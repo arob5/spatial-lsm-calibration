@@ -3,11 +3,11 @@
 Note on ProbPipe sample access:
   prior._sample(key, (n,)) returns a NumericRecordArray.
   Fields are accessed via bracket notation: arr["field_name"] -> shape (n,) array.
-  This differs from PLAN.md's getattr pattern; bracket notation is the correct API.
 
 Note on posterior samples:
-  ApproximateDistribution.draws() returns the raw flat chain arrays (shape: n_draws x n_params).
-  We unflatten using prior.unflatten_value() to get named fields.
+  posterior_predictive() accepts a raw chains array rather than an
+  ApproximateDistribution object, so it can be used after loading from NetCDF.
+  Pass the concatenated draws as (n_chains, n_draws, n_params) or (n_total, n_params).
 """
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ from typing import Any
 def prior_predictive(
     prior: Any,
     model: Any,
-    param_names: list[str],
     n_samples: int = 200,
     seed: int = 0,
     n_workers: int = 4,
@@ -30,11 +29,10 @@ def prior_predictive(
     Parameters
     ----------
     prior:
-        ProbPipe ProductDistribution prior.
+        ProbPipe ProductDistribution prior. Parameter names are derived from
+        prior.record_template.fields — no separate list needed.
     model:
         SIPNETModel instance (used as callable by PyEns).
-    param_names:
-        List of parameter names matching prior fields.
     n_samples:
         Number of prior samples to draw.
     seed:
@@ -52,8 +50,8 @@ def prior_predictive(
     from pyens.backends import LocalBackend
     from pysipnet.ensemble import sipnet_member_fields
 
-    # Sample parameter vectors from ProbPipe prior
-    # Returns NumericRecordArray; fields accessed via ["field_name"]
+    param_names: list[str] = list(prior.record_template.fields)
+
     key = jax.random.PRNGKey(seed)
     samples = prior._sample(key, (n_samples,))
 
@@ -78,29 +76,29 @@ def prior_predictive(
 
 
 def posterior_predictive(
-    posterior: Any,
+    posterior_chains: np.ndarray,
     prior: Any,
     model: Any,
-    param_names: list[str],
     n_samples: int = 200,
     seed: int = 1,
     n_workers: int = 4,
     output_var: str = "nee",
 ) -> np.ndarray:
-    """Draw parameter samples from posterior and run SIPNET in parallel.
+    """Draw parameter samples from posterior chains and run SIPNET in parallel.
 
     Parameters
     ----------
-    posterior:
-        ProbPipe ApproximateDistribution returned by condition_on().
+    posterior_chains:
+        Raw posterior draws as a numpy array. Shape may be either
+        (n_chains, n_draws, n_params) or (n_total, n_params).
+        Typically loaded from ArviZ NetCDF via az.from_netcdf().
     prior:
-        ProbPipe ProductDistribution prior (used to unflatten posterior draws).
+        ProbPipe ProductDistribution prior (used to unflatten draws).
+        Parameter names are derived from prior.record_template.fields.
     model:
         SIPNETModel instance.
-    param_names:
-        List of parameter names matching prior/posterior fields.
     n_samples:
-        Number of posterior draws to use (thinned from all draws if needed).
+        Number of posterior draws to use (randomly thinned if needed).
     seed:
         Random seed for draw selection.
     n_workers:
@@ -116,22 +114,24 @@ def posterior_predictive(
     from pyens.backends import LocalBackend
     from pysipnet.ensemble import sipnet_member_fields
 
-    # posterior.chains is a list of flat arrays, each shape (n_draws, n_params).
-    # (posterior.draws() returns NumericRecordArray — chains gives the raw flat arrays
-    # that prior.unflatten_value() expects.)
-    all_draws = np.concatenate([np.array(c) for c in posterior.chains], axis=0)
-    n_total = all_draws.shape[0]
+    param_names: list[str] = list(prior.record_template.fields)
+
+    chains = np.asarray(posterior_chains)
+    if chains.ndim == 3:
+        # (n_chains, n_draws, n_params) -> (n_total, n_params)
+        chains = chains.reshape(-1, chains.shape[-1])
+
+    n_total = chains.shape[0]
     rng = np.random.default_rng(seed)
     indices = rng.choice(n_total, size=min(n_samples, n_total), replace=False)
-    selected = all_draws[indices]  # shape (n_samples, n_params)
+    selected = chains[indices]  # shape (n_samples, n_params)
 
-    # Unflatten each draw using the prior's template
     members = Axis("member", size=len(indices))
     param_arrays: dict[str, list[float]] = {name: [] for name in param_names}
     for i in range(len(indices)):
-        rec = prior.unflatten_value(selected[i])
+        named = prior.unflatten_value(selected[i])
         for name in param_names:
-            param_arrays[name].append(float(rec[name]))
+            param_arrays[name].append(float(named[name]))
 
     spec = EnsembleSpec(inputs=sipnet_member_fields(members, **param_arrays))
     runner = EnsembleRunner(model, LocalBackend(n_workers=n_workers))

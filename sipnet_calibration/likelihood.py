@@ -1,84 +1,115 @@
-"""ProbPipe-compatible likelihood wrapper for SIPNET.
+"""ProbPipe-compatible likelihood base class for SIPNET experiments.
 
 Note on the params argument in log_likelihood:
   RWMH in ProbPipe operates in the prior's flat (unconstrained) space.
   The `params` argument received by log_likelihood is a flat 1-D JAX array,
-  NOT a ProbPipe Record. We unflatten it using the prior's record_template
-  so that parameter values can be accessed by name.
+  NOT a ProbPipe Record. We unflatten it using prior.unflatten_value() so
+  that parameter values can be accessed by name.
+
+Design:
+  SIPNETLikelihood is a thin base class that handles the ProbPipe protocol
+  (unflatten + error handling). Subclasses implement _evaluate() with the
+  actual physics/statistics. The prior is the sole source of truth for what
+  parameters are being calibrated — subclasses derive everything from it.
 """
 from __future__ import annotations
 
 import numpy as np
 import jax.numpy as jnp
-from dataclasses import dataclass, field
 from typing import Any
 
+from probpipe import NumericRecord
 
-@dataclass
+
 class SIPNETLikelihood:
-    """Gaussian observation likelihood wrapping a SIPNETModel.
+    """Minimal ProbPipe Likelihood base class for SIPNET experiments.
 
-    Implements the ProbPipe Likelihood protocol:
-        log_likelihood(params, data) -> float
+    The prior passed at construction is the authoritative definition of the
+    calibrated parameter space. Fixed / structural parameters live in whatever
+    SIPNETModel object is passed to a concrete subclass.
 
-    Parameters
-    ----------
-    model:
-        A configured SIPNETModel instance. Called as model(**param_overrides).
-    prior:
-        The ProbPipe ProductDistribution prior. Used to unflatten the flat
-        parameter array that RWMH passes to log_likelihood.
-    param_names:
-        List of SIPNET parameter leaf names to calibrate. Must match the
-        field names in the prior (and must be valid SIPNETModel kwargs).
-    sigma_obs:
-        Observation noise standard deviation (gC m-2 day-1 for NEE).
-    output_var:
-        Which SIPNETResult method to call for the modelled output.
-        Default "nee". Must be a zero-argument method returning pd.Series.
+    Subclasses must override _evaluate().
     """
 
-    model: Any           # SIPNETModel
-    prior: Any           # ProbPipe ProductDistribution — for unflatten
-    param_names: list[str]
-    sigma_obs: float
-    output_var: str = "nee"
+    def __init__(self, prior: Any) -> None:
+        self.prior = prior
 
     def log_likelihood(self, params: Any, data: Any) -> float:
-        """Evaluate Gaussian log-likelihood.
+        """ProbPipe protocol entry point.
 
         Parameters
         ----------
         params:
             Flat 1-D JAX array (RWMH state in prior's unconstrained space).
-            We unflatten it via prior.unflatten_value() to get a NumericRecord
-            with fields accessible via bracket notation: record["a_max"].
         data:
-            Observed output timeseries as a JAX or numpy 1-D array.
+            Observed timeseries passed through from condition_on().
         """
-        # Unflatten flat array -> NumericRecord with named fields
         try:
-            param_record = self.prior.unflatten_value(jnp.asarray(params))
+            named_params: NumericRecord = self.prior.unflatten_value(
+                jnp.asarray(params)
+            )
+        except Exception:
+            return -1e30
+        try:
+            return self._evaluate(named_params, data)
         except Exception:
             return -1e30
 
-        # Build override dict: flat param-name -> Python float
-        overrides = {}
-        for name in self.param_names:
-            try:
-                overrides[name] = float(param_record[name])
-            except Exception:
-                return -1e30
+    def _evaluate(self, named_params: NumericRecord, data: Any) -> float:
+        """Compute log-likelihood given unflattened parameter record and data.
 
-        try:
-            result = self.model(**overrides)
-        except Exception:
-            return -1e30
+        Parameters
+        ----------
+        named_params:
+            NumericRecord with fields matching the prior. Access values via
+            named_params["field_name"].
+        data:
+            Observed data as passed to log_likelihood.
+        """
+        raise NotImplementedError
 
-        predicted = getattr(result, self.output_var)().values
+
+class SingleSiteGaussianLikelihood(SIPNETLikelihood):
+    """Gaussian observation likelihood for a single-site SIPNET run.
+
+    Assumes iid Gaussian errors between modelled and observed output.
+
+    Parameters
+    ----------
+    prior:
+        ProbPipe ProductDistribution prior — defines calibrated parameters.
+    model:
+        Configured SIPNETModel instance (base params + climate already set).
+        Called as model(**overrides) where overrides come from named_params.
+    sigma_obs:
+        Observation noise standard deviation.
+    output:
+        Which SIPNETResult method to call for modelled output.
+        Must be a zero-argument method returning a pandas Series.
+        Default "nee".
+    """
+
+    def __init__(
+        self,
+        prior: Any,
+        model: Any,
+        sigma_obs: float,
+        output: str = "nee",
+    ) -> None:
+        super().__init__(prior)
+        self.model = model
+        self.sigma_obs = sigma_obs
+        self.output = output
+
+    def _evaluate(self, named_params: NumericRecord, data: Any) -> float:
+        overrides = {
+            name: float(named_params[name])
+            for name in self.prior.record_template.fields
+        }
+        result = self.model(**overrides)
+        predicted = getattr(result, self.output)().values
         obs = np.asarray(data)
         if len(predicted) != len(obs):
             return -1e30
-
         residuals = obs - predicted
-        return float(-0.5 * np.sum(residuals ** 2) / self.sigma_obs ** 2)
+        return float(-0.5 * np.sum(residuals**2) / self.sigma_obs**2)
