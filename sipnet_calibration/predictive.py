@@ -15,6 +15,8 @@ import numpy as np
 import jax
 from typing import Any
 
+from probpipe.custom_types import Array
+
 
 def prior_predictive(
     prior: Any,
@@ -23,7 +25,7 @@ def prior_predictive(
     seed: int = 0,
     n_workers: int = 4,
     output_var: str = "nee",
-) -> np.ndarray:
+) -> Array:
     """Sample from prior and run SIPNET in parallel via PyEns.
 
     Parameters
@@ -76,14 +78,14 @@ def prior_predictive(
 
 
 def posterior_predictive(
-    posterior_chains: np.ndarray,
+    posterior_chains: Array,
     prior: Any,
     model: Any,
     n_samples: int = 200,
     seed: int = 1,
     n_workers: int = 4,
     output_var: str = "nee",
-) -> np.ndarray:
+) -> Array:
     """Draw parameter samples from posterior chains and run SIPNET in parallel.
 
     Parameters

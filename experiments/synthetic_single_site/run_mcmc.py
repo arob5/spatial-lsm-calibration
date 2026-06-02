@@ -12,11 +12,9 @@ Output
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-# Allow imports from the experiment directory itself (config.py)
-sys.path.insert(0, str(Path(__file__).parent))
+from sipnet_calibration import ensure_experiment_on_path
+ensure_experiment_on_path(__file__)
 
 import arviz as az
 from probpipe import condition_on

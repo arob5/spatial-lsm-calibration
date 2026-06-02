@@ -6,8 +6,13 @@ are truly shared across experiments.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-def default_base_params() -> "SIPNETParametersV1":
+if TYPE_CHECKING:
+    from pysipnet import SIPNETParametersV1
+
+
+def default_base_params() -> SIPNETParametersV1:
     """Standard temperate-forest SIPNET baseline parameter set.
 
     Returns a fully-specified SIPNETParametersV1 suitable for use as

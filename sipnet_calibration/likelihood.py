@@ -19,6 +19,7 @@ import jax.numpy as jnp
 from typing import Any
 
 from probpipe import NumericRecord
+from probpipe.custom_types import Array, ArrayLike
 
 
 class SIPNETLikelihood:
@@ -34,7 +35,7 @@ class SIPNETLikelihood:
     def __init__(self, prior: Any) -> None:
         self.prior = prior
 
-    def log_likelihood(self, params: Any, data: Any) -> float:
+    def log_likelihood(self, params: ArrayLike, data: ArrayLike) -> float:
         """ProbPipe protocol entry point.
 
         Parameters
@@ -55,7 +56,7 @@ class SIPNETLikelihood:
         except Exception:
             return -1e30
 
-    def _evaluate(self, named_params: NumericRecord, data: Any) -> float:
+    def _evaluate(self, named_params: NumericRecord, data: ArrayLike) -> float:
         """Compute log-likelihood given unflattened parameter record and data.
 
         Parameters
@@ -101,7 +102,7 @@ class SingleSiteGaussianLikelihood(SIPNETLikelihood):
         self.sigma_obs = sigma_obs
         self.output = output
 
-    def _evaluate(self, named_params: NumericRecord, data: Any) -> float:
+    def _evaluate(self, named_params: NumericRecord, data: ArrayLike) -> float:
         overrides = {
             name: float(named_params[name])
             for name in self.prior.record_template.fields
@@ -109,7 +110,11 @@ class SingleSiteGaussianLikelihood(SIPNETLikelihood):
         result = self.model(**overrides)
         predicted = getattr(result, self.output)().values
         obs = np.asarray(data)
-        if len(predicted) != len(obs):
-            return -1e30
+        if predicted.shape != obs.shape:
+            raise ValueError(
+                f"Shape mismatch between model output {predicted.shape} "
+                f"and observations {obs.shape}. Check that the climate file "
+                f"and obs array were generated from the same setup_data() call."
+            )
         residuals = obs - predicted
         return float(-0.5 * np.sum(residuals**2) / self.sigma_obs**2)
