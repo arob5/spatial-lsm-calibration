@@ -1,49 +1,95 @@
 """ProbPipe-compatible likelihood base class for SIPNET experiments.
 
-Note on the params argument in log_likelihood:
-  RWMH in ProbPipe operates in the prior's flat (unconstrained) space.
-  The `params` argument received by log_likelihood is a flat 1-D JAX array,
-  NOT a ProbPipe Record. We unflatten it using prior.unflatten_value() so
-  that parameter values can be accessed by name.
+Calling convention (RWMH)
+-------------------------
+ProbPipe's RWMH sampler (``probpipe.inference._rwmh``) is a **pure Python
+for-loop** — it does not use ``jax.jit``, ``jax.vmap``, or any other JAX
+transformation. At each MCMC step it calls::
 
-Design:
-  SIPNETLikelihood is a thin base class that handles the ProbPipe protocol
-  (unflatten + error handling). Subclasses implement _evaluate() with the
-  actual physics/statistics. The prior is the sole source of truth for what
-  parameters are being calibrated — subclasses derive everything from it.
+    float(target_log_prob(params))
+
+where ``target_log_prob(params) = prior._log_prob(params)
+                                   + likelihood.log_likelihood(params, data)``.
+
+Consequences for subclass authors:
+  * ``params`` is always a **1-D flat** ``jnp.ndarray`` of shape ``(n_params,)``
+    — one draw, never a batched array.
+  * ``log_likelihood`` must return a Python ``float`` (or something that
+    ``float()`` accepts). Returning a JAX scalar is fine.
+  * Python side-effects (file I/O, subprocess calls like SIPNET) are safe.
+  * No autodiff is required; RWMH is gradient-free.
+
+Parameter unflattening
+----------------------
+RWMH operates in the prior's **flat unconstrained space** — the parameter
+vector it proposes has no names. ``SIPNETLikelihood`` reconstructs a named
+``NumericRecord`` from the flat vector via ``prior.unflatten_value(params)``
+so that subclasses can access parameters by name.
+
+The ``prior`` argument must be a ``RecordDistribution`` (e.g.
+``ProductDistribution``) — specifically it must expose:
+
+  * ``unflatten_value(flat: Array) -> NumericRecord``
+  * ``record_template.fields`` — ordered collection of parameter names
+
+``ProductDistribution`` satisfies both.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import jax.numpy as jnp
-from typing import Any
 
 from probpipe import NumericRecord
+from probpipe.core._record_distribution import RecordDistribution
 from probpipe.custom_types import Array, ArrayLike
+
+if TYPE_CHECKING:
+    pass  # future imports go here
 
 
 class SIPNETLikelihood:
     """Minimal ProbPipe Likelihood base class for SIPNET experiments.
 
-    The prior passed at construction is the authoritative definition of the
-    calibrated parameter space. Fixed / structural parameters live in whatever
-    SIPNETModel object is passed to a concrete subclass.
+    The ``prior`` passed at construction is the **sole source of truth** for
+    the calibrated parameter space — it defines both which parameters vary and
+    their names. Fixed / structural parameters live in whatever
+    ``SIPNETModel`` is passed to a concrete subclass.
 
-    Subclasses must override _evaluate().
+    Parameters
+    ----------
+    prior:
+        A ``RecordDistribution`` (e.g. ``ProductDistribution``) with named
+        fields. Must implement ``unflatten_value`` and expose
+        ``record_template.fields``.
+
+    Subclassing
+    -----------
+    Override ``_evaluate(named_params, data) -> float``. The base class
+    handles unflattening and catches all exceptions (returning ``-1e30`` so
+    MCMC continues). Subclass ``_evaluate`` should raise on invalid inputs
+    rather than returning ``-1e30`` — the base class converts the exception.
     """
 
-    def __init__(self, prior: Any) -> None:
+    def __init__(self, prior: RecordDistribution) -> None:
         self.prior = prior
 
     def log_likelihood(self, params: ArrayLike, data: ArrayLike) -> float:
-        """ProbPipe protocol entry point.
+        """ProbPipe Likelihood protocol entry point.
+
+        Called once per MCMC step with a single flat parameter vector.
+        Never called under ``jax.jit`` or ``jax.vmap`` by RWMH.
 
         Parameters
         ----------
         params:
-            Flat 1-D JAX array (RWMH state in prior's unconstrained space).
+            1-D flat ``jnp.ndarray`` of shape ``(n_params,)`` in the prior's
+            unconstrained space. Unflattened to a ``NumericRecord`` before
+            being passed to ``_evaluate``.
         data:
-            Observed timeseries passed through from condition_on().
+            Observed data as passed to ``condition_on``. May be a numpy
+            array, JAX array, or any type that ``_evaluate`` understands.
         """
         try:
             named_params: NumericRecord = self.prior.unflatten_value(
@@ -59,41 +105,53 @@ class SIPNETLikelihood:
     def _evaluate(self, named_params: NumericRecord, data: ArrayLike) -> float:
         """Compute log-likelihood given unflattened parameter record and data.
 
+        Called by ``log_likelihood`` after unflattening. Subclasses should
+        raise on invalid inputs; exceptions are caught by the base class and
+        mapped to ``-1e30``.
+
         Parameters
         ----------
         named_params:
-            NumericRecord with fields matching the prior. Access values via
-            named_params["field_name"].
+            ``NumericRecord`` with one field per calibrated parameter.
+            Access values via ``named_params["field_name"]``.
         data:
-            Observed data as passed to log_likelihood.
+            Observed data as passed to ``log_likelihood``.
         """
         raise NotImplementedError
 
 
 class SingleSiteGaussianLikelihood(SIPNETLikelihood):
-    """Gaussian observation likelihood for a single-site SIPNET run.
+    """iid Gaussian observation likelihood for a single-site SIPNET run.
 
-    Assumes iid Gaussian errors between modelled and observed output.
+    Assumes the residuals ``obs - model(params)`` are iid
+    ``N(0, sigma_obs²)`` at every timestep. The resulting log-likelihood is::
+
+        -0.5 * sum((obs - predicted)² / sigma_obs²)
+
+    In practice ``sigma_obs`` should be set to reflect both measurement noise
+    *and* model structural error (temporal autocorrelation, missing processes).
+    For the 8760-timestep sub-daily setting a value of ``sigma_obs = 2.0``
+    gC m⁻² per 3-hr step gives ~23% RWMH acceptance with ``step_size = 0.01``.
 
     Parameters
     ----------
     prior:
-        ProbPipe ProductDistribution prior — defines calibrated parameters.
+        ``RecordDistribution`` defining calibrated parameters.
     model:
-        Configured SIPNETModel instance (base params + climate already set).
-        Called as model(**overrides) where overrides come from named_params.
+        Configured ``SIPNETModel`` instance (base params + climate already
+        set). Called as ``model(**overrides)`` where overrides are derived
+        from ``named_params``.
     sigma_obs:
-        Observation noise standard deviation.
+        Observation noise standard deviation (same units as model output).
     output:
-        Which SIPNETResult method to call for modelled output.
-        Must be a zero-argument method returning a pandas Series.
-        Default "nee".
+        ``SIPNETResult`` method name to call for modelled output. Must be a
+        zero-argument method returning a ``pandas.Series``. Default ``"nee"``.
     """
 
     def __init__(
         self,
-        prior: Any,
-        model: Any,
+        prior: RecordDistribution,
+        model: object,
         sigma_obs: float,
         output: str = "nee",
     ) -> None:

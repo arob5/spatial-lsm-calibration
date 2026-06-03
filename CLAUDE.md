@@ -66,6 +66,18 @@ data/                       ← raw inputs only (e.g. era5_site1.clim)
 - `prior._sample(key, (n,))` returns `NumericRecordArray`; fields via `arr["name"]` give shape `(n,)` arrays
 - `posterior.chains` is a list of flat `(n_draws, n_params)` arrays
 - `posterior.inference_data` is an ArviZ `InferenceData` object
+- Type for a prior with named fields: `RecordDistribution` from `probpipe.core._record_distribution` (exported from `probpipe`)
+
+#### ProbPipe sharp edges (note for ProbPipe developer)
+- **RWMH is a pure Python for-loop** — no `jax.jit`, no `jax.vmap`. `log_likelihood` is called
+  once per step with a single `(n_params,)` array; return value is wrapped in `float()`.
+  Python side-effects (subprocess, file I/O) are safe. This is good for SIPNET but means
+  RWMH cannot exploit JAX's parallelism or JIT compilation. A future `jax.pure_callback`-based
+  variant could enable JIT and true chain parallelism via `vmap`.
+- **No batching contract on `log_likelihood`** — ProbPipe's Likelihood protocol only requires
+  scalar output. There is no vectorized/batched variant expected by any current sampler. This
+  means subclasses cannot inadvertently trigger batched calls, but also means there is no
+  path to a vectorized likelihood (e.g., for HMC with batched proposals) without a protocol change.
 
 ### PyEns
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
