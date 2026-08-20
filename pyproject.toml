@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pysipnet",
-    "probpipe",
     "pyens",
     "numpy>=1.24",
     "pandas>=2.0",
@@ -22,7 +21,6 @@ dependencies = [
 [tool.uv.sources]
 pysipnet = { path = "../pySIPNET", editable = true }
 pyens = { path = "../PyEns", editable = true }
-probpipe = { path = "../prob-pipe", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["sipnet_calibration"]
