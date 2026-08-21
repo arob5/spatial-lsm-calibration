@@ -18,6 +18,12 @@ dependencies = [
     "nbconvert",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.0",
+]
+
 [tool.uv.sources]
 pysipnet = { path = "../pySIPNET", editable = true }
 pyens = { path = "../PyEns", editable = true }
