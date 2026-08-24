@@ -1,47 +1,75 @@
-"""Structured positive-definite operators: the class hierarchy and its contract.
+"""Base classes for structured linear operators.
 
-Three levels, split by what is actually well defined at each:
+An operator represents a matrix implicitly, by how it acts on vectors, so that
+known structure can be exploited instead of storing or factorizing a dense
+array. Concrete operators live in :mod:`.leaves` and :mod:`.composite`.
 
-    LinOp         matvec, matmat, to_dense           (may be rectangular)
-      |
-    SquareLinOp   + solve, solve_mat, logdet, diag
-      |
-    PSDOperator   + factor, cholesky, whiten
+Class hierarchy
+---------------
+Each level adds the operations that become well defined at that level.
 
-The split is load-bearing rather than cosmetic. ``PSDOperator.factor()`` returns
-the square root *as an operator*, and square roots are rectangular and not
-self-adjoint -- so they belong in ``LinOp``, where they cannot advertise a
-meaningless ``solve``. See the design log
-``2026-08-20_Core Inference Primitives Design Spec`` for the reasoning.
+``LinOp``
+    Any linear map, possibly rectangular.
+    Provides ``matvec``, ``matmat``, ``to_dense``.
+``SquareLinOp``
+    A square map.
+    Adds ``solve``, ``solve_mat``, ``logdet``, ``diag``.
+``PSDOperator``
+    A symmetric positive semi-definite map.
+    Adds ``factor``, ``cholesky``, ``whiten``.
 
-Conventions fixed here and relied on everywhere downstream:
+Array shapes
+------------
+Every method takes leading batch axes; the operand's core shape is trailing.
 
-**Batch axes lead; the core operand shape trails.** This is the NumPy
-generalized-ufunc rule, and it is what ``vmap`` produces by default.
+==============  ====================  ====================================
+method          core operand          signature
+==============  ====================  ====================================
+``matvec``      vector ``(n_in,)``    ``(..., n_in) -> (..., n_out)``
+``matmat``      matrix ``(n_in, k)``  ``(..., n_in, k) -> (..., n_out, k)``
+``solve``       vector ``(n,)``       ``(..., n) -> (..., n)``
+``solve_mat``   matrix ``(n, k)``     ``(..., n, k) -> (..., n, k)``
+==============  ====================  ====================================
 
-===============  ====================  ==================================
-method           core operand          batched signature
-===============  ====================  ==================================
-``matvec``       vector ``(n_in,)``    ``(..., n_in) -> (..., n_out)``
-``matmat``       matrix ``(n_in, k)``  ``(..., n_in, k) -> (..., n_out, k)``
-``solve``        vector ``(n,)``       ``(..., n) -> (..., n)``
-``solve_mat``    matrix ``(n, k)``     ``(..., n, k) -> (..., n, k)``
-===============  ====================  ==================================
+The ``k`` in ``matmat`` is part of the core shape, not a batch axis. Use
+``matvec`` for a batch of vectors and ``matmat`` for a single matrix operand;
+neither infers which you meant from the number of dimensions.
 
-The ``k`` in ``matmat`` is *not* a batch axis -- it is the column count of one
-matrix operand, part of the core shape. ``matvec`` and ``matmat`` are therefore
-separate methods that never inspect ``ndim``; NumPy overloaded exactly this in
-``linalg.solve`` and had to change the rule in 2.0.
+Unsupported operations
+----------------------
+Not every operator can do everything cheaply. An operator raises
+:class:`UnsupportedOp` rather than falling back to dense linear algebra. Query
+support with ``op.supports(name)`` or ``op.capabilities()``, and use
+:func:`densify` when a dense fallback is genuinely wanted.
 
-**Children must contract their trailing axis.** Composite operators call child
-``matvec`` on arrays with leading batch axes. The obvious dense implementation
-``self.M @ x`` violates this -- it contracts the *second-to-last* axis when
-``ndim >= 2`` -- which produces a wrong answer with no error whenever the
-operator is square. Use ``dense_matvec`` below.
+Defining a new operator
+-----------------------
+Subclass the appropriate level, decorate with :func:`operator`, and implement
+``shape``, ``matvec``, ``to_dense``, plus whichever optional methods the
+structure supports. Use :func:`dense_matvec` and :func:`tri_solve` for the
+array work so the shape convention above is honoured. Mark non-array fields
+with :func:`static_field`. Validate against
+:func:`sipnet_calibration.linalg.testing.check_operator`.
 
-**Unsupported operations raise; they never silently densify.** A base method
-that falls back to ``to_dense() @ x`` turns an O(n^3) mistake into an invisible
-one. Densification is an explicit call, :func:`densify`.
+Notes
+-----
+Design decisions behind the above, recorded because they are not obvious and
+are easy to undo by accident:
+
+- The hierarchy has three levels rather than two because ``factor()`` returns
+  a square root *as an operator*, and square roots are generally rectangular
+  and not self-adjoint. Keeping them in ``LinOp`` means they cannot expose a
+  ``solve`` that has no meaning.
+- Implementations must contract the *trailing* axis. Writing ``self.M @ x``
+  instead contracts the second-to-last axis once ``x`` has two or more
+  dimensions, which returns a wrong answer without raising whenever the
+  operator is square.
+- ``to_dense`` is built from stored arrays rather than by applying the
+  operator to an identity matrix. The test suite compares ``matvec`` against
+  ``to_dense``, so an implementation via ``matvec`` would make that check
+  vacuous.
+- Unsupported operations raise instead of densifying so that an accidental
+  O(n^3) cost is visible rather than silent.
 """
 from __future__ import annotations
 
@@ -69,8 +97,8 @@ __all__ = [
 class UnsupportedOp(NotImplementedError):
     """Raised when an operator has no cheap implementation of an operation.
 
-    Deliberately *not* a silent fall back to dense linear algebra. If a dense
-    result is genuinely wanted, ask for it: ``densify(op).solve(b)``.
+    The message names the operator type and lists the operations it does
+    support. For an explicit dense fallback, use ``densify(op).solve(b)``.
     """
 
     def __init__(self, name: str, op: "LinOp") -> None:
@@ -87,25 +115,22 @@ class UnsupportedOp(NotImplementedError):
 # dataclass / pytree plumbing
 # ---------------------------------------------------------------------------
 
-# Field types that are almost always meant to be static. Leaving one of these
-# as a pytree child means it arrives as a tracer under `jit`, and any use of it
-# in a shape expression dies with "Shapes must be 1D sequences of concrete
-# values" -- far from the declaration that caused it.
 _SCALARISH = {"int", "float", "bool", "str", "NoneType", "None"}
 _CONTAINERS = {"tuple", "list", "dict", "set", "frozenset"}
 
 
 def _is_likely_static(ann: Any) -> bool:
-    """Heuristic: would this annotation be a mistake as a pytree child?
+    """Return True if this field annotation should have been marked static.
 
-    Must handle **string** annotations, because any module with
-    ``from __future__ import annotations`` -- which is to say, all of them --
-    hands ``dataclasses.fields`` the annotation as text rather than a type. An
-    earlier version only checked ``isinstance(ann, type)`` and therefore never
-    fired at all; a test caught it.
+    Containers are judged by their parameters, so ``tuple[int, ...]`` is
+    static-looking while ``tuple[LinOp, ...]`` is not, since the latter holds
+    arrays.
 
-    Containers are judged by their parameters, so ``tuple[int, ...]`` is static
-    but ``tuple[LinOp, ...]`` is a child -- the latter holds arrays.
+    Notes
+    -----
+    Annotations arrive as strings in any module using
+    ``from __future__ import annotations``, so a type-only check would never
+    fire.
     """
     if isinstance(ann, type):
         return ann.__name__ in _SCALARISH or ann.__name__ in _CONTAINERS
@@ -133,19 +158,26 @@ def static_field(**kwargs: Any):
 
 
 def operator(cls: type) -> type:
-    """Make ``cls`` a frozen dataclass registered as a JAX pytree.
+    """Class decorator: make ``cls`` a frozen dataclass and a JAX pytree.
 
-    Fields marked with :func:`static_field` become ``meta_fields``; everything
-    else becomes a child. Two guards, both for hazards that otherwise surface
-    far from their cause:
+    Array-valued fields become pytree children, so operators can be passed
+    through ``jit``, ``vmap`` and ``grad``. Fields marked with
+    :func:`static_field` become static metadata instead.
 
-    * A field annotated with a scalar/container type that is *not* marked
-      static raises at class-definition time. Such a field would silently
-      become a tracer under ``jit``.
-    * ``eq=False``, so operators use identity equality. Dataclass ``__eq__``
-      would compare arrays elementwise and raise "truth value ... is
-      ambiguous"; the generated ``__hash__`` would raise on ``ArrayImpl``.
-      Operators are always *traced* arguments, never ``static_argnums``.
+    Raises
+    ------
+    TypeError
+        If a field annotated as a scalar or plain container is not marked
+        static. Such a field would become a pytree child and arrive as a
+        tracer under ``jit``, typically failing later inside a shape
+        expression.
+
+    Notes
+    -----
+    Operators compare by identity (``eq=False``). Dataclass equality would
+    compare arrays elementwise and raise on the ambiguous truth value, and the
+    generated ``__hash__`` would fail on array fields. Pass operators as
+    ordinary traced arguments, never via ``static_argnums``.
     """
     cls = dataclass(frozen=True, eq=False)(cls)
 
@@ -174,16 +206,21 @@ def operator(cls: type) -> type:
 # ---------------------------------------------------------------------------
 
 def dense_matvec(M: Array, x: Array) -> Array:
-    """``M @ x`` contracting the **trailing** axis of ``x``.
+    """Apply a dense matrix to ``x``, contracting its trailing axis.
 
-    ``M @ x`` is wrong here: for ``x.ndim >= 2`` it contracts the second-to-last
-    axis. When the operator is square that is a wrong answer with no error.
+    Use this rather than ``M @ x`` when implementing ``matvec``: for arrays
+    with two or more dimensions the ``@`` operator contracts the
+    second-to-last axis, which silently returns a wrong answer when ``M`` is
+    square.
     """
     return jnp.einsum("ij,...j->...i", M, x)
 
 
 def tri_solve(L: Array, x: Array, *, lower: bool, trans: int = 0) -> Array:
-    """Triangular solve contracting the trailing axis, with leading batch axes."""
+    """Solve a triangular system, contracting the trailing axis of ``x``.
+
+    Accepts any number of leading batch axes.
+    """
     flat = x.reshape(-1, x.shape[-1]).T                     # (n, m)
     out = jax.scipy.linalg.solve_triangular(L, flat, lower=lower, trans=trans)
     return out.T.reshape(x.shape)
@@ -197,42 +234,54 @@ _OPTIONAL = ("solve", "solve_mat", "logdet", "diag", "factor", "cholesky", "whit
 
 
 class LinOp:
-    """A linear operator, possibly rectangular. Contract in the module docstring."""
+    """A linear map, possibly rectangular.
 
-    #: Set by subclasses that want to *withdraw* a capability their base provides
-    #: (rare). Normal types simply override the methods they support.
+    The base of the operator hierarchy. See the module docstring for the shape
+    convention and for how to define a new operator.
+    """
+
+    #: Names of operations this subclass explicitly does not support, even
+    #: though a base class provides them. Rarely needed.
     _WITHDRAWN: ClassVar[frozenset[str]] = frozenset()
 
     # -- required -----------------------------------------------------------
     @property
     def shape(self) -> tuple[int, int]:
-        """``(n_out, n_in)``. A property, not a field, so it never becomes a tracer."""
+        """Shape as ``(n_out, n_in)``.
+
+        Notes
+        -----
+        Defined as a property rather than a stored field so that it stays a
+        concrete Python tuple under ``jit`` and can be used in shape
+        expressions.
+        """
         raise NotImplementedError(f"{type(self).__name__} must define `shape`")
 
     def matvec(self, x: Array) -> Array:
+        """Apply the operator to ``x``, contracting its trailing axis."""
         raise NotImplementedError(f"{type(self).__name__} must define `matvec`")
 
     def to_dense(self) -> Array:
-        """Dense array, built **independently of matvec**.
+        """Return the operator as a dense array.
 
-        Independence matters: the conformance harness checks ``matvec`` against
-        ``to_dense``, and a ``to_dense`` implemented as ``self @ eye`` would make
-        that check compare ``matvec`` with itself.
+        Implementations build this from their stored arrays rather than by
+        applying the operator to an identity matrix.
         """
         raise NotImplementedError(f"{type(self).__name__} must define `to_dense`")
 
     # -- derived ------------------------------------------------------------
     def matmat(self, X: Array) -> Array:
-        """``A X`` for ``X`` of core shape ``(n_in, k)``, leading axes batched."""
+        """Apply the operator to a matrix ``X`` of core shape ``(n_in, k)``."""
         return self.matvec(X.swapaxes(-1, -2)).swapaxes(-1, -2)
 
     # -- capability introspection -------------------------------------------
     def supports(self, name: str) -> bool:
-        """Whether ``name`` has a cheap implementation on this instance.
+        """Return True if ``name`` has a cheap implementation on this instance.
 
-        Composites override this to intersect over their children: a
-        ``BlockDiag`` can only ``solve`` if every block can. A class-level
-        declaration cannot express that, which is why this is a method.
+        Notes
+        -----
+        This is an instance method because support can depend on an operator's
+        contents: a ``BlockDiag`` can only ``solve`` if all of its blocks can.
         """
         if name in self._WITHDRAWN:
             return False
@@ -240,6 +289,7 @@ class LinOp:
         return impl is not None and impl is not _BASE_IMPL.get(name)
 
     def capabilities(self) -> frozenset[str]:
+        """Return the names of all optional operations this instance supports."""
         return frozenset(n for n in _OPTIONAL if self.supports(n))
 
     def _unsupported(self, name: str):
@@ -254,28 +304,34 @@ class LinOp:
 # ---------------------------------------------------------------------------
 
 class SquareLinOp(LinOp):
-    """A square operator: inverse and determinant are at least well posed."""
+    """A square linear map, for which an inverse and determinant are defined."""
 
     @property
     def n(self) -> int:
+        """Side length of the operator."""
         return self.shape[0]
 
     def solve(self, b: Array) -> Array:
+        """Solve ``A x = b``, contracting the trailing axis of ``b``."""
         self._unsupported("solve")
 
     def solve_mat(self, B: Array) -> Array:
+        """Solve ``A X = B`` for a matrix ``B`` of core shape ``(n, k)``."""
         return self.solve(B.swapaxes(-1, -2)).swapaxes(-1, -2)
 
     def logdet(self) -> Array:
-        """Log-determinant, as a **real JAX scalar** -- never a Python float.
+        """Return the log-determinant as a real scalar array.
 
-        ``float(tracer)`` fails under ``jit``, and a complex intermediate (easy
-        to reach via an FFT-diagonalized operator) makes ``float()`` fail
-        outright. Return an array and let the caller decide.
+        Notes
+        -----
+        Always an array, never a Python ``float``: converting would fail on a
+        tracer under ``jit``, and also on any complex intermediate produced by
+        a spectrally diagonalized operator.
         """
         self._unsupported("logdet")
 
     def diag(self) -> Array:
+        """Return the diagonal as a vector of length ``n``."""
         self._unsupported("diag")
 
 
@@ -284,34 +340,40 @@ class SquareLinOp(LinOp):
 # ---------------------------------------------------------------------------
 
 class PSDOperator(SquareLinOp):
-    """A symmetric positive semi-definite operator.
+    """A symmetric positive semi-definite linear map.
 
-    ``rmatvec``/``rmatmat`` are deliberately absent: PSD implies self-adjoint,
-    so they would be aliases of ``matvec``/``matmat`` -- two more methods to
-    implement and test per type, for nothing.
+    Notes
+    -----
+    There are no ``rmatvec``/``rmatmat`` methods. A PSD operator is
+    self-adjoint, so they would duplicate ``matvec`` and ``matmat``.
     """
 
     def factor(self) -> LinOp:
-        """``L`` with ``L @ L.T == self``, as an operator of shape ``(n, k)``.
+        """Return an operator ``L`` of shape ``(n, k)`` with ``L @ L.T == self``.
 
-        **No constraint is imposed between ``k`` and ``n``.** Low-rank-plus-
-        diagonal gives ``k = n + r``; a reduced-rank coregionalization gives
-        ``k < n``, i.e. a genuinely singular operator for which ``solve`` does
-        not exist at all.
+        Use this to draw samples: ``L.matvec(eps)`` for standard normal
+        ``eps`` of length ``k`` has covariance equal to this operator.
+
+        The factor need not be square, in either direction. A
+        low-rank-plus-diagonal operator gives ``k > n``; a reduced-rank
+        operator gives ``k < n`` and is singular, so it will have no ``solve``.
         """
         self._unsupported("factor")
 
     def cholesky(self) -> LinOp:
-        """Square triangular ``L`` with ``L @ L.T == self``.
+        """Return the square triangular ``L`` with ``L @ L.T == self``.
 
-        Only defined when the factor is square. Prefer :meth:`whiten` at call
-        sites that just need ``L^{-1} x`` -- whitening needs square-and-
-        invertible, not triangularity.
+        Available only when the factor is square. To whiten a vector, prefer
+        :meth:`whiten`, which does not require the factor to be triangular.
         """
         self._unsupported("cholesky")
 
     def whiten(self, x: Array) -> Array:
-        """``L^{-1} x`` where ``L @ L.T == self``. The observation-noise hot path."""
+        """Return ``L^-1 x`` for a factor ``L`` satisfying ``L @ L.T == self``.
+
+        Transforms ``x`` so that data with this operator as its covariance
+        becomes uncorrelated with unit variance.
+        """
         return self.cholesky().solve(x)
 
 
@@ -330,10 +392,25 @@ del _lvl, _name
 # ---------------------------------------------------------------------------
 
 def densify(op: LinOp, *, max_n: int = 4096):
-    """Materialize ``op`` as a dense operator, with a guard.
+    """Return ``op`` as a dense operator, subject to a size limit.
 
-    The guard is on ``op.shape``, which is static even under ``jit``, so this
-    raises at trace time rather than allocating.
+    The explicit fallback for operations an operator does not support cheaply.
+    Returns a :class:`~.leaves.DensePSD` if ``op`` is PSD, otherwise a
+    :class:`~.leaves.Dense`.
+
+    Parameters
+    ----------
+    op
+        Operator to materialize.
+    max_n
+        Largest side length allowed. Raises above this rather than allocating,
+        so an unintended O(n^3) cost surfaces immediately. Raise it
+        deliberately if the cost is wanted.
+
+    Raises
+    ------
+    ValueError
+        If either side of ``op.shape`` exceeds ``max_n``.
     """
     from .leaves import Dense, DensePSD
 

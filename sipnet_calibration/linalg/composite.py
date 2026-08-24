@@ -1,19 +1,30 @@
-"""Composite operators: the ones built out of other operators.
+"""Operators built from other operators.
 
-``Product`` and ``HStack`` exist because ``PSDOperator.factor()`` is a
-homomorphism into the *general* operator algebra, not a leaf operation:
+============================  ==============================================
+class                         represents
+============================  ==============================================
+:class:`Product`              a chain of operators applied in sequence
+:class:`HStack`               blocks placed side by side, ``[A_1 ... A_m]``
+:class:`BlockDiag`            a block-diagonal matrix of PSD blocks
+:class:`BlockDiagGeneral`     a block-diagonal matrix of arbitrary blocks
+============================  ==============================================
 
-    factor(A + B)   =  [ L_A  L_B ]        -> HStack
-    factor(D A D)   =  D L_A               -> Product
-    factor(A (x) B) =  L_A (x) L_B         -> rectangular Kron  (not yet)
+See :mod:`sipnet_calibration.linalg.base` for the shape convention shared by
+all operators.
 
-so making ``factor`` first-class commits to that codomain existing.
+``Product`` and ``HStack`` are what ``factor()`` returns for composed
+operators, since a square root distributes over composition:
 
-Note both are ``LinOp``, not ``PSDOperator``: a general product of three
-operators is not PSD, and PSD-ness is not tracked through composition here.
-That is why a symmetric congruence ``diag(d) A diag(d)`` will need its own type
-rather than being sugar over ``Product`` -- it is the one that knows the result
-is still PSD.
+- the factor of a sum is its factors side by side, an ``HStack``;
+- the factor of ``D A D`` is ``D`` times the factor of ``A``, a ``Product``.
+
+Notes
+-----
+``Product`` and ``HStack`` are plain ``LinOp``, not ``PSDOperator``, because
+composing PSD operators does not generally give a PSD result and this layer
+does not track definiteness through composition. An operator that stays PSD
+under composition, such as a symmetric congruence ``diag(d) A diag(d)``, needs
+its own class rather than being expressed as a ``Product``.
 """
 from __future__ import annotations
 
@@ -27,7 +38,14 @@ __all__ = ["Product", "HStack", "BlockDiag"]
 
 @operator
 class Product(LinOp):
-    """``ops[0] @ ops[1] @ ... @ ops[-1]``, applied right to left."""
+    """A chain of operators, applied right to left.
+
+    Parameters
+    ----------
+    ops
+        Operators to compose, with adjacent shapes agreeing. The last is
+        applied first.
+    """
 
     ops: tuple[LinOp, ...]
 
@@ -56,12 +74,17 @@ class Product(LinOp):
 
 @operator
 class HStack(LinOp):
-    """``[A_1  A_2  ...  A_m]`` -- blocks side by side, sharing a row count.
+    """Blocks placed side by side, ``[A_1  A_2  ...  A_m]``.
 
-    Note this is *not* "apply each block to the whole input and concatenate the
-    outputs" (that is a block *column*). Here the input is split along its
-    trailing axis and the blocks' outputs are summed:
-    ``[A_1 A_2] @ [x_1; x_2] = A_1 x_1 + A_2 x_2``.
+    The input is split along its trailing axis, one piece per block, and the
+    blocks' outputs are summed, so that
+    ``[A_1 A_2] @ [x_1; x_2] == A_1 x_1 + A_2 x_2``. This is a block *row*;
+    it does not apply each block to the whole input.
+
+    Parameters
+    ----------
+    ops
+        Blocks, all with the same number of rows. Column counts may differ.
     """
 
     ops: tuple[LinOp, ...]
@@ -100,11 +123,19 @@ class HStack(LinOp):
 
 @operator
 class BlockDiag(PSDOperator):
-    """``blockdiag(blocks)`` of PSD blocks -- the shape observation noise takes.
+    """A block-diagonal matrix whose blocks are all PSD.
 
-    Capabilities are *conditional on the children*: this can only ``solve`` if
-    every block can. That is why :meth:`supports` is a method rather than a
-    class attribute.
+    Every operation is applied blockwise, so cost is the sum over blocks
+    rather than cubic in the total size.
+
+    Which operations are available depends on the blocks: this operator
+    supports ``solve`` only if all of its blocks do. Check with
+    ``op.supports(name)`` before calling.
+
+    Parameters
+    ----------
+    blocks
+        Square PSD operators, in order along the diagonal.
     """
 
     blocks: tuple[PSDOperator, ...]
@@ -167,10 +198,15 @@ class BlockDiag(PSDOperator):
 
 @operator
 class BlockDiagGeneral(LinOp):
-    """Block diagonal of arbitrary (possibly rectangular) blocks.
+    """A block-diagonal matrix whose blocks may be rectangular.
 
-    What ``BlockDiag.factor()`` returns: the blocks' factors need not be square,
-    so the result is a general ``LinOp``.
+    Returned by :meth:`BlockDiag.factor` and :meth:`BlockDiag.cholesky`, whose
+    per-block factors need not be square.
+
+    Parameters
+    ----------
+    blocks
+        Operators in order along the diagonal.
     """
 
     blocks: tuple[LinOp, ...]
@@ -200,7 +236,7 @@ class BlockDiagGeneral(LinOp):
 
 
 def _dense_block_diag(mats: list[Array]) -> Array:
-    """Dense block diagonal, built independently of any ``matvec``."""
+    """Assemble a dense block-diagonal array from dense blocks."""
     rows = sum(m.shape[0] for m in mats)
     cols = sum(m.shape[1] for m in mats)
     out = jnp.zeros((rows, cols), dtype=mats[0].dtype)

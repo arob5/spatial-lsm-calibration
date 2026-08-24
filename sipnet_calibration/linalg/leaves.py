@@ -1,11 +1,26 @@
-"""Leaf operators: the ones that store arrays rather than other operators.
+"""Operators defined directly by their own arrays.
 
-Every factorization here happens at **construction time**, not on demand. A
-lazily-cached factor written via ``object.__setattr__`` inside a traced function
-is written to the unflattened copy and discarded, so the operator silently
-re-factorizes on every call (measured ~9.5x at n=400). Constructing
-``DensePSD`` from a matrix therefore runs the Cholesky once, outside ``jit``,
-and stores the factor.
+============================  ==============================================
+class                         represents
+============================  ==============================================
+:class:`Identity`             the identity matrix
+:class:`ScaledIdentity`       a positive multiple of the identity
+:class:`Diagonal`             a diagonal matrix with positive entries
+:class:`Dense`                an explicit array, possibly rectangular
+:class:`Triangular`           a square triangular matrix
+:class:`DensePSD`             a dense PSD matrix, stored as its Cholesky
+============================  ==============================================
+
+See :mod:`sipnet_calibration.linalg.base` for the shape convention shared by
+all operators, and :mod:`sipnet_calibration.linalg.composite` for operators
+built out of these.
+
+Notes
+-----
+Any factorization an operator needs is performed when it is constructed, not
+on first use. A factor cached lazily inside a traced function is written to a
+temporary copy of the operator and discarded, which would make the operator
+re-factorize on every call.
 """
 from __future__ import annotations
 
@@ -27,7 +42,13 @@ __all__ = ["Identity", "ScaledIdentity", "Diagonal", "Dense", "Triangular", "Den
 
 @operator
 class Identity(PSDOperator):
-    """The identity, ``I_n``."""
+    """The identity matrix.
+
+    Parameters
+    ----------
+    size
+        Side length.
+    """
 
     size: int = static_field()
 
@@ -62,7 +83,16 @@ class Identity(PSDOperator):
 
 @operator
 class ScaledIdentity(PSDOperator):
-    """``c I_n`` with ``c > 0``. ``c`` is an array, so it can be differentiated."""
+    """A positive multiple of the identity.
+
+    Parameters
+    ----------
+    c
+        Scalar array, strictly positive. Held as an array so it can be
+        differentiated with respect to.
+    size
+        Side length.
+    """
 
     c: Array
     size: int = static_field()
@@ -98,7 +128,13 @@ class ScaledIdentity(PSDOperator):
 
 @operator
 class Diagonal(PSDOperator):
-    """``diag(d)`` with ``d > 0``."""
+    """A diagonal matrix.
+
+    Parameters
+    ----------
+    d
+        Diagonal entries, strictly positive. Its length sets the size.
+    """
 
     d: Array
 
@@ -134,7 +170,16 @@ class Diagonal(PSDOperator):
 
 @operator
 class Dense(LinOp):
-    """An explicit dense array, possibly rectangular. No structure claimed."""
+    """An explicit dense array, with no structure assumed.
+
+    May be rectangular, and is not assumed symmetric or definite, so it
+    provides only ``matvec``, ``matmat`` and ``to_dense``.
+
+    Parameters
+    ----------
+    A
+        The array, of shape ``(n_out, n_in)``.
+    """
 
     A: Array
 
@@ -151,7 +196,18 @@ class Dense(LinOp):
 
 @operator
 class Triangular(SquareLinOp):
-    """A square triangular matrix. Not PSD -- this is what ``cholesky()`` returns."""
+    """A square triangular matrix.
+
+    Returned by :meth:`~.base.PSDOperator.cholesky`. Not itself PSD, so it
+    provides ``solve``, ``logdet`` and ``diag`` but no factorization.
+
+    Parameters
+    ----------
+    L
+        Square array whose relevant triangle holds the matrix.
+    lower
+        Whether ``L`` is lower triangular.
+    """
 
     L: Array
     lower: bool = static_field(default=True)
@@ -183,15 +239,25 @@ class Triangular(SquareLinOp):
 
 @operator
 class DensePSD(PSDOperator):
-    """A dense PSD matrix, stored **as its Cholesky factor**.
+    """A dense positive-definite matrix, stored as its Cholesky factor.
 
-    Construct with :meth:`from_matrix`; the factorization runs once, there.
+    Construct with :meth:`from_matrix` rather than directly; the
+    factorization runs once, there.
+
+    Parameters
+    ----------
+    L
+        Lower Cholesky factor, satisfying ``L @ L.T`` equals the matrix.
     """
 
     L: Array
 
     @classmethod
     def from_matrix(cls, A: Array) -> "DensePSD":
+        """Build from a dense positive-definite matrix.
+
+        Runs the Cholesky factorization once, here, and stores the factor.
+        """
         return cls(jnp.linalg.cholesky(jnp.asarray(A)))
 
     @property

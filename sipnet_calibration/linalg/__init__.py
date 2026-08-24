@@ -1,7 +1,20 @@
 """Structured linear operators for Gaussian conditioning.
 
-Import order matters only in that :mod:`sipnet_calibration` must be imported
-first, so that float64 is enabled before any array is created.
+Operators represent matrices implicitly, by how they act on vectors, so that
+known structure can be exploited instead of storing or factorizing dense
+arrays.
+
+- :mod:`~sipnet_calibration.linalg.base` defines the class hierarchy, the
+  array-shape convention, and how to add a new operator.
+- :mod:`~sipnet_calibration.linalg.leaves` holds operators defined by their
+  own arrays.
+- :mod:`~sipnet_calibration.linalg.composite` holds operators built from
+  other operators.
+- :mod:`~sipnet_calibration.linalg.testing` holds conformance checks for new
+  operator types.
+
+Import :mod:`sipnet_calibration` before creating any array, so that float64 is
+enabled first.
 """
 from .base import (
     LinOp,

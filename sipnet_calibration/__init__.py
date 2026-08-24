@@ -1,16 +1,16 @@
 """Shared helpers for spatial SIPNET parameter calibration.
 
-Enables float64 before any array is created. JAX defaults to float32, and
-float32 is not adequate for the Gaussian-conditioning algebra downstream --
-anomaly centring and the whitened SVD both lose accuracy visibly.
+Importing this package enables JAX float64. JAX defaults to float32, which is
+not accurate enough for the Gaussian-conditioning algebra this code performs.
 
-Two caveats, both verified:
+Import it before creating any array: arrays made beforehand stay float32 and
+are not promoted afterwards.
 
-* Arrays created *before* this runs stay float32 and are never retroactively
-  promoted. Importing this package first is therefore load-bearing.
-* ``ProcessPoolExecutor`` workers (as used by ``PyEns``) do **not** inherit the
-  setting. Set ``JAX_ENABLE_X64=1`` in the environment for anything that forks
-  workers; the config call here only covers the parent process.
+Notes
+-----
+The setting applies to the current process only. ``ProcessPoolExecutor``
+workers, such as those used by ``PyEns``, do not inherit it; set the
+environment variable ``JAX_ENABLE_X64=1`` for anything that forks workers.
 """
 import jax
 

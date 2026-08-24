@@ -36,6 +36,42 @@ Conventions retained from the previous layout (still the intended design):
 - Raw inputs are symlinked into `data/raw/` (gitignored) and never edited;
   an ingest pipeline converts them to a canonical format.
 
+## Docstring conventions
+
+These apply to all docstrings, and strictly to module-, class-, and
+public-function-level ones.
+
+**Write for the person calling the code.** Lead with what the thing is and how
+to use it. Explain behaviour, arguments, return values, and errors — not the
+reasoning that led to the implementation.
+
+**Use clear, precise language and no unnecessary jargon.** Prefer a plain
+description over a compressed technical phrase. Do not editorialize about the
+design: sentences like "the split is load-bearing rather than cosmetic" state a
+low-level design judgement and do not belong at the top of an API.
+
+**Organize with sections.** Use standard headings — `Parameters`, `Returns`,
+`Raises`, `Notes` — and tables when listing several classes or functions. A
+reader should be able to skim the structure.
+
+**Put design rationale in a `Notes` section, or leave it out.** Consequential
+lower-level decisions are worth recording when they are non-obvious or easy to
+undo by accident, but they go at the bottom under `Notes`, never in the
+opening description.
+
+**Scope each level distinctly; do not repeat yourself.**
+- *Module*: what the module provides, an index of its contents, and any
+  convention shared across everything in it.
+- *Class*: what this class represents and its parameters. Do not restate
+  module-level conventions.
+- *Method/function*: what this call does, its arguments and return value. Do
+  not restate class-level context.
+
+**Keep docstrings self-contained.** Do not reference files outside the
+repository — Obsidian logs, design docs, external notes. A reader with only
+the source must be able to follow them. Cross-reference other modules and
+classes within the repo freely.
+
 ## Key API facts (hard-won from source reading)
 
 ### pySIPNET

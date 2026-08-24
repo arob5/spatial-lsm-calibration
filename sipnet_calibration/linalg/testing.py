@@ -1,21 +1,37 @@
-"""Conformance harness: one check suite every operator type must pass.
+"""Conformance checks for operator implementations.
 
-Designed around the failure modes that adversarial review of the design turned
-up, because each of them is silent:
+Call :func:`check_operator` on an instance of a new operator type to verify it
+against a dense reference. It runs the individual checks below, which can also
+be called on their own.
 
-* **`to_dense` circularity.** If `to_dense` were `self @ eye`, checking `matvec`
-  against `to_dense` would compare `matvec` with itself. Every type here builds
-  `to_dense` from its stored arrays instead, and :func:`check_dense_independent`
-  guards the property that makes the rest of the suite meaningful.
-* **Batch-rank bugs.** A child that contracts the wrong axis gives a *wrong
-  answer with no error* whenever the operator is square. Only a check that
-  varies the leading batch rank catches it, so :func:`check_matvec` sweeps
-  ndim 1/2/3 and compares against an explicit einsum.
-* **Factor/whitener inconsistency.** `factor()` and `cholesky()` are two
-  different square roots with no enforced relationship; the algebra downstream
-  assumes they agree. :func:`check_factor` ties them together.
+============================  ==============================================
+function                      checks
+============================  ==============================================
+:func:`check_matvec`          ``matvec`` at leading batch rank 0, 1 and 2
+:func:`check_matmat`          ``matmat`` with and without batch axes
+:func:`check_solve`           ``solve`` and ``solve_mat`` against the inverse
+:func:`check_factor`          ``factor``, ``cholesky`` and ``whiten`` agree
+:func:`check_scalars`         ``diag`` and ``logdet``
+:func:`check_pytree`          flatten round trip, ``jit``, ``vmap``, ``grad``
+:func:`check_dense_independent`  ``to_dense`` is not written via ``matvec``
+============================  ==============================================
 
-Use :func:`check_operator` to run everything.
+Checks skip operations the operator does not claim to support, so the same
+suite applies to every type.
+
+Notes
+-----
+Three of these target failures that produce wrong numbers rather than errors,
+which is why they are worth running on every new type:
+
+- Varying the leading batch rank catches an implementation that contracts the
+  wrong axis. Such an implementation is only wrong when the operator is
+  square, and then it raises nothing.
+- Requiring ``to_dense`` to be independent of ``matvec`` keeps the rest of the
+  suite meaningful. Were ``to_dense`` written as ``self @ eye``, comparing
+  ``matvec`` against it would compare ``matvec`` with itself.
+- Tying ``factor``, ``cholesky`` and ``whiten`` together matters because they
+  are separate square roots that downstream code assumes are consistent.
 """
 from __future__ import annotations
 
@@ -61,18 +77,14 @@ def _rng_x(key, shape) -> Array:
 # ---------------------------------------------------------------------------
 
 def check_dense_independent(op: LinOp) -> None:
-    """`to_dense` must not be implemented via `matvec`.
-
-    Cheap structural proxy: `to_dense` must be overridden by the concrete type
-    rather than inherited from a base that could route through `matvec`.
-    """
+    """Check that ``to_dense`` is defined by the type, not inherited generically."""
     assert "to_dense" in type(op).__dict__ or any(
         "to_dense" in c.__dict__ for c in type(op).__mro__[1:-1] if c is not LinOp
     ), f"{type(op).__name__} must define to_dense independently of matvec"
 
 
 def check_matvec(op: LinOp, key) -> None:
-    """`matvec` against an explicit einsum, at leading batch rank 0, 1 and 2."""
+    """Check ``matvec`` against a dense reference at batch rank 0, 1 and 2."""
     A = _ref(op)
     n_out, n_in = op.shape
     for batch in [(), (3,), (2, 3)]:
@@ -84,7 +96,7 @@ def check_matvec(op: LinOp, key) -> None:
 
 
 def check_matmat(op: LinOp, key) -> None:
-    """`matmat` core shape `(n_in, k)`, with and without leading batch axes."""
+    """Check ``matmat`` on core shape ``(n_in, k)``, with and without batching."""
     A = _ref(op)
     n_out, n_in = op.shape
     for batch in [(), (2,)]:
@@ -96,6 +108,7 @@ def check_matmat(op: LinOp, key) -> None:
 
 
 def check_solve(op: LinOp, key) -> None:
+    """Check ``solve`` and ``solve_mat`` against a dense inverse. Skipped if unsupported."""
     if not (isinstance(op, SquareLinOp) and op.supports("solve")):
         return
     A = _ref(op)
@@ -114,7 +127,12 @@ def check_solve(op: LinOp, key) -> None:
 
 
 def check_factor(op: LinOp, key) -> None:
-    """`L @ L.T == A`, and `cholesky`/`whiten` agree with each other."""
+    """Check that the square roots reproduce the operator and agree with each other.
+
+    Verifies ``L @ L.T`` equals the operator for both ``factor`` and
+    ``cholesky``, that ``whiten`` inverts the same factor ``cholesky``
+    returns, and that whitening yields unit variance.
+    """
     if not isinstance(op, PSDOperator):
         return
     A = _ref(op)
@@ -150,7 +168,11 @@ def check_factor(op: LinOp, key) -> None:
 
 
 def check_scalars(op: LinOp) -> None:
-    """`diag` and `logdet` against dense, and `logdet` must be a real JAX scalar."""
+    """Check ``diag`` and ``logdet`` against a dense reference.
+
+    Also checks that ``logdet`` returns a real array rather than a Python
+    float or a complex value.
+    """
     A = _ref(op)
     if isinstance(op, SquareLinOp) and op.supports("diag"):
         _close(op.diag(), np.diag(A), f"{type(op).__name__}.diag")
@@ -163,7 +185,7 @@ def check_scalars(op: LinOp) -> None:
 
 
 def check_pytree(op: LinOp, key) -> None:
-    """Flatten/unflatten round trip, and `matvec` under jit, vmap and grad."""
+    """Check the operator survives flatten/unflatten, ``jit``, ``vmap`` and ``grad``."""
     leaves, treedef = jax.tree_util.tree_flatten(op)
     rebuilt = jax.tree_util.tree_unflatten(treedef, leaves)
     assert type(rebuilt) is type(op)
@@ -190,7 +212,20 @@ def check_pytree(op: LinOp, key) -> None:
 # ---------------------------------------------------------------------------
 
 def check_operator(op: LinOp, *, seed: int = 0) -> None:
-    """Run the full conformance suite against one operator instance."""
+    """Run every conformance check against one operator instance.
+
+    Parameters
+    ----------
+    op
+        Instance to check. Should be small enough to densify.
+    seed
+        Seed for the random test vectors.
+
+    Raises
+    ------
+    AssertionError
+        On the first check that fails, with the operation and the error.
+    """
     key = jax.random.key(seed)
     check_dense_independent(op)
     check_matvec(op, key)
@@ -202,7 +237,7 @@ def check_operator(op: LinOp, *, seed: int = 0) -> None:
 
 
 def assert_raises_unsupported(op: LinOp, name: str) -> None:
-    """An unsupported capability must raise, not silently densify."""
+    """Check that an unsupported operation raises rather than falling back to dense."""
     try:
         getattr(op, name)()
     except UnsupportedOp:
