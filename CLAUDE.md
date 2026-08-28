@@ -22,19 +22,74 @@ Install them as editable locals via `uv sync` (see `pyproject.toml`). Never modi
 
 ## Repository layout
 
-**Cleared 2026-08-20** — the ProbPipe/RWMH single-site demo was removed to start
-fresh for real multi-site data. Only `sipnet_calibration/plotting.py` survives.
-The new layout has not been written yet; do not assume a structure here.
+The layout below is the **agreed target**, specified in
+`logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. As of
+2026-08-28 the reorg is in progress: the repo still has a flat
+`sipnet_calibration/` package containing only the superseded `plotting.py`.
+Build new code at the target paths; do not extend the old ones.
 
-Conventions retained from the previous layout (still the intended design):
+```
+pyproject.toml            # name = "sipnet-calibration"; src layout
+src/sipnet_calibration/
+  sites.py                # site table + select_sites(pft=, bbox=, has_nee=, ids=, sample=)
+  fields.py               # canonical field convention, validate_field(), adapters
+  obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
+  plotting/
+    __init__.py           # curated exports
+    style.py              # ROLES, rcParams
+    registry.py           # VARIABLES
+    primitives.py         # L1: (ax, plain numpy, **style) -> artist
+    series.py             # L2 time series panels
+    maps.py               # L2 spatial panels + SpatialRenderer implementations
+    facet.py              # L3 the one generic facet function
+    diagnostics.py        # L5 EKI history, marginals, coverage
+scripts/                  # ingest: data/raw/ -> data/processed/
+experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
+data/raw/                 # symlinked, never edited
+data/processed/           # ingest output == canonical plotting input
+tests/
+```
+
+Conventions:
 
 - One directory per experiment under `experiments/`, with `config.py` as the
   single source of truth for that experiment (parameters, transforms, data
   paths, algorithm settings).
 - Heavy computation lives in scripts, not notebooks. Notebooks are for
   exploration and plotting only, and load results from disk.
-- Raw inputs are symlinked into `data/raw/` (gitignored) and never edited;
-  an ingest pipeline converts them to a canonical format.
+- Raw inputs are symlinked into `data/raw/` and never edited; ingest scripts
+  convert them to `data/processed/`, whose format **is** the canonical format
+  used throughout the project.
+
+### Plotting and field conventions
+
+Read `logs/2026-08-28_Plotting Design Spec.md` in the vault before writing
+plotting code. The load-bearing rules:
+
+- **Canonical field**: an `xr.DataArray` with dims a *subset* of
+  `(member, site, time)`, `lon`/`lat` as non-dimension coords on `site`, and
+  units/`long_name` in `attrs`. It is a **convention plus `validate_field()`**,
+  not a wrapper class — a wrapper would fight xarray's `.sel`/`.resample`/
+  `.quantile`, which are the three operations this project needs. One
+  `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
+- Plotters branch on **presence of the `member` dim**, never on a mode keyword.
+- **Temporal aggregation lives in `obs_ops.py`** and is imported by both the
+  observation operator and the plotting layer, so a predictive-check figure
+  cannot disagree with what the likelihood consumed. Aggregation is a verb the
+  caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
+- **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
+  pandas, no xarray, no figure creation. **No plotter** calls `plt.show()` or
+  `savefig`, creates a figure implicitly, or accepts a `SIPNETResult` or a path
+  (that is an adapter's job).
+- **Anything that knows an experiment/task name belongs in
+  `experiments/<task>/plots.py`, not the library.**
+- Style comes from the `VARIABLES` registry and `ROLES` palette, not per-call
+  keywords. `center=0.0` for signed fluxes such as NEE is correctness, not
+  cosmetics.
+- Spatial rendering goes through the `SpatialRenderer` protocol (default
+  `tripcolor` on the Delaunay triangulation, masking long edges; GP renderer
+  later). Sites are 8000 **irregular points** spanning 7-82 deg N, so cartopy
+  projections are required and CONUS-only assumptions are wrong.
 
 ## Key API facts (hard-won from source reading)
 

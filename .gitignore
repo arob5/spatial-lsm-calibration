@@ -5,7 +5,9 @@ main.py
 .venv/
 .DS_Store
 
-data/
+# Raw inputs are symlinks to storage; processed data is regenerable from them.
+# Small provenance files under data/ (site tables, README) are tracked.
+data/raw/
+data/processed/
 
 .claude/worktrees/
-
