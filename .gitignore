@@ -1,6 +1,5 @@
 __pycache__/
 *.pyc
-.python-version
 main.py
 .venv/
 .DS_Store
