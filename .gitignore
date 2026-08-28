@@ -3,3 +3,9 @@ __pycache__/
 .python-version
 main.py
 .venv/
+.DS_Store
+
+data/
+
+.claude/worktrees/
+
