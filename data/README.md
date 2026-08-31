@@ -127,9 +127,10 @@ pool. The rest are distributed as follows.
 | east of 50 west | 31 |
 
 > **Note 2.** The `site_name` column does not correspond to the coordinates in
-> its own row and should not be used. For example, the 100 rows labelled
-> `soil_core_alaska` have latitudes between 33.3 and 36.0. The `site_id`, `lon`
-> and `lat` columns are mutually consistent.
+> its own row and should not be used. For example, none of the 100 rows labelled
+> `soil_core_alaska` lies north of 36.0. The fault is present in the file this
+> table was extracted from, not introduced by the extraction. The `site_id`,
+> `lon` and `lat` columns are mutually consistent.
 
 ### `site_id_map.csv`
 
@@ -467,17 +468,33 @@ templates are inferred from `ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim` and
 `initial_conditions/1/IC_site_1_1.nc`. Whether all 8000 site directories follow
 them has not been checked, and ingest should fail loudly on any that do not.
 
-**2. Misalignment of `site_name`.** Every label in `site_name` occupies a
-contiguous band of latitudes, which suggests the column retains an ordering
-different from the one applied to the coordinates, rather than that individual
-rows are wrong. Besides `soil_core_alaska` at 33.3 to 36.0 north, four rows
-labelled `Hawaii` lie between 119.6 and 86.1 west, and rows whose labels embed
-Costa Rican, Panamanian and Mexican site codes all lie near 46 north. That the
-coordinates themselves are sound was confirmed by joining `site_id_map.csv` to
-`site_ids.csv` and checking against known locations for Park Falls, Wind River,
-Sylvania and the University of Michigan Biological Station. It remains to be
-determined whether the misalignment originates in the source file or in the
-extraction to CSV; the latter is the cheaper possibility to rule out first.
+**2. Misalignment of `site_name`.** The labels in `site_name` do not describe the
+locations they are attached to, and the fault is present in the source file rather
+than introduced when this table was extracted from it. Checked against
+`site_info.Rdata` directly: `site_id`, `lon` and `lat` agree with the CSV to
+within floating-point tolerance, and the label groups fall at the same latitudes
+in both.
+
+Three observations characterise it. No row labelled `soil_core_alaska` lies north
+of 36.0, whereas Alaska begins near 55. The 190 rows labelled `ameriflux` all lie
+at or below 33.35, although 81% of the file lies above that line and the network
+in question is concentrated well to the north of it. Rows whose labels embed
+Costa Rican, Panamanian and Mexican site codes all sit near 46 north. Each label
+group is confined to a narrow band of latitudes rather than scattered, so this
+looks like an ordering or assignment error affecting the column as a whole, not a
+set of individually corrupted rows.
+
+The coordinates themselves are sound: joining `site_id_map.csv` to `site_ids.csv`
+and checking against known locations reproduces Park Falls, Wind River, Sylvania
+and the University of Michigan Biological Station correctly. Two further
+properties of the source file are consistent with a reordering having taken place:
+`site_ids` is exactly the sequence 1 to 8000, carrying no independent information,
+and `lat` is non-increasing across all 8000 rows with no exceptions.
+
+The correct assignment cannot be recovered from this file, since the ordering the
+labels belong to is not represented in it. Resolving this needs the version of the
+site table from before the reordering, or the per-provenance source lists the
+labels came from.
 
 **3. Sites resolving to the same model identifier.** The 8000-site pool is a
 subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
