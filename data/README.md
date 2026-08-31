@@ -257,9 +257,16 @@ confirmed.
   165-site caveat under [`site_id_map.csv`](#site_id_mapcsv--verified).
 - `utc` — ISO timestamps, 3-hourly, **2012-01-01T03:00:00Z to 2025-01-01T03:00:00Z**.
 - `ens01` … `ens25` — 25 ensemble members.
-- `ens_mean` — a derived mean. **This column must never be treated as a 26th
-  ensemble member**; admitting it to the member dimension corrupts every quantile
-  computed from the ensemble.
+- `ens_mean` — **verified to be exactly the mean of `ens01`…`ens25`** (max
+  discrepancy 7.8e-14 at `US-UMB`). It is therefore redundant, and **must never be
+  treated as a 26th ensemble member**: admitting it to the member dimension
+  corrupts every quantile computed from the ensemble.
+
+> **24.7% of rows have zero across-member spread** — VERIFIED at `US-UMB`
+> (7,225 of 29,225 rows have all 25 members identical; median spread on the rest
+> is 0.116). A plausible reading is that zero spread marks a *measured* rather
+> than gap-filled value, which would make it a free quality flag and would matter
+> a great deal for the observation-error model. **Unconfirmed — worth asking.**
 
 > **Coverage is highly ragged in time** — VERIFIED
 >
@@ -283,12 +290,22 @@ confirmed.
 
 > **Units are an OPEN QUESTION and this matters.**
 >
-> Values are around 0.16, which *would* be consistent with µmol CO₂ m⁻² s⁻¹ — a
-> **rate**. This is not proof and is not recorded here as fact. SIPNET's own `nee`
-> is `g C m⁻² per timestep` — a **total**. If the two are plotted or compared
-> without conversion, the result is wrong by orders of magnitude with no visual
-> cue. The **sign convention** is equally unconfirmed: SIPNET is documented
-> `+ = to atmosphere`, but gap-filled eddy-covariance products vary.
+> At `US-UMB` (UMBS, Michigan; 29,225 rows) values run **−37.2 to +13.3**, with a
+> July diurnal cycle peaking near **−21** at local midday. Those magnitudes are
+> characteristic of **µmol CO₂ m⁻² s⁻¹** — a **rate** — and are hard to reconcile
+> with any other common NEE unit; a value of −21 g C m⁻² per 3 h would be roughly
+> an order of magnitude beyond anything physical. This is strong evidence, but it
+> is still inference from magnitude and is **not recorded here as fact**.
+>
+> SIPNET's own `nee` is `g C m⁻² per timestep` — a **total**. If the two are
+> plotted or compared without conversion the result is wrong by orders of
+> magnitude, with no visual cue.
+>
+> The **sign convention, by contrast, is settled empirically** — VERIFIED. At
+> `US-UMB`, July means by UTC hour run +6.2 at night and −20.8 at local midday,
+> and monthly means are negative June–September, positive October–May. So
+> **negative = uptake, positive = release**, matching SIPNET's documented
+> `+ = to atmosphere`.
 >
 > `Data Notes.md` quotes Meng's README as `x_kgC_m2_s <- x_umolCO2_m2_s * 12e-9`,
 > which does not by itself establish which unit this file is in. **Confirm with
