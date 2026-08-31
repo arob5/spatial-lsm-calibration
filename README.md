@@ -34,7 +34,7 @@ in the code. `CLAUDE.md` documents code conventions only.
 | Period | 2012–2024 |
 | Drivers | ERA5, 3-hourly, ensemble |
 | Initial conditions | per-site, per-member netCDF |
-| Constraint data | NEE (3-hourly, 25-member, 185 Ameriflux sites), AGB and LAI (annual) |
+| Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), AGB, LAI, soil C and moisture (annual) |
 
 Every input arrives in ensemble form. Note the sites are **scattered points, not
 a grid**, and the extent is North America rather than CONUS — assumptions to the
@@ -88,6 +88,9 @@ data/raw/                 # symlinked from storage, never edited
 data/processed/           # ingest output == the canonical format used throughout
 tests/
 ```
+
+Data formats, provenance, and the coordinate reference system are documented in
+[`data/README.md`](data/README.md) and [`data/site_crs.json`](data/site_crs.json).
 
 ## Conventions
 
