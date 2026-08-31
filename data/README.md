@@ -63,10 +63,36 @@ else joins on.
 | west of 140°W | 1289 |
 | east of 50°W | 31 |
 
-`site_name` is a mixed-provenance label, not an identifier — 724 distinct values,
-dominated by `weighted_sample` (6907), then `ameriflux` (190) and
-`soil_core_alaska` (100), with the remainder site names and codes of several
-formats. Do not parse it.
+> **`site_name` is MISALIGNED with `lon`/`lat` — do not use it for anything.** — VERIFIED
+>
+> The column has 724 distinct values, dominated by `weighted_sample` (6907), then
+> `ameriflux` (190) and `soil_core_alaska` (100). But it does not correspond to
+> the coordinates in its own row:
+>
+> | Label | n | Actual lat range | Where that name implies |
+> |---|---|---|---|
+> | `soil_core_alaska` | 100 | 33.3 – 36.0 | Alaska, 55–72°N |
+> | `Hawaii` | 4 | 36.6 – 36.7, lon −119.6 to −86.1 | ~19–22°N, −155 to −160 |
+> | names containing `(CR-*)`, `(PA-*)` | 6 | 45.6 – 45.8 | Costa Rica / Panama, 7–12°N |
+> | names containing `(MX-*)` | 9 | 46.0 – 46.6 | Mexico, 14–33°N |
+> | `ameriflux` | 190 | 8.4 – 33.3 (contiguous) | scattered continent-wide |
+>
+> Every label group occupies a **contiguous latitude band**, which is the
+> signature of an ordering mismatch rather than of individual bad rows: the
+> coordinates are sorted by descending latitude while the name vector appears to
+> retain a different order.
+>
+> **`site_id`, `lon` and `lat` are consistent with each other** — only
+> `site_name` is decoupled. Verified by spot-checking the id map against known
+> site locations: `US-PF*` → −90.2/45.9 (Park Falls, WI), `US-xWR` → −121.95/45.82
+> (Wind River, WA), `US-Syv` → −89.35/46.24 (Sylvania, MI), `US-UMB` → −84.71/45.56
+> (UMBS). All correct.
+>
+> **Where the misalignment was introduced is unknown** — it could be upstream in
+> `site_info.Rdata`, or in this repo's extraction of that file to csv. Since
+> `site_info` is four parallel vectors, an extraction that reordered one of them
+> would produce exactly this. Checking that is the cheapest next step: reload the
+> `.Rdata` and confirm `site_name[i]` agrees with `lat[i]`.
 
 ### `site_id_map.csv` — VERIFIED
 
@@ -82,7 +108,27 @@ described in `Data Notes.md`. Per those notes, all 185 rows merge against the
 > The NEE product covers **209** distinct Ameriflux sites and this map covers
 > **185**, but the intersection is **165**. That is: 44 sites have NEE data but no
 > site id, and 20 sites have a site id but no NEE data. Any NEE-constrained
-> calibration is limited to those 165 unless the mapping is extended.
+> calibration is limited to those 165 unless the mapping is extended. (Not a
+> case or whitespace artifact — re-checked case-insensitively, same counts.)
+>
+> **The map is CONUS-only, which explains most of the 44.** All 185 mapped target
+> sites fall within lat 25.35–47.16 and lon −122.33 to −68.74, entirely inside a
+> CONUS box, and they address the contiguous id block **4102–7418**. Since site
+> ids are ordered by descending latitude, that block *is* a latitude band. The NEE
+> product, by contrast, spans the continent. Of the 44 unmapped sites, 12 are
+> non-US (11 `CA-*`, 1 `CR-*`) and 15 carry codes belonging to Alaskan clusters
+> (Bonanza Creek, Imnavait Creek, Poker Flat, Rosie Creek, Yukon-Kuskokwim, and
+> NEON Alaska) — so ~27 of 44 are outside CONUS. The remaining 17 are
+> unexplained. *(Locations of the 44 are read from site codes, not verified
+> against coordinates — no Ameriflux coordinates are available locally.)*
+>
+> **The 20 map-only sites remain genuinely unexplained.** They include `US-Ha1`
+> (Harvard Forest), `US-MMS` (Morgan Monroe) and `US-Ne1`/`US-Ne2` (Mead) — among
+> the most data-rich sites in Ameriflux, all inside CONUS, all present in the map.
+> Their total absence from a gap-filled EC product is not explained by geography.
+> The likeliest reading is that the id map and the gap-fill product are two
+> separate deliverables built from different input site lists; worth one question
+> to Gu Yang.
 
 ---
 
@@ -403,13 +449,19 @@ Data questions, in rough order of how much they block.
 5. **Should `processed/` carry its own spatially-meaningful site ordering?** The
    1–8000 ids must not be renumbered, but a Hilbert or Morton rank as an extra
    coordinate would help triangulation and chunk locality.
-6. **Which PFT assignment?** `Data Notes.md` describes two files with 16 and 3
+6. **Why is `site_name` misaligned with the coordinates, and where did it happen?**
+   Upstream in `site_info.Rdata`, or in this repo's csv extraction? Until answered,
+   `site_name` is unusable and any conclusion resting on it is void.
+7. **Why do 20 mapped sites have no NEE data, including Harvard Forest and Morgan
+   Monroe?** And can the 17 unexplained unmapped CONUS sites be recovered? Ask
+   Gu Yang.
+8. **Which PFT assignment?** `Data Notes.md` describes two files with 16 and 3
    distinct PFTs respectively. Not resolved, and no PFT file is present locally.
-7. **How do the sibling observation directories differ?** `Rdata_with_attributes`
+9. **How do the sibling observation directories differ?** `Rdata_with_attributes`
    versus `Rdata` versus the XML's `Obs` output directory — and given that
    `Rdata_with_attributes` carries no attributes, the naming is actively
    misleading.
-8. **What reference year was intended for the IC `time` units?** Repo issue #3.
+10. **What reference year was intended for the IC `time` units?** Repo issue #3.
    Not needed for calibration, since the dimension is degenerate.
-9. **Should the time horizon extend beyond 2012–2024?** Note the NEE file already
+11. **Should the time horizon extend beyond 2012–2024?** Note the NEE file already
    runs to 2025-01-01 while the drivers end at 2024 day 366.
