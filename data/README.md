@@ -3,24 +3,20 @@
 This directory holds the calibration inputs: raw files as provided by collaborators
 in `raw/`, and the converted, canonical form in `processed/`.
 
-**What this document is.** The *contract*: what shape things are, where they came
-from, and how to regenerate them. It is deliberately not the only data document,
-and it does not duplicate the others:
+This document explains assumptions about the structure of the data, where the datasets
+came from, and how to convert the raw data in the processed form for the purposes of 
+this project. Note that the terms *raw* and *processed* is used with respect to any 
+data manipulation done as part of this project. The *raw* data ingested here in 
+reality has been processed by others as part of previous analyses. Details are 
+given below.
 
-| Document | Owns |
-|---|---|
-| **this file** | the contract — shapes, dims, dtypes, units, how to regenerate |
-| `Data Notes.md` (Obsidian vault) | provenance and open questions — SCC paths, collaborator attribution, unresolved issues |
-| `logs/2026-08-28_Plotting Design Spec.md` (vault) | *rationale* for the processed format choices (zarr vs parquet, chunking) |
-| ingest script docstrings / `--help` | how to run each conversion step |
-| [`site_crs.json`](site_crs.json) | the CRS and grid definition for the site coordinates |
-
-**Verification status is marked throughout.** Everything below is either
+**Verification is a work in progress.** Everything below is either
 `VERIFIED` (checked directly against a file present in this repo), `DOCUMENTED`
 (stated by an upstream source), or `UNVERIFIED` (from notes, or not checkable from
 the local subset). Nothing is inferred silently — where a value merely *looks*
 consistent with a unit, that is called out as an open question rather than
-recorded as fact.
+recorded as fact. Ongoing communications with colleagues who are sourcing the 
+data will continue to fill in the gaps.
 
 ---
 
