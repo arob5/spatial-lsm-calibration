@@ -145,13 +145,18 @@ All mapped sites lie within 25.35-47.16 north and 122.33-68.74 west, so the map
 covers the conterminous US only. Because site identifiers are ordered by
 descending latitude, the mapped range 4102-7418 is a contiguous latitude band.
 
-The map and the [GAPFILL] net ecosystem exchange file do not cover the same
-sites: the NEE file contains 209 Ameriflux sites and the map contains 185, with
-165 in common. Calibration constrained by NEE is therefore limited to 165 sites
-unless the mapping is extended.
+This file and the [GAPFILL] net ecosystem exchange file do not cover the same
+sites: the NEE file contains 209 Ameriflux sites and this map contains 185, with
+165 in common, so calibration constrained by NEE is limited to those 165 sites.
+The producer attributes the omissions to three causes: some sites did not pass a
+validation test, some lacked the half-hourly data the gap-filling requires, and
+some resolved to the same model site identifier as another site. An updated
+release of the product covers more sites; see Note 7.
 
-> **Note 3.** 44 sites have NEE data but no site identifier, and 20 sites have a
-> site identifier but no NEE data.
+> **Note 3.** Because more than one Ameriflux site can fall within a single grid
+> cell, several may resolve to the same model site identifier. This file contains
+> no repeated identifiers, so such cases appear to have been dropped rather than
+> merged; how they should be handled is undecided.
 
 ---
 
@@ -273,10 +278,18 @@ columns.
 | `ens01` to `ens25` | float | Twenty-five ensemble members |
 | `ens_mean` | float | Mean of `ens01` to `ens25` |
 
-**Interpretation.** `ens_mean` is exactly the arithmetic mean of the 25 member
-columns, agreeing to within 8e-14 in the site checked, and is therefore
-redundant. It must not be carried as a 26th ensemble member, since that biases
-any quantile computed across members.
+**Interpretation.** Values are in micromoles of CO2 per square metre per second
+(umol CO2 m-2 s-1), a rate, as confirmed by the producer. SIPNET reports net
+ecosystem exchange as a per-timestep total in g C m-2, so ingest must convert
+between the two.
+
+Each of the 25 member columns is the gap-filled series obtained from one member
+of a driver ensemble. The spread across members therefore reflects the
+propagation of driver uncertainty through the gap-filling procedure, and not
+measurement error or uncertainty in the gap-filling model itself. `ens_mean` is
+the average of the 25 members, exactly so to within 8e-14 in the site checked,
+and is therefore redundant. It must not be carried as a 26th ensemble member,
+since that biases any quantile computed across members.
 
 The sign convention is that positive values denote flux to the atmosphere and
 negative values denote uptake, matching SIPNET's own convention for net ecosystem
@@ -300,15 +313,15 @@ Only 17 of the 209 sites have a near-complete record. Representing the file as a
 dense array over site and time therefore leaves roughly 55% of entries missing,
 and any per-site statistic must account for very unequal sample sizes.
 
-> **Note 7.** The units of the ensemble columns are not confirmed. Values at
-> `US-UMB` range from -37.2 to +13.3 and peak near -21 at midsummer midday, which
-> is characteristic of umol CO2 m-2 s-1, a rate. SIPNET reports net ecosystem
-> exchange as a per-timestep total in g C m-2, so a conversion is required and its
-> direction depends on this answer.
+> **Note 7.** An updated release of this product covers 217 sites, including
+> several absent here, but carries only the ensemble mean. Which release to use is
+> undecided.
 
 > **Note 8.** In about a quarter of rows, all 25 ensemble members are identical:
-> 7225 of 29,225 rows at `US-UMB`, where the median spread elsewhere is 0.116. The
-> meaning of these rows is not established.
+> 7225 of 29,225 rows at `US-UMB`, where the median spread elsewhere is 0.116.
+> Since the members differ only in the driver realisation used for gap-filling,
+> this is consistent with a directly measured timestep, which requires no
+> gap-filling, but that has not been confirmed.
 
 **Source.** [GAPFILL].
 
@@ -392,9 +405,10 @@ Reading the R data files requires R. The `obs.mean` object is a list of lists of
 data frames, which `pyreadr` does not support, so it is flattened by a one-off R
 script that writes netCDF. These are the only inputs that require R.
 
-Two conversions are applied during ingest rather than downstream: net ecosystem
-exchange is converted to a single canonical unit, so nothing later in the pipeline
-has to reconcile units, and the redundant `ens_mean` column is dropped.
+Two conversions are applied during ingest rather than downstream. Net ecosystem
+exchange is converted from umol CO2 m-2 s-1 to the canonical unit used
+throughout, so that nothing later in the pipeline has to reconcile units; and the
+redundant `ens_mean` column is dropped.
 
 > **Note 11.** Two plant functional type tables exist for the 8000 sites, with 16
 > and 3 distinct classes respectively, and the one to use has not been chosen.
@@ -436,7 +450,8 @@ The following conventions apply to every product.
   product in particular is not rectangular over site, year and variable.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
-> *i* of another is not established.
+> *i* of another is not established, though the net ecosystem exchange members are
+> known to derive from a driver ensemble.
 
 > **Note 13.** Whether the processed form should carry an additional
 > spatially-ordered site coordinate is undecided.
@@ -464,17 +479,21 @@ Sylvania and the University of Michigan Biological Station. It remains to be
 determined whether the misalignment originates in the source file or in the
 extraction to CSV; the latter is the cheaper possibility to rule out first.
 
-**3. Coverage gaps between the NEE file and the identifier map.** Of the 44 sites
-with NEE data but no identifier, 12 have non-US prefixes and a further 15 carry
-codes belonging to Alaskan site clusters, consistent with the map covering only
-the conterminous US. The remaining 17 are unexplained. The 20 sites with an
-identifier but no NEE data are harder to account for, since they include
-`US-Ha1`, `US-MMS`, `US-Ne1` and `US-Ne2`, all long-running sites well inside the
-mapped region. The likeliest explanation is that the identifier map and the
-gap-filled product were assembled from different site lists.
+**3. Sites resolving to the same model identifier.** The 8000-site pool is a
+subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
+fall in the same cell and resolve to one model site. The producer of [GAPFILL]
+gives this as one reason sites were omitted from the identifier map, and this file
+contains no repeated identifiers, which suggests such cases were dropped. If a
+later release retains them, the calibration has to decide what two observation
+series attached to a single model prediction mean: whether both enter the
+likelihood, whether they are averaged first, and how the observation error
+covariance should treat them. This is a modelling question rather than a data one,
+and is unresolved.
 
 **4. Driver ensemble size.** Only one member is available locally, so the size of
-the driver ensemble is unknown.
+the driver ensemble has not been confirmed. The gap-filling behind [GAPFILL] used
+25 driver members, and the reanalysis output carries 100, so neither figure can be
+assumed for the driver files themselves.
 
 **5. Reference year for the initial-condition time coordinate.** The units
 attribute is an unsubstituted template, so the intended reference year cannot be
@@ -488,20 +507,27 @@ reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
 appearing in some. Only one file is available locally, so neither the full set of
 combinations nor the ensemble size has been confirmed against the data.
 
-**7. Units of the NEE ensemble columns.** This blocks any comparison between
-modelled and observed net ecosystem exchange in either direction. The evidence for
-umol CO2 m-2 s-1 is the magnitude of the values: a midsummer midday value of -21
-in g C m-2 per three hours would be far outside the physical range, whereas -21
-umol CO2 m-2 s-1 is unremarkable for a productive temperate forest. A conversion
-factor between kg C m-2 s-1 and umol CO2 m-2 s-1 has been noted elsewhere, but
-does not by itself establish which unit this file uses.
+**7. Which release of the gap-filled product to use.** An updated release exists,
+combining the identifier map and the observations in a single file covering 217
+eddy-covariance sites. It includes sites absent from the release documented here,
+among them `US-Ha1`, and its site matching supersedes `site_id_map.csv`. It
+carries only the ensemble mean, however, so adopting it exchanges the ensemble
+spread for wider site coverage.
 
-**8. Rows with identical ensemble members.** One reading is that zero spread marks
-a directly measured value and non-zero spread a gap-filled one, which would make
-the ensemble spread usable as a quality flag and would matter for the observation
-error model. This has not been confirmed, and the alternative, that the
-gap-filling simply produces no spread under some conditions, has quite different
-consequences.
+That trade matters because the spread is currently the only per-observation
+uncertainty available for net ecosystem exchange, and an observation error
+covariance has to come from somewhere. Whether the ensemble can be obtained for
+the updated results, rather than only its mean, would settle the question; failing
+that, the choice is between coverage and a quantified uncertainty. Neither file is
+present in this repository.
+
+**8. Rows with identical ensemble members.** The members differ only in the
+driver realisation used for gap-filling, so a timestep that was measured directly,
+and therefore needed no gap-filling, would be expected to take the same value in
+every member. That would make zero spread a usable flag for measured values, which
+matters for the observation error model, since measured and imputed values should
+not carry equal weight. The producer has not confirmed this reading, and it does
+not carry over to the updated release, which has no ensemble.
 
 **9. Units of the assimilation inputs.** The units given for the four variables
 are documented for the published reanalysis output, whereas `obs.mean.Rdata` holds
@@ -523,7 +549,11 @@ repository, and the choice between them is open.
 *i*, initial-condition member *i* and the calibration ensemble were drawn jointly
 or independently determines whether arithmetic that pairs them is meaningful.
 Because xarray aligns on coordinate values automatically, an incorrect assumption
-here would combine unrelated members without any error being raised.
+here would combine unrelated members without any error being raised. One
+connection is known: the members of [GAPFILL] are gap-filled series driven by
+successive members of a driver ensemble, so if that is the same ensemble used here,
+net ecosystem exchange member *i* and driver member *i* would share a realisation.
+Whether it is the same ensemble has not been established.
 
 **13. Site ordering in the processed form.** The 1-8000 identifiers are fixed, but
 a spatially coherent ordering, a Hilbert or Morton rank for instance, would

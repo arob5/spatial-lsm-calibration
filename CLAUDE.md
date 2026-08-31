@@ -110,8 +110,9 @@ plotting code. The load-bearing rules:
   `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
   (sum); carbon pools and `AbvGrndWood`/`LAI` are stocks (instantaneous).
   `aggregate_time` reads the registry; `how=` is an override, not the input.
-- **Model and observed NEE are not in the same units** (see `data/README.md`,
-  note 7). Adapters convert into the one canonical unit named in `VARIABLES`, and
+- **Model and observed NEE are not in the same units.** Observed NEE is
+  `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
+  Adapters convert into the one canonical unit named in `VARIABLES`, and
   `validate_field()` checks `attrs["units"]` against it. Plotting the two on one
   axis without converting fails silently, by orders of magnitude.
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
