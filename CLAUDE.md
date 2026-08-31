@@ -77,6 +77,19 @@ plotting code. The load-bearing rules:
   observation operator and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
   caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
+- **The aggregation rule is a property of the variable, carried in `VARIABLES`
+  as `agg`.** SIPNET's `nee` is `g C m-2 per timestep` — extensive — so
+  3-hourly to daily is a **sum**; a mean is wrong by 8x and looks plausible.
+  `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
+  (sum); carbon pools and `AbvGrndWood`/`LAI` are stocks (instantaneous).
+  `aggregate_time` reads the registry; `how=` is an override, not the input.
+- **Model and observed NEE are NOT in the same units.** Observed
+  `ens_ec_3h.csv` values (~0.16) look like a rate (umol CO2 m-2 s-1); SIPNET's
+  is a per-timestep total. Adapters convert into the one canonical unit named in
+  `VARIABLES`, and `validate_field()` checks `attrs["units"]` against it.
+  Plotting the two on one axis without converting fails silently, by orders of
+  magnitude. The canonical unit and the observed product's sign convention are
+  both still open questions — see the design spec.
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
   pandas, no xarray, no figure creation. **No plotter** calls `plt.show()` or
   `savefig`, creates a figure implicitly, or accepts a `SIPNETResult` or a path
@@ -88,8 +101,22 @@ plotting code. The load-bearing rules:
   cosmetics.
 - Spatial rendering goes through the `SpatialRenderer` protocol (default
   `tripcolor` on the Delaunay triangulation, masking long edges; GP renderer
-  later). Sites are 8000 **irregular points** spanning 7-82 deg N, so cartopy
-  projections are required and CONUS-only assumptions are wrong.
+  later). Sites are 8000 **irregular points** spanning 7-82 deg N, so a real
+  projection is required and CONUS-only assumptions are wrong.
+- **No projection library is currently installable** (issue #4): neither
+  `cartopy` nor `pyproj` has a usable wheel on macOS 12 arm64 — every pyproj
+  arm64 wheel targets macOS 14+, on every Python version, so downgrading Python
+  does not help. `cartopy` is commented out of `pyproject.toml`; do not re-add
+  it expecting it to work locally. `plotting/maps.py` is blocked on that
+  decision, and also on recording the source projection of the `lon`/`lat` in
+  `data/site_ids.csv`.
+- **Site ids are the handed-down integers 1-8000** and are a shared key with
+  collaborators' files — never renumber them. Ameriflux `Site_ID` and `pft` are
+  non-dimension coords on `site`. `member` is a 0-based integer, and the NEE
+  csv's `ens_mean` column must never become a member.
+- **The IC netCDFs cannot be opened with CF decoding** (issue #3): their time
+  units are an unsubstituted `days since [year]-01-01` template. Use
+  `decode_times=False`; installing `cftime` does not help.
 
 ## Key API facts (hard-won from source reading)
 

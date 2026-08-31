@@ -3,8 +3,10 @@
 A **canonical field** is an :class:`xarray.DataArray` with
 
 * dims a *subset* of ``(member, site, time)``;
-* ``lon`` and ``lat`` as *non-dimension* coordinates on ``site``;
-* ``units`` and ``long_name`` in ``attrs``.
+* ``lon`` and ``lat`` as *non-dimension* coordinates on ``site``, whenever
+  ``site`` is a dim;
+* ``units`` and ``long_name`` in ``attrs``;
+* a ``name`` that is a key in the ``VARIABLES`` registry.
 
 This is a convention plus :func:`validate_field`, deliberately **not** a wrapper
 class: the three operations this project needs most are ``.quantile(dim="member")``,
@@ -13,28 +15,44 @@ project re-exporting them.
 
 Dims are a subset by design. A deterministic single run is ``(time,)``; an IC
 map is ``(member, site)``; the NEE observation ensemble is
-``(member, site, time)``. Plotters branch on *presence of the* ``member`` *dim*,
-never on a mode keyword.
+``(member, site, time)``; a per-site calibrated parameter is ``(member, site)``.
+Plotters branch on *presence of the* ``member`` *dim*, never on a mode keyword.
 
 One DataArray per variable, not one aligned Dataset -- NEE is 3-hourly, AGB/LAI
 are annual July-15 snapshots, ICs are static, and forcing a shared ``time``
 index costs NaN padding for nothing. Facet-by-variable takes
-``dict[str, DataArray]``.
+``dict[str, DataArray]``, which is also what multi-variable adapters return
+(``from_clim`` covers 12 variables).
 
+Identifiers
+-----------
+* ``site`` is the **handed-down integer id, 1-8000**. It has to be: only 185 of
+  the 8000 sites are Ameriflux sites. These ids are a shared key with
+  collaborators' files -- **never renumber them.** A spatially meaningful
+  ordering, if wanted, is a *separate* coordinate (e.g. a Hilbert rank), not a
+  renumbering.
+* Ameriflux ``Site_ID`` and ``pft`` are non-dimension coords on ``site``, NaN
+  for sites lacking them.
+* ``member`` is a 0-based integer. Two traps: the NEE csv's ``ens_mean`` column
+  must **never** become a member (it would corrupt every quantile), and integer
+  labels let xarray silently align members across unrelated sources -- whether
+  that pairing is meaningful is still an open question.
+
+Adapter notes
+-------------
 Adapters live here so that no plotter ever accepts a ``SIPNETResult`` or a path.
+They are also where unit conversion happens: nothing downstream reconciles
+units, and :func:`validate_field` checks ``attrs["units"]`` against the registry.
 
-API details verified against the installed stack (xarray 2026.4, zarr 3.3):
+* **The IC adapter must pass** ``decode_times=False``. The IC netCDFs carry an
+  unsubstituted template, ``units = "days since [year]-01-01 00:00:00 UTC"``,
+  which no calendar library can parse -- installing ``cftime`` does not help.
+  The ``time`` dim there is length 1 and carries no information.
+* ``from_eki_predictions`` unstacks a ``(J, N)`` block using the MultiIndex from
+  :func:`sipnet_calibration.obs_ops.obs_index` -- the same object the
+  observation operator used to build ``y``::
 
-* The EKI adapter must build the ``(site, variable, time)`` MultiIndex
-  coordinate explicitly --
-  ``xr.Coordinates.from_pandas_multiindex(midx, "obs")`` -- and pass that to
-  ``assign_coords``. Passing a bare ``pd.MultiIndex`` still works but raises a
-  ``FutureWarning``: implicit promotion to multiple indexed coordinates is being
-  removed.
-* ``lon``/``lat`` survive a zarr round-trip as non-dimension coordinates, so the
-  processed store needs no side-car for site geometry.
-* The IC netCDFs must be opened with ``decode_times=False``. Their ``time``
-  units attribute is a literal unsubstituted template,
-  ``"days since [year]-01-01 00:00:00 UTC"``, which no calendar library can
-  parse. The dim is length-1 and meaningless for static ICs regardless.
+      (xr.DataArray(predictions, dims=("member", "obs"))
+         .assign_coords(obs=obs_index)
+         .unstack("obs"))
 """
