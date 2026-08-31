@@ -123,7 +123,7 @@ exact match.
 | Column | Type | Description |
 |---|---|---|
 | `Site_ID` | string | Ameriflux site identifier, for example `US-xDC` |
-| `index` | integer | Corresponding `site_id`; 4102-7418 in this file |
+| `index` | integer | Corresponding `site_id` |
 
 All mapped sites lie within 25.35-47.16 north and 122.33-68.74 west, so the map
 covers the conterminous US only. Because site identifiers are ordered by
