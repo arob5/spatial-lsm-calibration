@@ -155,7 +155,7 @@ marked as context rather than as a property of our data.
 
 **Not tracked in git** (`.gitignore` excludes `data/raw/`), and never edited.
 
-The full dataset lives on BU's SCC; see `Data Notes.md` for the SCC paths. What
+The full dataset lives on Boston University's SCC. What
 is present locally is a **small format-reference subset** — a single site's
 drivers and initial conditions, plus the complete NEE and AGB/LAI constraint
 files. On SCC these should be symlinks rather than copies; locally they are real
