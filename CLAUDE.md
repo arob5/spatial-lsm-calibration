@@ -20,6 +20,33 @@ The long-term vision:
 
 Install them as editable locals via `uv sync` (see `pyproject.toml`). Never modify their source.
 
+## Data
+
+**`data/README.md` is the authority on data formats, provenance, units, and the
+open questions.** Read it before writing ingest or adapter code, and do not
+duplicate its content here — add data facts there instead.
+
+Facts specific to this working copy, which the README deliberately does not carry:
+
+- **Only a subset of `data/raw/` is present locally.** Drivers and initial
+  conditions exist for site 1, member 1 only; the NEE csv and the AGB/LAI
+  `.Rdata` files are complete. The full dataset lives on Boston University's SCC.
+  Anything that needs to hold across all 8000 sites cannot be verified here.
+- The local files are real copies, not symlinks. On SCC they should be symlinks.
+- R is available on this machine (`Rscript`), which is how the `.Rdata` files can
+  be inspected; `pyreadr` is not installed and would not handle their nesting.
+- Neither `pyproj` nor any R spatial package is installable here, so CRS and
+  projection definitions cannot be validated locally (issue #4).
+
+Operational rules that follow from the data and are easy to get wrong in code:
+
+- Open the IC netCDFs with `decode_times=False` (README note 5).
+- Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
+- Never renumber the 1-8000 site ids; they are a shared key with collaborators.
+- Do not use `site_name` for anything (README note 2).
+- Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
+  the AGB/LAI constraints are ragged over site x year x variable.
+
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
@@ -83,13 +110,10 @@ plotting code. The load-bearing rules:
   `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
   (sum); carbon pools and `AbvGrndWood`/`LAI` are stocks (instantaneous).
   `aggregate_time` reads the registry; `how=` is an override, not the input.
-- **Model and observed NEE are NOT in the same units.** Observed
-  `ens_ec_3h.csv` values (~0.16) look like a rate (umol CO2 m-2 s-1); SIPNET's
-  is a per-timestep total. Adapters convert into the one canonical unit named in
-  `VARIABLES`, and `validate_field()` checks `attrs["units"]` against it.
-  Plotting the two on one axis without converting fails silently, by orders of
-  magnitude. The canonical unit and the observed product's sign convention are
-  both still open questions — see the design spec.
+- **Model and observed NEE are not in the same units** (see `data/README.md`,
+  note 7). Adapters convert into the one canonical unit named in `VARIABLES`, and
+  `validate_field()` checks `attrs["units"]` against it. Plotting the two on one
+  axis without converting fails silently, by orders of magnitude.
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
   pandas, no xarray, no figure creation. **No plotter** calls `plt.show()` or
   `savefig`, creates a figure implicitly, or accepts a `SIPNETResult` or a path
@@ -103,20 +127,14 @@ plotting code. The load-bearing rules:
   `tripcolor` on the Delaunay triangulation, masking long edges; GP renderer
   later). Sites are 8000 **irregular points** spanning 7-82 deg N, so a real
   projection is required and CONUS-only assumptions are wrong.
-- **No projection library is currently installable** (issue #4): neither
-  `cartopy` nor `pyproj` has a usable wheel on macOS 12 arm64 — every pyproj
-  arm64 wheel targets macOS 14+, on every Python version, so downgrading Python
-  does not help. `cartopy` is commented out of `pyproject.toml`; do not re-add
-  it expecting it to work locally. `plotting/maps.py` is blocked on that
-  decision, and also on recording the source projection of the `lon`/`lat` in
-  `data/site_ids.csv`.
-- **Site ids are the handed-down integers 1-8000** and are a shared key with
-  collaborators' files — never renumber them. Ameriflux `Site_ID` and `pft` are
-  non-dimension coords on `site`. `member` is a 0-based integer, and the NEE
-  csv's `ens_mean` column must never become a member.
-- **The IC netCDFs cannot be opened with CF decoding** (issue #3): their time
-  units are an unsubstituted `days since [year]-01-01` template. Use
-  `decode_times=False`; installing `cftime` does not help.
+- **No projection library is installable here** (issue #4): every pyproj arm64
+  wheel targets macOS 14+, on every Python version, so downgrading Python does
+  not help. `cartopy` is commented out of `pyproject.toml`; do not re-add it
+  expecting it to work locally. `plotting/maps.py` is blocked on that decision.
+  The source CRS of the site coordinates is recorded in `data/site_crs.json`.
+- `site` is the integer 1-8000; Ameriflux `Site_ID` and `pft` are non-dimension
+  coords on `site`. `member` is a 0-based integer, meaningful only within one
+  source. See the Data section above for the rules these imply.
 
 ## Key API facts (hard-won from source reading)
 

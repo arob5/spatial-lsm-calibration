@@ -1,478 +1,509 @@
 # Data
 
-This directory holds the calibration inputs: raw files as provided by collaborators
-in `raw/`, and the converted, canonical form in `processed/`.
+This directory holds the inputs used for SIPNET parameter calibration: the files
+as received from their original sources, under `raw/`, and the converted form
+used throughout the project, under `processed/`.
 
-This document explains assumptions about the structure of the data, where the datasets
-came from, and how to convert the raw data in the processed form for the purposes of 
-this project. Note that the terms *raw* and *processed* is used with respect to any 
-data manipulation done as part of this project. The *raw* data ingested here in 
-reality has been processed by others as part of previous analyses. Details are 
-given below.
+The terms *raw* and *processed* refer only to data manipulation carried out as
+part of this project. The raw data ingested here has already been processed by
+others as part of earlier analyses; the sources are documented for each dataset
+below.
 
-**Verification is a work in progress.** Everything below is either
-`VERIFIED` (checked directly against a file present in this repo), `DOCUMENTED`
-(stated by an upstream source), or `UNVERIFIED` (from notes, or not checkable from
-the local subset). Nothing is inferred silently — where a value merely *looks*
-consistent with a unit, that is called out as an open question rather than
-recorded as fact. Ongoing communications with colleagues who are sourcing the 
-data will continue to fill in the gaps. Once everything is sufficiently verified
-this message and the verification tags will be removed. At this time, the prose of
-this document will be updated to read more naturally as a final README.
-
----
+Points that are unresolved or awaiting confirmation from the groups that produced
+the data are marked inline with a numbered note, and described in more detail
+under [Open questions](#open-questions).
 
 ## Contents
 
-- [Site metadata](#site-metadata) — tracked in git
-- [Coordinate reference system](#coordinate-reference-system) — tracked in git
-- [Raw inputs](#raw-inputs) — not tracked
-- [Conversion: raw to processed](#conversion-raw-to-processed)
-- [Processed format](#processed-format) — not tracked
+- [Sources](#sources)
+- [Directory layout](#directory-layout)
+- [Site metadata](#site-metadata)
+- [Coordinate reference system](#coordinate-reference-system)
+- [Raw inputs](#raw-inputs)
+- [Conversion to processed form](#conversion-to-processed-form)
+- [Processed format](#processed-format)
 - [Open questions](#open-questions)
+
+## Sources
+
+Three sources are referenced throughout this document.
+
+- **[NALCR]** Zhang, D., J. Huggins, Q. Li, S. Ramachandran, S. P. Serbin,
+  C. Webb, Z. Zuo, and M. Dietze (2026). *North American Land Carbon Reanalysis,
+  2012-2024.* ORNL DAAC, Oak Ridge, Tennessee, USA.
+  [doi:10.3334/ORNLDAAC/2507](https://doi.org/10.3334/ORNLDAAC/2507).
+  See also the
+  [dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html)
+  and the
+  [preprint](https://www.biorxiv.org/content/10.64898/2026.02.25.708030v1.abstract).
+- **[pySIPNET]** The pySIPNET interface package, whose `pysipnet.climate` and
+  `pysipnet.io.clim_io` modules define the SIPNET climate file format.
+- **[GAPFILL]** Gap-filled eddy-covariance net ecosystem exchange, produced by
+  Gu Yang at Boston University. No published reference at present.
+
+---
+
+## Directory layout
+
+Ingest expects the following structure. Site identifiers are the integers 1-8000
+described under [Site metadata](#site-metadata), and `<member>` indexes an
+ensemble member.
+
+```
+data/
+  site_ids.csv                  site table
+  site_id_map.csv               Ameriflux identifier map
+  site_crs.json                 coordinate reference system
+  raw/
+    drivers/
+      ERA5_<site_id>_<member>/ERA5.<member>.2012-01-01.2024-12-31.clim
+    initial_conditions/
+      <site_id>/IC_site_<site_id>_<member>.nc
+    constraints/
+      nee/ens_ec_3h.csv
+      sda_8k_site_rdata/obs.mean.Rdata
+      sda_8k_site_rdata/obs.cov.Rdata
+  processed/                    ingest output, created by the ingest scripts
+```
+
+> **Note 1.** The two per-site directory templates are inferred from a single
+> example of each rather than confirmed across all 8000 sites.
+
+The three files at the top level are tracked in version control, since they are
+small and are the keys every other dataset joins on. Neither `raw/` nor
+`processed/` is tracked. Files under `raw/` are treated as read-only; all
+conversion happens on the way into `processed/`, which is regenerable and absent
+on a fresh clone.
 
 ---
 
 ## Site metadata
 
-Two small files, tracked in git because they are the shared keys everything
-else joins on.
+### `site_ids.csv`
 
-### `site_ids.csv` — VERIFIED
+8000 rows, one per site.
 
-8000 rows, 4 columns: `site_id`, `lon`, `lat`, `site_name`.
+| Column | Type | Description |
+|---|---|---|
+| `site_id` | integer | Site identifier, 1-8000 |
+| `lon` | float | Longitude, degrees east |
+| `lat` | float | Latitude, degrees north |
+| `site_name` | string | Free-text label; see Note 2 |
 
-- `site_id` is the integer 1–8000, handed down from Dongchen Zhang's
-  `site_info.Rdata`. These are a **shared key with collaborators' files and must
-  never be renumbered.**
-- `lon`/`lat` are degrees. See [Coordinate reference system](#coordinate-reference-system).
-- Extent: lon −178.754 to −20.013, lat 7.013 to 82.546. The corners are
-  site 731 in the western Aleutians, site 1 in northeast Greenland, and site 8000
-  at 7.01°N in northern South America.
-- Only 3640 of 8000 fall inside a CONUS bounding box
-  (24–50°N, 125–66°W).
+The identifiers originate with [NALCR] and are shared with collaborators' files,
+so they are treated as fixed and are never renumbered. Rows are ordered by
+descending latitude.
+
+Coordinates span -178.754 to -20.013 in longitude and 7.013 to 82.546 in
+latitude. The extremes are site 731 in the western Aleutians, site 1 in northeast
+Greenland, and site 8000 at 7.01 degrees north in northern South America. 3640 of
+the 8000 sites fall inside a conterminous-US bounding box of 24-50 north and
+125-66 west, so analyses restricted to that region use a little under half the
+pool. The rest are distributed as follows.
 
 | Region | Sites |
 |---|---|
-| above 60°N | 2517 |
-| above 70°N | 475 |
-| above 80°N | 36 |
-| below 20°N | 412 |
-| west of 140°W | 1289 |
-| east of 50°W | 31 |
+| north of 60 | 2517 |
+| north of 70 | 475 |
+| north of 80 | 36 |
+| south of 20 | 412 |
+| west of 140 | 1289 |
+| east of 50 west | 31 |
 
-> **`site_name` is MISALIGNED with `lon`/`lat` — do not use it for anything.** — VERIFIED
->
-> The column has 724 distinct values, dominated by `weighted_sample` (6907), then
-> `ameriflux` (190) and `soil_core_alaska` (100). But it does not correspond to
-> the coordinates in its own row:
->
-> | Label | n | Actual lat range | Where that name implies |
-> |---|---|---|---|
-> | `soil_core_alaska` | 100 | 33.3 – 36.0 | Alaska, 55–72°N |
-> | `Hawaii` | 4 | 36.6 – 36.7, lon −119.6 to −86.1 | ~19–22°N, −155 to −160 |
-> | names containing `(CR-*)`, `(PA-*)` | 6 | 45.6 – 45.8 | Costa Rica / Panama, 7–12°N |
-> | names containing `(MX-*)` | 9 | 46.0 – 46.6 | Mexico, 14–33°N |
-> | `ameriflux` | 190 | 8.4 – 33.3 (contiguous) | scattered continent-wide |
->
-> Every label group occupies a **contiguous latitude band**, which is the
-> signature of an ordering mismatch rather than of individual bad rows: the
-> coordinates are sorted by descending latitude while the name vector appears to
-> retain a different order.
->
-> **`site_id`, `lon` and `lat` are consistent with each other** — only
-> `site_name` is decoupled. Verified by spot-checking the id map against known
-> site locations: `US-PF*` → −90.2/45.9 (Park Falls, WI), `US-xWR` → −121.95/45.82
-> (Wind River, WA), `US-Syv` → −89.35/46.24 (Sylvania, MI), `US-UMB` → −84.71/45.56
-> (UMBS). All correct.
->
-> **Where the misalignment was introduced is unknown** — it could be upstream in
-> `site_info.Rdata`, or in this repo's extraction of that file to csv. Since
-> `site_info` is four parallel vectors, an extraction that reordered one of them
-> would produce exactly this. Checking that is the cheapest next step: reload the
-> `.Rdata` and confirm `site_name[i]` agrees with `lat[i]`.
+> **Note 2.** The `site_name` column does not correspond to the coordinates in
+> its own row and should not be used. For example, the 100 rows labelled
+> `soil_core_alaska` have latitudes between 33.3 and 36.0. The `site_id`, `lon`
+> and `lat` columns are mutually consistent.
 
-### `site_id_map.csv` — VERIFIED
+### `site_id_map.csv`
 
-185 rows, 2 columns: `Site_ID` (Ameriflux, e.g. `US-xDC`), `index` (the 1–8000
-site id, range 4102–7418 in this file). Produced by exact matching.
+185 rows mapping Ameriflux site identifiers onto the integer site identifiers, by
+exact match.
 
-> **Only 165 sites are usable for NEE.** — VERIFIED
->
-> The NEE product covers **209** distinct Ameriflux sites and this map covers
-> **185**, but the intersection is **165**. That is: 44 sites have NEE data but no
-> site id, and 20 sites have a site id but no NEE data. Any NEE-constrained
-> calibration is limited to those 165 unless the mapping is extended. (Not a
-> case or whitespace artifact — re-checked case-insensitively, same counts.)
->
-> **The map is CONUS-only, which explains most of the 44.** All 185 mapped target
-> sites fall within lat 25.35–47.16 and lon −122.33 to −68.74, entirely inside a
-> CONUS box, and they address the contiguous id block **4102–7418**. Since site
-> ids are ordered by descending latitude, that block *is* a latitude band. The NEE
-> product, by contrast, spans the continent. Of the 44 unmapped sites, 12 are
-> non-US (11 `CA-*`, 1 `CR-*`) and 15 carry codes belonging to Alaskan clusters
-> (Bonanza Creek, Imnavait Creek, Poker Flat, Rosie Creek, Yukon-Kuskokwim, and
-> NEON Alaska) — so ~27 of 44 are outside CONUS. The remaining 17 are
-> unexplained. *(Locations of the 44 are read from site codes, not verified
-> against coordinates — no Ameriflux coordinates are available locally.)*
->
-> **The 20 map-only sites remain genuinely unexplained.** They include `US-Ha1`
-> (Harvard Forest), `US-MMS` (Morgan Monroe) and `US-Ne1`/`US-Ne2` (Mead) — among
-> the most data-rich sites in Ameriflux, all inside CONUS, all present in the map.
-> Their total absence from a gap-filled EC product is not explained by geography.
-> The likeliest reading is that the id map and the gap-fill product are two
-> separate deliverables built from different input site lists; worth one question
-> to Gu Yang.
+| Column | Type | Description |
+|---|---|---|
+| `Site_ID` | string | Ameriflux site identifier, for example `US-xDC` |
+| `index` | integer | Corresponding `site_id`; 4102-7418 in this file |
+
+All mapped sites lie within 25.35-47.16 north and 122.33-68.74 west, so the map
+covers the conterminous US only. Because site identifiers are ordered by
+descending latitude, the mapped range 4102-7418 is a contiguous latitude band.
+
+The map and the [GAPFILL] net ecosystem exchange file do not cover the same
+sites: the NEE file contains 209 Ameriflux sites and the map contains 185, with
+165 in common. Calibration constrained by NEE is therefore limited to 165 sites
+unless the mapping is extended.
+
+> **Note 3.** 44 sites have NEE data but no site identifier, and 20 sites have a
+> site identifier but no NEE data.
 
 ---
 
 ## Coordinate reference system
 
-Recorded in **[`site_crs.json`](site_crs.json)** (tracked in git), which is the
-authoritative machine-readable definition. Summary:
+The `lon` and `lat` columns of `site_ids.csv` are geographic coordinates on the
+WGS 84 datum (EPSG:4326), as documented in the [NALCR]
+[dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html).
+The full definition, together with the grid the coordinates fall on, is recorded
+in machine-readable form in [`site_crs.json`](site_crs.json).
 
-- **Source CRS of the `lon`/`lat` columns: EPSG:4326 (WGS 84 geographic)** —
-  DOCUMENTED by the ORNL DAAC dataset guide.
-- The coordinates are **cell centres of a 30 arcsecond (1/120°) geographic
-  grid**: extent −179→−20 lon, 7→85 lat, 19080 × 9360 cells. VERIFIED — all 8000
-  sites land on cell centres to within 1.02e-6° (≈0.11 m).
-- The grid is **not equal-area**: 30 arcsec is ~928 m in latitude everywhere, but
-  in longitude ranges from ~921 m at 7°N to **~121 m at 82.5°N**.
-- The file stores **longitude first**, which is the GDAL/PROJ traditional order
-  and the opposite of EPSG:4326's formal axis order. Transform with
-  `always_xy=True` or the equivalent.
+Site coordinates are cell centres of the approximately 1 km geographic grid used
+by [NALCR]: 0.008333 degree, or 30 arcsecond, resolution in both latitude and
+longitude, spanning 179 west to 20 west and 7 north to 85 north as a
+19080 by 9360 array. All 8000 sites fall on cell centres to within
+1.02e-6 degrees, about 0.11 m.
 
-**The map projection for plotting is not specified here, by design.** It is our
-choice, is not yet decided (repo issue #4), and will be documented separately once
-it is. `site_crs.json` records only what gives the raw coordinates their meaning.
-For context, the upstream product's own figures used ESRI:102003 (USA Contiguous
-Albers Equal Area Conic); that note lives in the JSON's `provenance` block, clearly
-marked as context rather than as a property of our data.
+Two consequences are worth noting.
+
+- The grid is not equal-area. Thirty arcseconds is about 928 m in latitude
+  everywhere, but in longitude it ranges from roughly 921 m at 7 north to 121 m
+  at 82.5 north. Density and per-area calculations must account for this.
+- The file stores longitude before latitude, which is the traditional GDAL and
+  PROJ ordering rather than the axis order EPSG:4326 formally declares.
+  Coordinate transformations should be configured accordingly, for instance with
+  pyproj's `always_xy=True`.
+
+`site_crs.json` records the coordinate system of the input data only. The map
+projection used for plotting is a separate choice, tracked in
+[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4), and will
+be documented once settled.
 
 ---
 
 ## Raw inputs
 
-**Not tracked in git** (`.gitignore` excludes `data/raw/`), and never edited.
+### Meteorological drivers
 
-The full dataset lives on Boston University's SCC. What
-is present locally is a **small format-reference subset** — a single site's
-drivers and initial conditions, plus the complete NEE and AGB/LAI constraint
-files. On SCC these should be symlinks rather than copies; locally they are real
-copies of the subset.
+**Format.** ERA5 reanalysis written in the SIPNET climate format: space-delimited
+text with no header row, one row per timestep. The example file has 37,992 rows
+and 14 columns, covering 2012-01-01 to the end of 2024 on a 3-hourly timestep.
+That row count is consistent with 4749 days, being thirteen years including four
+leap years, at eight timesteps per day.
 
-### Provenance
+Columns follow the 14-column layout defined by [pySIPNET].
 
-The 8000 sites, the driver and initial-condition ensembles, and the AGB/LAI
-constraints all originate from Dongchen Zhang's North American land carbon
-reanalysis:
+| # | Column | Unit | Description |
+|---|---|---|---|
+| 1 | `loc` | | Location index; constant, and required by SIPNET to be so |
+| 2 | `year` | | Integer year |
+| 3 | `day` | | Integer day of year, 1 = 1 January |
+| 4 | `time` | hours | Fractional hours at the start of the timestep |
+| 5 | `length` | days | Timestep duration; 0.125, that is 3 hours |
+| 6 | `tair` | deg C | Mean air temperature |
+| 7 | `tsoil` | deg C | Mean soil temperature |
+| 8 | `par` | mol m-2 | Photosynthetically active radiation, integrated over the timestep |
+| 9 | `precip` | mm | Total precipitation over the timestep |
+| 10 | `vpd` | Pa | Vapour pressure deficit |
+| 11 | `vpd_soil` | Pa | Soil-air vapour pressure deficit |
+| 12 | `vpress` | Pa | Vapour pressure in the canopy airspace |
+| 13 | `wspd` | m s-1 | Mean wind speed |
+| 14 | `soil_wetness` | | Legacy column, ignored by SIPNET; constant 0.6 |
 
-> Zhang, D., J. Huggins, Q. Li, S. Ramachandran, S. P. Serbin, C. Webb, Z. Zuo,
-> and M. Dietze. 2026. *North American Land Carbon Reanalysis, 2012–2024.* ORNL
-> DAAC, Oak Ridge, Tennessee, USA. https://doi.org/10.3334/ORNLDAAC/2507
+**Interpretation.** There is no datetime column; time is given by the `year`,
+`day` and `time` triple and must be assembled during ingest. Two columns are
+integrated quantities rather than rates: `par` and `precip` are totals over the
+timestep, so temporal aggregation of either is a sum rather than a mean. SIPNET
+requires `vpd` and `wspd` to be strictly positive and silently clamps values that
+are not, so non-positive entries are better caught at ingest.
 
-Preprint: https://www.biorxiv.org/content/10.64898/2026.02.25.708030v1.abstract
-Dataset guide: https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html
+> **Note 4.** The number of driver ensemble members is not established.
 
-The NEE constraint data comes separately, from Gu Yang's gap-filling work.
+**Source.** ERA5, prepared for the 8000-site pool as part of [NALCR].
 
-### Expected layout
+### Initial conditions
 
-```
-raw/
-  drivers/ERA5_<site_id>_<member>/ERA5.<member>.2012-01-01.2024-12-31.clim
-  initial_conditions/<site_id>/IC_site_<site_id>_<member>.nc
-  constraints/
-    nee/ens_ec_3h.csv
-    sda_8k_site_rdata/obs.mean.Rdata
-    sda_8k_site_rdata/obs.cov.Rdata
-```
+**Format.** One netCDF file per site and ensemble member, holding scalar initial
+values for the model's carbon pools. Each variable has a single `time` element.
+The example file contains the following.
 
-The two path templates are **UNVERIFIED** as general patterns: only
-`ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim` and
-`initial_conditions/1/IC_site_1_1.nc` exist locally, so the templates are
-inferred from those two examples plus `Data Notes.md`. Whether all 8000 site
-directories follow them has not been checked.
+| Variable | Units | Long name | Example value |
+|---|---|---|---|
+| `AbvGrndWood` | kg C m-2 | Above ground woody biomass | 0.05823572 |
+| `wood_carbon_content` | kg C m-2 | Wood Carbon Content | 0.05823572 |
+| `soil_organic_carbon_content` | kg C m-2 | Soil Organic Carbon Content by Layer | 13.08545431 |
+| `time` | see Note 5 | Time middle averaging period | 1.0 |
 
-### Drivers — `.clim` — VERIFIED (one file)
+**Interpretation.** These are static initial conditions, so the length-1 `time`
+dimension carries no information and can be dropped on read. In the example file
+`AbvGrndWood` and `wood_carbon_content` hold the same value. Files for other
+sites are reported to include `leaf_carbon_content` and `SoilMoistFrac` as well,
+so ingest should treat the variable set as varying between files rather than
+fixed.
 
-SIPNET climate format, space-delimited, **no header**. From
-`ERA5.1.2012-01-01.2024-12-31.clim`:
+> **Note 5.** The `time` units attribute is the unsubstituted template
+> `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse.
+> These files must be opened with CF time decoding disabled, for example
+> `xarray.open_dataset(path, decode_times=False)`.
 
-- **37,992 rows**, **14 columns** (uniform across all rows).
-- 3-hourly, 2012-01-01 through 2024 day 366. Row count is exactly consistent:
-  13 years with 4 leap years = 4749 days × 8 steps = 37,992.
-- Columns are pySIPNET's 14-column layout:
-  `loc, year, day, time, length, tair, tsoil, par, precip, vpd, vpd_soil, vpress, wspd, soil_wetness`.
-- `loc` is constant `0`. `length` is constant `0.125` (days = 3 h), which confirms
-  the timestep. `soil_wetness` is constant `0.6`; per pySIPNET, SIPNET ignores it.
-- **No datetime column** — time is `year`, `day`, `time`.
+> **Note 6.** The number of initial-condition ensemble members, and which
+> variables appear in which files, are not established.
 
-Units are as documented by pySIPNET's `clim_io` module rather than by the data
-itself. Note two of its warnings apply here: `par` is a **total** over the
-timestep (not a rate), and SIPNET silently clamps non-positive `vpd`/`wspd`.
+**Source.** Initial conditions prepared for the 8000-site pool as part of
+[NALCR], which reports 100 ensemble members together with ensemble mean and
+standard deviation.
 
-Driver **ensemble size is UNVERIFIED** — only member 1 is present locally.
+### Net ecosystem exchange
 
-### Initial conditions — `.nc` — VERIFIED (one file)
+**Format.** A single CSV file of about 1.7 GB, with 3,547,921 data rows and 28
+columns.
 
-From `IC_site_1_1.nc` (712 bytes):
-
-| Variable | Dims | Value | `units` attr | `long_name` attr |
-|---|---|---|---|---|
-| `AbvGrndWood` | `(time: 1)` | 0.05823572 | `kg C m-2` | Above ground woody biomass |
-| `wood_carbon_content` | `(time: 1)` | 0.05823572 | `kg C m-2` | Wood Carbon Content |
-| `soil_organic_carbon_content` | `(time: 1)` | 13.08545431 | `kg C m-2` | Soil Organic Carbon Content by Layer |
-| `time` | `(time: 1)` | 1.0 | `days since [year]-01-01 00:00:00 UTC` | Time middle averaging period |
-
-No global attributes. Note `AbvGrndWood` and `wood_carbon_content` are *equal* in
-this file.
-
-> **These files cannot be opened with CF time decoding** — repo issue #3.
->
-> The `time` units attribute is a literal unsubstituted template: `[year]` was
-> never replaced. No calendar library can parse it, and **installing `cftime`
-> does not help** (verified with 1.6.5). Open with `decode_times=False`. The
-> `time` dimension is length 1 and carries no information — these are static
-> initial conditions.
-
-`Data Notes.md` records that other IC files carry additional variables
-(`leaf_carbon_content`, `SoilMoistFrac`) — **UNVERIFIED locally**, as is the
-ensemble size. The upstream product is DOCUMENTED as having 100 ensemble members
-plus mean and standard deviation, which is consistent with the `IC_site_1_100.nc`
-path appearing in Dongchen's XML, but the IC ensemble size has not been directly
-confirmed.
-
-### NEE constraint — `ens_ec_3h.csv` — VERIFIED
-
-1.7 GB. **3,547,921 data rows, 28 columns.**
-
-- `Site_ID` — Ameriflux id (e.g. `CA-ARB`). **209 distinct sites**; see the
-  165-site caveat under [`site_id_map.csv`](#site_id_mapcsv--verified).
-- `utc` — ISO timestamps, 3-hourly, **2012-01-01T03:00:00Z to 2025-01-01T03:00:00Z**.
-- `ens01` … `ens25` — 25 ensemble members.
-- `ens_mean` — **verified to be exactly the mean of `ens01`…`ens25`** (max
-  discrepancy 7.8e-14 at `US-UMB`). It is therefore redundant, and **must never be
-  treated as a 26th ensemble member**: admitting it to the member dimension
-  corrupts every quantile computed from the ensemble.
-
-> **24.7% of rows have zero across-member spread** — VERIFIED at `US-UMB`
-> (7,225 of 29,225 rows have all 25 members identical; median spread on the rest
-> is 0.116). A plausible reading is that zero spread marks a *measured* rather
-> than gap-filled value, which would make it a free quality flag and would matter
-> a great deal for the observation-error model. **Unconfirmed — worth asking.**
-
-> **Coverage is highly ragged in time** — VERIFIED
->
-> The row count implies far less data than 209 sites × full period would give. A
-> complete 3-hourly series over 2012-01-01 to 2025-01-01 is ~37,992 timesteps, but
-> per-site row counts run **min 2,921, median 17,537, mean 16,975, max 37,993** —
-> a mean of **45% of the full period**.
->
-> | Coverage | Sites |
-> |---|---|
-> | ≥99% | 17 |
-> | ≥90% | 28 |
-> | ≥50% | 62 |
-> | ≥25% | 144 |
->
-> So only 17 of 209 sites have a near-complete record. A dense
-> `(member, site, time)` array would be **~55% NaN**. That is an acceptable price
-> for keeping the canonical rectangular convention — NaN compresses well in zarr —
-> but it must be a deliberate choice, and any per-site statistic has to account for
-> wildly unequal sample sizes.
-
-> **Units are an OPEN QUESTION and this matters.**
->
-> At `US-UMB` (UMBS, Michigan; 29,225 rows) values run **−37.2 to +13.3**, with a
-> July diurnal cycle peaking near **−21** at local midday. Those magnitudes are
-> characteristic of **µmol CO₂ m⁻² s⁻¹** — a **rate** — and are hard to reconcile
-> with any other common NEE unit; a value of −21 g C m⁻² per 3 h would be roughly
-> an order of magnitude beyond anything physical. This is strong evidence, but it
-> is still inference from magnitude and is **not recorded here as fact**.
->
-> SIPNET's own `nee` is `g C m⁻² per timestep` — a **total**. If the two are
-> plotted or compared without conversion the result is wrong by orders of
-> magnitude, with no visual cue.
->
-> The **sign convention, by contrast, is settled empirically** — VERIFIED. At
-> `US-UMB`, July means by UTC hour run +6.2 at night and −20.8 at local midday,
-> and monthly means are negative June–September, positive October–May. So
-> **negative = uptake, positive = release**, matching SIPNET's documented
-> `+ = to atmosphere`.
->
-> `Data Notes.md` quotes Meng's README as `x_kgC_m2_s <- x_umolCO2_m2_s * 12e-9`,
-> which does not by itself establish which unit this file is in. **Confirm with
-> Gu Yang before using NEE as a constraint.**
-
-### AGB / LAI / soil constraints — `.Rdata` — VERIFIED
-
-Inspected directly in R. Both files are `list` of length **13**, keyed by date
-`2012-07-15` … `2024-07-15`; each year is a list of length **8000** named
-`"1"` … `"8000"`.
-
-**`obs.mean.Rdata`** — object `obs.mean`. Each site-year is a **1-row
-data.frame** whose columns are the variables present. Column count ranges over
-{0, 1, 2, 3, 4}; columns appear in alphabetical order
-(`AbvGrndWood`, `LAI`, `SoilMoistFrac`, `TotSoilCarb`). No entry is `NULL`, but
-**6 sites in 2012 have a 0-column data.frame** — i.e. no observations at all.
-
-**Coverage is strongly year-dependent**, which is a sharper constraint than "not
-every site has every variable":
-
-| Year | TotSoilCarb | LAI | AbvGrndWood | SoilMoistFrac |
-|---|---|---|---|---|
-| 2012 | 7990 | 7670 | 3281 | **0** |
-| 2013 | 7990 | 7668 | 3281 | **0** |
-| 2014 | 7990 | 7677 | 3281 | **0** |
-| 2015 | 7990 | 7674 | 3281 | 7974 |
-| 2016–2023 | 7990 | 7649–7678 | 3262–3281 | 7974 |
-| 2024 | 7990 | 7663 | **0** | 7974 |
-
-So `SoilMoistFrac` is absent before 2015, `AbvGrndWood` is absent in 2024, and
-`AbvGrndWood` covers only ~41% of sites in the years it exists. **Ingest must not
-assume a rectangular site × year × variable array.**
-
-**`obs.cov.Rdata`** — object `obs.cov`. Same nesting. Each site-year is a
-`numeric` (1×1 case) or a `matrix`. Dimensions in 2012: 6 empty, 283 1×1,
-4475 2×2, 3236 3×3 — matching `obs.mean`'s column counts exactly, verified for
-all 8000 sites in 2015 with zero mismatches.
-
-> Two corrections to `Data Notes.md`, both VERIFIED:
->
-> 1. `obs.cov`'s site-level lists **are** named `"1"`…`"8000"` (the notes say
->    there are no names). What is genuinely absent is **dimnames on the
->    matrices**, so it is the **variable order**, not the site order, that must be
->    taken from `obs.mean`'s columns.
-> 2. The directory is named `Rdata_with_attributes`, but there are **no
->    non-standard attributes anywhere** — not on the outer list, the year lists,
->    or any of the 8000 data.frames. This bears on the open question of how it
->    differs from the sibling `Rdata/` directory.
-
-**Units** — DOCUMENTED by the ORNL DAAC dataset guide for the published product:
-
-| Variable | Unit | Measured range (2015) |
+| Column | Type | Description |
 |---|---|---|
-| `AbvGrndWood` | Mg C ha⁻¹ | 0 – 459 |
-| `LAI` | m² m⁻² | 0.1 – 6.9 |
-| `SoilMoistFrac` | percent | 0.99 – 92.89 |
-| `TotSoilCarb` | kg C m⁻² | 5.79 – 144.4 |
+| `Site_ID` | string | Ameriflux site identifier; 209 distinct values |
+| `utc` | timestamp | ISO 8601, 3-hourly, 2012-01-01T03:00:00Z to 2025-01-01T03:00:00Z |
+| `ens01` to `ens25` | float | Twenty-five ensemble members |
+| `ens_mean` | float | Mean of `ens01` to `ens25` |
 
-This resolves `Data Notes.md`'s puzzle that "Meng's README says Mg/ha, but this
-can't be true for all variables" — only `AbvGrndWood` is. It also confirms
-`SoilMoistFrac` is a **percent, not a fraction**, from documentation rather than
-from its range.
+**Interpretation.** `ens_mean` is exactly the arithmetic mean of the 25 member
+columns, agreeing to within 8e-14 in the site checked, and is therefore
+redundant. It must not be carried as a 26th ensemble member, since that biases
+any quantile computed across members.
 
-One caveat, deliberately not glossed: the guide documents the **published
-reanalysis output**, whereas `obs.mean.Rdata` is the SDA **observation input**.
-The four variable names and all 13 July-15 timestamps match exactly, so they
-almost certainly share definitions — but that is inference. **Worth one
-confirmation.** The July-15 timestamps are DOCUMENTED as the product's annual
-snapshot convention, which answers a standing question in `Data Notes.md`.
+The sign convention is that positive values denote flux to the atmosphere and
+negative values denote uptake, matching SIPNET's own convention for net ecosystem
+exchange. At `US-UMB`, July means by hour run from +6.2 overnight to -20.8 at
+local midday, and monthly means are negative from June to September and positive
+from October to May.
+
+Temporal coverage is uneven across sites, and sparser than the row count alone
+suggests. A complete 3-hourly record over the file's date range would be about
+37,992 rows per site, but per-site counts range from 2,921 to 37,993 with a median
+of 17,537, so the average site covers about 45% of the period.
+
+| Coverage of the full period | Sites |
+|---|---|
+| at least 99% | 17 |
+| at least 90% | 28 |
+| at least 50% | 62 |
+| at least 25% | 144 |
+
+Only 17 of the 209 sites have a near-complete record. Representing the file as a
+dense array over site and time therefore leaves roughly 55% of entries missing,
+and any per-site statistic must account for very unequal sample sizes.
+
+> **Note 7.** The units of the ensemble columns are not confirmed. Values at
+> `US-UMB` range from -37.2 to +13.3 and peak near -21 at midsummer midday, which
+> is characteristic of umol CO2 m-2 s-1, a rate. SIPNET reports net ecosystem
+> exchange as a per-timestep total in g C m-2, so a conversion is required and its
+> direction depends on this answer.
+
+> **Note 8.** In about a quarter of rows, all 25 ensemble members are identical:
+> 7225 of 29,225 rows at `US-UMB`, where the median spread elsewhere is 0.116. The
+> meaning of these rows is not established.
+
+**Source.** [GAPFILL].
+
+### Biomass, leaf area and soil constraints
+
+**Format.** Two R data files, each holding a single object that nests as year,
+then site, then observation. Both are lists of length 13 keyed by date from
+`2012-07-15` to `2024-07-15`, and each element is a list of length 8000 named
+`"1"` to `"8000"`.
+
+In `obs.mean.Rdata`, the object `obs.mean` gives each site-year as a single-row
+data frame whose columns are the variables observed there. Between zero and four
+columns appear, in alphabetical order.
+
+| Variable | Unit | Observed range, 2015 |
+|---|---|---|
+| `AbvGrndWood` | Mg C ha-1 | 0 to 459 |
+| `LAI` | m2 m-2 | 0.1 to 6.9 |
+| `SoilMoistFrac` | percent | 0.99 to 92.89 |
+| `TotSoilCarb` | kg C m-2 | 5.79 to 144.4 |
+
+In `obs.cov.Rdata`, the object `obs.cov` gives the corresponding observation error
+covariances with the same nesting, as a bare numeric in the single-variable case
+and a matrix otherwise. In 2012 the dimensions are 6 empty, 283 of 1x1, 4475 of
+2x2 and 3236 of 3x3, matching the column counts in `obs.mean` exactly.
+
+**Interpretation.** The July 15 keys are the annual snapshot convention of the
+source product, not observation dates. No site-year entry is null, but some are
+empty data frames with zero columns, denoting a site-year with no observations at
+all; six such entries occur in 2012.
+
+Coverage varies by variable and by year, so the data are not rectangular over
+site, year and variable.
+
+| Year | `TotSoilCarb` | `LAI` | `AbvGrndWood` | `SoilMoistFrac` |
+|---|---|---|---|---|
+| 2012 | 7990 | 7670 | 3281 | 0 |
+| 2013 | 7990 | 7668 | 3281 | 0 |
+| 2014 | 7990 | 7677 | 3281 | 0 |
+| 2015 | 7990 | 7674 | 3281 | 7974 |
+| 2016-2023 | 7990 | 7649-7678 | 3262-3281 | 7974 |
+| 2024 | 7990 | 7663 | 0 | 7974 |
+
+`SoilMoistFrac` is absent before 2015 and `AbvGrndWood` in 2024, and
+`AbvGrndWood` covers about 41% of sites in the years where it is present.
+
+The covariance matrices carry no dimension names, so the variable each row and
+column refers to must be taken from the column order of the corresponding
+`obs.mean` entry. The site-level lists in both objects are named, so sites can be
+addressed by name rather than by position.
+
+> **Note 9.** These files are the observation inputs to the source product's data
+> assimilation, whereas the units above are documented for its published output.
+
+> **Note 10.** Two further directories of `obs.mean` and `obs.cov` files exist
+> alongside this one, and the relationship between them is not established.
+
+**Source.** Observation inputs to the state data assimilation described in
+[NALCR]. Underlying products include LandTrendr aboveground biomass.
 
 ---
 
-## Conversion: raw to processed
+## Conversion to processed form
 
-Ingest scripts live in `../scripts/`. Each reads from `raw/`, writes to
-`processed/`, and never modifies its input. Run `--help` on a script for usage;
-this table records only what each one does.
+Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`,
+writes to `processed/`, and leaves its input unmodified. Run a script with
+`--help` for usage.
 
 | Script | Reads | Writes |
 |---|---|---|
-| `ingest_sites.py` | `site_ids.csv`, `site_id_map.csv`, PFT csv | `processed/sites.parquet` |
+| `ingest_sites.py` | `site_ids.csv`, `site_id_map.csv`, plant functional type table | `processed/sites.parquet` |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
-| `ingest_constraints.py` | R export of `obs.mean`/`obs.cov` | `processed/agb_lai.nc` |
+| `ingest_constraints.py` | R export of `obs.mean` and `obs.cov` | `processed/agb_lai.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
 | `ingest_drivers.py` | `raw/drivers/` | `processed/drivers.zarr` |
 
-**The `.Rdata` files require R.** `obs.mean` is a list-of-lists-of-data.frames,
-and `pyreadr` handles data.frames only, so flattening must happen in a one-time R
-script that writes netCDF or csv. These are the only inputs needing R.
+Reading the R data files requires R. The `obs.mean` object is a list of lists of
+data frames, which `pyreadr` does not support, so it is flattened by a one-off R
+script that writes netCDF. These are the only inputs that require R.
 
-Two conversions are load-bearing and must not be left implicit:
+Two conversions are applied during ingest rather than downstream: net ecosystem
+exchange is converted to a single canonical unit, so nothing later in the pipeline
+has to reconcile units, and the redundant `ens_mean` column is dropped.
 
-- **NEE units.** Whatever the resolution of the open question above, the adapter
-  converts into the one canonical unit named in the code's `VARIABLES` registry.
-  Nothing downstream reconciles units.
-- **`ens_mean` is dropped**, not carried as a member.
-
-`processed/` is regenerable from `raw/` and is therefore not tracked in git. It
-does not exist on a fresh clone; ingest scripts create it.
+> **Note 11.** Two plant functional type tables exist for the 8000 sites, with 16
+> and 3 distinct classes respectively, and the one to use has not been chosen.
 
 ---
 
 ## Processed format
 
-**PROPOSED** — the ingest scripts are not yet written. The rationale for these
-choices is in the plotting design spec; the short version is that the processed
-format *is* the canonical format used by the rest of the project, including as
-plotting input, so it is chosen to be directly loadable as such.
+The ingest scripts are not yet written; this section records the intended output.
 
-The canonical in-memory form is an `xarray.DataArray` with dims a subset of
-`(member, site, time)`, `lon`/`lat` as non-dimension coordinates on `site`, and
-units in `attrs`. Formats are chosen by *shape*:
+The processed form is also the form used throughout the rest of the project, so it
+is chosen to load directly as such: an `xarray.DataArray` per variable, with
+dimensions drawn from `member`, `site` and `time`, longitude and latitude as
+non-dimension coordinates on `site`, and units recorded in the array's attributes.
+Formats are chosen according to the shape of each product.
 
-| Product | Format | Dims | Rationale |
+| Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
-| `sites.parquet` | Parquet | table | tabular, tiny, joins |
-| `ic.nc` | netCDF | `(member, site)` | ~8000 × 100 × 3 ≈ 19 MB, whole-file |
-| `agb_lai.nc` | netCDF | `(site, time)` per variable, plus covariances | 8000 × 13, tiny |
-| `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 25 × 165 × 38k ≈ 630 MB f32 dense, ~55% NaN; lazy per-site reads |
-| `drivers.zarr` | Zarr, chunked on `(site, time)` | `(member, site, time)` | full array ~15 GB per member; site subsets only, locally |
+| `sites.parquet` | Parquet | table | negligible |
+| `ic.nc` | netCDF | `(member, site)` | 19 MB |
+| `agb_lai.nc` | netCDF | `(site, time)` per variable, plus covariances | negligible |
+| `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
+| `drivers.zarr` | Zarr, chunked on `site` and `time` | `(member, site, time)` | 15 GB per member; site subsets in practice |
 
-Zarr rather than Parquet for the `(member, site, time)` blocks because Zarr *is*
-the canonical xarray convention on disk: `open_zarr(...).sel(site=[...])` is the
-adapter, with no reshape step. Lazy reads are dask-backed.
+Zarr is used for the arrays indexed by member, site and time because it maps
+directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
+reads only the requested sites, with no reshaping step. Lazy reads are backed by
+dask.
 
-Conventions that apply to every product:
+The following conventions apply to every product.
 
-- `site` is the integer 1–8000. **Never renumbered.** Ameriflux `Site_ID` and
-  `pft` are non-dimension coordinates on `site`, absent where unknown.
-- `member` is a 0-based integer, and is **source-local** — see the open question
-  about cross-source member alignment.
-- Time is a real datetime index. SIPNET's `year`/`day`/`time` triple is converted
-  at the boundary.
-- Ragged coverage is represented honestly. The AGB/LAI product in particular is
-  not rectangular over site × year × variable.
+- `site` is the integer identifier 1-8000, never renumbered. Ameriflux
+  identifiers and plant functional type are non-dimension coordinates on `site`,
+  and are absent where unknown.
+- `member` is a zero-based integer index, meaningful only within a single source.
+- Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
+  converted at the boundary.
+- Uneven coverage is preserved rather than filled. The biomass and leaf area
+  product in particular is not rectangular over site, year and variable.
 
-**Open format questions:** the canonical NEE unit; whether covariances are stored
-as full matrices per site-year or in a sparse form; whether `processed/` carries
-its own spatially-meaningful site ordering as an extra coordinate (see below).
+> **Note 12.** Whether ensemble member *i* of one source corresponds to member
+> *i* of another is not established.
+
+> **Note 13.** Whether the processed form should carry an additional
+> spatially-ordered site coordinate is undecided.
 
 ---
 
 ## Open questions
 
-Data questions, in rough order of how much they block.
+Numbered notes above refer to the corresponding entry here.
 
-1. **What unit is `ens_ec_3h.csv` in, and what is its sign convention?** Blocks
-   any comparison of modelled and observed NEE. Ask Gu Yang.
-2. **Is `obs.mean.Rdata` in the same units as the published reanalysis product?**
-   Near-certain but inferred; one confirmation from Dongchen Zhang would settle it.
-3. **Can the NEE site mapping be extended past 165 sites?** 44 sites have NEE
-   data but no site id. `Data Notes.md` also records an unresolved concern that
-   earlier mappings were distance-based rather than exact.
-4. **Is the `member` index meaningful across sources?** Were driver member *i*,
-   IC member *i*, and the calibration ensemble drawn jointly or independently?
-   xarray aligns on coordinate values automatically, so this determines whether
-   cross-source arithmetic is a feature or a silent bug.
-5. **Should `processed/` carry its own spatially-meaningful site ordering?** The
-   1–8000 ids must not be renumbered, but a Hilbert or Morton rank as an extra
-   coordinate would help triangulation and chunk locality.
-6. **Why is `site_name` misaligned with the coordinates, and where did it happen?**
-   Upstream in `site_info.Rdata`, or in this repo's csv extraction? Until answered,
-   `site_name` is unusable and any conclusion resting on it is void.
-7. **Why do 20 mapped sites have no NEE data, including Harvard Forest and Morgan
-   Monroe?** And can the 17 unexplained unmapped CONUS sites be recovered? Ask
-   Gu Yang.
-8. **Which PFT assignment?** `Data Notes.md` describes two files with 16 and 3
-   distinct PFTs respectively. Not resolved, and no PFT file is present locally.
-9. **How do the sibling observation directories differ?** `Rdata_with_attributes`
-   versus `Rdata` versus the XML's `Obs` output directory — and given that
-   `Rdata_with_attributes` carries no attributes, the naming is actively
-   misleading.
-10. **What reference year was intended for the IC `time` units?** Repo issue #3.
-   Not needed for calibration, since the dimension is degenerate.
-11. **Should the time horizon extend beyond 2012–2024?** Note the NEE file already
-   runs to 2025-01-01 while the drivers end at 2024 day 366.
+**1. Per-site directory templates.** The driver and initial-condition path
+templates are inferred from `ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim` and
+`initial_conditions/1/IC_site_1_1.nc`. Whether all 8000 site directories follow
+them has not been checked, and ingest should fail loudly on any that do not.
+
+**2. Misalignment of `site_name`.** Every label in `site_name` occupies a
+contiguous band of latitudes, which suggests the column retains an ordering
+different from the one applied to the coordinates, rather than that individual
+rows are wrong. Besides `soil_core_alaska` at 33.3 to 36.0 north, four rows
+labelled `Hawaii` lie between 119.6 and 86.1 west, and rows whose labels embed
+Costa Rican, Panamanian and Mexican site codes all lie near 46 north. That the
+coordinates themselves are sound was confirmed by joining `site_id_map.csv` to
+`site_ids.csv` and checking against known locations for Park Falls, Wind River,
+Sylvania and the University of Michigan Biological Station. It remains to be
+determined whether the misalignment originates in the source file or in the
+extraction to CSV; the latter is the cheaper possibility to rule out first.
+
+**3. Coverage gaps between the NEE file and the identifier map.** Of the 44 sites
+with NEE data but no identifier, 12 have non-US prefixes and a further 15 carry
+codes belonging to Alaskan site clusters, consistent with the map covering only
+the conterminous US. The remaining 17 are unexplained. The 20 sites with an
+identifier but no NEE data are harder to account for, since they include
+`US-Ha1`, `US-MMS`, `US-Ne1` and `US-Ne2`, all long-running sites well inside the
+mapped region. The likeliest explanation is that the identifier map and the
+gap-filled product were assembled from different site lists.
+
+**4. Driver ensemble size.** Only one member is available locally, so the size of
+the driver ensemble is unknown.
+
+**5. Reference year for the initial-condition time coordinate.** The units
+attribute is an unsubstituted template, so the intended reference year cannot be
+recovered from the file. This does not affect calibration, since the dimension is
+degenerate, but it does mean the files cannot be used for anything time-aware.
+Tracked as
+[issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
+
+**6. Initial-condition variable sets and ensemble size.** The variable set is
+reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
+appearing in some. Only one file is available locally, so neither the full set of
+combinations nor the ensemble size has been confirmed against the data.
+
+**7. Units of the NEE ensemble columns.** This blocks any comparison between
+modelled and observed net ecosystem exchange in either direction. The evidence for
+umol CO2 m-2 s-1 is the magnitude of the values: a midsummer midday value of -21
+in g C m-2 per three hours would be far outside the physical range, whereas -21
+umol CO2 m-2 s-1 is unremarkable for a productive temperate forest. A conversion
+factor between kg C m-2 s-1 and umol CO2 m-2 s-1 has been noted elsewhere, but
+does not by itself establish which unit this file uses.
+
+**8. Rows with identical ensemble members.** One reading is that zero spread marks
+a directly measured value and non-zero spread a gap-filled one, which would make
+the ensemble spread usable as a quality flag and would matter for the observation
+error model. This has not been confirmed, and the alternative, that the
+gap-filling simply produces no spread under some conditions, has quite different
+consequences.
+
+**9. Units of the assimilation inputs.** The units given for the four variables
+are documented for the published reanalysis output, whereas `obs.mean.Rdata` holds
+the observation inputs to that reanalysis. All four variable names and all
+thirteen annual keys agree, so the two almost certainly share definitions, but
+this has not been confirmed.
+
+**10. Relationship between the observation directories.** Two further directories
+of `obs.mean` and `obs.cov` files exist alongside the one used here. It is not
+known how they differ or which is authoritative. The directory in use is named as
+though its contents carry variable attributes, but no attributes are present on
+any object within it.
+
+**11. Choice of plant functional type table.** Two tables exist for the 8000
+sites, distinguishing 16 and 3 classes respectively. Neither is present in this
+repository, and the choice between them is open.
+
+**12. Correspondence of ensemble members across sources.** Whether driver member
+*i*, initial-condition member *i* and the calibration ensemble were drawn jointly
+or independently determines whether arithmetic that pairs them is meaningful.
+Because xarray aligns on coordinate values automatically, an incorrect assumption
+here would combine unrelated members without any error being raised.
+
+**13. Site ordering in the processed form.** The 1-8000 identifiers are fixed, but
+a spatially coherent ordering, a Hilbert or Morton rank for instance, would
+improve locality for triangulation and for chunked reads. Such an ordering would
+be added as an additional coordinate rather than by renumbering.
