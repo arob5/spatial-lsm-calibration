@@ -34,22 +34,22 @@ this message and the verification tags will be removed.
 
 ## Site metadata
 
-Two small files, **tracked in git** because they are the shared keys everything
+Two small files, tracked in git because they are the shared keys everything
 else joins on.
 
 ### `site_ids.csv` — VERIFIED
 
 8000 rows, 4 columns: `site_id`, `lon`, `lat`, `site_name`.
 
-- `site_id` is the integer **1–8000**, handed down from Dongchen Zhang's
+- `site_id` is the integer 1–8000, handed down from Dongchen Zhang's
   `site_info.Rdata`. These are a **shared key with collaborators' files and must
   never be renumbered.**
 - `lon`/`lat` are degrees. See [Coordinate reference system](#coordinate-reference-system).
-- Extent: lon **−178.754 to −20.013**, lat **7.013 to 82.546**. The corners are
+- Extent: lon −178.754 to −20.013, lat 7.013 to 82.546. The corners are
   site 731 in the western Aleutians, site 1 in northeast Greenland, and site 8000
   at 7.01°N in northern South America.
-- Only **3640 of 8000 (45.5%)** fall inside a CONUS bounding box
-  (24–50°N, 125–66°W). **CONUS-only assumptions are wrong.**
+- Only 3640 of 8000 fall inside a CONUS bounding box
+  (24–50°N, 125–66°W).
 
 | Region | Sites |
 |---|---|
@@ -94,11 +94,7 @@ else joins on.
 ### `site_id_map.csv` — VERIFIED
 
 185 rows, 2 columns: `Site_ID` (Ameriflux, e.g. `US-xDC`), `index` (the 1–8000
-site id, range 4102–7418 in this file).
-
-Produced by **exact** matching, unlike the earlier distance-based mapping files
-described in `Data Notes.md`. Per those notes, all 185 rows merge against the
-8000 site ids.
+site id, range 4102–7418 in this file). Produced by exact matching.
 
 > **Only 165 sites are usable for NEE.** — VERIFIED
 >
