@@ -36,10 +36,26 @@ Three sources are referenced throughout this document.
   [dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html)
   and the
   [preprint](https://www.biorxiv.org/content/10.64898/2026.02.25.708030v1.abstract).
-- **[pySIPNET]** The pySIPNET interface package, whose `pysipnet.climate` and
-  `pysipnet.io.clim_io` modules define the SIPNET climate file format.
+- **[pySIPNET]** [pySIPNET](https://github.com/TARPS-group/pySIPNET), the SIPNET
+  interface package, whose `pysipnet.climate` and `pysipnet.io.clim_io` modules
+  define the SIPNET climate file format.
 - **[GAPFILL]** Gap-filled eddy-covariance net ecosystem exchange, produced by
-  Yang Gu at Boston University. No published reference at present.
+  Yang Gu at Boston University. Unpublished; no citable reference at present.
+
+### Relationship to the reanalysis
+
+This project shares a number of inputs with [NALCR]: the 8000-site pool and the
+grid it is defined on, the ERA5 driver ensembles, the initial condition
+ensembles, and the biomass, leaf area and soil constraint files. It does not take
+the reanalysis output as an input. The two analyses draw on overlapping inputs
+rather than one feeding the other, and they make different use of them: [NALCR]
+assimilates these data into a state reanalysis, whereas the work here uses them
+to calibrate model parameters.
+
+[NALCR] is referenced throughout because it is where the site pool originates and
+because its documentation is the fullest available description of several of the
+shared inputs. Where a statement below rests on documentation of the reanalysis
+output rather than on the input files themselves, that is marked with a note.
 
 ---
 
@@ -90,9 +106,9 @@ on a fresh clone.
 | `lat` | float | Latitude, degrees north |
 | `site_name` | string | Free-text label; see Note 2 |
 
-The identifiers originate with [NALCR] and are shared with collaborators' files,
-so they are treated as fixed and are never renumbered. Rows are ordered by
-descending latitude.
+The site pool and its identifiers were defined for the model runs underlying
+[NALCR], and are shared with collaborators' files, so they are treated as fixed
+and are never renumbered. Rows are ordered by descending latitude.
 
 Coordinates span -178.754 to -20.013 in longitude and 7.013 to 82.546 in
 latitude. The extremes are site 731 in the western Aleutians, site 1 in northeast
@@ -147,10 +163,10 @@ WGS 84 datum (EPSG:4326), as documented in the [NALCR]
 The full definition, together with the grid the coordinates fall on, is recorded
 in machine-readable form in [`site_crs.json`](site_crs.json).
 
-Site coordinates are cell centres of the approximately 1 km geographic grid used
-by [NALCR]: 0.008333 degree, or 30 arcsecond, resolution in both latitude and
-longitude, spanning 179 west to 20 west and 7 north to 85 north as a
-19080 by 9360 array. All 8000 sites fall on cell centres to within
+Site coordinates are cell centres of the approximately 1 km geographic grid on
+which [NALCR] is also defined: 0.008333 degree, or 30 arcsecond, resolution in
+both latitude and longitude, spanning 179 west to 20 west and 7 north to 85
+north as a 19080 by 9360 array. All 8000 sites fall on cell centres to within
 1.02e-6 degrees, about 0.11 m.
 
 Two consequences are worth noting.
@@ -208,7 +224,8 @@ are not, so non-positive entries are better caught at ingest.
 
 > **Note 4.** The number of driver ensemble members is not established.
 
-**Source.** ERA5, prepared for the 8000-site pool as part of [NALCR].
+**Source.** ERA5, prepared for the 8000-site pool for the model runs underlying
+[NALCR]. The same driver files are used here.
 
 ### Initial conditions
 
@@ -238,9 +255,11 @@ fixed.
 > **Note 6.** The number of initial-condition ensemble members, and which
 > variables appear in which files, are not established.
 
-**Source.** Initial conditions prepared for the 8000-site pool as part of
-[NALCR], which reports 100 ensemble members together with ensemble mean and
-standard deviation.
+**Source.** Initial condition ensembles prepared for the 8000-site pool for the
+model runs underlying [NALCR]. The same files are used here. The published
+reanalysis output carries 100 ensemble members together with ensemble mean and
+standard deviation; whether the initial condition files use the same ensemble
+size has not been confirmed against the data, and is the subject of Note 6.
 
 ### Net ecosystem exchange
 
@@ -302,7 +321,9 @@ then site, then observation. Both are lists of length 13 keyed by date from
 
 In `obs.mean.Rdata`, the object `obs.mean` gives each site-year as a single-row
 data frame whose columns are the variables observed there. Between zero and four
-columns appear, in alphabetical order.
+columns appear, in alphabetical order. The units below are those documented in
+the [NALCR] dataset guide for the corresponding variables of the reanalysis
+output; see Note 9.
 
 | Variable | Unit | Observed range, 2015 |
 |---|---|---|
@@ -341,14 +362,15 @@ column refers to must be taken from the column order of the corresponding
 `obs.mean` entry. The site-level lists in both objects are named, so sites can be
 addressed by name rather than by position.
 
-> **Note 9.** These files are the observation inputs to the source product's data
-> assimilation, whereas the units above are documented for its published output.
+> **Note 9.** The units above are documented for the reanalysis output, whereas
+> these files are the observation inputs to that reanalysis.
 
 > **Note 10.** Two further directories of `obs.mean` and `obs.cov` files exist
 > alongside this one, and the relationship between them is not established.
 
-**Source.** Observation inputs to the state data assimilation described in
-[NALCR]. Underlying products include LandTrendr aboveground biomass.
+**Source.** The observation files assimilated by [NALCR]; the same files are used
+here as calibration constraints. Underlying products include LandTrendr
+aboveground biomass.
 
 ---
 

@@ -54,7 +54,7 @@ directories, so they must be checked out alongside this repository:
 
 | Package | Expected path | Role |
 |---|---|---|
-| `pySIPNET` | `../pySIPNET` | SIPNET model interface — `SIPNETModel(**overrides)` |
+| [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | `../pySIPNET` | SIPNET model interface — `SIPNETModel(**overrides)` |
 | `PyEns` | `../PyEns` | parallel ensemble execution |
 
 Two further packages are related but **not currently dependencies**:
