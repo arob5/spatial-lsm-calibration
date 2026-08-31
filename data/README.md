@@ -39,7 +39,7 @@ Three sources are referenced throughout this document.
 - **[pySIPNET]** The pySIPNET interface package, whose `pysipnet.climate` and
   `pysipnet.io.clim_io` modules define the SIPNET climate file format.
 - **[GAPFILL]** Gap-filled eddy-covariance net ecosystem exchange, produced by
-  Gu Yang at Boston University. No published reference at present.
+  Yang Gu at Boston University. No published reference at present.
 
 ---
 
