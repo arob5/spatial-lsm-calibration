@@ -16,7 +16,8 @@ given below.
 the local subset). Nothing is inferred silently — where a value merely *looks*
 consistent with a unit, that is called out as an open question rather than
 recorded as fact. Ongoing communications with colleagues who are sourcing the 
-data will continue to fill in the gaps.
+data will continue to fill in the gaps. Once everything is sufficiently verified
+this message and the verification tags will be removed.
 
 ---
 
