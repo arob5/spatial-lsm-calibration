@@ -59,7 +59,8 @@ Build new code at the target paths; do not extend the old ones.
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
-  sites.py                # site table + select_sites(pft=, bbox=, has_nee=, ids=, sample=)
+  sites.py                # SITE_GRID + grid conversions (implemented); site table,
+                          # select_sites(pft=, bbox=, has_nee=, ids=, sample=)
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/
@@ -73,8 +74,8 @@ src/sipnet_calibration/
     diagnostics.py        # L5 EKI history, marginals, coverage
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
-data/raw/                 # symlinked, never edited
-data/processed/           # ingest output == canonical plotting input
+data/raw/                 # never edited; only raw/sites/ (the site shapefile) is tracked
+data/processed/           # ingest output == canonical plotting input; untracked
 tests/
 ```
 
@@ -133,7 +134,8 @@ plotting code. The load-bearing rules:
   wheel targets macOS 14+, on every Python version, so downgrading Python does
   not help. `cartopy` is commented out of `pyproject.toml`; do not re-add it
   expecting it to work locally. `plotting/maps.py` is blocked on that decision.
-  The source CRS of the site coordinates is recorded in `data/site_crs.json`.
+  The source CRS is settled (WGS 84 geographic) and the grid is `SITE_GRID` in
+  `sipnet_calibration.sites`; what is open is only the display projection.
 - `site` is the integer 1-8000; Ameriflux `Site_ID` and `pft` are non-dimension
   coords on `site`. `member` is a 0-based integer, meaningful only within one
   source. See the Data section above for the rules these imply.

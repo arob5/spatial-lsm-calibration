@@ -15,16 +15,16 @@ Early. The inference substrate lives in a separate package (`pyEKI`, below) and
 the first multi-site calibration run (`test1`) is not yet configured. What
 exists here today:
 
-- the `src/sipnet_calibration/` module skeleton, with contract docstrings and
-  no implementation yet;
+- the `src/sipnet_calibration/` module layout, whose modules carry the contract
+  each is to satisfy; only the site grid is implemented so far;
+- `SITE_GRID` and the conversions between coordinates and grid indices, in
+  `sipnet_calibration.sites`, with tests;
 - site metadata for the 8000-site pool, as a point shapefile under
-  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
-- a single site's drivers and initial conditions pulled down locally as a
-  format reference.
+  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`).
 
-Design records — the model definition, notation, algorithm design, and the
-plotting specification — live in an Obsidian vault outside this repository, not
-in the code. `CLAUDE.md` documents code conventions only.
+The model definition, notation, algorithm design and plotting specification are
+maintained outside this repository and are not published with it. `CLAUDE.md`
+records the code conventions; `data/README.md` documents the inputs.
 
 ## Scope of the problem
 
@@ -78,7 +78,7 @@ in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
 
 ```
 src/sipnet_calibration/
-  sites.py                # site table + select_sites(pft=, bbox=, has_nee=, ids=, sample=)
+  sites.py                # SITE_GRID, site table, select_sites(pft=, bbox=, has_nee=, ...)
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
@@ -89,8 +89,14 @@ data/processed/           # ingest output == the canonical format used throughou
 tests/
 ```
 
+Run the tests with:
+
+```bash
+uv run pytest
+```
+
 Data formats, provenance, and the coordinate reference system are documented in
-[`data/README.md`](data/README.md) and [`data/site_crs.json`](data/site_crs.json).
+[`data/README.md`](data/README.md).
 
 ## Conventions
 
@@ -110,8 +116,8 @@ Data formats, provenance, and the coordinate reference system are documented in
 
 The plotting suite is layered so that data provenance and display style stay
 independent — adapters map each data source to one canonical form, and plotters
-consume only that form. The rules are summarised in `CLAUDE.md` and specified in
-full in the vault. The two that most affect how it is used:
+consume only that form. `CLAUDE.md` records the rules in full; the two that most
+affect how the suite is used are:
 
 - A **canonical field** is an `xarray.DataArray` with dims a *subset* of
   `(member, site, time)` and `lon`/`lat` as non-dimension coords on `site`.

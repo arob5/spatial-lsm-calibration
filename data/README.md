@@ -68,7 +68,6 @@ ensemble member.
 ```
 data/
   site_id_map.csv               Ameriflux identifier map
-  site_crs.json                 coordinate reference system
   raw/
     sites/                      site table, tracked in version control
       pts.shp, pts.shx, pts.dbf, pts.prj, pts.cpg
@@ -96,8 +95,7 @@ into `processed/`, which is regenerable and absent on a fresh clone. Neither
 directory is tracked in version control, with one exception: `raw/sites/` holds
 the site shapefile, which is small, is a primary source rather than a pipeline
 output, and is the one input without which the repository carries no site
-information at all. `site_id_map.csv` and `site_crs.json` are tracked for the
-same reason.
+information at all. `site_id_map.csv` is tracked for the same reason.
 
 ---
 
@@ -203,30 +201,50 @@ release of the product covers more sites; see Note 7.
 Site coordinates are geographic, on the WGS 84 datum (EPSG:4326). Two independent
 statements agree on this: the [NALCR]
 [dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html),
-and `pts.prj`, which declares WGS 84 and no projected coordinate system.
-The full definition, together with the grid the coordinates fall on, is recorded
-in machine-readable form in [`site_crs.json`](site_crs.json).
+and `raw/sites/pts.prj`, which declares WGS 84 and no projected coordinate system.
+Note that `pts.prj` is written in the Esri flavour of WKT and carries no
+`AUTHORITY` token, so a reader that resolves codes strictly will not recognise it
+as EPSG:4326 without matching on names.
 
 Site coordinates are cell centres of the approximately 1 km geographic grid on
 which [NALCR] is also defined: 0.008333 degree, or 30 arcsecond, resolution in
-both latitude and longitude, spanning 179 west to 20 west and 7 north to 85
-north as a 19080 by 9360 array. All 8000 sites fall on cell centres to within
-1.02e-6 degrees, about 0.11 m.
+both latitude and longitude, spanning 179 west to 20 west and 7 north to 85 north
+as a 19080 by 9360 array. Those figures are mutually consistent to the cell:
+(20 - 179) x 120 is exactly 19080 and (85 - 7) x 120 exactly 9360. Cell centres
+lie at
+
+    lon = -179 + (lon_idx + 0.5)/120,   lat = 7 + (lat_idx + 0.5)/120
+
+for zero-based indices, which is where the `lon_idx` and `lat_idx` columns of the
+processed site table come from.
+
+All 8000 sites fall on cell centres, but only to within 1.02e-6 degrees, about
+0.11 m. The residual is consistent with the coordinates having passed through
+32-bit floating point somewhere upstream: site 1's stored latitude is
+82.5458343506 where the exact centre is 82.5458333333. The integer indices are
+therefore the exact representation of a site's position and the stored
+coordinates are a lossy rendering of it, which is why both are carried.
+
+The grid is defined in code as `SITE_GRID` in
+[`sipnet_calibration.sites`](../src/sipnet_calibration/sites.py), together with
+the conversions between coordinates and indices. It lives there rather than in a
+data file because the constants and the two functions that use them must not be
+able to disagree.
 
 Two consequences are worth noting.
 
 - The grid is not equal-area. Thirty arcseconds is about 928 m in latitude
   everywhere, but in longitude it ranges from roughly 921 m at 7 north to 121 m
   at 82.5 north. Density and per-area calculations must account for this.
-- The file stores longitude before latitude, which is the traditional GDAL and
-  PROJ ordering rather than the axis order EPSG:4326 formally declares.
+- Coordinates are stored longitude before latitude, which is the traditional GDAL
+  and PROJ ordering rather than the axis order EPSG:4326 formally declares.
   Coordinate transformations should be configured accordingly, for instance with
   pyproj's `always_xy=True`.
 
-`site_crs.json` records the coordinate system of the input data only. The map
-projection used for plotting is a separate choice, tracked in
-[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4), and will
-be documented once settled.
+The map projection used for plotting is a separate choice from the coordinate
+system of the input data. It is tracked in
+[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4) and will be
+documented once settled.
 
 ---
 
