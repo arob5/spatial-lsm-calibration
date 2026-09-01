@@ -9,13 +9,14 @@
     "documented separately once it is. See `provenance.display_projection_note` below",
     "for what the upstream product used, recorded as context only."
   ],
-
   "applies_to": {
     "file": "data/site_ids.csv",
-    "columns": ["lon", "lat"],
+    "columns": [
+      "lon",
+      "lat"
+    ],
     "n_rows": 8000
   },
-
   "source_crs": {
     "authority_code": "EPSG:4326",
     "name": "WGS 84",
@@ -29,19 +30,29 @@
     },
     "prime_meridian": "Greenwich",
     "angular_unit": "degree",
-    "axis_order_in_file": ["lon", "lat"],
+    "axis_order_in_file": [
+      "lon",
+      "lat"
+    ],
     "_axis_order_note": "EPSG:4326 formally declares (latitude, longitude) axis order, but this file stores longitude first, matching the GDAL/PROJ traditional order. Pass `always_xy=True` (pyproj) or the equivalent when transforming, or coordinates will silently swap.",
     "wkt1": "GEOGCS[\"WGS 84\",DATUM[\"WGS_1984\",SPHEROID[\"WGS 84\",6378137,298.257223563,AUTHORITY[\"EPSG\",\"7030\"]],AUTHORITY[\"EPSG\",\"6326\"]],PRIMEM[\"Greenwich\",0,AUTHORITY[\"EPSG\",\"8901\"]],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"4326\"]]",
     "_wkt_status": "UNVALIDATED. Neither pyproj nor any R spatial package (sf/terra/sp) is installable on the development workstation (issue #4), so this WKT string has not been round-tripped through a PROJ implementation. The authority code EPSG:4326 is the authoritative identifier; prefer resolving that over parsing this string. Validate on SCC before relying on the WKT."
   },
-
   "grid": {
     "description": "Sites lie on cell centres of the ~1 km geographic grid of the source product.",
     "resolution_deg": 0.008333333333333333,
     "resolution_deg_exact": "1/120",
     "resolution_arcsec": 30,
-    "extent_deg": { "west": -179.0, "east": -20.0, "south": 7.0, "north": 85.0 },
-    "dimensions": { "n_lon": 19080, "n_lat": 9360 },
+    "extent_deg": {
+      "west": -179.0,
+      "east": -20.0,
+      "south": 7.0,
+      "north": 85.0
+    },
+    "dimensions": {
+      "n_lon": 19080,
+      "n_lat": 9360
+    },
     "cell_centre_formula": {
       "lon": "-179.0 + (j + 0.5)/120  for j = 0 .. 19079",
       "lat": "7.0 + (k + 0.5)/120  for k = 0 .. 9359",
@@ -56,7 +67,6 @@
       "longitude_at_82.5N": 121
     }
   },
-
   "verification": {
     "checked_on": "2026-08-31",
     "grid_alignment": {
@@ -77,11 +87,19 @@
     },
     "datum": {
       "claim": "The lon/lat are WGS 84 (EPSG:4326).",
-      "source": "ORNL DAAC dataset guide, which states: \"Geographic coordinates using WGS 84 datum (EPSG 4326)\".",
-      "status": "DOCUMENTED UPSTREAM, not independently verifiable from the coordinates themselves"
+      "sources": [
+        "ORNL DAAC dataset guide, which states: \"Geographic coordinates using WGS 84 datum (EPSG 4326)\".",
+        "data/pts.prj, which declares GEOGCS[\"GCS_WGS_1984\", DATUM[\"D_WGS_1984\", SPHEROID[\"WGS_1984\", 6378137.0, 298.257223563]]] and no projected coordinate system."
+      ],
+      "status": "CONFIRMED by two independent statements"
+    },
+    "shapefile_agreement": {
+      "claim": "data/pts.shp holds the same coordinates as data/site_ids.csv, in the same order.",
+      "method": "Parsed the .shp binary directly (no geospatial library is installable here) and compared element-wise against the CSV.",
+      "result": "8000 point records; maximum difference 4.1e-13 degrees in longitude and 5.7e-14 in latitude, attributable to decimal truncation in the CSV. Both carry the same ~1.0e-6 degree departure from exact cell centres.",
+      "status": "VERIFIED"
     }
   },
-
   "provenance": {
     "source_product": "North American Land Carbon Reanalysis, 2012-2024 (Zhang et al. 2026), ORNL DAAC",
     "source_doi": "https://doi.org/10.3334/ORNLDAAC/2507",

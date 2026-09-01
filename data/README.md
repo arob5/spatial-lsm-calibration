@@ -67,7 +67,8 @@ ensemble member.
 
 ```
 data/
-  site_ids.csv                  site table
+  pts.shp, .shx, .dbf, .prj     site table as a point shapefile (authoritative)
+  site_ids.csv                  site table, CSV extract
   site_id_map.csv               Ameriflux identifier map
   site_crs.json                 coordinate reference system
   raw/
@@ -85,8 +86,8 @@ data/
 > **Note 1.** The two per-site directory templates are inferred from a single
 > example of each rather than confirmed across all 8000 sites.
 
-The three files at the top level are tracked in version control, since they are
-small and are the keys every other dataset joins on. Neither `raw/` nor
+The files at the top level are tracked in version control, since they are small
+and are the keys every other dataset joins on. Neither `raw/` nor
 `processed/` is tracked. Files under `raw/` are treated as read-only; all
 conversion happens on the way into `processed/`, which is regenerable and absent
 on a fresh clone.
@@ -94,6 +95,46 @@ on a fresh clone.
 ---
 
 ## Site metadata
+
+### `pts.shp` and companions
+
+The site table as an ESRI point shapefile: 8000 `Point` records in `pts.shp`,
+with `pts.shx`, `pts.dbf` and `pts.prj` alongside. This is the authoritative
+version of the table. Record *N* corresponds to site identifier *N*.
+
+Geometry is in geographic coordinates, and `pts.prj` declares WGS 84 with the
+GRS-consistent WGS-1984 spheroid, matching what the [NALCR] guide documents.
+The coordinates agree with `site_ids.csv` to within 4.1e-13 degrees, which is
+decimal truncation in the CSV rather than a real difference.
+
+The attribute table in `pts.dbf` holds five fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `site_id` | numeric | Site identifier, 1-8000, in record order |
+| `site_names` | character | Site label; see below |
+| `site_order` | numeric | 0 for the 6907 sampled filler points, 1-1093 for the named sites |
+| `cluster` | numeric | Six classes; see Note 2 |
+| `landcover` | numeric | Eight classes; see Note 2 |
+
+`site_order` separates the two kinds of site in the pool: 1093 named locations —
+flux towers, research stations, soil cores — and 6907 points labelled
+`weighted_sample`, which carry `site_order` 0. Among the named sites the values
+are a permutation of 1 to 1093.
+
+**Use `site_names` from this file, not the `site_name` column of
+`site_ids.csv`.** The two contain the same 725 distinct labels but in different
+orders, and only the shapefile's ordering is consistent with the coordinates.
+Every geographic check passes here and fails there: the 100 `soil_core_alaska`
+points fall between 60.7 and 65.6 north, the four `Hawaii` points between 19.8
+and 22.1 north and 159.5 and 155.7 west, and all 182 labels embedding a country
+code sit within their country's latitude range. Spot checks resolve exactly, for
+instance Chestnut Ridge to 35.929 north and 84.329 west and BOREAS Old Jack Pine
+to 53.913 north and 104.696 west.
+
+> **Note 2.** The meaning of the `cluster` and `landcover` fields is not
+> established. `landcover` is a third land-cover classification for these sites,
+> distinct from the two plant functional type tables of Note 11.
 
 ### `site_ids.csv`
 
@@ -104,7 +145,7 @@ on a fresh clone.
 | `site_id` | integer | Site identifier, 1-8000 |
 | `lon` | float | Longitude, degrees east |
 | `lat` | float | Latitude, degrees north |
-| `site_name` | string | Free-text label; see Note 2 |
+| `site_name` | string | Unreliable; use `site_names` from `pts.dbf` instead |
 
 The site pool and its identifiers were defined for the model runs underlying
 [NALCR], and are shared with collaborators' files, so they are treated as fixed
@@ -126,11 +167,12 @@ pool. The rest are distributed as follows.
 | west of 140 | 1289 |
 | east of 50 west | 31 |
 
-> **Note 2.** The `site_name` column does not correspond to the coordinates in
-> its own row and should not be used. For example, none of the 100 rows labelled
-> `soil_core_alaska` lies north of 36.0. The fault is present in the file this
-> table was extracted from, not introduced by the extraction. The `site_id`,
-> `lon` and `lat` columns are mutually consistent.
+The `site_name` column of this file is not aligned with the coordinates in its
+own row and should not be used; take labels from `pts.dbf` instead. The fault is
+present in `site_info.Rdata`, from which this CSV was extracted, and not
+introduced by the extraction: none of the 100 rows labelled `soil_core_alaska`
+lies north of 36.0 in either. `site_id`, `lon` and `lat` are unaffected and agree
+with the shapefile.
 
 ### `site_id_map.csv`
 
@@ -163,9 +205,10 @@ release of the product covers more sites; see Note 7.
 
 ## Coordinate reference system
 
-The `lon` and `lat` columns of `site_ids.csv` are geographic coordinates on the
-WGS 84 datum (EPSG:4326), as documented in the [NALCR]
-[dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html).
+Site coordinates are geographic, on the WGS 84 datum (EPSG:4326). Two independent
+statements agree on this: the [NALCR]
+[dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html),
+and `pts.prj`, which declares WGS 84 and no projected coordinate system.
 The full definition, together with the grid the coordinates fall on, is recorded
 in machine-readable form in [`site_crs.json`](site_crs.json).
 
@@ -468,33 +511,14 @@ templates are inferred from `ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim` and
 `initial_conditions/1/IC_site_1_1.nc`. Whether all 8000 site directories follow
 them has not been checked, and ingest should fail loudly on any that do not.
 
-**2. Misalignment of `site_name`.** The labels in `site_name` do not describe the
-locations they are attached to, and the fault is present in the source file rather
-than introduced when this table was extracted from it. Checked against
-`site_info.Rdata` directly: `site_id`, `lon` and `lat` agree with the CSV to
-within floating-point tolerance, and the label groups fall at the same latitudes
-in both.
-
-Three observations characterise it. No row labelled `soil_core_alaska` lies north
-of 36.0, whereas Alaska begins near 55. The 190 rows labelled `ameriflux` all lie
-at or below 33.35, although 81% of the file lies above that line and the network
-in question is concentrated well to the north of it. Rows whose labels embed
-Costa Rican, Panamanian and Mexican site codes all sit near 46 north. Each label
-group is confined to a narrow band of latitudes rather than scattered, so this
-looks like an ordering or assignment error affecting the column as a whole, not a
-set of individually corrupted rows.
-
-The coordinates themselves are sound: joining `site_id_map.csv` to `site_ids.csv`
-and checking against known locations reproduces Park Falls, Wind River, Sylvania
-and the University of Michigan Biological Station correctly. Two further
-properties of the source file are consistent with a reordering having taken place:
-`site_ids` is exactly the sequence 1 to 8000, carrying no independent information,
-and `lat` is non-increasing across all 8000 rows with no exceptions.
-
-The correct assignment cannot be recovered from this file, since the ordering the
-labels belong to is not represented in it. Resolving this needs the version of the
-site table from before the reordering, or the per-provenance source lists the
-labels came from.
+**2. Meaning of the `cluster` and `landcover` fields.** Neither is documented.
+`cluster` takes six values, distributed 1740, 1848, 2250, 1416, 407 and 339 across
+the pool, which is consistent with a spatial or covariate-based grouping used when
+the sample was drawn, but that is a guess. `landcover` takes eight values and is a
+third land-cover classification for these sites, alongside the 16-class and 3-class
+plant functional type tables of Note 11; which of the three is appropriate for
+calibration, and whether `landcover` is derived from either, is open. Both fields
+arrived with the shapefile and are not present in `site_info.Rdata`.
 
 **3. Sites resolving to the same model identifier.** The 8000-site pool is a
 subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
@@ -559,8 +583,10 @@ though its contents carry variable attributes, but no attributes are present on
 any object within it.
 
 **11. Choice of plant functional type table.** Two tables exist for the 8000
-sites, distinguishing 16 and 3 classes respectively. Neither is present in this
-repository, and the choice between them is open.
+sites, distinguishing 16 and 3 classes respectively, and neither is present in
+this repository. The `landcover` field of `pts.dbf` is a third classification with
+eight classes, and is present. Which to use, and how the three relate, is open;
+see also Note 2.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial-condition member *i* and the calibration ensemble were drawn jointly
