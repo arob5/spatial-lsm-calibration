@@ -31,14 +31,14 @@ __all__ = ["Grid", "SITE_GRID"]
 
 @dataclass(frozen=True, slots=True)
 class Grid:
-    """A regular geographic lattice, addressed by the centres of its cells.
+    """A regular geographic lattice, addressed by the centers of its cells.
 
     The step is held as an integer number of cells per degree rather than as a
     floating-point width, so that a step of exactly 1/120 degree stays exact
     instead of accumulating error across 19080 columns.
 
     Indices are zero-based, with ``lon_idx`` increasing east from ``west`` and
-    ``lat_idx`` increasing north from ``south``. Cell centres are at::
+    ``lat_idx`` increasing north from ``south``. Cell centers are at::
 
         lon = west  + (lon_idx + 0.5) / cells_per_degree
         lat = south + (lat_idx + 0.5) / cells_per_degree
@@ -46,7 +46,7 @@ class Grid:
     Parameters
     ----------
     west, south:
-        Outer edge of the first cell, in degrees. Not a cell centre.
+        Outer edge of the first cell, in degrees. Not a cell center.
     n_lon, n_lat:
         Number of cells along each axis.
     cells_per_degree:
@@ -95,7 +95,7 @@ class Grid:
     # ── conversions ──────────────────────────────────────────────────────────
 
     def index_to_lonlat(self, lon_idx, lat_idx):
-        """Cell centres for the given indices.
+        """Cell centers for the given indices.
 
         Parameters
         ----------
@@ -131,11 +131,11 @@ class Grid:
         return lon, lat
 
     def lonlat_to_index(self, lon, lat, *, tol: float = 1e-4):
-        """Indices of the cells whose centres the given coordinates sit at.
+        """Indices of the cells whose centers the given coordinates sit at.
 
-        The coordinates are expected to *be* cell centres, not arbitrary points:
+        The coordinates are expected to *be* cell centers, not arbitrary points:
         this is a lookup, not a binning operation. Coordinates that are further
-        than *tol* from any centre raise rather than being snapped, since a point
+        than *tol* from any center raise rather than being snapped, since a point
         that is not on the grid usually means the wrong grid or the wrong CRS.
 
         Parameters
@@ -143,7 +143,7 @@ class Grid:
         lon, lat:
             Degrees, scalar or array-like. Broadcast against each other.
         tol:
-            Largest accepted departure from a cell centre, in degrees. The
+            Largest accepted departure from a cell center, in degrees. The
             default of 1e-4 (about 11 m) is loose enough for coordinates that
             have passed through 32-bit storage and tight enough to reject a point
             that is genuinely off-grid, given a cell width of 1/120 degree.
@@ -156,7 +156,7 @@ class Grid:
         Raises
         ------
         ValueError
-            If any coordinate lies further than *tol* from a cell centre, or the
+            If any coordinate lies further than *tol* from a cell center, or the
             resulting index falls outside the grid.
         """
         x = np.asarray(lon, dtype=float)
@@ -170,7 +170,7 @@ class Grid:
         if np.any(off > tol):
             worst = float(np.max(off))
             raise ValueError(
-                f"coordinates are not on the grid: worst departure from a cell centre is "
+                f"coordinates are not on the grid: worst departure from a cell center is "
                 f"{worst:.3g} degrees, tolerance is {tol:g}"
             )
         if np.any(j < 0) or np.any(j >= self.n_lon):
@@ -187,8 +187,8 @@ class Grid:
 #: spanning 179 W to 20 W and 7 N to 85 N, as 19080 x 9360 cells. This is the
 #: grid of the North American Land Carbon Reanalysis; see ``data/README.md``.
 #:
-#: Site coordinates are cell centres of this grid, but as stored they depart from
-#: exact centres by up to 1.02e-6 degrees (about 0.11 m), consistent with having
+#: Site coordinates are cell centers of this grid, but as stored they depart from
+#: exact centers by up to 1.02e-6 degrees (about 0.11 m), consistent with having
 #: passed through 32-bit floating point somewhere upstream. The integer indices
 #: are therefore the exact representation of a site's position and the stored
 #: coordinates are a lossy rendering of it.

@@ -8,7 +8,7 @@ Planned: ``band``, ``fan``, ``spaghetti``, ``line``, ``points``,
 ``step_intervals``, ``map_points``, ``map_raster``, ``basemap``.
 
 ``fan`` takes *symmetric interval levels* -- ``(0.5, 0.9)`` -- not four raw
-quantiles: it generalises to n bands, reads correctly in a legend, and cannot be
+quantiles: it generalizes to n bands, reads correctly in a legend, and cannot be
 handed a non-monotone tuple.
 
 ``spaghetti`` takes ``n_max`` and decimates. A single site is 38k timesteps x 25

@@ -11,7 +11,7 @@ Planned contents:
 * ``sipnet_time_index(year, day, time) -> DatetimeIndex`` -- SIPNET output and
   ``.clim`` drivers carry ``year``, ``day``, ``time`` columns, not a datetime index.
 * ``obs_index(sites, variables, times) -> pd.MultiIndex`` -- the
-  ``(site, variable, time)`` labelling of the flat observation vector. The same
+  ``(site, variable, time)`` labeling of the flat observation vector. The same
   object must be used to flatten observations into ``y`` and to unstack EKI's
   ``(J, N)`` predictions back into canonical fields, or the two will mislabel
   relative to each other. (Note: this was originally expected to come from an
@@ -34,5 +34,5 @@ Aggregation is a verb the caller applies, never a plotter keyword::
     series_panel(nee, temporal_agg="1D")  # no
 
 That keeps a real subtlety at the call site: quantile-of-daily-mean is not
-daily-mean-of-quantile, and which one is wanted is a modelling choice.
+daily-mean-of-quantile, and which one is wanted is a modeling choice.
 """

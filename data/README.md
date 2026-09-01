@@ -144,7 +144,7 @@ The attribute table in `pts.dbf` holds five fields.
 
 `site_order` distinguishes the two kinds of site in the pool: 1093 named
 locations, being flux towers, research stations and soil cores, and 6907 points
-labelled `weighted_sample` drawn to fill out the sample. Named sites carry values
+labeled `weighted_sample` drawn to fill out the sample. Named sites carry values
 forming a permutation of 1 to 1093; sampled points carry 0.
 
 `cluster` and `landcover` together appear to define the strata the sampled points
@@ -203,14 +203,14 @@ statements agree on this: the [NALCR]
 [dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html),
 and `raw/sites/pts.prj`, which declares WGS 84 and no projected coordinate system.
 Note that `pts.prj` is written in the Esri flavour of WKT and carries no
-`AUTHORITY` token, so a reader that resolves codes strictly will not recognise it
+`AUTHORITY` token, so a reader that resolves codes strictly will not recognize it
 as EPSG:4326 without matching on names.
 
-Site coordinates are cell centres of the approximately 1 km geographic grid on
+Site coordinates are cell centers of the approximately 1 km geographic grid on
 which [NALCR] is also defined: 0.008333 degree, or 30 arcsecond, resolution in
 both latitude and longitude, spanning 179 west to 20 west and 7 north to 85 north
 as a 19080 by 9360 array. Those figures are mutually consistent to the cell:
-(20 - 179) x 120 is exactly 19080 and (85 - 7) x 120 exactly 9360. Cell centres
+(20 - 179) x 120 is exactly 19080 and (85 - 7) x 120 exactly 9360. Cell centers
 lie at
 
     lon = -179 + (lon_idx + 0.5)/120,   lat = 7 + (lat_idx + 0.5)/120
@@ -218,10 +218,10 @@ lie at
 for zero-based indices, which is where the `lon_idx` and `lat_idx` columns of the
 processed site table come from.
 
-All 8000 sites fall on cell centres, but only to within 1.02e-6 degrees, about
+All 8000 sites fall on cell centers, but only to within 1.02e-6 degrees, about
 0.11 m. The residual is consistent with the coordinates having passed through
 32-bit floating point somewhere upstream: site 1's stored latitude is
-82.5458343506 where the exact centre is 82.5458333333. The integer indices are
+82.5458343506 where the exact center is 82.5458333333. The integer indices are
 therefore the exact representation of a site's position and the stored
 coordinates are a lossy rendering of it, which is why both are carried.
 
@@ -335,7 +335,7 @@ columns.
 | `ens01` to `ens25` | float | Twenty-five ensemble members |
 | `ens_mean` | float | Mean of `ens01` to `ens25` |
 
-**Interpretation.** Values are in micromoles of CO2 per square metre per second
+**Interpretation.** Values are in micromoles of CO2 per square meter per second
 (umol CO2 m-2 s-1), a rate, as confirmed by the producer. SIPNET reports net
 ecosystem exchange as a per-timestep total in g C m-2, so ingest must convert
 between the two.
@@ -376,7 +376,7 @@ and any per-site statistic must account for very unequal sample sizes.
 
 > **Note 8.** In about a quarter of rows, all 25 ensemble members are identical:
 > 7225 of 29,225 rows at `US-UMB`, where the median spread elsewhere is 0.116.
-> Since the members differ only in the driver realisation used for gap-filling,
+> Since the members differ only in the driver realization used for gap-filling,
 > this is consistent with a directly measured timestep, which requires no
 > gap-filling, but that has not been confirmed.
 
@@ -510,7 +510,7 @@ translation, together with the grid indices:
 
 The grid indices are the exact representation of a site's position: reconstructing
 `lon` and `lat` from them differs from the stored floats by up to 1.0e-6 degrees,
-which is the departure of the stored values from true cell centres rather than an
+which is the departure of the stored values from true cell centers rather than an
 error in the reconstruction. Ingest writes floats at full round-trip precision and
 asserts that reading them back reproduces the shapefile values exactly, since CSV
 formatting is the one place this table can silently lose information.
@@ -548,7 +548,7 @@ them has not been checked, and ingest should fail loudly on any that do not.
 the sources available. The evidence that they define sampling strata is
 circumstantial but consistent: their cross-tabulation leaves 13 of 48 cells empty
 in a staircase pattern rather than at random, several columns hold near-equal
-counts across clusters, and the 6907 non-named sites are labelled
+counts across clusters, and the 6907 non-named sites are labeled
 `weighted_sample`. Against a geographic reading, mean within-cluster pairwise
 distance runs from 1636 to 3455 km where the pool as a whole averages 3098, so
 cluster 4 is more dispersed than the pool and the grouping cannot be spatial.
@@ -568,7 +568,7 @@ contains no repeated identifiers, which suggests such cases were dropped. If a
 later release retains them, the calibration has to decide what two observation
 series attached to a single model prediction mean: whether both enter the
 likelihood, whether they are averaged first, and how the observation error
-covariance should treat them. This is a modelling question rather than a data one,
+covariance should treat them. This is a modeling question rather than a data one,
 and is unresolved.
 
 **4. Driver ensemble size.** Only one member is available locally, so the size of
@@ -603,7 +603,7 @@ that, the choice is between coverage and a quantified uncertainty. Neither file 
 present in this repository.
 
 **8. Rows with identical ensemble members.** The members differ only in the
-driver realisation used for gap-filling, so a timestep that was measured directly,
+driver realization used for gap-filling, so a timestep that was measured directly,
 and therefore needed no gap-filling, would be expected to take the same value in
 every member. That would make zero spread a usable flag for measured values, which
 matters for the observation error model, since measured and imputed values should
@@ -635,7 +635,7 @@ Because xarray aligns on coordinate values automatically, an incorrect assumptio
 here would combine unrelated members without any error being raised. One
 connection is known: the members of [GAPFILL] are gap-filled series driven by
 successive members of a driver ensemble, so if that is the same ensemble used here,
-net ecosystem exchange member *i* and driver member *i* would share a realisation.
+net ecosystem exchange member *i* and driver member *i* would share a realization.
 Whether it is the same ensemble has not been established.
 
 **13. Site ordering in the processed form.** The 1-8000 identifiers are fixed, but

@@ -3,7 +3,7 @@
 Planned:
 
 * EKI history -- the stacked ``HistoryRecord`` fields versus step: beta ladder,
-  misfit mean/min/max, centre misfit, spread, ESS, ``n_valid``.
+  misfit mean/min/max, center misfit, spread, ESS, ``n_valid``.
 * Prior-versus-posterior marginals, and pairs.
 * Rank / coverage checks.
 * **Per-site parameters as a map** -- :func:`sipnet_calibration.plotting.maps.map_panel`

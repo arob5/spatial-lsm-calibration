@@ -18,7 +18,7 @@ Three fields are correctness, not cosmetics:
   (apparently a rate) on one axis, which fails by orders of magnitude with no
   visual cue. The canonical NEE unit is still an open question.
 * ``center`` -- ``0.0`` for signed fluxes such as NEE, so maps get a diverging
-  colormap centred correctly. A sequential colormap on a signed flux is a
+  colormap centered correctly. A sequential colormap on a signed flux is a
   genuinely misleading figure.
 
 ``sign`` records the direction convention (SIPNET is ``+ = to atmosphere``;

@@ -26,8 +26,8 @@ to replace the default::
 Sites are 8000 irregular points spanning 7-82 deg N and 178 W-20 W, with only
 ~3640 inside a CONUS box, so CONUS-only assumptions are wrong and unprojected
 lon/lat is not acceptable. Extent presets ``CONUS`` / ``NA`` / ``ALASKA``, plus a
-raw ``bbox``. Colour scales must be shareable across a facet grid (common
-``vmin``/``vmax``), centred for signed quantities, and log-scaled for the skewed
+raw ``bbox``. Color scales must be shareable across a facet grid (common
+``vmin``/``vmax``), centered for signed quantities, and log-scaled for the skewed
 carbon pools.
 
 BLOCKED -- do not implement yet

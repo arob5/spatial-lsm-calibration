@@ -20,7 +20,7 @@ REAL_SITES = [
     (8000, -71.42083435058593, 7.012501017252603, 12909, 1),
 ]
 
-# The stored coordinates depart from exact cell centres by up to this much,
+# The stored coordinates depart from exact cell centers by up to this much,
 # consistent with 32-bit storage upstream. See SITE_GRID's documentation.
 STORED_COORD_TOLERANCE_DEG = 1.02e-6
 
@@ -58,12 +58,12 @@ class TestGridGeometry:
 
 
 class TestIndexToLonLat:
-    def test_first_cell_centre_is_half_a_step_in(self):
+    def test_first_cell_center_is_half_a_step_in(self):
         lon, lat = SITE_GRID.index_to_lonlat(0, 0)
         assert lon == pytest.approx(-179.0 + 0.5 / 120)
         assert lat == pytest.approx(7.0 + 0.5 / 120)
 
-    def test_last_cell_centre_is_half_a_step_short_of_the_far_edge(self):
+    def test_last_cell_center_is_half_a_step_short_of_the_far_edge(self):
         lon, lat = SITE_GRID.index_to_lonlat(SITE_GRID.n_lon - 1, SITE_GRID.n_lat - 1)
         assert lon == pytest.approx(-20.0 - 0.5 / 120)
         assert lat == pytest.approx(85.0 - 0.5 / 120)
@@ -118,11 +118,11 @@ class TestLonLatToIndex:
         assert isinstance(j, int) and isinstance(k, int)
 
     def test_rejects_a_point_that_is_not_on_the_grid(self):
-        # a cell edge rather than a centre: half a step away from any centre
+        # a cell edge rather than a center: half a step away from any center
         with pytest.raises(ValueError, match="not on the grid"):
             SITE_GRID.lonlat_to_index(-179.0, 7.0)
 
-    def test_tolerance_is_honoured(self):
+    def test_tolerance_is_honored(self):
         lon, lat = SITE_GRID.index_to_lonlat(100, 100)
         nudged = lon + 5e-4
         with pytest.raises(ValueError, match="not on the grid"):
@@ -137,7 +137,7 @@ class TestLonLatToIndex:
             SITE_GRID.lonlat_to_index(lon, lat - 1.0)
 
     def test_the_stored_offset_does_not_shift_any_index(self):
-        # every site is within STORED_COORD_TOLERANCE_DEG of a centre, which is
+        # every site is within STORED_COORD_TOLERANCE_DEG of a center, which is
         # three orders of magnitude below half a cell, so rounding is unambiguous
         half_cell = 0.5 / SITE_GRID.cells_per_degree
         assert STORED_COORD_TOLERANCE_DEG < half_cell / 100

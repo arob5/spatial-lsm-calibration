@@ -48,6 +48,15 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
   the AGB/LAI constraints are ragged over site x year x variable.
 
+## Writing conventions
+
+- **American English spelling throughout**: `center`, not `centre`; `color`,
+  `behavior`, `labeled`, `modeling`, `meter`, `organize`, `recognize`,
+  `normalize`, `summarize`. This applies to prose, code comments, docstrings,
+  identifiers, commit messages, and issue and pull-request text alike.
+- Wrap prose in Markdown and docstrings at roughly 80 columns, matching the
+  surrounding file.
+
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
