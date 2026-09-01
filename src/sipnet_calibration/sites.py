@@ -1,8 +1,9 @@
 """The site table and site selection.
 
-The site table is the join of ``data/raw/site_ids.csv`` (8000 sites: id, lon,
-lat, name), the PFT assignment csv, and ``data/raw/site_id_map.csv`` (185
-Ameriflux ``Site_ID`` -> integer site id, exact matching).
+The site table is read from ``data/processed/sites/sites.csv``, produced by
+``scripts/ingest_sites.py`` from the point shapefile in ``data/raw/sites/``, the
+PFT assignment table, and ``data/site_id_map.csv`` (Ameriflux ``Site_ID`` ->
+integer site id, exact matching). See ``data/README.md`` for the column set.
 
 ``select_sites`` is the most-reused operation in the project and is deliberately
 not a plotting concern: subsetting by PFT, bounding box, data availability, or

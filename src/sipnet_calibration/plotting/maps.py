@@ -40,11 +40,10 @@ BLOCKED -- do not implement yet
    locally. The leading option is to implement the Albers Equal Area forward
    transform directly (closed form, ~30 lines, testable against published
    reference coordinates) plus a vendored Natural Earth GeoJSON.
-2. **The source projection of the site coordinates is not yet recorded.** The
-   ``lon``/``lat`` in ``data/site_ids.csv`` were produced under a specific
-   projection; an equal-area replot must start from the correct source CRS, and
-   assuming plain WGS84 would be subtly wrong in a way that is invisible at a
-   glance.
+2. **The display projection is undecided.** The source CRS of the site
+   coordinates is settled and recorded in ``data/site_crs.json``: geographic,
+   WGS 84, on a 1/120 degree grid. What remains open is which projection to draw
+   in, which is a separate choice from how the coordinates are defined.
 
 ``basemap()`` in :mod:`sipnet_calibration.plotting.primitives` is the seam for
 both, so neither blocks the renderers or the rest of the layer.

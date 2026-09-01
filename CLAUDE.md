@@ -43,8 +43,8 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Open the IC netCDFs with `decode_times=False` (README note 5).
 - Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
-- Site labels come from `data/pts.dbf` (`site_names`). The `site_name` column of
-  `data/site_ids.csv` is misordered relative to its own coordinates; do not use it.
+- The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
+  `data/processed/sites/sites.csv`. There is no other site source.
 - Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
   the AGB/LAI constraints are ragged over site x year x variable.
 

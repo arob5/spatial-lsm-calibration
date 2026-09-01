@@ -67,11 +67,11 @@ ensemble member.
 
 ```
 data/
-  pts.shp, .shx, .dbf, .prj     site table as a point shapefile (authoritative)
-  site_ids.csv                  site table, CSV extract
   site_id_map.csv               Ameriflux identifier map
   site_crs.json                 coordinate reference system
   raw/
+    sites/                      site table, tracked in version control
+      pts.shp, pts.shx, pts.dbf, pts.prj, pts.cpg
     drivers/
       ERA5_<site_id>_<member>/ERA5.<member>.2012-01-01.2024-12-31.clim
     initial_conditions/
@@ -81,82 +81,49 @@ data/
       sda_8k_site_rdata/obs.mean.Rdata
       sda_8k_site_rdata/obs.cov.Rdata
   processed/                    ingest output, created by the ingest scripts
+    sites/sites.csv
+    ic.nc
+    agb_lai.nc
+    nee.zarr/
+    drivers.zarr/
 ```
 
 > **Note 1.** The two per-site directory templates are inferred from a single
 > example of each rather than confirmed across all 8000 sites.
 
-The files at the top level are tracked in version control, since they are small
-and are the keys every other dataset joins on. Neither `raw/` nor
-`processed/` is tracked. Files under `raw/` are treated as read-only; all
-conversion happens on the way into `processed/`, which is regenerable and absent
-on a fresh clone.
+Files under `raw/` are treated as read-only; all conversion happens on the way
+into `processed/`, which is regenerable and absent on a fresh clone. Neither
+directory is tracked in version control, with one exception: `raw/sites/` holds
+the site shapefile, which is small, is a primary source rather than a pipeline
+output, and is the one input without which the repository carries no site
+information at all. `site_id_map.csv` and `site_crs.json` are tracked for the
+same reason.
 
 ---
 
 ## Site metadata
 
-### `pts.shp` and companions
+The site pool is defined by a point shapefile under `raw/sites/`, described here
+alongside the Ameriflux identifier map. The pool and its identifiers were defined
+for the model runs underlying [NALCR] and are shared with collaborators' files, so
+the identifiers are treated as fixed and are never renumbered.
 
-The site table as an ESRI point shapefile: 8000 `Point` records in `pts.shp`,
-with `pts.shx`, `pts.dbf` and `pts.prj` alongside. This is the authoritative
-version of the table. Record *N* corresponds to site identifier *N*.
+### `raw/sites/pts.shp` and companions
 
-Geometry is in geographic coordinates, and `pts.prj` declares WGS 84 with the
-GRS-consistent WGS-1984 spheroid, matching what the [NALCR] guide documents.
-The coordinates agree with `site_ids.csv` to within 4.1e-13 degrees, which is
-decimal truncation in the CSV rather than a real difference.
+The site table as an ESRI point shapefile: 8000 `Point` records in `pts.shp`, with
+`pts.shx`, `pts.dbf`, `pts.prj` and `pts.cpg` alongside. Record *N* corresponds to
+site identifier *N*. This is the only site source in the repository, and the only
+file under `raw/` that is tracked in version control: it is small, it is a primary
+source rather than a pipeline output, and without it the repository carries no site
+information at all.
 
-The attribute table in `pts.dbf` holds five fields:
-
-| Field | Type | Description |
-|---|---|---|
-| `site_id` | numeric | Site identifier, 1-8000, in record order |
-| `site_names` | character | Site label; see below |
-| `site_order` | numeric | 0 for the 6907 sampled filler points, 1-1093 for the named sites |
-| `cluster` | numeric | Six classes; see Note 2 |
-| `landcover` | numeric | Eight classes; see Note 2 |
-
-`site_order` separates the two kinds of site in the pool: 1093 named locations —
-flux towers, research stations, soil cores — and 6907 points labelled
-`weighted_sample`, which carry `site_order` 0. Among the named sites the values
-are a permutation of 1 to 1093.
-
-**Use `site_names` from this file, not the `site_name` column of
-`site_ids.csv`.** The two contain the same 725 distinct labels but in different
-orders, and only the shapefile's ordering is consistent with the coordinates.
-Every geographic check passes here and fails there: the 100 `soil_core_alaska`
-points fall between 60.7 and 65.6 north, the four `Hawaii` points between 19.8
-and 22.1 north and 159.5 and 155.7 west, and all 182 labels embedding a country
-code sit within their country's latitude range. Spot checks resolve exactly, for
-instance Chestnut Ridge to 35.929 north and 84.329 west and BOREAS Old Jack Pine
-to 53.913 north and 104.696 west.
-
-> **Note 2.** The meaning of the `cluster` and `landcover` fields is not
-> established. `landcover` is a third land-cover classification for these sites,
-> distinct from the two plant functional type tables of Note 11.
-
-### `site_ids.csv`
-
-8000 rows, one per site.
-
-| Column | Type | Description |
-|---|---|---|
-| `site_id` | integer | Site identifier, 1-8000 |
-| `lon` | float | Longitude, degrees east |
-| `lat` | float | Latitude, degrees north |
-| `site_name` | string | Unreliable; use `site_names` from `pts.dbf` instead |
-
-The site pool and its identifiers were defined for the model runs underlying
-[NALCR], and are shared with collaborators' files, so they are treated as fixed
-and are never renumbered. Rows are ordered by descending latitude.
-
-Coordinates span -178.754 to -20.013 in longitude and 7.013 to 82.546 in
-latitude. The extremes are site 731 in the western Aleutians, site 1 in northeast
-Greenland, and site 8000 at 7.01 degrees north in northern South America. 3640 of
-the 8000 sites fall inside a conterminous-US bounding box of 24-50 north and
-125-66 west, so analyses restricted to that region use a little under half the
-pool. The rest are distributed as follows.
+Geometry is in geographic coordinates on the WGS 84 datum, declared by `pts.prj`.
+Records are ordered by descending latitude. Coordinates span -178.754 to -20.013
+in longitude and 7.013 to 82.546 in latitude; the extremes are site 731 in the
+western Aleutians, site 1 in northeast Greenland, and site 8000 at 7.01 north in
+northern South America. 3640 of the 8000 sites fall inside a conterminous-US
+bounding box of 24-50 north and 125-66 west, so analyses restricted to that region
+use a little under half the pool. The remainder are distributed as follows.
 
 | Region | Sites |
 |---|---|
@@ -167,12 +134,40 @@ pool. The rest are distributed as follows.
 | west of 140 | 1289 |
 | east of 50 west | 31 |
 
-The `site_name` column of this file is not aligned with the coordinates in its
-own row and should not be used; take labels from `pts.dbf` instead. The fault is
-present in `site_info.Rdata`, from which this CSV was extracted, and not
-introduced by the extraction: none of the 100 rows labelled `soil_core_alaska`
-lies north of 36.0 in either. `site_id`, `lon` and `lat` are unaffected and agree
-with the shapefile.
+The attribute table in `pts.dbf` holds five fields.
+
+| Field | Type | Description |
+|---|---|---|
+| `site_id` | numeric | Site identifier, 1-8000, in record order |
+| `site_names` | character | Site label |
+| `site_order` | numeric | 0 for sampled points, 1-1093 for named sites |
+| `cluster` | numeric | Sampling stratum, six classes; see Note 2 |
+| `landcover` | numeric | Land cover class, eight classes; see Note 2 |
+
+`site_order` distinguishes the two kinds of site in the pool: 1093 named
+locations, being flux towers, research stations and soil cores, and 6907 points
+labelled `weighted_sample` drawn to fill out the sample. Named sites carry values
+forming a permutation of 1 to 1093; sampled points carry 0.
+
+`cluster` and `landcover` together appear to define the strata the sampled points
+were drawn from. Their cross-tabulation populates 35 of 48 cells, and the empty
+cells form a staircase rather than being scattered: clusters 1 to 3 span all eight
+land cover classes, cluster 4 lacks class 5, cluster 5 holds only classes 1, 3 and
+8, and cluster 6 only class 1. Several columns hold near-equal counts across
+clusters, land cover class 3 standing at 40 or 41 in each of clusters 1 to 5,
+which is the signature of a per-stratum sampling target truncated where too few
+candidate cells were available.
+
+`cluster` is not a geographic partition. Mean within-cluster pairwise distance
+ranges from 1636 to 3455 km against 3098 km for the pool as a whole, so cluster 4
+is more dispersed than the pool average. Whatever was clustered was not location.
+Cluster 6 is the one exception, confined to 25.8-49.1 north and 124-76 west, and
+to a single land cover class. `landcover`, by contrast, behaves as a land cover
+classification should: class 3 appears only between 42.8 and 69.0 north, class 7
+is spatially compact, and class 6 spans the full latitude range.
+
+> **Note 2.** The variables underlying `cluster`, and the classification scheme
+> behind `landcover`, are not documented in the available sources.
 
 ### `site_id_map.csv`
 
@@ -185,8 +180,8 @@ exact match.
 | `index` | integer | Corresponding `site_id` |
 
 All mapped sites lie within 25.35-47.16 north and 122.33-68.74 west, so the map
-covers the conterminous US only. Because site identifiers are ordered by
-descending latitude, the mapped range 4102-7418 is a contiguous latitude band.
+covers the conterminous US only. Because site identifiers run in descending
+latitude, the mapped range 4102-7418 is a contiguous latitude band.
 
 This file and the [GAPFILL] net ecosystem exchange file do not cover the same
 sites: the NEE file contains 209 Ameriflux sites and this map contains 185, with
@@ -439,7 +434,7 @@ writes to `processed/`, and leaves its input unmodified. Run a script with
 
 | Script | Reads | Writes |
 |---|---|---|
-| `ingest_sites.py` | `site_ids.csv`, `site_id_map.csv`, plant functional type table | `processed/sites.parquet` |
+| `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv`, plant functional type table | `processed/sites/sites.csv` |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
 | `ingest_constraints.py` | R export of `obs.mean` and `obs.cov` | `processed/agb_lai.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -471,7 +466,7 @@ Formats are chosen according to the shape of each product.
 
 | Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
-| `sites.parquet` | Parquet | table | negligible |
+| `sites/sites.csv` | CSV | table | ~1 MB |
 | `ic.nc` | netCDF | `(member, site)` | 19 MB |
 | `agb_lai.nc` | netCDF | `(site, time)` per variable, plus covariances | negligible |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
@@ -480,7 +475,27 @@ Formats are chosen according to the shape of each product.
 Zarr is used for the arrays indexed by member, site and time because it maps
 directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
 reads only the requested sites, with no reshaping step. Lazy reads are backed by
-dask.
+dask. The site table is CSV instead because it is small, tabular and read by
+people as often as by code.
+
+`sites/sites.csv` carries every field of the shapefile, so that nothing is lost in
+translation, together with the grid indices:
+
+| Column | Type | Description |
+|---|---|---|
+| `site_id` | integer | Site identifier, 1-8000 |
+| `lon`, `lat` | float | Coordinates, written at 17 significant digits |
+| `lon_idx`, `lat_idx` | integer | Zero-based indices on the 1/120 degree grid |
+| `site_name` | string | From the shapefile's `site_names` |
+| `site_order` | integer | 0 for sampled points, 1-1093 for named sites |
+| `cluster`, `landcover` | integer | Sampling stratum and land cover class |
+
+The grid indices are the exact representation of a site's position: reconstructing
+`lon` and `lat` from them differs from the stored floats by up to 1.0e-6 degrees,
+which is the departure of the stored values from true cell centres rather than an
+error in the reconstruction. Ingest writes floats at full round-trip precision and
+asserts that reading them back reproduces the shapefile values exactly, since CSV
+formatting is the one place this table can silently lose information.
 
 The following conventions apply to every product.
 
@@ -511,14 +526,21 @@ templates are inferred from `ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim` and
 `initial_conditions/1/IC_site_1_1.nc`. Whether all 8000 site directories follow
 them has not been checked, and ingest should fail loudly on any that do not.
 
-**2. Meaning of the `cluster` and `landcover` fields.** Neither is documented.
-`cluster` takes six values, distributed 1740, 1848, 2250, 1416, 407 and 339 across
-the pool, which is consistent with a spatial or covariate-based grouping used when
-the sample was drawn, but that is a guess. `landcover` takes eight values and is a
-third land-cover classification for these sites, alongside the 16-class and 3-class
-plant functional type tables of Note 11; which of the three is appropriate for
-calibration, and whether `landcover` is derived from either, is open. Both fields
-arrived with the shapefile and are not present in `site_info.Rdata`.
+**2. Meaning of the `cluster` and `landcover` fields.** Neither is documented in
+the sources available. The evidence that they define sampling strata is
+circumstantial but consistent: their cross-tabulation leaves 13 of 48 cells empty
+in a staircase pattern rather than at random, several columns hold near-equal
+counts across clusters, and the 6907 non-named sites are labelled
+`weighted_sample`. Against a geographic reading, mean within-cluster pairwise
+distance runs from 1636 to 3455 km where the pool as a whole averages 3098, so
+cluster 4 is more dispersed than the pool and the grouping cannot be spatial.
+
+The reanalysis preprint describes the pool as "8,000 pre-selected 1km²
+locations", which suggests the selection procedure is documented in earlier work
+or in supplementary material rather than in that paper. `landcover` resolves eight
+classes, fewer than the seventeen of the IGBP scheme, so it is likely an
+aggregation. Confirming both would take one question to the group that produced
+the site pool.
 
 **3. Sites resolving to the same model identifier.** The 8000-site pool is a
 subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
@@ -584,9 +606,9 @@ any object within it.
 
 **11. Choice of plant functional type table.** Two tables exist for the 8000
 sites, distinguishing 16 and 3 classes respectively, and neither is present in
-this repository. The `landcover` field of `pts.dbf` is a third classification with
-eight classes, and is present. Which to use, and how the three relate, is open;
-see also Note 2.
+this repository. The `landcover` field of the site shapefile is a third
+classification, with eight classes, and is present. Which to use, and how the
+three relate, is open; see also Note 2.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial-condition member *i* and the calibration ensemble were drawn jointly

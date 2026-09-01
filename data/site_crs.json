@@ -1,8 +1,8 @@
 {
   "_comment": [
-    "Coordinate reference system and grid definition for the `lon`/`lat` columns of",
-    "data/site_ids.csv. This file documents a PROPERTY OF THE RAW INPUT DATA: the CRS",
-    "in which the site coordinates were given to us.",
+    "Coordinate reference system and grid definition for the site coordinates in",
+    "data/raw/sites/pts.shp. This file documents a PROPERTY OF THE RAW INPUT DATA: the",
+    "CRS in which the site coordinates were given to us.",
     "",
     "It deliberately does NOT specify a map projection for plotting. The display",
     "projection is our choice, is not yet decided (see repo issue #4), and will be",
@@ -10,12 +10,9 @@
     "for what the upstream product used, recorded as context only."
   ],
   "applies_to": {
-    "file": "data/site_ids.csv",
-    "columns": [
-      "lon",
-      "lat"
-    ],
-    "n_rows": 8000
+    "file": "data/raw/sites/pts.shp",
+    "geometry": "8000 Point records",
+    "derived_product": "data/processed/sites/sites.csv (columns lon, lat, lon_idx, lat_idx)"
   },
   "source_crs": {
     "authority_code": "EPSG:4326",
@@ -54,9 +51,19 @@
       "n_lat": 9360
     },
     "cell_centre_formula": {
-      "lon": "-179.0 + (j + 0.5)/120  for j = 0 .. 19079",
-      "lat": "7.0 + (k + 0.5)/120  for k = 0 .. 9359",
-      "_note": "Stated as a set of centre coordinates rather than an array indexing convention: the row orientation of the source GeoTIFFs has not been inspected, so no north-up/south-up claim is made here."
+      "lon": "-179.0 + (lon_idx + 0.5)/120  for lon_idx = 0 .. 19079",
+      "lat": "7.0 + (lat_idx + 0.5)/120  for lat_idx = 0 .. 9359",
+      "_note": "lon_idx and lat_idx are the columns of that name in the processed site table, and are the exact representation of a site's position; the stored floats depart from true cell centres by up to 1.0e-6 degrees. Stated as a set of centre coordinates rather than an array indexing convention: the row orientation of the source GeoTIFFs has not been inspected, so no north-up/south-up claim is made here.",
+      "observed_index_ranges": {
+        "lon_idx": [
+          29,
+          19078
+        ],
+        "lat_idx": [
+          1,
+          9065
+        ]
+      }
     },
     "approximate_metric_spacing_m": {
       "_note": "30 arcsec is near-constant in latitude but shrinks with cos(lat) in longitude. The grid is NOT equal-area across this domain.",
@@ -71,7 +78,7 @@
     "checked_on": "2026-08-31",
     "grid_alignment": {
       "claim": "All 8000 site coordinates lie on cell centres of the 1/120-degree lattice.",
-      "method": "Computed (lat, lon) index residuals from the nearest cell centre for all 8000 rows of data/site_ids.csv.",
+      "method": "Computed (lat, lon) index residuals from the nearest cell centre for all 8000 records of data/raw/sites/pts.shp, parsed directly from the .shp binary.",
       "result": "8000 of 8000 rows match, with maximum deviation 1.02e-06 degrees (about 0.11 m).",
       "status": "VERIFIED"
     },
@@ -94,9 +101,8 @@
       "status": "CONFIRMED by two independent statements"
     },
     "shapefile_agreement": {
-      "claim": "data/pts.shp holds the same coordinates as data/site_ids.csv, in the same order.",
-      "method": "Parsed the .shp binary directly (no geospatial library is installable here) and compared element-wise against the CSV.",
-      "result": "8000 point records; maximum difference 4.1e-13 degrees in longitude and 5.7e-14 in latitude, attributable to decimal truncation in the CSV. Both carry the same ~1.0e-6 degree departure from exact cell centres.",
+      "claim": "The site shapefile and the site table extracted from site_info.Rdata held identical coordinates.",
+      "result": "Compared element-wise before site_info.Rdata was retired: maximum difference 4.1e-13 degrees in longitude and 5.7e-14 in latitude, attributable to decimal truncation in the CSV extract. The shapefile is now the sole source; this record is kept only to document that no coordinate change accompanied the switch.",
       "status": "VERIFIED"
     }
   },

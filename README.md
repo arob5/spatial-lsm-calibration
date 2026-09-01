@@ -17,8 +17,8 @@ exists here today:
 
 - the `src/sipnet_calibration/` module skeleton, with contract docstrings and
   no implementation yet;
-- site metadata for the 8000-site pool (`data/site_ids.csv`) and the Ameriflux
-  ID map (`data/site_id_map.csv`);
+- site metadata for the 8000-site pool, as a point shapefile under
+  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
 - a single site's drivers and initial conditions pulled down locally as a
   format reference.
 
@@ -84,7 +84,7 @@ src/sipnet_calibration/
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
-data/raw/                 # symlinked from storage, never edited
+data/raw/                 # inputs, never edited; only raw/sites/ is tracked
 data/processed/           # ingest output == the canonical format used throughout
 tests/
 ```
@@ -99,10 +99,9 @@ Data formats, provenance, and the coordinate reference system are documented in
   paths, algorithm settings.
 - **Heavy computation lives in scripts, not notebooks.** Notebooks are for
   exploration and plotting, and load results from disk.
-- **Raw inputs are never edited.** `data/raw/` is symlinked from storage; ingest
-  scripts convert it to `data/processed/`, whose format *is* the canonical
-  format used by the rest of the project — including as the input format for
-  plotting.
+- **Raw inputs are never edited.** Ingest scripts convert `data/raw/` to
+  `data/processed/`, whose format *is* the canonical format used by the rest of
+  the project — including as the input format for plotting.
 - **Calibration runs are tagged** `c_<task_id>_<run_name>_<run_index>`, where
   `c` marks a calibration run, `<task_id>` names the calibration task,
   `<run_name>` a run within it, and `<run_index>` increments on re-runs.
