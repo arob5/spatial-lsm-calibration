@@ -1,7 +1,7 @@
 [project]
-name = "spatial-lsm-calibration"
+name = "sipnet-calibration"
 version = "0.1.0"
-description = "Bayesian parameter estimation demo for the SIPNET land-surface model"
+description = "Scalable Bayesian multi-site parameter calibration for the SIPNET land-surface model"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -9,7 +9,26 @@ dependencies = [
     "pyens",
     "numpy>=1.24",
     "pandas>=2.0",
+    # Canonical field container: xr.DataArray with dims subset of (member, site, time).
+    "xarray>=2024.1",
+    # Non-standard-calendar netCDF decoding. Note this does NOT rescue the IC
+    # files: their units attribute is a literal unsubstituted template,
+    # "days since [year]-01-01 00:00:00 UTC", which no calendar library can
+    # parse. The IC adapter must use decode_times=False.
+    "cftime>=1.6",
+    "h5netcdf>=1.3",
+    # Processed store for the (member, site, time) blocks; open_zarr().sel(site=...)
+    # is the adapter, with no reshape step. dask is not optional here: chunked
+    # (i.e. lazy per-site) reads are the entire reason for choosing zarr.
+    "zarr>=2.17",
+    "dask[array]>=2024.1",
+    "scipy>=1.11",
     "matplotlib>=3.7",
+    # TODO(maps): projections for the spatial panels. Sites span 7-82 deg N, so
+    # unprojected lon/lat is not acceptable. cartopy 0.25 and pyproj 3.7 both
+    # lack macOS-arm64 + cp314 wheels and fall back to a source build needing
+    # system PROJ/GEOS, so the dependency is unresolved -- see the maps.py
+    # docstring. Linux (SCC) has cp314 wheels, so this is a local-only problem.
     "arviz>=0.13",
     "jax[cpu]>=0.4",
     "jupyter",
@@ -18,12 +37,17 @@ dependencies = [
     "nbconvert",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
 [tool.uv.sources]
 pysipnet = { path = "../pySIPNET", editable = true }
 pyens = { path = "../PyEns", editable = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["sipnet_calibration"]
+packages = ["src/sipnet_calibration"]
 
 [build-system]
 requires = ["hatchling"]
