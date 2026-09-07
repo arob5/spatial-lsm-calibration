@@ -27,10 +27,11 @@ library default.
 precision is lost: the retired ``data/site_ids.csv`` differed from the shapefile
 by up to 4.1e-13 degrees for exactly this reason. So the output is read back and
 compared **bitwise** against the values read from the shapefile before the
-script reports success. That check earns its place: it caught the natural
-choice of ``float_format="%.17g"`` moving 1632 of the 8000 longitudes, because
-pandas' default CSV parser does not read 17-digit strings back exactly. See
-:data:`FLOAT_FORMAT`.
+script reports success. That check earns its place: it caught pandas' default
+CSV parser reading 1632 of the 8000 longitudes back inexactly. The fix was the
+*reader* -- ``float_precision="round_trip"`` in
+:func:`sipnet_calibration.sites.load_sites` -- not the write format, which is
+inexact under the default parser either way. See :data:`FLOAT_FORMAT`.
 
 Asserts before writing, each in a named check with its own message:
 
@@ -104,19 +105,24 @@ N_SITES = 8000
 NAMED_SITE_COUNT = 1093
 
 #: ``float_format`` for the coordinate columns: ``None``, meaning pandas' default
-#: of ``repr``, which is the shortest decimal string that reads back as the same
-#: float64.
+#: of ``repr``, the shortest decimal string that reads back as the same float64.
 #:
-#: ``"%.17g"`` is the obvious alternative and it is **wrong here**, which is
-#: worth recording because it looks safer. 17 significant digits do round-trip
-#: through Python's ``float()``, but not through the C parser
-#: ``pandas.read_csv`` uses by default: writing -93.2875010172526 as
-#: ``-93.287501017252595`` and reading it back with default settings yields
-#: -93.28750101725261, off by 1.4e-14. 1632 of the 8000 longitudes moved that
-#: way. So the coordinates are written short and exact, and
-#: :func:`sipnet_calibration.sites.load_sites` additionally reads with
-#: ``float_precision="round_trip"`` so that neither side relies on the other's
-#: formatting.
+#: **The write format is not what makes the round trip exact; the read setting
+#: is.** The C parser ``pandas.read_csv`` uses by default is inexact for both
+#: candidates, so writing shorter does not rescue it:
+#:
+#: =================  ====================  ==========================
+#: written as         default parser        ``float_precision`` set
+#: =================  ====================  ==========================
+#: ``repr`` (this)    1496 of 8000 wrong    exact
+#: ``"%.17g"``        1632 of 8000 wrong    exact
+#: =================  ====================  ==========================
+#:
+#: ``repr`` is kept because it is shortest and is exact by construction under
+#: Python's own ``float()``, so the file is right for any reader that parses
+#: correctly. What guarantees this project's round trip is
+#: :func:`sipnet_calibration.sites.load_sites` reading with
+#: ``float_precision="round_trip"``; ``check_csv_round_trip`` is what proves it.
 FLOAT_FORMAT = None
 
 class IngestError(Exception):
@@ -525,8 +531,6 @@ def check_site_order_is_a_permutation(site_order: np.ndarray) -> None:
             f"1..{NAMED_SITE_COUNT}: {named.size} non-zero values, "
             f"{np.unique(named).size} distinct, max {named.max() if named.size else 0}"
         )
-    if np.any(site_order < 0):
-        raise IngestError("site_order holds negative values")
 
 
 def check_index_pairs_are_distinct(lon_idx: np.ndarray, lat_idx: np.ndarray) -> None:
@@ -560,13 +564,12 @@ def check_ameriflux_map_is_usable(mapping: dict[int, str], *, site_ids: np.ndarr
         )
 
 
-def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> pd.DataFrame:
+def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> None:
     """Fail unless reading the CSV back reproduces the table it was written from.
 
     ``lon`` and ``lat`` are compared **bitwise** rather than approximately: this
     is the assertion the script exists for, since CSV formatting is the one
-    place this table can silently lose information. Returns the frame that was
-    read back, so a caller can report on the file rather than on memory.
+    place this table can silently lose information.
     """
     read_back = load_sites(out_path)
     if list(read_back.columns) != list(written.columns):
@@ -608,7 +611,6 @@ def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> pd.DataFrame:
                 f"{differing.size} value(s) differ, first at row {index}, "
                 f"{original[index]!r} written against {returned[index]!r} read back"
             )
-    return read_back
 
 
 if __name__ == "__main__":

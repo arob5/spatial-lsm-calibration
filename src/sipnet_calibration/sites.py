@@ -12,8 +12,8 @@ PFT labelings can be applied to the same site pool. Labelings are their own prod
 ``processed/labelings/``, keyed on ``site_id``, and a caller joins one on before
 selecting.
 
-``select_sites`` is a site selection helper: subsetting by bounding box, by an
-arbitrary predicate or to a random sample.
+``select_sites`` is a site selection helper: subsetting by identifier, by
+bounding box, by an arbitrary predicate, or to a random sample.
 
 Note the sites are 8000 *irregular points* spanning 7-82 deg N and
 178 W-20 W. Only ~3640 fall inside a CONUS bounding box.
@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 __all__ = [
+    "DATA_ROOT_ENV_VAR",
     "Grid",
     "SITE_COLUMNS",
     "SITE_COLUMN_DTYPES",
@@ -235,9 +236,14 @@ SITE_COLUMNS = (
     "ameriflux_site_id",
 )
 
-#: Dtype per column. The integer widths are the narrowest that hold the data,
-#: and the two identifier columns are read as text rather than left to
-#: inference, so that a site named ``NA`` stays a name.
+#: Dtype per column, matching the site-table schema in the processed-format
+#: plan. ``lon_idx`` genuinely needs ``int32``; the other integer columns would
+#: fit ``int16`` and are widened to match it.
+#:
+#: The two text columns are declared ``str`` so that nothing is inferred from
+#: their content. Note that this alone does **not** save the eight sites named
+#: ``NA`` -- ``dtype=str`` still yields ``nan`` for them. What saves them is
+#: ``keep_default_na=False`` in :func:`load_sites`.
 SITE_COLUMN_DTYPES = {
     "site_id": np.int32,
     "lon": np.float64,
@@ -291,7 +297,8 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     FileNotFoundError
         If the file is absent, with the command that produces it.
     ValueError
-        If the columns are not the expected set, or ``site_id`` is not unique.
+        If the columns are not the expected set, the file holds no rows, or
+        ``site_id`` is not unique, not ascending, or below 1.
 
     Notes
     -----
@@ -351,8 +358,9 @@ def select_sites(
         A site table, from :func:`load_sites`, or one with extra columns joined
         on. Never modified.
     ids:
-        Site identifiers to keep. The result is in the order given, every identifier
-        must exist.
+        Site identifiers to keep; every identifier must exist. The result is in
+        the order given, unless *sample* is also passed, which re-sorts by
+        ``site_id``.
     bbox:
         ``(west, south, east, north)`` in degrees, edges included. Longitudes are
         negative throughout the pool, so ``(-125, 24, -66, 50)`` is the
@@ -378,8 +386,9 @@ def select_sites(
     KeyError
         If *ids* names a site the table does not hold.
     ValueError
-        If *bbox* is malformed, *where* does not return a usable mask, or
-        *sample* exceeds the number of rows available.
+        If *ids* holds duplicates, *bbox* is malformed, *where* does not return
+        a usable mask, or *sample* is negative or exceeds the number of rows
+        available.
 
     Notes
     -----

@@ -70,7 +70,9 @@ class TestIndexToLonLat:
 
     def test_scalars_in_scalars_out(self):
         lon, lat = SITE_GRID.index_to_lonlat(5, 7)
-        assert isinstance(lon, float) and isinstance(lat, float)
+        # `type(...) is float`, not isinstance: np.float64 is a float subclass,
+        # so isinstance would pass without the conversion this asserts.
+        assert type(lon) is float and type(lat) is float
 
     def test_arrays_in_arrays_out(self):
         lon, lat = SITE_GRID.index_to_lonlat([0, 1, 2], [0, 1, 2])
@@ -319,19 +321,44 @@ class TestCoordinateRoundTrip:
         for value in ingested["table"]["lon"].to_numpy().tolist():
             assert float(repr(value)) == value
 
-    def test_seventeen_significant_digits_would_not_survive_the_default_parser(
-        self, tmp_path
+    @pytest.mark.parametrize("float_format", [None, "%.17g"])
+    def test_the_reader_setting_is_what_makes_the_round_trip_exact(
+        self, tmp_path, float_format
     ):
-        # Records why FLOAT_FORMAT is None. If a future pandas makes the fast
-        # parser exact this test fails, which is the right way to find out.
+        # The default parser is inexact for BOTH write formats -- 1496 of 8000
+        # longitudes from repr, 1632 from %.17g -- and float_precision fixes
+        # both. So the guarantee lives in load_sites' reader setting, not in
+        # FLOAT_FORMAT. If a future pandas makes the default parser exact, this
+        # fails, which is the right way to find out.
         lon, _ = _shapefile_coordinates()
-        frame = pd.DataFrame({"lon": lon})
-        path = tmp_path / "wide.csv"
-        frame.to_csv(path, index=False, float_format="%.17g")
+        path = tmp_path / "coords.csv"
+        pd.DataFrame({"lon": lon}).to_csv(
+            path, index=False, float_format=float_format
+        )
         loose = pd.read_csv(path)["lon"].to_numpy()
         exact = pd.read_csv(path, float_precision="round_trip")["lon"].to_numpy()
-        assert not np.array_equal(loose, lon)
+        assert int((loose != lon).sum()) > 1000
         assert np.array_equal(exact, lon)
+
+    def test_load_sites_reads_exactly_whatever_format_was_written(self, tmp_path):
+        # The claim above, through the real loader rather than pandas directly.
+        lon, _ = _shapefile_coordinates()
+        for float_format in (None, "%.17g"):
+            path = tmp_path / f"t{float_format}.csv"
+            frame = pd.DataFrame({
+                "site_id": np.arange(1, len(lon) + 1, dtype=np.int32),
+                "lon": lon,
+                "lat": lon,
+                "lon_idx": np.zeros(len(lon), dtype=np.int32),
+                "lat_idx": np.zeros(len(lon), dtype=np.int32),
+                "site_name": ["x"] * len(lon),
+                "site_order": np.zeros(len(lon), dtype=np.int32),
+                "cluster": np.ones(len(lon), dtype=np.int8),
+                "landcover": np.ones(len(lon), dtype=np.int8),
+                "ameriflux_site_id": [""] * len(lon),
+            })[list(SITE_COLUMNS)]
+            frame.to_csv(path, index=False, float_format=float_format)
+            assert np.array_equal(load_sites(path)["lon"].to_numpy(), lon)
 
     def test_grid_indices_resolve_the_stored_coordinates(self, ingested):
         table = ingested["table"]
@@ -383,14 +410,28 @@ class TestTextRoundTrip:
         with shapefile.Reader(str(SHAPEFILE), encoding="latin-1") as reader:
             wrong = reader.record(7175)["site_names"]
         assert correct == UTF8_SITES[7176]
-        assert wrong != correct
-        assert wrong.isascii() is False or wrong == "RayÃ³n (MX-Ray)"
+        # The exact mojibake, not merely "differs": the module docstring's
+        # argument is that this particular string looks like a real site label.
+        assert wrong == "RayÃ³n (MX-Ray)"
 
     @pytest.mark.filterwarnings("ignore:Specified encoding:UserWarning")
     def test_reading_as_latin_one_is_rejected(self):
         contents = ingest.read_shapefile(SHAPEFILE, encoding="latin-1")
-        with pytest.raises(ingest.IngestError, match="declares"):
+        with pytest.raises(ingest.IngestError, match="was read as 'latin-1'"):
             ingest.check_encoding_is_utf8(contents, encoding_used="latin-1")
+
+    def test_a_cpg_declaring_something_else_is_rejected(self):
+        # The other branch of the same check, which "declares" also matched, so
+        # nothing exercised it.
+        contents = ingest.ShapefileContents(
+            declared_encoding="latin-1",
+            field_names=(),
+            records=(),
+            shape_types=(),
+            points=(),
+        )
+        with pytest.raises(ingest.IngestError, match=r"\.cpg declares 'latin-1'"):
+            ingest.check_encoding_is_utf8(contents, encoding_used="utf-8")
 
     def test_a_missing_cpg_is_rejected(self):
         contents = ingest.ShapefileContents(
@@ -658,11 +699,143 @@ class TestSelectSites:
         assert chosen["lon"].between(-125, -66).all()
 
     def test_the_input_table_is_not_modified(self, ingested):
-        table = ingested["table"]
+        # A private copy, not the module-scoped fixture: ~20 earlier tests share
+        # that frame, so damage done by any of them would already be in `before`
+        # and a schema change would go unnoticed.
+        table = ingested["table"].copy()
         before = table.copy()
         select_sites(table, bbox=(-125, 24, -66, 50), sample=10, seed=0)
         pd.testing.assert_frame_equal(table, before)
+        assert list(table.columns) == list(before.columns)
 
     def test_the_index_is_reset(self, ingested):
         chosen = select_sites(ingested["table"], bbox=(-125, 24, -66, 50))
         assert chosen.index.tolist() == list(range(len(chosen)))
+
+
+class TestRoundTripCheckItself:
+    """The script's central assertion, which had no test of its own."""
+
+    def _table(self, ingested):
+        return ingested["table"].head(20).copy()
+
+    def test_it_passes_on_a_faithful_write(self, ingested, tmp_path):
+        table = self._table(ingested)
+        path = tmp_path / "ok.csv"
+        ingest.write_site_table(table, path)
+        ingest.check_csv_round_trip(table, path)  # must not raise
+
+    def test_it_catches_a_lossy_coordinate(self, ingested, tmp_path):
+        table = self._table(ingested)
+        path = tmp_path / "lossy.csv"
+        table.to_csv(path, index=False, float_format="%.6f")
+        with pytest.raises(ingest.IngestError, match="lon did not survive"):
+            ingest.check_csv_round_trip(table, path)
+
+    def test_it_catches_a_mangled_site_name(self, ingested, tmp_path):
+        table = self._table(ingested)
+        path = tmp_path / "name.csv"
+        corrupted = table.copy()
+        corrupted.loc[0, "site_name"] = "not the real name"
+        ingest.write_site_table(corrupted, path)
+        with pytest.raises(ingest.IngestError, match="site_name did not survive"):
+            ingest.check_csv_round_trip(table, path)
+
+    def test_it_catches_a_dropped_row(self, ingested, tmp_path):
+        table = self._table(ingested)
+        path = tmp_path / "short.csv"
+        ingest.write_site_table(table.head(19), path)
+        with pytest.raises(ingest.IngestError, match="row count"):
+            ingest.check_csv_round_trip(table, path)
+
+
+class TestMainExitCodes:
+    def test_missing_shapefile_exits_two(self, tmp_path, capsys):
+        status = ingest.main(
+            ["--shapefile", str(tmp_path / "absent.shp"),
+             "--site-id-map", str(SITE_ID_MAP),
+             "--out", str(tmp_path / "out.csv")]
+        )
+        assert status == 2
+        assert "is not a file" in capsys.readouterr().err
+
+    def test_missing_site_id_map_exits_two(self, tmp_path, capsys):
+        status = ingest.main(
+            ["--shapefile", str(SHAPEFILE),
+             "--site-id-map", str(tmp_path / "absent.csv"),
+             "--out", str(tmp_path / "out.csv")]
+        )
+        assert status == 2
+        assert "is not a file" in capsys.readouterr().err
+
+    @pytest.mark.filterwarnings("ignore:Specified encoding:UserWarning")
+    def test_a_failed_check_exits_one_with_a_message_not_a_traceback(
+        self, tmp_path, capsys
+    ):
+        status = ingest.main(
+            ["--shapefile", str(SHAPEFILE),
+             "--site-id-map", str(SITE_ID_MAP),
+             "--encoding", "latin-1",
+             "--out", str(tmp_path / "out.csv")]
+        )
+        assert status == 1
+        err = capsys.readouterr().err
+        # A one-line diagnosis, not a traceback.
+        assert "Traceback" not in err
+        assert "error: the shapefile was read as 'latin-1'" in err
+
+
+class TestSchemaIsPinnedToALiteral:
+    """Guards against SITE_COLUMNS and the code drifting together.
+
+    Every other schema test compares the table against ``SITE_COLUMNS``, which
+    both the writer and the reader order by -- so editing the constant moves
+    them in step and nothing notices. These name the contract outright.
+    """
+
+    def test_column_names_and_order(self):
+        assert SITE_COLUMNS == (
+            "site_id",
+            "lon",
+            "lat",
+            "lon_idx",
+            "lat_idx",
+            "site_name",
+            "site_order",
+            "cluster",
+            "landcover",
+            "ameriflux_site_id",
+        )
+
+    def test_column_dtypes(self):
+        assert SITE_COLUMN_DTYPES == {
+            "site_id": np.int32,
+            "lon": np.float64,
+            "lat": np.float64,
+            "lon_idx": np.int32,
+            "lat_idx": np.int32,
+            "site_name": str,
+            "site_order": np.int32,
+            "cluster": np.int8,
+            "landcover": np.int8,
+            "ameriflux_site_id": str,
+        }
+
+
+class TestLoaderNormalizesTheFile:
+    def test_columns_come_back_in_canonical_order_however_the_file_is_ordered(
+        self, ingested, tmp_path
+    ):
+        # load_sites reorders to SITE_COLUMNS. The ingest script already writes
+        # in that order, so nothing else exercises the reorder.
+        shuffled = list(reversed(SITE_COLUMNS))
+        path = tmp_path / "shuffled.csv"
+        ingested["table"].head(5)[shuffled].to_csv(path, index=False)
+        assert tuple(load_sites(path).columns) == SITE_COLUMNS
+
+    def test_the_write_format_is_the_shortest_round_tripping_one(self):
+        # Intent, not behavior: with load_sites reading at round_trip precision
+        # the written format cannot change any value, so no behavioral test can
+        # pin this. repr is chosen so the file is also correct for readers that
+        # are not ours. See the FLOAT_FORMAT comment in the ingest script.
+        assert ingest.FLOAT_FORMAT is None

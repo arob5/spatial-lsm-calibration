@@ -25,7 +25,8 @@ dependencies = [
     "scipy>=1.11",
     # Reads the tracked point shapefile in data/raw/sites/. Pure Python, so it
     # sidesteps the arm64 wheel problems that block pyproj and cartopy here
-    # (issue #4). Used only by scripts/ingest_sites.py, never by the library.
+    # (issue #4). Used by scripts/ingest_sites.py and the tests, never by the
+    # library itself.
     "pyshp>=3.1",
     "matplotlib>=3.7",
     # TODO(maps): projections for the spatial panels. Sites span 7-82 deg N, so

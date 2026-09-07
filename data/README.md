@@ -490,8 +490,9 @@ aboveground biomass.
 
 ## Conversion to processed form
 
-Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`,
-writes to `processed/`, and leaves its input unmodified. Run a script with
+Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
+(and, for `ingest_sites.py`, the tracked `site_id_map.csv` beside it), writes to
+`processed/`, and leaves its input unmodified. Run a script with
 `--help` for usage.
 
 | Script | Reads | Writes |
@@ -519,7 +520,8 @@ redundant `ens_mean` column is dropped.
 
 ## Processed format
 
-The ingest scripts are not yet written; this section records the intended output.
+`ingest_sites.py` is written; the rest of this section records the intended
+output of scripts not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
 is chosen to load directly as such: an `xarray.DataArray` per variable, with
@@ -542,7 +544,7 @@ dask. The site table is CSV instead because it is small, tabular and read by
 people as often as by code.
 
 `sites/sites.csv` carries every field of the shapefile, so that nothing is lost in
-translation, together with the grid indices:
+translation, together with the grid indices and the Ameriflux identifier:
 
 | Column | Type | Description |
 |---|---|---|
@@ -560,7 +562,7 @@ identifiers it means, and is provisional in that a newer release supersedes the
 map it comes from; see open question 7.
 
 The grid indices are the exact representation of a site's position: reconstructing
-`lon` and `lat` from them differs from the stored floats by up to 1.0e-6 degrees,
+`lon` and `lat` from them differs from the stored floats by up to 1.02e-6 degrees,
 which is the departure of the stored values from true cell centers rather than an
 error in the reconstruction. Ingest writes floats at full round-trip precision and
 asserts that reading them back reproduces the shapefile values exactly, since CSV
@@ -571,11 +573,14 @@ assertion rather than by inspection, so `sipnet_calibration.sites.load_sites`
 exists to keep the reader and the writer in agreement rather than leaving the
 settings to each caller.
 
-- Coordinates are written by `repr`, the shortest string that reads back as the
-  same float64, and read with `float_precision="round_trip"`. The obvious
-  alternative, `float_format="%.17g"`, is wrong here: 17 significant digits
-  survive Python's `float()` but not the C parser `pandas.read_csv` uses by
-  default, which moved 1632 of the 8000 longitudes by about 1.4e-14 degrees.
+- Coordinates are read with `float_precision="round_trip"`. **This, not the
+  write format, is what makes the round trip exact.** The C parser
+  `pandas.read_csv` uses by default is inexact for either candidate format:
+  1496 of the 8000 longitudes come back wrong from the `repr` output actually
+  written, and 1632 from `float_format="%.17g"`, in both cases by about
+  1.4e-14 degrees. `repr` is written because it is shortest and is exact under
+  Python's own `float()`, so the file is right for any reader that parses
+  correctly.
 - Text columns are read with `keep_default_na=False`. Eight of the 8000 sites
   are named literally `NA`, which a default read turns into a null, and an
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
