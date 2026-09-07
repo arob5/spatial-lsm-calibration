@@ -207,10 +207,36 @@ validation test, some lacked the half-hourly data the gap-filling requires, and
 some resolved to the same model site identifier as another site. An updated
 release of the product covers more sites; see Note 7.
 
+#### Co-located instruments
+
+**A mapped identifier can stand for a location where several towers operate, and
+the tower this file selects is not always the one the site name suggests.**
+
+The shapefile's `site_names` field also carries Ameriflux identifiers. 57 of the
+185 mapped sites embed one in parentheses; 53 match this file and 4 do not.
+
+| `site_id` | `site_name` | This file | Embedded in the name |
+|---|---|---|---|
+| 4326 | Park Falls WLEF (US-PFa) | `US-PFp` | `US-PFa` |
+| 4705 | Bartlett Experimental Forest (US-Bar) | `US-xBR` | `US-Bar` |
+| 5584 | Blandy Experimental Farm (US-Bef) | `US-xBL` | `US-Bef` |
+| 5758 | Sherman Island (US-Snd) | `US-Sne` | `US-Snd` |
+
+These are co-located instruments, not transcription errors. 35 of the 185 mapped
+identifiers begin `US-x`, as do two of the four disagreements; taking that prefix
+to mean NEON, those two are a NEON tower and an Ameriflux tower sharing a cell.
+The other two pair Ameriflux towers at one location. A further 163 unmapped sites
+embed an identifier in their name, so the name field is not a fallback for the
+mapping.
+
+The choice of instrument is made here, per site, and recorded nowhere else. See
+Note 3, and Note 7 on the release that supersedes this map.
+
 > **Note 3.** Because more than one Ameriflux site can fall within a single grid
 > cell, several may resolve to the same model site identifier. This file contains
 > no repeated identifiers, so such cases appear to have been dropped rather than
-> merged; how they should be handled is undecided.
+> merged; how they should be handled is undecided. The table above is the visible
+> trace: cells where a choice between co-located towers was made silently.
 
 ---
 

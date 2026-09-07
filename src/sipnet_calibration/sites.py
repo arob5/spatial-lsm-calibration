@@ -8,11 +8,11 @@ what each column means.
 
 There is deliberately no plant functional type column. A PFT labeling is not an
 intrinsic property of a site: calibrations may or may not use PFTs, and different
-PFT labelings can be applied to the same site pool. Labelings are their own product, 
-``processed/labelings/``, keyed on ``site_id``, and a caller joins one on before 
+PFT labelings can be applied to the same site pool. Labelings are their own product,
+``processed/labelings/``, keyed on ``site_id``, and a caller joins one on before
 selecting.
 
-``select_sites`` is a site selection heper: subsetting by bounding box, by an 
+``select_sites`` is a site selection helper: subsetting by bounding box, by an
 arbitrary predicate or to a random sample.
 
 Note the sites are 8000 *irregular points* spanning 7-82 deg N and
