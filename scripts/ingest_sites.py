@@ -116,10 +116,6 @@ class IngestError(Exception):
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
-#
-# Reading top down: what the run does, then the steps it does it with,
-# then the helpers those lean on, then the invariants they all enforce.
-
 
 def main(argv: list[str] | None = None) -> int:
     """Read the shapefile, build the table, write it, and prove nothing was lost."""
@@ -332,10 +328,6 @@ def describe_site_table(table: pd.DataFrame) -> str:
 
 
 # ── supporting types and helpers ──────────────────────────────────────────────
-#
-# Nothing here decides anything; each exists so that a step above reads as one
-# statement rather than three.
-
 
 @dataclass(frozen=True)
 class ShapefileContents:
@@ -404,10 +396,7 @@ def na_hazard_site_ids(names: list[str], *, site_ids: np.ndarray) -> list[int]:
 
 # ── checks ────────────────────────────────────────────────────────────────────
 #
-# One invariant per function, each raising with the invariant named, so a
-# failure says which expectation broke rather than printing a traceback. The
-# module docstring lists them; this is where they live.
-
+# One invariant per function, each raising with the invariant named.
 
 def check_encoding_is_utf8(contents: ShapefileContents, *, encoding_used: str) -> None:
     """Fail unless the ``.cpg`` declares UTF-8 and that is what was read."""
