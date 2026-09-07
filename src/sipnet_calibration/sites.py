@@ -48,6 +48,9 @@ __all__ = [
 ]
 
 
+# ── the grid ──────────────────────────────────────────────────────────────────
+
+
 @dataclass(frozen=True, slots=True)
 class Grid:
     """A regular geographic lattice, addressed by the centers of its cells.
@@ -214,7 +217,7 @@ class Grid:
 SITE_GRID = Grid(west=-179.0, south=7.0, n_lon=19080, n_lat=9360, cells_per_degree=120)
 
 
-# ── the site table ───────────────────────────────────────────────────────────
+# ── the site table ────────────────────────────────────────────────────────────
 
 #: Columns of ``processed/sites/sites.csv``, in order. The ingest script writes
 #: exactly these and :func:`load_sites` requires exactly these, so the two
@@ -331,29 +334,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     return table[list(SITE_COLUMNS)]
 
 
-def _check_site_table(table: pd.DataFrame, *, source: Path) -> None:
-    """Raise unless *table* is a usable site table, naming what is wrong."""
-    found = set(table.columns)
-    expected = set(SITE_COLUMNS)
-    if found != expected:
-        missing = sorted(expected - found)
-        extra = sorted(found - expected)
-        raise ValueError(
-            f"{source} is not a site table: missing columns {missing}, "
-            f"unexpected columns {extra}"
-        )
-    site_ids = table["site_id"].to_numpy()
-    if site_ids.size == 0:
-        raise ValueError(f"{source} holds no rows")
-    if np.unique(site_ids).size != site_ids.size:
-        raise ValueError(f"{source} holds duplicate site_id values")
-    if np.any(np.diff(site_ids) <= 0):
-        raise ValueError(f"{source} is not in ascending site_id order")
-    if site_ids.min() < 1:
-        raise ValueError(f"{source} holds a site_id below 1")
-
-
-# ── site selection ──────────────────────────────────────────────────────────
+# ── site selection ────────────────────────────────────────────────────────────
 
 
 def select_sites(
@@ -446,6 +427,33 @@ def select_sites(
         selected = _draw_sample(selected, sample, seed)
 
     return selected.reset_index(drop=True)
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+#
+# Private: the shape of the table and of a selection, not part of the API.
+
+
+def _check_site_table(table: pd.DataFrame, *, source: Path) -> None:
+    """Raise unless *table* is a usable site table, naming what is wrong."""
+    found = set(table.columns)
+    expected = set(SITE_COLUMNS)
+    if found != expected:
+        missing = sorted(expected - found)
+        extra = sorted(found - expected)
+        raise ValueError(
+            f"{source} is not a site table: missing columns {missing}, "
+            f"unexpected columns {extra}"
+        )
+    site_ids = table["site_id"].to_numpy()
+    if site_ids.size == 0:
+        raise ValueError(f"{source} holds no rows")
+    if np.unique(site_ids).size != site_ids.size:
+        raise ValueError(f"{source} holds duplicate site_id values")
+    if np.any(np.diff(site_ids) <= 0):
+        raise ValueError(f"{source} is not in ascending site_id order")
+    if site_ids.min() < 1:
+        raise ValueError(f"{source} holds a site_id below 1")
 
 
 def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
