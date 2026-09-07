@@ -51,15 +51,23 @@ Asserts after writing:
   literally ``NA``, so a reader that took pandas' default missing values would
   fail here rather than silently nulling them.
 
+Run it from the project environment: it imports ``sipnet_calibration``, numpy,
+pandas and ``pyshp``, so a bare system ``python3`` fails on the first import.
+Either activate the environment, as the README describes, or use ``uv run``.
+
 Examples
 --------
 The whole job, with the repository's own paths::
 
-    python3 scripts/ingest_sites.py
+    python scripts/ingest_sites.py
+
+The same without activating the environment first::
+
+    uv run scripts/ingest_sites.py
 
 Write somewhere else, leaving ``data/processed/`` alone::
 
-    python3 scripts/ingest_sites.py --out /tmp/sites.csv
+    python scripts/ingest_sites.py --out /tmp/sites.csv
 """
 
 from __future__ import annotations

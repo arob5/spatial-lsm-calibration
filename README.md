@@ -49,6 +49,22 @@ Requires [uv](https://docs.astral.sh/uv/). The interpreter is pinned to 3.14 in
 uv sync
 ```
 
+Then activate the environment, and stay in it for everything below:
+
+```bash
+source .venv/bin/activate
+```
+
+**Everything in this repository is run from inside that environment** — scripts,
+tests and notebooks alike. They all import `sipnet_calibration` and its
+dependencies from `.venv`, so a system `python` fails on the first import rather
+than doing something subtly different. `which python` should print a path ending
+in `.venv/bin/python`.
+
+`uv run <command>` is the equivalent for a one-off without activating, and is
+what the commands in this README use so that they work either way. Notebooks are
+the one case needing more than this; see [Running notebooks](#running-notebooks).
+
 Two companion packages are installed as editable locals from sibling
 directories, so they must be checked out alongside this repository:
 
@@ -78,7 +94,7 @@ in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
 
 ```
 src/sipnet_calibration/
-  sites.py                # SITE_GRID, site table, select_sites(pft=, bbox=, has_nee=, ...)
+  sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics

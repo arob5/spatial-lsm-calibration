@@ -317,7 +317,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     if not csv_path.is_file():
         raise FileNotFoundError(
             f"no site table at {csv_path}; build it with "
-            "`python3 scripts/ingest_sites.py`"
+            "`python scripts/ingest_sites.py` from the project environment"
         )
 
     table = pd.read_csv(
