@@ -73,7 +73,7 @@ import numpy as np
 import pandas as pd
 import shapefile
 
-from sipnet_calibration.sites import SITE_COLUMNS, SITE_GRID
+from sipnet_calibration.sites import SITE_COLUMNS, SITE_GRID, load_sites
 
 #: Repository root, as seen from ``scripts/``.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -111,15 +111,230 @@ NAMED_SITE_COUNT = 1093
 #: formatting.
 FLOAT_FORMAT = None
 
-
 class IngestError(Exception):
     """Raised when an invariant of the input or the output does not hold."""
 
 
-# ── reading ──────────────────────────────────────────────────────────────────
+# ── entry point ───────────────────────────────────────────────────────────────
 #
-# All filesystem access lives here. Everything below takes plain Python data and
-# returns plain Python data, so it is testable without fixtures on disk.
+# Reading top down: what the run does, then the steps it does it with,
+# then the helpers those lean on, then the invariants they all enforce.
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Read the shapefile, build the table, write it, and prove nothing was lost."""
+    args = parse_args(argv)
+    if not args.shapefile.is_file():
+        print(f"error: {args.shapefile} is not a file", file=sys.stderr)
+        return 2
+    if not args.site_id_map.is_file():
+        print(f"error: {args.site_id_map} is not a file", file=sys.stderr)
+        return 2
+
+    print(f"Reading {args.shapefile} as {args.encoding} ...", file=sys.stderr)
+    contents = read_shapefile(args.shapefile, encoding=args.encoding)
+    try:
+        check_encoding_is_utf8(contents, encoding_used=args.encoding)
+        ameriflux = read_ameriflux_map(args.site_id_map)
+        table = build_site_table(contents, ameriflux)
+        write_site_table(table, args.out)
+        check_csv_round_trip(table, args.out)
+    except IngestError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+    print(f"\nWrote {args.out}")
+    print(describe_site_table(table))
+    print("\nThe CSV round trip is bitwise exact for lon and lat.")
+    return 0
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--shapefile",
+        type=Path,
+        default=DEFAULT_SHAPEFILE,
+        help=f"Point shapefile to read. Default {DEFAULT_SHAPEFILE}.",
+    )
+    parser.add_argument(
+        "--site-id-map",
+        type=Path,
+        default=DEFAULT_SITE_ID_MAP,
+        help=f"Ameriflux identifier map. Default {DEFAULT_SITE_ID_MAP}.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=DEFAULT_OUT,
+        help=f"CSV to write, creating its directory. Default {DEFAULT_OUT}.",
+    )
+    parser.add_argument(
+        "--encoding",
+        default=EXPECTED_ENCODING,
+        help=(
+            "Encoding of the .dbf attribute table. Default "
+            f"{EXPECTED_ENCODING}, which is what the .cpg declares; a value "
+            "disagreeing with the .cpg is rejected rather than honored."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+# ── the ingest steps, in the order main calls them ────────────────────────────
+#
+# Each step is named for what it produces. Filesystem access is confined to
+# the two readers and the writer; everything between them takes plain Python
+# data and returns plain Python data, so it is testable without fixtures on
+# disk.
+
+
+def read_shapefile(shp_path: Path, *, encoding: str) -> ShapefileContents:
+    """Read a point shapefile's geometry and attribute table into memory.
+
+    *encoding* is passed to the reader explicitly rather than being inferred, so
+    that a mismatch with the ``.cpg`` is something a check reports rather than
+    something the library resolves silently.
+    """
+    declared = read_declared_encoding(shp_path)
+    with shapefile.Reader(str(shp_path), encoding=encoding) as reader:
+        # fields[0] is the deletion flag, which is not a real attribute.
+        field_names = tuple(field[0] for field in reader.fields[1:])
+        records = tuple(
+            {name: record[name] for name in field_names} for record in reader.records()
+        )
+        shapes = reader.shapes()
+        shape_types = tuple(int(shape.shapeType) for shape in shapes)
+        points = tuple(
+            tuple((float(x), float(y)) for x, y in shape.points) for shape in shapes
+        )
+    return ShapefileContents(
+        declared_encoding=declared,
+        field_names=field_names,
+        records=records,
+        shape_types=shape_types,
+        points=points,
+    )
+
+
+def read_ameriflux_map(path: Path) -> dict[int, str]:
+    """Integer site id -> Ameriflux ``Site_ID``, from ``site_id_map.csv``.
+
+    The file's columns are ``Site_ID`` and ``index``; ``index`` is the integer
+    site id. The processed table calls the identifier ``ameriflux_site_id``,
+    because ``Site_ID`` is opaque about which of the two identifiers it means.
+    """
+    frame = pd.read_csv(path, dtype={"Site_ID": str, "index": np.int64})
+    missing = {"Site_ID", "index"} - set(frame.columns)
+    if missing:
+        raise IngestError(f"{path} is missing column(s) {sorted(missing)}")
+    return dict(zip(frame["index"].tolist(), frame["Site_ID"].tolist(), strict=True))
+
+
+def build_site_table(
+    contents: ShapefileContents, ameriflux: dict[int, str]
+) -> pd.DataFrame:
+    """The processed site table, with the columns of :data:`SITE_COLUMNS`.
+
+    Every invariant this script asserts about its input is checked here, so a
+    caller cannot get an unvalidated table. Returns a frame of
+    :data:`N_SITES` rows in ascending ``site_id`` order, which for this
+    shapefile is also record order.
+    """
+    check_record_count(contents)
+    check_shapes_are_single_points(contents)
+    check_fields_are_present(
+        contents,
+        required=("site_id", "site_names", "site_order", "cluster", "landcover"),
+    )
+
+    site_ids = np.array([record["site_id"] for record in contents.records], dtype=np.int64)
+    check_site_ids_are_the_full_range(site_ids)
+
+    lon = np.array([points[0][0] for points in contents.points], dtype=np.float64)
+    lat = np.array([points[0][1] for points in contents.points], dtype=np.float64)
+    # Raises if any coordinate is further than the default tolerance from a cell
+    # center, which would mean the wrong grid or the wrong CRS.
+    lon_idx, lat_idx = SITE_GRID.lonlat_to_index(lon, lat)
+    check_index_pairs_are_distinct(lon_idx, lat_idx)
+
+    integral = {}
+    for field in ("site_order", "cluster", "landcover"):
+        values = np.array(
+            [record[field] for record in contents.records], dtype=np.float64
+        )
+        check_values_are_integral(values, name=field)
+        integral[field] = values.astype(np.int64)
+    check_site_order_is_a_permutation(integral["site_order"])
+
+    names = [str(record["site_names"]) for record in contents.records]
+
+    check_ameriflux_map_is_usable(ameriflux, site_ids=site_ids)
+    ameriflux_column = [ameriflux.get(int(site_id), "") for site_id in site_ids]
+
+    table = pd.DataFrame(
+        {
+            "site_id": site_ids.astype(np.int32),
+            "lon": lon,
+            "lat": lat,
+            "lon_idx": lon_idx.astype(np.int32),
+            "lat_idx": lat_idx.astype(np.int32),
+            "site_name": names,
+            "site_order": integral["site_order"].astype(np.int32),
+            "cluster": integral["cluster"].astype(np.int8),
+            "landcover": integral["landcover"].astype(np.int8),
+            "ameriflux_site_id": ameriflux_column,
+        }
+    )
+    return table[list(SITE_COLUMNS)]
+
+
+def write_site_table(table: pd.DataFrame, out_path: Path) -> None:
+    """Write the table as CSV, creating its directory if it is absent."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    table.to_csv(out_path, index=False, float_format=FLOAT_FORMAT)
+
+
+def describe_site_table(table: pd.DataFrame) -> str:
+    """A short summary of the written table, for the terminal."""
+    named = table["site_order"] != 0
+    non_ascii = [
+        f"{row.site_id} {row.site_name!r}"
+        for row in table.itertuples()
+        if not row.site_name.isascii()
+    ]
+    mapped = table["ameriflux_site_id"] != ""
+    na_hazards = na_hazard_site_ids(
+        table["site_name"].tolist(), site_ids=table["site_id"].to_numpy()
+    )
+    lines = [
+        f"  rows                  : {len(table)}",
+        f"  site_id               : {table.site_id.min()}..{table.site_id.max()}",
+        f"  longitude             : {table.lon.min():.4f} to {table.lon.max():.4f}",
+        f"  latitude              : {table.lat.min():.4f} to {table.lat.max():.4f}",
+        f"  named sites           : {int(named.sum())}"
+        f" (site_order 1..{int(table.site_order.max())})",
+        f"  sampled points        : {int((~named).sum())}",
+        f"  cluster               : {sorted(table.cluster.unique().tolist())}",
+        f"  landcover             : {sorted(table.landcover.unique().tolist())}",
+        f"  Ameriflux identifiers : {int(mapped.sum())}",
+        f"  non-ASCII site names  : {len(non_ascii)}",
+    ]
+    lines += [f"      {entry}" for entry in non_ascii]
+    lines.append(
+        f"  names a default read_csv would null: {len(na_hazards)}"
+        + (f" (sites {na_hazards})" if na_hazards else "")
+    )
+    return "\n".join(lines)
+
+
+# ── supporting types and helpers ──────────────────────────────────────────────
+#
+# Nothing here decides anything; each exists so that a step above reads as one
+# statement rather than three.
 
 
 @dataclass(frozen=True)
@@ -167,52 +382,31 @@ def read_declared_encoding(shp_path: Path) -> str | None:
     return normalize_encoding(cpg_path.read_text())
 
 
-def read_shapefile(shp_path: Path, *, encoding: str) -> ShapefileContents:
-    """Read a point shapefile's geometry and attribute table into memory.
+def na_hazard_site_ids(names: list[str], *, site_ids: np.ndarray) -> list[int]:
+    """Sites whose name a default ``read_csv`` would turn into a missing value.
 
-    *encoding* is passed to the reader explicitly rather than being inferred, so
-    that a mismatch with the ``.cpg`` is something a check reports rather than
-    something the library resolves silently.
+    Eight of the 8000 sites are named literally ``NA``, which pandas treats as
+    null unless told otherwise. That is not an error in the data and this is not
+    a check: :func:`sipnet_calibration.sites.load_sites` reads the name column as
+    text with ``keep_default_na=False``, and
+    :func:`check_csv_round_trip` compares ``site_name`` value by value, so a
+    reader that lost them would fail there. The list is returned so the run
+    reports which sites depend on that, rather than leaving it to be
+    rediscovered.
     """
-    declared = read_declared_encoding(shp_path)
-    with shapefile.Reader(str(shp_path), encoding=encoding) as reader:
-        # fields[0] is the deletion flag, which is not a real attribute.
-        field_names = tuple(field[0] for field in reader.fields[1:])
-        records = tuple(
-            {name: record[name] for name in field_names} for record in reader.records()
-        )
-        shapes = reader.shapes()
-        shape_types = tuple(int(shape.shapeType) for shape in shapes)
-        points = tuple(
-            tuple((float(x), float(y)) for x, y in shape.points) for shape in shapes
-        )
-    return ShapefileContents(
-        declared_encoding=declared,
-        field_names=field_names,
-        records=records,
-        shape_types=shape_types,
-        points=points,
-    )
+    hazards = {"", *pd._libs.parsers.STR_NA_VALUES}
+    return [
+        int(site_id)
+        for site_id, name in zip(site_ids, names, strict=True)
+        if name in hazards
+    ]
 
 
-def read_ameriflux_map(path: Path) -> dict[int, str]:
-    """Integer site id -> Ameriflux ``Site_ID``, from ``site_id_map.csv``.
-
-    The file's columns are ``Site_ID`` and ``index``; ``index`` is the integer
-    site id. The processed table calls the identifier ``ameriflux_site_id``,
-    because ``Site_ID`` is opaque about which of the two identifiers it means.
-    """
-    frame = pd.read_csv(path, dtype={"Site_ID": str, "index": np.int64})
-    missing = {"Site_ID", "index"} - set(frame.columns)
-    if missing:
-        raise IngestError(f"{path} is missing column(s) {sorted(missing)}")
-    return dict(zip(frame["index"].tolist(), frame["Site_ID"].tolist(), strict=True))
-
-
-# ── checks ───────────────────────────────────────────────────────────────────
+# ── checks ────────────────────────────────────────────────────────────────────
 #
-# One invariant per function, each raising with the invariant named, so a failure
-# says which expectation broke rather than printing a traceback.
+# One invariant per function, each raising with the invariant named, so a
+# failure says which expectation broke rather than printing a traceback. The
+# module docstring lists them; this is where they live.
 
 
 def check_encoding_is_utf8(contents: ShapefileContents, *, encoding_used: str) -> None:
@@ -236,6 +430,19 @@ def check_encoding_is_utf8(contents: ShapefileContents, *, encoding_used: str) -
         )
 
 
+def check_record_count(contents: ShapefileContents) -> None:
+    """Fail unless the shapefile holds exactly :data:`N_SITES` records."""
+    if len(contents.records) != N_SITES:
+        raise IngestError(
+            f"expected {N_SITES} records, found {len(contents.records)}"
+        )
+    if len(contents.points) != len(contents.records):
+        raise IngestError(
+            f"{len(contents.points)} shapes against {len(contents.records)} "
+            "attribute records"
+        )
+
+
 def check_shapes_are_single_points(contents: ShapefileContents) -> None:
     """Fail unless every shape is a ``POINT`` carrying exactly one point."""
     point_type = int(shapefile.POINT)
@@ -254,19 +461,6 @@ def check_shapes_are_single_points(contents: ShapefileContents) -> None:
         raise IngestError(
             f"{len(wrong_count)} POINT shape(s) do not carry exactly one point; "
             f"first at record index {wrong_count[0]}"
-        )
-
-
-def check_record_count(contents: ShapefileContents) -> None:
-    """Fail unless the shapefile holds exactly :data:`N_SITES` records."""
-    if len(contents.records) != N_SITES:
-        raise IngestError(
-            f"expected {N_SITES} records, found {len(contents.records)}"
-        )
-    if len(contents.points) != len(contents.records):
-        raise IngestError(
-            f"{len(contents.points)} shapes against {len(contents.records)} "
-            "attribute records"
         )
 
 
@@ -369,96 +563,6 @@ def check_ameriflux_map_is_usable(mapping: dict[int, str], *, site_ids: np.ndarr
         )
 
 
-def na_hazard_site_ids(names: list[str], *, site_ids: np.ndarray) -> list[int]:
-    """Sites whose name a default ``read_csv`` would turn into a missing value.
-
-    Eight of the 8000 sites are named literally ``NA``, which pandas treats as
-    null unless told otherwise. That is not an error in the data and this is not
-    a check: :func:`sipnet_calibration.sites.load_sites` reads the name column as
-    text with ``keep_default_na=False``, and
-    :func:`check_csv_round_trip` compares ``site_name`` value by value, so a
-    reader that lost them would fail there. The list is returned so the run
-    reports which sites depend on that, rather than leaving it to be
-    rediscovered.
-    """
-    hazards = {"", *pd._libs.parsers.STR_NA_VALUES}
-    return [
-        int(site_id)
-        for site_id, name in zip(site_ids, names, strict=True)
-        if name in hazards
-    ]
-
-
-# ── building the table ───────────────────────────────────────────────────────
-
-
-def build_site_table(
-    contents: ShapefileContents, ameriflux: dict[int, str]
-) -> pd.DataFrame:
-    """The processed site table, with the columns of :data:`SITE_COLUMNS`.
-
-    Every invariant this script asserts about its input is checked here, so a
-    caller cannot get an unvalidated table. Returns a frame of
-    :data:`N_SITES` rows in ascending ``site_id`` order, which for this
-    shapefile is also record order.
-    """
-    check_record_count(contents)
-    check_shapes_are_single_points(contents)
-    check_fields_are_present(
-        contents,
-        required=("site_id", "site_names", "site_order", "cluster", "landcover"),
-    )
-
-    site_ids = np.array([record["site_id"] for record in contents.records], dtype=np.int64)
-    check_site_ids_are_the_full_range(site_ids)
-
-    lon = np.array([points[0][0] for points in contents.points], dtype=np.float64)
-    lat = np.array([points[0][1] for points in contents.points], dtype=np.float64)
-    # Raises if any coordinate is further than the default tolerance from a cell
-    # center, which would mean the wrong grid or the wrong CRS.
-    lon_idx, lat_idx = SITE_GRID.lonlat_to_index(lon, lat)
-    check_index_pairs_are_distinct(lon_idx, lat_idx)
-
-    integral = {}
-    for field in ("site_order", "cluster", "landcover"):
-        values = np.array(
-            [record[field] for record in contents.records], dtype=np.float64
-        )
-        check_values_are_integral(values, name=field)
-        integral[field] = values.astype(np.int64)
-    check_site_order_is_a_permutation(integral["site_order"])
-
-    names = [str(record["site_names"]) for record in contents.records]
-
-    check_ameriflux_map_is_usable(ameriflux, site_ids=site_ids)
-    ameriflux_column = [ameriflux.get(int(site_id), "") for site_id in site_ids]
-
-    table = pd.DataFrame(
-        {
-            "site_id": site_ids.astype(np.int32),
-            "lon": lon,
-            "lat": lat,
-            "lon_idx": lon_idx.astype(np.int32),
-            "lat_idx": lat_idx.astype(np.int32),
-            "site_name": names,
-            "site_order": integral["site_order"].astype(np.int32),
-            "cluster": integral["cluster"].astype(np.int8),
-            "landcover": integral["landcover"].astype(np.int8),
-            "ameriflux_site_id": ameriflux_column,
-        }
-    )
-    return table[list(SITE_COLUMNS)]
-
-
-# ── writing, and proving the write lost nothing ──────────────────────────────
-
-
-def write_site_table(table: pd.DataFrame, out_path: Path) -> None:
-    """Write the table as CSV, creating its directory if it is absent."""
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_csv(out_path, index=False, float_format=FLOAT_FORMAT)
-
-
 def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> pd.DataFrame:
     """Fail unless reading the CSV back reproduces the table it was written from.
 
@@ -467,8 +571,6 @@ def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> pd.DataFrame:
     place this table can silently lose information. Returns the frame that was
     read back, so a caller can report on the file rather than on memory.
     """
-    from sipnet_calibration.sites import load_sites
-
     read_back = load_sites(out_path)
     if list(read_back.columns) != list(written.columns):
         raise IngestError(
@@ -510,108 +612,6 @@ def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> pd.DataFrame:
                 f"{original[index]!r} written against {returned[index]!r} read back"
             )
     return read_back
-
-
-# ── reporting ────────────────────────────────────────────────────────────────
-
-
-def describe_site_table(table: pd.DataFrame) -> str:
-    """A short summary of the written table, for the terminal."""
-    named = table["site_order"] != 0
-    non_ascii = [
-        f"{row.site_id} {row.site_name!r}"
-        for row in table.itertuples()
-        if not row.site_name.isascii()
-    ]
-    mapped = table["ameriflux_site_id"] != ""
-    na_hazards = na_hazard_site_ids(
-        table["site_name"].tolist(), site_ids=table["site_id"].to_numpy()
-    )
-    lines = [
-        f"  rows                  : {len(table)}",
-        f"  site_id               : {table.site_id.min()}..{table.site_id.max()}",
-        f"  longitude             : {table.lon.min():.4f} to {table.lon.max():.4f}",
-        f"  latitude              : {table.lat.min():.4f} to {table.lat.max():.4f}",
-        f"  named sites           : {int(named.sum())}"
-        f" (site_order 1..{int(table.site_order.max())})",
-        f"  sampled points        : {int((~named).sum())}",
-        f"  cluster               : {sorted(table.cluster.unique().tolist())}",
-        f"  landcover             : {sorted(table.landcover.unique().tolist())}",
-        f"  Ameriflux identifiers : {int(mapped.sum())}",
-        f"  non-ASCII site names  : {len(non_ascii)}",
-    ]
-    lines += [f"      {entry}" for entry in non_ascii]
-    lines.append(
-        f"  names a default read_csv would null: {len(na_hazards)}"
-        + (f" (sites {na_hazards})" if na_hazards else "")
-    )
-    return "\n".join(lines)
-
-
-# ── entry point ──────────────────────────────────────────────────────────────
-
-
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--shapefile",
-        type=Path,
-        default=DEFAULT_SHAPEFILE,
-        help=f"Point shapefile to read. Default {DEFAULT_SHAPEFILE}.",
-    )
-    parser.add_argument(
-        "--site-id-map",
-        type=Path,
-        default=DEFAULT_SITE_ID_MAP,
-        help=f"Ameriflux identifier map. Default {DEFAULT_SITE_ID_MAP}.",
-    )
-    parser.add_argument(
-        "--out",
-        type=Path,
-        default=DEFAULT_OUT,
-        help=f"CSV to write, creating its directory. Default {DEFAULT_OUT}.",
-    )
-    parser.add_argument(
-        "--encoding",
-        default=EXPECTED_ENCODING,
-        help=(
-            "Encoding of the .dbf attribute table. Default "
-            f"{EXPECTED_ENCODING}, which is what the .cpg declares; a value "
-            "disagreeing with the .cpg is rejected rather than honored."
-        ),
-    )
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Read the shapefile, build the table, write it, and prove nothing was lost."""
-    args = parse_args(argv)
-    if not args.shapefile.is_file():
-        print(f"error: {args.shapefile} is not a file", file=sys.stderr)
-        return 2
-    if not args.site_id_map.is_file():
-        print(f"error: {args.site_id_map} is not a file", file=sys.stderr)
-        return 2
-
-    print(f"Reading {args.shapefile} as {args.encoding} ...", file=sys.stderr)
-    contents = read_shapefile(args.shapefile, encoding=args.encoding)
-    try:
-        check_encoding_is_utf8(contents, encoding_used=args.encoding)
-        ameriflux = read_ameriflux_map(args.site_id_map)
-        table = build_site_table(contents, ameriflux)
-        write_site_table(table, args.out)
-        check_csv_round_trip(table, args.out)
-    except IngestError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-
-    print(f"\nWrote {args.out}")
-    print(describe_site_table(table))
-    print("\nThe CSV round trip is bitwise exact for lon and lat.")
-    return 0
 
 
 if __name__ == "__main__":
