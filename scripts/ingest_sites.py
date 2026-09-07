@@ -82,7 +82,12 @@ import numpy as np
 import pandas as pd
 import shapefile
 
-from sipnet_calibration.sites import SITE_COLUMNS, SITE_GRID, load_sites
+from sipnet_calibration.sites import (
+    SITE_COLUMN_DTYPES,
+    SITE_COLUMNS,
+    SITE_GRID,
+    load_sites,
+)
 
 #: Repository root, as seen from ``scripts/``.
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -142,15 +147,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     print(f"Reading {args.shapefile} as {args.encoding} ...", file=sys.stderr)
-    contents = read_shapefile(args.shapefile, encoding=args.encoding)
     try:
+        contents = read_shapefile(args.shapefile, encoding=args.encoding)
         check_encoding_is_utf8(contents, encoding_used=args.encoding)
         ameriflux = read_ameriflux_map(args.site_id_map)
         table = build_site_table(contents, ameriflux)
-        write_site_table(table, args.out)
-        check_csv_round_trip(table, args.out)
+        write_checked_site_table(table, args.out)
     except IngestError as error:
         print(f"error: {error}", file=sys.stderr)
+        return 1
+    except Exception as error:  # noqa: BLE001 - reported, never a traceback
+        # Reading a shapefile, a CSV and a .cpg raises plenty that is not an
+        # IngestError: ValueError from an off-grid coordinate, EmptyDataError
+        # from a truncated map, LookupError from a bad --encoding,
+        # IsADirectoryError from --out. None of those is a bug in this script,
+        # so none should reach the user as a traceback.
+        print(f"error: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
 
     print(f"\nWrote {args.out}")
@@ -237,10 +249,16 @@ def read_ameriflux_map(path: Path) -> dict[int, str]:
     site id. The processed table calls the identifier ``ameriflux_site_id``,
     because ``Site_ID`` is opaque about which of the two identifiers it means.
     """
-    frame = pd.read_csv(path, dtype={"Site_ID": str, "index": np.int64})
+    frame = pd.read_csv(
+        path,
+        dtype={"Site_ID": str, "index": np.int64},
+        keep_default_na=False,
+        na_values=[],
+    )
     missing = {"Site_ID", "index"} - set(frame.columns)
     if missing:
         raise IngestError(f"{path} is missing column(s) {sorted(missing)}")
+    check_ameriflux_rows_are_one_per_site(frame, source=path)
     return dict(zip(frame["index"].tolist(), frame["Site_ID"].tolist(), strict=True))
 
 
@@ -261,7 +279,11 @@ def build_site_table(
         required=("site_id", "site_names", "site_order", "cluster", "landcover"),
     )
 
-    site_ids = np.array([record["site_id"] for record in contents.records], dtype=np.int64)
+    site_ids = _as_integer(
+        [record["site_id"] for record in contents.records],
+        name="site_id",
+        dtype=np.int32,
+    )
     check_site_ids_are_the_full_range(site_ids)
 
     lon = np.array([points[0][0] for points in contents.points], dtype=np.float64)
@@ -271,13 +293,14 @@ def build_site_table(
     lon_idx, lat_idx = SITE_GRID.lonlat_to_index(lon, lat)
     check_index_pairs_are_distinct(lon_idx, lat_idx)
 
-    integral = {}
-    for field in ("site_order", "cluster", "landcover"):
-        values = np.array(
-            [record[field] for record in contents.records], dtype=np.float64
+    integral = {
+        field: _as_integer(
+            [record[field] for record in contents.records],
+            name=field,
+            dtype=SITE_COLUMN_DTYPES[field],
         )
-        check_values_are_integral(values, name=field)
-        integral[field] = values.astype(np.int64)
+        for field in ("site_order", "cluster", "landcover")
+    }
     check_site_order_is_a_permutation(integral["site_order"])
 
     names = [str(record["site_names"]) for record in contents.records]
@@ -287,15 +310,15 @@ def build_site_table(
 
     table = pd.DataFrame(
         {
-            "site_id": site_ids.astype(np.int32),
+            "site_id": site_ids,
             "lon": lon,
             "lat": lat,
-            "lon_idx": lon_idx.astype(np.int32),
-            "lat_idx": lat_idx.astype(np.int32),
+            "lon_idx": _as_integer(lon_idx, name="lon_idx", dtype=np.int32),
+            "lat_idx": _as_integer(lat_idx, name="lat_idx", dtype=np.int32),
             "site_name": names,
-            "site_order": integral["site_order"].astype(np.int32),
-            "cluster": integral["cluster"].astype(np.int8),
-            "landcover": integral["landcover"].astype(np.int8),
+            "site_order": integral["site_order"],
+            "cluster": integral["cluster"],
+            "landcover": integral["landcover"],
             "ameriflux_site_id": ameriflux_column,
         }
     )
@@ -517,6 +540,38 @@ def check_values_are_integral(values: np.ndarray, *, name: str) -> None:
         )
 
 
+def check_values_fit_dtype(values: np.ndarray, *, name: str, dtype) -> None:
+    """Fail unless every value survives the cast to *dtype* unchanged.
+
+    Without this, ``astype`` wraps silently: a ``cluster`` of 200 becomes -56 in
+    ``int8``, and the round-trip check cannot see it because both the written
+    and the read-back column are ``int8``. Integrality is not enough; range has
+    to be checked too, and against the *target* type rather than ``int64``.
+    """
+    info = np.iinfo(dtype)
+    outside = np.flatnonzero((values < info.min) | (values > info.max))
+    if outside.size:
+        index = int(outside[0])
+        raise IngestError(
+            f"{name} holds {values[index]!r} at record index {index}, outside the "
+            f"range of {np.dtype(dtype).name} ({info.min}..{info.max}); casting "
+            f"it would wrap silently"
+        )
+
+
+def _as_integer(values, *, name: str, dtype) -> np.ndarray:
+    """Check integrality and range, then cast. The only integer cast used here.
+
+    Everything the table stores as an integer arrives as a float (the ``.dbf``
+    declares 15 decimals) or as ``int64`` (the grid indices), so every cast is a
+    narrowing one and every one goes through both checks.
+    """
+    wide = np.asarray(values, dtype=np.float64)
+    check_values_are_integral(wide, name=name)
+    check_values_fit_dtype(wide, name=name, dtype=dtype)
+    return np.asarray(values).astype(dtype)
+
+
 def check_site_order_is_a_permutation(site_order: np.ndarray) -> None:
     """Fail unless the non-zero ``site_order`` values are ``1..NAMED_SITE_COUNT``.
 
@@ -548,6 +603,30 @@ def check_index_pairs_are_distinct(lon_idx: np.ndarray, lat_idx: np.ndarray) -> 
         )
 
 
+def check_ameriflux_rows_are_one_per_site(frame: pd.DataFrame, *, source: Path) -> None:
+    """Fail unless each site id appears once, and no identifier is blank.
+
+    This runs on the *frame*, before it becomes a dict: ``dict(zip(...))`` keeps
+    the last row for a repeated site id and drops the rest without a word, so by
+    the time :func:`check_ameriflux_map_is_usable` sees the mapping the evidence
+    is gone. A repeated site id means two towers were matched to one model site,
+    which is a decision to make rather than to discard -- see the co-located
+    instruments section of ``data/README.md``.
+    """
+    repeated = frame["index"][frame["index"].duplicated()].unique().tolist()
+    if repeated:
+        raise IngestError(
+            f"{source} maps {len(repeated)} site id(s) more than once: "
+            f"{sorted(repeated)[:10]}"
+        )
+    blank = frame.index[frame["Site_ID"].str.strip() == ""].tolist()
+    if blank:
+        raise IngestError(
+            f"{source} has a blank Site_ID on {len(blank)} row(s), first at row "
+            f"{blank[0]}"
+        )
+
+
 def check_ameriflux_map_is_usable(mapping: dict[int, str], *, site_ids: np.ndarray) -> None:
     """Fail unless the Ameriflux identifiers are unique and map to real sites."""
     identifiers = list(mapping.values())
@@ -562,6 +641,26 @@ def check_ameriflux_map_is_usable(mapping: dict[int, str], *, site_ids: np.ndarr
             f"{len(unknown)} Ameriflux row(s) name a site id that is not in the "
             f"shapefile: {unknown[:10]}"
         )
+
+
+def write_checked_site_table(table: pd.DataFrame, out_path: Path) -> None:
+    """Write the table, verify the round trip, and only then publish it.
+
+    The check has to run against a real file, so the file is written to a
+    sibling temporary path and renamed over *out_path* once it passes. Writing
+    to *out_path* directly would mean that a failed check leaves a corrupt table
+    at the canonical path -- the one every other product joins against -- while
+    the script exits non-zero. The rename is atomic on a POSIX filesystem, so
+    *out_path* is either the previous table or a fully checked new one.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    partial = out_path.with_name(out_path.name + ".partial")
+    try:
+        write_site_table(table, partial)
+        check_csv_round_trip(table, partial)
+        partial.replace(out_path)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> None:

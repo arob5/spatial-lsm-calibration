@@ -117,9 +117,11 @@ information at all.
 
 Geometry is in geographic coordinates on the WGS 84 datum, declared by `pts.prj`.
 Records are ordered by descending latitude. Coordinates span -178.754 to -20.013
-in longitude and 7.013 to 82.546 in latitude; the extremes are site 731 in the
-western Aleutians, site 1 in northeast Greenland, and site 8000 at 7.01 north in
-northern South America. 3640 of the 8000 sites fall inside a conterminous-US
+in longitude and 7.013 to 82.546 in latitude. The four extremes are site 731 at
+68.51 N on the Chukchi coast (westernmost, 178.75 W), site 115 at 77.09 N in
+northeast Greenland (easternmost, 20.01 W), site 1 at 82.55 N, also in northeast
+Greenland (northernmost), and site 8000 at 7.01 N in northern South America
+(southernmost). 3640 of the 8000 sites fall inside a conterminous-US
 bounding box of 24-50 north and 125-66 west, so analyses restricted to that region
 use a little under half the pool. The remainder are distributed as follows.
 
@@ -418,8 +420,10 @@ and any per-site statistic must account for very unequal sample sizes.
 > several absent here, but carries only the ensemble mean. Which release to use is
 > undecided.
 
-> **Note 8.** In about a quarter of rows, all 25 ensemble members are identical:
-> 7225 of 29,225 rows at `US-UMB`, where the median spread elsewhere is 0.116.
+> **Note 8.** In about a third of rows, all 25 ensemble members are identical:
+> 10,273 of 29,225 rows at `US-UMB`. Across the remaining rows the median
+> standard deviation over members is 0.147 and the median range is 0.565; over
+> all rows the median standard deviation is 0.067.
 > Since the members differ only in the driver realization used for gap-filling,
 > this is consistent with a directly measured timestep, which requires no
 > gap-filling, but that has not been confirmed.
@@ -640,8 +644,9 @@ likelihood, whether they are averaged first, and how the observation error
 covariance should treat them. This is a modeling question rather than a data one,
 and is unresolved.
 
-**4. Driver ensemble size.** Only one member is available locally, so the size of
-the driver ensemble has not been confirmed. The gap-filling behind [GAPFILL] used
+**4. Driver ensemble size.** Only three driver directories are available locally
+(`ERA5_1_1`, `ERA5_1_2`, `ERA5_27_5`, so members 1, 2 and 5 across sites 1 and
+27), which is not enough to confirm the size of the driver ensemble. The gap-filling behind [GAPFILL] used
 25 driver members, and the reanalysis output carries 100, so neither figure can be
 assumed for the driver files themselves.
 
@@ -654,8 +659,11 @@ Tracked as
 
 **6. Initial-condition variable sets and ensemble size.** The variable set is
 reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
-appearing in some. Only one file is available locally, so neither the full set of
-combinations nor the ensemble size has been confirmed against the data.
+appearing in some. Three files are available locally — site 1 members 1 and 2,
+and site 27 member 94 — and none of the three carries either variable, so the
+full set of combinations is still unconfirmed. Member index 94 does put a floor
+of 94 on the initial-condition ensemble size. `scripts/survey_ic_variables.py`
+answers both questions where the files are.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217

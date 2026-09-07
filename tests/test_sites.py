@@ -839,3 +839,214 @@ class TestLoaderNormalizesTheFile:
         # pin this. repr is chosen so the file is also correct for readers that
         # are not ours. See the FLOAT_FORMAT comment in the ingest script.
         assert ingest.FLOAT_FORMAT is None
+
+
+class TestIntegerCastsCannotWrap:
+    """Range, not just integrality. A narrowing cast wraps in silence."""
+
+    def test_ingest_rejects_a_cluster_too_large_for_int8(self):
+        with pytest.raises(ingest.IngestError, match="outside the range of int8"):
+            ingest.check_values_fit_dtype(
+                np.array([1.0, 200.0]), name="cluster", dtype=np.int8
+            )
+
+    @pytest.mark.parametrize("value", [128.0, -129.0])
+    def test_ingest_rejects_either_int8_boundary(self, value):
+        with pytest.raises(ingest.IngestError, match="wrap silently"):
+            ingest.check_values_fit_dtype(
+                np.array([value]), name="cluster", dtype=np.int8
+            )
+
+    def test_ingest_accepts_the_real_ranges(self, ingested):
+        for column in ("site_order", "cluster", "landcover", "lon_idx", "lat_idx"):
+            values = ingested["table"][column].to_numpy().astype(np.float64)
+            dtype = SITE_COLUMN_DTYPES[column]
+            ingest.check_values_fit_dtype(values, name=column, dtype=dtype)
+
+    def test_ingest_catches_a_value_that_would_saturate_int64(self):
+        # Integral and finite, so check_values_are_integral passes it.
+        with pytest.raises(ingest.IngestError, match="outside the range"):
+            ingest._as_integer([1e300], name="cluster", dtype=np.int8)
+
+    def _one_row(self, tmp_path, **overrides):
+        fields = {
+            "site_id": 1, "lon": -100.0, "lat": 40.0, "lon_idx": 9480,
+            "lat_idx": 3960, "site_name": "x", "site_order": 0, "cluster": 1,
+            "landcover": 1, "ameriflux_site_id": "",
+        }
+        fields.update(overrides)
+        path = tmp_path / "one.csv"
+        path.write_text(
+            ",".join(SITE_COLUMNS) + "\n"
+            + ",".join(str(fields[c]) for c in SITE_COLUMNS) + "\n"
+        )
+        return path
+
+    def test_loader_rejects_a_site_id_that_would_wrap_to_a_valid_one(self, tmp_path):
+        # 4294967297 wraps to 1 in int32 and would then pass every other check.
+        path = self._one_row(tmp_path, site_id=4294967297)
+        with pytest.raises(ValueError, match="outside the range of int32"):
+            load_sites(path)
+
+    def test_loader_rejects_an_out_of_range_landcover(self, tmp_path):
+        path = self._one_row(tmp_path, landcover=200)
+        with pytest.raises(ValueError, match="outside the range of int8"):
+            load_sites(path)
+
+    def test_loader_still_returns_the_narrow_dtypes(self, ingested):
+        for column, dtype in SITE_COLUMN_DTYPES.items():
+            if dtype is not str:
+                assert ingested["table"][column].dtype == np.dtype(dtype)
+
+
+class TestPredicateMaskAlignment:
+    def test_a_reordered_series_mask_selects_the_same_rows(self, ingested):
+        table = ingested["table"]
+        straight = select_sites(table, where=lambda t: t["lat"] > 40)
+        reordered = select_sites(
+            table, where=lambda t: (t["lat"] > 40).sort_index(ascending=False)
+        )
+        assert straight["site_id"].tolist() == reordered["site_id"].tolist()
+
+    def test_it_aligns_after_an_earlier_filter_left_a_gappy_index(self, ingested):
+        table = ingested["table"]
+        both = select_sites(
+            table, bbox=(-125, 24, -66, 50), where=lambda t: t["lat"] > 40
+        )
+        manual = table[
+            (table.lon >= -125) & (table.lon <= -66)
+            & (table.lat >= 24) & (table.lat <= 50) & (table.lat > 40)
+        ]
+        assert both["site_id"].tolist() == manual["site_id"].tolist()
+
+    def test_a_series_with_a_foreign_index_is_rejected(self, ingested):
+        table = ingested["table"].head(10)
+        with pytest.raises(ValueError, match="cannot be aligned"):
+            select_sites(
+                table,
+                where=lambda t: pd.Series(
+                    [True] * 10, index=t["site_id"].to_numpy() + 10_000
+                ),
+            )
+
+    def test_a_nullable_boolean_mask_without_missing_values_works(self, ingested):
+        table = ingested["table"].head(4)
+        chosen = select_sites(
+            table,
+            where=lambda t: pd.Series(
+                pd.array([True, False, True, False], dtype="boolean"), index=t.index
+            ),
+        )
+        assert len(chosen) == 2
+
+    def test_a_nullable_boolean_mask_with_missing_values_says_what_to_do(
+        self, ingested
+    ):
+        # The module's own documented pattern, on a labeling with a gap.
+        table = ingested["table"].head(4).copy()
+        table["pft"] = pd.array(["DBF", None, "ENF", "DBF"], dtype="string")
+        with pytest.raises(ValueError, match="fillna"):
+            select_sites(table, where=lambda t: t["pft"] == "DBF")
+
+    def test_the_documented_join_pattern_works_once_na_is_resolved(self, ingested):
+        table = ingested["table"].head(4).copy()
+        table["pft"] = pd.array(["DBF", None, "ENF", "DBF"], dtype="string")
+        chosen = select_sites(table, where=lambda t: (t["pft"] == "DBF").fillna(False))
+        assert len(chosen) == 2
+
+
+class TestSelectByIdShape:
+    def test_a_duplicated_table_is_rejected_rather_than_multiplying_rows(
+        self, ingested
+    ):
+        doubled = pd.concat([ingested["table"].head(3)] * 2, ignore_index=True)
+        with pytest.raises(ValueError, match="repeated site id"):
+            select_sites(doubled, ids=[1, 2])
+
+    def test_it_preserves_dtype_and_column_order(self, ingested):
+        table = ingested["table"]
+        by_id = select_sites(table, ids=[1, 2])
+        by_bbox = select_sites(table, bbox=(-125, 24, -66, 50))
+        assert by_id.dtypes["site_id"] == by_bbox.dtypes["site_id"] == np.int32
+        assert list(by_id.columns) == list(by_bbox.columns) == list(SITE_COLUMNS)
+
+    def test_it_preserves_column_order_on_a_joined_table(self, ingested):
+        labeling = pd.DataFrame({"pft": ["A", "B", "C"], "site_id": [1, 2, 3]})
+        joined = labeling.merge(ingested["table"], on="site_id")
+        assert list(select_sites(joined, ids=[1, 2]).columns) == list(joined.columns)
+
+    def test_float_ids_are_rejected_rather_than_truncated(self, ingested):
+        with pytest.raises(ValueError, match="whole numbers"):
+            select_sites(ingested["table"], ids=[5.9, 1.2])
+
+
+class TestIngestPublishesAtomically:
+    def test_a_failed_check_leaves_the_previous_table_in_place(
+        self, ingested, tmp_path, monkeypatch
+    ):
+        # Make the write lossy, so the round-trip check fails on a real file.
+        def lossy(table, path):
+            table.to_csv(path, index=False, float_format="%.4f")
+
+        monkeypatch.setattr(ingest, "write_site_table", lossy)
+        out = tmp_path / "sites.csv"
+        out.write_text("previous contents\n")
+        with pytest.raises(ingest.IngestError, match="did not survive"):
+            ingest.write_checked_site_table(ingested["table"].head(5), out)
+        # The canonical path still holds what it held before.
+        assert out.read_text() == "previous contents\n"
+        assert not list(tmp_path.glob("*.partial"))
+
+    def test_a_good_run_replaces_the_file_and_leaves_no_partial(
+        self, ingested, tmp_path
+    ):
+        out = tmp_path / "sites.csv"
+        out.write_text("previous contents\n")
+        ingest.write_checked_site_table(ingested["table"].head(5), out)
+        assert len(load_sites(out)) == 5
+        assert not list(tmp_path.glob("*.partial"))
+
+
+class TestAmerifluxMapRows:
+    def _map(self, tmp_path, text):
+        path = tmp_path / "map.csv"
+        path.write_text(text)
+        return path
+
+    def test_a_repeated_site_id_is_rejected_not_collapsed(self, tmp_path):
+        path = self._map(tmp_path, "Site_ID,index\nUS-AAA,10\nUS-BBB,10\nUS-CCC,11\n")
+        with pytest.raises(ingest.IngestError, match="more than once"):
+            ingest.read_ameriflux_map(path)
+
+    def test_a_blank_identifier_is_rejected_not_read_as_missing(self, tmp_path):
+        path = self._map(tmp_path, "Site_ID,index\n,10\nUS-CCC,12\n")
+        with pytest.raises(ingest.IngestError, match="blank Site_ID"):
+            ingest.read_ameriflux_map(path)
+
+    def test_the_real_map_passes(self):
+        assert len(ingest.read_ameriflux_map(SITE_ID_MAP)) == 185
+
+
+class TestMainReportsRatherThanTracebacks:
+    @pytest.mark.filterwarnings("ignore:Specified encoding:UserWarning")
+    def test_an_unknown_encoding_is_a_message_not_a_traceback(self, tmp_path, capsys):
+        status = ingest.main(
+            ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP),
+             "--encoding", "not-a-codec", "--out", str(tmp_path / "o.csv")]
+        )
+        assert status == 1
+        err = capsys.readouterr().err
+        assert "Traceback" not in err and "error: LookupError" in err
+
+    def test_an_unwritable_output_is_a_message_not_a_traceback(
+        self, tmp_path, capsys
+    ):
+        directory = tmp_path / "out.csv"
+        directory.mkdir()
+        status = ingest.main(
+            ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP),
+             "--out", str(directory)]
+        )
+        assert status == 1
+        err = capsys.readouterr().err
+        assert "Traceback" not in err and err.startswith("Reading")

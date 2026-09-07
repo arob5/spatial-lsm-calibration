@@ -297,8 +297,9 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     FileNotFoundError
         If the file is absent, with the command that produces it.
     ValueError
-        If the columns are not the expected set, the file holds no rows, or
-        ``site_id`` is not unique, not ascending, or below 1.
+        If the columns are not the expected set, the file holds no rows,
+        ``site_id`` is not unique, not ascending, or below 1, or any integer
+        column holds a value outside the range of its declared dtype.
 
     Notes
     -----
@@ -324,15 +325,22 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
             "`python scripts/ingest_sites.py` from the project environment"
         )
 
+    # Read integers wide, then narrow after checking. Reading straight into the
+    # declared widths wraps out-of-range values silently: a site_id of
+    # 4294967297 becomes 1 in int32 and then satisfies every check below.
+    wide = {
+        column: (np.int64 if np.issubdtype(np.dtype(dtype), np.integer) else dtype)
+        for column, dtype in SITE_COLUMN_DTYPES.items()
+    }
     table = pd.read_csv(
         csv_path,
-        dtype=SITE_COLUMN_DTYPES,
+        dtype=wide,
         keep_default_na=False,
         na_values=[],
         float_precision="round_trip",
     )
     _check_site_table(table, source=csv_path)
-    return table[list(SITE_COLUMNS)]
+    return table[list(SITE_COLUMNS)].astype(SITE_COLUMN_DTYPES)
 
 
 # ── site selection ────────────────────────────────────────────────────────────
@@ -451,19 +459,53 @@ def _check_site_table(table: pd.DataFrame, *, source: Path) -> None:
     if site_ids.min() < 1:
         raise ValueError(f"{source} holds a site_id below 1")
 
+    for column, dtype in SITE_COLUMN_DTYPES.items():
+        if not np.issubdtype(np.dtype(dtype), np.integer):
+            continue
+        info = np.iinfo(dtype)
+        values = table[column].to_numpy()
+        outside = np.flatnonzero((values < info.min) | (values > info.max))
+        if outside.size:
+            index = int(outside[0])
+            raise ValueError(
+                f"{source} row {index} has {column}={values[index]}, outside the "
+                f"range of {np.dtype(dtype).name} ({info.min}..{info.max})"
+            )
+
 
 def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
-    """Rows for *ids*, in the order given. Raises on an unknown identifier."""
-    wanted = [int(site_id) for site_id in ids]
-    known = set(sites["site_id"].tolist())
-    unknown = [site_id for site_id in wanted if site_id not in known]
+    """Rows for *ids*, in the order given. Raises on an unknown identifier.
+
+    Selection is positional rather than ``set_index(...).loc[...]``, which would
+    change ``site_id``'s dtype and move it to the first column -- so the frame
+    this path returns would differ in shape from the one every other path
+    returns, on a table with joined columns.
+    """
+    wanted = []
+    for site_id in ids:
+        as_int = int(site_id)
+        if as_int != site_id:
+            raise ValueError(f"ids must be whole numbers, got {site_id!r}")
+        wanted.append(as_int)
+    if len(set(wanted)) != len(wanted):
+        raise ValueError("ids holds duplicate site ids")
+
+    site_ids = sites["site_id"]
+    if site_ids.duplicated().any():
+        repeated = site_ids[site_ids.duplicated()].unique().tolist()
+        raise ValueError(
+            f"the table holds {len(repeated)} repeated site id(s) "
+            f"{sorted(repeated)[:10]}, so ids= would return more rows than it "
+            "was asked for; de-duplicate it first"
+        )
+
+    position = pd.Series(np.arange(len(sites)), index=site_ids.to_numpy())
+    unknown = [site_id for site_id in wanted if site_id not in position.index]
     if unknown:
         raise KeyError(
             f"{len(unknown)} site id(s) are not in the table: {unknown[:10]}"
         )
-    if len(set(wanted)) != len(wanted):
-        raise ValueError("ids holds duplicate site ids")
-    return sites.set_index("site_id").loc[wanted].reset_index()
+    return sites.iloc[position.loc[wanted].to_numpy()]
 
 
 def _bbox_mask(sites: pd.DataFrame, bbox: tuple[float, float, float, float]) -> np.ndarray:
@@ -485,8 +527,35 @@ def _bbox_mask(sites: pd.DataFrame, bbox: tuple[float, float, float, float]) -> 
 
 
 def _predicate_mask(sites: pd.DataFrame, where: Callable[[pd.DataFrame], object]) -> np.ndarray:
-    """The mask *where* returns, checked for shape and dtype before it is used."""
-    mask = np.asarray(where(sites))
+    """The mask *where* returns, aligned and checked before it is used.
+
+    A ``Series`` is aligned on its index, the way ``.loc`` would, rather than
+    being read positionally. Reading it positionally is the dangerous case: a
+    reordered mask of the right length then selects the wrong rows and every
+    shape and dtype check still passes.
+    """
+    result = where(sites)
+
+    if isinstance(result, pd.Series):
+        if not result.index.equals(sites.index):
+            if len(result) != len(sites) or set(result.index) != set(sites.index):
+                raise ValueError(
+                    "where returned a Series whose index does not match the "
+                    "table's, so it cannot be aligned; return a mask over the "
+                    "frame that was passed in"
+                )
+            result = result.reindex(sites.index)
+        if isinstance(result.dtype, pd.BooleanDtype):
+            if result.isna().any():
+                raise ValueError(
+                    f"where returned a nullable boolean mask with "
+                    f"{int(result.isna().sum())} missing value(s); pandas cannot "
+                    "index with those. Say what a missing label means, for "
+                    'example (t["pft"] == "DBF").fillna(False)'
+                )
+            result = result.astype(bool)
+
+    mask = np.asarray(result)
     if mask.dtype != bool:
         raise ValueError(
             f"where must return a boolean mask, got dtype {mask.dtype}"

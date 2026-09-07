@@ -16,11 +16,14 @@ the first multi-site calibration run (`test1`) is not yet configured. What
 exists here today:
 
 - the `src/sipnet_calibration/` module layout, whose modules carry the contract
-  each is to satisfy; only the site grid is implemented so far;
+  each is to satisfy; `sites.py` is implemented, the rest are not;
 - `SITE_GRID` and the conversions between coordinates and grid indices, in
   `sipnet_calibration.sites`, with tests;
+- `load_sites()` and `select_sites()` over the processed site table, with tests;
 - site metadata for the 8000-site pool, as a point shapefile under
-  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`).
+  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
+- `scripts/ingest_sites.py`, which turns those two into
+  `data/processed/sites/sites.csv`.
 
 The model definition, notation, algorithm design and plotting specification are
 maintained outside this repository and are not published with it. `CLAUDE.md`
