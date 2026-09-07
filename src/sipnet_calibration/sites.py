@@ -1,14 +1,21 @@
 """The site pool: its grid, its table, and site selection.
 
 The site table is read from ``data/processed/sites/sites.csv``, produced by
-``scripts/ingest_sites.py`` from the point shapefile in ``data/raw/sites/``, the
-PFT assignment table, and ``data/site_id_map.csv`` (Ameriflux ``Site_ID`` ->
-integer site id, exact matching). See ``data/README.md`` for the column set.
+``scripts/ingest_sites.py`` from the point shapefile in ``data/raw/sites/`` and
+``data/site_id_map.csv`` (Ameriflux ``Site_ID`` -> integer site id, exact
+matching). :data:`SITE_COLUMNS` is the column set; ``data/README.md`` describes
+what each column means.
+
+There is deliberately no plant functional type column. A PFT labeling is not an
+intrinsic property of a site: some calibrations will not use PFTs, others will
+use different labelings, and the labeling is likely to be varied
+experimentally. Labelings are their own product, ``processed/labelings/``, keyed
+on ``site_id``, and a caller joins one on before selecting.
 
 ``select_sites`` is the most-reused operation in the project and is deliberately
-not a plotting concern: subsetting by PFT, bounding box, data availability, or
-random sample happens once and the result is passed to adapters and plotters
-alike.
+not a plotting concern: subsetting by bounding box, by an arbitrary predicate,
+or to a random sample happens once and the result is passed to adapters and
+plotters alike.
 
 Note the sites are 8000 *irregular points* spanning 7-82 deg N and
 178 W-20 W. Only ~3640 fall inside a CONUS bounding box, so CONUS-only
@@ -22,11 +29,23 @@ disagree with each other.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
-__all__ = ["Grid", "SITE_GRID"]
+__all__ = [
+    "Grid",
+    "SITE_COLUMNS",
+    "SITE_COLUMN_DTYPES",
+    "SITE_GRID",
+    "default_sites_path",
+    "load_sites",
+    "select_sites",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,3 +212,297 @@ class Grid:
 #: are therefore the exact representation of a site's position and the stored
 #: coordinates are a lossy rendering of it.
 SITE_GRID = Grid(west=-179.0, south=7.0, n_lon=19080, n_lat=9360, cells_per_degree=120)
+
+
+# ── the site table ───────────────────────────────────────────────────────────
+
+#: Columns of ``processed/sites/sites.csv``, in order. The ingest script writes
+#: exactly these and :func:`load_sites` requires exactly these, so the two
+#: cannot drift apart.
+#:
+#: ``lon``/``lat`` are the stored coordinates at full precision and
+#: ``lon_idx``/``lat_idx`` are their exact representation on :data:`SITE_GRID`;
+#: the table carries both because the floats are a lossy rendering of the
+#: indices rather than the other way round. ``ameriflux_site_id`` is the empty
+#: string for the sites with no Ameriflux counterpart, which is most of them.
+SITE_COLUMNS = (
+    "site_id",
+    "lon",
+    "lat",
+    "lon_idx",
+    "lat_idx",
+    "site_name",
+    "site_order",
+    "cluster",
+    "landcover",
+    "ameriflux_site_id",
+)
+
+#: Dtype per column. The integer widths are the narrowest that hold the data,
+#: and the two identifier columns are read as text rather than left to
+#: inference, so that a site named ``NA`` stays a name.
+SITE_COLUMN_DTYPES = {
+    "site_id": np.int32,
+    "lon": np.float64,
+    "lat": np.float64,
+    "lon_idx": np.int32,
+    "lat_idx": np.int32,
+    "site_name": str,
+    "site_order": np.int32,
+    "cluster": np.int8,
+    "landcover": np.int8,
+    "ameriflux_site_id": str,
+}
+
+#: Environment variable naming the ``data/`` directory, for a checkout whose
+#: data lives elsewhere. Unset, the repository's own ``data/`` is used.
+DATA_ROOT_ENV_VAR = "SIPNET_CALIBRATION_DATA"
+
+
+def default_sites_path() -> Path:
+    """Where the site table is expected to be.
+
+    ``$SIPNET_CALIBRATION_DATA/processed/sites/sites.csv`` when that variable is
+    set, and otherwise the ``data/`` directory of this checkout. Experiments name
+    their paths in ``config.py`` rather than relying on this; it exists so that
+    tests, notebooks and the ingest script agree on one default.
+    """
+    root = os.environ.get(DATA_ROOT_ENV_VAR)
+    data_root = Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    return data_root / "processed" / "sites" / "sites.csv"
+
+
+def load_sites(path: Path | str | None = None) -> pd.DataFrame:
+    """Read the site table.
+
+    Parameters
+    ----------
+    path:
+        The CSV to read. Defaults to :func:`default_sites_path`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per site, the columns of :data:`SITE_COLUMNS` in that order with
+        the dtypes of :data:`SITE_COLUMN_DTYPES`, in ascending ``site_id`` order.
+        ``site_id`` is left as a column rather than made the index, so that the
+        frame is a table rather than a lookup; callers wanting lookup call
+        ``.set_index("site_id")``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file is absent, with the command that produces it.
+    ValueError
+        If the columns are not the expected set, or ``site_id`` is not unique.
+
+    Notes
+    -----
+    Two reader settings are load-bearing rather than stylistic.
+
+    ``keep_default_na`` is off and ``na_values`` is empty, so no site name or
+    identifier is reinterpreted as a missing value. Eight of the 8000 sites are
+    named literally ``NA``, and an unmapped ``ameriflux_site_id`` reads back as
+    the empty string it was written as. The cost is that the float columns must
+    never be blank, which the ingest script guarantees.
+
+    ``float_precision="round_trip"`` selects the exact float parser over the
+    fast one pandas uses by default. The fast parser is not exact: it reads
+    ``-93.287501017252595`` as -93.28750101725261, off by 1.4e-14. This column
+    is the exact geometry of the site pool, so that is not acceptable, and the
+    setting makes the read correct whatever decimal representation the file
+    happens to carry.
+    """
+    csv_path = Path(path) if path is not None else default_sites_path()
+    if not csv_path.is_file():
+        raise FileNotFoundError(
+            f"no site table at {csv_path}; build it with "
+            "`python3 scripts/ingest_sites.py`"
+        )
+
+    table = pd.read_csv(
+        csv_path,
+        dtype=SITE_COLUMN_DTYPES,
+        keep_default_na=False,
+        na_values=[],
+        float_precision="round_trip",
+    )
+    _check_site_table(table, source=csv_path)
+    return table[list(SITE_COLUMNS)]
+
+
+def _check_site_table(table: pd.DataFrame, *, source: Path) -> None:
+    """Raise unless *table* is a usable site table, naming what is wrong."""
+    found = set(table.columns)
+    expected = set(SITE_COLUMNS)
+    if found != expected:
+        missing = sorted(expected - found)
+        extra = sorted(found - expected)
+        raise ValueError(
+            f"{source} is not a site table: missing columns {missing}, "
+            f"unexpected columns {extra}"
+        )
+    site_ids = table["site_id"].to_numpy()
+    if site_ids.size == 0:
+        raise ValueError(f"{source} holds no rows")
+    if np.unique(site_ids).size != site_ids.size:
+        raise ValueError(f"{source} holds duplicate site_id values")
+    if np.any(np.diff(site_ids) <= 0):
+        raise ValueError(f"{source} is not in ascending site_id order")
+    if site_ids.min() < 1:
+        raise ValueError(f"{source} holds a site_id below 1")
+
+
+# ── site selection ──────────────────────────────────────────────────────────
+
+
+def select_sites(
+    sites: pd.DataFrame,
+    *,
+    ids: Iterable[int] | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
+    where: Callable[[pd.DataFrame], object] | None = None,
+    sample: int | None = None,
+    seed: int | None = None,
+) -> pd.DataFrame:
+    """A subset of the site table.
+
+    The filters compose, and are applied in the order below so that *sample* is
+    always a sample of what survived the rest.
+
+    Parameters
+    ----------
+    sites:
+        A site table, from :func:`load_sites`, or one with extra columns joined
+        on. Never modified.
+    ids:
+        Site identifiers to keep. The result is in the order given, since a
+        caller who lists identifiers usually means that order; every identifier
+        must exist.
+    bbox:
+        ``(west, south, east, north)`` in degrees, edges included. Longitudes are
+        negative throughout the pool, so ``(-125, 24, -66, 50)`` is the
+        conterminous US and ``(66, 24, 125, 50)`` selects nothing.
+    where:
+        A callable taking the table and returning a boolean mask over its rows —
+        anything ``.loc`` accepts. This is the general filter: it covers the
+        columns of the table and any joined on beside them.
+    sample:
+        Keep this many rows, drawn without replacement, in ascending ``site_id``
+        order. Fewer rows available is an error rather than a silent truncation.
+    seed:
+        Seed for *sample*. Passing one makes the draw reproducible; leaving it
+        out does not.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy, with the index reset.
+
+    Raises
+    ------
+    KeyError
+        If *ids* names a site the table does not hold.
+    ValueError
+        If *bbox* is malformed, *where* does not return a usable mask, or
+        *sample* exceeds the number of rows available.
+
+    Notes
+    -----
+    There is no ``pft=`` argument. PFT is not a column of the site table (see the
+    module docstring), so the argument could only mean "the labeling I have in
+    mind", which is exactly the experimental choice that must not be baked into
+    a shared key. Join a labeling and pass ``where``::
+
+        labeled = sites.merge(pd.read_csv(labeling), on="site_id")
+        select_sites(labeled, where=lambda t: t["pft"] == "DBF")
+
+    There is no ``has_nee=`` argument either, for a narrower reason: which
+    release of the gap-filled product to use is unsettled, so what the argument
+    would mean is not yet decided. ``where`` expresses it in the meantime, and
+    the caller states which release they mean.
+
+    Examples
+    --------
+    Twenty conterminous-US sites with an Ameriflux counterpart::
+
+        select_sites(
+            load_sites(),
+            bbox=(-125, 24, -66, 50),
+            where=lambda t: t["ameriflux_site_id"] != "",
+            sample=20,
+            seed=0,
+        )
+    """
+    selected = sites
+
+    if ids is not None:
+        selected = _select_by_id(selected, ids)
+    if bbox is not None:
+        selected = selected.loc[_bbox_mask(selected, bbox)]
+    if where is not None:
+        selected = selected.loc[_predicate_mask(selected, where)]
+    if sample is not None:
+        selected = _draw_sample(selected, sample, seed)
+
+    return selected.reset_index(drop=True)
+
+
+def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
+    """Rows for *ids*, in the order given. Raises on an unknown identifier."""
+    wanted = [int(site_id) for site_id in ids]
+    known = set(sites["site_id"].tolist())
+    unknown = [site_id for site_id in wanted if site_id not in known]
+    if unknown:
+        raise KeyError(
+            f"{len(unknown)} site id(s) are not in the table: {unknown[:10]}"
+        )
+    if len(set(wanted)) != len(wanted):
+        raise ValueError("ids holds duplicate site ids")
+    return sites.set_index("site_id").loc[wanted].reset_index()
+
+
+def _bbox_mask(sites: pd.DataFrame, bbox: tuple[float, float, float, float]) -> np.ndarray:
+    """A boolean mask of the sites inside *bbox*, edges included."""
+    if len(bbox) != 4:
+        raise ValueError(f"bbox must be (west, south, east, north), got {bbox!r}")
+    west, south, east, north = (float(value) for value in bbox)
+    if west > east:
+        raise ValueError(
+            f"bbox west {west} is east of east {east}; the pool spans "
+            f"{SITE_GRID.west} to {SITE_GRID.east}, all negative, and this "
+            "function does not wrap the antimeridian"
+        )
+    if south > north:
+        raise ValueError(f"bbox south {south} is north of north {north}")
+    lon = sites["lon"].to_numpy()
+    lat = sites["lat"].to_numpy()
+    return (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
+
+
+def _predicate_mask(sites: pd.DataFrame, where: Callable[[pd.DataFrame], object]) -> np.ndarray:
+    """The mask *where* returns, checked for shape and dtype before it is used."""
+    mask = np.asarray(where(sites))
+    if mask.dtype != bool:
+        raise ValueError(
+            f"where must return a boolean mask, got dtype {mask.dtype}"
+        )
+    if mask.shape != (len(sites),):
+        raise ValueError(
+            f"where returned a mask of shape {mask.shape}, expected "
+            f"{(len(sites),)}"
+        )
+    return mask
+
+
+def _draw_sample(sites: pd.DataFrame, sample: int, seed: int | None) -> pd.DataFrame:
+    """*sample* rows drawn without replacement, in ascending ``site_id`` order."""
+    if sample < 0:
+        raise ValueError(f"sample must not be negative, got {sample}")
+    if sample > len(sites):
+        raise ValueError(
+            f"asked for a sample of {sample} from {len(sites)} site(s) available"
+        )
+    rng = np.random.default_rng(seed)
+    positions = np.sort(rng.choice(len(sites), size=sample, replace=False))
+    return sites.iloc[positions].sort_values("site_id")

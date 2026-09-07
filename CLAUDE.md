@@ -68,8 +68,8 @@ Build new code at the target paths; do not extend the old ones.
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
-  sites.py                # SITE_GRID + grid conversions (implemented); site table,
-                          # select_sites(pft=, bbox=, has_nee=, ids=, sample=)
+  sites.py                # SITE_GRID + grid conversions, load_sites(),
+                          # select_sites(ids=, bbox=, where=, sample=, seed=)
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/
@@ -145,9 +145,12 @@ plotting code. The load-bearing rules:
   expecting it to work locally. `plotting/maps.py` is blocked on that decision.
   The source CRS is settled (WGS 84 geographic) and the grid is `SITE_GRID` in
   `sipnet_calibration.sites`; what is open is only the display projection.
-- `site` is the integer 1-8000; Ameriflux `Site_ID` and `pft` are non-dimension
-  coords on `site`. `member` is a 0-based integer, meaningful only within one
-  source. See the Data section above for the rules these imply.
+- `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
+  `site`. PFT is **not** site metadata and is not a column of the site table: a
+  labeling is an experimental choice, so labelings are their own product at
+  `data/processed/labelings/<name>.csv`, keyed on `site_id`, and a caller joins
+  one on before selecting. `member` is a 0-based integer, meaningful only within
+  one source. See the Data section above for the rules these imply.
 
 ## Key API facts (hard-won from source reading)
 

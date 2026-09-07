@@ -147,6 +147,24 @@ locations, being flux towers, research stations and soil cores, and 6907 points
 labeled `weighted_sample` drawn to fill out the sample. Named sites carry values
 forming a permutation of 1 to 1093; sampled points carry 0.
 
+Three properties of the attribute table matter to anything that reads it, and
+each is quiet when it goes wrong.
+
+`pts.cpg` declares UTF-8, and exactly two of the 8000 names carry non-ASCII
+bytes: site 7176 `Rayón (MX-Ray)` and site 7813
+`Estación Experimental Forestal Horizontes`. Read as latin-1 neither raises;
+both decode to a string that still looks like a plausible site label. The
+declared encoding is therefore asserted at ingest rather than left to a library
+default.
+
+Eight sites are named literally `NA`: 3392, 7484, 7542, 7589, 7595, 7607, 7616
+and 7617. A CSV reader using its default missing-value strings turns these into
+nulls, so the site table is read with `keep_default_na=False`.
+
+`cluster`, `landcover` and `site_order` are declared in the `.dbf` as numerics
+with 15 decimal places, so a reader returns them as floats even though every
+value is a whole number. They are cast at ingest rather than written through.
+
 `cluster` and `landcover` together appear to define the strata the sampled points
 were drawn from. Their cross-tabulation populates 35 of 48 cells, and the empty
 cells form a staircase rather than being scattered: clusters 1 to 3 span all eight
@@ -452,7 +470,7 @@ writes to `processed/`, and leaves its input unmodified. Run a script with
 
 | Script | Reads | Writes |
 |---|---|---|
-| `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv`, plant functional type table | `processed/sites/sites.csv` |
+| `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
 | `ingest_constraints.py` | R export of `obs.mean` and `obs.cov` | `processed/agb_lai.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -467,8 +485,9 @@ exchange is converted from umol CO2 m-2 s-1 to the canonical unit used
 throughout, so that nothing later in the pipeline has to reconcile units; and the
 redundant `ens_mean` column is dropped.
 
-> **Note 11.** Two plant functional type tables exist for the 8000 sites, with 16
-> and 3 distinct classes respectively, and the one to use has not been chosen.
+> **Note 11.** Plant functional type is not site metadata and is not a column
+> of the site table. Which labeling a calibration uses, and how many exist, is
+> an experimental choice; see Note 11 under Open questions.
 
 ---
 
@@ -501,12 +520,18 @@ translation, together with the grid indices:
 
 | Column | Type | Description |
 |---|---|---|
-| `site_id` | integer | Site identifier, 1-8000 |
-| `lon`, `lat` | float | Coordinates, written at 17 significant digits |
-| `lon_idx`, `lat_idx` | integer | Zero-based indices on the 1/120 degree grid |
-| `site_name` | string | From the shapefile's `site_names` |
-| `site_order` | integer | 0 for sampled points, 1-1093 for named sites |
-| `cluster`, `landcover` | integer | Sampling stratum and land cover class |
+| `site_id` | int32 | Site identifier, 1-8000, in shapefile record order |
+| `lon`, `lat` | float64 | Coordinates, at full round-trip precision |
+| `lon_idx`, `lat_idx` | int32 | Zero-based indices on the 1/120 degree grid |
+| `site_name` | string | From the shapefile's `site_names`, renamed to the singular |
+| `site_order` | int32 | 0 for sampled points, 1-1093 for named sites |
+| `cluster`, `landcover` | int8 | Sampling stratum and land cover class |
+| `ameriflux_site_id` | string | From `site_id_map.csv`; empty for the 7815 unmapped sites |
+
+There is deliberately no `pft` column; see Note 11. The Ameriflux column is
+renamed from that file's `Site_ID`, which is opaque about which of the two
+identifiers it means, and is provisional in that a newer release supersedes the
+map it comes from; see open question 7.
 
 The grid indices are the exact representation of a site's position: reconstructing
 `lon` and `lat` from them differs from the stored floats by up to 1.0e-6 degrees,
@@ -515,11 +540,24 @@ error in the reconstruction. Ingest writes floats at full round-trip precision a
 asserts that reading them back reproduces the shapefile values exactly, since CSV
 formatting is the one place this table can silently lose information.
 
+Two details of that round trip are load-bearing, and both were found by the
+assertion rather than by inspection, so `sipnet_calibration.sites.load_sites`
+exists to keep the reader and the writer in agreement rather than leaving the
+settings to each caller.
+
+- Coordinates are written by `repr`, the shortest string that reads back as the
+  same float64, and read with `float_precision="round_trip"`. The obvious
+  alternative, `float_format="%.17g"`, is wrong here: 17 significant digits
+  survive Python's `float()` but not the C parser `pandas.read_csv` uses by
+  default, which moved 1632 of the 8000 longitudes by about 1.4e-14 degrees.
+- Text columns are read with `keep_default_na=False`. Eight of the 8000 sites
+  are named literally `NA`, which a default read turns into a null, and an
+  unmapped `ameriflux_site_id` is an empty string rather than a missing value.
+
 The following conventions apply to every product.
 
-- `site` is the integer identifier 1-8000, never renumbered. Ameriflux
-  identifiers and plant functional type are non-dimension coordinates on `site`,
-  and are absent where unknown.
+- `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
+  identifier is a non-dimension coordinate on `site`, absent where unknown.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
   converted at the boundary.
@@ -622,11 +660,23 @@ known how they differ or which is authoritative. The directory in use is named a
 though its contents carry variable attributes, but no attributes are present on
 any object within it.
 
-**11. Choice of plant functional type table.** Two tables exist for the 8000
-sites, distinguishing 16 and 3 classes respectively, and neither is present in
-this repository. The `landcover` field of the site shapefile is a third
-classification, with eight classes, and is present. Which to use, and how the
-three relate, is open; see also Note 2.
+**11. Where plant functional type labelings live, and which to use.** Two
+tables exist for the 8000 sites, distinguishing 16 and 3 classes respectively,
+and neither is present in this repository. The `landcover` field of the site
+shapefile is a third classification, with eight classes, and is present.
+
+This is no longer a question about `ingest_sites.py`, which deliberately does
+not join a PFT table. A labeling is not an intrinsic property of a site: some
+calibrations will not use PFTs at all, others will use different labelings, and
+the labeling is likely to be varied experimentally, so carrying one in the site
+table would bake an experimental choice into a key shared with collaborators.
+
+The agreed destination is a separate processed product, one file per labeling at
+`processed/labelings/<name>.csv`, keyed on `site_id`, so that several can
+coexist and a calibration names the one it used. Nothing is implemented yet
+because the tables are not in the repository. What remains open is which
+labelings to pull down and how the three classifications relate; see also
+Note 2.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial-condition member *i* and the calibration ensemble were drawn jointly

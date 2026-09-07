@@ -141,3 +141,528 @@ class TestLonLatToIndex:
         # three orders of magnitude below half a cell, so rounding is unambiguous
         half_cell = 0.5 / SITE_GRID.cells_per_degree
         assert STORED_COORD_TOLERANCE_DEG < half_cell / 100
+
+
+# ── the site table and the ingest script ─────────────────────────────────────
+#
+# These read the tracked shapefile directly. It is the only input under
+# data/raw/ that is in version control, which is what makes the ingest script
+# testable end to end here rather than only on the SCC.
+
+import hashlib
+import importlib.util
+import sys
+from pathlib import Path
+
+import pandas as pd
+import shapefile
+
+from sipnet_calibration.sites import (
+    SITE_COLUMN_DTYPES,
+    SITE_COLUMNS,
+    load_sites,
+    select_sites,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RAW_SITES = REPO_ROOT / "data" / "raw" / "sites"
+SHAPEFILE = RAW_SITES / "pts.shp"
+SITE_ID_MAP = REPO_ROOT / "data" / "site_id_map.csv"
+
+N_SITES = 8000
+
+# The two records carrying non-ASCII bytes. Under latin-1 both decode to
+# plausible-looking strings rather than raising, which is why the encoding is
+# asserted rather than left to a default.
+UTF8_SITES = {
+    7176: "Rayón (MX-Ray)",
+    7813: "Estación Experimental Forestal Horizontes",
+}
+
+# Sites named literally "NA", which a default read_csv turns into nulls.
+NA_NAMED_SITES = [3392, 7484, 7542, 7589, 7595, 7607, 7616, 7617]
+
+
+def _load_ingest_module():
+    """Import ``scripts/ingest_sites.py``, which is a script, not a package."""
+    path = REPO_ROOT / "scripts" / "ingest_sites.py"
+    spec = importlib.util.spec_from_file_location("ingest_sites", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["ingest_sites"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+ingest = _load_ingest_module()
+
+
+def _shapefile_coordinates():
+    """``(lon, lat)`` float64 arrays straight from the shapefile geometry."""
+    with shapefile.Reader(str(SHAPEFILE)) as reader:
+        shapes = reader.shapes()
+    lon = np.array([shape.points[0][0] for shape in shapes], dtype=np.float64)
+    lat = np.array([shape.points[0][1] for shape in shapes], dtype=np.float64)
+    return lon, lat
+
+
+def _digest_raw_inputs() -> dict[str, str]:
+    """SHA-256 of every file the script reads, to prove it wrote none of them."""
+    paths = sorted(RAW_SITES.iterdir()) + [SITE_ID_MAP]
+    return {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in paths
+        if path.is_file()
+    }
+
+
+@pytest.fixture(scope="module")
+def ingested(tmp_path_factory):
+    """Run the ingest script into a temporary directory and load the result.
+
+    Scoped to the module because the run reads 8000 records and the tests all
+    interrogate the same output. Writes nowhere near ``data/processed/``.
+    """
+    out = tmp_path_factory.mktemp("processed") / "sites" / "sites.csv"
+    before = _digest_raw_inputs()
+    status = ingest.main(
+        ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP), "--out", str(out)]
+    )
+    assert status == 0
+    return {
+        "path": out,
+        "table": load_sites(out),
+        "raw_digests_before": before,
+    }
+
+
+class TestIngestScript:
+    def test_help_works(self, capsys):
+        with pytest.raises(SystemExit) as caught:
+            ingest.parse_args(["--help"])
+        assert caught.value.code == 0
+        assert "sites.csv" in capsys.readouterr().out
+
+    def test_writes_eight_thousand_rows(self, ingested):
+        assert len(ingested["table"]) == N_SITES
+
+    def test_creates_its_output_directory(self, ingested):
+        # The fixture's --out named a directory that did not exist; the run had
+        # to create it, as it must on a fresh clone where data/processed/ is
+        # absent.
+        assert ingested["path"].is_file()
+        assert ingested["path"].parent.name == "sites"
+
+    def test_leaves_its_inputs_untouched(self, ingested):
+        assert _digest_raw_inputs() == ingested["raw_digests_before"]
+
+    def test_columns_are_the_agreed_set_in_order(self, ingested):
+        assert tuple(ingested["table"].columns) == SITE_COLUMNS
+
+    def test_there_is_no_pft_column(self, ingested):
+        # A PFT labeling is an experimental choice and must not be baked into
+        # the shared key; it is its own product keyed on site_id.
+        assert "pft" not in ingested["table"].columns
+
+
+class TestSiteIdentifiers:
+    def test_site_id_is_one_to_eight_thousand_in_record_order(self, ingested):
+        # Every other product joins on this and the identifiers are not ours to
+        # renumber, so a permutation would be as much a failure as a gap.
+        assert np.array_equal(
+            ingested["table"]["site_id"].to_numpy(), np.arange(1, N_SITES + 1)
+        )
+
+    def test_the_check_rejects_a_permuted_site_id(self):
+        permuted = np.arange(1, N_SITES + 1)
+        permuted[[0, 1]] = permuted[[1, 0]]
+        with pytest.raises(ingest.IngestError, match="record order"):
+            ingest.check_site_ids_are_the_full_range(permuted)
+
+    def test_the_check_rejects_a_gap(self):
+        with pytest.raises(ingest.IngestError, match="7999 value"):
+            ingest.check_site_ids_are_the_full_range(np.arange(1, N_SITES))
+
+    def test_ameriflux_identifiers_cover_the_mapped_sites_only(self, ingested):
+        mapped = ingested["table"]["ameriflux_site_id"] != ""
+        assert int(mapped.sum()) == 185
+        expected = pd.read_csv(SITE_ID_MAP)
+        joined = ingested["table"].set_index("site_id")["ameriflux_site_id"]
+        for row in expected.itertuples():
+            assert joined.loc[row.index] == row.Site_ID
+
+    def test_duplicate_ameriflux_identifiers_are_rejected(self):
+        with pytest.raises(ingest.IngestError, match="duplicate Ameriflux"):
+            ingest.check_ameriflux_map_is_usable(
+                {1: "US-Ha1", 2: "US-Ha1"}, site_ids=np.array([1, 2])
+            )
+
+    def test_an_ameriflux_row_naming_an_unknown_site_is_rejected(self):
+        with pytest.raises(ingest.IngestError, match="not in the shapefile"):
+            ingest.check_ameriflux_map_is_usable(
+                {99999: "US-Ha1"}, site_ids=np.array([1, 2])
+            )
+
+
+class TestCoordinateRoundTrip:
+    """The point of the exercise: CSV is where this table can lose precision."""
+
+    def test_coordinates_are_bitwise_equal_to_the_shapefile(self, ingested):
+        lon, lat = _shapefile_coordinates()
+        table = ingested["table"]
+        # Exact equality on float64, not approx: any difference at all is a
+        # loss, and 1632 longitudes moved under float_format="%.17g".
+        assert np.array_equal(table["lon"].to_numpy(), lon)
+        assert np.array_equal(table["lat"].to_numpy(), lat)
+
+    def test_every_coordinate_is_reproduced_exactly_by_repr(self, ingested):
+        # The written form is repr, so this is the property the file relies on.
+        for value in ingested["table"]["lon"].to_numpy().tolist():
+            assert float(repr(value)) == value
+
+    def test_seventeen_significant_digits_would_not_survive_the_default_parser(
+        self, tmp_path
+    ):
+        # Records why FLOAT_FORMAT is None. If a future pandas makes the fast
+        # parser exact this test fails, which is the right way to find out.
+        lon, _ = _shapefile_coordinates()
+        frame = pd.DataFrame({"lon": lon})
+        path = tmp_path / "wide.csv"
+        frame.to_csv(path, index=False, float_format="%.17g")
+        loose = pd.read_csv(path)["lon"].to_numpy()
+        exact = pd.read_csv(path, float_precision="round_trip")["lon"].to_numpy()
+        assert not np.array_equal(loose, lon)
+        assert np.array_equal(exact, lon)
+
+    def test_grid_indices_resolve_the_stored_coordinates(self, ingested):
+        table = ingested["table"]
+        lon_idx, lat_idx = SITE_GRID.lonlat_to_index(
+            table["lon"].to_numpy(), table["lat"].to_numpy()
+        )
+        assert np.array_equal(lon_idx, table["lon_idx"].to_numpy())
+        assert np.array_equal(lat_idx, table["lat_idx"].to_numpy())
+
+    def test_grid_index_pairs_are_distinct(self, ingested):
+        pairs = ingested["table"][["lon_idx", "lat_idx"]].to_numpy()
+        assert np.unique(pairs, axis=0).shape[0] == N_SITES
+
+    def test_the_distinctness_check_rejects_a_shared_cell(self):
+        with pytest.raises(ingest.IngestError, match="share a grid cell"):
+            ingest.check_index_pairs_are_distinct(
+                np.array([5, 5]), np.array([7, 7])
+            )
+
+    def test_indices_reconstruct_the_coordinates_to_the_stored_tolerance(self, ingested):
+        table = ingested["table"]
+        lon, lat = SITE_GRID.index_to_lonlat(
+            table["lon_idx"].to_numpy(), table["lat_idx"].to_numpy()
+        )
+        assert np.abs(lon - table["lon"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
+        assert np.abs(lat - table["lat"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
+
+
+class TestTextRoundTrip:
+    def test_the_two_utf8_site_names_survive(self, ingested):
+        names = ingested["table"].set_index("site_id")["site_name"]
+        for site_id, expected in UTF8_SITES.items():
+            assert names.loc[site_id] == expected
+
+    def test_those_names_are_not_ascii(self, ingested):
+        # Guards the test above: if the expected strings were ever replaced with
+        # their latin-1 misreadings the assertions would still pass, and this
+        # would not.
+        names = ingested["table"].set_index("site_id")["site_name"]
+        for site_id in UTF8_SITES:
+            assert not names.loc[site_id].isascii()
+        assert sum(not name.isascii() for name in ingested["table"]["site_name"]) == 2
+
+    @pytest.mark.filterwarnings("ignore:Specified encoding:UserWarning")
+    def test_latin_one_corrupts_them_quietly(self):
+        # The failure this asserts about is silent: neither read raises.
+        with shapefile.Reader(str(SHAPEFILE), encoding="utf-8") as reader:
+            correct = reader.record(7175)["site_names"]
+        with shapefile.Reader(str(SHAPEFILE), encoding="latin-1") as reader:
+            wrong = reader.record(7175)["site_names"]
+        assert correct == UTF8_SITES[7176]
+        assert wrong != correct
+        assert wrong.isascii() is False or wrong == "RayÃ³n (MX-Ray)"
+
+    @pytest.mark.filterwarnings("ignore:Specified encoding:UserWarning")
+    def test_reading_as_latin_one_is_rejected(self):
+        contents = ingest.read_shapefile(SHAPEFILE, encoding="latin-1")
+        with pytest.raises(ingest.IngestError, match="declares"):
+            ingest.check_encoding_is_utf8(contents, encoding_used="latin-1")
+
+    def test_a_missing_cpg_is_rejected(self):
+        contents = ingest.ShapefileContents(
+            declared_encoding=None,
+            field_names=(),
+            records=(),
+            shape_types=(),
+            points=(),
+        )
+        with pytest.raises(ingest.IngestError, match="undeclared"):
+            ingest.check_encoding_is_utf8(contents, encoding_used="utf-8")
+
+    def test_the_cpg_declares_utf8(self):
+        assert ingest.read_declared_encoding(SHAPEFILE) == "utf-8"
+
+    def test_sites_named_na_are_names_and_not_nulls(self, ingested):
+        names = ingested["table"].set_index("site_id")["site_name"]
+        for site_id in NA_NAMED_SITES:
+            assert names.loc[site_id] == "NA"
+        assert ingested["table"]["site_name"].notna().all()
+
+    def test_a_default_read_csv_would_null_them(self, ingested):
+        # Why load_sites passes keep_default_na=False. Not a property of our
+        # code, so it is asserted against pandas rather than against us.
+        naive = pd.read_csv(ingested["path"])
+        assert naive["site_name"].isna().sum() == len(NA_NAMED_SITES)
+
+
+class TestDbfNumerics:
+    """``cluster``, ``landcover`` and ``site_order`` arrive as floats."""
+
+    def test_they_are_stored_as_declared_decimals_in_the_dbf(self):
+        with shapefile.Reader(str(SHAPEFILE)) as reader:
+            declared = {field[0]: field for field in reader.fields[1:]}
+            record = reader.record(0)
+        for name in ("cluster", "landcover", "site_order"):
+            assert declared[name][3] == 15, "the .dbf still declares 15 decimals"
+            assert isinstance(record[name], float), "so pyshp still returns floats"
+
+    def test_they_are_written_as_integers(self, ingested):
+        table = ingested["table"]
+        for name in ("cluster", "landcover", "site_order"):
+            assert np.issubdtype(table[name].dtype, np.integer)
+
+    def test_their_ranges_are_the_documented_ones(self, ingested):
+        table = ingested["table"]
+        assert sorted(table["cluster"].unique()) == list(range(1, 7))
+        assert sorted(table["landcover"].unique()) == list(range(1, 9))
+
+    def test_site_order_is_zero_or_a_rank(self, ingested):
+        site_order = ingested["table"]["site_order"].to_numpy()
+        assert int((site_order == 0).sum()) == 6907
+        assert np.array_equal(np.sort(site_order[site_order != 0]), np.arange(1, 1094))
+
+    def test_a_non_integral_value_is_rejected(self):
+        with pytest.raises(ingest.IngestError, match="non-integral"):
+            ingest.check_values_are_integral(np.array([1.0, 2.5]), name="cluster")
+
+    def test_a_repeated_rank_is_rejected(self):
+        with pytest.raises(ingest.IngestError, match="permutation"):
+            ingest.check_site_order_is_a_permutation(np.array([1, 1, 0]))
+
+
+class TestShapeChecks:
+    def test_every_shape_is_a_single_point(self, ingested):
+        contents = ingest.read_shapefile(SHAPEFILE, encoding="utf-8")
+        ingest.check_shapes_are_single_points(contents)
+        ingest.check_record_count(contents)
+        assert len(contents.points) == N_SITES
+        assert all(len(points) == 1 for points in contents.points)
+
+    def test_a_multipoint_shape_is_rejected(self):
+        contents = ingest.ShapefileContents(
+            declared_encoding="utf-8",
+            field_names=(),
+            records=(),
+            shape_types=(int(shapefile.POINT),),
+            points=(((0.0, 0.0), (1.0, 1.0)),),
+        )
+        with pytest.raises(ingest.IngestError, match="exactly one point"):
+            ingest.check_shapes_are_single_points(contents)
+
+    def test_a_non_point_shape_is_rejected(self):
+        contents = ingest.ShapefileContents(
+            declared_encoding="utf-8",
+            field_names=(),
+            records=(),
+            shape_types=(int(shapefile.POLYGON),),
+            points=(((0.0, 0.0),),),
+        )
+        with pytest.raises(ingest.IngestError, match="not POINT"):
+            ingest.check_shapes_are_single_points(contents)
+
+    def test_a_short_record_count_is_rejected(self):
+        contents = ingest.ShapefileContents(
+            declared_encoding="utf-8",
+            field_names=("site_id",),
+            records=({"site_id": 1},),
+            shape_types=(int(shapefile.POINT),),
+            points=(((0.0, 0.0),),),
+        )
+        with pytest.raises(ingest.IngestError, match=f"expected {N_SITES} records"):
+            ingest.check_record_count(contents)
+
+    def test_a_missing_dbf_field_is_rejected(self):
+        contents = ingest.ShapefileContents(
+            declared_encoding="utf-8",
+            field_names=("site_id",),
+            records=(),
+            shape_types=(),
+            points=(),
+        )
+        with pytest.raises(ingest.IngestError, match="missing field"):
+            ingest.check_fields_are_present(
+                contents, required=("site_id", "site_names")
+            )
+
+
+class TestLoadSites:
+    def test_dtypes_are_the_declared_ones(self, ingested):
+        table = ingested["table"]
+        for column, dtype in SITE_COLUMN_DTYPES.items():
+            if dtype is str:
+                # pandas returns object or StringDtype depending on its version;
+                # what matters is that every value is a str.
+                assert all(isinstance(value, str) for value in table[column])
+            else:
+                assert table[column].dtype == np.dtype(dtype)
+
+    def test_a_missing_file_names_the_script_that_builds_it(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="ingest_sites.py"):
+            load_sites(tmp_path / "absent.csv")
+
+    def test_a_table_with_the_wrong_columns_is_rejected(self, tmp_path):
+        path = tmp_path / "wrong.csv"
+        pd.DataFrame({"site_id": [1], "lon": [0.0]}).to_csv(path, index=False)
+        with pytest.raises(ValueError, match="missing columns"):
+            load_sites(path)
+
+    def test_a_duplicate_site_id_is_rejected(self, ingested, tmp_path):
+        path = tmp_path / "duplicated.csv"
+        table = ingested["table"].head(3).copy()
+        table.loc[2, "site_id"] = 1
+        table.to_csv(path, index=False)
+        with pytest.raises(ValueError, match="duplicate site_id"):
+            load_sites(path)
+
+    def test_an_unsorted_table_is_rejected(self, ingested, tmp_path):
+        path = tmp_path / "unsorted.csv"
+        ingested["table"].head(3).iloc[::-1].to_csv(path, index=False)
+        with pytest.raises(ValueError, match="ascending site_id"):
+            load_sites(path)
+
+    def test_the_default_path_honors_the_environment_variable(self, monkeypatch, tmp_path):
+        from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
+
+        monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
+        assert default_sites_path() == tmp_path / "processed" / "sites" / "sites.csv"
+
+    def test_the_default_path_falls_back_to_the_checkout(self, monkeypatch):
+        from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
+
+        monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
+        assert default_sites_path() == (
+            REPO_ROOT / "data" / "processed" / "sites" / "sites.csv"
+        )
+
+
+class TestSelectSites:
+    def test_no_filters_returns_everything(self, ingested):
+        assert len(select_sites(ingested["table"])) == N_SITES
+
+    def test_ids_are_returned_in_the_order_given(self, ingested):
+        chosen = select_sites(ingested["table"], ids=[8000, 1, 4000])
+        assert chosen["site_id"].tolist() == [8000, 1, 4000]
+
+    def test_an_unknown_id_raises(self, ingested):
+        with pytest.raises(KeyError, match="not in the table"):
+            select_sites(ingested["table"], ids=[1, 99999])
+
+    def test_a_repeated_id_raises(self, ingested):
+        with pytest.raises(ValueError, match="duplicate site ids"):
+            select_sites(ingested["table"], ids=[1, 1])
+
+    def test_bbox_selects_the_conterminous_us(self, ingested):
+        # 3640 of the 8000 sites, per data/README.md.
+        conus = select_sites(ingested["table"], bbox=(-125, 24, -66, 50))
+        assert len(conus) == 3640
+        assert conus["lon"].between(-125, -66).all()
+        assert conus["lat"].between(24, 50).all()
+
+    def test_bbox_includes_its_edges(self, ingested):
+        table = ingested["table"]
+        row = table.iloc[0]
+        exact = select_sites(table, bbox=(row.lon, row.lat, row.lon, row.lat))
+        assert row.site_id in exact["site_id"].tolist()
+
+    def test_a_positive_longitude_bbox_selects_nothing(self, ingested):
+        # The whole pool is in the western hemisphere; this is the mistake the
+        # docstring warns about, and it should return empty rather than raise.
+        assert len(select_sites(ingested["table"], bbox=(66, 24, 125, 50))) == 0
+
+    def test_an_inverted_bbox_raises(self, ingested):
+        with pytest.raises(ValueError, match="east of"):
+            select_sites(ingested["table"], bbox=(-66, 24, -125, 50))
+        with pytest.raises(ValueError, match="north of"):
+            select_sites(ingested["table"], bbox=(-125, 50, -66, 24))
+
+    def test_where_filters_on_any_column(self, ingested):
+        mapped = select_sites(
+            ingested["table"], where=lambda t: t["ameriflux_site_id"] != ""
+        )
+        assert len(mapped) == 185
+
+    def test_where_filters_on_a_joined_column(self, ingested):
+        # The replacement for pft=: a labeling is joined on by the caller.
+        table = ingested["table"].head(10).copy()
+        labeling = pd.DataFrame(
+            {"site_id": table["site_id"], "pft": ["DBF"] * 4 + ["ENF"] * 6}
+        )
+        labeled = table.merge(labeling, on="site_id")
+        assert len(select_sites(labeled, where=lambda t: t["pft"] == "DBF")) == 4
+
+    def test_where_must_return_a_boolean_mask(self, ingested):
+        with pytest.raises(ValueError, match="boolean mask"):
+            select_sites(ingested["table"], where=lambda t: t["site_id"])
+
+    def test_where_must_return_one_value_per_row(self, ingested):
+        with pytest.raises(ValueError, match="shape"):
+            select_sites(ingested["table"], where=lambda t: np.array([True, False]))
+
+    def test_sample_is_reproducible_under_a_seed(self, ingested):
+        first = select_sites(ingested["table"], sample=20, seed=0)
+        second = select_sites(ingested["table"], sample=20, seed=0)
+        assert first["site_id"].tolist() == second["site_id"].tolist()
+        assert len(first) == 20
+
+    def test_a_different_seed_gives_a_different_sample(self, ingested):
+        first = select_sites(ingested["table"], sample=50, seed=0)
+        second = select_sites(ingested["table"], sample=50, seed=1)
+        assert first["site_id"].tolist() != second["site_id"].tolist()
+
+    def test_sample_is_in_ascending_site_id_order(self, ingested):
+        drawn = select_sites(ingested["table"], sample=100, seed=3)
+        assert drawn["site_id"].is_monotonic_increasing
+
+    def test_sample_draws_without_replacement(self, ingested):
+        drawn = select_sites(ingested["table"], sample=200, seed=4)
+        assert drawn["site_id"].nunique() == 200
+
+    def test_an_oversized_sample_raises_rather_than_truncating(self, ingested):
+        with pytest.raises(ValueError, match="from 8000 site"):
+            select_sites(ingested["table"], sample=N_SITES + 1)
+
+    def test_filters_compose_with_sample_applied_last(self, ingested):
+        chosen = select_sites(
+            ingested["table"],
+            bbox=(-125, 24, -66, 50),
+            where=lambda t: t["ameriflux_site_id"] != "",
+            sample=20,
+            seed=0,
+        )
+        assert len(chosen) == 20
+        assert (chosen["ameriflux_site_id"] != "").all()
+        assert chosen["lon"].between(-125, -66).all()
+
+    def test_the_input_table_is_not_modified(self, ingested):
+        table = ingested["table"]
+        before = table.copy()
+        select_sites(table, bbox=(-125, 24, -66, 50), sample=10, seed=0)
+        pd.testing.assert_frame_equal(table, before)
+
+    def test_the_index_is_reset(self, ingested):
+        chosen = select_sites(ingested["table"], bbox=(-125, 24, -66, 50))
+        assert chosen.index.tolist() == list(range(len(chosen)))
