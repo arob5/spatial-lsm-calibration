@@ -1,4 +1,4 @@
-"""The site pool: its grid, its table, and site selection.
+"""Helpers for working with sites and their geography.
 
 The site table is read from ``data/processed/sites/sites.csv``, produced by
 ``scripts/ingest_sites.py`` from the point shapefile in ``data/raw/sites/`` and
@@ -7,24 +7,18 @@ matching). :data:`SITE_COLUMNS` is the column set; ``data/README.md`` describes
 what each column means.
 
 There is deliberately no plant functional type column. A PFT labeling is not an
-intrinsic property of a site: some calibrations will not use PFTs, others will
-use different labelings, and the labeling is likely to be varied
-experimentally. Labelings are their own product, ``processed/labelings/``, keyed
-on ``site_id``, and a caller joins one on before selecting.
+intrinsic property of a site: calibrations may or may not use PFTs, and different
+PFT labelings can be applied to the same site pool. Labelings are their own product, 
+``processed/labelings/``, keyed on ``site_id``, and a caller joins one on before 
+selecting.
 
-``select_sites`` is the most-reused operation in the project and is deliberately
-not a plotting concern: subsetting by bounding box, by an arbitrary predicate,
-or to a random sample happens once and the result is passed to adapters and
-plotters alike.
+``select_sites`` is a site selection heper: subsetting by bounding box, by an 
+arbitrary predicate or to a random sample.
 
 Note the sites are 8000 *irregular points* spanning 7-82 deg N and
-178 W-20 W. Only ~3640 fall inside a CONUS bounding box, so CONUS-only
-assumptions are wrong.
+178 W-20 W. Only ~3640 fall inside a CONUS bounding box.
 
-This module also defines the geographic lattice the sites sit on. That lives
-here, beside the site table, because the grid is a property of the site pool and
-because the constants and the two conversions that use them must not be able to
-disagree with each other.
+This module also defines the geographic lattice the sites sit on.
 """
 
 from __future__ import annotations
