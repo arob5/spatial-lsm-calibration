@@ -16,11 +16,14 @@ the first multi-site calibration run (`test1`) is not yet configured. What
 exists here today:
 
 - the `src/sipnet_calibration/` module layout, whose modules carry the contract
-  each is to satisfy; only the site grid is implemented so far;
+  each is to satisfy; `sites.py` is implemented, the rest are not;
 - `SITE_GRID` and the conversions between coordinates and grid indices, in
   `sipnet_calibration.sites`, with tests;
+- `load_sites()` and `select_sites()` over the processed site table, with tests;
 - site metadata for the 8000-site pool, as a point shapefile under
-  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`).
+  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
+- `scripts/ingest_sites.py`, which turns those two into
+  `data/processed/sites/sites.csv`.
 
 The model definition, notation, algorithm design and plotting specification are
 maintained outside this repository and are not published with it. `CLAUDE.md`
@@ -48,6 +51,22 @@ Requires [uv](https://docs.astral.sh/uv/). The interpreter is pinned to 3.14 in
 ```bash
 uv sync
 ```
+
+Then activate the environment, and stay in it for everything below:
+
+```bash
+source .venv/bin/activate
+```
+
+**Everything in this repository is run from inside that environment** — scripts,
+tests and notebooks alike. They all import `sipnet_calibration` and its
+dependencies from `.venv`, so a system `python` fails on the first import rather
+than doing something subtly different. `which python` should print a path ending
+in `.venv/bin/python`.
+
+`uv run <command>` is the equivalent for a one-off without activating, and is
+what the commands in this README use so that they work either way. Notebooks are
+the one case needing more than this; see [Running notebooks](#running-notebooks).
 
 Two companion packages are installed as editable locals from sibling
 directories, so they must be checked out alongside this repository:
@@ -78,7 +97,7 @@ in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
 
 ```
 src/sipnet_calibration/
-  sites.py                # SITE_GRID, site table, select_sites(pft=, bbox=, has_nee=, ...)
+  sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics

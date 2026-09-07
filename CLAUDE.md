@@ -28,10 +28,12 @@ duplicate its content here — add data facts there instead.
 
 Facts specific to this working copy, which the README deliberately does not carry:
 
-- **Only a subset of `data/raw/` is present locally.** Drivers and initial
-  conditions exist for site 1, member 1 only; the NEE csv and the AGB/LAI
-  `.Rdata` files are complete. The full dataset lives on Boston University's SCC.
-  Anything that needs to hold across all 8000 sites cannot be verified here.
+- **Only a subset of `data/raw/` is present locally.** Drivers exist for
+  `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; initial conditions for site 1 members
+  1 and 2 and site 27 member 94. The NEE csv, the AGB/LAI `.Rdata` files and the
+  site shapefile are complete. The full dataset lives on Boston University's
+  SCC. Anything that needs to hold across all 8000 sites cannot be verified
+  here.
 - The local files are real copies, not symlinks. On SCC they should be symlinks.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
@@ -60,16 +62,15 @@ Operational rules that follow from the data and are easy to get wrong in code:
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
-`logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. As of
-2026-08-28 the reorg is in progress: the repo still has a flat
-`sipnet_calibration/` package containing only the superseded `plotting.py`.
-Build new code at the target paths; do not extend the old ones.
+`logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
+reorg has landed, so the paths below are the real ones; `sites.py` is
+implemented and the other modules carry the contract each is to satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
-  sites.py                # SITE_GRID + grid conversions (implemented); site table,
-                          # select_sites(pft=, bbox=, has_nee=, ids=, sample=)
+  sites.py                # SITE_GRID + grid conversions, load_sites(),
+                          # select_sites(ids=, bbox=, where=, sample=, seed=)
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/
@@ -145,9 +146,12 @@ plotting code. The load-bearing rules:
   expecting it to work locally. `plotting/maps.py` is blocked on that decision.
   The source CRS is settled (WGS 84 geographic) and the grid is `SITE_GRID` in
   `sipnet_calibration.sites`; what is open is only the display projection.
-- `site` is the integer 1-8000; Ameriflux `Site_ID` and `pft` are non-dimension
-  coords on `site`. `member` is a 0-based integer, meaningful only within one
-  source. See the Data section above for the rules these imply.
+- `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
+  `site`. PFT is **not** site metadata and is not a column of the site table: a
+  labeling is an experimental choice, so labelings are their own product at
+  `data/processed/labelings/<name>.csv`, keyed on `site_id`, and a caller joins
+  one on before selecting. `member` is a 0-based integer, meaningful only within
+  one source. See the Data section above for the rules these imply.
 
 ## Key API facts (hard-won from source reading)
 

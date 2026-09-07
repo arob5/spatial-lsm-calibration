@@ -117,9 +117,11 @@ information at all.
 
 Geometry is in geographic coordinates on the WGS 84 datum, declared by `pts.prj`.
 Records are ordered by descending latitude. Coordinates span -178.754 to -20.013
-in longitude and 7.013 to 82.546 in latitude; the extremes are site 731 in the
-western Aleutians, site 1 in northeast Greenland, and site 8000 at 7.01 north in
-northern South America. 3640 of the 8000 sites fall inside a conterminous-US
+in longitude and 7.013 to 82.546 in latitude. The four extremes are site 731 at
+68.51 N on the Chukchi coast (westernmost, 178.75 W), site 115 at 77.09 N in
+northeast Greenland (easternmost, 20.01 W), site 1 at 82.55 N, also in northeast
+Greenland (northernmost), and site 8000 at 7.01 N in northern South America
+(southernmost). 3640 of the 8000 sites fall inside a conterminous-US
 bounding box of 24-50 north and 125-66 west, so analyses restricted to that region
 use a little under half the pool. The remainder are distributed as follows.
 
@@ -146,6 +148,24 @@ The attribute table in `pts.dbf` holds five fields.
 locations, being flux towers, research stations and soil cores, and 6907 points
 labeled `weighted_sample` drawn to fill out the sample. Named sites carry values
 forming a permutation of 1 to 1093; sampled points carry 0.
+
+Three properties of the attribute table matter to anything that reads it, and
+each is quiet when it goes wrong.
+
+`pts.cpg` declares UTF-8, and exactly two of the 8000 names carry non-ASCII
+bytes: site 7176 `Rayón (MX-Ray)` and site 7813
+`Estación Experimental Forestal Horizontes`. Read as latin-1 neither raises;
+both decode to a string that still looks like a plausible site label. The
+declared encoding is therefore asserted at ingest rather than left to a library
+default.
+
+Eight sites are named literally `NA`: 3392, 7484, 7542, 7589, 7595, 7607, 7616
+and 7617. A CSV reader using its default missing-value strings turns these into
+nulls, so the site table is read with `keep_default_na=False`.
+
+`cluster`, `landcover` and `site_order` are declared in the `.dbf` as numerics
+with 15 decimal places, so a reader returns them as floats even though every
+value is a whole number. They are cast at ingest rather than written through.
 
 `cluster` and `landcover` together appear to define the strata the sampled points
 were drawn from. Their cross-tabulation populates 35 of 48 cells, and the empty
@@ -189,10 +209,36 @@ validation test, some lacked the half-hourly data the gap-filling requires, and
 some resolved to the same model site identifier as another site. An updated
 release of the product covers more sites; see Note 7.
 
+#### Co-located instruments
+
+**A mapped identifier can stand for a location where several towers operate, and
+the tower this file selects is not always the one the site name suggests.**
+
+The shapefile's `site_names` field also carries Ameriflux identifiers. 57 of the
+185 mapped sites embed one in parentheses; 53 match this file and 4 do not.
+
+| `site_id` | `site_name` | This file | Embedded in the name |
+|---|---|---|---|
+| 4326 | Park Falls WLEF (US-PFa) | `US-PFp` | `US-PFa` |
+| 4705 | Bartlett Experimental Forest (US-Bar) | `US-xBR` | `US-Bar` |
+| 5584 | Blandy Experimental Farm (US-Bef) | `US-xBL` | `US-Bef` |
+| 5758 | Sherman Island (US-Snd) | `US-Sne` | `US-Snd` |
+
+These are co-located instruments, not transcription errors. 35 of the 185 mapped
+identifiers begin `US-x`, as do two of the four disagreements; taking that prefix
+to mean NEON, those two are a NEON tower and an Ameriflux tower sharing a cell.
+The other two pair Ameriflux towers at one location. A further 163 unmapped sites
+embed an identifier in their name, so the name field is not a fallback for the
+mapping.
+
+The choice of instrument is made here, per site, and recorded nowhere else. See
+Note 3, and Note 7 on the release that supersedes this map.
+
 > **Note 3.** Because more than one Ameriflux site can fall within a single grid
 > cell, several may resolve to the same model site identifier. This file contains
 > no repeated identifiers, so such cases appear to have been dropped rather than
-> merged; how they should be handled is undecided.
+> merged; how they should be handled is undecided. The table above is the visible
+> trace: cells where a choice between co-located towers was made silently.
 
 ---
 
@@ -202,7 +248,7 @@ Site coordinates are geographic, on the WGS 84 datum (EPSG:4326). Two independen
 statements agree on this: the [NALCR]
 [dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html),
 and `raw/sites/pts.prj`, which declares WGS 84 and no projected coordinate system.
-Note that `pts.prj` is written in the Esri flavour of WKT and carries no
+Note that `pts.prj` is written in the Esri flavor of WKT and carries no
 `AUTHORITY` token, so a reader that resolves codes strictly will not recognize it
 as EPSG:4326 without matching on names.
 
@@ -271,9 +317,9 @@ Columns follow the 14-column layout defined by [pySIPNET].
 | 7 | `tsoil` | deg C | Mean soil temperature |
 | 8 | `par` | mol m-2 | Photosynthetically active radiation, integrated over the timestep |
 | 9 | `precip` | mm | Total precipitation over the timestep |
-| 10 | `vpd` | Pa | Vapour pressure deficit |
-| 11 | `vpd_soil` | Pa | Soil-air vapour pressure deficit |
-| 12 | `vpress` | Pa | Vapour pressure in the canopy airspace |
+| 10 | `vpd` | Pa | Vapor pressure deficit |
+| 11 | `vpd_soil` | Pa | Soil-air vapor pressure deficit |
+| 12 | `vpress` | Pa | Vapor pressure in the canopy airspace |
 | 13 | `wspd` | m s-1 | Mean wind speed |
 | 14 | `soil_wetness` | | Legacy column, ignored by SIPNET; constant 0.6 |
 
@@ -374,8 +420,10 @@ and any per-site statistic must account for very unequal sample sizes.
 > several absent here, but carries only the ensemble mean. Which release to use is
 > undecided.
 
-> **Note 8.** In about a quarter of rows, all 25 ensemble members are identical:
-> 7225 of 29,225 rows at `US-UMB`, where the median spread elsewhere is 0.116.
+> **Note 8.** In about a third of rows, all 25 ensemble members are identical:
+> 10,273 of 29,225 rows at `US-UMB`. Across the remaining rows the median
+> standard deviation over members is 0.147 and the median range is 0.565; over
+> all rows the median standard deviation is 0.067.
 > Since the members differ only in the driver realization used for gap-filling,
 > this is consistent with a directly measured timestep, which requires no
 > gap-filling, but that has not been confirmed.
@@ -446,13 +494,14 @@ aboveground biomass.
 
 ## Conversion to processed form
 
-Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`,
-writes to `processed/`, and leaves its input unmodified. Run a script with
+Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
+(and, for `ingest_sites.py`, the tracked `site_id_map.csv` beside it), writes to
+`processed/`, and leaves its input unmodified. Run a script with
 `--help` for usage.
 
 | Script | Reads | Writes |
 |---|---|---|
-| `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv`, plant functional type table | `processed/sites/sites.csv` |
+| `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
 | `ingest_constraints.py` | R export of `obs.mean` and `obs.cov` | `processed/agb_lai.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -467,14 +516,16 @@ exchange is converted from umol CO2 m-2 s-1 to the canonical unit used
 throughout, so that nothing later in the pipeline has to reconcile units; and the
 redundant `ens_mean` column is dropped.
 
-> **Note 11.** Two plant functional type tables exist for the 8000 sites, with 16
-> and 3 distinct classes respectively, and the one to use has not been chosen.
+> **Note 11.** Plant functional type is not site metadata and is not a column
+> of the site table. Which labeling a calibration uses, and how many exist, is
+> an experimental choice; see Note 11 under Open questions.
 
 ---
 
 ## Processed format
 
-The ingest scripts are not yet written; this section records the intended output.
+`ingest_sites.py` is written; the rest of this section records the intended
+output of scripts not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
 is chosen to load directly as such: an `xarray.DataArray` per variable, with
@@ -497,29 +548,55 @@ dask. The site table is CSV instead because it is small, tabular and read by
 people as often as by code.
 
 `sites/sites.csv` carries every field of the shapefile, so that nothing is lost in
-translation, together with the grid indices:
+translation, together with the grid indices and the Ameriflux identifier:
 
 | Column | Type | Description |
 |---|---|---|
-| `site_id` | integer | Site identifier, 1-8000 |
-| `lon`, `lat` | float | Coordinates, written at 17 significant digits |
-| `lon_idx`, `lat_idx` | integer | Zero-based indices on the 1/120 degree grid |
-| `site_name` | string | From the shapefile's `site_names` |
-| `site_order` | integer | 0 for sampled points, 1-1093 for named sites |
-| `cluster`, `landcover` | integer | Sampling stratum and land cover class |
+| `site_id` | int32 | Site identifier, 1-8000, in shapefile record order |
+| `lon`, `lat` | float64 | Coordinates, at full round-trip precision |
+| `lon_idx`, `lat_idx` | int32 | Zero-based indices on the 1/120 degree grid |
+| `site_name` | string | From the shapefile's `site_names`, renamed to the singular |
+| `site_order` | int32 | 0 for sampled points, 1-1093 for named sites |
+| `cluster`, `landcover` | int8 | Sampling stratum and land cover class |
+| `ameriflux_site_id` | string | From `site_id_map.csv`; empty for the 7815 unmapped sites |
+
+A `.dbf` null becomes the empty string in `site_name`, matching what an empty
+`ameriflux_site_id` means, and is an error in any numeric column: the integer
+columns cannot hold a missing value, and none of them has a spare code for one.
+
+There is deliberately no `pft` column; see Note 11. The Ameriflux column is
+renamed from that file's `Site_ID`, which is opaque about which of the two
+identifiers it means, and is provisional in that a newer release supersedes the
+map it comes from; see open question 7.
 
 The grid indices are the exact representation of a site's position: reconstructing
-`lon` and `lat` from them differs from the stored floats by up to 1.0e-6 degrees,
+`lon` and `lat` from them differs from the stored floats by up to 1.02e-6 degrees,
 which is the departure of the stored values from true cell centers rather than an
 error in the reconstruction. Ingest writes floats at full round-trip precision and
 asserts that reading them back reproduces the shapefile values exactly, since CSV
 formatting is the one place this table can silently lose information.
 
+Two details of that round trip are load-bearing, and both were found by the
+assertion rather than by inspection, so `sipnet_calibration.sites.load_sites`
+exists to keep the reader and the writer in agreement rather than leaving the
+settings to each caller.
+
+- Coordinates are read with `float_precision="round_trip"`. **This, not the
+  write format, is what makes the round trip exact.** The C parser
+  `pandas.read_csv` uses by default is inexact for either candidate format:
+  1496 of the 8000 longitudes come back wrong from the `repr` output actually
+  written, and 1632 from `float_format="%.17g"`, in both cases by about
+  1.4e-14 degrees. `repr` is written because it is shortest and is exact under
+  Python's own `float()`, so the file is right for any reader that parses
+  correctly.
+- Text columns are read with `keep_default_na=False`. Eight of the 8000 sites
+  are named literally `NA`, which a default read turns into a null, and an
+  unmapped `ameriflux_site_id` is an empty string rather than a missing value.
+
 The following conventions apply to every product.
 
-- `site` is the integer identifier 1-8000, never renumbered. Ameriflux
-  identifiers and plant functional type are non-dimension coordinates on `site`,
-  and are absent where unknown.
+- `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
+  identifier is a non-dimension coordinate on `site`, absent where unknown.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
   converted at the boundary.
@@ -571,8 +648,9 @@ likelihood, whether they are averaged first, and how the observation error
 covariance should treat them. This is a modeling question rather than a data one,
 and is unresolved.
 
-**4. Driver ensemble size.** Only one member is available locally, so the size of
-the driver ensemble has not been confirmed. The gap-filling behind [GAPFILL] used
+**4. Driver ensemble size.** Only three driver directories are available locally
+(`ERA5_1_1`, `ERA5_1_2`, `ERA5_27_5`, so members 1, 2 and 5 across sites 1 and
+27), which is not enough to confirm the size of the driver ensemble. The gap-filling behind [GAPFILL] used
 25 driver members, and the reanalysis output carries 100, so neither figure can be
 assumed for the driver files themselves.
 
@@ -585,8 +663,11 @@ Tracked as
 
 **6. Initial-condition variable sets and ensemble size.** The variable set is
 reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
-appearing in some. Only one file is available locally, so neither the full set of
-combinations nor the ensemble size has been confirmed against the data.
+appearing in some. Three files are available locally — site 1 members 1 and 2,
+and site 27 member 94 — and none of the three carries either variable, so the
+full set of combinations is still unconfirmed. Member index 94 does put a floor
+of 94 on the initial-condition ensemble size. `scripts/survey_ic_variables.py`
+answers both questions where the files are.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217
@@ -622,11 +703,23 @@ known how they differ or which is authoritative. The directory in use is named a
 though its contents carry variable attributes, but no attributes are present on
 any object within it.
 
-**11. Choice of plant functional type table.** Two tables exist for the 8000
-sites, distinguishing 16 and 3 classes respectively, and neither is present in
-this repository. The `landcover` field of the site shapefile is a third
-classification, with eight classes, and is present. Which to use, and how the
-three relate, is open; see also Note 2.
+**11. Where plant functional type labelings live, and which to use.** Two
+tables exist for the 8000 sites, distinguishing 16 and 3 classes respectively,
+and neither is present in this repository. The `landcover` field of the site
+shapefile is a third classification, with eight classes, and is present.
+
+This is no longer a question about `ingest_sites.py`, which deliberately does
+not join a PFT table. A labeling is not an intrinsic property of a site: some
+calibrations will not use PFTs at all, others will use different labelings, and
+the labeling is likely to be varied experimentally, so carrying one in the site
+table would bake an experimental choice into a key shared with collaborators.
+
+The agreed destination is a separate processed product, one file per labeling at
+`processed/labelings/<name>.csv`, keyed on `site_id`, so that several can
+coexist and a calibration names the one it used. Nothing is implemented yet
+because the tables are not in the repository. What remains open is which
+labelings to pull down and how the three classifications relate; see also
+Note 2.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial-condition member *i* and the calibration ensemble were drawn jointly
