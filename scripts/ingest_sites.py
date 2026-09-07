@@ -4,7 +4,7 @@
 The point shapefile in ``data/raw/sites/`` defines the 8000-site pool. It is the
 only input under ``data/raw/`` that is tracked in version control, so this is the
 one ingest script that runs end to end on a laptop. Every other product joins
-against its output on ``site_id``, which is why it comes first.
+against its output on ``site_id``.
 
 The output carries every field of the shapefile, so nothing is lost in
 translation, plus the grid indices from
