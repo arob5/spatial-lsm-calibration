@@ -248,7 +248,7 @@ Site coordinates are geographic, on the WGS 84 datum (EPSG:4326). Two independen
 statements agree on this: the [NALCR]
 [dataset guide](https://daacweb-prod.ornl.gov/CMS/guides/Land_C_Reanalysis_NorthAmerica.html),
 and `raw/sites/pts.prj`, which declares WGS 84 and no projected coordinate system.
-Note that `pts.prj` is written in the Esri flavour of WKT and carries no
+Note that `pts.prj` is written in the Esri flavor of WKT and carries no
 `AUTHORITY` token, so a reader that resolves codes strictly will not recognize it
 as EPSG:4326 without matching on names.
 
@@ -317,9 +317,9 @@ Columns follow the 14-column layout defined by [pySIPNET].
 | 7 | `tsoil` | deg C | Mean soil temperature |
 | 8 | `par` | mol m-2 | Photosynthetically active radiation, integrated over the timestep |
 | 9 | `precip` | mm | Total precipitation over the timestep |
-| 10 | `vpd` | Pa | Vapour pressure deficit |
-| 11 | `vpd_soil` | Pa | Soil-air vapour pressure deficit |
-| 12 | `vpress` | Pa | Vapour pressure in the canopy airspace |
+| 10 | `vpd` | Pa | Vapor pressure deficit |
+| 11 | `vpd_soil` | Pa | Soil-air vapor pressure deficit |
+| 12 | `vpress` | Pa | Vapor pressure in the canopy airspace |
 | 13 | `wspd` | m s-1 | Mean wind speed |
 | 14 | `soil_wetness` | | Legacy column, ignored by SIPNET; constant 0.6 |
 

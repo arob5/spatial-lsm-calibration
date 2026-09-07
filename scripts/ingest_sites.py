@@ -42,8 +42,10 @@ Asserts before writing, each in a named check with its own message:
   ``.dbf`` declares them as numerics with 15 decimals, so they arrive as floats
   and must be cast rather than written through);
 * ``site_order``'s non-zero values are a permutation of 1..1093;
-* every coordinate resolves on ``SITE_GRID``, to 8000 distinct index pairs;
-* no duplicate Ameriflux identifier, and every mapped site id exists.
+* every coordinate is finite and resolves on ``SITE_GRID``, to 8000 distinct
+  index pairs;
+* the Ameriflux map is non-empty, maps each site id once, has no blank
+  identifier, and names only site ids that exist.
 
 Asserts after writing:
 
@@ -86,6 +88,7 @@ from sipnet_calibration.sites import (
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
     SITE_GRID,
+    default_sites_path,
     load_sites,
 )
 
@@ -94,7 +97,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 DEFAULT_SHAPEFILE = REPO_ROOT / "data" / "raw" / "sites" / "pts.shp"
 DEFAULT_SITE_ID_MAP = REPO_ROOT / "data" / "site_id_map.csv"
-DEFAULT_OUT = REPO_ROOT / "data" / "processed" / "sites" / "sites.csv"
+#: Where the table is written, which is exactly where
+#: :func:`sipnet_calibration.sites.load_sites` will look for it -- including
+#: when ``$SIPNET_CALIBRATION_DATA`` redirects both. Hard-coding the checkout
+#: path here meant that, with that variable set, a default run wrote one place
+#: and every consumer read another, and the run still reported success.
+DEFAULT_OUT = default_sites_path()
 
 #: The encoding ``pts.cpg`` is expected to declare, normalized by
 #: :func:`normalize_encoding`.
@@ -288,6 +296,7 @@ def build_site_table(
 
     lon = np.array([points[0][0] for points in contents.points], dtype=np.float64)
     lat = np.array([points[0][1] for points in contents.points], dtype=np.float64)
+    check_coordinates_are_finite(lon, lat)
     # Raises if any coordinate is further than the default tolerance from a cell
     # center, which would mean the wrong grid or the wrong CRS.
     lon_idx, lat_idx = SITE_GRID.lonlat_to_index(lon, lat)
@@ -588,6 +597,23 @@ def check_site_order_is_a_permutation(site_order: np.ndarray) -> None:
         )
 
 
+def check_coordinates_are_finite(lon: np.ndarray, lat: np.ndarray) -> None:
+    """Fail on a NaN or infinite coordinate, naming the record it came from.
+
+    ``SITE_GRID.lonlat_to_index`` rejects these too, but it works on the whole
+    array and cannot say which site is at fault. It is also the wrong place to
+    learn about it: a NaN here means the geometry is damaged, not that the grid
+    or the CRS is wrong, and the two want different responses.
+    """
+    bad = np.flatnonzero(~(np.isfinite(lon) & np.isfinite(lat)))
+    if bad.size:
+        index = int(bad[0])
+        raise IngestError(
+            f"{bad.size} record(s) have a non-finite coordinate, first at record "
+            f"index {index}: lon={lon[index]!r}, lat={lat[index]!r}"
+        )
+
+
 def check_index_pairs_are_distinct(lon_idx: np.ndarray, lat_idx: np.ndarray) -> None:
     """Fail unless the grid index pairs identify the sites uniquely.
 
@@ -613,6 +639,11 @@ def check_ameriflux_rows_are_one_per_site(frame: pd.DataFrame, *, source: Path) 
     which is a decision to make rather than to discard -- see the co-located
     instruments section of ``data/README.md``.
     """
+    if frame.empty:
+        raise IngestError(
+            f"{source} holds no rows; a header-only map is a truncated or wrongly "
+            "pathed file, not a site pool with no Ameriflux counterparts"
+        )
     repeated = frame["index"][frame["index"].duplicated()].unique().tolist()
     if repeated:
         raise IngestError(

@@ -173,11 +173,20 @@ class Grid:
         Raises
         ------
         ValueError
-            If any coordinate lies further than *tol* from a cell center, or the
-            resulting index falls outside the grid.
+            If any coordinate is not finite, lies further than *tol* from a cell
+            center, or resolves to an index outside the grid.
         """
         x = np.asarray(lon, dtype=float)
         y = np.asarray(lat, dtype=float)
+        # Checked first because NaN defeats both guards below: np.rint(nan) is 0
+        # on this platform, and every comparison against NaN is False, so a NaN
+        # coordinate would silently resolve to a real cell.
+        non_finite = ~(np.isfinite(x) & np.isfinite(y))
+        if np.any(non_finite):
+            n = int(np.count_nonzero(non_finite))
+            raise ValueError(
+                f"{n} coordinate(s) are not finite, so they are not on the grid"
+            )
         jf = (x - self.west) * self.cells_per_degree - 0.5
         kf = (y - self.south) * self.cells_per_degree - 0.5
         j = np.rint(jf).astype(np.int64)

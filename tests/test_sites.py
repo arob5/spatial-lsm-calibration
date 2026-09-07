@@ -1050,3 +1050,71 @@ class TestMainReportsRatherThanTracebacks:
         assert status == 1
         err = capsys.readouterr().err
         assert "Traceback" not in err and err.startswith("Reading")
+
+
+class TestNonFiniteCoordinates:
+    """NaN defeated both of lonlat_to_index's guards and resolved to a real cell."""
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_the_grid_rejects_a_non_finite_coordinate(self, bad):
+        lon, lat = SITE_GRID.index_to_lonlat(100, 100)
+        with pytest.raises(ValueError, match="not finite"):
+            SITE_GRID.lonlat_to_index(bad, lat)
+        with pytest.raises(ValueError, match="not finite"):
+            SITE_GRID.lonlat_to_index(lon, bad)
+
+    def test_the_grid_rejects_one_bad_value_in_an_array(self):
+        lon, lat = SITE_GRID.index_to_lonlat(np.arange(5), np.arange(5))
+        lon = lon.copy()
+        lon[3] = np.nan
+        with pytest.raises(ValueError, match="1 coordinate"):
+            SITE_GRID.lonlat_to_index(lon, lat)
+
+    def test_ingest_names_the_offending_record(self):
+        import dataclasses
+
+        contents = ingest.read_shapefile(SHAPEFILE, encoding="utf-8")
+        points = list(contents.points)
+        points[7] = ((float("nan"), 45.0125),)
+        damaged = dataclasses.replace(contents, points=tuple(points))
+        with pytest.raises(ingest.IngestError, match="record index 7"):
+            ingest.build_site_table(
+                damaged, ingest.read_ameriflux_map(SITE_ID_MAP)
+            )
+
+    def test_the_real_shapefile_is_finite_throughout(self, ingested):
+        table = ingested["table"]
+        assert np.isfinite(table["lon"].to_numpy()).all()
+        assert np.isfinite(table["lat"].to_numpy()).all()
+
+
+class TestEmptyAmerifluxMap:
+    def test_a_header_only_map_is_rejected(self, tmp_path):
+        path = tmp_path / "empty.csv"
+        path.write_text("Site_ID,index\n")
+        with pytest.raises(ingest.IngestError, match="holds no rows"):
+            ingest.read_ameriflux_map(path)
+
+    def test_a_one_row_map_is_accepted(self, tmp_path):
+        path = tmp_path / "one.csv"
+        path.write_text("Site_ID,index\nUS-Ha1,4102\n")
+        assert ingest.read_ameriflux_map(path) == {4102: "US-Ha1"}
+
+
+class TestDefaultOutputAgreesWithTheLoader:
+    def test_the_script_writes_where_the_loader_reads(self):
+        from sipnet_calibration.sites import default_sites_path
+
+        assert ingest.DEFAULT_OUT == default_sites_path()
+
+    def test_both_follow_the_environment_variable(self, monkeypatch, tmp_path):
+        # The script's default was hard-coded to the checkout, so with this set
+        # a default run wrote one place and every consumer read another, and
+        # still reported success. DEFAULT_OUT is bound at import, so the module
+        # is re-executed here rather than reloaded.
+        from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
+
+        monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
+        fresh = _load_ingest_module()
+        assert fresh.DEFAULT_OUT == default_sites_path()
+        assert str(tmp_path) in str(fresh.DEFAULT_OUT)
