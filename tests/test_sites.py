@@ -153,6 +153,7 @@ class TestLonLatToIndex:
 
 import hashlib
 import importlib.util
+import pathlib
 import sys
 from pathlib import Path
 
@@ -1118,3 +1119,111 @@ class TestDefaultOutputAgreesWithTheLoader:
         fresh = _load_ingest_module()
         assert fresh.DEFAULT_OUT == default_sites_path()
         assert str(tmp_path) in str(fresh.DEFAULT_OUT)
+
+
+@pytest.fixture(scope="module")
+def shapefile_with_nulls(tmp_path_factory):
+    """A three-record shapefile carrying .dbf nulls, written with pyshp.
+
+    The real shapefile has no nulls, so null handling cannot be exercised
+    against it. This is the smallest thing that can carry one.
+    """
+    base = str(tmp_path_factory.mktemp("nulls") / "t")
+    writer = shapefile.Writer(base)
+    writer.field("cluster", "N", 24, 15)
+    writer.field("landcover", "N", 24, 15)
+    writer.field("site_order", "N", 24, 15)
+    writer.field("site_names", "C", 115)
+    writer.field("site_id", "N", 18, 0)
+    writer.point(-100.0, 40.0)
+    writer.record(1, 1, 0, "a real name", 1)
+    writer.point(-100.0, 41.0)
+    writer.record(None, 1, 0, "", 2)          # null numeric, blank name
+    writer.point(-100.0, 42.0)
+    writer.record(1, 1, 0, "another name", None)  # null site_id
+    writer.close()
+    pathlib.Path(base + ".cpg").write_text("UTF-8")
+    return ingest.read_shapefile(pathlib.Path(base + ".shp"), encoding="utf-8")
+
+
+class TestDbfNulls:
+    """A null means the empty string in text, and is an error in a numeric."""
+
+    def test_a_null_numeric_names_the_field_and_the_record(self, shapefile_with_nulls):
+        with pytest.raises(ingest.IngestError, match="cluster is null in 1 record"):
+            ingest.numeric_field(shapefile_with_nulls.records, "cluster")
+
+    def test_a_null_site_id_is_reported_as_a_null(self, shapefile_with_nulls):
+        # Not as a TypeError from int(None), and not as "non-finite values".
+        with pytest.raises(ingest.IngestError, match="site_id is null"):
+            ingest.numeric_field(shapefile_with_nulls.records, "site_id")
+
+    def test_the_message_says_it_must_be_resolved_in_the_source(
+        self, shapefile_with_nulls
+    ):
+        with pytest.raises(ingest.IngestError, match="resolved in the source"):
+            ingest.numeric_field(shapefile_with_nulls.records, "cluster")
+
+    def test_a_blank_name_reads_as_the_empty_string(self, shapefile_with_nulls):
+        names = ingest.text_field(shapefile_with_nulls.records, "site_names")
+        assert names == ["a real name", "", "another name"]
+
+    def test_a_null_name_becomes_empty_not_the_string_None(self):
+        # str(None) == 'None' is a four-character site name that looks real.
+        records = ({"site_names": None}, {"site_names": "real"})
+        assert ingest.text_field(records, "site_names") == ["", "real"]
+
+    def test_undecoded_bytes_are_rejected_rather_than_stringified(self):
+        records = ({"site_names": b"Ray\xc3\xb3n"},)
+        with pytest.raises(ingest.IngestError, match="undecoded bytes"):
+            ingest.text_field(records, "site_names")
+
+    def test_a_non_text_value_is_rejected(self):
+        with pytest.raises(ingest.IngestError, match="not text"):
+            ingest.text_field(({"site_names": 42},), "site_names")
+
+    def test_the_real_shapefile_has_no_nulls_in_any_field(self):
+        contents = ingest.read_shapefile(SHAPEFILE, encoding="utf-8")
+        for field in ("site_id", "site_order", "cluster", "landcover"):
+            ingest.numeric_field(contents.records, field)
+        names = ingest.text_field(contents.records, "site_names")
+        assert len(names) == N_SITES
+        assert all(isinstance(name, str) for name in names)
+
+    def test_an_empty_site_name_survives_the_round_trip(self, tmp_path, ingested):
+        # The empty string has to come back as a name, not as a null, or the
+        # convention this fix relies on does not hold.
+        table = ingested["table"].head(3).copy()
+        table.loc[0, "site_name"] = ""
+        path = tmp_path / "blank.csv"
+        ingest.write_site_table(table, path)
+        ingest.check_csv_round_trip(table, path)
+        assert load_sites(path).loc[0, "site_name"] == ""
+
+    def test_build_site_table_writes_an_empty_name_for_a_null(self):
+        # Through the real path, at the real record count: pyshp's Writer
+        # stringifies None for a character field, so a null one cannot be
+        # created by writing a fixture and has to be injected here.
+        import dataclasses
+
+        contents = ingest.read_shapefile(SHAPEFILE, encoding="utf-8")
+        records = list(contents.records)
+        records[5] = {**records[5], "site_names": None}
+        damaged = dataclasses.replace(contents, records=tuple(records))
+        table = ingest.build_site_table(
+            damaged, ingest.read_ameriflux_map(SITE_ID_MAP)
+        )
+        assert table.loc[5, "site_name"] == ""
+        assert table.loc[5, "site_name"] != "None"
+
+    def test_build_site_table_reports_a_null_numeric(self):
+        import dataclasses
+
+        contents = ingest.read_shapefile(SHAPEFILE, encoding="utf-8")
+        records = list(contents.records)
+        records[9] = {**records[9], "cluster": None}
+        damaged = dataclasses.replace(contents, records=tuple(records))
+        with pytest.raises(ingest.IngestError, match="cluster is null"):
+            ingest.build_site_table(
+                damaged, ingest.read_ameriflux_map(SITE_ID_MAP)
+            )

@@ -560,6 +560,10 @@ translation, together with the grid indices and the Ameriflux identifier:
 | `cluster`, `landcover` | int8 | Sampling stratum and land cover class |
 | `ameriflux_site_id` | string | From `site_id_map.csv`; empty for the 7815 unmapped sites |
 
+A `.dbf` null becomes the empty string in `site_name`, matching what an empty
+`ameriflux_site_id` means, and is an error in any numeric column: the integer
+columns cannot hold a missing value, and none of them has a spare code for one.
+
 There is deliberately no `pft` column; see Note 11. The Ameriflux column is
 renamed from that file's `Site_ID`, which is opaque about which of the two
 identifiers it means, and is provisional in that a newer release supersedes the

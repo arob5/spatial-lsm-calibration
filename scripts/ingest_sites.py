@@ -45,7 +45,17 @@ Asserts before writing, each in a named check with its own message:
 * every coordinate is finite and resolves on ``SITE_GRID``, to 8000 distinct
   index pairs;
 * the Ameriflux map is non-empty, maps each site id once, has no blank
-  identifier, and names only site ids that exist.
+  identifier, and names only site ids that exist;
+* no numeric field is null (see below).
+
+A ``.dbf`` null means different things in the two kinds of column, so it is
+handled in two ways. In a **text** column it becomes the empty string, which is
+what "missing" already means there -- ``ameriflux_site_id`` uses it for the 7815
+sites with no counterpart, and it is the only marker that survives a read with
+``keep_default_na=False``. In a **numeric** column it is an error: an integer
+dtype cannot hold ``NaN``, ``cluster`` and ``landcover`` have no spare value,
+and ``site_order``'s 0 already means "a sampled point", so there is nowhere to
+put it and nothing to do but say so.
 
 Asserts after writing:
 
@@ -288,7 +298,7 @@ def build_site_table(
     )
 
     site_ids = _as_integer(
-        [record["site_id"] for record in contents.records],
+        numeric_field(contents.records, "site_id"),
         name="site_id",
         dtype=np.int32,
     )
@@ -304,7 +314,7 @@ def build_site_table(
 
     integral = {
         field: _as_integer(
-            [record[field] for record in contents.records],
+            numeric_field(contents.records, field),
             name=field,
             dtype=SITE_COLUMN_DTYPES[field],
         )
@@ -312,7 +322,7 @@ def build_site_table(
     }
     check_site_order_is_a_permutation(integral["site_order"])
 
-    names = [str(record["site_names"]) for record in contents.records]
+    names = text_field(contents.records, "site_names")
 
     check_ameriflux_map_is_usable(ameriflux, site_ids=site_ids)
     ameriflux_column = [ameriflux.get(int(site_id), "") for site_id in site_ids]
@@ -418,6 +428,63 @@ def read_declared_encoding(shp_path: Path) -> str | None:
     if not cpg_path.is_file():
         return None
     return normalize_encoding(cpg_path.read_text())
+
+
+def text_field(records: tuple[dict[str, object], ...], field: str) -> list[str]:
+    """A character field's values, with a ``.dbf`` null as the empty string.
+
+    The empty string is what "missing" means in this table's text columns:
+    ``ameriflux_site_id`` already uses it for the 7815 sites with no Ameriflux
+    counterpart, and it is the only missing marker that survives the round trip,
+    since :func:`sipnet_calibration.sites.load_sites` reads with
+    ``keep_default_na=False``. So a null site name reads back as absent rather
+    than as the four-character name ``None``, which is what ``str(None)`` would
+    have made of it.
+
+    A ``bytes`` value raises instead. That means the attribute table did not
+    decode, which is the failure this whole script is arranged to make loud, and
+    ``str(b'...')`` would bury it in a name that looks almost plausible.
+    """
+    values = []
+    for index, record in enumerate(records):
+        value = record[field]
+        if value is None:
+            values.append("")
+        elif isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, bytes):
+            raise IngestError(
+                f"{field} at record index {index} is undecoded bytes "
+                f"({value[:32]!r}); the attribute table was read with the wrong "
+                "encoding"
+            )
+        else:
+            raise IngestError(
+                f"{field} at record index {index} is {type(value).__name__} "
+                f"({value!r}), not text"
+            )
+    return values
+
+
+def numeric_field(records: tuple[dict[str, object], ...], field: str) -> list[object]:
+    """A numeric field's values, with a ``.dbf`` null reported rather than cast.
+
+    Unlike the text columns, the integer columns have no way to say "missing":
+    an integer dtype cannot hold ``NaN``, ``cluster`` and ``landcover`` have no
+    spare value, and ``site_order``'s 0 already means "a sampled point". So a
+    null here is an error, and the point of this function is that the message
+    says so and names the record -- reaching :func:`check_values_are_integral`
+    as a ``NaN`` would report "non-finite values" and leave the reader guessing
+    whether the source held a null or a genuine ``NaN``.
+    """
+    null_at = [index for index, record in enumerate(records) if record[field] is None]
+    if null_at:
+        raise IngestError(
+            f"{field} is null in {len(null_at)} record(s), first at record index "
+            f"{null_at[0]}; the processed table has no way to record a missing "
+            f"{field}, so this has to be resolved in the source"
+        )
+    return [record[field] for record in records]
 
 
 def na_hazard_site_ids(names: list[str], *, site_ids: np.ndarray) -> list[int]:
@@ -538,8 +605,13 @@ def check_values_are_integral(values: np.ndarray, *, name: str) -> None:
     numerics with 15 decimals, so they arrive as floats. Casting them is only
     safe while this holds.
     """
-    if not np.all(np.isfinite(values)):
-        raise IngestError(f"{name} holds non-finite values")
+    non_finite = np.flatnonzero(~np.isfinite(values))
+    if non_finite.size:
+        index = int(non_finite[0])
+        raise IngestError(
+            f"{name} holds {values[index]!r} at record index {index}; "
+            f"{non_finite.size} value(s) are not finite"
+        )
     fractional = np.flatnonzero(values != np.floor(values))
     if fractional.size:
         index = int(fractional[0])
