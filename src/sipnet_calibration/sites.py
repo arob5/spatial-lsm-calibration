@@ -351,8 +351,7 @@ def select_sites(
         A site table, from :func:`load_sites`, or one with extra columns joined
         on. Never modified.
     ids:
-        Site identifiers to keep. The result is in the order given, since a
-        caller who lists identifiers usually means that order; every identifier
+        Site identifiers to keep. The result is in the order given, every identifier
         must exist.
     bbox:
         ``(west, south, east, north)`` in degrees, edges included. Longitudes are
@@ -364,7 +363,7 @@ def select_sites(
         columns of the table and any joined on beside them.
     sample:
         Keep this many rows, drawn without replacement, in ascending ``site_id``
-        order. Fewer rows available is an error rather than a silent truncation.
+        order. Fewer rows available is an error.
     seed:
         Seed for *sample*. Passing one makes the draw reproducible; leaving it
         out does not.
@@ -385,17 +384,11 @@ def select_sites(
     Notes
     -----
     There is no ``pft=`` argument. PFT is not a column of the site table (see the
-    module docstring), so the argument could only mean "the labeling I have in
-    mind", which is exactly the experimental choice that must not be baked into
-    a shared key. Join a labeling and pass ``where``::
+    module docstring). PFT selection can be done by joining a labeling and passing
+    ``where``::
 
         labeled = sites.merge(pd.read_csv(labeling), on="site_id")
         select_sites(labeled, where=lambda t: t["pft"] == "DBF")
-
-    There is no ``has_nee=`` argument either, for a narrower reason: which
-    release of the gap-filled product to use is unsettled, so what the argument
-    would mean is not yet decided. ``where`` expresses it in the meantime, and
-    the caller states which release they mean.
 
     Examples
     --------
@@ -404,7 +397,7 @@ def select_sites(
         select_sites(
             load_sites(),
             bbox=(-125, 24, -66, 50),
-            where=lambda t: t["ameriflux_site_id"] != "",
+            where=lambda s: s["ameriflux_site_id"] != "",
             sample=20,
             seed=0,
         )
