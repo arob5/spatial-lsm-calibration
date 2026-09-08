@@ -533,8 +533,11 @@ Conversions applied during ingest rather than downstream:
 
 - **Constraints.** The covariance matrices are reduced to their diagonals. This
   is lossless and asserted, not assumed. Zero variances are written through
-  unchanged; 929 `AbvGrndWood` variances are exactly zero, and flooring them is
-  a modeling decision that would be hidden if an ingest script made it.
+  unchanged; 929 `AbvGrndWood` variances are exactly zero. 925 of those sit
+  where the observation is zero too, but four assert a non-zero value with no
+  uncertainty at all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016),
+  all with a mean of 1.0. Either way flooring them is a modeling decision that
+  would be hidden if an ingest script made it. See open question 14.
 - **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
   unit used throughout, so that nothing later has to reconcile units, and the
   redundant `ens_mean` column is dropped.
@@ -639,7 +642,7 @@ source name is kept in the file's attributes as
 |---|---|---|
 | `AbvGrndWood` | `aboveground_wood_carbon` | Mg C ha-1 |
 | `LAI` | `lai` | m2 m-2 |
-| `SoilMoistFrac` | `soil_moisture_fraction` | percent |
+| `SoilMoistFrac` | `soil_moisture_percent` | percent |
 | `TotSoilCarb` | `total_soil_carbon` | kg C m-2 |
 
 The rename is applied by `ingest_constraints.py`, from a single mapping in
@@ -829,3 +832,21 @@ Whether it is the same ensemble has not been established.
 a spatially coherent ordering, a Hilbert or Morton rank for instance, would
 improve locality for triangulation and for chunked reads. Such an ordering would
 be added as an additional coordinate rather than by renumbering.
+
+**14. Observations with an error variance of exactly zero.** 929 `AbvGrndWood`
+site-years carry a variance of 0. In 925 of them the observation is 0 as well,
+which reads as "no biomass, and no uncertainty about that" and is at least
+self-consistent. The other four assert a non-zero value with no uncertainty at
+all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016), each with a mean
+of exactly 1.0.
+
+A zero variance is unusable either way. A Gaussian likelihood weights a residual
+by `1/variance`, so these four contribute an infinite weight to a value of 1.0,
+and any code that forms a precision matrix or sums a log-likelihood over them
+returns `inf` or `NaN` for that site-year rather than a large number. The 925
+are the same arithmetic but at least encode a plausible intent.
+
+Nothing floors them at ingest, deliberately: the floor is a modeling choice.
+But whether these are real, a placeholder, or an artifact of the source
+processing is a question for the producer, and it bears on whether the four
+should be dropped rather than floored.

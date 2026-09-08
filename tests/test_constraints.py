@@ -438,13 +438,13 @@ class TestPivot:
         # different statement from "not observed".
         assert np.isnan(float(
             ingested[OBSERVATION_MEAN].sel(
-                site=1, time="2012-07-15", variable="soil_moisture_fraction"
+                site=1, time="2012-07-15", variable="soil_moisture_percent"
             )
         ))
 
     def test_a_variable_absent_from_one_snapshot_is_nan_throughout_it(self, ingested):
         absent = ingested[OBSERVATION_MEAN].sel(
-            time="2012-07-15", variable="soil_moisture_fraction"
+            time="2012-07-15", variable="soil_moisture_percent"
         )
         assert bool(np.all(np.isnan(absent.values)))
 
@@ -545,6 +545,34 @@ class TestManifestChecks:
         manifest["counts_by_snapshot_variable"]["2012-07-15"]["LAI"] += 1
         manifest["n_rows"] += 1
         assert self._run(synthetic, manifest) == 1
+
+    def test_a_truncated_interior_value_is_refused(self, synthetic):
+        # The truncated value is neither the min nor the max, so the manifest
+        # comparison cannot see it. This is what the full-table check exists
+        # for.
+        rows = [
+            ("2012-07-15", 1, "LAI", 0.1, 1.0),
+            ("2012-07-15", 2, "LAI", 31.609129905700701, 1.0),
+            ("2012-07-15", 3, "LAI", 99.9, 1.0),
+        ]
+        _write_long_table(synthetic["long_table"], rows)
+        synthetic["manifest"].write_text(json.dumps(_manifest_for(rows)))
+
+        lines = synthetic["long_table"].read_text().split("\n")
+        columns = lines[2].split(",")
+        assert columns[3] == "31.609129905700701"
+        columns[3] = "31.60912"
+        lines[2] = ",".join(columns)
+        synthetic["long_table"].write_text("\n".join(lines))
+        assert ingest.main(
+            [
+                "--long-table", str(synthetic["long_table"]),
+                "--manifest", str(synthetic["manifest"]),
+                "--sites", str(synthetic["sites"]),
+                "--out", str(synthetic["out"]),
+            ]
+        ) == 1
+        assert not synthetic["out"].exists()
 
     def test_a_truncated_extreme_is_refused(self, synthetic):
         # What a writer or parser losing precision would look like.
@@ -1175,7 +1203,7 @@ class TestRealIngest:
 
     def test_soil_moisture_is_absent_before_2015(self, real_dataset):
         early = real_dataset[OBSERVATION_MEAN].sel(
-            variable="soil_moisture_fraction",
+            variable="soil_moisture_percent",
             time=slice("2012-01-01", "2014-12-31"),
         )
         assert bool(np.all(np.isnan(early.values)))

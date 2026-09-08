@@ -71,7 +71,7 @@ Source                  Processed
 ======================= ===========================
 ``AbvGrndWood``         ``aboveground_wood_carbon``
 ``LAI``                 ``lai``
-``SoilMoistFrac``       ``soil_moisture_fraction``
+``SoilMoistFrac``       ``soil_moisture_percent``
 ``TotSoilCarb``         ``total_soil_carbon``
 ======================= ===========================
 
@@ -235,7 +235,7 @@ OBSERVATION_VARIANCE = "observation_variance"
 SOURCE_VARIABLE_NAMES = {
     "AbvGrndWood": "aboveground_wood_carbon",
     "LAI": "lai",
-    "SoilMoistFrac": "soil_moisture_fraction",
+    "SoilMoistFrac": "soil_moisture_percent",
     "TotSoilCarb": "total_soil_carbon",
 }
 
@@ -278,9 +278,9 @@ CONSTRAINT_VARIABLE_ATTRS = {
         "long_name": "Leaf area index",
         "source_name": "LAI",
     },
-    "soil_moisture_fraction": {
+    "soil_moisture_percent": {
         "units": "percent",
-        "long_name": "Soil moisture fraction",
+        "long_name": "Soil moisture percent",
         "source_name": "SoilMoistFrac",
     },
     "total_soil_carbon": {

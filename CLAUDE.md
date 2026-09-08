@@ -62,7 +62,7 @@ Raw variable names are not ours to choose; processed ones are.
   a processed product.
 - **Avoid abbreviations** unless they are universal. So `total_soil_carbon`, not
   `TotSoilCarb`; `aboveground_wood_carbon`, not `AbvGrndWood`;
-  `soil_moisture_fraction`, not `SoilMoistFrac`. `lai` is fine, and so are
+  `soil_moisture_percent`, not `SoilMoistFrac`. `lai` is fine, and so are
   `lon`/`lat`, which the canonical field convention fixes.
 - The rename from source to processed name belongs in **one explicit mapping**
   in the library beside the schema, not spread across a script. See
@@ -71,6 +71,9 @@ Raw variable names are not ours to choose; processed ones are.
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
+- **The `VARIABLES` registry is keyed on processed names**, so a canonical
+  field's `name` is a processed name. That is what makes `validate_field()`
+  usable against anything an adapter produces.
 
 ### File organization
 
@@ -232,7 +235,8 @@ plotting code. The load-bearing rules:
   as `agg`.** SIPNET's `nee` is `g C m-2 per timestep` — extensive — so
   3-hourly to daily is a **sum**; a mean is wrong by 8x and looks plausible.
   `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
-  (sum); carbon pools and `AbvGrndWood`/`LAI` are stocks (instantaneous).
+  (sum); carbon pools and `aboveground_wood_carbon`/`lai` are stocks
+  (instantaneous).
   `aggregate_time` reads the registry; `how=` is an override, not the input.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).

@@ -54,14 +54,18 @@ either. The one that matters most is diagonality: the Python side cannot see an
 off-diagonal element, because by the time the CSV exists it is gone, so it
 checks that R *made* the claim and refuses to write if it did not.
 
+Every parsed double is also re-formatted and compared against the text on disk,
+so a writer or parser that truncates is caught anywhere in the table rather
+than only at the extremes the manifest records.
+
 Output is written to a ``.partial`` path and renamed only once it reads back
 bitwise through the library loader, so a failed check cannot leave a corrupt
 file where the canonical one belongs.
 
-Zero variances are written through unchanged. Some source variances are exactly
-zero, mostly where the observation is zero too, which is unusable as a weight
-and unusable as a prior; something downstream has to floor them. Doing it here
-would hide a modeling decision inside an ingest script, so the count is
+Zero variances are written through unchanged. Most sit where the observation is
+zero too, but a few assert a non-zero value with no uncertainty at all, which
+weights as ``1/0``. Either way something downstream has to floor them; doing it
+here would hide a modeling decision inside an ingest script, so the count is
 reported instead.
 
 Usage
@@ -178,6 +182,7 @@ def ingest(
     check_table_matches_manifest(table, manifest)
     check_snapshots_match_manifest(table, manifest)
     check_extremes_round_tripped(table, manifest)
+    check_every_value_round_tripped(table, long_table)
     check_no_duplicate_triples(table)
     check_sites_are_in_the_site_table(table, sites)
 
@@ -541,6 +546,42 @@ def check_extremes_round_tripped(table: pd.DataFrame, manifest: dict) -> None:
                         f"parsed to {formatted!r}. A value lost precision "
                         "between the two."
                     )
+
+
+def check_every_value_round_tripped(table: pd.DataFrame, path: Path) -> None:
+    """Every parsed double re-formats to exactly the text on disk.
+
+    :func:`check_extremes_round_tripped` compares four strings per variable
+    against the manifest, which catches a truncating writer but sees nothing in
+    the interior. This reads the file back as text and checks all of it, which
+    costs about a second.
+    """
+    raw = pd.read_csv(
+        path,
+        usecols=["mean", "variance"],
+        dtype=str,
+        keep_default_na=False,
+        na_values=[],
+        index_col=False,
+    )
+    if len(raw) != len(table):
+        raise IngestError(
+            f"{path}: re-read gave {len(raw)} rows against {len(table)}"
+        )
+    for column in ("mean", "variance"):
+        written = raw[column].to_numpy()
+        formatted = np.array([f"{value:.17g}" for value in table[column]])
+        differ = np.where(
+            [not _same_extreme(f, w) for f, w in zip(formatted, written)]
+        )[0]
+        if differ.size:
+            first = int(differ[0])
+            raise IngestError(
+                f"{path}: {differ.size} {column} value(s) do not re-format to "
+                f"the text on disk; first at data row {first}, which reads "
+                f"{str(written[first])!r} and parsed to "
+                f"{str(formatted[first])!r}."
+            )
 
 
 def check_no_duplicate_triples(table: pd.DataFrame) -> None:
