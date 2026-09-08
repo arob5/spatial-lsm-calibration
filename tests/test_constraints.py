@@ -816,6 +816,11 @@ class TestDocstringExamples:
     Extracted from the shipped docstring rather than copied here, so that the
     text and the tested code cannot diverge. They read the product at the
     default path, so they are skipped where the pipeline has not been run.
+
+    This catches an example that no longer *works* -- a renamed function, a
+    stale keyword, a variable that is gone -- which is how examples usually
+    rot. It does not check that an example still says something sensible; that
+    is what the tests of the functions themselves are for.
     """
 
     @staticmethod

@@ -1,24 +1,162 @@
-"""Helpers for working with sites and their geography.
+"""The data model for the site pool, and the geographic lattice it sits on.
 
-The site table is read from ``data/processed/sites/sites.csv``, produced by
-``scripts/ingest_sites.py`` from the point shapefile in ``data/raw/sites/`` and
-``data/site_id_map.csv`` (Ameriflux ``Site_ID`` -> integer site id, exact
-matching). :data:`SITE_COLUMNS` is the column set; ``data/README.md`` describes
-what each column means.
+Overview
+--------
+This module defines how the site pool is represented -- its columns, dtypes and
+identifiers -- and provides the functions for reading it, selecting from it, and
+converting between coordinates and grid indices. It is the single description of
+that layout: the ingest script that writes the table gets its column set and
+dtypes from here rather than declaring its own.
 
-There is deliberately no plant functional type column. A PFT labeling is not an
-intrinsic property of a site: calibrations may or may not use PFTs, and different
-PFT labelings can be applied to the same site pool. Labelings are their own product,
-``processed/labelings/``, keyed on ``site_id``, and a caller joins one on before
-selecting.
+It sits downstream of the one script that builds the table, and the dependency
+runs one way::
 
-``select_sites`` is a site selection helper: subsetting by identifier, by
-bounding box, by an arbitrary predicate, or to a random sample.
+    raw/sites/pts.*  +  site_id_map.csv
+      -> scripts/ingest_sites.py    processed/sites/sites.csv
+      -> this module                load_sites() -> pandas.DataFrame
 
-Note the sites are 8000 *irregular points* spanning 7-82 deg N and
-178 W-20 W. Only ~3640 fall inside a CONUS bounding box.
+Every other processed product joins against this table on ``site_id``, so this
+is where the meaning of a site identifier is fixed. ``data/README.md`` documents
+the source data, the coordinate reference system and the open questions.
 
-This module also defines the geographic lattice the sites sit on.
+Input data
+----------
+``data/processed/sites/sites.csv``
+    The site table, read by :func:`load_sites`, whose layout is the
+    `Data model`_ below. :func:`default_sites_path` says where it is expected
+    to be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
+    :data:`DATA_ROOT_ENV_VAR`.
+
+The grid itself is not read from anywhere. :data:`SITE_GRID` is defined in code
+beside the conversions that use it, so the constants and the arithmetic cannot
+disagree with each other.
+
+Data model
+----------
+:func:`load_sites` returns a ``pandas.DataFrame`` with one row per site, in
+ascending ``site_id`` order, holding the columns of :data:`SITE_COLUMNS` with
+the dtypes of :data:`SITE_COLUMN_DTYPES`. Anything else raises.
+
+================================ ============= ==============================
+Column                           Dtype         Meaning
+================================ ============= ==============================
+``site_id``                      ``int32``     handed-down site identifier
+``lon``, ``lat``                 ``float64``   coordinates, in degrees
+``lon_index``, ``lat_index``     ``int32``     position on :data:`SITE_GRID`
+``site_name``                    ``str``       label, empty where absent
+``site_order``                   ``int32``     0 sampled, else the named rank
+``cluster``, ``landcover``       ``int8``      sampling stratum, cover class
+``ameriflux_site_id``            ``str``       identifier, empty where absent
+================================ ============= ==============================
+
+``site_id`` is left as a column rather than made the index, so the frame is a
+table; callers wanting lookup call ``.set_index("site_id")``.
+
+**Missing values.** The empty string, not ``NaN``, in both text columns: the
+table is read with ``keep_default_na=False``, so a name that happens to read as
+a null word survives. No numeric column can be missing.
+
+**Geography.** The sites are irregular points spanning roughly 7-82 degrees
+north and 178-20 degrees west, of which only a minority fall inside a
+conterminous-US bounding box. Their coordinates are cell centers of
+:data:`SITE_GRID`, a regular geographic lattice; ``lon_index``/``lat_index`` are
+the exact representation of a position and the stored floats are a lossy
+rendering of it.
+
+There is deliberately **no plant functional type column**. A PFT labeling is not
+an intrinsic property of a site: a calibration may not use PFTs at all, and
+different labelings can be applied to the same pool. Labelings are their own
+product under ``processed/labelings/``, keyed on ``site_id``, and a caller joins
+one on before selecting.
+
+Functions
+---------
+:func:`load_sites`
+    Read the site table and check it against the data model above.
+
+:func:`select_sites`
+    A subset of a site table, by identifier, bounding box, arbitrary predicate,
+    or random sample. The filters compose.
+
+:func:`default_sites_path`
+    Where the table is expected to be.
+
+:class:`Grid` and :data:`SITE_GRID`
+    The lattice, and the conversions between coordinates and indices:
+    :meth:`Grid.lonlat_to_index` and :meth:`Grid.index_to_lonlat`.
+
+Notes
+-----
+**The grid is not equal-area.** A cell is about 928 m tall everywhere, but its
+width shrinks from roughly 921 m at the south of the pool to a small fraction of
+that at the north. Density and per-area calculations have to account for it, and
+spatial plots need a real projection rather than plotting degrees directly.
+
+**Coordinates are stored longitude before latitude**, which is the traditional
+GDAL and PROJ ordering rather than the axis order EPSG:4326 formally declares.
+Coordinate transformations should be configured accordingly.
+
+**:meth:`Grid.lonlat_to_index` is a lookup, not a binning operation.** It expects
+coordinates that already *are* cell centers and raises on anything further than
+its tolerance from one, because a point that is off-grid usually means the wrong
+grid or the wrong CRS rather than a point needing rounding.
+
+Usage
+-----
+Read the table and select from it::
+
+    from sipnet_calibration.sites import (
+        SITE_GRID,
+        load_sites,
+        select_sites,
+    )
+
+    sites = load_sites()                    # or load_sites(path)
+
+    # Named sites, by identifier, in the order given.
+    named = select_sites(sites, ids=[4102, 4113, 5584])
+
+    # A bounding box, as (west, south, east, north), edges included. Every
+    # longitude in the pool is negative.
+    conus = select_sites(sites, bbox=(-125, 24, -66, 50))
+
+    # Any predicate over the table's columns.
+    flux_towers = select_sites(sites, where=lambda s: s["ameriflux_site_id"] != "")
+
+    # The filters compose, and sample is always of whatever survived.
+    subset = select_sites(
+        sites,
+        bbox=(-125, 24, -66, 50),
+        where=lambda s: s["ameriflux_site_id"] != "",
+        sample=20,
+        seed=0,
+    )
+
+Select on a labeling by joining it on first, since PFT is not a column here::
+
+    import pandas as pd
+
+    # A real labeling is its own product under processed/labelings/, keyed on
+    # site_id. The join is the same whatever the labeling is called.
+    labeling = pd.DataFrame({"site_id": [4102, 4113], "pft": ["DBF", "ENF"]})
+    deciduous = select_sites(
+        sites.merge(labeling, on="site_id"), where=lambda s: s["pft"] == "DBF"
+    )
+
+Convert between coordinates and grid indices::
+
+    row = sites.iloc[0]
+
+    # A stored coordinate back to its exact position on the lattice.
+    lon_index, lat_index = SITE_GRID.lonlat_to_index(row["lon"], row["lat"])
+
+    # And back to the cell center, which is where the stored value came from.
+    lon, lat = SITE_GRID.index_to_lonlat(lon_index, lat_index)
+
+    # Both are vectorized, so a whole column converts at once.
+    lon_indices, lat_indices = SITE_GRID.lonlat_to_index(
+        sites["lon"].to_numpy(), sites["lat"].to_numpy()
+    )
 """
 
 from __future__ import annotations

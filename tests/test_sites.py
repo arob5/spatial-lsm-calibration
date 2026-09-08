@@ -154,15 +154,19 @@ class TestLonLatToIndex:
 import hashlib
 import importlib.util
 import pathlib
+import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pandas as pd
 import shapefile
 
+import sipnet_calibration.sites as sites_module
 from sipnet_calibration.sites import (
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
+    default_sites_path,
     load_sites,
     select_sites,
 )
@@ -1227,3 +1231,36 @@ class TestDbfNulls:
             ingest.build_site_table(
                 damaged, ingest.read_ameriflux_map(SITE_ID_MAP)
             )
+
+
+class TestDocstringExamples:
+    """The Usage examples in the module docstring have to actually run.
+
+    Extracted from the shipped docstring rather than copied here, so that the
+    text and the tested code cannot diverge. They read the site table at the
+    default path, so they are skipped where the ingest has not been run.
+
+    This catches an example that no longer *works* -- a renamed function, a
+    stale keyword, a variable that is gone -- which is how examples usually
+    rot. It does not check that an example still says something sensible; that
+    is what the tests of the functions themselves are for.
+    """
+
+    @staticmethod
+    def _usage_code_blocks() -> list[str]:
+        usage = sites_module.__doc__.split("Usage\n-----", 1)[1]
+        blocks = re.findall(r"::\n\n((?:(?: {4}.*)?\n)+)", usage)
+        return [textwrap.dedent(block) for block in blocks]
+
+    def test_the_docstring_has_usage_examples(self):
+        assert len(self._usage_code_blocks()) >= 3
+
+    @pytest.mark.skipif(
+        not default_sites_path().exists(),
+        reason="needs the built site table at the default path",
+    )
+    def test_every_usage_example_executes(self):
+        namespace: dict = {}
+        for index, code in enumerate(self._usage_code_blocks(), start=1):
+            compiled = compile(code, f"<docstring block {index}>", "exec")
+            exec(compiled, namespace)  # noqa: S102 - the docstring is the input
