@@ -1,44 +1,60 @@
 """The annual biomass, leaf area and soil constraints, and their schema.
 
-The source is a pair of R data files holding the observations assimilated by the
-North American Land Carbon Reanalysis: ``obs.mean.Rdata`` and ``obs.cov.Rdata``,
-each nesting as snapshot date, then site, then variable.
-``scripts/export_constraints.R`` flattens them to a long CSV and
-``scripts/ingest_constraints.py`` pivots that into
-``data/processed/constraints_annual.nc``. See ``data/README.md`` for the source
-format and the open questions.
+This module holds the schema constants and the reader for
+``data/processed/constraints_annual.nc``, so that the writer and the reader of
+that file cannot drift apart. It is the same division
+:mod:`sipnet_calibration.sites` uses, for the same reason: the settings that
+keep a product loadable are not something to re-derive per notebook.
 
-This module holds the schema constants and the reader, so that the writer and
-the reader of the processed file cannot drift apart. That is the same division
-:mod:`sipnet_calibration.sites` uses, and the reason is the same: the two
-settings that keep a product loadable are not something to re-derive per
-notebook.
+``scripts/export_constraints.R`` and ``scripts/ingest_constraints.py`` build the
+file; ``data/README.md`` documents the source and the open questions.
 
-Two aspects of the layout are deliberate and worth stating.
+Variable names
+--------------
+The source names are not ours to choose, but the processed ones are, and they
+follow the project convention: lower case with underscores, abbreviations
+avoided unless universal.
+
+======================= ===========================
+Source                  Processed
+======================= ===========================
+``AbvGrndWood``         ``aboveground_wood_carbon``
+``LAI``                 ``lai``
+``SoilMoistFrac``       ``soil_moisture_fraction``
+``TotSoilCarb``         ``total_soil_carbon``
+======================= ===========================
+
+The rename happens in the ingest script, via :data:`SOURCE_VARIABLE_NAMES`. It
+is safe to do there rather than in R because the intermediate long table names
+the variable on every row, so a row carries its own identity and the rename
+cannot mis-pair a variance with a variable. In the *source* the pairing is
+positional, which is why R keeps the source names and the source order.
+
+Layout
+------
+Two aspects are deliberate and worth stating.
 
 **The observation error covariances are diagonal, so only variances are
 carried.** Every one of the 103,047 covariance matrices in the source is exactly
 diagonal -- checked over all 13 snapshots and all 8000 sites, not sampled -- so
-the full matrices hold nothing the diagonal does not. ``export_constraints.R``
-asserts diagonality at the source, where the off-diagonal is still visible, and
-records the largest off-diagonal element it saw in its manifest so the Python
-side can check that the assertion really ran. If a future release carries
-genuine cross-variable covariance, this product gains a
-``(site, time, variable, variable)`` array and :data:`OBS_VAR` becomes a view of
-its diagonal.
+the full matrices hold nothing the diagonal does not. Diagonality is asserted in
+R, where the off-diagonal is still visible, and the largest element seen is
+recorded in a manifest so the Python side can confirm the check ran. If a future
+release carries genuine cross-variable covariance, this product gains a
+``(site, time, variable, variable)`` array and :data:`OBSERVATION_VARIANCE`
+becomes a view of its diagonal.
 
 **``variable`` is a dimension, not one array per variable.** The canonical field
-convention in ``logs/2026-08-28_Plotting Design Spec.md`` asks for dims a subset
-of ``(member, site, time)``, which this stored form is not. It is stored this way
-because the observation operator indexes observations by exactly
-``(site, variable, time)``, so flattening to the observation vector is a stack
-rather than a join, and because the four variables genuinely share one
-``(site, time)`` grid here. :func:`constraint_fields` produces the canonical
-per-variable view for plotting, so both consumers are served without either
-having to reshape the other's form.
+convention wants dims a subset of ``(member, site, time)``, which this stored
+form is not. It is stored this way because the observation operator indexes
+observations by exactly ``(site, variable, time)``, so flattening to the
+observation vector is a stack rather than a join, and because all four variables
+share one ``(site, time)`` grid here. :func:`constraint_fields` produces the
+canonical per-variable view, so the plotting layer and the likelihood are each
+served without reshaping the other's form.
 
 Missingness is dense ``NaN``: the source is ragged over site, snapshot and
-variable, and a dense array of 416,000 cells costs 3 MB per statistic, which is
+variable, and 416,000 cells per statistic cost 2.2 MB compressed, which is
 cheaper than any ragged encoding is to reason about.
 """
 
@@ -58,9 +74,10 @@ __all__ = [
     "CONSTRAINT_VARIABLE_ATTRS",
     "LONG_COLUMNS",
     "LONG_COLUMN_DTYPES",
-    "OBS_MEAN",
-    "OBS_VAR",
+    "OBSERVATION_MEAN",
+    "OBSERVATION_VARIANCE",
     "SNAPSHOT_MONTH_DAY",
+    "SOURCE_VARIABLE_NAMES",
     "UNITS_PROVENANCE",
     "UNITS_STATUS",
     "constraint_fields",
@@ -71,21 +88,27 @@ __all__ = [
 ]
 
 #: Name of the mean array in the processed file.
-OBS_MEAN = "obs_mean"
+OBSERVATION_MEAN = "observation_mean"
 
 #: Name of the variance array in the processed file.
-OBS_VAR = "obs_var"
+OBSERVATION_VARIANCE = "observation_variance"
 
-#: The four constrained variables, in the alphabetical order the source uses.
+#: Source variable name -> processed variable name.
 #:
-#: The order is load-bearing rather than cosmetic. ``obs.cov`` carries **no
-#: dimension names**, so the only thing that says which row of a covariance
-#: matrix belongs to which variable is the column order of the corresponding
-#: ``obs.mean`` entry -- which is alphabetical. Keeping this tuple alphabetical
-#: means the ``variable`` coordinate of the processed file is in the same order
-#: the source used, so a mistake in the pairing shows up as a variable named
-#: wrongly rather than as a silently transposed matrix.
-CONSTRAINT_VARIABLES = ("AbvGrndWood", "LAI", "SoilMoistFrac", "TotSoilCarb")
+#: The source names come from the reanalysis observation files and are not ours
+#: to change. The processed names follow the project convention. Applied by
+#: ``scripts/ingest_constraints.py``; see the module docstring for why the
+#: rename is safe at that point and not before.
+SOURCE_VARIABLE_NAMES = {
+    "AbvGrndWood": "aboveground_wood_carbon",
+    "LAI": "lai",
+    "SoilMoistFrac": "soil_moisture_fraction",
+    "TotSoilCarb": "total_soil_carbon",
+}
+
+#: The four constrained variables, by processed name, in the order the
+#: ``variable`` coordinate carries them.
+CONSTRAINT_VARIABLES = tuple(sorted(SOURCE_VARIABLE_NAMES.values()))
 
 #: Month and day of the source's annual snapshot key.
 #:
@@ -107,37 +130,42 @@ UNITS_PROVENANCE = (
     "been confirmed by the producer. See open question 9 in data/README.md."
 )
 
-#: Per-variable metadata written into the processed file.
+#: Per-variable metadata written into the processed file, by processed name.
 #:
 #: ``units`` is recorded because omitting it would be worse -- the canonical
 #: field convention requires it, and a consumer with no unit at all has less to
 #: go on than one with an unconfirmed unit and a status flag saying so. Both
 #: :data:`UNITS_STATUS` and :data:`UNITS_PROVENANCE` travel with it.
 CONSTRAINT_VARIABLE_ATTRS = {
-    "AbvGrndWood": {
+    "aboveground_wood_carbon": {
         "units": "Mg C ha-1",
-        "long_name": "Above ground woody biomass",
+        "long_name": "Aboveground woody biomass carbon",
+        "source_name": "AbvGrndWood",
     },
-    "LAI": {
+    "lai": {
         "units": "m2 m-2",
         "long_name": "Leaf area index",
+        "source_name": "LAI",
     },
-    "SoilMoistFrac": {
+    "soil_moisture_fraction": {
         "units": "percent",
         "long_name": "Soil moisture fraction",
+        "source_name": "SoilMoistFrac",
     },
-    "TotSoilCarb": {
+    "total_soil_carbon": {
         "units": "kg C m-2",
         "long_name": "Total soil carbon",
+        "source_name": "TotSoilCarb",
     },
 }
 
-#: Columns of the long CSV that ``export_constraints.R`` writes.
+#: Columns of the long table that ``export_constraints.R`` writes. Its
+#: ``variable`` column holds *source* names.
 LONG_COLUMNS = ("snapshot_date", "site_id", "variable", "mean", "variance")
 
-#: Dtype per long-CSV column. ``mean`` and ``variance`` are read as float64 with
-#: ``float_precision="round_trip"`` in :func:`read_long_table` rather than being
-#: declared here, because the dtype alone does not make the parse exact.
+#: Dtype per long-table column. ``mean`` and ``variance`` are read as float64
+#: with ``float_precision="round_trip"`` in :func:`read_long_table` rather than
+#: being declared here, because the dtype alone does not make the parse exact.
 LONG_COLUMN_DTYPES = {
     "snapshot_date": str,
     "site_id": np.int32,
@@ -161,7 +189,7 @@ def default_constraints_path() -> Path:
 
 
 def read_long_table(path: Path | str) -> pd.DataFrame:
-    """Read the long CSV that ``export_constraints.R`` writes.
+    """Read the long table that ``export_constraints.R`` writes.
 
     Parameters
     ----------
@@ -172,13 +200,15 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
     -------
     pandas.DataFrame
         The columns of :data:`LONG_COLUMNS`, one row per observed
-        ``(snapshot, site, variable)`` triple.
+        ``(snapshot, site, variable)`` triple. ``variable`` holds *source*
+        names; the ingest script renames them.
 
     Raises
     ------
     ValueError
         If the columns are not exactly :data:`LONG_COLUMNS`, the file holds no
-        rows, or any variable name is not in :data:`CONSTRAINT_VARIABLES`.
+        rows, or any variable name is not a key of
+        :data:`SOURCE_VARIABLE_NAMES`.
 
     Notes
     -----
@@ -188,9 +218,9 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
     the last bits -- the same failure that cost the site table its coordinates
     before it was caught. The round-trip parser is exact.
 
-    ``keep_default_na=False`` keeps a variable named ``NA`` from becoming a null,
-    for the same reason the site table needs it. No such variable exists today;
-    the setting costs nothing and removes the possibility.
+    ``keep_default_na=False`` keeps a variable named ``NA`` from becoming a
+    null, for the same reason the site table needs it. No such variable exists
+    today; the setting costs nothing and removes the possibility.
     """
     frame = pd.read_csv(
         path,
@@ -208,11 +238,12 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
     if frame.empty:
         raise ValueError(f"{path}: holds no rows")
 
-    unknown = sorted(set(frame["variable"]) - set(CONSTRAINT_VARIABLES))
+    unknown = sorted(set(frame["variable"]) - set(SOURCE_VARIABLE_NAMES))
     if unknown:
         raise ValueError(
-            f"{path}: variable names not in CONSTRAINT_VARIABLES: {unknown}. "
-            "A new variable in the source is a schema change, not a new row."
+            f"{path}: source variable names not in SOURCE_VARIABLE_NAMES: "
+            f"{unknown}. A new variable in the source is a schema change, not a "
+            "new row."
         )
 
     for column in ("mean", "variance"):
@@ -231,8 +262,8 @@ def load_constraints(path: Path | str | None = None) -> xr.Dataset:
     Returns
     -------
     xarray.Dataset
-        :data:`OBS_MEAN` and :data:`OBS_VAR`, both with dims
-        ``(site, time, variable)``, ``lon`` and ``lat`` as non-dimension
+        :data:`OBSERVATION_MEAN` and :data:`OBSERVATION_VARIANCE`, both with
+        dims ``(site, time, variable)``, ``lon`` and ``lat`` as non-dimension
         coordinates on ``site``, and ``NaN`` where a site-snapshot-variable was
         not observed.
 
@@ -261,7 +292,7 @@ def load_constraints(path: Path | str | None = None) -> xr.Dataset:
         )
 
     dataset = xr.open_dataset(path, engine="h5netcdf")
-    _validate_constraints(dataset, path)
+    _check_schema(dataset, path)
     return dataset
 
 
@@ -287,9 +318,9 @@ def constraint_fields(
     Returns
     -------
     dict
-        Keyed by variable name, in :data:`CONSTRAINT_VARIABLES` order. This is
-        the shape multi-variable adapters return and what facet-by-variable
-        consumes.
+        Keyed by processed variable name, in :data:`CONSTRAINT_VARIABLES` order.
+        This is the shape multi-variable adapters return and what
+        facet-by-variable consumes.
 
     Raises
     ------
@@ -297,11 +328,9 @@ def constraint_fields(
         If *statistic* is neither ``"mean"`` nor ``"variance"``.
     """
     if statistic not in ("mean", "variance"):
-        raise ValueError(
-            f"statistic must be 'mean' or 'variance', got {statistic!r}"
-        )
+        raise ValueError(f"statistic must be 'mean' or 'variance', got {statistic!r}")
 
-    array = dataset[OBS_MEAN if statistic == "mean" else OBS_VAR]
+    array = dataset[OBSERVATION_MEAN if statistic == "mean" else OBSERVATION_VARIANCE]
     fields = {}
     for name in CONSTRAINT_VARIABLES:
         field = array.sel(variable=name, drop=True).rename(name)
@@ -320,7 +349,7 @@ def snapshot_dates(years: list[int] | tuple[int, ...]) -> pd.DatetimeIndex:
     return pd.DatetimeIndex([pd.Timestamp(year, month, day) for year in years])
 
 
-# ── private helpers ───────────────────────────────────────────────────────────
+# ── supporting helpers ────────────────────────────────────────────────────────
 
 
 def _field_attrs(name: str, statistic: str) -> dict[str, str]:
@@ -334,14 +363,18 @@ def _field_attrs(name: str, statistic: str) -> dict[str, str]:
     return {
         "units": units,
         "long_name": long_name,
+        "source_name": source["source_name"],
         "units_status": UNITS_STATUS,
         "units_provenance": UNITS_PROVENANCE,
     }
 
 
-def _validate_constraints(dataset: xr.Dataset, path: Path) -> None:
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def _check_schema(dataset: xr.Dataset, path: Path) -> None:
     """Raise unless *dataset* matches the schema this module defines."""
-    missing = {OBS_MEAN, OBS_VAR} - set(dataset.data_vars)
+    missing = {OBSERVATION_MEAN, OBSERVATION_VARIANCE} - set(dataset.data_vars)
     if missing:
         raise ValueError(
             f"{path}: missing data variables {sorted(missing)}; found "
@@ -349,7 +382,7 @@ def _validate_constraints(dataset: xr.Dataset, path: Path) -> None:
         )
 
     expected_dims = ("site", "time", "variable")
-    for name in (OBS_MEAN, OBS_VAR):
+    for name in (OBSERVATION_MEAN, OBSERVATION_VARIANCE):
         if dataset[name].dims != expected_dims:
             raise ValueError(
                 f"{path}: {name} has dims {dataset[name].dims}, expected "
@@ -371,8 +404,7 @@ def _validate_constraints(dataset: xr.Dataset, path: Path) -> None:
     if stored != CONSTRAINT_VARIABLES:
         raise ValueError(
             f"{path}: variable coordinate is {stored}, expected "
-            f"{CONSTRAINT_VARIABLES}. The order is what pairs a variance with "
-            "its variable; see the module docstring."
+            f"{CONSTRAINT_VARIABLES}"
         )
 
     site = dataset["site"].values

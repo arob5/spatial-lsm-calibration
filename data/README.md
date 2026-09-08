@@ -619,16 +619,35 @@ observed:
 
 | Variable | Dims | Type | Description |
 |---|---|---|---|
-| `obs_mean` | `(site, time, variable)` | float64 | The observation |
-| `obs_var` | `(site, time, variable)` | float64 | Its error variance |
+| `observation_mean` | `(site, time, variable)` | float64 | The observation |
+| `observation_variance` | `(site, time, variable)` | float64 | Its error variance |
 
 `site` is the full 1-8000 pool, whether or not a site was ever observed; `time`
-is the thirteen July 15 snapshot keys; and `variable` is `AbvGrndWood`, `LAI`,
-`SoilMoistFrac`, `TotSoilCarb`. `lon` and `lat` are non-dimension coordinates on
-`site`, joined from the site table. 8000 x 13 x 4 is 416,000 cells per array, of
+is the thirteen July 15 snapshot keys. `lon` and `lat` are non-dimension
+coordinates on `site`, joined from the site table.
+
+The `variable` coordinate holds **processed** names. The source names are not
+ours to choose, but the processed ones follow the project convention of lower
+case with underscores and no unnecessary abbreviation, and each variable's
+source name is kept in the file's attributes as
+`variable_<name>_source_name`:
+
+| Source | Processed | Unit |
+|---|---|---|
+| `AbvGrndWood` | `aboveground_wood_carbon` | Mg C ha-1 |
+| `LAI` | `lai` | m2 m-2 |
+| `SoilMoistFrac` | `soil_moisture_fraction` | percent |
+| `TotSoilCarb` | `total_soil_carbon` | kg C m-2 |
+
+The rename is applied by `ingest_constraints.py`, from a single mapping in
+`sipnet_calibration.constraints`. It happens there rather than in R because the
+intermediate long table names the variable on every row, so a row carries its
+own identity and the rename cannot mis-pair a variance with a variable. In the
+source the pairing is positional, which is why the R side keeps the source names
+and the source order. 8000 x 13 x 4 is 416,000 cells per array, of
 which 322,515 are observed, so the file is 2.2 MB compressed. Dense is chosen
-over a ragged encoding because the raggedness costs nothing to represent this way
-and dense is far easier to reason about.
+over a ragged encoding because the raggedness costs nothing to represent this
+way and dense is far easier to reason about.
 
 Three points about the layout.
 
@@ -655,8 +674,8 @@ Units are recorded per variable in the file's attributes, each carrying
 `units_status = "unconfirmed"` and a provenance string: they are documented for
 the reanalysis *output* rather than for these observation *inputs*. See open
 question 9. Recording them with a status flag is preferred to omitting them,
-since a consumer with no unit has less to go on than one with an unconfirmed unit
-and a flag saying so.
+since a consumer with no unit has less to go on than one with an unconfirmed
+unit and a flag saying so.
 
 The following conventions apply to every product.
 
@@ -670,9 +689,9 @@ The following conventions apply to every product.
   model-specification time, so that different constraints can be used at
   different time scales without a re-ingest.
 - Uneven coverage is preserved rather than filled. The annual constraints in
-  particular are not rectangular over site, snapshot and variable, and unobserved
-  cells are `NaN` rather than zero -- a zero there would be an observation of no
-  biomass, which is a different and real statement.
+  particular are not rectangular over site, snapshot and variable, and
+  unobserved cells are `NaN` rather than zero -- a zero there would be an
+  observation of no biomass, which is a different and real statement.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are

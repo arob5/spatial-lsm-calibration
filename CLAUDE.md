@@ -50,6 +50,77 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
   the AGB/LAI constraints are ragged over site x year x variable.
 
+## Code conventions
+
+These are project-wide and apply to new code without being restated.
+
+### Naming in processed data
+
+Raw variable names are not ours to choose; processed ones are.
+
+- **`lower_case_with_underscores`** for every variable, coordinate and column of
+  a processed product.
+- **Avoid abbreviations** unless they are universal. So `total_soil_carbon`, not
+  `TotSoilCarb`; `aboveground_wood_carbon`, not `AbvGrndWood`;
+  `soil_moisture_fraction`, not `SoilMoistFrac`. `lai` is fine, and so are
+  `lon`/`lat`, which the canonical field convention fixes.
+- The rename from source to processed name belongs in **one explicit mapping**
+  in the library beside the schema, not spread across a script. See
+  `SOURCE_VARIABLE_NAMES` in `sipnet_calibration.constraints`. Keep the source
+  name in the product's attributes so the correspondence is never guesswork.
+- Renaming is safe only where a record carries its own identity. Where the
+  source pairs values *positionally*, the positional read stays in source names
+  and the rename happens after the data is self-describing.
+
+### File organization
+
+- **Public first, private last.** Public functions, classes and constants at the
+  top of a file; helpers and anything underscore-prefixed below them.
+- Data processing scripts follow the section order
+  `entry point` -> `the steps, in the order main calls them` ->
+  `supporting types and helpers` -> `checks`, with `# ── ... ──` section
+  comments. `scripts/ingest_sites.py` and `scripts/ingest_constraints.py` are
+  the worked examples.
+- Keep functions short enough that the top-level one reads as a summary of the
+  work. If it stops reading that way, pull a step out as a helper. Roughly 40
+  lines is where to start looking for the seam, not a hard limit.
+
+### Data validation in processing scripts
+
+- Every validation check is its own helper named **`check_*`**, saying what it
+  checks: `check_covariances_were_diagonal`, `check_no_duplicate_triples`,
+  `check_sites_are_in_the_site_table`. Not `validate`, not an inline `assert`
+  buried in a transformation.
+- The `check_*` helpers live together in the **`checks` section at the bottom**
+  of the file.
+- A check raises with a message naming the invariant that broke and, where
+  possible, what to do about it. The script's `main` turns those into a reported
+  error rather than a traceback.
+
+### Docstrings for data processing scripts
+
+File-level docstrings use these sections, in this order:
+
+1. **Overview** — a couple of sentences on what the script does.
+2. **Input data** — the assumed format of what it reads. Clear and precise, but
+   not every detail.
+3. **Output data** — the same for what it writes.
+4. **Notes** — anything else load-bearing: traps, why a step exists, what a
+   choice rests on. Omit if there is nothing to say.
+5. **Usage** — the command lines.
+
+Function and module docstrings elsewhere are ordinary NumPy style.
+
+### Other
+
+- **Schema constants and the reader live in the library**, not the script, so
+  the writer and the reader of a product cannot drift apart
+  (`SITE_COLUMNS` in `sites.py`, `CONSTRAINT_VARIABLES` in `constraints.py`).
+  A script's own round-trip check calls the library loader, never a parallel
+  reader.
+- **Write to a `.partial` path and rename only after the checks pass**, so a
+  failed run cannot leave a corrupt file at the canonical path.
+
 ## Writing conventions
 
 - **American English spelling throughout**: `center`, not `centre`; `color`,

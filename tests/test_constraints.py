@@ -28,10 +28,12 @@ import pytest
 import xarray as xr
 
 from sipnet_calibration.constraints import (
+    CONSTRAINT_VARIABLE_ATTRS,
     CONSTRAINT_VARIABLES,
     LONG_COLUMNS,
-    OBS_MEAN,
-    OBS_VAR,
+    OBSERVATION_MEAN,
+    OBSERVATION_VARIANCE,
+    SOURCE_VARIABLE_NAMES,
     UNITS_STATUS,
     constraint_fields,
     load_constraints,
@@ -50,8 +52,8 @@ RAW_COV = RAW_RDATA / "obs.cov.Rdata"
 EMPTY_SITES = [9, 143, 483, 1487, 2686, 3012]
 EMPTY_SNAPSHOTS = ["2012-07-15", "2013-07-15", "2014-07-15"]
 
-#: Per-variable row counts of the real source, from data/README.md's coverage
-#: table. The export must reproduce these exactly.
+#: Per-variable row counts of the real source, keyed by *source* name, from
+#: data/README.md's coverage table. The export must reproduce these exactly.
 REAL_COUNTS = {
     "AbvGrndWood": 39273,
     "LAI": 99632,
@@ -59,6 +61,11 @@ REAL_COUNTS = {
     "TotSoilCarb": 103870,
 }
 REAL_N_ROWS = sum(REAL_COUNTS.values())
+
+#: The same counts keyed by processed name, for checking the written product.
+REAL_COUNTS_PROCESSED = {
+    SOURCE_VARIABLE_NAMES[source]: count for source, count in REAL_COUNTS.items()
+}
 
 
 def _load_ingest_module():
@@ -80,8 +87,10 @@ ingest = _load_ingest_module()
 #: a site observing every variable, one observing a subset in the middle of the
 #: alphabet, one observing a single variable, one observing nothing at all, and
 #: a variable that appears in one snapshot but not the other.
+#: Rows carry *source* variable names, because that is what the long table
+#: holds; the ingest script renames them.
 SYNTHETIC_ROWS = [
-    # snapshot,      site, variable,        mean,   variance
+    # snapshot,      site, source variable, mean,   variance
     ("2012-07-15", 1, "AbvGrndWood", 10.0, 100.0),
     ("2012-07-15", 1, "LAI", 1.5, 0.4356),
     ("2012-07-15", 1, "TotSoilCarb", 20.0, 400.0),
@@ -136,10 +145,10 @@ def _manifest_for(rows=SYNTHETIC_ROWS) -> dict:
         subset = frame[frame["snapshot_date"] == snapshot]
         counts[snapshot] = {
             name: int((subset["variable"] == name).sum())
-            for name in CONSTRAINT_VARIABLES
+            for name in SOURCE_VARIABLE_NAMES
         }
     extremes = {}
-    for name in CONSTRAINT_VARIABLES:
+    for name in SOURCE_VARIABLE_NAMES:
         subset = frame[frame["variable"] == name]
         if subset.empty:
             continue
@@ -156,7 +165,7 @@ def _manifest_for(rows=SYNTHETIC_ROWS) -> dict:
         "generated_at": "2026-09-08T00:00:00-0400",
         "mean_file": "synthetic",
         "cov_file": "synthetic",
-        "variables": list(CONSTRAINT_VARIABLES),
+        "variables": list(SOURCE_VARIABLE_NAMES),
         "n_sites": len(SYNTHETIC_SITES),
         "snapshot_dates": sorted(frame["snapshot_date"].unique().tolist()),
         "n_snapshots": frame["snapshot_date"].nunique(),
@@ -208,6 +217,20 @@ class TestSchemaConstants:
         # pairing a variance with its variable. See the module docstring.
         assert list(CONSTRAINT_VARIABLES) == sorted(CONSTRAINT_VARIABLES)
 
+    def test_processed_names_follow_the_naming_convention(self):
+        for name in CONSTRAINT_VARIABLES:
+            assert name == name.lower()
+            assert " " not in name and "-" not in name
+
+    def test_every_source_variable_has_a_processed_name(self):
+        assert set(SOURCE_VARIABLE_NAMES.values()) == set(CONSTRAINT_VARIABLES)
+        assert len(SOURCE_VARIABLE_NAMES) == len(CONSTRAINT_VARIABLES)
+
+    def test_every_processed_variable_has_attributes(self):
+        assert set(CONSTRAINT_VARIABLE_ATTRS) == set(CONSTRAINT_VARIABLES)
+        for name, attrs in CONSTRAINT_VARIABLE_ATTRS.items():
+            assert SOURCE_VARIABLE_NAMES[attrs["source_name"]] == name
+
     def test_snapshot_dates_use_the_source_convention(self):
         dates = snapshot_dates([2012, 2024])
         assert list(dates.strftime("%Y-%m-%d")) == ["2012-07-15", "2024-07-15"]
@@ -243,7 +266,7 @@ class TestReadLongTable:
         path = _write_long_table(
             tmp_path / "long.csv", [("2012-07-15", 1, "Nitrogen", 1.0, 1.0)]
         )
-        with pytest.raises(ValueError, match="not in CONSTRAINT_VARIABLES"):
+        with pytest.raises(ValueError, match="not in SOURCE_VARIABLE_NAMES"):
             read_long_table(path)
 
     def test_rejects_an_empty_table(self, tmp_path):
@@ -258,7 +281,7 @@ class TestReadLongTable:
 
 class TestPivot:
     def test_dims_and_coordinates(self, ingested):
-        assert ingested[OBS_MEAN].dims == ("site", "time", "variable")
+        assert ingested[OBSERVATION_MEAN].dims == ("site", "time", "variable")
         assert list(ingested["site"].values) == SYNTHETIC_SITES
         assert list(ingested["variable"].values) == list(CONSTRAINT_VARIABLES)
         assert ingested["lon"].dims == ("site",)
@@ -267,20 +290,25 @@ class TestPivot:
     def test_every_pool_site_gets_a_row_even_when_never_observed(self, ingested):
         # Site 3 appears in no row of the long table.
         assert 3 in ingested["site"].values
-        assert bool(np.all(np.isnan(ingested[OBS_MEAN].sel(site=3).values)))
+        assert bool(np.all(np.isnan(ingested[OBSERVATION_MEAN].sel(site=3).values)))
 
     @pytest.mark.parametrize(
-        "snapshot,site,variable,mean,variance",
+        "snapshot,site,source_variable,mean,variance",
         [(row[0], row[1], row[2], row[3], row[4]) for row in SYNTHETIC_ROWS],
     )
     def test_each_observation_lands_in_its_own_cell(
-        self, ingested, snapshot, site, variable, mean, variance
+        self, ingested, snapshot, site, source_variable, mean, variance
     ):
+        variable = SOURCE_VARIABLE_NAMES[source_variable]
         assert float(
-            ingested[OBS_MEAN].sel(site=site, time=snapshot, variable=variable)
+            ingested[OBSERVATION_MEAN].sel(
+                site=site, time=snapshot, variable=variable
+            )
         ) == mean
         assert float(
-            ingested[OBS_VAR].sel(site=site, time=snapshot, variable=variable)
+            ingested[OBSERVATION_VARIANCE].sel(
+                site=site, time=snapshot, variable=variable
+            )
         ) == variance
 
     def test_a_site_observing_a_subset_pairs_variances_correctly(self, ingested):
@@ -288,43 +316,80 @@ class TestPivot:
         # positional pairing would put LAI's variance on AbvGrndWood. This is
         # the case the whole variable-ordering convention exists for.
         cell = ingested.sel(site=2, time="2012-07-15")
-        assert np.isnan(float(cell[OBS_MEAN].sel(variable="AbvGrndWood")))
-        assert np.isnan(float(cell[OBS_VAR].sel(variable="AbvGrndWood")))
-        assert float(cell[OBS_MEAN].sel(variable="LAI")) == 2.5
-        assert float(cell[OBS_VAR].sel(variable="LAI")) == 0.49
-        assert float(cell[OBS_MEAN].sel(variable="TotSoilCarb")) == 30.0
-        assert float(cell[OBS_VAR].sel(variable="TotSoilCarb")) == 900.0
+        wood, lai = "aboveground_wood_carbon", "lai"
+        soil = "total_soil_carbon"
+        assert np.isnan(float(cell[OBSERVATION_MEAN].sel(variable=wood)))
+        assert np.isnan(float(cell[OBSERVATION_VARIANCE].sel(variable=wood)))
+        assert float(cell[OBSERVATION_MEAN].sel(variable=lai)) == 2.5
+        assert float(cell[OBSERVATION_VARIANCE].sel(variable=lai)) == 0.49
+        assert float(cell[OBSERVATION_MEAN].sel(variable=soil)) == 30.0
+        assert float(cell[OBSERVATION_VARIANCE].sel(variable=soil)) == 900.0
+
+    def test_source_names_are_renamed_to_processed_names(self, ingested):
+        # The long table carried "TotSoilCarb"; the product carries
+        # "total_soil_carbon", with the same value in the same cell.
+        assert "TotSoilCarb" not in ingested["variable"].values
+        assert float(
+            ingested[OBSERVATION_MEAN].sel(
+                site=1, time="2012-07-15", variable="total_soil_carbon"
+            )
+        ) == 20.0
+
+    def test_an_unmapped_source_variable_is_refused(self, synthetic):
+        # A new variable in the source is a schema change, not a new row.
+        rows = SYNTHETIC_ROWS + [("2012-07-15", 1, "Nitrogen", 1.0, 1.0)]
+        _write_long_table(synthetic["long_table"], rows)
+        status = ingest.main(
+            [
+                "--long-table", str(synthetic["long_table"]),
+                "--manifest", str(synthetic["manifest"]),
+                "--sites", str(synthetic["sites"]),
+                "--out", str(synthetic["out"]),
+            ]
+        )
+        assert status == 1
+        assert not synthetic["out"].exists()
 
     def test_unobserved_cells_are_nan_not_zero(self, ingested):
         # A zero here would be an observation of no biomass, which is a real and
         # different statement from "not observed".
         assert np.isnan(float(
-            ingested[OBS_MEAN].sel(site=1, time="2012-07-15", variable="SoilMoistFrac")
+            ingested[OBSERVATION_MEAN].sel(
+                site=1, time="2012-07-15", variable="soil_moisture_fraction"
+            )
         ))
 
     def test_a_variable_absent_from_one_snapshot_is_nan_throughout_it(self, ingested):
-        absent = ingested[OBS_MEAN].sel(time="2012-07-15", variable="SoilMoistFrac")
+        absent = ingested[OBSERVATION_MEAN].sel(
+            time="2012-07-15", variable="soil_moisture_fraction"
+        )
         assert bool(np.all(np.isnan(absent.values)))
 
     def test_zero_variances_are_preserved_not_floored(self, ingested):
         # Flooring is a modeling decision and must not happen at ingest.
         assert float(
-            ingested[OBS_VAR].sel(site=4, time="2012-07-15", variable="TotSoilCarb")
+            ingested[OBSERVATION_VARIANCE].sel(
+                site=4, time="2012-07-15", variable="total_soil_carbon"
+            )
         ) == 0.0
         assert float(
-            ingested[OBS_VAR].sel(site=2, time="2013-07-15", variable="AbvGrndWood")
+            ingested[OBSERVATION_VARIANCE].sel(
+                site=2, time="2013-07-15", variable="aboveground_wood_carbon"
+            )
         ) == 0.0
 
     def test_a_zero_observation_is_distinct_from_a_missing_one(self, ingested):
-        observed_zero = ingested[OBS_MEAN].sel(
-            site=2, time="2013-07-15", variable="AbvGrndWood"
+        observed_zero = ingested[OBSERVATION_MEAN].sel(
+            site=2, time="2013-07-15", variable="aboveground_wood_carbon"
         )
         assert float(observed_zero) == 0.0
         assert not np.isnan(float(observed_zero))
 
     def test_observed_cell_count_matches_the_long_table(self, ingested):
-        assert int(np.isfinite(ingested[OBS_MEAN].values).sum()) == len(SYNTHETIC_ROWS)
-        assert int(np.isfinite(ingested[OBS_VAR].values).sum()) == len(SYNTHETIC_ROWS)
+        expected = len(SYNTHETIC_ROWS)
+        mean, variance = OBSERVATION_MEAN, OBSERVATION_VARIANCE
+        assert int(np.isfinite(ingested[mean].values).sum()) == expected
+        assert int(np.isfinite(ingested[variance].values).sum()) == expected
 
 
 # ── attributes ────────────────────────────────────────────────────────────────
@@ -332,9 +397,10 @@ class TestPivot:
 
 class TestAttributes:
     def test_units_are_carried_but_flagged_unconfirmed(self, ingested):
-        assert ingested[OBS_MEAN].attrs["units_status"] == UNITS_STATUS
-        assert "reanalysis" in ingested[OBS_MEAN].attrs["units_provenance"]
-        assert ingested.attrs["variable_LAI_units"] == "m2 m-2"
+        assert ingested[OBSERVATION_MEAN].attrs["units_status"] == UNITS_STATUS
+        assert "reanalysis" in ingested[OBSERVATION_MEAN].attrs["units_provenance"]
+        assert ingested.attrs["variable_lai_units"] == "m2 m-2"
+        assert ingested.attrs["variable_lai_source_name"] == "LAI"
 
     def test_the_snapshot_key_is_labeled_nominal(self, ingested):
         # Not an instant and not an interval: a bookkeeping key.
@@ -502,7 +568,8 @@ class TestLoadConstraintsValidation:
         return path
 
     def test_missing_a_data_variable_is_rejected(self, ingested, tmp_path):
-        path = self._write(ingested.drop_vars(OBS_VAR), tmp_path / "bad.nc")
+        dropped = ingested.drop_vars(OBSERVATION_VARIANCE)
+        path = self._write(dropped, tmp_path / "bad.nc")
         with pytest.raises(ValueError, match="missing data variables"):
             load_constraints(path)
 
@@ -553,19 +620,20 @@ class TestConstraintFields:
 
     def test_fields_carry_units_and_the_unconfirmed_flag(self, ingested):
         fields = constraint_fields(ingested)
-        assert fields["LAI"].attrs["units"] == "m2 m-2"
-        assert fields["LAI"].attrs["long_name"] == "Leaf area index"
-        assert fields["LAI"].attrs["units_status"] == UNITS_STATUS
+        assert fields["lai"].attrs["units"] == "m2 m-2"
+        assert fields["lai"].attrs["long_name"] == "Leaf area index"
+        assert fields["lai"].attrs["units_status"] == UNITS_STATUS
+        assert fields["lai"].attrs["source_name"] == "LAI"
 
     def test_variance_fields_carry_squared_units(self, ingested):
         fields = constraint_fields(ingested, statistic="variance")
-        assert fields["TotSoilCarb"].attrs["units"] == "(kg C m-2)2"
-        assert "variance" in fields["TotSoilCarb"].attrs["long_name"]
+        assert fields["total_soil_carbon"].attrs["units"] == "(kg C m-2)2"
+        assert "variance" in fields["total_soil_carbon"].attrs["long_name"]
 
     def test_values_match_the_stored_form(self, ingested):
         fields = constraint_fields(ingested)
-        expected = ingested[OBS_MEAN].sel(variable="LAI").values
-        assert np.array_equal(fields["LAI"].values, expected, equal_nan=True)
+        expected = ingested[OBSERVATION_MEAN].sel(variable="lai").values
+        assert np.array_equal(fields["lai"].values, expected, equal_nan=True)
 
     def test_an_unknown_statistic_is_rejected(self, ingested):
         with pytest.raises(ValueError, match="must be 'mean' or 'variance'"):
@@ -803,40 +871,48 @@ class TestRealIngest:
         assert real_dataset["site"].values[0] == 1
         assert real_dataset["site"].values[-1] == 8000
 
-    @pytest.mark.parametrize("snapshot,site,variable,mean,variance", GOLDEN)
+    @pytest.mark.parametrize("snapshot,site,source_variable,mean,variance", GOLDEN)
     def test_golden_values_are_bitwise_equal_to_the_source(
-        self, real_dataset, snapshot, site, variable, mean, variance
+        self, real_dataset, snapshot, site, source_variable, mean, variance
     ):
+        variable = SOURCE_VARIABLE_NAMES[source_variable]
         assert float(
-            real_dataset[OBS_MEAN].sel(site=site, time=snapshot, variable=variable)
+            real_dataset[OBSERVATION_MEAN].sel(
+                site=site, time=snapshot, variable=variable
+            )
         ) == mean
         assert float(
-            real_dataset[OBS_VAR].sel(site=site, time=snapshot, variable=variable)
+            real_dataset[OBSERVATION_VARIANCE].sel(
+                site=site, time=snapshot, variable=variable
+            )
         ) == variance
 
     @pytest.mark.parametrize("site", EMPTY_SITES)
     @pytest.mark.parametrize("snapshot", EMPTY_SNAPSHOTS)
     def test_the_empty_site_snapshots_are_all_nan(self, real_dataset, site, snapshot):
-        cell = real_dataset[OBS_MEAN].sel(site=site, time=snapshot)
+        cell = real_dataset[OBSERVATION_MEAN].sel(site=site, time=snapshot)
         assert bool(np.all(np.isnan(cell.values)))
 
     def test_soil_moisture_is_absent_before_2015(self, real_dataset):
-        early = real_dataset[OBS_MEAN].sel(
-            variable="SoilMoistFrac", time=slice("2012-01-01", "2014-12-31")
+        early = real_dataset[OBSERVATION_MEAN].sel(
+            variable="soil_moisture_fraction",
+            time=slice("2012-01-01", "2014-12-31"),
         )
         assert bool(np.all(np.isnan(early.values)))
 
     def test_aboveground_wood_is_absent_in_2024(self, real_dataset):
         assert bool(np.all(np.isnan(
-            real_dataset[OBS_MEAN].sel(variable="AbvGrndWood", time="2024-07-15").values
+            real_dataset[OBSERVATION_MEAN]
+            .sel(variable="aboveground_wood_carbon", time="2024-07-15")
+            .values
         )))
 
     def test_observed_cell_counts_match_the_documented_coverage(self, real_dataset):
         for index, name in enumerate(CONSTRAINT_VARIABLES):
-            values = real_dataset[OBS_MEAN].values[:, :, index]
+            values = real_dataset[OBSERVATION_MEAN].values[:, :, index]
             observed = int(np.isfinite(values).sum())
-            assert observed == REAL_COUNTS[name]
+            assert observed == REAL_COUNTS_PROCESSED[name]
 
     def test_the_file_is_small_enough_to_load_whole(self, real_dataset):
-        cells = int(np.prod(real_dataset[OBS_MEAN].shape))
+        cells = int(np.prod(real_dataset[OBSERVATION_MEAN].shape))
         assert cells == 8000 * 13 * 4
