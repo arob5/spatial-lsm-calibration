@@ -12,27 +12,28 @@ laptop, and every other product joins against its output on ``site_id``.
 Input data
 ----------
 ``--shapefile``
-    ``data/raw/sites/pts.shp`` and companions: 8000 single-point ``POINT``
-    records, one per site, in descending latitude. Record *N* is site *N*.
+    ``data/raw/sites/pts.shp`` and companions: one single-point ``POINT``
+    record per site, in descending latitude, with record *N* being site *N*.
     Geometry is float64 lon/lat on WGS 84. The ``.dbf`` attribute table holds
     ``site_id``, ``site_names``, ``site_order``, ``cluster`` and ``landcover``;
     the three numeric fields are declared with 15 decimals and so arrive as
     floats. ``pts.cpg`` declares the ``.dbf`` encoding, which is UTF-8.
+    :data:`N_SITES` is the pool size the checks require.
 
 ``--site-id-map``
-    ``data/site_id_map.csv``: 185 rows of ``Site_ID, index``, mapping an
-    Ameriflux identifier onto a site id by exact match.
+    ``data/site_id_map.csv``: rows of ``Site_ID, index``, mapping an Ameriflux
+    identifier onto a site id by exact match. It covers a subset of the pool.
 
 Output data
 -----------
-``--out``, default ``data/processed/sites/sites.csv``, 8000 rows::
+``--out``, default ``data/processed/sites/sites.csv``, one row per site::
 
     site_id, lon, lat, lon_index, lat_index, site_name, site_order,
     cluster, landcover, ameriflux_site_id
 
 ``site_name`` is the shapefile's ``site_names`` renamed to the singular, and
 ``ameriflux_site_id`` is that file's ``Site_ID`` renamed to say which identifier
-it means; it is the empty string for the 7815 sites with no counterpart. The
+it means; it is the empty string for sites with no counterpart. The
 column set and dtypes come from ``SITE_COLUMNS`` and ``SITE_COLUMN_DTYPES`` in
 :mod:`sipnet_calibration.sites`, so this writer and
 :func:`sipnet_calibration.sites.load_sites` cannot drift apart. There is
@@ -44,19 +45,18 @@ Notes
 Two things about this table are easy to get wrong and quiet when they go wrong,
 and most of the checking exists to make them loud.
 
-**The encoding.** Exactly two of the 8000 site names carry non-ASCII bytes. Read
-as latin-1 they do not raise; they decode to ``'RayÃ³n (MX-Ray)'``, which still
-looks like a plausible site label. So the declared encoding is read from the
-``.cpg`` and asserted rather than left to a library default, and ``--encoding``
-rejects anything that disagrees rather than honoring it.
+**The encoding.** A few site names carry non-ASCII bytes. Read as latin-1 they
+do not raise; they decode to ``'RayÃ³n (MX-Ray)'``, which still looks like a
+plausible site label. So the declared encoding is read from the ``.cpg`` and
+asserted rather than left to a library default, and ``--encoding`` rejects
+anything that disagrees rather than honoring it. The run reports how many such
+names it saw.
 
 **The coordinates.** The geometry is float64 and CSV formatting is where that
-precision goes: the retired ``data/site_ids.csv`` differed from the shapefile by
-up to 4.1e-13 degrees for exactly this reason. So the output is read back and
-compared **bitwise** before the script reports success. That check earns its
-place -- it caught pandas' default CSV parser reading 1632 of the 8000
-longitudes back inexactly. The fix was the *reader*,
-``float_precision="round_trip"`` in
+precision goes, which is why the output is read back and compared **bitwise**
+before the script reports success. That check earns its place -- it caught
+pandas' default CSV parser reading a fraction of the longitudes back inexactly.
+The fix was the *reader*, ``float_precision="round_trip"`` in
 :func:`sipnet_calibration.sites.load_sites`, not the write format, which is
 inexact under the default parser either way. See :data:`FLOAT_FORMAT`.
 
@@ -70,12 +70,12 @@ nowhere to put it and nothing to do but say so.
 
 The checks are named individually in the ``checks`` section below. Before
 writing: the declared encoding, the record and shape counts, ``site_id`` being
-exactly 1..8000 in record order, the numeric fields being integral,
+exactly ``1..N_SITES`` in record order, the numeric fields being integral,
 ``site_order``'s non-zero values being a permutation of 1..1093, every
 coordinate resolving on ``SITE_GRID`` to a distinct index pair, and the
 Ameriflux map naming each site at most once and only sites that exist. After
-writing: the bitwise round trip, which also catches the eight sites named
-literally ``NA``.
+writing: the bitwise round trip, which also catches the sites named literally
+``NA``.
 
 Run it from the project environment: it imports ``sipnet_calibration``, numpy,
 pandas and ``pyshp``, so a bare system ``python3`` fails on the first import.
@@ -145,9 +145,12 @@ NAMED_SITE_COUNT = 1093
 #: =================  ====================  ==========================
 #: written as         default parser        ``float_precision`` set
 #: =================  ====================  ==========================
-#: ``repr`` (this)    1496 of 8000 wrong    exact
-#: ``"%.17g"``        1632 of 8000 wrong    exact
+#: ``repr`` (this)    some rows inexact     exact
+#: ``"%.17g"``        some rows inexact     exact
 #: =================  ====================  ==========================
+#:
+#: ``test_the_reader_setting_is_what_makes_the_round_trip_exact`` measures both
+#: columns, so the numbers live there rather than here.
 #:
 #: ``repr`` is kept because it is shortest and is exact by construction under
 #: Python's own ``float()``, so the file is right for any reader that parses
@@ -442,7 +445,7 @@ def text_field(records: tuple[dict[str, object], ...], field: str) -> list[str]:
     """A character field's values, with a ``.dbf`` null as the empty string.
 
     The empty string is what "missing" means in this table's text columns:
-    ``ameriflux_site_id`` already uses it for the 7815 sites with no Ameriflux
+    ``ameriflux_site_id`` already uses it for every site with no Ameriflux
     counterpart, and it is the only missing marker that survives the round trip,
     since :func:`sipnet_calibration.sites.load_sites` reads with
     ``keep_default_na=False``. So a null site name reads back as absent rather
@@ -498,8 +501,8 @@ def numeric_field(records: tuple[dict[str, object], ...], field: str) -> list[ob
 def na_hazard_site_ids(names: list[str], *, site_ids: np.ndarray) -> list[int]:
     """Sites whose name a default ``read_csv`` would turn into a missing value.
 
-    Eight of the 8000 sites are named literally ``NA``, which pandas treats as
-    null unless told otherwise. That is not an error in the data and this is not
+    Some sites are named literally ``NA``, which pandas treats as null unless
+    told otherwise. That is not an error in the data and this is not
     a check: :func:`sipnet_calibration.sites.load_sites` reads the name column as
     text with ``keep_default_na=False``, and
     :func:`check_csv_round_trip` compares ``site_name`` value by value, so a

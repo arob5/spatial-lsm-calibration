@@ -97,6 +97,26 @@ Raw variable names are not ours to choose; processed ones are.
   possible, what to do about it. The script's `main` turns those into a reported
   error rather than a traceback.
 
+### What does and does not belong in documentation
+
+- **Do not write volatile measurements into documentation.** Row counts, cell
+  counts, file sizes, per-variable coverage, "929 of them are zero" — these
+  describe one snapshot of the data and go stale silently. A load-bearing
+  numeric property of the data is **checked programmatically**: an assertion in
+  the ingest script, a constant in the library, or a test. Documentation says
+  what the property *is* and where it is checked, not what it currently
+  measures. Where a run's numbers are genuinely useful, print them.
+  `data/README.md` is the exception, since recording measured characteristics of
+  the raw data is its job — but even there, anything the code relies on is
+  asserted in code as well, not just written down.
+- **Keep low-level design reasoning out of docstrings.** A docstring says what
+  something is, what it takes and what it returns. Why a design was chosen over
+  an alternative, what bug it avoids, what would break if it were done the other
+  way — that belongs in a **Notes section at the end**, if it belongs in the
+  docstring at all. Otherwise put it in an implementation comment beside the
+  code it explains, or in the design log in the vault. A top-level docstring is
+  read by someone trying to use the thing, not to review its design.
+
 ### Docstrings for data processing scripts
 
 File-level docstrings use these sections, in this order:

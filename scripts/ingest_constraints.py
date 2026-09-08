@@ -9,8 +9,10 @@ the processed convention on the way. The R script does the reading and the one
 check that only R can do; this script makes every schema decision and every
 check that can be made from the flattened data.
 
-``sipnet_calibration.constraints`` holds the schema and the reader. This is the
-writer, and it is tested against that reader rather than against a parallel one.
+``sipnet_calibration.constraints`` holds the schema and the reader. This script
+is the writer, and its own round-trip check reads the file back with
+:func:`sipnet_calibration.constraints.load_constraints` -- the same function
+every consumer uses -- so the two cannot drift apart.
 
 Input data
 ----------
@@ -39,10 +41,11 @@ Output data
     observation_mean(site, time, variable)      float64, NaN where unobserved
     observation_variance(site, time, variable)  float64, NaN where unobserved
 
-``site`` is the full 1-8000 pool whether or not a site was ever observed;
-``time`` the thirteen July-15 snapshot keys; ``variable`` the four processed
+``site`` is the whole site pool, whether or not a site was ever observed;
+``time`` the annual snapshot keys the source carries; ``variable`` the processed
 variable names. ``lon`` and ``lat`` are non-dimension coordinates on ``site``.
-416,000 cells per array, of which 322,515 are observed; 2.2 MB compressed.
+Unobserved cells are ``NaN``. The run prints the observed cell count and the
+file size, and the tests check the counts against the source.
 
 Notes
 -----
@@ -56,11 +59,11 @@ Output is written to a ``.partial`` path and renamed only once it reads back
 bitwise through the library loader, so a failed check cannot leave a corrupt
 file where the canonical one belongs.
 
-Zero variances are written through unchanged. 929 ``aboveground_wood_carbon``
-variances are exactly zero in the source, 925 of them where the observation is
-also zero; that is unusable as a weight and unusable as a prior, so something
-downstream has to floor them. Doing it here would hide a modeling decision
-inside an ingest script, so the count is asserted and reported instead.
+Zero variances are written through unchanged. Some source variances are exactly
+zero, mostly where the observation is zero too, which is unusable as a weight
+and unusable as a prior; something downstream has to floor them. Doing it here
+would hide a modeling decision inside an ingest script, so the count is
+reported instead.
 
 Usage
 -----
@@ -200,13 +203,11 @@ def read_manifest(path: Path) -> dict:
 
 
 def rename_to_processed_variables(table: pd.DataFrame) -> pd.DataFrame:
-    """Map the source variable names onto the processed ones.
-
-    Safe here rather than in R because the long table names the variable on
-    every row, so a row carries its own identity and the rename cannot mis-pair
-    a variance with a variable. In the source the pairing is positional, which
-    is why R keeps the source names and the source order.
-    """
+    """Map the source variable names onto the processed ones."""
+    # Safe here rather than in R because the long table names the variable on
+    # every row, so a row carries its own identity and the rename cannot
+    # mis-pair a variance with a variable. In the source the pairing is
+    # positional, which is why R keeps the source names and the source order.
     renamed = table.copy()
     renamed["variable"] = renamed["variable"].map(SOURCE_VARIABLE_NAMES)
     check_every_variable_was_renamed(renamed, table)

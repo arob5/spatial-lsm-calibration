@@ -20,8 +20,8 @@ Input data
     ``<root>/<site>/IC_site_<site>_<member>.nc``. Each file is netCDF-3 classic
     (magic ``CDF\x01``) holding a handful of scalar carbon-pool variables on a
     length-1 record dimension named ``time``, with ``units`` and ``long_name``
-    attributes and a ``_FillValue`` of -999.0. The expected pool is 8000 sites
-    by 100 members, but nothing here assumes that.
+    attributes and a ``_FillValue`` of -999.0. Nothing here assumes a pool
+    size or an ensemble size; reporting them is the point.
 
     The ``time`` variable's ``units`` attribute is the literal unsubstituted
     template ``days since [year]-01-01 00:00:00 UTC``, which no calendar

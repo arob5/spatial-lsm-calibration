@@ -11,9 +11,9 @@ file; ``data/README.md`` documents the source and the open questions.
 
 Variable names
 --------------
-The source names are not ours to choose, but the processed ones are, and they
-follow the project convention: lower case with underscores, abbreviations
-avoided unless universal.
+Source names are prescribed by the input data. The processed names follow the
+lower case with underscore, all but the most common abbreviations avoided,
+project convention.
 
 ======================= ===========================
 Source                  Processed
@@ -24,38 +24,30 @@ Source                  Processed
 ``TotSoilCarb``         ``total_soil_carbon``
 ======================= ===========================
 
-The rename happens in the ingest script, via :data:`SOURCE_VARIABLE_NAMES`. It
-is safe to do there rather than in R because the intermediate long table names
-the variable on every row, so a row carries its own identity and the rename
-cannot mis-pair a variance with a variable. In the *source* the pairing is
-positional, which is why R keeps the source names and the source order.
+The rename happens in the ingest script, via :data:`SOURCE_VARIABLE_NAMES`.
 
-Layout
-------
-Two aspects are deliberate and worth stating.
-
-**The observation error covariances are diagonal, so only variances are
-carried.** Every one of the 103,047 covariance matrices in the source is exactly
-diagonal -- checked over all 13 snapshots and all 8000 sites, not sampled -- so
-the full matrices hold nothing the diagonal does not. Diagonality is asserted in
-R, where the off-diagonal is still visible, and the largest element seen is
-recorded in a manifest so the Python side can confirm the check ran. If a future
-release carries genuine cross-variable covariance, this product gains a
-``(site, time, variable, variable)`` array and :data:`OBSERVATION_VARIANCE`
-becomes a view of its diagonal.
+Notes
+-----
+**Only variances are carried, not covariance matrices.** Every source
+covariance is exactly diagonal, so the matrices hold nothing the diagonal does
+not. That is asserted in R at every export, where the off-diagonal is still
+visible, and the largest element seen is recorded in a manifest so this side can
+confirm the check ran. If a future release carries genuine cross-variable
+covariance, this product gains a ``(site, time, variable, variable)`` array and
+:data:`OBSERVATION_VARIANCE` becomes a view of its diagonal.
 
 **``variable`` is a dimension, not one array per variable.** The canonical field
 convention wants dims a subset of ``(member, site, time)``, which this stored
 form is not. It is stored this way because the observation operator indexes
 observations by exactly ``(site, variable, time)``, so flattening to the
-observation vector is a stack rather than a join, and because all four variables
+observation vector is a stack rather than a join, and because the variables
 share one ``(site, time)`` grid here. :func:`constraint_fields` produces the
 canonical per-variable view, so the plotting layer and the likelihood are each
 served without reshaping the other's form.
 
-Missingness is dense ``NaN``: the source is ragged over site, snapshot and
-variable, and 416,000 cells per statistic cost 2.2 MB compressed, which is
-cheaper than any ragged encoding is to reason about.
+**Missingness is dense** ``NaN``. The source is ragged over site, snapshot and
+variable, and a dense array is cheap at this size and far easier to reason about
+than any ragged encoding.
 """
 
 from __future__ import annotations
@@ -95,10 +87,7 @@ OBSERVATION_VARIANCE = "observation_variance"
 
 #: Source variable name -> processed variable name.
 #:
-#: The source names come from the reanalysis observation files and are not ours
-#: to change. The processed names follow the project convention. Applied by
-#: ``scripts/ingest_constraints.py``; see the module docstring for why the
-#: rename is safe at that point and not before.
+#: Applied by ``scripts/ingest_constraints.py``.
 SOURCE_VARIABLE_NAMES = {
     "AbvGrndWood": "aboveground_wood_carbon",
     "LAI": "lai",
@@ -106,15 +95,15 @@ SOURCE_VARIABLE_NAMES = {
     "TotSoilCarb": "total_soil_carbon",
 }
 
-#: The four constrained variables, by processed name, in the order the
-#: ``variable`` coordinate carries them.
+#: The constrained variables, by processed name, in the order the ``variable``
+#: coordinate carries them.
 CONSTRAINT_VARIABLES = tuple(sorted(SOURCE_VARIABLE_NAMES.values()))
 
 #: Month and day of the source's annual snapshot key.
 #:
-#: The July 15 dates are the source product's annual bookkeeping convention, not
-#: observation dates: see ``data/README.md``. Nothing should read them as the
-#: instant an observation was taken.
+#: The source product's annual bookkeeping convention, not observation dates:
+#: see ``data/README.md``. Nothing should read them as the instant an
+#: observation was taken.
 SNAPSHOT_MONTH_DAY = (7, 15)
 
 #: What is and is not settled about the units below.
@@ -125,17 +114,15 @@ UNITS_STATUS = "unconfirmed"
 UNITS_PROVENANCE = (
     "Documented in the NALCR dataset guide for the corresponding variables of "
     "the reanalysis *output*. These files are the observation *inputs* to that "
-    "reanalysis. All four variable names and all thirteen snapshot keys agree "
-    "between the two, so they very likely share definitions, but this has not "
+    "reanalysis. The variable names and the snapshot keys agree between the "
+    "two, so they very likely share definitions, but this has not "
     "been confirmed by the producer. See open question 9 in data/README.md."
 )
 
 #: Per-variable metadata written into the processed file, by processed name.
 #:
-#: ``units`` is recorded because omitting it would be worse -- the canonical
-#: field convention requires it, and a consumer with no unit at all has less to
-#: go on than one with an unconfirmed unit and a status flag saying so. Both
-#: :data:`UNITS_STATUS` and :data:`UNITS_PROVENANCE` travel with it.
+#: The units are unconfirmed; :data:`UNITS_STATUS` and
+#: :data:`UNITS_PROVENANCE` travel with every one of them.
 CONSTRAINT_VARIABLE_ATTRS = {
     "aboveground_wood_carbon": {
         "units": "Mg C ha-1",

@@ -14,11 +14,11 @@
 # Two `.Rdata` files, each holding a single object that nests as snapshot date,
 # then site, then variable.
 #
-#   obs.mean   list of 13 snapshots keyed "2012-07-15".."2024-07-15". Each is a
-#              list of 8000 sites named "1".."8000". Each site entry is a
-#              one-row data frame whose columns are the variables observed
-#              there: zero to four of AbvGrndWood, LAI, SoilMoistFrac,
-#              TotSoilCarb, in alphabetical order.
+#   obs.mean   a list of annual snapshots keyed "YYYY-07-15", each a list of
+#              sites named "1".."N" in order. Each site entry is a one-row data
+#              frame whose columns are the variables observed there: any subset
+#              of AbvGrndWood, LAI, SoilMoistFrac, TotSoilCarb, in alphabetical
+#              order, possibly none. `--expect-sites` says what N must be.
 #
 #   obs.cov    the same nesting, holding the observation error covariance for
 #              each site-snapshot: a bare numeric when one variable was
