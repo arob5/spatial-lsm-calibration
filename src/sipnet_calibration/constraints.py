@@ -127,6 +127,63 @@ the consumers that want the canonical form instead.
 variable, and a dense array is cheap at this size and far easier to reason about
 than any ragged encoding. A ``NaN`` means not observed; a zero is an
 observation.
+
+Usage
+-----
+Load the product, then select from it with ordinary xarray::
+
+    from sipnet_calibration.constraints import (
+        constraint_fields,
+        load_constraints,
+        snapshot_dates,
+    )
+
+    constraints = load_constraints()        # or load_constraints(path)
+
+    # One variable, over every site and snapshot: dims (site, time).
+    lai = constraints["observation_mean"].sel(variable="lai")
+
+    # One site's whole record: dims (time, variable).
+    site_1 = constraints.sel(site=1)
+
+    # One snapshot. snapshot_dates builds the keys from years, so the
+    # July-15 convention is not written out at the call site.
+    (key,) = snapshot_dates([2015])
+    in_2015 = constraints.sel(time=key)
+
+    # A subset of sites, returned in the order given.
+    subset = constraints.sel(site=[4102, 4113, 5584])
+
+    # An observation beside its error variance.
+    mean = constraints["observation_mean"].sel(variable="total_soil_carbon")
+    variance = constraints["observation_variance"].sel(variable="total_soil_carbon")
+
+For plotting, take the canonical per-variable view. It drops the ``variable``
+dimension and gives each field its own units, so a plotter needs to know nothing
+about this product's layout::
+
+    fields = constraint_fields(constraints)                       # observations
+    variances = constraint_fields(constraints, statistic="variance")
+
+    fields["lai"].dims                      # ('site', 'time')
+    fields["lai"].attrs["units"]            # 'm2 m-2'
+    variances["total_soil_carbon"].attrs["units"]     # '(kg C m-2)2'
+
+For the likelihood, flatten to an observation vector, keeping only what was
+observed. The ``(site, variable, time)`` index that falls out is the labeling
+the observation operator uses, and unstacking it is the inverse::
+
+    observed = (
+        constraints["observation_mean"]
+        .stack(observation=("site", "variable", "time"))
+        .dropna("observation")
+    )
+    observed.indexes["observation"].names   # ['site', 'variable', 'time']
+    observed.unstack("observation").dims    # ('site', 'variable', 'time')
+
+Selecting the matching error variances is the same expression against
+``observation_variance``, and the two indexes align because both arrays are
+``NaN`` in exactly the same places.
 """
 
 from __future__ import annotations

@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import numpy as np
@@ -27,6 +29,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+import sipnet_calibration.constraints as constraints_module
 from sipnet_calibration.constraints import (
     CONSTRAINT_VARIABLE_ATTRS,
     CONSTRAINT_VARIABLES,
@@ -36,6 +39,7 @@ from sipnet_calibration.constraints import (
     SOURCE_VARIABLE_NAMES,
     UNITS_STATUS,
     constraint_fields,
+    default_constraints_path,
     load_constraints,
     read_long_table,
     snapshot_dates,
@@ -384,6 +388,15 @@ class TestPivot:
         )
         assert float(observed_zero) == 0.0
         assert not np.isnan(float(observed_zero))
+
+    def test_mean_and_variance_are_missing_together(self, ingested):
+        # The Usage section of the module docstring tells callers they can
+        # select variances with the same expression as the means and get an
+        # aligned vector. That holds only if the two arrays are NaN in exactly
+        # the same cells.
+        mean_missing = np.isnan(ingested[OBSERVATION_MEAN].values)
+        variance_missing = np.isnan(ingested[OBSERVATION_VARIANCE].values)
+        assert np.array_equal(mean_missing, variance_missing)
 
     def test_observed_cell_count_matches_the_long_table(self, ingested):
         expected = len(SYNTHETIC_ROWS)
@@ -795,6 +808,34 @@ class TestExportDiagonalityAssertion:
         completed = _run_export(directory, extra=["--nonsense", "1"])
         assert completed.returncode == 1
         assert "unknown option" in completed.stderr
+
+
+class TestDocstringExamples:
+    """The Usage examples in the module docstring have to actually run.
+
+    Extracted from the shipped docstring rather than copied here, so that the
+    text and the tested code cannot diverge. They read the product at the
+    default path, so they are skipped where the pipeline has not been run.
+    """
+
+    @staticmethod
+    def _usage_code_blocks() -> list[str]:
+        usage = constraints_module.__doc__.split("Usage\n-----", 1)[1]
+        blocks = re.findall(r"::\n\n((?:(?: {4}.*)?\n)+)", usage)
+        return [textwrap.dedent(block) for block in blocks]
+
+    def test_the_docstring_has_usage_examples(self):
+        assert len(self._usage_code_blocks()) >= 3
+
+    @pytest.mark.skipif(
+        not default_constraints_path().exists(),
+        reason="needs the built product at the default path",
+    )
+    def test_every_usage_example_executes(self):
+        namespace: dict = {}
+        for index, code in enumerate(self._usage_code_blocks(), start=1):
+            compiled = compile(code, f"<docstring block {index}>", "exec")
+            exec(compiled, namespace)  # noqa: S102 - the docstring is the input
 
 
 @real_source
