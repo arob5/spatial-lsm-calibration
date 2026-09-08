@@ -44,7 +44,7 @@ from sipnet_calibration.constraints import (
     read_long_table,
     snapshot_dates,
 )
-from sipnet_calibration.sites import SITE_COLUMNS
+from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, SITE_COLUMNS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXPORT_SCRIPT = REPO_ROOT / "scripts" / "export_constraints.R"
@@ -239,6 +239,32 @@ class TestSchemaConstants:
         dates = snapshot_dates([2012, 2024])
         assert list(dates.strftime("%Y-%m-%d")) == ["2012-07-15", "2024-07-15"]
 
+    def test_snapshot_dates_preserves_the_order_given(self):
+        dates = snapshot_dates([2024, 2012])
+        assert list(dates.strftime("%Y-%m-%d")) == ["2024-07-15", "2012-07-15"]
+
+    def test_snapshot_dates_of_nothing_is_empty(self):
+        assert len(snapshot_dates([])) == 0
+
+    def test_snapshot_dates_spans_a_leap_year(self):
+        assert snapshot_dates([2016])[0].strftime("%Y-%m-%d") == "2016-07-15"
+
+    def test_default_constraints_path_honors_the_data_root_override(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
+        assert (
+            default_constraints_path()
+            == tmp_path / "processed" / "constraints_annual.nc"
+        )
+
+    def test_default_constraints_path_falls_back_to_the_checkout(self, monkeypatch):
+        monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
+        assert default_constraints_path().parts[-2:] == (
+            "processed",
+            "constraints_annual.nc",
+        )
+
 
 # ── reading the long table ────────────────────────────────────────────────────
 
@@ -250,8 +276,9 @@ class TestReadLongTable:
         assert len(table) == len(SYNTHETIC_ROWS)
 
     def test_a_seventeen_digit_double_round_trips_exactly(self, tmp_path):
-        # The value the site table lost to %.17g plus a non-round-trip parser.
-        awkward = float.fromhex("0x1.921fb54442d18p+1")
+        # 0.4356 is a real LAI variance, and pandas' default C parser moves it
+        # in the last bits -- so this fails if float_precision is dropped.
+        awkward = 0.4356
         path = _write_long_table(
             tmp_path / "long.csv",
             [("2012-07-15", 1, "LAI", awkward, awkward)],
@@ -259,6 +286,58 @@ class TestReadLongTable:
         table = read_long_table(path)
         assert table["mean"][0] == awkward
         assert table["variance"][0] == awkward
+
+    def test_the_default_parser_would_not_be_exact(self, tmp_path):
+        # Pins the reason float_precision="round_trip" is set at all.
+        path = _write_long_table(
+            tmp_path / "long.csv", [("2012-07-15", 1, "LAI", 0.4356, 0.4356)]
+        )
+        loose = pd.read_csv(path, keep_default_na=False, na_values=[])
+        assert loose["mean"][0] != 0.4356
+        assert read_long_table(path)["mean"][0] == 0.4356
+
+    def test_an_all_integer_column_is_still_read_as_float(self, tmp_path):
+        # pandas infers int64 for an all-integer column, and float_precision
+        # then does not apply; the dtype is declared to stop that.
+        path = _write_long_table(
+            tmp_path / "long.csv",
+            [("2012-07-15", 1, "LAI", 0.0, 1.0), ("2012-07-15", 2, "LAI", 2.0, 1.0)],
+        )
+        table = read_long_table(path)
+        assert table["mean"].dtype == np.float64
+        assert table["variance"].dtype == np.float64
+
+    def test_a_site_id_too_large_for_the_stored_width_is_rejected(self, tmp_path):
+        # Read straight into int32 this wraps to site 1 and then passes every
+        # downstream check, attributing the observation to the wrong site.
+        path = _write_long_table(
+            tmp_path / "long.csv", [("2012-07-15", 4294967297, "LAI", 1.5, 0.25)]
+        )
+        with pytest.raises(ValueError, match="outside the range of int32"):
+            read_long_table(path)
+
+    @pytest.mark.parametrize("site_id", [0, -1])
+    def test_a_site_id_below_one_is_rejected(self, tmp_path, site_id):
+        path = _write_long_table(
+            tmp_path / "long.csv", [("2012-07-15", site_id, "LAI", 1.5, 0.25)]
+        )
+        with pytest.raises(ValueError, match="below 1"):
+            read_long_table(path)
+
+    def test_a_row_with_surplus_leading_fields_is_rejected(self, tmp_path):
+        # Without index_col=False pandas absorbs the extra field into an index
+        # and the column check still passes.
+        path = tmp_path / "long.csv"
+        path.write_text(
+            ",".join(LONG_COLUMNS) + "\nJUNK,2012-07-15,1,LAI,1.5,0.25\n"
+        )
+        with pytest.raises(ValueError):
+            read_long_table(path)
+
+    def test_a_snapshot_key_reading_as_null_survives(self, tmp_path):
+        # keep_default_na=False is what stops a text column being nulled.
+        path = _write_long_table(tmp_path / "long.csv", [("NA", 1, "LAI", 1.5, 0.25)])
+        assert read_long_table(path)["snapshot_date"][0] == "NA"
 
     def test_rejects_unexpected_columns(self, tmp_path):
         path = tmp_path / "long.csv"
@@ -549,6 +628,80 @@ class TestOtherIngestChecks:
         partial = synthetic["out"].with_suffix(synthetic["out"].suffix + ".partial")
         assert not partial.exists()
 
+    def test_the_round_trip_check_catches_a_lossy_write(self, synthetic, monkeypatch):
+        # The check the module docstring calls the thing that keeps the writer
+        # and the schema from drifting apart. Previously only its staging was
+        # tested, by monkeypatching it to raise; nothing wrote a file that
+        # actually fails it.
+        lossy = dict(ingest.netcdf_encoding())
+        for name in (OBSERVATION_MEAN, OBSERVATION_VARIANCE):
+            lossy[name] = {**lossy[name], "dtype": "float32"}
+        monkeypatch.setattr(ingest, "netcdf_encoding", lambda: lossy)
+        with pytest.raises(ingest.IngestError, match="changed on the round trip"):
+            ingest.ingest(
+                synthetic["long_table"],
+                synthetic["manifest"],
+                synthetic["sites"],
+                synthetic["out"],
+            )
+        assert not synthetic["out"].exists()
+
+    def test_the_rename_check_reports_an_unmapped_source_name(self):
+        # Reached directly: through main, read_long_table rejects the unknown
+        # name first, so this check was unreachable by any test.
+        table = pd.DataFrame(
+            {
+                "snapshot_date": ["2012-07-15"],
+                "site_id": np.array([1], dtype=np.int32),
+                "variable": ["Nitrogen"],
+                "mean": [1.0],
+                "variance": [1.0],
+            }
+        )
+        with pytest.raises(ingest.IngestError, match="no processed name"):
+            ingest.rename_to_processed_variables(table)
+
+    def test_a_manifest_that_is_not_an_object_is_refused(self, synthetic):
+        synthetic["manifest"].write_text("42")
+        assert ingest.main(
+            [
+                "--long-table", str(synthetic["long_table"]),
+                "--manifest", str(synthetic["manifest"]),
+                "--sites", str(synthetic["sites"]),
+                "--out", str(synthetic["out"]),
+            ]
+        ) == 1
+        assert not synthetic["out"].exists()
+
+    def test_a_snapshot_with_no_observations_is_refused(self, synthetic):
+        # The time axis is built from observed rows, so a snapshot observed
+        # nowhere would drop out silently and shift every later index.
+        manifest = _manifest_for()
+        manifest["snapshot_dates"] = manifest["snapshot_dates"] + ["2014-07-15"]
+        manifest["n_snapshots"] += 1
+        synthetic["manifest"].write_text(json.dumps(manifest))
+        assert ingest.main(
+            [
+                "--long-table", str(synthetic["long_table"]),
+                "--manifest", str(synthetic["manifest"]),
+                "--sites", str(synthetic["sites"]),
+                "--out", str(synthetic["out"]),
+            ]
+        ) == 1
+        assert not synthetic["out"].exists()
+
+    def test_a_directory_given_as_the_manifest_is_reported(self, synthetic, tmp_path):
+        directory = tmp_path / "as_dir"
+        directory.mkdir()
+        assert ingest.main(
+            [
+                "--long-table", str(synthetic["long_table"]),
+                "--manifest", str(directory),
+                "--sites", str(synthetic["sites"]),
+                "--out", str(synthetic["out"]),
+            ]
+        ) == 1
+
     def test_a_failed_round_trip_leaves_nothing_at_the_canonical_path(
         self, synthetic, monkeypatch
     ):
@@ -595,6 +748,16 @@ class TestLoadConstraintsValidation:
     def test_missing_lon_lat_is_rejected(self, ingested, tmp_path):
         path = self._write(ingested.drop_vars(["lon", "lat"]), tmp_path / "bad.nc")
         with pytest.raises(ValueError, match="missing the 'lon' coordinate"):
+            load_constraints(path)
+
+    def test_lon_on_the_wrong_dimension_is_rejected(self, ingested, tmp_path):
+        # The coords-present check covers a missing lon; this branch exists for
+        # a lon that is there but not on site.
+        wrong = ingested.drop_vars("lon").assign_coords(
+            lon=("time", np.zeros(ingested.sizes["time"]))
+        )
+        path = self._write(wrong, tmp_path / "bad.nc")
+        with pytest.raises(ValueError, match="non-dimension coordinate on"):
             load_constraints(path)
 
     def test_transposed_dims_are_rejected(self, ingested, tmp_path):
@@ -647,6 +810,24 @@ class TestConstraintFields:
         fields = constraint_fields(ingested)
         expected = ingested[OBSERVATION_MEAN].sel(variable="lai").values
         assert np.array_equal(fields["lai"].values, expected, equal_nan=True)
+
+    @pytest.mark.parametrize("name", CONSTRAINT_VARIABLES)
+    def test_variance_fields_hold_variances_not_means(self, ingested, name):
+        # Returning the mean array for statistic="variance" passed every other
+        # test in this class: the units are synthesized from the name, so the
+        # variance branch was checked to be labeled right and never to be right.
+        variances = constraint_fields(ingested, statistic="variance")
+        expected = ingested[OBSERVATION_VARIANCE].sel(variable=name).values
+        assert np.array_equal(variances[name].values, expected, equal_nan=True)
+
+    def test_variance_fields_differ_from_mean_fields(self, ingested):
+        means = constraint_fields(ingested)
+        variances = constraint_fields(ingested, statistic="variance")
+        assert not np.array_equal(
+            means["total_soil_carbon"].values,
+            variances["total_soil_carbon"].values,
+            equal_nan=True,
+        )
 
     def test_an_unknown_statistic_is_rejected(self, ingested):
         with pytest.raises(ValueError, match="must be 'mean' or 'variance'"):
@@ -712,7 +893,7 @@ SYNTHETIC_RDATA_SNIPPET = """
 out <- commandArgs(trailingOnly = TRUE)[[1]]
 frame_of <- function(...) data.frame(..., check.names = FALSE)
 obs.mean <- list(`2012-07-15` = list(
-  `1` = frame_of(LAI = 1.5, TotSoilCarb = 20),
+  `1` = frame_of(COL_ORDER_SITE_1),
   `2` = frame_of(TotSoilCarb = 30),
   `3` = frame_of(AbvGrndWood = 5, LAI = 2, TotSoilCarb = 40)
 ))
@@ -727,11 +908,24 @@ save(obs.cov, file = file.path(out, "obs.cov.Rdata"))
 """
 
 
-def _write_synthetic_rdata(directory: Path, off_diagonal: str) -> Path:
-    """Build a tiny source pair in R, with *off_diagonal* planted."""
+#: Site 1's columns, alphabetical. The unsorted variant is what
+#: ``check_columns_are_sorted`` exists to reject: ``obs.cov`` has no dimension
+#: names, so column order is the only thing pairing a variance to a variable.
+SORTED_COLUMNS = "LAI = 1.5, TotSoilCarb = 20"
+UNSORTED_COLUMNS = "TotSoilCarb = 20, LAI = 1.5"
+
+
+def _write_synthetic_rdata(
+    directory: Path, off_diagonal: str, columns: str = SORTED_COLUMNS
+) -> Path:
+    """Build a tiny source pair in R, with *off_diagonal* and *columns* planted."""
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "make.R"
-    script.write_text(SYNTHETIC_RDATA_SNIPPET.replace("OFFDIAG", off_diagonal))
+    script.write_text(
+        SYNTHETIC_RDATA_SNIPPET.replace("OFFDIAG", off_diagonal).replace(
+            "COL_ORDER_SITE_1", columns
+        )
+    )
     completed = subprocess.run(
         ["Rscript", str(script), str(directory)], capture_output=True, text=True
     )
@@ -796,6 +990,46 @@ class TestExportDiagonalityAssertion:
         assert rows.loc[(3, "AbvGrndWood"), "variance"] == 100.0
         assert rows.loc[(3, "LAI"), "variance"] == 0.49
         assert rows.loc[(3, "TotSoilCarb"), "variance"] == 1600.0
+
+    def test_unsorted_columns_are_rejected(self, tmp_path):
+        directory = _write_synthetic_rdata(
+            tmp_path / "unsorted", "0", columns=UNSORTED_COLUMNS
+        )
+        completed = _run_export(directory)
+        assert completed.returncode == 1
+        assert "ascending order" in completed.stderr
+        assert not (directory / "long.csv").exists()
+        assert not (directory / "manifest.json").exists()
+
+    def test_an_unnamed_snapshot_list_is_rejected(self, tmp_path):
+        # An unnamed list made every nesting check vacuous, and the export then
+        # wrote a CSV with the snapshot_date column dropped and exited 0.
+        directory = tmp_path / "unnamed"
+        directory.mkdir(parents=True, exist_ok=True)
+        script = directory / "make.R"
+        script.write_text(
+            "out <- commandArgs(trailingOnly = TRUE)[[1]]\n"
+            "obs.mean <- list(list(`1` = data.frame(LAI = 1.5)))\n"
+            "obs.cov <- list(list(`1` = 0.25))\n"
+            'save(obs.mean, file = file.path(out, "obs.mean.Rdata"))\n'
+            'save(obs.cov, file = file.path(out, "obs.cov.Rdata"))\n'
+        )
+        built = subprocess.run(
+            ["Rscript", str(script), str(directory)], capture_output=True, text=True
+        )
+        assert built.returncode == 0, built.stderr
+        completed = _run_export(directory, extra=["--expect-sites", "1"])
+        assert completed.returncode == 1
+        assert "named by snapshot key" in completed.stderr
+        assert not (directory / "long.csv").exists()
+
+    @pytest.mark.parametrize("flag", ["--out", "--manifest"])
+    def test_an_empty_output_path_is_rejected(self, tmp_path, flag):
+        # An empty path dumped the whole CSV to stdout and exited 0.
+        directory = _write_synthetic_rdata(tmp_path / f"empty{flag[2:]}", "0")
+        completed = _run_export(directory, extra=[flag, ""])
+        assert completed.returncode == 1
+        assert "is required" in completed.stderr
 
     def test_a_site_count_disagreement_is_rejected(self, tmp_path):
         directory = _write_synthetic_rdata(tmp_path / "count", "0")

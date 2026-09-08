@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         dataset = ingest(args.long_table, args.manifest, sites_path, out)
-    except (IngestError, FileNotFoundError, ValueError) as error:
+    except (IngestError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
@@ -177,6 +177,7 @@ def ingest(
     sites = load_sites(sites_path)
 
     check_table_matches_manifest(table, manifest)
+    check_snapshots_match_manifest(table, manifest)
     check_extremes_round_tripped(table, manifest)
     check_no_duplicate_triples(table)
     check_sites_are_in_the_site_table(table, sites)
@@ -195,8 +196,15 @@ def read_manifest(path: Path) -> dict:
         raise IngestError(
             f"{path} not found. Produce it with scripts/export_constraints.R."
         ) from error
+    except OSError as error:
+        raise IngestError(f"{path} could not be read: {error}") from error
     except json.JSONDecodeError as error:
         raise IngestError(f"{path} is not valid JSON: {error}") from error
+
+    if not isinstance(manifest, dict):
+        raise IngestError(
+            f"{path}: expected a JSON object, found {type(manifest).__name__}"
+        )
 
     check_manifest_has_required_keys(manifest, path)
     return manifest
@@ -302,9 +310,13 @@ def describe_constraints(dataset: xr.Dataset) -> str:
         variances = variance.values[:, :, index]
         finite = np.isfinite(column)
         n_zero = int((variances[np.isfinite(variances)] <= 0).sum())
+        extent = (
+            f"[{column[finite].min():.5g}, {column[finite].max():.5g}]"
+            if finite.any()
+            else "[none observed]"
+        )
         lines.append(
-            f"  {name:<24s} n={finite.sum():>6d}  "
-            f"range [{np.nanmin(column):.5g}, {np.nanmax(column):.5g}]  "
+            f"  {name:<24s} n={finite.sum():>6d}  range {extent}  "
             f"non-positive variances {n_zero}"
         )
     return "\n".join(lines)
@@ -323,6 +335,21 @@ class Grids:
     time: pd.DatetimeIndex
     lon: np.ndarray
     lat: np.ndarray
+
+
+def _same_extreme(formatted: str, expected: str) -> bool:
+    """Whether two ``%.17g`` extremes denote the same value.
+
+    A string comparison, because that is what detects a truncated digit. The
+    one exception is the sign of zero: R's ``min``/``max`` return the first of
+    tied values and numpy's return the signed one, so a column holding both
+    zeros can disagree on the sign of its extreme while every value round-trips
+    exactly. That is not a precision loss and must not be reported as one.
+    """
+    zeros = {"0", "-0"}
+    if formatted in zeros and expected in zeros:
+        return True
+    return formatted == expected
 
 
 def netcdf_encoding() -> dict:
@@ -465,6 +492,30 @@ def check_table_matches_manifest(table: pd.DataFrame, manifest: dict) -> None:
                 )
 
 
+def check_snapshots_match_manifest(table: pd.DataFrame, manifest: dict) -> None:
+    """Every snapshot the source held carries rows in the table.
+
+    The time axis is built from the snapshots that carry observations, so a
+    snapshot observed nowhere would drop out of the product silently and shift
+    every later snapshot's index.
+    """
+    expected = set(manifest["snapshot_dates"])
+    observed = set(table["snapshot_date"])
+    missing = sorted(expected - observed)
+    if missing:
+        raise IngestError(
+            f"{len(missing)} snapshot(s) in the manifest carry no rows in the "
+            f"long table: {missing}. They would drop out of the time axis "
+            "rather than appearing as all-NaN."
+        )
+    unexpected = sorted(observed - expected)
+    if unexpected:
+        raise IngestError(
+            f"snapshot(s) in the long table the manifest does not list: "
+            f"{unexpected}"
+        )
+
+
 def check_extremes_round_tripped(table: pd.DataFrame, manifest: dict) -> None:
     """The parsed extremes re-format to exactly the strings R wrote.
 
@@ -485,7 +536,7 @@ def check_extremes_round_tripped(table: pd.DataFrame, manifest: dict) -> None:
             values = rows[column].to_numpy()
             for key, value in zip(keys, (values.min(), values.max())):
                 formatted = f"{value:.17g}"
-                if formatted != expected[key]:
+                if not _same_extreme(formatted, expected[key]):
                     raise IngestError(
                         f"{variable} {key}: R wrote {expected[key]!r}, this "
                         f"parsed to {formatted!r}. A value lost precision "
@@ -553,10 +604,17 @@ def check_round_trip(dataset: xr.Dataset, path: Path) -> None:
                 )
             same = (written == read) | (np.isnan(written) & np.isnan(read))
             if not same.all():
-                worst = np.nanmax(np.abs(written - read))
+                differ = ~same
+                numeric = differ & np.isfinite(written) & np.isfinite(read)
+                detail = (
+                    "worst numeric difference "
+                    f"{np.abs(written[numeric] - read[numeric]).max()!r}"
+                    if numeric.any()
+                    else "every disagreement is NaN against a value"
+                )
                 raise IngestError(
-                    f"{name}: {int((~same).sum())} cells changed on the round "
-                    f"trip, worst difference {worst!r}"
+                    f"{name}: {int(differ.sum())} cells changed on the round "
+                    f"trip; {detail}"
                 )
         for coordinate in ("site", "time", "variable", "lon", "lat"):
             if not np.array_equal(

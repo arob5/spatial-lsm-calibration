@@ -37,8 +37,10 @@ The intermediate long table
 
 Data model
 ----------
-:func:`load_constraints` returns an ``xarray.Dataset`` shaped as follows.
-Anything that does not match raises, so a consumer can rely on it.
+:func:`load_constraints` returns an ``xarray.Dataset`` shaped as follows. The
+data variables, dims, coordinate set and ``variable`` order are checked on
+load; the dtypes below are what the writer produces, not something the reader
+enforces.
 
 **Dimensions**: ``site``, ``time``, ``variable``.
 
@@ -75,14 +77,23 @@ Source                  Processed
 ``TotSoilCarb``         ``total_soil_carbon``
 ======================= ===========================
 
-**Attributes.** Each data variable carries ``units``, ``long_name`` and the
-units caveat, :data:`UNITS_STATUS` and :data:`UNITS_PROVENANCE` -- the units are
+**Attributes.** Each variable's unit is a dataset attribute,
+``variable_<name>_units``, alongside ``_long_name`` and ``_source_name`` --
+netCDF has nowhere to hang attributes off a coordinate value.
+:func:`constraint_fields` puts the right unit on each field.
+
+The two data variables span four variables with different units, so their own
+``units`` attribute is a pointer to those dataset attributes rather than a unit
+string. They also carry ``units_status`` and ``units_provenance``: the units are
 documented for the reanalysis output rather than for these observation inputs,
-so they are recorded but flagged. Per-variable metadata is on the dataset as
-``variable_<name>_{units,long_name,source_name}``, since netCDF has nowhere to
-hang attributes off a coordinate value. ``time`` carries ``time_zone`` and
-``time_label``, the latter being ``"nominal"``: the snapshot keys are the source
-product's annual bookkeeping convention, not observation dates.
+so they are recorded but flagged.
+
+The dataset also carries ``title``, ``source_mean_file``, ``source_cov_file``,
+``source_resolution``, ``history``, ``exported_at``,
+``covariances_all_diagonal`` and ``n_observed_triples``. ``time`` carries
+``time_zone`` and ``time_label``, the latter being ``"nominal"``: the snapshot
+keys are the source product's annual bookkeeping convention, not observation
+dates.
 
 Functions
 ---------
@@ -347,10 +358,25 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
     """
     frame = pd.read_csv(
         path,
-        dtype={"snapshot_date": str, "site_id": np.int32, "variable": str},
+        # site_id is read wide and narrowed after checking, as load_sites does:
+        # reading straight into int32 wraps silently, and a site_id of
+        # 4294967297 becomes 1 and then satisfies every check downstream.
+        # mean/variance are declared rather than inferred, because pandas infers
+        # int64 for an all-integer column and float_precision then does not
+        # apply.
+        dtype={
+            "snapshot_date": str,
+            "site_id": np.int64,
+            "variable": str,
+            "mean": np.float64,
+            "variance": np.float64,
+        },
         float_precision="round_trip",
         keep_default_na=False,
         na_values=[],
+        # Without this, a row with surplus leading fields is absorbed into an
+        # index and the column check still passes.
+        index_col=False,
     )
 
     if tuple(frame.columns) != LONG_COLUMNS:
@@ -369,9 +395,8 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
             "new row."
         )
 
-    for column in ("mean", "variance"):
-        frame[column] = frame[column].astype(np.float64)
-    return frame
+    _check_site_ids_fit_dtype(frame, path)
+    return frame.astype({"site_id": np.int32})
 
 
 def load_constraints(path: Path | str | None = None) -> xr.Dataset:
@@ -415,7 +440,11 @@ def load_constraints(path: Path | str | None = None) -> xr.Dataset:
         )
 
     dataset = xr.open_dataset(path, engine="h5netcdf")
-    _check_schema(dataset, path)
+    try:
+        _check_schema(dataset, path)
+    except Exception:
+        dataset.close()
+        raise
     return dataset
 
 
@@ -493,6 +522,22 @@ def _field_attrs(name: str, statistic: str) -> dict[str, str]:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def _check_site_ids_fit_dtype(frame: pd.DataFrame, path: Path) -> None:
+    """Raise unless every site id survives narrowing to the stored width."""
+    info = np.iinfo(np.int32)
+    site_id = frame["site_id"].to_numpy()
+    outside = (site_id < info.min) | (site_id > info.max)
+    if outside.any():
+        offenders = sorted(set(site_id[outside].tolist()))[:10]
+        raise ValueError(
+            f"{path}: site ids outside the range of int32: {offenders}. "
+            "Narrowing them would wrap to a different, valid-looking site."
+        )
+    if (site_id < 1).any():
+        offenders = sorted(set(site_id[site_id < 1].tolist()))[:10]
+        raise ValueError(f"{path}: site ids below 1: {offenders}")
 
 
 def _check_schema(dataset: xr.Dataset, path: Path) -> None:

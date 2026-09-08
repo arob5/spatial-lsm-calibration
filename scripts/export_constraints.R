@@ -145,7 +145,7 @@ parse_args <- function(argv) {
     i <- i + 2L
   }
   for (key in c("out", "manifest")) {
-    if (is.null(args[[key]])) {
+    if (is.null(args[[key]]) || !nzchar(args[[key]])) {
       stop(sprintf("--%s is required.%s", key, USAGE), call. = FALSE)
     }
   }
@@ -326,6 +326,22 @@ extremes_by_variable <- function(rows) {
 
 #' The two objects nest identically, snapshot then site, over the expected pool.
 check_nesting_matches <- function(obs_mean, obs_cov, n_sites) {
+  if (!is.list(obs_mean) || !is.list(obs_cov)) {
+    stop("obs.mean and obs.cov must both be lists of snapshots", call. = FALSE)
+  }
+  # Without this, every check below is vacuous: identical(NULL, NULL) is TRUE
+  # and `for (key in NULL)` never iterates, so an unnamed list would reach the
+  # writer and silently drop the snapshot_date column.
+  if (is.null(names(obs_mean)) || is.null(names(obs_cov))) {
+    stop("obs.mean and obs.cov must be named by snapshot key", call. = FALSE)
+  }
+  if (anyNA(names(obs_mean)) || !all(nzchar(names(obs_mean)))) {
+    stop("obs.mean has a missing or empty snapshot key", call. = FALSE)
+  }
+  if (any(grepl(",", names(obs_mean), fixed = TRUE))) {
+    stop("a snapshot key contains a comma, which would corrupt the CSV",
+         call. = FALSE)
+  }
   if (!identical(names(obs_mean), names(obs_cov))) {
     stop("obs.mean and obs.cov have different snapshot keys", call. = FALSE)
   }
@@ -422,6 +438,12 @@ check_no_missing_values <- function(means, variances, key, site) {
   if (anyNA(means) || anyNA(variances)) {
     stop(sprintf("obs.mean/obs.cov[['%s']][['%s']] holds NA", key, site),
          call. = FALSE)
+  }
+  # anyNA does not catch +-Inf, which sprintf writes as "Inf" and pandas parses
+  # to "inf" -- reported downstream as a precision loss, which it is not.
+  if (!all(is.finite(means)) || !all(is.finite(variances))) {
+    stop(sprintf("obs.mean/obs.cov[['%s']][['%s']] holds a non-finite value",
+                 key, site), call. = FALSE)
   }
   invisible(TRUE)
 }
