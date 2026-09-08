@@ -57,3 +57,8 @@ packages = ["src/sipnet_calibration"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: exercises the real source data end to end; takes tens of seconds",
+]

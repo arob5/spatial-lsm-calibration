@@ -71,6 +71,8 @@ pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
   sites.py                # SITE_GRID + grid conversions, load_sites(),
                           # select_sites(ids=, bbox=, where=, sample=, seed=)
+  constraints.py          # annual constraint schema, load_constraints(),
+                          # constraint_fields() -> canonical per-variable view
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/
