@@ -117,6 +117,24 @@ Raw variable names are not ours to choose; processed ones are.
   code it explains, or in the design log in the vault. A top-level docstring is
   read by someone trying to use the thing, not to review its design.
 
+### Docstrings for modules that define a data model
+
+A module that owns how some data is represented should answer four questions,
+because these are what someone opens it to find out:
+
+1. **Where it sits in the pipeline** — which scripts produce the data it reads,
+   and which way the dependency runs.
+2. **What it reads** — the inputs, named, with what each is for.
+3. **The data model** — for an xarray product, the dims, the data variables and
+   their dtypes, the coordinates and which dims they are on, the attributes,
+   and what missing means. State it plainly; do not make the reader infer it
+   from the validation code.
+4. **The functions it provides** — the public entry points and what each one
+   does with that model.
+
+`sipnet_calibration.constraints` is the worked example. Design reasoning goes
+after all of that, under Notes, per the rule above.
+
 ### Docstrings for data processing scripts
 
 File-level docstrings use these sections, in this order:

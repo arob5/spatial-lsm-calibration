@@ -1,19 +1,70 @@
-"""The annual biomass, leaf area and soil constraints, and their schema.
+"""The data model for the annual biomass, leaf area and soil constraints.
 
-This module holds the schema constants and the reader for
-``data/processed/constraints_annual.nc``, so that the writer and the reader of
-that file cannot drift apart. It is the same division
-:mod:`sipnet_calibration.sites` uses, for the same reason: the settings that
-keep a product loadable are not something to re-derive per notebook.
+Overview
+--------
+This module defines how the annual constraint data is represented -- its
+dimensions, coordinates, variable names, units and dtypes -- and provides the
+functions that read it and reshape it. It is the single description of that
+layout: everything else in the project, the ingest script included, gets the
+schema from here rather than restating it.
 
-``scripts/export_constraints.R`` and ``scripts/ingest_constraints.py`` build the
-file; ``data/README.md`` documents the source and the open questions.
+It sits at the end of the pipeline that builds the data, and the dependency runs
+one way::
 
-Variable names
---------------
-Source names are prescribed by the input data. The processed names follow the
-lower case with underscore, all but the most common abbreviations avoided,
-project convention.
+    raw/constraints/sda_8k_site_rdata/obs.{mean,cov}.Rdata
+      -> scripts/export_constraints.R     long table + manifest
+      -> scripts/ingest_constraints.py    processed/constraints_annual.nc
+      -> this module                      load_constraints() -> xarray.Dataset
+
+``ingest_constraints.py`` imports the schema constants from here, and its
+round-trip check reads its own output back through :func:`load_constraints`, so
+the writer is verified against the same description every consumer uses.
+``data/README.md`` documents the source data and the open questions about it.
+
+Input data
+----------
+``data/processed/constraints_annual.nc``
+    The product, read by :func:`load_constraints`, whose layout is the
+    `Data model`_ below. :func:`default_constraints_path` says where it is
+    expected to be.
+
+The intermediate long table
+    A CSV of one row per observed ``(snapshot, site, variable)`` triple, written
+    by ``export_constraints.R`` and read by :func:`read_long_table` on the
+    ingest script's behalf. It lives here rather than in the script because the
+    reader settings are load-bearing: ``float_precision="round_trip"`` is what
+    makes the parse exact. Its ``variable`` column holds *source* names.
+
+Data model
+----------
+:func:`load_constraints` returns an ``xarray.Dataset`` shaped as follows.
+Anything that does not match raises, so a consumer can rely on it.
+
+**Dimensions**: ``site``, ``time``, ``variable``.
+
+**Data variables**, both ``float64``, ``NaN`` where a site-snapshot-variable
+was not observed::
+
+    observation_mean(site, time, variable)      the observation
+    observation_variance(site, time, variable)  its error variance
+
+**Coordinates**
+
+================== ============ ===============================================
+Name               Dims         Meaning
+================== ============ ===============================================
+``site``           ``site``     handed-down integer site id, strictly ascending
+``time``           ``time``     annual snapshot key, ``datetime64``
+``variable``       ``variable`` processed variable name, sorted
+``lon``, ``lat``   ``site``     non-dimension coordinates, from the site table
+================== ============ ===============================================
+
+The ``site`` axis is the whole site pool, not only the observed sites.
+
+**Variable names.** Source names are prescribed by the input data. The processed
+names follow the lower case with underscore, all but the most common
+abbreviations avoided, project convention. The rename happens in the ingest
+script, via :data:`SOURCE_VARIABLE_NAMES`.
 
 ======================= ===========================
 Source                  Processed
@@ -24,7 +75,35 @@ Source                  Processed
 ``TotSoilCarb``         ``total_soil_carbon``
 ======================= ===========================
 
-The rename happens in the ingest script, via :data:`SOURCE_VARIABLE_NAMES`.
+**Attributes.** Each data variable carries ``units``, ``long_name`` and the
+units caveat, :data:`UNITS_STATUS` and :data:`UNITS_PROVENANCE` -- the units are
+documented for the reanalysis output rather than for these observation inputs,
+so they are recorded but flagged. Per-variable metadata is on the dataset as
+``variable_<name>_{units,long_name,source_name}``, since netCDF has nowhere to
+hang attributes off a coordinate value. ``time`` carries ``time_zone`` and
+``time_label``, the latter being ``"nominal"``: the snapshot keys are the source
+product's annual bookkeeping convention, not observation dates.
+
+Functions
+---------
+:func:`load_constraints`
+    Read the product and check it against the data model above. Raises rather
+    than returning something subtly wrong.
+
+:func:`constraint_fields`
+    Split the stored form into canonical fields -- one ``DataArray`` per
+    variable with dims ``(site, time)``, carrying its own units -- for either
+    the means or the variances. This is the view the plotting layer wants.
+
+:func:`read_long_table`
+    Read the intermediate long table exactly, for the ingest script.
+
+:func:`snapshot_dates`
+    Build the source's annual snapshot keys for given years.
+
+:func:`default_constraints_path`
+    Where the product is expected to be, honoring
+    ``$SIPNET_CALIBRATION_DATA``.
 
 Notes
 -----
@@ -41,13 +120,13 @@ convention wants dims a subset of ``(member, site, time)``, which this stored
 form is not. It is stored this way because the observation operator indexes
 observations by exactly ``(site, variable, time)``, so flattening to the
 observation vector is a stack rather than a join, and because the variables
-share one ``(site, time)`` grid here. :func:`constraint_fields` produces the
-canonical per-variable view, so the plotting layer and the likelihood are each
-served without reshaping the other's form.
+share one ``(site, time)`` grid here. :func:`constraint_fields` is what serves
+the consumers that want the canonical form instead.
 
 **Missingness is dense** ``NaN``. The source is ragged over site, snapshot and
 variable, and a dense array is cheap at this size and far easier to reason about
-than any ragged encoding.
+than any ragged encoding. A ``NaN`` means not observed; a zero is an
+observation.
 """
 
 from __future__ import annotations
