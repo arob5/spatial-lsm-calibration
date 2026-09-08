@@ -54,11 +54,11 @@ class Grid:
     floating-point width, so that a step of exactly 1/120 degree stays exact
     instead of accumulating error across 19080 columns.
 
-    Indices are zero-based, with ``lon_idx`` increasing east from ``west`` and
-    ``lat_idx`` increasing north from ``south``. Cell centers are at::
+    Indices are zero-based, with ``lon_index`` increasing east from ``west`` and
+    ``lat_index`` increasing north from ``south``. Cell centers are at::
 
-        lon = west  + (lon_idx + 0.5) / cells_per_degree
-        lat = south + (lat_idx + 0.5) / cells_per_degree
+        lon = west  + (lon_index + 0.5) / cells_per_degree
+        lat = south + (lat_index + 0.5) / cells_per_degree
 
     Parameters
     ----------
@@ -111,12 +111,12 @@ class Grid:
 
     # ── conversions ──────────────────────────────────────────────────────────
 
-    def index_to_lonlat(self, lon_idx, lat_idx):
+    def index_to_lonlat(self, lon_index, lat_index):
         """Cell centers for the given indices.
 
         Parameters
         ----------
-        lon_idx, lat_idx:
+        lon_index, lat_index:
             Zero-based indices, scalar or array-like. Broadcast against each
             other.
 
@@ -130,16 +130,16 @@ class Grid:
         ValueError
             If any index falls outside the grid.
         """
-        j = np.asarray(lon_idx)
-        k = np.asarray(lat_idx)
+        j = np.asarray(lon_index)
+        k = np.asarray(lat_index)
         if not (np.issubdtype(j.dtype, np.integer) and np.issubdtype(k.dtype, np.integer)):
             if np.any(j != np.floor(j)) or np.any(k != np.floor(k)):
                 raise ValueError("indices must be integers; use lonlat_to_index for coordinates")
             j, k = j.astype(np.int64), k.astype(np.int64)
         if np.any(j < 0) or np.any(j >= self.n_lon):
-            raise ValueError(f"lon_idx outside 0..{self.n_lon - 1}")
+            raise ValueError(f"lon_index outside 0..{self.n_lon - 1}")
         if np.any(k < 0) or np.any(k >= self.n_lat):
-            raise ValueError(f"lat_idx outside 0..{self.n_lat - 1}")
+            raise ValueError(f"lat_index outside 0..{self.n_lat - 1}")
 
         lon = self.west + (j + 0.5) / self.cells_per_degree
         lat = self.south + (k + 0.5) / self.cells_per_degree
@@ -168,7 +168,7 @@ class Grid:
         Returns
         -------
         tuple
-            ``(lon_idx, lat_idx)`` as integers. Scalars in, scalars out.
+            ``(lon_index, lat_index)`` as integers. Scalars in, scalars out.
 
         Raises
         ------
@@ -228,7 +228,7 @@ SITE_GRID = Grid(west=-179.0, south=7.0, n_lon=19080, n_lat=9360, cells_per_degr
 #: cannot drift apart.
 #:
 #: ``lon``/``lat`` are the stored coordinates at full precision and
-#: ``lon_idx``/``lat_idx`` are their exact representation on :data:`SITE_GRID`;
+#: ``lon_index``/``lat_index`` are their exact representation on :data:`SITE_GRID`;
 #: the table carries both because the floats are a lossy rendering of the
 #: indices rather than the other way round. ``ameriflux_site_id`` is the empty
 #: string for the sites with no Ameriflux counterpart, which is most of them.
@@ -236,8 +236,8 @@ SITE_COLUMNS = (
     "site_id",
     "lon",
     "lat",
-    "lon_idx",
-    "lat_idx",
+    "lon_index",
+    "lat_index",
     "site_name",
     "site_order",
     "cluster",
@@ -246,7 +246,7 @@ SITE_COLUMNS = (
 )
 
 #: Dtype per column, matching the site-table schema in the processed-format
-#: plan. ``lon_idx`` genuinely needs ``int32``; the other integer columns would
+#: plan. ``lon_index`` genuinely needs ``int32``; the other integer columns would
 #: fit ``int16`` and are widened to match it.
 #:
 #: The two text columns are declared ``str`` so that nothing is inferred from
@@ -257,8 +257,8 @@ SITE_COLUMN_DTYPES = {
     "site_id": np.int32,
     "lon": np.float64,
     "lat": np.float64,
-    "lon_idx": np.int32,
-    "lat_idx": np.int32,
+    "lon_index": np.int32,
+    "lat_index": np.int32,
     "site_name": str,
     "site_order": np.int32,
     "cluster": np.int8,

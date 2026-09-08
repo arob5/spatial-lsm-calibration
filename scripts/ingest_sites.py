@@ -1,86 +1,94 @@
 #!/usr/bin/env python3
-"""Build the site table: ``raw/sites/pts.*`` -> ``processed/sites/sites.csv``.
+"""Build the site table.
 
-The point shapefile in ``data/raw/sites/`` defines the 8000-site pool. It is the
-only input under ``data/raw/`` that is tracked in version control, so this is the
-one ingest script that runs end to end on a laptop. Every other product joins
-against its output on ``site_id``.
+Overview
+--------
+Read the point shapefile that defines the 8000-site pool and write it as a CSV,
+carrying every field of the shapefile plus the grid indices and the Ameriflux
+identifier. The shapefile is the only input under ``data/raw/`` that is tracked
+in version control, so this is the one ingest script that runs end to end on a
+laptop, and every other product joins against its output on ``site_id``.
 
-The output carries every field of the shapefile, so nothing is lost in
-translation, plus the grid indices from
-``sipnet_calibration.sites.SITE_GRID`` and the Ameriflux identifier from
-``data/site_id_map.csv``:
+Input data
+----------
+``--shapefile``
+    ``data/raw/sites/pts.shp`` and companions: 8000 single-point ``POINT``
+    records, one per site, in descending latitude. Record *N* is site *N*.
+    Geometry is float64 lon/lat on WGS 84. The ``.dbf`` attribute table holds
+    ``site_id``, ``site_names``, ``site_order``, ``cluster`` and ``landcover``;
+    the three numeric fields are declared with 15 decimals and so arrive as
+    floats. ``pts.cpg`` declares the ``.dbf`` encoding, which is UTF-8.
 
-    site_id, lon, lat, lon_idx, lat_idx, site_name, site_order, cluster,
-    landcover, ameriflux_site_id
+``--site-id-map``
+    ``data/site_id_map.csv``: 185 rows of ``Site_ID, index``, mapping an
+    Ameriflux identifier onto a site id by exact match.
 
+Output data
+-----------
+``--out``, default ``data/processed/sites/sites.csv``, 8000 rows::
+
+    site_id, lon, lat, lon_index, lat_index, site_name, site_order,
+    cluster, landcover, ameriflux_site_id
+
+``site_name`` is the shapefile's ``site_names`` renamed to the singular, and
+``ameriflux_site_id`` is that file's ``Site_ID`` renamed to say which identifier
+it means; it is the empty string for the 7815 sites with no counterpart. The
+column set and dtypes come from ``SITE_COLUMNS`` and ``SITE_COLUMN_DTYPES`` in
+:mod:`sipnet_calibration.sites`, so this writer and
+:func:`sipnet_calibration.sites.load_sites` cannot drift apart. There is
+deliberately no ``pft`` column: a labeling is an experimental choice, not site
+metadata.
+
+Notes
+-----
 Two things about this table are easy to get wrong and quiet when they go wrong,
-and most of what follows exists to make them loud.
+and most of the checking exists to make them loud.
 
-**The encoding.** ``pts.cpg`` declares UTF-8, and exactly two of the 8000 site
-names carry non-ASCII bytes. Read as latin-1 they do not raise; they decode to
-``'RayÃ³n (MX-Ray)'``, which still looks like a plausible site label. So the
-declared encoding is read from the ``.cpg`` and asserted rather than left to a
-library default.
+**The encoding.** Exactly two of the 8000 site names carry non-ASCII bytes. Read
+as latin-1 they do not raise; they decode to ``'RayÃ³n (MX-Ray)'``, which still
+looks like a plausible site label. So the declared encoding is read from the
+``.cpg`` and asserted rather than left to a library default, and ``--encoding``
+rejects anything that disagrees rather than honoring it.
 
 **The coordinates.** The geometry is float64 and CSV formatting is where that
-precision is lost: the retired ``data/site_ids.csv`` differed from the shapefile
-by up to 4.1e-13 degrees for exactly this reason. So the output is read back and
-compared **bitwise** against the values read from the shapefile before the
-script reports success. That check earns its place: it caught pandas' default
-CSV parser reading 1632 of the 8000 longitudes back inexactly. The fix was the
-*reader* -- ``float_precision="round_trip"`` in
-:func:`sipnet_calibration.sites.load_sites` -- not the write format, which is
+precision goes: the retired ``data/site_ids.csv`` differed from the shapefile by
+up to 4.1e-13 degrees for exactly this reason. So the output is read back and
+compared **bitwise** before the script reports success. That check earns its
+place -- it caught pandas' default CSV parser reading 1632 of the 8000
+longitudes back inexactly. The fix was the *reader*,
+``float_precision="round_trip"`` in
+:func:`sipnet_calibration.sites.load_sites`, not the write format, which is
 inexact under the default parser either way. See :data:`FLOAT_FORMAT`.
 
-Asserts before writing, each in a named check with its own message:
-
-* ``pts.cpg`` declares UTF-8 and that is the encoding the reader was given;
-* 8000 records, 8000 single-point ``POINT`` shapes;
-* ``site_id`` is exactly 1..8000 in record order;
-* ``cluster``, ``landcover`` and ``site_order`` hold integral values (the
-  ``.dbf`` declares them as numerics with 15 decimals, so they arrive as floats
-  and must be cast rather than written through);
-* ``site_order``'s non-zero values are a permutation of 1..1093;
-* every coordinate is finite and resolves on ``SITE_GRID``, to 8000 distinct
-  index pairs;
-* the Ameriflux map is non-empty, maps each site id once, has no blank
-  identifier, and names only site ids that exist;
-* no numeric field is null (see below).
-
 A ``.dbf`` null means different things in the two kinds of column, so it is
-handled in two ways. In a **text** column it becomes the empty string, which is
-what "missing" already means there -- ``ameriflux_site_id`` uses it for the 7815
-sites with no counterpart, and it is the only marker that survives a read with
-``keep_default_na=False``. In a **numeric** column it is an error: an integer
-dtype cannot hold ``NaN``, ``cluster`` and ``landcover`` have no spare value,
-and ``site_order``'s 0 already means "a sampled point", so there is nowhere to
-put it and nothing to do but say so.
+handled two ways. In a **text** column it becomes the empty string, which is
+what "missing" already means there, and is the only marker that survives a read
+with ``keep_default_na=False``. In a **numeric** column it is an error: an
+integer dtype cannot hold ``NaN``, ``cluster`` and ``landcover`` have no spare
+value, and ``site_order``'s 0 already means "a sampled point", so there is
+nowhere to put it and nothing to do but say so.
 
-Asserts after writing:
-
-* the CSV round trip is bitwise exact for ``lon`` and ``lat``, and equal for
-  every other column. That last part is doing real work: eight sites are named
-  literally ``NA``, so a reader that took pandas' default missing values would
-  fail here rather than silently nulling them.
+The checks are named individually in the ``checks`` section below. Before
+writing: the declared encoding, the record and shape counts, ``site_id`` being
+exactly 1..8000 in record order, the numeric fields being integral,
+``site_order``'s non-zero values being a permutation of 1..1093, every
+coordinate resolving on ``SITE_GRID`` to a distinct index pair, and the
+Ameriflux map naming each site at most once and only sites that exist. After
+writing: the bitwise round trip, which also catches the eight sites named
+literally ``NA``.
 
 Run it from the project environment: it imports ``sipnet_calibration``, numpy,
 pandas and ``pyshp``, so a bare system ``python3`` fails on the first import.
 Either activate the environment, as the README describes, or use ``uv run``.
 
-Examples
---------
-The whole job, with the repository's own paths::
+Usage
+-----
+::
 
     python scripts/ingest_sites.py
-
-The same without activating the environment first::
-
     uv run scripts/ingest_sites.py
-
-Write somewhere else, leaving ``data/processed/`` alone::
-
     python scripts/ingest_sites.py --out /tmp/sites.csv
+    python scripts/ingest_sites.py --help
 """
 
 from __future__ import annotations
@@ -309,8 +317,8 @@ def build_site_table(
     check_coordinates_are_finite(lon, lat)
     # Raises if any coordinate is further than the default tolerance from a cell
     # center, which would mean the wrong grid or the wrong CRS.
-    lon_idx, lat_idx = SITE_GRID.lonlat_to_index(lon, lat)
-    check_index_pairs_are_distinct(lon_idx, lat_idx)
+    lon_index, lat_index = SITE_GRID.lonlat_to_index(lon, lat)
+    check_index_pairs_are_distinct(lon_index, lat_index)
 
     integral = {
         field: _as_integer(
@@ -332,8 +340,8 @@ def build_site_table(
             "site_id": site_ids,
             "lon": lon,
             "lat": lat,
-            "lon_idx": _as_integer(lon_idx, name="lon_idx", dtype=np.int32),
-            "lat_idx": _as_integer(lat_idx, name="lat_idx", dtype=np.int32),
+            "lon_index": _as_integer(lon_index, name="lon_index", dtype=np.int32),
+            "lat_index": _as_integer(lat_index, name="lat_index", dtype=np.int32),
             "site_name": names,
             "site_order": integral["site_order"],
             "cluster": integral["cluster"],
@@ -686,13 +694,15 @@ def check_coordinates_are_finite(lon: np.ndarray, lat: np.ndarray) -> None:
         )
 
 
-def check_index_pairs_are_distinct(lon_idx: np.ndarray, lat_idx: np.ndarray) -> None:
+def check_index_pairs_are_distinct(
+    lon_index: np.ndarray, lat_index: np.ndarray
+) -> None:
     """Fail unless the grid index pairs identify the sites uniquely.
 
     Two sites on one cell would make the indices useless as a position and would
     mean the pool is not the subsample of the grid it is documented to be.
     """
-    pairs = np.stack([lon_idx, lat_idx], axis=1)
+    pairs = np.stack([lon_index, lat_index], axis=1)
     distinct = np.unique(pairs, axis=0)
     if distinct.shape[0] != pairs.shape[0]:
         raise IngestError(

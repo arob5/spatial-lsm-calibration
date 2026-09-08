@@ -259,10 +259,10 @@ as a 19080 by 9360 array. Those figures are mutually consistent to the cell:
 (20 - 179) x 120 is exactly 19080 and (85 - 7) x 120 exactly 9360. Cell centers
 lie at
 
-    lon = -179 + (lon_idx + 0.5)/120,   lat = 7 + (lat_idx + 0.5)/120
+    lon = -179 + (lon_index + 0.5)/120,   lat = 7 + (lat_index + 0.5)/120
 
-for zero-based indices, which is where the `lon_idx` and `lat_idx` columns of the
-processed site table come from.
+for zero-based indices, which is where the `lon_index` and `lat_index` columns
+of the processed site table come from.
 
 All 8000 sites fall on cell centers, but only to within 1.02e-6 degrees, about
 0.11 m. The residual is consistent with the coordinates having passed through
@@ -574,7 +574,7 @@ translation, together with the grid indices and the Ameriflux identifier:
 |---|---|---|
 | `site_id` | int32 | Site identifier, 1-8000, in shapefile record order |
 | `lon`, `lat` | float64 | Coordinates, at full round-trip precision |
-| `lon_idx`, `lat_idx` | int32 | Zero-based indices on the 1/120 degree grid |
+| `lon_index`, `lat_index` | int32 | Zero-based indices on the 1/120 degree grid |
 | `site_name` | string | From the shapefile's `site_names`, renamed to the singular |
 | `site_order` | int32 | 0 for sampled points, 1-1093 for named sites |
 | `cluster`, `landcover` | int8 | Sampling stratum and land cover class |
