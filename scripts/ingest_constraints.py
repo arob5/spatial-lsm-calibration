@@ -49,11 +49,10 @@ file size, and the tests check the counts against the source.
 
 Notes
 -----
-The manifest is the R script's testimony about the source, and much of the
-checking here is the CSV against that manifest rather than either on trust. The
-load-bearing one is diagonality: the Python side cannot see an off-diagonal
-element, because by the time the CSV exists it is gone, so it checks that R
-*made* the claim and refuses to write if it did not.
+Most checks here compare the CSV against the manifest rather than trusting
+either. The one that matters most is diagonality: the Python side cannot see an
+off-diagonal element, because by the time the CSV exists it is gone, so it
+checks that R *made* the claim and refuses to write if it did not.
 
 Output is written to a ``.partial`` path and renamed only once it reads back
 bitwise through the library loader, so a failed check cannot leave a corrupt

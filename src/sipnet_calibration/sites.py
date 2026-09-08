@@ -11,7 +11,7 @@ dtypes from here rather than declaring its own.
 It sits downstream of the one script that builds the table, and the dependency
 runs one way::
 
-    raw/sites/pts.*  +  site_id_map.csv
+    raw/sites/pts.*  +  data/site_id_map.csv
       -> scripts/ingest_sites.py    processed/sites/sites.csv
       -> this module                load_sites() -> pandas.DataFrame
 
@@ -35,7 +35,9 @@ Data model
 ----------
 :func:`load_sites` returns a ``pandas.DataFrame`` with one row per site, in
 ascending ``site_id`` order, holding the columns of :data:`SITE_COLUMNS` with
-the dtypes of :data:`SITE_COLUMN_DTYPES`. Anything else raises.
+the dtypes of :data:`SITE_COLUMN_DTYPES`, which the read imposes. A missing or
+unexpected column, a duplicate or non-ascending ``site_id``, or an
+out-of-range integer raises.
 
 ================================ ============= ==============================
 Column                           Dtype         Meaning
@@ -57,7 +59,7 @@ table is read with ``keep_default_na=False``, so a name that happens to read as
 a null word survives. No numeric column can be missing.
 
 **Geography.** The sites are irregular points spanning roughly 7-82 degrees
-north and 178-20 degrees west, of which only a minority fall inside a
+north and 178-20 degrees west, of which fewer than half fall inside a
 conterminous-US bounding box. Their coordinates are cell centers of
 :data:`SITE_GRID`, a regular geographic lattice; ``lon_index``/``lat_index`` are
 the exact representation of a position and the stored floats are a lossy

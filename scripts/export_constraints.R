@@ -43,9 +43,9 @@
 #
 #   <manifest>  JSON recording what was checked: per-snapshot per-variable row
 #               counts, the exact extremes per variable, the site-snapshots with
-#               no observations, and the largest absolute off-diagonal
-#               covariance element seen. The ingest script checks the CSV
-#               against this and refuses to write if they disagree.
+#               no observations, and whether every covariance was diagonal. The
+#               ingest script checks the CSV against this and refuses to write
+#               if they disagree.
 #
 # Notes
 # -----
@@ -53,8 +53,10 @@
 # variances rather than covariance matrices, which is lossless only because
 # every source covariance is exactly diagonal. Once the CSV is written the
 # off-diagonal is gone, so this is the last place the claim can be checked. The
-# manifest reports the largest element seen so the Python side can confirm the
-# check ran rather than trusting that it did.
+# manifest carries the result so the Python side can confirm the check ran
+# rather than trusting that it did. `max_abs_offdiagonal` is 0 whenever the
+# export completes: a non-zero element aborts the run rather than being
+# reported.
 #
 # R is needed at all because obs.mean is a list of lists of data frames, which
 # `pyreadr` does not support, and because R's `ncdf4` is not installed on the
@@ -300,8 +302,8 @@ counts_by_snapshot_variable <- function(rows) {
 #' `data.table`, so an `i` expression is evaluated with its columns in scope;
 #' with the loop variable named `variable` the filter `rows$variable ==
 #' variable` compares the column against itself, is true everywhere, and
-#' silently reports the same global extremes for all four variables. That is not
-#' hypothetical -- it is what the first run of this script did.
+#' silently reports the same global extremes for all four variables. It is what
+#' the first run of this script did.
 extremes_by_variable <- function(rows) {
   result <- list()
   for (variable_name in SOURCE_VARIABLES) {
@@ -400,8 +402,8 @@ check_covariance_shape <- function(covariance, n_variables, key, site) {
 
 #' The covariance is exactly symmetric and exactly diagonal.
 #'
-#' This is the check the whole storage choice rests on: the processed form keeps
-#' variances rather than matrices, which is lossless just when this holds. It is
+#' The storage choice depends on this check: the processed form keeps variances
+#' rather than matrices, which is lossless just when this holds. It is
 #' also the last place the claim is checkable, since the off-diagonal does not
 #' survive into the long table.
 check_covariance_is_diagonal <- function(covariance, n_variables, key, site) {

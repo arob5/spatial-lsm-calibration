@@ -474,6 +474,9 @@ site, year and variable.
 
 `SoilMoistFrac` is absent before 2015 and `AbvGrndWood` in 2024, and
 `AbvGrndWood` covers about 41% of sites in the years where it is present.
+Summed over all thirteen snapshots the observation counts are `TotSoilCarb`
+103,870, `LAI` 99,632, `SoilMoistFrac` 79,740 and `AbvGrndWood` 39,273, or
+322,515 observations in total.
 
 The covariance matrices carry no dimension names, so the variable each row and
 column refers to must be taken from the column order of the corresponding
@@ -651,10 +654,12 @@ way and dense is far easier to reason about.
 
 Three points about the layout.
 
-- **Variances, not covariance matrices.** Every one of the 103,047 covariance
-  matrices in the source is exactly diagonal, so nothing is lost. The check runs
-  over all 13 snapshots and all 8000 sites at every export rather than having
-  been done once, because it is what makes the choice lossless.
+- **Variances, not covariance matrices.** Every source covariance is diagonal,
+  so nothing is lost. Of the 104,000 site-snapshot entries, 103,029 are
+  matrices whose off-diagonal is checked element by element at every export;
+  953 are single-variable scalars, which have no off-diagonal; 18 are empty.
+  The check runs at every export, not once, because it is what makes the
+  choice lossless.
 - **`variable` is a dimension.** That is not a canonical field, whose dims must
   be a subset of `(member, site, time)`. It is stored this way because the
   observation operator indexes observations by exactly `(site, variable, time)`,
@@ -670,12 +675,11 @@ Three points about the layout.
   `time_label = "nominal"` with a note saying so, rather than claiming one of
   the interval conventions the other products use.
 
-Units are recorded per variable in the file's attributes, each carrying
-`units_status = "unconfirmed"` and a provenance string: they are documented for
-the reanalysis *output* rather than for these observation *inputs*. See open
-question 9. Recording them with a status flag is preferred to omitting them,
-since a consumer with no unit has less to go on than one with an unconfirmed
-unit and a flag saying so.
+Each variable's unit is a dataset attribute, `variable_<name>_units`, beside
+`_long_name` and `_source_name`. The two data variables carry
+`units_status = "unconfirmed"` and a provenance string, because the units are
+documented for the reanalysis *output* rather than for these observation
+*inputs*. See open question 9.
 
 The following conventions apply to every product.
 

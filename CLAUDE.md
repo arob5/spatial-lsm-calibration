@@ -101,8 +101,8 @@ Raw variable names are not ours to choose; processed ones are.
 
 - **Do not write volatile measurements into documentation.** Row counts, cell
   counts, file sizes, per-variable coverage, "929 of them are zero" — these
-  describe one snapshot of the data and go stale silently. A load-bearing
-  numeric property of the data is **checked programmatically**: an assertion in
+  describe one snapshot of the data and go stale silently. A numeric property
+  the code depends on is **checked programmatically**: an assertion in
   the ingest script, a constant in the library, or a test. Documentation says
   what the property *is* and where it is checked, not what it currently
   measures. Where a run's numbers are genuinely useful, print them.
@@ -132,8 +132,8 @@ because these are what someone opens it to find out:
 4. **The functions it provides** — the public entry points and what each one
    does with that model.
 
-`sipnet_calibration.constraints` is the worked example. Design reasoning goes
-after all of that, under Notes, per the rule above.
+Then Notes for the design reasoning, then Usage for how to call the public
+functions. `sipnet_calibration.constraints` is the worked example.
 
 ### Docstrings for data processing scripts
 
@@ -143,13 +143,13 @@ File-level docstrings use these sections, in this order:
 2. **Input data** — the assumed format of what it reads. Clear and precise, but
    not every detail.
 3. **Output data** — the same for what it writes.
-4. **Notes** — anything else load-bearing: traps, why a step exists, what a
-   choice rests on. Omit if there is nothing to say.
+4. **Notes** — anything else that matters: traps, why a step exists, what a
+   choice depends on. Omit if there is nothing to say.
 5. **Usage** — the command lines.
 
 Function and module docstrings elsewhere are ordinary NumPy style.
 
-### Other
+### Products and their readers
 
 - **Schema constants and the reader live in the library**, not the script, so
   the writer and the reader of a product cannot drift apart
@@ -172,8 +172,9 @@ Function and module docstrings elsewhere are ordinary NumPy style.
 
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
-reorg has landed, so the paths below are the real ones; `sites.py` is
-implemented and the other modules carry the contract each is to satisfy.
+reorg has landed, so the paths below are the real ones; `sites.py` and
+`constraints.py` are implemented and the other modules carry the contract each
+is to satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout

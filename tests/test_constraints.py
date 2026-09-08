@@ -56,8 +56,8 @@ RAW_COV = RAW_RDATA / "obs.cov.Rdata"
 EMPTY_SITES = [9, 143, 483, 1487, 2686, 3012]
 EMPTY_SNAPSHOTS = ["2012-07-15", "2013-07-15", "2014-07-15"]
 
-#: Per-variable row counts of the real source, keyed by *source* name, from
-#: data/README.md's coverage table. The export must reproduce these exactly.
+#: Per-variable observation counts of the real source, keyed by *source* name,
+#: as recorded in data/README.md. The export must reproduce these exactly.
 REAL_COUNTS = {
     "AbvGrndWood": 39273,
     "LAI": 99632,

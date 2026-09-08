@@ -54,9 +54,9 @@ names it saw.
 
 **The coordinates.** The geometry is float64 and CSV formatting is where that
 precision goes, which is why the output is read back and compared **bitwise**
-before the script reports success. That check earns its place -- it caught
-pandas' default CSV parser reading a fraction of the longitudes back inexactly.
-The fix was the *reader*, ``float_precision="round_trip"`` in
+before the script reports success. The check caught pandas' default CSV parser
+reading some longitudes back inexactly. The fix was the *reader*,
+``float_precision="round_trip"`` in
 :func:`sipnet_calibration.sites.load_sites`, not the write format, which is
 inexact under the default parser either way. See :data:`FLOAT_FORMAT`.
 

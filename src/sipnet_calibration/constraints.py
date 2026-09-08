@@ -30,10 +30,8 @@ Input data
 
 The intermediate long table
     A CSV of one row per observed ``(snapshot, site, variable)`` triple, written
-    by ``export_constraints.R`` and read by :func:`read_long_table` on the
-    ingest script's behalf. It lives here rather than in the script because the
-    reader settings are load-bearing: ``float_precision="round_trip"`` is what
-    makes the parse exact. Its ``variable`` column holds *source* names.
+    by ``export_constraints.R`` and read by :func:`read_long_table`, which
+    parses it exactly. Its ``variable`` column holds *source* names.
 
 Data model
 ----------
@@ -121,10 +119,10 @@ Notes
 **Only variances are carried, not covariance matrices.** Every source
 covariance is exactly diagonal, so the matrices hold nothing the diagonal does
 not. That is asserted in R at every export, where the off-diagonal is still
-visible, and the largest element seen is recorded in a manifest so this side can
-confirm the check ran. If a future release carries genuine cross-variable
-covariance, this product gains a ``(site, time, variable, variable)`` array and
-:data:`OBSERVATION_VARIANCE` becomes a view of its diagonal.
+visible, and the result is recorded in a manifest so this side can confirm the
+check ran. If a future release carries genuine cross-variable
+covariance, this product would need a
+``(site, time, variable, variable)`` array instead.
 
 **``variable`` is a dimension, not one array per variable.** The canonical field
 convention wants dims a subset of ``(member, site, time)``, which this stored
@@ -134,9 +132,8 @@ observation vector is a stack rather than a join, and because the variables
 share one ``(site, time)`` grid here. :func:`constraint_fields` is what serves
 the consumers that want the canonical form instead.
 
-**Missingness is dense** ``NaN``. The source is ragged over site, snapshot and
-variable, and a dense array is cheap at this size and far easier to reason about
-than any ragged encoding. A ``NaN`` means not observed; a zero is an
+**Missingness.** Unobserved cells are ``NaN`` in a dense array; a ragged
+encoding buys nothing at this size. A ``NaN`` means not observed; a zero is an
 observation.
 
 Usage
@@ -314,8 +311,7 @@ def default_constraints_path() -> Path:
 
     ``$SIPNET_CALIBRATION_DATA/processed/constraints_annual.nc`` when that
     variable is set, and otherwise the ``data/`` directory of this checkout.
-    Experiments name their paths in ``config.py``; this exists so that tests,
-    notebooks and the ingest script agree on one default.
+    Experiments name their paths in ``config.py``.
     """
     root = os.environ.get(DATA_ROOT_ENV_VAR)
     data_root = Path(root) if root else Path(__file__).resolve().parents[2] / "data"
@@ -346,11 +342,10 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
 
     Notes
     -----
-    ``float_precision="round_trip"`` is load-bearing. The R side writes the
-    doubles with ``%.17g``, which uniquely determines a float64, but pandas'
-    default C parser is not correctly rounding and moves some of those values in
-    the last bits -- the same failure that cost the site table its coordinates
-    before it was caught. The round-trip parser is exact.
+    ``float_precision="round_trip"`` is required for an exact parse. The R side
+    writes the doubles with ``%.17g``, which uniquely determines a float64, but
+    pandas' default C parser is not correctly rounding and moves tens of
+    thousands of the real table's values in the last bits.
 
     ``keep_default_na=False`` keeps a variable named ``NA`` from becoming a
     null, for the same reason the site table needs it. No such variable exists
@@ -451,13 +446,12 @@ def load_constraints(path: Path | str | None = None) -> xr.Dataset:
 def constraint_fields(
     dataset: xr.Dataset, *, statistic: str = "mean"
 ) -> dict[str, xr.DataArray]:
-    """Split the stored form into canonical per-variable fields.
+    """One ``DataArray`` per variable, for either the means or the variances.
 
-    The stored form carries ``variable`` as a dimension, which the canonical
-    field convention does not allow. This is the view that does: one
-    ``DataArray`` per variable with dims ``(site, time)``, named for the
-    variable, carrying its units and long name, and keeping ``lon``/``lat`` as
-    non-dimension coordinates on ``site``.
+    Each field has dims ``(site, time)``, is named for its variable, carries
+    that variable's units and long name, and keeps ``lon``/``lat`` as
+    non-dimension coordinates on ``site`` -- the canonical field shape, which
+    the stored form is not.
 
     Parameters
     ----------
@@ -492,10 +486,9 @@ def constraint_fields(
 
 
 def snapshot_dates(years: list[int] | tuple[int, ...]) -> pd.DatetimeIndex:
-    """The source's annual snapshot keys for the given years.
+    """The source's annual snapshot keys for the given years, in that order.
 
-    Kept here rather than written out at each call site so that the month and
-    day come from :data:`SNAPSHOT_MONTH_DAY` alone.
+    The month and day come from :data:`SNAPSHOT_MONTH_DAY`.
     """
     month, day = SNAPSHOT_MONTH_DAY
     return pd.DatetimeIndex([pd.Timestamp(year, month, day) for year in years])
