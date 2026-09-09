@@ -1,53 +1,25 @@
-"""L3 -- the one generic facet function.
+"""Grids of panels: figure and axes construction, shared limits, legends.
 
-Overview
---------
-:func:`facet` owns figure and axes construction, shared limits, panel titles
-and legend deduplication, for every grid of panels in the project. It is the
-reason an L2 panel never creates its own figure: most of the repetitive figure
-code in a project like this is figure, axes, limit and legend plumbing, and
-centralizing it here is where the bulk of the saving comes from.
+:func:`facet` draws one panel per element of a sequence, and owns everything
+around the panels -- the figure, the grid of axes, axis sharing, panel titles
+and the legend. It is why the panel functions never create a figure of their
+own.
 
-Two thin wrappers cover the cases that come up constantly --
-:func:`by_site`, one panel per site, and :func:`by_variable`, one panel per
-variable. Both are a few lines over :func:`facet` and exist because writing
-the closure and the titles by hand at every call site is exactly the
-repetition this layer removes.
+:func:`by_site` and :func:`by_variable` are the two cases that come up
+constantly, written over :func:`facet`.
 
 Callbacks
 ---------
-The two layers take callbacks of different shapes, and each reads naturally
-for what it is:
+:func:`facet` takes ``panel_fn(ax, item)``, called once per element, and
+ignores what it returns. The two wrappers instead take a panel function of the
+form ``panel_fn(field, ax=ax)`` -- such as
+:func:`sipnet_calibration.plotting.series.series_panel` -- and build the
+selection themselves.
 
-* :func:`facet` takes ``panel_fn(ax, item) -> None``. *items* is any sequence
-  and the callback does whatever it likes with an element; its return is
-  ignored.
-* The wrappers take a **panel composer**, ``panel_fn(field, ax=ax)`` --
-  :func:`sipnet_calibration.plotting.series.series_panel` and anything with
-  its signature. The wrapper builds the selection and the closure.
-
-Extra arguments are bound with ``functools.partial`` rather than threaded
-through this module::
+Bind any further arguments with ``functools.partial``::
 
     from functools import partial
     by_site(tair, partial(series_panel, role="prior", show="spaghetti"))
-
-Notes
------
-**Shared limits come from matplotlib's own axis sharing**, through ``share``,
-rather than from a separate pass that computes common limits and applies
-them. The design spec carried both a ``share`` and a ``common_lims``
-parameter; they are the same request, and ``sharex``/``sharey`` gets it right
-through autoscaling, including as later artists are added to a panel.
-
-**The return is** ``(Figure, axes)``, not the ``Figure`` alone that the spec
-proposed. ``fig.axes`` also holds the hidden filler axes that pad the last
-row, so a caller wanting to annotate panel *k* would otherwise have to redo
-the grid arithmetic. The returned array is aligned one-to-one with *items*.
-
-**No style is applied.** :func:`.style.use_project_style` is an experiment
-report's call, not this module's; a facet grid that restyled the session
-would be as surprising as an import that did.
 
 Usage
 -----
@@ -55,11 +27,12 @@ Usage
 
     from sipnet_calibration.plotting import by_site, facet, series_panel
 
-    # One panel per site, each a driver ensemble fan, shared y-limits.
+    # One panel per site, each a driver ensemble fan, on one y scale.
     fig, axes = by_site(air_temperature, sites=six_sites, share="y", ncol=3)
 
     # The general form.
-    fig, axes = facet(six_sites, lambda ax, s: series_panel(f.sel(site=s), ax=ax),
+    fig, axes = facet(six_sites,
+                      lambda ax, s: series_panel(field.sel(site=s), ax=ax),
                       labels=lambda s: f"site {s}")
 """
 
@@ -98,34 +71,30 @@ def facet(
         left to right.
     panel_fn:
         Called as ``panel_fn(ax, item)`` once per element. Its return value is
-        ignored, so an L2 panel that returns its ``Axes`` can be passed
+        ignored, so a panel function that returns its ``Axes`` may be used
         directly.
     ncol:
-        Panels per row. The number of rows follows from ``len(items)``; the
-        unused axes of the last row are hidden rather than left as empty
-        frames.
+        Panels per row. The number of rows follows from ``len(items)``, and
+        the unused axes of the last row are hidden.
     share:
         One of :data:`SHARE_MODES`, passed to ``pyplot.subplots`` as
-        ``sharex``/``sharey``. ``"y"`` is what gives a grid of panels one
-        common y-scale, which is usually the point of drawing them together.
+        ``sharex`` and ``sharey``. ``"y"`` puts every panel on one y scale.
     labels:
-        Panel titles: a sequence the same length as *items*, or a callable
-        applied to each element, or ``None`` for no titles.
+        Panel titles: a sequence as long as *items*, a callable applied to
+        each element, or ``None`` for no titles.
     panel_size:
-        Width and height of one panel in inches. The figure is sized from this
-        and the grid, so a six-panel grid is not the same size as a
-        twenty-panel one.
+        Width and height of one panel, in inches. The figure is sized from
+        this and the shape of the grid.
     legend:
         ``"dedup"`` collects the handles and labels of every panel, keeps the
-        first occurrence of each label, and places one figure-level legend --
-        the usual case, where each panel draws the same few roles.
-        ``"each"`` gives every panel its own legend. ``"none"`` draws none.
+        first occurrence of each label, and places one legend on the figure.
+        ``"each"`` gives every panel its own. ``"none"`` draws none.
 
     Returns
     -------
     (matplotlib.figure.Figure, numpy.ndarray)
-        The figure, and a one-dimensional object array of the axes actually
-        drawn on, aligned with *items*. Hidden filler axes are not in it.
+        The figure, and a one-dimensional object array of the axes that were
+        drawn on, aligned with *items*. The hidden axes are not in it.
 
     Raises
     ------
@@ -150,16 +119,13 @@ def by_site(
     Parameters
     ----------
     field:
-        A canonical field with a ``site`` dim.
+        A canonical field with a ``site`` dimension.
     panel_fn:
-        A panel composer called as ``panel_fn(field.sel(site=s), ax=ax)``.
-        ``None`` means
-        :func:`sipnet_calibration.plotting.series.series_panel`. Bind extra
-        arguments with ``functools.partial``.
+        Called as ``panel_fn(field.sel(site=s), ax=ax)``. ``None`` uses
+        :func:`sipnet_calibration.plotting.series.series_panel`.
     sites:
-        The site ids to draw, in that order. ``None`` means every site on
-        *field*, which is a grid of 8000 panels for a whole-pool field --
-        select first.
+        The site ids to draw, in that order. ``None`` draws every site on
+        *field*, which for a whole-pool field is 8000 panels.
     **facet_kwargs:
         Passed to :func:`facet`. ``labels`` defaults to ``"site <id>"``.
 
@@ -171,8 +137,8 @@ def by_site(
     Raises
     ------
     ValueError
-        If *field* has no ``site`` dim, or *sites* names an id that is not on
-        it.
+        If *field* has no ``site`` dimension, or *sites* names an id that is
+        not on it.
     """
     raise NotImplementedError
 
@@ -187,19 +153,17 @@ def by_variable(
     Parameters
     ----------
     fields:
-        Variable name to canonical field, as the multi-variable adapters
-        return -- :func:`sipnet_calibration.drivers.driver_fields` and
-        :func:`sipnet_calibration.constraints.constraint_fields`. The fields
-        need not share a time axis, which is the reason those adapters return
-        a mapping rather than a ``Dataset``.
+        Variable name to field, as
+        :func:`sipnet_calibration.drivers.driver_fields` and
+        :func:`sipnet_calibration.constraints.constraint_fields` return. The
+        fields need not share a time axis.
     panel_fn:
-        A panel composer called as ``panel_fn(field, ax=ax)``. ``None`` means
+        Called as ``panel_fn(field, ax=ax)``. ``None`` uses
         :func:`sipnet_calibration.plotting.series.series_panel`.
     **facet_kwargs:
         Passed to :func:`facet`. ``labels`` defaults to each field's
-        ``long_name``, falling back to the variable's name. ``share`` defaults
-        to ``"none"`` and should stay there: the variables have different
-        units, so a shared y-axis would be meaningless.
+        ``long_name``, falling back to its name. ``share`` defaults to
+        ``"none"``, since the variables have different units.
 
     Returns
     -------

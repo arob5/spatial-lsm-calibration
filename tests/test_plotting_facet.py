@@ -40,7 +40,7 @@ def test_the_callback_is_called_once_per_item_in_order():
 
 
 def test_the_callback_return_is_ignored():
-    """A callback returning an ``Axes`` -- as every L2 panel does -- is fine."""
+    """A callback returning an ``Axes`` -- as the panel functions do -- is fine."""
     raise NotImplementedError
 
 

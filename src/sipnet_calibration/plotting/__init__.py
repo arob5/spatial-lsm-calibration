@@ -1,47 +1,42 @@
-"""Plotting suite: matplotlib, ensemble- and site-aware.
+"""Plotting for the project's canonical fields: matplotlib, ensemble-aware.
 
-Five layers, dependencies strictly upward:
+A canonical field is an ``xarray.DataArray`` whose dimensions are a subset of
+``(member, site, time)``, described in
+:mod:`sipnet_calibration.fields`. Everything here takes one, or a mapping of
+several, and draws it.
 
-* **L1** :mod:`primitives` -- signature always ``(ax, plain numpy, **style) -> artist``.
-  No pandas, no xarray, no figure creation.
-* **L2** :mod:`series`, :mod:`maps` -- one variable, one Axes, canonical field in.
-* **L3** :mod:`facet` -- the one generic facet function; owns figure and axes
-  construction, shared limits, legend de-duplication.
-* **L4** experiment reports -- in ``experiments/<task>/plots.py``, *never* here.
-  Anything that knows a task name is not core.
-* **L5** :mod:`diagnostics` -- inference diagnostics (EKI history, marginals,
-  coverage, per-site parameter maps).
+==========================  ================================================
+:mod:`primitives`           ``(ax, numpy arrays, **style) -> artist``
+:mod:`series`               a time-series panel on one ``Axes``
+:mod:`maps`                 a spatial panel on one ``Axes`` (not implemented)
+:mod:`facet`                a grid of panels, and the figure around it
+:mod:`diagnostics`          inference diagnostics (not implemented)
+:mod:`style`                roles, colors and matplotlib settings
+:mod:`registry`             per-variable display metadata (not implemented)
+==========================  ================================================
 
-Invariants, for every plotter in this package:
+Every panel takes an ``Axes`` and returns it. None of them creates a figure
+except when no ``Axes`` is given, and none calls ``show`` or ``savefig``. None
+accepts a ``SIPNETResult``, a ``DataFrame`` or a path; converting those to a
+canonical field is the job of an adapter in
+:mod:`sipnet_calibration.fields`. Reports that know an experiment's name
+belong in ``experiments/<task>/plots.py`` rather than here.
 
-* takes ``ax``, returns ``Axes``;
-* never calls ``plt.show()`` or ``savefig``, and never creates a figure
-  implicitly (that is :mod:`facet`'s job);
-* never accepts a ``SIPNETResult``, a DataFrame, or a path (that is an adapter's
-  job, in :mod:`sipnet_calibration.fields`);
-* takes style from :mod:`registry` and :mod:`style`, not from a dozen keywords.
+Three conventions run through the package:
 
-Three rules cut across the layers and are stated once here:
+* In a time-series panel, ``time`` is the x-axis and every other dimension
+  present is a sample dimension, so a field shaped ``(site, time)`` draws a
+  curve per site as ``(member, time)`` draws one per member.
+* Curves and bands keep ``NaN``, so gaps show; scattered points drop it.
+* Style is resolved as the drawing function's default, then the role, then any
+  keyword given explicitly.
 
-* **``time`` is the x-axis of a series panel, and every other dim present is a
-  sample dim.** A field shaped ``(site, time)`` draws a curve per site exactly
-  as ``(member, time)`` draws a curve per member. See :mod:`series`.
-* **Lines and bands keep** ``NaN`` **so the gap shows; points drop it** so the
-  artist holds exactly what was observed. See :mod:`primitives`.
-* **Style precedence is primitive default, then role, then explicit keyword.**
-  See :mod:`style`.
+Temporal aggregation is not done here. It is applied by the caller with
+:func:`sipnet_calibration.obs_ops.aggregate_time`, which the observation
+operator also uses.
 
-Aggregation is not part of this package. It is a verb the caller applies with
-:func:`sipnet_calibration.obs_ops.aggregate_time`, which defaults to the
-variable's own rule, so that a predictive-check figure cannot disagree with
-what the likelihood consumed.
-
-Interactive single-run inspection is out of scope: ``pysipnet.viz.dashboard``
-already owns it.
-
-The spatial layer -- :mod:`maps`, and the ``basemap``, ``map_points`` and
-``map_raster`` primitives -- is not implemented; it is blocked on the
-projection decision in issue #4.
+Interactive inspection of a single run is out of scope; ``pysipnet.viz``
+covers it.
 """
 
 from sipnet_calibration.plotting.facet import by_site, by_variable, facet

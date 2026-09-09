@@ -7,15 +7,13 @@ window. The plotting tests assert on artist data and properties --
 limits -- and never on rendered images, which are brittle across matplotlib
 versions and say nothing about why a test failed.
 
-The synthetic fixtures build canonical fields at each dim subset, since the
-rule that panels branch on which dims are present is the thing most likely to
-regress. They are canonical rather than merely convenient: a real
-``DatetimeIndex`` on ``time``, ``lon``/``lat`` as non-dimension coordinates on
-``site``, and ``units``/``long_name`` in ``attrs``.
+The synthetic fixtures build canonical fields at each subset of the
+``(member, site, time)`` dimensions, with a real ``DatetimeIndex`` on
+``time``, ``lon``/``lat`` as non-dimension coordinates on ``site``, and
+``units``/``long_name`` in ``attrs``.
 
-The real-data fixtures read the files that are present in this working copy --
-three driver files and the annual constraint product -- and skip when they are
-not, since only a subset of ``data/raw/`` exists outside the SCC.
+The real-data fixtures read the driver files and the annual constraint product
+present in this working copy, and skip when they are not there.
 """
 
 from __future__ import annotations
@@ -157,9 +155,8 @@ def field_with_gaps() -> xr.DataArray:
 def real_driver_field() -> xr.DataArray:
     """``air_temperature`` from the driver files present in this working copy.
 
-    Sites 1 and 27 by members 1, 2 and 5, of which only three of the six
-    pairs have a file, so the field is half missing and ``driver_present``
-    says where. That makes it the real gap case, not a contrived one.
+    Sites 1 and 27 by members 1, 2 and 5. Only three of the six pairs have a
+    file, so the field is half missing and ``driver_present`` says where.
     """
     drivers = pytest.importorskip("sipnet_calibration.drivers")
     try:
@@ -185,9 +182,8 @@ def real_constraint_fields() -> tuple[dict, dict]:
     """The annual constraint means and their error variances, as field dicts.
 
     Both are keyed on processed variable name, with dims ``(site, time)`` over
-    the whole 8000-site pool and 13 annual snapshots, about 38 percent of the
-    cells observed. This is the error-bar overlay case with its real
-    raggedness.
+    the whole site pool and the annual snapshots, and are ragged: most cells
+    are unobserved.
     """
     constraints = pytest.importorskip("sipnet_calibration.constraints")
     try:

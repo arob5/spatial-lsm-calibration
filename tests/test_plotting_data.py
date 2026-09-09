@@ -7,8 +7,8 @@ ragged (constraints), carry real attributes, and are the fields an experiment
 report will actually hand to a panel.
 
 The acceptance criteria of the plotting design spec are written out here as
-call sites, because the spec's own test of whether the seams are in the right
-place is that each is one to three lines and needs no new library function.
+call sites, each of which should be one to three lines and need no library
+function that does not already exist.
 
 Skipped until the plotting modules are implemented; collected so that the
 intended assertions are on the record and reviewable.
@@ -49,10 +49,7 @@ def test_the_y_label_is_the_real_variable_and_unit(ax, real_driver_field):
 
 
 def test_a_driver_field_draws_one_curve_per_site(ax, real_driver_field):
-    """One member across both sites: the sample dim is ``site``.
-
-    This is the case the design spec's ``member``-only rule did not cover.
-    """
+    """One member across both sites: the sample dim is ``site``, not ``member``."""
     raise NotImplementedError
 
 
@@ -87,21 +84,19 @@ def test_by_variable_over_the_constraint_fields(real_constraint_fields):
     raise NotImplementedError
 
 
-# ── the design spec's acceptance criteria ─────────────────────────────────────
+# ── acceptance criteria ───────────────────────────────────────────────────────
 
 
 def test_acceptance_one_panel_three_aggregations(ax, real_driver_field):
     """Raw, daily and monthly ``par`` at one site, overlaid, in three lines.
 
-    Criterion 1 of the design spec, restated on a driver variable: the NEE
-    product does not exist and is out of this PR's scope, and ``par`` is
-    extensive in the same way, so a daily total is a sum for the same reason.
+    Criterion 1 of the design spec, on ``par`` rather than NEE, which has no
+    processed product yet. Like NEE, ``par`` is a per-timestep total, so its
+    daily value is a sum.
 
-    The aggregation here is ``.resample(time="1D").sum()`` written at the call
-    site. When ``obs_ops.aggregate_time`` lands (issue #6) it replaces that
-    and takes the rule from the variable rather than from the caller; the
-    point this test makes -- that overlaying aggregations needs no plotter
-    keyword -- is the same either way.
+    The aggregation is written at the call site as ``.resample(time="1D")
+    .sum()`` until ``obs_ops.aggregate_time`` exists (issue #6), which takes
+    the rule from the variable instead.
     """
     raise NotImplementedError
 
