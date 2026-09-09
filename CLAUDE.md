@@ -43,6 +43,9 @@ Facts specific to this working copy, which the README deliberately does not carr
 Operational rules that follow from the data and are easy to get wrong in code:
 
 - Open the IC netCDFs with `decode_times=False` (README note 5).
+- Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
+  drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
+  takes only the slot from it.
 - Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
@@ -186,8 +189,11 @@ src/sipnet_calibration/
                           # select_sites(ids=, bbox=, where=, sample=, seed=)
   constraints.py          # annual constraint schema, load_constraints(),
                           # constraint_fields() -> canonical per-variable view
+  drivers.py              # driver schema, load_drivers() reading raw .clim files
+                          # into (member, site, time); no processed file exists
   fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
+  obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
+                          # shared with the likelihood
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -213,7 +219,10 @@ Conventions:
   exploration and plotting only, and load results from disk.
 - Raw inputs are symlinked into `data/raw/` and never edited; ingest scripts
   convert them to `data/processed/`, whose format **is** the canonical format
-  used throughout the project.
+  used throughout the project. The drivers are the one exception: SIPNET reads
+  the raw `.clim` files itself, so `sipnet_calibration.drivers.load_drivers`
+  produces the canonical form from `data/raw/drivers/` on demand and nothing is
+  written under `processed/` for them.
 
 ### Plotting and field conventions
 
