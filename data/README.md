@@ -363,14 +363,18 @@ fixed.
 > These files must be opened with CF time decoding disabled, for example
 > `xarray.open_dataset(path, decode_times=False)`.
 
-> **Note 6.** The number of initial-condition ensemble members, and which
-> variables appear in which files, are not established.
+> **Note 6.** The initial-condition ensemble has **100 members**, the same size
+> as the published reanalysis output. Confirmed for the project rather than
+> inferred from the files: this checkout holds three of the 800,000, and the
+> highest member index among them is 94. Which variables appear in which files
+> is still not established; `scripts/survey_ic_variables.py` answers it where
+> the files are.
 
 **Source.** Initial condition ensembles prepared for the 8000-site pool for the
 model runs underlying [NALCR]. The same files are used here. The published
 reanalysis output carries 100 ensemble members together with ensemble mean and
-standard deviation; whether the initial condition files use the same ensemble
-size has not been confirmed against the data, and is the subject of Note 6.
+standard deviation, and the initial condition files use the same ensemble size.
+That could not be confirmed against the data available here; see Note 6.
 
 ### Net ecosystem exchange
 
@@ -763,13 +767,13 @@ degenerate, but it does mean the files cannot be used for anything time-aware.
 Tracked as
 [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
-**6. Initial-condition variable sets and ensemble size.** The variable set is
+**6. Initial-condition variable sets.** *The ensemble size is resolved: 100
+members, as Note 6 records.* What remains open is the variable set, which is
 reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
 appearing in some. Three files are available locally — site 1 members 1 and 2,
 and site 27 member 94 — and none of the three carries either variable, so the
-full set of combinations is still unconfirmed. Member index 94 does put a floor
-of 94 on the initial-condition ensemble size. `scripts/survey_ic_variables.py`
-answers both questions where the files are.
+full set of combinations is still unconfirmed. `scripts/survey_ic_variables.py`
+answers it where the files are, and has not yet been run on the SCC.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217
