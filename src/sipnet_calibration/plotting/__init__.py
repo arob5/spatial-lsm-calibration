@@ -21,6 +21,57 @@ Invariants, for every plotter in this package:
   job, in :mod:`sipnet_calibration.fields`);
 * takes style from :mod:`registry` and :mod:`style`, not from a dozen keywords.
 
+Three rules cut across the layers and are stated once here:
+
+* **``time`` is the x-axis of a series panel, and every other dim present is a
+  sample dim.** A field shaped ``(site, time)`` draws a curve per site exactly
+  as ``(member, time)`` draws a curve per member. See :mod:`series`.
+* **Lines and bands keep** ``NaN`` **so the gap shows; points drop it** so the
+  artist holds exactly what was observed. See :mod:`primitives`.
+* **Style precedence is primitive default, then role, then explicit keyword.**
+  See :mod:`style`.
+
+Aggregation is not part of this package. It is a verb the caller applies with
+:func:`sipnet_calibration.obs_ops.aggregate_time`, which defaults to the
+variable's own rule, so that a predictive-check figure cannot disagree with
+what the likelihood consumed.
+
 Interactive single-run inspection is out of scope: ``pysipnet.viz.dashboard``
 already owns it.
+
+The spatial layer -- :mod:`maps`, and the ``basemap``, ``map_points`` and
+``map_raster`` primitives -- is not implemented; it is blocked on the
+projection decision in issue #4.
 """
+
+from sipnet_calibration.plotting.facet import by_site, by_variable, facet
+from sipnet_calibration.plotting.primitives import band, fan, line, points, spaghetti
+from sipnet_calibration.plotting.series import series_panel
+from sipnet_calibration.plotting.style import (
+    BAND_ALPHAS,
+    CURVE_COLORS,
+    RC_PARAMS,
+    ROLES,
+    axis_label,
+    role_style,
+    use_project_style,
+)
+
+__all__ = [
+    "BAND_ALPHAS",
+    "CURVE_COLORS",
+    "RC_PARAMS",
+    "ROLES",
+    "axis_label",
+    "band",
+    "by_site",
+    "by_variable",
+    "facet",
+    "fan",
+    "line",
+    "points",
+    "role_style",
+    "series_panel",
+    "spaghetti",
+    "use_project_style",
+]
