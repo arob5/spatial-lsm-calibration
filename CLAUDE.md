@@ -174,6 +174,52 @@ Function and module docstrings elsewhere are ordinary NumPy style.
 - Wrap prose in Markdown and docstrings at roughly 80 columns, matching the
   surrounding file.
 
+## Working alongside other sessions
+
+Several sessions often work in this repository at once, on separate branches
+and separate pull requests. Unless each has its own checkout they share one
+working tree, one index and one `HEAD`, and a number of ordinary git commands
+then do something other than what they appear to do.
+
+**Work in your own worktree, created from an explicit start point.** The root
+checkout is nobody's workspace; leave it on `main` and clean.
+`.claude/worktrees/` is already ignored.
+
+```bash
+git worktree add -b feat/<topic> .claude/worktrees/<topic> origin/main
+```
+
+- **Always name the start point.** `git checkout -b <name>` and
+  `git worktree add <path> <branch>` take whatever happens to be checked out.
+  A branch created while another session's work is checked out is rooted on
+  that session's commit, which yields a pull request carrying someone else's
+  commit that cannot merge until theirs does. Neither command needs a clean
+  tree, so nothing warns you. Naming `origin/main`, or whatever the base
+  really is, is the whole fix.
+- **Stage explicit paths.** `git add -A` and `git add .` stage every dirty
+  file in the tree, including the ones another session is still editing.
+  `git add <path> <path>` cannot.
+- **Do not switch branches in a checkout you do not own.** `git switch` and
+  `git checkout <branch>` move `HEAD` for every session using that tree.
+  Read-only commands are always safe: `status`, `log`, `diff`, `show`,
+  `reflog`, `worktree list`.
+- **Read `git status --short` before every commit**, and confirm that every
+  file it lists is yours.
+
+Two checks catch a wrong base or a stray file after the fact:
+
+```bash
+git rev-list --count main..HEAD     # more commits than you made?
+git diff --name-only main...HEAD    # files you did not touch?
+```
+
+Destructive commands discard work that may belong to another session:
+`git checkout -- <path>`, `git restore`, `git reset --hard`, `git clean`,
+`git stash`. Ask before running one in a shared checkout, and name specific
+paths rather than a whole tree. Never run one on another session's behalf:
+permission belongs to the session whose work it affects, and routing a denied
+command through a peer is not a way to get it approved.
+
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
