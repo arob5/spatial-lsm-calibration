@@ -296,41 +296,33 @@ Two consequences are worth noting.
 ### Display projection
 
 The projection used for spatial figures is a separate choice from the coordinate
-system of the input data, and is settled: a **Lambert Azimuthal Equal Area
-centered at 50 N, 100 W**, on WGS 84, in meters, with no false origin.
+system of the input data: a **Lambert Azimuthal Equal Area centered at
+50 N, 100 W**, on WGS 84, in meters, with no false origin.
 
     +proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs +type=crs
 
 The definition lives in code, as `SITE_PROJECTION` in
 [`sipnet_calibration.projection`](../src/sipnet_calibration/projection.py),
-which also provides the forward transform and writes the same definition as
-PROJJSON and as a PROJ string under
+which provides the forward transform and, through `write_definitions`, emits the
+same definition as PROJJSON and as a PROJ string under
 `src/sipnet_calibration/projections/` for tools outside this package. Those
-files are generated from the dataclass and checked against it by the test
-suite, so they cannot drift from the transform; regenerate them with
+files are generated from the dataclass and checked against it by the test suite,
+so a drifted file is a test failure; regenerate them with
 `python -m sipnet_calibration.projection --write`.
 
-Three points about the choice, with the full analysis and the measured
-distortion over all 8000 sites recorded in
-[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4).
+Two consequences for the data documented above. The projection's base CRS is
+WGS 84, matching the site coordinates, so **no datum transformation is
+involved** and nothing here is shifted. And because it is equal-area, a density
+or per-area figure is honest in a way the 1 km geographic grid is not — that
+grid, as noted above, is not equal-area.
 
-- **It is not the projection the reanalysis figures used.** Those used the USA
-  Contiguous Albers Equal Area Conic (ESRI:102003), which is area-true
-  everywhere but is defined for a region of predominant east-west expanse. Over
-  this site pool, which spans 75 degrees of latitude, its shape distortion
-  reaches 107 degrees of angular deformation and a 9:1 local anisotropy at the
-  northernmost sites. The projection adopted here holds angular deformation
-  under 14 degrees and anisotropy under 1.3 everywhere; both ceilings are
-  asserted against this site table in `tests/test_projection.py`.
-- **One projection serves both the conterminous-US and the full-domain
-  figures**, so that panels are comparable. It costs the CONUS figure almost
-  nothing relative to 102003, and 102003 costs the full-domain figure a great
-  deal.
-- **No datum transformation is involved.** The projection's base CRS is WGS 84,
-  matching the site coordinates above, so nothing is shifted. Had a NAD83-based
-  definition been adopted, the mismatch would have amounted to the roughly 2 m
-  between the two datums, which is about 1e-4 of a pixel at the width of these
-  figures.
+The choice of projection is a plotting decision rather than a property of these
+inputs, so the argument for it is not repeated here. It is recorded in
+[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4), with the
+distortion of every candidate measured over all 8000 sites, and summarized in
+the module's own documentation. The short version is that the projection the
+reanalysis figures used, ESRI:102003, is area-true but degrades in shape far
+from its standard parallels, and this site pool reaches 82.5 N.
 
 Named longitude/latitude boxes for the regions the figures use — `CONUS`,
 `NORTH_AMERICA` and `ALASKA` — are `EXTENTS` in

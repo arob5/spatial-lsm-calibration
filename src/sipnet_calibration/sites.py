@@ -506,8 +506,8 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #: axes limits. They live here, beside the selection they parametrize, so that a
 #: figure and the site subset it plots cannot disagree about what a region means.
 #:
-#: - ``CONUS`` is the conterminous-US box used throughout ``data/README.md``;
-#:   3640 of the 8000 sites fall inside it.
+#: - ``CONUS`` is the conterminous-US box ``data/README.md`` uses, holding a
+#:   little under half the pool; the count is asserted in ``tests/test_sites.py``.
 #: - ``NORTH_AMERICA`` is the extent of :data:`SITE_GRID` itself, so it contains
 #:   every site by construction rather than by a bound anyone chose.
 #: - ``ALASKA`` is the EPSG area of use of "United States (USA) - Alaska", as
@@ -517,9 +517,8 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #:   and none of them wraps.
 #:
 #: The plotting design spec calls the middle one ``NA``. It is spelled out here
-#: because ``NA`` is exactly the string that already bites this data: eight of
-#: the 8000 sites are named literally ``NA``, which is why the table is read
-#: with ``keep_default_na=False``.
+#: under the project's convention against abbreviations, and because ``NA`` is
+#: an unhappy name in a module that has to read ``NA`` as a literal site name.
 EXTENTS = {
     "CONUS": (-125.0, 24.0, -66.0, 50.0),
     "NORTH_AMERICA": (SITE_GRID.west, SITE_GRID.south, SITE_GRID.east, SITE_GRID.north),
