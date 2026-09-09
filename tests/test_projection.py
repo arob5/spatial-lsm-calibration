@@ -207,6 +207,12 @@ class TestProjectionDefinition:
         caller -- nor the documented ``[-360, 360]`` longitude range."""
         assert Projection(name="alaska", lat_0=85.0, lon_0=-154.0).lat_0 == 85.0
         assert Projection(name="wrapped", lat_0=50.0, lon_0=260.0).lon_0 == 260.0
+        # The polar guard must reject a pole and nothing else: a center a
+        # hundredth of a degree short of one is still an oblique projection,
+        # and it projects.
+        near_polar = Projection(name="near polar", lat_0=89.99, lon_0=0.0)
+        assert near_polar.forward(0.0, 89.99) == pytest.approx((0.0, 0.0), abs=1e-9)
+        assert all(math.isfinite(value) for value in near_polar.forward(45.0, 60.0))
 
     def test_rejects_a_method_name_that_disagrees_with_the_code(self):
         """The name is written into PROJJSON beside the code, so the two must
@@ -373,9 +379,9 @@ class TestForwardBehavior:
             x, y = SITE_PROJECTION.forward(-100.0, pole)
             assert math.isfinite(x) and math.isfinite(y)
 
-        # The clip is load-bearing rather than decorative: on a strongly
-        # flattened ellipsoid the ratio exceeds 1 by an epsilon and arcsin
-        # returns NaN without it.
+        # A strongly flattened ellipsoid, where a formula that was not exactly
+        # odd in latitude would put the ratio outside [-1, 1] and arcsin would
+        # return NaN.
         flattened = Projection(
             name="flattened",
             lat_0=50.0,
@@ -387,9 +393,11 @@ class TestForwardBehavior:
             assert math.isfinite(x) and math.isfinite(y)
 
     def test_a_pole_is_one_point_whatever_meridian_it_is_approached_along(self):
-        """``q`` is odd in latitude exactly but not in floating point, and
-        ``arcsin`` amplifies the shortfall near -1: computed naively the south
-        pole spreads over a meter of easting with the meridian."""
+        """What keeps this true is that ``_authalic_q`` is exactly odd in
+        latitude. Written with Snyder's logarithm instead of the equivalent
+        ``arctanh``, ``q(-90) / q_p`` falls short of -1 by 4e-16, ``arcsin``
+        amplifies that near -1, and the south pole spreads over a meter of
+        easting with the meridian it is approached along."""
         for pole in (90.0, -90.0):
             x, y = SITE_PROJECTION.forward(np.array([-180.0, -100.0, -10.0, 179.9]), pole)
             assert x == pytest.approx(np.zeros(4), abs=1e-6)

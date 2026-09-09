@@ -464,14 +464,11 @@ class Projection:
         parallel_radius = math.cos(origin) / math.sqrt(1 - e2 * math.sin(origin) ** 2)
         stretch = semi_major * parallel_radius / (authalic_radius * math.cos(beta_0))
 
-        # Evaluated on |sin(lat)| with the sign restored, because q is odd in
-        # latitude in exact arithmetic but not in floating point: computed
-        # directly, q(-90)/q_pole is -0.9999999999999996 where q(90)/q_pole is
-        # exactly 1, and arcsin amplifies that shortfall enough to spread the
-        # south pole over a meter of easting with the meridian it is approached
-        # along. The clip then only has to defend the +1 side.
-        sin_ratio = _authalic_q(np.abs(np.radians(latitude)), e2) / q_pole
-        beta = np.copysign(np.arcsin(np.clip(sin_ratio, -1.0, 1.0)), latitude)
+        # The clip is insurance, not arithmetic this relies on: the ratio is
+        # exactly +-1 at the poles for every eccentricity tested, which is a
+        # property of the arctanh form in _authalic_q rather than of arcsin.
+        # A ratio over 1 by one ulp would return NaN, so the guard stays.
+        beta = np.arcsin(np.clip(_authalic_q(np.radians(latitude), e2) / q_pole, -1.0, 1.0))
         delta_lon = np.radians(longitude - self.lon_0)
         cos_delta_lon = np.cos(delta_lon)
 
@@ -887,10 +884,14 @@ def _authalic_q(lat_radians, eccentricity_squared):
     Notes
     -----
     Snyder writes the second term as ``ln((1 - e sin) / (1 + e sin)) / (2e)``,
-    which is ``-arctanh(e sin) / e``. The ``arctanh`` form is used because the
-    logarithm's argument is ``1 - 2 e sin`` near the equator, where taking its
-    logarithm cancels; the difference is nanometers on the ground, but the
-    identity is exact and the form is no longer.
+    which is ``-arctanh(e sin) / e``. The ``arctanh`` form is used for two
+    reasons. The logarithm's argument is ``1 - 2 e sin`` near the equator, where
+    taking its logarithm cancels; that costs only nanometers on the ground, but
+    the identity is exact and the form is no longer. More usefully, ``arctanh``
+    is exactly odd in its argument, so ``q(-90) / q_p`` comes out as exactly
+    ``-1`` where the logarithm gives ``-0.9999999999999996``. ``arcsin``
+    amplifies that shortfall near ``-1``, which would otherwise spread the south
+    pole over a meter of easting with the meridian it is approached along.
     """
     sin_lat = np.sin(lat_radians)
     if eccentricity_squared == 0.0:
