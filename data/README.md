@@ -84,11 +84,17 @@ data/
     ic.nc
     agb_lai.nc
     nee.zarr/
-    drivers.zarr/
 ```
 
-> **Note 1.** The two per-site directory templates are inferred from a single
-> example of each rather than confirmed across all 8000 sites.
+The drivers have no processed form. SIPNET reads the raw `.clim` files itself,
+so `sipnet_calibration.drivers.load_drivers` produces the canonical
+`(member, site, time)` form from `raw/drivers/` on demand instead; see
+[Meteorological drivers](#meteorological-drivers) and
+[Processed format](#processed-format).
+
+> **Note 1.** The per-site directory templates are inferred from three driver
+> directories and three initial-condition files rather than confirmed across
+> all 8000 sites.
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
@@ -298,11 +304,14 @@ documented once settled.
 
 ### Meteorological drivers
 
-**Format.** ERA5 reanalysis written in the SIPNET climate format: space-delimited
-text with no header row, one row per timestep. The example file has 37,992 rows
-and 14 columns, covering 2012-01-01 to the end of 2024 on a 3-hourly timestep.
-That row count is consistent with 4749 days, being thirteen years including four
-leap years, at eight timesteps per day.
+**Format.** ERA5 reanalysis written in the SIPNET climate format: text with no
+header row, one row per timestep, the fields separated by tabs and padded with
+spaces. [pySIPNET] describes the format as space-delimited, and SIPNET itself
+accepts either. Each of the three files present has 37,992 rows and 14 columns,
+covering 2012-01-01 to the end of 2024 on a 3-hourly timestep. That row count is
+4749 days, being thirteen years including four leap years, at eight timesteps
+per day, and the `year`, `day`, `time` and `length` columns are identical across
+the three files.
 
 Columns follow the 14-column layout defined by [pySIPNET].
 
@@ -311,7 +320,7 @@ Columns follow the 14-column layout defined by [pySIPNET].
 | 1 | `loc` | | Location index; constant, and required by SIPNET to be so |
 | 2 | `year` | | Integer year |
 | 3 | `day` | | Integer day of year, 1 = 1 January |
-| 4 | `time` | hours | Fractional hours at the start of the timestep |
+| 4 | `time` | hours | Hour-of-day label of the timestep; drifts and is not a timestamp, see Note 15 |
 | 5 | `length` | days | Timestep duration; 0.125, that is 3 hours |
 | 6 | `tair` | deg C | Mean air temperature |
 | 7 | `tsoil` | deg C | Mean soil temperature |
@@ -324,11 +333,43 @@ Columns follow the 14-column layout defined by [pySIPNET].
 | 14 | `soil_wetness` | | Legacy column, ignored by SIPNET; constant 0.6 |
 
 **Interpretation.** There is no datetime column; time is given by the `year`,
-`day` and `time` triple and must be assembled during ingest. Two columns are
-integrated quantities rather than rates: `par` and `precip` are totals over the
-timestep, so temporal aggregation of either is a sum rather than a mean. SIPNET
-requires `vpd` and `wspd` to be strictly positive and silently clamps values that
-are not, so non-positive entries are better caught at ingest.
+`day` and `time` triple. The `time` column cannot be used as written (Note 15),
+so timestamps are assembled from `year`, `day` and the row's position within its
+day by `sipnet_calibration.obs_ops.sipnet_time_index`. What clock those labels
+are on, and whether a label marks the start or the end of its three hours, is
+inferred rather than documented (Note 16). Two columns are integrated
+quantities rather than rates: `par` and `precip` are totals over the timestep,
+so temporal aggregation of either is a sum rather than a mean. SIPNET requires
+`vpd` and `wspd` to be strictly positive and silently clamps values that are
+not; the files also hold small negative excursions of `par` and `precip` around
+zero (Note 17). `sipnet_calibration.drivers.load_drivers` leaves all of these
+unchanged and counts them in the variable attributes. The column units are the
+ones the format documents, which is what SIPNET
+assumes when it reads the file; the producer has not confirmed them, and the
+NALCR guide describes the forcing differently (Note 18).
+
+> **Note 15.** The `time` column is hour-of-day computed by reducing a
+> whole-year `linspace` modulo 24 with an off-by-one endpoint: for a year of
+> `n` days, `linspace(0, 24 n - 1, 8 n) % 24` reproduces it to 5e-7 h in all
+> three files. The label steps by 3.000685 h rather than 3, so it is two hours
+> late by the last slot of each year, resets at the year boundary, and is not
+> monotone within a year. Tracked as
+> [issue #9](https://github.com/arob5/spatial-lsm-calibration/issues/9).
+
+> **Note 16.** The drivers are on a longitude-tracking clock consistent with
+> UTC, and the value in the row labeled hour *h* covers the three hours ending
+> at *h*. Both statements are inferred from the diurnal PAR cycle at sites 1
+> and 27, 54 degrees of longitude apart, not confirmed by the producer.
+
+> **Note 17.** `par` takes exactly two negative values, -1.926e-15 and
+> -1.374e-05, the latter in about 1350 rows per file, almost all between
+> October and March at these two polar sites; `precip` negatives are all
+> exactly -6.939e-15. `vpd_soil` is exactly zero in about 30 percent of rows
+> in every file. What produces these is not known.
+
+> **Note 18.** The [NALCR] dataset guide says the reanalysis ran SIPNET on
+> "hourly meteorological forcing from the ERA5 atmospheric reanalysis". These
+> files are 3-hourly.
 
 > **Note 4.** The driver ensemble has **10 members**. The three
 > directories present locally are members 1, 2 and 5, so this cannot be
@@ -367,8 +408,7 @@ fixed.
 > as the published reanalysis output. Confirmed for the project rather than
 > inferred from the files: this checkout holds three of the 800,000, and the
 > highest member index among them is 94. Which variables appear in which files
-> is still not established; `scripts/survey_ic_variables.py` answers it where
-> the files are.
+> is still not established; that can only be answered where the files are.
 
 **Source.** Initial condition ensembles prepared for the 8000-site pool for the
 model runs underlying [NALCR]. The same files are used here. The published
@@ -516,7 +556,12 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | `ingest_constraints.py` | that CSV and manifest, `processed/sites/sites.csv` | `processed/constraints_annual.nc` |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
-| `ingest_drivers.py` | `raw/drivers/` | `processed/drivers.zarr` |
+
+The drivers have no ingest script. SIPNET runs read the raw `.clim` files, so
+converting 80,000 of them into a store would produce a large copy the model
+never reads; `sipnet_calibration.drivers.load_drivers` parses the raw files for
+the sites a caller names and returns the canonical form directly. A cached
+subset, where a workflow wants one, is the caller's `to_zarr`.
 
 Reading the R data files requires R, and they are the only inputs that do.
 `obs.mean` is a list of lists of data frames, which `pyreadr` does not support,
@@ -557,8 +602,9 @@ Conversions applied during ingest rather than downstream:
 
 ## Processed format
 
-`ingest_sites.py` and `ingest_constraints.py` are written; the rest of this
-section records the intended output of scripts not yet written.
+`ingest_sites.py` and `ingest_constraints.py` are written, and the driver
+reader in `sipnet_calibration.drivers` is implemented; the rest of this section
+records the intended output of scripts not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
 is chosen to load directly as such: an `xarray.DataArray` per variable, with
@@ -572,7 +618,7 @@ Formats are chosen according to the shape of each product.
 | `constraints_annual.nc` | netCDF | `(site, time, variable)` for the mean and the variance | 2.2 MB |
 | `ic.nc` | netCDF | `(member, site)` | 32 MB at 100 members |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
-| `drivers.zarr` | Zarr, chunked on `site` and `time` | `(member, site, time)` | 15 GB per member; site subsets in practice |
+| drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
 
 Zarr is used for the arrays indexed by member, site and time because it maps
 directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
@@ -691,13 +737,47 @@ Each variable's unit is a dataset attribute, `variable_<name>_units`, beside
 documented for the reanalysis *output* rather than for these observation
 *inputs*. See open question 9.
 
+The **drivers** are served by `sipnet_calibration.drivers.load_drivers(sites,
+...)`, which parses the raw `.clim` files for the named sites and returns an
+`xarray.Dataset` with one `float64` variable per consumed column on
+`(member, site, time)`, `lon` and `lat` on `site`, and a `source_member_index`
+coordinate on `member` holding the 1-based index from the directory name. The
+`loc`, `length` and `soil_wetness` columns are asserted constant and not
+carried; `length` becomes the `timestep_days` attribute. The processed names
+follow the same convention as the constraints:
+
+| Source | Processed | Unit | Aggregation |
+|---|---|---|---|
+| `tair` | `air_temperature` | deg C | mean |
+| `tsoil` | `soil_temperature` | deg C | mean |
+| `par` | `par` | mol m-2 | sum |
+| `precip` | `precipitation` | mm | sum |
+| `vpd` | `vpd` | Pa | mean |
+| `vpd_soil` | `soil_vpd` | Pa | mean |
+| `vpress` | `vapor_pressure` | Pa | mean |
+| `wspd` | `wind_speed` | m s-1 | mean |
+
+Every variable carries `units_status = "format_documented"` with a provenance
+string: the units are what the `.clim` format documents and SIPNET assumes, not
+units the producer has confirmed. The `time` coordinate holds the nominal
+`year`/`day`/`3 x slot` instants and carries `time_zone = "UTC"`,
+`time_label = "interval_end"` and `clock_status = "inferred"`, per Note 16;
+keeping the nominal labels means a daily resample groups exactly the eight rows
+SIPNET itself calls one day. A requested `(site, member)` pair with no file is
+an error unless `allow_missing=True`, which fills it with `NaN` and adds a
+boolean `driver_present(member, site)`. The three local files are such a case:
+site 1 has members 1 and 2, site 27 has member 5.
+
 The following conventions apply to every product.
 
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
   identifier is a non-dimension coordinate on `site`, absent where unknown.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
-  converted at the boundary.
+  converted at the boundary by `sipnet_calibration.obs_ops.sipnet_time_index`,
+  which uses the `time` column only to identify a row's slot within its day
+  (Note 15). This applies to SIPNET output as well as to the drivers, since
+  SIPNET copies the column into its output verbatim.
 - Each product is stored at the temporal resolution its source arrives in.
   Aggregation is the observation operator's business, specified per variable at
   model-specification time, so that different constraints can be used at
@@ -720,10 +800,15 @@ The following conventions apply to every product.
 
 Numbered notes above refer to the corresponding entry here.
 
-**1. Per-site directory templates.** The driver and initial-condition path
-templates are inferred from `ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim` and
-`initial_conditions/1/IC_site_1_1.nc`. Whether all 8000 site directories follow
-them has not been checked, and ingest should fail loudly on any that do not.
+**1. Per-site directory templates.** The driver template
+`ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim` holds for the three
+directories present and the initial-condition template
+`initial_conditions/<site>/IC_site_<site>_<member>.nc` for the three files
+present. Whether all 8000 site directories follow
+them has not been checked. The driver reader raises on any file it is asked
+for that departs from the template, and on a directory whose member disagrees
+with its file name; whether the 8000 x 10 set is complete can only be surveyed
+where the files are.
 
 **2. Meaning of the `cluster` and `landcover` fields.** Neither is documented in
 the sources available. The evidence that they define sampling strata is
@@ -772,8 +857,8 @@ members, as Note 6 records.* What remains open is the variable set, which is
 reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
 appearing in some. Three files are available locally — site 1 members 1 and 2,
 and site 27 member 94 — and none of the three carries either variable, so the
-full set of combinations is still unconfirmed. `scripts/survey_ic_variables.py`
-answers it where the files are, and has not yet been run on the SCC.
+full set of combinations is still unconfirmed, and can only be surveyed on the
+SCC, where the files are.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217
@@ -859,3 +944,45 @@ Nothing floors them at ingest, deliberately: the floor is a modeling choice.
 But whether these are real, a placeholder, or an artifact of the source
 processing is a question for the producer, and it bears on whether the four
 should be dropped rather than floored.
+
+**15. The `time` column of the driver files.** Filed as
+[issue #9](https://github.com/arob5/spatial-lsm-calibration/issues/9), which
+identifies the generator artifact exactly. Nothing in the project uses the
+column's value: `sipnet_time_index` takes the slot from `floor(time / 3)`, which
+is correct because the drift is never negative and never reaches a full step,
+and the driver reader asserts the drift model per file so that a regenerated
+file without it is noticed. The open question is for the producer: is the
+series intended to be exactly 3-hourly?
+
+**16. The driver clock and interval labeling.** The two sites are 54 degrees
+of longitude apart, so a UTC clock requires the diurnal PAR cycle to shift by
+3.6 h between them and a fixed local clock requires no shift. Measured, the
+first harmonic of the summer PAR cycle shifts by 3.6 h, and the PAR-centroid
+method of issue #6's comment by 3.4 h; either reading excludes a fixed local
+clock. A PAR-centroid test at both sites places each row's total over the three
+hours *ending* at its nominal label, one step from the "start of timestep" that
+[pySIPNET] documents. "UTC with end-of-interval labels" and "UTC-3 with
+start-of-interval labels" describe the same intervals and cannot be told apart
+from the data; the reader records the former with `clock_status = "inferred"`.
+Confirmation from the producer would settle it, and matters most for the
+sub-daily comparison against net ecosystem exchange, whose own clock is the
+subject of [issue #8](https://github.com/arob5/spatial-lsm-calibration/issues/8).
+
+**17. Values that are not physical.** The negative `par` value -1.374e-05
+recurs in about 1350 rows per file with no variation, and the tiny negatives of
+`par` and `precip` look like floating-point residue from the generator; the 30
+percent of rows with `vpd_soil` exactly zero is a larger fraction than the 0 to
+7 rows with `vpd` zero. None of this is altered on read: the reader asserts
+that negative excursions stay within 1e-4 of zero and records the counts in the
+variable attributes, since clamping would hide an upstream artifact and a
+value of -1e-15 mm harms nothing. What produces them is a question for the
+producer. Also unexplained: in every file the mean of `tsoil` equals the mean
+of `tair` to about 3e-5 deg C, as though `tsoil` were a mean-preserving filter
+of `tair`.
+
+**18. Hourly or 3-hourly forcing.** The [NALCR] dataset guide describes the
+reanalysis as run on hourly ERA5 forcing, while these files are 3-hourly.
+Whether these are the files the reanalysis used, and whether they were
+aggregated from hourly, is not documented. The same guide says nothing about
+the driver ensemble size, variables, units or clock, so the units recorded here
+rest on the format definition alone.

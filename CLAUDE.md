@@ -43,6 +43,9 @@ Facts specific to this working copy, which the README deliberately does not carr
 Operational rules that follow from the data and are easy to get wrong in code:
 
 - Open the IC netCDFs with `decode_times=False` (README note 5).
+- Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
+  drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
+  takes only the slot from it.
 - Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
@@ -175,9 +178,10 @@ Function and module docstrings elsewhere are ordinary NumPy style.
 
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
-reorg has landed, so the paths below are the real ones; `sites.py` and
-`constraints.py` are implemented and the other modules carry the contract each
-is to satisfy.
+reorg has landed, so the paths below are the real ones; `sites.py`,
+`constraints.py` and `drivers.py` are implemented, `obs_ops.py` has
+`sipnet_time_index`, and the other modules carry the contract each is to
+satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -186,8 +190,11 @@ src/sipnet_calibration/
                           # select_sites(ids=, bbox=, where=, sample=, seed=)
   constraints.py          # annual constraint schema, load_constraints(),
                           # constraint_fields() -> canonical per-variable view
+  drivers.py              # driver schema, load_drivers() reading raw .clim files
+                          # into (member, site, time); no processed file exists
   fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
+  obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
+                          # shared with the likelihood
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -213,7 +220,9 @@ Conventions:
   exploration and plotting only, and load results from disk.
 - Raw inputs are symlinked into `data/raw/` and never edited; ingest scripts
   convert them to `data/processed/`, whose format **is** the canonical format
-  used throughout the project.
+  used throughout the project. The drivers are the one exception: nothing is
+  written under `processed/` for them, and `drivers.load_drivers` produces the
+  canonical form from `data/raw/drivers/` on demand; `data/README.md` says why.
 
 ### Plotting and field conventions
 
