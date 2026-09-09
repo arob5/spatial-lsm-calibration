@@ -51,6 +51,15 @@ class TestSipnetTimeIndex:
         assert one_day(2013, 60, [0.0])[0] == pd.Timestamp("2013-03-01")
         assert one_day(2012, 366, [21.0])[0] == pd.Timestamp("2012-12-31 21:00")
 
+    def test_century_rule_for_leap_years(self):
+        assert one_day(2000, 366, [0.0])[0] == pd.Timestamp("2000-12-31")
+        with pytest.raises(ValueError, match="day_of_year 366 in non-leap year"):
+            one_day(2100, 366, [0.0])
+
+    def test_rejects_two_dimensional_input(self):
+        with pytest.raises(ValueError, match="one-dimensional"):
+            sipnet_time_index([[2013]], [[1]], [[0.0]])
+
     def test_spans_a_year_boundary_in_row_order(self):
         index = sipnet_time_index([2012, 2012, 2013, 2013], [366, 366, 1, 1], [18, 21, 0, 3])
         expected = pd.DatetimeIndex(
@@ -81,6 +90,10 @@ class TestSipnetTimeIndex:
             sipnet_time_index([2013], [1], [0.0], timestep_hours=5.0)
         with pytest.raises(ValueError, match="divide 24"):
             sipnet_time_index([2013], [1], [0.0], timestep_hours=0.0)
+        with pytest.raises(ValueError, match="divide 24"):
+            sipnet_time_index([2013], [1], [0.0], timestep_hours=float("inf"))
+        with pytest.raises(ValueError, match="must be a number"):
+            sipnet_time_index([2013], [1], [0.0], timestep_hours="three")
 
     def test_rejects_unequal_lengths(self):
         with pytest.raises(ValueError, match="same length"):

@@ -24,8 +24,8 @@ Planned (issue #6):
   ``index`` layer in pyEKI. That layer does not exist -- it is this module's job.)
 
 **The aggregation rule is a property of the variable, not of the call site.**
-``how`` defaults to ``VARIABLES[field.name].agg``; pass it only to deliberately
-override. SIPNET's ``nee`` is ``g C m-2 per timestep`` -- extensive -- so
+When it lands, ``how`` will default to ``VARIABLES[field.name].agg``; pass it
+only to deliberately override. SIPNET's ``nee`` is ``g C m-2 per timestep`` -- extensive -- so
 3-hourly to daily is a **sum**, and a mean is wrong by a factor of 8 while
 looking entirely plausible. ``tair``/``vpd`` are intensive (mean),
 ``par``/``precip`` are per-timestep totals (sum), and carbon pools are stocks
@@ -74,8 +74,9 @@ def sipnet_time_index(
         (or floats that are whole numbers); ``hours_since_midnight`` is hours
         since midnight of that day.
     timestep_hours:
-        Length of one row's timestep in hours; must divide 24. The default is
-        the 3-hourly drivers. A daily file passes ``24.0``.
+        Length of one row's timestep in hours; must be finite and divide 24
+        into a whole number of steps. The default is the 3-hourly drivers. A
+        daily file passes ``24.0``.
 
     Returns
     -------
@@ -88,14 +89,15 @@ def sipnet_time_index(
     Raises
     ------
     ValueError
-        If the lengths differ; ``timestep_hours`` does not divide 24; a
-        ``year`` or ``day_of_year`` is not a whole number; a ``day_of_year`` is
-        outside ``1..366``, or is 366 in a non-leap year; an
-        ``hours_since_midnight`` is outside ``[0, 24)``; or the resulting index
-        is not strictly increasing. SIPNET
-        writes rows in order, so the last condition is what a label drifting
-        by one full step or more turns into: the row lands in the next row's
-        slot and the two collide.
+        If the inputs are not one-dimensional or differ in length;
+        ``timestep_hours`` is not a finite number dividing 24; a ``year`` or
+        ``day_of_year`` is not numeric or not a whole number; a
+        ``day_of_year`` is outside ``1..366``, or is 366 in a non-leap year;
+        an ``hours_since_midnight`` is not finite or is outside ``[0, 24)``;
+        or the resulting index is not strictly increasing. SIPNET writes rows
+        in order, so the last condition is what a label drifting by one full
+        step or more turns into: the row lands in the next row's slot and the
+        two collide.
 
     Notes
     -----
@@ -111,6 +113,11 @@ def sipnet_time_index(
     :mod:`sipnet_calibration.drivers` asserts the drift model of the source
     separately, on whole files.
 
+    The slot division is exact for the timesteps SIPNET is run at (3, 1, 0.5
+    and 24 hours). A step such as ``0.1`` divides 24 but is not exactly
+    representable, so a label sitting exactly on a slot boundary can floor
+    into the slot below.
+
     Nothing about the result depends on an interval convention. The nominal
     label ``slot * timestep_hours`` is what the source wrote, and
     ``resample`` on it groups a day's rows exactly as SIPNET's own ``day``
@@ -125,7 +132,11 @@ def sipnet_time_index(
             f"and the same length; got shapes {year.shape}, {day.shape}, {hours.shape}"
         )
 
-    if not timestep_hours > 0:
+    try:
+        timestep_hours = float(timestep_hours)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"timestep_hours must be a number, got {timestep_hours!r}") from error
+    if not (np.isfinite(timestep_hours) and timestep_hours > 0):
         raise ValueError(f"timestep_hours must divide 24, got {timestep_hours!r}")
     steps_per_day = 24.0 / timestep_hours
     if abs(steps_per_day - round(steps_per_day)) > 1e-9:

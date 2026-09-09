@@ -18,9 +18,10 @@ not.
 Input data
 ----------
 ``--root``
-    A directory laid out as ``<root>/ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim``,
-    the layout :mod:`sipnet_calibration.drivers` documents. Nothing here
-    assumes the site pool or the ensemble size; reporting them is the point.
+    A directory laid out as
+    ``<root>/ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim``, the
+    layout :mod:`sipnet_calibration.drivers` documents. Nothing here assumes
+    the site pool or the ensemble size; reporting them is the point.
 
 Output data
 -----------
@@ -42,9 +43,9 @@ A report to stdout and, with ``--out``, the same content as JSON:
 Notes
 -----
 Runs under the project environment rather than bare Python: the whole point is
-to apply the reader's own checks, so it imports them. Parsing costs tens of
-milliseconds per file and there are 80,000, so a serial run is about two hours;
-``--jobs`` parallelizes over files.
+to apply the reader's own checks, so it imports them. Parsing costs about a
+tenth of a second per file and there are 80,000, so a serial run is about two
+hours; ``--jobs`` parallelizes over files.
 
 Usage
 -----
@@ -61,7 +62,7 @@ import hashlib
 import json
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -79,11 +80,16 @@ from sipnet_calibration.drivers import (
 DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
 FILE_PATTERN = re.compile(r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$")
 
-#: Which invariant a ``read_clim_file`` message is about, by a phrase it carries.
+#: Which invariant a ``read_clim_file`` message is about, by a phrase it
+#: carries. Coupled to the reader's wording; a message no phrase matches is
+#: reported as ``unknown`` rather than dropped.
 CHECK_PHRASES = {
+    "holds no rows": "empty_file",
     "could not be parsed": "column_count",
     "expected 14 fields": "column_count",
-    "missing or non-finite": "no_missing_values",
+    "could not be read as a number": "non_numeric_field",
+    "non-finite value": "no_missing_values",
+    "non-integer values": "integer_year_day",
     "must be": "constant_columns",
     "years are not contiguous": "day_structure",
     "ascending year order": "day_structure",
@@ -91,7 +97,6 @@ CHECK_PHRASES = {
     "does not run": "day_structure",
     "linspace model": "time_drift_model",
     "below -": "negative_excursions",
-    "non-integer": "integer_year_day",
 }
 
 
@@ -178,7 +183,6 @@ def survey_one_file(directory: Path) -> FileFacts:
     except ValueError as error:
         facts.error = str(error)
         facts.failed_check = classify(facts.error)
-        _collect_what_we_can(facts, path)
         return facts
     except Exception as error:  # noqa: BLE001 -- a survey reports, it does not stop
         facts.error = f"{type(error).__name__}: {error}"
@@ -312,27 +316,6 @@ def classify(message: str) -> str:
         if phrase in message:
             return check
     return "unknown"
-
-
-def _collect_what_we_can(facts: FileFacts, path: Path) -> None:
-    """Row count and constant values from a file that failed a check."""
-    try:
-        raw = pd.read_csv(path, sep=r"\s+", header=None, dtype=str, keep_default_na=False)
-    except Exception:  # noqa: BLE001
-        return
-    facts.n_rows = None  # not a parsed file; keep the report's meaning of n_rows
-    facts.constants["_raw_row_count"] = [float(len(raw))]
-    if raw.shape[1] == 14:
-        for index, column in ((0, "loc"), (4, "length"), (13, "soil_wetness")):
-            facts.constants[column] = sorted({float(v) for v in raw[index].unique() if _is_number(v)})
-
-
-def _is_number(text: str) -> bool:
-    try:
-        float(text)
-    except ValueError:
-        return False
-    return True
 
 
 def _gaps(sites: list[int]) -> list[int]:

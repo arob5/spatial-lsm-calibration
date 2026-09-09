@@ -178,9 +178,10 @@ Function and module docstrings elsewhere are ordinary NumPy style.
 
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
-reorg has landed, so the paths below are the real ones; `sites.py` and
-`constraints.py` are implemented and the other modules carry the contract each
-is to satisfy.
+reorg has landed, so the paths below are the real ones; `sites.py`,
+`constraints.py` and `drivers.py` are implemented, `obs_ops.py` has
+`sipnet_time_index`, and the other modules carry the contract each is to
+satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -219,10 +220,9 @@ Conventions:
   exploration and plotting only, and load results from disk.
 - Raw inputs are symlinked into `data/raw/` and never edited; ingest scripts
   convert them to `data/processed/`, whose format **is** the canonical format
-  used throughout the project. The drivers are the one exception: SIPNET reads
-  the raw `.clim` files itself, so `sipnet_calibration.drivers.load_drivers`
-  produces the canonical form from `data/raw/drivers/` on demand and nothing is
-  written under `processed/` for them.
+  used throughout the project. The drivers are the one exception: nothing is
+  written under `processed/` for them, and `drivers.load_drivers` produces the
+  canonical form from `data/raw/drivers/` on demand; `data/README.md` says why.
 
 ### Plotting and field conventions
 

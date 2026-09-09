@@ -300,8 +300,7 @@ class TestReadClimFile:
 
     def test_rejects_days_out_of_sequence(self, tmp_path):
         rows = synthetic_rows()
-        rows.loc[rows["day"] == 40, "day"] = 41
-        rows.loc[(rows["day"] == 41)].index  # two days now claim to be 41
+        rows.loc[rows["day"] == 40, "day"] = 41  # two days now claim to be 41
         rows.loc[rows.index[8 * 40 : 8 * 41], "day"] = 40  # swap them
         path = write_rows(tmp_path / "a.clim", rows)
         with pytest.raises(ValueError, match="does not run 1..365"):
@@ -325,6 +324,40 @@ class TestReadClimFile:
         with pytest.raises(ValueError, match="departs from the modulo-24 linspace model"):
             read_clim_file(path)
 
+    def test_drift_tolerance_is_tight(self, tmp_path):
+        """A single label 1e-4 h off the model is refused; the check promises
+        1e-5 h, and the real files sit at 5e-7 h."""
+        rows = synthetic_rows()
+        rows.loc[1000, "time"] += 1e-4
+        with pytest.raises(ValueError, match="departs from the modulo-24 linspace model"):
+            read_clim_file(write_rows(tmp_path / "a.clim", rows))
+
+    def test_rejects_years_in_descending_order(self, tmp_path):
+        rows = pd.concat(
+            [synthetic_rows(years=(2014,)), synthetic_rows(years=(2013,))], ignore_index=True
+        )
+        with pytest.raises(ValueError, match="ascending year order"):
+            read_clim_file(write_rows(tmp_path / "a.clim", rows))
+
+    def test_rejects_a_non_integer_day(self, tmp_path):
+        path = write_rows(tmp_path / "a.clim", synthetic_rows())
+        text = path.read_text().splitlines()
+        fields = text[5].split("\t")
+        fields[2] = "1.5"
+        text[5] = "\t".join(fields)
+        path.write_text("\n".join(text) + "\n")
+        with pytest.raises(ValueError, match="day holds non-integer values"):
+            read_clim_file(path)
+
+    def test_rejects_an_empty_file(self, tmp_path):
+        path = tmp_path / "a.clim"
+        path.write_text("")
+        with pytest.raises(ValueError, match="holds no rows"):
+            read_clim_file(path)
+        path.write_text("\n\n")
+        with pytest.raises(ValueError, match="holds no rows"):
+            read_clim_file(path)
+
     def test_accepts_the_drifting_time_column(self, tmp_path):
         rows = synthetic_rows(years=(2012, 2013))
         frame = read_clim_file(write_rows(tmp_path / "a.clim", rows))
@@ -332,11 +365,20 @@ class TestReadClimFile:
         assert frame["time"].iloc[8 * 366 - 1] == pytest.approx(23.0)
         assert frame["time"].iloc[-1] == pytest.approx(23.0)
 
-    def test_rejects_par_far_below_zero(self, tmp_path):
+    @pytest.mark.parametrize("column", ["par", "precip"])
+    def test_rejects_totals_far_below_zero(self, tmp_path, column):
         rows = synthetic_rows()
-        rows.loc[7, "par"] = -0.01
-        with pytest.raises(ValueError, match="par value\\(s\\) below"):
+        rows.loc[7, column] = -0.01
+        with pytest.raises(ValueError, match=f"{column} value\\(s\\) below"):
             read_clim_file(write_rows(tmp_path / "a.clim", rows))
+
+    def test_negative_tolerance_is_the_exact_bound(self, tmp_path):
+        rows = synthetic_rows()
+        rows.loc[7, "par"] = -NEGATIVE_TOLERANCE
+        read_clim_file(write_rows(tmp_path / "a.clim", rows))
+        rows.loc[7, "par"] = -NEGATIVE_TOLERANCE * 1.01
+        with pytest.raises(ValueError, match="par value"):
+            read_clim_file(write_rows(tmp_path / "b.clim", rows))
 
     def test_reads_small_negative_par_through_unchanged(self, tmp_path):
         rows = synthetic_rows()
@@ -399,8 +441,36 @@ class TestLoadDrivers:
         np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2, 5])
 
     def test_rejects_a_non_positive_member_index(self, root, sites_table):
-        with pytest.raises(ValueError, match="1-based"):
+        with pytest.raises(ValueError, match="1-based.*within 1"):
             load_drivers([3], members=[0], root=root, sites_table=sites_table)
+
+    @pytest.mark.parametrize("members", [[1.5], "12", ["1", "2"], [True], [np.inf], [40000]])
+    def test_rejects_members_that_are_not_positive_integers(self, root, sites_table, members):
+        with pytest.raises(ValueError, match="member indices"):
+            load_drivers([3], members=members, root=root, sites_table=sites_table)
+
+    @pytest.mark.parametrize("sites", [3, [np.inf], [2**31], [1.5], ["3"], "3", []])
+    def test_rejects_sites_that_are_not_positive_integers(self, root, sites_table, sites):
+        with pytest.raises(ValueError, match="site identifiers"):
+            load_drivers(sites, root=root, sites_table=sites_table)
+
+    def test_rejects_an_unusable_site_table(self, root, sites_table):
+        with pytest.raises(ValueError, match="lacks column"):
+            load_drivers([3], root=root, sites_table=sites_table.set_index("site_id"))
+        with pytest.raises(ValueError, match="lacks column"):
+            load_drivers([3], root=root, sites_table=sites_table.drop(columns=["lon"]))
+        duplicated = pd.concat([sites_table, sites_table.head(3)], ignore_index=True)
+        with pytest.raises(ValueError, match="repeats site id"):
+            load_drivers([3], root=root, sites_table=duplicated)
+
+    def test_a_directory_off_the_template_is_ignored_by_discovery(self, root, sites_table):
+        """``ERA5_3_01`` names member 1 but is not the directory ``driver_file``
+        would look in, so discovery does not report it."""
+        write_pair(root, 3, 4)
+        (root / "ERA5_3_4").rename(root / "ERA5_3_04")
+        assert available_members(root, 3) == (1, 2)
+        dataset = load_drivers([3], root=root, sites_table=sites_table)
+        np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2])
 
     def test_time_axis_is_the_nominal_three_hourly_grid(self, root, sites_table):
         dataset = load_drivers([3], root=root, sites_table=sites_table)
@@ -415,18 +485,47 @@ class TestLoadDrivers:
         assert "clock_provenance" in attrs and "time_label_note" in attrs
 
     def test_variable_attributes_carry_units_and_the_units_caveat(self, root, sites_table):
+        """Pinned as literals, not against the constants they were written
+        from: these are the values validate_field() will one day compare."""
+        expected_units = {
+            "air_temperature": "deg C",
+            "soil_temperature": "deg C",
+            "par": "mol m-2",
+            "precipitation": "mm",
+            "vpd": "Pa",
+            "soil_vpd": "Pa",
+            "vapor_pressure": "Pa",
+            "wind_speed": "m s-1",
+        }
+        expected_source = {
+            "air_temperature": "tair",
+            "soil_temperature": "tsoil",
+            "par": "par",
+            "precipitation": "precip",
+            "vpd": "vpd",
+            "soil_vpd": "vpd_soil",
+            "vapor_pressure": "vpress",
+            "wind_speed": "wspd",
+        }
         dataset = load_drivers([3], root=root, sites_table=sites_table)
         for name in DRIVER_VARIABLES:
             attrs = dataset[name].attrs
-            for key, value in DRIVER_VARIABLE_ATTRS[name].items():
-                assert attrs[key] == value
-            assert attrs["units_status"] == UNITS_STATUS
-            assert "units_provenance" in attrs
+            assert attrs["units"] == expected_units[name], name
+            assert attrs["source_name"] == expected_source[name], name
+            assert attrs["aggregation"] == ("sum" if name in ("par", "precipitation") else "mean")
+            assert attrs["units_status"] == "format_documented"
+            assert "not been confirmed" in attrs["units_provenance"]
+            assert attrs["long_name"]
+        assert dataset.attrs["member_source"] == "met"
+        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
+        assert dataset["lon"].dtype == np.float64 and dataset["lat"].dtype == np.float64
 
     def test_non_physical_values_are_counted_not_altered(self, tmp_path, sites_table):
         rows = synthetic_rows(seed=1)
         rows.loc[[0, 1, 2], "par"] = -1e-6
+        rows.loc[[20, 21, 22, 23, 24], "par"] = 0.0  # zeros are not below zero
         rows.loc[[3], "precip"] = -1e-15
+        rows.loc[[25, 26], "precip"] = 0.0
         rows.loc[[4, 5], "vpd"] = 0.0
         rows.loc[[6], "wspd"] = 0.0
         rows.loc[[7, 8, 9, 10], "vpd_soil"] = 0.0
@@ -505,6 +604,14 @@ class TestLoadDrivers:
         write_pair(root, 3, 4, synthetic_rows(years=(2013,)))
         with pytest.raises(ValueError, match="rows where"):
             load_drivers([3, 7], members=[4], root=root, sites_table=sites_table)
+        # Same year and day columns, one time label perturbed within the drift
+        # tolerance: still a different grid.
+        rows = synthetic_rows(years=(2013,))
+        write_pair(root, 3, 6, rows)
+        rows.loc[100, "time"] += 5e-6
+        write_pair(root, 7, 6, rows)
+        with pytest.raises(ValueError, match="time differs from"):
+            load_drivers([3, 7], members=[6], root=root, sites_table=sites_table)
 
     def test_round_trips_through_zarr(self, root, sites_table, tmp_path):
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
@@ -530,6 +637,12 @@ class TestDriverFields:
     def test_fields_carry_the_variable_attributes(self, root, sites_table):
         dataset = load_drivers([3], root=root, sites_table=sites_table)
         fields = driver_fields(dataset)
+        # The registry attributes are supplied even when the dataset lost them,
+        # as a cache written by someone else might have.
+        stripped = dataset.copy()
+        stripped["par"].attrs = {}
+        assert driver_fields(stripped)["par"].attrs["units"] == "mol m-2"
+        assert driver_fields(stripped)["par"].attrs["units_status"] == UNITS_STATUS
         assert fields["par"].attrs["units"] == "mol m-2"
         assert fields["par"].attrs["aggregation"] == "sum"
         assert fields["par"].attrs["units_status"] == UNITS_STATUS
@@ -645,3 +758,15 @@ class TestRealFiles:
             assert (frame["wspd"] > 0).all()
             assert (frame["vpress"] > 0).all()
             assert (frame["vpd_soil"] == 0).mean() > 0.2
+
+    @needs_site_table
+    def test_the_product_counts_agree_with_the_files(self, frames):
+        pairs = real_pairs()
+        dataset = load_drivers(
+            sorted({s for s, _ in pairs}), root=REAL_ROOT, sites_table=load_sites(), allow_missing=True
+        )
+        assert dataset["par"].attrs["n_values_below_zero"] == sum(int((f["par"] < 0).sum()) for f in frames.values())
+        assert dataset["precipitation"].attrs["n_values_below_zero"] == sum(int((f["precip"] < 0).sum()) for f in frames.values())
+        assert dataset["vpd"].attrs["n_values_not_positive"] == sum(int((f["vpd"] <= 0).sum()) for f in frames.values())
+        assert dataset["soil_vpd"].attrs["n_values_not_positive"] == sum(int((f["vpd_soil"] <= 0).sum()) for f in frames.values())
+        assert dataset["wind_speed"].attrs["n_values_not_positive"] == 0

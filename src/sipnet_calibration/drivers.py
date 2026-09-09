@@ -1,4 +1,4 @@
-"""The data model for the meteorological drivers, read straight from the raw files.
+"""The data model for the meteorological drivers, read from the raw files.
 
 Overview
 --------
@@ -35,16 +35,18 @@ Input data
 
     A ``.clim`` file is the 14-column SIPNET climate format: tab-delimited text
     with space-padded fields and no header, one row per timestep, the columns
-    of :data:`CLIM_FILE_COLUMNS` in that order. The files here are 3-hourly and
-    cover 2012-01-01 through 2024-12-31. Three columns are constants that carry
-    no information, asserted at :data:`CLIM_FILE_CONSTANTS`; the ``time``
-    column is a drifting hour-of-day label that must not be used as a
-    timestamp (issue #9), so :func:`read_clim_file` uses it only to identify a
-    row's slot within its day.
+    of :data:`CLIM_FILE_COLUMNS` in that order. The files are 3-hourly. Three
+    columns are constants, asserted at :data:`CLIM_FILE_CONSTANTS`; only
+    ``length`` is kept, as the ``timestep_days`` attribute. The ``time`` column
+    is a drifting hour-of-day label that must not be used as a timestamp
+    (issue #9), so :func:`read_clim_file` uses it only to identify a row's slot
+    within its day.
 
 ``data/processed/sites/sites.csv``
     The site table, for the ``lon``/``lat`` coordinates and to confirm that the
-    requested sites exist. Read through :func:`sipnet_calibration.sites.load_sites`.
+    requested sites exist. Read through
+    :func:`sipnet_calibration.sites.load_sites`; only its ``site_id``, ``lon``
+    and ``lat`` columns are used, and ``site_id`` must be unique.
 
 Data model
 ----------
@@ -103,11 +105,12 @@ Name                    Dims         Meaning
 
 **Time.** Labels are the nominal ``year``/``day``/``3 * slot`` instants, built
 by :func:`sipnet_calibration.obs_ops.sipnet_time_index` and never from the
-``time`` column's value. The coordinate carries ``time_zone = "UTC"``,
-``time_label = "interval_end"``, ``clock_status`` and ``clock_provenance``: the
-value in the row labeled hour ``h`` covers the interval ``(h - 3, h]`` on a
-clock consistent with UTC. That is inferred from the data, not confirmed by the
-producer, which is what the status attribute says.
+``time`` column's value. The coordinate carries ``long_name``,
+``time_zone = "UTC"``, ``time_label = "interval_end"``, ``time_label_note``,
+``clock_status`` and ``clock_provenance``: the value in the row labeled hour
+``h`` covers the interval ``(h - 3, h]`` on a clock consistent with UTC. That
+is inferred from the data, not confirmed by the producer, which is what the
+status attribute says.
 
 **Attributes** on the dataset: ``title``, ``source_root``, ``source_layout``,
 ``timestep_days``, ``member_source = "met"``, ``member_correspondence``,
@@ -147,10 +150,11 @@ Notes
 -----
 **Why a reader and not a store.** SIPNET consumes the raw text, so a store
 would be a second copy that only the analysis side reads, and the full
-ensemble is tens of gigabytes. Reading direct means what is plotted is parsed
-from the exact file the model ran on. The cost is that reads are site-major
-only: a site's whole record is one file, but one timestep across the pool
-means parsing every file. Calibration and the per-site figures need the former.
+ensemble is hundreds of gigabytes of text. Reading direct means what is
+plotted is parsed from the exact file the model ran on. The cost is that reads
+are site-major only: a site's whole record is one file, but one timestep across
+the pool means parsing every file. Calibration and the per-site figures need
+the former.
 
 **Why the time column is not the timestamp.** The ``time`` column is hour-of-
 day from a whole-year ``linspace`` reduced modulo 24 with an off-by-one
@@ -410,7 +414,7 @@ def default_drivers_root() -> Path:
     """Where the raw driver directory is expected to be.
 
     ``$SIPNET_CALIBRATION_DATA/raw/drivers`` when that variable is set, and
-    otherwise the ``data/`` directory of this checkout. Experiments name their
+    otherwise ``data/raw/drivers`` under this checkout. Experiments name their
     paths in ``config.py``.
     """
     root = os.environ.get(DATA_ROOT_ENV_VAR)
@@ -443,7 +447,8 @@ def driver_file(root: Path | str, site: int, member: int) -> Path:
     ValueError
         If more than one file matches, since the layout promises exactly one.
     """
-    directory = Path(root) / DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member=int(member))
+    name = DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member=int(member))
+    directory = Path(root) / name
     if not directory.is_dir():
         raise FileNotFoundError(
             f"no driver directory for site {site} member {member}: {directory}"
@@ -477,13 +482,19 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
         1-based member indices in ascending order, possibly empty. Only the
         directory's existence is consulted; whether the file inside it is
         present and well formed is :func:`driver_file` and
-        :func:`read_clim_file`'s business.
+        :func:`read_clim_file`'s business. A directory whose name is not
+        exactly the template for its numbers, ``ERA5_3_01`` say, is ignored,
+        since :func:`driver_file` could not find it either.
     """
     root = Path(root)
     members = []
-    for directory in root.glob(DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member="*")):
+    pattern = DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member="*")
+    for directory in root.glob(pattern):
         parsed = _site_member_from_directory(directory.name)
-        if parsed is not None and parsed[0] == int(site) and directory.is_dir():
+        if parsed is None or not directory.is_dir():
+            continue
+        canonical = DRIVER_DIRECTORY_TEMPLATE.format(site=parsed[0], member=parsed[1])
+        if parsed[0] == int(site) and directory.name == canonical:
             members.append(parsed[1])
     return tuple(sorted(members))
 
@@ -507,13 +518,15 @@ def read_clim_file(path: Path | str) -> pd.DataFrame:
     Raises
     ------
     ValueError
-        If any per-file check fails: a row without 14 fields, a missing or
-        non-finite value, a constant column off its value, a day without
-        exactly :data:`STEPS_PER_DAY` rows, days not running ``1..n_days``
-        within each year, years not contiguous, a ``time`` column that does
-        not follow the drifting-label model of issue #9, or ``par``/``precip``
-        further below zero than :data:`NEGATIVE_TOLERANCE`. The message names
-        the file and the invariant.
+        If any per-file check fails: an empty file, a row without 14 fields, a
+        field that is not a number, a non-finite value, a ``year`` or ``day``
+        that is not a whole number, a constant column off its value, a day
+        without exactly :data:`STEPS_PER_DAY` rows, days not running
+        ``1..n_days`` within each year, years not contiguous or not in
+        ascending order, a ``time`` column that does not follow the
+        drifting-label model of issue #9, or ``par``/``precip`` further below
+        zero than :data:`NEGATIVE_TOLERANCE`. The message names the file and
+        the invariant.
 
     Notes
     -----
@@ -539,6 +552,8 @@ def read_clim_file(path: Path | str) -> pd.DataFrame:
             na_values=[],
             index_col=False,
         )
+    except pd.errors.EmptyDataError as error:
+        raise ValueError(f"{path}: holds no rows") from error
     except pd.errors.ParserError as error:
         raise ValueError(f"{path}: could not be parsed as a .clim file: {error}") from error
     except ValueError as error:
@@ -579,22 +594,25 @@ def load_drivers(
     ----------
     sites:
         Site identifiers to read, any iterable of integers. Returned in
-        ascending order whatever order they are given in. Every one must be in
-        the site table.
+        ascending order whatever order they are given in, duplicates dropped.
+        Every one must be in the site table.
     members:
-        Source member indices (1-based, as in the directory names) to read.
-        ``None`` means every member that has a directory for any of the
-        requested sites.
+        Source member indices (1-based, as in the directory names) to read,
+        any iterable of integers, likewise sorted and de-duplicated. ``None``
+        means every member that has a directory for any of the requested
+        sites.
     root:
         The drivers root. Defaults to :func:`default_drivers_root`.
     sites_table:
         The site table, as :func:`sipnet_calibration.sites.load_sites` returns
-        it. Loaded from its default location when ``None``.
+        it. Loaded from its default location when ``None``. Only ``site_id``,
+        ``lon`` and ``lat`` are read, and ``site_id`` must be unique.
     allow_missing:
         What to do about a ``(site, member)`` pair with no file. ``False``, the
         default, raises, because a missing driver member that became ``NaN``
         would propagate silently through any statistic over members. ``True``
-        fills the pair with ``NaN`` and adds :data:`DRIVER_PRESENT`.
+        fills the pair with ``NaN`` and adds :data:`DRIVER_PRESENT`. At least
+        one requested pair must have a file either way.
 
     Returns
     -------
@@ -606,21 +624,26 @@ def load_drivers(
     Raises
     ------
     FileNotFoundError
-        If the root does not exist, or a requested pair has no file and
-        *allow_missing* is ``False``.
+        If the root does not exist; if *members* is ``None`` and no requested
+        site has a driver directory; if no requested pair has a file at all;
+        or if a requested pair has no file and *allow_missing* is ``False``.
     ValueError
-        If a site is not in the site table, a file fails
-        :func:`read_clim_file`'s checks, the directory and file-name members
-        disagree, the dates in a file name do not match its first and last
-        day, or two files do not share one ``(year, day, time)`` grid, since
-        the ``time`` coordinate is built once and applied to every file.
+        If *sites* or *members* is empty, or holds anything but positive whole
+        numbers; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
+        repeats a ``site_id``; if a site is not in the site table; if a pair's
+        directory holds more than one ``.clim`` file; if a file fails
+        :func:`read_clim_file`'s checks, its name does not follow the
+        template, the directory and file-name members disagree, or the dates
+        in the file name do not match its first and last day; or if two files
+        do not share one ``(year, day, time)`` grid, since the ``time``
+        coordinate is built once and applied to every file.
 
     Notes
     -----
-    Parsing costs under a tenth of a second per file, so ten sites at ten
-    members take several seconds and two hundred sites a few minutes; the Notes
-    in the module docstring say why this is preferred to a store. Memory is
-    about 2.4 MB per site-member.
+    Parsing costs about a tenth of a second per file, so ten sites at ten
+    members take about ten seconds and two hundred sites a few minutes; the
+    Notes in the module docstring say why this is preferred to a store. Memory
+    is about 2.4 MB per site-member.
 
     Values are read through unchanged: negative excursions of ``par`` and
     ``precipitation`` around zero, and zeros of ``vpd``, ``soil_vpd`` and
@@ -633,6 +656,7 @@ def load_drivers(
 
     site_ids = _site_ids(sites)
     table = sites_table if sites_table is not None else load_sites()
+    _check_site_table_is_usable(table)
     _check_sites_are_in_the_site_table(site_ids, table)
 
     member_ids = _member_ids(members, root=root, sites=site_ids)
@@ -778,20 +802,13 @@ def _time_attrs() -> dict[str, str]:
 
 def _site_ids(sites: Iterable[int]) -> np.ndarray:
     """Requested sites as a sorted, de-duplicated ``int32`` array."""
-    values = np.asarray(list(sites))
-    if values.size == 0:
-        raise ValueError("no sites requested")
-    if values.dtype.kind not in "iu":
-        if values.dtype.kind != "f" or np.any(values != np.floor(values)):
-            raise ValueError(f"site identifiers must be integers, got {values.dtype}")
-    values = np.unique(values.astype(np.int64))
-    if np.any(values < 1):
-        raise ValueError(f"site identifiers must be positive, found {values[values < 1].tolist()}")
-    return values.astype(np.int32)
+    return _positive_integers(sites, name="site identifiers", dtype=np.int32)
 
 
-def _member_ids(members: Iterable[int] | None, *, root: Path, sites: np.ndarray) -> np.ndarray:
-    """Requested members as a sorted ``int64`` array, discovered when ``None``."""
+def _member_ids(
+    members: Iterable[int] | None, *, root: Path, sites: np.ndarray
+) -> np.ndarray:
+    """Requested members as a sorted ``int16`` array, discovered when ``None``."""
     if members is None:
         found: set[int] = set()
         for site in sites:
@@ -800,16 +817,39 @@ def _member_ids(members: Iterable[int] | None, *, root: Path, sites: np.ndarray)
             raise FileNotFoundError(
                 f"no driver directories under {root} for sites {sites.tolist()}"
             )
-        return np.array(sorted(found), dtype=np.int64)
-    values = np.unique(np.asarray(list(members)).astype(np.int64))
-    if values.size == 0:
-        raise ValueError("no members requested")
-    if np.any(values < 1):
+        return np.array(sorted(found), dtype=np.int16)
+    return _positive_integers(
+        members,
+        name="member indices (the source's 1-based directory indices)",
+        dtype=np.int16,
+    )
+
+
+def _positive_integers(values: Iterable[int], *, name: str, dtype) -> np.ndarray:
+    """*values* as a sorted, de-duplicated array of *dtype*, or a clear error.
+
+    Strings, booleans, non-whole floats, non-finite values, non-positive
+    values and anything that would wrap when narrowed to *dtype* are refused,
+    since each would otherwise resolve to a plausible-looking wrong directory.
+    """
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
         raise ValueError(
-            f"member indices are the source's 1-based directory indices; found "
-            f"{values[values < 1].tolist()}"
+            f"{name} must be an iterable of integers, got {type(values).__name__}"
         )
-    return values
+    array = np.asarray(list(values))
+    if array.size == 0:
+        raise ValueError(f"no {name} requested")
+    if array.dtype.kind == "f":
+        if np.any(~np.isfinite(array)) or np.any(array != np.floor(array)):
+            raise ValueError(f"{name} must be whole numbers, found non-integer values")
+    elif array.dtype.kind not in "iu":
+        raise ValueError(f"{name} must be integers, got {array.dtype}")
+    array = np.unique(array.astype(np.int64))
+    limit = np.iinfo(dtype).max
+    if np.any(array < 1) or np.any(array > limit):
+        bad = array[(array < 1) | (array > limit)]
+        raise ValueError(f"{name} must lie within 1..{limit}, found {bad[:5].tolist()}")
+    return array.astype(dtype)
 
 
 def _locate_files(
@@ -941,15 +981,18 @@ def _assemble(
 
 
 def _check_column_count(raw: pd.DataFrame, path: Path) -> None:
-    """Every row has exactly the 14 fields of :data:`CLIM_FILE_COLUMNS`."""
+    """Every row has exactly the 14 fields of :data:`CLIM_FILE_COLUMNS`.
+
+    The parser has already refused a row with more fields than the first and
+    an empty file; what remains is a first row of the wrong width, which is a
+    different layout.
+    """
     expected = len(CLIM_FILE_COLUMNS)
     if raw.shape[1] != expected:
         raise ValueError(
             f"{path}: expected {expected} fields per row, the first row has "
             f"{raw.shape[1]}. Only the 14-column SIPNET climate layout is read."
         )
-    if raw.empty:
-        raise ValueError(f"{path}: holds no rows")
 
 
 def _check_no_missing_values(frame: pd.DataFrame, path: Path) -> None:
@@ -1124,6 +1167,23 @@ def _check_grids_identical(
                 f"row {first} ({b[first]!r} against {a[first]!r}); every file "
                 "read together must share one (year, day, time) grid"
             )
+
+
+def _check_site_table_is_usable(table: pd.DataFrame) -> None:
+    """The site table has the columns read here, and one row per site."""
+    if not isinstance(table, pd.DataFrame):
+        raise ValueError(f"sites_table must be a DataFrame, got {type(table).__name__}")
+    missing = [column for column in ("site_id", "lon", "lat") if column not in table.columns]
+    if missing:
+        raise ValueError(
+            f"the site table lacks column(s) {missing}; pass it as load_sites() "
+            "returns it, with site_id as a column rather than the index"
+        )
+    duplicated = table["site_id"][table["site_id"].duplicated()]
+    if not duplicated.empty:
+        raise ValueError(
+            f"the site table repeats site id(s) {sorted(set(duplicated.tolist()))[:5]}"
+        )
 
 
 def _check_sites_are_in_the_site_table(sites: np.ndarray, table: pd.DataFrame) -> None:

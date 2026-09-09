@@ -93,8 +93,8 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 [Processed format](#processed-format).
 
 > **Note 1.** The per-site directory templates are inferred from three driver
-> directories and one initial-condition file rather than confirmed across all
-> 8000 sites.
+> directories and three initial-condition files rather than confirmed across
+> all 8000 sites.
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
@@ -342,16 +342,17 @@ quantities rather than rates: `par` and `precip` are totals over the timestep,
 so temporal aggregation of either is a sum rather than a mean. SIPNET requires
 `vpd` and `wspd` to be strictly positive and silently clamps values that are
 not; the files also hold small negative excursions of `par` and `precip` around
-zero (Note 17). The reader reads all of these through unchanged and counts
-them. The column units are the ones the format documents, which is what SIPNET
+zero (Note 17). `sipnet_calibration.drivers.load_drivers` leaves all of these
+unchanged and counts them in the variable attributes. The column units are the
+ones the format documents, which is what SIPNET
 assumes when it reads the file; the producer has not confirmed them, and the
 NALCR guide describes the forcing differently (Note 18).
 
 > **Note 15.** The `time` column is hour-of-day computed by reducing a
 > whole-year `linspace` modulo 24 with an off-by-one endpoint: for a year of
 > `n` days, `linspace(0, 24 n - 1, 8 n) % 24` reproduces it to 5e-7 h in all
-> three files. The label drifts late by 3.000685 h per step, is two hours late
-> by the last slot of each year, resets at the year boundary, and is not
+> three files. The label steps by 3.000685 h rather than 3, so it is two hours
+> late by the last slot of each year, resets at the year boundary, and is not
 > monotone within a year. Tracked as
 > [issue #9](https://github.com/arob5/spatial-lsm-calibration/issues/9).
 
@@ -801,8 +802,9 @@ Numbered notes above refer to the corresponding entry here.
 
 **1. Per-site directory templates.** The driver template
 `ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim` holds for the three
-directories present and the initial-condition template is inferred from
-`initial_conditions/1/IC_site_1_1.nc`. Whether all 8000 site directories follow
+directories present and the initial-condition template
+`initial_conditions/<site>/IC_site_<site>_<member>.nc` for the three files
+present. Whether all 8000 site directories follow
 them has not been checked. The driver reader raises on any file it is asked
 for that departs from the template, and on a directory whose member disagrees
 with its file name; whether the 8000 x 10 set is complete can only be surveyed
@@ -952,9 +954,11 @@ and the driver reader asserts the drift model per file so that a regenerated
 file without it is noticed. The open question is for the producer: is the
 series intended to be exactly 3-hourly?
 
-**16. The driver clock and interval labeling.** From the first harmonic of the
-summer PAR cycle, the phase moves about 3.6 h between site 1 (24.6 W) and site
-27 (78.6 W), which is what a UTC clock requires and excludes a fixed local
+**16. The driver clock and interval labeling.** The two sites are 54 degrees
+of longitude apart, so a UTC clock requires the diurnal PAR cycle to shift by
+3.6 h between them and a fixed local clock requires no shift. Measured, the
+first harmonic of the summer PAR cycle shifts by 3.6 h, and the PAR-centroid
+method of issue #6's comment by 3.4 h; either reading excludes a fixed local
 clock. A PAR-centroid test at both sites places each row's total over the three
 hours *ending* at its nominal label, one step from the "start of timestep" that
 [pySIPNET] documents. "UTC with end-of-interval labels" and "UTC-3 with
