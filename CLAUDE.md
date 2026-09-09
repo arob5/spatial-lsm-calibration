@@ -189,13 +189,14 @@ checkout is nobody's workspace; leave it on `main` and clean.
 git worktree add -b feat/<topic> .claude/worktrees/<topic> origin/main
 ```
 
-- **Always name the start point.** `git checkout -b <name>` and
-  `git worktree add <path> <branch>` take whatever happens to be checked out.
-  A branch created while another session's work is checked out is rooted on
-  that session's commit, which yields a pull request carrying someone else's
-  commit that cannot merge until theirs does. Neither command needs a clean
-  tree, so nothing warns you. Naming `origin/main`, or whatever the base
-  really is, is the whole fix.
+- **Always name the start point.** `git checkout -b <name>`, and
+  `git worktree add` with its trailing `<commit-ish>` omitted, base the new
+  branch on whatever is currently checked out: `<commit-ish>` defaults to
+  `HEAD`. A branch created while another session's work is checked out is
+  rooted on that session's commit, which yields a pull request carrying
+  someone else's commit that cannot merge until theirs does. Neither command
+  needs a clean tree, so nothing warns you. Naming `origin/main`, or whatever
+  the base really is, is the whole fix.
 - **Stage explicit paths.** `git add -A` and `git add .` stage every dirty
   file in the tree, including the ones another session is still editing.
   `git add <path> <path>` cannot.
@@ -206,11 +207,19 @@ git worktree add -b feat/<topic> .claude/worktrees/<topic> origin/main
 - **Read `git status --short` before every commit**, and confirm that every
   file it lists is yours.
 
-Two checks catch a wrong base or a stray file after the fact:
+Naming the start point and staging explicit paths are not alternatives, and
+neither is "commit before switching branches". Committing first prevents
+neither wrong base, since the branch point is chosen when the branch is
+created, whatever the state of the tree; and explicit staging never touches
+the branch point. One habit protects the index, the other the base.
+
+Two checks catch a wrong base or a stray file after the fact. They compare
+against `origin/main` rather than local `main`, which in a fresh worktree is
+only as current as the last fetch:
 
 ```bash
-git rev-list --count main..HEAD     # more commits than you made?
-git diff --name-only main...HEAD    # files you did not touch?
+git rev-list --count origin/main..HEAD     # more commits than you made?
+git diff --name-only origin/main...HEAD    # files you did not touch?
 ```
 
 Destructive commands discard work that may belong to another session:
@@ -219,6 +228,20 @@ Destructive commands discard work that may belong to another session:
 paths rather than a whole tree. Never run one on another session's behalf:
 permission belongs to the session whose work it affects, and routing a denied
 command through a peer is not a way to get it approved.
+
+`git stash` needs its own warning, because a worktree gives no protection from
+it. The stack is a single repository-wide `refs/stash` shared by the root and
+every worktree, and `git stash pop` takes the top of it whoever pushed it.
+Prefer a temporary commit for setting work aside. If you must stash, label it
+with `git stash push -u -m "<label>"`, note its SHA from
+`git stash list --format='%H %gs'`, restore with `git stash apply <sha>`
+rather than `pop`, and drop that entry afterwards.
+
+A wrong base is usually repaired by rebasing and force-pushing. Force-push
+only your own branch, with `--force-with-lease`, and check first whether
+anyone has based a branch on yours: `git branch --contains <old-tip>`. If one
+has, tell that session before you push — rewriting a branch moves the base of
+everything stacked on it, and they will have to rebase too.
 
 ## Repository layout
 
