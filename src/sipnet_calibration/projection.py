@@ -63,6 +63,7 @@ Field                    Type           Meaning
 ``ellipsoid``            ``Ellipsoid``  the ellipsoid the formulas use
 ``base_crs_name``        ``str``        geographic CRS of the input coordinates
 ``base_crs_code``        ``int``        its EPSG code
+``base_datum_name``      ``str``        its geodetic datum, by name
 ======================== ============== =====================================
 
 :data:`SITE_PROJECTION` is the project's projection: a Lambert Azimuthal Equal
@@ -134,8 +135,11 @@ coastline handed to the same function might.
 
 **A longitude/latitude box does not project to a rectangle.** Its edges become
 curves, so :meth:`Projection.projected_bounds` samples along them rather than
-projecting the four corners; corners alone clip the top of a CONUS box by tens
-of kilometers.
+projecting the four corners. The edge farthest from the projection center bows
+away from it between its corners, and the corners miss that: on the CONUS box,
+whose southern edge is the far one from a center at 50 N, the four corners
+understate the box by hundreds of kilometers; ``tests/test_projection.py``
+measures it.
 
 Usage
 -----
@@ -163,7 +167,9 @@ Regenerate the tracked interchange files after changing a parameter::
 
 from __future__ import annotations
 
+import argparse
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -219,22 +225,37 @@ class Ellipsoid:
         The conversion is exact in both directions to floating-point rounding,
         so nothing is lost by storing the inverse flattening.
         """
-        raise NotImplementedError
+        if not 0.0 <= eccentricity_squared < 1.0:
+            raise ValueError(
+                f"eccentricity_squared must be in [0, 1), got {eccentricity_squared}"
+            )
+        flattening = 1.0 - math.sqrt(1.0 - eccentricity_squared)
+        return cls(
+            name=name,
+            semi_major=semi_major,
+            # Zero is how a sphere is written, here and in WKT alike, since 1/f
+            # is undefined for one.
+            inverse_flattening=0.0 if flattening == 0.0 else 1.0 / flattening,
+            authority_code=authority_code,
+        )
 
     @property
     def flattening(self) -> float:
-        """``f``, the flattening."""
-        raise NotImplementedError
+        """``f``, the flattening. Zero for a sphere."""
+        if self.inverse_flattening == 0.0:
+            return 0.0
+        return 1.0 / self.inverse_flattening
 
     @property
     def eccentricity_squared(self) -> float:
         """``e**2 = 2f - f**2``."""
-        raise NotImplementedError
+        flattening = self.flattening
+        return 2.0 * flattening - flattening * flattening
 
     @property
     def eccentricity(self) -> float:
         """``e``."""
-        raise NotImplementedError
+        return math.sqrt(self.eccentricity_squared)
 
 
 #: The ellipsoid of EPSG:4326, which is the CRS the site coordinates are on, so
@@ -287,6 +308,10 @@ class Projection:
         :attr:`base_crs_code`, or the definition contradicts itself.
     base_crs_name, base_crs_code:
         The geographic CRS the input coordinates are on.
+    base_datum_name:
+        Its geodetic datum, by name. No authority code is claimed for it: EPSG
+        registers 6326 as the WGS 84 *ensemble*, and the definition written here
+        carries a single reference frame instead; see :meth:`projjson`.
     method, method_code:
         EPSG method name and code.
     """
@@ -299,6 +324,7 @@ class Projection:
     ellipsoid: Ellipsoid = WGS84
     base_crs_name: str = "WGS 84"
     base_crs_code: int = 4326
+    base_datum_name: str = "World Geodetic System 1984"
     method: str = LAEA_METHOD
     method_code: int = LAEA_METHOD_CODE
 
@@ -361,7 +387,39 @@ class Projection:
         which is why the closed-form spherical scale factors are a valid check
         on the output and are used as one in the tests.
         """
-        raise NotImplementedError
+        longitude, latitude, scalar = _check_coordinates(lon, lat)
+        e2 = self.ellipsoid.eccentricity_squared
+        semi_major = self.ellipsoid.semi_major
+
+        q_pole = _authalic_q(math.pi / 2, e2)
+        authalic_radius = semi_major * math.sqrt(q_pole / 2)
+        origin = math.radians(self.lat_0)
+        # beta is the authalic latitude; the ratio can exceed 1 by an epsilon at
+        # the poles, where q(lat) is q_pole up to rounding.
+        beta_0 = math.asin(min(1.0, max(-1.0, _authalic_q(origin, e2) / q_pole)))
+        parallel_radius = math.cos(origin) / math.sqrt(1 - e2 * math.sin(origin) ** 2)
+        stretch = semi_major * parallel_radius / (authalic_radius * math.cos(beta_0))
+
+        beta = np.arcsin(np.clip(_authalic_q(np.radians(latitude), e2) / q_pole, -1.0, 1.0))
+        delta_lon = np.radians(longitude - self.lon_0)
+        cos_delta_lon = np.cos(delta_lon)
+
+        # 1 + cos(angular distance from the center), on the authalic sphere.
+        span = (
+            1.0
+            + math.sin(beta_0) * np.sin(beta)
+            + math.cos(beta_0) * np.cos(beta) * cos_delta_lon
+        )
+        _check_not_antipodal(span, self)
+
+        scale = authalic_radius * np.sqrt(2.0 / span)
+        x = self.false_easting + scale * stretch * np.cos(beta) * np.sin(delta_lon)
+        y = self.false_northing + (scale / stretch) * (
+            math.cos(beta_0) * np.sin(beta) - math.sin(beta_0) * np.cos(beta) * cos_delta_lon
+        )
+        if scalar:
+            return float(x), float(y)
+        return x, y
 
     def projected_bounds(self, bbox, *, samples_per_edge: int = 256):
         """The projected bounding box of a longitude/latitude box.
@@ -394,11 +452,29 @@ class Projection:
         -----
         The edges of a longitude/latitude box project to curves, so the bound is
         taken over samples along the whole boundary rather than over the four
-        corners. Corners alone would clip the poleward edge of a wide box: the
-        top edge of the CONUS box bows away from the projection center by tens
-        of kilometers between its corners.
+        corners. The edge farthest from the projection center bows away from it
+        between its corners, and corners alone miss that: on the CONUS box,
+        whose southern edge is the far one from a center at 50 N, they
+        understate it by hundreds of kilometers, which is a visible clip.
+
+        The boundary is enough, and the interior needs no sampling: the forward
+        transform is a local diffeomorphism everywhere it is defined, so its
+        components have no interior critical point and each extreme is attained
+        on the edge of the box.
         """
-        raise NotImplementedError
+        west, south, east, north = _check_bbox(bbox)
+        if samples_per_edge < 2:
+            raise ValueError(f"samples_per_edge must be at least 2, got {samples_per_edge}")
+
+        along = np.linspace(0.0, 1.0, samples_per_edge)
+        lons = west + along * (east - west)
+        lats = south + along * (north - south)
+        constant = np.ones_like(along)
+        boundary_lon = np.concatenate([lons, lons, west * constant, east * constant])
+        boundary_lat = np.concatenate([south * constant, north * constant, lats, lats])
+
+        x, y = self.forward(boundary_lon, boundary_lat)
+        return float(x.min()), float(y.min()), float(x.max()), float(y.max())
 
     # ── the definition, in interchange form ──────────────────────────────────
 
@@ -407,8 +483,29 @@ class Projection:
 
         The form PROJ, GDAL and R's ``sf`` all accept directly, and the shortest
         thing to paste into a colleague's session.
+
+        Notes
+        -----
+        The ellipsoid is written as ``+ellps=`` when :data:`PROJ_ELLIPSOID_NAMES`
+        holds a token whose parameters match this one's to the last digit, and as
+        explicit ``+a=`` and ``+rf=`` otherwise. The named token is preferred
+        because it carries the ellipsoid's identity, but it is a claim about what
+        PROJ will substitute, so it is only made when the substitution is known
+        to be this ellipsoid.
         """
-        raise NotImplementedError
+        return " ".join(
+            [
+                "+proj=laea",
+                f"+lat_0={_number(self.lat_0)}",
+                f"+lon_0={_number(self.lon_0)}",
+                f"+x_0={_number(self.false_easting)}",
+                f"+y_0={_number(self.false_northing)}",
+                _proj_ellipsoid(self.ellipsoid),
+                "+units=m",
+                "+no_defs",
+                "+type=crs",
+            ]
+        )
 
     def projjson(self) -> dict:
         """The definition as PROJJSON, as a ``dict`` ready for :mod:`json`.
@@ -431,7 +528,95 @@ class Projection:
         is about which realization of WGS 84 is meant, at the 2 m level, and is
         immaterial at the scale of these figures.
         """
-        raise NotImplementedError
+        return {
+            "$schema": PROJJSON_SCHEMA,
+            "type": "ProjectedCRS",
+            "name": self.name,
+            "base_crs": {
+                "type": "GeographicCRS",
+                "name": self.base_crs_name,
+                "datum": {
+                    "type": "GeodeticReferenceFrame",
+                    "name": self.base_datum_name,
+                    "ellipsoid": {
+                        "name": self.ellipsoid.name,
+                        "semi_major_axis": self.ellipsoid.semi_major,
+                        "inverse_flattening": self.ellipsoid.inverse_flattening,
+                        "id": {"authority": "EPSG", "code": self.ellipsoid.authority_code},
+                    },
+                },
+                "coordinate_system": {
+                    "subtype": "ellipsoidal",
+                    # The axis order EPSG:4326 declares, which is not the order
+                    # forward() takes its arguments in; see the module docstring.
+                    "axis": [
+                        {
+                            "name": "Geodetic latitude",
+                            "abbreviation": "Lat",
+                            "direction": "north",
+                            "unit": "degree",
+                        },
+                        {
+                            "name": "Geodetic longitude",
+                            "abbreviation": "Lon",
+                            "direction": "east",
+                            "unit": "degree",
+                        },
+                    ],
+                },
+                "id": {"authority": "EPSG", "code": self.base_crs_code},
+            },
+            "conversion": {
+                "name": f"{self.name} conversion",
+                "method": {
+                    "name": self.method,
+                    "id": {"authority": "EPSG", "code": self.method_code},
+                },
+                "parameters": [
+                    {
+                        "name": "Latitude of natural origin",
+                        "value": self.lat_0,
+                        "unit": "degree",
+                        "id": {"authority": "EPSG", "code": 8801},
+                    },
+                    {
+                        "name": "Longitude of natural origin",
+                        "value": self.lon_0,
+                        "unit": "degree",
+                        "id": {"authority": "EPSG", "code": 8802},
+                    },
+                    {
+                        "name": "False easting",
+                        "value": self.false_easting,
+                        "unit": "metre",
+                        "id": {"authority": "EPSG", "code": 8806},
+                    },
+                    {
+                        "name": "False northing",
+                        "value": self.false_northing,
+                        "unit": "metre",
+                        "id": {"authority": "EPSG", "code": 8807},
+                    },
+                ],
+            },
+            "coordinate_system": {
+                "subtype": "Cartesian",
+                "axis": [
+                    {
+                        "name": "Easting",
+                        "abbreviation": "E",
+                        "direction": "east",
+                        "unit": "metre",
+                    },
+                    {
+                        "name": "Northing",
+                        "abbreviation": "N",
+                        "direction": "north",
+                        "unit": "metre",
+                    },
+                ],
+            },
+        }
 
 
 #: The project's display projection: Lambert Azimuthal Equal Area centered at
@@ -450,6 +635,19 @@ SITE_PROJECTION = Projection(
 #: File name stem of the tracked interchange files, without an extension.
 DEFINITION_STEM = "north_america_laea"
 
+#: PROJJSON schema the emitted definition declares itself against.
+PROJJSON_SCHEMA = "https://proj.org/schemas/v0.7/projjson.schema.json"
+
+#: PROJ's built-in ellipsoid tokens, by EPSG code, with the parameters PROJ
+#: substitutes for each. Held with the parameters rather than as bare names so
+#: that :meth:`Projection.proj_string` can refuse to write ``+ellps=WGS84`` for
+#: an ellipsoid that is not the one PROJ means by it, and fall back to explicit
+#: ``+a`` and ``+rf`` instead. From the PROJ ellipsoid documentation.
+PROJ_ELLIPSOID_NAMES = {
+    7030: ("WGS84", 6378137.0, 298.257223563),
+    7019: ("GRS80", 6378137.0, 298.257222101),
+}
+
 
 # ── the interchange files ─────────────────────────────────────────────────────
 
@@ -461,7 +659,7 @@ def default_definition_dir() -> Path:
     regenerable and absent on a fresh clone, whereas this definition must always
     be present.
     """
-    raise NotImplementedError
+    return Path(__file__).resolve().parent / "projections"
 
 
 def definition_paths(
@@ -481,7 +679,8 @@ def definition_paths(
     dict
         ``{"projjson": path, "projstring": path}``.
     """
-    raise NotImplementedError
+    root = Path(directory) if directory is not None else default_definition_dir()
+    return {suffix: root / f"{stem}.{suffix}" for suffix in ("projjson", "projstring")}
 
 
 def write_definitions(
@@ -510,7 +709,12 @@ def write_definitions(
     is the only thing that should ever write them. :func:`check_definitions`
     makes a hand-edit a test failure.
     """
-    raise NotImplementedError
+    paths = definition_paths(directory, stem=stem)
+    contents = _definition_contents(projection)
+    for key, path in paths.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(contents[key], encoding="utf-8")
+    return paths
 
 
 def check_definitions(
@@ -542,7 +746,20 @@ def check_definitions(
     disagrees with the transform. It is the same arrangement as the site table's
     round-trip assertion in ``scripts/ingest_sites.py``.
     """
-    raise NotImplementedError
+    paths = definition_paths(directory, stem=stem)
+    contents = _definition_contents(projection)
+    for key, path in paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"no {key} definition at {path}; write it with {_WRITE_COMMAND}"
+            )
+        if path.read_text(encoding="utf-8") != contents[key]:
+            raise ValueError(
+                f"{path} is not what {projection.name} serializes to, so the stored "
+                f"definition and the transform disagree; regenerate it with "
+                f"{_WRITE_COMMAND}, and if the file was edited by hand, make the "
+                "change in the dataclass instead"
+            )
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -550,19 +767,150 @@ def check_definitions(
 # Private: the projection formulas, and the argument checking they need.
 
 
+#: How close to the antipode of the center :meth:`Projection.forward` refuses to
+#: go, as a floor on ``1 + cos(angular distance)``. That quantity is about
+#: ``(pi - c)**2 / 2``, so this is roughly 8e-5 degrees of arc, where the
+#: projected coordinates are already about a million Earth radii out.
+_ANTIPODE_FLOOR = 1e-10
+
+_WRITE_COMMAND = "`python -m sipnet_calibration.projection --write`"
+
+
 def _authalic_q(lat_radians, eccentricity_squared):
     """Snyder's ``q``, equation 3-12: ``2`` times the authalic sine, up to ``q_p``."""
-    raise NotImplementedError
+    sin_lat = np.sin(lat_radians)
+    if eccentricity_squared == 0.0:
+        return 2.0 * sin_lat
+    eccentricity = math.sqrt(eccentricity_squared)
+    return (1 - eccentricity_squared) * (
+        sin_lat / (1 - eccentricity_squared * sin_lat * sin_lat)
+        - (1 / (2 * eccentricity))
+        * np.log((1 - eccentricity * sin_lat) / (1 + eccentricity * sin_lat))
+    )
 
 
 def _check_coordinates(lon, lat):
     """The broadcast, finite, in-range ``(lon, lat)`` pair, as ``float64`` arrays."""
-    raise NotImplementedError
+    longitude = np.asarray(lon, dtype=float)
+    latitude = np.asarray(lat, dtype=float)
+    scalar = longitude.ndim == 0 and latitude.ndim == 0
+    longitude, latitude = np.broadcast_arrays(longitude, latitude)
+
+    # Checked before the range test, which NaN passes: every comparison against
+    # NaN is False, so a NaN latitude would go on to project to NaN and then
+    # into an axes limit or a triangulation as a silently dropped point.
+    non_finite = ~(np.isfinite(longitude) & np.isfinite(latitude))
+    if np.any(non_finite):
+        count = int(np.count_nonzero(non_finite))
+        raise ValueError(f"{count} coordinate(s) are not finite, so they cannot be projected")
+    outside = np.abs(latitude) > 90.0
+    if np.any(outside):
+        worst = float(np.max(np.abs(latitude[outside])))
+        raise ValueError(
+            f"{int(np.count_nonzero(outside))} latitude(s) are outside [-90, 90], the "
+            f"worst being {worst}; arguments are (lon, lat), longitude first"
+        )
+    return longitude, latitude, scalar
+
+
+def _check_not_antipodal(span, projection):
+    """Raise if any point is at the antipode of *projection*'s center.
+
+    *span* is ``1 + cos(c)`` for the authalic angular distance ``c`` from the
+    center. The check is not decoration: at the antipode the formula evaluates
+    to infinity times ``sin(180 deg)``, which is a finite, plausible-looking
+    number rather than an error or a NaN.
+    """
+    too_close = np.asarray(span) < _ANTIPODE_FLOOR
+    if np.any(too_close):
+        antipode_lon = projection.lon_0 + 180.0
+        raise ValueError(
+            f"{int(np.count_nonzero(too_close))} point(s) are at the antipode of the "
+            f"projection center, near ({antipode_lon}, {-projection.lat_0}), where "
+            "this projection is undefined"
+        )
+
+
+def _check_bbox(bbox):
+    """The four floats of a well-formed ``(west, south, east, north)`` box."""
+    values = tuple(bbox)
+    if len(values) != 4:
+        raise ValueError(f"bbox must be (west, south, east, north), got {bbox!r}")
+    west, south, east, north = (float(value) for value in values)
+    if west > east:
+        raise ValueError(
+            f"bbox west {west} is east of east {east}; this does not wrap the "
+            "antimeridian, matching sipnet_calibration.sites.select_sites"
+        )
+    if south > north:
+        raise ValueError(f"bbox south {south} is north of north {north}")
+    return west, south, east, north
+
+
+def _number(value: float) -> str:
+    """A parameter as PROJ writes it: no trailing zeros, no exponent."""
+    text = f"{float(value):.12f}".rstrip("0").rstrip(".")
+    return text if text not in ("", "-0") else "0"
+
+
+def _proj_ellipsoid(ellipsoid: Ellipsoid) -> str:
+    """``+ellps=`` where PROJ's token means this exact ellipsoid, else ``+a`` and ``+rf``."""
+    known = PROJ_ELLIPSOID_NAMES.get(ellipsoid.authority_code)
+    if known is not None:
+        name, semi_major, inverse_flattening = known
+        if (semi_major, inverse_flattening) == (
+            ellipsoid.semi_major,
+            ellipsoid.inverse_flattening,
+        ):
+            return f"+ellps={name}"
+    return f"+a={_number(ellipsoid.semi_major)} +rf={_number(ellipsoid.inverse_flattening)}"
+
+
+def _definition_contents(projection: Projection) -> dict[str, str]:
+    """The text of each interchange file, keyed as :func:`definition_paths` keys them."""
+    return {
+        "projjson": json.dumps(projection.projjson(), indent=2) + "\n",
+        "projstring": projection.proj_string() + "\n",
+    }
 
 
 def _main(argv: list[str] | None = None) -> int:
     """``python -m sipnet_calibration.projection [--write | --check]``."""
-    raise NotImplementedError
+    parser = argparse.ArgumentParser(
+        prog="python -m sipnet_calibration.projection",
+        description=(
+            "Write or verify the interchange files for the project's display "
+            "projection. The parameters live in the dataclass; these files are "
+            "generated from it."
+        ),
+    )
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
+        "--write", action="store_true", help="regenerate the files, overwriting them"
+    )
+    action.add_argument(
+        "--check",
+        action="store_true",
+        help="verify the stored files match the dataclass; the default",
+    )
+    parser.add_argument(
+        "--directory",
+        default=None,
+        help="where the files live; defaults to the package's projections/ directory",
+    )
+    arguments = parser.parse_args(argv)
+
+    if arguments.write:
+        for key, path in write_definitions(directory=arguments.directory).items():
+            print(f"wrote {key}: {path}")
+        return 0
+    try:
+        check_definitions(directory=arguments.directory)
+    except (FileNotFoundError, ValueError) as error:
+        print(f"error: {error}")
+        return 1
+    print(f"the stored definition matches {SITE_PROJECTION.name}")
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
