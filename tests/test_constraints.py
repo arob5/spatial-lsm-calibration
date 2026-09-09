@@ -33,6 +33,7 @@ import sipnet_calibration.constraints as constraints_module
 from sipnet_calibration.constraints import (
     CONSTRAINT_VARIABLE_ATTRS,
     CONSTRAINT_VARIABLES,
+    LONG_COLUMN_DTYPES,
     LONG_COLUMNS,
     OBSERVATION_MEAN,
     OBSERVATION_VARIANCE,
@@ -274,6 +275,18 @@ class TestReadLongTable:
         table = read_long_table(synthetic["long_table"])
         assert tuple(table.columns) == LONG_COLUMNS
         assert len(table) == len(SYNTHETIC_ROWS)
+
+    def test_dtypes_are_the_declared_ones(self, synthetic):
+        # The constant is the schema only if the read is actually built from
+        # it; declared separately, the two drift and nothing notices.
+        table = read_long_table(synthetic["long_table"])
+        for column, dtype in LONG_COLUMN_DTYPES.items():
+            if dtype is str:
+                # pandas returns object or StringDtype depending on its version;
+                # what matters is that every value is a str.
+                assert all(isinstance(value, str) for value in table[column])
+            else:
+                assert table[column].dtype == np.dtype(dtype)
 
     def test_a_seventeen_digit_double_round_trips_exactly(self, tmp_path):
         # 0.4356 is a real LAI variance, and pandas' default C parser moves it
@@ -798,7 +811,22 @@ class TestLoadConstraintsValidation:
     def test_a_descending_site_axis_is_rejected(self, ingested, tmp_path):
         reversed_sites = ingested.isel(site=slice(None, None, -1))
         path = self._write(reversed_sites, tmp_path / "bad.nc")
-        with pytest.raises(ValueError, match="strictly ascending"):
+        with pytest.raises(ValueError, match="site is not strictly ascending"):
+            load_constraints(path)
+
+    def test_a_repeated_snapshot_key_is_rejected(self, ingested, tmp_path):
+        # sel(time=key) would return two snapshots rather than one, which is
+        # not an error anywhere downstream -- just a wrong answer.
+        repeated = ingested.isel(time=[0] * ingested.sizes["time"])
+        path = self._write(repeated, tmp_path / "bad.nc")
+        with pytest.raises(ValueError, match="time is not strictly ascending"):
+            load_constraints(path)
+
+    def test_a_descending_time_axis_is_rejected(self, ingested, tmp_path):
+        path = self._write(
+            ingested.isel(time=slice(None, None, -1)), tmp_path / "bad.nc"
+        )
+        with pytest.raises(ValueError, match="time is not strictly ascending"):
             load_constraints(path)
 
 
@@ -1002,6 +1030,17 @@ class TestExportDiagonalityAssertion:
         completed = _run_export(directory)
         assert completed.returncode == 1
         assert "off-diagonal" in completed.stderr
+        assert not (directory / "long.csv").exists()
+        assert not (directory / "manifest.json").exists()
+
+    def test_a_symmetric_pair_of_na_off_diagonals_is_rejected(self, tmp_path):
+        # NA survives the symmetry check, and check_no_missing_values sees only
+        # the diagonal. Unguarded, the comparison is NA and R aborts on
+        # "missing value where TRUE/FALSE needed" instead of naming the problem.
+        directory = _write_synthetic_rdata(tmp_path / "na", "NA_real_")
+        completed = _run_export(directory)
+        assert completed.returncode == 1
+        assert "NA off-diagonal element" in completed.stderr
         assert not (directory / "long.csv").exists()
         assert not (directory / "manifest.json").exists()
 

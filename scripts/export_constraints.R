@@ -414,6 +414,13 @@ check_covariance_is_diagonal <- function(covariance, n_variables, key, site) {
   }
 
   off <- as.numeric(covariance)[as.numeric(diag(n_variables)) == 0]
+  # check_no_missing_values sees only the diagonal, and a symmetric pair of NAs
+  # survives the symmetry check above. Without this the comparison below is NA
+  # and R aborts on "missing value where TRUE/FALSE needed" instead of saying
+  # what is wrong.
+  if (anyNA(off)) {
+    stop(sprintf("%s has an NA off-diagonal element", where), call. = FALSE)
+  }
   max_off <- if (length(off) == 0L) 0 else max(abs(off))
   if (max_off != 0) {
     stop(sprintf(paste0("%s has a non-zero off-diagonal element (%.17g). The ",

@@ -61,10 +61,10 @@ Name               Dims         Meaning
 
 The ``site`` axis is the whole site pool, not only the observed sites.
 
-**Variable names.** Source names are prescribed by the input data. The processed
-names follow the lower case with underscore, all but the most common
-abbreviations avoided, project convention. The rename happens in the ingest
-script, via :data:`SOURCE_VARIABLE_NAMES`.
+**Variable names.** The source names are prescribed by the input data; the
+processed ones follow the project convention of lower case with underscores and
+no abbreviation beyond the universal. The rename happens in the ingest script,
+via :data:`SOURCE_VARIABLE_NAMES`.
 
 ======================= ===========================
 Source                  Processed
@@ -294,9 +294,9 @@ CONSTRAINT_VARIABLE_ATTRS = {
 #: ``variable`` column holds *source* names.
 LONG_COLUMNS = ("snapshot_date", "site_id", "variable", "mean", "variance")
 
-#: Dtype per long-table column. ``mean`` and ``variance`` are read as float64
-#: with ``float_precision="round_trip"`` in :func:`read_long_table` rather than
-#: being declared here, because the dtype alone does not make the parse exact.
+#: Dtype per long-table column, as :func:`read_long_table` returns them, and
+#: what it hands pandas at the read. Declaring ``mean`` and ``variance`` is not
+#: on its own enough to parse them exactly; see :func:`read_long_table`.
 LONG_COLUMN_DTYPES = {
     "snapshot_date": str,
     "site_id": np.int32,
@@ -329,7 +329,8 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
     Returns
     -------
     pandas.DataFrame
-        The columns of :data:`LONG_COLUMNS`, one row per observed
+        The columns of :data:`LONG_COLUMNS` with the dtypes of
+        :data:`LONG_COLUMN_DTYPES`, one row per observed
         ``(snapshot, site, variable)`` triple. ``variable`` holds *source*
         names; the ingest script renames them.
 
@@ -359,13 +360,7 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
         # mean/variance are declared rather than inferred, because pandas infers
         # int64 for an all-integer column and float_precision then does not
         # apply.
-        dtype={
-            "snapshot_date": str,
-            "site_id": np.int64,
-            "variable": str,
-            "mean": np.float64,
-            "variance": np.float64,
-        },
+        dtype={**LONG_COLUMN_DTYPES, "site_id": np.int64},
         float_precision="round_trip",
         keep_default_na=False,
         na_values=[],
@@ -391,7 +386,7 @@ def read_long_table(path: Path | str) -> pd.DataFrame:
         )
 
     _check_site_ids_fit_dtype(frame, path)
-    return frame.astype({"site_id": np.int32})
+    return frame.astype({"site_id": LONG_COLUMN_DTYPES["site_id"]})
 
 
 def load_constraints(path: Path | str | None = None) -> xr.Dataset:
@@ -519,13 +514,14 @@ def _field_attrs(name: str, statistic: str) -> dict[str, str]:
 
 def _check_site_ids_fit_dtype(frame: pd.DataFrame, path: Path) -> None:
     """Raise unless every site id survives narrowing to the stored width."""
-    info = np.iinfo(np.int32)
+    stored = np.dtype(LONG_COLUMN_DTYPES["site_id"])
+    info = np.iinfo(stored)
     site_id = frame["site_id"].to_numpy()
     outside = (site_id < info.min) | (site_id > info.max)
     if outside.any():
         offenders = sorted(set(site_id[outside].tolist()))[:10]
         raise ValueError(
-            f"{path}: site ids outside the range of int32: {offenders}. "
+            f"{path}: site ids outside the range of {stored}: {offenders}. "
             "Narrowing them would wrap to a different, valid-looking site."
         )
     if (site_id < 1).any():
@@ -573,3 +569,12 @@ def _check_schema(dataset: xr.Dataset, path: Path) -> None:
         raise ValueError(f"{path}: holds no sites")
     if np.any(np.diff(site) <= 0):
         raise ValueError(f"{path}: site is not strictly ascending")
+
+    time = dataset["time"].values
+    if time.size == 0:
+        raise ValueError(f"{path}: holds no snapshots")
+    if np.any(np.diff(time) <= np.timedelta64(0, "ns")):
+        raise ValueError(
+            f"{path}: time is not strictly ascending. A repeated snapshot key "
+            "would make sel(time=...) return more than one snapshot."
+        )
