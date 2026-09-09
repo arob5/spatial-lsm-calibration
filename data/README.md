@@ -330,7 +330,10 @@ timestep, so temporal aggregation of either is a sum rather than a mean. SIPNET
 requires `vpd` and `wspd` to be strictly positive and silently clamps values that
 are not, so non-positive entries are better caught at ingest.
 
-> **Note 4.** The number of driver ensemble members is not established.
+> **Note 4.** The driver ensemble has **10 members**. The three
+> directories present locally are members 1, 2 and 5, so this cannot be
+> seen from this checkout; the figure is confirmed for the project rather
+> than inferred from the files.
 
 **Source.** ERA5, prepared for the 8000-site pool for the model runs underlying
 [NALCR]. The same driver files are used here.
@@ -360,14 +363,18 @@ fixed.
 > These files must be opened with CF time decoding disabled, for example
 > `xarray.open_dataset(path, decode_times=False)`.
 
-> **Note 6.** The number of initial-condition ensemble members, and which
-> variables appear in which files, are not established.
+> **Note 6.** The initial-condition ensemble has **100 members**, the same size
+> as the published reanalysis output. Confirmed for the project rather than
+> inferred from the files: this checkout holds three of the 800,000, and the
+> highest member index among them is 94. Which variables appear in which files
+> is still not established; `scripts/survey_ic_variables.py` answers it where
+> the files are.
 
 **Source.** Initial condition ensembles prepared for the 8000-site pool for the
 model runs underlying [NALCR]. The same files are used here. The published
 reanalysis output carries 100 ensemble members together with ensemble mean and
-standard deviation; whether the initial condition files use the same ensemble
-size has not been confirmed against the data, and is the subject of Note 6.
+standard deviation, and the initial condition files use the same ensemble size.
+That could not be confirmed against the data available here; see Note 6.
 
 ### Net ecosystem exchange
 
@@ -745,11 +752,13 @@ likelihood, whether they are averaged first, and how the observation error
 covariance should treat them. This is a modeling question rather than a data one,
 and is unresolved.
 
-**4. Driver ensemble size.** Only three driver directories are available locally
-(`ERA5_1_1`, `ERA5_1_2`, `ERA5_27_5`, so members 1, 2 and 5 across sites 1 and
-27), which is not enough to confirm the size of the driver ensemble. The gap-filling behind [GAPFILL] used
-25 driver members, and the reanalysis output carries 100, so neither figure can be
-assumed for the driver files themselves.
+**4. Driver ensemble size.** *Resolved: the driver ensemble has 10 members.*
+Only three driver directories are available locally (`ERA5_1_1`, `ERA5_1_2`,
+`ERA5_27_5`, so members 1, 2 and 5 across sites 1 and 27), which is not enough to
+see this from the files, and neither of the two figures nearby applies: the
+gap-filling behind [GAPFILL] used 25 driver members, and the reanalysis output
+carries 100. Kept numbered so the surrounding references do not shift. What
+remains open is member correspondence across sources, which is question 12.
 
 **5. Reference year for the initial-condition time coordinate.** The units
 attribute is an unsubstituted template, so the intended reference year cannot be
@@ -758,13 +767,13 @@ degenerate, but it does mean the files cannot be used for anything time-aware.
 Tracked as
 [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
-**6. Initial-condition variable sets and ensemble size.** The variable set is
+**6. Initial-condition variable sets.** *The ensemble size is resolved: 100
+members, as Note 6 records.* What remains open is the variable set, which is
 reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
 appearing in some. Three files are available locally — site 1 members 1 and 2,
 and site 27 member 94 — and none of the three carries either variable, so the
-full set of combinations is still unconfirmed. Member index 94 does put a floor
-of 94 on the initial-condition ensemble size. `scripts/survey_ic_variables.py`
-answers both questions where the files are.
+full set of combinations is still unconfirmed. `scripts/survey_ic_variables.py`
+answers it where the files are, and has not yet been run on the SCC.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217
