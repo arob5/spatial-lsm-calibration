@@ -192,6 +192,8 @@ src/sipnet_calibration/
                           # constraint_fields() -> canonical per-variable view
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
+  initial_conditions.py   # IC schema, read_ic_file(), load_initial_conditions()
+                          # over processed/ic.nc, initial_condition_fields()
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
                           # shared with the likelihood
