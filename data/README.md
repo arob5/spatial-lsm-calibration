@@ -330,7 +330,10 @@ timestep, so temporal aggregation of either is a sum rather than a mean. SIPNET
 requires `vpd` and `wspd` to be strictly positive and silently clamps values that
 are not, so non-positive entries are better caught at ingest.
 
-> **Note 4.** The number of driver ensemble members is not established.
+> **Note 4.** The driver ensemble has **10 members**. The three
+> directories present locally are members 1, 2 and 5, so this cannot be
+> seen from this checkout; the figure is confirmed for the project rather
+> than inferred from the files.
 
 **Source.** ERA5, prepared for the 8000-site pool for the model runs underlying
 [NALCR]. The same driver files are used here.
@@ -745,11 +748,13 @@ likelihood, whether they are averaged first, and how the observation error
 covariance should treat them. This is a modeling question rather than a data one,
 and is unresolved.
 
-**4. Driver ensemble size.** Only three driver directories are available locally
-(`ERA5_1_1`, `ERA5_1_2`, `ERA5_27_5`, so members 1, 2 and 5 across sites 1 and
-27), which is not enough to confirm the size of the driver ensemble. The gap-filling behind [GAPFILL] used
-25 driver members, and the reanalysis output carries 100, so neither figure can be
-assumed for the driver files themselves.
+**4. Driver ensemble size.** *Resolved: the driver ensemble has 10 members.*
+Only three driver directories are available locally (`ERA5_1_1`, `ERA5_1_2`,
+`ERA5_27_5`, so members 1, 2 and 5 across sites 1 and 27), which is not enough to
+see this from the files, and neither of the two figures nearby applies: the
+gap-filling behind [GAPFILL] used 25 driver members, and the reanalysis output
+carries 100. Kept numbered so the surrounding references do not shift. What
+remains open is member correspondence across sources, which is question 12.
 
 **5. Reference year for the initial-condition time coordinate.** The units
 attribute is an unsubstituted template, so the intended reference year cannot be
