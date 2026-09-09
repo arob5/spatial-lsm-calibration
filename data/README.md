@@ -293,10 +293,50 @@ Two consequences are worth noting.
   Coordinate transformations should be configured accordingly, for instance with
   pyproj's `always_xy=True`.
 
-The map projection used for plotting is a separate choice from the coordinate
-system of the input data. It is tracked in
-[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4) and will be
-documented once settled.
+### Display projection
+
+The projection used for spatial figures is a separate choice from the coordinate
+system of the input data, and is settled: a **Lambert Azimuthal Equal Area
+centered at 50 N, 100 W**, on WGS 84, in meters, with no false origin.
+
+    +proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs +type=crs
+
+The definition lives in code, as `SITE_PROJECTION` in
+[`sipnet_calibration.projection`](../src/sipnet_calibration/projection.py),
+which also provides the forward transform and writes the same definition as
+PROJJSON and as a PROJ string under
+`src/sipnet_calibration/projections/` for tools outside this package. Those
+files are generated from the dataclass and checked against it by the test
+suite, so they cannot drift from the transform; regenerate them with
+`python -m sipnet_calibration.projection --write`.
+
+Three points about the choice, with the full analysis and the measured
+distortion over all 8000 sites recorded in
+[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4).
+
+- **It is not the projection the reanalysis figures used.** Those used the USA
+  Contiguous Albers Equal Area Conic (ESRI:102003), which is area-true
+  everywhere but is defined for a region of predominant east-west expanse. Over
+  this site pool, which spans 75 degrees of latitude, its shape distortion
+  reaches 107 degrees of angular deformation and a 9:1 local anisotropy at the
+  northernmost sites. The projection adopted here holds angular deformation
+  under 14 degrees and anisotropy under 1.3 everywhere; both ceilings are
+  asserted against this site table in `tests/test_projection.py`.
+- **One projection serves both the conterminous-US and the full-domain
+  figures**, so that panels are comparable. It costs the CONUS figure almost
+  nothing relative to 102003, and 102003 costs the full-domain figure a great
+  deal.
+- **No datum transformation is involved.** The projection's base CRS is WGS 84,
+  matching the site coordinates above, so nothing is shifted. Had a NAD83-based
+  definition been adopted, the mismatch would have amounted to the roughly 2 m
+  between the two datums, which is about 1e-4 of a pixel at the width of these
+  figures.
+
+Named longitude/latitude boxes for the regions the figures use — `CONUS`,
+`NORTH_AMERICA` and `ALASKA` — are `EXTENTS` in
+[`sipnet_calibration.sites`](../src/sipnet_calibration/sites.py), beside the
+site selection that takes the same form, so a figure and the sites it plots
+cannot disagree about what a region means.
 
 ---
 

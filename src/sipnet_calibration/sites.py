@@ -83,6 +83,11 @@ Functions
 :func:`default_sites_path`
     Where the table is expected to be.
 
+:data:`EXTENTS`
+    Named longitude/latitude boxes -- ``CONUS``, ``NORTH_AMERICA``, ``ALASKA``
+    -- in the form *bbox* takes, shared with the spatial plotting layer so that
+    a figure and the sites it plots agree on what a region is.
+
 :class:`Grid` and :data:`SITE_GRID`
     The lattice, and the conversions between coordinates and indices:
     :meth:`Grid.lonlat_to_index` and :meth:`Grid.index_to_lonlat`.
@@ -173,6 +178,7 @@ import pandas as pd
 
 __all__ = [
     "DATA_ROOT_ENV_VAR",
+    "EXTENTS",
     "Grid",
     "SITE_COLUMNS",
     "SITE_COLUMN_DTYPES",
@@ -494,6 +500,32 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 
 # ── site selection ────────────────────────────────────────────────────────────
 
+#: Named regions, as ``(west, south, east, north)`` in degrees, in the form
+#: :func:`select_sites` takes for *bbox* and
+#: :meth:`sipnet_calibration.projection.Projection.projected_bounds` takes for
+#: axes limits. They live here, beside the selection they parametrize, so that a
+#: figure and the site subset it plots cannot disagree about what a region means.
+#:
+#: - ``CONUS`` is the conterminous-US box used throughout ``data/README.md``;
+#:   3640 of the 8000 sites fall inside it.
+#: - ``NORTH_AMERICA`` is the extent of :data:`SITE_GRID` itself, so it contains
+#:   every site by construction rather than by a bound anyone chose.
+#: - ``ALASKA`` is the EPSG area of use of "United States (USA) - Alaska", as
+#:   registered for EPSG:3338, clipped on the west at the grid's own edge: the
+#:   registered extent runs from 172.42 E across the antimeridian, whereas the
+#:   grid, the site pool and :func:`select_sites` are all in negative longitudes
+#:   and none of them wraps.
+#:
+#: The plotting design spec calls the middle one ``NA``. It is spelled out here
+#: because ``NA`` is exactly the string that already bites this data: eight of
+#: the 8000 sites are named literally ``NA``, which is why the table is read
+#: with ``keep_default_na=False``.
+EXTENTS = {
+    "CONUS": (-125.0, 24.0, -66.0, 50.0),
+    "NORTH_AMERICA": (SITE_GRID.west, SITE_GRID.south, SITE_GRID.east, SITE_GRID.north),
+    "ALASKA": (SITE_GRID.west, 51.3, -129.99, 71.4),
+}
+
 
 def select_sites(
     sites: pd.DataFrame,
@@ -521,7 +553,9 @@ def select_sites(
     bbox:
         ``(west, south, east, north)`` in degrees, edges included. Longitudes are
         negative throughout the pool, so ``(-125, 24, -66, 50)`` is the
-        conterminous US and ``(66, 24, 125, 50)`` selects nothing.
+        conterminous US and ``(66, 24, 125, 50)`` selects nothing. The named
+        regions are in :data:`EXTENTS`, so ``bbox=EXTENTS["CONUS"]`` is the same
+        box as the CONUS figure uses.
     where:
         A callable taking the table and returning a boolean mask over its rows —
         anything ``.loc`` accepts. This is the general filter: it covers the
