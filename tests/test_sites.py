@@ -12,7 +12,7 @@ import pytest
 
 from sipnet_calibration.sites import SITE_GRID, Grid
 
-# (site_id, lon, lat, lon_idx, lat_idx) from data/raw/sites/pts.shp
+# (site_id, lon, lat, lon_index, lat_index) from data/raw/sites/pts.shp
 REAL_SITES = [
     (1, -24.5625010172526, 82.54583435058593, 18532, 9065),
     (731, -178.75416768391926, 68.5125010172526, 29, 7381),
@@ -79,12 +79,12 @@ class TestIndexToLonLat:
         assert lon.shape == (3,) and lat.shape == (3,)
 
     @pytest.mark.parametrize(
-        "lon_idx, lat_idx",
+        "lon_index, lat_index",
         [(-1, 0), (0, -1), (19080, 0), (0, 9360)],
     )
-    def test_rejects_out_of_range(self, lon_idx, lat_idx):
+    def test_rejects_out_of_range(self, lon_index, lat_index):
         with pytest.raises(ValueError, match="outside"):
-            SITE_GRID.index_to_lonlat(lon_idx, lat_idx)
+            SITE_GRID.index_to_lonlat(lon_index, lat_index)
 
     def test_rejects_fractional_indices(self):
         with pytest.raises(ValueError, match="must be integers"):
@@ -92,17 +92,17 @@ class TestIndexToLonLat:
 
 
 class TestLonLatToIndex:
-    @pytest.mark.parametrize("site_id, lon, lat, lon_idx, lat_idx", REAL_SITES)
+    @pytest.mark.parametrize("site_id, lon, lat, lon_index, lat_index", REAL_SITES)
     def test_real_site_coordinates_resolve_to_their_indices(
-        self, site_id, lon, lat, lon_idx, lat_idx
+        self, site_id, lon, lat, lon_index, lat_index
     ):
-        assert SITE_GRID.lonlat_to_index(lon, lat) == (lon_idx, lat_idx)
+        assert SITE_GRID.lonlat_to_index(lon, lat) == (lon_index, lat_index)
 
-    @pytest.mark.parametrize("site_id, lon, lat, lon_idx, lat_idx", REAL_SITES)
+    @pytest.mark.parametrize("site_id, lon, lat, lon_index, lat_index", REAL_SITES)
     def test_reconstruction_is_within_the_stored_coordinate_tolerance(
-        self, site_id, lon, lat, lon_idx, lat_idx
+        self, site_id, lon, lat, lon_index, lat_index
     ):
-        back_lon, back_lat = SITE_GRID.index_to_lonlat(lon_idx, lat_idx)
+        back_lon, back_lat = SITE_GRID.index_to_lonlat(lon_index, lat_index)
         assert abs(back_lon - lon) <= STORED_COORD_TOLERANCE_DEG
         assert abs(back_lat - lat) <= STORED_COORD_TOLERANCE_DEG
 
@@ -154,15 +154,19 @@ class TestLonLatToIndex:
 import hashlib
 import importlib.util
 import pathlib
+import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pandas as pd
 import shapefile
 
+import sipnet_calibration.sites as sites_module
 from sipnet_calibration.sites import (
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
+    default_sites_path,
     load_sites,
     select_sites,
 )
@@ -350,8 +354,8 @@ class TestCoordinateRoundTrip:
                 "site_id": np.arange(1, len(lon) + 1, dtype=np.int32),
                 "lon": lon,
                 "lat": lon,
-                "lon_idx": np.zeros(len(lon), dtype=np.int32),
-                "lat_idx": np.zeros(len(lon), dtype=np.int32),
+                "lon_index": np.zeros(len(lon), dtype=np.int32),
+                "lat_index": np.zeros(len(lon), dtype=np.int32),
                 "site_name": ["x"] * len(lon),
                 "site_order": np.zeros(len(lon), dtype=np.int32),
                 "cluster": np.ones(len(lon), dtype=np.int8),
@@ -363,14 +367,14 @@ class TestCoordinateRoundTrip:
 
     def test_grid_indices_resolve_the_stored_coordinates(self, ingested):
         table = ingested["table"]
-        lon_idx, lat_idx = SITE_GRID.lonlat_to_index(
+        lon_index, lat_index = SITE_GRID.lonlat_to_index(
             table["lon"].to_numpy(), table["lat"].to_numpy()
         )
-        assert np.array_equal(lon_idx, table["lon_idx"].to_numpy())
-        assert np.array_equal(lat_idx, table["lat_idx"].to_numpy())
+        assert np.array_equal(lon_index, table["lon_index"].to_numpy())
+        assert np.array_equal(lat_index, table["lat_index"].to_numpy())
 
     def test_grid_index_pairs_are_distinct(self, ingested):
-        pairs = ingested["table"][["lon_idx", "lat_idx"]].to_numpy()
+        pairs = ingested["table"][["lon_index", "lat_index"]].to_numpy()
         assert np.unique(pairs, axis=0).shape[0] == N_SITES
 
     def test_the_distinctness_check_rejects_a_shared_cell(self):
@@ -382,7 +386,7 @@ class TestCoordinateRoundTrip:
     def test_indices_reconstruct_the_coordinates_to_the_stored_tolerance(self, ingested):
         table = ingested["table"]
         lon, lat = SITE_GRID.index_to_lonlat(
-            table["lon_idx"].to_numpy(), table["lat_idx"].to_numpy()
+            table["lon_index"].to_numpy(), table["lat_index"].to_numpy()
         )
         assert np.abs(lon - table["lon"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
         assert np.abs(lat - table["lat"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
@@ -799,8 +803,8 @@ class TestSchemaIsPinnedToALiteral:
             "site_id",
             "lon",
             "lat",
-            "lon_idx",
-            "lat_idx",
+            "lon_index",
+            "lat_index",
             "site_name",
             "site_order",
             "cluster",
@@ -813,8 +817,8 @@ class TestSchemaIsPinnedToALiteral:
             "site_id": np.int32,
             "lon": np.float64,
             "lat": np.float64,
-            "lon_idx": np.int32,
-            "lat_idx": np.int32,
+            "lon_index": np.int32,
+            "lat_index": np.int32,
             "site_name": str,
             "site_order": np.int32,
             "cluster": np.int8,
@@ -859,7 +863,7 @@ class TestIntegerCastsCannotWrap:
             )
 
     def test_ingest_accepts_the_real_ranges(self, ingested):
-        for column in ("site_order", "cluster", "landcover", "lon_idx", "lat_idx"):
+        for column in ("site_order", "cluster", "landcover", "lon_index", "lat_index"):
             values = ingested["table"][column].to_numpy().astype(np.float64)
             dtype = SITE_COLUMN_DTYPES[column]
             ingest.check_values_fit_dtype(values, name=column, dtype=dtype)
@@ -871,8 +875,8 @@ class TestIntegerCastsCannotWrap:
 
     def _one_row(self, tmp_path, **overrides):
         fields = {
-            "site_id": 1, "lon": -100.0, "lat": 40.0, "lon_idx": 9480,
-            "lat_idx": 3960, "site_name": "x", "site_order": 0, "cluster": 1,
+            "site_id": 1, "lon": -100.0, "lat": 40.0, "lon_index": 9480,
+            "lat_index": 3960, "site_name": "x", "site_order": 0, "cluster": 1,
             "landcover": 1, "ameriflux_site_id": "",
         }
         fields.update(overrides)
@@ -1227,3 +1231,36 @@ class TestDbfNulls:
             ingest.build_site_table(
                 damaged, ingest.read_ameriflux_map(SITE_ID_MAP)
             )
+
+
+class TestDocstringExamples:
+    """The Usage examples in the module docstring have to actually run.
+
+    Extracted from the shipped docstring rather than copied here, so that the
+    text and the tested code cannot diverge. They read the site table at the
+    default path, so they are skipped where the ingest has not been run.
+
+    This catches an example that no longer *works* -- a renamed function, a
+    stale keyword, a variable that is gone -- which is how examples usually
+    rot. It does not check that an example still says something sensible; that
+    is what the tests of the functions themselves are for.
+    """
+
+    @staticmethod
+    def _usage_code_blocks() -> list[str]:
+        usage = sites_module.__doc__.split("Usage\n-----", 1)[1]
+        blocks = re.findall(r"::\n\n((?:(?: {4}.*)?\n)+)", usage)
+        return [textwrap.dedent(block) for block in blocks]
+
+    def test_the_docstring_has_usage_examples(self):
+        assert len(self._usage_code_blocks()) >= 3
+
+    @pytest.mark.skipif(
+        not default_sites_path().exists(),
+        reason="needs the built site table at the default path",
+    )
+    def test_every_usage_example_executes(self):
+        namespace: dict = {}
+        for index, code in enumerate(self._usage_code_blocks(), start=1):
+            compiled = compile(code, f"<docstring block {index}>", "exec")
+            exec(compiled, namespace)  # noqa: S102 - the docstring is the input

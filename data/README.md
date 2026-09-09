@@ -259,10 +259,10 @@ as a 19080 by 9360 array. Those figures are mutually consistent to the cell:
 (20 - 179) x 120 is exactly 19080 and (85 - 7) x 120 exactly 9360. Cell centers
 lie at
 
-    lon = -179 + (lon_idx + 0.5)/120,   lat = 7 + (lat_idx + 0.5)/120
+    lon = -179 + (lon_index + 0.5)/120,   lat = 7 + (lat_index + 0.5)/120
 
-for zero-based indices, which is where the `lon_idx` and `lat_idx` columns of the
-processed site table come from.
+for zero-based indices, which is where the `lon_index` and `lat_index` columns
+of the processed site table come from.
 
 All 8000 sites fall on cell centers, but only to within 1.02e-6 degrees, about
 0.11 m. The residual is consistent with the coordinates having passed through
@@ -474,6 +474,9 @@ site, year and variable.
 
 `SoilMoistFrac` is absent before 2015 and `AbvGrndWood` in 2024, and
 `AbvGrndWood` covers about 41% of sites in the years where it is present.
+Summed over all thirteen snapshots the observation counts are `TotSoilCarb`
+103,870, `LAI` 99,632, `SoilMoistFrac` 79,740 and `AbvGrndWood` 39,273, or
+322,515 observations in total.
 
 The covariance matrices carry no dimension names, so the variable each row and
 column refers to must be taken from the column order of the corresponding
@@ -502,19 +505,42 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | Script | Reads | Writes |
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
+| `export_constraints.R` | `raw/constraints/sda_8k_site_rdata/obs.{mean,cov}.Rdata` | a long CSV and a JSON manifest |
+| `ingest_constraints.py` | that CSV and manifest, `processed/sites/sites.csv` | `processed/constraints_annual.nc` |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
-| `ingest_constraints.py` | R export of `obs.mean` and `obs.cov` | `processed/agb_lai.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
 | `ingest_drivers.py` | `raw/drivers/` | `processed/drivers.zarr` |
 
-Reading the R data files requires R. The `obs.mean` object is a list of lists of
-data frames, which `pyreadr` does not support, so it is flattened by a one-off R
-script that writes netCDF. These are the only inputs that require R.
+Reading the R data files requires R, and they are the only inputs that do.
+`obs.mean` is a list of lists of data frames, which `pyreadr` does not support,
+and R's `ncdf4` is not installed on the development machine, so R cannot write
+the netCDF either. `export_constraints.R` therefore does only what R must --
+read the objects and flatten them to one row per observed
+`(snapshot, site, variable)` triple -- and `ingest_constraints.py` makes every
+schema decision. The intermediate CSV is 322,515 rows and about 19 MB; it is
+scratch, not a product, and belongs outside `processed/`.
 
-Two conversions are applied during ingest rather than downstream. Net ecosystem
-exchange is converted from umol CO2 m-2 s-1 to the canonical unit used
-throughout, so that nothing later in the pipeline has to reconcile units; and the
-redundant `ens_mean` column is dropped.
+Alongside the CSV, `export_constraints.R` writes a JSON manifest of what it
+checked: per-snapshot per-variable row counts, the exact extremes per variable,
+the empty site-snapshots, and the largest off-diagonal covariance element it
+saw. `ingest_constraints.py` checks the CSV against that manifest and refuses to
+write if the two disagree. The manifest exists because **the diagonality of the
+covariances can only be checked in R** -- by the time the CSV exists the
+off-diagonal is gone -- and the processed form stores variances rather than
+matrices, which is lossless exactly when they are diagonal.
+
+Conversions applied during ingest rather than downstream:
+
+- **Constraints.** The covariance matrices are reduced to their diagonals. This
+  is lossless and asserted, not assumed. Zero variances are written through
+  unchanged; 929 `AbvGrndWood` variances are exactly zero. 925 of those sit
+  where the observation is zero too, but four assert a non-zero value with no
+  uncertainty at all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016),
+  all with a mean of 1.0. Either way flooring them is a modeling decision that
+  would be hidden if an ingest script made it. See open question 14.
+- **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
+  unit used throughout, so that nothing later has to reconcile units, and the
+  redundant `ens_mean` column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -524,8 +550,8 @@ redundant `ens_mean` column is dropped.
 
 ## Processed format
 
-`ingest_sites.py` is written; the rest of this section records the intended
-output of scripts not yet written.
+`ingest_sites.py` and `ingest_constraints.py` are written; the rest of this
+section records the intended output of scripts not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
 is chosen to load directly as such: an `xarray.DataArray` per variable, with
@@ -536,8 +562,8 @@ Formats are chosen according to the shape of each product.
 | Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
-| `ic.nc` | netCDF | `(member, site)` | 19 MB |
-| `agb_lai.nc` | netCDF | `(site, time)` per variable, plus covariances | negligible |
+| `constraints_annual.nc` | netCDF | `(site, time, variable)` for the mean and the variance | 2.2 MB |
+| `ic.nc` | netCDF | `(member, site)` | 32 MB at 100 members |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
 | `drivers.zarr` | Zarr, chunked on `site` and `time` | `(member, site, time)` | 15 GB per member; site subsets in practice |
 
@@ -554,7 +580,7 @@ translation, together with the grid indices and the Ameriflux identifier:
 |---|---|---|
 | `site_id` | int32 | Site identifier, 1-8000, in shapefile record order |
 | `lon`, `lat` | float64 | Coordinates, at full round-trip precision |
-| `lon_idx`, `lat_idx` | int32 | Zero-based indices on the 1/120 degree grid |
+| `lon_index`, `lat_index` | int32 | Zero-based indices on the 1/120 degree grid |
 | `site_name` | string | From the shapefile's `site_names`, renamed to the singular |
 | `site_order` | int32 | 0 for sampled points, 1-1093 for named sites |
 | `cluster`, `landcover` | int8 | Sampling stratum and land cover class |
@@ -593,6 +619,71 @@ settings to each caller.
   are named literally `NA`, which a default read turns into a null, and an
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
 
+`constraints_annual.nc` carries the annual biomass, leaf area and soil
+constraints on a dense grid, with `NaN` where a site-snapshot-variable was not
+observed:
+
+| Variable | Dims | Type | Description |
+|---|---|---|---|
+| `observation_mean` | `(site, time, variable)` | float64 | The observation |
+| `observation_variance` | `(site, time, variable)` | float64 | Its error variance |
+
+`site` is the full 1-8000 pool, whether or not a site was ever observed; `time`
+is the thirteen July 15 snapshot keys. `lon` and `lat` are non-dimension
+coordinates on `site`, joined from the site table.
+
+The `variable` coordinate holds **processed** names. The source names are not
+ours to choose, but the processed ones follow the project convention of lower
+case with underscores and no unnecessary abbreviation, and each variable's
+source name is kept in the file's attributes as
+`variable_<name>_source_name`:
+
+| Source | Processed | Unit |
+|---|---|---|
+| `AbvGrndWood` | `aboveground_wood_carbon` | Mg C ha-1 |
+| `LAI` | `lai` | m2 m-2 |
+| `SoilMoistFrac` | `soil_moisture_percent` | percent |
+| `TotSoilCarb` | `total_soil_carbon` | kg C m-2 |
+
+The rename is applied by `ingest_constraints.py`, from a single mapping in
+`sipnet_calibration.constraints`. It happens there rather than in R because the
+intermediate long table names the variable on every row, so a row carries its
+own identity and the rename cannot mis-pair a variance with a variable. In the
+source the pairing is positional, which is why the R side keeps the source names
+and the source order. 8000 x 13 x 4 is 416,000 cells per array, of
+which 322,515 are observed, so the file is 2.2 MB compressed. Dense is chosen
+over a ragged encoding because the raggedness costs nothing to represent this
+way and dense is far easier to reason about.
+
+Three points about the layout.
+
+- **Variances, not covariance matrices.** Every source covariance is diagonal,
+  so nothing is lost. Of the 104,000 site-snapshot entries, 103,029 are
+  matrices whose off-diagonal is checked element by element at every export;
+  953 are single-variable scalars, which have no off-diagonal; 18 are empty.
+  The check runs at every export, not once, because it is what makes the
+  choice lossless.
+- **`variable` is a dimension.** That is not a canonical field, whose dims must
+  be a subset of `(member, site, time)`. It is stored this way because the
+  observation operator indexes observations by exactly `(site, variable, time)`,
+  so flattening to the observation vector is a stack rather than a join, and
+  because all four variables share one `(site, time)` grid here.
+  `sipnet_calibration.constraints.constraint_fields` returns the canonical
+  per-variable view -- one `DataArray` per variable with dims `(site, time)` --
+  so the plotting layer and the likelihood are each served without reshaping the
+  other's form.
+- **The snapshot key is labeled `nominal`.** The July 15 dates are the source
+  product's annual bookkeeping convention, not observation dates, so the label
+  is neither an instant nor an interval boundary. The file records
+  `time_label = "nominal"` with a note saying so, rather than claiming one of
+  the interval conventions the other products use.
+
+Each variable's unit is a dataset attribute, `variable_<name>_units`, beside
+`_long_name` and `_source_name`. The two data variables carry
+`units_status = "unconfirmed"` and a provenance string, because the units are
+documented for the reanalysis *output* rather than for these observation
+*inputs*. See open question 9.
+
 The following conventions apply to every product.
 
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
@@ -600,8 +691,14 @@ The following conventions apply to every product.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
   converted at the boundary.
-- Uneven coverage is preserved rather than filled. The biomass and leaf area
-  product in particular is not rectangular over site, year and variable.
+- Each product is stored at the temporal resolution its source arrives in.
+  Aggregation is the observation operator's business, specified per variable at
+  model-specification time, so that different constraints can be used at
+  different time scales without a re-ingest.
+- Uneven coverage is preserved rather than filled. The annual constraints in
+  particular are not rectangular over site, snapshot and variable, and
+  unobserved cells are `NaN` rather than zero -- a zero there would be an
+  observation of no biomass, which is a different and real statement.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
@@ -735,3 +832,21 @@ Whether it is the same ensemble has not been established.
 a spatially coherent ordering, a Hilbert or Morton rank for instance, would
 improve locality for triangulation and for chunked reads. Such an ordering would
 be added as an additional coordinate rather than by renumbering.
+
+**14. Observations with an error variance of exactly zero.** 929 `AbvGrndWood`
+site-years carry a variance of 0. In 925 of them the observation is 0 as well,
+which reads as "no biomass, and no uncertainty about that" and is at least
+self-consistent. The other four assert a non-zero value with no uncertainty at
+all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016), each with a mean
+of exactly 1.0.
+
+A zero variance is unusable either way. A Gaussian likelihood weights a residual
+by `1/variance`, so these four contribute an infinite weight to a value of 1.0,
+and any code that forms a precision matrix or sums a log-likelihood over them
+returns `inf` or `NaN` for that site-year rather than a large number. The 925
+are the same arithmetic but at least encode a plausible intent.
+
+Nothing floors them at ingest, deliberately: the floor is a modeling choice.
+But whether these are real, a placeholder, or an artifact of the source
+processing is a question for the producer, and it bears on whether the four
+should be dropped rather than floored.

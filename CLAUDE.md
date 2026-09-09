@@ -50,6 +50,118 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
   the AGB/LAI constraints are ragged over site x year x variable.
 
+## Code conventions
+
+These are project-wide and apply to new code without being restated.
+
+### Naming in processed data
+
+Raw variable names are not ours to choose; processed ones are.
+
+- **`lower_case_with_underscores`** for every variable, coordinate and column of
+  a processed product.
+- **Avoid abbreviations** unless they are universal. So `total_soil_carbon`, not
+  `TotSoilCarb`; `aboveground_wood_carbon`, not `AbvGrndWood`;
+  `soil_moisture_percent`, not `SoilMoistFrac`. `lai` is fine, and so are
+  `lon`/`lat`, which the canonical field convention fixes.
+- The rename from source to processed name belongs in **one explicit mapping**
+  in the library beside the schema, not spread across a script. See
+  `SOURCE_VARIABLE_NAMES` in `sipnet_calibration.constraints`. Keep the source
+  name in the product's attributes so the correspondence is never guesswork.
+- Renaming is safe only where a record carries its own identity. Where the
+  source pairs values *positionally*, the positional read stays in source names
+  and the rename happens after the data is self-describing.
+- **The `VARIABLES` registry is keyed on processed names**, so a canonical
+  field's `name` is a processed name. That is what makes `validate_field()`
+  usable against anything an adapter produces.
+
+### File organization
+
+- **Public first, private last.** Public functions, classes and constants at the
+  top of a file; helpers and anything underscore-prefixed below them.
+- Data processing scripts follow the section order
+  `entry point` -> `the steps, in the order main calls them` ->
+  `supporting types and helpers` -> `checks`, with `# ── ... ──` section
+  comments. `scripts/ingest_sites.py` and `scripts/ingest_constraints.py` are
+  the worked examples.
+- Keep functions short enough that the top-level one reads as a summary of the
+  work. If it stops reading that way, pull a step out as a helper. Roughly 40
+  lines is where to start looking for the seam, not a hard limit.
+
+### Data validation in processing scripts
+
+- Every validation check is its own helper named **`check_*`**, saying what it
+  checks: `check_covariances_were_diagonal`, `check_no_duplicate_triples`,
+  `check_sites_are_in_the_site_table`. Not `validate`, not an inline `assert`
+  buried in a transformation.
+- The `check_*` helpers live together in the **`checks` section at the bottom**
+  of the file.
+- A check raises with a message naming the invariant that broke and, where
+  possible, what to do about it. The script's `main` turns those into a reported
+  error rather than a traceback.
+
+### What does and does not belong in documentation
+
+- **Do not write volatile measurements into documentation.** Row counts, cell
+  counts, file sizes, per-variable coverage, "929 of them are zero" — these
+  describe one snapshot of the data and go stale silently. A numeric property
+  the code depends on is **checked programmatically**: an assertion in
+  the ingest script, a constant in the library, or a test. Documentation says
+  what the property *is* and where it is checked, not what it currently
+  measures. Where a run's numbers are genuinely useful, print them.
+  `data/README.md` is the exception, since recording measured characteristics of
+  the raw data is its job — but even there, anything the code relies on is
+  asserted in code as well, not just written down.
+- **Keep low-level design reasoning out of docstrings.** A docstring says what
+  something is, what it takes and what it returns. Why a design was chosen over
+  an alternative, what bug it avoids, what would break if it were done the other
+  way — that belongs in a **Notes section at the end**, if it belongs in the
+  docstring at all. Otherwise put it in an implementation comment beside the
+  code it explains, or in the design log in the vault. A top-level docstring is
+  read by someone trying to use the thing, not to review its design.
+
+### Docstrings for modules that define a data model
+
+A module that owns how some data is represented should answer four questions,
+because these are what someone opens it to find out:
+
+1. **Where it sits in the pipeline** — which scripts produce the data it reads,
+   and which way the dependency runs.
+2. **What it reads** — the inputs, named, with what each is for.
+3. **The data model** — for an xarray product, the dims, the data variables and
+   their dtypes, the coordinates and which dims they are on, the attributes,
+   and what missing means. State it plainly; do not make the reader infer it
+   from the validation code.
+4. **The functions it provides** — the public entry points and what each one
+   does with that model.
+
+Then Notes for the design reasoning, then Usage for how to call the public
+functions. `sipnet_calibration.constraints` is the worked example.
+
+### Docstrings for data processing scripts
+
+File-level docstrings use these sections, in this order:
+
+1. **Overview** — a couple of sentences on what the script does.
+2. **Input data** — the assumed format of what it reads. Clear and precise, but
+   not every detail.
+3. **Output data** — the same for what it writes.
+4. **Notes** — anything else that matters: traps, why a step exists, what a
+   choice depends on. Omit if there is nothing to say.
+5. **Usage** — the command lines.
+
+Function and module docstrings elsewhere are ordinary NumPy style.
+
+### Products and their readers
+
+- **Schema constants and the reader live in the library**, not the script, so
+  the writer and the reader of a product cannot drift apart
+  (`SITE_COLUMNS` in `sites.py`, `CONSTRAINT_VARIABLES` in `constraints.py`).
+  A script's own round-trip check calls the library loader, never a parallel
+  reader.
+- **Write to a `.partial` path and rename only after the checks pass**, so a
+  failed run cannot leave a corrupt file at the canonical path.
+
 ## Writing conventions
 
 - **American English spelling throughout**: `center`, not `centre`; `color`,
@@ -63,14 +175,17 @@ Operational rules that follow from the data and are easy to get wrong in code:
 
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
-reorg has landed, so the paths below are the real ones; `sites.py` is
-implemented and the other modules carry the contract each is to satisfy.
+reorg has landed, so the paths below are the real ones; `sites.py` and
+`constraints.py` are implemented and the other modules carry the contract each
+is to satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
   sites.py                # SITE_GRID + grid conversions, load_sites(),
                           # select_sites(ids=, bbox=, where=, sample=, seed=)
+  constraints.py          # annual constraint schema, load_constraints(),
+                          # constraint_fields() -> canonical per-variable view
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/
@@ -120,7 +235,8 @@ plotting code. The load-bearing rules:
   as `agg`.** SIPNET's `nee` is `g C m-2 per timestep` — extensive — so
   3-hourly to daily is a **sum**; a mean is wrong by 8x and looks plausible.
   `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
-  (sum); carbon pools and `AbvGrndWood`/`LAI` are stocks (instantaneous).
+  (sum); carbon pools and `aboveground_wood_carbon`/`lai` are stocks
+  (instantaneous).
   `aggregate_time` reads the registry; `how=` is an override, not the input.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
