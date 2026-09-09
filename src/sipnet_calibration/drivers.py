@@ -211,13 +211,16 @@ A cached subset, if a workflow wants one, is the caller's business::
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
+from sipnet_calibration.obs_ops import sipnet_time_index
+from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, load_sites
 
 __all__ = [
     "CLIM_FILE_COLUMNS",
@@ -390,10 +393,12 @@ MEMBER_SOURCE = "met"
 DRIVER_PRESENT = "driver_present"
 
 #: Per-site-and-member directory under the drivers root, and the file inside
-#: it. ``<start>`` and ``<end>`` in the file name are dates; the glob accepts
-#: any and the reader checks them against the data.
+#: it, ``ERA5.<member>.<start>.<end>.clim``. The glob accepts any member and
+#: any dates so that a file whose name disagrees with its directory is reported
+#: as the mismatch it is rather than as a missing file; the reader checks both
+#: against the directory and the data.
 DRIVER_DIRECTORY_TEMPLATE = "ERA5_{site}_{member}"
-DRIVER_FILE_GLOB = "ERA5.{member}.*.clim"
+DRIVER_FILE_GLOB = "ERA5.*.clim"
 
 #: How far below zero ``par`` and ``precip`` may go before a file is refused.
 #: The source holds excursions of order 1e-5 and 1e-15 that read as generator
@@ -408,7 +413,9 @@ def default_drivers_root() -> Path:
     otherwise the ``data/`` directory of this checkout. Experiments name their
     paths in ``config.py``.
     """
-    raise NotImplementedError
+    root = os.environ.get(DATA_ROOT_ENV_VAR)
+    data_root = Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    return data_root / "raw" / "drivers"
 
 
 def driver_file(root: Path | str, site: int, member: int) -> Path:
@@ -436,7 +443,22 @@ def driver_file(root: Path | str, site: int, member: int) -> Path:
     ValueError
         If more than one file matches, since the layout promises exactly one.
     """
-    raise NotImplementedError
+    directory = Path(root) / DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member=int(member))
+    if not directory.is_dir():
+        raise FileNotFoundError(
+            f"no driver directory for site {site} member {member}: {directory}"
+        )
+    matches = sorted(directory.glob(DRIVER_FILE_GLOB))
+    if not matches:
+        raise FileNotFoundError(
+            f"{directory} holds no file matching {DRIVER_FILE_GLOB!r}"
+        )
+    if len(matches) > 1:
+        raise ValueError(
+            f"{directory} holds {len(matches)} files matching {DRIVER_FILE_GLOB!r}; "
+            f"the layout promises one: {[m.name for m in matches]}"
+        )
+    return matches[0]
 
 
 def available_members(root: Path | str, site: int) -> tuple[int, ...]:
@@ -457,7 +479,13 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
         present and well formed is :func:`driver_file` and
         :func:`read_clim_file`'s business.
     """
-    raise NotImplementedError
+    root = Path(root)
+    members = []
+    for directory in root.glob(DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member="*")):
+        parsed = _site_member_from_directory(directory.name)
+        if parsed is not None and parsed[0] == int(site) and directory.is_dir():
+            members.append(parsed[1])
+    return tuple(sorted(members))
 
 
 def read_clim_file(path: Path | str) -> pd.DataFrame:
@@ -497,13 +525,50 @@ def read_clim_file(path: Path | str) -> pd.DataFrame:
     upstream regeneration is noticed. When that happens the check, not the
     caller, is what needs changing.
     """
-    raise NotImplementedError
+    path = Path(path)
+    try:
+        raw = pd.read_csv(
+            path,
+            sep=r"\s+",
+            header=None,
+            dtype=np.float64,
+            float_precision="round_trip",
+            # A field reading "NA" must stay a parse failure, not become a
+            # quiet null; and no field may be absorbed into an index.
+            keep_default_na=False,
+            na_values=[],
+            index_col=False,
+        )
+    except pd.errors.ParserError as error:
+        raise ValueError(f"{path}: could not be parsed as a .clim file: {error}") from error
+    except ValueError as error:
+        raise ValueError(
+            f"{path}: a field could not be read as a number ({error}). A row with "
+            "fewer than 14 fields shows up here as an empty field."
+        ) from error
+
+    _check_column_count(raw, path)
+    raw.columns = list(CLIM_FILE_COLUMNS)
+    _check_no_missing_values(raw, path)
+
+    frame = raw
+    for column in ("year", "day"):
+        values = frame[column].to_numpy()
+        if np.any(values != np.floor(values)):
+            raise ValueError(f"{path}: {column} holds non-integer values")
+        frame[column] = values.astype(np.int32)
+
+    _check_constant_columns(frame, path)
+    _check_day_structure(frame, path)
+    _check_time_column_follows_drift_model(frame, path)
+    _check_negative_excursions_bounded(frame, path)
+    return frame
 
 
 def load_drivers(
-    sites,
+    sites: Iterable[int],
     *,
-    members=None,
+    members: Iterable[int] | None = None,
     root: Path | str | None = None,
     sites_table: pd.DataFrame | None = None,
     allow_missing: bool = False,
@@ -552,17 +617,47 @@ def load_drivers(
 
     Notes
     -----
-    Parsing costs about 40 ms per file, so ten sites at ten members take a few
-    seconds and two hundred sites a minute or two; the Notes in the module
-    docstring say why this is preferred to a store. Memory is about 2.4 MB per
-    site-member.
+    Parsing costs under a tenth of a second per file, so ten sites at ten
+    members take several seconds and two hundred sites a few minutes; the Notes
+    in the module docstring say why this is preferred to a store. Memory is
+    about 2.4 MB per site-member.
 
     Values are read through unchanged: negative excursions of ``par`` and
     ``precipitation`` around zero, and zeros of ``vpd``, ``soil_vpd`` and
     ``wind_speed`` that SIPNET would clamp, are counted into the variable
     attributes rather than altered.
     """
-    raise NotImplementedError
+    root = Path(root) if root is not None else default_drivers_root()
+    if not root.is_dir():
+        raise FileNotFoundError(f"drivers root {root} is not a directory")
+
+    site_ids = _site_ids(sites)
+    table = sites_table if sites_table is not None else load_sites()
+    _check_sites_are_in_the_site_table(site_ids, table)
+
+    member_ids = _member_ids(members, root=root, sites=site_ids)
+
+    paths, present = _locate_files(root, sites=site_ids, members=member_ids)
+    if not present.any():
+        raise FileNotFoundError(
+            f"no driver files under {root} for sites {site_ids.tolist()} and "
+            f"members {member_ids.tolist()}"
+        )
+    if not allow_missing:
+        _check_members_complete(present, sites=site_ids, members=member_ids, root=root)
+
+    arrays, time = _read_all(paths, present)
+    dataset = _assemble(
+        arrays,
+        present=present,
+        time=time,
+        sites=site_ids,
+        members=member_ids,
+        table=table,
+        root=root,
+        allow_missing=allow_missing,
+    )
+    return dataset
 
 
 def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
@@ -592,20 +687,53 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     ValueError
         If any of :data:`DRIVER_VARIABLES` is absent from *dataset*.
     """
-    raise NotImplementedError
+    missing = [name for name in DRIVER_VARIABLES if name not in dataset.data_vars]
+    if missing:
+        raise ValueError(
+            f"dataset is missing driver variables {missing}; found "
+            f"{sorted(dataset.data_vars)}"
+        )
+    fields = {}
+    for name in DRIVER_VARIABLES:
+        field = dataset[name].copy(deep=False)
+        field.attrs = {**_variable_attrs(name), **dataset[name].attrs}
+        fields[name] = field
+    return fields
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
+_DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
+_FILE_PATTERN = re.compile(r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$")
+
+#: Source columns whose sub-zero values are counted, and the attribute name.
+_COUNT_BELOW_ZERO = {"par": "n_values_below_zero", "precip": "n_values_below_zero"}
+_COUNT_NOT_POSITIVE = {
+    "vpd": "n_values_not_positive",
+    "vpd_soil": "n_values_not_positive",
+    "wspd": "n_values_not_positive",
+}
+
 
 def _site_member_from_directory(name: str) -> tuple[int, int] | None:
     """``(site, member)`` from an ``ERA5_<site>_<member>`` name, else ``None``."""
-    raise NotImplementedError
+    match = _DIRECTORY_PATTERN.match(name)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
 
 
 def _dates_from_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
     """The ``<start>`` and ``<end>`` dates embedded in a ``.clim`` file name."""
-    raise NotImplementedError
+    match = _FILE_PATTERN.match(path.name)
+    if match is None:
+        raise ValueError(
+            f"{path}: file name does not follow ERA5.<member>.<start>.<end>.clim"
+        )
+    try:
+        return pd.Timestamp(match.group(2)), pd.Timestamp(match.group(3))
+    except ValueError as error:
+        raise ValueError(f"{path}: file name carries an invalid date: {error}") from error
 
 
 def _time_axis(frame: pd.DataFrame) -> pd.DatetimeIndex:
@@ -615,17 +743,198 @@ def _time_axis(frame: pd.DataFrame) -> pd.DatetimeIndex:
     ``year``, ``day`` and the slot the ``time`` column identifies. Every file
     read in one :func:`load_drivers` call must produce the same axis.
     """
-    raise NotImplementedError
+    return sipnet_time_index(
+        year=frame["year"].to_numpy(),
+        day_of_year=frame["day"].to_numpy(),
+        hours_since_midnight=frame["time"].to_numpy(),
+        timestep_hours=TIMESTEP_HOURS,
+    )
 
 
 def _variable_attrs(name: str) -> dict[str, str]:
     """Attributes for one variable, with the units caveat attached."""
-    raise NotImplementedError
+    return {
+        **DRIVER_VARIABLE_ATTRS[name],
+        "units_status": UNITS_STATUS,
+        "units_provenance": UNITS_PROVENANCE,
+    }
 
 
 def _time_attrs() -> dict[str, str]:
     """Attributes for the ``time`` coordinate: clock, label, and their status."""
-    raise NotImplementedError
+    return {
+        "long_name": "Nominal timestamp of the timestep",
+        "time_zone": TIME_ZONE,
+        "time_label": TIME_LABEL,
+        "time_label_note": (
+            "The value in the row labeled hour h covers the interval (h - 3, h]. "
+            "Labels are the nominal year/day/3*slot instants; the source's own "
+            "time column drifts and is not used (issue #9)."
+        ),
+        "clock_status": CLOCK_STATUS,
+        "clock_provenance": CLOCK_PROVENANCE,
+    }
+
+
+def _site_ids(sites: Iterable[int]) -> np.ndarray:
+    """Requested sites as a sorted, de-duplicated ``int32`` array."""
+    values = np.asarray(list(sites))
+    if values.size == 0:
+        raise ValueError("no sites requested")
+    if values.dtype.kind not in "iu":
+        if values.dtype.kind != "f" or np.any(values != np.floor(values)):
+            raise ValueError(f"site identifiers must be integers, got {values.dtype}")
+    values = np.unique(values.astype(np.int64))
+    if np.any(values < 1):
+        raise ValueError(f"site identifiers must be positive, found {values[values < 1].tolist()}")
+    return values.astype(np.int32)
+
+
+def _member_ids(members: Iterable[int] | None, *, root: Path, sites: np.ndarray) -> np.ndarray:
+    """Requested members as a sorted ``int64`` array, discovered when ``None``."""
+    if members is None:
+        found: set[int] = set()
+        for site in sites:
+            found.update(available_members(root, int(site)))
+        if not found:
+            raise FileNotFoundError(
+                f"no driver directories under {root} for sites {sites.tolist()}"
+            )
+        return np.array(sorted(found), dtype=np.int64)
+    values = np.unique(np.asarray(list(members)).astype(np.int64))
+    if values.size == 0:
+        raise ValueError("no members requested")
+    if np.any(values < 1):
+        raise ValueError(
+            f"member indices are the source's 1-based directory indices; found "
+            f"{values[values < 1].tolist()}"
+        )
+    return values
+
+
+def _locate_files(
+    root: Path, *, sites: np.ndarray, members: np.ndarray
+) -> tuple[dict[tuple[int, int], Path], np.ndarray]:
+    """Paths for every ``(member, site)`` pair that has one, and a presence mask."""
+    present = np.zeros((members.size, sites.size), dtype=bool)
+    paths: dict[tuple[int, int], Path] = {}
+    for j, site in enumerate(sites):
+        for i, member in enumerate(members):
+            try:
+                paths[(i, j)] = driver_file(root, int(site), int(member))
+            except FileNotFoundError:
+                continue
+            present[i, j] = True
+    return paths, present
+
+
+def _read_all(
+    paths: dict[tuple[int, int], Path], present: np.ndarray
+) -> tuple[dict[str, np.ndarray], pd.DatetimeIndex]:
+    """Parse every located file into ``(member, site, time)`` arrays.
+
+    The first file read fixes the time axis; every later file is checked to
+    share its grid before its values are copied in. Cells with no file stay
+    ``NaN``.
+    """
+    reference: pd.DataFrame | None = None
+    reference_path: Path | None = None
+    arrays: dict[str, np.ndarray] = {}
+    time: pd.DatetimeIndex | None = None
+
+    for (i, j), path in sorted(paths.items(), key=lambda item: (item[0][1], item[0][0])):
+        frame = read_clim_file(path)
+        site, member = _site_member_from_directory(path.parent.name)
+        _check_file_name_matches_contents(path, frame, site=site, member=member)
+        if reference is None:
+            reference, reference_path = frame, path
+            time = _time_axis(frame)
+            shape = present.shape + (len(frame),)
+            arrays = {source: np.full(shape, np.nan) for source in SOURCE_VARIABLE_NAMES}
+        else:
+            _check_grids_identical(reference, frame, reference_path=reference_path, path=path)
+        for source in SOURCE_VARIABLE_NAMES:
+            arrays[source][i, j, :] = frame[source].to_numpy()
+    assert time is not None
+    return arrays, time
+
+
+def _assemble(
+    arrays: dict[str, np.ndarray],
+    *,
+    present: np.ndarray,
+    time: pd.DatetimeIndex,
+    sites: np.ndarray,
+    members: np.ndarray,
+    table: pd.DataFrame,
+    root: Path,
+    allow_missing: bool,
+) -> xr.Dataset:
+    """Put the arrays into the Dataset the module docstring describes."""
+    dims = ("member", "site", "time")
+    coordinates = table.set_index("site_id").loc[sites]
+    data_vars = {}
+    for source, name in SOURCE_VARIABLE_NAMES.items():
+        values = arrays[source]
+        attrs = _variable_attrs(name)
+        observed = values[present]
+        if source in _COUNT_BELOW_ZERO:
+            attrs[_COUNT_BELOW_ZERO[source]] = int(np.count_nonzero(observed < 0))
+        if source in _COUNT_NOT_POSITIVE:
+            attrs[_COUNT_NOT_POSITIVE[source]] = int(np.count_nonzero(observed <= 0))
+        data_vars[name] = xr.DataArray(values, dims=dims, attrs=attrs)
+    if allow_missing:
+        data_vars[DRIVER_PRESENT] = xr.DataArray(
+            present,
+            dims=("member", "site"),
+            attrs={
+                "long_name": "Whether a driver file existed for the member and site",
+                "comment": "The eight driver variables are NaN where this is False.",
+            },
+        )
+
+    dataset = xr.Dataset(
+        data_vars,
+        coords={
+            "member": np.arange(members.size, dtype=np.int16),
+            "source_member_index": ("member", members.astype(np.int16)),
+            "site": sites.astype(np.int32),
+            "lon": ("site", coordinates["lon"].to_numpy(np.float64)),
+            "lat": ("site", coordinates["lat"].to_numpy(np.float64)),
+            "time": time,
+        },
+    )
+    dataset["time"].attrs = _time_attrs()
+    dataset["member"].attrs = {
+        "long_name": "Ensemble member",
+        "comment": (
+            "0-based, meaningful only within this source; source_member_index "
+            "is the 1-based index in the directory name."
+        ),
+    }
+    dataset["source_member_index"].attrs = {
+        "long_name": "Member index in the source directory name (1-based)"
+    }
+    dataset["site"].attrs = {
+        "long_name": "Model site identifier",
+        "comment": "The handed-down 1-8000 identifier; never renumbered.",
+    }
+    dataset.attrs = {
+        "title": "ERA5 meteorological drivers in SIPNET climate-file form",
+        "source_root": str(root),
+        "source_layout": f"{DRIVER_DIRECTORY_TEMPLATE}/{DRIVER_FILE_GLOB}",
+        "timestep_days": CLIM_FILE_CONSTANTS["length"],
+        "member_source": MEMBER_SOURCE,
+        "member_correspondence": (
+            "Not established. Whether driver member i corresponds to "
+            "initial-condition or NEE member i is open question 12 in "
+            "data/README.md; nothing here assumes it does."
+        ),
+        "n_sites": int(sites.size),
+        "n_members": int(members.size),
+        "coverage": "complete" if present.all() else "gaps",
+    }
+    return dataset
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -633,12 +942,29 @@ def _time_attrs() -> dict[str, str]:
 
 def _check_column_count(raw: pd.DataFrame, path: Path) -> None:
     """Every row has exactly the 14 fields of :data:`CLIM_FILE_COLUMNS`."""
-    raise NotImplementedError
+    expected = len(CLIM_FILE_COLUMNS)
+    if raw.shape[1] != expected:
+        raise ValueError(
+            f"{path}: expected {expected} fields per row, the first row has "
+            f"{raw.shape[1]}. Only the 14-column SIPNET climate layout is read."
+        )
+    if raw.empty:
+        raise ValueError(f"{path}: holds no rows")
 
 
 def _check_no_missing_values(frame: pd.DataFrame, path: Path) -> None:
-    """No value is missing or non-finite; SIPNET requires complete drivers."""
-    raise NotImplementedError
+    """No value is missing or non-finite; SIPNET requires complete drivers.
+
+    The parse itself refuses an empty or non-numeric field, so what reaches
+    this check is a field that parsed to an infinity.
+    """
+    finite = np.isfinite(frame.to_numpy())
+    if not finite.all():
+        rows, columns = np.nonzero(~finite)
+        raise ValueError(
+            f"{path}: {rows.size} non-finite value(s); first at data row "
+            f"{int(rows[0])}, column {frame.columns[int(columns[0])]!r}"
+        )
 
 
 def _check_constant_columns(frame: pd.DataFrame, path: Path) -> None:
@@ -648,7 +974,20 @@ def _check_constant_columns(frame: pd.DataFrame, path: Path) -> None:
     ``timestep_days`` attribute both assume it, so a file with a different
     timestep must be refused rather than mislabeled.
     """
-    raise NotImplementedError
+    for column, expected in CLIM_FILE_CONSTANTS.items():
+        values = frame[column].to_numpy()
+        if not np.all(values == expected):
+            seen = np.unique(values[values != expected])
+            raise ValueError(
+                f"{path}: {column} must be {expected!r} in every row; found "
+                f"{seen[:5].tolist()}"
+                + (
+                    ". A different length is a different timestep, which this "
+                    "reader does not handle."
+                    if column == "length"
+                    else ""
+                )
+            )
 
 
 def _check_day_structure(frame: pd.DataFrame, path: Path) -> None:
@@ -658,7 +997,32 @@ def _check_day_structure(frame: pd.DataFrame, path: Path) -> None:
     contiguous. This is the structure the time axis is built from, so any
     departure would produce a wrong axis rather than an error downstream.
     """
-    raise NotImplementedError
+    year = frame["year"].to_numpy()
+    day = frame["day"].to_numpy()
+    years = np.unique(year)
+    if np.any(np.diff(years) != 1):
+        raise ValueError(f"{path}: years are not contiguous: {years.tolist()}")
+    # Rows must be grouped by year in ascending order for the per-year slices
+    # below to be the years they claim to be.
+    if np.any(np.diff(year) < 0):
+        raise ValueError(f"{path}: rows are not in ascending year order")
+
+    for value in years:
+        rows = day[year == value]
+        n_days = 366 if pd.Timestamp(int(value), 1, 1).is_leap_year else 365
+        expected = np.repeat(np.arange(1, n_days + 1), STEPS_PER_DAY)
+        if rows.size != expected.size:
+            raise ValueError(
+                f"{path}: year {value} has {rows.size} rows, expected "
+                f"{expected.size} ({n_days} days x {STEPS_PER_DAY} steps)"
+            )
+        if not np.array_equal(rows, expected):
+            first = int(np.flatnonzero(rows != expected)[0])
+            raise ValueError(
+                f"{path}: year {value} does not run 1..{n_days} with "
+                f"{STEPS_PER_DAY} rows per day; first departure at row {first} "
+                f"of the year (day {int(rows[first])}, expected {int(expected[first])})"
+            )
 
 
 def _check_time_column_follows_drift_model(frame: pd.DataFrame, path: Path) -> None:
@@ -670,7 +1034,21 @@ def _check_time_column_follows_drift_model(frame: pd.DataFrame, path: Path) -> N
     the artifact is noticed: it would mean the generator was corrected, and
     the drift model documented here would then be wrong.
     """
-    raise NotImplementedError
+    year = frame["year"].to_numpy()
+    time = frame["time"].to_numpy()
+    for value in np.unique(year):
+        labels = time[year == value]
+        n_days = labels.size // STEPS_PER_DAY
+        model = np.linspace(0, 24 * n_days - 1, labels.size) % 24
+        worst = float(np.max(np.abs(labels - model)))
+        if worst > 1e-5:
+            raise ValueError(
+                f"{path}: the time column in {value} departs from the "
+                f"modulo-24 linspace model of issue #9 by up to {worst:.3g} h. "
+                "Either the file was regenerated without the artifact, in which "
+                "case this check and the documentation need updating, or it is "
+                "not a file this reader understands."
+            )
 
 
 def _check_negative_excursions_bounded(frame: pd.DataFrame, path: Path) -> None:
@@ -679,7 +1057,15 @@ def _check_negative_excursions_bounded(frame: pd.DataFrame, path: Path) -> None:
     Small negatives are known and read through; a large one would be a
     different kind of problem and is refused.
     """
-    raise NotImplementedError
+    for column in ("par", "precip"):
+        values = frame[column].to_numpy()
+        low = values < -NEGATIVE_TOLERANCE
+        if low.any():
+            raise ValueError(
+                f"{path}: {int(low.sum())} {column} value(s) below "
+                f"-{NEGATIVE_TOLERANCE:g}, the lowest {values.min():.4g}. Small "
+                "negative excursions around zero are known; these are not small."
+            )
 
 
 def _check_file_name_matches_contents(
@@ -691,7 +1077,28 @@ def _check_file_name_matches_contents(
     two must agree; the ``<start>`` and ``<end>`` dates in the file name must
     be the first and last day the data covers.
     """
-    raise NotImplementedError
+    match = _FILE_PATTERN.match(path.name)
+    if match is None:
+        raise ValueError(
+            f"{path}: file name does not follow ERA5.<member>.<start>.<end>.clim"
+        )
+    if int(match.group(1)) != member:
+        raise ValueError(
+            f"{path}: the file name says member {int(match.group(1))}, the "
+            f"directory says member {member}"
+        )
+    start, end = _dates_from_file_name(path)
+    first = pd.Timestamp(int(frame["year"].iloc[0]), 1, 1) + pd.Timedelta(
+        days=int(frame["day"].iloc[0]) - 1
+    )
+    last = pd.Timestamp(int(frame["year"].iloc[-1]), 1, 1) + pd.Timedelta(
+        days=int(frame["day"].iloc[-1]) - 1
+    )
+    if (start, end) != (first, last):
+        raise ValueError(
+            f"{path}: the file name covers {start.date()} to {end.date()} but the "
+            f"data runs {first.date()} to {last.date()}"
+        )
 
 
 def _check_grids_identical(
@@ -702,12 +1109,31 @@ def _check_grids_identical(
     The ``time`` coordinate is built from the first file read and applied to
     all of them, which is sound only if the grids are the same.
     """
-    raise NotImplementedError
+    if len(frame) != len(reference):
+        raise ValueError(
+            f"{path} has {len(frame)} rows where {reference_path} has "
+            f"{len(reference)}; every file read together must share one grid"
+        )
+    for column in ("year", "day", "time"):
+        a = reference[column].to_numpy()
+        b = frame[column].to_numpy()
+        if not np.array_equal(a, b):
+            first = int(np.flatnonzero(a != b)[0])
+            raise ValueError(
+                f"{path}: {column} differs from {reference_path} first at data "
+                f"row {first} ({b[first]!r} against {a[first]!r}); every file "
+                "read together must share one (year, day, time) grid"
+            )
 
 
 def _check_sites_are_in_the_site_table(sites: np.ndarray, table: pd.DataFrame) -> None:
     """Every requested site exists in the site table, so it has coordinates."""
-    raise NotImplementedError
+    unknown = sorted(set(sites.tolist()) - set(table["site_id"].tolist()))
+    if unknown:
+        raise ValueError(
+            f"{len(unknown)} requested site(s) are not in the site table, for "
+            f"example {unknown[:10]}"
+        )
 
 
 def _check_members_complete(
@@ -718,4 +1144,16 @@ def _check_members_complete(
     The message lists the missing pairs, and says that ``allow_missing=True``
     reads the rest with ``NaN`` in their place.
     """
-    raise NotImplementedError
+    if present.all():
+        return
+    missing = [
+        (int(sites[j]), int(members[i]))
+        for i, j in zip(*np.nonzero(~present), strict=True)
+    ]
+    shown = ", ".join(f"site {s} member {m}" for s, m in missing[:10])
+    more = f", and {len(missing) - 10} more" if len(missing) > 10 else ""
+    raise FileNotFoundError(
+        f"{len(missing)} requested (site, member) pair(s) have no driver file "
+        f"under {root}: {shown}{more}. Pass allow_missing=True to read the rest "
+        "with NaN in their place and a driver_present array saying which."
+    )

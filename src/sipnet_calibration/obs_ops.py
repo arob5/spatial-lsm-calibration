@@ -7,10 +7,11 @@ with what the likelihood consumed.
 
 Provided:
 
-* ``sipnet_time_index(year, day, time, *, timestep_hours) -> DatetimeIndex`` --
-  SIPNET output and ``.clim`` drivers carry ``year``, ``day``, ``time`` columns,
-  not a datetime index. The ``time`` column drifts (issue #9) and is used only
-  to identify a row's slot within its day, never as the timestamp.
+* ``sipnet_time_index(year, day_of_year, hours_since_midnight, *,
+  timestep_hours) -> DatetimeIndex`` -- SIPNET output and ``.clim`` drivers
+  carry ``year``, ``day`` and ``time`` columns, not a datetime index. The
+  ``time`` column drifts (issue #9) and is used only to identify a row's slot
+  within its day, never as the timestamp.
 
 Planned (issue #6):
 
@@ -44,29 +45,34 @@ daily-mean-of-quantile, and which one is wanted is a modeling choice.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 __all__ = ["sipnet_time_index"]
 
 
-def sipnet_time_index(year, day, time, *, timestep_hours: float = 3.0) -> pd.DatetimeIndex:
+def sipnet_time_index(
+    year, day_of_year, hours_since_midnight, *, timestep_hours: float = 3.0
+) -> pd.DatetimeIndex:
     """Timestamps for rows labeled the way SIPNET labels them.
 
-    SIPNET's climate files and its output give each row a ``year``, an integer
-    ``day`` of year with 1 being January 1, and a fractional-hour ``time``. This
-    builds the nominal timestamp of each row as::
+    SIPNET's climate files and its output give each row a year, an integer day
+    of year with 1 being January 1, and a fractional hour of the day -- the
+    columns SIPNET calls ``year``, ``day`` and ``time``. This builds the
+    nominal timestamp of each row as::
 
-        year-01-01  +  (day - 1) days  +  slot * timestep_hours
+        year-01-01  +  (day_of_year - 1) days  +  slot * timestep_hours
 
-    where ``slot = floor(time / timestep_hours)`` is the row's position within
-    its day. The ``time`` value itself is used for nothing else.
+    where ``slot = floor(hours_since_midnight / timestep_hours)`` is the row's
+    position within its day. The hour value itself is used for nothing else.
 
     Parameters
     ----------
-    year, day, time:
-        Array-likes of equal length. ``year`` and ``day`` are integers (or
-        floats that are whole numbers); ``time`` is hours since midnight of
-        ``day``.
+    year, day_of_year, hours_since_midnight:
+        Array-likes of equal length: SIPNET's ``year``, ``day`` and ``time``
+        columns under clearer names. ``year`` and ``day_of_year`` are integers
+        (or floats that are whole numbers); ``hours_since_midnight`` is hours
+        since midnight of that day.
     timestep_hours:
         Length of one row's timestep in hours; must divide 24. The default is
         the 3-hourly drivers. A daily file passes ``24.0``.
@@ -83,11 +89,13 @@ def sipnet_time_index(year, day, time, *, timestep_hours: float = 3.0) -> pd.Dat
     ------
     ValueError
         If the lengths differ; ``timestep_hours`` does not divide 24; a
-        ``day`` is outside ``1..366``, or is 366 in a non-leap year; a ``time``
-        is outside ``[0, 24)``; or a ``time`` label does not sit inside its
-        slot, meaning ``time - slot * timestep_hours`` is not in
-        ``[0, timestep_hours)``. That last condition is what a label with a
-        drift of one full step or more would violate.
+        ``year`` or ``day_of_year`` is not a whole number; a ``day_of_year`` is
+        outside ``1..366``, or is 366 in a non-leap year; an
+        ``hours_since_midnight`` is outside ``[0, 24)``; or the resulting index
+        is not strictly increasing. SIPNET
+        writes rows in order, so the last condition is what a label drifting
+        by one full step or more turns into: the row lands in the next row's
+        slot and the two collide.
 
     Notes
     -----
@@ -99,9 +107,87 @@ def sipnet_time_index(year, day, time, *, timestep_hours: float = 3.0) -> pd.Dat
     same column verbatim into its output, which is why this lives here rather
     than in a driver-specific module.
 
+    A drift of less than one step is invisible to a single label by design;
+    :mod:`sipnet_calibration.drivers` asserts the drift model of the source
+    separately, on whole files.
+
     Nothing about the result depends on an interval convention. The nominal
     label ``slot * timestep_hours`` is what the source wrote, and
     ``resample`` on it groups a day's rows exactly as SIPNET's own ``day``
     column does.
     """
-    raise NotImplementedError
+    year = np.asarray(year)
+    day = np.asarray(day_of_year)
+    hours = np.asarray(hours_since_midnight, dtype=np.float64)
+    if not (year.shape == day.shape == hours.shape) or year.ndim != 1:
+        raise ValueError(
+            "year, day_of_year and hours_since_midnight must be one-dimensional "
+            f"and the same length; got shapes {year.shape}, {day.shape}, {hours.shape}"
+        )
+
+    if not timestep_hours > 0:
+        raise ValueError(f"timestep_hours must divide 24, got {timestep_hours!r}")
+    steps_per_day = 24.0 / timestep_hours
+    if abs(steps_per_day - round(steps_per_day)) > 1e-9:
+        raise ValueError(f"timestep_hours must divide 24, got {timestep_hours!r}")
+    steps_per_day = int(round(steps_per_day))
+
+    year = _whole_numbers(year, name="year")
+    day = _whole_numbers(day, name="day_of_year")
+
+    if year.size == 0:
+        return pd.DatetimeIndex([], dtype="datetime64[ns]")
+
+    if np.any(day < 1) or np.any(day > 366):
+        bad = day[(day < 1) | (day > 366)]
+        raise ValueError(f"day_of_year must be within 1..366, found {bad[:5].tolist()}")
+    is_leap = (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
+    if np.any((day == 366) & ~is_leap):
+        bad_years = np.unique(year[(day == 366) & ~is_leap])
+        raise ValueError(f"day_of_year 366 in non-leap year(s) {bad_years[:5].tolist()}")
+
+    if np.any(~np.isfinite(hours)) or np.any(hours < 0) or np.any(hours >= 24):
+        bad = hours[~((hours >= 0) & (hours < 24))]
+        raise ValueError(
+            f"hours_since_midnight must lie within [0, 24), found {bad[:5].tolist()}"
+        )
+
+    slot = np.floor(hours / timestep_hours).astype(np.int64)
+    # An hour just below 24 with a step that divides 24 always floors below
+    # steps_per_day; the guard is against floating-point noise at the edge.
+    slot = np.minimum(slot, steps_per_day - 1)
+
+    year_start = pd.to_datetime(pd.Series(year), format="%Y").to_numpy()
+    offset = (day - 1).astype("timedelta64[D]") + (
+        (slot * timestep_hours * 3600.0).round().astype(np.int64).astype("timedelta64[s]")
+    )
+    index = pd.DatetimeIndex(year_start + offset).as_unit("ns")
+
+    if not index.is_monotonic_increasing or index.has_duplicates:
+        where = int(np.flatnonzero(np.diff(index.asi8) <= 0)[0]) + 1
+        raise ValueError(
+            "the timestamps are not strictly increasing: row "
+            f"{where} ({index[where]}) does not follow row {where - 1} "
+            f"({index[where - 1]}). Rows out of order, or a time label that "
+            "drifted into the next slot."
+        )
+    return index
+
+
+# ── supporting helpers ────────────────────────────────────────────────────────
+
+
+def _whole_numbers(values: np.ndarray, *, name: str) -> np.ndarray:
+    """*values* as ``int64``, raising if any is not a whole number."""
+    if values.dtype.kind in "iu":
+        return values.astype(np.int64)
+    if values.dtype.kind == "f":
+        if np.any(~np.isfinite(values)) or np.any(values != np.floor(values)):
+            raise ValueError(f"{name} must hold whole numbers")
+        return values.astype(np.int64)
+    if values.dtype.kind == "b":
+        raise ValueError(f"{name} must be numeric, got booleans")
+    try:
+        return _whole_numbers(values.astype(np.float64), name=name)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be numeric") from error
