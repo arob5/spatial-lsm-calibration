@@ -2597,7 +2597,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyeki", git = "https://github.com/TARPS-group/pyEKI.git?branch=main" },
     { name = "pyens", git = "https://github.com/arob5/PyEns.git?branch=main" },
-    { name = "pyproj", specifier = ">=3.7.2" },
+    { name = "pyproj", specifier = ">=3.7.1" },
     { name = "pyshp", specifier = ">=3.1" },
     { name = "pysipnet", git = "https://github.com/TARPS-group/pySIPNET.git?branch=main" },
     { name = "scipy", specifier = ">=1.11" },
