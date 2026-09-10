@@ -93,7 +93,7 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 [Processed format](#processed-format).
 
 > **Note 1.** The per-site directory templates are inferred from three driver
-> directories and three initial-condition files rather than confirmed across
+> directories and three initial condition files rather than confirmed across
 > all 8000 sites.
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
@@ -412,17 +412,25 @@ is why the processed names do not collide; see
 [Processed format](#processed-format).
 
 **These files are not a SIPNET input format.** SIPNET has no netCDF reader.
-Initial conditions reach it as *parameters* — `plantWoodInit`, `soilInit`,
-`laiInit`, `soilWFracInit` — and three of the four mappings involve parameters
-that are themselves calibrated, so the mapping depends on the current parameter
-vector and belongs to the experiment layer rather than to ingest. From
-`sipnet.c:1885-1924`: `plantWoodC = (1 - coarseRootFrac - fineRootFrac) *
-plantWoodInit`, `plantLeafC = laiInit * leafCSpWt`, `soilWater = soilWFracInit *
-soilWHC`, and `soilC = soilInit`. Only the last is a plain unit
-conversion: that mapping is the identity, and the factor of 1000 is kg C m-2
-to the g C m-2 that `sipnet/docs/parameters.md` documents for the parameter.
-`ingest_ic.py` therefore applies **no parameter mapping and no unit
-conversion**.
+These files hold initial *state* — carbon pool sizes per unit ground area —
+while SIPNET is initialized from *parameters*: `plantWoodInit`, `soilInit`,
+`laiInit`, `soilWFracInit`. Computing three of those four from the
+corresponding pool needs parameters that are themselves calibrated, from
+`sipnet.c:1885-1924`:
+
+| Parameter | SIPNET uses it as | So computing it needs |
+|---|---|---|
+| `plantWoodInit` | `plantWoodC = (1 - coarseRootFrac - fineRootFrac) * plantWoodInit` | the two root fractions |
+| `laiInit` | `plantLeafC = laiInit * leafCSpWt` | the specific leaf weight |
+| `soilWFracInit` | `soilWater = soilWFracInit * soilWHC` | the water holding capacity |
+| `soilInit` | `soilC = soilInit` | nothing — a unit change only |
+
+So the conversion changes with every proposed parameter vector and belongs to
+the experiment layer rather than to ingest. Even `soilInit`, the one free of
+calibrated parameters, is purely a unit change: the parameter *is* the pool,
+and the factor of 1000 is kg C m-2 to the g C m-2 that
+`sipnet/docs/parameters.md` documents. `ingest_ic.py` therefore applies **no
+state-to-parameter conversion and no unit conversion**.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
 > `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
@@ -435,7 +443,7 @@ conversion**.
 > all. Tracked as
 > [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
-> **Note 6.** The initial-condition ensemble has **100 members**, the same size
+> **Note 6.** The initial condition ensemble has **100 members**, the same size
 > as the published reanalysis output. Confirmed for the project rather than
 > inferred from the files: this checkout holds three of the 800,000, and the
 > highest member index among them is 94. Which variables appear in which files
@@ -628,9 +636,9 @@ Conversions applied during ingest rather than downstream:
   redundant `ens_mean` column is dropped.
 - **Initial conditions.** The length-1 `time` dimension is dropped and what it
   claimed is recorded in the product's attributes. An explicit `-999.0` is
-  masked to `NaN` and counted. **No parameter mapping and no unit conversion**;
-  see [Initial conditions](#initial-conditions) for why the mapping cannot live
-  here. Non-physical values are counted, not clamped, as for the drivers.
+  masked to `NaN` and counted. **No state-to-parameter conversion and no unit
+  conversion**; see [Initial conditions](#initial-conditions) for why that
+  conversion cannot live here. Non-physical values are counted, not clamped, as for the drivers.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -806,7 +814,7 @@ an error unless `allow_missing=True`, which fills it with `NaN` and adds a
 boolean `driver_present(member, site)`. The three local files are such a case:
 site 1 has members 1 and 2, site 27 has member 5.
 
-`ic.nc` carries the initial-condition ensemble on `(member, site)`, in the
+`ic.nc` carries the initial condition ensemble on `(member, site)`, in the
 source's own units, read through
 `sipnet_calibration.initial_conditions.load_initial_conditions`:
 
@@ -843,7 +851,7 @@ Three points about the layout.
   by a factor of ten, and the `VARIABLES` registry holds one unit per processed
   name — so sharing a name would force one of the two units to be wrong and
   would assert an identity nobody has confirmed. For the soil variable there is
-  evidence *against* identity: at site 1 the two initial-condition members
+  evidence *against* identity: at site 1 the two initial condition members
   present are 13.1 and 27.9 kg C m-2 against a `total_soil_carbon` constraint of
   74.3, and at site 27 the one member present is 55.7 against 42.2. Where a
   counterpart plausibly exists, the variable carries
@@ -895,12 +903,12 @@ Numbered notes above refer to the corresponding entry here.
 
 **1. Per-site directory templates.** The driver template
 `ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim` holds for the three
-directories present and the initial-condition template
+directories present and the initial condition template
 `initial_conditions/<site>/IC_site_<site>_<member>.nc` for the three files
 present. Whether all 8000 site directories follow
 them has not been checked. The driver reader raises on any file it is asked
 for that departs from the template, and on a directory whose member disagrees
-with its file name. `ingest_ic.py` walks the initial-condition tree instead of
+with its file name. `ingest_ic.py` walks the initial condition tree instead of
 being told what to expect, so it reports rather than assumes: a file whose
 embedded site disagrees with its directory is an error naming both numbers, a
 site directory the pool does not know about is an error, and an incomplete
@@ -943,7 +951,7 @@ gap-filling behind [GAPFILL] used 25 driver members, and the reanalysis output
 carries 100. Kept numbered so the surrounding references do not shift. What
 remains open is member correspondence across sources, which is question 12.
 
-**5. Reference year for the initial-condition time coordinate.** The units
+**5. Reference year for the initial condition time coordinate.** The units
 attribute is an unsubstituted template, so the intended reference year cannot be
 recovered from the file. This does not affect calibration, since the dimension is
 degenerate, but it does mean the files cannot be used for anything time-aware.
@@ -1033,7 +1041,7 @@ labelings to pull down and how the three classifications relate; see also
 Note 2.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
-*i*, initial-condition member *i* and the calibration ensemble were drawn jointly
+*i*, initial condition member *i* and the calibration ensemble were drawn jointly
 or independently determines whether arithmetic that pairs them is meaningful.
 Because xarray aligns on coordinate values automatically, an incorrect assumption
 here would combine unrelated members without any error being raised. One

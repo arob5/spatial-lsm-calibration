@@ -1,25 +1,32 @@
 #!/usr/bin/env python
-"""Build the initial-condition product.
+"""Build the initial condition product.
 
 Overview
 --------
-Walk the raw initial-condition tree, parse one small netCDF per
-``(site, member)`` pair, and assemble them into the single netCDF the rest of
-the project reads. The source is one small file per pair, hundreds of
-thousands of them; the product is a single file of a few tens of megabytes,
-which is the only form in which this ensemble exists off the SCC. The run
-prints the sizes and counts it actually saw.
+Converts the raw initial condition input files into a single netCDF,
+representing the processed initial condition data utilized by the rest of the
+project. The input files consist of one netCDF per ``(site, member)``. The
+processed format is a single netCDF containing all sites, ensemble members,
+and variables.
 
-``sipnet_calibration.initial_conditions`` holds the schema, the per-file parser
-and the reader. This script is the writer, and its own round-trip check reads
-the file back with
-:func:`sipnet_calibration.initial_conditions.load_initial_conditions` -- the
-same function every consumer uses -- so the two cannot drift apart.
+``sipnet_calibration.initial_conditions`` holds the data schema, the per-file
+parser and the reader that loads the processed data. This script is
+responsible for ingesting the raw data and writing the processed data. A
+round-trip check reads the file back with
+:func:`sipnet_calibration.initial_conditions.load_initial_conditions` so the
+two cannot drift apart.
 
-No parameter mapping and no unit conversion happen here. Initial conditions
-reach SIPNET as parameters, and three of the four mappings depend on parameters
-we calibrate, so the mapping is a modeling decision for the experiment layer;
-see the Notes in the library module.
+No unit conversion and no state-to-parameter conversion happen here; the
+source values are written through unchanged. These files hold initial *state*
+-- carbon pool sizes per unit ground area -- whereas SIPNET is initialized
+from *parameters* (``plantWoodInit``, ``soilInit``, ``laiInit``,
+``soilWFracInit``). Computing one of those parameters from the corresponding
+stored pool generally needs the calibration parameters themselves: recovering
+``plantWoodInit`` from ``AbvGrndWood`` needs the two root-fraction parameters,
+for instance. That makes the conversion a modeling decision for the
+experiment layer, evaluated per ensemble member at run time, rather than
+something an ingest can precompute. The Notes in the library module give the
+formulas.
 
 Input data
 ----------
@@ -28,7 +35,7 @@ Input data
     file per ensemble member named ``IC_site_<site>_<member>.nc`` with the
     source's 1-based member index. Each file is netCDF-3 classic with a
     length-1 unlimited ``time`` dimension and one ``float64`` scalar variable
-    per initial-condition field, declaring ``_FillValue = -999.0``. Parsed by
+    per initial condition field, declaring ``_FillValue = -999.0``. Parsed by
     :func:`~sipnet_calibration.initial_conditions.read_ic_file`, which runs
     every per-file check.
 
@@ -196,7 +203,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--root",
         type=Path,
         default=None,
-        help="The raw initial-condition root. Defaults to "
+        help="The raw initial condition root. Defaults to "
         "data/raw/initial_conditions.",
     )
     parser.add_argument(
@@ -272,25 +279,25 @@ def ingest(
 
 
 def discover_files(root: Path) -> FileIndex:
-    """Index every initial-condition file under *root*.
+    """Index every initial condition file under *root*.
 
     Walks the site directories, taking the site from the directory name and the
     member from the file name, and returns the paths keyed by
     ``(site, member)`` together with the discovered site and member sets.
 
     Filesystem debris is ignored rather than reported, but a file that *does*
-    look like an initial-condition file and disagrees with its directory is
+    look like an initial condition file and disagrees with its directory is
     kept, so that :func:`check_paths_follow_the_layout` can report it.
 
     Raises
     ------
     IngestError
-        If *root* is not a directory, or holds no initial-condition file at
+        If *root* is not a directory, or holds no initial condition file at
         all.
     """
     root = Path(root)
     if not root.is_dir():
-        raise IngestError(f"initial-condition root {root} is not a directory")
+        raise IngestError(f"initial condition root {root} is not a directory")
 
     paths: dict[tuple[int, int], Path] = {}
     for site in available_sites(root):
@@ -315,7 +322,7 @@ def discover_files(root: Path) -> FileIndex:
 
     if not paths:
         raise IngestError(
-            f"no initial-condition files under {root}. Expected the layout "
+            f"no initial condition files under {root}. Expected the layout "
             f"<site>/{IC_FILE_TEMPLATE.format(site='<site>', member='<member>')}."
         )
 
@@ -529,7 +536,7 @@ def describe_initial_conditions(
 
 @dataclass(frozen=True)
 class FileIndex:
-    """Every initial-condition file found, and the axes they imply.
+    """Every initial condition file found, and the axes they imply.
 
     Attributes
     ----------
@@ -630,7 +637,7 @@ def annotate_dataset(
     dataset[IC_PRESENT].attrs = {
         "long_name": "Whether a file existed for the member and site",
         "comment": (
-            "Every initial-condition variable is NaN where this is False. "
+            "Every initial condition variable is NaN where this is False. "
             f"{VARIABLE_PRESENT} is False there too."
         ),
     }
@@ -668,7 +675,7 @@ def annotate_dataset(
 
     complete = bool(grids.ic_present.all())
     dataset.attrs = {
-        "title": "SIPNET initial-condition ensemble in source units",
+        "title": "SIPNET initial condition ensemble in source units",
         "source_root": str(index.root),
         "source_layout": (
             f"<site>/{IC_FILE_TEMPLATE.format(site='<site>', member='<member>')}"
@@ -677,7 +684,7 @@ def annotate_dataset(
         "history": "scripts/ingest_ic.py",
         "member_source": MEMBER_SOURCE,
         "member_correspondence": (
-            "Not established. Whether initial-condition member i corresponds "
+            "Not established. Whether initial condition member i corresponds "
             "to driver or NEE member i is open question 12 in "
             "data/README.md; nothing here assumes it does. The ensembles are "
             "different sizes, which argues against a simple pairing."
@@ -764,7 +771,7 @@ def check_paths_follow_the_layout(index: FileIndex) -> None:
             )
     if wrong:
         raise IngestError(
-            "initial-condition files disagree with their directories:\n  "
+            "initial condition files disagree with their directories:\n  "
             + "\n  ".join(wrong)
             + "\nThe product records no path per cell, so a misfiled file "
             "cannot be attributed after the arrays are built."
@@ -836,7 +843,7 @@ def check_every_pool_site_has_a_directory(
     if absent:
         raise IngestError(
             f"{len(absent)} of {len(pool)} pool sites have no "
-            f"initial-condition file under {index.root}: {_sample(absent)}. "
+            f"initial condition file under {index.root}: {_sample(absent)}. "
             "A site whose directory exists but holds nothing parseable "
             "counts here too. Pass --allow-gaps to write a product for the "
             "sites that are present, filling the rest with NaN and "

@@ -1,12 +1,13 @@
-"""The data model for the initial-condition ensemble, and its reader.
+"""The data model for the initial condition ensemble, and its reader.
 
 Overview
 --------
-This module defines how the initial-condition ensemble is represented -- its
+This module defines how the initial condition ensemble is represented -- its
 dimensions, coordinates, variable names, units and dtype -- and provides the
 functions that read it. It is the single description of that layout: the ingest
-script, the tests, the plotting layer and the experiment layer's parameter
-mapping all get the schema from here rather than restating it.
+script, the tests, the plotting layer and the experiment layer's
+state-to-parameter conversion all get the schema from here rather than
+restating it.
 
 Unlike the drivers, the initial conditions get an **ingested product**; the
 Notes say why. The dependency runs one way::
@@ -34,7 +35,7 @@ Input data
     ``<site>/IC_site_<site>_<member>.nc``, where ``<site>`` is the 1-8000 site
     identifier and ``<member>`` the source's 1-based member index. Each file
     holds a single unlimited ``time`` dimension of length 1 and one ``float64``
-    scalar variable on ``("time",)`` per initial-condition field, each
+    scalar variable on ``("time",)`` per initial condition field, each
     declaring ``_FillValue = -999.0`` and a ``units`` attribute. The ``time``
     coordinate is undecodable (issue #3), so the files must be opened with
     ``decode_times=False``; they are netCDF-3, so they must be opened with
@@ -49,7 +50,7 @@ follows.
 **Dimensions**: ``member``, ``site``, and ``variable`` for the presence
 companion only.
 
-**Data variables**, one per initial-condition field, all ``float64`` on
+**Data variables**, one per initial condition field, all ``float64`` on
 ``(member, site)``, named as :data:`IC_VARIABLES`:
 
 =================================== =============================== ========
@@ -167,23 +168,31 @@ What the raw form costs is one file open per ``(site, member)`` cell, with no
 axis along which that is cheap, which is exactly what a store removes; and the
 store is the only form in which this ensemble exists off the SCC.
 
-**Why the parameter mapping is not applied.** Initial conditions reach SIPNET
-as parameters, and three of the four mappings involve parameters we calibrate:
-``envi.plantWoodC = (1 - coarseRootFrac - fineRootFrac) * plantWoodInit``,
-``envi.plantLeafC = laiInit * leafCSpWt`` and
-``envi.soilWater = soilWFracInit * soilWHC`` (``sipnet.c:1885-1924``). Only
-``soilInit`` is a plain unit conversion: the mapping itself is the identity,
-and the factor of 1000 is kg C m-2 to the g C m-2 that
-``sipnet/docs/parameters.md`` documents for the parameter. So the mapping depends on the current
-parameter vector, is evaluated per ensemble member at run time, and belongs to
-the experiment layer. This module writes the source values in their source
-units, unchanged.
+**Why the state-to-parameter conversion is not applied.** These files hold
+initial state -- carbon pool sizes per unit ground area -- while SIPNET is
+initialized from parameters, and computing three of the four parameters from
+the corresponding pool needs parameters we calibrate
+(``sipnet.c:1885-1924``):
+
+* ``envi.plantWoodC = (1 - coarseRootFrac - fineRootFrac) * plantWoodInit``,
+  so ``plantWoodInit`` depends on the two root fractions;
+* ``envi.plantLeafC = laiInit * leafCSpWt``, so ``laiInit`` depends on the
+  specific leaf weight;
+* ``envi.soilWater = soilWFracInit * soilWHC``, so ``soilWFracInit`` depends
+  on the water holding capacity.
+
+Only ``soilInit`` is free of them, and even there the conversion is purely a
+unit change: the parameter *is* the pool, and the factor of 1000 is
+kg C m-2 to the g C m-2 that ``sipnet/docs/parameters.md`` documents. So the
+conversion changes with every proposed parameter vector, is evaluated per
+ensemble member at run time, and belongs to the experiment layer. This module
+writes the source values in their source units, unchanged.
 
 **Why the processed names are namespaced with ``initial_``.** These are not
 observations: they are the starting state of a different analysis, at an
 instant nobody has established (issue #3). ``constraints.py`` already maps a
 source variable named ``AbvGrndWood`` to ``aboveground_wood_carbon`` in
-``Mg C ha-1``, while the initial-condition variable of that same source name is
+``Mg C ha-1``, while the initial condition variable of that same source name is
 in ``kg C m-2``. Since the ``VARIABLES`` registry holds one canonical unit per
 processed name, sharing the name would force one of the two units to be wrong,
 and would assert an identity nobody has confirmed -- for the soil variable
@@ -221,7 +230,7 @@ ensemble applies exactly the checks the ingest applies.
 ``source_member_index`` keeps the 1-based file index beside it, which matters
 here because a partial read is normal: a checkout holding a few files gives a
 short member axis whose source indices are whatever the file names carry.
-Whether initial-condition member *i* corresponds to driver member *i* is not
+Whether initial condition member *i* corresponds to driver member *i* is not
 established -- open question 12 in ``data/README.md`` -- and the ensembles are
 different sizes, which argues against it. Nothing here assumes a pairing;
 ``member_source`` is written so that a guard can refuse one.
@@ -332,7 +341,7 @@ SOURCE_VARIABLE_NAMES = {
     "soil_organic_carbon_content": "initial_soil_organic_carbon",
 }
 
-#: The initial-condition variables, by processed name, in source file order.
+#: The initial condition variables, by processed name, in source file order.
 IC_VARIABLES = tuple(SOURCE_VARIABLE_NAMES.values())
 
 #: Source variables that are reported to appear in files not available here,
@@ -461,7 +470,7 @@ IC_FILE_GLOB = "IC_site_*.nc"
 
 @dataclass(frozen=True)
 class IcFileContents:
-    """One parsed initial-condition file, in *source* variable names.
+    """One parsed initial condition file, in *source* variable names.
 
     Attributes
     ----------
@@ -494,7 +503,7 @@ class IcFileContents:
 
 
 def default_ic_root() -> Path:
-    """Where the raw initial-condition directory is expected to be.
+    """Where the raw initial condition directory is expected to be.
 
     ``$SIPNET_CALIBRATION_DATA/raw/initial_conditions`` when that variable is
     set, and otherwise ``data/raw/initial_conditions`` under this checkout.
@@ -513,7 +522,7 @@ def default_ic_path() -> Path:
 
 
 def ic_file(root: Path | str, site: int, member: int) -> Path:
-    """The initial-condition file for one site and one source member index.
+    """The initial condition file for one site and one source member index.
 
     Parameters
     ----------
@@ -538,12 +547,12 @@ def ic_file(root: Path | str, site: int, member: int) -> Path:
     directory = Path(root) / str(site)
     if not directory.is_dir():
         raise FileNotFoundError(
-            f"no initial-condition directory for site {site}: {directory}"
+            f"no initial condition directory for site {site}: {directory}"
         )
     path = directory / IC_FILE_TEMPLATE.format(site=site, member=member)
     if not path.is_file():
         raise FileNotFoundError(
-            f"no initial-condition file for site {site} member {member}: {path}"
+            f"no initial condition file for site {site} member {member}: {path}"
         )
     return path
 
@@ -615,7 +624,7 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
 
 
 def read_ic_file(path: Path | str) -> IcFileContents:
-    """Parse one initial-condition file exactly and check it.
+    """Parse one initial condition file exactly and check it.
 
     Parameters
     ----------
@@ -669,7 +678,7 @@ def read_ic_file(path: Path | str) -> IcFileContents:
         raise
     except Exception as error:
         raise ValueError(
-            f"{path}: could not be read as a netCDF-3 initial-condition file "
+            f"{path}: could not be read as a netCDF-3 initial condition file "
             f"({type(error).__name__}: {error})"
         ) from error
 
@@ -710,7 +719,7 @@ def read_ic_file(path: Path | str) -> IcFileContents:
 
 
 def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
-    """Read the initial-condition product and check it against the schema.
+    """Read the initial condition product and check it against the schema.
 
     Parameters
     ----------
@@ -750,7 +759,7 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     path = Path(path) if path is not None else default_ic_path()
     if not path.exists():
         raise FileNotFoundError(
-            f"no initial-condition product at {path}. Build it with "
+            f"no initial condition product at {path}. Build it with "
             "scripts/ingest_ic.py."
         )
     dataset = xr.open_dataset(path, engine="h5netcdf")
@@ -795,7 +804,7 @@ def initial_condition_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     missing = [name for name in IC_VARIABLES if name not in dataset.data_vars]
     if missing:
         raise ValueError(
-            f"dataset is missing initial-condition variables {missing}; found "
+            f"dataset is missing initial condition variables {missing}; found "
             f"{sorted(dataset.data_vars)}"
         )
     fields = {}
@@ -933,7 +942,7 @@ def _check_time_variable_is_degenerate(dataset: xr.Dataset, path: Path) -> None:
     """
     if "time" not in dataset.variables:
         raise ValueError(
-            f"{path}: has no 'time' variable. Every initial-condition file "
+            f"{path}: has no 'time' variable. Every initial condition file "
             "carries one, of length 1."
         )
     length = int(dataset.sizes.get("time", 0))

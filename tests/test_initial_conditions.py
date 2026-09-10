@@ -1,4 +1,4 @@
-"""Tests for the initial-condition schema, its reader and the ingest script.
+"""Tests for the initial condition schema, its reader and the ingest script.
 
 Most cases run against small synthetic netCDF-3 files written to ``tmp_path``
 in the real layout, because the three real files exercise only the happy path.
@@ -103,7 +103,7 @@ def _write_ic_file(
     write_time=True,
     extra_dims=None,
 ):
-    """Write one synthetic netCDF-3 initial-condition file.
+    """Write one synthetic netCDF-3 initial condition file.
 
     Defaults reproduce a real file: an unlimited ``time`` of length 1 holding
     ``1.0``, the template units string, and ``float64`` scalars on
@@ -149,7 +149,7 @@ def _write_ic_file(
 
 @pytest.fixture
 def write_ic_file():
-    """A factory writing one synthetic netCDF-3 initial-condition file.
+    """A factory writing one synthetic netCDF-3 initial condition file.
 
     Takes the destination, a mapping of source variable name to value, and
     optional overrides for the units, long names, fill value, time length,
@@ -366,11 +366,11 @@ class TestPaths:
         assert ic_file(ic_tree, 27, 1).parent.name == "27"
 
     def test_ic_file_raises_when_the_site_directory_is_absent(self, ic_tree):
-        with pytest.raises(FileNotFoundError, match="no initial-condition directory"):
+        with pytest.raises(FileNotFoundError, match="no initial condition directory"):
             ic_file(ic_tree, 999, 1)
 
     def test_ic_file_raises_when_the_member_file_is_absent(self, ic_tree):
-        with pytest.raises(FileNotFoundError, match="no initial-condition file"):
+        with pytest.raises(FileNotFoundError, match="no initial condition file"):
             ic_file(ic_tree, 1, 77)
 
     def test_available_sites_lists_the_directories_in_order(self, ic_tree):
@@ -643,7 +643,7 @@ class TestDiscovery:
 
     def test_raises_when_the_tree_holds_no_file(self, tmp_path):
         (tmp_path / "empty").mkdir()
-        with pytest.raises(ingest.IngestError, match="no initial-condition files"):
+        with pytest.raises(ingest.IngestError, match="no initial condition files"):
             ingest.discover_files(tmp_path / "empty")
 
     def test_ignores_debris_at_both_levels(self, ic_tree):
@@ -806,7 +806,7 @@ class TestCoverageChecks:
     ):
         """The development checkout's case: two sites of the pool's many."""
         index = ingest.discover_files(ic_tree)
-        with pytest.raises(ingest.IngestError, match="have no initial-condition file"):
+        with pytest.raises(ingest.IngestError, match="have no initial condition file"):
             ingest.check_every_pool_site_has_a_directory(
                 index, site_table, allow_gaps=False
             )
@@ -1104,7 +1104,7 @@ class TestBuildDataset:
         """``member_source`` is ``"ic"`` and the correspondence attribute says no.
 
         xarray aligns integer member labels silently, so this attribute is the
-        only thing standing between a caller and pairing initial-condition
+        only thing standing between a caller and pairing initial condition
         member 3 with driver member 3.
         """
         dataset, _, _, _ = built
@@ -1239,7 +1239,7 @@ class TestBuildDataset:
     def test_records_the_descriptive_attributes_the_product_promises(self, built):
         """The self-describing prose, not just its presence."""
         dataset, _, _, index = built
-        assert dataset.attrs["title"].startswith("SIPNET initial-condition")
+        assert dataset.attrs["title"].startswith("SIPNET initial condition")
         assert dataset.attrs["history"] == "scripts/ingest_ic.py"
         assert dataset.attrs["source_root"] == str(index.root)
         assert dataset.attrs["source_layout"] == "<site>/IC_site_<site>_<member>.nc"
@@ -1443,7 +1443,7 @@ class TestLoadInitialConditions:
             }
 
     def test_raises_when_the_file_is_absent(self, tmp_path):
-        with pytest.raises(FileNotFoundError, match="no initial-condition product"):
+        with pytest.raises(FileNotFoundError, match="no initial condition product"):
             load_initial_conditions(tmp_path / "nope.nc")
 
     def test_rejects_a_missing_data_variable(self, product):
@@ -1731,7 +1731,7 @@ class TestInitialConditionFields:
 
     def test_raises_when_a_variable_is_absent(self, built):
         dataset, _, _, _ = built
-        with pytest.raises(ValueError, match="missing initial-condition variables"):
+        with pytest.raises(ValueError, match="missing initial condition variables"):
             initial_condition_fields(dataset.drop_vars(IC_VARIABLES[0]))
 
 
@@ -1880,7 +1880,7 @@ class TestMain:
         with pytest.raises(SystemExit) as exit_info:
             ingest.parse_args(["--help"])
         assert exit_info.value.code == 0
-        assert "initial-condition" in capsys.readouterr().out
+        assert "initial condition" in capsys.readouterr().out
 
 
 # ── the real files ────────────────────────────────────────────────────────────
