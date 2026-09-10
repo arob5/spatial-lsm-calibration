@@ -102,7 +102,9 @@ def build_plot_grid(
         each element, or ``None`` for no titles.
     panel_size:
         Width and height of one panel, in inches. The figure is sized from
-        this and the shape of the grid.
+        this and the shape of the grid, and laid out with matplotlib's
+        constrained layout, which is what keeps the legend clear of the
+        panels.
     legend:
         ``"dedup"`` collects the handles and labels of every panel, keeps the
         first occurrence of each label, and places one legend on the figure.
@@ -142,19 +144,23 @@ def build_plot_grid(
         sharex=share in ("x", "both"),
         sharey=share in ("y", "both"),
         squeeze=False,
+        layout="constrained",
     )
     every_axes = grid.ravel()
     for spare in every_axes[len(items) :]:
         spare.set_visible(False)
 
     axes = np.empty(len(items), dtype=object)
-    for position, item in enumerate(items):
-        axes[position] = every_axes[position]
-        panel_fn(every_axes[position], item)
-        if titles is not None:
-            every_axes[position].set_title(titles[position])
-
-    _add_legend(figure, axes, legend)
+    try:
+        for position, item in enumerate(items):
+            axes[position] = every_axes[position]
+            panel_fn(every_axes[position], item)
+            if titles is not None:
+                every_axes[position].set_title(titles[position])
+        _add_legend(figure, axes, legend)
+    except BaseException:
+        plt.close(figure)
+        raise
     return figure, axes
 
 
@@ -164,6 +170,11 @@ def _panel_titles(items, labels) -> list[str] | None:
         return None
     if callable(labels):
         return [str(labels(item)) for item in items]
+    if isinstance(labels, str):
+        raise ValueError(
+            f"labels is the single string {labels!r}, which would title the "
+            "panels one character each; pass one label per panel, or a callable"
+        )
     titles = list(labels)
     if len(titles) != len(items):
         raise ValueError(
@@ -231,12 +242,17 @@ def plot_by_site(
             f"the array has dimensions {list(data.dims)} and needs {SITE_DIM!r} "
             "to be split by site"
         )
-    available = (
-        list(data.coords[SITE_DIM].values) if SITE_DIM in data.coords else []
-    )
+    if SITE_DIM not in data.coords:
+        raise ValueError(
+            f"the array has a {SITE_DIM!r} dimension but no {SITE_DIM!r} "
+            "coordinate, so its panels cannot be named or selected"
+        )
+    available = list(data.coords[SITE_DIM].values)
     if sites is None:
         chosen = available
     else:
+        if isinstance(sites, (str, bytes)) or not hasattr(sites, "__iter__"):
+            raise ValueError(f"sites must be a sequence of site ids, got {sites!r}")
         chosen = list(sites)
         missing = [site for site in chosen if site not in available]
         if missing:

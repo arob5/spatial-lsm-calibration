@@ -7,6 +7,7 @@ is the branch a future change is most likely to break silently.
 
 from __future__ import annotations
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
@@ -39,10 +40,15 @@ def test_a_time_only_field_draws_one_line(ax, field_time):
 
 def test_a_member_field_draws_a_fan(ax, field_member_time):
     """``(member, time)`` under ``show="auto"`` gives bands over the members."""
-    plot_time_series(field_member_time, ax=ax)
-    assert len(ax.collections) == 2
-    expected = nanquantile(field_member_time.values, 0.5)
-    np.testing.assert_allclose(ax.lines[0].get_ydata(), expected)
+    plot_time_series(field_member_time, ax=ax, levels=(0.5,))
+    (drawn,) = ax.collections
+    vertices = drawn.get_paths()[0].vertices
+    assert vertices[:, 1].min() == pytest.approx(
+        np.percentile(field_member_time.values, 25, axis=0).min()
+    )
+    np.testing.assert_allclose(
+        ax.lines[0].get_ydata(), np.median(field_member_time.values, axis=0)
+    )
 
 
 def test_a_site_field_draws_a_fan_over_sites(ax, field_site_time):
@@ -81,6 +87,36 @@ def test_stacking_is_not_a_quantile_of_quantiles(ax, field_member_site_time):
     pooled_low = per_site.quantile(0.25, dim="site").values
     assert not np.allclose(stacked_low, pooled_low)
     assert band_bounds(ax)[0] == pytest.approx(stacked_low.min())
+
+
+def test_the_stored_dimension_order_does_not_matter(ax):
+    """A field stored as ``(time, member)`` still gives one curve per member.
+
+    Nothing upstream promises canonical dimension order, and reshaping without
+    transposing first scrambles members across timesteps: it produces a
+    plausible figure of the wrong data. Written because removing the transpose
+    in ``_stacked_samples`` left every other test passing.
+    """
+    values = np.arange(12.0).reshape(4, 3)
+    data = xr.DataArray(
+        values,
+        dims=("time", "member"),
+        coords={"time": np.arange(4), "member": np.arange(3)},
+        attrs={"units": "u", "long_name": "L"},
+    )
+    plot_time_series(data, ax=ax, show="spaghetti")
+    assert len(ax.lines) == 3
+    for member, drawn in enumerate(ax.lines):
+        np.testing.assert_array_equal(drawn.get_ydata(), values[:, member])
+
+
+def test_an_explicit_color_overrides_the_per_curve_palette(ax, field_site_time):
+    """``color=`` with ``label_by`` wins, as the style precedence says."""
+    plot_time_series(
+        field_site_time, ax=ax, show="spaghetti", label_by="site", color="#123456"
+    )
+    assert {line.get_color() for line in ax.lines} == {"#123456"}
+    assert len(ax.get_legend_handles_labels()[1]) == field_site_time.sizes["site"]
 
 
 def test_a_field_without_time_is_rejected(ax, field_member_site):
@@ -150,6 +186,19 @@ def test_show_points_draws_scattered_observations(ax, field_time):
     assert isinstance(ax.containers[0], ErrorbarContainer)
 
 
+def test_points_are_drawn_with_a_marker(ax, field_time):
+    """The observation role gives points a marker, so they are visible.
+
+    Drawing them with the line keywords instead leaves ``linestyle="none"``
+    and no marker, and the observations disappear from the figure while the
+    error bars remain.
+    """
+    plot_time_series(field_time, ax=ax, role="obs", show="points")
+    marker = ax.containers[0][0]
+    assert marker.get_marker() == ROLES["obs"]["marker"]
+    assert marker.get_markersize() == ROLES["obs"]["markersize"]
+
+
 def test_an_unknown_show_is_rejected(ax, field_time):
     """The message lists :data:`SHOW_KINDS`."""
     with pytest.raises(ValueError, match="show must be one of") as raised:
@@ -164,8 +213,22 @@ def test_a_fan_also_draws_the_median(ax, field_member_time):
     """``show="fan"`` draws a curve whose data are the median of the samples."""
     plot_time_series(field_member_time, ax=ax, show="fan")
     assert len(ax.lines) == 1
-    expected = nanquantile(field_member_time.values, 0.5)
-    np.testing.assert_allclose(ax.lines[0].get_ydata(), expected)
+    np.testing.assert_allclose(
+        ax.lines[0].get_ydata(), np.median(field_member_time.values, axis=0)
+    )
+
+
+def test_a_fan_takes_only_the_color_from_the_role(ax, field_member_time):
+    """Bands get the role's color and not its line width.
+
+    Passing the line keywords to ``fill_between`` instead draws a visible
+    edge around every band.
+    """
+    plot_time_series(field_member_time, ax=ax, role="posterior")
+    default = matplotlib.rcParams["patch.linewidth"]
+    assert default != ROLES["posterior"]["linewidth"]
+    for collection in ax.collections:
+        assert collection.get_linewidth()[0] == pytest.approx(default)
 
 
 def test_the_fan_legend_entry_is_on_the_median(ax, field_member_time):
@@ -217,6 +280,56 @@ def test_label_by_labels_and_colors_each_curve(ax, field_site_time):
     assert labels == [f"site {site}" for site in field_site_time["site"].values]
     colors = [artist.get_color() for artist in ax.lines]
     assert colors == list(CURVE_COLORS[: len(colors)])
+
+
+def test_label_by_pairs_labels_and_colors_with_the_curves_it_draws(ax):
+    """With thinning and colour cycling, each curve keeps its own label.
+
+    ``field_site_time`` has two curves, which is below both ``n_max`` and the
+    length of the palette, so it cannot catch a label taken by drawing
+    position rather than by sample index.
+    """
+    n_site = 12
+    values = np.arange(n_site * 4, dtype=float).reshape(n_site, 4)
+    data = xr.DataArray(
+        values,
+        dims=("site", "time"),
+        coords={
+            "site": np.arange(1, n_site + 1),
+            "time": np.arange(4),
+            "lon": ("site", np.zeros(n_site)),
+            "lat": ("site", np.zeros(n_site)),
+        },
+        attrs={"units": "u", "long_name": "L"},
+    )
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="site", n_max=5)
+
+    drawn = ax.lines
+    assert len(drawn) == 5
+    for artist in drawn:
+        site = int(artist.get_label().removeprefix("site "))
+        np.testing.assert_array_equal(artist.get_ydata(), values[site - 1])
+    assert [a.get_color() for a in drawn] == list(CURVE_COLORS[:5])
+
+
+def test_label_by_cycles_the_palette_when_curves_outnumber_it(ax):
+    """More curves than colors reuses the palette from the start."""
+    n_site = len(CURVE_COLORS) + 2
+    data = xr.DataArray(
+        np.zeros((n_site, 3)),
+        dims=("site", "time"),
+        coords={
+            "site": np.arange(1, n_site + 1),
+            "time": np.arange(3),
+            "lon": ("site", np.zeros(n_site)),
+            "lat": ("site", np.zeros(n_site)),
+        },
+        attrs={"units": "u", "long_name": "L"},
+    )
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="site", n_max=n_site)
+    colors = [a.get_color() for a in ax.lines]
+    assert colors[: len(CURVE_COLORS)] == list(CURVE_COLORS)
+    assert colors[len(CURVE_COLORS) :] == list(CURVE_COLORS[:2])
 
 
 def test_label_by_requires_spaghetti(ax, field_site_time):
@@ -405,9 +518,21 @@ def test_the_panel_never_shows_or_saves(ax, field_time, monkeypatch):
     plot_time_series(field_time, ax=ax)
 
 
+def test_a_time_dim_without_a_coordinate_uses_positions(ax):
+    """With no ``time`` coordinate the x axis is 0, 1, 2, ..."""
+    data = xr.DataArray(
+        np.arange(4.0), dims=("time",), attrs={"units": "u", "long_name": "L"}
+    )
+    plot_time_series(data, ax=ax)
+    np.testing.assert_array_equal(ax.lines[0].get_xdata(), np.arange(4))
+
+
 def test_the_y_label_comes_from_the_attributes(ax, field_time):
-    """The y label is :func:`axis_label` of the data."""
+    """The y label is the long name and unit, spelled out rather than
+    compared against the function that produced it.
+    """
     plot_time_series(field_time, ax=ax)
+    assert ax.get_ylabel() == "Mean air temperature over the timestep (deg C)"
     assert ax.get_ylabel() == axis_label(field_time)
 
 

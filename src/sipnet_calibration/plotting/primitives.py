@@ -240,7 +240,12 @@ def fan(
     levels = _checked_levels(levels)
 
     widest_first = sorted(levels, reverse=True)
-    alphas = np.linspace(BAND_ALPHAS[0], BAND_ALPHAS[1], len(widest_first))
+    given_alpha = style.pop("alpha", None)
+    alphas = (
+        np.full(len(widest_first), given_alpha)
+        if given_alpha is not None
+        else np.linspace(BAND_ALPHAS[0], BAND_ALPHAS[1], len(widest_first))
+    )
     label = style.pop("label", None)
 
     wanted = []
@@ -340,7 +345,8 @@ def thinned_indices(n_samples: int, n_max: int) -> np.ndarray:
     """Indices of the samples to draw: all of them, or *n_max* evenly spaced.
 
     When thinning happens the spacing is at least one, so the indices are
-    distinct and include the first and the last.
+    distinct; they run from the first sample to the last, which for
+    ``n_max`` of one means the first alone.
     """
     if n_samples <= n_max:
         return np.arange(n_samples)
@@ -389,6 +395,11 @@ def _check_samples(x: np.ndarray, samples: np.ndarray) -> None:
 
 def _checked_levels(levels) -> tuple[float, ...]:
     """*levels* as a tuple, raising unless they are widths within ``(0, 1)``."""
+    if isinstance(levels, (int, float)):
+        raise ValueError(
+            f"levels must be a sequence of interval widths, got the single "
+            f"number {levels!r}; pass ({levels},) to draw one band"
+        )
     levels = tuple(float(level) for level in levels)
     if not levels:
         raise ValueError("levels must name at least one interval width")

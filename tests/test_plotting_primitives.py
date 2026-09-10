@@ -100,13 +100,15 @@ def test_spaghetti_decimates_above_n_max(ax, x, samples):
 
 
 def test_spaghetti_decimation_is_evenly_spaced_and_keeps_the_ends(ax, x, samples):
-    """The curves drawn are the evenly spaced samples, ends included."""
+    """The curves drawn are the evenly spaced samples, ends included.
+
+    The indices are written out rather than recomputed with the
+    implementation's own expression, which would pass for any rule.
+    """
+    assert len(samples) == 40
     drawn = spaghetti(ax, x, samples, n_max=5)
-    expected = np.linspace(0, len(samples) - 1, 5).round().astype(int)
-    for artist, index in zip(drawn, expected):
+    for artist, index in zip(drawn, [0, 10, 20, 29, 39]):
         np.testing.assert_array_equal(artist.get_ydata(), samples[index])
-    assert expected[0] == 0
-    assert expected[-1] == len(samples) - 1
 
 
 def test_spaghetti_curves_share_one_color(ax, x, samples):
@@ -172,6 +174,13 @@ def test_band_passes_style_to_the_artist(ax, x):
     """Opacity given as a keyword reaches the collection."""
     drawn = band(ax, x, np.zeros(6), np.ones(6), alpha=0.25)
     assert drawn.get_alpha() == pytest.approx(0.25)
+
+
+def test_band_takes_the_color_it_is_given(ax, x):
+    """The fill color is the one passed, not matplotlib's next cycle color."""
+    drawn = band(ax, x, np.zeros(6), np.ones(6), color="#0072B2")
+    red, green, blue, _ = drawn.get_facecolor()[0]
+    assert (round(red, 2), round(green, 2), round(blue, 2)) == (0.0, 0.45, 0.7)
 
 
 def test_band_rejects_mismatched_lengths(ax, x):
@@ -260,6 +269,30 @@ def test_fan_rejects_bad_levels(ax, x, samples, levels):
         fan(ax, x, samples, levels=levels)
 
 
+def test_fan_rejects_samples_of_the_wrong_width(ax, x, samples):
+    """Samples whose second axis differs from *x* raise."""
+    with pytest.raises(ValueError, match="they must match"):
+        fan(ax, x, samples[:, :3])
+
+
+def test_spaghetti_rejects_samples_of_the_wrong_width(ax, x, samples):
+    """The same check applies to the individual curves."""
+    with pytest.raises(ValueError, match="they must match"):
+        spaghetti(ax, x, samples[:, :3])
+
+
+def test_fan_honors_an_explicit_alpha(ax, x, samples):
+    """Passing ``alpha`` gives every band the same opacity."""
+    drawn = fan(ax, x, samples, levels=(0.5, 0.9), alpha=0.4)
+    assert [c.get_alpha() for c in drawn] == [pytest.approx(0.4)] * 2
+
+
+def test_fan_rejects_a_single_number_for_levels(ax, x, samples):
+    """A bare number raises rather than failing on iteration."""
+    with pytest.raises(ValueError, match="sequence of interval widths"):
+        fan(ax, x, samples, levels=0.5)
+
+
 def test_fan_rejects_one_dimensional_samples(ax, x):
     """A single series raises, directing the caller to :func:`line`."""
     with pytest.raises(ValueError, match="line"):
@@ -316,6 +349,15 @@ def test_points_keeps_datetime_x(ax, field_time):
     values[3] = np.nan
     drawn = points(ax, field_time["time"].values, values)
     assert len(drawn[0].get_xdata()) == len(values) - 1
+
+
+def test_points_drops_a_not_a_time_in_x(ax):
+    """A ``NaT`` timestamp drops its point, as a ``NaN`` value would."""
+    times = np.array(
+        ["2012-01-01", "NaT", "2012-01-03"], dtype="datetime64[ns]"
+    )
+    drawn = points(ax, times, np.ones(3))
+    assert len(drawn[0].get_xdata()) == 2
 
 
 def test_points_rejects_mismatched_lengths(ax, x):

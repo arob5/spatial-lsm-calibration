@@ -299,14 +299,11 @@ def _draw_labeled_curves(
     labels = _curve_labels(data, sample_dims, label_by)
     chosen = primitives.thinned_indices(len(samples), int(n_max))
     for position, index in enumerate(chosen):
-        primitives.line(
-            ax,
-            x,
-            samples[index],
-            color=CURVE_COLORS[position % len(CURVE_COLORS)],
-            label=labels[index],
+        keywords = {
+            "color": CURVE_COLORS[position % len(CURVE_COLORS)],
             **style,
-        )
+        }
+        primitives.line(ax, x, samples[index], label=labels[index], **keywords)
 
 
 def _error_bar_lengths(
@@ -341,7 +338,9 @@ def _error_bar_lengths(
 
     name, error = given[0]
     _check_aligned(data, error, name)
-    values = error.transpose(*data.dims).values
+    # show == "points" here, so the data has no sample dimension and both
+    # arrays are one-dimensional over time; no reordering is possible.
+    values = error.values
     if name == "variance":
         if np.any(values[np.isfinite(values)] < 0):
             raise ValueError("a variance cannot be negative")

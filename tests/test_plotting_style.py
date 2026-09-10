@@ -127,10 +127,20 @@ def test_importing_the_package_does_not_change_rcparams():
 
 
 def test_use_project_style_applies_rc_params():
-    """After the call, every key of :data:`RC_PARAMS` is in ``rcParams``."""
+    """The settings the project actually depends on are applied.
+
+    Named individually rather than looped over :data:`RC_PARAMS`, which would
+    only be testing ``dict.update`` and would pass if an entry were deleted.
+    """
     original = matplotlib.rcParams.copy()
     try:
         use_project_style()
+        assert matplotlib.rcParams["figure.constrained_layout.use"] is True
+        assert matplotlib.rcParams["axes.spines.top"] is False
+        assert matplotlib.rcParams["axes.spines.right"] is False
+        assert matplotlib.rcParams["legend.frameon"] is False
+        cycle = matplotlib.rcParams["axes.prop_cycle"].by_key()["color"]
+        assert cycle == list(CURVE_COLORS)
         for key, value in RC_PARAMS.items():
             assert matplotlib.rcParams[key] == value
     finally:

@@ -143,6 +143,12 @@ def test_no_labels_means_no_titles(closing):
     assert [a.get_title() for a in axes] == ["", ""]
 
 
+def test_a_single_string_for_labels_is_rejected():
+    """A bare string would title the panels one character each."""
+    with pytest.raises(ValueError, match="one character each"):
+        build_plot_grid([1, 2, 3, 4], draw_nothing, labels="Site")
+
+
 def test_a_labels_sequence_of_the_wrong_length_is_rejected():
     """A mismatch raises rather than titling some panels."""
     with pytest.raises(ValueError, match="they must match"):
@@ -176,6 +182,34 @@ def test_dedup_keeps_first_seen_order(closing):
 
     figure, _ = closing(build_plot_grid([["b", "a"], ["a", "c"]], panel))
     assert [t.get_text() for t in figure.legends[0].get_texts()] == ["b", "a", "c"]
+
+
+def test_dedup_keeps_the_first_handle_for_a_label(closing):
+    """The handle kept is the first seen, not the last."""
+
+    def panel(ax, item):
+        ax.plot([0, 1], [0, 1], color=item, label="shared")
+
+    figure, _ = closing(build_plot_grid(["#111111", "#eeeeee"], panel))
+    (handle,) = figure.legends[0].legend_handles
+    assert handle.get_color() == "#111111"
+
+
+def test_legend_each_adds_nothing_to_an_unlabeled_panel(closing):
+    """``legend="each"`` leaves a panel with no labeled artists alone."""
+    figure, axes = closing(build_plot_grid([1, 2], draw_nothing, legend="each"))
+    assert all(ax.get_legend() is None for ax in axes)
+
+
+def test_the_dedup_legend_sits_outside_the_panels(closing, field_time):
+    """A legend drawn over the panels would hide the data it describes."""
+    figure, axes = closing(
+        build_plot_grid([1, 2], partial(two_roles, field=field_time))
+    )
+    figure.canvas.draw()
+    legend_box = figure.legends[0].get_window_extent()
+    for ax in axes:
+        assert not legend_box.overlaps(ax.get_window_extent())
 
 
 def test_legend_none_draws_no_legend(closing, field_time):
@@ -266,6 +300,39 @@ def test_plot_by_site_accepts_a_bound_plotting_function(
         )
     )
     assert len(axes[0].lines) == field_member_site_time.sizes["member"]
+
+
+def test_a_failing_callback_does_not_leak_a_figure():
+    """The figure is closed when a panel callback raises partway through."""
+
+    def explode(ax, item):
+        if item == 2:
+            raise RuntimeError("boom")
+
+    before = set(plt.get_fignums())
+    with pytest.raises(RuntimeError, match="boom"):
+        build_plot_grid([1, 2, 3], explode)
+    assert set(plt.get_fignums()) == before
+
+
+def test_plot_by_site_rejects_a_site_dim_without_a_site_coordinate():
+    """A ``site`` dimension with no ids cannot name or select panels."""
+    import xarray as xr
+
+    data = xr.DataArray(
+        np.zeros((2, 4)),
+        dims=("site", "time"),
+        coords={"time": np.arange(4)},
+        attrs={"units": "u", "long_name": "L"},
+    )
+    with pytest.raises(ValueError, match="no 'site' coordinate"):
+        plot_by_site(data)
+
+
+def test_plot_by_site_rejects_a_bare_site_id(field_member_site_time):
+    """``sites=1`` raises rather than failing on iteration."""
+    with pytest.raises(ValueError, match="sequence of site ids"):
+        plot_by_site(field_member_site_time, sites=1)
 
 
 def test_plot_by_site_rejects_a_field_without_a_site_dim(field_member_time):
