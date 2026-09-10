@@ -25,24 +25,30 @@ dependencies = [
     "dask[array]>=2024.1",
     "scipy>=1.11",
     # Reads the tracked point shapefile in data/raw/sites/. Pure Python, so it
-    # pure Python, so it needs no system GDAL. Used by scripts/ingest_sites.py
-    # and the tests, never by the library itself.
+    # needs no system GDAL. Used by scripts/ingest_sites.py and the tests,
+    # never by the library itself.
     "pyshp>=3.1",
     "matplotlib>=3.7",
-    # PROJ, through pyproj, is what sipnet_calibration.projection applies; the
-    # module owns the choice of projection and its stored definition, not any
-    # formula. Note the floor: pyproj's macOS arm64 wheels target macOS 14 and
-    # newer, so this environment does not resolve on an older mac. Issue #4 was
-    # opened when the workstation was on macOS 12 and no wheel would install.
-    # cartopy is still absent for a different reason -- its arm64 wheels stop at
-    # cp313 and this project is on cp314.
     "arviz>=0.13",
     "jax[cpu]>=0.4",
     "jupyter",
     "ipykernel",
     "nbformat",
     "nbconvert",
-    "pyproj>=3.8.0",
+    # PROJ, through pyproj, is what sipnet_calibration.projection applies; the
+    # module owns the choice of projection and its stored definition, not any
+    # formula. The floor is 3.7.2 because that is the oldest release with a
+    # wheel for this project's Python, and it keeps two floors lower than 3.8
+    # does: macOS 13 rather than 15 on Intel, though both need macOS 14 on
+    # arm64. Both need glibc 2.28 on Linux -- RHEL 8 or newer -- where 3.7.1
+    # still built against 2.17; check that before assuming an older cluster
+    # node resolves. Nothing here needs an API newer than pyproj 3.1.
+    #
+    # cartopy is absent for an unrelated reason: its arm64 wheels stop at cp313
+    # while the development venv is on 3.14. Nothing in this project's metadata
+    # excludes it -- requires-python is >=3.12 -- so adopting it would mean
+    # adding an upper bound that does not exist today.
+    "pyproj>=3.7.2",
 ]
 
 [dependency-groups]

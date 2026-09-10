@@ -47,9 +47,10 @@ Facts specific to this working copy, which the README deliberately does not carr
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
   grounds that every arm64 wheel targets macOS 14 or newer; the machine has
   since been upgraded past that, and `pyproj` is now a dependency. `cartopy`
-  still has no wheel for this project's Python (arm64 wheels stop at cp313),
-  which is a Python-version problem rather than an OS one. No R spatial package
-  is installable.
+  still has no wheel for the venv's Python — its arm64 wheels stop at cp313 and
+  the venv is on 3.14 — which is a Python-version problem rather than an OS one,
+  and `requires-python` does not exclude it. No R spatial package is
+  installable.
 
 Operational rules that follow from the data and are easy to get wrong in code:
 
@@ -388,8 +389,8 @@ plotting code. The load-bearing rules:
   formula. `Projection.factors()` exposes PROJ's own distortion measures,
   which is how a caller converts the long-edge mask threshold between a
   projected length and a ground distance, and how it learns that projected
-  north rotates by up to 58 degrees across the domain. `cartopy` is still
-  absent: its arm64 wheels stop at cp313 and this project is on cp314. What
+  north rotates by about 150 degrees across the domain. `cartopy` is still
+  absent: its arm64 wheels stop at cp313 while the venv is on 3.14. What
   `plotting/maps.py` waits on is the vendored basemap.
 - `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
   `site`. PFT is **not** site metadata and is not a column of the site table: a

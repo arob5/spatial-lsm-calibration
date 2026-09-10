@@ -831,6 +831,9 @@ class TestSchemaIsPinnedToALiteral:
     def test_dtypes_cannot_be_mutated(self):
         """The schema is read-only: a caller that reassigned a dtype would
         change what every later read of the table produces."""
+        from types import MappingProxyType
+
+        assert isinstance(SITE_COLUMN_DTYPES, MappingProxyType)
         with pytest.raises(TypeError):
             SITE_COLUMN_DTYPES["site_id"] = str  # type: ignore[index]
 

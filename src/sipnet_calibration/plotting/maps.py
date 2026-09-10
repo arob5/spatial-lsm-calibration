@@ -61,25 +61,27 @@ local scale is close to isotropic --
 :meth:`~sipnet_calibration.projection.Projection.factors` is what converts
 between the two, and ``tissot_semimajor`` is the bound to use.
 
-North is not up. Projected north rotates by up to 58 degrees at the northwest of
-the domain and -42 at the southeast, so a single north arrow on a full-domain
-panel is wrong nearly everywhere on it; draw the graticule instead. ``factors``
-reports the rotation at a point as ``meridian_convergence``.
+North is not up. Over the site pool projected north rotates from -71 degrees on
+the Chukchi coast to +75 in northeast Greenland, and over the whole
+``NORTH_AMERICA`` extent from -78 to +79, so a single north arrow on a
+full-domain panel is wrong nearly everywhere on it; draw the graticule instead.
+``factors`` reports the rotation at a point as ``meridian_convergence``, in
+PROJ's sign convention rather than the one the eye reads.
 
-Still outstanding -- the basemap
--------------------------------
+Still outstanding: the basemap
+------------------------------
 Nothing here is blocked on the projection any more. What is missing is a
 vendored Natural Earth coastline and states GeoJSON, small enough to track,
-projected with the same forward transform. ``basemap()`` in
-:mod:`sipnet_calibration.plotting.primitives`, which is a name in that module's
-contract rather than a function yet, is the seam for it, so the renderers and
-the rest of this layer can be built before it exists.
+projected with the same forward transform. A ``basemap()`` primitive, which
+:mod:`sipnet_calibration.plotting.primitives` does not name yet, is the seam for
+it, so the renderers and the rest of this layer can be built before it exists.
 
 ``cartopy`` is still absent, but not for the reason issue #4 gives: that issue
 assumed macOS 12, where no pyproj arm64 wheel could be installed, and the
 workstation has since moved past macOS 14. ``pyproj`` is now a dependency.
-``cartopy``'s own arm64 wheels stop at cp313 while this project is on cp314, so
-adopting it would mean pinning the interpreter down -- worth weighing when the
-basemap is built, since cartopy would supply the coastlines and the gridline
-labels outright.
+``cartopy``'s own arm64 wheels stop at cp313 while the development venv is on
+3.14, so adopting it would mean bounding the interpreter from above, which
+``requires-python`` does not do today -- worth weighing when the basemap is
+built, since cartopy would supply the coastlines and the gridline labels
+outright.
 """

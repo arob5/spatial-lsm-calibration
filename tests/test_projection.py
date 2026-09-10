@@ -34,6 +34,7 @@ import warnings
 import numpy as np
 import pyproj
 import pytest
+from types import MappingProxyType
 
 from sipnet_calibration.projection import (
     DEFINITION_STEM,
@@ -124,10 +125,19 @@ class TestTheProjectionThatWasChosen:
         )
         assert factors.areal_scale == pytest.approx(np.ones(4), abs=SITE_AREA_TOLERANCE)
 
-    def test_the_crs_is_built_once_and_reused(self):
-        """Building a CRS parses a definition through PROJ, which costs far more
-        than a transform, and every panel uses this one."""
+    def test_the_crs_transformer_and_proj_are_built_once_and_reused(self):
+        """Each parses a definition through PROJ, which costs far more than the
+        query it serves, and every panel uses this projection. The transformer
+        is the most expensive of the three, since it resolves an operation as
+        well as building the CRS."""
+        from sipnet_calibration.projection import _proj, _transformer
+
         assert SITE_PROJECTION.crs() is SITE_PROJECTION.crs()
+        assert _transformer(SITE_PROJECTION) is _transformer(SITE_PROJECTION)
+        assert _proj(SITE_PROJECTION) is _proj(SITE_PROJECTION)
+        # And the cache is keyed on the projection, not shared across variants.
+        variant = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
+        assert _transformer(SITE_PROJECTION) is not _transformer(variant)
 
     def test_a_variant_is_a_one_liner_and_revalidates(self):
         """The projection is the project default, not a prohibition, so a caller
@@ -159,6 +169,39 @@ class TestTheProjectionThatWasChosen:
     def test_is_immutable(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             SITE_PROJECTION.lat_0 = 0.0  # type: ignore[misc]
+
+
+class TestBaseCrs:
+    def test_rejects_a_projected_base_crs(self):
+        """``forward`` takes degrees, so a projected base CRS is a silent
+        wrong answer -- and PROJ's own complaint is several kilobytes of JSON
+        that never names the field."""
+        with pytest.raises(ValueError, match="base_crs must be geographic"):
+            Projection(name="bad", lat_0=50.0, lon_0=-100.0, base_crs="EPSG:3857")
+
+    def test_rejects_a_base_crs_proj_does_not_recognize(self):
+        with pytest.raises(ValueError, match="not a CRS PROJ recognizes"):
+            Projection(name="bad", lat_0=50.0, lon_0=-100.0, base_crs="nonsense")
+
+    def test_rejects_an_unhashable_base_crs(self):
+        """A ``dict`` is a form ``CRS.from_user_input`` accepts, but it cannot
+        key the cache, and the failure would otherwise be an unhashable-type
+        ``TypeError`` at first use rather than a ``ValueError`` at
+        construction."""
+        with pytest.raises(ValueError, match="base_crs must be hashable"):
+            Projection(
+                name="bad",
+                lat_0=50.0,
+                lon_0=-100.0,
+                base_crs={"proj": "longlat", "datum": "WGS84"},
+            )
+
+    def test_accepts_another_geographic_base_crs(self):
+        """NAD83 is geographic too, so it is admissible -- the site coordinates
+        are simply not on it."""
+        nad83 = Projection(name="on NAD83", lat_0=50.0, lon_0=-100.0, base_crs="EPSG:4269")
+        x, y = nad83.forward(-100.0, 50.0)
+        assert math.isfinite(x) and math.isfinite(y)
 
 
 class TestForward:
@@ -206,6 +249,15 @@ class TestForward:
             SITE_PROJECTION.forward(170.0, 10.0), abs=1e-6
         )
 
+    def test_a_bad_base_crs_is_not_reported_as_a_bad_input_point(self):
+        """``CRSError`` is a subclass of ``ProjError``, so guarding the
+        transformer's construction would blame the antipode for a definition
+        that will not build. Construction is now validated up front."""
+        with pytest.raises(ValueError, match="base_crs"):
+            Projection(name="bad", lat_0=50.0, lon_0=-100.0, base_crs="EPSG:3857").forward(
+                -90.0, 40.0
+            )
+
     def test_refuses_a_point_outside_the_domain_rather_than_returning_inf(self):
         """PROJ's default is to return infinity, which propagates into an axes
         limit or into a triangulation as a silently dropped point. The message
@@ -215,7 +267,9 @@ class TestForward:
         ).transform(*SITE_PROJECTION.antipode)
         assert not np.isfinite(raw).all(), "PROJ no longer returns inf; the guard's premise"
 
-        with pytest.raises(ValueError, match="antipode of its center"):
+        # The coordinates matter: they say which point in an 8000-row array to
+        # look for.
+        with pytest.raises(ValueError, match=r"antipode of its center, \(80\.0, -50\.0\)"):
             SITE_PROJECTION.forward(*SITE_PROJECTION.antipode)
         with pytest.raises(ValueError, match="antipode of its center"):
             SITE_PROJECTION.forward(
@@ -256,7 +310,7 @@ class TestForward:
             SITE_PROJECTION.forward(masked_lon, masked_lat)
 
     def test_rejects_latitudes_outside_the_poles(self):
-        with pytest.raises(ValueError, match="outside"):
+        with pytest.raises(ValueError, match=r"outside \[-90, 90\]"):
             SITE_PROJECTION.forward(-100.0, 90.5)
         # The message says which order the arguments go in, because swapping
         # them is the way this is usually reached.
@@ -278,11 +332,53 @@ class TestForward:
 
 class TestFactors:
     def test_reports_the_rotation_of_projected_north(self):
-        """North is not up: the rotation runs from +58 degrees at the northwest
-        of the domain to -42 at the southeast, so a single north arrow on a
-        full-domain panel is wrong nearly everywhere on it."""
-        factors = SITE_PROJECTION.factors(np.array([-170.0, -100.0, -20.0]), np.array([60.0, 50.0, 20.0]))
+        """North is not up, and the sign is PROJ's rather than the one the eye
+        reads: at the northwest of the domain ``meridian_convergence`` is
+        *negative*. It is zero on the central meridian by construction."""
+        factors = SITE_PROJECTION.factors(
+            np.array([-170.0, -100.0, -20.0]), np.array([60.0, 50.0, 20.0])
+        )
         assert factors.meridian_convergence == pytest.approx([-57.91, 0.0, 42.09], abs=0.01)
+
+    @needs_site_table
+    def test_the_convergence_spread_over_the_pool_is_what_the_docs_claim(self):
+        """The figure that justifies refusing a north arrow, pinned so the prose
+        cannot drift from it again: it was wrong in sign, in magnitude and in
+        location before this test existed."""
+        sites = load_sites()
+        convergence = SITE_PROJECTION.factors(
+            sites["lon"].to_numpy(), sites["lat"].to_numpy()
+        ).meridian_convergence
+        assert convergence.min() == pytest.approx(-70.6, abs=0.2)
+        assert convergence.max() == pytest.approx(75.1, abs=0.2)
+        assert convergence.max() - convergence.min() == pytest.approx(146.0, abs=1.0)
+
+    def test_factors_refuses_the_region_where_proj_returns_infinity(self):
+        """Wider than the point ``forward`` refuses: about a degree around the
+        antipode. Unchecked, one such point turns the documented
+        ``300e3 * tissot_semimajor.max()`` into ``inf``, and a long-edge mask
+        into one that masks nothing."""
+        antipode_lon, antipode_lat = SITE_PROJECTION.antipode
+        with pytest.raises(ValueError, match="undefined at the antipode"):
+            SITE_PROJECTION.factors(antipode_lon, antipode_lat + 0.001)
+        with pytest.raises(ValueError, match="undefined at the antipode"):
+            SITE_PROJECTION.factors(
+                np.array([-100.0, antipode_lon]), np.array([50.0, antipode_lat + 0.001])
+            )
+
+    def test_factors_rejects_empty_input_in_this_module_s_own_terms(self):
+        """PROJ raises "longitude and latitude must be same size" on empty
+        input, which is false and is a different exception type from everything
+        else here."""
+        with pytest.raises(ValueError, match="at least one point"):
+            SITE_PROJECTION.factors(np.array([]), np.array([]))
+
+    def test_factors_reuses_one_proj_object(self):
+        """Constructing it parses the definition through PROJ, which costs more
+        than the query it serves."""
+        from sipnet_calibration.projection import _proj
+
+        assert _proj(SITE_PROJECTION) is _proj(SITE_PROJECTION)
 
     def test_reports_the_scale_factors_a_ground_distance_needs(self):
         """The long-edge triangle mask is a projected length and wants a ground
@@ -301,6 +397,25 @@ class TestFactors:
         assert factors.tissot_semiminor == pytest.approx(1.0, abs=1e-9)
         assert factors.meridian_convergence == pytest.approx(0.0, abs=1e-9)
         assert factors.angular_distortion == pytest.approx(0.0, abs=1e-6)
+
+    def test_reports_the_variant_projection_it_is_called_on(self):
+        """Every other case here goes through ``SITE_PROJECTION``, so ``factors``
+        could ignore ``self`` entirely and still pass. A variant reports unity
+        and no rotation at *its* center, where ``SITE_PROJECTION`` reports 1.035
+        and -43 degrees."""
+        variant = dataclasses.replace(
+            SITE_PROJECTION, name="Alaska LAEA", lat_0=64.0, lon_0=-150.0
+        )
+        own = variant.factors(-150.0, 64.0)
+        # PROJ computes factors by finite differences, so the center is unity to
+        # about 1e-8 rather than exactly.
+        assert own.tissot_semimajor == pytest.approx(1.0, abs=1e-6)
+        assert own.tissot_semiminor == pytest.approx(1.0, abs=1e-6)
+        assert own.meridian_convergence == pytest.approx(0.0, abs=1e-6)
+
+        default = SITE_PROJECTION.factors(-150.0, 64.0)
+        assert default.tissot_semimajor == pytest.approx(1.0347, abs=1e-3)
+        assert default.meridian_convergence == pytest.approx(-43.26, abs=0.01)
 
     def test_checks_its_arguments_the_way_forward_does(self):
         with pytest.raises(ValueError, match="not finite"):
@@ -423,6 +538,22 @@ class TestProjectedBounds:
             SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
         )
 
+    def test_samples_per_edge_actually_controls_the_sampling(self):
+        """Nothing else observes the parameter taking effect: comparing the
+        default against a finer run passes trivially for an implementation that
+        discards it. Two samples per edge is the corners-only bound the method
+        exists to avoid, so it is the one call that distinguishes the two."""
+        west, south, east, north = EXTENTS["CONUS"]
+        corner_x, corner_y = SITE_PROJECTION.forward(
+            np.array([west, east, west, east]), np.array([south, south, north, north])
+        )
+        coarse = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=2)
+        assert coarse == pytest.approx(
+            (corner_x.min(), corner_y.min(), corner_x.max(), corner_y.max()), abs=1.0
+        )
+        default_y_min = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])[1]
+        assert coarse[1] - default_y_min > 350e3
+
     def test_more_samples_do_not_change_the_answer_materially(self):
         """The tolerance is meters against figures thousands of kilometers
         across, several orders of magnitude below one rendered pixel."""
@@ -438,6 +569,10 @@ class TestProjectedBounds:
             (-180.0, -90.0, 180.0, 90.0),  # the whole globe
             (-200.0, -60.0, 100.0, -40.0),  # 300 degrees wide, unwrapped
             (0.0, -60.0, 300.0, -40.0),  # 300 degrees wide, positive
+            (60.0, -55.0, 80.0, -45.0),  # antipode exactly on the east edge
+            (80.0, -55.0, 100.0, -45.0),  # exactly on the west edge
+            (70.0, -50.0, 90.0, -45.0),  # exactly on the south edge
+            (70.0, -55.0, 90.0, -50.0),  # exactly on the north edge
         ],
     )
     def test_refuses_a_box_containing_the_antipode(self, box):
@@ -647,7 +782,7 @@ class TestInterchangeFiles:
         not merely succeed on the good one -- a default that silently did
         nothing would also return 0."""
         assert projection_main(["--directory", str(tmp_path)]) == 1
-        assert "error" in capsys.readouterr().out
+        assert "--write" in capsys.readouterr().out
         assert projection_main([]) == 0
         assert "matches" in capsys.readouterr().out
 
@@ -655,7 +790,7 @@ class TestInterchangeFiles:
         blocked = tmp_path / "a-file"
         blocked.write_text("not a directory\n")
         assert projection_main(["--write", "--directory", str(blocked / "sub")]) == 1
-        assert "error" in capsys.readouterr().out
+        assert "Not a directory" in capsys.readouterr().out
 
 
 class TestExtents:
@@ -671,6 +806,7 @@ class TestExtents:
     def test_extents_cannot_be_mutated(self):
         """A figure and the site subset it plots are supposed to agree on what a
         region means, so a caller must not be able to reassign an entry."""
+        assert isinstance(EXTENTS, MappingProxyType)
         with pytest.raises(TypeError):
             EXTENTS["CONUS"] = (0.0, 0.0, 1.0, 1.0)  # type: ignore[index]
         with pytest.raises(TypeError):

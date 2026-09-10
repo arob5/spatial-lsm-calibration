@@ -133,12 +133,16 @@ it does not matter: NAD 83 and WGS 84 differ by about 2 m, and the full-domain
 extent is 16,000 km across, so the shift is under a thousandth of a pixel at any
 figure size anyone would render.
 
-**North is not up, and not by a little.** The rotation of projected north
-reaches 58 degrees at the northwest of the domain and -42 at the southeast, a
-hundred degrees across one full-domain panel. A single north arrow is therefore
-not merely imprecise but wrong nearly everywhere on such a figure; a graticule
-is the honest indicator. :meth:`Projection.factors` reports the rotation at a
-point as ``meridian_convergence``.
+**North is not up, and not by a little.** Over the site pool the rotation of
+projected north runs from -71 degrees on the Chukchi coast to +75 in northeast
+Greenland, a spread of about 146 degrees; across the whole
+``NORTH_AMERICA`` extent it runs from -78 to +79, and the two extremes are the
+northwest and *northeast* corners rather than opposite ends of a diagonal. A
+single north arrow is therefore not merely imprecise but wrong nearly
+everywhere on such a figure; a graticule is the honest indicator.
+:meth:`Projection.factors` reports the rotation at a point as
+``meridian_convergence``, and ``tests/test_projection.py`` pins those extremes.
+Mind its sign convention, which is PROJ's: see that method's Notes.
 
 **There is no inverse transform**, because nothing in the spatial panels as
 specified needs one: a graticule, an extent and a site marker are all forward.
@@ -278,6 +282,31 @@ class Projection:
         ):
             if not math.isfinite(value):
                 raise ValueError(f"{field} must be finite, got {value}")
+        # Checked here rather than left to first use. An unhashable base_crs
+        # would otherwise fail in the transformer cache with "unhashable type",
+        # and a projected one would fail inside PROJ with several kilobytes of
+        # JSON -- neither of which names the field.
+        # Hashability first, and explicitly: a dict is a form
+        # CRS.from_user_input accepts, and a geographic one at that, so it
+        # passes every check below and then fails in the cache with
+        # "unhashable type: 'dict'" at the first transform.
+        try:
+            hash(self.base_crs)
+        except TypeError as error:
+            raise ValueError(
+                f"base_crs must be hashable, since the built CRS is cached on it; "
+                f"got {type(self.base_crs).__name__}. Pass an EPSG string, a PROJ "
+                "string or a pyproj.CRS"
+            ) from error
+        try:
+            base = pyproj.CRS.from_user_input(self.base_crs)
+        except pyproj.exceptions.CRSError as error:
+            raise ValueError(f"base_crs is not a CRS PROJ recognizes: {error}") from error
+        if not base.is_geographic:
+            raise ValueError(
+                f"base_crs must be geographic, since forward() takes degrees; "
+                f"{self.base_crs} is {base.type_name}"
+            )
 
     # ── the transform ────────────────────────────────────────────────────────
 
@@ -322,14 +351,14 @@ class Projection:
         the resulting ``ProjError`` is re-raised as a ``ValueError``.
         """
         longitude, latitude, scalar = _check_coordinates(lon, lat)
+        # Built outside the try: pyproj's CRSError is a subclass of ProjError,
+        # so a definition that will not build would otherwise be re-raised as a
+        # complaint about an input point that was fine.
+        transformer = _transformer(self)
         try:
-            x, y = _transformer(self).transform(longitude, latitude, errcheck=True)
+            x, y = transformer.transform(longitude, latitude, errcheck=True)
         except pyproj.exceptions.ProjError as error:
-            antipode_lon, antipode_lat = self.antipode
-            raise ValueError(
-                f"{error}. The only point this projection cannot take is the antipode "
-                f"of its center, at ({antipode_lon}, {antipode_lat})"
-            ) from error
+            raise ValueError(_outside_domain_message(self, error)) from error
         if scalar:
             return float(x), float(y)
         return np.asarray(x), np.asarray(y)
@@ -352,14 +381,41 @@ class Projection:
             assuming; and ``meridian_convergence``, the rotation of projected
             north in degrees.
 
+        Raises
+        ------
+        ValueError
+            On the same inputs :meth:`forward` rejects, and additionally where
+            PROJ cannot compute factors. That region is **wider than the point
+            ``forward`` refuses**: it extends about a degree around the
+            antipode, where PROJ returns infinity for every factor. Left
+            unchecked, a single such point turns
+            ``300e3 * factors.tissot_semimajor.max()`` into ``inf`` and a
+            long-edge mask into one that masks nothing.
+
         Notes
         -----
         This is what turns a ground distance into a projected one and back --
         the conversion the long-edge triangle mask in ``plotting/maps.py``
         needs, and which cannot be done from the projection parameters alone.
+
+        PROJ's conventions, which are its own rather than this module's:
+        ``angular_distortion`` is in degrees; ``meridian_convergence`` is in
+        degrees and is the *negative* of the clockwise rotation of the image of
+        true north, so a caller rotating a label takes its sign as PROJ gives
+        it rather than as the eye reads it; ``tissot_semimajor`` and
+        ``tissot_semiminor`` multiply to 1 here, since the projection is
+        equal-area.
         """
         longitude, latitude, _ = _check_coordinates(lon, lat)
-        return pyproj.Proj(self.crs()).get_factors(longitude, latitude, radians=False)
+        if longitude.size == 0:
+            # PROJ raises "longitude and latitude must be same size" on empty
+            # input, which is both false and a different exception type from
+            # everything else this module raises.
+            raise ValueError("factors() needs at least one point, got an empty array")
+        try:
+            return _proj(self).get_factors(longitude, latitude, radians=False, errcheck=True)
+        except pyproj.exceptions.ProjError as error:
+            raise ValueError(_outside_domain_message(self, error)) from error
 
     @property
     def antipode(self) -> tuple[float, float]:
@@ -652,8 +708,15 @@ def check_definitions(
 
 _WRITE_COMMAND = "`python -m sipnet_calibration.projection --write`"
 
+#: Bound on the CRS, transformer and Proj caches. The documented way to get a
+#: variant is ``dataclasses.replace``, so a caller scanning centers would
+#: otherwise leak two PROJ objects per variant for the life of the process.
+#: A handful is plenty: one projection is the norm and a facet of a few is the
+#: most anyone has proposed.
+_CACHE_SIZE = 32
 
-@functools.lru_cache(maxsize=None)
+
+@functools.lru_cache(maxsize=_CACHE_SIZE)
 def _crs(projection: Projection) -> pyproj.CRS:
     """*projection* as a :class:`pyproj.CRS`, built once per instance.
 
@@ -673,7 +736,7 @@ def _crs(projection: Projection) -> pyproj.CRS:
     )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=_CACHE_SIZE)
 def _transformer(projection: Projection) -> pyproj.Transformer:
     """The transformer from *projection*'s base CRS onto it, built once.
 
@@ -683,6 +746,26 @@ def _transformer(projection: Projection) -> pyproj.Transformer:
     """
     return pyproj.Transformer.from_crs(
         pyproj.CRS.from_user_input(projection.base_crs), _crs(projection), always_xy=True
+    )
+
+
+@functools.lru_cache(maxsize=_CACHE_SIZE)
+def _proj(projection: Projection) -> pyproj.Proj:
+    """*projection* as a :class:`pyproj.Proj`, for :meth:`Projection.factors`.
+
+    Cached for the same reason as :func:`_crs`: constructing it parses the
+    definition through PROJ, which costs more than the query it serves.
+    """
+    return pyproj.Proj(_crs(projection))
+
+
+def _outside_domain_message(projection: Projection, error: Exception) -> str:
+    """What to tell a caller whose point PROJ would not take."""
+    antipode_lon, antipode_lat = projection.antipode
+    return (
+        f"{error}. This projection is undefined at the antipode of its center, "
+        f"({antipode_lon}, {antipode_lat}); distortion factors are unavailable for "
+        "about a degree around it, though the transform itself is not"
     )
 
 

@@ -299,7 +299,7 @@ The projection used for spatial figures is a separate choice from the coordinate
 system of the input data: a **Lambert Azimuthal Equal Area centered at
 50 N, 100 W**, on WGS 84, in meters, with no false origin.
 
-    +proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs +type=crs
+    +proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
 
 The parameters live in code, as `SITE_PROJECTION` in
 [`sipnet_calibration.projection`](../src/sipnet_calibration/projection.py),
@@ -324,8 +324,10 @@ figures used, ESRI:102003, the USA Contiguous Albers Equal Area Conic, is
 area-true everywhere but is intended for a region of predominant east-west
 expanse, and it degrades in shape far from its standard parallels. This site
 pool reaches 82.5 N, where it distorts shape severely — 107 degrees of angular
-deformation, against under 14 for the projection adopted here. Both ceilings are
-asserted against this table in `tests/test_projection.py`.
+deformation, against under 14 for the projection adopted here. The ceiling for
+the adopted projection is asserted against this table in
+`tests/test_projection.py`; the 102003 figure is a one-off measurement recorded
+on issue #4, since this package implements only the one projection.
 
 Named longitude/latitude boxes for the regions the figures use — `CONUS`,
 `NORTH_AMERICA` and `ALASKA` — are `EXTENTS` in
