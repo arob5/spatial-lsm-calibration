@@ -6,7 +6,7 @@ A canonical field is an ``xarray.DataArray`` whose dimensions are a subset of
 several, and draws it.
 
 ==========================  ================================================
-:mod:`primitives`           ``(ax, numpy arrays, **style) -> artist``
+:mod:`primitives`           adds one element to an ``Axes``
 :mod:`series`               a time-series panel on one ``Axes``
 :mod:`maps`                 a spatial panel on one ``Axes`` (not implemented)
 :mod:`facet`                a grid of panels, and the figure around it

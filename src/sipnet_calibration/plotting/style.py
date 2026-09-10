@@ -20,7 +20,7 @@ once by whatever is producing a set of figures.
 Functions
 ---------
 :func:`role_style`
-    A role's keywords for one kind of artist, with overrides applied.
+    A role's keywords for one kind of element, with overrides applied.
 :func:`use_project_style`
     Apply :data:`RC_PARAMS` to matplotlib's global ``rcParams``.
 :func:`axis_label`
@@ -56,7 +56,7 @@ __all__ = [
 
 #: Role name to matplotlib keywords. The keys are the roles a panel may be
 #: asked for; :func:`role_style` selects from a value the part that applies to
-#: a given kind of artist.
+#: a given kind of element.
 ROLES: dict[str, dict[str, Any]] = {
     "prior": {"color": "#999999", "linestyle": "-", "linewidth": 1.0},
     "posterior": {"color": "#0072B2", "linestyle": "-", "linewidth": 1.2},
@@ -107,14 +107,14 @@ RC_PARAMS: dict[str, Any] = {
 
 
 def role_style(role: str, kind: str = "line", **overrides: Any) -> dict[str, Any]:
-    """A role's keywords for one kind of artist, with *overrides* applied.
+    """A role's keywords for one kind of element, with *overrides* applied.
 
     Parameters
     ----------
     role:
         A key of :data:`ROLES`.
     kind:
-        The kind of artist the keywords are for, which decides which of the
+        The kind of element the keywords are for, which decides which of the
         role's keywords are returned:
 
         ==========  ==================================================

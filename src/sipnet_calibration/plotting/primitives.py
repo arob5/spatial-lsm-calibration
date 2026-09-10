@@ -1,28 +1,35 @@
-"""Drawing functions that put one kind of artist onto an existing ``Axes``.
+"""Low-level plotting primitives.
 
-Every function here has the signature ``(ax, <numpy arrays>, **style) ->
-artist``. They take numpy, not pandas or xarray; they draw onto the ``ax``
-they are given and never create a figure; and they know nothing about roles or
-about variables. Style keywords are passed through to matplotlib.
+The base plotting helpers used throughout this project, responsible for adding
+elements to existing matplotlib ``Axes`` objects. The supported elements are
+the ones that come up repeatedly when visualizing land surface modeling data
+and results: a single time series, an ensemble of them drawn as separate
+curves, an ensemble summarized as nested intervals, and observations with
+their error bars.
 
-============================  ===================================================
-:func:`line`                  one curve
-:func:`spaghetti`             an ensemble as individual curves
-:func:`band`                  one filled interval between explicit bounds
-:func:`fan`                   nested central intervals computed from samples
-:func:`points`                scattered values, with optional error bars
-============================  ===================================================
+Each function takes an ``Axes`` and plain numpy arrays, adds one element to
+it, and returns what it added. They accept no pandas and no xarray, they
+create no figure, and they know nothing about roles or about variables. Style
+keywords are passed straight through to matplotlib.
+
+====================  ==============================================
+:func:`line`          one curve
+:func:`spaghetti`     an ensemble as individual curves
+:func:`band`          one filled interval between explicit bounds
+:func:`fan`           nested central intervals computed from samples
+:func:`points`        scattered values, with optional error bars
+====================  ==============================================
 
 Missing values
 --------------
 Curves and bands keep ``NaN``, so a gap in the data is a gap in the drawing:
 :func:`line` and :func:`spaghetti` break the curve there, and :func:`band` and
 :func:`fan` draw one region per run of finite values rather than spanning the
-gap. :func:`points` instead drops the entries that are not finite, so the
-artist holds exactly the values that were present.
+gap. :func:`points` instead drops the entries that are not finite, so what is
+drawn is exactly the values that were present.
 
-The spatial drawing functions the design calls for -- ``map_points``,
-``map_raster`` and ``basemap`` -- are not implemented; they belong with
+The spatial equivalents -- ``map_points``, ``map_raster`` and ``basemap`` --
+are not implemented; they belong with
 :mod:`sipnet_calibration.plotting.maps` and are blocked on issue #4.
 
 Usage

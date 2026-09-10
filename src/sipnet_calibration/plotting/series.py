@@ -60,7 +60,7 @@ Usage
     tair = driver_fields(load_drivers([1, 27]))["air_temperature"]
 
     series_panel(tair.sel(site=1))                        # a fan over members
-    series_panel(tair.sel(site=1), show="spaghetti")      # the members as curves
+    series_panel(tair.sel(site=1), show="spaghetti")     # members as curves
     series_panel(tair.isel(member=0), show="spaghetti", label_by="site")
 
     # An observation with its error variance, over a model panel.
