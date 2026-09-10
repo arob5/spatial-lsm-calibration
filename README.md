@@ -9,74 +9,53 @@ This is a **research codebase, not a library**. The deliverables are calibrated
 parameter ensembles, diagnostic outputs, and reusable inference machinery — not
 a published package. Interfaces change when the science requires it.
 
-## Status
+## Getting set up
 
-Early. The inference substrate lives in a separate package (`pyEKI`, below) and
-the first multi-site calibration run (`test1`) is not yet configured. What
-exists here today:
+Requires [uv](https://docs.astral.sh/uv/). The constraints ingest additionally
+needs `Rscript`; nothing else does.
 
-- the `src/sipnet_calibration/` module layout, whose modules carry the contract
-  each is to satisfy; `sites.py` is implemented, the rest are not;
-- `SITE_GRID` and the conversions between coordinates and grid indices, in
-  `sipnet_calibration.sites`, with tests;
-- `load_sites()` and `select_sites()` over the processed site table, with tests;
-- site metadata for the 8000-site pool, as a point shapefile under
-  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
-- `scripts/ingest_sites.py`, which turns those two into
-  `data/processed/sites/sites.csv`.
+**1. Clone this repository and its two companion packages as siblings.**
+`pyproject.toml` installs `pysipnet` and `pyens` as editable locals from
+`../pySIPNET` and `../PyEns`, so the sibling layout is required rather than a
+convention. `pySIPNET` is the SIPNET model interface; `PyEns` runs ensembles in
+parallel.
 
-The model definition, notation, algorithm design and plotting specification are
-maintained outside this repository and are not published with it. `CLAUDE.md`
-records the code conventions; `data/README.md` documents the inputs.
+```bash
+git clone https://github.com/arob5/spatial-lsm-calibration.git
+git clone https://github.com/TARPS-group/pySIPNET.git
+git clone https://github.com/arob5/PyEns.git
+cd spatial-lsm-calibration
+```
 
-## Scope of the problem
-
-| | |
-|---|---|
-| Sites | 8000 irregular points, 7–82° N and 178° W–20° W (~3640 inside CONUS) |
-| Period | 2012–2024 |
-| Drivers | ERA5, 3-hourly, ensemble |
-| Initial conditions | per-site, per-member netCDF |
-| Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), AGB, LAI, soil C and moisture (annual) |
-
-Every input arrives in ensemble form. Note the sites are **scattered points, not
-a grid**, and the extent is North America rather than CONUS — assumptions to the
-contrary are wrong.
-
-## Setup
-
-Requires [uv](https://docs.astral.sh/uv/). The interpreter is pinned to 3.14 in
-`.python-version`; `requires-python` is only a floor, so use the pin.
+**2. Sync the environment.** This creates `.venv` from `uv.lock`, using the
+interpreter pinned in `.python-version` (3.14). `requires-python` is only a
+floor, so use the pin.
 
 ```bash
 uv sync
 ```
 
-Then activate the environment, and stay in it for everything below:
+**3. Activate it, and stay in it for everything below.**
 
 ```bash
 source .venv/bin/activate
 ```
 
-**Everything in this repository is run from inside that environment** — scripts,
-tests and notebooks alike. They all import `sipnet_calibration` and its
+Scripts, tests and notebooks alike import `sipnet_calibration` and its
 dependencies from `.venv`, so a system `python` fails on the first import rather
-than doing something subtly different. `which python` should print a path ending
-in `.venv/bin/python`.
+than doing something subtly different; `which python` should print a path ending
+in `.venv/bin/python`. `uv run <command>` is the equivalent for a one-off
+without activating. Notebooks are the one case needing more than this; see
+[Running notebooks](#running-notebooks).
 
-`uv run <command>` is the equivalent for a one-off without activating, and is
-what the commands in this README use so that they work either way. Notebooks are
-the one case needing more than this; see [Running notebooks](#running-notebooks).
+**4. Check the environment works.**
 
-Two companion packages are installed as editable locals from sibling
-directories, so they must be checked out alongside this repository:
+```bash
+uv run pytest
+```
 
-| Package | Expected path | Role |
-|---|---|---|
-| [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | `../pySIPNET` | SIPNET model interface — `SIPNETModel(**overrides)` |
-| `PyEns` | `../PyEns` | parallel ensemble execution |
-
-Two further packages are related but **not currently dependencies**:
+Two further packages are related but **not currently dependencies**, and nothing
+above installs them:
 
 - **`pyEKI`** — the ensemble-Kalman inference substrate (structured linear
   operators, Gaussian conditioning, EKI). Developed independently; not yet wired
@@ -93,6 +72,123 @@ clean without it, but `plotting/maps.py` is unimplemented pending the decision
 in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
 (BU's SCC) cartopy installs normally.
 
+## Running the data processing
+
+A one-time step per checkout. Ingest converts `data/raw/` into
+`data/processed/`, whose format **is** the canonical format the rest of the
+project reads.
+
+It requires the raw data to be present under `data/raw/` in the layout
+[`data/README.md`](data/README.md) specifies. **The data for this project is
+housed on Boston University's Shared Computing Cluster (SCC).** A fresh clone
+has almost none of it — only the site shapefile and the Ameriflux identifier map
+are tracked — so this section is mostly about running on the SCC. Step 1 is the
+exception and runs anywhere.
+
+**The order below is load-bearing**, because each step reads what an earlier one
+wrote. A single top-level helper that runs the whole sequence is wanted
+eventually but does not exist yet, so for now it is these calls, in this order.
+
+**1. The site table.** Writes `data/processed/sites/sites.csv`.
+
+```bash
+python scripts/ingest_sites.py
+```
+
+This must run first: `ingest_constraints.py` and `ingest_ic.py` both read that
+file for the site axis and the `lon`/`lat` coordinates.
+
+**2. Flatten the constraint `.Rdata` files.** Writes a long CSV and a JSON
+manifest of what R checked.
+
+```bash
+Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json
+```
+
+These are the only inputs that need R (`data.table` and `jsonlite`). Both
+outputs are scratch rather than products, so write them outside
+`data/processed/`.
+
+**3. The annual constraints product.** Writes
+`data/processed/constraints_annual.nc`.
+
+```bash
+python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json
+```
+
+Must follow step 2, whose two files are its input, and step 1.
+
+**4. The initial conditions product.** Writes `data/processed/ic.nc`.
+
+```bash
+python scripts/ingest_ic.py --jobs 16
+```
+
+`--root` defaults to `data/raw/initial_conditions`. The read is I/O bound, so
+`--jobs` is worth raising on a networked filesystem.
+
+There is also an `--allow-gaps` flag, and it is not a default. It fills missing
+`(site, member)` pairs with `NaN` and records them in `ic_present` instead of
+stopping, and exists so the script is runnable in a checkout holding only part
+of the ensemble. On the SCC, with the full ensemble present, it should not be
+needed — reaching for it there means something is wrong with the data or with
+`--root`, and using it anyway yields a silently partial product.
+
+Two things are deliberately absent from that sequence:
+
+- **Net ecosystem exchange.** `scripts/ingest_nee.py` does not exist yet;
+  `data/README.md` records it as intended.
+- **Drivers.** There is no driver ingest step at all, and nothing is written
+  under `data/processed/` for them.
+  `sipnet_calibration.drivers.load_drivers` parses the raw `.clim` files into
+  the canonical form on demand.
+
+[`data/README.md`](data/README.md) is the authority on the per-product detail —
+the expected layout, provenance, units, and what each script reads and writes.
+This section is only the order in which to call them.
+
+### Optional: raw data survey
+
+Two diagnostics that answer questions about the raw data which can only be
+answered where the files are. They are **optional**, they run **before**
+processing, and they write a JSON summary rather than any processed product.
+Neither is part of the ingest pipeline.
+
+```bash
+python3 scripts/survey_ic_variables.py --root <IC root> --jobs 16 --out ic_survey.json
+```
+
+*Which variables do the initial condition files actually carry, and is the
+`(site, member)` ensemble a complete rectangle?* The files are not all alike, and
+`ingest_ic.py` treats an unregistered variable as fatal, so this is how to find
+out what is there first. It parses the netCDF-3 headers directly and imports
+nothing third-party, so it runs under a bare `python3` with no environment
+activated. `--sample N` surveys a random sample of sites instead of all of them.
+
+```bash
+python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_survey.json
+```
+
+*Does the driver directory template cover every site and member, and does every
+`.clim` file pass the reader's own checks?* It applies
+`sipnet_calibration.drivers.read_clim_file` to each file, so unlike the survey
+above it needs the project environment. There are around 80,000 files at roughly
+a tenth of a second each, which is what `--jobs` is for.
+
+## Scope of the problem
+
+| | |
+|---|---|
+| Sites | 8000 irregular points, 7–82° N and 178° W–20° W (~3640 inside CONUS) |
+| Period | 2012–2024 |
+| Drivers | ERA5, 3-hourly, ensemble |
+| Initial conditions | per-site, per-member netCDF |
+| Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), AGB, LAI, soil C and moisture (annual) |
+
+Every input arrives in ensemble form. Note the sites are **scattered points, not
+a grid**, and the extent is North America rather than CONUS — assumptions to the
+contrary are wrong.
+
 ## Layout
 
 ```
@@ -106,12 +202,6 @@ experiments/<task>/       # config.py (source of truth) + plots.py (report figur
 data/raw/                 # inputs, never edited; only raw/sites/ is tracked
 data/processed/           # ingest output == the canonical format used throughout
 tests/
-```
-
-Run the tests with:
-
-```bash
-uv run pytest
 ```
 
 Data formats, provenance, and the coordinate reference system are documented in
@@ -160,11 +250,31 @@ To execute headlessly:
 .venv/bin/jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=python3 --output out.ipynb in.ipynb
 ```
 
+## Status
+
+Early. The inference substrate lives in a separate package (`pyEKI`, above) and
+the first multi-site calibration run (`test1`) is not yet configured. What
+exists here today:
+
+- the `src/sipnet_calibration/` module layout, whose modules carry the contract
+  each is to satisfy; `sites.py` is implemented, the rest are not;
+- `SITE_GRID` and the conversions between coordinates and grid indices, in
+  `sipnet_calibration.sites`, with tests;
+- `load_sites()` and `select_sites()` over the processed site table, with tests;
+- site metadata for the 8000-site pool, as a point shapefile under
+  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
+- `scripts/ingest_sites.py`, which turns those two into
+  `data/processed/sites/sites.csv`.
+
+The model definition, notation, algorithm design and plotting specification are
+maintained outside this repository and are not published with it. `CLAUDE.md`
+records the code conventions; `data/README.md` documents the inputs.
+
 ## Open issues
 
 Data and environment problems currently tracked:
 
-- [#3](https://github.com/arob5/spatial-lsm-calibration/issues/3) — the initial-condition
+- [#3](https://github.com/arob5/spatial-lsm-calibration/issues/3) — the initial condition
   netCDFs carry an unsubstituted `[year]` template in their time units, so they
   cannot be opened with CF decoding enabled. Adapters must use
   `decode_times=False`.
