@@ -9,14 +9,14 @@ This is a research codebase, not a library.
 
 ## Getting set up
 
-Requires [uv](https://docs.astral.sh/uv/). The constraints ingest additionally
-needs `Rscript`; nothing else does.
+Requires [uv](https://docs.astral.sh/uv/). One piece of the data ingest step requires
+`Rscript` as well.
 
 **1. Clone this repository and its two companion packages as siblings.**
 `pyproject.toml` installs `pysipnet` and `pyens` as editable locals from
-`../pySIPNET` and `../PyEns`, so the sibling layout is required rather than a
-convention. `pySIPNET` is the SIPNET model interface; `PyEns` runs ensembles in
-parallel.
+`../pySIPNET` and `../PyEns`, so the sibling layout is required. 
+`pySIPNET` is the SIPNET model interface; `PyEns` provides an interface
+running ensembles. 
 
 ```bash
 git clone https://github.com/arob5/spatial-lsm-calibration.git
