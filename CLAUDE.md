@@ -44,11 +44,12 @@ Facts specific to this working copy, which the README deliberately does not carr
 - The local files are real copies, not symlinks. On SCC they should be symlinks.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
-- Neither `pyproj` nor any R spatial package is installable here, so a
-  definition cannot be round-tripped through PROJ or GDAL locally.
-  `sipnet_calibration.projection` is validated against published reference
-  coordinates instead, and `python -m sipnet_calibration.projection --check`
-  verifies the stored definition files (issue #4).
+- **`pyproj` installs here.** Issue #4 recorded that it could not, on the
+  grounds that every arm64 wheel targets macOS 14 or newer; the machine has
+  since been upgraded past that, and `pyproj` is now a dependency. `cartopy`
+  still has no wheel for this project's Python (arm64 wheels stop at cp313),
+  which is a Python-version problem rather than an OS one. No R spatial package
+  is installable.
 
 Operational rules that follow from the data and are easy to get wrong in code:
 
@@ -287,8 +288,8 @@ src/sipnet_calibration/
   sites.py                # SITE_GRID + grid conversions, load_sites(),
                           # select_sites(ids=, bbox=, where=, sample=, seed=),
                           # EXTENTS (named lon/lat boxes)
-  projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W), forward(),
-                          # projected_bounds(); writes projections/
+  projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
+                          # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
   constraints.py          # annual constraint schema, load_constraints(),
                           # constraint_fields() -> canonical per-variable view
@@ -369,9 +370,10 @@ plotting code. The load-bearing rules:
   projection is required and CONUS-only assumptions are wrong.
 - **The display projection is settled**: a Lambert Azimuthal Equal Area
   centered at 50 N, 100 W on WGS 84, held as `SITE_PROJECTION` in
-  `sipnet_calibration.projection`, which also provides the forward transform,
-  `projected_bounds()` for axes limits, and the stored PROJJSON and PROJ string
-  under `src/sipnet_calibration/projections/`. Plotting code projects through
+  `sipnet_calibration.projection`, which provides `forward()`,
+  `projected_bounds()` for axes limits, `factors()` for local distortion, and
+  the PROJJSON and PROJ string that PROJ serializes from it under
+  `src/sipnet_calibration/projections/`. Plotting code projects through
   that module and never defines projection parameters of its own. Named
   lon/lat extents (`CONUS`, `NORTH_AMERICA`, `ALASKA`) are `EXTENTS` in
   `sipnet_calibration.sites`, beside the selection that takes the same form.
@@ -380,13 +382,15 @@ plotting code. The load-bearing rules:
   degrees and anisotropy under 1.3 over the whole pool, both asserted against
   the real site table in `tests/test_projection.py`; `data/README.md` and issue
   #4 carry the comparison.
-- **No projection *library* is installable here** (issue #4), which is why the
-  transform is implemented in numpy from Snyder's formulas and validated
-  against published coordinates: every
-  pyproj arm64 wheel targets macOS 14+, on every Python version, so downgrading
-  Python does not help. `cartopy` is commented out of `pyproject.toml`; do not
-  re-add it expecting it to work locally. What `plotting/maps.py` still waits on
-  is the vendored basemap, not the projection.
+- **PROJ does the projection arithmetic**, through `pyproj`. What
+  `projection.py` owns is the project's choice of projection, the serialized
+  definition, and the shape the rest of the code consumes it in — not any
+  formula. `Projection.factors()` exposes PROJ's own distortion measures,
+  which is how a caller converts the long-edge mask threshold between a
+  projected length and a ground distance, and how it learns that projected
+  north rotates by up to 58 degrees across the domain. `cartopy` is still
+  absent: its arm64 wheels stop at cp313 and this project is on cp314. What
+  `plotting/maps.py` waits on is the vendored basemap.
 - `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
   `site`. PFT is **not** site metadata and is not a column of the site table: a
   labeling is an experimental choice, so labelings are their own product at

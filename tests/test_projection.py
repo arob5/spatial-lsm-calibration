@@ -1,38 +1,27 @@
-"""Tests for the display projection and its forward transform.
+"""Tests for the display projection.
 
-The transform is validated against **published coordinates**, not against its
-own properties. Equal-areaness is not evidence that an implementation is right:
-it follows from the functional form even when the parameters are wrong, which is
-how the wrong cone constant in the analysis on issue #4 survived an equal-area
-check while placing coordinates thousands of km out. So the cases in
-``TestForwardAgainstPublishedCoordinates`` come first, from two independent
-sources, and the property tests are downstream of them.
+PROJ does the projection arithmetic, so there is nothing here that checks a
+formula: testing PROJ against PROJ would say nothing. What is tested is
+everything the project actually decided —
 
-Two references, both offline:
+- that :data:`SITE_PROJECTION` is the projection that was chosen, with the
+  parameters that were chosen, on the base CRS the site coordinates are on;
+- that the distortion over the **real 8000-site pool** stays inside the
+  ceilings the choice was made on, which is the one measurement the decision
+  rests on and the one thing a future parameter change could quietly break;
+- that the stored interchange files still say what the parameters say, so the
+  definition a colleague reads cannot drift from the transform this package
+  applies — including across a PROJ upgrade, which changes the serialization
+  without anyone here touching a parameter;
+- the boundary behavior that is this module's own rather than PROJ's: the
+  argument guards, the refusal to return ``inf``, and the boundary sampling in
+  ``projected_bounds``.
 
-- **Snyder** (1987), *Map Projections: A Working Manual*, USGS Professional
-  Paper 1395, Appendix A: the oblique ellipsoidal Lambert Azimuthal Equal-Area
-  worked example, on Clarke 1866. It exercises the authalic-latitude path with
-  a center away from the equator, and the book's seven-figure intermediates
-  bound the agreement at a few millimeters.
-- **PROJ**, ``test/gie/builtins.gie``, the ``+proj=laea +ellps=GRS80`` block:
-  PROJ's own regression values, to its own 0.1 mm tolerance. Four of its five
-  points are 2.24 degrees of arc from the origin, where every azimuthal
-  projection agrees to third order in the angular distance, so the fifth at
-  (150, 50) is what actually pins the functional form; there is a test that
-  says so. The same block documents that PROJ rejects the antipode, though only
-  this implementation's refusal is asserted here -- PROJ's own cannot be run on
-  this machine.
-
-The scale factors are pinned separately, on a sphere, where the authalic
-latitude is the geodetic one and the closed-form spherical values are therefore
-exact. That is what fixes the *shape* of the distortion field, which an area
-check cannot see.
-
-The cases over the real site pool read ``data/processed/sites/sites.csv`` and
-are skipped when it is absent. They are what pin the distortion figures the
-projection was chosen on, so that a change to the parameters that quietly makes
-the Arctic worse fails here rather than in a figure.
+The site-pool cases read ``data/processed/sites/sites.csv`` and skip when it is
+absent, which on a fresh clone it is: it is untracked, and a git worktree does
+not have it at all unless ``$SIPNET_CALIBRATION_DATA`` points at a checkout that
+does. Those are the tests that matter most, so run them deliberately rather than
+trusting a green suite.
 """
 
 from __future__ import annotations
@@ -40,15 +29,17 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import warnings
 
 import numpy as np
+import pyproj
 import pytest
 
 from sipnet_calibration.projection import (
+    DEFINITION_STEM,
+    LAEA_METHOD,
     LAEA_METHOD_CODE,
     SITE_PROJECTION,
-    WGS84,
-    Ellipsoid,
     Projection,
     check_definitions,
     default_definition_dir,
@@ -56,157 +47,96 @@ from sipnet_calibration.projection import (
     write_definitions,
 )
 from sipnet_calibration.projection import _main as projection_main
-from sipnet_calibration.projection import _number
 from sipnet_calibration.sites import EXTENTS, SITE_GRID, default_sites_path, load_sites, select_sites
-
-# Snyder, Appendix A, oblique ellipsoidal Lambert Azimuthal Equal-Area.
-# Clarke 1866 is given there as a and e**2 rather than as an inverse flattening.
-SNYDER_CLARKE_1866 = {"semi_major": 6378206.4, "eccentricity_squared": 0.00676866}
-SNYDER_CENTER = {"lat_0": 40.0, "lon_0": -100.0}
-SNYDER_POINT = (-110.0, 30.0)
-SNYDER_EXPECTED = (-965932.11, -1056814.93)
-#: The book carries seven significant figures, so its own rounding is worth a
-#: few millimeters of the result; nothing here is asserted tighter than that.
-SNYDER_TOLERANCE_M = 0.02
-
-# PROJ test/gie/builtins.gie, operation "+proj=laea +ellps=GRS80", forward.
-# Defaults apply, so the center is (0, 0): the equatorial aspect, which the
-# oblique formulas must also cover.
-PROJ_LAEA_CASES = [
-    ((2.0, 1.0), (222602.471450095, 110589.827224410)),
-    ((2.0, -1.0), (222602.471450095, -110589.827224409)),
-    ((-2.0, 1.0), (-222602.471450095, 110589.827224410)),
-    ((-2.0, -1.0), (-222602.471450095, -110589.827224409)),
-    ((150.0, 50.0), (4372597.1888, 10352365.4614)),
-]
-PROJ_TOLERANCE_M = 1e-4
 
 # Measured over data/processed/sites/sites.csv under SITE_PROJECTION, and the
 # reason this projection was chosen over the alternatives; see issue #4. Held as
 # ceilings rather than as the measured values, since a slightly better number is
-# not a regression.
+# not a regression. For contrast, the ESRI:102003 Albers that the published
+# reanalysis figures used reaches 107 degrees and 9.2:1 over the same sites.
 SITE_OMEGA_CEILING_DEG = 14.0
 SITE_ANISOTROPY_CEILING = 1.3
 SITE_AREA_TOLERANCE = 1e-6
 
+#: The projected bounds of each named extent, in meters, to the nearest
+#: kilometer. Literal rather than recomputed, so that a change in the extent, in
+#: the projection, or in the boundary sampling has to be noticed and re-blessed
+#: rather than silently agreeing with itself.
+EXPECTED_BOUNDS_KM = {
+    "CONUS": (-2564.9, -2861.6, 3436.4, 546.3),
+    "NORTH_AMERICA": (-7968.8, -4657.9, 8031.0, 4265.3),
+    "ALASKA": (-4289.3, 561.0, -1046.0, 3823.3),
+}
 
-class TestEllipsoid:
-    def test_wgs84_matches_the_registered_parameters(self):
-        """``a = 6378137`` exactly, ``1/f = 298.257223563``, EPSG 7030."""
-        assert WGS84.semi_major == 6378137.0
-        assert WGS84.inverse_flattening == 298.257223563
-        assert WGS84.authority_code == 7030
-
-    def test_eccentricity_squared_follows_from_the_inverse_flattening(self):
-        """``e**2 = 2f - f**2``, giving the documented 6.69437999e-3 for WGS 84."""
-        flattening = 1.0 / 298.257223563
-        assert WGS84.flattening == pytest.approx(flattening, rel=1e-15)
-        assert WGS84.eccentricity_squared == pytest.approx(
-            2 * flattening - flattening**2, rel=1e-15
-        )
-        assert WGS84.eccentricity_squared == pytest.approx(0.00669437999014, rel=1e-12)
-        assert WGS84.eccentricity == pytest.approx(math.sqrt(WGS84.eccentricity_squared))
-
-    def test_from_eccentricity_squared_round_trips(self):
-        """Snyder's ``e**2`` for Clarke 1866 comes back unchanged through ``1/f``."""
-        clarke = Ellipsoid.from_eccentricity_squared("Clarke 1866", **SNYDER_CLARKE_1866)
-        assert clarke.eccentricity_squared == pytest.approx(
-            SNYDER_CLARKE_1866["eccentricity_squared"], rel=1e-15
-        )
-        assert clarke.inverse_flattening == pytest.approx(294.9786, rel=1e-6)
-        # 0 is not a placeholder: it is what makes proj_string spell the
-        # parameters out instead of claiming a +ellps= token.
-        assert clarke.authority_code == 0
-
-    def test_from_eccentricity_squared_writes_a_sphere_as_zero_inverse_flattening(self):
-        """``1/f`` is undefined for a sphere, so zero stands for one, and the
-        eccentricity comes back as zero rather than as a division by it."""
-        sphere = Ellipsoid.from_eccentricity_squared("Sphere", 6371007.0, 0.0)
-        assert sphere.inverse_flattening == 0.0
-        assert sphere.flattening == 0.0
-        assert sphere.eccentricity_squared == 0.0
-
-    def test_from_eccentricity_squared_rejects_an_impossible_shape(self):
-        for bad in (-1e-9, 1.0, 2.0):
-            with pytest.raises(ValueError, match="eccentricity_squared"):
-                Ellipsoid.from_eccentricity_squared("bad", 6378137.0, bad)
-
-    def test_from_eccentricity_squared_round_trips_at_a_tiny_eccentricity(self):
-        """The textbook ``1 - sqrt(1 - e**2)`` cancels here, losing four
-        significant digits by ``e**2 = 1e-12``; the form used does not."""
-        for eccentricity_squared in (1e-12, 1e-9, 1e-6, 1e-3):
-            ellipsoid = Ellipsoid.from_eccentricity_squared(
-                "tiny", 6378137.0, eccentricity_squared
-            )
-            assert ellipsoid.eccentricity_squared == pytest.approx(
-                eccentricity_squared, rel=1e-14
-            )
-
-    def test_rejects_a_figure_that_is_not_an_ellipsoid(self):
-        """A negative radius silently point-reflects the whole map, and an
-        inverse flattening of 1 or below makes every coordinate NaN."""
-        for semi_major in (0.0, -6378137.0, float("nan"), float("inf")):
-            with pytest.raises(ValueError, match="semi_major"):
-                Ellipsoid("bad", semi_major, 298.257223563, 0)
-        for inverse_flattening in (0.4, 0.5, 1.0 - 1e-9, -298.0, float("nan")):
-            with pytest.raises(ValueError, match="inverse_flattening"):
-                Ellipsoid("bad", 6378137.0, inverse_flattening, 0)
-        # Zero is the sphere and is admitted.
-        assert Ellipsoid("sphere", 6378137.0, 0.0, 0).eccentricity_squared == 0.0
-
-    def test_rejects_the_degenerate_unit_eccentricity(self):
-        """``1/f == 1`` is ``e == 1``, where ``q`` is ``arctanh(1) = inf`` and
-        every projected coordinate comes back NaN with nothing to say why. It
-        has to be refused at construction, since no guard downstream catches a
-        NaN that originates in the ellipsoid: the coordinate checks see finite
-        input, and the antipode check compares a NaN and finds it false."""
-        with pytest.raises(ValueError, match="greater than 1"):
-            Ellipsoid("degenerate", 6378137.0, 1.0, 0)
-        # And the structural condition is not enough: just above 1 the
-        # eccentricity still rounds to 1, so the check is on the derived
-        # eccentricity rather than on the inverse flattening.
-        for barely_above in (1.0 + 1e-9, 1.0 + 1e-12):
-            with pytest.raises(ValueError, match="eccentricity is 1 to floating point"):
-                Ellipsoid("nearly flat", 6378137.0, barely_above, 0)
-
-        # An absurd but representable figure does project, so the guard has not
-        # become a blanket refusal: 1/f = 2 is e**2 = 0.75.
-        absurd = Projection(
-            name="absurd",
-            lat_0=50.0,
-            lon_0=-100.0,
-            ellipsoid=Ellipsoid("flattened by half", 6378137.0, 2.0, 0),
-        )
-        x, y = absurd.forward(-90.0, 40.0)
-        assert math.isfinite(x) and math.isfinite(y)
-
-    def test_is_immutable(self):
-        with pytest.raises(dataclasses.FrozenInstanceError):
-            WGS84.semi_major = 1.0  # type: ignore[misc]
+needs_site_table = pytest.mark.skipif(
+    not default_sites_path().exists(),
+    reason="processed/sites/sites.csv is not present; set $SIPNET_CALIBRATION_DATA",
+)
 
 
-class TestProjectionDefinition:
+class TestTheProjectionThatWasChosen:
     def test_site_projection_is_the_agreed_laea(self):
-        """LAEA, center 50 N/100 W, no false origin, WGS 84, EPSG method 9820."""
+        """A Lambert Azimuthal Equal Area centered at 50 N, 100 W, on WGS 84,
+        in meters, with no false origin."""
         assert SITE_PROJECTION.lat_0 == 50.0
         assert SITE_PROJECTION.lon_0 == -100.0
         assert SITE_PROJECTION.false_easting == 0.0
         assert SITE_PROJECTION.false_northing == 0.0
-        assert SITE_PROJECTION.ellipsoid == WGS84
-        assert SITE_PROJECTION.base_crs_code == 4326
-        assert SITE_PROJECTION.method_code == LAEA_METHOD_CODE == 9820
+        assert SITE_PROJECTION.base_crs == "EPSG:4326"
 
-    def test_rejects_a_method_it_cannot_transform(self):
-        """A projection naming another EPSG method must not be constructible."""
-        with pytest.raises(ValueError, match="9822"):
-            Projection(name="Albers", lat_0=50.0, lon_0=-100.0, method_code=9822)
+    def test_the_built_crs_is_what_the_parameters_say(self):
+        """The parameters reach PROJ intact. Literals rather than comparisons
+        against the fields they came from, since the latter would pass however
+        the conversion was built."""
+        document = SITE_PROJECTION.projjson()
+        assert document["type"] == "ProjectedCRS"
+        assert document["name"] == SITE_PROJECTION.name
 
-    def test_rejects_the_polar_aspect(self):
-        """``lat_0`` at a pole needs its own formulas, so it raises rather than
-        dividing by ``cos(lat_0)``."""
-        for pole in (90.0, -90.0):
-            with pytest.raises(ValueError, match="polar aspect"):
-                Projection(name="polar", lat_0=pole, lon_0=0.0)
+        conversion = document["conversion"]
+        assert conversion["method"]["name"] == LAEA_METHOD == "Lambert Azimuthal Equal Area"
+        assert conversion["method"]["id"] == {
+            "authority": "EPSG",
+            "code": LAEA_METHOD_CODE,
+        } == {"authority": "EPSG", "code": 9820}
+        assert [
+            (parameter["name"], parameter["value"], parameter["unit"])
+            for parameter in conversion["parameters"]
+        ] == [
+            ("Latitude of natural origin", 50, "degree"),
+            ("Longitude of natural origin", -100, "degree"),
+            ("False easting", 0, "metre"),
+            ("False northing", 0, "metre"),
+        ]
+
+        assert document["base_crs"]["id"] == {"authority": "EPSG", "code": 4326}
+        assert document["base_crs"]["name"] == "WGS 84"
+        assert [axis["name"] for axis in document["coordinate_system"]["axis"]] == [
+            "Easting",
+            "Northing",
+        ]
+        assert {axis["unit"] for axis in document["coordinate_system"]["axis"]} == {"metre"}
+
+    def test_the_crs_is_equal_area(self):
+        """The property the whole choice rests on, asked of PROJ rather than
+        inferred from the method name."""
+        factors = SITE_PROJECTION.factors(
+            np.array([-100.0, -60.0, -170.0, -25.0]), np.array([50.0, 7.5, 68.5, 82.5])
+        )
+        assert factors.areal_scale == pytest.approx(np.ones(4), abs=SITE_AREA_TOLERANCE)
+
+    def test_the_crs_is_built_once_and_reused(self):
+        """Building a CRS parses a definition through PROJ, which costs far more
+        than a transform, and every panel uses this one."""
+        assert SITE_PROJECTION.crs() is SITE_PROJECTION.crs()
+
+    def test_a_variant_is_a_one_liner_and_revalidates(self):
+        """The projection is the project default, not a prohibition, so a caller
+        wanting a different center must be able to say so — and must not be able
+        to say something invalid."""
+        alaska = dataclasses.replace(SITE_PROJECTION, name="Alaska LAEA", lat_0=64.0, lon_0=-150.0)
+        assert alaska.forward(-150.0, 64.0) == pytest.approx((0.0, 0.0), abs=1e-6)
+        with pytest.raises(ValueError, match=r"lat_0 must be in \[-90, 90\]"):
+            dataclasses.replace(SITE_PROJECTION, lat_0=100.0)
 
     def test_rejects_an_out_of_range_origin(self):
         for bad_lat in (100.0, -100.0):
@@ -218,101 +148,28 @@ class TestProjectionDefinition:
 
     def test_rejects_a_non_finite_false_origin(self):
         """It is added to every projected coordinate and written into the
-        definition files, so a NaN here defeats the guard in ``forward`` and
-        puts ``+x_0=nan`` in a file meant to be authoritative."""
+        definition files, so a NaN here would put ``+x_0=nan`` in a file meant
+        to be authoritative."""
         for bad in (float("nan"), float("inf"), float("-inf")):
             with pytest.raises(ValueError, match="false_easting must be finite"):
                 Projection(name="bad", lat_0=50.0, lon_0=-100.0, false_easting=bad)
             with pytest.raises(ValueError, match="false_northing must be finite"):
                 Projection(name="bad", lat_0=50.0, lon_0=-100.0, false_northing=bad)
 
-    def test_accepts_a_near_polar_center_and_an_unwrapped_origin(self):
-        """The guards reject the polar aspect and out-of-range values, not a
-        legitimate high-latitude center -- an Alaska panel is an obvious future
-        caller -- nor the documented ``[-360, 360]`` longitude range."""
-        assert Projection(name="alaska", lat_0=85.0, lon_0=-154.0).lat_0 == 85.0
-        assert Projection(name="wrapped", lat_0=50.0, lon_0=260.0).lon_0 == 260.0
-        # The polar guard must reject a pole and nothing else: a center a
-        # hundredth of a degree short of one is still an oblique projection,
-        # and it projects.
-        near_polar = Projection(name="near polar", lat_0=89.99, lon_0=0.0)
-        assert near_polar.forward(0.0, 89.99) == pytest.approx((0.0, 0.0), abs=1e-9)
-        assert all(math.isfinite(value) for value in near_polar.forward(45.0, 60.0))
-
-    def test_rejects_a_method_name_that_disagrees_with_the_code(self):
-        """The name is written into PROJJSON beside the code, so the two must
-        not be allowed to describe different methods."""
-        with pytest.raises(ValueError, match="Albers"):
-            Projection(name="mislabeled", lat_0=50.0, lon_0=-100.0, method="Albers Equal Area")
-
     def test_is_immutable(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             SITE_PROJECTION.lat_0 = 0.0  # type: ignore[misc]
 
 
-class TestForwardAgainstPublishedCoordinates:
-    def test_snyders_oblique_example(self):
-        """Snyder Appendix A: Clarke 1866, center 40 N/100 W, point 30 N/110 W."""
-        projection = Projection(
-            name="Snyder Appendix A",
-            ellipsoid=Ellipsoid.from_eccentricity_squared("Clarke 1866", **SNYDER_CLARKE_1866),
-            **SNYDER_CENTER,
-        )
-        x, y = projection.forward(*SNYDER_POINT)
-        assert x == pytest.approx(SNYDER_EXPECTED[0], abs=SNYDER_TOLERANCE_M)
-        assert y == pytest.approx(SNYDER_EXPECTED[1], abs=SNYDER_TOLERANCE_M)
-
-    @pytest.mark.parametrize(("lonlat", "expected"), PROJ_LAEA_CASES)
-    def test_projs_regression_values(self, lonlat, expected):
-        """``+proj=laea +ellps=GRS80`` from PROJ's own test suite, to 0.1 mm."""
-        x, y = _proj_reference_projection().forward(*lonlat)
-        assert x == pytest.approx(expected[0], abs=PROJ_TOLERANCE_M)
-        assert y == pytest.approx(expected[1], abs=PROJ_TOLERANCE_M)
-
-    def test_the_far_field_case_is_what_pins_the_functional_form(self):
-        """Why PROJ's (150, 50) case earns its place beside four near-origin
-        ones. On a sphere the radius from the center must be ``2R sin(c/2)``,
-        the equal-area law, and every azimuthal projection agrees with that to
-        third order in ``c``: an azimuthal *equidistant* radius, ``R c``,
-        differs from it by 6.3e-5 at PROJ's near-origin points and by 22
-        percent at its far one. So the near-origin cases barely constrain the
-        law and the far one does."""
-        radius = 6371007.0
-        spherical = Projection(
-            name="spherical",
-            lat_0=0.0,
-            lon_0=0.0,
-            ellipsoid=Ellipsoid.from_eccentricity_squared("Sphere", radius, 0.0),
-        )
-        for lon, lat in [(2.0, 1.0), (150.0, 50.0)]:
-            distance = float(_angular_distance(spherical, lon, lat))
-            x, y = spherical.forward(lon, lat)
-            equal_area = 2 * radius * math.sin(distance / 2)
-            equidistant = radius * distance
-            assert math.hypot(x, y) == pytest.approx(equal_area, rel=1e-12)
-            discrimination = abs(equidistant - equal_area) / equal_area
-            if distance < math.radians(5):
-                assert discrimination < 1e-4
-            else:
-                assert discrimination > 0.1
-
-
-class TestForwardBehavior:
+class TestForward:
     def test_the_center_maps_to_the_false_origin(self):
-        """``(lon_0, lat_0)`` goes to ``(false_easting, false_northing)``."""
         assert SITE_PROJECTION.forward(
             SITE_PROJECTION.lon_0, SITE_PROJECTION.lat_0
-        ) == pytest.approx((0.0, 0.0), abs=1e-9)
+        ) == pytest.approx((0.0, 0.0), abs=1e-6)
 
     def test_false_origin_translates_and_nothing_else(self):
-        """A projection differing only in its false origin differs only by that
-        constant offset, at every site."""
-        shifted = Projection(
-            name="shifted",
-            lat_0=SITE_PROJECTION.lat_0,
-            lon_0=SITE_PROJECTION.lon_0,
-            false_easting=4321000.0,
-            false_northing=3210000.0,
+        shifted = dataclasses.replace(
+            SITE_PROJECTION, false_easting=4321000.0, false_northing=3210000.0
         )
         lon = np.array([-160.0, -100.0, -30.0, -70.0])
         lat = np.array([65.0, 10.0, 80.0, 45.0])
@@ -323,17 +180,16 @@ class TestForwardBehavior:
 
     def test_scalars_in_scalars_out(self):
         x, y = SITE_PROJECTION.forward(-90.0, 45.0)
-        # `type` rather than `isinstance`: np.float64 is a subclass of float,
-        # and is not a scalar for json.dumps or for a formatted axis label.
+        # `type` rather than `isinstance`: np.float64 is a subclass of float and
+        # is not a scalar for json.dumps or for a formatted axis label.
         assert type(x) is float
         assert type(y) is float
 
     def test_broadcasts_and_preserves_shape(self):
-        """A scalar longitude against an array of latitudes, and 2-D input."""
         x, y = SITE_PROJECTION.forward(-100.0, np.array([40.0, 50.0, 60.0]))
         assert x.shape == y.shape == (3,)
         # A scalar longitude at the central meridian puts every point on x = 0.
-        assert x == pytest.approx(np.zeros(3), abs=1e-9)
+        assert x == pytest.approx(np.zeros(3), abs=1e-6)
 
         grid_lon, grid_lat = np.meshgrid(np.linspace(-140, -60, 4), np.linspace(20, 70, 3))
         x, y = SITE_PROJECTION.forward(grid_lon, grid_lat)
@@ -344,15 +200,42 @@ class TestForwardBehavior:
         assert x.dtype == y.dtype == np.float64
 
     def test_longitudes_are_not_wrapped(self):
-        """-190 and 170 are the same meridian and must project the same, since a
-        vendored coastline can carry either."""
+        """-190 and 170 are the same meridian, since a vendored coastline can
+        carry either."""
         assert SITE_PROJECTION.forward(-190.0, 10.0) == pytest.approx(
             SITE_PROJECTION.forward(170.0, 10.0), abs=1e-6
         )
 
+    def test_refuses_a_point_outside_the_domain_rather_than_returning_inf(self):
+        """PROJ's default is to return infinity, which propagates into an axes
+        limit or into a triangulation as a silently dropped point. The message
+        has to name the antipode, since that is the only such point here."""
+        raw = pyproj.Transformer.from_crs(
+            "EPSG:4326", SITE_PROJECTION.crs(), always_xy=True
+        ).transform(*SITE_PROJECTION.antipode)
+        assert not np.isfinite(raw).all(), "PROJ no longer returns inf; the guard's premise"
+
+        with pytest.raises(ValueError, match="antipode of its center"):
+            SITE_PROJECTION.forward(*SITE_PROJECTION.antipode)
+        with pytest.raises(ValueError, match="antipode of its center"):
+            SITE_PROJECTION.forward(
+                np.array([-100.0, SITE_PROJECTION.antipode[0]]),
+                np.array([50.0, SITE_PROJECTION.antipode[1]]),
+            )
+
+    def test_accepts_a_point_far_from_the_center_but_short_of_the_antipode(self):
+        """The guard must not narrow the projection's domain: everything but the
+        antipode itself projects, including 179 degrees of arc away."""
+        antipode_lon, antipode_lat = SITE_PROJECTION.antipode
+        x, y = SITE_PROJECTION.forward(antipode_lon - 1.0, antipode_lat)
+        assert math.isfinite(x) and math.isfinite(y)
+
+    def test_accepts_the_poles(self):
+        for pole in (90.0, -90.0):
+            x, y = SITE_PROJECTION.forward(-100.0, pole)
+            assert math.isfinite(x) and math.isfinite(y)
+
     def test_rejects_non_finite_coordinates(self):
-        """``NaN`` cannot be allowed through: it propagates into axes limits and
-        into the triangulation as a silently dropped point."""
         for lon, lat in [(np.nan, 50.0), (-100.0, np.nan), (np.inf, 50.0)]:
             with pytest.raises(ValueError, match="not finite"):
                 SITE_PROJECTION.forward(lon, lat)
@@ -361,96 +244,230 @@ class TestForwardBehavior:
 
     def test_counts_bad_values_before_broadcasting(self):
         """One bad scalar against 8000 latitudes is one bad coordinate. The
-        count is the whole diagnostic value of the message -- it says whether
-        one site is wrong or the whole table is -- so it must not report the
-        broadcast size."""
-        with pytest.raises(ValueError, match="1 longitude\\(s\\) and 0 latitude"):
+        count says whether one site is wrong or the whole table is, so it must
+        not report the broadcast size."""
+        with pytest.raises(ValueError, match=r"1 longitude\(s\) and 0 latitude"):
             SITE_PROJECTION.forward(np.nan, np.full(8000, 50.0))
 
     def test_rejects_a_masked_coordinate_rather_than_projecting_its_fill(self):
-        """``np.asarray`` drops a mask silently, so a masked entry would project
-        its fill value to a finite, plausible coordinate."""
         masked_lon = np.ma.masked_array([-100.0, 1e30], mask=[False, True])
         masked_lat = np.ma.masked_array([50.0, 50.0], mask=[False, True])
         with pytest.raises(ValueError, match="not finite"):
             SITE_PROJECTION.forward(masked_lon, masked_lat)
 
-    def test_rejects_a_longitude_fill_value(self):
-        """Longitudes are deliberately not wrapped, but they are bounded:
-        nothing would otherwise reject -9999, which projects to a real-looking
-        point."""
-        for bad in (-9999.0, 1e20):
-            with pytest.raises(ValueError, match=r"outside \[-360, 360\]"):
-                SITE_PROJECTION.forward(bad, 50.0)
-
     def test_rejects_latitudes_outside_the_poles(self):
         with pytest.raises(ValueError, match="outside"):
             SITE_PROJECTION.forward(-100.0, 90.5)
-        # One corrupt row among good ones must fail too: at 999 degrees the
-        # projection returns a finite -11,581 km of northing.
-        with pytest.raises(ValueError, match="1 latitude"):
-            SITE_PROJECTION.forward(
-                np.array([-100.0, -95.0, -90.0]), np.array([45.0, 999.0, 50.0])
-            )
         # The message says which order the arguments go in, because swapping
         # them is the way this is usually reached.
         with pytest.raises(ValueError, match="longitude first"):
             SITE_PROJECTION.forward(50.0, -100.0)
+        # One corrupt row among good ones must fail too.
+        with pytest.raises(ValueError, match="1 latitude"):
+            SITE_PROJECTION.forward(
+                np.array([-100.0, -95.0, -90.0]), np.array([45.0, 999.0, 50.0])
+            )
 
-    def test_accepts_the_poles_themselves(self):
-        """The authalic latitude at a pole is the ratio of two quantities that
-        are equal up to rounding, so the pole must not fall out of ``arcsin``."""
-        for pole in (90.0, -90.0):
-            x, y = SITE_PROJECTION.forward(-100.0, pole)
-            assert math.isfinite(x) and math.isfinite(y)
+    def test_rejects_a_longitude_fill_value(self):
+        """PROJ accepts -9999 as a longitude and projects it to a real-looking
+        point, so the bound is this module's to impose."""
+        for bad in (-9999.0, 1e20):
+            with pytest.raises(ValueError, match=r"outside \[-360, 360\]"):
+                SITE_PROJECTION.forward(bad, 50.0)
 
-        # A strongly flattened ellipsoid, where a formula that was not exactly
-        # odd in latitude would put the ratio outside [-1, 1] and arcsin would
-        # return NaN.
-        flattened = Projection(
-            name="flattened",
-            lat_0=50.0,
-            lon_0=-100.0,
-            ellipsoid=Ellipsoid.from_eccentricity_squared("e2 = 0.3", 6378137.0, 0.3),
+
+class TestFactors:
+    def test_reports_the_rotation_of_projected_north(self):
+        """North is not up: the rotation runs from +58 degrees at the northwest
+        of the domain to -42 at the southeast, so a single north arrow on a
+        full-domain panel is wrong nearly everywhere on it."""
+        factors = SITE_PROJECTION.factors(np.array([-170.0, -100.0, -20.0]), np.array([60.0, 50.0, 20.0]))
+        assert factors.meridian_convergence == pytest.approx([-57.91, 0.0, 42.09], abs=0.01)
+
+    def test_reports_the_scale_factors_a_ground_distance_needs(self):
+        """The long-edge triangle mask is a projected length and wants a ground
+        distance; this is the conversion, and it cannot be had from the
+        projection parameters alone."""
+        factors = SITE_PROJECTION.factors(-170.0, 60.0)
+        assert factors.tissot_semimajor == pytest.approx(1.0626, abs=1e-3)
+        assert factors.tissot_semiminor == pytest.approx(0.9411, abs=1e-3)
+        # Equal-area means the product is 1, which is what makes one scale
+        # factor the reciprocal of the other.
+        assert factors.tissot_semimajor * factors.tissot_semiminor == pytest.approx(1.0, abs=1e-6)
+
+    def test_is_unity_and_unrotated_at_the_center(self):
+        factors = SITE_PROJECTION.factors(SITE_PROJECTION.lon_0, SITE_PROJECTION.lat_0)
+        assert factors.tissot_semimajor == pytest.approx(1.0, abs=1e-9)
+        assert factors.tissot_semiminor == pytest.approx(1.0, abs=1e-9)
+        assert factors.meridian_convergence == pytest.approx(0.0, abs=1e-9)
+        assert factors.angular_distortion == pytest.approx(0.0, abs=1e-6)
+
+    def test_checks_its_arguments_the_way_forward_does(self):
+        with pytest.raises(ValueError, match="not finite"):
+            SITE_PROJECTION.factors(np.nan, 50.0)
+        with pytest.raises(ValueError, match="longitude first"):
+            SITE_PROJECTION.factors(50.0, -100.0)
+
+
+@needs_site_table
+class TestSiteDomainDistortion:
+    """The measurement the choice of projection rests on, over the real pool."""
+
+    @staticmethod
+    def _factors():
+        sites = load_sites()
+        return SITE_PROJECTION.factors(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+
+    def test_every_site_projects_to_a_finite_coordinate(self):
+        sites = load_sites()
+        x, y = SITE_PROJECTION.forward(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+        assert np.isfinite(x).all()
+        assert np.isfinite(y).all()
+
+    def test_angular_deformation_stays_under_the_ceiling(self):
+        """No site exceeds 14 degrees, against 107 for the ESRI:102003 that the
+        published reanalysis figures used."""
+        assert self._factors().angular_distortion.max() < SITE_OMEGA_CEILING_DEG
+
+    def test_anisotropy_stays_under_the_ceiling(self):
+        """No site exceeds 1.3:1, against 9.2:1 for ESRI:102003. Load-bearing
+        beyond appearance: the triangulation is computed after projecting, and
+        the long-edge mask is a projected length."""
+        factors = self._factors()
+        anisotropy = factors.tissot_semimajor / factors.tissot_semiminor
+        assert anisotropy.max() < SITE_ANISOTROPY_CEILING
+
+    def test_area_is_preserved_over_the_whole_pool(self):
+        assert np.abs(self._factors().areal_scale - 1.0).max() < SITE_AREA_TOLERANCE
+
+    def test_the_worst_distortion_is_at_the_site_farthest_from_the_center(self):
+        """Distortion grows with angular distance from the center, so the
+        extremes of the pool are where the ceilings are tested and a change of
+        center moves both together."""
+        sites = load_sites()
+        lon = sites["lon"].to_numpy()
+        lat = sites["lat"].to_numpy()
+        center = math.radians(SITE_PROJECTION.lat_0)
+        distance = np.arccos(
+            np.clip(
+                math.sin(center) * np.sin(np.radians(lat))
+                + math.cos(center) * np.cos(np.radians(lat))
+                * np.cos(np.radians(lon - SITE_PROJECTION.lon_0)),
+                -1.0,
+                1.0,
+            )
         )
-        for pole in (90.0, -90.0):
-            x, y = flattened.forward(-100.0, pole)
-            assert math.isfinite(x) and math.isfinite(y)
+        assert int(np.argmax(self._factors().angular_distortion)) == int(np.argmax(distance))
+        assert np.degrees(distance.max()) == pytest.approx(54.8, abs=0.1)
 
-    def test_a_pole_is_one_point_whatever_meridian_it_is_approached_along(self):
-        """What keeps this true is that ``_authalic_q`` is exactly odd in
-        latitude. Written with Snyder's logarithm instead of the equivalent
-        ``arctanh``, ``q(-90) / q_p`` falls short of -1 by 4e-16, ``arcsin``
-        amplifies that near -1, and the south pole spreads over a meter of
-        easting with the meridian it is approached along."""
-        for pole in (90.0, -90.0):
-            x, y = SITE_PROJECTION.forward(np.array([-180.0, -100.0, -10.0, 179.9]), pole)
-            assert x == pytest.approx(np.zeros(4), abs=1e-6)
-            assert y == pytest.approx(np.full(4, y[0]), abs=1e-6)
 
-    def test_rejects_the_antipode_of_the_center(self):
-        """The formula there is infinity times ``sin(180 deg)``, which is a
-        finite plausible number rather than an error. PROJ rejects it too."""
-        antipode = (SITE_PROJECTION.lon_0 + 180.0, -SITE_PROJECTION.lat_0)
-        with pytest.raises(ValueError, match="antipode"):
-            SITE_PROJECTION.forward(*antipode)
-        with pytest.raises(ValueError, match="antipode"):
-            SITE_PROJECTION.forward(np.array([-100.0, antipode[0]]), np.array([50.0, antipode[1]]))
+class TestProjectedBounds:
+    @pytest.mark.parametrize("name", sorted(EXPECTED_BOUNDS_KM))
+    def test_bounds_of_each_named_extent(self, name):
+        """Pinned to literal kilometers, so the answer cannot drift with the
+        extent, the projection or the sampling without being re-blessed. A
+        containment assertion alone would pass for an arbitrarily wide box, and
+        an over-wide box is a figure whose data fills half the axes."""
+        bounds_km = tuple(v / 1000.0 for v in SITE_PROJECTION.projected_bounds(EXTENTS[name]))
+        assert bounds_km == pytest.approx(EXPECTED_BOUNDS_KM[name], abs=0.1)
 
-    def test_accepts_a_point_far_from_the_center_but_short_of_the_antipode(self):
-        """The guard must not narrow the projection's domain: PROJ accepts 124
-        degrees of arc, and so must this."""
-        x, y = _proj_reference_projection().forward(150.0, 50.0)
-        assert math.isfinite(x) and math.isfinite(y)
-        # 179 degrees of arc from the center is still projectable.
-        x, y = SITE_PROJECTION.forward(SITE_PROJECTION.lon_0 + 179.0, -SITE_PROJECTION.lat_0)
-        assert math.isfinite(x) and math.isfinite(y)
+    def test_boundary_sampling_beats_the_four_corners(self):
+        """A longitude/latitude box projects to a curved quadrilateral, so the
+        true bound lies outside the corner-only one. The far edge from the
+        projection center is where the corners miss it, which for a center at
+        50 N and the CONUS box is its southern edge. Two-sided, because the
+        one-sided form gets easier to satisfy the looser the bound becomes."""
+        west, south, east, north = EXTENTS["CONUS"]
+        corner_x, corner_y = SITE_PROJECTION.forward(
+            np.array([west, east, west, east]), np.array([south, south, north, north])
+        )
+        _, y_min, _, _ = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
+        assert 350e3 < corner_y.min() - y_min < 450e3
+        # The other three edges are attained at corners, so they must agree.
+        assert corner_x.min() == pytest.approx(
+            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])[0], abs=1.0
+        )
+
+    @needs_site_table
+    def test_contains_every_site_inside_the_box(self):
+        """Whatever ``select_sites(bbox=...)`` returns must project inside the
+        limits the same box gives, or a figure clips its own data."""
+        sites = select_sites(load_sites(), bbox=EXTENTS["CONUS"])
+        x, y = SITE_PROJECTION.forward(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+        x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
+        assert x.min() >= x_min and x.max() <= x_max
+        assert y.min() >= y_min and y.max() <= y_max
+
+    def test_rejects_a_malformed_box(self):
+        with pytest.raises(ValueError, match="3 value"):
+            SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0))
+        with pytest.raises(ValueError, match="5 value"):
+            SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0, 50.0, 0.0))
+        with pytest.raises(ValueError, match="antimeridian"):
+            SITE_PROJECTION.projected_bounds((-66.0, 24.0, -125.0, 50.0))
+        with pytest.raises(ValueError, match="north of north"):
+            SITE_PROJECTION.projected_bounds((-125.0, 50.0, -66.0, 24.0))
+        with pytest.raises(ValueError, match="must be numbers"):
+            SITE_PROJECTION.projected_bounds({"west": -125.0, "s": 1, "e": 2, "n": 3})
+        with pytest.raises(ValueError, match="must be finite"):
+            SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0, np.nan))
+        with pytest.raises(ValueError, match=r"\(west, south, east, north\)"):
+            SITE_PROJECTION.projected_bounds(None)
+        with pytest.raises(ValueError, match="samples_per_edge must be at least 2"):
+            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=1)
+        with pytest.raises(ValueError, match="samples_per_edge must be an integer"):
+            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=8.0)
+
+    def test_coerces_numeric_strings_the_way_it_documents(self):
+        assert SITE_PROJECTION.projected_bounds(("-125", "24", "-66", "50")) == pytest.approx(
+            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
+        )
+
+    def test_more_samples_do_not_change_the_answer_materially(self):
+        """The tolerance is meters against figures thousands of kilometers
+        across, several orders of magnitude below one rendered pixel."""
+        for name, box in EXTENTS.items():
+            default = np.array(SITE_PROJECTION.projected_bounds(box))
+            fine = np.array(SITE_PROJECTION.projected_bounds(box, samples_per_edge=8192))
+            assert np.abs(default - fine).max() < 100.0, name
+
+    @pytest.mark.parametrize(
+        "box",
+        [
+            (70.0, -60.0, 90.0, -40.0),  # the antipode, snugly
+            (-180.0, -90.0, 180.0, 90.0),  # the whole globe
+            (-200.0, -60.0, 100.0, -40.0),  # 300 degrees wide, unwrapped
+            (0.0, -60.0, 300.0, -40.0),  # 300 degrees wide, positive
+        ],
+    )
+    def test_refuses_a_box_containing_the_antipode(self, box):
+        """The boundary-sampling argument holds only where the transform is
+        defined throughout the box. A box wider than 180 degrees is the case a
+        symmetric reduction of the longitude offset cannot express: an offset of
+        280 degrees comes back as -80, the box looks as though it ends before
+        the antipode, and the bounds returned are quietly not bounds. Measured
+        on the whole globe, an interior point sat 12,699 km outside a bound
+        whose x_max came back as 0."""
+        with pytest.raises(ValueError, match="unbounded, not merely large"):
+            SITE_PROJECTION.projected_bounds(box)
+
+    @pytest.mark.parametrize(
+        "box",
+        [
+            (-200.0, -30.0, 100.0, -10.0),  # spans the antipode's meridian, not its latitude
+            (-125.0, -60.0, -66.0, -40.0),  # spans its latitude, not its meridian
+        ],
+    )
+    def test_accepts_a_box_that_misses_the_antipode_in_one_coordinate(self, box):
+        """Both halves of the guard's conjunction have to be there: with either
+        one dropped, a box that misses the antipode in the other coordinate
+        would be refused for no reason."""
+        x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(box)
+        assert x_min < x_max and y_min < y_max
 
 
 class TestAntipode:
     def test_antipode_is_the_point_forward_refuses(self):
-        """Exposed because the module tells callers to keep away from it, and
-        clipping to avoid it needs somewhere to clip around."""
         assert SITE_PROJECTION.antipode == (80.0, -50.0)
         with pytest.raises(ValueError, match="antipode"):
             SITE_PROJECTION.forward(*SITE_PROJECTION.antipode)
@@ -465,332 +482,42 @@ class TestAntipode:
             projection.forward(antipode_lon, antipode_lat)
 
 
-class TestEqualArea:
-    def test_area_scale_is_unity_across_the_domain(self):
-        """A property of the method, asserted downstream of the published-value
-        cases rather than as evidence for them: the areal scale factor is 1 at
-        the center, at the far south and at the far north alike."""
-        lon = np.array([-100.0, -60.0, -170.0, -25.0])
-        lat = np.array([50.0, 7.5, 68.5, 82.5])
-        area, _, _ = _tissot(SITE_PROJECTION, lon, lat)
-        assert area == pytest.approx(np.ones(4), abs=1e-6)
-
-    def test_scale_factors_match_the_closed_form_spherical_values(self):
-        """For an ellipsoidal LAEA the distortion is that of a spherical LAEA on
-        the authalic sphere, so on a sphere the radial and tangential scale
-        factors must be exactly ``cos(c/2)`` and ``sec(c/2)`` for angular
-        distance ``c``. This is what pins the shape of the distortion field,
-        where the area check alone cannot: an area check passes for any
-        equal-area map, right parameters or wrong."""
-        radius = 6371007.0
-        spherical = Projection(
-            name="spherical",
-            lat_0=SITE_PROJECTION.lat_0,
-            lon_0=SITE_PROJECTION.lon_0,
-            ellipsoid=Ellipsoid.from_eccentricity_squared("Sphere", radius, 0.0),
-        )
-        lon = np.array([-140.0, -60.0, -100.0, -20.0])
-        lat = np.array([30.0, 70.0, 7.0, 60.0])
-        distance = _angular_distance(spherical, lon, lat)
-
-        area, scale_max, scale_min = _tissot(spherical, lon, lat, radius=radius)
-        assert area == pytest.approx(np.ones(4), abs=1e-6)
-        assert scale_max == pytest.approx(1.0 / np.cos(distance / 2), rel=1e-6)
-        assert scale_min == pytest.approx(np.cos(distance / 2), rel=1e-6)
-
-
-@pytest.mark.skipif(
-    not default_sites_path().exists(), reason="processed/sites/sites.csv is not present"
-)
-class TestSiteDomainDistortion:
-    def test_every_site_projects_to_a_finite_coordinate(self):
-        x, y = SITE_PROJECTION.forward(*_site_coordinates())
-        assert np.isfinite(x).all()
-        assert np.isfinite(y).all()
-
-    def test_angular_deformation_stays_under_the_ceiling(self):
-        """No site exceeds 14 degrees, against 107 for the ESRI:102003 that the
-        published reanalysis figures used; this is the measurement the choice of
-        projection rests on."""
-        assert _site_metrics()["omega"].max() < SITE_OMEGA_CEILING_DEG
-
-    def test_anisotropy_stays_under_the_ceiling(self):
-        """No site exceeds 1.3:1, against 9.2:1 for ESRI:102003. This one is
-        load-bearing beyond appearance: the Delaunay triangulation is computed
-        after projecting, and the long-edge mask is a projected length."""
-        assert _site_metrics()["anisotropy"].max() < SITE_ANISOTROPY_CEILING
-
-    def test_area_is_preserved_over_the_whole_pool(self):
-        area = _site_metrics()["area"]
-        assert np.abs(area - 1.0).max() < SITE_AREA_TOLERANCE
-
-    def test_the_most_distorted_site_is_the_one_farthest_from_the_center(self):
-        """Distortion grows monotonically with angular distance from the center,
-        so the extremes of the pool are where the ceilings are tested, and a
-        change of center moves both together."""
-        metrics = _site_metrics()
-        assert int(np.argmax(metrics["omega"])) == int(np.argmax(metrics["distance"]))
-        assert int(np.argmax(metrics["anisotropy"])) == int(np.argmax(metrics["distance"]))
-
-
-class TestProjectedBounds:
-    def test_bounds_of_a_named_extent(self):
-        """``EXTENTS["CONUS"]`` gives axes limits in the same projected meters as
-        ``forward`` returns."""
-        x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
-        assert x_min < x_max
-        assert y_min < y_max
-        # The box straddles the central meridian, so it spans x = 0.
-        assert x_min < 0.0 < x_max
-        # Every corner of the box is inside the bounds it produced.
-        west, south, east, north = EXTENTS["CONUS"]
-        x, y = SITE_PROJECTION.forward(
-            np.array([west, east, west, east]), np.array([south, south, north, north])
-        )
-        assert x.min() >= x_min and x.max() <= x_max
-        assert y.min() >= y_min and y.max() <= y_max
-
-    def test_boundary_sampling_beats_the_four_corners(self):
-        """A longitude/latitude box projects to a curved quadrilateral, so the
-        true bound is outside the corner-only one. The far edge from the
-        projection center is where the corners miss it, which for a center at
-        50 N and the CONUS box is its southern edge."""
-        west, south, east, north = EXTENTS["CONUS"]
-        corner_x, corner_y = SITE_PROJECTION.forward(
-            np.array([west, east, west, east]), np.array([south, south, north, north])
-        )
-        _, y_min, _, _ = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
-        # Measured at 392 km; asserted well below that, but far enough above
-        # zero that only real boundary sampling passes.
-        assert corner_y.min() - y_min > 300e3
-
-    def test_contains_every_site_inside_the_box(self):
-        """Whatever ``select_sites(bbox=...)`` returns must project inside the
-        limits the same box gives, or a figure clips its own data."""
-        if not default_sites_path().exists():
-            pytest.skip("processed/sites/sites.csv is not present")
-        sites = select_sites(load_sites(), bbox=EXTENTS["CONUS"])
-        x, y = SITE_PROJECTION.forward(sites["lon"].to_numpy(), sites["lat"].to_numpy())
-        x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
-        assert x.min() >= x_min and x.max() <= x_max
-        assert y.min() >= y_min and y.max() <= y_max
-
-    def test_rejects_a_malformed_box(self):
-        """Four values, west of east, south of north -- the same contract as
-        ``select_sites``."""
-        with pytest.raises(ValueError, match="west, south, east, north"):
-            SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0))
-        with pytest.raises(ValueError, match="antimeridian"):
-            SITE_PROJECTION.projected_bounds((-66.0, 24.0, -125.0, 50.0))
-        with pytest.raises(ValueError, match="north of north"):
-            SITE_PROJECTION.projected_bounds((-125.0, 50.0, -66.0, 24.0))
-        with pytest.raises(ValueError, match="samples_per_edge"):
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=1)
-        with pytest.raises(ValueError, match="samples_per_edge must be an integer"):
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=8.0)
-        # Five values is as wrong as three, and both must say so rather than
-        # silently using the first four.
-        with pytest.raises(ValueError, match="5 value"):
-            SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0, 50.0, 0.0))
-        # Everything unusable is a ValueError, including what would otherwise
-        # surface as a TypeError from unpacking or a bare numpy message.
-        for bad in (None, 5, {"west": -125.0}, (-125.0, 24.0, -66.0, np.nan)):
-            with pytest.raises(ValueError, match="bbox"):
-                SITE_PROJECTION.projected_bounds(bad)
-
-    def test_coerces_numeric_strings_the_way_it_documents(self):
-        assert SITE_PROJECTION.projected_bounds(("-125", "24", "-66", "50")) == pytest.approx(
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
-        )
-
-    def test_refuses_a_box_containing_the_antipode_of_the_center(self):
-        """The boundary-sampling argument holds only where the transform is
-        defined throughout the box. With the antipode inside, the interior holds
-        a singularity and the boundary bound is not a bound -- an interior point
-        lands tens of km outside it, growing without limit toward the
-        antipode."""
-        antipode_lon, antipode_lat = SITE_PROJECTION.antipode
-        antipode_box = (antipode_lon - 10, antipode_lat - 10, antipode_lon + 10, antipode_lat + 10)
-        with pytest.raises(ValueError, match="antipode"):
-            SITE_PROJECTION.projected_bounds(antipode_box)
-
-    @pytest.mark.parametrize(
-        "box",
-        [
-            (-180.0, -90.0, 180.0, 90.0),  # the whole globe
-            (-200.0, -60.0, 100.0, -40.0),  # 300 degrees wide, unwrapped
-            (0.0, -60.0, 300.0, -40.0),  # 300 degrees wide, positive
-        ],
-    )
-    def test_refuses_a_wide_box_containing_the_antipode(self, box):
-        """A box wider than 180 degrees is the case a symmetric reduction of the
-        longitude offset cannot express: an offset of 280 degrees comes back as
-        -80, the box looks as though it ends before the antipode, and the bounds
-        returned are quietly not bounds. Measured on the whole globe, an
-        interior point sat 12,699 km outside a bound whose x_max came back as 0.
-        """
-        with pytest.raises(ValueError, match="antipode"):
-            SITE_PROJECTION.projected_bounds(box)
-
-    def test_accepts_a_wide_box_that_misses_the_antipode(self):
-        """The wide-box fix must not turn into a blanket refusal: the same span
-        at a latitude the antipode is not at projects fine."""
-        antipode_lon, antipode_lat = SITE_PROJECTION.antipode
-        away = (-200.0, antipode_lat + 20.0, 100.0, antipode_lat + 40.0)
-        x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(away)
-        assert x_min < x_max and y_min < y_max
-
-    def test_more_samples_do_not_change_the_answer_materially(self):
-        """The default is past convergence for these extents. The tolerance is
-        in meters against figures thousands of kilometers across, so it is
-        several orders of magnitude below one rendered pixel."""
-        for name, box in EXTENTS.items():
-            default = np.array(SITE_PROJECTION.projected_bounds(box))
-            fine = np.array(SITE_PROJECTION.projected_bounds(box, samples_per_edge=8192))
-            assert np.abs(default - fine).max() < 100.0, name
-
-
 class TestInterchangeFiles:
     def test_proj_string_carries_every_parameter(self):
-        """``+proj=laea``, both origin parameters, the false origin, the
-        ellipsoid and the units, so that pasting it elsewhere reproduces this
-        projection and not a defaulted one."""
         assert SITE_PROJECTION.proj_string() == (
-            "+proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +ellps=WGS84 "
+            "+proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +datum=WGS84 "
             "+units=m +no_defs +type=crs"
         )
 
-    def test_proj_string_spells_out_an_ellipsoid_proj_does_not_name(self):
-        """``+ellps=`` is a claim about what PROJ will substitute, so it is only
-        made for an ellipsoid whose parameters are the ones PROJ means."""
-        projection = Projection(
-            name="Snyder Appendix A",
-            ellipsoid=Ellipsoid.from_eccentricity_squared("Clarke 1866", **SNYDER_CLARKE_1866),
-            **SNYDER_CENTER,
-        )
-        assert "+ellps=" not in projection.proj_string()
-        assert "+a=6378206.4" in projection.proj_string()
-        assert "+rf=294.978610787262" in projection.proj_string()
+    def test_proj_string_does_not_warn(self):
+        """PROJ warns that a PROJ string loses information, which is true and is
+        why the PROJJSON is stored beside it -- but it describes a deliberate
+        choice, not something a caller can act on."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            assert SITE_PROJECTION.proj_string().startswith("+proj=laea")
 
-    def test_proj_string_names_grs80_when_the_parameters_are_grs80s(self):
-        """The lookup arm, which nothing else reaches: the Clarke 1866 fixture
-        misses the table entirely on its authority code of 0."""
-        assert "+ellps=GRS80" in _proj_reference_projection().proj_string()
+    def test_the_two_serializations_describe_the_same_crs(self):
+        """They carry different amounts — the PROJ string has no CRS name and
+        gives the base CRS by datum rather than by EPSG code — so the test is
+        that they project identically, not that they are textually equal."""
+        from_json = pyproj.CRS.from_user_input(SITE_PROJECTION.projjson())
+        from_string = pyproj.CRS.from_user_input(SITE_PROJECTION.proj_string())
+        lon = np.linspace(-179.0, -20.0, 50)
+        lat = np.linspace(7.0, 84.0, 50)
+        first = pyproj.Transformer.from_crs("EPSG:4326", from_json, always_xy=True).transform(lon, lat)
+        second = pyproj.Transformer.from_crs(
+            "EPSG:4326", from_string, always_xy=True
+        ).transform(lon, lat)
+        assert np.hypot(first[0] - second[0], first[1] - second[1]).max() == 0.0
 
-    def test_proj_string_refuses_the_ellps_token_for_a_mismatched_ellipsoid(self):
-        """EPSG 7030 with parameters that are not PROJ's WGS84 must not claim
-        the token. Holding the parameters in ``PROJ_ELLIPSOID_NAMES`` rather
-        than bare names is the whole point, and this is the arm that uses them."""
-        impostor = Projection(
-            name="impostor",
-            lat_0=50.0,
-            lon_0=-100.0,
-            ellipsoid=Ellipsoid("WGS 84 (modified)", 6378137.0, 298.0, 7030),
-        )
-        assert "+ellps=" not in impostor.proj_string()
-        assert "+a=6378137 +rf=298" in impostor.proj_string()
+    def test_projjson_is_valid_json_and_stable_across_calls(self):
+        text = json.dumps(SITE_PROJECTION.projjson(), indent=2)
+        assert json.loads(text) == SITE_PROJECTION.projjson()
+        assert SITE_PROJECTION.projjson() == SITE_PROJECTION.projjson()
 
-    def test_proj_string_writes_a_sphere_as_a_radius(self):
-        """``+rf`` is the *reverse* flattening, so ``+rf=0`` asks PROJ for a
-        flattening of 1/0, even though zero is how this module, WKT and
-        PROJJSON all spell a sphere. PROJ's parameter for one is ``+R``."""
-        spherical = Projection(
-            name="spherical",
-            lat_0=0.0,
-            lon_0=0.0,
-            ellipsoid=Ellipsoid.from_eccentricity_squared("Sphere", 6371007.0, 0.0),
-        )
-        assert "+R=6371007" in spherical.proj_string()
-        assert "+rf=" not in spherical.proj_string()
-        assert spherical.projjson()["base_crs"]["datum"]["ellipsoid"][
-            "inverse_flattening"
-        ] == 0.0
-
-    def test_number_formatting_round_trips_exactly(self):
-        """A fixed number of decimal places is short of the seventeen
-        significant digits a float can need, so a parameter would round on its
-        way into the file that is supposed to be authoritative for it."""
-        for value in (50.0, -100.0, 0.0, 6378137.0, 298.257223563, 294.978610787262, 1 / 3):
-            assert float(_number(value)) == value
-        assert _number(-0.0) == "0"
-        assert _number(0.0) == "0"
-        assert "e" not in _number(6378137.0)
-
-    def test_projjson_declares_the_epsg_method_and_parameter_codes(self):
-        """Method 9820, parameters 8801, 8802, 8806 and 8807, and the base CRS
-        with the ellipsoid the transform actually used.
-
-        Every value here is a literal rather than a comparison against the
-        dataclass field it came from. The tracked definition file cannot serve
-        as the check on its own: it is generated from this same source, and the
-        workflow this module documents regenerates it, so a wrong unit or a
-        swapped axis order would survive both.
-        """
-        document = SITE_PROJECTION.projjson()
-        assert document["$schema"] == "https://proj.org/schemas/v0.7/projjson.schema.json"
-        assert document["type"] == "ProjectedCRS"
-
-        conversion = document["conversion"]
-        assert conversion["method"]["name"] == "Lambert Azimuthal Equal Area"
-        assert conversion["method"]["id"] == {"authority": "EPSG", "code": 9820}
-        assert [parameter["id"]["code"] for parameter in conversion["parameters"]] == [
-            8801,
-            8802,
-            8806,
-            8807,
-        ]
-        # Two degrees then two meters. A unit swapped here is a definition that
-        # reads without error and puts the data thousands of km away.
-        assert [parameter["unit"] for parameter in conversion["parameters"]] == [
-            "degree",
-            "degree",
-            "metre",
-            "metre",
-        ]
-
-        base = document["base_crs"]
-        assert base["name"] == "WGS 84"
-        assert base["id"] == {"authority": "EPSG", "code": 4326}
-        assert base["datum"]["type"] == "GeodeticReferenceFrame"
-        assert base["datum"]["name"] == "World Geodetic System 1984"
-        ellipsoid = base["datum"]["ellipsoid"]
-        assert ellipsoid["name"] == "WGS 84"
-        assert ellipsoid["semi_major_axis"] == 6378137.0
-        assert ellipsoid["inverse_flattening"] == 298.257223563
-        assert ellipsoid["id"] == {"authority": "EPSG", "code": 7030}
-        # The base CRS declares the axis order EPSG:4326 does, which is not the
-        # order forward() takes its arguments in.
-        assert base["coordinate_system"]["subtype"] == "ellipsoidal"
-        assert [
-            axis["abbreviation"] for axis in base["coordinate_system"]["axis"]
-        ] == ["Lat", "Lon"]
-
-        # The projected CRS itself is registered with nobody, which is why the
-        # definition is stored in this repository at all.
-        assert "id" not in document
-        assert document["coordinate_system"]["subtype"] == "Cartesian"
-        axes = [axis["name"] for axis in document["coordinate_system"]["axis"]]
-        assert axes == ["Easting", "Northing"]
-        assert {axis["unit"] for axis in document["coordinate_system"]["axis"]} == {"metre"}
-
-    def test_projjson_parameter_values_equal_the_dataclass_fields(self):
-        """The serialization is derived, so nothing can be stale in one place
-        and current in the other."""
-        values = {
-            parameter["name"]: parameter["value"]
-            for parameter in SITE_PROJECTION.projjson()["conversion"]["parameters"]
-        }
-        assert values == {
-            "Latitude of natural origin": SITE_PROJECTION.lat_0,
-            "Longitude of natural origin": SITE_PROJECTION.lon_0,
-            "False easting": SITE_PROJECTION.false_easting,
-            "False northing": SITE_PROJECTION.false_northing,
-        }
-
-    def test_serializers_distinguish_the_two_false_origin_parameters(self):
-        """``SITE_PROJECTION`` has both at zero, so it cannot tell them apart.
-        Copy-paste between two adjacent four-line parameter dicts is how they
-        get swapped, and the swap is invisible to every other test here."""
+    def test_serializations_distinguish_the_two_false_origin_parameters(self):
+        """``SITE_PROJECTION`` has both at zero, so it cannot tell them apart."""
         offset = Projection(
             name="offset",
             lat_0=52.0,
@@ -808,113 +535,131 @@ class TestInterchangeFiles:
         assert values["Latitude of natural origin"] == 52.0
         assert values["Longitude of natural origin"] == 10.0
 
-    def test_projjson_is_valid_json_and_stable_across_calls(self):
-        text = json.dumps(SITE_PROJECTION.projjson(), indent=2)
-        assert json.loads(text) == SITE_PROJECTION.projjson()
-        assert SITE_PROJECTION.projjson() == SITE_PROJECTION.projjson()
-
-    def test_the_tracked_files_match_the_dataclass(self):
-        """``check_definitions`` passes on the files in the repository. This is
-        the anti-drift device: a parameter change that skips the regeneration
-        fails here."""
+    def test_the_tracked_files_match_the_parameters(self):
+        """The anti-drift device: a parameter change that skips the
+        regeneration fails here, and so does a PROJ upgrade that changes the
+        serialization."""
         check_definitions()
         for path in definition_paths().values():
             assert path.is_file()
             assert path.parent == default_definition_dir()
 
+    def test_the_tracked_projjson_is_what_proj_emits_now(self):
+        """Compared as parsed JSON rather than as text, so the failure says
+        which field moved rather than that two blobs differ."""
+        stored = json.loads(definition_paths()["projjson"].read_text())
+        assert stored == SITE_PROJECTION.projjson()
+
     def test_check_definitions_rejects_an_edited_file(self, tmp_path):
-        """A hand-edited definition is a test failure, not a way to change the
-        projection."""
-        paths = write_definitions(directory=tmp_path)
-        check_definitions(directory=tmp_path)
+        paths = write_definitions(tmp_path)
+        check_definitions(tmp_path)
         paths["projstring"].write_text(
             paths["projstring"].read_text().replace("+lat_0=50", "+lat_0=45")
         )
         with pytest.raises(ValueError, match="disagree"):
-            check_definitions(directory=tmp_path)
+            check_definitions(tmp_path)
 
     def test_check_definitions_detects_a_changed_parameter(self, tmp_path):
-        """The same failure from the other side: the files are current and the
-        dataclass has moved on."""
-        write_definitions(directory=tmp_path)
-        moved = Projection(name=SITE_PROJECTION.name, lat_0=45.0, lon_0=-100.0)
+        write_definitions(tmp_path)
+        moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
         with pytest.raises(ValueError, match="regenerate"):
-            check_definitions(moved, directory=tmp_path)
+            check_definitions(tmp_path, projection=moved)
 
     def test_check_definitions_names_the_regeneration_command(self, tmp_path):
-        """A missing or stale file has to say what to run."""
         with pytest.raises(FileNotFoundError, match="--write"):
-            check_definitions(directory=tmp_path)
+            check_definitions(tmp_path)
 
     def test_write_definitions_is_idempotent(self, tmp_path):
-        first = {
-            key: path.read_text() for key, path in write_definitions(directory=tmp_path).items()
-        }
-        second = {
-            key: path.read_text() for key, path in write_definitions(directory=tmp_path).items()
-        }
+        first = {key: path.read_text() for key, path in write_definitions(tmp_path).items()}
+        second = {key: path.read_text() for key, path in write_definitions(tmp_path).items()}
         assert first == second
 
     def test_write_definitions_overwrites_a_stale_file(self, tmp_path):
         """Idempotence alone is satisfied by a function that writes nothing the
-        second time, and this is the only escape hatch when ``check_definitions``
-        fails: if it declined to overwrite, a parameter change could never be
-        brought back into agreement."""
-        paths = write_definitions(directory=tmp_path)
+        second time, and this is the only escape hatch when
+        ``check_definitions`` fails."""
+        paths = write_definitions(tmp_path)
         paths["projstring"].write_text("+proj=laea +lat_0=45\n")
-        write_definitions(directory=tmp_path)
+        write_definitions(tmp_path)
         assert paths["projstring"].read_text() == SITE_PROJECTION.proj_string() + "\n"
-        check_definitions(directory=tmp_path)
+        check_definitions(tmp_path)
 
     def test_write_definitions_creates_a_missing_directory(self, tmp_path):
-        paths = write_definitions(directory=tmp_path / "nested" / "dir")
+        paths = write_definitions(tmp_path / "nested" / "dir")
         assert all(path.is_file() for path in paths.values())
 
-    def test_write_definitions_leaves_no_partial_files(self, tmp_path):
-        """The files are staged beside their destinations and moved into place
-        together, so a failed run cannot leave one file describing this
-        projection and the other describing the last one."""
-        directory = tmp_path / "staged"
-        write_definitions(directory=directory)
-        assert list(directory.glob("*.partial")) == []
+    def test_a_failed_write_leaves_the_previous_pair_intact(self, tmp_path, monkeypatch):
+        """What the staging is for. With the second move failing, neither file
+        may be half-updated and no partial may be left behind — otherwise a
+        colleague pastes a definition that describes neither projection."""
+        write_definitions(tmp_path)
+        moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
+
+        import sipnet_calibration.projection as module
+
+        real_replace = module.os.replace
+        calls = {"n": 0}
+
+        def failing_replace(src, dst):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("disk full")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(module.os, "replace", failing_replace)
+        with pytest.raises(OSError, match="disk full"):
+            write_definitions(tmp_path, projection=moved)
+
+        assert list(tmp_path.glob("*.partial")) == []
+        # The first file did move, so the pair is inconsistent -- which is
+        # exactly what check_definitions is for, and it must say so.
+        with pytest.raises(ValueError, match="regenerate"):
+            check_definitions(tmp_path)
+
+    def test_files_end_in_a_newline(self, tmp_path):
+        for path in write_definitions(tmp_path).values():
+            assert path.read_text().endswith("\n")
 
     def test_definition_paths_rejects_a_stem_that_is_a_path(self, tmp_path):
         for bad in ("../escaped", "a/b", "/absolute", ""):
             with pytest.raises(ValueError, match="bare file name"):
                 definition_paths(tmp_path, stem=bad)
 
-    def test_files_end_in_a_newline(self, tmp_path):
-        """So that they are well-formed text files, and so that an editor adding
-        one is not mistaken for a drifted definition."""
-        for path in write_definitions(directory=tmp_path).values():
-            assert path.read_text().endswith("\n")
+    def test_definition_stem_names_the_tracked_files(self):
+        assert DEFINITION_STEM == "north_america_laea"
+        assert definition_paths()["projjson"].name == "north_america_laea.projjson"
 
     def test_module_main_writes_and_checks(self, tmp_path, capsys):
-        """``python -m sipnet_calibration.projection --write`` and ``--check``."""
         assert projection_main(["--check", "--directory", str(tmp_path)]) == 1
         assert "error" in capsys.readouterr().out
         assert projection_main(["--write", "--directory", str(tmp_path)]) == 0
         assert projection_main(["--check", "--directory", str(tmp_path)]) == 0
         assert "matches" in capsys.readouterr().out
 
-        # A file that exists but has drifted is the other error arm, and it has
-        # to name the command that fixes it.
+        # A file that exists but has drifted is the other error arm.
         definition_paths(tmp_path)["projstring"].write_text("+proj=laea\n")
         assert projection_main(["--check", "--directory", str(tmp_path)]) == 1
         assert "regenerate" in capsys.readouterr().out
 
-    def test_module_main_defaults_to_checking_the_tracked_directory(self, capsys):
-        """``--check`` is documented as the default, and the mutually exclusive
-        group is not required, so the no-flag path is real behavior -- a default
-        that silently did nothing would also return 0."""
+    def test_module_main_defaults_to_checking(self, tmp_path, capsys):
+        """``--check`` is the documented default and the group is not required,
+        so the no-flag path is real behavior. It must *fail* on a bad directory,
+        not merely succeed on the good one -- a default that silently did
+        nothing would also return 0."""
+        assert projection_main(["--directory", str(tmp_path)]) == 1
+        assert "error" in capsys.readouterr().out
         assert projection_main([]) == 0
         assert "matches" in capsys.readouterr().out
+
+    def test_module_main_reports_a_write_failure(self, tmp_path, capsys):
+        blocked = tmp_path / "a-file"
+        blocked.write_text("not a directory\n")
+        assert projection_main(["--write", "--directory", str(blocked / "sub")]) == 1
+        assert "error" in capsys.readouterr().out
 
 
 class TestExtents:
     def test_named_extents_are_well_formed_boxes(self):
-        """Four values each, west of east and south of north, so every one is
-        accepted by both ``select_sites`` and ``projected_bounds``."""
         for name, box in EXTENTS.items():
             assert len(box) == 4, name
             west, south, east, north = box
@@ -922,20 +667,16 @@ class TestExtents:
             assert south < north, name
             assert -180.0 <= west and east <= 180.0, name
             assert -90.0 <= south and north <= 90.0, name
-            SITE_PROJECTION.projected_bounds(box)
 
     def test_extents_cannot_be_mutated(self):
         """A figure and the site subset it plots are supposed to agree on what a
-        region means, so a caller must not be able to reassign an entry and
-        change every later figure in the process."""
+        region means, so a caller must not be able to reassign an entry."""
         with pytest.raises(TypeError):
             EXTENTS["CONUS"] = (0.0, 0.0, 1.0, 1.0)  # type: ignore[index]
         with pytest.raises(TypeError):
             del EXTENTS["ALASKA"]  # type: ignore[attr-defined]
 
     def test_north_america_is_the_grid_extent(self):
-        """So that it contains every site by construction rather than by a bound
-        anyone chose."""
         assert EXTENTS["NORTH_AMERICA"] == (
             SITE_GRID.west,
             SITE_GRID.south,
@@ -951,99 +692,9 @@ class TestExtents:
         assert west == SITE_GRID.west
         assert (south, east, north) == (51.3, -129.99, 71.4)
 
-    @pytest.mark.skipif(
-        not default_sites_path().exists(), reason="processed/sites/sites.csv is not present"
-    )
+    @needs_site_table
     def test_the_extents_select_the_documented_subsets(self):
-        """CONUS is the 3640 sites ``data/README.md`` records, and
-        NORTH_AMERICA is all of them."""
         sites = load_sites()
         assert len(select_sites(sites, bbox=EXTENTS["NORTH_AMERICA"])) == len(sites)
         assert len(select_sites(sites, bbox=EXTENTS["CONUS"])) == 3640
         assert 0 < len(select_sites(sites, bbox=EXTENTS["ALASKA"])) < len(sites)
-
-
-# ── helpers ───────────────────────────────────────────────────────────────────
-
-
-def _proj_reference_projection() -> Projection:
-    """The CRS of PROJ's ``+proj=laea +ellps=GRS80`` test block: GRS 80, center (0, 0)."""
-    return Projection(
-        name="PROJ builtins.gie reference",
-        lat_0=0.0,
-        lon_0=0.0,
-        ellipsoid=Ellipsoid("GRS 1980", 6378137.0, 298.257222101, 7019),
-    )
-
-
-def _angular_distance(projection: Projection, lon, lat):
-    """Great-circle distance from *projection*'s center, in radians."""
-    center = math.radians(projection.lat_0)
-    latitude = np.radians(lat)
-    delta_lon = np.radians(np.asarray(lon, dtype=float) - projection.lon_0)
-    return np.arccos(
-        np.clip(
-            math.sin(center) * np.sin(latitude)
-            + math.cos(center) * np.cos(latitude) * np.cos(delta_lon),
-            -1.0,
-            1.0,
-        )
-    )
-
-
-def _tissot(projection: Projection, lon, lat, *, radius: float | None = None, step: float = 1e-5):
-    """Areal scale and the two extreme linear scale factors, at each point.
-
-    The Jacobian is taken by central differences with respect to *true distance
-    on the ellipsoid*, using the meridional and prime-vertical radii of
-    curvature, so its singular values are the scale factors directly and no
-    further normalization is needed. Independent of the projection formulas, so
-    it is a check on them rather than a restatement.
-    """
-    lon = np.asarray(lon, dtype=float)
-    lat = np.asarray(lat, dtype=float)
-    semi_major = radius if radius is not None else projection.ellipsoid.semi_major
-    e2 = projection.ellipsoid.eccentricity_squared
-
-    latitude = np.radians(lat)
-    w = 1 - e2 * np.sin(latitude) ** 2
-    prime_vertical = semi_major / np.sqrt(w)
-    meridional = semi_major * (1 - e2) / w**1.5
-    east_per_degree = np.radians(1.0) * prime_vertical * np.cos(latitude)
-    north_per_degree = np.radians(1.0) * meridional
-
-    east_x1, east_y1 = projection.forward(lon + step, lat)
-    east_x0, east_y0 = projection.forward(lon - step, lat)
-    north_x1, north_y1 = projection.forward(lon, lat + step)
-    north_x0, north_y0 = projection.forward(lon, lat - step)
-
-    dx_de = (east_x1 - east_x0) / (2 * step * east_per_degree)
-    dy_de = (east_y1 - east_y0) / (2 * step * east_per_degree)
-    dx_dn = (north_x1 - north_x0) / (2 * step * north_per_degree)
-    dy_dn = (north_y1 - north_y0) / (2 * step * north_per_degree)
-
-    trace = dx_de**2 + dy_de**2 + dx_dn**2 + dy_dn**2
-    area = np.abs(dx_de * dy_dn - dx_dn * dy_de)
-    spread = np.sqrt(np.maximum(trace**2 - 4 * area**2, 0.0))
-    scale_max = np.sqrt((trace + spread) / 2)
-    scale_min = np.sqrt(np.maximum((trace - spread) / 2, 0.0))
-    return area, scale_max, scale_min
-
-
-def _site_coordinates():
-    """The real site coordinates, longitude first."""
-    sites = load_sites()
-    return sites["lon"].to_numpy(), sites["lat"].to_numpy()
-
-
-def _site_metrics():
-    """Distortion of :data:`SITE_PROJECTION` at every site in the pool."""
-    lon, lat = _site_coordinates()
-    area, scale_max, scale_min = _tissot(SITE_PROJECTION, lon, lat)
-    omega = np.degrees(2 * np.arcsin(np.clip((scale_max - scale_min) / (scale_max + scale_min), 0, 1)))
-    return {
-        "area": area,
-        "anisotropy": scale_max / scale_min,
-        "omega": omega,
-        "distance": _angular_distance(SITE_PROJECTION, lon, lat),
-    }

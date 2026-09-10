@@ -36,13 +36,19 @@ The projection
 --------------
 **Settled, and not this module's to define.** The display projection is a
 Lambert Azimuthal Equal Area centered at 50 N, 100 W, held as
-:data:`sipnet_calibration.projection.SITE_PROJECTION`. Project coordinates with
-:meth:`~sipnet_calibration.projection.Projection.forward` and get axes limits
-for an extent from
+:data:`sipnet_calibration.projection.SITE_PROJECTION` and applied by PROJ.
+Project coordinates with
+:meth:`~sipnet_calibration.projection.Projection.forward`, get axes limits for
+an extent from
 :meth:`~sipnet_calibration.projection.Projection.projected_bounds`, which
-samples the box boundary rather than its corners. Do not define projection
-parameters here, and do not reach for degrees: the choice, the alternatives and
-the distortion measured over all 8000 sites are recorded on issue #4.
+samples the box boundary rather than its corners, and get local distortion from
+:meth:`~sipnet_calibration.projection.Projection.factors`. Do not define
+projection parameters here, and do not reach for degrees: the choice, the
+alternatives and the distortion measured over all 8000 sites are recorded on
+issue #4.
+
+Set ``ax.set_aspect("equal")``. Without it the equal-area property, which is
+the whole reason for this projection, does not survive to the page.
 
 Two properties of it bear on the renderers. It is equal-area, which is what
 makes a density or heatmap panel honest. And its anisotropy stays under 1.3
@@ -51,7 +57,14 @@ across the pool, which matters because ``TriRenderer`` is to triangulate
 a strongly anisotropic projection the mesh would be an artifact of the
 projection rather than of where the sites are -- and because the long-edge mask
 threshold is a projected length, which only means one ground distance where the
-local scale is close to isotropic.
+local scale is close to isotropic --
+:meth:`~sipnet_calibration.projection.Projection.factors` is what converts
+between the two, and ``tissot_semimajor`` is the bound to use.
+
+North is not up. Projected north rotates by up to 58 degrees at the northwest of
+the domain and -42 at the southeast, so a single north arrow on a full-domain
+panel is wrong nearly everywhere on it; draw the graticule instead. ``factors``
+reports the rotation at a point as ``meridian_convergence``.
 
 Still outstanding -- the basemap
 -------------------------------
@@ -62,11 +75,11 @@ projected with the same forward transform. ``basemap()`` in
 contract rather than a function yet, is the seam for it, so the renderers and
 the rest of this layer can be built before it exists.
 
-**No projection *library* is installable here** (issue #4), which is why the
-forward transform is implemented in numpy rather than through cartopy. Neither
-``cartopy`` nor ``pyproj`` has a usable wheel on macOS 12 arm64: every pyproj
-arm64 wheel targets ``macosx_14_0`` (macOS 14+), on *every* Python version, so
-this is a platform incompatibility and downgrading Python does not help.
-``cartopy`` is commented out of ``pyproject.toml``; do not re-add it expecting
-it to work locally.
+``cartopy`` is still absent, but not for the reason issue #4 gives: that issue
+assumed macOS 12, where no pyproj arm64 wheel could be installed, and the
+workstation has since moved past macOS 14. ``pyproj`` is now a dependency.
+``cartopy``'s own arm64 wheels stop at cp313 while this project is on cp314, so
+adopting it would mean pinning the interpreter down -- worth weighing when the
+basemap is built, since cartopy would supply the coastlines and the gridline
+labels outright.
 """

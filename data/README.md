@@ -301,14 +301,13 @@ system of the input data: a **Lambert Azimuthal Equal Area centered at
 
     +proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +ellps=WGS84 +units=m +no_defs +type=crs
 
-The definition lives in code, as `SITE_PROJECTION` in
+The parameters live in code, as `SITE_PROJECTION` in
 [`sipnet_calibration.projection`](../src/sipnet_calibration/projection.py),
-which provides the forward transform and, through `write_definitions`, emits the
-same definition as PROJJSON and as a PROJ string under
-`src/sipnet_calibration/projections/` for tools outside this package. Those
-files are generated from the dataclass and checked against it by the test suite,
-so a drifted file is a test failure; regenerate them with
-`python -m sipnet_calibration.projection --write`.
+which builds a `pyproj.CRS` from them and provides the transform. PROJ
+serializes that CRS to the PROJJSON and PROJ string stored under
+`src/sipnet_calibration/projections/`, for tools outside this package; the test
+suite checks them against the parameters, so a drifted file is a test failure.
+Regenerate them with `python -m sipnet_calibration.projection --write`.
 
 This bears on the data above in two ways. The projection's base CRS is
 WGS 84, matching the site coordinates, so **no datum transformation is
