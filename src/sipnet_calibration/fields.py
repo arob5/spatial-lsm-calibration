@@ -85,7 +85,8 @@ Three traps are worth knowing before writing an adapter:
   information (issue #3).
 * :func:`from_eki_predictions` unstacks a ``(J, N)`` block with the
   ``(site, variable, time)`` index from
-  :func:`sipnet_calibration.obs_ops.obs_index`. It must be the same index the
+  :func:`sipnet_calibration.observation_operators.obs_index`. It must be the
+  same index the
   observation operator used to build the observation vector, or the
   predictions come back mislabeled against the observations they are compared
   with.

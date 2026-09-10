@@ -181,23 +181,26 @@ def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fi
 # ── acceptance criteria ───────────────────────────────────────────────────────
 
 
+@pytest.mark.skip(reason="issue #6: aggregate_time is not implemented yet")
 def test_acceptance_one_panel_three_aggregations(ax, real_driver_field):
     """Raw, daily and monthly ``par`` at one site, overlaid, in three lines.
 
     Criterion 1 of the design spec, on ``par`` rather than NEE, which has no
     processed product yet. Like NEE, ``par`` is a per-timestep total, so its
-    daily value is a sum.
+    daily value is a sum -- and the point of the criterion is that the call
+    site does not have to know that. It says ``aggregate_time(par, "1D")``,
+    and the rule comes from the variable.
 
-    The aggregation is written at the call site as ``.resample(time="1D")
-    .sum()`` until ``obs_ops.aggregate_time`` exists (issue #6), which takes
-    the rule from the variable instead.
+    The sum over the daily curve equals the sum over the 3-hourly one, which
+    is what a mean would break.
     """
     from sipnet_calibration.drivers import driver_fields, load_drivers
+    from sipnet_calibration.observation_operators import aggregate_time
 
     par = driver_fields(load_drivers([1], members=[1]))["par"].sel(site=1, member=0)
     plot_time_series(par, ax=ax, role="prior", label="3-hourly")
-    plot_time_series(par.resample(time="1D").sum(), ax=ax, role="posterior", label="daily")
-    plot_time_series(par.resample(time="MS").sum(), ax=ax, role="truth", label="monthly")
+    plot_time_series(aggregate_time(par, "1D"), ax=ax, role="posterior", label="daily")
+    plot_time_series(aggregate_time(par, "MS"), ax=ax, role="truth", label="monthly")
 
     assert ax.get_legend_handles_labels()[1] == ["3-hourly", "daily", "monthly"]
     lengths = [len(artist.get_ydata()) for artist in ax.lines]

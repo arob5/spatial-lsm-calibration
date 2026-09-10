@@ -99,8 +99,10 @@ in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
 src/sipnet_calibration/
   sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
   fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
-  plotting/               # style, registry, primitives, series, maps, facet, diagnostics
+  variable_registry.py    # VarSpec + VARIABLES — canonical units and agg rules
+  observation_operators.py  # aggregate_time, sipnet_time_index — shared with
+                          # the likelihood
+  plotting/               # style, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
 data/raw/                 # inputs, never edited; only raw/sites/ is tracked
@@ -143,7 +145,8 @@ affect how the suite is used are:
   Plotters branch on presence of the `member` dim, so the same function serves a
   single deterministic run and a posterior predictive ensemble.
 - **Temporal aggregation is a verb the caller applies**, not a plotter keyword,
-  and it lives in `obs_ops.py` shared with the observation operator — so a
+  and it lives in `observation_operators.py` shared with the observation
+  operator — so a
   predictive-check figure cannot disagree with what the likelihood consumed.
 
 ## Running notebooks

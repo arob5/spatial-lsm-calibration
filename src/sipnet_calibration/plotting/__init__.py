@@ -13,8 +13,12 @@ rather than in terms of matplotlib.
 :mod:`facet`        grids of panels, and the figure around them
 :mod:`diagnostics`  inference diagnostics (not implemented)
 :mod:`style`        roles, colors and matplotlib settings
-:mod:`registry`     per-variable display metadata (not implemented)
 ==================  ==================================================
+
+Per-variable metadata -- a variable's canonical unit, its colormap, the value
+a diverging scale centers on -- is not in this package. It lives in
+:mod:`sipnet_calibration.variable_registry`, in the data layer, because the
+likelihood reads the same entries.
 
 Every plotting function draws onto an ``Axes`` it is given and returns it.
 Only :mod:`facet` creates a figure, and nothing here calls ``show`` or
@@ -30,8 +34,8 @@ is resolved as the drawing function's default, then the role asked for, then
 any keyword given explicitly.
 
 Temporal aggregation is not done here. It is applied by the caller with
-:func:`sipnet_calibration.obs_ops.aggregate_time`, which the observation
-operator also uses.
+:func:`sipnet_calibration.observation_operators.aggregate_time`, which the
+observation operator also uses.
 
 Interactive inspection of a single run is out of scope; ``pysipnet.viz``
 covers it.
