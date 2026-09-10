@@ -293,10 +293,47 @@ Two consequences are worth noting.
   Coordinate transformations should be configured accordingly, for instance with
   pyproj's `always_xy=True`.
 
-The map projection used for plotting is a separate choice from the coordinate
-system of the input data. It is tracked in
-[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4) and will be
-documented once settled.
+### Display projection
+
+The projection used for spatial figures is a separate choice from the coordinate
+system of the input data: a **Lambert Azimuthal Equal Area centered at
+50 N, 100 W**, on WGS 84, in meters, with no false origin.
+
+    +proj=laea +lat_0=50 +lon_0=-100 +x_0=0 +y_0=0 +datum=WGS84 +units=m +no_defs +type=crs
+
+The parameters live in code, as `SITE_PROJECTION` in
+[`sipnet_calibration.projection`](../src/sipnet_calibration/projection.py),
+which builds a `pyproj.CRS` from them and provides the transform. PROJ
+serializes that CRS to the PROJJSON and PROJ string stored under
+`src/sipnet_calibration/projections/`, for tools outside this package; the test
+suite checks them against the parameters, so a drifted file is a test failure.
+Regenerate them with `python -m sipnet_calibration.projection --write`.
+
+This bears on the data above in two ways. The projection's base CRS is
+WGS 84, matching the site coordinates, so **no datum transformation is
+involved** and nothing here is shifted. And because it is equal-area, a density
+or per-area figure is honest in a way the 1 km geographic grid is not — that
+grid, as noted above, is not equal-area.
+
+The choice of projection is a plotting decision rather than a property of these
+inputs, so the argument for it is not repeated here. It is recorded in
+[issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4), with the
+distortion of every candidate measured over all 8000 sites, and summarized in
+the module's own documentation. The short version: the projection the reanalysis
+figures used, ESRI:102003, the USA Contiguous Albers Equal Area Conic, is
+area-true everywhere but is intended for a region of predominant east-west
+expanse, and it degrades in shape far from its standard parallels. This site
+pool reaches 82.5 N, where it distorts shape severely — 107 degrees of angular
+deformation, against under 14 for the projection adopted here. The ceiling for
+the adopted projection is asserted against this table in
+`tests/test_projection.py`; the 102003 figure is a one-off measurement recorded
+on issue #4, since this package implements only the one projection.
+
+Named longitude/latitude boxes for the regions the figures use — `CONUS`,
+`NORTH_AMERICA` and `ALASKA` — are `EXTENTS` in
+[`sipnet_calibration.sites`](../src/sipnet_calibration/sites.py), beside the
+site selection that takes the same form, so a figure and the sites it plots
+cannot disagree about what a region means.
 
 ---
 

@@ -12,6 +12,7 @@ This is a research codebase, not a library.
 - [Quick start](#quick-start)
   - [Generating the processed data](#generating-the-processed-data)
 - [Advanced setup](#advanced-setup)
+  - [Known setup caveat](#known-setup-caveat)
   - [Companion packages](#companion-packages)
   - [Raw data survey](#raw-data-survey)
   - [Running notebooks](#running-notebooks)
@@ -62,6 +63,24 @@ Every script takes `--help`, which documents its inputs, its outputs and the
 flags for pointing it at data that is not where it expects.
 
 ## Advanced setup
+
+### Known setup caveat
+
+`pyproj` sets the platform floor, and the requirement is pinned low on purpose
+(`>=3.7.1`) so that the floor follows the machine rather than the other way
+round. On Apple silicon every candidate release needs macOS 14. On Intel macs
+3.7.x needs macOS 13 and 3.8 needs 15. On Linux 3.7.1 needs glibc 2.17 (RHEL 7)
+and everything newer needs 2.28 (RHEL 8). So an older cluster node resolves on
+Python 3.13 with pyproj 3.7.1, while a current machine takes 3.8 on 3.14; all
+three produce identical output.
+
+`cartopy` is not a dependency. Its arm64 wheels stop at cp313 while the
+development venv is on 3.14, so adopting it would mean bounding the interpreter
+from above, which `requires-python = ">=3.12"` does not do today. Nothing is
+blocked on it: the display projection is settled and applied through `pyproj`
+in `sipnet_calibration.projection`. What cartopy would still supply is the
+coastlines and gridline labels that `plotting/maps.py` otherwise needs a
+vendored basemap for.
 
 ### Companion packages
 

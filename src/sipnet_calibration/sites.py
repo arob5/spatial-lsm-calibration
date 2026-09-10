@@ -83,6 +83,11 @@ Functions
 :func:`default_sites_path`
     Where the table is expected to be.
 
+:data:`EXTENTS`
+    Named longitude/latitude boxes -- ``CONUS``, ``NORTH_AMERICA``, ``ALASKA``
+    -- in the form *bbox* takes, shared with the spatial plotting layer so that
+    a figure and the sites it plots agree on what a region is.
+
 :class:`Grid` and :data:`SITE_GRID`
     The lattice, and the conversions between coordinates and indices:
     :meth:`Grid.lonlat_to_index` and :meth:`Grid.index_to_lonlat`.
@@ -167,12 +172,14 @@ import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
 
 __all__ = [
     "DATA_ROOT_ENV_VAR",
+    "EXTENTS",
     "Grid",
     "SITE_COLUMNS",
     "SITE_COLUMN_DTYPES",
@@ -393,18 +400,23 @@ SITE_COLUMNS = (
 #: their content. Note that this alone does **not** save the eight sites named
 #: ``NA`` -- ``dtype=str`` still yields ``nan`` for them. What saves them is
 #: ``keep_default_na=False`` in :func:`load_sites`.
-SITE_COLUMN_DTYPES = {
-    "site_id": np.int32,
-    "lon": np.float64,
-    "lat": np.float64,
-    "lon_index": np.int32,
-    "lat_index": np.int32,
-    "site_name": str,
-    "site_order": np.int32,
-    "cluster": np.int8,
-    "landcover": np.int8,
-    "ameriflux_site_id": str,
-}
+#:
+#: Read-only: this is the schema, and a caller that mutated it would change what
+#: every later read of the table produces.
+SITE_COLUMN_DTYPES = MappingProxyType(
+    {
+        "site_id": np.int32,
+        "lon": np.float64,
+        "lat": np.float64,
+        "lon_index": np.int32,
+        "lat_index": np.int32,
+        "site_name": str,
+        "site_order": np.int32,
+        "cluster": np.int8,
+        "landcover": np.int8,
+        "ameriflux_site_id": str,
+    }
+)
 
 #: Environment variable naming the ``data/`` directory, for a checkout whose
 #: data lives elsewhere. Unset, the repository's own ``data/`` is used.
@@ -494,6 +506,36 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 
 # ── site selection ────────────────────────────────────────────────────────────
 
+#: Named regions, as ``(west, south, east, north)`` in degrees, in the form
+#: :func:`select_sites` takes for *bbox* and
+#: :meth:`sipnet_calibration.projection.Projection.projected_bounds` takes for
+#: axes limits. They live here, beside the selection they parametrize, so that a
+#: figure and the site subset it plots cannot disagree about what a region means.
+#:
+#: - ``CONUS`` is the conterminous-US box ``data/README.md`` uses, holding a
+#:   little under half the pool; the count is asserted in the test suite.
+#: - ``NORTH_AMERICA`` is the extent of :data:`SITE_GRID` itself, so it contains
+#:   every site by construction rather than by a bound anyone chose.
+#: - ``ALASKA`` is the EPSG area of use of "United States (USA) - Alaska", as
+#:   registered for EPSG:3338, clipped on the west at the grid's own edge: the
+#:   registered extent runs from 172.42 E across the antimeridian, whereas the
+#:   grid, the site pool and :func:`select_sites` are all in negative longitudes
+#:   and none of them wraps. No site is lost, since every site longitude is
+#:   negative, but a basemap drawn to this box omits the western Aleutians.
+#:
+#: The plotting design spec calls the middle one ``NA``. It is spelled out here
+#: under the project's convention against abbreviations, and because ``NA`` is
+#: an unhappy name in a module that has to read ``NA`` as a literal site name.
+#: Read-only, like :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
+#: silently change every later figure in the process.
+EXTENTS = MappingProxyType(
+    {
+        "CONUS": (-125.0, 24.0, -66.0, 50.0),
+        "NORTH_AMERICA": (SITE_GRID.west, SITE_GRID.south, SITE_GRID.east, SITE_GRID.north),
+        "ALASKA": (SITE_GRID.west, 51.3, -129.99, 71.4),
+    }
+)
+
 
 def select_sites(
     sites: pd.DataFrame,
@@ -521,7 +563,9 @@ def select_sites(
     bbox:
         ``(west, south, east, north)`` in degrees, edges included. Longitudes are
         negative throughout the pool, so ``(-125, 24, -66, 50)`` is the
-        conterminous US and ``(66, 24, 125, 50)`` selects nothing.
+        conterminous US and ``(66, 24, 125, 50)`` selects nothing. The named
+        regions are in :data:`EXTENTS`, so ``bbox=EXTENTS["CONUS"]`` is the same
+        box as the CONUS figure uses.
     where:
         A callable taking the table and returning a boolean mask over its rows —
         anything ``.loc`` accepts. This is the general filter: it covers the
