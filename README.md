@@ -65,7 +65,7 @@ upgrades it deliberately. Ordinary use needs no local checkout of any of them.
 #### Upgrading a companion package
 
 New work on `main` in one of these repositories does **not** reach this project
-until the lock is refreshed. To take it:
+until the lock is refreshed. To refresh:
 
 ```bash
 uv lock --upgrade-package pysipnet
@@ -94,8 +94,7 @@ uv pip install -e ../pySIPNET
 
 Note that **any later `uv sync` silently replaces the overlay** with the
 commit pinned in `uv.lock` — including `uv sync --inexact`, and including the
-sync that another step of some workflow happens to run. Nothing warns you; the
-symptom is that your edits stop having any effect. `uv pip show pysipnet` says
+sync that another step of some workflow happens to run. `uv pip show pysipnet` says
 which one is installed: an `Editable project location` line means the local
 checkout, and no such line means the pinned commit. Re-run the
 `uv pip install -e` after any sync.
@@ -105,28 +104,23 @@ Once the work is pushed to `main`, upgrade as above and drop the overlay.
 ## Running the data processing
 
 A one-time step per checkout. Ingest converts `data/raw/` into
-`data/processed/`, whose format **is** the canonical format the rest of the
+`data/processed/`, whose format is the canonical format the rest of the
 project reads.
 
 It requires the raw data to be present under `data/raw/` in the layout
-[`data/README.md`](data/README.md) specifies. **The data for this project is
-housed on Boston University's Shared Computing Cluster (SCC).** A fresh clone
+[`data/README.md`](data/README.md) specifies. The data for this project is
+housed on Boston University's Shared Computing Cluster (SCC). A fresh clone
 has almost none of it — only the site shapefile and the Ameriflux identifier map
-are tracked — so this section is mostly about running on the SCC. Step 1 is the
-exception and runs anywhere.
+are tracked. Step 1 below will run regardless of the data being present.
 
-**The order below is load-bearing**, because each step reads what an earlier one
-wrote. A single top-level helper that runs the whole sequence is wanted
-eventually but does not exist yet, so for now it is these calls, in this order.
+The below steps must be run in order. A top-level helper will eventually replace 
+this sequence of commands with a single one.
 
 **1. The site table.** Writes `data/processed/sites/sites.csv`.
 
 ```bash
 python scripts/ingest_sites.py
 ```
-
-This must run first: `ingest_constraints.py` and `ingest_ic.py` both read that
-file for the site axis and the `lon`/`lat` coordinates.
 
 **2. Flatten the constraint `.Rdata` files.** Writes a long CSV and a JSON
 manifest of what R checked.
@@ -146,8 +140,6 @@ outputs are scratch rather than products, so write them outside
 python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json
 ```
 
-Must follow step 2, whose two files are its input, and step 1.
-
 **4. The initial conditions product.** Writes `data/processed/ic.nc`.
 
 ```bash
@@ -156,22 +148,6 @@ python scripts/ingest_ic.py --jobs 16
 
 `--root` defaults to `data/raw/initial_conditions`. The read is I/O bound, so
 `--jobs` is worth raising on a networked filesystem.
-
-There is also an `--allow-gaps` flag, and it is not a default. It fills missing
-`(site, member)` pairs with `NaN` and records them in `ic_present` instead of
-stopping, and exists so the script is runnable in a checkout holding only part
-of the ensemble. On the SCC, with the full ensemble present, it should not be
-needed — reaching for it there means something is wrong with the data or with
-`--root`, and using it anyway yields a silently partial product.
-
-Two things are deliberately absent from that sequence:
-
-- **Net ecosystem exchange.** `scripts/ingest_nee.py` does not exist yet;
-  `data/README.md` records it as intended.
-- **Drivers.** There is no driver ingest step at all, and nothing is written
-  under `data/processed/` for them.
-  `sipnet_calibration.drivers.load_drivers` parses the raw `.clim` files into
-  the canonical form on demand.
 
 [`data/README.md`](data/README.md) is the authority on the per-product detail —
 the expected layout, provenance, units, and what each script reads and writes.
