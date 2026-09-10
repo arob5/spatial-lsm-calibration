@@ -39,18 +39,35 @@ Usage
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Sequence
 from typing import Any
 
+import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-__all__ = ["SHARE_MODES", "build_plot_grid", "plot_by_site", "plot_by_variable"]
+from sipnet_calibration.plotting.series import plot_time_series
+
+__all__ = [
+    "LEGEND_MODES",
+    "SHARE_MODES",
+    "SITE_DIM",
+    "build_plot_grid",
+    "plot_by_site",
+    "plot_by_variable",
+]
 
 #: What ``share`` may be, matching ``pyplot.subplots``' ``sharex``/``sharey``.
 SHARE_MODES: tuple[str, ...] = ("none", "x", "y", "both")
+
+#: What ``legend`` may be.
+LEGEND_MODES: tuple[str, ...] = ("dedup", "each", "none")
+
+#: The dimension :func:`plot_by_site` splits on.
+SITE_DIM = "site"
 
 
 def build_plot_grid(
@@ -105,7 +122,73 @@ def build_plot_grid(
         ``"each"`` or ``"none"``; or if *labels* is a sequence of a different
         length from *items*.
     """
-    raise NotImplementedError
+    items = list(items)
+    if not items:
+        raise ValueError("items is empty; there is nothing to draw")
+    if not isinstance(ncol, (int, np.integer)) or int(ncol) < 1:
+        raise ValueError(f"ncol must be a positive integer, got {ncol!r}")
+    if share not in SHARE_MODES:
+        raise ValueError(f"share must be one of {list(SHARE_MODES)}, got {share!r}")
+    if legend not in LEGEND_MODES:
+        raise ValueError(f"legend must be one of {list(LEGEND_MODES)}, got {legend!r}")
+    titles = _panel_titles(items, labels)
+
+    ncol = min(int(ncol), len(items))
+    nrow = math.ceil(len(items) / ncol)
+    figure, grid = plt.subplots(
+        nrow,
+        ncol,
+        figsize=(ncol * panel_size[0], nrow * panel_size[1]),
+        sharex=share in ("x", "both"),
+        sharey=share in ("y", "both"),
+        squeeze=False,
+    )
+    every_axes = grid.ravel()
+    for spare in every_axes[len(items) :]:
+        spare.set_visible(False)
+
+    axes = np.empty(len(items), dtype=object)
+    for position, item in enumerate(items):
+        axes[position] = every_axes[position]
+        panel_fn(every_axes[position], item)
+        if titles is not None:
+            every_axes[position].set_title(titles[position])
+
+    _add_legend(figure, axes, legend)
+    return figure, axes
+
+
+def _panel_titles(items, labels) -> list[str] | None:
+    """One title per item, or ``None`` when no titles were asked for."""
+    if labels is None:
+        return None
+    if callable(labels):
+        return [str(labels(item)) for item in items]
+    titles = list(labels)
+    if len(titles) != len(items):
+        raise ValueError(
+            f"labels has {len(titles)} entries and there are {len(items)} "
+            "panels; they must match"
+        )
+    return [str(title) for title in titles]
+
+
+def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:
+    """Place the legend asked for, if there is anything to put in it."""
+    if legend == "none":
+        return
+    if legend == "each":
+        for ax in axes:
+            if ax.get_legend_handles_labels()[1]:
+                ax.legend()
+        return
+    unique: dict[str, Any] = {}
+    for ax in axes:
+        handles, labels = ax.get_legend_handles_labels()
+        for handle, label in zip(handles, labels):
+            unique.setdefault(label, handle)
+    if unique:
+        figure.legend(list(unique.values()), list(unique), loc="outside upper right")
 
 
 def plot_by_site(
@@ -143,7 +226,32 @@ def plot_by_site(
         If *data* has no ``site`` dimension, or *sites* names an id that is
         not in it.
     """
-    raise NotImplementedError
+    if SITE_DIM not in data.dims:
+        raise ValueError(
+            f"the array has dimensions {list(data.dims)} and needs {SITE_DIM!r} "
+            "to be split by site"
+        )
+    available = (
+        list(data.coords[SITE_DIM].values) if SITE_DIM in data.coords else []
+    )
+    if sites is None:
+        chosen = available
+    else:
+        chosen = list(sites)
+        missing = [site for site in chosen if site not in available]
+        if missing:
+            raise ValueError(
+                f"no such site(s) in the data: {missing}. It holds "
+                f"{len(available)} site(s), starting {available[:5]}"
+            )
+
+    panel_fn = plot_time_series if panel_fn is None else panel_fn
+    grid_kwargs.setdefault("labels", lambda site: f"site {site}")
+    return build_plot_grid(
+        chosen,
+        lambda ax, site: panel_fn(data.sel({SITE_DIM: site}), ax=ax),
+        **grid_kwargs,
+    )
 
 
 def plot_by_variable(
@@ -178,4 +286,13 @@ def plot_by_variable(
     ValueError
         If *data* is empty.
     """
-    raise NotImplementedError
+    if not data:
+        raise ValueError("data is empty; there is nothing to draw")
+    panel_fn = plot_time_series if panel_fn is None else panel_fn
+    names = list(data)
+    grid_kwargs.setdefault(
+        "labels", [data[name].attrs.get("long_name", name) for name in names]
+    )
+    return build_plot_grid(
+        names, lambda ax, name: panel_fn(data[name], ax=ax), **grid_kwargs
+    )

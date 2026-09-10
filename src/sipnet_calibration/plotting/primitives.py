@@ -41,6 +41,7 @@ Usage
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 import numpy as np
@@ -49,7 +50,17 @@ from matplotlib.collections import PolyCollection
 from matplotlib.container import ErrorbarContainer
 from matplotlib.lines import Line2D
 
-__all__ = ["band", "fan", "line", "points", "spaghetti"]
+from sipnet_calibration.plotting.style import BAND_ALPHAS
+
+__all__ = [
+    "band",
+    "fan",
+    "line",
+    "nanquantile",
+    "points",
+    "spaghetti",
+    "thinned_indices",
+]
 
 
 def line(ax: Axes, x: np.ndarray, y: np.ndarray, **style: Any) -> Line2D:
@@ -78,7 +89,10 @@ def line(ax: Axes, x: np.ndarray, y: np.ndarray, **style: Any) -> Line2D:
     ValueError
         If *x* or *y* is not one-dimensional, or they differ in length.
     """
-    raise NotImplementedError
+    x, y = np.asarray(x), np.asarray(y)
+    _check_same_length(x=x, y=y)
+    (drawn,) = ax.plot(x, y, **style)
+    return drawn
 
 
 def spaghetti(
@@ -119,7 +133,25 @@ def spaghetti(
     Decimation changes what the figure shows. To summarize a large ensemble
     rather than sample it, use :func:`fan`.
     """
-    raise NotImplementedError
+    x, samples = np.asarray(x), np.asarray(samples)
+    _check_samples(x, samples)
+    if not isinstance(n_max, (int, np.integer)) or int(n_max) < 1:
+        raise ValueError(f"n_max must be a positive integer, got {n_max!r}")
+
+    label = style.pop("label", None)
+    drawn = []
+    for position, index in enumerate(thinned_indices(len(samples), int(n_max))):
+        keep_label = position == 0 and label is not None
+        drawn.append(
+            line(
+                ax,
+                x,
+                samples[index],
+                label=label if keep_label else "_nolegend_",
+                **style,
+            )
+        )
+    return drawn
 
 
 def band(
@@ -149,7 +181,9 @@ def band(
     ValueError
         If the three arrays are not one-dimensional and the same length.
     """
-    raise NotImplementedError
+    x, lower, upper = np.asarray(x), np.asarray(lower), np.asarray(upper)
+    _check_same_length(x=x, lower=lower, upper=upper)
+    return ax.fill_between(x, lower, upper, **style)
 
 
 def fan(
@@ -201,7 +235,36 @@ def fan(
     numpy would otherwise raise per quantile per such column is suppressed
     around the quantile calculation.
     """
-    raise NotImplementedError
+    x, samples = np.asarray(x), np.asarray(samples)
+    _check_samples(x, samples)
+    levels = _checked_levels(levels)
+
+    widest_first = sorted(levels, reverse=True)
+    alphas = np.linspace(BAND_ALPHAS[0], BAND_ALPHAS[1], len(widest_first))
+    label = style.pop("label", None)
+
+    wanted = []
+    for level in widest_first:
+        tail = (1.0 - level) / 2.0
+        wanted.extend((tail, 1.0 - tail))
+    limits = nanquantile(samples, wanted)
+
+    drawn = []
+    for position, alpha in enumerate(alphas):
+        is_narrowest = position == len(widest_first) - 1
+        keep_label = is_narrowest and label is not None
+        drawn.append(
+            band(
+                ax,
+                x,
+                limits[2 * position],
+                limits[2 * position + 1],
+                alpha=alpha,
+                label=label if keep_label else "_nolegend_",
+                **style,
+            )
+        )
+    return drawn
 
 
 def points(
@@ -241,4 +304,97 @@ def points(
     ValueError
         If the arrays are not one-dimensional and the same length.
     """
-    raise NotImplementedError
+    x, y = np.asarray(x), np.asarray(y)
+    arrays = {"x": x, "y": y}
+    if yerr is not None:
+        yerr = np.asarray(yerr)
+        arrays["yerr"] = yerr
+    _check_same_length(**arrays)
+
+    keep = _is_finite(x) & _is_finite(y)
+    if yerr is not None:
+        keep = keep & _is_finite(yerr)
+    return ax.errorbar(
+        x[keep], y[keep], yerr=None if yerr is None else yerr[keep], **style
+    )
+
+
+# ── shared utilities ────────────────────────────────────────────────────────
+
+
+def nanquantile(samples: np.ndarray, quantiles) -> np.ndarray:
+    """Quantiles along the first axis, without the all-missing-slice warning.
+
+    A column in which every sample is missing yields ``NaN``, which is what
+    the caller wants; ``numpy`` announces it once per quantile per such
+    column, which the caller does not need.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="All-NaN slice encountered", category=RuntimeWarning
+        )
+        return np.nanquantile(samples, quantiles, axis=0)
+
+
+def thinned_indices(n_samples: int, n_max: int) -> np.ndarray:
+    """Indices of the samples to draw: all of them, or *n_max* evenly spaced.
+
+    When thinning happens the spacing is at least one, so the indices are
+    distinct and include the first and the last.
+    """
+    if n_samples <= n_max:
+        return np.arange(n_samples)
+    return np.linspace(0, n_samples - 1, n_max).round().astype(int)
+
+
+# ── supporting helpers ────────────────────────────────────────────────────────
+
+
+def _is_finite(values: np.ndarray) -> np.ndarray:
+    """Which entries are usable, for datetimes as well as for numbers."""
+    if np.issubdtype(values.dtype, np.datetime64):
+        return ~np.isnat(values)
+    if values.dtype.kind in "iub":
+        return np.ones(values.shape, dtype=bool)
+    return np.isfinite(values)
+
+
+def _check_same_length(**arrays: np.ndarray) -> None:
+    """Raise unless every array is one-dimensional and they share a length."""
+    wrong = {name: a.ndim for name, a in arrays.items() if a.ndim != 1}
+    if wrong:
+        detail = ", ".join(f"{n} has {d} dimensions" for n, d in wrong.items())
+        raise ValueError(f"expected one-dimensional arrays; {detail}")
+    lengths = {name: a.size for name, a in arrays.items()}
+    if len(set(lengths.values())) > 1:
+        detail = ", ".join(f"{n} of {s}" for n, s in lengths.items())
+        raise ValueError(f"expected arrays of the same length; got {detail}")
+
+
+def _check_samples(x: np.ndarray, samples: np.ndarray) -> None:
+    """Raise unless *samples* is shaped ``(n_samples, len(x))``."""
+    if x.ndim != 1:
+        raise ValueError(f"x must be one-dimensional; it has {x.ndim} dimensions")
+    if samples.ndim != 2:
+        raise ValueError(
+            f"samples must be two-dimensional, (n_samples, {x.size}); it has "
+            f"{samples.ndim}. A single series is drawn by line()."
+        )
+    if samples.shape[1] != x.size:
+        raise ValueError(
+            f"each sample has {samples.shape[1]} values and x has {x.size}; "
+            "they must match"
+        )
+
+
+def _checked_levels(levels) -> tuple[float, ...]:
+    """*levels* as a tuple, raising unless they are widths within ``(0, 1)``."""
+    levels = tuple(float(level) for level in levels)
+    if not levels:
+        raise ValueError("levels must name at least one interval width")
+    if len(set(levels)) != len(levels):
+        raise ValueError(f"levels must not repeat a width; got {levels}")
+    outside = [level for level in levels if not 0.0 < level < 1.0]
+    if outside:
+        raise ValueError(f"every level must lie within (0, 1); got {outside}")
+    return levels

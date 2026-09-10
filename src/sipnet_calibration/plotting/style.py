@@ -57,9 +57,10 @@ __all__ = [
 
 #: Role name to matplotlib keywords. The keys are the roles a panel may be
 #: asked for; :func:`role_style` selects from a value the part that applies to
-#: a given kind of element.
+#: a given kind of element. No two roles share a line style and marker, so
+#: they stay apart in grayscale as well as in color.
 ROLES: dict[str, dict[str, Any]] = {
-    "prior": {"color": "#999999", "linestyle": "-", "linewidth": 1.0},
+    "prior": {"color": "#999999", "linestyle": "--", "linewidth": 1.0},
     "posterior": {"color": "#0072B2", "linestyle": "-", "linewidth": 1.2},
     "obs": {
         "color": "#000000",
@@ -67,7 +68,7 @@ ROLES: dict[str, dict[str, Any]] = {
         "marker": "o",
         "markersize": 3.5,
     },
-    "truth": {"color": "#D55E00", "linestyle": "--", "linewidth": 1.4},
+    "truth": {"color": "#D55E00", "linestyle": "-.", "linewidth": 1.4},
 }
 
 #: Colors for curves that have to be told apart from one another, such as one
@@ -144,7 +145,21 @@ def role_style(role: str, kind: str = "line", **overrides: Any) -> dict[str, Any
         If *role* is not a key of :data:`ROLES`, or *kind* is not ``"line"``,
         ``"band"`` or ``"points"``. The message lists the valid values.
     """
-    raise NotImplementedError
+    if role not in ROLES:
+        raise ValueError(f"unknown role {role!r}; the roles are {sorted(ROLES)}")
+    if kind not in _KIND_KEYWORDS:
+        raise ValueError(
+            f"unknown kind {kind!r}; the kinds are {sorted(_KIND_KEYWORDS)}"
+        )
+    style = {
+        key: value
+        for key, value in ROLES[role].items()
+        if key in _KIND_KEYWORDS[kind]
+    }
+    if kind == "points":
+        style["linestyle"] = "none"
+    style.update(overrides)
+    return style
 
 
 def use_project_style() -> None:
@@ -157,7 +172,7 @@ def use_project_style() -> None:
     -------
     None
     """
-    raise NotImplementedError
+    matplotlib.rcParams.update(RC_PARAMS)
 
 
 def axis_label(field: xr.DataArray) -> str:
@@ -181,8 +196,24 @@ def axis_label(field: xr.DataArray) -> str:
         one. An xarray operation that does not carry attributes forward is the
         usual cause.
     """
-    # The VARIABLES registry (issue #6) plugs in here when it lands: prefer
-    # VARIABLES[field.name].label over attrs["long_name"], and raise if
-    # attrs["units"] disagrees with the registry's canonical unit. This is the
-    # only place in the series layer that needs it.
-    raise NotImplementedError
+    attrs = getattr(field, "attrs", {})
+    missing = [name for name in ("long_name", "units") if not attrs.get(name)]
+    if missing:
+        name = getattr(field, "name", None)
+        raise ValueError(
+            f"the array{f' {name!r}' if name else ''} has no "
+            f"{' and no '.join(repr(m) for m in missing)} attribute; an xarray "
+            "operation that does not carry attributes forward is the usual cause"
+        )
+    return f"{attrs['long_name']} ({attrs['units']})"
+
+
+# ── supporting definitions ────────────────────────────────────────────────────
+
+#: Which of a role's keywords apply to each kind of element. ``points`` also
+#: has ``linestyle`` forced to ``"none"``, which is not taken from the role.
+_KIND_KEYWORDS = {
+    "line": ("color", "linestyle", "linewidth"),
+    "band": ("color",),
+    "points": ("color", "marker", "markersize"),
+}
