@@ -2038,6 +2038,38 @@ wheels = [
 ]
 
 [[package]]
+name = "pyeki"
+version = "0.1.0.dev0"
+source = { editable = "../pyEKI" }
+dependencies = [
+    { name = "jax" },
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "jax", specifier = ">=0.4" },
+    { name = "numpy", specifier = ">=1.24" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "furo", specifier = ">=2024.1" },
+    { name = "ipykernel", specifier = ">=6.0" },
+    { name = "jupyter", specifier = ">=1.0" },
+    { name = "matplotlib", specifier = ">=3.7" },
+    { name = "mypy", specifier = ">=1.10" },
+    { name = "myst-parser", specifier = ">=2.0" },
+    { name = "nbsphinx", specifier = ">=0.9" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "pytest-cov", specifier = ">=5.0" },
+    { name = "ruff", specifier = ">=0.4" },
+    { name = "sphinx", specifier = ">=7.0" },
+    { name = "sphinx-copybutton", specifier = ">=0.5" },
+    { name = "sphinx-design", specifier = ">=0.5" },
+]
+
+[[package]]
 name = "pyens"
 version = "0.1.0"
 source = { editable = "../PyEns" }
@@ -2545,6 +2577,7 @@ dependencies = [
     { name = "nbformat" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pyeki" },
     { name = "pyens" },
     { name = "pyshp" },
     { name = "pysipnet" },
@@ -2572,6 +2605,7 @@ requires-dist = [
     { name = "nbformat" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", specifier = ">=2.0" },
+    { name = "pyeki", editable = "../pyEKI" },
     { name = "pyens", editable = "../PyEns" },
     { name = "pyshp", specifier = ">=3.1" },
     { name = "pysipnet", editable = "../pySIPNET" },

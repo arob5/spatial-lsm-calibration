@@ -12,18 +12,24 @@ This is a research codebase, not a library.
 Requires [uv](https://docs.astral.sh/uv/). One piece of the data ingest step requires
 `Rscript` as well.
 
-**1. Clone this repository and its two companion packages as siblings.**
-`pyproject.toml` installs `pysipnet` and `pyens` as editable locals from
-`../pySIPNET` and `../PyEns`, so the sibling layout is required. 
-`pySIPNET` is the SIPNET model interface; `PyEns` provides an interface
-running ensembles. 
+**1. Clone this repository and its three companion packages as siblings.**
+`pyproject.toml` installs `pysipnet`, `pyens` and `pyeki` as editable locals
+from `../pySIPNET`, `../PyEns` and `../pyEKI`, so the sibling layout is
+required. `pySIPNET` is the SIPNET model interface, `PyEns` provides an
+interface for running ensembles, and `pyEKI` is the ensemble Kalman inference
+substrate.
 
 ```bash
 git clone https://github.com/arob5/spatial-lsm-calibration.git
 git clone https://github.com/TARPS-group/pySIPNET.git
 git clone https://github.com/arob5/PyEns.git
+git clone https://github.com/TARPS-group/pyEKI.git
 cd spatial-lsm-calibration
 ```
+
+Clone them under exactly those directory names: the paths above are matched
+literally, and on a case-sensitive filesystem such as the SCC's a directory
+named `pyens` will not satisfy `../PyEns`.
 
 **2. Sync the environment.** This creates `.venv` from `uv.lock`, using the
 interpreter pinned in `.python-version` (3.14). `requires-python` is only a
@@ -50,15 +56,6 @@ notebooks.
 ```bash
 uv run pytest
 ```
-
-### Known setup caveat
-
-`cartopy` is required by the spatial plotting design but is **commented out of
-`pyproject.toml`**: it has no installable wheel on macOS 12 arm64, and the
-blocker is the operating system rather than the Python version. `uv sync` is
-clean without it, but `plotting/maps.py` is unimplemented pending the decision
-in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
-(BU's SCC) cartopy installs normally.
 
 ## Running the data processing
 
@@ -192,8 +189,11 @@ data/processed/           # ingest output == the canonical format used throughou
 tests/
 ```
 
-Data formats, provenance, and the coordinate reference system are documented in
-[`data/README.md`](data/README.md).
+`CLAUDE.md` records the code conventions, and
+[`data/README.md`](data/README.md) documents the inputs — their formats,
+provenance, and coordinate reference system. The model definition, notation,
+algorithm design and plotting specification are maintained outside this
+repository and are not published with it.
 
 ## Conventions
 
@@ -237,26 +237,6 @@ To execute headlessly:
 ```bash
 .venv/bin/jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=python3 --output out.ipynb in.ipynb
 ```
-
-## Status
-
-Early. The inference substrate lives in a separate package (`pyEKI`, above) and
-the first multi-site calibration run (`test1`) is not yet configured. What
-exists here today:
-
-- the `src/sipnet_calibration/` module layout, whose modules carry the contract
-  each is to satisfy; `sites.py` is implemented, the rest are not;
-- `SITE_GRID` and the conversions between coordinates and grid indices, in
-  `sipnet_calibration.sites`, with tests;
-- `load_sites()` and `select_sites()` over the processed site table, with tests;
-- site metadata for the 8000-site pool, as a point shapefile under
-  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
-- `scripts/ingest_sites.py`, which turns those two into
-  `data/processed/sites/sites.csv`.
-
-The model definition, notation, algorithm design and plotting specification are
-maintained outside this repository and are not published with it. `CLAUDE.md`
-records the code conventions; `data/README.md` documents the inputs.
 
 ## Open issues
 

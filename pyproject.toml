@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pysipnet",
     "pyens",
+    "pyeki",
     "numpy>=1.24",
     "pandas>=2.0",
     # Canonical field container: xr.DataArray with dims subset of (member, site, time).
@@ -50,6 +51,7 @@ dev = [
 [tool.uv.sources]
 pysipnet = { path = "../pySIPNET", editable = true }
 pyens = { path = "../PyEns", editable = true }
+pyeki = { path = "../pyEKI", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sipnet_calibration"]
