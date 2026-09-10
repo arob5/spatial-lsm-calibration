@@ -44,8 +44,8 @@ Operational rules that follow from the data and are easy to get wrong in code:
 
 - Open the IC netCDFs with `decode_times=False` (README note 5).
 - Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
-  drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
-  takes only the slot from it.
+  drifts (README note 15, issue #9). Use
+  `observation_operators.sipnet_time_index`, which takes only the slot from it.
 - Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
@@ -269,9 +269,15 @@ per package; the path above needs nothing.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py` and `drivers.py` are implemented, `obs_ops.py` has
-`sipnet_time_index`, and the other modules carry the contract each is to
-satisfy.
+`constraints.py` and `drivers.py` are implemented,
+`observation_operators.py` has `sipnet_time_index` and `aggregate_time`, and
+the other modules carry the contract each is to satisfy.
+
+The registry sits in the data layer rather than under `plotting/`, which is a
+departure from the vault spec's layout: `aggregate_time` reads it and is
+imported by the likelihood, so a registry under `plotting/` would make the
+likelihood import `matplotlib.pyplot` and would invert the dependency
+direction `src/sipnet_calibration/__init__.py` states.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -283,12 +289,14 @@ src/sipnet_calibration/
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
   fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
-                          # shared with the likelihood
+  variable_registry.py    # VarSpec + VARIABLES: canonical units, aggregation
+                          # rules, colormaps — read by the likelihood and the
+                          # plots alike, so it is not under plotting/
+  observation_operators.py  # sipnet_time_index, aggregate_time,
+                          # aggregation_counts — shared with the likelihood
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
-    registry.py           # VARIABLES
     primitives.py         # L1: (ax, plain numpy, **style) -> artist
     series.py             # L2 time series panels
     maps.py               # L2 spatial panels + SpatialRenderer implementations
@@ -326,17 +334,21 @@ plotting code. The load-bearing rules:
   `.quantile`, which are the three operations this project needs. One
   `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
 - Plotters branch on **presence of the `member` dim**, never on a mode keyword.
-- **Temporal aggregation lives in `obs_ops.py`** and is imported by both the
-  observation operator and the plotting layer, so a predictive-check figure
+- **Temporal aggregation lives in `observation_operators.py`** and is imported
+  by both the observation operator and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
   caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
 - **The aggregation rule is a property of the variable, carried in `VARIABLES`
   as `agg`.** SIPNET's `nee` is `g C m-2 per timestep` — extensive — so
   3-hourly to daily is a **sum**; a mean is wrong by 8x and looks plausible.
-  `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
-  (sum); carbon pools and `aboveground_wood_carbon`/`lai` are stocks
-  (instantaneous).
+  `air_temperature`/`vpd` are intensive (mean); `par`/`precipitation` are
+  per-timestep totals (sum); carbon pools and
+  `aboveground_wood_carbon`/`lai` are stocks, whose `agg` is
+  `instantaneous` — a refusal, so `aggregate_time` raises rather than
+  silently taking a period's first or last value.
   `aggregate_time` reads the registry; `how=` is an override, not the input.
+  It never reads a field's own `aggregation` attribute, which the drivers
+  carry; the two are asserted equal in the registry's tests instead.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
   Adapters convert into the one canonical unit named in `VARIABLES`, and

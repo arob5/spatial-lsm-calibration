@@ -335,7 +335,8 @@ Columns follow the 14-column layout defined by [pySIPNET].
 **Interpretation.** There is no datetime column; time is given by the `year`,
 `day` and `time` triple. The `time` column cannot be used as written (Note 15),
 so timestamps are assembled from `year`, `day` and the row's position within its
-day by `sipnet_calibration.obs_ops.sipnet_time_index`. What clock those labels
+day by `sipnet_calibration.observation_operators.sipnet_time_index`. What clock
+those labels
 are on, and whether a label marks the start or the end of its three hours, is
 inferred rather than documented (Note 16). Two columns are integrated
 quantities rather than rates: `par` and `precip` are totals over the timestep,
@@ -462,6 +463,15 @@ of 17,537, so the average site covers about 45% of the period.
 Only 17 of the 209 sites have a near-complete record. Representing the file as a
 dense array over site and time therefore leaves roughly 55% of entries missing,
 and any per-site statistic must account for very unequal sample sizes.
+
+That missingness is **entirely structural**. Every site's rows are one
+contiguous run on the 3-hour grid: there is no interior gap at any of the 209
+sites, no missing value in any member column, and the only calendar days not
+holding all eight rows are the first and last of each site's record. A site is
+short because whole stretches of the period are absent, not because its record
+is punctured. This is why temporal aggregation can default to keeping partial
+periods rather than dropping them: a partial day can only arise at a record
+edge. See the aggregation rules under Processed format.
 
 > **Note 7.** An updated release of this product covers 217 sites, including
 > several absent here, but carries only the ensemble mean. Which release to use is
@@ -592,7 +602,26 @@ Conversions applied during ingest rather than downstream:
   would be hidden if an ingest script made it. See open question 14.
 - **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
   unit used throughout, so that nothing later has to reconcile units, and the
-  redundant `ens_mean` column is dropped.
+  redundant `ens_mean` column is dropped. The canonical unit is **g C m-2 as a
+  per-timestep total**, matching what SIPNET reports, so the likelihood
+  compares totals and the model side converts nothing. The conversion is
+
+  ```
+  g C m-2 per timestep = rate * 12.011e-6 * length * 86400
+  ```
+
+  with `rate` in umol CO2 m-2 s-1 and `length` the timestep in days, taken
+  from the `.clim` `length` column rather than an assumed three hours. The
+  factor is `GRAMS_CARBON_PER_MICROMOLE_CO2` in
+  `sipnet_calibration.variable_registry`, which holds the canonical unit of
+  every variable; it agrees with the producer's own
+  `kg C m-2 s-1 = umol CO2 m-2 s-1 * 12e-9`.
+
+  A per-timestep total does not name its timestep, so a 3-hourly field and a
+  daily one carry the same unit string while differing by a factor of eight.
+  `observation_operators.aggregate_time` records `aggregation_applied` and
+  `aggregation_freq` in the attributes of what it returns, which is what
+  tells the two apart.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -619,6 +648,24 @@ Formats are chosen according to the shape of each product.
 | `ic.nc` | netCDF | `(member, site)` | 32 MB at 100 members |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
+
+**Aggregating a processed field in time** goes through
+`sipnet_calibration.observation_operators.aggregate_time`, which takes the rule
+from `variable_registry.VARIABLES` rather than from the call site. The rule is
+a property of the variable, and getting it wrong is silent: `nee`, `par` and
+`precipitation` are quantities accumulated over the timestep, so a coarser
+period is their **sum**, and a mean is wrong by the number of steps in the
+period while looking entirely plausible. The temperatures, the vapor pressures
+and the wind speed describe the timestep rather than accumulating over it, so
+they are meaned. The four annual constraints are levels at an instant, and
+aggregation is refused for them rather than silently taking a period's first or
+last value.
+
+A period with no observations comes back missing, never zero -- xarray's
+`.resample(...).sum()` returns zero for an all-missing group, which for a
+55%-missing field would read as zero flux. A partial period is returned as the
+partial total it is, unscaled; a caller wanting only whole periods says so with
+`min_count=`, or masks on `aggregation_counts`.
 
 Zarr is used for the arrays indexed by member, site and time because it maps
 directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
@@ -774,7 +821,8 @@ The following conventions apply to every product.
   identifier is a non-dimension coordinate on `site`, absent where unknown.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
-  converted at the boundary by `sipnet_calibration.obs_ops.sipnet_time_index`,
+  converted at the boundary by
+  `sipnet_calibration.observation_operators.sipnet_time_index`,
   which uses the `time` column only to identify a row's slot within its day
   (Note 15). This applies to SIPNET output as well as to the drivers, since
   SIPNET copies the column into its output verbatim.
