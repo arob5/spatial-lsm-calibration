@@ -5,9 +5,10 @@ Overview
 --------
 Walk the raw initial-condition tree, parse one small netCDF per
 ``(site, member)`` pair, and assemble them into the single netCDF the rest of
-the project reads. The source is 800,000 files of about 712 bytes; the product
-is one file of about 32 MB, which is the only form in which this ensemble
-exists off the SCC.
+the project reads. The source is one small file per pair, hundreds of
+thousands of them; the product is a single file of a few tens of megabytes,
+which is the only form in which this ensemble exists off the SCC. The run
+prints the sizes and counts it actually saw.
 
 ``sipnet_calibration.initial_conditions`` holds the schema, the per-file parser
 and the reader. This script is the writer, and its own round-trip check reads
@@ -61,16 +62,13 @@ Notes
 an incomplete ensemble has to be opted into rather than discovered later. With
 the flag the gaps are reported, filled with ``NaN``, recorded in
 ``ic_present``, and the dataset's ``coverage`` attribute becomes ``"gaps"``.
-The flag is what makes the script runnable in a development checkout: three
-files, two sites, and members 1, 2 and 94.
+The flag is what makes the script runnable in a checkout holding only part of
+the ensemble.
 
 **The variable set is not settled, and an unregistered variable is fatal.**
-Only the three variables confirmed by inspecting files are registered.
-``leaf_carbon_content`` and ``SoilMoistFrac`` are reported to appear in files
-that are not available, so their units are unknown and registering them would
-mean inventing one. ``read_ic_file`` therefore refuses them and names the
-blocker. A survey of the full ensemble will stop -- with the evidence needed to
-specify them, which is the point. See open question 6 in ``data/README.md``.
+Only the variables confirmed by inspecting files are registered, so a survey
+of the full ensemble stops on a file carrying one of the others, with the
+evidence needed to specify it. See open question 6 in ``data/README.md``.
 
 **Three kinds of absence, two presence arrays.** A ``NaN`` in a data variable
 means the pair had no file, or the file lacked the variable, or the file held an
@@ -108,7 +106,6 @@ In a checkout holding only a few files::
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -119,6 +116,7 @@ import pandas as pd
 import xarray as xr
 
 from sipnet_calibration.initial_conditions import (
+    IC_FILE_GLOB,
     IC_FILE_TEMPLATE,
     IC_PRESENT,
     IC_VARIABLE_ATTRS,
@@ -137,6 +135,7 @@ from sipnet_calibration.initial_conditions import (
     default_ic_root,
     load_initial_conditions,
     read_ic_file,
+    site_member_from_file_name,
     time_attrs,
     variable_attrs,
 )
@@ -146,10 +145,14 @@ from sipnet_calibration.sites import load_sites
 COMPRESSION = {"zlib": True, "complevel": 4}
 
 #: Default number of worker threads for the read. The read is dominated by
-#: filesystem latency rather than by parsing -- about 0.9 ms of parse per file
-#: against however long a stat and open take -- so concurrency is what makes a
+#: filesystem latency rather than by parsing, so concurrency is what makes a
 #: full run tractable on a networked filesystem, and is worth raising there.
 DEFAULT_JOBS = 8
+
+#: Ceiling on the worker count. The read is I/O bound, so more threads than
+#: this buys nothing, and an unbounded value would exhaust the process thread
+#: limit at the full 800,000-file scale.
+MAX_JOBS = 128
 
 
 class IngestError(Exception):
@@ -238,9 +241,9 @@ def ingest(
 ) -> tuple[xr.Dataset, dict[tuple[int, int], IcFileContents]]:
     """Discover, read, check, build and write.
 
-    Reads as a summary of the work: index the tree, load the site table, check
-    the index against it, parse every file, check what spans files, build the
-    grids and the Dataset, write it.
+    Index the tree, load the site table, check the index against it, parse
+    every file, check what spans files, build the grids and the Dataset,
+    write it.
 
     Returns
     -------
@@ -275,8 +278,7 @@ def discover_files(root: Path) -> FileIndex:
     member from the file name, and returns the paths keyed by
     ``(site, member)`` together with the discovered site and member sets.
 
-    Filesystem debris is ignored rather than reported -- ``.DS_Store`` is
-    present in the development checkout at two levels -- but a file that *does*
+    Filesystem debris is ignored rather than reported, but a file that *does*
     look like an initial-condition file and disagrees with its directory is
     kept, so that :func:`check_paths_follow_the_layout` can report it.
 
@@ -344,8 +346,9 @@ def read_all_files(
     """
     keys = sorted(index.paths)
     contents: dict[tuple[int, int], IcFileContents] = {}
-    workers = max(1, int(jobs))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    workers = min(max(1, int(jobs)), MAX_JOBS)
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
         futures = {pool.submit(read_ic_file, index.paths[key]): key for key in keys}
         for future in as_completed(futures):
             key = futures[future]
@@ -355,6 +358,12 @@ def read_all_files(
                 raise IngestError(
                     f"site {key[0]} member {key[1]}: {error}"
                 ) from error
+    finally:
+        # cancel_futures, because the default shutdown drains the whole
+        # queue before the exception surfaces. At 800,000 files that means
+        # a bad file found in the first second would keep the filesystem
+        # busy for the rest of the run before reporting.
+        pool.shutdown(wait=False, cancel_futures=True)
     return contents
 
 
@@ -377,6 +386,7 @@ def build_grids(
     mis-pair a value with a variable.
     """
     site = sites["site_id"].to_numpy(np.int32)
+    check_member_indices_are_representable(index)
     source_members = np.asarray(index.members, dtype=np.int16)
     shape = (source_members.size, site.size)
 
@@ -456,13 +466,17 @@ def describe_initial_conditions(
 ) -> str:
     """A report of what was written, for the run log.
 
-    Prints what documentation must not: the coverage, the number of sites and
-    members and pairs found against those expected, and per variable the number
-    of files carrying it, its extremes, its explicit-fill count and its count
-    of non-positive values. Also the distinct variable-set signatures with
-    their file counts, and the number of cells where the two wood variables are
-    both present and unequal -- the measurement that would settle whether they
-    are duplicates.
+    Reports the coverage, the number of sites and members and pairs found
+    against those expected, and per variable ``carried`` (files that held
+    it), ``n`` (of those, the ones with a value rather than a fill), its
+    extremes, its explicit-fill count and its count of non-positive values.
+    Also the distinct variable-set signatures with their file counts, and
+    the number of cells where the two wood variables are both present and
+    unequal -- the measurement that would settle whether they are
+    duplicates.
+
+    ``carried`` and ``n`` differ by exactly the explicit fills, which is
+    why both are printed.
     """
     n_members, n_sites = dataset.sizes["member"], dataset.sizes["site"]
     present = int(dataset[IC_PRESENT].values.sum())
@@ -476,17 +490,23 @@ def describe_initial_conditions(
         f"{int((dataset[IC_PRESENT].values.any(axis=0)).sum())}",
     ]
 
-    for name in IC_VARIABLES:
+    for index, name in enumerate(IC_VARIABLES):
         array = dataset[name]
         finite = np.isfinite(array.values)
+        carried = int(
+            dataset[VARIABLE_PRESENT]
+            .transpose("member", "site", "variable")
+            .values[:, :, index]
+            .sum()
+        )
         extent = (
             f"[{array.values[finite].min():.6g}, {array.values[finite].max():.6g}]"
             if finite.any()
             else "[none present]"
         )
         lines.append(
-            f"  {name:<32s} n={int(finite.sum()):>6d}  range {extent}  "
-            f"fills {array.attrs['n_explicit_fills']}  "
+            f"  {name:<32s} carried={carried:>6d}  n={int(finite.sum()):>6d}  "
+            f"range {extent}  fills {array.attrs['n_explicit_fills']}  "
             f"non-positive {array.attrs['n_values_not_positive']}"
         )
 
@@ -589,8 +609,8 @@ def annotate_dataset(
     counts. On the coordinates: what ``member``, ``source_member_index``,
     ``site`` and ``variable`` mean. On the dataset: the title, the source root
     and layout, the source fill value, the history, ``member_source``,
-    ``member_correspondence``, the sizes, the coverage, and the four attributes
-    recording the dropped ``time`` coordinate.
+    ``member_correspondence``, the sizes, the coverage, and the five
+    attributes recording the dropped ``time`` coordinate.
 
     ``member_correspondence`` says that no correspondence with the driver or
     net-ecosystem-exchange ensembles is established, because xarray aligns
@@ -681,8 +701,17 @@ def _wood_variables_disagreeing(dataset: xr.Dataset) -> int:
     would decide the answer in advance. Reported, never asserted.
     """
     first, second = dataset[IC_VARIABLES[0]].values, dataset[IC_VARIABLES[1]].values
-    both = np.isfinite(first) & np.isfinite(second)
-    return int((first[both] != second[both]).sum())
+    present = dataset[VARIABLE_PRESENT].transpose("member", "site", "variable").values
+    # Presence, not finiteness: a cell where one variable is an explicit
+    # fill and the other a real number is a disagreement, and finiteness
+    # would drop it. A NaN-ness mismatch between two present cells is one
+    # as well.
+    both = present[:, :, 0] & present[:, :, 1]
+    first, second = first[both], second[both]
+    nan_first, nan_second = np.isnan(first), np.isnan(second)
+    differing_nan = nan_first != nan_second
+    differing_value = ~nan_first & ~nan_second & (first != second)
+    return int(np.count_nonzero(differing_nan | differing_value))
 
 
 def _variable_set_signatures(
@@ -750,11 +779,14 @@ def check_no_duplicate_site_member_pairs(index: FileIndex) -> None:
     """
     seen: dict[tuple[int, int], list[Path]] = {}
     for site in index.sites:
-        for path in sorted((index.root / str(site)).glob("IC_site_*.nc")):
-            match = re.fullmatch(r"IC_site_(\d+)_(\d+)\.nc", path.name)
-            if match is None:
+        for path in sorted((index.root / str(site)).glob(IC_FILE_GLOB)):
+            # The same parse and the same is_file() test discovery uses, so
+            # a directory, a dangling symlink or a name off the template is
+            # debris to both rather than a phantom duplicate here.
+            parsed = site_member_from_file_name(path.name)
+            if parsed is None or not path.is_file():
                 continue
-            key = (site, int(match.group(2)))
+            key = (site, parsed[1])
             seen.setdefault(key, []).append(path)
     duplicates = {key: paths for key, paths in seen.items() if len(paths) > 1}
     if duplicates:
@@ -793,8 +825,8 @@ def check_every_pool_site_has_a_directory(
     """Every site in the pool has a directory under the root.
 
     Fatal unless *allow_gaps*, and reports how many are absent with a sample of
-    the identifiers rather than all 7998 of them. This is the check the
-    development checkout trips, since it holds two sites of the 8000.
+    the identifiers rather than all of them, since a full pool would bury the
+    message. This is the check a partial checkout trips.
     """
     if allow_gaps:
         return
@@ -803,10 +835,12 @@ def check_every_pool_site_has_a_directory(
     absent = [site for site in pool if int(site) not in found]
     if absent:
         raise IngestError(
-            f"{len(absent)} of {len(pool)} pool sites have no directory under "
-            f"{index.root}: {_sample(absent)}. Pass --allow-gaps to write a "
-            "product for the sites that are present, filling the rest with "
-            "NaN and recording it in ic_present."
+            f"{len(absent)} of {len(pool)} pool sites have no "
+            f"initial-condition file under {index.root}: {_sample(absent)}. "
+            "A site whose directory exists but holds nothing parseable "
+            "counts here too. Pass --allow-gaps to write a product for the "
+            "sites that are present, filling the rest with NaN and "
+            "recording it in ic_present."
         )
 
 
@@ -815,9 +849,8 @@ def check_members_are_the_same_at_every_site(
 ) -> None:
     """Every site that has any file has the whole discovered member set.
 
-    This is the ragged-ensemble check, and the more interesting of the two
-    coverage checks: a site missing one member of an otherwise complete
-    ensemble is the case that would quietly skew a statistic over members.
+    A site missing one member of an otherwise complete ensemble is the case
+    that would quietly skew a statistic over members.
     Fatal unless *allow_gaps*, and reports the sites and the members they lack.
     """
     if allow_gaps:
@@ -837,6 +870,25 @@ def check_members_are_the_same_at_every_site(
             f"{_sample(sorted(expected))}. A site missing one member would "
             "skew any statistic taken over members. Pass --allow-gaps to write "
             "it anyway, recorded in ic_present."
+        )
+
+
+def check_member_indices_are_representable(index: FileIndex) -> None:
+    """Every discovered member index fits the ``member`` axis's dtype.
+
+    The axis is ``int16`` to match every other product. A file name
+    carrying a larger number would otherwise abort the run with a bare
+    ``OverflowError`` from the array cast, which is neither a reported
+    error nor a named invariant.
+    """
+    limit = int(np.iinfo(np.int16).max)
+    beyond = [member for member in index.members if member > limit]
+    if beyond:
+        raise IngestError(
+            f"member indices {_sample(beyond)} exceed {limit}, the largest "
+            "the int16 member axis holds. The source's member index comes "
+            "from the file name, so this is a file named outside the "
+            "layout's range rather than a limit worth raising."
         )
 
 

@@ -8,14 +8,8 @@ functions that read it. It is the single description of that layout: the ingest
 script, the tests, the plotting layer and the experiment layer's parameter
 mapping all get the schema from here rather than restating it.
 
-Unlike the drivers, the initial conditions get an **ingested product**. SIPNET
-has no netCDF reader: initial conditions enter it as *parameters*
-(``plantWoodInit``, ``soilInit``, ``laiInit``, ``soilWFracInit``), so the raw
-files are not a model input format and a store is not a cache of something the
-model reads. And the raw form is 800,000 files of about 712 bytes each, one per
-``(site, member)`` *cell*, so there is no axis along which reading it is cheap:
-one site's ensemble is 100 opens, one member across the pool is 8000, and the
-whole ensemble is 800,000. The product is 32 MB. The dependency runs one way::
+Unlike the drivers, the initial conditions get an **ingested product**; the
+Notes say why. The dependency runs one way::
 
     raw/initial_conditions/<site>/IC_site_<site>_<member>.nc
       -> scripts/ingest_ic.py -> processed/ic.nc
@@ -74,7 +68,8 @@ Each also carries ``n_explicit_fills`` and ``n_values_not_positive``, counted
 rather than altered.
 
 Two variables carry ``related_constraint_variable``,
-``related_constraint_unit_factor`` and ``related_constraint_status`` from
+``related_constraint_unit_factor``, ``related_constraint_status`` and
+``related_constraint_note`` from
 :data:`RELATED_CONSTRAINT_VARIABLES`, because a reader will want to compare
 them against ``constraints_annual.nc`` and the two products are neither in the
 same units nor established to be the same quantity. See `Notes`_.
@@ -90,7 +85,7 @@ same units nor established to be the same quantity. See `Notes`_.
 Name                    Dims           Meaning
 ======================= ============== ========================================
 ``member``              ``member``     0-based ``int16``, in ascending order
-``source_member_index`` ``member``     the 1-based index in the file name
+``source_member_index`` ``member``     1-based ``int16``, the file name's index
 ``site``                ``site``       handed-down ``int32`` site id, ascending
 ``lon``, ``lat``        ``site``       from the site table, ``float64``
 ``variable``            ``variable``   the :data:`IC_VARIABLES` names, in order
@@ -106,7 +101,8 @@ for what that costs.
 **Attributes** on the dataset: ``title``, ``source_root``, ``source_layout``,
 ``source_fill_value``, ``history``, ``member_source = "ic"``,
 ``member_correspondence``, ``n_sites``, ``n_members``, ``coverage``
-(``"complete"`` or ``"gaps"``), and the four time attributes above.
+(``"complete"`` or ``"gaps"``), a ``coverage_note`` when ``coverage`` is
+``"gaps"``, and the five time attributes above.
 
 **Missing values.** Every kind of absence is ``NaN`` in a data variable, and
 the two presence companions are what tell them apart:
@@ -135,8 +131,7 @@ Functions
 
 :func:`read_ic_file`
     Parse one raw file exactly, in source variable names, and run the per-file
-    checks. The building block ``scripts/ingest_ic.py`` is made of, public so
-    that tests and one-off surveys apply the same checks the ingest does.
+    checks. The building block ``scripts/ingest_ic.py`` is made of.
 
 :func:`available_sites`
     Which site identifiers have a directory under a raw root.
@@ -151,28 +146,35 @@ Functions
     Where the raw directory and the written product are expected to be, both
     honoring ``$SIPNET_CALIBRATION_DATA``.
 
+:func:`site_member_from_file_name`
+    The ``(site, member)`` a source file name encodes, or ``None`` when the
+    name is not exactly the layout template.
+
 :func:`variable_attrs`, :func:`time_attrs`
     The attribute sets the product carries, for one variable and for the
-    dropped ``time`` coordinate. Public because the writer is a separate
-    script: the attributes are schema, so the same code that the reader
-    validates against has to build them.
+    dropped ``time`` coordinate.
 
 Notes
 -----
-**Why a product and not a reader.** The drivers got a reader on two grounds and
-neither holds here. SIPNET consumes the raw ``.clim`` text, so a driver store
-would be a copy the model never reads; SIPNET never reads these files at all.
-And the driver store would have been hundreds of gigabytes, where this product
-is 8000 x 100 x 3 x 8 bytes. What the raw form costs here is 800,000 file
-opens, which is exactly what a store removes, and the store is also the only
-form in which this ensemble exists off the SCC.
+**Why a product and not a reader.** The drivers got a reader on two grounds
+and neither holds here. SIPNET consumes the raw ``.clim`` text, so a driver
+store would be a copy the model never reads; SIPNET has no netCDF reader and
+never reads these files at all -- initial conditions reach it as parameters.
+And a driver store would have been hundreds of gigabytes, where this product
+is ``n_variables x n_members x n_sites x 8`` bytes plus a byte per presence
+cell, tens of megabytes at the ensemble sizes ``data/README.md`` records.
+What the raw form costs is one file open per ``(site, member)`` cell, with no
+axis along which that is cheap, which is exactly what a store removes; and the
+store is the only form in which this ensemble exists off the SCC.
 
 **Why the parameter mapping is not applied.** Initial conditions reach SIPNET
 as parameters, and three of the four mappings involve parameters we calibrate:
 ``envi.plantWoodC = (1 - coarseRootFrac - fineRootFrac) * plantWoodInit``,
 ``envi.plantLeafC = laiInit * leafCSpWt`` and
 ``envi.soilWater = soilWFracInit * soilWHC`` (``sipnet.c:1885-1924``). Only
-``soilInit`` is a plain factor of 1000. So the mapping depends on the current
+``soilInit`` is a plain unit conversion: the mapping itself is the identity,
+and the factor of 1000 is kg C m-2 to the g C m-2 that
+``sipnet/docs/parameters.md`` documents for the parameter. So the mapping depends on the current
 parameter vector, is evaluated per ensemble member at run time, and belongs to
 the experiment layer. This module writes the source values in their source
 units, unchanged.
@@ -206,13 +208,19 @@ a fill, and the product records the count.
 
 **Why both presence companions are written unconditionally.** A schema whose
 shape depends on the data means every consumer branches on whether a variable
-exists. The two arrays are 4.8 MB before compression and nearly constant, so
-they cost almost nothing after it.
+exists. The two arrays are one byte per cell before compression and nearly
+constant, so they cost almost nothing after it.
+
+**Why these helpers are public.** The writer is a separate script, and the
+attribute sets and the file-name parse are schema: the reader validates
+against them, so the same code has to build them and parse names the way
+discovery does. :func:`read_ic_file` is public so that a survey over the whole
+ensemble applies exactly the checks the ingest applies.
 
 **Member indices.** ``member`` is 0-based to match every other product, and
 ``source_member_index`` keeps the 1-based file index beside it, which matters
-here because a partial read is normal: the three files in the development
-checkout produce members ``0, 1, 2`` against source indices ``1, 2, 94``.
+here because a partial read is normal: a checkout holding a few files gives a
+short member axis whose source indices are whatever the file names carry.
 Whether initial-condition member *i* corresponds to driver member *i* is not
 established -- open question 12 in ``data/README.md`` -- and the ensembles are
 different sizes, which argues against it. Nothing here assumes a pairing;
@@ -225,15 +233,11 @@ initialize a run at a known date without an external decision. In particular
 there is nothing here to align against the thirteen annual constraint
 snapshots.
 
-**The variable set is not settled, and this module is deliberately strict about
-it.** :data:`IC_VARIABLES` holds the three variables confirmed by inspecting
-files. ``leaf_carbon_content`` and ``SoilMoistFrac`` are reported to appear in
-other files, but no file carrying either is available, so their units, long
-names and shapes are unknown and they are **not** registered -- they are listed
-in :data:`UNSPECIFIED_VARIABLES` instead. :func:`read_ic_file` refuses any
-variable outside :data:`IC_VARIABLES` and names the blocker when the variable
-is one of those two, so a survey of the full ensemble stops with the answer
-rather than recording a guess. Open question 6 in ``data/README.md``.
+**The variable set is not settled**, so a variable outside
+:data:`SOURCE_VARIABLE_NAMES` is refused rather than dropped or guessed at, and
+a survey of the full ensemble stops on one with the evidence needed to specify
+it. See :data:`UNSPECIFIED_VARIABLES` and open question 6 in
+``data/README.md``.
 
 Usage
 -----
@@ -310,6 +314,7 @@ __all__ = [
     "initial_condition_fields",
     "load_initial_conditions",
     "read_ic_file",
+    "site_member_from_file_name",
     "time_attrs",
     "variable_attrs",
 ]
@@ -396,7 +401,7 @@ IC_VARIABLE_ATTRS = {
 #: units that differ by a factor of ten. ``status`` is the load-bearing field:
 #: ``"unconfirmed"`` means the source names agree and the quantities plausibly
 #: match, and ``"contradicted"`` means the values do not correspond at the
-#: sites checked. Neither is a licence to convert. See ``data/README.md``.
+#: sites checked. Neither is a license to convert. See ``data/README.md``.
 RELATED_CONSTRAINT_VARIABLES = {
     "initial_aboveground_wood_carbon": {
         "variable": "aboveground_wood_carbon",
@@ -447,9 +452,9 @@ IC_PRESENT = "ic_present"
 VARIABLE_PRESENT = "variable_present"
 
 #: The one file for a site and member, under the site's directory, and the glob
-#: that finds every member's file for a site. The glob accepts any member so
-#: that a file whose name disagrees with its directory is reported as the
-#: mismatch it is rather than as a missing file.
+#: that finds every member's file for a site. The glob wildcards the *site*,
+#: so a file whose embedded site disagrees with its directory is found and
+#: reported as the mismatch it is rather than passed over as absent.
 IC_FILE_TEMPLATE = "IC_site_{site}_{member}.nc"
 IC_FILE_GLOB = "IC_site_*.nc"
 
@@ -557,8 +562,7 @@ def available_sites(root: Path | str) -> tuple[int, ...]:
         Site identifiers in ascending order, possibly empty. Only a directory
         whose name is exactly a positive integer counts; anything else is
         ignored rather than reported, because the source tree carries
-        filesystem debris -- ``.DS_Store`` is present in the development
-        checkout. Whether the directory holds any file is
+        filesystem debris. Whether the directory holds any file is
         :func:`available_members`' business.
     """
     root = Path(root)
@@ -603,7 +607,7 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
         return ()
     members = []
     for path in directory.glob(IC_FILE_GLOB):
-        parsed = _site_member_from_file_name(path.name)
+        parsed = site_member_from_file_name(path.name)
         if parsed is None or not path.is_file():
             continue
         members.append(parsed[1])
@@ -627,12 +631,14 @@ def read_ic_file(path: Path | str) -> IcFileContents:
 
     Raises
     ------
+    FileNotFoundError
+        If *path* does not exist.
     ValueError
         If any per-file check fails: a file that is not readable as netCDF-3;
         no ``time`` variable, or a ``time`` whose length is not 1; a data
         variable whose dims are not exactly ``("time",)``, which is what a
         layer-resolved soil variable would look like; a variable outside
-        :data:`IC_VARIABLES`, with the message naming
+        :data:`SOURCE_VARIABLE_NAMES`, with the message naming
         :data:`UNSPECIFIED_VARIABLES` and open question 6 when it is one of
         those; no data variable at all; a ``_FillValue`` that is not
         :data:`SOURCE_FILL_VALUE`; a ``units`` attribute that is missing or
@@ -671,6 +677,8 @@ def read_ic_file(path: Path | str) -> IcFileContents:
         _check_time_variable_is_degenerate(dataset, path)
         _check_no_unexpected_variables(dataset, path)
         _check_variables_are_scalar_on_time(dataset, path)
+        _check_variables_are_float64(dataset, path)
+        _check_no_unhandled_cf_attributes(dataset, path)
         _check_fill_values_are_the_expected_sentinel(dataset, path)
         _check_units_match_the_registered_units(dataset, path)
         _check_only_declared_fills_are_non_finite(dataset, path)
@@ -712,7 +720,7 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     Returns
     -------
     xarray.Dataset
-        The `Data model`_ described in the module docstring: the
+        The data model described in this module's docstring: the
         :data:`IC_VARIABLES` on ``(member, site)`` as ``float64``, the two
         presence companions, ``lon``/``lat`` on ``site``, and
         ``source_member_index`` on ``member``.
@@ -794,9 +802,7 @@ def initial_condition_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     for name in IC_VARIABLES:
         field = dataset[name].copy(deep=False)
         field.attrs = {**variable_attrs(name), **dataset[name].attrs}
-        # The variable coordinate indexes variable_present, not this field, and
-        # carrying it would make the field's coords disagree with its dims.
-        fields[name] = field.drop_vars("variable", errors="ignore")
+        fields[name] = field
     return fields
 
 
@@ -804,7 +810,7 @@ def variable_attrs(name: str) -> dict[str, object]:
     """Attributes for one variable, with the units caveat and any counterpart.
 
     :data:`IC_VARIABLE_ATTRS` for *name*, plus ``units_status`` and
-    ``units_provenance``, plus the three ``related_constraint_*`` entries when
+    ``units_provenance``, plus the four ``related_constraint_*`` entries when
     :data:`RELATED_CONSTRAINT_VARIABLES` has one. The runtime counts
     ``n_explicit_fills`` and ``n_values_not_positive`` are added by the ingest
     script, which is what can count them.
@@ -846,12 +852,33 @@ def time_attrs() -> dict[str, object]:
     }
 
 
+def site_member_from_file_name(name: str) -> tuple[int, int] | None:
+    """``(site, member)`` from an ``IC_site_<site>_<member>.nc`` name.
+
+    ``None`` when the name is not exactly the template for its numbers, so
+    that :func:`available_members` ignores debris rather than failing on it.
+    """
+    match = _FILE_PATTERN.match(name)
+    if match is None:
+        return None
+    site, member = match.group(1), match.group(2)
+    if IC_FILE_TEMPLATE.format(site=int(site), member=int(member)) != name:
+        return None
+    return int(site), int(member)
+
+
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
 #: Exactly ``IC_site_<site>_<member>.nc``, with no leading zeros or extra
 #: parts, so that a name off the template is skipped rather than half-read.
 _FILE_PATTERN = re.compile(r"^IC_site_(\d+)_(\d+)\.nc$")
+
+#: Per-variable source attributes this reader understands and acts on.
+#: Anything else is refused by :func:`_check_no_unhandled_cf_attributes`,
+#: because the read disables CF scaling and an unhandled attribute would
+#: change what the value means.
+_HANDLED_VARIABLE_ATTRS = frozenset({"units", "long_name", "_FillValue"})
 
 #: Dataset attributes the product must carry, checked on read.
 _REQUIRED_DATASET_ATTRS = (
@@ -885,21 +912,6 @@ _REQUIRED_VARIABLE_ATTRS = (
     "n_explicit_fills",
     "n_values_not_positive",
 )
-
-
-def _site_member_from_file_name(name: str) -> tuple[int, int] | None:
-    """``(site, member)`` from an ``IC_site_<site>_<member>.nc`` name.
-
-    ``None`` when the name is not exactly the template for its numbers, so
-    that :func:`available_members` ignores debris rather than failing on it.
-    """
-    match = _FILE_PATTERN.match(name)
-    if match is None:
-        return None
-    site, member = match.group(1), match.group(2)
-    if IC_FILE_TEMPLATE.format(site=int(site), member=int(member)) != name:
-        return None
-    return int(site), int(member)
 
 
 def _data_root() -> Path:
@@ -951,8 +963,26 @@ def _check_variables_are_scalar_on_time(dataset: xr.Dataset, path: Path) -> None
             )
 
 
+def _check_variables_are_float64(dataset: xr.Dataset, path: Path) -> None:
+    """Every data variable is ``float64``, as the source format is.
+
+    The product advertises ``float64`` and its contract is bit-exact
+    passthrough, so a ``float32`` source would lose about eight significant
+    digits between the file and the product with nothing to signal it, and an
+    integer source would make the declared fill ambiguous.
+    """
+    for source, array in dataset.data_vars.items():
+        if array.dtype != np.float64:
+            raise ValueError(
+                f"{path}: variable {source!r} is {array.dtype}, expected "
+                "float64. The product stores float64 and promises the source "
+                "value unchanged; a narrower source dtype would be upcast "
+                "silently and the promise would be false."
+            )
+
+
 def _check_no_unexpected_variables(dataset: xr.Dataset, path: Path) -> None:
-    """Every data variable is in :data:`IC_VARIABLES`, and there is one.
+    """Every data variable is in :data:`SOURCE_VARIABLE_NAMES`, and there is one.
 
     An unregistered variable has no processed name and no units, so it can
     only be dropped or guessed at; both are worse than stopping. When the
@@ -988,6 +1018,32 @@ def _check_no_unexpected_variables(dataset: xr.Dataset, path: Path) -> None:
         "new variable needs both before it can be stored, so this stops "
         "rather than dropping it."
     )
+
+
+def _check_no_unhandled_cf_attributes(dataset: xr.Dataset, path: Path) -> None:
+    """No data variable carries a CF attribute this reader does not act on.
+
+    The file is read with ``mask_and_scale=False`` so that the declared fill
+    stays visible, but that also switches off ``scale_factor`` and
+    ``add_offset`` decoding. A packed variable would then be stored as its raw
+    storage value, rescaled by an arbitrary factor, with nothing to signal it
+    -- the same failure :func:`_check_units_match_the_registered_units` exists
+    to prevent. ``missing_value`` is a CF alias for ``_FillValue`` and would
+    likewise go unmasked. None of the available files carries any of these, so
+    refusing them costs nothing and keeps the "source values unchanged" claim
+    true.
+    """
+    for source, array in dataset.data_vars.items():
+        unhandled = sorted(set(array.attrs) - _HANDLED_VARIABLE_ATTRS)
+        if unhandled:
+            raise ValueError(
+                f"{path}: variable {source!r} carries {unhandled}, which this "
+                "reader does not act on. It reads with mask_and_scale=False, "
+                "so scale_factor, add_offset and missing_value would be "
+                "ignored rather than applied and the stored value would not "
+                "be the physical one. Handle the attribute explicitly before "
+                "admitting a file that uses it."
+            )
 
 
 def _check_fill_values_are_the_expected_sentinel(
@@ -1125,6 +1181,12 @@ def _check_dataset_matches_the_schema(dataset: xr.Dataset, path: Path) -> None:
         raise ValueError(
             f"{path}: 'site' is {dataset['site'].dtype}, expected int32."
         )
+    if dataset["source_member_index"].dtype != np.int16:
+        raise ValueError(
+            f"{path}: 'source_member_index' is "
+            f"{dataset['source_member_index'].dtype}, expected int16, to "
+            "match the member axis it sits on."
+        )
 
     for coord in ("site", "source_member_index"):
         values = dataset[coord].values
@@ -1178,13 +1240,27 @@ def _check_presence_companions_agree_with_the_values(
     for index, name in enumerate(IC_VARIABLES):
         values = dataset[name].transpose("member", "site").values
         present = variable_present[:, :, index]
-        if np.any(np.isfinite(values[~present])):
+        # isnan, not isfinite: the data model says every absence is NaN, and an
+        # infinity is not NaN, so isfinite would let one through as an absence
+        # and a consumer's nanmean would then propagate it.
+        if np.any(~np.isnan(values[~present])):
             raise ValueError(
-                f"{path}: {name!r} is finite where {VARIABLE_PRESENT} is "
+                f"{path}: {name!r} is not NaN where {VARIABLE_PRESENT} is "
                 "False. A value the source never carried cannot have one, and "
                 "the fill indicator variable_present & isnan(value) would be "
                 "wrong."
             )
+        recorded = dataset[name].attrs.get("n_explicit_fills")
+        if recorded is not None:
+            counted = int(np.count_nonzero(present & np.isnan(values)))
+            if int(recorded) != counted:
+                raise ValueError(
+                    f"{path}: {name!r} records n_explicit_fills "
+                    f"{int(recorded)} but the arrays hold {counted} cells "
+                    f"where {VARIABLE_PRESENT} is True and the value is NaN. "
+                    "That count and that indicator are two statements of the "
+                    "same fact, so they cannot disagree."
+                )
 
 
 def _check_attributes_are_complete(dataset: xr.Dataset, path: Path) -> None:
@@ -1193,9 +1269,9 @@ def _check_attributes_are_complete(dataset: xr.Dataset, path: Path) -> None:
     Per variable: ``units``, ``long_name``, ``source_name``,
     ``source_long_name``, ``aggregation``, ``units_status``,
     ``units_provenance``, ``n_explicit_fills``, ``n_values_not_positive``, and
-    the three ``related_constraint_*`` entries where one is registered. On the
+    the four ``related_constraint_*`` entries where one is registered. On the
     dataset: ``member_source``, ``member_correspondence``, ``coverage``, the
-    four time attributes, and the source and provenance strings. These are
+    five time attributes, and the source and provenance strings. These are
     what make the product self-describing, so a missing one is a defect rather
     than a cosmetic gap.
     """
@@ -1231,6 +1307,7 @@ def _check_attributes_are_complete(dataset: xr.Dataset, path: Path) -> None:
                     "related_constraint_variable",
                     "related_constraint_unit_factor",
                     "related_constraint_status",
+                    "related_constraint_note",
                 )
                 if key not in attrs
             ]

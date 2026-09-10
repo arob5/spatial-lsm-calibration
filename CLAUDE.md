@@ -179,9 +179,9 @@ Function and module docstrings elsewhere are ordinary NumPy style.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py` and `drivers.py` are implemented, `obs_ops.py` has
-`sipnet_time_index`, and the other modules carry the contract each is to
-satisfy.
+`constraints.py`, `drivers.py` and `initial_conditions.py` are implemented,
+`obs_ops.py` has `sipnet_time_index`, and the other modules carry the
+contract each is to satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout

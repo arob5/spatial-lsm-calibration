@@ -38,7 +38,7 @@ from sipnet_calibration.constraints import CONSTRAINT_VARIABLES
 from sipnet_calibration.constraints import (
     SOURCE_VARIABLE_NAMES as CONSTRAINT_SOURCE_NAMES,
 )
-from sipnet_calibration.sites import SITE_COLUMNS
+from sipnet_calibration.sites import SITE_COLUMNS, load_sites
 from sipnet_calibration.initial_conditions import (
     DATA_ROOT_ENV_VAR,
     IC_FILE_TEMPLATE,
@@ -239,9 +239,32 @@ def built(ic_tree, site_table):
 
 class TestSchemaConstants:
     def test_every_source_variable_maps_to_a_processed_name_in_source_order(self):
-        """``IC_VARIABLES`` is the registered source variables, renamed, in order."""
-        assert IC_VARIABLES == tuple(SOURCE_VARIABLE_NAMES.values())
+        """The mapping and its order are pinned to literals, not to each other.
+
+        Asserting ``IC_VARIABLES == tuple(SOURCE_VARIABLE_NAMES.values())``
+        would restate the definition and could not fail. ``variable_present``
+        is indexed by this order, so it is pinned here and, against the real
+        files, in ``TestRealFiles``.
+        """
+        assert SOURCE_VARIABLE_NAMES == {
+            "AbvGrndWood": "initial_aboveground_wood_carbon",
+            "wood_carbon_content": "initial_wood_carbon",
+            "soil_organic_carbon_content": "initial_soil_organic_carbon",
+        }
+        assert IC_VARIABLES == (
+            "initial_aboveground_wood_carbon",
+            "initial_wood_carbon",
+            "initial_soil_organic_carbon",
+        )
         assert len(IC_VARIABLES) == len(set(IC_VARIABLES))
+
+    def test_our_processed_long_names_are_pinned(self):
+        """The source long names are the files'; these are ours to keep stable."""
+        assert [IC_VARIABLE_ATTRS[n]["long_name"] for n in IC_VARIABLES] == [
+            "Initial aboveground woody biomass carbon",
+            "Initial wood carbon",
+            "Initial soil organic carbon",
+        ]
 
     def test_processed_names_follow_the_naming_convention(self):
         """Lower case with underscores, no abbreviation, all prefixed ``initial_``."""
@@ -532,6 +555,55 @@ class TestReadIcFile:
         with pytest.raises(ValueError, match="non-finite value"):
             read_ic_file(path)
 
+    @pytest.mark.parametrize("code,label", [("f", "float32"), ("i", "int32")])
+    def test_rejects_a_source_variable_that_is_not_float64(
+        self, tmp_path, code, label
+    ):
+        """A float32 source loses ~8 digits in a product promising the source bits."""
+        path = tmp_path / "f.nc"
+        with netcdf_file(str(path), "w") as dataset:
+            dataset.createDimension("time", None)
+            time = dataset.createVariable("time", "d", ("time",))
+            time[:] = [SOURCE_TIME_VALUE]
+            time.units = SOURCE_TIME_UNITS
+            time.long_name = SOURCE_TIME_LONG_NAME
+            variable = dataset.createVariable("AbvGrndWood", code, ("time",))
+            variable[:] = [1]
+            variable.units = "kg C m-2"
+            variable._FillValue = np.float64(SOURCE_FILL_VALUE)
+            variable.long_name = "Above ground woody biomass"
+        with pytest.raises(ValueError, match="expected float64"):
+            read_ic_file(path)
+
+    @pytest.mark.parametrize(
+        "attribute,value",
+        [("scale_factor", 0.001), ("add_offset", 100.0), ("missing_value", 5.0)],
+    )
+    def test_rejects_a_cf_attribute_the_reader_does_not_act_on(
+        self, tmp_path, attribute, value
+    ):
+        """The read disables CF scaling, so a packed variable would be wrong.
+
+        ``mask_and_scale=False`` keeps the declared fill visible but also turns
+        off ``scale_factor``/``add_offset``, so a packed source would be stored
+        as its raw storage value with nothing to signal it.
+        """
+        path = tmp_path / "f.nc"
+        with netcdf_file(str(path), "w") as dataset:
+            dataset.createDimension("time", None)
+            time = dataset.createVariable("time", "d", ("time",))
+            time[:] = [SOURCE_TIME_VALUE]
+            time.units = SOURCE_TIME_UNITS
+            time.long_name = SOURCE_TIME_LONG_NAME
+            variable = dataset.createVariable("AbvGrndWood", "d", ("time",))
+            variable[:] = [5.0]
+            variable.units = "kg C m-2"
+            variable._FillValue = np.float64(SOURCE_FILL_VALUE)
+            variable.long_name = "Above ground woody biomass"
+            setattr(variable, attribute, value)
+        with pytest.raises(ValueError, match="does not act on"):
+            read_ic_file(path)
+
     def test_rejects_a_file_that_is_not_netcdf3(self, tmp_path):
         path = tmp_path / "f.nc"
         path.write_bytes(b"not a netcdf file at all")
@@ -543,9 +615,9 @@ class TestReadIcFile:
     ):
         """The engine is pinned to ``scipy`` deliberately; ``h5netcdf`` fails here."""
         path = write_ic_file(tmp_path / "f.nc")
-        with pytest.raises(Exception):
+        with pytest.raises(OSError, match="file signature not found"):
             xr.open_dataset(path, decode_times=False, engine="h5netcdf")
-        assert read_ic_file(path).values  # the pinned engine reads it
+        assert set(read_ic_file(path).values) == set(SOURCE_NAMES)
 
 
 # ── discovery and layout ──────────────────────────────────────────────────────
@@ -582,6 +654,62 @@ class TestDiscovery:
         assert set(index.paths) == {(1, 1), (1, 2), (27, 1), (27, 2)}
 
 
+class TestReadAllFiles:
+    def test_reads_every_file_into_a_dict_keyed_by_pair(self, ic_tree):
+        index = ingest.discover_files(ic_tree)
+        contents = ingest.read_all_files(index, jobs=2)
+        assert set(contents) == set(index.paths)
+
+    def test_raises_on_a_single_bad_file_rather_than_dropping_it(
+        self, ic_tree, write_ic_file
+    ):
+        """A dropped file would become a NaN indistinguishable from an absence.
+
+        This is the case the docstring's "the run stops rather than dropping
+        the file" promises, and nothing exercised it.
+        """
+        write_ic_file(ic_tree / "1" / "IC_site_1_3.nc", time_length=2)
+        index = ingest.discover_files(ic_tree)
+        with pytest.raises(ingest.IngestError) as error:
+            ingest.read_all_files(index, jobs=2)
+        message = str(error.value)
+        assert "site 1 member 3" in message
+        assert "'time' has length 2" in message
+
+    def test_respects_the_worker_count(self, ic_tree, monkeypatch):
+        """``--jobs`` reaches the pool rather than being ignored."""
+        seen = {}
+        real = ingest.ThreadPoolExecutor
+
+        def record(max_workers, *args, **kwargs):
+            seen["max_workers"] = max_workers
+            return real(max_workers=max_workers, *args, **kwargs)
+
+        monkeypatch.setattr(ingest, "ThreadPoolExecutor", record)
+        index = ingest.discover_files(ic_tree)
+        ingest.read_all_files(index, jobs=3)
+        assert seen["max_workers"] == 3
+
+    def test_caps_the_worker_count(self, ic_tree, monkeypatch):
+        """An unbounded value would exhaust the thread limit at full scale."""
+        seen = {}
+        real = ingest.ThreadPoolExecutor
+
+        def record(max_workers, *args, **kwargs):
+            seen["max_workers"] = max_workers
+            return real(max_workers=max_workers, *args, **kwargs)
+
+        monkeypatch.setattr(ingest, "ThreadPoolExecutor", record)
+        index = ingest.discover_files(ic_tree)
+        ingest.read_all_files(index, jobs=10_000_000)
+        assert seen["max_workers"] == ingest.MAX_JOBS
+
+    @pytest.mark.parametrize("jobs", [0, -5])
+    def test_a_non_positive_worker_count_becomes_one(self, ic_tree, jobs):
+        index = ingest.discover_files(ic_tree)
+        assert set(ingest.read_all_files(index, jobs=jobs)) == set(index.paths)
+
+
 class TestLayoutChecks:
     def test_accepts_a_conforming_tree(self, ic_tree):
         ingest.check_paths_follow_the_layout(ingest.discover_files(ic_tree))
@@ -613,6 +741,41 @@ class TestLayoutChecks:
         with pytest.raises(ingest.IngestError, match="same \\(site, member\\) cell"):
             ingest.check_no_duplicate_site_member_pairs(index)
 
+    @pytest.mark.parametrize("kind", ["directory", "dangling_symlink", "leading_zero"])
+    def test_debris_named_like_a_file_is_not_a_duplicate(
+        self, ic_tree, write_ic_file, kind
+    ):
+        """Discovery ignores these, so the duplicate check must ignore them too.
+
+        Otherwise a stray directory or broken link across 8000 site
+        directories aborts the whole ingest naming a conflict that does not
+        exist.
+        """
+        write_ic_file(ic_tree / "27" / "IC_site_27_3.nc")
+        target = ic_tree / "27" / "IC_site_1_3.nc"
+        if kind == "directory":
+            target.mkdir()
+        elif kind == "dangling_symlink":
+            target.symlink_to(ic_tree / "27" / "does_not_exist.nc")
+        else:
+            write_ic_file(ic_tree / "27" / "IC_site_1_03.nc")
+        index = ingest.discover_files(ic_tree)
+        ingest.check_no_duplicate_site_member_pairs(index)
+        ingest.check_paths_follow_the_layout(index)
+
+    def test_rejects_a_member_index_beyond_the_axis_dtype(
+        self, ic_tree, write_ic_file
+    ):
+        """A larger number would abort with a bare OverflowError from the cast."""
+        write_ic_file(ic_tree / "1" / "IC_site_1_40000.nc")
+        index = ingest.discover_files(ic_tree)
+        with pytest.raises(ingest.IngestError, match="exceed 32767"):
+            ingest.check_member_indices_are_representable(index)
+
+    def test_accepts_a_member_index_at_the_axis_limit(self, ic_tree):
+        index = ingest.discover_files(ic_tree)
+        ingest.check_member_indices_are_representable(index)
+
     def test_rejects_a_site_absent_from_the_site_table(self, tmp_path, site_table):
         """The identifiers are a shared key; a tree that disagrees is an error."""
         root = _build_tree(tmp_path / "ic", [(1, 1), (9999, 1)])
@@ -643,7 +806,7 @@ class TestCoverageChecks:
     ):
         """The development checkout's case: two sites of the pool's many."""
         index = ingest.discover_files(ic_tree)
-        with pytest.raises(ingest.IngestError, match="have no directory under"):
+        with pytest.raises(ingest.IngestError, match="have no initial-condition file"):
             ingest.check_every_pool_site_has_a_directory(
                 index, site_table, allow_gaps=False
             )
@@ -763,6 +926,21 @@ class TestBuildGrids:
         absent = grids.site.tolist().index(5)
         assert np.all(np.isnan(grids.values[IC_VARIABLES[0]][:, absent]))
         assert not grids.ic_present[:, absent].any()
+
+    def test_joins_lon_and_lat_by_value_from_the_site_table(self, built, site_table):
+        """Not just presence: the values, in order, and not transposed.
+
+        Joining the site table is the only reason ``build_grids`` takes it, and
+        the plotting layer maps every site through these two coordinates, so a
+        silent swap would put the whole pool in the wrong hemisphere.
+        """
+        _, _, grids, _ = built
+        assert grids.lon.tolist() == site_table["lon"].tolist()
+        assert grids.lat.tolist() == site_table["lat"].tolist()
+        # The two columns are not interchangeable: latitudes are in [-90, 90]
+        # and these longitudes are not, so a swap cannot pass unnoticed.
+        assert np.all(np.abs(grids.lat) <= 90)
+        assert np.any(np.abs(grids.lon) > 90)
 
     def test_applies_the_rename_from_the_library_mapping(self, built):
         _, _, grids, _ = built
@@ -938,14 +1116,92 @@ class TestBuildDataset:
         dataset, _, _, _ = built
         assert dataset.attrs["coverage"] == "gaps"
 
+    def test_the_wood_comparison_is_bitwise_not_within_a_tolerance(
+        self, tmp_path, site_table
+    ):
+        """A tolerance would decide the question the count exists to answer."""
+        root = tmp_path / "ic"
+        _write_ic_file(
+            root / "1" / "IC_site_1_1.nc",
+            values={
+                "AbvGrndWood": 1.0,
+                "wood_carbon_content": 1.0 + 1e-15,
+                "soil_organic_carbon_content": 3.0,
+            },
+        )
+        index = ingest.discover_files(root)
+        contents = ingest.read_all_files(index, jobs=1)
+        grids = ingest.build_grids(contents, index, site_table)
+        dataset = ingest.build_dataset(grids, index, allow_gaps=True)
+        # np.isclose would call these equal; bitwise does not.
+        assert np.isclose(1.0, 1.0 + 1e-15)
+        assert ingest._wood_variables_disagreeing(dataset) == 1
+
+    def test_the_wood_comparison_counts_a_fill_against_a_real_value(
+        self, tmp_path, site_table
+    ):
+        """A cell where one is an explicit fill and the other is not disagrees.
+
+        Comparing on finiteness dropped exactly these cells, so the count
+        under-reported the disagreements it exists to measure.
+        """
+        root = tmp_path / "ic"
+        _write_ic_file(
+            root / "1" / "IC_site_1_1.nc",
+            values={
+                "AbvGrndWood": SOURCE_FILL_VALUE,
+                "wood_carbon_content": 0.6,
+                "soil_organic_carbon_content": 3.0,
+            },
+        )
+        _write_ic_file(
+            root / "1" / "IC_site_1_2.nc",
+            values={"AbvGrndWood": 0.7, "soil_organic_carbon_content": 3.0},
+        )
+        index = ingest.discover_files(root)
+        contents = ingest.read_all_files(index, jobs=1)
+        grids = ingest.build_grids(contents, index, site_table)
+        dataset = ingest.build_dataset(grids, index, allow_gaps=True)
+        # The fill-against-value cell counts; the absent-variable cell does not,
+        # since variable_present is False there and there is nothing to compare.
+        assert ingest._wood_variables_disagreeing(dataset) == 1
+
+    def test_counts_the_files_carrying_each_variable_and_its_fills(self, built):
+        """The report distinguishes carried from finite; the fills are the gap."""
+        dataset, contents, _, _ = built
+        report = ingest.describe_initial_conditions(dataset, contents)
+        assert "carried" in report
+
+    def test_counts_signatures_rather_than_overwriting_them(self, tmp_path):
+        """Two files with the same variable set count as two."""
+        root = tmp_path / "ic"
+        for member in (1, 2, 3):
+            _write_ic_file(root / "1" / f"IC_site_1_{member}.nc")
+        contents = ingest.read_all_files(ingest.discover_files(root), jobs=1)
+        signatures = ingest._variable_set_signatures(contents)
+        assert list(signatures.values()) == [3]
+
     def test_counts_non_positive_values_without_clamping_them(
         self, tmp_path, site_table
     ):
-        """A negative carbon stock is passed through and counted, per the drivers."""
+        """A negative carbon stock is passed through and counted, per the drivers.
+
+        Zero is included deliberately: it is the one value that distinguishes
+        "non-positive" from "negative", and a suite testing only ``-2.0`` reads
+        as coverage of a comparison it never exercises.
+        """
         root = tmp_path / "ic"
         _write_ic_file(
             root / "1" / "IC_site_1_1.nc",
             values={name: -2.0 for name in SOURCE_NAMES},
+        )
+        _write_ic_file(
+            root / "1" / "IC_site_1_2.nc",
+            values={name: 0.0 for name in SOURCE_NAMES},
+        )
+        _write_ic_file(
+            root / "1" / "IC_site_1_3.nc",
+            values={name: 1.5 for name in SOURCE_NAMES},
         )
         index = ingest.discover_files(root)
         grids = ingest.build_grids(
@@ -953,8 +1209,59 @@ class TestBuildDataset:
         )
         dataset = ingest.build_dataset(grids, index, allow_gaps=True)
         for name in IC_VARIABLES:
-            assert dataset[name].attrs["n_values_not_positive"] == 1
+            # the negative and the zero, not the 1.5
+            assert dataset[name].attrs["n_values_not_positive"] == 2
             assert dataset[name].sel(member=0, site=1).item() == -2.0
+            assert dataset[name].sel(member=1, site=1).item() == 0.0
+
+    def test_records_the_fill_count_as_a_product_attribute(
+        self, tmp_path, site_table
+    ):
+        """What a consumer reads is the attribute, not the intermediate grid."""
+        root = tmp_path / "ic"
+        values = {name: 1.0 for name in SOURCE_NAMES}
+        values["AbvGrndWood"] = SOURCE_FILL_VALUE
+        _write_ic_file(root / "1" / "IC_site_1_1.nc", values=values)
+        index = ingest.discover_files(root)
+        grids = ingest.build_grids(
+            ingest.read_all_files(index, jobs=1), index, site_table
+        )
+        dataset = ingest.build_dataset(grids, index, allow_gaps=True)
+        assert dataset["initial_aboveground_wood_carbon"].attrs["n_explicit_fills"] == 1
+        assert dataset["initial_wood_carbon"].attrs["n_explicit_fills"] == 0
+        # And it agrees with the indicator the data model promises.
+        present = dataset[VARIABLE_PRESENT].sel(
+            variable="initial_aboveground_wood_carbon"
+        )
+        indicator = present & dataset["initial_aboveground_wood_carbon"].isnull()
+        assert int(indicator.values.sum()) == 1
+
+    def test_records_the_descriptive_attributes_the_product_promises(self, built):
+        """The self-describing prose, not just its presence."""
+        dataset, _, _, index = built
+        assert dataset.attrs["title"].startswith("SIPNET initial-condition")
+        assert dataset.attrs["history"] == "scripts/ingest_ic.py"
+        assert dataset.attrs["source_root"] == str(index.root)
+        assert dataset.attrs["source_layout"] == "<site>/IC_site_<site>_<member>.nc"
+        assert dataset.attrs["source_fill_value"] == SOURCE_FILL_VALUE
+        assert dataset.attrs["n_sites"] == dataset.sizes["site"]
+        assert dataset.attrs["n_members"] == dataset.sizes["member"]
+        assert "issue #3" in dataset.attrs["time_note"]
+        assert SOURCE_FILL_VALUE == -999.0
+        assert str(SOURCE_FILL_VALUE) in dataset[VARIABLE_PRESENT].attrs["comment"]
+        assert "NaN where this is False" in dataset[IC_PRESENT].attrs["comment"]
+
+    def test_records_a_coverage_note_only_when_there_are_gaps(
+        self, tmp_path, site_table, built
+    ):
+        dataset, _, _, _ = built
+        assert "allow-gaps" in dataset.attrs["coverage_note"]
+        table = site_table[site_table["site_id"].isin([1, 27])].reset_index(drop=True)
+        root = _build_tree(tmp_path / "full", [(1, 1), (1, 2), (27, 1), (27, 2)])
+        index = ingest.discover_files(root)
+        grids = ingest.build_grids(ingest.read_all_files(index, jobs=1), index, table)
+        complete = ingest.build_dataset(grids, index, allow_gaps=False)
+        assert "coverage_note" not in complete.attrs
 
 
 # ── writing and the round trip ────────────────────────────────────────────────
@@ -998,11 +1305,112 @@ class TestWriteDataset:
                 assert dict(back[name].attrs) == dict(dataset[name].attrs)
             assert dict(back.attrs) == dict(dataset.attrs)
 
+    def test_the_round_trip_check_catches_a_value_that_drifted(self, tmp_path, built):
+        """The writer/schema drift guard, actually driven.
+
+        Every case here passed with ``check_round_trip`` neutered, because the
+        only test touching it replaced it with a stub. These call it on a
+        dataset that genuinely disagrees with the file.
+        """
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        ingest.write_dataset(dataset, out)
+        drifted = dataset.copy(deep=True)
+        drifted[IC_VARIABLES[0]].values[0, 0] = 12345.0
+        with pytest.raises(ingest.IngestError, match="does not read back"):
+            ingest.check_round_trip(drifted, out)
+
+    def test_the_round_trip_check_catches_a_changed_variable_attribute(
+        self, tmp_path, built
+    ):
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        ingest.write_dataset(dataset, out)
+        drifted = dataset.copy(deep=True)
+        drifted[IC_VARIABLES[0]].attrs["units"] = "Mg C ha-1"
+        with pytest.raises(ingest.IngestError, match="attributes changed"):
+            ingest.check_round_trip(drifted, out)
+
+    def test_the_round_trip_check_catches_a_changed_dataset_attribute(
+        self, tmp_path, built
+    ):
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        ingest.write_dataset(dataset, out)
+        drifted = dataset.copy(deep=True)
+        drifted.attrs["history"] = "something else"
+        with pytest.raises(ingest.IngestError, match="dataset attributes changed"):
+            ingest.check_round_trip(drifted, out)
+
+    def test_the_round_trip_check_catches_a_changed_dtype(self, tmp_path, built):
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        ingest.write_dataset(dataset, out)
+        drifted = dataset.copy(deep=True)
+        drifted[IC_VARIABLES[0]] = drifted[IC_VARIABLES[0]].astype(np.float32)
+        with pytest.raises(ingest.IngestError, match="read back as"):
+            ingest.check_round_trip(drifted, out)
+
+    def test_the_round_trip_check_catches_a_changed_coordinate(
+        self, tmp_path, built
+    ):
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        ingest.write_dataset(dataset, out)
+        drifted = dataset.copy(deep=True)
+        drifted = drifted.assign_coords(lon=("site", drifted["lon"].values + 1.0))
+        with pytest.raises(ingest.IngestError, match="does not round-trip"):
+            ingest.check_round_trip(drifted, out)
+
+    def test_the_round_trip_check_rejects_a_product_the_loader_refuses(
+        self, tmp_path, built
+    ):
+        """It goes through the library loader, so the loader's checks apply.
+
+        Swapping in a parallel ``xr.open_dataset`` passed the whole suite; this
+        is what makes the documented convention -- the check calls the library
+        loader, never a parallel reader -- observable.
+        """
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        dataset.drop_vars(IC_PRESENT).to_netcdf(out, engine="h5netcdf")
+        with pytest.raises(ValueError, match="data variables are"):
+            ingest.check_round_trip(dataset, out)
+
     def test_creates_the_output_directory(self, tmp_path, built):
         dataset, _, _, _ = built
         out = tmp_path / "deep" / "nested" / "ic.nc"
         ingest.write_dataset(dataset, out)
         assert out.is_file()
+
+
+class TestNetcdfEncoding:
+    def test_floats_get_a_nan_fill_and_the_companions_do_not(self):
+        """A boolean array has no missing state; giving it a fill invents one."""
+        encoding = ingest.netcdf_encoding()
+        for name in IC_VARIABLES:
+            assert np.isnan(encoding[name]["_FillValue"])
+        for name in (IC_PRESENT, VARIABLE_PRESENT):
+            assert "_FillValue" not in encoding[name]
+
+    def test_every_array_is_compressed(self):
+        encoding = ingest.netcdf_encoding()
+        assert set(encoding) == set(IC_VARIABLES) | {IC_PRESENT, VARIABLE_PRESENT}
+        for settings in encoding.values():
+            assert settings["zlib"] is True
+            assert settings["complevel"] == 4
+
+    def test_the_written_file_carries_that_encoding(self, tmp_path, built):
+        import h5py
+
+        dataset, _, _, _ = built
+        out = tmp_path / "ic.nc"
+        ingest.write_dataset(dataset, out)
+        with h5py.File(out, "r") as handle:
+            for name in IC_VARIABLES:
+                assert handle[name].compression == "gzip"
+            for name in (IC_PRESENT, VARIABLE_PRESENT):
+                assert handle[name].compression == "gzip"
 
 
 # ── load_initial_conditions ───────────────────────────────────────────────────
@@ -1131,6 +1539,119 @@ class TestLoadInitialConditions:
         with pytest.raises(ValueError, match="member_source is"):
             load_initial_conditions(product)
 
+    @pytest.mark.parametrize(
+        "coord,dtype", [("member", np.int32), ("site", np.int64)]
+    )
+    def test_rejects_a_wrong_coordinate_dtype(self, product, coord, dtype):
+        """The axes' dtypes are part of the schema, not an accident of writing."""
+        _rewrite(product, lambda ds: ds.assign_coords(
+            {coord: ds[coord].values.astype(dtype)}
+        ))
+        with pytest.raises(ValueError, match="expected int"):
+            load_initial_conditions(product)
+
+    def test_rejects_a_non_bool_presence_companion(self, product):
+        def demote(ds):
+            ds[IC_PRESENT] = ds[IC_PRESENT].astype(np.int8)
+            return ds
+
+        _rewrite(product, demote)
+        with pytest.raises(ValueError, match="expected bool"):
+            load_initial_conditions(product)
+
+    def test_rejects_wrong_presence_companion_dims(self, product):
+        def reshape(ds):
+            values = ds[VARIABLE_PRESENT].values[:, :, 0]
+            ds[VARIABLE_PRESENT] = xr.DataArray(values, dims=("member", "site"))
+            return ds
+
+        _rewrite(product, reshape)
+        with pytest.raises(ValueError, match="expected \\('member', 'site', 'variable'\\)"):
+            load_initial_conditions(product)
+
+    def test_rejects_a_missing_coordinate(self, product):
+        _rewrite(product, lambda ds: ds.drop_vars("lon"))
+        with pytest.raises(ValueError, match="coordinate 'lon' is missing"):
+            load_initial_conditions(product)
+
+    def test_rejects_lon_that_is_not_on_site(self, product):
+        def promote(ds):
+            return ds.assign_coords(lon=float(ds["lon"].values[0]))
+
+        _rewrite(product, promote)
+        with pytest.raises(ValueError, match="expected \\('site',\\)"):
+            load_initial_conditions(product)
+
+    def test_rejects_a_non_ascending_source_member_index(self, product):
+        def reverse(ds):
+            return ds.assign_coords(
+                source_member_index=("member", ds["source_member_index"].values[::-1])
+            )
+
+        _rewrite(product, reverse)
+        with pytest.raises(ValueError, match="not strictly ascending"):
+            load_initial_conditions(product)
+
+    def test_rejects_an_invalid_coverage_value(self, product):
+        def relabel(ds):
+            ds.attrs = {**ds.attrs, "coverage": "partial"}
+            return ds
+
+        _rewrite(product, relabel)
+        with pytest.raises(ValueError, match="coverage is"):
+            load_initial_conditions(product)
+
+    def test_rejects_a_units_string_that_is_not_the_registered_one(self, product):
+        """The one thing standing between the product and a silent rescale."""
+        def rescale(ds):
+            ds[IC_VARIABLES[0]].attrs = {
+                **ds[IC_VARIABLES[0]].attrs,
+                "units": "Mg C ha-1",
+            }
+            return ds
+
+        _rewrite(product, rescale)
+        with pytest.raises(ValueError, match="records units"):
+            load_initial_conditions(product)
+
+    def test_rejects_a_missing_related_constraint_attribute(self, product):
+        def strip(ds):
+            attrs = dict(ds[IC_VARIABLES[0]].attrs)
+            attrs.pop("related_constraint_unit_factor")
+            ds[IC_VARIABLES[0]].attrs = attrs
+            return ds
+
+        _rewrite(product, strip)
+        with pytest.raises(ValueError, match="missing attributes"):
+            load_initial_conditions(product)
+
+    def test_rejects_an_infinity_where_variable_present_is_false(self, product):
+        """An inf is not NaN, so an isfinite test would let it through.
+
+        A consumer's nanmean over members would then propagate it rather than
+        skipping the cell.
+        """
+        def poison(ds):
+            ds[IC_VARIABLES[0]].values[:] = np.inf
+            return ds
+
+        _rewrite(product, poison)
+        with pytest.raises(ValueError, match="is not NaN where"):
+            load_initial_conditions(product)
+
+    def test_rejects_a_fill_count_that_disagrees_with_the_arrays(self, product):
+        """The count and the indicator are two statements of the same fact."""
+        def miscount(ds):
+            ds[IC_VARIABLES[0]].attrs = {
+                **ds[IC_VARIABLES[0]].attrs,
+                "n_explicit_fills": 7,
+            }
+            return ds
+
+        _rewrite(product, miscount)
+        with pytest.raises(ValueError, match="n_explicit_fills"):
+            load_initial_conditions(product)
+
     def test_rejects_a_variable_present_where_no_file_was(self, product):
         """``variable_present`` cannot be ``True`` where ``ic_present`` is ``False``."""
         def lie(ds):
@@ -1148,7 +1669,7 @@ class TestLoadInitialConditions:
             return ds
 
         _rewrite(product, lie)
-        with pytest.raises(ValueError, match="is finite where"):
+        with pytest.raises(ValueError, match="is not NaN where"):
             load_initial_conditions(product)
 
 
@@ -1169,13 +1690,37 @@ class TestInitialConditionFields:
             assert field.dims == ("member", "site")
             assert field["lon"].dims == ("site",)
             assert field["lat"].dims == ("site",)
-            assert "variable" not in field.coords
 
     def test_each_field_carries_its_own_units_and_long_name(self, built):
         dataset, _, _, _ = built
         for name, field in initial_condition_fields(dataset).items():
             assert field.attrs["units"] == IC_VARIABLE_ATTRS[name]["units"]
             assert field.attrs["long_name"] == IC_VARIABLE_ATTRS[name]["long_name"]
+
+    def test_attaches_the_registered_attributes_to_a_bare_dataset(self, built):
+        """The merge is the point, so feed it a Dataset without the attributes.
+
+        Every other case passes a Dataset ``annotate_dataset`` already
+        annotated, where the merge is redundant and removing it changes
+        nothing.
+        """
+        dataset, _, _, _ = built
+        bare = dataset.copy(deep=True)
+        for name in IC_VARIABLES:
+            bare[name].attrs = {}
+        for name, field in initial_condition_fields(bare).items():
+            assert field.attrs["units"] == IC_VARIABLE_ATTRS[name]["units"]
+            assert field.attrs["long_name"] == IC_VARIABLE_ATTRS[name]["long_name"]
+            assert field.attrs["units_status"] == UNITS_STATUS
+            assert field.attrs["source_name"] == IC_VARIABLE_ATTRS[name]["source_name"]
+
+    def test_the_products_own_attributes_win_over_the_registered_ones(self, built):
+        """The runtime counts are on the product, not in the registry."""
+        dataset, _, _, _ = built
+        fields = initial_condition_fields(dataset)
+        for name, field in fields.items():
+            assert "n_explicit_fills" in field.attrs
+            assert "n_values_not_positive" in field.attrs
 
     def test_the_presence_companions_are_not_fields(self, built):
         """They are neither canonical nor per-variable, so they are left out."""
@@ -1446,6 +1991,44 @@ class TestRealFiles:
         contents = read_ic_file(ic_file(REAL_ROOT, *pair))
         assert set(contents.values).isdisjoint(UNSPECIFIED_VARIABLES)
 
+    @pytest.mark.parametrize("pair", real_pairs())
+    def test_the_source_variable_order_matches_the_schema(self, pair):
+        """``SOURCE_VARIABLE_NAMES``' order is the files' order, not a choice.
+
+        ``variable_present`` is indexed by it, so a reordering would attribute
+        one variable's presence to another. Read out of a real file rather than
+        asserted against the definition.
+        """
+        with netcdf_file(str(ic_file(REAL_ROOT, *pair)), "r", mmap=False) as raw:
+            order = [name for name in raw.variables if name != "time"]
+        assert order == list(SOURCE_VARIABLE_NAMES)
+
+    @pytest.mark.parametrize("pair", real_pairs())
+    def test_every_source_variable_is_float64(self, pair):
+        with netcdf_file(str(ic_file(REAL_ROOT, *pair)), "r", mmap=False) as raw:
+            for name, variable in raw.variables.items():
+                assert variable.data.dtype == np.dtype(">f8"), name
+
+    @pytest.mark.parametrize("pair", real_pairs())
+    def test_no_local_file_carries_an_unhandled_cf_attribute(self, pair):
+        """So refusing them costs nothing on the real data."""
+        with netcdf_file(str(ic_file(REAL_ROOT, *pair)), "r", mmap=False) as raw:
+            for name, variable in raw.variables.items():
+                if name == "time":
+                    continue
+                assert set(variable._attributes) <= {
+                    "units",
+                    "long_name",
+                    "_FillValue",
+                }
+
+    @pytest.mark.parametrize("pair", real_pairs())
+    def test_every_local_file_carries_all_three_variables(self, pair):
+        """Stronger than a subset assertion, and it is what the README claims."""
+        contents = read_ic_file(ic_file(REAL_ROOT, *pair))
+        assert set(contents.values) == set(SOURCE_VARIABLE_NAMES)
+        assert contents.units == dict.fromkeys(SOURCE_VARIABLE_NAMES, "kg C m-2")
+
     @pytest.mark.slow
     def test_the_local_tree_ingests_with_allow_gaps(self, tmp_path):
         """The real files on the full pool axis, with ``coverage`` reading gaps.
@@ -1470,3 +2053,9 @@ class TestRealFiles:
                         member=index, site=site
                     ).item()
                     assert stored == value
+            # And the coordinates joined from the real 8000-site table, by
+            # value: a lon/lat swap passed every other case in this suite.
+            table = load_sites()
+            assert dataset["lon"].values.tolist() == table["lon"].tolist()
+            assert dataset["lat"].values.tolist() == table["lat"].tolist()
+            assert np.all(np.abs(dataset["lat"].values) <= 90)

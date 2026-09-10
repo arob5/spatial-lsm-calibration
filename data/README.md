@@ -418,7 +418,9 @@ that are themselves calibrated, so the mapping depends on the current parameter
 vector and belongs to the experiment layer rather than to ingest. From
 `sipnet.c:1885-1924`: `plantWoodC = (1 - coarseRootFrac - fineRootFrac) *
 plantWoodInit`, `plantLeafC = laiInit * leafCSpWt`, `soilWater = soilWFracInit *
-soilWHC`, and `soilC = soilInit`. Only the last is a plain factor of 1000.
+soilWHC`, and `soilC = soilInit`. Only the last is a plain unit
+conversion: that mapping is the identity, and the factor of 1000 is kg C m-2
+to the g C m-2 that `sipnet/docs/parameters.md` documents for the parameter.
 `ingest_ic.py` therefore applies **no parameter mapping and no unit
 conversion**.
 
@@ -652,7 +654,7 @@ Formats are chosen according to the shape of each product.
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
 | `constraints_annual.nc` | netCDF | `(site, time, variable)` for the mean and the variance | 2.2 MB |
-| `ic.nc` | netCDF | `(member, site)` | 32 MB at 100 members |
+| `ic.nc` | netCDF | `(member, site)` | 22 MB at 100 members and 3 variables |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
 
@@ -845,10 +847,11 @@ Three points about the layout.
   present are 13.1 and 27.9 kg C m-2 against a `total_soil_carbon` constraint of
   74.3, and at site 27 the one member present is 55.7 against 42.2. Where a
   counterpart plausibly exists, the variable carries
-  `related_constraint_variable`, `related_constraint_unit_factor` and a
-  `related_constraint_status` of `unconfirmed` (wood) or `contradicted` (soil),
+  `related_constraint_variable`, `related_constraint_unit_factor`, a
+  `related_constraint_status` of `unconfirmed` (wood) or `contradicted`
+  (soil), and a `related_constraint_note` saying what is and is not known,
   so the factor lives in the product rather than in a reader's head. Neither
-  status is a licence to convert.
+  status is a license to convert.
 - **A missing `(site, member)` file is an error** unless `ingest_ic.py` is given
   `--allow-gaps`, because a `NaN` member would propagate silently through any
   statistic over members. With the flag the gaps are reported, filled with
@@ -876,8 +879,8 @@ The following conventions apply to every product.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
-> known to derive from a driver ensemble. Every product records a
-> `member_source` attribute — `"met"`, `"ic"` — and states in
+> known to derive from a driver ensemble. Every product that has a
+> `member` dimension records a `member_source` attribute — `"met"`, `"ic"` — and states in
 > `member_correspondence` that no cross-source pairing is established, because
 > xarray aligns integer member labels silently.
 
