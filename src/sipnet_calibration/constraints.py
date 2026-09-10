@@ -415,7 +415,7 @@ def load_constraints(path: Path | str | None = None) -> xr.Dataset:
 
     Notes
     -----
-    ``decode_times`` is left on: unlike the initial-condition files, whose units
+    ``decode_times`` is left on: unlike the initial condition files, whose units
     attribute is an unsubstituted template, this file's time encoding is written
     by this project and is decodable.
     """

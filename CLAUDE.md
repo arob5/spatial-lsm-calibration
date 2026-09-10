@@ -269,9 +269,9 @@ per package; the path above needs nothing.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py` and `drivers.py` are implemented, `obs_ops.py` has
-`sipnet_time_index`, and the other modules carry the contract each is to
-satisfy.
+`constraints.py`, `drivers.py` and `initial_conditions.py` are implemented,
+`obs_ops.py` has `sipnet_time_index`, and the other modules carry the
+contract each is to satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -282,6 +282,8 @@ src/sipnet_calibration/
                           # constraint_fields() -> canonical per-variable view
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
+  initial_conditions.py   # IC schema, read_ic_file(), load_initial_conditions()
+                          # over processed/ic.nc, initial_condition_fields()
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
                           # shared with the likelihood

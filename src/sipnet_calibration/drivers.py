@@ -179,7 +179,7 @@ significant figures in some columns, which float32 does not hold.
 **Member indices.** ``member`` is 0-based to match every other product;
 ``source_member_index`` keeps the 1-based file index beside it so the mapping
 to a directory is never guesswork. Whether driver member *i* corresponds to
-initial-condition member *i* is not established (open question 12 in
+initial condition member *i* is not established (open question 12 in
 ``data/README.md``), and ``member_correspondence`` says so.
 
 Usage
@@ -967,7 +967,7 @@ def _assemble(
         "member_source": MEMBER_SOURCE,
         "member_correspondence": (
             "Not established. Whether driver member i corresponds to "
-            "initial-condition or NEE member i is open question 12 in "
+            "initial condition or NEE member i is open question 12 in "
             "data/README.md; nothing here assumes it does."
         ),
         "n_sites": int(sites.size),

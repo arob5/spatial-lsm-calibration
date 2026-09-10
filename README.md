@@ -164,7 +164,7 @@ To execute headlessly:
 
 Data and environment problems currently tracked:
 
-- [#3](https://github.com/arob5/spatial-lsm-calibration/issues/3) — the initial-condition
+- [#3](https://github.com/arob5/spatial-lsm-calibration/issues/3) — the initial condition
   netCDFs carry an unsubstituted `[year]` template in their time units, so they
   cannot be opened with CF decoding enabled. Adapters must use
   `decode_times=False`.
