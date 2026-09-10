@@ -103,15 +103,16 @@ Once the work is pushed to `main`, upgrade as above and drop the overlay.
 
 ## Running the data processing
 
-A one-time step per checkout. Ingest converts `data/raw/` into
-`data/processed/`, whose format is the canonical format the rest of the
-project reads.
-
-It requires the raw data to be present under `data/raw/` in the layout
-[`data/README.md`](data/README.md) specifies. The data for this project is
-housed on Boston University's Shared Computing Cluster (SCC). A fresh clone
-has almost none of it — only the site shapefile and the Ameriflux identifier map
-are tracked. Step 1 below will run regardless of the data being present.
+Since the raw data inputs come from various sources with varying conventions, this 
+project writes many of them to a processed form that is used throughout all further
+analyses. The raw-to-processed conversion need only occur once and then the saved
+processed data will be used from that point on. This requires the raw data to be 
+present under `data/raw/` in the layout [`data/README.md`](data/README.md) specifies.
+The data for this project is housed on Boston University's Shared Computing Cluster (SCC). 
+A fresh git clone will have almost none of this data. Also note that raw input data requiring
+lots of storage (e.g., meteorological drivers) is not re-written to a processed form in order
+to save space; rather, helper functions are defined to query the raw data using this project's 
+conventions.
 
 The below steps must be run in order. A top-level helper will eventually replace 
 this sequence of commands with a single one.
