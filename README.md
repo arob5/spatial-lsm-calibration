@@ -33,33 +33,23 @@ floor, so use the pin.
 uv sync
 ```
 
-**3. Activate it, and stay in it for everything below.**
+**3. Activate the virtual environment.**
 
 ```bash
 source .venv/bin/activate
 ```
 
-Scripts, tests and notebooks alike import `sipnet_calibration` and its
-dependencies from `.venv`, so a system `python` fails on the first import rather
-than doing something subtly different; `which python` should print a path ending
-in `.venv/bin/python`. `uv run <command>` is the equivalent for a one-off
-without activating. Notebooks are the one case needing more than this; see
-[Running notebooks](#running-notebooks).
+All code should be run from within this virtual environment. Running 
+`which python` should print a path ending in `.venv/bin/python`. Alternatively,
+`uv run <command>` can be utilized for a one-off command without activating the venv.
+See [Running notebooks](#running-notebooks) for more details regarding running Jupyter
+notebooks.
 
 **4. Check the environment works.**
 
 ```bash
 uv run pytest
 ```
-
-Two further packages are related but **not currently dependencies**, and nothing
-above installs them:
-
-- **`pyEKI`** — the ensemble-Kalman inference substrate (structured linear
-  operators, Gaussian conditioning, EKI). Developed independently; not yet wired
-  into this repo's dependency list.
-- **`ProbPipe`** — a planned migration target for inference, removed as a
-  dependency on 2026-08-20 because its API is in flux.
 
 ### Known setup caveat
 
