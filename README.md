@@ -18,7 +18,6 @@ This is a research codebase, not a library.
 - [Scope of the problem](#scope-of-the-problem)
 - [Layout](#layout)
 - [Conventions](#conventions)
-- [Open issues](#open-issues)
 
 ## Quick start
 
