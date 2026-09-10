@@ -666,7 +666,7 @@ def annotate_dataset(
         "comment": "The handed-down 1-8000 identifier; never renumbered.",
     }
     dataset["variable"].attrs = {
-        "long_name": "Initial-condition variable",
+        "long_name": "Initial condition variable",
         "comment": (
             "Processed names, indexing variable_present only. Each variable's "
             "source name is the source_name attribute of the variable itself."

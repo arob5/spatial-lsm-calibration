@@ -401,7 +401,7 @@ IC_VARIABLE_ATTRS = {
     },
 }
 
-#: Initial-condition variables that have a counterpart among the annual
+#: Initial condition variables that have a counterpart among the annual
 #: constraints, the factor from this product's unit to that one's, and how well
 #: the correspondence is established.
 #:

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Survey the initial-condition netCDF files.
+"""Survey the initial condition netCDF files.
 
 Overview
 --------
 Report the variable sets, ensemble shape and metadata of every
-initial-condition file under a root directory. The files are not all alike --
+initial condition file under a root directory. The files are not all alike --
 some carry ``leaf_carbon_content`` and ``SoilMoistFrac`` beyond the three
 variables seen so far -- and ``scripts/ingest_ic.py`` has to know the full set
 of combinations before it can build a ``(member, site)`` array. That question
@@ -398,7 +398,7 @@ def describe_ensemble(totals: SurveyTotals) -> dict[str, object]:
 
 @dataclass
 class FileFacts:
-    """What the survey extracts from one initial-condition file."""
+    """What the survey extracts from one initial condition file."""
 
     site: int
     member: int

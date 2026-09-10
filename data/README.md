@@ -961,7 +961,7 @@ unsubstituted, so a fix upstream is noticed rather than silently accepted. What
 remains for the producer is what instant the initial state describes. Tracked as
 [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
-**6. Initial-condition variable sets.** *The ensemble size is resolved: 100
+**6. Initial condition variable sets.** *The ensemble size is resolved: 100
 members, as Note 6 records.* What remains open is the variable set, which is
 reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
 appearing in some. Three files are available locally — site 1 members 1 and 2,
