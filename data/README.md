@@ -381,34 +381,65 @@ NALCR guide describes the forcing differently (Note 18).
 
 ### Initial conditions
 
-**Format.** One netCDF file per site and ensemble member, holding scalar initial
-values for the model's carbon pools. Each variable has a single `time` element.
-The example file contains the following.
+**Format.** One netCDF-3 classic file per site and ensemble member, holding
+scalar initial values for the model's carbon pools. Each data variable is a
+`float64` on a single length-1 `time` dimension, which is the file's *unlimited
+record* dimension, and declares `_FillValue = -999.0` and a `units` attribute.
+There are no global attributes. The files available carry the following.
 
-| Variable | Units | Long name | Example value |
-|---|---|---|---|
-| `AbvGrndWood` | kg C m-2 | Above ground woody biomass | 0.05823572 |
-| `wood_carbon_content` | kg C m-2 | Wood Carbon Content | 0.05823572 |
-| `soil_organic_carbon_content` | kg C m-2 | Soil Organic Carbon Content by Layer | 13.08545431 |
-| `time` | see Note 5 | Time middle averaging period | 1.0 |
+| Variable | Units | Long name |
+|---|---|---|
+| `AbvGrndWood` | kg C m-2 | Above ground woody biomass |
+| `wood_carbon_content` | kg C m-2 | Wood Carbon Content |
+| `soil_organic_carbon_content` | kg C m-2 | Soil Organic Carbon Content by Layer |
+| `time` | see Note 5 | Time middle averaging period |
 
 **Interpretation.** These are static initial conditions, so the length-1 `time`
-dimension carries no information and can be dropped on read. In the example file
-`AbvGrndWood` and `wood_carbon_content` hold the same value. Files for other
-sites are reported to include `leaf_carbon_content` and `SoilMoistFrac` as well,
-so ingest should treat the variable set as varying between files rather than
-fixed.
+dimension carries no information and is dropped on read. `AbvGrndWood` and
+`wood_carbon_content` are **bitwise** identical in every file available, across
+two sites and three members; that is evidence that one is a copy of the other
+and not proof of it, so both are carried and the count of disagreeing cells is
+reported at every ingest. Files for other sites are reported to carry
+`leaf_carbon_content` and `SoilMoistFrac` as well, but no such file is
+available, so their units are unknown and they are deliberately **not** part of
+the schema; see Note 6 and open question 6.
+
+The units are the `units` attribute the files themselves carry, asserted
+identical across every file read and nothing more than that, which is what the
+product's `units_status = "source_attribute"` records. Two of them sit close to
+a constraint variable without being established to be the same quantity, which
+is why the processed names do not collide; see
+[Processed format](#processed-format).
+
+**These files are not a SIPNET input format.** SIPNET has no netCDF reader.
+Initial conditions reach it as *parameters* — `plantWoodInit`, `soilInit`,
+`laiInit`, `soilWFracInit` — and three of the four mappings involve parameters
+that are themselves calibrated, so the mapping depends on the current parameter
+vector and belongs to the experiment layer rather than to ingest. From
+`sipnet.c:1885-1924`: `plantWoodC = (1 - coarseRootFrac - fineRootFrac) *
+plantWoodInit`, `plantLeafC = laiInit * leafCSpWt`, `soilWater = soilWFracInit *
+soilWHC`, and `soilC = soilInit`. Only the last is a plain factor of 1000.
+`ingest_ic.py` therefore applies **no parameter mapping and no unit
+conversion**.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
-> `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse.
-> These files must be opened with CF time decoding disabled, for example
-> `xarray.open_dataset(path, decode_times=False)`.
+> `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
+> and the `long_name` is `Time middle averaging period`; both match PEcAn's
+> `standard_vars.csv` byte for byte. These files must be opened with CF time
+> decoding disabled, for example
+> `xarray.open_dataset(path, decode_times=False, engine="scipy")`. The engine
+> matters as much as the flag: the files are netCDF-3 classic, so `h5netcdf` —
+> the engine this project writes its own products with — cannot open them at
+> all. Tracked as
+> [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
 > **Note 6.** The initial-condition ensemble has **100 members**, the same size
 > as the published reanalysis output. Confirmed for the project rather than
 > inferred from the files: this checkout holds three of the 800,000, and the
 > highest member index among them is 94. Which variables appear in which files
-> is still not established; that can only be answered where the files are.
+> is still not established; that can only be answered where the files are, and
+> until it is, a file carrying a variable outside the schema is a **loud
+> failure** rather than a silent extra column. See open question 6.
 
 **Source.** Initial condition ensembles prepared for the 8000-site pool for the
 model runs underlying [NALCR]. The same files are used here. The published
@@ -593,6 +624,11 @@ Conversions applied during ingest rather than downstream:
 - **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
   unit used throughout, so that nothing later has to reconcile units, and the
   redundant `ens_mean` column is dropped.
+- **Initial conditions.** The length-1 `time` dimension is dropped and what it
+  claimed is recorded in the product's attributes. An explicit `-999.0` is
+  masked to `NaN` and counted. **No parameter mapping and no unit conversion**;
+  see [Initial conditions](#initial-conditions) for why the mapping cannot live
+  here. Non-physical values are counted, not clamped, as for the drivers.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -602,9 +638,9 @@ Conversions applied during ingest rather than downstream:
 
 ## Processed format
 
-`ingest_sites.py` and `ingest_constraints.py` are written, and the driver
-reader in `sipnet_calibration.drivers` is implemented; the rest of this section
-records the intended output of scripts not yet written.
+`ingest_sites.py`, `ingest_constraints.py` and `ingest_ic.py` are written, and
+the driver reader in `sipnet_calibration.drivers` is implemented; the rest of
+this section records the intended output of scripts not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
 is chosen to load directly as such: an `xarray.DataArray` per variable, with
@@ -768,6 +804,57 @@ an error unless `allow_missing=True`, which fills it with `NaN` and adds a
 boolean `driver_present(member, site)`. The three local files are such a case:
 site 1 has members 1 and 2, site 27 has member 5.
 
+`ic.nc` carries the initial-condition ensemble on `(member, site)`, in the
+source's own units, read through
+`sipnet_calibration.initial_conditions.load_initial_conditions`:
+
+| Variable | Dims | Type | Description |
+|---|---|---|---|
+| `initial_aboveground_wood_carbon` | `(member, site)` | float64 | Source `AbvGrndWood`, kg C m-2 |
+| `initial_wood_carbon` | `(member, site)` | float64 | Source `wood_carbon_content`, kg C m-2 |
+| `initial_soil_organic_carbon` | `(member, site)` | float64 | Source `soil_organic_carbon_content`, kg C m-2 |
+| `ic_present` | `(member, site)` | bool | Whether a file existed for the pair |
+| `variable_present` | `(member, site, variable)` | bool | Whether that file carried the variable |
+
+`site` is the whole 1-8000 pool whether or not a file exists for it, matching
+`constraints_annual.nc`. `member` is the discovered ensemble, 0-based, with
+`source_member_index` on `member` carrying the source's 1-based file index —
+which matters because a partial tree is normal: the three local files give
+members 0, 1, 2 against source indices 1, 2 and 94. There is **no `time`
+dimension**; the source's degenerate one is dropped and what it claimed is kept
+in `source_time_units`, `source_time_long_name`, `source_time_value`,
+`time_status` and `time_note`. Nothing here is time-aware, so there is nothing
+to align against the annual constraint snapshots.
+
+Three points about the layout.
+
+- **Three kinds of absence, two presence arrays.** A `NaN` means the pair had no
+  file, or the file did not carry the variable, or the file carried an explicit
+  `-999.0`. `ic_present` and `variable_present` distinguish them, and
+  `variable_present & isnan(value)` **is** the explicit-fill indicator — an
+  identity the loader checks rather than merely asserting in prose. Both arrays
+  are written unconditionally, so no consumer branches on the product's shape.
+- **The processed names are namespaced with `initial_`, and nothing is
+  converted.** These are the starting state of a different analysis at an
+  instant nobody has established, not observations. `AbvGrndWood` names a
+  variable in *both* this source and the constraint files, in units that differ
+  by a factor of ten, and the `VARIABLES` registry holds one unit per processed
+  name — so sharing a name would force one of the two units to be wrong and
+  would assert an identity nobody has confirmed. For the soil variable there is
+  evidence *against* identity: at site 1 the two initial-condition members
+  present are 13.1 and 27.9 kg C m-2 against a `total_soil_carbon` constraint of
+  74.3, and at site 27 the one member present is 55.7 against 42.2. Where a
+  counterpart plausibly exists, the variable carries
+  `related_constraint_variable`, `related_constraint_unit_factor` and a
+  `related_constraint_status` of `unconfirmed` (wood) or `contradicted` (soil),
+  so the factor lives in the product rather than in a reader's head. Neither
+  status is a licence to convert.
+- **A missing `(site, member)` file is an error** unless `ingest_ic.py` is given
+  `--allow-gaps`, because a `NaN` member would propagate silently through any
+  statistic over members. With the flag the gaps are reported, filled with
+  `NaN`, recorded in `ic_present`, and `coverage` reads `"gaps"` rather than
+  `"complete"`.
+
 The following conventions apply to every product.
 
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
@@ -789,7 +876,10 @@ The following conventions apply to every product.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
-> known to derive from a driver ensemble.
+> known to derive from a driver ensemble. Every product records a
+> `member_source` attribute — `"met"`, `"ic"` — and states in
+> `member_correspondence` that no cross-source pairing is established, because
+> xarray aligns integer member labels silently.
 
 > **Note 13.** Whether the processed form should carry an additional
 > spatially-ordered site coordinate is undecided.
@@ -807,8 +897,13 @@ directories present and the initial-condition template
 present. Whether all 8000 site directories follow
 them has not been checked. The driver reader raises on any file it is asked
 for that departs from the template, and on a directory whose member disagrees
-with its file name; whether the 8000 x 10 set is complete can only be surveyed
-where the files are.
+with its file name. `ingest_ic.py` walks the initial-condition tree instead of
+being told what to expect, so it reports rather than assumes: a file whose
+embedded site disagrees with its directory is an error naming both numbers, a
+site directory the pool does not know about is an error, and an incomplete
+`(site, member)` rectangle stops the run unless `--allow-gaps` is passed.
+Whether either 8000-site set is complete can only be surveyed where the files
+are.
 
 **2. Meaning of the `cluster` and `landcover` fields.** Neither is documented in
 the sources available. The evidence that they define sampling strata is
@@ -849,7 +944,10 @@ remains open is member correspondence across sources, which is question 12.
 attribute is an unsubstituted template, so the intended reference year cannot be
 recovered from the file. This does not affect calibration, since the dimension is
 degenerate, but it does mean the files cannot be used for anything time-aware.
-Tracked as
+`ic.nc` drops the dimension and records the template verbatim rather than
+guessing a year, and `ingest_ic.py` asserts the template is still
+unsubstituted, so a fix upstream is noticed rather than silently accepted. What
+remains for the producer is what instant the initial state describes. Tracked as
 [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
 **6. Initial-condition variable sets.** *The ensemble size is resolved: 100
@@ -859,6 +957,25 @@ appearing in some. Three files are available locally — site 1 members 1 and 2,
 and site 27 member 94 — and none of the three carries either variable, so the
 full set of combinations is still unconfirmed, and can only be surveyed on the
 SCC, where the files are.
+
+`initial_conditions.py` therefore registers only the three variables that were
+inspected. The other two are listed in `UNSPECIFIED_VARIABLES` and are *not*
+part of the schema, because their units are unknown and registering them would
+mean inventing one. A file carrying either fails the read with a message naming
+this question, so a survey of the full ensemble stops with the evidence needed
+to specify them — the units and long names the files actually carry — rather
+than recording a guess. Closing this means adding them to
+`SOURCE_VARIABLE_NAMES` and `IC_VARIABLE_ATTRS` from that evidence.
+
+Two further questions for the producer follow from the same files. Is
+`wood_carbon_content` a distinct quantity from `AbvGrndWood`, or a duplicate?
+They are bitwise identical in all three files available, and SIPNET's
+`plantWoodInit` is above-ground *plus roots* while `AbvGrndWood` is above-ground
+only, so a wood pool including roots would be the more natural input. And is
+`soil_organic_carbon_content` the same quantity as the constraint files'
+`TotSoilCarb`? Both are declared kg C m-2, but the values do not correspond at
+the two sites that could be checked, and the long name says "by Layer", which
+raises whether any file carries a layer dimension.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217

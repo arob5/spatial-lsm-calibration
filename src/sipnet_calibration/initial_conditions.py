@@ -151,6 +151,12 @@ Functions
     Where the raw directory and the written product are expected to be, both
     honoring ``$SIPNET_CALIBRATION_DATA``.
 
+:func:`variable_attrs`, :func:`time_attrs`
+    The attribute sets the product carries, for one variable and for the
+    dropped ``time`` coordinate. Public because the writer is a separate
+    script: the attributes are schema, so the same code that the reader
+    validates against has to build them.
+
 Notes
 -----
 **Why a product and not a reader.** The drivers got a reader on two grounds and
@@ -268,6 +274,7 @@ Parse one raw file, with every per-file check applied::
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -303,6 +310,8 @@ __all__ = [
     "initial_condition_fields",
     "load_initial_conditions",
     "read_ic_file",
+    "time_attrs",
+    "variable_attrs",
 ]
 
 #: Source variable name -> processed variable name.
@@ -478,6 +487,7 @@ class IcFileContents:
     time_value: float
 
 
+
 def default_ic_root() -> Path:
     """Where the raw initial-condition directory is expected to be.
 
@@ -485,7 +495,7 @@ def default_ic_root() -> Path:
     set, and otherwise ``data/raw/initial_conditions`` under this checkout.
     Experiments name their paths in ``config.py``.
     """
-    raise NotImplementedError
+    return _data_root() / "raw" / "initial_conditions"
 
 
 def default_ic_path() -> Path:
@@ -494,7 +504,7 @@ def default_ic_path() -> Path:
     ``$SIPNET_CALIBRATION_DATA/processed/ic.nc`` when that variable is set, and
     otherwise the ``data/`` directory of this checkout.
     """
-    raise NotImplementedError
+    return _data_root() / "processed" / "ic.nc"
 
 
 def ic_file(root: Path | str, site: int, member: int) -> Path:
@@ -519,7 +529,18 @@ def ic_file(root: Path | str, site: int, member: int) -> Path:
     FileNotFoundError
         If the site's directory, or the file inside it, is absent.
     """
-    raise NotImplementedError
+    site, member = int(site), int(member)
+    directory = Path(root) / str(site)
+    if not directory.is_dir():
+        raise FileNotFoundError(
+            f"no initial-condition directory for site {site}: {directory}"
+        )
+    path = directory / IC_FILE_TEMPLATE.format(site=site, member=member)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no initial-condition file for site {site} member {member}: {path}"
+        )
+    return path
 
 
 def available_sites(root: Path | str) -> tuple[int, ...]:
@@ -540,7 +561,21 @@ def available_sites(root: Path | str) -> tuple[int, ...]:
         checkout. Whether the directory holds any file is
         :func:`available_members`' business.
     """
-    raise NotImplementedError
+    root = Path(root)
+    if not root.is_dir():
+        return ()
+    sites = []
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        # str.isdigit() accepts unicode digits that int() also accepts but
+        # that would not round-trip through the path template, so compare the
+        # canonical form instead.
+        if entry.name.isdigit() and str(int(entry.name)) == entry.name:
+            site = int(entry.name)
+            if site > 0:
+                sites.append(site)
+    return tuple(sorted(sites))
 
 
 def available_members(root: Path | str, site: int) -> tuple[int, ...]:
@@ -563,7 +598,16 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
         it is returned so that ``scripts/ingest_ic.py`` can report the
         mismatch rather than silently skipping a file.
     """
-    raise NotImplementedError
+    directory = Path(root) / str(int(site))
+    if not directory.is_dir():
+        return ()
+    members = []
+    for path in directory.glob(IC_FILE_GLOB):
+        parsed = _site_member_from_file_name(path.name)
+        if parsed is None or not path.is_file():
+            continue
+        members.append(parsed[1])
+    return tuple(sorted(members))
 
 
 def read_ic_file(path: Path | str) -> IcFileContents:
@@ -610,7 +654,51 @@ def read_ic_file(path: Path | str) -> IcFileContents:
     the declared fill is visible and can be told apart from any other
     non-finite value, which is then refused.
     """
-    raise NotImplementedError
+    path = Path(path)
+    try:
+        dataset = xr.open_dataset(
+            path, decode_times=False, engine="scipy", mask_and_scale=False
+        )
+    except FileNotFoundError:
+        raise
+    except Exception as error:
+        raise ValueError(
+            f"{path}: could not be read as a netCDF-3 initial-condition file "
+            f"({type(error).__name__}: {error})"
+        ) from error
+
+    with dataset:
+        _check_time_variable_is_degenerate(dataset, path)
+        _check_no_unexpected_variables(dataset, path)
+        _check_variables_are_scalar_on_time(dataset, path)
+        _check_fill_values_are_the_expected_sentinel(dataset, path)
+        _check_units_match_the_registered_units(dataset, path)
+        _check_only_declared_fills_are_non_finite(dataset, path)
+
+        values: dict[str, float] = {}
+        fills: set[str] = set()
+        units: dict[str, str] = {}
+        long_names: dict[str, str] = {}
+        for source in dataset.data_vars:
+            array = dataset[source]
+            value = float(np.ravel(array.values)[0])
+            if value == SOURCE_FILL_VALUE:
+                fills.add(str(source))
+                value = float("nan")
+            values[str(source)] = value
+            units[str(source)] = str(array.attrs["units"])
+            long_names[str(source)] = str(array.attrs.get("long_name", ""))
+
+        time = dataset["time"]
+        return IcFileContents(
+            values=values,
+            explicit_fills=frozenset(fills),
+            units=units,
+            long_names=long_names,
+            time_units=str(time.attrs.get("units", "")),
+            time_long_name=str(time.attrs.get("long_name", "")),
+            time_value=float(np.ravel(time.values)[0]),
+        )
 
 
 def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
@@ -651,7 +739,21 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     the failure this guards against -- a ``NaN`` whose origin is unknown -- is
     invisible downstream.
     """
-    raise NotImplementedError
+    path = Path(path) if path is not None else default_ic_path()
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no initial-condition product at {path}. Build it with "
+            "scripts/ingest_ic.py."
+        )
+    dataset = xr.open_dataset(path, engine="h5netcdf")
+    try:
+        _check_dataset_matches_the_schema(dataset, path)
+        _check_attributes_are_complete(dataset, path)
+        _check_presence_companions_agree_with_the_values(dataset, path)
+    except Exception:
+        dataset.close()
+        raise
+    return dataset
 
 
 def initial_condition_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
@@ -682,13 +784,23 @@ def initial_condition_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     ValueError
         If any of :data:`IC_VARIABLES` is absent from *dataset*.
     """
-    raise NotImplementedError
+    missing = [name for name in IC_VARIABLES if name not in dataset.data_vars]
+    if missing:
+        raise ValueError(
+            f"dataset is missing initial-condition variables {missing}; found "
+            f"{sorted(dataset.data_vars)}"
+        )
+    fields = {}
+    for name in IC_VARIABLES:
+        field = dataset[name].copy(deep=False)
+        field.attrs = {**variable_attrs(name), **dataset[name].attrs}
+        # The variable coordinate indexes variable_present, not this field, and
+        # carrying it would make the field's coords disagree with its dims.
+        fields[name] = field.drop_vars("variable", errors="ignore")
+    return fields
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def _variable_attrs(name: str) -> dict[str, object]:
+def variable_attrs(name: str) -> dict[str, object]:
     """Attributes for one variable, with the units caveat and any counterpart.
 
     :data:`IC_VARIABLE_ATTRS` for *name*, plus ``units_status`` and
@@ -697,16 +809,82 @@ def _variable_attrs(name: str) -> dict[str, object]:
     ``n_explicit_fills`` and ``n_values_not_positive`` are added by the ingest
     script, which is what can count them.
     """
-    raise NotImplementedError
+    attrs: dict[str, object] = {
+        **IC_VARIABLE_ATTRS[name],
+        "units_status": UNITS_STATUS,
+        "units_provenance": UNITS_PROVENANCE,
+    }
+    related = RELATED_CONSTRAINT_VARIABLES.get(name)
+    if related is not None:
+        attrs["related_constraint_variable"] = related["variable"]
+        attrs["related_constraint_unit_factor"] = related["unit_factor"]
+        attrs["related_constraint_status"] = related["status"]
+        attrs["related_constraint_note"] = related["note"]
+    return attrs
 
 
-def _time_attrs() -> dict[str, object]:
+def time_attrs() -> dict[str, object]:
     """Dataset attributes recording the source's dropped ``time`` coordinate.
 
     ``source_time_units``, ``source_time_long_name``, ``source_time_value``,
     ``time_status`` and a ``time_note`` giving the reason and the issue number.
     """
-    raise NotImplementedError
+    return {
+        "source_time_units": SOURCE_TIME_UNITS,
+        "source_time_long_name": SOURCE_TIME_LONG_NAME,
+        "source_time_value": SOURCE_TIME_VALUE,
+        "time_status": TIME_STATUS,
+        "time_note": (
+            "The source files carry a length-1 unlimited 'time' dimension "
+            "whose units attribute is an unsubstituted template that no "
+            "calendar library can parse (issue #3), so it is dropped and what "
+            "it claimed is recorded here. These values describe a single "
+            "instant that has not been established, so nothing here is "
+            "time-aware and there is nothing to align against the annual "
+            "constraint snapshots."
+        ),
+    }
+
+
+# ── supporting helpers ────────────────────────────────────────────────────────
+
+
+#: Exactly ``IC_site_<site>_<member>.nc``, with no leading zeros or extra
+#: parts, so that a name off the template is skipped rather than half-read.
+_FILE_PATTERN = re.compile(r"^IC_site_(\d+)_(\d+)\.nc$")
+
+#: Dataset attributes the product must carry, checked on read.
+_REQUIRED_DATASET_ATTRS = (
+    "title",
+    "source_root",
+    "source_layout",
+    "source_fill_value",
+    "history",
+    "member_source",
+    "member_correspondence",
+    "n_sites",
+    "n_members",
+    "coverage",
+    "source_time_units",
+    "source_time_long_name",
+    "source_time_value",
+    "time_status",
+    "time_note",
+)
+
+#: Per-variable attributes the product must carry, checked on read. The two
+#: counts are added by the ingest, which is what can count them.
+_REQUIRED_VARIABLE_ATTRS = (
+    "units",
+    "long_name",
+    "source_name",
+    "source_long_name",
+    "aggregation",
+    "units_status",
+    "units_provenance",
+    "n_explicit_fills",
+    "n_values_not_positive",
+)
 
 
 def _site_member_from_file_name(name: str) -> tuple[int, int] | None:
@@ -715,12 +893,21 @@ def _site_member_from_file_name(name: str) -> tuple[int, int] | None:
     ``None`` when the name is not exactly the template for its numbers, so
     that :func:`available_members` ignores debris rather than failing on it.
     """
-    raise NotImplementedError
+    match = _FILE_PATTERN.match(name)
+    if match is None:
+        return None
+    site, member = match.group(1), match.group(2)
+    if IC_FILE_TEMPLATE.format(site=int(site), member=int(member)) != name:
+        return None
+    return int(site), int(member)
 
 
 def _data_root() -> Path:
     """The ``data`` directory, honoring ``$SIPNET_CALIBRATION_DATA``."""
-    raise NotImplementedError
+    root = os.environ.get(DATA_ROOT_ENV_VAR)
+    if root:
+        return Path(root)
+    return Path(__file__).resolve().parents[2] / "data"
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -732,7 +919,18 @@ def _check_time_variable_is_degenerate(dataset: xr.Dataset, path: Path) -> None:
     A length other than 1 would mean these are not static initial conditions,
     which is a different product and must not be quietly averaged away.
     """
-    raise NotImplementedError
+    if "time" not in dataset.variables:
+        raise ValueError(
+            f"{path}: has no 'time' variable. Every initial-condition file "
+            "carries one, of length 1."
+        )
+    length = int(dataset.sizes.get("time", 0))
+    if length != 1:
+        raise ValueError(
+            f"{path}: 'time' has length {length}, expected 1. A longer time "
+            "dimension would mean these are not static initial conditions, "
+            "which is a different product; it must not be averaged away."
+        )
 
 
 def _check_variables_are_scalar_on_time(dataset: xr.Dataset, path: Path) -> None:
@@ -743,7 +941,14 @@ def _check_variables_are_scalar_on_time(dataset: xr.Dataset, path: Path) -> None
     dimension is a live possibility, and it would otherwise be flattened into
     a single cell silently.
     """
-    raise NotImplementedError
+    for source, array in dataset.data_vars.items():
+        if tuple(array.dims) != ("time",):
+            raise ValueError(
+                f"{path}: variable {source!r} has dims {tuple(array.dims)}, "
+                "expected ('time',). A variable resolved over layers or any "
+                "other dimension cannot be stored as one value per site and "
+                "member, and must not be flattened silently."
+            )
 
 
 def _check_no_unexpected_variables(dataset: xr.Dataset, path: Path) -> None:
@@ -755,7 +960,34 @@ def _check_no_unexpected_variables(dataset: xr.Dataset, path: Path) -> None:
     points at open question 6, because that case is expected and is what a
     survey of the full ensemble exists to resolve.
     """
-    raise NotImplementedError
+    found = [str(name) for name in dataset.data_vars]
+    if not found:
+        raise ValueError(
+            f"{path}: holds no data variable. Expected at least one of "
+            f"{sorted(SOURCE_VARIABLE_NAMES)}."
+        )
+    unknown = [name for name in found if name not in SOURCE_VARIABLE_NAMES]
+    if not unknown:
+        return
+    unspecified = [name for name in unknown if name in UNSPECIFIED_VARIABLES]
+    other = [name for name in unknown if name not in UNSPECIFIED_VARIABLES]
+    if unspecified:
+        raise ValueError(
+            f"{path}: carries {unspecified}, which are reported to appear in "
+            "the ensemble but are not specified: no file carrying either was "
+            "available when the schema was written, so their units and long "
+            "names are unknown and registering them would have meant "
+            "inventing a unit. This is the expected blocker, not a defect in "
+            "the file. Record the units and long names this file carries, add "
+            "them to IC_VARIABLE_ATTRS and SOURCE_VARIABLE_NAMES, and rerun. "
+            "See open question 6 in data/README.md."
+        )
+    raise ValueError(
+        f"{path}: carries unregistered variable(s) {other}. Only "
+        f"{sorted(SOURCE_VARIABLE_NAMES)} have a processed name and a unit. A "
+        "new variable needs both before it can be stored, so this stops "
+        "rather than dropping it."
+    )
 
 
 def _check_fill_values_are_the_expected_sentinel(
@@ -767,7 +999,20 @@ def _check_fill_values_are_the_expected_sentinel(
     attribute as ``float64`` and a netCDF-3 writer given a Python float may
     write ``float32``, which is not a difference worth failing on.
     """
-    raise NotImplementedError
+    for source, array in dataset.data_vars.items():
+        if "_FillValue" not in array.attrs:
+            raise ValueError(
+                f"{path}: variable {source!r} declares no _FillValue. The "
+                f"schema relies on {SOURCE_FILL_VALUE} marking a missing "
+                "value, and a variable without it cannot be read that way."
+            )
+        declared = float(np.ravel(array.attrs["_FillValue"])[0])
+        if declared != SOURCE_FILL_VALUE:
+            raise ValueError(
+                f"{path}: variable {source!r} declares _FillValue "
+                f"{declared!r}, expected {SOURCE_FILL_VALUE}. A different "
+                "sentinel would be read as a real value."
+            )
 
 
 def _check_units_match_the_registered_units(dataset: xr.Dataset, path: Path) -> None:
@@ -777,7 +1022,23 @@ def _check_units_match_the_registered_units(dataset: xr.Dataset, path: Path) -> 
     would be invisible afterwards. This is also what makes the recorded
     ``units_status`` true: the unit is the source's, asserted across files.
     """
-    raise NotImplementedError
+    for source, array in dataset.data_vars.items():
+        processed = SOURCE_VARIABLE_NAMES[str(source)]
+        expected = IC_VARIABLE_ATTRS[processed]["units"]
+        if "units" not in array.attrs:
+            raise ValueError(
+                f"{path}: variable {source!r} has no units attribute. The "
+                f"schema records {expected!r} for it, taken from the source "
+                "files, and a file that states nothing cannot confirm it."
+            )
+        found = str(array.attrs["units"])
+        if found != expected:
+            raise ValueError(
+                f"{path}: variable {source!r} is in {found!r}, but the schema "
+                f"registers {expected!r} for {processed!r}. Nothing here "
+                "converts units, so a file on a different scale would be "
+                "stored as though it were on this one."
+            )
 
 
 def _check_only_declared_fills_are_non_finite(
@@ -789,7 +1050,16 @@ def _check_only_declared_fills_are_non_finite(
     indistinguishable from a fill once masked, and the product's whole account
     of missingness rests on that distinction.
     """
-    raise NotImplementedError
+    for source, array in dataset.data_vars.items():
+        values = np.ravel(array.values)
+        if not np.all(np.isfinite(values)):
+            raise ValueError(
+                f"{path}: variable {source!r} holds a non-finite value "
+                f"({values.tolist()}). Missing values are marked with "
+                f"{SOURCE_FILL_VALUE}; a NaN or infinity would be "
+                "indistinguishable from that once masked, and the product "
+                "tells the two kinds of absence apart."
+            )
 
 
 def _check_dataset_matches_the_schema(dataset: xr.Dataset, path: Path) -> None:
@@ -801,7 +1071,85 @@ def _check_dataset_matches_the_schema(dataset: xr.Dataset, path: Path) -> None:
     ``0..n-1``, ``site`` and ``source_member_index`` ascending, and
     ``variable`` equal to :data:`IC_VARIABLES` in order.
     """
-    raise NotImplementedError
+    expected_vars = set(IC_VARIABLES) | {IC_PRESENT, VARIABLE_PRESENT}
+    found = set(map(str, dataset.data_vars))
+    if found != expected_vars:
+        raise ValueError(
+            f"{path}: data variables are {sorted(found)}, expected "
+            f"{sorted(expected_vars)}."
+        )
+
+    for name in IC_VARIABLES:
+        array = dataset[name]
+        if tuple(array.dims) != ("member", "site"):
+            raise ValueError(
+                f"{path}: {name!r} has dims {tuple(array.dims)}, expected "
+                "('member', 'site')."
+            )
+        if array.dtype != np.float64:
+            raise ValueError(
+                f"{path}: {name!r} is {array.dtype}, expected float64."
+            )
+
+    for name, dims in ((IC_PRESENT, ("member", "site")),
+                       (VARIABLE_PRESENT, ("member", "site", "variable"))):
+        array = dataset[name]
+        if tuple(array.dims) != dims:
+            raise ValueError(
+                f"{path}: {name!r} has dims {tuple(array.dims)}, expected "
+                f"{dims}."
+            )
+        if array.dtype != np.bool_:
+            raise ValueError(f"{path}: {name!r} is {array.dtype}, expected bool.")
+
+    for coord in ("member", "source_member_index", "site", "lon", "lat", "variable"):
+        if coord not in dataset.coords:
+            raise ValueError(
+                f"{path}: coordinate {coord!r} is missing; the product "
+                "promises member, source_member_index, site, lon, lat and "
+                "variable."
+            )
+
+    member = dataset["member"].values
+    if not np.array_equal(member, np.arange(member.size)):
+        raise ValueError(
+            f"{path}: 'member' is not 0..{member.size - 1}. Member labels are "
+            "a 0-based index into this source's ensemble; the source's own "
+            "1-based index is source_member_index."
+        )
+    if dataset["member"].dtype != np.int16:
+        raise ValueError(
+            f"{path}: 'member' is {dataset['member'].dtype}, expected int16."
+        )
+    if dataset["site"].dtype != np.int32:
+        raise ValueError(
+            f"{path}: 'site' is {dataset['site'].dtype}, expected int32."
+        )
+
+    for coord in ("site", "source_member_index"):
+        values = dataset[coord].values
+        if np.any(np.diff(values) <= 0):
+            raise ValueError(
+                f"{path}: {coord!r} is not strictly ascending. Both axes are "
+                "sorted and unique so that a selection cannot silently pick "
+                "the wrong cell."
+            )
+
+    variable = [str(name) for name in dataset["variable"].values]
+    if tuple(variable) != IC_VARIABLES:
+        raise ValueError(
+            f"{path}: 'variable' is {variable}, expected {list(IC_VARIABLES)} "
+            "in that order. variable_present is indexed by it, so an "
+            "out-of-order axis would attribute one variable's presence to "
+            "another."
+        )
+
+    for coord in ("lon", "lat"):
+        if tuple(dataset[coord].dims) != ("site",):
+            raise ValueError(
+                f"{path}: {coord!r} has dims {tuple(dataset[coord].dims)}, "
+                "expected ('site',) as a non-dimension coordinate."
+            )
 
 
 def _check_presence_companions_agree_with_the_values(
@@ -815,7 +1163,28 @@ def _check_presence_companions_agree_with_the_values(
     docstring. Without this the ``variable_present & isnan(value)``
     fill indicator would be a claim rather than a fact.
     """
-    raise NotImplementedError
+    ic_present = dataset[IC_PRESENT].transpose("member", "site").values
+    variable_present = dataset[VARIABLE_PRESENT].transpose(
+        "member", "site", "variable"
+    ).values
+
+    absent_file = ~ic_present
+    if np.any(variable_present[absent_file]):
+        raise ValueError(
+            f"{path}: {VARIABLE_PRESENT} is True where {IC_PRESENT} is False. "
+            "A file that does not exist cannot carry a variable."
+        )
+
+    for index, name in enumerate(IC_VARIABLES):
+        values = dataset[name].transpose("member", "site").values
+        present = variable_present[:, :, index]
+        if np.any(np.isfinite(values[~present])):
+            raise ValueError(
+                f"{path}: {name!r} is finite where {VARIABLE_PRESENT} is "
+                "False. A value the source never carried cannot have one, and "
+                "the fill indicator variable_present & isnan(value) would be "
+                "wrong."
+            )
 
 
 def _check_attributes_are_complete(dataset: xr.Dataset, path: Path) -> None:
@@ -830,4 +1199,49 @@ def _check_attributes_are_complete(dataset: xr.Dataset, path: Path) -> None:
     what make the product self-describing, so a missing one is a defect rather
     than a cosmetic gap.
     """
-    raise NotImplementedError
+    missing = [key for key in _REQUIRED_DATASET_ATTRS if key not in dataset.attrs]
+    if missing:
+        raise ValueError(
+            f"{path}: dataset attributes {missing} are missing. They are what "
+            "make the product self-describing -- the units caveat, the member "
+            "source, the coverage and what the dropped time coordinate "
+            "claimed."
+        )
+    if dataset.attrs["member_source"] != MEMBER_SOURCE:
+        raise ValueError(
+            f"{path}: member_source is {dataset.attrs['member_source']!r}, "
+            f"expected {MEMBER_SOURCE!r}. Member labels are meaningful only "
+            "within one source, and this attribute is what a cross-source "
+            "guard reads."
+        )
+    if dataset.attrs["coverage"] not in ("complete", "gaps"):
+        raise ValueError(
+            f"{path}: coverage is {dataset.attrs['coverage']!r}, expected "
+            "'complete' or 'gaps'."
+        )
+
+    for name in IC_VARIABLES:
+        attrs = dataset[name].attrs
+        missing = [key for key in _REQUIRED_VARIABLE_ATTRS if key not in attrs]
+        related = RELATED_CONSTRAINT_VARIABLES.get(name)
+        if related is not None:
+            missing += [
+                key
+                for key in (
+                    "related_constraint_variable",
+                    "related_constraint_unit_factor",
+                    "related_constraint_status",
+                )
+                if key not in attrs
+            ]
+        if missing:
+            raise ValueError(
+                f"{path}: variable {name!r} is missing attributes {missing}."
+            )
+        expected_units = IC_VARIABLE_ATTRS[name]["units"]
+        if attrs["units"] != expected_units:
+            raise ValueError(
+                f"{path}: variable {name!r} records units {attrs['units']!r}, "
+                f"expected {expected_units!r}. Nothing converts units, so the "
+                "stored string has to be the source's."
+            )
