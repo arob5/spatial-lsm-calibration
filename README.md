@@ -7,45 +7,62 @@ of spatial variability.
 
 This is a research codebase, not a library. 
 
-## Getting set up
+## Contents
 
-Requires [uv](https://docs.astral.sh/uv/). One piece of the data ingest step requires
-`Rscript` as well.
+- [Quick start](#quick-start)
+  - [Generating the processed data](#generating-the-processed-data)
+- [Advanced setup](#advanced-setup)
+  - [Companion packages](#companion-packages)
+  - [Raw data survey](#raw-data-survey)
+  - [Running notebooks](#running-notebooks)
+- [Scope of the problem](#scope-of-the-problem)
+- [Layout](#layout)
+- [Conventions](#conventions)
+- [Open issues](#open-issues)
 
-**1. Clone this repository.** Nothing else needs cloning: the three companion
-packages are installed from git, and are described under
-[Companion packages](#companion-packages) below.
+## Quick start
+
+Requires [uv](https://docs.astral.sh/uv/). One data processing step below also
+needs `Rscript`.
 
 ```bash
 git clone https://github.com/arob5/spatial-lsm-calibration.git
 cd spatial-lsm-calibration
+uv sync                     # create .venv from uv.lock, on the pinned 3.14
+source .venv/bin/activate   # run everything from inside this environment
+pytest                      # check it works
 ```
 
-**2. Sync the environment.** This creates `.venv` from `uv.lock`, using the
-interpreter pinned in `.python-version` (3.14). `requires-python` is only a
-floor, so use the pin.
+Nothing else needs cloning: the three companion packages are installed from
+git, and are described under [Companion packages](#companion-packages).
+
+### Generating the processed data
+
+Raw inputs arrive from several sources with differing conventions, so most of
+them are converted once into a processed form that everything downstream reads.
+This needs the raw data present under `data/raw/` in the layout
+[`data/README.md`](data/README.md) specifies. That data is housed on Boston
+University's Shared Computing Cluster (SCC), and a fresh clone has almost none
+of it, so in practice this runs on the SCC. Raw inputs too large to be worth
+copying, the meteorological drivers especially, are left alone; helper
+functions query them in place instead.
+
+Run these in order; each reads what an earlier one wrote. A top-level helper
+will eventually replace the sequence with a single command.
 
 ```bash
-uv sync
+python scripts/ingest_sites.py                                                       # -> data/processed/sites/sites.csv
+Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json         # scratch, not products
+python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json  # -> data/processed/constraints_annual.nc
+python scripts/ingest_ic.py --jobs 16                                                # -> data/processed/ic.nc
 ```
 
-**3. Activate the virtual environment.**
+[`data/README.md`](data/README.md) is the authority on the per-product detail:
+the expected layout, provenance, units, and what each script reads and writes.
+Every script takes `--help`, which documents its inputs, its outputs and the
+flags for pointing it at data that is not where it expects.
 
-```bash
-source .venv/bin/activate
-```
-
-All code should be run from within this virtual environment. Running 
-`which python` should print a path ending in `.venv/bin/python`. Alternatively,
-`uv run <command>` can be utilized for a one-off command without activating the venv.
-See [Running notebooks](#running-notebooks) for more details regarding running Jupyter
-notebooks.
-
-**4. Check the environment works.**
-
-```bash
-uv run pytest
-```
+## Advanced setup
 
 ### Companion packages
 
@@ -101,60 +118,7 @@ checkout, and no such line means the pinned commit. Re-run the
 
 Once the work is pushed to `main`, upgrade as above and drop the overlay.
 
-## Running the data processing
-
-Since the raw data inputs come from various sources with varying conventions, this 
-project writes many of them to a processed form that is used throughout all further
-analyses. The raw-to-processed conversion need only occur once and then the saved
-processed data will be used from that point on. This requires the raw data to be 
-present under `data/raw/` in the layout [`data/README.md`](data/README.md) specifies.
-The data for this project is housed on Boston University's Shared Computing Cluster (SCC). 
-A fresh git clone will have almost none of this data. Also note that raw input data requiring
-lots of storage (e.g., meteorological drivers) is not re-written to a processed form in order
-to save space; rather, helper functions are defined to query the raw data using this project's 
-conventions.
-
-The below steps must be run in order. A top-level helper will eventually replace 
-this sequence of commands with a single one.
-
-**1. The site table.** Writes `data/processed/sites/sites.csv`.
-
-```bash
-python scripts/ingest_sites.py
-```
-
-**2. Flatten the constraint `.Rdata` files.** Writes a long CSV and a JSON
-manifest of what R checked.
-
-```bash
-Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json
-```
-
-These are the only inputs that need R (`data.table` and `jsonlite`). Both
-outputs are scratch rather than products, so write them outside
-`data/processed/`.
-
-**3. The annual constraints product.** Writes
-`data/processed/constraints_annual.nc`.
-
-```bash
-python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json
-```
-
-**4. The initial conditions product.** Writes `data/processed/ic.nc`.
-
-```bash
-python scripts/ingest_ic.py --jobs 16
-```
-
-`--root` defaults to `data/raw/initial_conditions`. The read is I/O bound, so
-`--jobs` is worth raising on a networked filesystem.
-
-[`data/README.md`](data/README.md) is the authority on the per-product detail —
-the expected layout, provenance, units, and what each script reads and writes.
-This section is only the order in which to call them.
-
-### Optional: raw data survey
+### Raw data survey
 
 Two diagnostics that answer questions about the raw data which can only be
 answered where the files are. They are **optional**, they run **before**
@@ -181,6 +145,20 @@ python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_s
 `sipnet_calibration.drivers.read_clim_file` to each file, so unlike the survey
 above it needs the project environment. There are around 80,000 files at roughly
 a tenth of a second each, which is what `--jobs` is for.
+
+### Running notebooks
+
+Use the project venv's Jupyter directly, **not** `uv run jupyter`:
+
+```bash
+.venv/bin/jupyter lab
+```
+
+To execute headlessly:
+
+```bash
+.venv/bin/jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=python3 --output out.ipynb in.ipynb
+```
 
 ## Scope of the problem
 
@@ -245,20 +223,6 @@ affect how the suite is used are:
 - **Temporal aggregation is a verb the caller applies**, not a plotter keyword,
   and it lives in `obs_ops.py` shared with the observation operator — so a
   predictive-check figure cannot disagree with what the likelihood consumed.
-
-## Running notebooks
-
-Use the project venv's Jupyter directly, **not** `uv run jupyter`:
-
-```bash
-.venv/bin/jupyter lab
-```
-
-To execute headlessly:
-
-```bash
-.venv/bin/jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=python3 --output out.ipynb in.ipynb
-```
 
 ## Open issues
 
