@@ -310,7 +310,7 @@ files are generated from the dataclass and checked against it by the test suite,
 so a drifted file is a test failure; regenerate them with
 `python -m sipnet_calibration.projection --write`.
 
-Two consequences for the data documented above. The projection's base CRS is
+This bears on the data above in two ways. The projection's base CRS is
 WGS 84, matching the site coordinates, so **no datum transformation is
 involved** and nothing here is shifted. And because it is equal-area, a density
 or per-area figure is honest in a way the 1 km geographic grid is not — that
@@ -320,9 +320,13 @@ The choice of projection is a plotting decision rather than a property of these
 inputs, so the argument for it is not repeated here. It is recorded in
 [issue #4](https://github.com/arob5/spatial-lsm-calibration/issues/4), with the
 distortion of every candidate measured over all 8000 sites, and summarized in
-the module's own documentation. The short version is that the projection the
-reanalysis figures used, ESRI:102003, is area-true but degrades in shape far
-from its standard parallels, and this site pool reaches 82.5 N.
+the module's own documentation. The short version: the projection the reanalysis
+figures used, ESRI:102003, the USA Contiguous Albers Equal Area Conic, is
+area-true everywhere but is intended for a region of predominant east-west
+expanse, and it degrades in shape far from its standard parallels. This site
+pool reaches 82.5 N, where it distorts shape severely — 107 degrees of angular
+deformation, against under 14 for the projection adopted here. Both ceilings are
+asserted against this table in `tests/test_projection.py`.
 
 Named longitude/latitude boxes for the regions the figures use — `CONUS`,
 `NORTH_AMERICA` and `ALASKA` — are `EXTENTS` in

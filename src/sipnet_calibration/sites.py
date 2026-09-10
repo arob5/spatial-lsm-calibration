@@ -401,8 +401,8 @@ SITE_COLUMNS = (
 #: ``NA`` -- ``dtype=str`` still yields ``nan`` for them. What saves them is
 #: ``keep_default_na=False`` in :func:`load_sites`.
 #:
-#: Read-only, like :data:`EXTENTS`: these are the schema, and a caller that
-#: mutated them would change what every later read of the table produces.
+#: Read-only: this is the schema, and a caller that mutated it would change what
+#: every later read of the table produces.
 SITE_COLUMN_DTYPES = MappingProxyType(
     {
         "site_id": np.int32,
@@ -513,21 +513,21 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #: figure and the site subset it plots cannot disagree about what a region means.
 #:
 #: - ``CONUS`` is the conterminous-US box ``data/README.md`` uses, holding a
-#:   little under half the pool; the count is asserted in ``tests/test_sites.py``.
+#:   little under half the pool; the count is asserted in the test suite.
 #: - ``NORTH_AMERICA`` is the extent of :data:`SITE_GRID` itself, so it contains
 #:   every site by construction rather than by a bound anyone chose.
 #: - ``ALASKA`` is the EPSG area of use of "United States (USA) - Alaska", as
 #:   registered for EPSG:3338, clipped on the west at the grid's own edge: the
 #:   registered extent runs from 172.42 E across the antimeridian, whereas the
 #:   grid, the site pool and :func:`select_sites` are all in negative longitudes
-#:   and none of them wraps.
+#:   and none of them wraps. No site is lost, since every site longitude is
+#:   negative, but a basemap drawn to this box omits the western Aleutians.
 #:
 #: The plotting design spec calls the middle one ``NA``. It is spelled out here
 #: under the project's convention against abbreviations, and because ``NA`` is
 #: an unhappy name in a module that has to read ``NA`` as a literal site name.
-#: Read-only: a figure and the site subset it plots are supposed to agree on
-#: what a region means, and a caller that reassigned an entry would silently
-#: change every later figure in the process.
+#: Read-only, like :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
+#: silently change every later figure in the process.
 EXTENTS = MappingProxyType(
     {
         "CONUS": (-125.0, 24.0, -66.0, 50.0),

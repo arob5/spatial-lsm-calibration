@@ -143,17 +143,42 @@ class TestEllipsoid:
             )
 
     def test_rejects_a_figure_that_is_not_an_ellipsoid(self):
-        """A flattening of 1 or more gives a NaN eccentricity, and a negative
-        radius silently point-reflects the whole map."""
+        """A negative radius silently point-reflects the whole map, and an
+        inverse flattening of 1 or below makes every coordinate NaN."""
         for semi_major in (0.0, -6378137.0, float("nan"), float("inf")):
             with pytest.raises(ValueError, match="semi_major"):
                 Ellipsoid("bad", semi_major, 298.257223563, 0)
-        for inverse_flattening in (0.5, 1.0 - 1e-9, -298.0, float("nan")):
+        for inverse_flattening in (0.4, 0.5, 1.0 - 1e-9, -298.0, float("nan")):
             with pytest.raises(ValueError, match="inverse_flattening"):
                 Ellipsoid("bad", 6378137.0, inverse_flattening, 0)
-        # Zero is the sphere, and 1 exactly is the degenerate limit that is
-        # allowed through as a shape: neither raises.
+        # Zero is the sphere and is admitted.
         assert Ellipsoid("sphere", 6378137.0, 0.0, 0).eccentricity_squared == 0.0
+
+    def test_rejects_the_degenerate_unit_eccentricity(self):
+        """``1/f == 1`` is ``e == 1``, where ``q`` is ``arctanh(1) = inf`` and
+        every projected coordinate comes back NaN with nothing to say why. It
+        has to be refused at construction, since no guard downstream catches a
+        NaN that originates in the ellipsoid: the coordinate checks see finite
+        input, and the antipode check compares a NaN and finds it false."""
+        with pytest.raises(ValueError, match="greater than 1"):
+            Ellipsoid("degenerate", 6378137.0, 1.0, 0)
+        # And the structural condition is not enough: just above 1 the
+        # eccentricity still rounds to 1, so the check is on the derived
+        # eccentricity rather than on the inverse flattening.
+        for barely_above in (1.0 + 1e-9, 1.0 + 1e-12):
+            with pytest.raises(ValueError, match="eccentricity is 1 to floating point"):
+                Ellipsoid("nearly flat", 6378137.0, barely_above, 0)
+
+        # An absurd but representable figure does project, so the guard has not
+        # become a blanket refusal: 1/f = 2 is e**2 = 0.75.
+        absurd = Projection(
+            name="absurd",
+            lat_0=50.0,
+            lon_0=-100.0,
+            ellipsoid=Ellipsoid("flattened by half", 6378137.0, 2.0, 0),
+        )
+        x, y = absurd.forward(-90.0, 40.0)
+        assert math.isfinite(x) and math.isfinite(y)
 
     def test_is_immutable(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -422,6 +447,24 @@ class TestForwardBehavior:
         assert math.isfinite(x) and math.isfinite(y)
 
 
+class TestAntipode:
+    def test_antipode_is_the_point_forward_refuses(self):
+        """Exposed because the module tells callers to keep away from it, and
+        clipping to avoid it needs somewhere to clip around."""
+        assert SITE_PROJECTION.antipode == (80.0, -50.0)
+        with pytest.raises(ValueError, match="antipode"):
+            SITE_PROJECTION.forward(*SITE_PROJECTION.antipode)
+
+    @pytest.mark.parametrize("lon_0", [-100.0, 0.0, 100.0, 260.0, -350.0, 179.9])
+    def test_antipode_longitude_is_wrapped_whatever_the_origin_was_given_as(self, lon_0):
+        projection = Projection(name="wherever", lat_0=10.0, lon_0=lon_0)
+        antipode_lon, antipode_lat = projection.antipode
+        assert -180.0 <= antipode_lon < 180.0
+        assert antipode_lat == -10.0
+        with pytest.raises(ValueError, match="antipode"):
+            projection.forward(antipode_lon, antipode_lat)
+
+
 class TestEqualArea:
     def test_area_scale_is_unity_across_the_domain(self):
         """A property of the method, asserted downstream of the published-value
@@ -564,10 +607,38 @@ class TestProjectedBounds:
         """The boundary-sampling argument holds only where the transform is
         defined throughout the box. With the antipode inside, the interior holds
         a singularity and the boundary bound is not a bound -- an interior point
-        lands 48 km outside it, growing without limit toward the antipode."""
-        antipode_box = (70.0, -60.0, 90.0, -40.0)
+        lands tens of km outside it, growing without limit toward the
+        antipode."""
+        antipode_lon, antipode_lat = SITE_PROJECTION.antipode
+        antipode_box = (antipode_lon - 10, antipode_lat - 10, antipode_lon + 10, antipode_lat + 10)
         with pytest.raises(ValueError, match="antipode"):
             SITE_PROJECTION.projected_bounds(antipode_box)
+
+    @pytest.mark.parametrize(
+        "box",
+        [
+            (-180.0, -90.0, 180.0, 90.0),  # the whole globe
+            (-200.0, -60.0, 100.0, -40.0),  # 300 degrees wide, unwrapped
+            (0.0, -60.0, 300.0, -40.0),  # 300 degrees wide, positive
+        ],
+    )
+    def test_refuses_a_wide_box_containing_the_antipode(self, box):
+        """A box wider than 180 degrees is the case a symmetric reduction of the
+        longitude offset cannot express: an offset of 280 degrees comes back as
+        -80, the box looks as though it ends before the antipode, and the bounds
+        returned are quietly not bounds. Measured on the whole globe, an
+        interior point sat 12,699 km outside a bound whose x_max came back as 0.
+        """
+        with pytest.raises(ValueError, match="antipode"):
+            SITE_PROJECTION.projected_bounds(box)
+
+    def test_accepts_a_wide_box_that_misses_the_antipode(self):
+        """The wide-box fix must not turn into a blanket refusal: the same span
+        at a latitude the antipode is not at projects fine."""
+        antipode_lon, antipode_lat = SITE_PROJECTION.antipode
+        away = (-200.0, antipode_lat + 20.0, 100.0, antipode_lat + 40.0)
+        x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(away)
+        assert x_min < x_max and y_min < y_max
 
     def test_more_samples_do_not_change_the_answer_materially(self):
         """The default is past convergence for these extents. The tolerance is
