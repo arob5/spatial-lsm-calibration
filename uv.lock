@@ -2040,60 +2040,16 @@ wheels = [
 [[package]]
 name = "pyeki"
 version = "0.1.0.dev0"
-source = { editable = "../pyEKI" }
+source = { git = "https://github.com/TARPS-group/pyEKI.git?branch=main#ad084a85e625206e1c5d6ab27fc069f36d43febd" }
 dependencies = [
     { name = "jax" },
     { name = "numpy" },
 ]
 
-[package.metadata]
-requires-dist = [
-    { name = "jax", specifier = ">=0.4" },
-    { name = "numpy", specifier = ">=1.24" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "furo", specifier = ">=2024.1" },
-    { name = "ipykernel", specifier = ">=6.0" },
-    { name = "jupyter", specifier = ">=1.0" },
-    { name = "matplotlib", specifier = ">=3.7" },
-    { name = "mypy", specifier = ">=1.10" },
-    { name = "myst-parser", specifier = ">=2.0" },
-    { name = "nbsphinx", specifier = ">=0.9" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov", specifier = ">=5.0" },
-    { name = "ruff", specifier = ">=0.4" },
-    { name = "sphinx", specifier = ">=7.0" },
-    { name = "sphinx-copybutton", specifier = ">=0.5" },
-    { name = "sphinx-design", specifier = ">=0.5" },
-]
-
 [[package]]
 name = "pyens"
 version = "0.1.0"
-source = { editable = "../PyEns" }
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", marker = "extra == 'xarray'", specifier = ">=1.26" },
-    { name = "parsl", marker = "extra == 'parsl'", specifier = ">=2024.1" },
-    { name = "pyens", extras = ["parsl", "xarray"], marker = "extra == 'all'" },
-    { name = "xarray", marker = "extra == 'xarray'", specifier = ">=2024.1" },
-]
-provides-extras = ["parsl", "xarray", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "ipykernel", specifier = ">=7.2.0" },
-    { name = "jupyter", specifier = ">=1.1.1" },
-    { name = "myst-parser", specifier = ">=5.1.0" },
-    { name = "pydata-sphinx-theme", specifier = ">=0.18.0" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov", specifier = ">=5.0" },
-    { name = "sphinx", specifier = ">=9.0.4" },
-    { name = "sphinx-copybutton", specifier = ">=0.5.2" },
-]
+source = { git = "https://github.com/arob5/PyEns.git?branch=main#2fb808c22ef02e7c5a0314daa0746e39fcfd6b17" }
 
 [[package]]
 name = "pygments"
@@ -2125,44 +2081,12 @@ wheels = [
 [[package]]
 name = "pysipnet"
 version = "0.1.0.dev0"
-source = { editable = "../pySIPNET" }
+source = { git = "https://github.com/TARPS-group/pySIPNET.git?branch=main#3150009c89d3cd4357d8d17fc2b8824aa4219385" }
 dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pint" },
     { name = "pydantic" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "jupyter", marker = "extra == 'examples'", specifier = ">=1.0" },
-    { name = "matplotlib", marker = "extra == 'examples'", specifier = ">=3.7" },
-    { name = "nbformat", marker = "extra == 'examples'", specifier = ">=4.2.0" },
-    { name = "numpy", specifier = ">=1.24" },
-    { name = "pandas", specifier = ">=2.0" },
-    { name = "pint", specifier = ">=0.23" },
-    { name = "plotly", marker = "extra == 'viz'", specifier = ">=5.3" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "xarray", marker = "extra == 'xarray'", specifier = ">=2023.0" },
-]
-provides-extras = ["xarray", "viz", "examples"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "matplotlib", specifier = ">=3.7" },
-    { name = "mkdocs", specifier = ">=1.5" },
-    { name = "mkdocs-gen-files", specifier = ">=0.5" },
-    { name = "mkdocs-jupyter", specifier = ">=0.24" },
-    { name = "mkdocs-literate-nav", specifier = ">=0.6" },
-    { name = "mkdocs-material", specifier = ">=9.5" },
-    { name = "mkdocstrings", extras = ["python"], specifier = ">=0.24" },
-    { name = "mypy", specifier = ">=1.10" },
-    { name = "nbformat", specifier = ">=4.2.0" },
-    { name = "plotly", specifier = ">=5.0" },
-    { name = "pytest", specifier = ">=8.0" },
-    { name = "pytest-cov", specifier = ">=5.0" },
-    { name = "ruff", specifier = ">=0.4" },
-    { name = "xarray", specifier = ">=2023.0" },
 ]
 
 [[package]]
@@ -2605,10 +2529,10 @@ requires-dist = [
     { name = "nbformat" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", specifier = ">=2.0" },
-    { name = "pyeki", editable = "../pyEKI" },
-    { name = "pyens", editable = "../PyEns" },
+    { name = "pyeki", git = "https://github.com/TARPS-group/pyEKI.git?branch=main" },
+    { name = "pyens", git = "https://github.com/arob5/PyEns.git?branch=main" },
     { name = "pyshp", specifier = ">=3.1" },
-    { name = "pysipnet", editable = "../pySIPNET" },
+    { name = "pysipnet", git = "https://github.com/TARPS-group/pySIPNET.git?branch=main" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "xarray", specifier = ">=2024.1" },
     { name = "zarr", specifier = ">=2.17" },

@@ -12,24 +12,14 @@ This is a research codebase, not a library.
 Requires [uv](https://docs.astral.sh/uv/). One piece of the data ingest step requires
 `Rscript` as well.
 
-**1. Clone this repository and its three companion packages as siblings.**
-`pyproject.toml` installs `pysipnet`, `pyens` and `pyeki` as editable locals
-from `../pySIPNET`, `../PyEns` and `../pyEKI`, so the sibling layout is
-required. `pySIPNET` is the SIPNET model interface, `PyEns` provides an
-interface for running ensembles, and `pyEKI` is the ensemble Kalman inference
-substrate.
+**1. Clone this repository.** Nothing else needs cloning: the three companion
+packages are installed from git, and are described under
+[Companion packages](#companion-packages) below.
 
 ```bash
 git clone https://github.com/arob5/spatial-lsm-calibration.git
-git clone https://github.com/TARPS-group/pySIPNET.git
-git clone https://github.com/arob5/PyEns.git
-git clone https://github.com/TARPS-group/pyEKI.git
 cd spatial-lsm-calibration
 ```
-
-Clone them under exactly those directory names: the paths above are matched
-literally, and on a case-sensitive filesystem such as the SCC's a directory
-named `pyens` will not satisfy `../PyEns`.
 
 **2. Sync the environment.** This creates `.venv` from `uv.lock`, using the
 interpreter pinned in `.python-version` (3.14). `requires-python` is only a
@@ -56,6 +46,61 @@ notebooks.
 ```bash
 uv run pytest
 ```
+
+### Companion packages
+
+Three packages are developed alongside this project and are dependencies of it:
+
+| Package | Role |
+|---|---|
+| [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | the SIPNET model interface |
+| [`PyEns`](https://github.com/arob5/PyEns) | running ensembles |
+| [`pyEKI`](https://github.com/TARPS-group/pyEKI) | the ensemble Kalman inference substrate |
+
+`[tool.uv.sources]` in `pyproject.toml` tracks the `main` branch of each, and
+`uv.lock` records the **exact commit** resolved from it. So `uv sync` installs
+the same three commits for everyone, and none of them moves until someone
+upgrades it deliberately. Ordinary use needs no local checkout of any of them.
+
+#### Upgrading a companion package
+
+New work on `main` in one of these repositories does **not** reach this project
+until the lock is refreshed. To take it:
+
+```bash
+uv lock --upgrade-package pysipnet
+uv sync
+```
+
+The distribution names are `pysipnet`, `pyens` and `pyeki`; name several in one
+command to upgrade them together. `uv lock --upgrade` upgrades everything
+including the third-party dependencies, which is usually not what you want
+here.
+
+The only file that changes is `uv.lock`, and its diff shows which commit each
+package moved to. **Commit that change**, since it is the record of which
+version of each package a calibration run used.
+
+#### Developing a companion package
+
+To work on one of them and have this project pick up the edits immediately,
+clone it anywhere and overlay an editable install on top of the synced
+environment:
+
+```bash
+git clone https://github.com/TARPS-group/pySIPNET.git ../pySIPNET
+uv pip install -e ../pySIPNET
+```
+
+Note that **any later `uv sync` silently replaces the overlay** with the
+commit pinned in `uv.lock` — including `uv sync --inexact`, and including the
+sync that another step of some workflow happens to run. Nothing warns you; the
+symptom is that your edits stop having any effect. `uv pip show pysipnet` says
+which one is installed: an `Editable project location` line means the local
+checkout, and no such line means the pinned commit. Re-run the
+`uv pip install -e` after any sync.
+
+Once the work is pushed to `main`, upgrade as above and drop the overlay.
 
 ## Running the data processing
 
