@@ -2,19 +2,12 @@
 
 Overview
 --------
-Two things this project does are done in observation space rather than in
-model space: turning SIPNET's own row labeling into timestamps, and
-aggregating a series in time. Both are done by the observation operator H
-before the likelihood sees a residual, and both are done again by the plotting
-layer before a predictive check is drawn. This module is the one
-implementation of each, imported by both, so a figure cannot silently
-disagree with what the likelihood consumed.
-
-That failure is the reason the module exists and is worth naming: a posterior
-predictive figure drawn at a different aggregation than the likelihood used
-looks fine, is wrong, and takes a day to diagnose. If a second aggregation
-path ever seems wanted for plotting, the design is wrong rather than the rule
-needing an exception.
+Two things this project does happen in observation space rather than in model
+space: turning SIPNET's own row labeling into timestamps, and aggregating a
+series in time. Both belong to the observation operator, which applies them
+before the likelihood sees a residual, and both are wanted again by the
+plotting layer before a predictive check is drawn. This module holds the one
+implementation of each, for both to import.
 
 Functions
 ---------
@@ -43,6 +36,12 @@ is wanted is a modeling choice rather than a default.
 
 Notes
 -----
+**Why one implementation and not two.** A posterior predictive figure drawn
+at a different aggregation than the likelihood used looks fine, is wrong, and
+takes a day to diagnose. Sharing the code path removes the possibility. If a
+second aggregation path ever seems wanted for plotting, that is a sign the
+design is wrong rather than that the rule needs an exception.
+
 **The rule is a property of the variable, not of the call site.** ``how``
 defaults to ``VARIABLES[field.name].agg``; pass it only to override
 deliberately. SIPNET's ``nee`` is ``g C m-2`` per timestep -- extensive -- so
@@ -59,36 +58,28 @@ length comes from the ``.clim`` ``length`` column rather than an assumed three
 hours, and the factor is
 :data:`~sipnet_calibration.variable_registry.GRAMS_CARBON_PER_MICROMOLE_CO2`.
 
-**What a period's label means.** Periods are left-closed and labeled with
-their own start, which is xarray's convention and pandas'. The drivers and
-SIPNET's output label the **end** of each timestep (``drivers.TIME_LABEL``),
-so a day's eight rows labeled 00:00 to 21:00 span the interval from 21:00 the
-previous day to 21:00 on the day they are labeled with. That is not corrected
-here, deliberately: grouping by the nominal label reproduces SIPNET's own
-``day`` column exactly, which is the grouping the model's own daily output
-uses and therefore the one a comparison against it needs. Observed NEE is on
-a different clock again (issue #8), and reconciling the two is the NEE
-adapter's problem, not this module's.
+**What a period's label means.** Periods are left-closed, and pandas decides
+where the label goes: a start-anchored frequency such as ``"1D"``, ``"MS"``
+or ``"YS"`` labels the period's start, while an end-anchored one such as
+``"ME"`` or ``"YE"`` labels its end. Nothing here overrides that, so the
+label the result carries is the one the frequency asked for.
 
-**Planned, and not implemented (deferred from issue #6).**
+The drivers and SIPNET's output label the **end** of each timestep
+(``drivers.TIME_LABEL``), so a day's eight rows labeled 00:00 to 21:00 span
+the interval from 21:00 the previous day to 21:00 on the day they are labeled
+with. That is not corrected here, deliberately: grouping by the nominal label
+reproduces SIPNET's own ``day`` column exactly, which is the grouping the
+model's own daily output uses and therefore the one a comparison against it
+needs. Observed NEE is on a different clock again (issue #8), and reconciling
+the two is the NEE adapter's problem, not this module's.
 
-``obs_index(observed: Mapping[str, DataArray]) -> pd.MultiIndex`` -- the
-``(site, variable, time)`` labeling of the flat observation vector. The same
-object must be used to flatten observations into ``y`` and to unstack EKI's
-``(J, N)`` predictions back into canonical fields, or the two mislabel
-relative to each other.
-
-Its signature was first written as ``obs_index(sites, variables, times)``,
-which reads as a cartesian product, and **the observation vector is not a
-product**: only 17 of 209 sites have a near-complete NEE record and the
-annual constraints are ragged over site, year and variable, with some
-site-years carrying no observation at all. An index built from nominal axes
-would describe an observation vector that does not exist. It has to enumerate
-the triples actually observed, so its construction is driven by the data --
-each field's ``notnull()`` cells, stacked, in a deterministic order -- which
-is what the signature above says. Nothing consumes it until the observation
-operator exists. (It was originally expected from an ``index`` layer in pyEKI;
-that layer does not exist, and this is the module that owes it.)
+**Planned, and not implemented.** ``obs_index`` will give the
+``(site, variable, time)`` labeling of the flat observation vector, which the
+observation operator and ``fields.from_eki_predictions`` must share or the
+predictions come back mislabeled against the observations. It has to
+enumerate the triples actually observed rather than a product of the axes,
+since neither the NEE record nor the annual constraints is rectangular.
+Deferred to issue #23, which carries the signature and the reasoning.
 
 Usage
 -----
@@ -100,8 +91,8 @@ Usage
         sipnet_time_index,
     )
 
-    daily = aggregate_time(par, "1D")            # summed: par is a total
-    daily = aggregate_time(air_temperature, "1D")  # meaned: it is intensive
+    daily_par = aggregate_time(par, "1D")     # summed: par is a total
+    daily_tair = aggregate_time(tair, "1D")   # meaned: it is intensive
 
     # A stricter completeness rule than the default, applied identically
     # wherever it is wanted.
@@ -131,11 +122,6 @@ __all__ = [
 
 #: The dimension aggregated along.
 TIME_DIM = "time"
-
-#: The date one period of a frequency is measured from, for the upsampling
-#: check. A fixed probe rather than the array's own start, so the check does
-#: not depend on where a record happens to begin.
-_PROBE_DATE = pd.Timestamp("2001-01-01")
 
 #: What ``how`` may be: every rule of
 #: :data:`~sipnet_calibration.variable_registry.AGGREGATION_RULES` that names
@@ -350,8 +336,7 @@ def aggregate_time(
     one mechanism for every method: the period's count of values that are not
     missing is computed once, and the reduction is masked where it falls below
     *min_count*. ``min_count=`` is deliberately not also passed to ``.sum()``;
-    two mechanisms doing one job means either can be deleted without a test
-    noticing.
+    two mechanisms doing one job.
 
     **Partial periods are not scaled, and are not dropped by default.**
     Summing three of a day's eight timesteps gives a partial total, and
@@ -364,41 +349,40 @@ def aggregate_time(
     the figure and the likelihood read the same one.
 
     ``min_count=1`` is a safe default for the data this project has rather
-    than in general. The gap-filled NEE product has no interior gaps and no
-    missing values: read whole, its 209 sites are each one contiguous
-    3-hourly run, and the only calendar days not holding all eight rows are
-    the first and last of each site's record, 418 in total. Its missingness
-    is structural -- whole years absent per site -- so a partial daily total
-    can only arise at a record edge. The drivers have no missing values at
-    all.
+    than in general. Both products it is applied to are contiguous in time:
+    the gap-filled NEE record runs unbroken within each site's covered years,
+    so its missingness is structural rather than punctured and a partial
+    period can only arise at a record edge, and the ``.clim`` driver files
+    hold no missing values at all. (A driver *field* does carry ``NaN``,
+    where :func:`~sipnet_calibration.drivers.load_drivers` was asked for a
+    member and site whose file is absent; that is a whole pair missing, not
+    an interior gap, and ``driver_present`` says which.) ``data/README.md``
+    records the measurements behind that.
 
-    **A stock is refused rather than guessed at.** ``lai`` and the carbon
-    pools are levels at an instant, not quantities accumulated over an
-    interval, so neither a sum nor a mean is their aggregation, and picking
-    ``first`` or ``last`` silently would be a choice made in the wrong place.
-    The annual constraints are already at their source resolution, where
-    aggregation is a no-op. A caller who does want the year-end value says
-    ``how="last"``.
-
-    **Upsampling is refused.** ``aggregate_time(annual_lai, "1D")`` and
-    ``aggregate_time(three_hourly, "1h")`` would each return a field that is
-    mostly ``NaN``, with no error, and the emptiness would read as missing
-    data rather than as a mistake. The target period is compared against the
-    median spacing of the ``time`` coordinate. A period of no fixed length --
-    ``"MS"``, ``"YS"`` -- is measured by applying the offset to a fixed probe
-    date, so its length is one particular month or year rather than an
-    average; that is well inside the margin the comparison needs.
+    **A stock is refused rather than guessed at.** ``lai`` and the two soil
+    and biomass constraints are levels at an instant, not quantities
+    accumulated over an interval, so neither a sum nor a mean is their
+    aggregation, and picking ``first`` or ``last`` silently would be a choice
+    made in the wrong place. Those are also the variables that arrive at
+    their source resolution already, where aggregation would be a no-op. A
+    caller who does want the year-end value says ``how="last"``.
     """
-    _check_aggregatable(field)
-    _check_not_upsampling(field, freq)
+    # The argument checks come first, so that a mistake in the call is
+    # reported as itself rather than as whatever the data then runs into.
+    _check_frequency(freq)
     _check_min_count(min_count)
+    _check_aggregatable(field)
     method = _resolved_method(field, how)
 
+    _check_not_upsampling(field, freq)
+
+    counts = _count_by_period(field, freq)
     aggregated = _reduce(field.resample({TIME_DIM: freq}), method)
     # One guard for every method, rather than sum's own min_count plus a mask
     # for the rest: a period with nothing in it is missing under all four, and
     # two mechanisms doing one job means either can be deleted unnoticed.
-    counts = _count_by_period(field, freq)
+    # xarray aligns `counts` by dimension name, so this is correct whatever
+    # order the field stores its dimensions in.
     aggregated = aggregated.where(counts >= int(min_count))
 
     # The attributes are set here rather than left to the reduction's
@@ -444,6 +428,7 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
         upsampling check. The variable's rule is not consulted, so a stock is
         counted rather than refused.
     """
+    _check_frequency(freq)
     _check_aggregatable(field)
     _check_not_upsampling(field, freq)
     return _count_by_period(field, freq)
@@ -524,30 +509,61 @@ def _reduce(resampled, method: str) -> xr.DataArray:
     raise ValueError(f"unhandled aggregation method {method!r}")
 
 
+def _is_datetime(dtype) -> bool:
+    """Whether *dtype* is a datetime one, timezone-aware ones included.
+
+    ``numpy.issubdtype`` raises a ``TypeError`` on a pandas extension dtype
+    such as ``datetime64[us, UTC]``, which xarray resamples correctly, so the
+    pandas predicate is asked first.
+    """
+    if isinstance(dtype, pd.api.extensions.ExtensionDtype):
+        return isinstance(dtype, pd.DatetimeTZDtype)
+    return np.issubdtype(dtype, np.datetime64)
+
+
+def _rows_per_period(field: xr.DataArray, freq: str) -> xr.DataArray:
+    """How many rows of *field*'s time axis fall in each period.
+
+    Rows, not values, so it says nothing about missingness: it is the shape
+    of the grouping itself, which is what :func:`_check_not_upsampling` asks
+    about. One dimension, whatever the field's own shape.
+    """
+    ones = xr.DataArray(
+        np.ones(field.sizes[TIME_DIM]),
+        dims=TIME_DIM,
+        coords={TIME_DIM: field.coords[TIME_DIM]},
+    )
+    return ones.resample({TIME_DIM: freq}).sum().fillna(0)
+
+
 def _count_by_period(field: xr.DataArray, freq: str) -> xr.DataArray:
     """Values that are not missing, per period, as ``int64``.
 
     The one place the count is computed, so :func:`aggregate_time`'s guard and
     :func:`aggregation_counts` cannot disagree about what a period holds.
     """
-    counts = field.notnull().resample({TIME_DIM: freq}).sum().astype(np.int64)
+    # A period holding no rows at all comes back as NaN from the sum, so the
+    # fill is what makes the result an integer count rather than an undefined
+    # NaN-to-int64 cast -- which saturates to 0 on arm64 and to INT64_MIN on
+    # x86-64, and would make an empty period read as fully observed there.
+    counts = field.notnull().resample({TIME_DIM: freq}).sum()
+    counts = counts.fillna(0).astype(np.int64)
     counts.name = None
     counts.attrs = {}
     return counts
 
 
-def _period_span(freq: str) -> pd.Timedelta:
-    """How long one period of *freq* lasts.
+# ── checks ────────────────────────────────────────────────────────────────────
 
-    Offsets of no fixed length -- ``"MS"``, ``"YS"`` -- are measured by
-    applying the offset to a fixed probe date, so the answer is the length of
-    one particular month or year.
 
-    Raises
-    ------
-    ValueError
-        If *freq* is not a pandas offset alias, or names a zero-length or
-        negative period.
+def _check_frequency(freq: str) -> None:
+    """Raise unless *freq* is a pandas offset alias naming a positive period.
+
+    Notes
+    -----
+    ``to_offset(None)`` returns ``None`` rather than raising, so ``freq=None``
+    would otherwise reach the resample and fail as a ``TypeError`` naming
+    neither the argument nor the array.
     """
     try:
         offset = pd.tseries.frequencies.to_offset(freq)
@@ -556,30 +572,16 @@ def _period_span(freq: str) -> pd.Timedelta:
             "freq must be a pandas offset alias such as '1D', 'MS' or 'YS', "
             f"got {freq!r}"
         ) from error
-    # to_offset gives a Timedelta only for fixed-length offsets, so the length
-    # of a month or a year is measured by applying it rather than converting.
-    span = (_PROBE_DATE + offset) - _PROBE_DATE
-    if span <= pd.Timedelta(0):
+    if offset is None:
         raise ValueError(
-            f"freq={freq!r} spans {span}, which cannot group anything; pass a "
-            "positive frequency"
+            "freq must be a pandas offset alias such as '1D', 'MS' or 'YS', "
+            f"got {freq!r}"
         )
-    return span
-
-
-def _source_spacing(field: xr.DataArray) -> pd.Timedelta:
-    """The median spacing of *field*'s ``time`` coordinate.
-
-    The median rather than the minimum, so that a single duplicated or
-    irregular label does not decide whether an aggregation is a downsample.
-    """
-    times = field.coords[TIME_DIM].values
-    if times.size < 2:
-        return pd.Timedelta(0)
-    return pd.Timedelta(np.median(np.diff(times)))
-
-
-# ── checks ────────────────────────────────────────────────────────────────────
+    if offset.n <= 0:
+        raise ValueError(
+            f"freq={freq!r} names a period of {offset.n} steps, which cannot "
+            "group anything; pass a positive frequency"
+        )
 
 
 def _check_aggregatable(field: xr.DataArray) -> None:
@@ -592,10 +594,14 @@ def _check_aggregatable(field: xr.DataArray) -> None:
     not say which array was at fault.
     """
     if not isinstance(field, xr.DataArray):
+        advice = (
+            " A Dataset holds several variables, whose aggregation rules "
+            "differ; aggregate one field at a time."
+            if isinstance(field, xr.Dataset)
+            else ""
+        )
         raise ValueError(
-            f"expected an xarray.DataArray, got {type(field).__name__}. A "
-            "Dataset holds several variables, whose aggregation rules differ; "
-            "aggregate one field at a time."
+            f"expected an xarray.DataArray, got {type(field).__name__}.{advice}"
         )
     if TIME_DIM not in field.dims:
         raise ValueError(
@@ -608,39 +614,73 @@ def _check_aggregatable(field: xr.DataArray) -> None:
             "coordinate, so there is nothing to group its rows by"
         )
     times = field.coords[TIME_DIM]
-    if not np.issubdtype(times.dtype, np.datetime64):
+    if not _is_datetime(times.dtype):
         raise ValueError(
             f"the {TIME_DIM!r} coordinate has dtype {times.dtype}, and "
             "aggregation needs datetimes. SIPNET's output and the .clim "
             "drivers carry year, day and hour columns instead; convert them "
             "with sipnet_time_index first."
         )
-    values = times.values
-    steps = np.diff(values)
-    if steps.size and np.any(steps <= np.timedelta64(0, "ns")):
-        where = int(np.flatnonzero(steps <= np.timedelta64(0, "ns"))[0]) + 1
+    # Through a DatetimeIndex rather than the raw values, because a
+    # timezone-aware coordinate comes back as an object array of Timestamps,
+    # which numpy will not compare against a timedelta64.
+    stamps = pd.DatetimeIndex(times.values)
+    if len(stamps) == 0:
+        raise ValueError(
+            f"the {TIME_DIM!r} axis is empty, so there is nothing to "
+            "aggregate. A selection that matched no timestamps is the usual "
+            "cause."
+        )
+    if stamps.hasnans:
+        raise ValueError(
+            f"the {TIME_DIM!r} coordinate holds a missing timestamp (NaT), so "
+            "its rows cannot be grouped into periods. Drop those rows, or "
+            "rebuild the axis with sipnet_time_index."
+        )
+    if not stamps.is_monotonic_increasing or stamps.has_duplicates:
+        backwards = np.flatnonzero(stamps[1:] <= stamps[:-1])
+        where = int(backwards[0]) + 1
         raise ValueError(
             f"the {TIME_DIM!r} coordinate is not strictly increasing: entry "
-            f"{where} ({values[where]}) does not follow entry {where - 1} "
-            f"({values[where - 1]}). Two sources concatenated out of order "
+            f"{where} ({stamps[where]}) does not follow entry {where - 1} "
+            f"({stamps[where - 1]}). Two sources concatenated out of order "
             "group into overlapping periods, which is wrong rather than empty."
         )
 
 
 def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
-    """Raise if *freq* names a period shorter than *field*'s own spacing.
+    """Raise if *freq* would group nothing and invent empty periods besides.
 
+    Notes
+    -----
     Upsampling returns a field that is mostly ``NaN`` with no error, and the
     emptiness reads as missing data rather than as a mistake.
+
+    The test is on what the grouping *does*, not on how long a period lasts,
+    because a calendar offset has no single length: a year is 365 days or
+    366, a quarter 90 to 92, a month 28 to 31. Comparing one measured period
+    against the source's spacing therefore picks the wrong side for an annual
+    series that happens to span a leap year, which is exactly what the
+    constraint product is -- and it depends on which probe date the period
+    was measured from, which is arbitrary.
+
+    Two conditions have to hold together. Every row alone in its own period
+    means the aggregation grouped nothing; empty periods besides means it
+    invented rows that were never observed. Either on its own is legitimate:
+    a daily field aggregated to ``"1D"`` groups nothing and is a lawful
+    no-op, and a record with a gap in it produces empty periods while still
+    grouping its rows eight at a time.
     """
-    span = _period_span(freq)
-    spacing = _source_spacing(field)
-    if span < spacing:
+    rows = _rows_per_period(field, freq)
+    n_periods = int(rows.sizes[TIME_DIM])
+    n_occupied = int((rows > 0).sum())
+    n_rows = int(field.sizes[TIME_DIM])
+    if n_occupied == n_rows and n_periods > n_occupied:
         raise ValueError(
-            f"freq={freq!r} spans {span}, which is shorter than the array's "
-            f"own spacing of {spacing}, so this would interpolate rather than "
-            "aggregate and would return a field that is mostly missing. Pass "
-            "a coarser frequency."
+            f"freq={freq!r} puts each of the {n_rows} timestamps in a period "
+            f"of its own and adds {n_periods - n_occupied} empty ones, so "
+            "this would interpolate rather than aggregate and would return a "
+            "field that is mostly missing. Pass a coarser frequency."
         )
 
 

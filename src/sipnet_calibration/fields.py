@@ -17,7 +17,8 @@ A **canonical field** is an ``xarray.DataArray`` holding one variable, with
 * ``lon`` and ``lat`` as non-dimension coordinates on ``site``, whenever
   ``site`` is a dimension;
 * ``units`` and ``long_name`` in ``attrs``;
-* a ``name`` that is a key of the ``VARIABLES`` registry.
+* a ``name`` that is a key of
+  :data:`sipnet_calibration.variable_registry.VARIABLES`.
 
 Which dimensions are present depends on the quantity. A single deterministic
 run is ``(time,)``, an initial-condition ensemble is ``(member, site)``, the
@@ -71,7 +72,8 @@ Nothing in this module is implemented yet. The drivers and the annual
 constraints already have readers of their own that produce the form described
 above, so it is the remaining sources -- SIPNET output, the initial
 conditions, the NEE observations and the calibration output -- that this
-module is still owed for. The ``VARIABLES`` registry is issue #6.
+module is still owed for. The ``VARIABLES`` registry it checks names against
+is :mod:`sipnet_calibration.variable_registry`.
 
 Three traps are worth knowing before writing an adapter:
 
@@ -84,10 +86,9 @@ Three traps are worth knowing before writing an adapter:
   parse; ``cftime`` does not help. The dimension is length one and carries no
   information (issue #3).
 * :func:`from_eki_predictions` unstacks a ``(J, N)`` block with the
-  ``(site, variable, time)`` index from
-  :func:`sipnet_calibration.observation_operators.obs_index`. It must be the
-  same index the
-  observation operator used to build the observation vector, or the
-  predictions come back mislabeled against the observations they are compared
-  with.
+  ``(site, variable, time)`` index that the observation operator used to build
+  the observation vector, or the predictions come back mislabeled against the
+  observations they are compared with. That index is ``obs_index``, which
+  :mod:`sipnet_calibration.observation_operators` is to provide and which is
+  not written yet (issue #23).
 """

@@ -13,33 +13,22 @@ the period, and plotting a rate against a total is wrong by orders of
 magnitude. Neither looks wrong on a figure.
 
 It is also what replaces a function per variable -- ``plot_nee``, ``plot_gpp``,
-``plot_lai`` -- which is the combinatorial trap the plotting design exists to
-avoid.
+``plot_lai`` -- which is the combinatorial trap the plotting design avoids.
 
-Where it sits
--------------
-This is a **data-layer** module, not a plotting one, and it imports nothing
-from :mod:`sipnet_calibration.plotting`. That is deliberate and load-bearing:
-:func:`sipnet_calibration.observation_operators.aggregate_time` reads the
-registry and is imported by the observation operator, so a registry under
-``plotting/`` would make the likelihood import ``matplotlib.pyplot``, and
-would invert the dependency direction that
-:mod:`sipnet_calibration`'s own docstring states. The plotting layer reads
-this module; this module reads nothing.
+Input data
+----------
+None. It is a literal mapping, with no file, environment or import dependency
+of its own, and it imports nothing from
+:mod:`sipnet_calibration.plotting`. It sits in the data layer rather than
+under ``plotting/`` because
+:func:`sipnet_calibration.observation_operators.aggregate_time` reads it and
+will be imported by the observation operator: under ``plotting/`` that would
+pull ``matplotlib.pyplot`` into the likelihood, and would invert the
+dependency direction :mod:`sipnet_calibration`'s own docstring states. The
+plotting layer reads this module; this module reads nothing.
 
-The dependency runs::
-
-    variable_registry  ->  observation_operators  ->  the likelihood
-                       ->  fields.validate_field
-                       ->  plotting/
-
-What it reads
--------------
-Nothing. It is a literal mapping, with no file, environment or import
-dependency of its own.
-
-The data model
---------------
+Data model
+----------
 :data:`VARIABLES` maps a **processed** variable name to a :class:`VarSpec`.
 The keys follow the project's naming convention -- lower case with
 underscores, and no abbreviation that is not universal -- so ``lai`` and
@@ -69,10 +58,10 @@ lives with each reader, in ``drivers.SOURCE_VARIABLE_NAMES`` and
 ======================= ==================================================
 
 **Which variables are here.** The eight meteorological drivers, the four
-annual constraints, and ``nee``. The first twelve have readers, so their units
-and rules are checked against what those readers write. ``nee`` is here
-because its canonical unit is a decision this module has to record; no reader
-produces it yet.
+annual constraints, and ``nee``. The first twelve have readers, so their
+units are checked against what those readers write, and the drivers'
+aggregation rules with them. ``nee`` is here because its canonical unit is a
+decision this module has to record; no reader produces it yet.
 
 **Which are deliberately absent.** SIPNET's other outputs -- ``gpp``, the
 carbon pools, the cumulative fluxes -- and the initial-condition variables.
@@ -103,7 +92,8 @@ what it returns, which is what tells the two apart.
 
 **A driver variable's rule appears twice**, here and in
 ``drivers.DRIVER_VARIABLE_ATTRS``, which writes an ``aggregation`` attribute
-onto every driver field. This module is the authority:
+onto every driver field. This module is the authority (issue #24 removes the
+duplication):
 ``aggregate_time`` reads the registry and never the attribute. The two are
 asserted equal in ``tests/test_variable_registry.py``, so neither can be
 changed alone; removing the duplication means the reader deriving its
@@ -168,10 +158,15 @@ AGGREGATION_RULES: tuple[str, ...] = ("sum", "mean", "last", "first", INSTANTANE
 #:         = rate[umol CO2 m-2 s-1] * GRAMS_CARBON_PER_MICROMOLE_CO2
 #:           * timestep_length_days * 86400
 #:
-#: The timestep length must come from the ``.clim`` ``length`` column
-#: (``drivers.CLIM_FILE_CONSTANTS["length"]``, asserted per file), never from
-#: an assumed three hours. Agrees with the factor the producer of the
-#: gap-filled product documents, ``kg C m-2 s-1 = umol CO2 m-2 s-1 * 12e-9``.
+#: The timestep length must come from the ``.clim`` ``length`` column, whose
+#: value is ``drivers.CLIM_FILE_CONSTANTS["length"]`` and is checked against
+#: every file the reader parses, rather than from an assumed three hours.
+#:
+#: The producer of the gap-filled product documents the conversion as
+#: ``kg C m-2 s-1 = umol CO2 m-2 s-1 * 12e-9``, which is the same calculation
+#: with carbon's molar mass rounded to 12. The two differ by 0.09%; the
+#: unrounded value is used here because nothing depends on matching the
+#: producer's arithmetic digit for digit, and 12.011 is the right mass.
 GRAMS_CARBON_PER_MICROMOLE_CO2 = 12.011e-6
 
 

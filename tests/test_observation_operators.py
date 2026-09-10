@@ -8,8 +8,8 @@ trusting that column's value.
 The ``aggregate_time`` cases exist mostly to pin down two things that fail
 silently. The first is sum versus mean: a per-timestep total aggregated with a
 mean is wrong by the number of steps in the period, which for 3-hourly to
-daily is a factor of eight, and the result looks entirely plausible on a
-figure. The second is an empty period, which ``.resample(...).sum()`` reports
+daily is a factor of eight, and nothing about the resulting figure looks
+wrong. The second is an empty period, which ``.resample(...).sum()`` reports
 as zero rather than as missing, so a day with no observations reads as zero
 flux.
 
@@ -22,6 +22,7 @@ survives an entire suite of same-shaped fixtures.
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -161,6 +162,45 @@ class TestSipnetTimeIndex:
     def test_rejects_rows_out_of_order(self):
         with pytest.raises(ValueError, match="not strictly increasing"):
             sipnet_time_index([2013, 2013], [2, 1], [0.0, 0.0])
+
+    def test_rejects_a_year_or_day_that_is_not_numeric(self):
+        """A boolean would otherwise pass as 0 or 1, and a string that is not
+        a number reaches the conversion of last resort. A string that *is* a
+        number is accepted, which is what a column read as text gives."""
+        with pytest.raises(ValueError, match="year must be numeric"):
+            sipnet_time_index(["twenty thirteen"], [1], [0.0])
+        with pytest.raises(ValueError, match="must be numeric, got booleans"):
+            sipnet_time_index([True], [1], [0.0])
+        assert sipnet_time_index(["2013"], [1], [0.0])[0] == pd.Timestamp("2013-01-01")
+
+    def test_rejects_a_non_finite_year_or_day(self):
+        """``NaN`` is not a whole number, and floor-comparing it silently
+        yields False, so it needs its own guard."""
+        with pytest.raises(ValueError, match="year must hold whole numbers"):
+            sipnet_time_index([np.nan], [1], [0.0])
+        with pytest.raises(ValueError, match="day_of_year must hold whole numbers"):
+            sipnet_time_index([2013], [np.inf], [0.0])
+
+    def test_a_timestep_whose_seconds_are_not_exact_is_rounded(self):
+        """A step of 4.8 h divides 24 into five whole steps but is not exactly
+        representable, so the fourth slot computes as 51839.99999999999
+        seconds. Truncating instead of rounding puts it one second early, at
+        14:23:59. The steps SIPNET is actually run at are all exact, so this
+        is what keeps the function right for any step that divides 24."""
+        index = sipnet_time_index([2013], [1], [15.0], timestep_hours=4.8)
+        assert index[0] == pd.Timestamp("2013-01-01 14:24:00")
+
+    def test_a_half_hour_timestep_lands_on_exact_seconds(self):
+        """0.5 is a step SIPNET is run at, and it is the smallest one whose
+        slot offset is not already a whole number of seconds."""
+        index = sipnet_time_index(
+            [2013] * 4, [1] * 4, [0.0, 0.5, 1.0, 1.5], timestep_hours=0.5
+        )
+        pd.testing.assert_index_equal(
+            index,
+            pd.date_range("2013-01-01", periods=4, freq="30min").as_unit("ns"),
+            check_names=False,
+        )
 
     @pytest.mark.skipif(not REAL_FILE.exists(), reason="the raw driver file is not present")
     def test_reproduces_the_real_files_grid(self):
@@ -369,6 +409,144 @@ class TestEmptyPeriods:
         )
 
 
+class TestEmptyPeriodsWithEveryDimensionPresent:
+    """The guard on the shape it exists for.
+
+    Every case in :class:`TestEmptyPeriods` is one-dimensional, and the
+    variable the guard was written for is ``(member, site, time)`` NEE that is
+    about 55% missing. A guard that masked only a one-dimensional field, or
+    that broadcast wrongly against a ``member`` dimension, would pass all of
+    those and fail here.
+    """
+
+    def test_only_the_missing_member_site_pair_goes_missing(self):
+        """The day is blanked for one member at one site. Every other cell of
+        that day must still be finite, and the blanked one must be NaN --
+        checked cell by cell, so a guard that masked the whole day, or none of
+        it, or the wrong pair, fails."""
+        field = three_hourly_field("par", dims=("member", "site", "time"), n_days=3)
+        values = field.values.copy()
+        values[1, 1, STEPS_PER_DAY : 2 * STEPS_PER_DAY] = np.nan
+        field = field.copy(data=values)
+
+        daily = aggregate_time(field, "1D")
+        expected_missing = np.zeros((2, 2, 3), dtype=bool)
+        expected_missing[1, 1, 1] = True
+        np.testing.assert_array_equal(np.isnan(daily.values), expected_missing)
+
+        finite = values.reshape(2, 2, 3, STEPS_PER_DAY).sum(axis=-1)
+        np.testing.assert_allclose(
+            daily.values[~expected_missing], finite[~expected_missing]
+        )
+
+    def test_a_partial_day_at_one_pair_is_dropped_only_there(self):
+        """``min_count`` with more than one dimension present: only the pair
+        whose day is short goes missing."""
+        field = three_hourly_field("par", dims=("member", "site", "time"), n_days=3)
+        values = field.values.copy()
+        values[0, 1, STEPS_PER_DAY + 3 : 2 * STEPS_PER_DAY] = np.nan
+        field = field.copy(data=values)
+
+        daily = aggregate_time(field, "1D", min_count=STEPS_PER_DAY)
+        expected_missing = np.zeros((2, 2, 3), dtype=bool)
+        expected_missing[0, 1, 1] = True
+        np.testing.assert_array_equal(np.isnan(daily.values), expected_missing)
+
+    def test_the_same_holds_when_time_is_not_the_last_dimension(self):
+        """A ``(time, site)`` field, so a guard that indexed positionally
+        rather than by dimension name masks the wrong cells."""
+        field = three_hourly_field("par", dims=("time", "site"), n_days=3)
+        values = field.values.copy()
+        values[STEPS_PER_DAY : 2 * STEPS_PER_DAY, 0] = np.nan
+        field = field.copy(data=values)
+
+        daily = aggregate_time(field, "1D")
+        expected_missing = np.zeros((3, 2), dtype=bool)
+        expected_missing[1, 0] = True
+        np.testing.assert_array_equal(np.isnan(daily.values), expected_missing)
+
+    def test_counts_are_per_cell_not_per_period(self):
+        """``aggregation_counts`` has to count within each member and site,
+        not collapse them, or the completeness rule it exists to support is
+        wrong wherever coverage differs across the pool."""
+        field = three_hourly_field("par", dims=("member", "site", "time"), n_days=3)
+        values = field.values.copy()
+        values[1, 1, STEPS_PER_DAY : 2 * STEPS_PER_DAY] = np.nan
+        values[0, 0, STEPS_PER_DAY : STEPS_PER_DAY + 3] = np.nan
+        field = field.copy(data=values)
+
+        counts = aggregation_counts(field, "1D")
+        expected = np.isfinite(values.reshape(2, 2, 3, STEPS_PER_DAY)).sum(axis=-1)
+        np.testing.assert_array_equal(counts.values, expected)
+        assert counts.dims == ("member", "site", "time")
+
+
+class TestFrequenciesOtherThanDaily:
+    """Nothing above leaves the daily period, so a guard or a grouping that is
+    right only at ``"1D"`` -- counts taken at a hard-coded frequency, say --
+    would pass the rest of the suite."""
+
+    @staticmethod
+    def three_months() -> xr.DataArray:
+        """A 3-hourly ``par`` field spanning January to March."""
+        return three_hourly_field("par", n_days=90, start="2013-01-01")
+
+    def test_monthly_totals_match_an_independent_groupby(self):
+        """Compared against a pandas groupby on the calendar month, which
+        shares no code with the resample under test."""
+        par = self.three_months()
+        frame = pd.Series(par.values, index=pd.DatetimeIndex(par["time"].values))
+        expected = frame.groupby(frame.index.month).sum().to_numpy()
+
+        monthly = aggregate_time(par, "MS")
+        np.testing.assert_allclose(monthly.values, expected)
+        assert monthly.sizes["time"] == 3
+
+    def test_the_monthly_periods_are_the_month_starts(self):
+        """A frequency silently doubled to ``"2MS"`` conserves the total and
+        would pass a sum-conservation check; the labels are what catch it."""
+        monthly = aggregate_time(self.three_months(), "MS")
+        pd.testing.assert_index_equal(
+            pd.DatetimeIndex(monthly["time"].values),
+            pd.date_range("2013-01-01", periods=3, freq="MS"),
+            check_names=False,
+        )
+
+    def test_monthly_counts_are_taken_over_the_month(self):
+        """``aggregation_counts`` at a frequency other than daily, against a
+        numpy count, with a month made deliberately short so the three counts
+        differ and a hard-coded period cannot pass."""
+        par = self.three_months()
+        values = par.values.copy()
+        values[STEPS_PER_DAY * 31 : STEPS_PER_DAY * 33] = np.nan  # two days in February
+        values[STEPS_PER_DAY * 60 : STEPS_PER_DAY * 61] = np.nan  # one day in March
+        par = par.copy(data=values)
+
+        counts = aggregation_counts(par, "MS")
+        stamps = pd.DatetimeIndex(par["time"].values)
+        expected = [
+            int(np.isfinite(values[stamps.month == month]).sum()) for month in (1, 2, 3)
+        ]
+        np.testing.assert_array_equal(counts.values, expected)
+        assert len(set(expected)) == 3
+
+    def test_the_completeness_guard_is_taken_at_the_target_period(self):
+        """A whole month missing must come back as one missing month. A guard
+        that took its counts at a hard-coded ``"1D"`` would align them to the
+        wrong axis and drop a month that was fully observed."""
+        par = self.three_months()
+        values = par.values.copy()
+        values[: STEPS_PER_DAY * 31] = np.nan  # all of January
+        par = par.copy(data=values)
+
+        monthly = aggregate_time(par, "MS")
+        np.testing.assert_array_equal(np.isnan(monthly.values), [True, False, False])
+        stamps = pd.DatetimeIndex(par["time"].values)
+        np.testing.assert_allclose(
+            monthly.values[1], np.nansum(values[stamps.month == 2])
+        )
+
+
 class TestPartialPeriods:
     def test_a_partial_period_is_returned_not_scaled(self):
         """Three of a day's eight rows sum to those three values. Scaling
@@ -424,13 +602,13 @@ class TestPartialPeriods:
         with pytest.raises(ValueError, match="min_count must be at least 1"):
             aggregate_time(par, "1D", min_count=-3)
 
-    def test_min_count_must_be_an_integer(self):
-        """``min_count=1.5`` would compare as a float and quietly work."""
-        par = three_hourly_field("par")
+    @pytest.mark.parametrize("min_count", [1.5, "8", True, False, None])
+    def test_min_count_must_be_an_integer(self, min_count):
+        """``min_count=1.5`` would compare as a float and quietly work, and
+        ``True`` is an ``int`` in Python, so without the boolean guard it
+        would silently pass as 1."""
         with pytest.raises(ValueError, match="min_count must be an integer"):
-            aggregate_time(par, "1D", min_count=1.5)
-        with pytest.raises(ValueError, match="min_count must be an integer"):
-            aggregate_time(par, "1D", min_count="8")
+            aggregate_time(three_hourly_field("par"), "1D", min_count=min_count)
 
 
 class TestStocksAreRefused:
@@ -500,53 +678,135 @@ class TestExplicitHow:
         last = aggregate_time(par, "1D", how="last")
         assert last.values[0] == pytest.approx(expected)
 
+    def test_first_skips_a_missing_opening_value(self):
+        """The counterpart to ``last``: the first *observed* value of the
+        period, not the first row, which is ``NaN`` wherever a record starts
+        part-way through one."""
+        par = three_hourly_field("par")
+        par[:2] = np.nan
+        expected = daily_blocks(par)[0, 2]
+        first = aggregate_time(par, "1D", how="first")
+        assert first.values[0] == pytest.approx(expected)
+
     def test_an_unknown_how_raises_and_lists_the_methods(self):
         """A typo such as ``how="total"`` would otherwise reach xarray."""
         with pytest.raises(ValueError, match=r"how must be one of \['sum'"):
             aggregate_time(three_hourly_field("par"), "1D", how="total")
 
 
+def annual_field(name: str, years, *, month_day: str = "07-15") -> xr.DataArray:
+    """An annual series, the shape the constraint product has."""
+    return xr.DataArray(
+        np.arange(float(len(years))),
+        dims="time",
+        coords={"time": pd.to_datetime([f"{y}-{month_day}" for y in years])},
+        name=name,
+        attrs={"units": "arbitrary", "long_name": f"Synthetic {name}"},
+    )
+
+
 class TestUpsamplingIsRefused:
     def test_a_finer_target_than_the_source_raises(self):
         """``"1h"`` on a 3-hourly field returns a field that is two-thirds
         ``NaN`` with no error, and the emptiness reads as missing data."""
-        with pytest.raises(ValueError, match="shorter than the array's own spacing"):
+        with pytest.raises(ValueError, match="would interpolate rather than"):
             aggregate_time(three_hourly_field("par"), "1h")
+
+    def test_a_target_only_slightly_finer_raises(self):
+        """``"2h"`` on a 3-hourly field is upsampling by a ratio of 1.5, so a
+        check with slack in it would let this through."""
+        with pytest.raises(ValueError, match="would interpolate rather than"):
+            aggregate_time(three_hourly_field("par"), "2h")
 
     def test_an_annual_field_refuses_a_monthly_target(self):
         """The case that arises for real: the annual constraints in a report
         that aggregates every variable to one frequency."""
-        annual = xr.DataArray(
-            np.arange(4.0),
-            dims="time",
-            coords={
-                "time": pd.to_datetime(
-                    [f"{year}-07-15" for year in (2012, 2013, 2014, 2015)]
-                )
-            },
-            name="lai",
-        )
-        with pytest.raises(ValueError, match="shorter than the array's own spacing"):
+        annual = annual_field("lai", (2012, 2013, 2014, 2015))
+        with pytest.raises(ValueError, match="would interpolate rather than"):
             aggregate_time(annual, "MS", how="last")
 
-    def test_a_target_equal_to_the_source_spacing_is_allowed(self):
-        """Aggregating a daily field to ``"1D"`` is a no-op, not an error."""
-        daily = three_hourly_field("par").resample(time="1D").sum()
-        daily.name = "par"
+    @pytest.mark.parametrize("freq", ["YS", "YE"])
+    @pytest.mark.parametrize("years", [(2011, 2012, 2013), (2015, 2016)])
+    def test_an_annual_field_accepts_an_annual_target_across_a_leap_year(
+        self, freq, years
+    ):
+        """The regression that a duration comparison gets wrong. A year is 365
+        days or 366, so an annual series spanning a leap year has a spacing
+        longer than a measured non-leap year, and a check that compares the
+        two refuses a downsample that is plainly one. The constraint product
+        is exactly this series, and ``how="last"`` is what its own docstring
+        tells a caller to pass."""
+        annual = annual_field("lai", years)
+        result = aggregate_time(annual, freq, how="last")
+        assert result.sizes["time"] == len(years)
+        np.testing.assert_allclose(sorted(result.values), sorted(annual.values))
+
+    @pytest.mark.parametrize(
+        ("freq", "source_freq"), [("QS", "QS"), ("W", "7D"), ("ME", "ME")]
+    )
+    def test_a_source_at_its_own_frequency_is_accepted(self, freq, source_freq):
+        """Quarters, weeks and month-ends all have lengths that vary, and a
+        duration comparison measured from one probe date refuses every one of
+        them."""
+        times = pd.date_range("2020-01-05", periods=8, freq=source_freq)
+        field = xr.DataArray(
+            np.arange(8.0), dims="time", coords={"time": times}, name="par"
+        )
+        assert aggregate_time(field, freq).sizes["time"] == 8
+
+    def test_a_target_equal_to_the_source_spacing_is_a_no_op_with_provenance(self):
+        """Aggregating a daily field to ``"1D"`` is a no-op, not an error --
+        but it is still an aggregation, so it records what it did. A
+        short-circuit that returned the input unchanged would pass on the
+        values alone."""
+        values = np.arange(1.0, 4.0)
+        daily = xr.DataArray(
+            values,
+            dims="time",
+            coords={"time": pd.date_range("2013-01-01", periods=3, freq="1D")},
+            name="par",
+            attrs={"units": "arbitrary", "long_name": "Synthetic par"},
+        )
         result = aggregate_time(daily, "1D")
-        np.testing.assert_allclose(result.values, daily.values)
+        np.testing.assert_allclose(result.values, values)
+        assert result.name == "par"
+        assert result.attrs["aggregation_applied"] == "sum"
+        assert result.attrs["aggregation_freq"] == "1D"
+
+    def test_a_single_timestamp_is_not_upsampling(self):
+        """One row produces one period at any frequency, so there is nothing
+        to refuse. A one-year slice of the annual constraints is this case."""
+        one = annual_field("lai", (2015,))
+        assert aggregate_time(one, "YS", how="last").sizes["time"] == 1
+
+    def test_a_long_gap_does_not_make_a_downsample_look_like_one(self):
+        """A record with a month-long hole is still 3-hourly, and a daily
+        aggregation of it is a downsample. A check that took the widest gap as
+        the source's spacing would refuse this."""
+        times = pd.DatetimeIndex(
+            list(pd.date_range("2013-01-01", periods=8, freq="3h"))
+            + list(pd.date_range("2013-02-01", periods=8, freq="3h"))
+        )
+        field = xr.DataArray(
+            np.arange(16.0), dims="time", coords={"time": times}, name="par"
+        )
+        assert aggregate_time(field, "1D").sizes["time"] == 32
 
     def test_a_coarser_target_of_no_fixed_length_is_allowed(self):
-        """``"MS"`` and ``"YS"`` have no fixed length, so the comparison has
-        to measure them rather than convert them to a ``Timedelta``."""
+        """``"MS"`` and ``"YS"`` have no fixed length, so the check cannot
+        rest on converting them to a duration."""
         par = three_hourly_field("par", n_days=40)
         for freq in ("MS", "YS"):
             result = aggregate_time(par, freq)
             assert result.values.sum() == pytest.approx(par.values.sum())
 
-    def test_a_frequency_that_is_not_an_offset_alias_raises(self):
-        with pytest.raises(ValueError, match="pandas offset alias"):
-            aggregate_time(three_hourly_field("par"), "every other Tuesday")
+    @pytest.mark.parametrize("freq", ["every other Tuesday", None, "0D", "-1D"])
+    def test_a_frequency_that_is_not_a_positive_offset_alias_raises(self, freq):
+        """``to_offset(None)`` returns ``None`` rather than raising, so
+        ``freq=None`` reaches the resample as a ``TypeError`` unless it is
+        caught here."""
+        with pytest.raises(ValueError, match="freq"):
+            aggregate_time(three_hourly_field("par"), freq)
 
 
 class TestWhatSurvivesAggregation:
@@ -680,6 +940,47 @@ class TestTheTimeAxis:
         with pytest.raises(ValueError, match="not strictly increasing"):
             aggregate_time(par.assign_coords(time=stamps), "1D")
 
+    def test_a_timezone_aware_time_coordinate_is_accepted(self):
+        """xarray groups a tz-aware axis correctly, and ``drivers`` records
+        ``time_zone = "UTC"`` on the coordinate, so a caller localizing the
+        index is doing the obvious thing. The dtype check has to recognize it
+        rather than raise on the pandas extension dtype."""
+        par = three_hourly_field("par")
+        aware = par.assign_coords(
+            time=pd.DatetimeIndex(par["time"].values).tz_localize("UTC")
+        )
+        daily = aggregate_time(aware, "1D")
+        np.testing.assert_allclose(daily.values, daily_blocks(par).sum(axis=1))
+
+    def test_an_empty_time_axis_raises_with_a_message_of_our_own(self):
+        """A selection that matched no timestamps. Without the check, xarray
+        reports ``__resample_dim__ must not be empty``, naming an internal of
+        its own rather than the array or the argument."""
+        empty = xr.DataArray(
+            np.ones(0), dims="time", coords={"time": pd.DatetimeIndex([])}, name="par"
+        )
+        with pytest.raises(ValueError, match="axis is empty"):
+            aggregate_time(empty, "1D")
+        with pytest.raises(ValueError, match="axis is empty"):
+            aggregation_counts(empty, "1D")
+
+    def test_a_missing_timestamp_raises(self):
+        """``NaT`` compares False against everything, so it slips past a
+        monotonicity check and surfaces much later as a pandas message about
+        a non-monotonic index."""
+        par = three_hourly_field("par")
+        stamps = par["time"].values.copy().astype("datetime64[ns]")
+        stamps[4] = np.datetime64("NaT")
+        with pytest.raises(ValueError, match="missing timestamp"):
+            aggregate_time(par.assign_coords(time=stamps), "1D")
+
+    def test_the_arguments_are_checked_before_the_array(self):
+        """A mistake in the call is reported as itself. With the array
+        checked first, passing a bad ``min_count`` alongside something that is
+        not a field reports the field, and the caller fixes the wrong thing."""
+        with pytest.raises(ValueError, match="min_count must be at least 1"):
+            aggregate_time("not a field", "1D", min_count=0)
+
     def test_something_that_is_not_a_dataarray_raises(self):
         """A ``Dataset``, which is what an adapter that has not run yet would
         hand over."""
@@ -739,12 +1040,42 @@ class TestAggregationCounts:
         counts = aggregation_counts(three_hourly_field("not_a_variable"), "1D")
         np.testing.assert_array_equal(counts.values, [STEPS_PER_DAY] * 3)
 
+    def test_it_returns_integer_counts_and_is_not_a_canonical_field(self):
+        """The documented contract. A float count breaks the ``counts == 8``
+        idiom the module's own Usage section shows, and a count carrying the
+        field's ``units`` would be plottable as if it were the field."""
+        counts = aggregation_counts(three_hourly_field("par"), "1D")
+        assert counts.dtype == np.int64
+        assert counts.name is None
+        assert counts.attrs == {}
+
+    def test_a_period_holding_no_rows_at_all_counts_zero(self):
+        """Distinct from a period whose rows are all missing: here the time
+        axis itself has a gap, so the sum over the empty group is ``NaN``
+        before the fill. Casting that to ``int64`` is undefined -- it
+        saturates to 0 on arm64 and to INT64_MIN on x86-64, which is what the
+        cluster runs -- so a machine-dependent count would read as fully
+        observed there."""
+        times = pd.DatetimeIndex(
+            list(pd.date_range("2013-01-01", periods=8, freq="3h"))
+            + list(pd.date_range("2013-01-05", periods=8, freq="3h"))
+        )
+        field = xr.DataArray(
+            np.arange(16.0), dims="time", coords={"time": times}, name="par"
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            counts = aggregation_counts(field, "1D")
+        np.testing.assert_array_equal(counts.values, [8, 0, 0, 0, 8])
+        assert counts.dtype == np.int64
+        assert np.isnan(aggregate_time(field, "1D").values[1:4]).all()
+
     def test_it_refuses_the_same_time_axes_aggregate_time_refuses(self):
         """The checks are shared, so a caller cannot get a count for a field
         that cannot be aggregated."""
         with pytest.raises(ValueError, match="needs 'time'"):
             aggregation_counts(three_hourly_field("par", dims=("site",)), "1D")
-        with pytest.raises(ValueError, match="shorter than the array's own spacing"):
+        with pytest.raises(ValueError, match="would interpolate rather than"):
             aggregation_counts(three_hourly_field("par"), "1h")
 
 

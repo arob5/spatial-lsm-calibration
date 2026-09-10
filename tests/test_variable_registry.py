@@ -45,6 +45,30 @@ CENTERED_ON_ZERO = {"nee", "air_temperature", "soil_temperature"}
 #: The processed naming convention: lower case, digits and underscores.
 PROCESSED_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
+#: Every registered variable, and its whole specification, written out
+#: independently of the registry. Comparing the two as a mapping is what makes
+#: a wrong colormap, a mislabeled variable, a stray ``transform`` or an entry
+#: added or deleted fail here rather than in a figure -- none of which a check
+#: that only asks "is this a valid colormap name?" can see. The values are the
+#: agreed ones; changing the registry means changing this table too, which is
+#: the point.
+EXPECTED = {
+    # name:                     (label,                units,       agg,      cmap,      center, sign, transform)
+    "air_temperature":          ("Air temperature",    "deg C",     "mean",   "RdBu_r",  0.0,    None, None),
+    "soil_temperature":         ("Soil temperature",   "deg C",     "mean",   "RdBu_r",  0.0,    None, None),
+    "par":                      ("PAR",                "mol m-2",   "sum",    "viridis", None,   None, None),
+    "precipitation":            ("Precipitation",      "mm",        "sum",    "Blues",   None,   None, None),
+    "vpd":                      ("VPD",                "Pa",        "mean",   "viridis", None,   None, None),
+    "soil_vpd":                 ("Soil VPD",           "Pa",        "mean",   "viridis", None,   None, None),
+    "vapor_pressure":           ("Vapor pressure",     "Pa",        "mean",   "viridis", None,   None, None),
+    "wind_speed":               ("Wind speed",         "m s-1",     "mean",   "viridis", None,   None, None),
+    "aboveground_wood_carbon":  ("Aboveground wood C", "Mg C ha-1", "instantaneous", "viridis", None, None, None),
+    "lai":                      ("LAI",                "m2 m-2",    "instantaneous", "YlGn",    None, None, None),
+    "soil_moisture_percent":    ("Soil moisture",      "percent",   "instantaneous", "Blues",   None, None, None),
+    "total_soil_carbon":        ("Total soil C",       "kg C m-2",  "instantaneous", "viridis", None, None, None),
+    "nee":                      ("NEE",                "g C m-2",   "sum",    "RdBu_r",  0.0, "+ to atmosphere", None),
+}
+
 
 class TestTheEntries:
     def test_every_agg_is_a_known_rule(self):
@@ -78,6 +102,18 @@ class TestTheEntries:
         for name, spec in VARIABLES.items():
             assert spec.transform is None or spec.transform in allowed, name
 
+    def test_the_spec_defaults_are_the_neutral_ones(self):
+        """Every registered entry states its own colormap, so the defaults are
+        reached only by an entry added later. They should be the neutral
+        choices rather than whatever was convenient."""
+        bare = VarSpec(label="X", units="u", agg="sum")
+        assert (bare.cmap, bare.center, bare.sign, bare.transform) == (
+            "viridis",
+            None,
+            None,
+            None,
+        )
+
     def test_a_spec_cannot_be_mutated(self):
         """Frozen, so a consumer holding an entry cannot edit the registry."""
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -90,12 +126,48 @@ class TestTheEntries:
         for name in VARIABLES:
             assert PROCESSED_NAME.match(name), name
 
-    def test_the_registry_holds_every_variable_that_has_a_reader(self):
-        """A registry that lost its entries would make every other test here
-        vacuously true, since they all loop over it."""
+    def test_the_registry_holds_exactly_the_expected_variables(self):
+        """Neither an entry deleted nor one added silently. The module
+        docstring says SIPNET's other outputs and the initial-condition
+        variables are deliberately absent, and this is what holds them out."""
+        assert set(VARIABLES) == set(EXPECTED)
         assert set(VARIABLES) >= (
             set(DRIVER_VARIABLE_ATTRS) | set(CONSTRAINT_VARIABLE_ATTRS) | {"nee"}
         )
+
+    def test_every_entry_matches_the_expected_specification(self):
+        """The whole `VarSpec`, field by field, against an independent table.
+        Checking that a colormap name is *valid* does not notice ``par``
+        drawn in ``gist_ncar``, that a label is a non-empty string does not
+        notice ``par`` labeled "VPD", and neither notices a ``transform``
+        appearing on a variable that should not have one."""
+        actual = {
+            name: (
+                spec.label,
+                spec.units,
+                spec.agg,
+                spec.cmap,
+                spec.center,
+                spec.sign,
+                spec.transform,
+            )
+            for name, spec in VARIABLES.items()
+        }
+        assert actual == EXPECTED
+
+    def test_the_labels_are_distinct(self):
+        """Two variables sharing a label make a faceted figure unreadable and
+        a legend wrong, and the per-entry comparison above would not notice a
+        swap that kept both strings in the table."""
+        labels = [spec.label for spec in VARIABLES.values()]
+        assert len(set(labels)) == len(labels)
+
+    def test_the_refusal_sentinel_keeps_its_spelling(self):
+        """Every other assertion about ``INSTANTANEOUS`` compares the symbol
+        against itself, so its *value* is pinned nowhere else -- and that
+        value is the string ``drivers``, ``constraints`` and the error
+        messages a user reads all spell out."""
+        assert INSTANTANEOUS == "instantaneous"
 
 
 class TestCentersAndSigns:
@@ -129,7 +201,9 @@ class TestAgreementWithTheReaders:
 
     def test_every_driver_variable_is_registered(self):
         """A reader producing a field the registry does not know would make
-        ``aggregate_time`` raise on data the project already loads."""
+        ``aggregate_time`` raise on data the project already loads. Pinned as
+        an equality for the same reason as the constraints below."""
+        assert len(DRIVER_VARIABLE_ATTRS) == 8
         assert not sorted(set(DRIVER_VARIABLE_ATTRS) - set(VARIABLES))
 
     def test_driver_aggregation_attributes_match_the_registry(self):
@@ -154,7 +228,15 @@ class TestAgreementWithTheReaders:
         }
 
     def test_every_constraint_variable_is_registered(self):
-        """As for the drivers."""
+        """As for the drivers. The equality is what stops the two loops below
+        going vacuous if the constraint mapping is ever emptied -- a subset
+        test alone passes trivially against nothing."""
+        assert set(CONSTRAINT_VARIABLE_ATTRS) == {
+            "aboveground_wood_carbon",
+            "lai",
+            "soil_moisture_percent",
+            "total_soil_carbon",
+        }
         assert not sorted(set(CONSTRAINT_VARIABLE_ATTRS) - set(VARIABLES))
 
     def test_constraint_units_match_the_registry(self):
@@ -204,11 +286,15 @@ class TestVariableSpec:
 
 
 class TestTheCarbonConversionFactor:
-    def test_agrees_with_the_factor_the_producer_documents(self):
-        """The producer gives ``kg C m-2 s-1 = umol CO2 m-2 s-1 * 12e-9``, so
-        the constant is that factor scaled to grams, to the precision the
-        rounder figure implies."""
-        assert GRAMS_CARBON_PER_MICROMOLE_CO2 == pytest.approx(12e-9 * 1e3, rel=1e-3)
+    def test_differs_from_the_producer_s_rounded_factor_by_the_stated_amount(self):
+        """The producer gives ``kg C m-2 s-1 = umol CO2 m-2 s-1 * 12e-9``,
+        which is the same calculation with carbon's molar mass rounded to 12.
+        The gap is asserted rather than tolerated: a tolerance wide enough to
+        call the two equal is a tolerance wide enough to hide a real drift,
+        and the module docstring quotes this figure."""
+        ratio = GRAMS_CARBON_PER_MICROMOLE_CO2 / (12e-9 * 1e3)
+        assert ratio == pytest.approx(12.011 / 12, rel=1e-12)
+        assert abs(ratio - 1) == pytest.approx(0.00092, abs=5e-6)
 
     def test_is_the_molar_mass_of_carbon_in_grams_per_micromole(self):
         """One micromole of CO2 carries one micromole of carbon, so the factor

@@ -335,10 +335,9 @@ Columns follow the 14-column layout defined by [pySIPNET].
 **Interpretation.** There is no datetime column; time is given by the `year`,
 `day` and `time` triple. The `time` column cannot be used as written (Note 15),
 so timestamps are assembled from `year`, `day` and the row's position within its
-day by `sipnet_calibration.observation_operators.sipnet_time_index`. What clock
-those labels
-are on, and whether a label marks the start or the end of its three hours, is
-inferred rather than documented (Note 16). Two columns are integrated
+day by `sipnet_calibration.observation_operators.sipnet_time_index`. What
+clock those labels are on, and whether a label marks the start or the end of
+its three hours, is inferred rather than documented (Note 16). Two columns are integrated
 quantities rather than rates: `par` and `precip` are totals over the timestep,
 so temporal aggregation of either is a sum rather than a mean. SIPNET requires
 `vpd` and `wspd` to be strictly positive and silently clamps values that are
@@ -614,7 +613,7 @@ Conversions applied during ingest rather than downstream:
   from the `.clim` `length` column rather than an assumed three hours. The
   factor is `GRAMS_CARBON_PER_MICROMOLE_CO2` in
   `sipnet_calibration.variable_registry`, which holds the canonical unit of
-  every variable; it agrees with the producer's own
+  every variable it registers; it agrees with the producer's own
   `kg C m-2 s-1 = umol CO2 m-2 s-1 * 12e-9`.
 
   A per-timestep total does not name its timestep, so a 3-hourly field and a
@@ -649,6 +648,12 @@ Formats are chosen according to the shape of each product.
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
 
+Zarr is used for the arrays indexed by member, site and time because it maps
+directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
+reads only the requested sites, with no reshaping step. Lazy reads are backed by
+dask. The site table is CSV instead because it is small, tabular and read by
+people as often as by code.
+
 **Aggregating a processed field in time** goes through
 `sipnet_calibration.observation_operators.aggregate_time`, which takes the rule
 from `variable_registry.VARIABLES` rather than from the call site. The rule is
@@ -666,12 +671,6 @@ A period with no observations comes back missing, never zero -- xarray's
 55%-missing field would read as zero flux. A partial period is returned as the
 partial total it is, unscaled; a caller wanting only whole periods says so with
 `min_count=`, or masks on `aggregation_counts`.
-
-Zarr is used for the arrays indexed by member, site and time because it maps
-directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
-reads only the requested sites, with no reshaping step. Lazy reads are backed by
-dask. The site table is CSV instead because it is small, tabular and read by
-people as often as by code.
 
 `sites/sites.csv` carries every field of the shapefile, so that nothing is lost in
 translation, together with the grid indices and the Ameriflux identifier:
@@ -822,8 +821,8 @@ The following conventions apply to every product.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
   converted at the boundary by
-  `sipnet_calibration.observation_operators.sipnet_time_index`,
-  which uses the `time` column only to identify a row's slot within its day
+  `sipnet_calibration.observation_operators.sipnet_time_index`, which uses the
+  `time` column only to identify a row's slot within its day
   (Note 15). This applies to SIPNET output as well as to the drivers, since
   SIPNET copies the column into its output verbatim.
 - Each product is stored at the temporal resolution its source arrives in.
