@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skip(
 
 
 def test_a_driver_ensemble_fans_at_one_site(ax, real_driver_field):
-    """``series_panel`` on one site's real driver ensemble draws its bands."""
+    """One site's real driver ensemble is drawn as quantile bands."""
     raise NotImplementedError
 
 
@@ -79,7 +79,7 @@ def test_an_observation_overlay_keeps_the_model_panel(ax, real_constraint_fields
     raise NotImplementedError
 
 
-def test_by_variable_over_the_constraint_fields(real_constraint_fields):
+def test_plot_by_variable_over_the_constraint_fields(real_constraint_fields):
     """Four variables with four different units, one panel each, no shared y."""
     raise NotImplementedError
 

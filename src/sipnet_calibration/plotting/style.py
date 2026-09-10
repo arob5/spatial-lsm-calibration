@@ -1,21 +1,22 @@
-"""Roles, colors and matplotlib settings for the project's figures.
+"""Roles, colors and matplotlib settings.
 
-A *role* is what a series means -- ``prior``, ``posterior``, ``obs`` or
-``truth`` -- rather than how it should look. A panel is asked for a role, and
-:func:`role_style` turns it into matplotlib keywords, so that call sites carry
-no colors, line styles or markers. The roles differ in line style and marker
-as well as in color, so a figure remains readable in grayscale, and the
-palette is chosen to stay distinguishable under the common forms of color
-vision deficiency.
+The appearance of a series in this project's figures follows from what the
+series *is* -- a prior, a posterior, an observation, a truth -- rather than
+from keywords at the call site. This module holds that mapping, together with
+the palette and the matplotlib settings the figures are drawn under, so that
+the same quantity looks the same wherever it appears.
+
+The palette is Okabe-Ito, which stays distinguishable under the common forms
+of color vision deficiency, and the roles differ in line style and marker as
+well as in color, so a figure survives being printed in grayscale.
 
 Style is resolved in three stages, each overriding the one before: the drawing
 function's own default, then the role, then any keyword the caller passes
 explicitly. A keyword this module does not recognize is passed on to
 matplotlib unchanged.
 
-Importing this module does not change matplotlib's global ``rcParams``.
-:func:`use_project_style` applies :data:`RC_PARAMS`, and is meant to be called
-once by whatever is producing a set of figures.
+Importing this module does not change matplotlib's global ``rcParams``;
+:func:`use_project_style` is what applies :data:`RC_PARAMS`.
 
 Functions
 ---------

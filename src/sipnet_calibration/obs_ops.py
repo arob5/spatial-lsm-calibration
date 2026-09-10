@@ -36,8 +36,8 @@ length in days) rather than assuming a fixed timestep.
 
 Aggregation is a verb the caller applies, never a plotter keyword::
 
-    series_panel(agg(nee, "1D"))          # yes
-    series_panel(nee, temporal_agg="1D")  # no
+    plot_time_series(agg(nee, "1D"))          # yes
+    plot_time_series(nee, temporal_agg="1D")  # no
 
 That keeps a real subtlety at the call site: quantile-of-daily-mean is not
 daily-mean-of-quantile, and which one is wanted is a modeling choice.

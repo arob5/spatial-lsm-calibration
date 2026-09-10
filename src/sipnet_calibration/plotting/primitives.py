@@ -28,10 +28,6 @@ Curves and bands keep ``NaN``, so a gap in the data is a gap in the drawing:
 gap. :func:`points` instead drops the entries that are not finite, so what is
 drawn is exactly the values that were present.
 
-The spatial equivalents -- ``map_points``, ``map_raster`` and ``basemap`` --
-are not implemented; they belong with
-:mod:`sipnet_calibration.plotting.maps` and are blocked on issue #4.
-
 Usage
 -----
 ::

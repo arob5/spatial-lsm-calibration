@@ -1,72 +1,38 @@
-"""Time-series panels over the project's canonical fields.
+"""Time series plots.
 
-:func:`series_panel` draws one field against time onto one ``Axes``. It covers
-a single deterministic run, an ensemble drawn as a fan or as individual
-curves, and scattered observations with error bars, according to the shape of
-the field it is given and the role it is asked for.
+Nearly everything this project produces is indexed by time: SIPNET output, the
+meteorological drivers that force it, and the observations it is calibrated
+against. This module plots them, whether the quantity is a single run, an
+ensemble, or a set of observations carrying error estimates.
 
-The panel takes an ``Axes`` and returns it. It sets no title and never saves
-or shows a figure.
+:func:`plot_time_series` is the one function. It draws onto an ``Axes`` it is
+given and returns it, so several quantities can be layered on one panel by
+calling it repeatedly, and a grid of panels is built by
+:mod:`sipnet_calibration.plotting.facet`. The elements it draws come from
+:mod:`sipnet_calibration.plotting.primitives`, and its colors and line styles
+from :mod:`sipnet_calibration.plotting.style`.
 
-How the shape of a field is read
---------------------------------
-``time`` is the x-axis, and every other dimension present is a sample
-dimension. ``show="auto"`` draws a fan when there is at least one sample
-dimension and a single curve when there is none:
-
-==========================  ================================================
-Dimensions of the field     ``show="auto"`` draws
-==========================  ================================================
-``(time,)``                 one curve
-``(member, time)``          a fan over members
-``(site, time)``            a fan over sites
-``(member, site, time)``    a fan over the member-site curves together
-==========================  ================================================
-
-To draw a fan over members for one site, select the site first. To draw one
-panel per site, use :func:`sipnet_calibration.plotting.facet.by_site`.
-
-Drawing several things on one panel
------------------------------------
-Every panel takes ``ax`` and returns it, so an overlay is a second call::
-
-    ax = series_panel(predicted, role="posterior")
-    series_panel(observed, ax=ax, role="obs")
-
-That covers observations, a truth line, and several aggregations of the same
-variable on one panel. An observation ensemble is drawn the same way; only the
-role differs. An observation error given as a variance or a standard deviation
-is a second field on the same grid, passed as ``variance=`` or
-``standard_deviation=``.
-
-Aggregating first
------------------
-Aggregation is applied by the caller, with
+Temporal aggregation is applied by the caller before plotting, using
 :func:`sipnet_calibration.obs_ops.aggregate_time`, which takes the rule from
-the variable::
-
-    series_panel(aggregate_time(nee, "1D"))
-
-Note that the order matters: the quantiles of a daily sum are not the daily
-sum of the quantiles, and which is wanted is a modeling choice.
+the variable. The same function is used by the observation operator, so a
+predictive check is drawn at the aggregation the likelihood consumed.
 
 Usage
 -----
 ::
 
     from sipnet_calibration.drivers import driver_fields, load_drivers
-    from sipnet_calibration.plotting import series_panel
+    from sipnet_calibration.plotting import plot_time_series
 
     tair = driver_fields(load_drivers([1, 27]))["air_temperature"]
 
-    series_panel(tair.sel(site=1))                        # a fan over members
-    series_panel(tair.sel(site=1), show="spaghetti")     # members as curves
-    series_panel(tair.isel(member=0), show="spaghetti", label_by="site")
+    plot_time_series(tair.sel(site=1))                     # quantile bands
+    plot_time_series(tair.sel(site=1), show="spaghetti")   # members as curves
 
-    # An observation with its error variance, over a model panel.
-    ax = series_panel(predicted_wood.sel(site=s))
-    series_panel(observed_wood.sel(site=s), ax=ax, role="obs", show="points",
-                 variance=wood_variance.sel(site=s))
+    # Observations, with their error variance, over a model panel.
+    ax = plot_time_series(predicted_wood.sel(site=s))
+    plot_time_series(observed_wood.sel(site=s), ax=ax, role="obs",
+                     show="points", variance=wood_variance.sel(site=s))
 """
 
 from __future__ import annotations
@@ -76,14 +42,14 @@ from typing import Any
 import xarray as xr
 from matplotlib.axes import Axes
 
-__all__ = ["SHOW_KINDS", "series_panel"]
+__all__ = ["SHOW_KINDS", "plot_time_series"]
 
-#: What ``show`` may be. ``"auto"`` is resolved from the field's dimensions.
+#: What ``show`` may be. ``"auto"`` is resolved from the data's dimensions.
 SHOW_KINDS: tuple[str, ...] = ("auto", "line", "spaghetti", "fan", "points")
 
 
-def series_panel(
-    field: xr.DataArray,
+def plot_time_series(
+    data: xr.DataArray,
     ax: Axes | None = None,
     *,
     show: str = "auto",
@@ -97,26 +63,53 @@ def series_panel(
     n_sigma: float = 1.0,
     **style: Any,
 ) -> Axes:
-    """Draw *field* against time on one ``Axes``.
+    """Plot *data* against time on one ``Axes``.
+
+    ``time`` is the x axis and every other dimension is treated as a sample
+    dimension, so the same call covers a single run and an ensemble, and an
+    ensemble over sites is drawn the way an ensemble over members is. With
+    ``show="auto"``:
+
+    ========================  =============================================
+    Dimensions of *data*      what is drawn
+    ========================  =============================================
+    ``(time,)``               one curve
+    ``(member, time)``        quantile bands over the members
+    ``(site, time)``          quantile bands over the sites
+    ``(member, site, time)``  quantile bands over the member-site curves
+    ========================  =============================================
+
+    To summarize members at one site, select the site first. To draw one panel
+    per site, use :func:`sipnet_calibration.plotting.facet.plot_by_site`.
 
     Parameters
     ----------
-    field:
-        A canonical field whose dimensions are a subset of
-        ``(member, site, time)`` and include ``time``. Every dimension other
-        than ``time`` is a sample dimension.
+    data:
+        An ``xarray.DataArray`` holding one variable, which must satisfy:
+
+        * ``time`` is one of its dimensions;
+        * its other dimension names, if any, are among ``member`` and
+          ``site``;
+        * ``attrs`` carries ``units`` and ``long_name``, which become the y
+          axis label.
+
+        The readers in this project produce arrays that satisfy this;
+        see :mod:`sipnet_calibration.fields` for the wider convention they
+        follow, of which this function uses only the three points above.
     ax:
         The axes to draw on. If ``None``, a figure and axes are created with
         ``matplotlib.pyplot.subplots``.
     show:
-        One of :data:`SHOW_KINDS`. ``"auto"`` draws a fan when the field has a
-        sample dimension and a single curve when it does not. Asking for
-        ``"line"`` on a field that has a sample dimension, or for ``"fan"`` or
-        ``"spaghetti"`` on one that does not, is an error.
+        One of :data:`SHOW_KINDS`. ``"auto"`` draws quantile bands when *data*
+        has a sample dimension and a single curve when it does not. Asking for
+        ``"line"`` when there is a sample dimension, or for ``"fan"`` or
+        ``"spaghetti"`` when there is not, is an error rather than a silent
+        reduction.
     role:
         A key of :data:`.style.ROLES`, deciding color, line style and marker.
     levels:
-        Interval widths for ``show="fan"``; see :func:`.primitives.fan`.
+        Widths of the quantile bands for ``show="fan"``; see
+        :func:`.primitives.fan`.
     n_max:
         The most curves ``show="spaghetti"`` draws; see
         :func:`.primitives.spaghetti`.
@@ -127,9 +120,10 @@ def series_panel(
         The name of a coordinate on the sample dimension, with
         ``show="spaghetti"``. Each curve is then labeled with that
         coordinate's value and colored from :data:`.style.CURVE_COLORS`
-        instead of from the role. *label* is ignored when this is given.
+        instead of from the role, which is how a panel with one curve per site
+        is made readable. *label* is ignored when this is given.
     variance, standard_deviation:
-        The observation error, as a field aligned with *field*, with
+        The observation error, as a ``DataArray`` aligned with *data*, with
         ``show="points"``. At most one of the two may be given.
     n_sigma:
         Multiplies the standard deviation to give each error bar's
@@ -143,27 +137,35 @@ def series_panel(
     matplotlib.axes.Axes
         The axes drawn on, which is *ax* itself when it was given. Its y label
         is set from :func:`.style.axis_label`; the x axis and the title are
-        left alone.
+        left alone, a panel title being the grid's to set.
 
     Raises
     ------
     ValueError
-        If *field* is not a ``DataArray``, or its dimensions are not a subset
-        of ``(member, site, time)`` or do not include ``time``; if *show* is
-        not in :data:`SHOW_KINDS` or does not suit the field's dimensions; if
+        If *data* is not a ``DataArray``, has no ``time`` dimension, or has a
+        dimension other than ``member`` and ``site`` beside it; if *show* is
+        not in :data:`SHOW_KINDS` or does not suit the dimensions; if
         *label_by* is given without ``show="spaghetti"`` or names a coordinate
         that is not on a sample dimension; if both *variance* and
         *standard_deviation* are given, either is given without
-        ``show="points"``, either does not align with *field*, or a variance
-        is negative; or if *n_sigma* is not finite and positive.
+        ``show="points"``, either does not align with *data*, or a variance is
+        negative; or if *n_sigma* is not finite and positive.
 
     Notes
     -----
+    Restricting the dimension names to ``member``, ``site`` and ``time`` is a
+    guard rather than a requirement: the sample-dimension rule would work on
+    any name. It is checked because a further dimension is usually a mistake.
+    Passing the stored form of the annual constraints, which carries a
+    ``variable`` dimension, would otherwise draw quantile bands across four
+    variables with four different units -- a plausible-looking figure of
+    nothing.
+
     ``show="fan"`` also draws the median as a curve, and the legend entry goes
     on that curve rather than on a band.
 
     Quantiles ignore missing values and are taken over all sample dimensions
-    at once, so a field with both ``member`` and ``site`` is summarized over
-    the whole set of curves rather than in two stages.
+    at once, so data with both ``member`` and ``site`` is summarized over the
+    whole set of curves rather than in two stages.
     """
     raise NotImplementedError

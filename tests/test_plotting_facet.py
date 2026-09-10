@@ -116,57 +116,63 @@ def test_a_non_positive_ncol_is_rejected():
     raise NotImplementedError
 
 
-# ── by_site ───────────────────────────────────────────────────────────────────
+# ── plot_by_site ──────────────────────────────────────────────────────────────
 
 
-def test_by_site_draws_one_panel_per_site(field_member_site_time):
+def test_plot_by_site_draws_one_panel_per_site(field_member_site_time):
     """One panel per site, and each panel's data are that site's slice."""
     raise NotImplementedError
 
 
-def test_by_site_titles_the_panels_with_the_site_ids(field_member_site_time):
+def test_plot_by_site_titles_the_panels_with_the_site_ids(
+    field_member_site_time,
+):
     """The default labels name the site."""
     raise NotImplementedError
 
 
-def test_by_site_selects_and_orders_by_the_sites_given(field_member_site_time):
+def test_plot_by_site_selects_and_orders_by_the_sites_given(
+    field_member_site_time,
+):
     """``sites=`` picks a subset, in the order given."""
     raise NotImplementedError
 
 
-def test_by_site_accepts_a_bound_panel_composer(field_member_site_time):
-    """``functools.partial(series_panel, show="spaghetti")`` reaches the panel."""
+def test_plot_by_site_accepts_a_bound_panel_composer(field_member_site_time):
+    """A partial of ``plot_time_series`` reaches the panel with its keywords."""
     raise NotImplementedError
 
 
-def test_by_site_rejects_a_field_without_a_site_dim(field_member_time):
+def test_plot_by_site_rejects_a_field_without_a_site_dim(field_member_time):
     """A field with no ``site`` dim raises."""
     raise NotImplementedError
 
 
-def test_by_site_rejects_a_site_that_is_not_on_the_field(field_member_site_time):
+def test_plot_by_site_rejects_a_site_that_is_not_on_the_field(
+    field_member_site_time,
+):
     """An unknown site id raises rather than yielding an empty panel."""
     raise NotImplementedError
 
 
-# ── by_variable ───────────────────────────────────────────────────────────────
+# ── plot_by_variable ──────────────────────────────────────────────────────────
 
 
-def test_by_variable_draws_one_panel_per_variable(field_time):
+def test_plot_by_variable_draws_one_panel_per_variable(field_time):
     """One panel per entry of the mapping, in its order."""
     raise NotImplementedError
 
 
-def test_by_variable_titles_the_panels_with_the_long_names(field_time):
+def test_plot_by_variable_titles_the_panels_with_the_long_names(field_time):
     """The default labels come from each field's ``long_name``."""
     raise NotImplementedError
 
 
-def test_by_variable_accepts_fields_on_different_time_axes(field_time):
+def test_plot_by_variable_accepts_fields_on_different_time_axes(field_time):
     """Annual and 3-hourly fields in one call, which is why it is a mapping."""
     raise NotImplementedError
 
 
-def test_by_variable_rejects_an_empty_mapping():
+def test_plot_by_variable_rejects_an_empty_mapping():
     """An empty mapping raises."""
     raise NotImplementedError

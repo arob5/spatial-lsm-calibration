@@ -1,39 +1,40 @@
-"""Grids of panels: figure and axes construction, shared limits, legends.
+"""Grids of plot panels.
 
-:func:`facet` draws one panel per element of a sequence, and owns everything
-around the panels -- the figure, the grid of axes, axis sharing, panel titles
-and the legend. It is why the panel functions never create a figure of their
-own.
+Multi-panel figures are the normal way to look at this project's data: one
+panel per site, or one per variable, with the panels sharing a scale so that
+they can be read against each other. This module builds them. It creates the
+figure and the grid of axes, calls a plotting function once per panel, and
+handles the panel titles, the shared axis limits and the single figure legend.
 
-:func:`by_site` and :func:`by_variable` are the two cases that come up
-constantly, written over :func:`facet`.
+:func:`build_plot_grid` is the general form and accepts any sequence of items.
+:func:`plot_by_site` and :func:`plot_by_variable` cover the two cases that come
+up constantly and are written over it.
 
-Callbacks
----------
-:func:`facet` takes ``panel_fn(ax, item)``, called once per element, and
-ignores what it returns. The two wrappers instead take a panel function of the
-form ``panel_fn(field, ax=ax)`` -- such as
-:func:`sipnet_calibration.plotting.series.series_panel` -- and build the
-selection themselves.
+This is the only part of the package that creates a figure. The plotting
+functions it calls draw onto an ``Axes`` they are given, which is what lets the
+same function serve a single panel and a grid of them.
 
-Bind any further arguments with ``functools.partial``::
+Arguments beyond the item being plotted are bound with ``functools.partial``
+rather than passed through this module::
 
     from functools import partial
-    by_site(tair, partial(series_panel, role="prior", show="spaghetti"))
+    plot_by_site(tair, partial(plot_time_series, show="spaghetti"))
 
 Usage
 -----
 ::
 
-    from sipnet_calibration.plotting import by_site, facet, series_panel
+    from sipnet_calibration.plotting import build_plot_grid, plot_by_site
 
-    # One panel per site, each a driver ensemble fan, on one y scale.
-    fig, axes = by_site(air_temperature, sites=six_sites, share="y", ncol=3)
+    # One panel per site, each a driver ensemble, on one y scale.
+    figure, axes = plot_by_site(air_temperature, sites=six_sites, share="y")
 
     # The general form.
-    fig, axes = facet(six_sites,
-                      lambda ax, s: series_panel(field.sel(site=s), ax=ax),
-                      labels=lambda s: f"site {s}")
+    figure, axes = build_plot_grid(
+        six_sites,
+        lambda ax, site: plot_time_series(field.sel(site=site), ax=ax),
+        labels=lambda site: f"site {site}",
+    )
 """
 
 from __future__ import annotations
@@ -46,13 +47,13 @@ import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-__all__ = ["SHARE_MODES", "by_site", "by_variable", "facet"]
+__all__ = ["SHARE_MODES", "build_plot_grid", "plot_by_site", "plot_by_variable"]
 
 #: What ``share`` may be, matching ``pyplot.subplots``' ``sharex``/``sharey``.
 SHARE_MODES: tuple[str, ...] = ("none", "x", "y", "both")
 
 
-def facet(
+def build_plot_grid(
     items: Sequence[Any],
     panel_fn: Callable[[Axes, Any], None],
     *,
@@ -62,7 +63,7 @@ def facet(
     panel_size: tuple[float, float] = (3.2, 2.4),
     legend: str = "dedup",
 ) -> tuple[Figure, np.ndarray]:
-    """Build a grid of panels, one per element of *items*.
+    """Build a figure of panels, one per element of *items*.
 
     Parameters
     ----------
@@ -70,9 +71,9 @@ def facet(
         Any sequence. One panel is drawn per element, in order, filling rows
         left to right.
     panel_fn:
-        Called as ``panel_fn(ax, item)`` once per element. Its return value is
-        ignored, so a panel function that returns its ``Axes`` may be used
-        directly.
+        Called as ``panel_fn(ax, item)`` once per element, with the axes for
+        that panel. Its return value is ignored, so a plotting function that
+        returns its ``Axes`` can be passed directly.
     ncol:
         Panels per row. The number of rows follows from ``len(items)``, and
         the unused axes of the last row are hidden.
@@ -94,7 +95,7 @@ def facet(
     -------
     (matplotlib.figure.Figure, numpy.ndarray)
         The figure, and a one-dimensional object array of the axes that were
-        drawn on, aligned with *items*. The hidden axes are not in it.
+        drawn on, in the order of *items*. The hidden axes are not included.
 
     Raises
     ------
@@ -107,72 +108,74 @@ def facet(
     raise NotImplementedError
 
 
-def by_site(
-    field: xr.DataArray,
+def plot_by_site(
+    data: xr.DataArray,
     panel_fn: Callable[..., Any] | None = None,
     *,
     sites: Sequence[int] | None = None,
-    **facet_kwargs: Any,
+    **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One panel per site, each drawing that site's slice of *field*.
+    """One panel per site, each drawing that site's slice of *data*.
 
     Parameters
     ----------
-    field:
-        A canonical field with a ``site`` dimension.
+    data:
+        A ``DataArray`` with a ``site`` dimension.
     panel_fn:
-        Called as ``panel_fn(field.sel(site=s), ax=ax)``. ``None`` uses
-        :func:`sipnet_calibration.plotting.series.series_panel`.
+        Called as ``panel_fn(data.sel(site=s), ax=ax)`` for each site.
+        ``None`` uses
+        :func:`sipnet_calibration.plotting.series.plot_time_series`.
     sites:
-        The site ids to draw, in that order. ``None`` draws every site on
-        *field*, which for a whole-pool field is 8000 panels.
-    **facet_kwargs:
-        Passed to :func:`facet`. ``labels`` defaults to ``"site <id>"``.
+        The site ids to draw, in that order. ``None`` draws every site in
+        *data*, which for a whole-pool field is 8000 panels.
+    **grid_kwargs:
+        Passed to :func:`build_plot_grid`. ``labels`` defaults to
+        ``"site <id>"``.
 
     Returns
     -------
     (matplotlib.figure.Figure, numpy.ndarray)
-        As :func:`facet`, with one entry per site.
+        As :func:`build_plot_grid`, with one entry per site.
 
     Raises
     ------
     ValueError
-        If *field* has no ``site`` dimension, or *sites* names an id that is
-        not on it.
+        If *data* has no ``site`` dimension, or *sites* names an id that is
+        not in it.
     """
     raise NotImplementedError
 
 
-def by_variable(
-    fields: dict[str, xr.DataArray],
+def plot_by_variable(
+    data: dict[str, xr.DataArray],
     panel_fn: Callable[..., Any] | None = None,
-    **facet_kwargs: Any,
+    **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One panel per variable, in the order *fields* gives them.
+    """One panel per variable, in the order *data* gives them.
 
     Parameters
     ----------
-    fields:
-        Variable name to field, as
+    data:
+        Variable name to ``DataArray``, as
         :func:`sipnet_calibration.drivers.driver_fields` and
         :func:`sipnet_calibration.constraints.constraint_fields` return. The
-        fields need not share a time axis.
+        variables need not share a time axis.
     panel_fn:
-        Called as ``panel_fn(field, ax=ax)``. ``None`` uses
-        :func:`sipnet_calibration.plotting.series.series_panel`.
-    **facet_kwargs:
-        Passed to :func:`facet`. ``labels`` defaults to each field's
-        ``long_name``, falling back to its name. ``share`` defaults to
-        ``"none"``, since the variables have different units.
+        Called as ``panel_fn(array, ax=ax)`` for each variable. ``None`` uses
+        :func:`sipnet_calibration.plotting.series.plot_time_series`.
+    **grid_kwargs:
+        Passed to :func:`build_plot_grid`. ``labels`` defaults to each
+        variable's ``long_name``, falling back to its name. ``share`` defaults
+        to ``"none"``, since the variables have different units.
 
     Returns
     -------
     (matplotlib.figure.Figure, numpy.ndarray)
-        As :func:`facet`, with one entry per variable.
+        As :func:`build_plot_grid`, with one entry per variable.
 
     Raises
     ------
     ValueError
-        If *fields* is empty.
+        If *data* is empty.
     """
     raise NotImplementedError
