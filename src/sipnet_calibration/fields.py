@@ -1,58 +1,92 @@
-"""The canonical field convention and the adapters that produce it.
+"""The array form that the plotting and inference layers read.
 
-A **canonical field** is an :class:`xarray.DataArray` with
+Data reaches this project in as many shapes as it has sources. SIPNET writes
+columnar output, the meteorological drivers are text files, the initial
+conditions are per-site netCDF, the observations are a csv and a set of R
+objects, and the calibration returns flat blocks that carry no record of space
+or time. This module defines the single form all of them are converted into,
+and holds the adapters that do the converting. Everything downstream -- the
+plots and the observation operator -- reads that form and nothing else, so
+adding a source costs one adapter rather than a change in every consumer.
 
-* dims a *subset* of ``(member, site, time)``;
-* ``lon`` and ``lat`` as *non-dimension* coordinates on ``site``, whenever
-  ``site`` is a dim;
+The form
+--------
+A **canonical field** is an ``xarray.DataArray`` holding one variable, with
+
+* dimensions drawn from ``member``, ``site`` and ``time``, in any combination;
+* ``lon`` and ``lat`` as non-dimension coordinates on ``site``, whenever
+  ``site`` is a dimension;
 * ``units`` and ``long_name`` in ``attrs``;
-* a ``name`` that is a key in the ``VARIABLES`` registry.
+* a ``name`` that is a key of the ``VARIABLES`` registry.
 
-This is a convention plus :func:`validate_field`, deliberately **not** a wrapper
-class: the three operations this project needs most are ``.quantile(dim="member")``,
-``.resample(time=...)`` and ``.sel(site=...)``, and a wrapper would spend the
-project re-exporting them.
+Which dimensions are present depends on the quantity. A single deterministic
+run is ``(time,)``, an initial-condition ensemble is ``(member, site)``, the
+gap-filled NEE observations are ``(member, site, time)``, and a calibrated
+per-site parameter is ``(member, site)``.
 
-Dims are a subset by design. A deterministic single run is ``(time,)``; an IC
-map is ``(member, site)``; the NEE observation ensemble is
-``(member, site, time)``; a per-site calibrated parameter is ``(member, site)``.
-Plotters branch on *presence of the* ``member`` *dim*, never on a mode keyword.
-
-One DataArray per variable, not one aligned Dataset -- NEE is 3-hourly, AGB/LAI
-are annual July-15 snapshots, ICs are static, and forcing a shared ``time``
-index costs NaN padding for nothing. Facet-by-variable takes
-``dict[str, DataArray]``, which is also what multi-variable adapters return
-(``from_clim`` covers 12 variables).
+One array holds one variable, and variables are not combined into a
+``Dataset``: they do not share a time axis, NEE being 3-hourly, the biomass
+and leaf area constraints annual, and the initial conditions static. A group
+of variables is a ``dict[str, DataArray]``, which is what the multi-variable
+adapters return and what the readers in
+:mod:`sipnet_calibration.drivers` and :mod:`sipnet_calibration.constraints`
+already produce.
 
 Identifiers
 -----------
-* ``site`` is the **handed-down integer id, 1-8000**. It has to be: only 185 of
-  the 8000 sites are Ameriflux sites. These ids are a shared key with
-  collaborators' files -- **never renumber them.** A spatially meaningful
-  ordering, if wanted, is a *separate* coordinate (e.g. a Hilbert rank), not a
-  renumbering.
-* Ameriflux ``Site_ID`` and ``pft`` are non-dimension coords on ``site``, NaN
-  for sites lacking them.
-* ``member`` is a 0-based integer. Two traps: the NEE csv's ``ens_mean`` column
-  must **never** become a member (it would corrupt every quantile), and integer
-  labels let xarray silently align members across unrelated sources -- whether
-  that pairing is meaningful is still an open question.
+``site``
+    The handed-down integer site id, 1 to 8000. It is a shared key with
+    collaborators' files and is never renumbered; a spatially meaningful
+    ordering, where one is wanted, is added as a separate coordinate. Only 185
+    of the sites are Ameriflux sites, so an Ameriflux-keyed identifier cannot
+    address the pool: ``ameriflux_site_id`` is a non-dimension coordinate on
+    ``site``, missing for the rest. Plant functional type is not site
+    metadata and is not carried here; a labeling is an experimental choice and
+    lives in its own product under ``data/processed/labelings/``.
+``member``
+    A 0-based ensemble index, meaningful only within the source it came from.
+    Whether member *i* of one source corresponds to member *i* of another is
+    not established, and xarray aligns on the integer label without
+    complaint, so any arithmetic across two sources needs that settled first.
+``time``
+    Timestamps, whose meaning is the source's and is recorded in the
+    coordinate's attributes rather than assumed: the drivers label the end of
+    each interval, and the annual constraints carry a nominal bookkeeping date
+    rather than an observation date.
 
-Adapter notes
--------------
-Adapters live here so that no plotter ever accepts a ``SIPNETResult`` or a path.
-They are also where unit conversion happens: nothing downstream reconciles
-units, and :func:`validate_field` checks ``attrs["units"]`` against the registry.
+Functions
+---------
+:func:`validate_field`
+    Check an array against the form above and raise on the first property that
+    does not hold.
+:func:`from_sipnet_result`, :func:`from_clim`, :func:`from_ic_store`,
+:func:`from_nee_store`, :func:`from_eki_predictions`
+    One adapter per source. They are also where unit conversion happens: each
+    variable has one canonical unit in the registry, adapters convert into it,
+    and nothing downstream reconciles units.
 
-* **The IC adapter must pass** ``decode_times=False``. The IC netCDFs carry an
-  unsubstituted template, ``units = "days since [year]-01-01 00:00:00 UTC"``,
-  which no calendar library can parse -- installing ``cftime`` does not help.
-  The ``time`` dim there is length 1 and carries no information.
-* ``from_eki_predictions`` unstacks a ``(J, N)`` block using the MultiIndex from
-  :func:`sipnet_calibration.obs_ops.obs_index` -- the same object the
-  observation operator used to build ``y``::
+Notes
+-----
+Nothing in this module is implemented yet. The drivers and the annual
+constraints already have readers of their own that produce the form described
+above, so it is the remaining sources -- SIPNET output, the initial
+conditions, the NEE observations and the calibration output -- that this
+module is still owed for. The ``VARIABLES`` registry is issue #6.
 
-      (xr.DataArray(predictions, dims=("member", "obs"))
-         .assign_coords(obs=obs_index)
-         .unstack("obs"))
+Three traps are worth knowing before writing an adapter:
+
+* The NEE csv carries an ``ens_mean`` column. It is a derived mean, not a
+  member, and admitting it to the ``member`` dimension corrupts every quantile
+  taken afterwards.
+* The initial-condition netCDFs must be opened with ``decode_times=False``.
+  Their time units are an unsubstituted template,
+  ``"days since [year]-01-01 00:00:00 UTC"``, which no calendar library can
+  parse; ``cftime`` does not help. The dimension is length one and carries no
+  information (issue #3).
+* :func:`from_eki_predictions` unstacks a ``(J, N)`` block with the
+  ``(site, variable, time)`` index from
+  :func:`sipnet_calibration.obs_ops.obs_index`. It must be the same index the
+  observation operator used to build the observation vector, or the
+  predictions come back mislabeled against the observations they are compared
+  with.
 """
