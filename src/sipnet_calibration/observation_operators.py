@@ -132,6 +132,11 @@ __all__ = [
 #: The dimension aggregated along.
 TIME_DIM = "time"
 
+#: The date one period of a frequency is measured from, for the upsampling
+#: check. A fixed probe rather than the array's own start, so the check does
+#: not depend on where a record happens to begin.
+_PROBE_DATE = pd.Timestamp("2001-01-01")
+
 #: What ``how`` may be: every rule of
 #: :data:`~sipnet_calibration.variable_registry.AGGREGATION_RULES` that names
 #: a reduction. :data:`~sipnet_calibration.variable_registry.INSTANTANEOUS` is
@@ -384,7 +389,28 @@ def aggregate_time(
     date, so its length is one particular month or year rather than an
     average; that is well inside the margin the comparison needs.
     """
-    raise NotImplementedError("issue #6")
+    _check_aggregatable(field)
+    _check_not_upsampling(field, freq)
+    _check_min_count(min_count)
+    method = _resolved_method(field, how)
+
+    aggregated = _reduce(field.resample({TIME_DIM: freq}), method)
+    # One guard for every method, rather than sum's own min_count plus a mask
+    # for the rest: a period with nothing in it is missing under all four, and
+    # two mechanisms doing one job means either can be deleted unnoticed.
+    counts = _count_by_period(field, freq)
+    aggregated = aggregated.where(counts >= int(min_count))
+
+    # The attributes are set here rather than left to the reduction's
+    # keep_attrs: its default varies between xarray versions and between
+    # reductions, and a dropped `units` breaks the axis label of every plot
+    # downstream. Copied, so that aggregating does not add provenance to the
+    # field the caller keeps.
+    aggregated.name = field.name
+    aggregated.attrs = dict(field.attrs)
+    aggregated.attrs["aggregation_applied"] = method
+    aggregated.attrs["aggregation_freq"] = freq
+    return aggregated
 
 
 def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
@@ -418,7 +444,9 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
         upsampling check. The variable's rule is not consulted, so a stock is
         counted rather than refused.
     """
-    raise NotImplementedError("issue #6")
+    _check_aggregatable(field)
+    _check_not_upsampling(field, freq)
+    return _count_by_period(field, freq)
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
@@ -452,19 +480,60 @@ def _resolved_method(field: xr.DataArray, how: str | None) -> str:
         :data:`~sipnet_calibration.variable_registry.INSTANTANEOUS`. Each
         message says what to pass instead.
     """
-    raise NotImplementedError("issue #6")
+    if how is not None:
+        if how == INSTANTANEOUS:
+            raise ValueError(
+                f"how={how!r} names a refusal rather than a reduction: it is "
+                "what a stock's registry entry carries, and it says to choose "
+                f"a reduction here. The methods are {list(AGGREGATION_METHODS)}"
+            )
+        if how not in AGGREGATION_METHODS:
+            raise ValueError(
+                f"how must be one of {list(AGGREGATION_METHODS)}, got {how!r}"
+            )
+        return how
+
+    spec = variable_spec(field.name)
+    if spec.agg == INSTANTANEOUS:
+        raise ValueError(
+            f"{field.name!r} is a stock -- a level at an instant rather than a "
+            "quantity accumulated over an interval -- so it has no "
+            "aggregation rule, and neither a sum nor a mean is right for it. "
+            'Say which you want, for instance how="last" for the value at the '
+            "end of each period"
+        )
+    return spec.agg
 
 
 def _reduce(resampled, method: str) -> xr.DataArray:
-    """Apply *method* to a resample object, keeping the field's attributes.
+    """Apply *method* to a resample object.
 
-    Notes
-    -----
-    ``keep_attrs`` is passed explicitly rather than relied on. The default
-    differs between xarray versions and between reductions, and a dropped
-    ``units`` breaks the axis label of every plot downstream.
+    Attributes are not preserved here; :func:`aggregate_time` sets them on the
+    result. ``skipna`` is what makes ``last`` the last *observed* value of a
+    period rather than its last row, which is ``NaN`` whenever a record ends
+    part-way through one.
     """
-    raise NotImplementedError("issue #6")
+    if method == "sum":
+        return resampled.sum()
+    if method == "mean":
+        return resampled.mean()
+    if method == "last":
+        return resampled.last(skipna=True)
+    if method == "first":
+        return resampled.first(skipna=True)
+    raise ValueError(f"unhandled aggregation method {method!r}")
+
+
+def _count_by_period(field: xr.DataArray, freq: str) -> xr.DataArray:
+    """Values that are not missing, per period, as ``int64``.
+
+    The one place the count is computed, so :func:`aggregate_time`'s guard and
+    :func:`aggregation_counts` cannot disagree about what a period holds.
+    """
+    counts = field.notnull().resample({TIME_DIM: freq}).sum().astype(np.int64)
+    counts.name = None
+    counts.attrs = {}
+    return counts
 
 
 def _period_span(freq: str) -> pd.Timedelta:
@@ -480,7 +549,22 @@ def _period_span(freq: str) -> pd.Timedelta:
         If *freq* is not a pandas offset alias, or names a zero-length or
         negative period.
     """
-    raise NotImplementedError("issue #6")
+    try:
+        offset = pd.tseries.frequencies.to_offset(freq)
+    except Exception as error:
+        raise ValueError(
+            "freq must be a pandas offset alias such as '1D', 'MS' or 'YS', "
+            f"got {freq!r}"
+        ) from error
+    # to_offset gives a Timedelta only for fixed-length offsets, so the length
+    # of a month or a year is measured by applying it rather than converting.
+    span = (_PROBE_DATE + offset) - _PROBE_DATE
+    if span <= pd.Timedelta(0):
+        raise ValueError(
+            f"freq={freq!r} spans {span}, which cannot group anything; pass a "
+            "positive frequency"
+        )
+    return span
 
 
 def _source_spacing(field: xr.DataArray) -> pd.Timedelta:
@@ -489,7 +573,10 @@ def _source_spacing(field: xr.DataArray) -> pd.Timedelta:
     The median rather than the minimum, so that a single duplicated or
     irregular label does not decide whether an aggregation is a downsample.
     """
-    raise NotImplementedError("issue #6")
+    times = field.coords[TIME_DIM].values
+    if times.size < 2:
+        return pd.Timedelta(0)
+    return pd.Timedelta(np.median(np.diff(times)))
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -504,7 +591,40 @@ def _check_aggregatable(field: xr.DataArray) -> None:
     coordinate is integer-valued fails inside pandas with a message that does
     not say which array was at fault.
     """
-    raise NotImplementedError("issue #6")
+    if not isinstance(field, xr.DataArray):
+        raise ValueError(
+            f"expected an xarray.DataArray, got {type(field).__name__}. A "
+            "Dataset holds several variables, whose aggregation rules differ; "
+            "aggregate one field at a time."
+        )
+    if TIME_DIM not in field.dims:
+        raise ValueError(
+            f"the array has dimensions {list(field.dims)} and needs "
+            f"{TIME_DIM!r} to be aggregated in time"
+        )
+    if TIME_DIM not in field.coords:
+        raise ValueError(
+            f"the array has a {TIME_DIM!r} dimension but no {TIME_DIM!r} "
+            "coordinate, so there is nothing to group its rows by"
+        )
+    times = field.coords[TIME_DIM]
+    if not np.issubdtype(times.dtype, np.datetime64):
+        raise ValueError(
+            f"the {TIME_DIM!r} coordinate has dtype {times.dtype}, and "
+            "aggregation needs datetimes. SIPNET's output and the .clim "
+            "drivers carry year, day and hour columns instead; convert them "
+            "with sipnet_time_index first."
+        )
+    values = times.values
+    steps = np.diff(values)
+    if steps.size and np.any(steps <= np.timedelta64(0, "ns")):
+        where = int(np.flatnonzero(steps <= np.timedelta64(0, "ns"))[0]) + 1
+        raise ValueError(
+            f"the {TIME_DIM!r} coordinate is not strictly increasing: entry "
+            f"{where} ({values[where]}) does not follow entry {where - 1} "
+            f"({values[where - 1]}). Two sources concatenated out of order "
+            "group into overlapping periods, which is wrong rather than empty."
+        )
 
 
 def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
@@ -513,7 +633,15 @@ def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
     Upsampling returns a field that is mostly ``NaN`` with no error, and the
     emptiness reads as missing data rather than as a mistake.
     """
-    raise NotImplementedError("issue #6")
+    span = _period_span(freq)
+    spacing = _source_spacing(field)
+    if span < spacing:
+        raise ValueError(
+            f"freq={freq!r} spans {span}, which is shorter than the array's "
+            f"own spacing of {spacing}, so this would interpolate rather than "
+            "aggregate and would return a field that is mostly missing. Pass "
+            "a coarser frequency."
+        )
 
 
 def _check_min_count(min_count: int) -> None:
@@ -522,4 +650,14 @@ def _check_min_count(min_count: int) -> None:
     Zero would mean a period formed from nothing still produces a value,
     which for a sum is the zero this function exists to prevent.
     """
-    raise NotImplementedError("issue #6")
+    if isinstance(min_count, bool) or not isinstance(min_count, (int, np.integer)):
+        raise ValueError(
+            f"min_count must be an integer, got {min_count!r}. It counts "
+            "values, so a fraction of one has no meaning."
+        )
+    if int(min_count) < 1:
+        raise ValueError(
+            f"min_count must be at least 1, got {min_count!r}. Zero would let "
+            "a period formed from no observations produce a value, which for "
+            "a sum is the zero this argument exists to prevent."
+        )

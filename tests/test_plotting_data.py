@@ -181,7 +181,6 @@ def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fi
 # ── acceptance criteria ───────────────────────────────────────────────────────
 
 
-@pytest.mark.skip(reason="issue #6: aggregate_time is not implemented yet")
 def test_acceptance_one_panel_three_aggregations(ax, real_driver_field):
     """Raw, daily and monthly ``par`` at one site, overlaid, in three lines.
 

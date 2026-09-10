@@ -293,4 +293,19 @@ def variable_spec(name: str) -> VarSpec:
         registered names and says to add an entry, since inferring a rule for
         an unregistered variable is what this module exists to prevent.
     """
-    raise NotImplementedError("issue #6")
+    if not isinstance(name, str):
+        raise ValueError(
+            f"a variable name must be a string, got {name!r}. An array whose "
+            "name is None has usually been through an xarray operation that "
+            "does not carry the name forward, such as arithmetic between two "
+            "arrays"
+        )
+    try:
+        return VARIABLES[name]
+    except KeyError:
+        raise ValueError(
+            f"{name!r} is not in the variable registry, so its canonical unit "
+            "and aggregation rule are not known. Add an entry to VARIABLES in "
+            "sipnet_calibration.variable_registry. The registered variables "
+            f"are {sorted(VARIABLES)}"
+        ) from None
