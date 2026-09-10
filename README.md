@@ -1,33 +1,163 @@
 # Spatial Parameter Calibration for Land Surface Models (LSMs)
 
 Scalable Bayesian algorithms for parameter calibration of the **SIPNET**
-land-surface model, with an emphasis on multi-site inference that exploits
+land surface model (LSM), with an emphasis on multi-site inference that exploits
 spatial structure rather than treating plant functional types as the only source
-of pooling.
+of spatial variability.
 
-This is a **research codebase, not a library**. The deliverables are calibrated
-parameter ensembles, diagnostic outputs, and reusable inference machinery — not
-a published package. Interfaces change when the science requires it.
+This is a research codebase, not a library. 
 
-## Status
+## Contents
 
-Early. The inference substrate lives in a separate package (`pyEKI`, below) and
-the first multi-site calibration run (`test1`) is not yet configured. What
-exists here today:
+- [Quick start](#quick-start)
+  - [Generating the processed data](#generating-the-processed-data)
+- [Advanced setup](#advanced-setup)
+  - [Companion packages](#companion-packages)
+  - [Raw data survey](#raw-data-survey)
+  - [Running notebooks](#running-notebooks)
+- [Scope of the problem](#scope-of-the-problem)
+- [Layout](#layout)
+- [Conventions](#conventions)
 
-- the `src/sipnet_calibration/` module layout, whose modules carry the contract
-  each is to satisfy; `sites.py` is implemented, the rest are not;
-- `SITE_GRID` and the conversions between coordinates and grid indices, in
-  `sipnet_calibration.sites`, with tests;
-- `load_sites()` and `select_sites()` over the processed site table, with tests;
-- site metadata for the 8000-site pool, as a point shapefile under
-  `data/raw/sites/`, and the Ameriflux ID map (`data/site_id_map.csv`);
-- `scripts/ingest_sites.py`, which turns those two into
-  `data/processed/sites/sites.csv`.
+## Quick start
 
-The model definition, notation, algorithm design and plotting specification are
-maintained outside this repository and are not published with it. `CLAUDE.md`
-records the code conventions; `data/README.md` documents the inputs.
+Requires [uv](https://docs.astral.sh/uv/). One data processing step below also
+needs `Rscript`.
+
+```bash
+git clone https://github.com/arob5/spatial-lsm-calibration.git
+cd spatial-lsm-calibration
+uv sync                     # create .venv from uv.lock, on the pinned 3.14
+source .venv/bin/activate   # run everything from inside this environment
+pytest                      # check it works
+```
+
+Nothing else needs cloning: the three companion packages are installed from
+git, and are described under [Companion packages](#companion-packages).
+
+### Generating the processed data
+
+Raw inputs arrive from several sources with differing conventions, so most of
+them are converted once into a processed form that everything downstream reads.
+This needs the raw data present under `data/raw/` in the layout
+[`data/README.md`](data/README.md) specifies. That data is housed on Boston
+University's Shared Computing Cluster (SCC), and a fresh clone has almost none
+of it, so in practice this runs on the SCC. Raw inputs too large to be worth
+copying, the meteorological drivers especially, are left alone; helper
+functions query them in place instead.
+
+Run these in order; each reads what an earlier one wrote. A top-level helper
+will eventually replace the sequence with a single command.
+
+```bash
+python scripts/ingest_sites.py                                                       # -> data/processed/sites/sites.csv
+Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json         # scratch, not products
+python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json  # -> data/processed/constraints_annual.nc
+python scripts/ingest_ic.py --jobs 16                                                # -> data/processed/ic.nc
+```
+
+[`data/README.md`](data/README.md) is the authority on the per-product detail:
+the expected layout, provenance, units, and what each script reads and writes.
+Every script takes `--help`, which documents its inputs, its outputs and the
+flags for pointing it at data that is not where it expects.
+
+## Advanced setup
+
+### Companion packages
+
+Three packages are developed alongside this project and are dependencies of it:
+
+| Package | Role |
+|---|---|
+| [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | the SIPNET model interface |
+| [`PyEns`](https://github.com/arob5/PyEns) | running ensembles |
+| [`pyEKI`](https://github.com/TARPS-group/pyEKI) | solving inverse problems with ensemble Kalman methods |
+
+`[tool.uv.sources]` in `pyproject.toml` tracks the `main` branch of each, and
+`uv.lock` records the **exact commit** resolved from it. So `uv sync` installs
+the same three commits for everyone, and none of them moves until someone
+upgrades it deliberately. Ordinary use needs no local checkout of any of them.
+
+#### Upgrading a companion package
+
+New work on `main` in one of these repositories does **not** reach this project
+until the lock is refreshed. To refresh:
+
+```bash
+uv lock --upgrade-package pysipnet
+uv sync
+```
+
+The distribution names are `pysipnet`, `pyens` and `pyeki`; name several in one
+command to upgrade them together. `uv lock --upgrade` upgrades everything
+including the third-party dependencies, which is usually not what you want
+here.
+
+The only file that changes is `uv.lock`, and its diff shows which commit each
+package moved to. **Commit that change**, since it is the record of which
+version of each package a calibration run used.
+
+#### Developing a companion package
+
+To work on one of them and have this project pick up the edits immediately,
+clone it anywhere and overlay an editable install on top of the synced
+environment:
+
+```bash
+git clone https://github.com/TARPS-group/pySIPNET.git ../pySIPNET
+uv pip install -e ../pySIPNET
+```
+
+Note that **any later `uv sync` silently replaces the overlay** with the
+commit pinned in `uv.lock` — including `uv sync --inexact`, and including the
+sync that another step of some workflow happens to run. `uv pip show pysipnet` says
+which one is installed: an `Editable project location` line means the local
+checkout, and no such line means the pinned commit. Re-run the
+`uv pip install -e` after any sync.
+
+Once the work is pushed to `main`, upgrade as above and drop the overlay.
+
+### Raw data survey
+
+Two diagnostics that answer questions about the raw data which can only be
+answered where the files are. They are **optional**, they run **before**
+processing, and they write a JSON summary rather than any processed product.
+Neither is part of the ingest pipeline.
+
+```bash
+python3 scripts/survey_ic_variables.py --root <IC root> --jobs 16 --out ic_survey.json
+```
+
+*Which variables do the initial condition files actually carry, and is the
+`(site, member)` ensemble a complete rectangle?* The files are not all alike, and
+`ingest_ic.py` treats an unregistered variable as fatal, so this is how to find
+out what is there first. It parses the netCDF-3 headers directly and imports
+nothing third-party, so it runs under a bare `python3` with no environment
+activated. `--sample N` surveys a random sample of sites instead of all of them.
+
+```bash
+python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_survey.json
+```
+
+*Does the driver directory template cover every site and member, and does every
+`.clim` file pass the reader's own checks?* It applies
+`sipnet_calibration.drivers.read_clim_file` to each file, so unlike the survey
+above it needs the project environment. There are around 80,000 files at roughly
+a tenth of a second each, which is what `--jobs` is for.
+
+### Running notebooks
+
+Use the project venv's Jupyter directly, **not** `uv run jupyter`:
+
+```bash
+.venv/bin/jupyter lab
+```
+
+To execute headlessly:
+
+```bash
+.venv/bin/jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=python3 --output out.ipynb in.ipynb
+```
 
 ## Scope of the problem
 
@@ -42,56 +172,6 @@ records the code conventions; `data/README.md` documents the inputs.
 Every input arrives in ensemble form. Note the sites are **scattered points, not
 a grid**, and the extent is North America rather than CONUS — assumptions to the
 contrary are wrong.
-
-## Setup
-
-Requires [uv](https://docs.astral.sh/uv/). The interpreter is pinned to 3.14 in
-`.python-version`; `requires-python` is only a floor, so use the pin.
-
-```bash
-uv sync
-```
-
-Then activate the environment, and stay in it for everything below:
-
-```bash
-source .venv/bin/activate
-```
-
-**Everything in this repository is run from inside that environment** — scripts,
-tests and notebooks alike. They all import `sipnet_calibration` and its
-dependencies from `.venv`, so a system `python` fails on the first import rather
-than doing something subtly different. `which python` should print a path ending
-in `.venv/bin/python`.
-
-`uv run <command>` is the equivalent for a one-off without activating, and is
-what the commands in this README use so that they work either way. Notebooks are
-the one case needing more than this; see [Running notebooks](#running-notebooks).
-
-Two companion packages are installed as editable locals from sibling
-directories, so they must be checked out alongside this repository:
-
-| Package | Expected path | Role |
-|---|---|---|
-| [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | `../pySIPNET` | SIPNET model interface — `SIPNETModel(**overrides)` |
-| `PyEns` | `../PyEns` | parallel ensemble execution |
-
-Two further packages are related but **not currently dependencies**:
-
-- **`pyEKI`** — the ensemble-Kalman inference substrate (structured linear
-  operators, Gaussian conditioning, EKI). Developed independently; not yet wired
-  into this repo's dependency list.
-- **`ProbPipe`** — a planned migration target for inference, removed as a
-  dependency on 2026-08-20 because its API is in flux.
-
-### Known setup caveat
-
-`cartopy` is required by the spatial plotting design but is **commented out of
-`pyproject.toml`**: it has no installable wheel on macOS 12 arm64, and the
-blocker is the operating system rather than the Python version. `uv sync` is
-clean without it, but `plotting/maps.py` is unimplemented pending the decision
-in [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4). On Linux
-(BU's SCC) cartopy installs normally.
 
 ## Layout
 
@@ -108,14 +188,11 @@ data/processed/           # ingest output == the canonical format used throughou
 tests/
 ```
 
-Run the tests with:
-
-```bash
-uv run pytest
-```
-
-Data formats, provenance, and the coordinate reference system are documented in
-[`data/README.md`](data/README.md).
+`CLAUDE.md` records the code conventions, and
+[`data/README.md`](data/README.md) documents the inputs — their formats,
+provenance, and coordinate reference system. The model definition, notation,
+algorithm design and plotting specification are maintained outside this
+repository and are not published with it.
 
 ## Conventions
 
@@ -130,44 +207,3 @@ Data formats, provenance, and the coordinate reference system are documented in
 - **Calibration runs are tagged** `c_<task_id>_<run_name>_<run_index>`, where
   `c` marks a calibration run, `<task_id>` names the calibration task,
   `<run_name>` a run within it, and `<run_index>` increments on re-runs.
-
-### Plotting
-
-The plotting suite is layered so that data provenance and display style stay
-independent — adapters map each data source to one canonical form, and plotters
-consume only that form. `CLAUDE.md` records the rules in full; the two that most
-affect how the suite is used are:
-
-- A **canonical field** is an `xarray.DataArray` with dims a *subset* of
-  `(member, site, time)` and `lon`/`lat` as non-dimension coords on `site`.
-  Plotters branch on presence of the `member` dim, so the same function serves a
-  single deterministic run and a posterior predictive ensemble.
-- **Temporal aggregation is a verb the caller applies**, not a plotter keyword,
-  and it lives in `obs_ops.py` shared with the observation operator — so a
-  predictive-check figure cannot disagree with what the likelihood consumed.
-
-## Running notebooks
-
-Use the project venv's Jupyter directly, **not** `uv run jupyter`:
-
-```bash
-.venv/bin/jupyter lab
-```
-
-To execute headlessly:
-
-```bash
-.venv/bin/jupyter nbconvert --to notebook --execute --ExecutePreprocessor.kernel_name=python3 --output out.ipynb in.ipynb
-```
-
-## Open issues
-
-Data and environment problems currently tracked:
-
-- [#3](https://github.com/arob5/spatial-lsm-calibration/issues/3) — the initial-condition
-  netCDFs carry an unsubstituted `[year]` template in their time units, so they
-  cannot be opened with CF decoding enabled. Adapters must use
-  `decode_times=False`.
-- [#4](https://github.com/arob5/spatial-lsm-calibration/issues/4) — no installable
-  projection library on the development workstation; the spatial plotting layer
-  is blocked on choosing an approach.

@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pysipnet",
     "pyens",
+    "pyeki",
     "numpy>=1.24",
     "pandas>=2.0",
     # Canonical field container: xr.DataArray with dims subset of (member, site, time).
@@ -47,9 +48,15 @@ dev = [
     "pytest>=8.0",
 ]
 
+# The three companion packages are developed alongside this project rather than
+# released, so they are tracked by branch and pinned to an exact commit in
+# uv.lock. A run's environment is therefore reproducible, and a companion moves
+# forward only when `uv lock --upgrade-package <name>` says so. See the README
+# for the upgrade and local-development workflows.
 [tool.uv.sources]
-pysipnet = { path = "../pySIPNET", editable = true }
-pyens = { path = "../PyEns", editable = true }
+pysipnet = { git = "https://github.com/TARPS-group/pySIPNET.git", branch = "main" }
+pyens = { git = "https://github.com/arob5/PyEns.git", branch = "main" }
+pyeki = { git = "https://github.com/TARPS-group/pyEKI.git", branch = "main" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sipnet_calibration"]

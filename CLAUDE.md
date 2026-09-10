@@ -12,13 +12,20 @@ The long-term vision:
 
 ## Companion packages (read-only — do not edit)
 
-| Package | Path | Role |
-|---------|------|------|
-| `pySIPNET` | `../pySIPNET` | SIPNET model interface; `SIPNETModel(**overrides)` |
-| `ProbPipe` | `../prob-pipe` (also on PyPI) | **Not currently a dependency** — API in flux; planned migration target for inference. See below. |
-| `PyEns` | `../PyEns` | Parallel ensemble execution via `ProcessPoolExecutor` |
+| Package | Source | Role |
+|---------|--------|------|
+| `pySIPNET` | `TARPS-group/pySIPNET` | SIPNET model interface; `SIPNETModel(**overrides)` |
+| `PyEns` | `arob5/PyEns` | Parallel ensemble execution via `ProcessPoolExecutor` |
+| `pyEKI` | `TARPS-group/pyEKI` | Solving inverse problems with ensemble Kalman methods |
+| `ProbPipe` | `TARPS-group/prob-pipe` (also on PyPI) | **Not currently a dependency** — API in flux; planned migration target for inference. See below. |
 
-Install them as editable locals via `uv sync` (see `pyproject.toml`). Never modify their source.
+The first three are dependencies, installed from git rather than from sibling
+directories: `[tool.uv.sources]` tracks each repository's `main` branch and
+`uv.lock` pins an exact commit, so `uv sync` needs nothing beside the checkout
+and no companion moves until someone upgrades it. Take new work from one with
+`uv lock --upgrade-package <pysipnet|pyens|pyeki>`; the README also covers the
+editable-overlay workflow for developing one locally. Never modify their
+source from here.
 
 ## Data
 
@@ -243,26 +250,24 @@ anyone has based a branch on yours: `git branch --contains <old-tip>`. If one
 has, tell that session before you push — rewriting a branch moves the base of
 everything stacked on it, and they will have to rebase too.
 
-**A worktree isolates git, not the Python environment.** A new worktree has no
-`.venv`, and the root's has this package installed editable against the
-**root's** `src/`, so the root interpreter imports whatever branch the root
-checkout is on rather than your own. Put your own tree first on the path:
+**A worktree isolates git, but it starts with no Python environment.** Give it
+its own, which takes one command and nothing beside it:
 
 ```bash
-PYTHONPATH="$PWD/src" ../../../.venv/bin/python -m pytest -q
+uv sync
+uv run pytest
 ```
 
-Without it the failure is loud only when a module exists on your branch alone —
-`ModuleNotFoundError` for something you are looking at in your editor. For a
-module that exists on both, the tests pass while exercising the root's copy,
-which is the case worth remembering.
+The companion packages come from git rather than from sibling paths, so
+`uv sync` needs nothing next to the worktree, and the `.venv` it creates has
+`sipnet_calibration` installed editable against **that worktree's** `src/`.
 
-`uv sync` inside a worktree is not a substitute without extra setup.
-`[tool.uv.sources]` gives the companion packages as `../pySIPNET` and
-`../PyEns`, and uv resolves those relative to the `pyproject.toml` it reads, so
-from `.claude/worktrees/<topic>/` they point at `.claude/worktrees/pySIPNET`
-and the sync stops at `Distribution not found`. Reaching them takes a symlink
-per package; the path above needs nothing.
+Do not reach for the root's interpreter instead. Its `sipnet_calibration` is
+editable against the **root's** `src/`, so it imports whatever branch the root
+checkout is on rather than your own. That failure is loud only when a module
+exists on your branch alone — `ModuleNotFoundError` for something you are
+looking at in your editor. For a module that exists on both, the tests pass
+while exercising the root's copy, which is the case worth remembering.
 
 ## Repository layout
 
