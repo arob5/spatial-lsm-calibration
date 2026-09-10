@@ -274,15 +274,19 @@ while exercising the root's copy, which is the case worth remembering.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py` and `drivers.py` are implemented, `obs_ops.py` has
-`sipnet_time_index`, and the other modules carry the contract each is to
+`constraints.py`, `drivers.py` and `projection.py` are implemented, `obs_ops.py`
+has `sipnet_time_index`, and the other modules carry the contract each is to
 satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
   sites.py                # SITE_GRID + grid conversions, load_sites(),
-                          # select_sites(ids=, bbox=, where=, sample=, seed=)
+                          # select_sites(ids=, bbox=, where=, sample=, seed=),
+                          # EXTENTS (named lon/lat boxes)
+  projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W), forward(),
+                          # projected_bounds(); writes projections/*.projjson
+  projections/            # the stored definition, generated from the dataclass
   constraints.py          # annual constraint schema, load_constraints(),
                           # constraint_fields() -> canonical per-variable view
   drivers.py              # driver schema, load_drivers() reading raw .clim files
@@ -360,12 +364,23 @@ plotting code. The load-bearing rules:
   `tripcolor` on the Delaunay triangulation, masking long edges; GP renderer
   later). Sites are 8000 **irregular points** spanning 7-82 deg N, so a real
   projection is required and CONUS-only assumptions are wrong.
-- **No projection library is installable here** (issue #4): every pyproj arm64
-  wheel targets macOS 14+, on every Python version, so downgrading Python does
-  not help. `cartopy` is commented out of `pyproject.toml`; do not re-add it
-  expecting it to work locally. `plotting/maps.py` is blocked on that decision.
-  The source CRS is settled (WGS 84 geographic) and the grid is `SITE_GRID` in
-  `sipnet_calibration.sites`; what is open is only the display projection.
+- **The display projection is settled**: a Lambert Azimuthal Equal Area
+  centered at 50 N, 100 W on WGS 84, held as `SITE_PROJECTION` in
+  `sipnet_calibration.projection`, which also provides the forward transform,
+  `projected_bounds()` for axes limits, and the stored PROJJSON and PROJ string
+  under `src/sipnet_calibration/projections/`. Plotting code projects through
+  that module and never defines projection parameters of its own. Named
+  lon/lat extents (`CONUS`, `NORTH_AMERICA`, `ALASKA`) are `EXTENTS` in
+  `sipnet_calibration.sites`, beside the selection that takes the same form.
+  ESRI:102003, which the published reanalysis figures used, was rejected on
+  measured distortion: it reaches 107 degrees of angular deformation and 9:1
+  anisotropy at the northernmost sites. See issue #4.
+- **No projection *library* is installable here** (issue #4), which is why the
+  transform is 40 lines of numpy validated against published coordinates: every
+  pyproj arm64 wheel targets macOS 14+, on every Python version, so downgrading
+  Python does not help. `cartopy` is commented out of `pyproject.toml`; do not
+  re-add it expecting it to work locally. What `plotting/maps.py` still waits on
+  is the vendored basemap, not the projection.
 - `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
   `site`. PFT is **not** site metadata and is not a column of the site table: a
   labeling is an experimental choice, so labelings are their own product at

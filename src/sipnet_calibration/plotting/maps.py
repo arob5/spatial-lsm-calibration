@@ -25,26 +25,47 @@ to replace the default::
 
 Sites are 8000 irregular points spanning 7-82 deg N and 178 W-20 W, with only
 ~3640 inside a CONUS box, so CONUS-only assumptions are wrong and unprojected
-lon/lat is not acceptable. Extent presets ``CONUS`` / ``NA`` / ``ALASKA``, plus a
-raw ``bbox``. Color scales must be shareable across a facet grid (common
+lon/lat is not acceptable. Extent presets come from
+:data:`sipnet_calibration.sites.EXTENTS` -- ``CONUS``, ``NORTH_AMERICA`` and
+``ALASKA``, the middle one spelled out rather than ``NA`` -- plus a raw
+``bbox``. Color scales must be shareable across a facet grid (common
 ``vmin``/``vmax``), centered for signed quantities, and log-scaled for the skewed
 carbon pools.
 
+The projection
+--------------
+**Settled, and not this module's to define.** The display projection is a
+Lambert Azimuthal Equal Area centered at 50 N, 100 W, held as
+:data:`sipnet_calibration.projection.SITE_PROJECTION`. Project coordinates with
+:meth:`~sipnet_calibration.projection.Projection.forward` and get axes limits
+for an extent from
+:meth:`~sipnet_calibration.projection.Projection.projected_bounds`, which
+samples the box boundary rather than its corners. Do not define projection
+parameters here, and do not reach for degrees: the choice, the alternatives and
+the distortion measured over all 8000 sites are recorded on issue #4.
+
+Two properties of it bear on the renderers. It is equal-area, which is what
+makes a density or heatmap panel honest. And its anisotropy stays under 1.3
+across the pool, which matters because ``TriRenderer`` triangulates *after*
+projecting -- a Delaunay triangulation is not affine-invariant, so under a
+strongly anisotropic projection the mesh would be an artifact of the projection
+rather than of where the sites are -- and because the long-edge mask threshold
+is a projected length, which only means one ground distance if the scale is
+close to uniform.
+
 BLOCKED -- do not implement yet
 ------------------------------
-1. **No projection library is installable here** (issue #4). Neither ``cartopy``
-   nor ``pyproj`` has a usable wheel on macOS 12 arm64: every pyproj arm64 wheel
-   targets ``macosx_14_0`` (macOS 14+), on *every* Python version, so this is a
-   platform incompatibility and downgrading Python does not help. ``cartopy`` is
-   commented out of ``pyproject.toml``; do not re-add it expecting it to work
-   locally. The leading option is to implement the Albers Equal Area forward
-   transform directly (closed form, ~30 lines, testable against published
-   reference coordinates) plus a vendored Natural Earth GeoJSON.
-2. **The display projection is undecided.** The source CRS is settled --
-   geographic, WGS 84 -- and the lattice is
-   :data:`sipnet_calibration.sites.SITE_GRID`. What remains open is which
-   projection to draw in, a separate choice from how the coordinates are defined.
+**No projection *library* is installable here** (issue #4), which is why the
+forward transform is implemented in numpy rather than through cartopy. Neither
+``cartopy`` nor ``pyproj`` has a usable wheel on macOS 12 arm64: every pyproj
+arm64 wheel targets ``macosx_14_0`` (macOS 14+), on *every* Python version, so
+this is a platform incompatibility and downgrading Python does not help.
+``cartopy`` is commented out of ``pyproject.toml``; do not re-add it expecting
+it to work locally.
 
-``basemap()`` in :mod:`sipnet_calibration.plotting.primitives` is the seam for
-both, so neither blocks the renderers or the rest of the layer.
+What remains is therefore the basemap, not the projection: a vendored Natural
+Earth coastline and states GeoJSON, small enough to track, projected with the
+same forward transform. ``basemap()`` in
+:mod:`sipnet_calibration.plotting.primitives` is the seam, so it does not block
+the renderers or the rest of the layer.
 """

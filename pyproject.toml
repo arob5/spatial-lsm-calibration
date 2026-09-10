@@ -30,11 +30,12 @@ dependencies = [
     # library itself.
     "pyshp>=3.1",
     "matplotlib>=3.7",
-    # TODO(maps): projections for the spatial panels. Sites span 7-82 deg N, so
-    # unprojected lon/lat is not acceptable. cartopy 0.25 and pyproj 3.7 both
-    # lack macOS-arm64 + cp314 wheels and fall back to a source build needing
-    # system PROJ/GEOS, so the dependency is unresolved -- see the maps.py
-    # docstring. Linux (SCC) has cp314 wheels, so this is a local-only problem.
+    # No cartopy or pyproj: cartopy 0.25 and pyproj 3.7 both lack macOS-arm64 +
+    # cp314 wheels and fall back to a source build needing system PROJ/GEOS
+    # (issue #4). Linux (SCC) has cp314 wheels, so this is a local-only problem,
+    # but the environment must resolve from uv.lock alone on both. Nothing is
+    # blocked on it: sipnet_calibration.projection implements the forward
+    # transform in numpy, validated against published coordinates.
     "arviz>=0.13",
     "jax[cpu]>=0.4",
     "jupyter",

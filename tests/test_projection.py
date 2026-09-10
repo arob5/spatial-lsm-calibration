@@ -853,6 +853,15 @@ class TestExtents:
             assert -90.0 <= south and north <= 90.0, name
             SITE_PROJECTION.projected_bounds(box)
 
+    def test_extents_cannot_be_mutated(self):
+        """A figure and the site subset it plots are supposed to agree on what a
+        region means, so a caller must not be able to reassign an entry and
+        change every later figure in the process."""
+        with pytest.raises(TypeError):
+            EXTENTS["CONUS"] = (0.0, 0.0, 1.0, 1.0)  # type: ignore[index]
+        with pytest.raises(TypeError):
+            del EXTENTS["ALASKA"]  # type: ignore[attr-defined]
+
     def test_north_america_is_the_grid_extent(self):
         """So that it contains every site by construction rather than by a bound
         anyone chose."""

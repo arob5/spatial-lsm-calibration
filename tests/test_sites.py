@@ -813,6 +813,8 @@ class TestSchemaIsPinnedToALiteral:
         )
 
     def test_column_dtypes(self):
+        # A MappingProxyType compares equal to the dict it wraps, so this
+        # still reads as a plain schema assertion.
         assert SITE_COLUMN_DTYPES == {
             "site_id": np.int32,
             "lon": np.float64,
@@ -825,6 +827,12 @@ class TestSchemaIsPinnedToALiteral:
             "landcover": np.int8,
             "ameriflux_site_id": str,
         }
+
+    def test_dtypes_cannot_be_mutated(self):
+        """The schema is read-only: a caller that reassigned a dtype would
+        change what every later read of the table produces."""
+        with pytest.raises(TypeError):
+            SITE_COLUMN_DTYPES["site_id"] = str  # type: ignore[index]
 
 
 class TestLoaderNormalizesTheFile:

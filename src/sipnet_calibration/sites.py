@@ -172,6 +172,7 @@ import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
@@ -399,18 +400,23 @@ SITE_COLUMNS = (
 #: their content. Note that this alone does **not** save the eight sites named
 #: ``NA`` -- ``dtype=str`` still yields ``nan`` for them. What saves them is
 #: ``keep_default_na=False`` in :func:`load_sites`.
-SITE_COLUMN_DTYPES = {
-    "site_id": np.int32,
-    "lon": np.float64,
-    "lat": np.float64,
-    "lon_index": np.int32,
-    "lat_index": np.int32,
-    "site_name": str,
-    "site_order": np.int32,
-    "cluster": np.int8,
-    "landcover": np.int8,
-    "ameriflux_site_id": str,
-}
+#:
+#: Read-only, like :data:`EXTENTS`: these are the schema, and a caller that
+#: mutated them would change what every later read of the table produces.
+SITE_COLUMN_DTYPES = MappingProxyType(
+    {
+        "site_id": np.int32,
+        "lon": np.float64,
+        "lat": np.float64,
+        "lon_index": np.int32,
+        "lat_index": np.int32,
+        "site_name": str,
+        "site_order": np.int32,
+        "cluster": np.int8,
+        "landcover": np.int8,
+        "ameriflux_site_id": str,
+    }
+)
 
 #: Environment variable naming the ``data/`` directory, for a checkout whose
 #: data lives elsewhere. Unset, the repository's own ``data/`` is used.
@@ -519,11 +525,16 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #: The plotting design spec calls the middle one ``NA``. It is spelled out here
 #: under the project's convention against abbreviations, and because ``NA`` is
 #: an unhappy name in a module that has to read ``NA`` as a literal site name.
-EXTENTS = {
-    "CONUS": (-125.0, 24.0, -66.0, 50.0),
-    "NORTH_AMERICA": (SITE_GRID.west, SITE_GRID.south, SITE_GRID.east, SITE_GRID.north),
-    "ALASKA": (SITE_GRID.west, 51.3, -129.99, 71.4),
-}
+#: Read-only: a figure and the site subset it plots are supposed to agree on
+#: what a region means, and a caller that reassigned an entry would silently
+#: change every later figure in the process.
+EXTENTS = MappingProxyType(
+    {
+        "CONUS": (-125.0, 24.0, -66.0, 50.0),
+        "NORTH_AMERICA": (SITE_GRID.west, SITE_GRID.south, SITE_GRID.east, SITE_GRID.north),
+        "ALASKA": (SITE_GRID.west, 51.3, -129.99, 71.4),
+    }
+)
 
 
 def select_sites(
