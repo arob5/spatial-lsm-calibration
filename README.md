@@ -1,13 +1,11 @@
 # Spatial Parameter Calibration for Land Surface Models (LSMs)
 
 Scalable Bayesian algorithms for parameter calibration of the **SIPNET**
-land-surface model, with an emphasis on multi-site inference that exploits
+land surface model (LSM), with an emphasis on multi-site inference that exploits
 spatial structure rather than treating plant functional types as the only source
-of pooling.
+of spatial variability.
 
-This is a **research codebase, not a library**. The deliverables are calibrated
-parameter ensembles, diagnostic outputs, and reusable inference machinery — not
-a published package. Interfaces change when the science requires it.
+This is a research codebase, not a library. 
 
 ## Getting set up
 
