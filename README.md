@@ -55,7 +55,7 @@ Three packages are developed alongside this project and are dependencies of it:
 |---|---|
 | [`pySIPNET`](https://github.com/TARPS-group/pySIPNET) | the SIPNET model interface |
 | [`PyEns`](https://github.com/arob5/PyEns) | running ensembles |
-| [`pyEKI`](https://github.com/TARPS-group/pyEKI) | the ensemble Kalman inference substrate |
+| [`pyEKI`](https://github.com/TARPS-group/pyEKI) | solving inverse problems with ensemble Kalman methods |
 
 `[tool.uv.sources]` in `pyproject.toml` tracks the `main` branch of each, and
 `uv.lock` records the **exact commit** resolved from it. So `uv sync` installs
