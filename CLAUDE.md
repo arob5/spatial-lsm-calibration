@@ -243,6 +243,27 @@ anyone has based a branch on yours: `git branch --contains <old-tip>`. If one
 has, tell that session before you push — rewriting a branch moves the base of
 everything stacked on it, and they will have to rebase too.
 
+**A worktree isolates git, not the Python environment.** A new worktree has no
+`.venv`, and the root's has this package installed editable against the
+**root's** `src/`, so the root interpreter imports whatever branch the root
+checkout is on rather than your own. Put your own tree first on the path:
+
+```bash
+PYTHONPATH="$PWD/src" ../../../.venv/bin/python -m pytest -q
+```
+
+Without it the failure is loud only when a module exists on your branch alone —
+`ModuleNotFoundError` for something you are looking at in your editor. For a
+module that exists on both, the tests pass while exercising the root's copy,
+which is the case worth remembering.
+
+`uv sync` inside a worktree is not a substitute without extra setup.
+`[tool.uv.sources]` gives the companion packages as `../pySIPNET` and
+`../PyEns`, and uv resolves those relative to the `pyproject.toml` it reads, so
+from `.claude/worktrees/<topic>/` they point at `.claude/worktrees/pySIPNET`
+and the sync stops at `Distribution not found`. Reaching them takes a symlink
+per package; the path above needs nothing.
+
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
