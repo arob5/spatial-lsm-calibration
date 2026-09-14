@@ -1,49 +1,22 @@
-"""What each variable *is*: its canonical unit, its aggregation rule, its style.
+"""Variable specs: canonical units, aggregation rule, plotting style.
 
 Overview
 --------
 This module holds the one description of every variable the project handles.
-Three of its fields are correctness rather than presentation -- the canonical
-unit a variable is held in, the temporal aggregation rule it obeys, and the
-sign convention it follows -- and they are here because they are properties of
-the variable. Every place that rediscovers one of them is a place it can be
-rediscovered wrongly, and two of the three fail silently when they are:
-aggregating a per-timestep flux with a mean is wrong by the number of steps in
-the period, and plotting a rate against a total is wrong by orders of
-magnitude. Neither looks wrong on a figure.
-
-It is also what replaces a function per variable -- ``plot_nee``, ``plot_gpp``,
-``plot_lai`` -- which is the combinatorial trap the plotting design avoids.
-
-Input data
-----------
-None. It is a literal mapping, with no file, environment or import dependency
-of its own, and it imports nothing from
-:mod:`sipnet_calibration.plotting`. It sits in the data layer rather than
-under ``plotting/`` because
-:func:`sipnet_calibration.observation_operators.aggregate_time` reads it and
-will be imported by the observation operator: under ``plotting/`` that would
-pull ``matplotlib.pyplot`` into the likelihood, and would invert the
-dependency direction :mod:`sipnet_calibration`'s own docstring states. The
-plotting layer reads this module; this module reads nothing.
+This includes the canonical unit for the stored variable, temporal aggregation
+rule, and the sign convention. Also stores variable information that is 
+utilized by the plotting code for proper formatting, labels, etc.
 
 Data model
 ----------
-:data:`VARIABLES` maps a **processed** variable name to a :class:`VarSpec`.
-The keys follow the project's naming convention -- lower case with
-underscores, and no abbreviation that is not universal -- so ``lai`` and
-``par`` are keys but ``AbvGrndWood`` is not; the source-name correspondence
-lives with each reader, in ``drivers.SOURCE_VARIABLE_NAMES`` and
-``constraints.SOURCE_VARIABLE_NAMES``.
+:data:`VARIABLES` maps a processed variable name to a :class:`VarSpec`.
 
 ======================= ==================================================
 :class:`VarSpec` field  Meaning
 ======================= ==================================================
 ``label``               Short display name, for a panel title or a legend
-                        entry. Not an axis label: an axis wants the field's
-                        own ``long_name``, which is longer and says what
-                        the value is a summary of.
-``units``               The **canonical** unit. Adapters convert into it and
+                        entry (for axis labels use the long name)
+``units``               The canonical unit. Adapters convert into it and
                         nothing downstream reconciles units.
 ``agg``                 The temporal aggregation rule, one of
                         :data:`AGGREGATION_RULES`.
@@ -57,18 +30,13 @@ lives with each reader, in ``drivers.SOURCE_VARIABLE_NAMES`` and
                         present; carried because the design names it.
 ======================= ==================================================
 
-**Which variables are here.** The eight meteorological drivers, the four
-annual constraints, and ``nee``. The first twelve have readers, so their
-units are checked against what those readers write, and the drivers'
-aggregation rules with them. ``nee`` is here because its canonical unit is a
-decision this module has to record; no reader produces it yet.
+**Included Variables.** This registry includes meteorological drivers and
+constraint data.
 
-**Which are deliberately absent.** SIPNET's other outputs -- ``gpp``, the
-carbon pools, the cumulative fluxes -- and the initial-condition variables.
-Their *processed names* are the SIPNET adapter's and
-``initial_conditions.py``'s to settle, and a guess made here would have to be
-renamed later. :func:`variable_spec` raises on a name that is absent rather
-than guessing a rule for it.
+**Excluded Variables.** Most SIPNET outputs (GPP, carbon pools, cumulative
+fluxes) and the initial condition variables. These are already handled 
+by pySIPNET and ``initial_conditions.py``. :func:`variable_spec` raises on 
+a name that is absent rather than guessing a rule for it.
 
 Functions
 ---------
