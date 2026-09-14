@@ -33,6 +33,15 @@ A report to stdout and, with ``--out``, the same content as JSON:
 
 * the distinct variable-set signatures and how many files carry each;
 * per variable, the file count and the distinct ``units`` and ``long_name``;
+* per variable, the distinct *dimensions*, storage types, attribute names
+  and declared ``_FillValue``, which is what says whether
+  ``scripts/ingest_ic.py`` will accept the ensemble: it requires a scalar
+  ``float64`` on ``time`` alone, refuses an attribute it does not act on
+  (``scale_factor`` and ``add_offset`` would silently rescale a value), and
+  asserts the fill is -999.0;
+* the distinct ``units``, ``long_name`` and value of the ``time`` variable,
+  since the ingest asserts the unsubstituted template of issue #3 and a file
+  with a real year would mean that defect was fixed upstream;
 * the member indices present per site, and whether the ensemble is a complete
   rectangle over sites and members;
 * files whose directory and file-name site numbers disagree;
@@ -43,12 +52,16 @@ A report to stdout and, with ``--out``, the same content as JSON:
 
 Notes
 -----
-**No third-party dependencies.** The files are netCDF-3 classic, whose header
-format is simple enough to parse directly, so this runs under any Python 3 on
-the SCC with no modules loaded and no environment to activate. Only the header
-and the handful of scalar values are read, about a kilobyte per file, so a run
-is dominated by filesystem latency rather than by parsing -- which is what
-``--jobs`` is for, and it is worth raising on a networked filesystem.
+**No third-party dependencies**, so this runs on the SCC with no modules
+loaded and no environment to activate. It does need **Python 3.8 or newer**:
+the header parse relies on a dict comprehension evaluating its key before its
+value, which 3.8 changed, and on 3.7 it would mis-parse every header rather
+than fail. :func:`main` refuses to run on anything older.
+
+Only the header and the handful of scalar values are read, about a kilobyte
+per file, so a run is dominated by filesystem latency rather than by parsing
+-- which is what ``--jobs`` is for, and it is worth raising on a networked
+filesystem.
 
 For a record variable, ``read_values`` returns the first record only, which is
 all these files have. The record count is reported separately so that a file
@@ -95,6 +108,16 @@ class NetCDFParseError(Exception):
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.version_info < (3, 8):
+        print(
+            "error: this script needs Python 3.8 or newer. The netCDF header "
+            "parse relies on dict comprehensions evaluating the key before "
+            "the value, which changed in 3.8; on an older interpreter it "
+            f"would mis-parse every file silently. Found "
+            f"{sys.version.split()[0]}.",
+            file=sys.stderr,
+        )
+        return 2
     args = parse_args(argv)
     if not args.root.is_dir():
         print(f"error: --root {args.root} is not a directory", file=sys.stderr)
@@ -158,7 +181,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--no-values",
         action="store_true",
-        help="Read headers only; skips the fill-value and equality checks.",
+        help="Read headers only; skips the fill-value counts, the equality "
+        "check and the time variable's values. Everything else, including "
+        "dimensions, dtypes and attribute names, comes from the header.",
     )
     parser.add_argument(
         "--out",
@@ -221,6 +246,7 @@ def survey_one_file(path: Path, *, check_values: bool) -> FileFacts:
     header, raw = read_header(path)
     by_name = {variable.name: variable for variable in header.variables}
     data_names = tuple(sorted(name for name in by_name if name != "time"))
+    dimension_names = [name for name, _ in header.dimensions]
 
     def attribute(name: str, key: str) -> str:
         value = by_name[name].attributes.get(key, "")
@@ -228,7 +254,14 @@ def survey_one_file(path: Path, *, check_values: bool) -> FileFacts:
 
     time_length = header.dimension_sizes().get("time")
 
-    n_fill = 0
+    def dimensions_of(name: str) -> tuple[str, ...]:
+        return tuple(
+            dimension_names[i] if i < len(dimension_names) else f"<{i}>"
+            for i in by_name[name].dimension_ids
+        )
+
+    fills_by_variable: dict[str, int] = {}
+    time_values: tuple[float, ...] = ()
     equal: bool | None = None
     if check_values:
         values = {
@@ -236,10 +269,14 @@ def survey_one_file(path: Path, *, check_values: bool) -> FileFacts:
             for name, variable in by_name.items()
             if name != "time"
         }
-        n_fill = sum(v.count(FILL_VALUE) for v in values.values())
+        fills_by_variable = {
+            name: v.count(FILL_VALUE) for name, v in values.items()
+        }
         left, right = EQUALITY_PAIR
         if left in values and right in values:
             equal = values[left] == values[right]
+        if "time" in by_name:
+            time_values = tuple(read_values(by_name["time"], raw))
 
     return FileFacts(
         site=site,
@@ -247,8 +284,27 @@ def survey_one_file(path: Path, *, check_values: bool) -> FileFacts:
         signature=data_names,
         units={name: attribute(name, "units") for name in data_names},
         long_names={name: attribute(name, "long_name") for name in data_names},
+        dimensions={name: dimensions_of(name) for name in data_names},
+        dtypes={
+            name: _NC_TYPE_NAMES.get(
+                by_name[name].type_tag, f"tag {by_name[name].type_tag}"
+            )
+            for name in data_names
+        },
+        attribute_names={
+            name: tuple(sorted(by_name[name].attributes)) for name in data_names
+        },
+        fill_values={
+            name: attribute(name, "_FillValue") for name in data_names
+        },
         time_length=time_length,
-        n_fill_values=n_fill,
+        time_units=attribute("time", "units") if "time" in by_name else "",
+        time_long_name=(
+            attribute("time", "long_name") if "time" in by_name else ""
+        ),
+        time_values=time_values,
+        n_fill_values=sum(fills_by_variable.values()),
+        fills_by_variable=fills_by_variable,
         equality_pair_equal=equal,
     )
 
@@ -262,10 +318,22 @@ def accumulate(totals: SurveyTotals, facts: FileFacts, path: Path) -> None:
     totals.time_lengths[facts.time_length] += 1
     totals.n_fill_values += facts.n_fill_values
 
+    totals.time_units[facts.time_units] += 1
+    totals.time_long_names[facts.time_long_name] += 1
+    if facts.time_values:
+        totals.time_values[repr(list(facts.time_values))] += 1
+
     for name in facts.signature:
         totals.variable_files[name] += 1
         totals.variable_units[name][facts.units[name]] += 1
         totals.variable_long_names[name][facts.long_names[name]] += 1
+        totals.variable_dimensions[name][", ".join(facts.dimensions[name])] += 1
+        totals.variable_dtypes[name][facts.dtypes[name]] += 1
+        totals.variable_attribute_names[name][
+            ", ".join(facts.attribute_names[name])
+        ] += 1
+        totals.variable_fill_values[name][facts.fill_values[name]] += 1
+        totals.variable_fill_counts[name] += facts.fills_by_variable.get(name, 0)
 
     if facts.equality_pair_equal is not None:
         totals.n_equality_pair_checked += 1
@@ -297,8 +365,18 @@ def build_report(totals: SurveyTotals) -> dict[str, object]:
                 "n_files": totals.variable_files[name],
                 "units": dict(totals.variable_units[name]),
                 "long_names": dict(totals.variable_long_names[name]),
+                "dimensions": dict(totals.variable_dimensions[name]),
+                "dtypes": dict(totals.variable_dtypes[name]),
+                "attribute_names": dict(totals.variable_attribute_names[name]),
+                "declared_fill_values": dict(totals.variable_fill_values[name]),
+                "n_fill_values_in_data": totals.variable_fill_counts[name],
             }
             for name in sorted(totals.variable_files)
+        },
+        "time_variable": {
+            "units": dict(totals.time_units),
+            "long_names": dict(totals.time_long_names),
+            "values": dict(totals.time_values),
         },
         "ensemble": describe_ensemble(totals),
         "time_dimension_lengths": {
@@ -338,6 +416,18 @@ def print_report(report: dict[str, object]) -> None:
         print(f"  {name:<32s} {info['n_files']:>8d} files   units: {units}")
         for long_name, n in info["long_names"].items():
             print(f"  {'':<32s} {'':>8s}   long_name: {long_name!r} x{n}")
+        for label, key in (
+            ("dims", "dimensions"),
+            ("dtype", "dtypes"),
+            ("attrs", "attribute_names"),
+            ("_FillValue", "declared_fill_values"),
+        ):
+            joined = ", ".join(f"({v}) x{n}" for v, n in info[key].items())
+            print(f"  {'':<32s} {'':>8s}   {label}: {joined}")
+        print(
+            f"  {'':<32s} {'':>8s}   fill values in data: "
+            f"{info['n_fill_values_in_data']}"
+        )
 
     ensemble = report["ensemble"]
     print("\nEnsemble")
@@ -353,6 +443,15 @@ def print_report(report: dict[str, object]) -> None:
         print(f"    examples: {ensemble['example_sites_with_other_size']}")
     print(f"  ensemble size counts       : {ensemble['ensemble_size_counts']}")
 
+    time_variable = report["time_variable"]
+    print("\ntime variable")
+    for label, key in (
+        ("units", "units"),
+        ("long_name", "long_names"),
+        ("values", "values"),
+    ):
+        joined = ", ".join(f"{v!r} x{n}" for v, n in time_variable[key].items())
+        print(f"  {label:<12s}: {joined or '(not read; --no-values)'}")
     print(f"\ntime dimension lengths       : {report['time_dimension_lengths']}")
     print(f"fill values ({FILL_VALUE}) found  : {report['fill_values']['n_fill_values_found']}")
 
@@ -405,8 +504,16 @@ class FileFacts:
     signature: tuple[str, ...]
     units: dict[str, str]
     long_names: dict[str, str]
+    dimensions: dict[str, tuple[str, ...]]
+    dtypes: dict[str, str]
+    attribute_names: dict[str, tuple[str, ...]]
+    fill_values: dict[str, str]
     time_length: int | None
+    time_units: str
+    time_long_name: str
+    time_values: tuple[float, ...]
     n_fill_values: int
+    fills_by_variable: dict[str, int]
     equality_pair_equal: bool | None
 
 
@@ -423,6 +530,22 @@ class SurveyTotals:
     variable_long_names: dict[str, Counter] = field(
         default_factory=lambda: defaultdict(Counter)
     )
+    variable_dimensions: dict[str, Counter] = field(
+        default_factory=lambda: defaultdict(Counter)
+    )
+    variable_dtypes: dict[str, Counter] = field(
+        default_factory=lambda: defaultdict(Counter)
+    )
+    variable_attribute_names: dict[str, Counter] = field(
+        default_factory=lambda: defaultdict(Counter)
+    )
+    variable_fill_values: dict[str, Counter] = field(
+        default_factory=lambda: defaultdict(Counter)
+    )
+    variable_fill_counts: Counter = field(default_factory=Counter)
+    time_units: Counter = field(default_factory=Counter)
+    time_long_names: Counter = field(default_factory=Counter)
+    time_values: Counter = field(default_factory=Counter)
     members_by_site: dict[int, set[int]] = field(
         default_factory=lambda: defaultdict(set)
     )
@@ -444,6 +567,16 @@ class SurveyTotals:
 
 _MAGIC = b"CDF"
 _NC_DIMENSION, _NC_VARIABLE, _NC_ATTRIBUTE = 10, 11, 12
+
+#: netCDF type tag -> the name the format gives it, for reporting.
+_NC_TYPE_NAMES = {
+    1: "byte",
+    2: "char",
+    3: "short",
+    4: "int",
+    5: "float32",
+    6: "float64",
+}
 
 #: netCDF type tag -> (struct format character, size in bytes).
 _NC_TYPES = {
