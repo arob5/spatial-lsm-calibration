@@ -2099,6 +2099,7 @@ dependencies = [
     { name = "pandas" },
     { name = "pint" },
     { name = "pydantic" },
+    { name = "xarray" },
 ]
 
 [package.metadata]
@@ -2111,9 +2112,9 @@ requires-dist = [
     { name = "pint", specifier = ">=0.23" },
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=5.3" },
     { name = "pydantic", specifier = ">=2.0" },
-    { name = "xarray", marker = "extra == 'xarray'", specifier = ">=2023.0" },
+    { name = "xarray", specifier = ">=2023.0" },
 ]
-provides-extras = ["xarray", "viz", "examples"]
+provides-extras = ["viz", "examples"]
 
 [package.metadata.requires-dev]
 dev = [
