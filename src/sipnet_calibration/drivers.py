@@ -104,8 +104,8 @@ Name                    Dims         Meaning
 ======================= ============ ==========================================
 
 **Time.** Labels are the nominal ``year``/``day``/``3 * slot`` instants, built
-by :func:`sipnet_calibration.observation_operators.sipnet_time_index` and never from the
-``time`` column's value. The coordinate carries ``long_name``,
+by :func:`sipnet_calibration.observation_operators.sipnet_time_index` and
+never from the ``time`` column's value. The coordinate carries ``long_name``,
 ``time_zone = "UTC"``, ``time_label = "interval_end"``, ``time_label_note``,
 ``clock_status`` and ``clock_provenance``: the value in the row labeled hour
 ``h`` covers the interval ``(h - 3, h]`` on a clock consistent with UTC. That
@@ -169,8 +169,8 @@ apart puts the drivers on a longitude-tracking clock consistent with UTC, with
 each row's PAR accumulated over the three hours *ending* at its nominal label.
 Keeping the nominal labels and recording ``time_label = "interval_end"`` means
 a daily resample groups exactly the eight rows SIPNET itself calls one day,
-the same :func:`~sipnet_calibration.observation_operators.sipnet_time_index` applies
-unchanged to SIPNET output, and no row acquires a 2011 date. Anything that
+the same :func:`~sipnet_calibration.observation_operators.sipnet_time_index`
+applies unchanged to SIPNET output, and no row acquires a 2011 date. Anything that
 needs interval-start semantics reads the label and shifts.
 
 **Why float64.** There is no disk to save, and the text carries up to eight
@@ -372,8 +372,8 @@ DRIVER_VARIABLE_ATTRS = {
     },
 }
 
-#: The clock the time labels are on, and what a label marks. The label
-#: convention is shared vocabulary; see :mod:`sipnet_calibration.time_conventions`.
+#: The clock the time labels are on, and what a label marks; the label
+#: vocabulary is :mod:`sipnet_calibration.time_conventions`.
 TIME_ZONE = "UTC"
 TIME_LABEL = TimeLabel.INTERVAL_END
 

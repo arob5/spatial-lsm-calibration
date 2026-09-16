@@ -374,8 +374,8 @@ Columns follow the 14-column layout defined by [pySIPNET].
 so timestamps are assembled from `year`, `day` and the row's position within its
 day by `sipnet_calibration.observation_operators.sipnet_time_index`. What
 clock those labels are on, and whether a label marks the start or the end of
-its three hours, is inferred rather than documented (Note 16). Two columns are integrated
-quantities rather than rates: `par` and `precip` are totals over the timestep,
+its three hours, is inferred rather than documented (Note 16). Two columns are
+integrated quantities rather than rates: `par` and `precip` are totals over the timestep,
 so temporal aggregation of either is a sum rather than a mean. SIPNET requires
 `vpd` and `wspd` to be strictly positive and silently clamps values that are
 not; the files also hold small negative excursions of `par` and `precip` around
@@ -467,8 +467,9 @@ columns.
 
 **Interpretation.** Values are in micromoles of CO2 per square meter per second
 (umol CO2 m-2 s-1), a rate, as confirmed by the producer. SIPNET reports net
-ecosystem exchange as a per-timestep total in g C m-2, so ingest must convert
-between the two.
+ecosystem exchange as a total over the timestep in grams of carbon per square
+meter; the observation operator converts the model into the observation's
+units, and the processed product keeps the producer's.
 
 Each of the 25 member columns is the gap-filled series obtained from one member
 of a driver ensemble. The spread across members therefore reflects the
@@ -636,9 +637,10 @@ Conversions applied during ingest rather than downstream:
   uncertainty at all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016),
   all with a mean of 1.0. Either way flooring them is a modeling decision that
   would be hidden if an ingest script made it. See open question 14.
-- **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
-  unit used throughout, so that nothing later has to reconcile units, and the
-  redundant `ens_mean` column is dropped.
+- **Net ecosystem exchange.** Kept in the producer's units, umol CO2 m-2 s-1;
+  the observation operator converts the model into these units using the
+  model's own timestep length, never the reverse. The redundant `ens_mean`
+  column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -691,6 +693,9 @@ A period with no observations comes back missing, never zero -- xarray's
 partial total it is, unscaled; a caller wanting only whole periods says so with
 `min_count=`, or masks on `aggregation_counts`. Irregular windows, such as an
 observation's own intervals, go through `reduce_windows` with the same rules.
+An aggregated field's `time` coordinate says what its new labels mark: the
+start of each period for a start-anchored frequency such as `1D`, the end for
+`ME` or `YE`.
 
 Every `time` coordinate carries a `time_label` attribute saying what its
 labels mark; the vocabulary is `sipnet_calibration.time_conventions.TimeLabel`

@@ -184,8 +184,7 @@ def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fi
 def test_acceptance_one_panel_three_aggregations(ax, real_driver_field):
     """Raw, daily and monthly ``par`` at one site, overlaid, in three lines.
 
-    Criterion 1 of the design spec, on ``par`` rather than NEE, which has no
-    processed product yet. Like NEE, ``par`` is a per-timestep total, so its
+    On ``par`` rather than NEE, which has no processed product yet. Like NEE, ``par`` is a per-timestep total, so its
     daily value is a sum -- and the point of the criterion is that the call
     site does not have to say so. It says ``aggregate_time(par, "1D")``, and
     the rule comes from the ``aggregation`` attribute the driver reader wrote.

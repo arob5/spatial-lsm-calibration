@@ -362,9 +362,10 @@ plotting code. The load-bearing rules:
   8x and looks plausible. Temperatures and vapor pressures are step means;
   PAR and precipitation are step totals. Observed fields carry no such
   attribute on purpose: how an observation is placed in time is a property of
-  the observation, decided by its observation operator, and the variable's
-  kind only constrains what is allowed (a state is never summed; a flux is
-  not averaged until it is a rate).
+  the observation, decided by its observation operator. `aggregate_time`
+  itself accepts any `how`; the observation layer to come (issue #6) is where
+  the variable's kind constrains what is allowed (a state is never summed; a
+  flux is not averaged until it is a rate).
 - **Model-side variable names are pySIPNET's and are never renamed** here
   (`net_ecosystem_exchange`, `leaf_carbon`, `wood_carbon`); observed variables
   get this project's names, in the observed-variable registry. Units follow

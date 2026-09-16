@@ -32,6 +32,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from enum import StrEnum
+
 from sipnet_calibration.observation_operators import (
     AGGREGATION_ATTR,
     REDUCTIONS,
@@ -865,6 +867,27 @@ class TestUpsamplingIsRefused:
         one = annual_field("lai", (2015,))
         assert aggregate_time(one, "YS", how="last").sizes["time"] == 1
 
+    def test_a_gapped_field_at_its_own_cadence_is_a_no_op(self):
+        """A daily record missing a day, aggregated to ``"1D"``: nothing is
+        grouped and one empty period appears, and that is not upsampling."""
+        times = pd.to_datetime(["2013-01-01", "2013-01-02", "2013-01-04"])
+        field = xr.DataArray(np.arange(3.0), dims="time", coords={"time": times}, name="x")
+        result = aggregate_time(field, "1D", how="sum")
+        np.testing.assert_allclose(result.values, [0.0, 1.0, np.nan, 2.0])
+        np.testing.assert_array_equal(aggregation_counts(field, "1D").values, [1, 1, 0, 1])
+
+    def test_a_sparse_annual_field_aggregates_to_years(self):
+        """The ragged constraint product, one site with a missing year."""
+        sparse = annual_field("lai", (2005, 2007, 2008))
+        result = aggregate_time(sparse, "YS", how="last")
+        assert result.sizes["time"] == 4
+        np.testing.assert_allclose(result.values, [0.0, np.nan, 1.0, 2.0])
+
+    def test_a_three_hourly_record_missing_one_row_is_not_upsampled_at_its_own_step(self):
+        par = three_hourly_field("par", n_days=1)
+        par = par.isel(time=[0, 1, 2, 4, 5, 6, 7])
+        assert aggregate_time(par, "3h").sizes["time"] == STEPS_PER_DAY
+
     def test_a_long_gap_does_not_make_a_downsample_look_like_one(self):
         """A record with a month-long hole is still 3-hourly, and a daily
         aggregation of it is a downsample. A check that took the widest gap as
@@ -985,6 +1008,31 @@ class TestWhatSurvivesAggregation:
 
 
 class TestTheTimeAxis:
+    def test_the_aggregated_time_coordinate_says_what_its_labels_mark(self):
+        """The source's label attributes describe the source's steps and do
+        not survive; the clock attributes do."""
+        par = three_hourly_field("par", n_days=40)
+        par["time"].attrs = {
+            TIME_LABEL_ATTR: TimeLabel.INTERVAL_END.value,
+            "time_label_note": "covers (h - 3, h]",
+            "time_zone": "UTC",
+            "clock_status": "inferred",
+        }
+        daily = aggregate_time(par, "1D")
+        assert daily["time"].attrs[TIME_LABEL_ATTR] == TimeLabel.INTERVAL_START.value
+        assert "(h - 3, h]" not in daily["time"].attrs["time_label_note"]
+        assert daily["time"].attrs["time_zone"] == "UTC"
+        assert daily["time"].attrs["clock_status"] == "inferred"
+        monthly = aggregate_time(par, "ME")
+        assert monthly["time"].attrs[TIME_LABEL_ATTR] == TimeLabel.INTERVAL_END.value
+        assert aggregate_time(par, "YS")["time"].attrs[TIME_LABEL_ATTR] == "interval_start"
+
+    def test_freq_must_be_a_string(self):
+        """A ``Timedelta`` is an offset pandas accepts, but it cannot be
+        written as an attribute."""
+        with pytest.raises(ValueError, match="freq must be a pandas offset alias"):
+            aggregate_time(three_hourly_field("par"), pd.Timedelta("1D"))
+
     def test_a_field_with_no_time_dimension_raises(self):
         """An initial-condition field is ``(member, site)``."""
         static = three_hourly_field("par", dims=("member", "site"))
@@ -1353,6 +1401,151 @@ class TestReduceWindows:
             reduce_windows(canonical, windows, "sum"),
             reduce_windows(transposed, windows, "sum").transpose("site", "time"),
         )
+        expected = canonical.values.reshape(2, -1, STEPS_PER_DAY).sum(axis=-1)
+        np.testing.assert_allclose(reduce_windows(canonical, windows, "sum").values, expected)
+
+    def test_a_window_with_exactly_min_count_values_is_kept(self):
+        """The boundary: ``>=``, not ``>``. With the default of 1, a window
+        holding one value is a value, not missing."""
+        field = three_hourly_field("par", n_days=2)
+        field[STEPS_PER_DAY + 1 :] = np.nan
+        windows = day_windows("2013-01-01", 2)
+        loose = reduce_windows(field, windows, "sum")
+        assert loose.values[1] == pytest.approx(daily_blocks(field)[1, 0])
+        field[STEPS_PER_DAY + 3 :] = field.values[STEPS_PER_DAY]
+        exact = reduce_windows(field, windows, "sum", min_count=6)
+        assert np.isfinite(exact.values[1])
+        assert np.isnan(reduce_windows(field, windows, "sum", min_count=7).values[1])
+
+    def test_decreasing_windows_raise(self):
+        """Non-overlapping but out of order: pandas accepts them, and the
+        values would come back paired with the wrong labels."""
+        field = three_hourly_field("par", n_days=3)
+        windows = day_windows("2013-01-01", 3)[::-1]
+        with pytest.raises(ValueError, match="increasing order"):
+            reduce_windows(field, windows, "sum")
+
+    def test_duplicate_labels_raise(self):
+        field = three_hourly_field("par", n_days=3)
+        windows = day_windows("2013-01-01", 3)
+        labels = pd.to_datetime(["2013-07-15", "2013-07-15", "2015-07-15"])
+        with pytest.raises(ValueError, match="strictly increasing"):
+            reduce_windows(field, windows, "sum", labels=labels)
+
+    def test_degenerate_windows_with_repeated_default_labels_raise(self):
+        field = three_hourly_field("par", n_days=3)
+        edge = pd.Timestamp("2013-01-02")
+        windows = pd.IntervalIndex.from_arrays(
+            [pd.Timestamp("2013-01-01"), edge], [edge, edge], closed="left"
+        )
+        with pytest.raises(ValueError, match="right edges must be strictly increasing"):
+            reduce_windows(field, windows, "sum")
+
+    def test_numeric_labels_raise_rather_than_becoming_1970(self):
+        field = three_hourly_field("par", n_days=3)
+        with pytest.raises(ValueError, match="labels must be timestamps"):
+            reduce_windows(field, day_windows("2013-01-01", 3), "sum", labels=[1, 2, 3])
+
+    def test_windows_holding_nat_are_named_as_such(self):
+        field = three_hourly_field("par", n_days=3)
+        windows = pd.IntervalIndex.from_arrays(
+            [pd.Timestamp("2013-01-01"), pd.NaT], [pd.Timestamp("2013-01-02"), pd.NaT]
+        )
+        with pytest.raises(ValueError, match="NaT"):
+            reduce_windows(field, windows, "sum")
+
+    def test_window_counts_carry_the_labels_and_int64_when_nothing_matches(self):
+        """The counts align with the reduction by coordinate, not only by
+        position, in the all-outside branch too."""
+        field = three_hourly_field("par", dims=("site", "time"))
+        windows = day_windows("2014-01-01", 2)
+        labels = pd.to_datetime(["2014-07-15", "2015-07-15"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            counts = window_counts(field, windows, labels=labels)
+            reduced = reduce_windows(field, windows, "sum", labels=labels)
+        assert counts.dtype == np.int64
+        pd.testing.assert_index_equal(pd.DatetimeIndex(counts["time"].values), labels, check_names=False)
+        pd.testing.assert_index_equal(pd.DatetimeIndex(reduced["time"].values), labels, check_names=False)
+
+    def test_windows_in_another_datetime_resolution_are_accepted(self):
+        """``sipnet_time_index`` produces nanoseconds; ``pd.to_datetime`` and
+        ``pd.date_range`` produce microseconds under pandas 3. The two must
+        meet without the caller converting."""
+        n = STEPS_PER_DAY * 3
+        stamps = sipnet_time_index([2013] * n, np.repeat([1, 2, 3], STEPS_PER_DAY), np.tile(np.arange(0, 24, 3.0), 3))
+        assert stamps.unit == "ns"
+        field = three_hourly_field("par", n_days=3).assign_coords(time=stamps)
+        windows = day_windows("2013-01-01", 3)
+        assert windows.left.unit == "us"
+        result = reduce_windows(field, windows, "sum", labels=windows.left)
+        np.testing.assert_allclose(result.values, daily_blocks(field).sum(axis=1))
+        np.testing.assert_array_equal(window_counts(field, windows).values, STEPS_PER_DAY)
+        coarse = field.assign_coords(time=stamps.as_unit("s"))
+        np.testing.assert_allclose(
+            reduce_windows(coarse, windows, "sum").values, daily_blocks(field).sum(axis=1)
+        )
+
+    def test_timezone_aware_field_and_windows_group_in_that_zone(self):
+        """The rows keep their zone through the grouping: a window given in
+        the field's zone collects the rows it names, not their UTC wall clock."""
+        field = three_hourly_field("par", n_days=2)
+        aware = field.assign_coords(
+            time=pd.DatetimeIndex(field["time"].values).tz_localize("America/New_York")
+        )
+        edges = pd.date_range("2013-01-01", periods=3, freq="1D", tz="America/New_York")
+        windows = pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="left")
+        result = reduce_windows(aware, windows, "sum")
+        np.testing.assert_allclose(result.values, daily_blocks(field).sum(axis=1))
+        np.testing.assert_array_equal(window_counts(aware, windows).values, STEPS_PER_DAY)
+
+    def test_a_time_zone_mismatch_raises_rather_than_matching_nothing(self):
+        field = three_hourly_field("par", n_days=2)
+        naive_windows = day_windows("2013-01-01", 2)
+        aware = field.assign_coords(time=pd.DatetimeIndex(field["time"].values).tz_localize("UTC"))
+        with pytest.raises(ValueError, match="time zone"):
+            reduce_windows(aware, naive_windows, "sum")
+        edges = pd.date_range("2013-01-01", periods=3, freq="1D", tz="UTC")
+        aware_windows = pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="left")
+        with pytest.raises(ValueError, match="time zone"):
+            reduce_windows(field, aware_windows, "sum")
+
+    def test_the_default_labels_say_they_are_interval_ends(self):
+        field = three_hourly_field("par", n_days=3)
+        result = reduce_windows(field, day_windows("2013-01-01", 3), "sum")
+        assert result["time"].attrs[TIME_LABEL_ATTR] == TimeLabel.INTERVAL_END.value
+
+    def test_labels_given_as_a_dataarray_keep_their_attributes(self):
+        """An observation operator labels the result with the observation's
+        own coordinate, which says what its labels mean."""
+        field = three_hourly_field("par", n_days=3)
+        labels = xr.DataArray(
+            pd.to_datetime(["2013-07-15", "2014-07-15", "2015-07-15"]),
+            dims="time",
+            attrs={TIME_LABEL_ATTR: TimeLabel.NOMINAL.value, "time_zone": "none"},
+        )
+        result = reduce_windows(field, day_windows("2013-01-01", 3), "sum", labels=labels)
+        assert result["time"].attrs[TIME_LABEL_ATTR] == "nominal"
+        assert result["time"].attrs["time_zone"] == "none"
+        plain = reduce_windows(field, day_windows("2013-01-01", 3), "sum", labels=labels.values)
+        assert plain["time"].attrs == {}
+
+    def test_how_given_as_a_string_enum_is_stored_as_a_plain_string(self):
+        """h5netcdf cannot write a ``str`` subclass as an attribute."""
+
+        class Rule(StrEnum):
+            SUM = "sum"
+
+        field = three_hourly_field("par", n_days=3)
+        result = reduce_windows(field, day_windows("2013-01-01", 3), Rule.SUM)
+        assert type(result.attrs["aggregation_applied"]) is str
+        field.attrs[AGGREGATION_ATTR] = Rule.SUM
+        assert type(aggregate_time(field, "1D").attrs["aggregation_applied"]) is str
+
+    def test_an_array_of_reductions_is_refused(self):
+        field = three_hourly_field("par", n_days=3)
+        with pytest.raises(ValueError, match="how must be one of"):
+            reduce_windows(field, day_windows("2013-01-01", 3), np.array(["sum"]))
 
     def test_the_name_and_attributes_survive(self):
         field = three_hourly_field("par")
@@ -1402,6 +1595,23 @@ class TestReduceWindows:
             reduce_windows(three_hourly_field("par", dims=("site",)), day_windows("2013-01-01", 1), "sum")
         with pytest.raises(ValueError, match="min_count must be at least 1"):
             reduce_windows(three_hourly_field("par"), day_windows("2013-01-01", 1), "sum", min_count=0)
+
+
+class TestAgainstTheRealConstraints:
+    """The annual product is ragged in year; a site's observed years must
+    aggregate to years without being mistaken for upsampling."""
+
+    def test_a_ragged_site_aggregates_to_years(self, real_constraint_fields):
+        means, _ = real_constraint_fields
+        wood = means["aboveground_wood_carbon"]
+        counts = wood.notnull().sum("time")
+        partial = [int(s) for s, n in zip(wood["site"].values, counts.values) if 0 < n < wood.sizes["time"]]
+        if not partial:
+            pytest.skip("no site with a partial record")
+        one = wood.sel(site=partial[0]).dropna("time")
+        result = aggregate_time(one, "YS", how="last")
+        assert result.notnull().sum().item() == one.sizes["time"]
+        np.testing.assert_allclose(result.dropna("time").values, one.values)
 
 
 # ── time conventions ──────────────────────────────────────────────────────────

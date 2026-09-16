@@ -1,4 +1,4 @@
-"""Time indexing and temporal aggregation, shared by the likelihood and the plots.
+"""Time indexing and temporal aggregation for the likelihood and the plots.
 
 Overview
 --------
@@ -42,10 +42,10 @@ Notes
 -----
 **Where the rule comes from.** :func:`aggregate_time` has two sources for its
 rule and no default: the ``how`` argument, and the field's ``aggregation``
-attribute. pySIPNET writes that attribute onto every model output and driver
-field from the variable's kind (a ``flux`` is a total over the step and sums;
-a ``state`` or a step ``mean`` averages), and
-:mod:`sipnet_calibration.drivers` writes it onto the driver fields it reads.
+attribute. pySIPNET writes that attribute onto every model output field from
+the variable's kind (a ``flux`` is a total over the step and sums; a ``state``
+or a step ``mean`` averages), and :mod:`sipnet_calibration.drivers` writes it
+onto the driver fields it reads.
 A field carrying neither is refused, because a wrong default is silent:
 SIPNET's ``net_ecosystem_exchange`` is ``g m-2`` of carbon per timestep, so
 3-hourly to daily is a sum, and a mean is wrong by a factor of eight while
@@ -76,9 +76,9 @@ Usage
         sipnet_time_index,
     )
 
-    daily_par = aggregate_time(par, "1D")       # summed: par carries aggregation="sum"
-    daily_tair = aggregate_time(tair, "1D")     # meaned: it carries aggregation="mean"
-    daily_obs = aggregate_time(nee_obs, "1D", how="mean")   # an observation says how
+    daily_par = aggregate_time(par, "1D")     # par carries aggregation="sum"
+    daily_tair = aggregate_time(tair, "1D")   # tair carries aggregation="mean"
+    daily_obs = aggregate_time(nee_obs, "1D", how="mean")   # an observation says
 
     # Only whole days.
     counts = aggregation_counts(par, "1D")
@@ -94,6 +94,8 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from sipnet_calibration.time_conventions import TIME_LABEL_ATTR, TimeLabel
 
 __all__ = [
     "AGGREGATION_ATTR",
@@ -171,10 +173,7 @@ def sipnet_time_index(
         ``day_of_year`` is not numeric or not a whole number; a
         ``day_of_year`` is outside ``1..366``, or is 366 in a non-leap year;
         an ``hours_since_midnight`` is not finite or is outside ``[0, 24)``;
-        or the resulting index is not strictly increasing. SIPNET writes rows
-        in order, so the last condition is what a label drifting by one full
-        step or more turns into: the row lands in the next row's slot and the
-        two collide.
+        or the resulting index is not strictly increasing.
 
     Notes
     -----
@@ -183,22 +182,13 @@ def sipnet_time_index(
     nominal hour 21 is labeled ``23.00`` on 31 December, and rounding would
     put it in a ninth slot. The drift is always non-negative and always below
     one step, so ``floor`` identifies the slot in every row. SIPNET copies the
-    same column verbatim into its output, which is why this lives here rather
-    than in a driver-specific module.
-
-    A drift of less than one step is invisible to a single label by design;
-    :mod:`sipnet_calibration.drivers` asserts the drift model of the source
-    separately, on whole files.
+    same column verbatim into its output, so this applies to output as well
+    as to drivers.
 
     The slot division is exact for the timesteps SIPNET is run at (3, 1, 0.5
     and 24 hours). A step such as ``0.1`` divides 24 but is not exactly
     representable, so a label sitting exactly on a slot boundary can floor
     into the slot below.
-
-    Nothing about the result depends on an interval convention. The nominal
-    label ``slot * timestep_hours`` is what the source wrote, and
-    ``resample`` on it groups a day's rows exactly as SIPNET's own ``day``
-    column does.
     """
     year = np.asarray(year)
     day = np.asarray(day_of_year)
@@ -286,8 +276,9 @@ def aggregate_time(
     how:
         One of :data:`REDUCTIONS`. ``None`` takes the rule from
         ``field.attrs["aggregation"]``, which pySIPNET writes on every model
-        and driver field from the variable's kind; a field without that
-        attribute, an observation say, has to be told.
+        output field from the variable's kind and ``load_drivers`` on every
+        driver field; a field without that attribute, an observation say, has
+        to be told.
     min_count:
         The fewest values a period may be formed from and still produce a
         value. A period with fewer than *min_count* values that are not
@@ -301,7 +292,10 @@ def aggregate_time(
         ``attrs`` are carried through, with ``aggregation_applied`` (the
         method used) and ``aggregation_freq`` (*freq*) added, so that two
         aggregations of one variable are distinguishable: a per-timestep total
-        carries the same ``units`` at every resolution.
+        carries the same ``units`` at every resolution. The ``time``
+        coordinate's ``time_label`` says whether the labels mark the start of
+        each period (start-anchored frequencies such as ``"1D"``) or its end
+        (``"ME"``, ``"YE"``); the source's clock attributes are kept.
 
     Raises
     ------
@@ -312,7 +306,8 @@ def aggregate_time(
         *how* is given and is not in :data:`REDUCTIONS`; if *how* is not
         given and the field carries no ``aggregation`` attribute, or one that
         names no reduction; if *min_count* is not an integer of at least 1;
-        or if *freq* names a period shorter than the field's own spacing.
+        or if *freq* names periods shorter than the field's own spacing, which
+        would interpolate rather than aggregate.
 
     Notes
     -----
@@ -346,6 +341,7 @@ def aggregate_time(
     aggregated.attrs = dict(field.attrs)
     aggregated.attrs["aggregation_applied"] = method
     aggregated.attrs["aggregation_freq"] = freq
+    aggregated[TIME_DIM].attrs = _period_time_attrs(field, freq)
     return aggregated
 
 
@@ -404,17 +400,19 @@ def reduce_windows(
         As :func:`aggregate_time`.
     windows:
         A ``pandas.IntervalIndex`` of datetimes, non-overlapping, in
-        increasing order. Its ``closed`` side decides which of two adjacent
-        windows a label on their shared edge belongs to; ``"right"`` matches
-        end-labeled rows, ``"left"`` start-labeled ones.
+        increasing order, naive or in the same time zone as the field. Its
+        ``closed`` side decides which of two adjacent windows a label on their
+        shared edge belongs to; ``"right"`` matches end-labeled rows,
+        ``"left"`` start-labeled ones.
     how:
         One of :data:`REDUCTIONS`. Required: a window has no frequency to
         infer anything from, and the field's ``aggregation`` attribute is
         about its own steps, not about what an observation wants.
     labels:
         The ``time`` coordinate of the result, one label per window, strictly
-        increasing. Defaults to each window's right edge. An observation
-        operator passes the observation's own labels.
+        increasing. Defaults to each window's right edge, labeled
+        ``time_label = "interval_end"``. An observation operator passes the
+        observation's own ``time`` coordinate, whose attributes are kept.
     min_count:
         As :func:`aggregate_time`: a window formed from fewer values that are
         not missing comes back as ``NaN``.
@@ -432,29 +430,32 @@ def reduce_windows(
     ValueError
         If *field* fails the checks of :func:`aggregate_time`; if *how* is not
         in :data:`REDUCTIONS`; if *windows* is not a datetime
-        ``IntervalIndex``, is empty, overlaps or is not increasing; if
-        *labels* is not the length of *windows* or not strictly increasing;
-        or if *min_count* is not an integer of at least 1.
+        ``IntervalIndex``, is empty, holds ``NaT``, overlaps, is not
+        increasing, or is in a different time zone from the field; if
+        *labels* are not timestamps, not the length of *windows* or not
+        strictly increasing; or if *min_count* is not an integer of at
+        least 1.
 
     Notes
     -----
-    Membership is by the row's label, not by the interval the row covers. The
-    drivers and SIPNET's output label the end of each step, so a window
-    ``(a, b]`` collects the steps that end in it. For midpoint membership,
-    shift the labels by half a step first.
+    Membership is by the row's label, not by the interval the row covers, so
+    a right-closed window ``(a, b]`` collects the end-labeled steps that end
+    in it. For midpoint membership, shift the labels by half a step first.
     """
-    _check_reduction(how)
+    how = _check_reduction(how)
     _check_min_count(min_count)
     _check_aggregatable(field)
-    windows = _checked_windows(windows)
-    labels = _checked_labels(labels, windows)
+    stamps = _time_index(field)
+    windows = _checked_windows(windows, stamps)
+    labels, label_attrs = _checked_labels(labels, windows)
 
-    membership = windows.get_indexer(pd.DatetimeIndex(field.coords[TIME_DIM].values))
+    membership = windows.get_indexer(stamps)
     counts = _count_by_window(field, membership, len(windows))
     reduced = _reduce_by_window(field, membership, how, len(windows))
     reduced = reduced.where(counts >= int(min_count))
 
     reduced = reduced.assign_coords({TIME_DIM: labels})
+    reduced[TIME_DIM].attrs = label_attrs
     reduced.name = field.name
     reduced.attrs = dict(field.attrs)
     reduced.attrs["aggregation_applied"] = how
@@ -481,11 +482,14 @@ def window_counts(field: xr.DataArray, windows: pd.IntervalIndex, *, labels=None
         As :func:`reduce_windows`, for the field, the windows and the labels.
     """
     _check_aggregatable(field)
-    windows = _checked_windows(windows)
-    labels = _checked_labels(labels, windows)
-    membership = windows.get_indexer(pd.DatetimeIndex(field.coords[TIME_DIM].values))
+    stamps = _time_index(field)
+    windows = _checked_windows(windows, stamps)
+    labels, label_attrs = _checked_labels(labels, windows)
+    membership = windows.get_indexer(stamps)
     counts = _count_by_window(field, membership, len(windows))
-    return counts.assign_coords({TIME_DIM: labels})
+    counts = counts.assign_coords({TIME_DIM: labels})
+    counts[TIME_DIM].attrs = label_attrs
+    return counts
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
@@ -507,11 +511,37 @@ def _whole_numbers(values: np.ndarray, *, name: str) -> np.ndarray:
         raise ValueError(f"{name} must be numeric") from error
 
 
+def _time_index(field: xr.DataArray) -> pd.DatetimeIndex:
+    """The ``time`` coordinate as a ``DatetimeIndex``, time zone kept."""
+    return pd.DatetimeIndex(field.coords[TIME_DIM].to_index())
+
+
+def _period_time_attrs(field: xr.DataArray, freq: str) -> dict:
+    """Attributes for the ``time`` coordinate of a regular aggregation.
+
+    pandas labels start-anchored frequencies by the period's start and
+    end-anchored ones by its end. The source's clock attributes still hold
+    and are kept; its label attributes describe the source's steps and are
+    replaced.
+    """
+    source = field.coords[TIME_DIM].attrs
+    label = pd.Grouper(freq=freq).label
+    edge = TimeLabel.INTERVAL_START if label == "left" else TimeLabel.INTERVAL_END
+    attrs = {key: source[key] for key in ("time_zone", "clock_status", "clock_provenance") if key in source}
+    attrs["long_name"] = f"Period label ({freq})"
+    attrs[TIME_LABEL_ATTR] = edge.value
+    attrs["time_label_note"] = (
+        f"Each label marks the {'start' if label == 'left' else 'end'} of a "
+        f"period of {freq}, aggregated from a source whose labels were "
+        f"{source.get(TIME_LABEL_ATTR, 'unrecorded')}."
+    )
+    return attrs
+
+
 def _resolved_method(field: xr.DataArray, how: str | None) -> str:
     """The reduction to apply, from *how* or from the field's attribute."""
     if how is not None:
-        _check_reduction(how)
-        return how
+        return _check_reduction(how)
 
     rule = field.attrs.get(AGGREGATION_ATTR)
     what = f"{field.name!r}" if field.name is not None else "this unnamed array"
@@ -535,7 +565,7 @@ def _resolved_method(field: xr.DataArray, how: str | None) -> str:
             f"{what} carries {AGGREGATION_ATTR}={rule!r}, which is not one of "
             f"{list(REDUCTIONS)}; pass how= to say what is meant"
         )
-    return rule
+    return str(rule)
 
 
 def _reduce(grouped, method: str) -> xr.DataArray:
@@ -588,17 +618,14 @@ def _count_by_period(field: xr.DataArray, freq: str) -> xr.DataArray:
 
 
 def _members(field: xr.DataArray, membership: np.ndarray) -> xr.DataArray:
-    """The rows of *field* inside some window, with their window index as a
-    coordinate to group by."""
+    """The rows inside some window, with the window index as a coordinate."""
     inside = np.flatnonzero(membership >= 0)
     rows = field.isel({TIME_DIM: inside})
     return rows.assign_coords({_WINDOW: (TIME_DIM, membership[inside])})
 
 
 def _by_window(reduced_groups: xr.DataArray, n_windows: int, dims) -> xr.DataArray:
-    """A grouped reduction re-expanded to one entry per window, in the field's
-    dimension order, with the group coordinate renamed to ``time``; the
-    caller assigns the labels."""
+    """One entry per window, in the field's dimension order, without labels."""
     full = reduced_groups.reindex({_WINDOW: np.arange(n_windows)})
     full = full.rename({_WINDOW: TIME_DIM}).drop_vars(TIME_DIM, errors="ignore")
     return full.transpose(*dims)
@@ -617,8 +644,7 @@ def _reduce_by_window(
 
 
 def _count_by_window(field: xr.DataArray, membership: np.ndarray, n_windows: int) -> xr.DataArray:
-    """Values that are not missing, per window, as ``int64``; zero for a
-    window with no rows."""
+    """Values that are not missing, per window, as ``int64``."""
     if not (membership >= 0).any():
         shape = [n_windows if dim == TIME_DIM else field.sizes[dim] for dim in field.dims]
         coords = {name: coord for name, coord in field.coords.items() if TIME_DIM not in coord.dims}
@@ -639,6 +665,11 @@ def _check_frequency(freq: str) -> None:
     ``to_offset(None)`` returns ``None`` rather than raising, hence the
     explicit check.
     """
+    if not isinstance(freq, str):
+        raise ValueError(
+            "freq must be a pandas offset alias such as '1D', 'MS' or 'YS', "
+            f"got {freq!r}"
+        )
     try:
         offset = pd.tseries.frequencies.to_offset(freq)
     except Exception as error:
@@ -658,15 +689,15 @@ def _check_frequency(freq: str) -> None:
         )
 
 
-def _check_reduction(how) -> None:
-    """Raise unless *how* is one of :data:`REDUCTIONS`."""
-    if how not in REDUCTIONS:
+def _check_reduction(how) -> str:
+    """Raise unless *how* is one of :data:`REDUCTIONS`; return it as a plain string."""
+    if not isinstance(how, str) or how not in REDUCTIONS:
         raise ValueError(f"how must be one of {list(REDUCTIONS)}, got {how!r}")
+    return str(how)
 
 
 def _check_aggregatable(field: xr.DataArray) -> None:
-    """Raise unless *field* is a ``DataArray`` with a strictly increasing
-    datetime ``time`` coordinate."""
+    """Raise unless *field* has a strictly increasing datetime ``time`` axis."""
     if not isinstance(field, xr.DataArray):
         advice = (
             " A Dataset holds several variables, whose aggregation rules "
@@ -695,8 +726,7 @@ def _check_aggregatable(field: xr.DataArray) -> None:
             "drivers carry year, day and hour columns instead; convert them "
             "with sipnet_time_index first."
         )
-    # A DatetimeIndex handles a timezone-aware coordinate; raw values do not.
-    stamps = pd.DatetimeIndex(times.values)
+    stamps = _time_index(field)
     if len(stamps) == 0:
         raise ValueError(
             f"the {TIME_DIM!r} axis is empty, so there is nothing to "
@@ -721,24 +751,31 @@ def _check_aggregatable(field: xr.DataArray) -> None:
 
 
 def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
-    """Raise if *freq* would group nothing and invent empty periods besides.
+    """Raise if every period of *freq* is shorter than the field's spacing.
 
-    Upsampling returns a field that is mostly ``NaN`` with no error. The test
-    is on what the grouping does rather than on period lengths, which vary
-    for calendar offsets: every row alone in its own period *and* empty
-    periods added means interpolation. Either alone is legitimate (a daily
-    field at ``"1D"`` is a no-op; a record with a gap produces empty periods).
+    Upsampling returns a field that is mostly ``NaN`` with no error. The
+    comparison is between the smallest gap in the field's time axis and the
+    longest period *freq* produces on it, so a sparse or gapped field at its
+    own cadence or coarser passes, and calendar periods of varying length
+    (365 or 366 days, 28 to 31) are measured rather than assumed.
     """
-    rows = _rows_per_period(field, freq)
-    n_periods = int(rows.sizes[TIME_DIM])
-    n_occupied = int((rows > 0).sum())
-    n_rows = int(field.sizes[TIME_DIM])
-    if n_occupied == n_rows and n_periods > n_occupied:
+    stamps = _time_index(field)
+    if len(stamps) < 2:
+        return
+    labels = pd.DatetimeIndex(_rows_per_period(field, freq).coords[TIME_DIM].to_index())
+    # The label differences give every period's length but the last one's, so
+    # the boundary after the last label is appended.
+    offset = pd.tseries.frequencies.to_offset(freq)
+    edges = labels.append(pd.DatetimeIndex([labels[-1] + offset]))
+    spacing = np.diff(stamps.as_unit("ns").asi8).min()
+    period = np.diff(edges.as_unit("ns").asi8).max()
+    if spacing > period:
         raise ValueError(
-            f"freq={freq!r} puts each of the {n_rows} timestamps in a period "
-            f"of its own and adds {n_periods - n_occupied} empty ones, so "
-            "this would interpolate rather than aggregate and would return a "
-            "field that is mostly missing. Pass a coarser frequency."
+            f"freq={freq!r} produces periods of at most "
+            f"{pd.Timedelta(int(period), 'ns')} on a field whose rows are at "
+            f"least {pd.Timedelta(int(spacing), 'ns')} apart, so this would "
+            "interpolate rather than aggregate and would return a field that "
+            "is mostly missing. Pass a coarser frequency."
         )
 
 
@@ -757,9 +794,13 @@ def _check_min_count(min_count: int) -> None:
         )
 
 
-def _checked_windows(windows) -> pd.IntervalIndex:
-    """Raise unless *windows* is a non-empty, increasing, non-overlapping
-    ``IntervalIndex`` of datetimes; return it."""
+def _checked_windows(windows, stamps: pd.DatetimeIndex) -> pd.IntervalIndex:
+    """*windows* checked and put in the time unit of *stamps*.
+
+    Raises unless it is a non-empty, increasing, non-overlapping
+    ``IntervalIndex`` of datetimes without ``NaT``, naive or in the time zone
+    of *stamps*.
+    """
     if not isinstance(windows, pd.IntervalIndex):
         raise ValueError(
             "windows must be a pandas.IntervalIndex, for instance from "
@@ -772,28 +813,58 @@ def _checked_windows(windows) -> pd.IntervalIndex:
         raise ValueError(
             f"windows must be intervals of datetimes, got {windows.left.dtype}"
         )
+    left, right = pd.DatetimeIndex(windows.left), pd.DatetimeIndex(windows.right)
+    if left.hasnans or right.hasnans:
+        raise ValueError("windows hold a missing edge (NaT)")
+    if left.tz != stamps.tz:
+        raise ValueError(
+            f"windows are in time zone {left.tz} and the field's time "
+            f"coordinate in {stamps.tz}; pandas matches no rows across that "
+            "difference. Localize or convert one of them first."
+        )
     if windows.is_overlapping:
         raise ValueError(
             "windows overlap, so a row could belong to two of them; reduce "
             "into non-overlapping windows"
         )
-    if not windows.left.is_monotonic_increasing:
+    if not left.is_monotonic_increasing:
         raise ValueError("windows must be in increasing order")
-    return windows
+    # pandas refuses to index one datetime resolution with another.
+    unit = stamps.unit
+    return pd.IntervalIndex.from_arrays(left.as_unit(unit), right.as_unit(unit), closed=windows.closed)
 
 
-def _checked_labels(labels, windows: pd.IntervalIndex) -> pd.DatetimeIndex:
-    """The result's ``time`` coordinate: *labels* checked against *windows*,
-    or the windows' right edges."""
+def _checked_labels(labels, windows: pd.IntervalIndex) -> tuple[pd.DatetimeIndex, dict]:
+    """The result's ``time`` coordinate and its attributes.
+
+    *labels* checked against *windows*, keeping a ``DataArray``'s attributes;
+    or the windows' right edges, labeled as interval ends.
+    """
     if labels is None:
-        return pd.DatetimeIndex(windows.right)
-    values = labels.values if isinstance(labels, xr.DataArray) else np.asarray(labels).ravel()
-    index = pd.DatetimeIndex(values)
+        index = pd.DatetimeIndex(windows.right)
+        attrs = {
+            TIME_LABEL_ATTR: TimeLabel.INTERVAL_END.value,
+            "time_label_note": "Each label is the right edge of its window.",
+        }
+        what = "the windows' right edges"
+    else:
+        values = labels.values if isinstance(labels, xr.DataArray) else np.asarray(labels).ravel()
+        if values.dtype.kind in "iufb":
+            raise ValueError(
+                f"labels must be timestamps, got dtype {values.dtype}; numbers "
+                "would be read as nanoseconds since 1970"
+            )
+        index = pd.DatetimeIndex(values)
+        attrs = dict(labels.attrs) if isinstance(labels, xr.DataArray) else {}
+        what = "labels"
     if len(index) != len(windows):
         raise ValueError(
             f"labels has {len(index)} entries for {len(windows)} windows; "
             "one label per window"
         )
     if index.hasnans or not index.is_monotonic_increasing or index.has_duplicates:
-        raise ValueError("labels must be strictly increasing timestamps with no NaT")
-    return index
+        raise ValueError(
+            f"{what} must be strictly increasing timestamps with no NaT; pass "
+            "labels= to name the windows otherwise"
+        )
+    return index, attrs

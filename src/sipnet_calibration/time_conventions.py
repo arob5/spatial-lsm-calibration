@@ -3,13 +3,9 @@
 Every product that carries a ``time`` coordinate records, in that
 coordinate's ``time_label`` attribute, what its labels mean: the end of the
 interval a value covers, the start, an instant, or a bookkeeping key that is
-not a time at all. The drivers, the annual constraints and the model-output
-adapter write one of these values, and the observation operators read it
+not a time at all. The drivers and the annual constraints write one of these
+values, the model-output adapter will, and the observation operators read it
 rather than assuming a convention.
-
-The stored strings are the enum values, unchanged from what the products
-wrote before this module existed, so a file written earlier reads back as the
-same member.
 
 Usage
 -----

@@ -63,9 +63,9 @@ Functions
     does not hold.
 :func:`from_sipnet_result`, :func:`from_clim`, :func:`from_ic_store`,
 :func:`from_nee_store`, :func:`from_eki_predictions`
-    One adapter per source. They are also where unit conversion happens: each
-    variable has one canonical unit in the registry, adapters convert into it,
-    and nothing downstream reconciles units.
+    One adapter per source. Adapters do not convert units: a field keeps its
+    source's units, and an observation operator converts the model into the
+    observation's.
 
 Notes
 -----
