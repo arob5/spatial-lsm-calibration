@@ -1331,11 +1331,14 @@ class TestReduceWindows:
     def test_a_window_holding_no_rows_is_missing_and_counts_zero(self):
         field = three_hourly_field("par", n_days=3)
         windows = day_windows("2013-01-02", 3)  # the third day is past the record
-        result = reduce_windows(field, windows, "sum")
-        counts = window_counts(field, windows)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # a NaN-to-int cast is platform-dependent
+            result = reduce_windows(field, windows, "sum")
+            counts = window_counts(field, windows)
         assert np.isnan(result.values[2]) and result.values[2] != 0.0
         np.testing.assert_array_equal(counts.values, [STEPS_PER_DAY, STEPS_PER_DAY, 0])
         assert counts.dtype == np.int64
+        assert counts.name is None and counts.attrs == {}
 
     def test_no_window_holds_any_row(self):
         """Every window past the record: all missing, all counts zero, and
@@ -1587,6 +1590,8 @@ class TestReduceWindows:
         windows = day_windows("2013-01-01", 3)
         with pytest.raises(ValueError, match="one label per window"):
             reduce_windows(field, windows, "sum", labels=windows.left[:2])
+        with pytest.raises(ValueError, match="one label per window"):
+            window_counts(field, windows, labels=windows.left[:2])
         with pytest.raises(ValueError, match="strictly increasing"):
             reduce_windows(field, windows, "sum", labels=windows.left[::-1])
 
@@ -1622,7 +1627,10 @@ class TestTimeLabel:
         """The enum fixes a vocabulary that already exists in written files;
         its values must be those strings exactly."""
         assert TimeLabel.INTERVAL_END == "interval_end"
+        assert TimeLabel.INTERVAL_START == "interval_start"
+        assert TimeLabel.INSTANT == "instant"
         assert TimeLabel.NOMINAL == "nominal"
+        assert TimeLabel.STATIC == "static"
         assert TimeLabel("interval_end") is TimeLabel.INTERVAL_END
         assert TIME_LABEL_ATTR == "time_label"
 
