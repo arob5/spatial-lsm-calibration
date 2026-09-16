@@ -104,7 +104,7 @@ Name                    Dims         Meaning
 ======================= ============ ==========================================
 
 **Time.** Labels are the nominal ``year``/``day``/``3 * slot`` instants, built
-by :func:`sipnet_calibration.obs_ops.sipnet_time_index` and never from the
+by :func:`sipnet_calibration.observation_operators.sipnet_time_index` and never from the
 ``time`` column's value. The coordinate carries ``long_name``,
 ``time_zone = "UTC"``, ``time_label = "interval_end"``, ``time_label_note``,
 ``clock_status`` and ``clock_provenance``: the value in the row labeled hour
@@ -169,7 +169,7 @@ apart puts the drivers on a longitude-tracking clock consistent with UTC, with
 each row's PAR accumulated over the three hours *ending* at its nominal label.
 Keeping the nominal labels and recording ``time_label = "interval_end"`` means
 a daily resample groups exactly the eight rows SIPNET itself calls one day,
-the same :func:`~sipnet_calibration.obs_ops.sipnet_time_index` applies
+the same :func:`~sipnet_calibration.observation_operators.sipnet_time_index` applies
 unchanged to SIPNET output, and no row acquires a 2011 date. Anything that
 needs interval-start semantics reads the label and shifts.
 
@@ -223,7 +223,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.obs_ops import sipnet_time_index
+from sipnet_calibration.observation_operators import sipnet_time_index
+from sipnet_calibration.time_conventions import TIME_LABEL_ATTR, TimeLabel
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, load_sites
 
 __all__ = [
@@ -371,9 +372,10 @@ DRIVER_VARIABLE_ATTRS = {
     },
 }
 
-#: The clock the time labels are on, and what a label marks.
+#: The clock the time labels are on, and what a label marks. The label
+#: convention is shared vocabulary; see :mod:`sipnet_calibration.time_conventions`.
 TIME_ZONE = "UTC"
-TIME_LABEL = "interval_end"
+TIME_LABEL = TimeLabel.INTERVAL_END
 
 #: How well the clock is established.
 CLOCK_STATUS = "inferred"
@@ -763,7 +765,7 @@ def _dates_from_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
 def _time_axis(frame: pd.DataFrame) -> pd.DatetimeIndex:
     """The nominal timestamps of one parsed file.
 
-    Built by :func:`sipnet_calibration.obs_ops.sipnet_time_index` from
+    Built by :func:`sipnet_calibration.observation_operators.sipnet_time_index` from
     ``year``, ``day`` and the slot the ``time`` column identifies. Every file
     read in one :func:`load_drivers` call must produce the same axis.
     """
@@ -789,7 +791,7 @@ def _time_attrs() -> dict[str, str]:
     return {
         "long_name": "Nominal timestamp of the timestep",
         "time_zone": TIME_ZONE,
-        "time_label": TIME_LABEL,
+        TIME_LABEL_ATTR: TIME_LABEL.value,
         "time_label_note": (
             "The value in the row labeled hour h covers the interval (h - 3, h]. "
             "Labels are the nominal year/day/3*slot instants; the source's own "
