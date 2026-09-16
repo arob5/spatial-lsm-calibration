@@ -1,17 +1,15 @@
 """What a ``time`` label marks: the one vocabulary every product uses.
 
-Every product in this project that carries a ``time`` coordinate records, in
-that coordinate's ``time_label`` attribute, what its labels mean: whether a
-label is the end of the interval a value covers, the start, an instant, or a
-bookkeeping key that is not a time at all. The drivers, the annual
-constraints and the model-output adapter all write one of these values, and
-the observation operators read it rather than assuming a convention. This
-module holds the vocabulary so that the writers and the readers cannot
-spell it differently.
+Every product that carries a ``time`` coordinate records, in that
+coordinate's ``time_label`` attribute, what its labels mean: the end of the
+interval a value covers, the start, an instant, or a bookkeeping key that is
+not a time at all. The drivers, the annual constraints and the model-output
+adapter write one of these values, and the observation operators read it
+rather than assuming a convention.
 
-The stored strings are the enum values, unchanged from what the products wrote
-before this module existed, so a file written earlier reads back as the same
-member.
+The stored strings are the enum values, unchanged from what the products
+wrote before this module existed, so a file written earlier reads back as the
+same member.
 
 Usage
 -----

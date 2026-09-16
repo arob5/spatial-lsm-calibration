@@ -1,42 +1,34 @@
-"""Observation-space operations shared by the likelihood and the plots.
+"""Time indexing and temporal aggregation, shared by the likelihood and the plots.
 
 Overview
 --------
-Two things this project does happen in observation space rather than in model
-space: turning SIPNET's own row labeling into timestamps, and reducing a
-series in time. Both belong to the observation operator, which applies them
-before the likelihood sees a residual, and both are wanted again by the
-plotting layer before a predictive check is drawn. This module holds the one
-implementation of each, for both to import.
-
-It is the mechanism half of the design in
-``logs/2026-09-15_Observation Operators and Observed Variables Design Spec.md``
-(Obsidian vault). The expression and alignment vocabulary, the ``Pipeline``
-operator and the observed-variable registry are that design's other half and
-are not written yet (issue #6).
+SIPNET labels its rows with ``year``, ``day`` and ``time`` columns rather
+than timestamps, and the model runs at a finer step than most observations
+are made at. This module builds the timestamps and reduces a field in time,
+either into regular periods (days, months, years) or into arbitrary windows
+such as an observation's own intervals. The observation operator applies
+these before the likelihood sees a residual, and the plotting layer applies
+the same functions before a predictive check is drawn, so the two cannot
+disagree.
 
 Functions
 ---------
 :func:`sipnet_time_index`
-    Timestamps for rows labeled the way SIPNET labels them, with ``year``,
-    ``day`` and ``time`` columns rather than a datetime index. The ``time``
+    Timestamps for rows labeled the way SIPNET labels them. The ``time``
     column drifts (issue #9) and is used only to identify a row's slot within
     its day, never as the timestamp itself.
 
 :func:`aggregate_time`
-    Reduce a field along ``time`` into regular periods -- days, months, years
-    -- by the rule the field's own ``aggregation`` attribute names, or by an
-    explicit ``how``.
+    Reduce a field along ``time`` into regular periods, by the rule the
+    field's own ``aggregation`` attribute names or by an explicit ``how``.
 
 :func:`aggregation_counts`
-    How many values each period of such an aggregation was formed from, so a
-    caller can impose its own completeness rule.
+    How many values each period of such an aggregation was formed from, for
+    a caller imposing its own completeness rule.
 
 :func:`reduce_windows`
-    The general form: reduce a field into arbitrary, possibly irregular,
-    windows given as a ``pandas.IntervalIndex``, labeling the result as the
-    caller asks. This is what an observation operator uses to put a model
-    series onto an observation's own time labels.
+    Reduce a field into arbitrary, possibly irregular, windows given as a
+    ``pandas.IntervalIndex``, labeling the result as the caller asks.
 
 :func:`window_counts`
     The counts for :func:`reduce_windows`.
@@ -46,53 +38,32 @@ Aggregation is a verb the caller applies, never a plotter keyword::
     plot_time_series(aggregate_time(nee, "1D"))     # yes
     plot_time_series(nee, temporal_agg="1D")        # no
 
-Besides keeping signatures small, that keeps a real subtlety at the call site:
-a quantile of daily means is not the daily mean of a quantile, and which one
-is wanted is a modeling choice rather than a default.
-
 Notes
 -----
-**Why one implementation and not two.** A posterior predictive figure drawn
-at a different aggregation than the likelihood used looks fine, is wrong, and
-takes a day to diagnose. Sharing the code path removes the possibility. If a
-second aggregation path ever seems wanted for plotting, that is a sign the
-design is wrong rather than that the rule needs an exception.
+**Where the rule comes from.** :func:`aggregate_time` has two sources for its
+rule and no default: the ``how`` argument, and the field's ``aggregation``
+attribute. pySIPNET writes that attribute onto every model output and driver
+field from the variable's kind (a ``flux`` is a total over the step and sums;
+a ``state`` or a step ``mean`` averages), and
+:mod:`sipnet_calibration.drivers` writes it onto the driver fields it reads.
+A field carrying neither is refused, because a wrong default is silent:
+SIPNET's ``net_ecosystem_exchange`` is ``g m-2`` of carbon per timestep, so
+3-hourly to daily is a sum, and a mean is wrong by a factor of eight while
+looking plausible. Observed fields carry no ``aggregation`` attribute: how an
+observation is placed in time is decided by its observation operator.
 
-**Where the rule comes from.** ``aggregate_time`` has exactly two sources for
-its rule: the ``how`` argument, and the field's ``aggregation`` attribute.
-pySIPNET writes that attribute onto every model output and driver field from
-the variable's ``kind`` (a ``flux`` is a total over the step and sums; a
-``state`` or a ``mean`` averages), and :mod:`sipnet_calibration.drivers`
-writes the same attribute onto the driver fields it reads. A field carrying
-neither is refused rather than given a default, because a wrong default is
-silent: SIPNET's ``net_ecosystem_exchange`` is ``g m-2`` of carbon **per
-timestep**, so 3-hourly to daily is a **sum**, and a mean is wrong by a
-factor of eight while looking entirely plausible. Observed fields carry no
-``aggregation`` attribute, deliberately: how an observation is placed in time
-is a property of the observation, decided by its observation operator, and
-not something this module can know from the variable's name.
-
-**Nothing here converts between a rate and a total, or between units.** That
-is the observation operator's job, and it needs the step length, which the
-model output carries as ``time_step_length``.
+**Units are not converted here.** Turning a per-step total into a rate, or
+a model unit into an observation's, is the observation operator's job.
 
 **What a period's label means.** Periods are left-closed, and pandas decides
 where the label goes: a start-anchored frequency such as ``"1D"``, ``"MS"``
-or ``"YS"`` labels the period's start, while an end-anchored one such as
-``"ME"`` or ``"YE"`` labels its end. Nothing here overrides that, so the
-label the result carries is the one the frequency asked for.
-
-The drivers and SIPNET's output label the **end** of each timestep
-(:data:`sipnet_calibration.drivers.TIME_LABEL`), so a day's eight rows labeled
-00:00 to 21:00 span the interval from 21:00 the previous day to 21:00 on the
-day they are labeled with. That is not corrected here, deliberately: grouping
-by the nominal label reproduces SIPNET's own ``day`` column exactly, which is
-the grouping the model's own daily output uses and therefore the one a
-comparison against it needs. Observed NEE is on a different clock again
-(issue #8), and reconciling the two is an observation operator's problem.
-:func:`reduce_windows` assigns a row to a window by the row's label, for the
-same reason; an alignment that wants to assign by interval midpoint shifts the
-labels by half a step before calling it.
+or ``"YS"`` labels the period's start, an end-anchored one such as ``"ME"``
+or ``"YE"`` labels its end. The drivers and SIPNET's output label the **end**
+of each timestep (:data:`sipnet_calibration.drivers.TIME_LABEL`), so a day's
+eight rows labeled 00:00 to 21:00 group under that day, which is the grouping
+SIPNET's own ``day`` column gives. :func:`reduce_windows` likewise assigns a
+row to a window by the row's label; an alignment that wants midpoint
+membership shifts the labels by half a step before calling it.
 
 Usage
 -----
@@ -109,8 +80,7 @@ Usage
     daily_tair = aggregate_time(tair, "1D")     # meaned: it carries aggregation="mean"
     daily_obs = aggregate_time(nee_obs, "1D", how="mean")   # an observation says how
 
-    # A stricter completeness rule than the default, applied identically
-    # wherever it is wanted.
+    # Only whole days.
     counts = aggregation_counts(par, "1D")
     whole_days = aggregate_time(par, "1D").where(counts == 8)
 
@@ -346,38 +316,18 @@ def aggregate_time(
 
     Notes
     -----
-    **Empty periods do not become zero.** ``.resample(...).sum()`` returns 0
-    for an all-missing group, so a day with no observations would otherwise
-    read as zero flux rather than as unobserved. With NEE about 55% missing
-    over site and time that is the common case, not an edge case. The guard is
-    one mechanism for every method: the period's count of values that are not
-    missing is computed once, and the reduction is masked where it falls below
-    *min_count*. ``min_count=`` is deliberately not also passed to ``.sum()``;
-    two mechanisms doing one job.
+    A period with no values that are not missing comes back ``NaN``, never
+    zero, under every method; ``.resample(...).sum()`` on its own would
+    return zero for an all-missing day, which reads as zero flux.
 
-    **Partial periods are not scaled, and are not dropped by default.**
-    Summing three of a day's eight timesteps gives a partial total, and
-    scaling it up assumes the absent timesteps resemble the present ones. For
-    a diurnal flux that is false in the worst direction: a day missing its
-    night hours would scale to a strongly negative fake. So the value returned
-    is the partial total, and a caller wanting only whole periods says so,
-    with ``min_count=`` or by masking on :func:`aggregation_counts`. The rule
-    is the caller's to choose and belongs in the experiment's config, where
-    the figure and the likelihood read the same one.
-
-    ``min_count=1`` is a safe default for the data this project has rather
-    than in general. Both products it is applied to are contiguous in time:
-    the gap-filled NEE record runs unbroken within each site's covered years,
-    so its missingness is structural rather than punctured and a partial
-    period can only arise at a record edge, and the ``.clim`` driver files
-    hold no missing values at all. (A driver *field* does carry ``NaN``,
-    where :func:`~sipnet_calibration.drivers.load_drivers` was asked for a
-    member and site whose file is absent; that is a whole pair missing, not
-    an interior gap, and ``driver_present`` says which.) ``data/README.md``
-    records the measurements behind that.
+    A partial period is returned as the partial total or mean it is, never
+    scaled up: scaling assumes the absent timesteps resemble the present
+    ones, which for a diurnal flux is false. A caller wanting only whole
+    periods says so with ``min_count=`` or by masking on
+    :func:`aggregation_counts`. The project's records are contiguous within
+    their covered spans, so a partial period arises only at a record edge,
+    which is why ``min_count=1`` is the default.
     """
-    # The argument checks come first, so that a mistake in the call is
-    # reported as itself rather than as whatever the data then runs into.
     _check_frequency(freq)
     _check_min_count(min_count)
     _check_aggregatable(field)
@@ -387,18 +337,11 @@ def aggregate_time(
 
     counts = _count_by_period(field, freq)
     aggregated = _reduce(field.resample({TIME_DIM: freq}), method)
-    # One guard for every method, rather than sum's own min_count plus a mask
-    # for the rest: a period with nothing in it is missing under all six, and
-    # two mechanisms doing one job means either can be deleted unnoticed.
-    # xarray aligns `counts` by dimension name, so this is correct whatever
-    # order the field stores its dimensions in.
+    # One mask for every method; xarray aligns `counts` by dimension name.
     aggregated = aggregated.where(counts >= int(min_count))
 
-    # The attributes are set here rather than left to the reduction's
-    # keep_attrs: its default varies between xarray versions and between
-    # reductions, and a dropped `units` breaks the axis label of every plot
-    # downstream. Copied, so that aggregating does not add provenance to the
-    # field the caller keeps.
+    # Set explicitly: the reductions' keep_attrs defaults vary across xarray
+    # versions, and the copy keeps the caller's field free of this provenance.
     aggregated.name = field.name
     aggregated.attrs = dict(field.attrs)
     aggregated.attrs["aggregation_applied"] = method
@@ -426,9 +369,7 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
         Integer counts, with the same dimensions as the aggregate and the same
         ``time`` axis, so it aligns with what :func:`aggregate_time` returns
         and can mask it directly. Zero where a period held nothing. It carries
-        no ``units`` or ``long_name``, being a count of the field rather than
-        a field, and so is not a canonical field and cannot be plotted by
-        :func:`~sipnet_calibration.plotting.series.plot_time_series`.
+        no attributes: it is a count of the field, not a field.
 
     Raises
     ------
@@ -499,10 +440,8 @@ def reduce_windows(
     -----
     Membership is by the row's label, not by the interval the row covers. The
     drivers and SIPNET's output label the end of each step, so a window
-    ``(a, b]`` collects the steps that end in it, which is the grouping that
-    reproduces SIPNET's own daily bookkeeping. An alignment that wants
-    midpoint membership shifts the labels by half a step first; this function
-    does not know the step length and does not guess it.
+    ``(a, b]`` collects the steps that end in it. For midpoint membership,
+    shift the labels by half a step first.
     """
     _check_reduction(how)
     _check_min_count(min_count)
@@ -569,15 +508,7 @@ def _whole_numbers(values: np.ndarray, *, name: str) -> np.ndarray:
 
 
 def _resolved_method(field: xr.DataArray, how: str | None) -> str:
-    """The reduction to apply, from *how* or from the field's attribute.
-
-    Raises
-    ------
-    ValueError
-        If *how* is given and is not in :data:`REDUCTIONS`; or if it is not
-        given and the field carries no ``aggregation`` attribute, or one that
-        names no reduction. Each message says what to pass instead.
-    """
+    """The reduction to apply, from *how* or from the field's attribute."""
     if how is not None:
         _check_reduction(how)
         return how
@@ -610,10 +541,8 @@ def _resolved_method(field: xr.DataArray, how: str | None) -> str:
 def _reduce(grouped, method: str) -> xr.DataArray:
     """Apply *method* to a resample or groupby object.
 
-    Attributes are not preserved here; the caller sets them on the result.
-    ``skipna`` is what makes ``last`` the last *observed* value of a period
-    rather than its last row, which is ``NaN`` whenever a record ends
-    part-way through one.
+    ``skipna`` makes ``first``/``last`` the first/last *observed* value of a
+    period rather than its first/last row.
     """
     if method == "sum":
         return grouped.sum()
@@ -631,24 +560,14 @@ def _reduce(grouped, method: str) -> xr.DataArray:
 
 
 def _is_datetime(dtype) -> bool:
-    """Whether *dtype* is a datetime one, timezone-aware ones included.
-
-    ``numpy.issubdtype`` raises a ``TypeError`` on a pandas extension dtype
-    such as ``datetime64[us, UTC]``, which xarray resamples correctly, so the
-    pandas predicate is asked first.
-    """
+    """Whether *dtype* is a datetime one, timezone-aware ones included."""
     if isinstance(dtype, pd.api.extensions.ExtensionDtype):
         return isinstance(dtype, pd.DatetimeTZDtype)
     return np.issubdtype(dtype, np.datetime64)
 
 
 def _rows_per_period(field: xr.DataArray, freq: str) -> xr.DataArray:
-    """How many rows of *field*'s time axis fall in each period.
-
-    Rows, not values, so it says nothing about missingness: it is the shape
-    of the grouping itself, which is what :func:`_check_not_upsampling` asks
-    about. One dimension, whatever the field's own shape.
-    """
+    """How many rows of *field*'s time axis fall in each period, missing or not."""
     ones = xr.DataArray(
         np.ones(field.sizes[TIME_DIM]),
         dims=TIME_DIM,
@@ -658,15 +577,9 @@ def _rows_per_period(field: xr.DataArray, freq: str) -> xr.DataArray:
 
 
 def _count_by_period(field: xr.DataArray, freq: str) -> xr.DataArray:
-    """Values that are not missing, per period, as ``int64``.
-
-    The one place the count is computed, so :func:`aggregate_time`'s guard and
-    :func:`aggregation_counts` cannot disagree about what a period holds.
-    """
-    # A period holding no rows at all comes back as NaN from the sum, so the
-    # fill is what makes the result an integer count rather than an undefined
-    # NaN-to-int64 cast -- which saturates to 0 on arm64 and to INT64_MIN on
-    # x86-64, and would make an empty period read as fully observed there.
+    """Values that are not missing, per period, as ``int64``."""
+    # An empty period sums to NaN; fill before the cast, which is otherwise
+    # platform-dependent (0 on arm64, INT64_MIN on x86-64).
     counts = field.notnull().resample({TIME_DIM: freq}).sum()
     counts = counts.fillna(0).astype(np.int64)
     counts.name = None
@@ -684,11 +597,8 @@ def _members(field: xr.DataArray, membership: np.ndarray) -> xr.DataArray:
 
 def _by_window(reduced_groups: xr.DataArray, n_windows: int, dims) -> xr.DataArray:
     """A grouped reduction re-expanded to one entry per window, in the field's
-    dimension order, with the group coordinate renamed to ``time``.
-
-    xarray drops the ``time`` coordinate's values when it groups by another
-    coordinate on that dimension, so the caller assigns the labels.
-    """
+    dimension order, with the group coordinate renamed to ``time``; the
+    caller assigns the labels."""
     full = reduced_groups.reindex({_WINDOW: np.arange(n_windows)})
     full = full.rename({_WINDOW: TIME_DIM}).drop_vars(TIME_DIM, errors="ignore")
     return full.transpose(*dims)
@@ -708,7 +618,7 @@ def _reduce_by_window(
 
 def _count_by_window(field: xr.DataArray, membership: np.ndarray, n_windows: int) -> xr.DataArray:
     """Values that are not missing, per window, as ``int64``; zero for a
-    window with no rows. The one place the count is computed."""
+    window with no rows."""
     if not (membership >= 0).any():
         shape = [n_windows if dim == TIME_DIM else field.sizes[dim] for dim in field.dims]
         coords = {name: coord for name, coord in field.coords.items() if TIME_DIM not in coord.dims}
@@ -726,11 +636,8 @@ def _count_by_window(field: xr.DataArray, membership: np.ndarray, n_windows: int
 def _check_frequency(freq: str) -> None:
     """Raise unless *freq* is a pandas offset alias naming a positive period.
 
-    Notes
-    -----
-    ``to_offset(None)`` returns ``None`` rather than raising, so ``freq=None``
-    would otherwise reach the resample and fail as a ``TypeError`` naming
-    neither the argument nor the array.
+    ``to_offset(None)`` returns ``None`` rather than raising, hence the
+    explicit check.
     """
     try:
         offset = pd.tseries.frequencies.to_offset(freq)
@@ -758,14 +665,8 @@ def _check_reduction(how) -> None:
 
 
 def _check_aggregatable(field: xr.DataArray) -> None:
-    """Raise unless *field* is an array that can be aggregated along time.
-
-    Checks that it is a ``DataArray``, that it has a ``time`` dimension with a
-    datetime coordinate on it, and that the coordinate increases. A field
-    without a ``time`` coordinate cannot be resampled at all, and one whose
-    coordinate is integer-valued fails inside pandas with a message that does
-    not say which array was at fault.
-    """
+    """Raise unless *field* is a ``DataArray`` with a strictly increasing
+    datetime ``time`` coordinate."""
     if not isinstance(field, xr.DataArray):
         advice = (
             " A Dataset holds several variables, whose aggregation rules "
@@ -794,9 +695,7 @@ def _check_aggregatable(field: xr.DataArray) -> None:
             "drivers carry year, day and hour columns instead; convert them "
             "with sipnet_time_index first."
         )
-    # Through a DatetimeIndex rather than the raw values, because a
-    # timezone-aware coordinate comes back as an object array of Timestamps,
-    # which numpy will not compare against a timedelta64.
+    # A DatetimeIndex handles a timezone-aware coordinate; raw values do not.
     stamps = pd.DatetimeIndex(times.values)
     if len(stamps) == 0:
         raise ValueError(
@@ -824,25 +723,11 @@ def _check_aggregatable(field: xr.DataArray) -> None:
 def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
     """Raise if *freq* would group nothing and invent empty periods besides.
 
-    Notes
-    -----
-    Upsampling returns a field that is mostly ``NaN`` with no error, and the
-    emptiness reads as missing data rather than as a mistake.
-
-    The test is on what the grouping *does*, not on how long a period lasts,
-    because a calendar offset has no single length: a year is 365 days or
-    366, a quarter 90 to 92, a month 28 to 31. Comparing one measured period
-    against the source's spacing therefore picks the wrong side for an annual
-    series that happens to span a leap year, which is exactly what the
-    constraint product is -- and it depends on which probe date the period
-    was measured from, which is arbitrary.
-
-    Two conditions have to hold together. Every row alone in its own period
-    means the aggregation grouped nothing; empty periods besides means it
-    invented rows that were never observed. Either on its own is legitimate:
-    a daily field aggregated to ``"1D"`` groups nothing and is a lawful
-    no-op, and a record with a gap in it produces empty periods while still
-    grouping its rows eight at a time.
+    Upsampling returns a field that is mostly ``NaN`` with no error. The test
+    is on what the grouping does rather than on period lengths, which vary
+    for calendar offsets: every row alone in its own period *and* empty
+    periods added means interpolation. Either alone is legitimate (a daily
+    field at ``"1D"`` is a no-op; a record with a gap produces empty periods).
     """
     rows = _rows_per_period(field, freq)
     n_periods = int(rows.sizes[TIME_DIM])
@@ -858,11 +743,7 @@ def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
 
 
 def _check_min_count(min_count: int) -> None:
-    """Raise unless *min_count* is an integer of at least 1.
-
-    Zero would mean a period formed from nothing still produces a value,
-    which for a sum is the zero this function exists to prevent.
-    """
+    """Raise unless *min_count* is an integer of at least 1."""
     if isinstance(min_count, bool) or not isinstance(min_count, (int, np.integer)):
         raise ValueError(
             f"min_count must be an integer, got {min_count!r}. It counts "
