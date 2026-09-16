@@ -56,8 +56,8 @@ Operational rules that follow from the data and are easy to get wrong in code:
 
 - Open the IC netCDFs with `decode_times=False` (README note 5).
 - Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
-  drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
-  takes only the slot from it.
+  drifts (README note 15, issue #9). Use
+  `observation_operators.sipnet_time_index`, which takes only the slot from it.
 - Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
@@ -86,9 +86,10 @@ Raw variable names are not ours to choose; processed ones are.
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
-- **The `VARIABLES` registry is keyed on processed names**, so a canonical
-  field's `name` is a processed name. That is what makes `validate_field()`
-  usable against anything an adapter produces.
+- **The observed-variable registry is keyed on processed names**, so an
+  observed field's `name` is a processed name; a model-output field keeps its
+  pySIPNET name. That is what makes `validate_field()` usable against anything
+  an adapter produces.
 
 ### File organization
 
@@ -279,9 +280,14 @@ while exercising the root's copy, which is the case worth remembering.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `drivers.py` and `projection.py` are implemented, `obs_ops.py`
-has `sipnet_time_index`, and the other modules carry the contract each is to
-satisfy.
+`constraints.py`, `drivers.py` and `projection.py` are implemented,
+`observation_operators.py` has the time mechanisms (`sipnet_time_index`,
+`aggregate_time`, `aggregation_counts`, `reduce_windows`), and the other
+modules carry the contract each is to satisfy. The observation layer --
+the observed-variable registry, the expression and alignment vocabulary and
+the `Pipeline` operator -- is specified in
+`logs/2026-09-15_Observation Operators and Observed Variables Design Spec.md`
+in the vault and is landing in that order (issue #6).
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -297,12 +303,15 @@ src/sipnet_calibration/
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
   fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
-                          # shared with the likelihood
+  time_conventions.py     # TimeLabel: what a time label marks, shared by every product
+  observation_operators.py  # sipnet_time_index, aggregate_time, aggregation_counts,
+                          # reduce_windows — shared with the likelihood; the
+                          # expression/alignment vocabulary and Pipeline to follow
+  observations.py         # (to land) DataProduct, TimeStructure, ObservedVariable,
+                          # OBSERVED_VARIABLES; observation_index, flatten, unflatten
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
-    registry.py           # VARIABLES
     primitives.py         # L1: (ax, plain numpy, **style) -> artist
     series.py             # L2 time series panels
     maps.py               # L2 spatial panels + SpatialRenderer implementations
@@ -340,31 +349,43 @@ plotting code. The load-bearing rules:
   `.quantile`, which are the three operations this project needs. One
   `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
 - Plotters branch on **presence of the `member` dim**, never on a mode keyword.
-- **Temporal aggregation lives in `obs_ops.py`** and is imported by both the
-  observation operator and the plotting layer, so a predictive-check figure
-  cannot disagree with what the likelihood consumed. Aggregation is a verb the
-  caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
-- **The aggregation rule is a property of the variable, carried in `VARIABLES`
-  as `agg`.** SIPNET's `nee` is `g C m-2 per timestep` — extensive — so
-  3-hourly to daily is a **sum**; a mean is wrong by 8x and looks plausible.
-  `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
-  (sum); carbon pools and `aboveground_wood_carbon`/`lai` are stocks
-  (instantaneous).
-  `aggregate_time` reads the registry; `how=` is an override, not the input.
+- **Temporal aggregation lives in `observation_operators.py`** and is
+  imported by both the observation operator and the plotting layer, so a
+  predictive-check figure cannot disagree with what the likelihood consumed.
+  Aggregation is a verb the caller applies — `series_panel(agg(f, "1D"))` —
+  never a plotter keyword.
+- **`aggregate_time` has two sources for its rule and no default: an explicit
+  `how=`, or the field's `aggregation` attribute**, which pySIPNET writes from
+  the variable's `kind` onto model output and `load_drivers` writes onto the
+  drivers. SIPNET's `net_ecosystem_exchange` is a `flux`, a total over the
+  step in `g m-2` of C, so 3-hourly to daily is a **sum**; a mean is wrong by
+  8x and looks plausible. Temperatures and vapor pressures are step means;
+  PAR and precipitation are step totals. Observed fields carry no such
+  attribute on purpose: how an observation is placed in time is a property of
+  the observation, decided by its observation operator, and the variable's
+  kind only constrains what is allowed (a state is never summed; a flux is
+  not averaged until it is a rate).
+- **Model-side variable names are pySIPNET's and are never renamed** here
+  (`net_ecosystem_exchange`, `leaf_carbon`, `wood_carbon`); observed variables
+  get this project's names, in the observed-variable registry. Units follow
+  pySIPNET's convention too: a UDUNITS string plus a separate `constituent`
+  (`"g m-2"` + `"C"`, never `"g C m-2"`).
 - **Model and observed NEE are not in the same units.** Observed NEE is
-  `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
-  Adapters convert into the one canonical unit named in `VARIABLES`, and
-  `validate_field()` checks `attrs["units"]` against it. Plotting the two on one
-  axis without converting fails silently, by orders of magnitude.
+  `umol CO2 m-2 s-1` (a rate); SIPNET's is `g m-2` of C per timestep (a
+  total). An observation operator converts the model into the observation's
+  units, never the reverse, and `validate_field()` checks `attrs["units"]`
+  against the registry. Plotting the two on one axis without converting fails
+  silently, by orders of magnitude.
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
   pandas, no xarray, no figure creation. **No plotter** calls `plt.show()` or
   `savefig`, creates a figure implicitly, or accepts a `SIPNETResult` or a path
   (that is an adapter's job).
 - **Anything that knows an experiment/task name belongs in
   `experiments/<task>/plots.py`, not the library.**
-- Style comes from the `VARIABLES` registry and `ROLES` palette, not per-call
-  keywords. `center=0.0` for signed fluxes such as NEE is correctness, not
-  cosmetics.
+- Style comes from the `ROLES` palette and from what a field says about
+  itself (`long_name`, `units`, `constituent`, `sign_convention`), not per-call
+  keywords and not a per-variable table. `center=0.0` for signed fluxes such
+  as NEE is correctness, not cosmetics.
 - Spatial rendering goes through the `SpatialRenderer` protocol (default
   `tripcolor` on the Delaunay triangulation, masking long edges; GP renderer
   later). Sites are 8000 **irregular points** spanning 7-82 deg N, so a real

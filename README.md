@@ -198,8 +198,10 @@ contrary are wrong.
 src/sipnet_calibration/
   sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
   fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
-  plotting/               # style, registry, primitives, series, maps, facet, diagnostics
+  time_conventions.py     # TimeLabel: what a time label marks, shared by every product
+  observation_operators.py  # sipnet_time_index, aggregate_time, aggregation_counts,
+                          # reduce_windows — shared with the likelihood
+  plotting/               # style, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
 data/raw/                 # inputs, never edited; only raw/sites/ is tracked
