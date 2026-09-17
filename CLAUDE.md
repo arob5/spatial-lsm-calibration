@@ -310,7 +310,7 @@ src/sipnet_calibration/
     diagnostics.py        # L5 EKI history, marginals, coverage
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
-data/raw/                 # never edited; only raw/sites/ (the site shapefile) is tracked
+data/raw/                 # never edited; raw/sites/ and raw/constraints/ are tracked
 data/processed/           # ingest output == canonical plotting input; untracked
 tests/
 ```
