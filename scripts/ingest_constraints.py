@@ -102,6 +102,7 @@ from sipnet_calibration.constraints import (
     read_long_table,
 )
 from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.time_conventions import TIME_LABEL_ATTR, TimeLabel
 
 #: Reference epoch for the stored time encoding. Written explicitly so nothing
 #: is inherited from a default.
@@ -399,7 +400,7 @@ def annotate_dataset(dataset: xr.Dataset, manifest: dict) -> None:
     dataset["time"].attrs = {
         "long_name": "Annual snapshot key",
         "time_zone": "none (nominal annual key)",
-        "time_label": "nominal",
+        TIME_LABEL_ATTR: TimeLabel.NOMINAL.value,
         "time_label_note": (
             "The July 15 dates are the source product's annual bookkeeping "
             "convention, not observation dates. 'nominal' extends the "

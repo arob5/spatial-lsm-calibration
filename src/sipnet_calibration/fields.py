@@ -17,7 +17,9 @@ A **canonical field** is an ``xarray.DataArray`` holding one variable, with
 * ``lon`` and ``lat`` as non-dimension coordinates on ``site``, whenever
   ``site`` is a dimension;
 * ``units`` and ``long_name`` in ``attrs``;
-* a ``name`` that is a key of the ``VARIABLES`` registry.
+* a ``name`` that is either a pySIPNET output variable name, for a field of
+  model output, or a key of the observed-variable registry planned for
+  :mod:`sipnet_calibration.observations` (issue #6), for an observation.
 
 Which dimensions are present depends on the quantity. A single deterministic
 run is ``(time,)``, an initial-condition ensemble is ``(member, site)``, the
@@ -61,9 +63,9 @@ Functions
     does not hold.
 :func:`from_sipnet_result`, :func:`from_clim`, :func:`from_ic_store`,
 :func:`from_nee_store`, :func:`from_eki_predictions`
-    One adapter per source. They are also where unit conversion happens: each
-    variable has one canonical unit in the registry, adapters convert into it,
-    and nothing downstream reconciles units.
+    One adapter per source. Adapters do not convert units: a field keeps its
+    source's units, and an observation operator converts the model into the
+    observation's.
 
 Notes
 -----
@@ -71,7 +73,8 @@ Nothing in this module is implemented yet. The drivers and the annual
 constraints already have readers of their own that produce the form described
 above, so it is the remaining sources -- SIPNET output, the initial
 conditions, the NEE observations and the calibration output -- that this
-module is still owed for. The ``VARIABLES`` registry is issue #6.
+module is still owed for. The observed-variable registry it checks names
+against, and the units convention it checks against, are issue #6.
 
 Three traps are worth knowing before writing an adapter:
 
@@ -84,9 +87,9 @@ Three traps are worth knowing before writing an adapter:
   parse; ``cftime`` does not help. The dimension is length one and carries no
   information (issue #3).
 * :func:`from_eki_predictions` unstacks a ``(J, N)`` block with the
-  ``(site, variable, time)`` index from
-  :func:`sipnet_calibration.obs_ops.obs_index`. It must be the same index the
-  observation operator used to build the observation vector, or the
-  predictions come back mislabeled against the observations they are compared
-  with.
+  ``(variable, site, time)`` index that the observation operator used to
+  build the observation vector, or the predictions come back mislabeled
+  against the observations they are compared with. That index is
+  ``observation_index``, planned for :mod:`sipnet_calibration.observations`
+  and not written yet (issue #23).
 """

@@ -372,10 +372,10 @@ Columns follow the 14-column layout defined by [pySIPNET].
 **Interpretation.** There is no datetime column; time is given by the `year`,
 `day` and `time` triple. The `time` column cannot be used as written (Note 15),
 so timestamps are assembled from `year`, `day` and the row's position within its
-day by `sipnet_calibration.obs_ops.sipnet_time_index`. What clock those labels
-are on, and whether a label marks the start or the end of its three hours, is
-inferred rather than documented (Note 16). Two columns are integrated
-quantities rather than rates: `par` and `precip` are totals over the timestep,
+day by `sipnet_calibration.observation_operators.sipnet_time_index`. What
+clock those labels are on, and whether a label marks the start or the end of
+its three hours, is inferred rather than documented (Note 16). Two columns are
+integrated quantities rather than rates: `par` and `precip` are totals over the timestep,
 so temporal aggregation of either is a sum rather than a mean. SIPNET requires
 `vpd` and `wspd` to be strictly positive and silently clamps values that are
 not; the files also hold small negative excursions of `par` and `precip` around
@@ -467,8 +467,9 @@ columns.
 
 **Interpretation.** Values are in micromoles of CO2 per square meter per second
 (umol CO2 m-2 s-1), a rate, as confirmed by the producer. SIPNET reports net
-ecosystem exchange as a per-timestep total in g C m-2, so ingest must convert
-between the two.
+ecosystem exchange as a total over the timestep in grams of carbon per square
+meter; the observation operator converts the model into the observation's
+units, and the processed product keeps the producer's.
 
 Each of the 25 member columns is the gap-filled series obtained from one member
 of a driver ensemble. The spread across members therefore reflects the
@@ -499,6 +500,15 @@ of 17,537, so the average site covers about 45% of the period.
 Only 17 of the 209 sites have a near-complete record. Representing the file as a
 dense array over site and time therefore leaves roughly 55% of entries missing,
 and any per-site statistic must account for very unequal sample sizes.
+
+That missingness is **entirely structural**. Every site's rows are one
+contiguous run on the 3-hour grid: there is no interior gap at any of the 209
+sites, no missing value in any member column, and the only calendar days not
+holding all eight rows are the first and last of each site's record. A site is
+short because whole stretches of the period are absent, not because its record
+is punctured. This is why temporal aggregation can default to keeping partial
+periods rather than dropping them: a partial day can only arise at a record
+edge. See the aggregation rules under Processed format.
 
 > **Note 7.** An updated release of this product covers 217 sites, including
 > several absent here, but carries only the ensemble mean. Which release to use is
@@ -627,9 +637,10 @@ Conversions applied during ingest rather than downstream:
   uncertainty at all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016),
   all with a mean of 1.0. Either way flooring them is a modeling decision that
   would be hidden if an ingest script made it. See open question 14.
-- **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
-  unit used throughout, so that nothing later has to reconcile units, and the
-  redundant `ens_mean` column is dropped.
+- **Net ecosystem exchange.** Kept in the producer's units, umol CO2 m-2 s-1;
+  the observation operator converts the model into these units using the
+  model's own timestep length, never the reverse. The redundant `ens_mean`
+  column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -662,6 +673,33 @@ directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)
 reads only the requested sites, with no reshaping step. Lazy reads are backed by
 dask. The site table is CSV instead because it is small, tabular and read by
 people as often as by code.
+
+**Aggregating a processed field in time** goes through
+`sipnet_calibration.observation_operators.aggregate_time`. The rule comes from
+an explicit `how=` or from the field's own `aggregation` attribute, and from
+nowhere else: pySIPNET writes that attribute onto model output from each
+variable's kind, and `load_drivers` writes it onto the drivers (`par` and
+`precipitation` are totals over the timestep and sum; the temperatures, vapor
+pressures and wind speed describe the timestep and are meaned). A wrong rule
+is silent, which is why there is no default: a per-timestep total meaned to
+daily is wrong by the number of steps in the day while looking entirely
+plausible. The constraint fields carry no `aggregation` attribute: how an
+annual observation is placed in time is a property of the observation, and its
+observation operator says so.
+
+A period with no observations comes back missing, never zero -- xarray's
+`.resample(...).sum()` returns zero for an all-missing group, which for a
+55%-missing field would read as zero flux. A partial period is returned as the
+partial total it is, unscaled; a caller wanting only whole periods says so with
+`min_count=`, or masks on `aggregation_counts`. Irregular windows, such as an
+observation's own intervals, go through `reduce_windows` with the same rules.
+An aggregated field's `time` coordinate says what its new labels mark: the
+start of each period for a start-anchored frequency such as `1D`, the end for
+`ME` or `YE`.
+
+Every `time` coordinate carries a `time_label` attribute saying what its
+labels mark; the vocabulary is `sipnet_calibration.time_conventions.TimeLabel`
+(`interval_end` for the drivers, `nominal` for the annual constraints).
 
 `sites/sites.csv` carries every field of the shapefile, so that nothing is lost in
 translation, together with the grid indices and the Ameriflux identifier:
@@ -811,8 +849,9 @@ The following conventions apply to every product.
   identifier is a non-dimension coordinate on `site`, absent where unknown.
 - `member` is a zero-based integer index, meaningful only within a single source.
 - Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
-  converted at the boundary by `sipnet_calibration.obs_ops.sipnet_time_index`,
-  which uses the `time` column only to identify a row's slot within its day
+  converted at the boundary by
+  `sipnet_calibration.observation_operators.sipnet_time_index`, which uses the
+  `time` column only to identify a row's slot within its day
   (Note 15). This applies to SIPNET output as well as to the drivers, since
   SIPNET copies the column into its output verbatim.
 - Each product is stored at the temporal resolution its source arrives in.
