@@ -71,7 +71,10 @@ The uncompressed md5 is the one that carries meaning.
 
 The observations the reanalysis assimilated live upstream as
 `obs.mean.Rdata` / `obs.cov.Rdata`, which remain symlinked under
-`sda_8k_site_rdata/` and are still what the current ingest reads. Those files
+`sda_8k_site_rdata/`. Nothing reads them any longer; they are kept for the
+questions still going to their producers, and `tests/test_constraints.py`
+checks the products built from the files here against what was built from
+them. Those files
 combine all four variables into a nested structure of 13 snapshots x 8000
 sites, carry no attributes despite their directory's name, key their covariance
 matrices positionally, and apply at least one undocumented modification: the

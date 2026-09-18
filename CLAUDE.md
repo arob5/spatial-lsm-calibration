@@ -38,10 +38,12 @@ Facts specific to this working copy, which the README deliberately does not carr
 - **Only a subset of `data/raw/` is present locally.** Drivers exist for
   `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; initial conditions for site 1 members
   1 and 2 and site 27 member 94. The NEE csv, the five constraint files
-  (tracked), the obsolete assembled `.Rdata` pair and the site shapefile are
-  complete. The full dataset lives on Boston University's SCC. Anything that
-  needs to hold across all 8000 sites cannot be verified here.
-- The local files are real copies, not symlinks. On SCC they should be symlinks.
+  (tracked), the assembled `.Rdata` pair retained for validation, and the site
+  shapefile are complete. The full dataset lives on Boston University's SCC.
+  Anything that needs to hold across all 8000 sites cannot be verified here.
+- In the root checkout the storage-backed inputs are real copies, not symlinks;
+  on SCC, and in a worktree that links them from the root, they are symlinks.
+  The five constraint files and the site shapefile are tracked either way.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
@@ -183,8 +185,8 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   read alike: `Conventions = "CF-1.11"` on the dataset; `standard_name`,
   `axis` and, where present, `bounds` on `time`; `standard_name` and `units`
   on `lon`/`lat`; no `_FillValue` on any coordinate. Where a value's support
-  is documented it is a CF `time_bounds(time, bounds)` coordinate, half-open,
-  exactly as pySIPNET writes `[time_step_start, time]`. Where CF has no
+  is documented it is a CF `time_bounds(time, bounds)` coordinate, as
+  pySIPNET writes `time_bounds = [time_step_start, time]`. Where CF has no
   vocabulary for what a label means, the meaning goes in words
   (`time_reference`, `comment`), never in a `cell_methods` that is not
   literally true.
@@ -197,7 +199,8 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   the product stores, so a netCDF describes itself and there is no separate
   processed schema to keep in step. `ConstraintSpec` is the worked example.
 - **A unit that is inferred is recorded as inferred**, in a `units_provenance`
-  sentence on the spec and the product. No status enums.
+  sentence on the spec and the product, not as a status enum. The drivers
+  predate this rule and still carry `units_status` and `clock_status`.
 
 ### Products and their readers
 
@@ -386,9 +389,7 @@ plotting code. The load-bearing rules:
   is not averaged until it is a rate). SIPNET's `net_ecosystem_exchange` is
   `g m-2` of C per timestep, so 3-hourly to daily is a **sum**, and a mean is
   wrong by 8x while looking plausible; the fix is to say `how`, not to look
-  up a default. The `aggregate_time` on the observation-operators branch still
-  reads an `aggregation` attribute pySIPNET no longer writes and is to be
-  brought into line.
+  up a default.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
   Observation products keep their source units; the observation operator
@@ -445,9 +446,14 @@ plotting code. The load-bearing rules:
 - `ClimateStaging` is in `pysipnet.runner`, not `pysipnet.climate`
 - `SIPNETRunner(climate_staging=ClimateStaging.SYMLINK)` — staging goes on the runner, not the model
 - Parameter override keys are flat snake_case leaf names (`a_max`, not `photosynthesis.a_max`)
-- `SIPNETOutput` selects with `out["nee"]` (a `DataArray`) and `out[["nee", "gpp"]]` (a `Dataset`); aliases resolve. `result.nee()` and `to_xarray()` are gone (PR #36).
-- The output `Dataset` is CF-1.11: `time` is the **end** of each step, `time_step_start` and `time_step_length` are coordinates, and `time_bounds = [time_step_start, time]` (PR #38). `pysipnet.resample.resample(ds, freq, how=...)` requires `how`.
-- `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`, `constituent` and `kind` of every column; `pysipnet.units.validate_units` refuses a substance token inside a unit string (`"g C m-2"` is wrong; `"g m-2"` + `constituent="C"`).
+- `SIPNETOutput` selects with `out["nee"]` (a `DataArray`) and `out[["nee", "gpp"]]`
+  (a `Dataset`); aliases resolve. `result.nee()` and `to_xarray()` are gone (pySIPNET PR #36).
+- The output `Dataset` is CF-1.11: `time` is the **end** of each step, `time_step_start` and
+  `time_step_length` are coordinates, and `time_bounds = [time_step_start, time]` (PR #38).
+  `pysipnet.resample.resample(ds, freq, how=...)` requires `how`.
+- `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`,
+  `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
+  token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
 
 ### PyEns

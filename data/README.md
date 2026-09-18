@@ -618,9 +618,9 @@ keep those within **30 days** of July 15, take the nearest, and on a tie
 between an earlier and a later composite take the **earlier**. That
 reproduces the `LAI` means in `obs.mean.Rdata` exactly, at all 99,632 of them,
 and `max(sd, 0.66)` reproduces every variance. The tie-break is load-bearing:
-4,863 site-years tie, the values differ in 4,026 of them, and the later-date
-rule fails on 4,003. The window excludes 398 site-years whose nearest unflagged
-composite is 31-45 days out. Nearest-date selection without the flag filter
+within the window 4,840 site-years tie, the two candidates differ in 4,003 of
+them, and the later-date rule fails on exactly those. The window excludes 398
+site-years whose nearest unflagged composite is 31-45 days out. Nearest-date selection without the flag filter
 reproduces only 85.9%. The rule is what the PEcAn prep code does
 (`MODIS_LAI_prep.R`: `search_window = 30`, rows with `sd >= 20` dropped,
 `which.min` taking the first minimum), and it is encoded in
@@ -645,8 +645,8 @@ observations.
 
 8000 sites x 13 years, 2012-2024; 103,870 rows carry values. `soc` and `sd` are
 **ten times** the corresponding values in `obs.mean.Rdata`, which are declared
-`kg C m-2`; this file is therefore in `Mg C ha-1` (Note 9). Ingest converts;
-the raw file keeps the source unit.
+`kg C m-2`; this file is therefore in `Mg C ha-1` (Note 9). The processed
+product keeps that unit; the factor is the observation operator's to apply.
 
 The values integrate **0-200 cm** (Note 21).
 
@@ -663,8 +663,9 @@ longer; they are kept because they are what the reanalysis actually
 assimilated, which the per-variable files above cannot show, and because the
 questions going to their producers are still being formulated.
 `tests/test_constraints.py` checks that the new products reproduce them, via
-the last product built from them, `processed/constraints_annual.nc`, where
-that file is present.
+`processed/constraints_annual.nc`, the last output of the retired R and Python
+pipeline (repository commit `d533dfd` and earlier). No script writes that file
+any longer; the check runs where a copy is present and skips otherwise.
 
 Two R data files, each a single object nesting as year, then site, then
 observation: lists of length 13 keyed by date from `2012-07-15` to
@@ -786,9 +787,10 @@ Conversions applied during ingest rather than downstream:
   (2016) and 7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a
   modeling decision that would be hidden if an ingest script made it. See open
   question 14.
-- **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
-  unit used throughout, so that nothing later has to reconcile units, and the
-  redundant `ens_mean` column is dropped.
+- **Net ecosystem exchange.** None to the values, as for the constraints: the
+  product keeps the producer's umol CO2 m-2 s-1 and the observation operator
+  converts the model into it (the 2026-09-15 observation-operator design
+  decision). The redundant `ens_mean` column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -913,7 +915,9 @@ pySIPNET's use of a `comment` where `cell_methods` cannot speak.
 Every attribute on `value` comes from the constraint's `ConstraintSpec`:
 `units`, `constituent` (where the unit is of a substance), `long_name`,
 `description`, `product`, `source_file`, `source_column`, `time_reference`,
-`units_provenance` and, where set, `sign_convention` and `comment`. The units
+`units_provenance` and, where set, `sign_convention` and `comment`. The dataset
+counts what the ingest did to the rows: `rows_read`,
+`rows_dropped_by_quality_flag` and `rows_collapsed_as_copies`. The units
 are the raw file's, unchanged, and every one is inferred or documented for
 something adjacent rather than confirmed by the producer; `units_provenance`
 says which, in a sentence. See open question 9.
@@ -1203,8 +1207,8 @@ litter and roots, is also unconfirmed.
 assembled covariance file floors the `LAI` standard deviations at 0.66,
 affecting 82.4% of observations; no per-variable source carries the floor. The
 script that applies it is PEcAn's `MODIS_LAI_prep.R`, so what remains open is
-whether the floor is intended for assimilation. Separately, a later revision of the MODIS
-extraction exists upstream which disagrees with the assembled file at 16,770 of
+whether the floor is intended for assimilation. Separately, a later revision of
+the MODIS extraction exists upstream which disagrees with the assembled file at 16,770 of
 99,112 observations, spread evenly across all thirteen years and by as much as
 6.5 leaf area index units. Which extraction is authoritative determines what a
 future ingest should produce.
