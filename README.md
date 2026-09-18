@@ -22,8 +22,7 @@ This is a research codebase, not a library.
 
 ## Quick start
 
-Requires [uv](https://docs.astral.sh/uv/). One data processing step below also
-needs `Rscript`.
+Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/arob5/spatial-lsm-calibration.git
@@ -52,8 +51,7 @@ will eventually replace the sequence with a single command.
 
 ```bash
 python scripts/ingest_sites.py                                                       # -> data/processed/sites/sites.csv
-Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json         # scratch, not products
-python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json  # -> data/processed/constraints_annual.nc
+python scripts/ingest_constraints.py                                                 # -> data/processed/constraints/<name>.nc, one per constraint
 python scripts/ingest_ic.py --jobs 16                                                # -> data/processed/ic.nc
 ```
 

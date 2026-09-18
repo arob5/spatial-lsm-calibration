@@ -37,10 +37,10 @@ Facts specific to this working copy, which the README deliberately does not carr
 
 - **Only a subset of `data/raw/` is present locally.** Drivers exist for
   `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; initial conditions for site 1 members
-  1 and 2 and site 27 member 94. The NEE csv, the AGB/LAI `.Rdata` files and the
-  site shapefile are complete. The full dataset lives on Boston University's
-  SCC. Anything that needs to hold across all 8000 sites cannot be verified
-  here.
+  1 and 2 and site 27 member 94. The NEE csv, the five constraint files
+  (tracked), the obsolete assembled `.Rdata` pair and the site shapefile are
+  complete. The full dataset lives on Boston University's SCC. Anything that
+  needs to hold across all 8000 sites cannot be verified here.
 - The local files are real copies, not symlinks. On SCC they should be symlinks.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
@@ -63,7 +63,10 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
   `data/processed/sites/sites.csv`. There is no other site source.
 - Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
-  the AGB/LAI constraints are ragged over site x year x variable.
+  every constraint product is ragged over site x time.
+- Constraint products keep their **source units** and their source's own time
+  labels. Nothing is converted or aligned at ingest; the observation operator
+  does both. See the processed-data conventions below.
 
 ## Code conventions
 
@@ -75,14 +78,20 @@ Raw variable names are not ours to choose; processed ones are.
 
 - **`lower_case_with_underscores`** for every variable, coordinate and column of
   a processed product.
-- **Avoid abbreviations** unless they are universal. So `total_soil_carbon`, not
-  `TotSoilCarb`; `aboveground_wood_carbon`, not `AbvGrndWood`;
-  `soil_moisture_percent`, not `SoilMoistFrac`. `lai` is fine, and so are
-  `lon`/`lat`, which the canonical field convention fixes.
-- The rename from source to processed name belongs in **one explicit mapping**
+- **Avoid abbreviations** unless they are universal. So `soil_organic_carbon`,
+  not `soc`; `aboveground_biomass`, not `agb`; `standard_deviation`, not `sd`.
+  `lai` is fine, and so are `lon`/`lat`, which the canonical field convention
+  fixes.
+- The correspondence from source to processed belongs in **one explicit spec**
   in the library beside the schema, not spread across a script. See
-  `SOURCE_VARIABLE_NAMES` in `sipnet_calibration.constraints`. Keep the source
-  name in the product's attributes so the correspondence is never guesswork.
+  `ConstraintSpec` in `sipnet_calibration.constraints`, whose `raw_file`,
+  `value_column` and `sd_column` name the source and whose fields are written
+  into the product as `source_file` and `source_column`, so the correspondence
+  is never guesswork.
+- A constraint product is named for its **raw file's stem**
+  (`modis_leaf_area_index`, not `lai`): the name is then the spec's key, the
+  raw file and the output file at once, it keeps two products of one quantity
+  apart, and it asserts nothing the source does not (biomass, not carbon).
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
@@ -167,11 +176,34 @@ File-level docstrings use these sections, in this order:
 
 Function and module docstrings elsewhere are ordinary NumPy style.
 
+### Processed data conventions
+
+- **Processed products follow the Climate and Forecast conventions, CF-1.11**,
+  as pySIPNET's model output does since its PR #38, so model and observation
+  read alike: `Conventions = "CF-1.11"` on the dataset; `standard_name`,
+  `axis` and, where present, `bounds` on `time`; `standard_name` and `units`
+  on `lon`/`lat`; no `_FillValue` on any coordinate. Where a value's support
+  is documented it is a CF `time_bounds(time, bounds)` coordinate, half-open,
+  exactly as pySIPNET writes `[time_step_start, time]`. Where CF has no
+  vocabulary for what a label means, the meaning goes in words
+  (`time_reference`, `comment`), never in a `cell_methods` that is not
+  literally true.
+- **Ingest changes structure, never values.** No unit conversion, no temporal
+  alignment, no choice of which record stands for a year. Units are the raw
+  file's; the observation operator converts through Pint
+  (`pysipnet.units.unit_registry`) and decides the alignment.
+- **One flat spec per variable, from which everything is derived**, in the
+  shape of pySIPNET's `VariableSpec`: the spec's `xarray_attributes()` is what
+  the product stores, so a netCDF describes itself and there is no separate
+  processed schema to keep in step. `ConstraintSpec` is the worked example.
+- **A unit that is inferred is recorded as inferred**, in a `units_provenance`
+  sentence on the spec and the product. No status enums.
+
 ### Products and their readers
 
 - **Schema constants and the reader live in the library**, not the script, so
   the writer and the reader of a product cannot drift apart
-  (`SITE_COLUMNS` in `sites.py`, `CONSTRAINT_VARIABLES` in `constraints.py`).
+  (`SITE_COLUMNS` in `sites.py`, `CONSTRAINTS` in `constraints.py`).
   A script's own round-trip check calls the library loader, never a parallel
   reader.
 - **Write to a `.partial` path and rename only after the checks pass**, so a
@@ -292,8 +324,9 @@ src/sipnet_calibration/
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
-  constraints.py          # annual constraint schema, load_constraints(),
-                          # constraint_fields() -> canonical per-variable view
+  constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
+                          # read_raw(), build_constraint(), load_constraint(),
+                          # constraint_fields() -> canonical per-product view
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
   fields.py               # canonical field convention, validate_field(), adapters
@@ -311,7 +344,8 @@ src/sipnet_calibration/
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
 data/raw/                 # never edited; raw/sites/ and raw/constraints/ are tracked
-data/processed/           # ingest output == canonical plotting input; untracked
+data/processed/           # ingest output == canonical plotting input; untracked;
+                          # constraints/<name>.nc is one CF-1.11 netCDF per constraint
 tests/
 ```
 
@@ -344,18 +378,23 @@ plotting code. The load-bearing rules:
   observation operator and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
   caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
-- **The aggregation rule is a property of the variable, carried in `VARIABLES`
-  as `agg`.** SIPNET's `nee` is `g C m-2 per timestep` — extensive — so
-  3-hourly to daily is a **sum**; a mean is wrong by 8x and looks plausible.
-  `tair`/`vpd` are intensive (mean); `par`/`precip` are per-timestep totals
-  (sum); carbon pools and `aboveground_wood_carbon`/`lai` are stocks
-  (instantaneous).
-  `aggregate_time` reads the registry; `how=` is an override, not the input.
+- **The caller names the resampling method; the variable's kind constrains
+  which are valid.** This is pySIPNET's rule since its PR #38, which removed
+  the per-variable `aggregation` default: `pysipnet.resample.resample(ds, freq,
+  how=...)` requires `how`, weights means by step length, and refuses a
+  method the kind does not support (a pool is not additive; a per-step total
+  is not averaged until it is a rate). SIPNET's `net_ecosystem_exchange` is
+  `g m-2` of C per timestep, so 3-hourly to daily is a **sum**, and a mean is
+  wrong by 8x while looking plausible; the fix is to say `how`, not to look
+  up a default. The `aggregate_time` on the observation-operators branch still
+  reads an `aggregation` attribute pySIPNET no longer writes and is to be
+  brought into line.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
-  Adapters convert into the one canonical unit named in `VARIABLES`, and
-  `validate_field()` checks `attrs["units"]` against it. Plotting the two on one
-  axis without converting fails silently, by orders of magnitude.
+  Observation products keep their source units; the observation operator
+  converts the model into the observation's units, through Pint, before a
+  residual or an overlay is formed. Plotting the two on one axis without
+  converting fails silently, by orders of magnitude.
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
   pandas, no xarray, no figure creation. **No plotter** calls `plt.show()` or
   `savefig`, creates a figure implicitly, or accepts a `SIPNETResult` or a path
@@ -406,7 +445,9 @@ plotting code. The load-bearing rules:
 - `ClimateStaging` is in `pysipnet.runner`, not `pysipnet.climate`
 - `SIPNETRunner(climate_staging=ClimateStaging.SYMLINK)` — staging goes on the runner, not the model
 - Parameter override keys are flat snake_case leaf names (`a_max`, not `photosynthesis.a_max`)
-- `result.nee()` returns a `pd.Series` of one value per climate timestep (sub-daily if climate is sub-daily)
+- `SIPNETOutput` selects with `out["nee"]` (a `DataArray`) and `out[["nee", "gpp"]]` (a `Dataset`); aliases resolve. `result.nee()` and `to_xarray()` are gone (PR #36).
+- The output `Dataset` is CF-1.11: `time` is the **end** of each step, `time_step_start` and `time_step_length` are coordinates, and `time_bounds = [time_step_start, time]` (PR #38). `pysipnet.resample.resample(ds, freq, how=...)` requires `how`.
+- `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`, `constituent` and `kind` of every column; `pysipnet.units.validate_units` refuses a substance token inside a unit string (`"g C m-2"` is wrong; `"g m-2"` + `constituent="C"`).
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
 
 ### PyEns
