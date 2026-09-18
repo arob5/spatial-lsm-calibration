@@ -75,10 +75,16 @@ data/
       ERA5_<site_id>_<member>/ERA5.<member>.2012-01-01.2024-12-31.clim
     initial_conditions/
       <site_id>/IC_site_<site_id>_<member>.nc
-    constraints/
+    constraints/              observations, tracked in version control
+      landtrendr_aboveground_biomass.csv.gz
+      gedi_aboveground_biomass.csv.gz
+      modis_leaf_area_index.csv.gz
+      smap_soil_moisture.csv.gz
+      soilgrids_soil_organic_carbon.csv.gz
+      provenance.md
       nee/ens_ec_3h.csv
-      sda_8k_site_rdata/obs.mean.Rdata
-      sda_8k_site_rdata/obs.cov.Rdata
+      sda_8k_site_rdata/obs.mean.Rdata    retained for validation
+      sda_8k_site_rdata/obs.cov.Rdata     retained for validation
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
     ic.nc
@@ -98,10 +104,16 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with one exception: `raw/sites/` holds
-the site shapefile, which is small, is a primary source rather than a pipeline
-output, and is the one input without which the repository carries no site
-information at all. `site_id_map.csv` is tracked for the same reason.
+directory is tracked in version control, with two exceptions, both small primary
+sources rather than pipeline outputs, and both inputs the repository cannot do
+without. `raw/sites/` holds the site shapefile, without which the repository
+carries no site information at all; `site_id_map.csv` is tracked for the same
+reason. `raw/constraints/` holds the five per-variable observation files, which
+are tracked because the upstream copies are edited and moved in place, so a
+symlink is not a stable input; see
+[Constraint observations](#constraint-observations). Everything else under
+`raw/`, including the much larger drivers, initial conditions and eddy-covariance
+files, lives on storage and is symlinked.
 
 ---
 
@@ -514,35 +526,141 @@ and any per-site statistic must account for very unequal sample sizes.
 
 **Source.** [GAPFILL].
 
-### Biomass, leaf area and soil constraints
+### Constraint observations
 
-**Format.** Two R data files, each holding a single object that nests as year,
-then site, then observation. Both are lists of length 13 keyed by date from
-`2012-07-15` to `2024-07-15`, and each element is a list of length 8000 named
-`"1"` to `"8000"`.
+**Format.** Five gzipped CSV files under `raw/constraints/`, one per source
+product. Each is a flat table addressed by `site_id`, and `site_id` is the
+1-8000 identifier of the site table. These files are **copied into the
+repository rather than symlinked**: the upstream copies are edited and moved in
+place, so a symlink is not a stable input.
+[`provenance.md`](raw/constraints/provenance.md) records the source path, size,
+checksum and copy date of each, and the conversion applied.
 
-In `obs.mean.Rdata`, the object `obs.mean` gives each site-year as a single-row
-data frame whose columns are the variables observed there. Between zero and four
-columns appear, in alphabetical order. The units below are those documented in
-the [NALCR] dataset guide for the corresponding variables of the reanalysis
-output; see Note 9.
+| File | Source product | Rows | Columns |
+|---|---|---|---|
+| `landtrendr_aboveground_biomass.csv.gz` | LandTrendr | 96,000 | `site_id`, `year`, `agb_mean`, `agb_sd` |
+| `gedi_aboveground_biomass.csv.gz` | GEDI | 48,000 | `year`, `site_id`, `agb`, `sd` |
+| `modis_leaf_area_index.csv.gz` | MODIS | 1,404,385 | `date`, `site_id`, `lat`, `lon`, `lai`, `sd`, `qc` |
+| `smap_soil_moisture.csv.gz` | SMAP | 79,740 | `date`, `site_id`, `lat`, `lon`, `smp`, `sd` |
+| `soilgrids_soil_organic_carbon.csv.gz` | SoilGrids | 104,000 | `site_id`, `soc`, `sd`, `year` |
 
-| Variable | Unit | Observed range, 2015 |
-|---|---|---|
-| `AbvGrndWood` | Mg C ha-1 | 0 to 459 |
-| `LAI` | m2 m-2 | 0.1 to 6.9 |
-| `SoilMoistFrac` | percent | 0.99 to 92.89 |
-| `TotSoilCarb` | kg C m-2 | 5.79 to 144.4 |
+The product attribution is the producer's own, taken from a dictionary in the
+assembly code rather than inferred.
 
-In `obs.cov.Rdata`, the object `obs.cov` gives the corresponding observation error
-covariances with the same nesting, as a bare numeric in the single-variable case
-and a matrix otherwise. In 2012 the dimensions are 6 empty, 283 of 1x1, 4475 of
-2x2 and 3236 of 3x3, matching the column counts in `obs.mean` exactly.
+Two of the five are byte-verbatim copies of the producer's CSVs, gzipped and
+otherwise untouched. The other three were `.Rdata` objects and were serialized
+to CSV at **17 significant digits**, which round-trips a float64 exactly; the
+column names are the source's own. Read them with
+`pandas.read_csv(..., float_precision="round_trip")`, for the same reason
+`sites.csv` does (see [Processed format](#processed-format)).
 
-**Interpretation.** The July 15 keys are the annual snapshot convention of the
-source product, not observation dates. No site-year entry is null, but some are
-empty data frames with zero columns, denoting a site-year with no observations at
-all; six such entries occur in 2012.
+Where a column duplicates the site table -- `lat` and `lon` in the MODIS and
+SMAP files -- it is retained deliberately, as a check that a file's `site_id`
+means the same thing the site table means. That is not hypothetical: a second,
+6400-site pool exists upstream whose site 1 is a different location.
+
+#### `landtrendr_aboveground_biomass.csv.gz`
+
+8000 sites x 12 years, 2012-2023; 39,273 rows carry values. The unit is
+`Mg C ha-1` (Note 9).
+
+`agb_mean` is **integer-valued throughout**, taking 399 distinct values from 0
+to 502. Coverage is **US land only**: 3,281 sites, all within CONUS. 2024 is
+absent because the assembly code assigns it `NA` explicitly, not because data
+is missing.
+
+`agb_sd` comes from **two different sources either side of 2018**, and the two
+halves are not the same kind of quantity (Note 19). The file is the
+concatenation of an object holding 2012-2017 standard deviations, which are
+integer-valued and are LandTrendr's own, and an object named `agb.pred` holding
+2018-2023, which sit beside a 430 MB random-forest model. The means come from a
+single object spanning 2012-2023 and are continuous in provenance, yet still
+show a level-dependent discontinuity at the 2017/2018 boundary (Note 19).
+
+The source names this quantity aboveground **biomass** throughout -- directory,
+file and columns -- while the state variable it feeds is named aboveground
+**wood**. No numerical conversion is applied between them (Note 20).
+
+#### `gedi_aboveground_biomass.csv.gz`
+
+8000 sites x 6 years, 2019-2024; 12,596 rows carry values. Units are not
+established (Note 9).
+
+**This product is not part of the constraint set the reanalysis used**, and is
+absent from `obs.mean.Rdata`. It is kept as a candidate additional biomass
+constraint: it is independent of LandTrendr, and it covers 2024, which
+LandTrendr does not.
+
+#### `modis_leaf_area_index.csv.gz`
+
+322 observation dates from 2011-06-02 to 2024-08-28 across 7,705 sites, so
+unlike the other files it is **not one row per site-year**. `lai` runs 0 to 7
+and `sd` 0 to 24.8, both exact multiples of 0.1, which is the native MODIS
+scaling.
+
+`qc` takes the values 0 and 1, and **`qc == 1` is exactly equivalent to
+`sd > 20`**: 221,659 rows satisfy each, and no row satisfies one but not the
+other. Within that flagged set, **`lai == 0` is a no-data sentinel** -- all
+60,016 such rows carry `sd` of exactly 24.8, the file maximum, and all are
+flagged. After dropping flagged rows the minimum `lai` is 0.1 and no zeros
+remain.
+
+Selecting, per site and year, the nearest observation by date to July 15 from
+the unflagged rows reproduces the `LAI` means in `obs.mean.Rdata` exactly, at
+all 99,632 of them. Nearest-date selection without the flag filter reproduces
+only 85.9%.
+
+#### `smap_soil_moisture.csv.gz`
+
+7,974 sites x 10 years, 2015-2024, complete; the variable is absent before
+2015. Values run 0.99 to 92.95, so the scale is 0-100 despite the source
+variable being named a fraction (Note 9).
+
+The `date` column holds **only the July 15 snapshot label** -- ten distinct
+values, all July 15 -- so the acquisition date of the underlying retrieval is
+not recoverable from this file.
+
+The source grid is coarser than the 1 km site grid: 529 pairs of sites carry
+bitwise-identical values in all ten years, with a median separation of 4.6 km
+and a maximum of 25.9 km. Sites sharing a source cell do not carry independent
+observations.
+
+#### `soilgrids_soil_organic_carbon.csv.gz`
+
+8000 sites x 13 years, 2012-2024; 103,870 rows carry values. `soc` and `sd` are
+**ten times** the corresponding values in `obs.mean.Rdata`, which are declared
+`kg C m-2`; this file is therefore in `Mg C ha-1` (Note 9). Ingest converts;
+the raw file keeps the source unit.
+
+The values integrate **0-200 cm** (Note 21).
+
+**The values are constant in time.** Every site carries a bitwise-identical
+`soc` and `sd` in all 13 years, so the 103,870 rows are 7,990 distinct
+observations repeated thirteen times. The assembly code confirms the mechanism:
+soil carbon is read once and reused for every snapshot. Anything that treats
+site-years as independent will weight this variable thirteen times too heavily.
+
+#### Retained for validation: `sda_8k_site_rdata/obs.{mean,cov}.Rdata`
+
+The nested assimilation inputs remain symlinked, and remain what
+`export_constraints.R` and `ingest_constraints.py` currently read. They are kept
+because they are what the reanalysis actually assimilated, which the
+per-variable files above cannot show.
+
+Two R data files, each a single object nesting as year, then site, then
+observation: lists of length 13 keyed by date from `2012-07-15` to
+`2024-07-15`, each element a list of length 8000 named `"1"` to `"8000"`. In
+`obs.mean`, each site-year is a single-row data frame whose columns are the
+variables observed there, between zero and four, in alphabetical order. In
+`obs.cov`, the corresponding error covariances, as a bare numeric in the
+single-variable case and a matrix otherwise. The covariance matrices carry no
+dimension names, so the variable each row refers to must be taken from the
+column order of the corresponding `obs.mean` entry.
+
+The July 15 keys are the annual snapshot convention of the source product, not
+observation dates. Some site-years are empty data frames with zero columns,
+denoting no observations at all; six such entries occur in each of 2012, 2013
+and 2014.
 
 Coverage varies by variable and by year, so the data are not rectangular over
 site, year and variable.
@@ -556,26 +674,48 @@ site, year and variable.
 | 2016-2023 | 7990 | 7649-7678 | 3262-3281 | 7974 |
 | 2024 | 7990 | 7663 | 0 | 7974 |
 
-`SoilMoistFrac` is absent before 2015 and `AbvGrndWood` in 2024, and
-`AbvGrndWood` covers about 41% of sites in the years where it is present.
 Summed over all thirteen snapshots the observation counts are `TotSoilCarb`
 103,870, `LAI` 99,632, `SoilMoistFrac` 79,740 and `AbvGrndWood` 39,273, or
 322,515 observations in total.
 
-The covariance matrices carry no dimension names, so the variable each row and
-column refers to must be taken from the column order of the corresponding
-`obs.mean` entry. The site-level lists in both objects are named, so sites can be
-addressed by name rather than by position.
+**These files do not agree with the per-variable sources on `LAI`.** Their
+`AbvGrndWood`, `SoilMoistFrac` and `TotSoilCarb` values reproduce the
+per-variable files exactly. Their `LAI` standard deviations are the source
+values **floored at 0.66**, which affects 82.4% of observations and is not
+documented anywhere upstream (Note 22). Whoever uses these files for validation
+must account for that floor.
 
-> **Note 9.** The units above are documented for the reanalysis output, whereas
-> these files are the observation inputs to that reanalysis.
+> **Note 9.** The units of all five products are documented for the published
+> reanalysis output, or inferred from the assembled observation files, rather
+> than stated by any attribute in the raw data. None has been confirmed by the
+> producer. GEDI's are not established at all.
 
-> **Note 10.** Two further directories of `obs.mean` and `obs.cov` files exist
-> alongside this one, and the relationship between them is not established.
+> **Note 10.** The directory the symlink points at is named as though its
+> contents carry variable attributes, but no attributes are present on any
+> object within it, at either the data-frame or the column level. The assembly
+> code shows attributes were intended, naming the source product of each
+> variable; the files in place do not carry them.
 
-**Source.** The observation files assimilated by [NALCR]; the same files are used
-here as calibration constraints. Underlying products include LandTrendr
-aboveground biomass.
+> **Note 19.** `AbvGrndWood` standard deviations before and after 2018 come
+> from different objects and are not the same kind of quantity; the later half
+> appears to be model-predicted. Separately, the means show a level-dependent
+> discontinuity at that boundary despite coming from a single object.
+
+> **Note 20.** The source calls the biomass product aboveground biomass; the
+> state variable is aboveground wood. The values pass through unchanged.
+
+> **Note 21.** The 0-200 cm depth is established by correlation, not by an
+> attribute: against a SoilGrids table carrying both intervals, `soc` matches
+> the 0-200 cm column at 0.9970 and the 0-30 cm column at 0.8147. The match is
+> close but not exact, so the depth interval is settled while the precise
+> extraction is not.
+
+> **Note 22.** The 0.66 floor on the `LAI` standard deviations appears only in
+> the assembled covariance file, not in any per-variable source, and no script
+> producing it has been found.
+
+**Source.** The observation inputs assimilated by [NALCR]. The per-variable
+files are the upstream sources from which those inputs were assembled.
 
 ---
 
@@ -919,17 +1059,25 @@ matters for the observation error model, since measured and imputed values shoul
 not carry equal weight. The producer has not confirmed this reading, and it does
 not carry over to the updated release, which has no ensemble.
 
-**9. Units of the assimilation inputs.** The units given for the four variables
-are documented for the published reanalysis output, whereas `obs.mean.Rdata` holds
-the observation inputs to that reanalysis. All four variable names and all
-thirteen annual keys agree, so the two almost certainly share definitions, but
-this has not been confirmed.
+**9. Units of the constraint observations.** No unit is stated by any attribute
+in any of the five raw files. `Mg C ha-1` for LandTrendr biomass and `m2 m-2`
+for MODIS leaf area index are documented for the published reanalysis output
+rather than for these inputs; `Mg C ha-1` for SoilGrids soil carbon is inferred
+from its being exactly ten times the assembled values, which are themselves
+declared `kg C m-2` on the same unconfirmed basis. The SMAP scale is 0-100
+despite the source variable being named a fraction, and what it is a fraction of
+-- saturation, porosity, water holding capacity -- is not established, which
+matters because SIPNET's `soilWFracInit` is a fraction of water holding
+capacity. GEDI's units are not established at all, and biomass against carbon
+differs there by about a factor of two.
 
-**10. Relationship between the observation directories.** Two further directories
-of `obs.mean` and `obs.cov` files exist alongside the one used here. It is not
-known how they differ or which is authoritative. The directory in use is named as
-though its contents carry variable attributes, but no attributes are present on
-any object within it.
+**10. Provenance of the assembled observation files.** The `obs.mean.Rdata` we
+hold is byte-identical to a file in a sibling directory dated ten months
+earlier, while the `obs.cov.Rdata` beside it matches none of the twelve other
+covariance files upstream and differs from its sibling only by the `LAI` floor
+of question 22. No script producing it has been found, so whether the two are an
+intended pair is unknown. The directory is named as though its contents carry
+variable attributes; they do not (Note 10).
 
 **11. Where plant functional type labelings live, and which to use.** Two
 tables exist for the 8000 sites, distinguishing 16 and 3 classes respectively,
@@ -1023,3 +1171,35 @@ Whether these are the files the reanalysis used, and whether they were
 aggregated from hourly, is not documented. The same guide says nothing about
 the driver ensemble size, variables, units or clock, so the units recorded here
 rest on the format definition alone.
+
+**19. The 2018 discontinuity in aboveground biomass.** The standard deviations
+before and after 2018 come from different objects: 2012-2017 are LandTrendr's
+own and are integer-valued, 2018-2023 come from an object named `agb.pred`
+sitting beside a 430 MB random-forest model. Whether the later half is a model
+prediction, and whether a predicted uncertainty should be assimilated on equal
+footing with a measured one, is a question for the producer. Separately, the
+means come from a single continuous object yet still jump at that boundary:
+24% of sites move by more than 10 Mg C ha-1, against 0.6-3.2% at every other
+year boundary, and the shift runs the wrong way for growth -- low sites up,
+high sites down, with the change correlating at -0.47 with the 2017 level.
+
+**20. Biomass or wood.** The source names the product aboveground biomass in
+its directory, file and column names; the state variable it populates is named
+aboveground wood. No numerical conversion is applied between them. Either the
+product is already wood-only despite its name, or the relabeling is unconverted
+-- which matters by whatever the wood fraction is.
+
+**21. Soil carbon depth and extraction.** The 0-200 cm interval is established
+by correlation rather than by an attribute (Note 21), and the ~2% residual says
+the extraction differs in some way from the SoilGrids table used for the
+comparison. Whether the values are organic carbon only, and whether they include
+litter and roots, is also unconfirmed.
+
+**22. The leaf area index floor, and which version is authoritative.** The
+assembled covariance file floors the `LAI` standard deviations at 0.66,
+affecting 82.4% of observations; no per-variable source carries the floor and no
+script producing it has been found. Separately, a later revision of the MODIS
+extraction exists upstream which disagrees with the assembled file at 16,770 of
+99,112 observations, spread evenly across all thirteen years and by as much as
+6.5 leaf area index units. Which extraction is authoritative determines what a
+future ingest should produce.

@@ -5,11 +5,14 @@ main.py
 .DS_Store
 
 # Raw inputs live on storage and are not distributed with the repository; processed
-# data is regenerable from them. The site shapefile is the exception: it is small,
-# it is a primary source rather than a pipeline output, and without it the repo has
-# no site information at all.
+# data is regenerable from them. Two exceptions are tracked, both small primary
+# sources rather than pipeline outputs, and both things the repo cannot function
+# without: the site shapefile, and the constraint observations. The constraint
+# files are held in the repository rather than symlinked because the upstream
+# copies are edited and moved in place; see data/raw/constraints/provenance.md.
 data/raw/*
 !data/raw/sites/
+!data/raw/constraints/
 data/processed/
 
 .claude/worktrees/
