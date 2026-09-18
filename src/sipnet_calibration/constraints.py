@@ -30,9 +30,9 @@ Input data
 ``data/raw/constraints/<spec.raw_file>``
     A gzipped CSV with a header row, one row per observation record, addressed
     by ``site_id`` (the 1-8000 site identifier) and, unless static, by the
-    spec's ``time_column``. Numeric fields are exact at 17 significant digits
-    and missing values are the literal ``NA``. :func:`read_raw` is the only
-    reader and parses them exactly.
+    spec's ``time_column``. Missing values are the literal ``NA``; the three
+    files serialized from R carry 17 significant digits. :func:`read_raw` is
+    the only reader and parses them exactly.
 
 ``data/processed/sites/sites.csv``
     The site table, for the site pool and the ``lon``/``lat`` coordinates,
@@ -81,15 +81,15 @@ Name             Dims               Meaning
 pySIPNET's model output does, so the two sides read alike. ``time`` carries
 ``standard_name``, ``axis`` and, when present, ``bounds``; ``lon`` and ``lat``
 carry ``standard_name`` and ``units``; no coordinate is encoded with a
-``_FillValue``. ``value`` carries the spec's ``units``, ``constituent``,
-``long_name``, ``description``, ``product``, ``source_file``,
-``source_column``, ``time_reference``, ``units_provenance`` and, when set,
+``_FillValue``. ``value`` carries the spec's ``units``, ``long_name``,
+``description``, ``product``, ``source_file``, ``source_column``,
+``time_reference``, ``units_provenance`` and, when set, ``constituent``,
 ``sign_convention`` and ``comment``. No observation carries ``cell_methods``:
 CF has no vocabulary for "the nearest composite" or "an annual map", and the
 words are in ``time_reference`` and ``comment`` instead. The dataset carries
 ``Conventions``, ``title``, ``constraint``, ``product``, ``source_file``,
 ``time_structure``, ``rows_read``, ``rows_dropped_by_quality_flag``,
-``history`` and ``created``.
+``rows_collapsed_as_copies``, ``history`` and ``created``.
 
 **Units** are the raw file's units, unchanged. The ingest changes structure,
 never values; converting an observation into model units, or the reverse, is
@@ -153,6 +153,7 @@ Usage
     from sipnet_calibration.constraints import (
         constraint_fields,
         constraint_sds,
+        describe,
         load_constraint,
         resolve_constraint,
     )
@@ -175,6 +176,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -195,8 +197,11 @@ __all__ = [
     "CONSTRAINT_NAMES",
     "ConstraintSpec",
     "MISSING_TOKEN",
+    "NAME_PATTERN",
+    "PRODUCER_UNCONFIRMED",
     "SITE_COLUMN",
     "STANDARD_DEVIATION",
+    "TIME_REFERENCE_FOR_STRUCTURE",
     "TIME_UNITS",
     "TimeStructure",
     "VALUE",
@@ -292,11 +297,11 @@ class ConstraintSpec:
     sign_convention: str = ""
     """Which direction is positive, when that is not obvious."""
 
-    notes: str = ""
-    """Anything else a reader must know; written as the ``comment`` attribute."""
+    comment: str = ""
+    """Anything else a reader must know; the CF ``comment`` attribute."""
 
     def __post_init__(self) -> None:
-        if not _NAME_PATTERN.match(self.name):
+        if not NAME_PATTERN.match(self.name):
             raise ValueError(
                 f"Constraint name {self.name!r} is not lower_case_with_underscores."
             )
@@ -325,7 +330,7 @@ class ConstraintSpec:
     @property
     def time_reference(self) -> str:
         """In words, what the ``time`` label of the processed product marks."""
-        return _TIME_REFERENCE_FOR_STRUCTURE[self.time_structure]
+        return TIME_REFERENCE_FOR_STRUCTURE[self.time_structure]
 
     @property
     def has_time_bounds(self) -> bool:
@@ -359,8 +364,8 @@ class ConstraintSpec:
             attrs["constituent"] = self.constituent
         if self.sign_convention:
             attrs["sign_convention"] = self.sign_convention
-        if self.notes:
-            attrs["comment"] = self.notes
+        if self.comment:
+            attrs["comment"] = self.comment
         return attrs
 
     def _named_columns(self) -> dict[str, str]:
@@ -378,12 +383,14 @@ SITE_COLUMN = "site_id"
 #: How a raw file writes a missing value.
 MISSING_TOKEN = "NA"
 
-_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
+#: What a constraint name must look like: lower case words joined by underscores.
+NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
-_TIME_REFERENCE_FOR_STRUCTURE: dict[TimeStructure, str] = {
+#: In words, what the ``time`` label of a product with each structure marks.
+TIME_REFERENCE_FOR_STRUCTURE: dict[TimeStructure, str] = {
     TimeStructure.STATIC: (
-        "no time: a static map. The source repeated one value into every year; "
-        "the copies were checked to be identical and collapsed."
+        "a static map with no time dimension. The source repeated one value into "
+        "every year; the copies were checked to be identical and collapsed."
     ),
     TimeStructure.ANNUAL: (
         "the value attributed to the calendar year given by time_bounds; the "
@@ -395,18 +402,14 @@ _TIME_REFERENCE_FOR_STRUCTURE: dict[TimeStructure, str] = {
     ),
 }
 
+#: The sentence every unit provenance ends with, because it is true of every one.
+PRODUCER_UNCONFIRMED = "Not confirmed by the producer; see data/README.md, open question 9."
+
 
 # ── the registry ──────────────────────────────────────────────────────────────
 
-
-def _spec(**kwargs: Any) -> ConstraintSpec:
-    return ConstraintSpec(**kwargs)
-
-
-_UNCONFIRMED = "Not confirmed by the producer; see data/README.md, open question 9."
-
 CONSTRAINTS: tuple[ConstraintSpec, ...] = (
-    _spec(
+    ConstraintSpec(
         name="landtrendr_aboveground_biomass",
         long_label="Aboveground biomass",
         units="Mg ha-1",
@@ -429,14 +432,14 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         units_provenance=(
             "Documented as Mg C ha-1 for the reanalysis output. PEcAn's prep applies no "
             "biomass-to-carbon factor and LandTrendr's native product is dry biomass, so "
-            "the constituent is unconfirmed by about a factor of two. " + _UNCONFIRMED
+            "the constituent is unconfirmed by about a factor of two. " + PRODUCER_UNCONFIRMED
         ),
-        notes=(
+        comment=(
             "929 records carry a standard deviation of exactly zero, 925 of them with a "
             "mean of zero; they are written through unchanged."
         ),
     ),
-    _spec(
+    ConstraintSpec(
         name="gedi_aboveground_biomass",
         long_label="Aboveground biomass",
         units="Mg ha-1",
@@ -457,10 +460,10 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         units_provenance=(
             "Not established. Mg ha-1 is assumed as the native GEDI biomass unit; whether "
             "the values are carbon or dry biomass is unknown, so no constituent is recorded. "
-            + _UNCONFIRMED
+            + PRODUCER_UNCONFIRMED
         ),
     ),
-    _spec(
+    ConstraintSpec(
         name="modis_leaf_area_index",
         long_label="Leaf area index",
         units="m2 m-2",
@@ -483,15 +486,16 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         quality_column="qc",
         quality_pass="000",
         units_provenance=(
-            "The product's documented unit and 0.1 scale factor. " + _UNCONFIRMED
+            "The product's documented unit and 0.1 scale factor. " + PRODUCER_UNCONFIRMED
         ),
-        notes=(
+        comment=(
             "The date is the composite's label as the extraction returned it. The "
             "compositing period is 4 days; whether the label marks its first day is not "
-            "confirmed, so no time bounds are written."
+            "confirmed, so no time bounds are written. Many unflagged records carry a "
+            "standard deviation of exactly zero; they are written through unchanged."
         ),
     ),
-    _spec(
+    ConstraintSpec(
         name="smap_soil_moisture",
         long_label="Soil moisture",
         units="percent",
@@ -513,15 +517,15 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         units_provenance=(
             "A fraction multiplied by 100 in the prep code. What the fraction is of "
             "(volumetric water, saturation, holding capacity) and over what depth is not "
-            "established. " + _UNCONFIRMED
+            "established. " + PRODUCER_UNCONFIRMED
         ),
-        notes=(
+        comment=(
             "The date is the assembler's July 15 snapshot key, not an acquisition time. "
             "Documented as a single SMAP L4 value on that day; the time of day is not "
             "confirmed."
         ),
     ),
-    _spec(
+    ConstraintSpec(
         name="soilgrids_soil_organic_carbon",
         long_label="Soil organic carbon",
         units="Mg ha-1",
@@ -541,7 +545,7 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         time_column="year",
         units_provenance=(
             "Inferred: the values are exactly ten times those of the assembled files, "
-            "which are declared kg C m-2 on the same unconfirmed basis. " + _UNCONFIRMED
+            "which are declared kg C m-2 on the same unconfirmed basis. " + PRODUCER_UNCONFIRMED
         ),
     ),
 )
@@ -724,14 +728,21 @@ def read_raw(spec: ConstraintSpec, root: Path | str | None = None) -> pd.DataFra
     if not path.exists():
         raise FileNotFoundError(f"{path} not found; see data/raw/constraints/provenance.md")
 
-    frame = pd.read_csv(
-        path,
-        dtype=_raw_dtypes(spec),
-        float_precision="round_trip",
-        keep_default_na=False,
-        na_values=[MISSING_TOKEN],
-        index_col=False,
-    )
+    try:
+        with warnings.catch_warnings():
+            # A row with more fields than the header only warns by default and
+            # loses its trailing field; here that is a malformed file.
+            warnings.simplefilter("error", pd.errors.ParserWarning)
+            frame = pd.read_csv(
+                path,
+                dtype=_raw_dtypes(spec),
+                float_precision="round_trip",
+                keep_default_na=False,
+                na_values=[MISSING_TOKEN],
+                index_col=False,
+            )
+    except (ValueError, OverflowError, pd.errors.ParserWarning) as error:
+        raise ValueError(f"{path}: could not be parsed as its spec declares: {error}") from error
     if tuple(frame.columns) != spec.raw_columns:
         raise ValueError(
             f"{path}: header is {tuple(frame.columns)}, expected {spec.raw_columns}. "
@@ -782,8 +793,10 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     _check_sites_in_pool(row_site, site, spec)
     site_index = np.searchsorted(site, row_site)
 
+    n_collapsed = 0
     if spec.time_structure is TimeStructure.STATIC:
         arrays = _static_arrays(spec, kept, site_index, site.size)
+        n_collapsed = len(kept) - len(np.unique(site_index))
         coords: dict[str, Any] = {}
     else:
         time = _time_labels(spec, kept)
@@ -803,7 +816,9 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
             STANDARD_DEVIATION: (spec.dims, arrays[1], _sd_attributes(spec)),
         },
         coords=coords,
-        attrs=_dataset_attributes(spec, n_read=len(frame), n_dropped=n_dropped),
+        attrs=_dataset_attributes(
+            spec, n_read=len(frame), n_dropped=n_dropped, n_collapsed=n_collapsed
+        ),
     )
     return dataset
 
@@ -847,8 +862,8 @@ def describe(spec: ConstraintSpec) -> str:
         f"  units      {spec.units_provenance}",
         f"  what       {spec.description}",
     ]
-    if spec.notes:
-        lines.append(f"  note       {spec.notes}")
+    if spec.comment:
+        lines.append(f"  comment    {spec.comment}")
     return "\n".join(lines)
 
 
@@ -982,7 +997,9 @@ def _sd_attributes(spec: ConstraintSpec) -> dict[str, Any]:
     return attrs
 
 
-def _dataset_attributes(spec: ConstraintSpec, *, n_read: int, n_dropped: int) -> dict[str, Any]:
+def _dataset_attributes(
+    spec: ConstraintSpec, *, n_read: int, n_dropped: int, n_collapsed: int
+) -> dict[str, Any]:
     return {
         "Conventions": CF_CONVENTIONS,
         "title": f"{spec.long_label} constraint from {spec.product}",
@@ -992,6 +1009,7 @@ def _dataset_attributes(spec: ConstraintSpec, *, n_read: int, n_dropped: int) ->
         "time_structure": spec.time_structure.value,
         "rows_read": n_read,
         "rows_dropped_by_quality_flag": n_dropped,
+        "rows_collapsed_as_copies": n_collapsed,
         "history": (
             f"scripts/ingest_constraints.py: read data/raw/constraints/{spec.raw_file}"
             + (
@@ -1016,7 +1034,11 @@ def _fields(
     sites: Iterable[int] | None,
     directory: Path | str | None,
 ) -> dict[str, xr.DataArray]:
+    if isinstance(names, str):
+        names = [names]
     names = list(names) if names is not None else list(CONSTRAINT_NAMES)
+    if isinstance(sites, (int, np.integer)):
+        sites = [sites]
     wanted = None if sites is None else [int(site) for site in sites]
     fields: dict[str, xr.DataArray] = {}
     for name in names:

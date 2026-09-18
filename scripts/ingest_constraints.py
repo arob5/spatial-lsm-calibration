@@ -69,6 +69,7 @@ from sipnet_calibration.constraints import (
     CONSTRAINT_NAMES,
     SITE_COLUMN,
     STANDARD_DEVIATION,
+    TIME_UNITS,
     VALUE,
     ConstraintSpec,
     TimeStructure,
@@ -177,8 +178,10 @@ def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFra
     check_coordinates_match_site_table(spec, frame, sites)
     check_key_is_unique(spec, frame)
     check_value_and_sd_missing_together(spec, frame)
+    check_values_are_finite(spec, frame)
     check_sd_is_not_negative(spec, frame)
     check_quality_flag_values(spec, frame)
+    check_some_rows_are_observed(spec, frame)
     check_time_column_parses(spec, frame)
     if spec.time_structure is TimeStructure.STATIC:
         check_static_copies_agree(spec, frame)
@@ -203,11 +206,15 @@ def describe_product(dataset: xr.Dataset, path: Path) -> str:
         f"  {sizes}; observed {int(observed.sum())} of {observed.size} cells "
         f"({observed.mean():.1%})",
         f"  rows read {dataset.attrs['rows_read']}, dropped by quality flag "
-        f"{dataset.attrs['rows_dropped_by_quality_flag']}",
-        f"  value range [{value[observed].min():.5g}, {value[observed].max():.5g}] "
-        f"{dataset[VALUE].attrs['units']}; standard deviations of zero: "
-        f"{int((sd[observed] == 0).sum())}",
+        f"{dataset.attrs['rows_dropped_by_quality_flag']}, collapsed as copies "
+        f"{dataset.attrs['rows_collapsed_as_copies']}",
     ]
+    if observed.any():
+        lines.append(
+            f"  value range [{value[observed].min():.5g}, {value[observed].max():.5g}] "
+            f"{dataset[VALUE].attrs['units']}; standard deviations of zero: "
+            f"{int((sd[observed] == 0).sum())}"
+        )
     if "time" in dataset.dims:
         first, last = dataset["time"].values[[0, -1]]
         lines.append(f"  time {str(first)[:10]} .. {str(last)[:10]}")
@@ -256,9 +263,15 @@ def check_coordinates_match_site_table(
         return
     table = sites.set_index(SITE_COLUMN).loc[frame[SITE_COLUMN].to_numpy(), ["lon", "lat"]]
     for column in ("lon", "lat"):
-        difference = np.abs(frame[column].to_numpy(np.float64) - table[column].to_numpy())
-        if np.nanmax(difference) > COORDINATE_TOLERANCE_DEGREES:
-            worst = int(np.nanargmax(difference))
+        given = frame[column].to_numpy(np.float64)
+        if not np.isfinite(given).all():
+            raise IngestError(
+                f"{spec.raw_file}: {column} is missing or not finite in "
+                f"{int((~np.isfinite(given)).sum())} rows"
+            )
+        difference = np.abs(given - table[column].to_numpy())
+        if difference.max() > COORDINATE_TOLERANCE_DEGREES:
+            worst = int(np.argmax(difference))
             raise IngestError(
                 f"{spec.raw_file}: {column} disagrees with the site table by up to "
                 f"{difference[worst]:.3g} degrees (site {frame[SITE_COLUMN].iloc[worst]}). "
@@ -290,6 +303,33 @@ def check_value_and_sd_missing_together(spec: ConstraintSpec, frame: pd.DataFram
         )
 
 
+def check_values_are_finite(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise on an infinite value or standard deviation; only ``NA`` may be missing."""
+    for column in (spec.value_column, spec.sd_column):
+        values = frame[column].to_numpy(np.float64)
+        infinite = np.isinf(values)
+        if infinite.any():
+            raise IngestError(
+                f"{spec.raw_file}: {column!r} is infinite in {int(infinite.sum())} rows"
+            )
+
+
+def check_some_rows_are_observed(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise if no row that passes the quality flag carries a value.
+
+    A file of nothing but ``NA`` would otherwise build an all-missing product
+    and replace the canonical file with it.
+    """
+    kept = frame
+    if spec.quality_column is not None:
+        kept = frame[frame[spec.quality_column] == spec.quality_pass]
+    if not kept[spec.value_column].notna().any():
+        raise IngestError(
+            f"{spec.raw_file}: no row carries an observed value"
+            + (" after the quality filter" if spec.quality_column else "")
+        )
+
+
 def check_sd_is_not_negative(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise on a negative standard deviation."""
     sd = frame[spec.sd_column].to_numpy(np.float64)
@@ -313,7 +353,7 @@ def check_quality_flag_values(spec: ConstraintSpec, frame: pd.DataFrame) -> None
     if not (values == spec.quality_pass).any():
         raise IngestError(
             f"{spec.raw_file}: no row has {spec.quality_column!r} == {spec.quality_pass!r}; "
-            f"values seen: {sorted(values.unique().tolist())[:10]}"
+            f"values seen: {sorted(map(str, values.unique().tolist()))[:10]}"
         )
 
 
@@ -326,11 +366,17 @@ def check_time_column_parses(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
         raise IngestError(f"{spec.raw_file}: {spec.time_column!r} has missing values")
     if spec.time_structure is TimeStructure.DATED:
         try:
-            pd.to_datetime(column, format="%Y-%m-%d")
+            parsed = pd.to_datetime(column, format="%Y-%m-%d")
         except (ValueError, TypeError) as error:
             raise IngestError(
                 f"{spec.raw_file}: {spec.time_column!r} is not an ISO date column: {error}"
             ) from error
+        # An empty string parses to NaT without raising.
+        if parsed.isna().any():
+            raise IngestError(
+                f"{spec.raw_file}: {spec.time_column!r} has {int(parsed.isna().sum())} "
+                "values that are not dates"
+            )
     else:
         years = column.to_numpy()
         if not np.issubdtype(years.dtype, np.integer) or (years < 1900).any() or (years > 2100).any():
@@ -361,6 +407,12 @@ def check_round_trip(dataset: xr.Dataset, partial: Path, spec: ConstraintSpec) -
         raise IngestError(
             f"{partial}: the written file does not read back identical to what was built. "
             "The partial file is left in place for inspection."
+        )
+    if "time" in written.coords and written["time"].encoding.get("units") != TIME_UNITS:
+        # xarray silently changes the units when a label is not a whole day.
+        raise IngestError(
+            f"{partial}: time was encoded as {written['time'].encoding.get('units')!r}, not "
+            f"{TIME_UNITS!r}; a label is not a whole day. The partial file is left in place."
         )
 
 
