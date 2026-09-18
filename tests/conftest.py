@@ -12,7 +12,7 @@ The synthetic fixtures build canonical fields at each subset of the
 ``time``, ``lon``/``lat`` as non-dimension coordinates on ``site``, and
 ``units``/``long_name`` in ``attrs``.
 
-The real-data fixtures read the driver files and the annual constraint product
+The real-data fixtures read the driver files and the constraint products
 present in this working copy, and skip when they are not there.
 """
 
@@ -179,18 +179,18 @@ def real_driver_presence() -> xr.DataArray:
 
 @pytest.fixture(scope="session")
 def real_constraint_fields() -> tuple[dict, dict]:
-    """The annual constraint means and their error variances, as field dicts.
+    """The constraint observations and their error variances, as field dicts.
 
-    Both are keyed on processed variable name, with dims ``(site, time)`` over
-    the whole site pool and the annual snapshots, and are ragged: most cells
-    are unobserved.
+    Both are keyed on constraint name. The fields have dims ``(site, time)``
+    over the whole site pool and each product's own time labels, or
+    ``(site,)`` for the static soil carbon, and are ragged: most cells are
+    unobserved. The variances are the squares of the reported standard
+    deviations.
     """
     constraints = pytest.importorskip("sipnet_calibration.constraints")
     try:
-        dataset = constraints.load_constraints()
+        means = constraints.constraint_fields()
+        sds = constraints.constraint_sds()
     except FileNotFoundError as error:
-        pytest.skip(f"constraint product not available in this working copy: {error}")
-    return (
-        constraints.constraint_fields(dataset),
-        constraints.constraint_fields(dataset, statistic="variance"),
-    )
+        pytest.skip(f"constraint products not available in this working copy: {error}")
+    return means, {name: sd**2 for name, sd in sds.items()}

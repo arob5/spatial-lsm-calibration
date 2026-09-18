@@ -1,437 +1,639 @@
-"""The data model for the annual biomass, leaf area and soil constraints.
+"""The constraint observations: what each is, how its raw file is read, and the
+processed product it becomes.
 
 Overview
 --------
-This module defines how the annual constraint data is represented -- its
-dimensions, coordinates, variable names, units and dtypes -- and provides the
-functions that read it and reshape it. It is the single description of that
-layout: everything else in the project, the ingest script included, gets the
-schema from here rather than restating it.
+Five observation products constrain the calibration: LandTrendr and GEDI
+aboveground biomass, MODIS leaf area index, SMAP soil moisture and SoilGrids
+soil organic carbon. Each arrives as one gzipped CSV under
+``data/raw/constraints/`` whose columns carry no units, no time semantics and
+no provenance. This module holds one :class:`ConstraintSpec` per product -- the
+single description of what the quantity is, in what units, on what time
+structure, and which columns of the raw file carry it -- and the functions that
+turn the raw file into a processed netCDF and read it back. The spec's fields
+are written into the netCDF as attributes, so the processed file needs no
+description beyond itself.
 
-It sits at the end of the pipeline that builds the data, and the dependency runs
-one way::
+The dependency runs one way::
 
-    raw/constraints/sda_8k_site_rdata/obs.{mean,cov}.Rdata
-      -> scripts/export_constraints.R     long table + manifest
-      -> scripts/ingest_constraints.py    processed/constraints_annual.nc
-      -> this module                      load_constraints() -> xarray.Dataset
+    raw/constraints/<name>.csv.gz
+      -> scripts/ingest_constraints.py    read_raw(), the checks, build_constraint()
+      -> processed/constraints/<name>.nc  one file per constraint
+      -> this module                      load_constraint() -> xarray.Dataset
 
-``ingest_constraints.py`` imports the schema constants from here, and its
-round-trip check reads its own output back through :func:`load_constraints`, so
-the writer is verified against the same description every consumer uses.
-``data/README.md`` documents the source data and the open questions about it.
+``data/README.md`` documents the source files and the open questions about
+them; ``data/raw/constraints/provenance.md`` records where each was copied
+from and how to detect drift.
 
 Input data
 ----------
-``data/processed/constraints_annual.nc``
-    The product, read by :func:`load_constraints`, whose layout is the
-    `Data model`_ below. :func:`default_constraints_path` says where it is
-    expected to be.
+``data/raw/constraints/<spec.raw_file>``
+    A gzipped CSV with a header row, one row per observation record, addressed
+    by ``site_id`` (the 1-8000 site identifier) and, unless static, by the
+    spec's ``time_column``. Numeric fields are exact at 17 significant digits
+    and missing values are the literal ``NA``. :func:`read_raw` is the only
+    reader and parses them exactly.
 
-The intermediate long table
-    A CSV of one row per observed ``(snapshot, site, variable)`` triple, written
-    by ``export_constraints.R`` and read by :func:`read_long_table`, which
-    parses it exactly. Its ``variable`` column holds *source* names.
+``data/processed/sites/sites.csv``
+    The site table, for the site pool and the ``lon``/``lat`` coordinates,
+    read through :func:`sipnet_calibration.sites.load_sites`.
 
 Data model
 ----------
-:func:`load_constraints` returns an ``xarray.Dataset`` shaped as follows. The
-data variables, dims, coordinate set and ``variable`` order are checked on
-load; the dtypes below are what the writer produces, not something the reader
-enforces.
+:func:`load_constraint` returns an ``xarray.Dataset`` shaped as follows. The
+data variables, dims, coordinates and units are checked on load against the
+spec; the dtypes are what the writer produces.
 
-**Dimensions**: ``site``, ``time``, ``variable``.
+**Dimensions**: ``site``, and ``time`` unless the spec's structure is
+``STATIC``, and ``bounds`` (of length 2) when ``time_bounds`` is present.
 
-**Data variables**, both ``float64``, ``NaN`` where a site-snapshot-variable
-was not observed::
+**Data variables**, both ``float64``, ``NaN`` where a site (and time) was not
+observed, ``NaN`` in the same cells of both::
 
-    observation_mean(site, time, variable)      the observation
-    observation_variance(site, time, variable)  its error variance
+    value(site[, time])               the observation, in the spec's units
+    standard_deviation(site[, time])  its reported standard deviation, same units
 
 **Coordinates**
 
-================== ============ ===============================================
-Name               Dims         Meaning
-================== ============ ===============================================
-``site``           ``site``     handed-down integer site id, strictly ascending
-``time``           ``time``     annual snapshot key, ``datetime64``
-``variable``       ``variable`` processed variable name, sorted
-``lon``, ``lat``   ``site``     non-dimension coordinates, from the site table
-================== ============ ===============================================
+================ ================== =============================================
+Name             Dims               Meaning
+================ ================== =============================================
+``site``         ``site``           ``int32``, the whole 1-8000 pool, ascending
+``lon``, ``lat`` ``site``           ``float64``, from the site table
+``time``         ``time``           ``datetime64[ns]``; see below
+``time_bounds``  ``(time, bounds)`` the half-open interval a value covers,
+                                    only when the structure documents one
+================ ================== =============================================
 
-The ``site`` axis is the whole site pool, not only the observed sites.
+**Time.** What the ``time`` label means depends on the spec's
+:class:`TimeStructure` and is written on the coordinate in words:
 
-**Variable names.** The source names are prescribed by the input data; the
-processed ones follow the project convention of lower case with underscores and
-no abbreviation beyond the universal. The rename happens in the ingest script,
-via :data:`SOURCE_VARIABLE_NAMES`.
+* ``ANNUAL``: one value per calendar year. ``time`` is January 1 of the year,
+  a key rather than an acquisition time, and ``time_bounds`` is the calendar
+  year ``[Jan 1, next Jan 1)``.
+* ``DATED``: one value per source date, carried exactly as the source wrote
+  it, with no bounds: what the label marks is described on the variable, not
+  encoded.
+* ``STATIC``: no time dimension. The raw file's yearly copies are checked to
+  be identical and collapsed to one value per site.
 
-======================= ===========================
-Source                  Processed
-======================= ===========================
-``AbvGrndWood``         ``aboveground_wood_carbon``
-``LAI``                 ``lai``
-``SoilMoistFrac``       ``soil_moisture_percent``
-``TotSoilCarb``         ``total_soil_carbon``
-======================= ===========================
+**Attributes** follow the Climate and Forecast conventions (CF-1.11), as
+pySIPNET's model output does, so the two sides read alike. ``time`` carries
+``standard_name``, ``axis`` and, when present, ``bounds``; ``lon`` and ``lat``
+carry ``standard_name`` and ``units``; no coordinate is encoded with a
+``_FillValue``. ``value`` carries the spec's ``units``, ``constituent``,
+``long_name``, ``description``, ``product``, ``source_file``,
+``source_column``, ``time_reference``, ``units_provenance`` and, when set,
+``sign_convention`` and ``comment``. No observation carries ``cell_methods``:
+CF has no vocabulary for "the nearest composite" or "an annual map", and the
+words are in ``time_reference`` and ``comment`` instead. The dataset carries
+``Conventions``, ``title``, ``constraint``, ``product``, ``source_file``,
+``time_structure``, ``rows_read``, ``rows_dropped_by_quality_flag``,
+``history`` and ``created``.
 
-**Attributes.** Each variable's unit is a dataset attribute,
-``variable_<name>_units``, alongside ``_long_name`` and ``_source_name`` --
-netCDF has nowhere to hang attributes off a coordinate value.
-:func:`constraint_fields` puts the right unit on each field.
+**Units** are the raw file's units, unchanged. The ingest changes structure,
+never values; converting an observation into model units, or the reverse, is
+the observation operator's job.
 
-The two data variables span four variables with different units, so their own
-``units`` attribute is a pointer to those dataset attributes rather than a unit
-string. They also carry ``units_status`` and ``units_provenance``: the units are
-documented for the reanalysis output rather than for these observation inputs,
-so they are recorded but flagged.
-
-The dataset also carries ``title``, ``source_mean_file``, ``source_cov_file``,
-``source_resolution``, ``history``, ``exported_at``,
-``covariances_all_diagonal`` and ``n_observed_triples``. ``time`` carries
-``time_zone`` and ``time_label``, the latter being ``"nominal"``: the snapshot
-keys are the source product's annual bookkeeping convention, not observation
-dates.
+**Missing values.** ``NaN`` means not observed. A zero is an observation.
 
 Functions
 ---------
-:func:`load_constraints`
-    Read the product and check it against the data model above. Raises rather
-    than returning something subtly wrong.
+:func:`resolve_constraint`
+    The spec for a constraint name, raising if there is none.
 
-:func:`constraint_fields`
-    Split the stored form into canonical fields -- one ``DataArray`` per
-    variable with dims ``(site, time)``, carrying its own units -- for either
-    the means or the variances. This is the view the plotting layer wants.
+:func:`load_constraint`
+    Read one processed product and check it against its spec.
 
-:func:`read_long_table`
-    Read the intermediate long table exactly, for the ingest script.
+:func:`constraint_fields`, :func:`constraint_sds`
+    The ``value`` or ``standard_deviation`` arrays of several products, one
+    canonical field per constraint, optionally for a subset of sites.
 
-:func:`snapshot_dates`
-    Build the source's annual snapshot keys for given years.
+:func:`read_raw`
+    Parse a raw file exactly, in its source column names.
 
-:func:`default_constraints_path`
-    Where the product is expected to be, honoring
-    ``$SIPNET_CALIBRATION_DATA``.
+:func:`build_constraint`
+    Turn a raw frame into the processed Dataset above. Pure; the ingest script
+    wraps it with the checks and the write.
+
+:func:`netcdf_encoding`
+    The on-disk encoding the ingest script writes with.
+
+:func:`describe`
+    A spec rendered as a paragraph.
 
 Notes
 -----
-**Only variances are carried, not covariance matrices.** Every source
-covariance is exactly diagonal, so the matrices hold nothing the diagonal does
-not. That is asserted in R at every export, where the off-diagonal is still
-visible, and the result is recorded in a manifest so this side can confirm the
-check ran. If a future release carries genuine cross-variable
-covariance, this product would need a
-``(site, time, variable, variable)`` array instead.
+**One spec, no separate processed schema.** The spec plays the role
+pySIPNET's ``VariableSpec`` plays for model output: one flat record per
+variable from which everything else is derived. Its ``xarray_attributes()``
+is what makes the netCDF self-describing, so there is nothing to keep in
+step between a raw description and a processed one.
 
-**``variable`` is a dimension, not one array per variable.** The canonical field
-convention wants dims a subset of ``(member, site, time)``, which this stored
-form is not. It is stored this way because the observation operator indexes
-observations by exactly ``(site, variable, time)``, so flattening to the
-observation vector is a stack rather than a join, and because the variables
-share one ``(site, time)`` grid here. :func:`constraint_fields` is what serves
-the consumers that want the canonical form instead.
+**One product per constraint.** The five sources have three time structures
+and no shared grid; a single dense file would re-impose the assembler's
+alignment onto July 15 keys. Each product is stored at its source's own
+resolution, and how an observation is placed against model time is decided by
+its observation operator.
 
-**Missingness.** Unobserved cells are ``NaN`` in a dense array; a ragged
-encoding buys nothing at this size. A ``NaN`` means not observed; a zero is an
-observation.
+**No unit conversion at ingest.** SoilGrids soil carbon is stored in the
+source's ``Mg ha-1`` rather than the ``kg m-2`` of the assembled files it was
+once compared against; the factor is Pint's to supply where it is needed.
+
+**Dropping quality-flagged rows.** MODIS rows with ``qc == "001"`` fail the
+producer's quality test and are equivalent to ``sd > 20``; their ``lai == 0``
+values carry the product's fill standard deviation (248 x 0.1 = 24.8). They
+are dropped and counted at ingest rather than carried as observations. The
+raw file keeps them.
 
 Usage
 -----
-Load the product, then select from it with ordinary xarray::
+::
 
     from sipnet_calibration.constraints import (
         constraint_fields,
-        load_constraints,
-        snapshot_dates,
+        constraint_sds,
+        load_constraint,
+        resolve_constraint,
     )
 
-    constraints = load_constraints()        # or load_constraints(path)
+    lai = load_constraint("modis_leaf_area_index")       # Dataset: value, standard_deviation
+    lai["value"].sel(site=4102).dropna("time")            # one site's composites
 
-    # One variable, over every site and snapshot: dims (site, time).
-    lai = constraints["observation_mean"].sel(variable="lai")
+    fields = constraint_fields(sites=[4102, 4113])        # every constraint, two sites
+    fields["smap_soil_moisture"].dims                     # ('site', 'time')
+    fields["soilgrids_soil_organic_carbon"].dims          # ('site',)
+    fields["landtrendr_aboveground_biomass"].attrs["units"]   # 'Mg ha-1'
 
-    # One site's whole record: dims (time, variable).
-    site_1 = constraints.sel(site=1)
+    sds = constraint_sds(["modis_leaf_area_index"])
+    variance = sds["modis_leaf_area_index"] ** 2
 
-    # One snapshot. snapshot_dates builds the keys from years, so the
-    # July-15 convention is not written out at the call site.
-    (key,) = snapshot_dates([2015])
-    in_2015 = constraints.sel(time=key)
-
-    # A subset of sites, returned in the order given.
-    subset = constraints.sel(site=[4102, 4113, 5584])
-
-    # An observation beside its error variance.
-    mean = constraints["observation_mean"].sel(variable="total_soil_carbon")
-    variance = constraints["observation_variance"].sel(variable="total_soil_carbon")
-
-For plotting, take the canonical per-variable view. It drops the ``variable``
-dimension and gives each field its own units, so a plotter needs to know nothing
-about this product's layout::
-
-    fields = constraint_fields(constraints)                       # observations
-    variances = constraint_fields(constraints, statistic="variance")
-
-    fields["lai"].dims                      # ('site', 'time')
-    fields["lai"].attrs["units"]            # 'm2 m-2'
-    variances["total_soil_carbon"].attrs["units"]     # '(kg C m-2)2'
-
-For the likelihood, flatten to an observation vector, keeping only what was
-observed. The ``(site, variable, time)`` index that falls out is the labeling
-the observation operator uses, and unstacking it is the inverse::
-
-    observed = (
-        constraints["observation_mean"]
-        .stack(observation=("site", "variable", "time"))
-        .dropna("observation")
-    )
-    observed.indexes["observation"].names   # ['site', 'variable', 'time']
-    observed.unstack("observation").dims    # ('site', 'variable', 'time')
-
-Selecting the matching error variances is the same expression against
-``observation_variance``, and the two indexes align because both arrays are
-``NaN`` in exactly the same places.
+    print(describe(resolve_constraint("smap_soil_moisture")))
 """
 
 from __future__ import annotations
 
 import os
+import re
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.units import validate_units
 
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
 
 __all__ = [
-    "CONSTRAINT_VARIABLES",
-    "CONSTRAINT_VARIABLE_ATTRS",
-    "LONG_COLUMNS",
-    "LONG_COLUMN_DTYPES",
-    "OBSERVATION_MEAN",
-    "OBSERVATION_VARIANCE",
-    "SNAPSHOT_MONTH_DAY",
-    "SOURCE_VARIABLE_NAMES",
-    "UNITS_PROVENANCE",
-    "UNITS_STATUS",
+    "CALENDAR",
+    "CF_CONVENTIONS",
+    "CONSTRAINTS",
+    "CONSTRAINT_NAMES",
+    "ConstraintSpec",
+    "MISSING_TOKEN",
+    "SITE_COLUMN",
+    "STANDARD_DEVIATION",
+    "TIME_UNITS",
+    "TimeStructure",
+    "VALUE",
+    "build_constraint",
     "constraint_fields",
-    "default_constraints_path",
-    "load_constraints",
-    "read_long_table",
-    "snapshot_dates",
+    "constraint_path",
+    "constraint_sds",
+    "default_constraints_dir",
+    "default_raw_dir",
+    "describe",
+    "load_constraint",
+    "netcdf_encoding",
+    "read_raw",
+    "resolve_constraint",
 ]
 
-#: Name of the mean array in the processed file.
-OBSERVATION_MEAN = "observation_mean"
 
-#: Name of the variance array in the processed file.
-OBSERVATION_VARIANCE = "observation_variance"
+# ── the spec ──────────────────────────────────────────────────────────────────
 
-#: Source variable name -> processed variable name.
-#:
-#: Applied by ``scripts/ingest_constraints.py``.
-SOURCE_VARIABLE_NAMES = {
-    "AbvGrndWood": "aboveground_wood_carbon",
-    "LAI": "lai",
-    "SoilMoistFrac": "soil_moisture_percent",
-    "TotSoilCarb": "total_soil_carbon",
+
+class TimeStructure(StrEnum):
+    """How a constraint's records are placed in time."""
+
+    STATIC = "static"
+    """One value per site with no time. A year column in the raw file, if any,
+    is an artifact of the assembly and is checked to be constant and collapsed."""
+
+    ANNUAL = "annual"
+    """One value per calendar year. The raw time column holds the year; the
+    processed ``time`` is January 1 of that year, with ``time_bounds`` spanning
+    the calendar year."""
+
+    DATED = "dated"
+    """One value per source date. The raw time column holds an ISO date, which
+    is carried as written with no bounds; what it marks is described in words."""
+
+
+@dataclass(frozen=True)
+class ConstraintSpec:
+    """Everything a consumer needs to know about one constraint observation.
+
+    One instance per raw file. The fields describe the quantity, the raw file
+    that carries it and how it sits in time; :meth:`xarray_attributes` is what
+    the processed netCDF stores, so the file describes itself.
+    """
+
+    name: str
+    """Processed name: the raw file's stem, the registry key and the output file's stem."""
+
+    long_label: str
+    """Plot-ready name without units, e.g. ``"Leaf area index"``."""
+
+    units: str
+    """UDUNITS-style unit string, physical units only, validated by :mod:`pysipnet.units`."""
+
+    constituent: str
+    """Substance the unit refers to, ``"C"`` for carbon, or ``""``."""
+
+    description: str
+    """What the quantity is and how the producer constructed it, with the citation."""
+
+    product: str
+    """The source product, e.g. ``"MODIS MCD15A3H v061"``."""
+
+    time_structure: TimeStructure
+    """How the records sit in time; see :class:`TimeStructure`."""
+
+    raw_file: str
+    """File name under ``data/raw/constraints/``."""
+
+    raw_columns: tuple[str, ...]
+    """The raw file's header, in order; :func:`read_raw` refuses any other."""
+
+    value_column: str
+    """Raw column holding the observation."""
+
+    sd_column: str
+    """Raw column holding the observation's standard deviation."""
+
+    time_column: str | None
+    """Raw column holding the year (``ANNUAL``, ``STATIC``) or the ISO date
+    (``DATED``); ``None`` only for a static table with no time column."""
+
+    quality_column: str | None = None
+    """Raw column holding a quality flag; rows not equal to *quality_pass* are dropped."""
+
+    quality_pass: str = ""
+    """The flag value of a row that passes; required with *quality_column*."""
+
+    units_provenance: str = ""
+    """Where the unit comes from and how firm it is, in a sentence."""
+
+    sign_convention: str = ""
+    """Which direction is positive, when that is not obvious."""
+
+    notes: str = ""
+    """Anything else a reader must know; written as the ``comment`` attribute."""
+
+    def __post_init__(self) -> None:
+        if not _NAME_PATTERN.match(self.name):
+            raise ValueError(
+                f"Constraint name {self.name!r} is not lower_case_with_underscores."
+            )
+        validate_units(self.units)
+        if not self.description or not self.long_label or not self.product:
+            raise ValueError(f"Constraint {self.name!r} needs a description, long_label and product.")
+        if len(set(self.raw_columns)) != len(self.raw_columns):
+            raise ValueError(f"Constraint {self.name!r}: raw_columns repeats a column.")
+        if SITE_COLUMN not in self.raw_columns:
+            raise ValueError(f"Constraint {self.name!r}: raw_columns lacks {SITE_COLUMN!r}.")
+        for role, column in self._named_columns().items():
+            if column not in self.raw_columns:
+                raise ValueError(
+                    f"Constraint {self.name!r}: {role} {column!r} is not in raw_columns "
+                    f"{self.raw_columns}."
+                )
+        if self.time_column is None and self.time_structure is not TimeStructure.STATIC:
+            raise ValueError(
+                f"Constraint {self.name!r}: a {self.time_structure.value} constraint needs a time_column."
+            )
+        if (self.quality_column is None) != (self.quality_pass == ""):
+            raise ValueError(
+                f"Constraint {self.name!r}: quality_column and quality_pass go together."
+            )
+
+    @property
+    def time_reference(self) -> str:
+        """In words, what the ``time`` label of the processed product marks."""
+        return _TIME_REFERENCE_FOR_STRUCTURE[self.time_structure]
+
+    @property
+    def has_time_bounds(self) -> bool:
+        """Whether the processed product carries ``time_bounds``."""
+        return self.time_structure is TimeStructure.ANNUAL
+
+    @property
+    def dims(self) -> tuple[str, ...]:
+        """The dims of the processed data variables."""
+        if self.time_structure is TimeStructure.STATIC:
+            return ("site",)
+        return ("site", "time")
+
+    def xarray_attributes(self) -> dict[str, Any]:
+        """Attributes for the ``value`` array of the processed product.
+
+        Keys follow the Climate and Forecast conventions where one exists
+        (``units``, ``long_name``, ``comment``); the rest are spelled out.
+        """
+        attrs: dict[str, Any] = {
+            "units": self.units,
+            "long_name": self.long_label,
+            "description": self.description,
+            "product": self.product,
+            "source_file": self.raw_file,
+            "source_column": self.value_column,
+            "time_reference": self.time_reference,
+            "units_provenance": self.units_provenance,
+        }
+        if self.constituent:
+            attrs["constituent"] = self.constituent
+        if self.sign_convention:
+            attrs["sign_convention"] = self.sign_convention
+        if self.notes:
+            attrs["comment"] = self.notes
+        return attrs
+
+    def _named_columns(self) -> dict[str, str]:
+        columns = {"value_column": self.value_column, "sd_column": self.sd_column}
+        if self.time_column is not None:
+            columns["time_column"] = self.time_column
+        if self.quality_column is not None:
+            columns["quality_column"] = self.quality_column
+        return columns
+
+
+#: The column every raw file addresses its records by: the 1-8000 site identifier.
+SITE_COLUMN = "site_id"
+
+#: How a raw file writes a missing value.
+MISSING_TOKEN = "NA"
+
+_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
+
+_TIME_REFERENCE_FOR_STRUCTURE: dict[TimeStructure, str] = {
+    TimeStructure.STATIC: (
+        "no time: a static map. The source repeated one value into every year; "
+        "the copies were checked to be identical and collapsed."
+    ),
+    TimeStructure.ANNUAL: (
+        "the value attributed to the calendar year given by time_bounds; the "
+        "January 1 label is a key, not an acquisition time."
+    ),
+    TimeStructure.DATED: (
+        "the source's own date label, carried as written. What instant or "
+        "interval it marks is stated in the comment, not encoded."
+    ),
 }
 
-#: The constrained variables, by processed name, in the order the ``variable``
-#: coordinate carries them.
-CONSTRAINT_VARIABLES = tuple(sorted(SOURCE_VARIABLE_NAMES.values()))
 
-#: Month and day of the source's annual snapshot key.
-#:
-#: The source product's annual bookkeeping convention, not observation dates:
-#: see ``data/README.md``. Nothing should read them as the instant an
-#: observation was taken.
-SNAPSHOT_MONTH_DAY = (7, 15)
+# ── the registry ──────────────────────────────────────────────────────────────
 
-#: What is and is not settled about the units below.
-UNITS_STATUS = "unconfirmed"
 
-#: Why. Recorded next to every unit string in the written file, so that no
-#: consumer can take these as checked.
-UNITS_PROVENANCE = (
-    "Documented in the NALCR dataset guide for the corresponding variables of "
-    "the reanalysis *output*. These files are the observation *inputs* to that "
-    "reanalysis. The variable names and the snapshot keys agree between the "
-    "two, so they very likely share definitions, but this has not "
-    "been confirmed by the producer. See open question 9 in data/README.md."
+def _spec(**kwargs: Any) -> ConstraintSpec:
+    return ConstraintSpec(**kwargs)
+
+
+_UNCONFIRMED = "Not confirmed by the producer; see data/README.md, open question 9."
+
+CONSTRAINTS: tuple[ConstraintSpec, ...] = (
+    _spec(
+        name="landtrendr_aboveground_biomass",
+        long_label="Aboveground biomass",
+        units="Mg ha-1",
+        constituent="C",
+        description=(
+            "That calendar year's LandTrendr annual Landsat biomass map at the site, "
+            "2012-2023, as extracted by PEcAn Landtrendr_AGB_prep.R. Means are whole "
+            "numbers. Standard deviations for 2012-2017 are LandTrendr's own and are "
+            "whole numbers; 2018-2023 come from a separate object beside a random-forest "
+            "model and appear to be predicted. Coverage is US land only. The season "
+            "within the year that an annual value represents is not documented."
+        ),
+        product="LandTrendr annual Landsat biomass",
+        time_structure=TimeStructure.ANNUAL,
+        raw_file="landtrendr_aboveground_biomass.csv.gz",
+        raw_columns=("site_id", "year", "agb_mean", "agb_sd"),
+        value_column="agb_mean",
+        sd_column="agb_sd",
+        time_column="year",
+        units_provenance=(
+            "Documented as Mg C ha-1 for the reanalysis output. PEcAn's prep applies no "
+            "biomass-to-carbon factor and LandTrendr's native product is dry biomass, so "
+            "the constituent is unconfirmed by about a factor of two. " + _UNCONFIRMED
+        ),
+        notes=(
+            "929 records carry a standard deviation of exactly zero, 925 of them with a "
+            "mean of zero; they are written through unchanged."
+        ),
+    ),
+    _spec(
+        name="gedi_aboveground_biomass",
+        long_label="Aboveground biomass",
+        units="Mg ha-1",
+        constituent="",
+        description=(
+            "An annual GEDI aboveground biomass value at the site, 2019-2024. The product, "
+            "its version, and how footprint retrievals were aggregated to the 1 km site "
+            "are not documented. Independent of LandTrendr and not part of the set the "
+            "reanalysis assimilated."
+        ),
+        product="GEDI",
+        time_structure=TimeStructure.ANNUAL,
+        raw_file="gedi_aboveground_biomass.csv.gz",
+        raw_columns=("year", "site_id", "agb", "sd"),
+        value_column="agb",
+        sd_column="sd",
+        time_column="year",
+        units_provenance=(
+            "Not established. Mg ha-1 is assumed as the native GEDI biomass unit; whether "
+            "the values are carbon or dry biomass is unknown, so no constituent is recorded. "
+            + _UNCONFIRMED
+        ),
+    ),
+    _spec(
+        name="modis_leaf_area_index",
+        long_label="Leaf area index",
+        units="m2 m-2",
+        constituent="",
+        description=(
+            "Lai_500m and LaiStdDev_500m of each 4-day MODIS composite at the site, June "
+            "through August of 2011-2024, as extracted by PEcAn MODIS_LAI_prep.R. Rows "
+            "flagged qc '001' fail the producer's quality test, are equivalent to sd > 20, "
+            "and are dropped at ingest; their sd of 24.8 is the product fill value 248 x "
+            "0.1. LAI is one-sided green leaf area per unit ground area in broadleaf "
+            "canopies and half the total needle area in conifers."
+        ),
+        product="MODIS MCD15A3H v061",
+        time_structure=TimeStructure.DATED,
+        raw_file="modis_leaf_area_index.csv.gz",
+        raw_columns=("date", "site_id", "lat", "lon", "lai", "sd", "qc"),
+        value_column="lai",
+        sd_column="sd",
+        time_column="date",
+        quality_column="qc",
+        quality_pass="000",
+        units_provenance=(
+            "The product's documented unit and 0.1 scale factor. " + _UNCONFIRMED
+        ),
+        notes=(
+            "The date is the composite's label as the extraction returned it. The "
+            "compositing period is 4 days; whether the label marks its first day is not "
+            "confirmed, so no time bounds are written."
+        ),
+    ),
+    _spec(
+        name="smap_soil_moisture",
+        long_label="Soil moisture",
+        units="percent",
+        constituent="",
+        description=(
+            "SMAP Level 4 sm_profile_analysis at the site, multiplied by 100, on the "
+            "July 15 key of each year 2015-2024, as extracted by PEcAn SMAP_SMP_prep.R. "
+            "The standard deviation is either a fixed 4 or the L4 ensemble standard "
+            "deviation x 100; which produced this file is not documented. The source "
+            "grid is coarser than the site grid, so neighboring sites can share a value."
+        ),
+        product="SMAP Level 4 soil moisture",
+        time_structure=TimeStructure.DATED,
+        raw_file="smap_soil_moisture.csv.gz",
+        raw_columns=("date", "site_id", "lat", "lon", "smp", "sd"),
+        value_column="smp",
+        sd_column="sd",
+        time_column="date",
+        units_provenance=(
+            "A fraction multiplied by 100 in the prep code. What the fraction is of "
+            "(volumetric water, saturation, holding capacity) and over what depth is not "
+            "established. " + _UNCONFIRMED
+        ),
+        notes=(
+            "The date is the assembler's July 15 snapshot key, not an acquisition time. "
+            "Documented as a single SMAP L4 value on that day; the time of day is not "
+            "confirmed."
+        ),
+    ),
+    _spec(
+        name="soilgrids_soil_organic_carbon",
+        long_label="Soil organic carbon",
+        units="Mg ha-1",
+        constituent="C",
+        description=(
+            "SoilGrids250m soil organic carbon at the site, integrated over 0-200 cm "
+            "(established by correlation, not by an attribute), as extracted by PEcAn "
+            "Soilgrids_SoilC_prep.R. A static map: the assembler wrote the same value "
+            "into every year 2012-2024."
+        ),
+        product="SoilGrids250m v2.0",
+        time_structure=TimeStructure.STATIC,
+        raw_file="soilgrids_soil_organic_carbon.csv.gz",
+        raw_columns=("site_id", "soc", "sd", "year"),
+        value_column="soc",
+        sd_column="sd",
+        time_column="year",
+        units_provenance=(
+            "Inferred: the values are exactly ten times those of the assembled files, "
+            "which are declared kg C m-2 on the same unconfirmed basis. " + _UNCONFIRMED
+        ),
+    ),
 )
 
-#: Per-variable metadata written into the processed file, by processed name.
-#:
-#: The units are unconfirmed; :data:`UNITS_STATUS` and
-#: :data:`UNITS_PROVENANCE` travel with every one of them.
-CONSTRAINT_VARIABLE_ATTRS = {
-    "aboveground_wood_carbon": {
-        "units": "Mg C ha-1",
-        "long_name": "Aboveground woody biomass carbon",
-        "source_name": "AbvGrndWood",
-    },
-    "lai": {
-        "units": "m2 m-2",
-        "long_name": "Leaf area index",
-        "source_name": "LAI",
-    },
-    "soil_moisture_percent": {
-        "units": "percent",
-        "long_name": "Soil moisture percent",
-        "source_name": "SoilMoistFrac",
-    },
-    "total_soil_carbon": {
-        "units": "kg C m-2",
-        "long_name": "Total soil carbon",
-        "source_name": "TotSoilCarb",
-    },
-}
-
-#: Columns of the long table that ``export_constraints.R`` writes. Its
-#: ``variable`` column holds *source* names.
-LONG_COLUMNS = ("snapshot_date", "site_id", "variable", "mean", "variance")
-
-#: Dtype per long-table column, as :func:`read_long_table` returns them, and
-#: what it hands pandas at the read. Declaring ``mean`` and ``variance`` is not
-#: on its own enough to parse them exactly; see :func:`read_long_table`.
-LONG_COLUMN_DTYPES = {
-    "snapshot_date": str,
-    "site_id": np.int32,
-    "variable": str,
-    "mean": np.float64,
-    "variance": np.float64,
-}
+#: The constraint names, in registry order.
+CONSTRAINT_NAMES: tuple[str, ...] = tuple(spec.name for spec in CONSTRAINTS)
 
 
-def default_constraints_path() -> Path:
-    """Where the processed constraint file is expected to be.
+def resolve_constraint(name: str) -> ConstraintSpec:
+    """The spec named *name*, or a ``KeyError`` listing the names that exist."""
+    for spec in CONSTRAINTS:
+        if spec.name == name:
+            return spec
+    raise KeyError(f"No constraint named {name!r}. Known: {list(CONSTRAINT_NAMES)}")
 
-    ``$SIPNET_CALIBRATION_DATA/processed/constraints_annual.nc`` when that
-    variable is set, and otherwise the ``data/`` directory of this checkout.
-    Experiments name their paths in ``config.py``.
+
+# ── the product ───────────────────────────────────────────────────────────────
+
+#: Name of the observation array in the processed file.
+VALUE = "value"
+
+#: Name of the standard-deviation array in the processed file.
+STANDARD_DEVIATION = "standard_deviation"
+
+#: The metadata conventions the processed files follow, as pySIPNET's output does.
+CF_CONVENTIONS = "CF-1.11"
+
+#: On-disk time encoding. Written explicitly so nothing is inherited from a default.
+TIME_UNITS = "days since 2000-01-01"
+CALENDAR = "proleptic_gregorian"
+
+
+def default_raw_dir() -> Path:
+    """Where the raw constraint files are expected: ``data/raw/constraints/``.
+
+    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
     """
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    data_root = Path(root) if root else Path(__file__).resolve().parents[2] / "data"
-    return data_root / "processed" / "constraints_annual.nc"
+    return _data_root() / "raw" / "constraints"
 
 
-def read_long_table(path: Path | str) -> pd.DataFrame:
-    """Read the long table that ``export_constraints.R`` writes.
+def default_constraints_dir() -> Path:
+    """Where the processed products are expected: ``data/processed/constraints/``.
+
+    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
+    """
+    return _data_root() / "processed" / "constraints"
+
+
+def constraint_path(
+    constraint: str | ConstraintSpec, directory: Path | str | None = None
+) -> Path:
+    """The processed file of a constraint: ``<directory>/<name>.nc``."""
+    name = constraint if isinstance(constraint, str) else constraint.name
+    base = Path(directory) if directory is not None else default_constraints_dir()
+    return base / f"{name}.nc"
+
+
+def load_constraint(
+    constraint: str | ConstraintSpec, path: Path | str | None = None
+) -> xr.Dataset:
+    """Read one processed constraint and check it against its spec.
 
     Parameters
     ----------
+    constraint:
+        A constraint name from :data:`CONSTRAINT_NAMES`, or a spec.
     path:
-        The CSV to read.
-
-    Returns
-    -------
-    pandas.DataFrame
-        The columns of :data:`LONG_COLUMNS` with the dtypes of
-        :data:`LONG_COLUMN_DTYPES`, one row per observed
-        ``(snapshot, site, variable)`` triple. ``variable`` holds *source*
-        names; the ingest script renames them.
-
-    Raises
-    ------
-    ValueError
-        If the columns are not exactly :data:`LONG_COLUMNS`, the file holds no
-        rows, or any variable name is not a key of
-        :data:`SOURCE_VARIABLE_NAMES`.
-
-    Notes
-    -----
-    ``float_precision="round_trip"`` is required for an exact parse. The R side
-    writes the doubles with ``%.17g``, which uniquely determines a float64, but
-    pandas' default C parser is not correctly rounding and moves tens of
-    thousands of the real table's values in the last bits.
-
-    ``keep_default_na=False`` keeps a variable named ``NA`` from becoming a
-    null, for the same reason the site table needs it. No such variable exists
-    today; the setting costs nothing and removes the possibility.
-    """
-    frame = pd.read_csv(
-        path,
-        # site_id is read wide and narrowed after checking, as load_sites does:
-        # reading straight into int32 wraps silently, and a site_id of
-        # 4294967297 becomes 1 and then satisfies every check downstream.
-        # mean/variance are declared rather than inferred, because pandas infers
-        # int64 for an all-integer column and float_precision then does not
-        # apply.
-        dtype={**LONG_COLUMN_DTYPES, "site_id": np.int64},
-        float_precision="round_trip",
-        keep_default_na=False,
-        na_values=[],
-        # Without this, a row with surplus leading fields is absorbed into an
-        # index and the column check still passes.
-        index_col=False,
-    )
-
-    if tuple(frame.columns) != LONG_COLUMNS:
-        raise ValueError(
-            f"{path}: expected columns {LONG_COLUMNS}, found {tuple(frame.columns)}. "
-            "Regenerate it with scripts/export_constraints.R."
-        )
-    if frame.empty:
-        raise ValueError(f"{path}: holds no rows")
-
-    unknown = sorted(set(frame["variable"]) - set(SOURCE_VARIABLE_NAMES))
-    if unknown:
-        raise ValueError(
-            f"{path}: source variable names not in SOURCE_VARIABLE_NAMES: "
-            f"{unknown}. A new variable in the source is a schema change, not a "
-            "new row."
-        )
-
-    _check_site_ids_fit_dtype(frame, path)
-    return frame.astype({"site_id": LONG_COLUMN_DTYPES["site_id"]})
-
-
-def load_constraints(path: Path | str | None = None) -> xr.Dataset:
-    """Read the processed annual constraints.
-
-    Parameters
-    ----------
-    path:
-        The netCDF file to read. Defaults to :func:`default_constraints_path`.
+        The netCDF to read. Defaults to :func:`constraint_path`.
 
     Returns
     -------
     xarray.Dataset
-        :data:`OBSERVATION_MEAN` and :data:`OBSERVATION_VARIANCE`, both with
-        dims ``(site, time, variable)``, ``lon`` and ``lat`` as non-dimension
-        coordinates on ``site``, and ``NaN`` where a site-snapshot-variable was
-        not observed.
+        :data:`VALUE` and :data:`STANDARD_DEVIATION` on the spec's dims, with
+        ``lon`` and ``lat`` on ``site``, and ``NaN`` where not observed.
 
     Raises
     ------
     FileNotFoundError
-        If the file is absent, with the commands that produce it.
+        If the file is absent, with the command that produces it.
     ValueError
-        If the variables, dims, coordinates or ``variable`` order are not the
-        schema this module defines.
-
-    Notes
-    -----
-    ``decode_times`` is left on: unlike the initial-condition files, whose units
-    attribute is an unsubstituted template, this file's time encoding is written
-    by this project and is decodable.
+        If the file does not match the spec's data model.
     """
-    path = Path(path) if path is not None else default_constraints_path()
+    spec = constraint if isinstance(constraint, ConstraintSpec) else resolve_constraint(constraint)
+    path = Path(path) if path is not None else constraint_path(spec)
     if not path.exists():
         raise FileNotFoundError(
             f"{path} not found. Produce it with:\n"
-            "  Rscript scripts/export_constraints.R --out <long.csv> "
-            "--manifest <manifest.json>\n"
-            "  python scripts/ingest_constraints.py --long-table <long.csv> "
-            "--manifest <manifest.json>"
+            f"  python scripts/ingest_constraints.py --constraint {spec.name}"
         )
-
     dataset = xr.open_dataset(path, engine="h5netcdf")
     try:
-        _check_schema(dataset, path)
+        _check_product(dataset, spec, path)
     except Exception:
         dataset.close()
         raise
@@ -439,142 +641,473 @@ def load_constraints(path: Path | str | None = None) -> xr.Dataset:
 
 
 def constraint_fields(
-    dataset: xr.Dataset, *, statistic: str = "mean"
+    names: Sequence[str] | None = None,
+    *,
+    sites: Iterable[int] | None = None,
+    directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """One ``DataArray`` per variable, for either the means or the variances.
-
-    Each field has dims ``(site, time)``, is named for its variable, carries
-    that variable's units and long name, and keeps ``lon``/``lat`` as
-    non-dimension coordinates on ``site`` -- the canonical field shape, which
-    the stored form is not.
+    """The observations of several constraints, one canonical field each.
 
     Parameters
     ----------
-    dataset:
-        As returned by :func:`load_constraints`.
-    statistic:
-        ``"mean"`` for the observations, ``"variance"`` for their error
-        variances.
+    names:
+        Constraint names, in the order the result should carry them. Defaults
+        to every constraint in :data:`CONSTRAINT_NAMES`.
+    sites:
+        Site ids to keep, in the order given. Defaults to the whole pool.
+    directory:
+        Where the processed files are. Defaults to
+        :func:`default_constraints_dir`.
 
     Returns
     -------
     dict
-        Keyed by processed variable name, in :data:`CONSTRAINT_VARIABLES` order.
-        This is the shape multi-variable adapters return and what
-        facet-by-variable consumes.
+        Constraint name to its ``value`` array, renamed to the constraint,
+        with dims ``(site, time)`` or ``(site,)`` and the array's attributes.
 
     Raises
     ------
     ValueError
-        If *statistic* is neither ``"mean"`` nor ``"variance"``.
+        If a requested site is not in the pool.
     """
-    if statistic not in ("mean", "variance"):
-        raise ValueError(f"statistic must be 'mean' or 'variance', got {statistic!r}")
-
-    array = dataset[OBSERVATION_MEAN if statistic == "mean" else OBSERVATION_VARIANCE]
-    fields = {}
-    for name in CONSTRAINT_VARIABLES:
-        field = array.sel(variable=name, drop=True).rename(name)
-        field.attrs = _field_attrs(name, statistic)
-        fields[name] = field
-    return fields
+    return _fields(VALUE, names, sites, directory)
 
 
-def snapshot_dates(years: list[int] | tuple[int, ...]) -> pd.DatetimeIndex:
-    """The source's annual snapshot keys for the given years, in that order.
+def constraint_sds(
+    names: Sequence[str] | None = None,
+    *,
+    sites: Iterable[int] | None = None,
+    directory: Path | str | None = None,
+) -> dict[str, xr.DataArray]:
+    """The reported standard deviations, as :func:`constraint_fields` does the values."""
+    return _fields(STANDARD_DEVIATION, names, sites, directory)
 
-    The month and day come from :data:`SNAPSHOT_MONTH_DAY`.
+
+# ── raw to processed ──────────────────────────────────────────────────────────
+
+
+def read_raw(spec: ConstraintSpec, root: Path | str | None = None) -> pd.DataFrame:
+    """Parse a constraint's raw file exactly, in its source column names.
+
+    Parameters
+    ----------
+    spec:
+        Which constraint.
+    root:
+        The directory holding the raw files. Defaults to
+        :func:`default_raw_dir`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The columns of ``spec.raw_columns``, in order: ``site_id`` as
+        ``int64``, the value and standard deviation as ``float64`` with
+        ``NaN`` where the file says ``NA``, a ``DATED`` time column and any
+        quality column as strings, a year column as ``int64``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file is absent.
+    ValueError
+        If the header is not ``spec.raw_columns`` or the file has no rows.
+
+    Notes
+    -----
+    ``float_precision="round_trip"`` is what makes the read exact: three of the
+    files were written from R at 17 significant digits, which pandas' default
+    parser does not reproduce. ``keep_default_na=False`` with ``na_values``
+    set to the literal ``NA`` keeps the quality flag ``"000"`` a string and
+    lets nothing else become missing by accident.
     """
-    month, day = SNAPSHOT_MONTH_DAY
-    return pd.DatetimeIndex([pd.Timestamp(year, month, day) for year in years])
+    path = (Path(root) if root is not None else default_raw_dir()) / spec.raw_file
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found; see data/raw/constraints/provenance.md")
+
+    frame = pd.read_csv(
+        path,
+        dtype=_raw_dtypes(spec),
+        float_precision="round_trip",
+        keep_default_na=False,
+        na_values=[MISSING_TOKEN],
+        index_col=False,
+    )
+    if tuple(frame.columns) != spec.raw_columns:
+        raise ValueError(
+            f"{path}: header is {tuple(frame.columns)}, expected {spec.raw_columns}. "
+            "A changed raw file is a spec change, not a new row."
+        )
+    if frame.empty:
+        raise ValueError(f"{path}: holds no rows")
+    return frame
+
+
+def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> xr.Dataset:
+    """Turn a raw frame into the processed Dataset the data model describes.
+
+    Parameters
+    ----------
+    spec:
+        Which constraint.
+    frame:
+        As :func:`read_raw` returns it.
+    sites:
+        The site table from :func:`sipnet_calibration.sites.load_sites`; its
+        ``site_id`` is the pool and its ``lon``/``lat`` the coordinates.
+
+    Returns
+    -------
+    xarray.Dataset
+        Dense over the whole pool (and every time label the kept rows carry),
+        ``NaN`` where not observed, with every attribute the data model lists.
+
+    Raises
+    ------
+    ValueError
+        If a row's site is not in the pool, if two kept rows share a
+        ``(site, time)``, or if a static constraint's copies differ.
+
+    Notes
+    -----
+    This is pure: it neither reads nor writes files, so the ingest script and
+    the tests call it on the same frames. The friendlier, earlier checks live
+    in the script; the guards here are the ones that would otherwise let a
+    fancy-indexed assignment silently overwrite a cell.
+    """
+    kept, n_dropped = _apply_quality_filter(spec, frame)
+    site = np.sort(sites[SITE_COLUMN].to_numpy(np.int64))
+    coordinates = sites.set_index(SITE_COLUMN).loc[site, ["lon", "lat"]]
+
+    row_site = kept[SITE_COLUMN].to_numpy(np.int64)
+    _check_sites_in_pool(row_site, site, spec)
+    site_index = np.searchsorted(site, row_site)
+
+    if spec.time_structure is TimeStructure.STATIC:
+        arrays = _static_arrays(spec, kept, site_index, site.size)
+        coords: dict[str, Any] = {}
+    else:
+        time = _time_labels(spec, kept)
+        arrays = _dated_arrays(spec, kept, site_index, time, site.size)
+        coords = _time_coords(spec, time)
+
+    coords.update(
+        {
+            "site": ("site", site.astype(np.int32), _SITE_ATTRS),
+            "lon": ("site", coordinates["lon"].to_numpy(np.float64), _LON_ATTRS),
+            "lat": ("site", coordinates["lat"].to_numpy(np.float64), _LAT_ATTRS),
+        }
+    )
+    dataset = xr.Dataset(
+        {
+            VALUE: (spec.dims, arrays[0], spec.xarray_attributes()),
+            STANDARD_DEVIATION: (spec.dims, arrays[1], _sd_attributes(spec)),
+        },
+        coords=coords,
+        attrs=_dataset_attributes(spec, n_read=len(frame), n_dropped=n_dropped),
+    )
+    return dataset
+
+
+def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
+    """The on-disk encoding for a product built by :func:`build_constraint`.
+
+    Both data arrays are compressed with ``NaN`` as the fill value; ``time``
+    and ``time_bounds`` are integer days on :data:`TIME_UNITS`; and no
+    coordinate carries a ``_FillValue``, as CF requires.
+    """
+    encoding: dict[str, dict[str, Any]] = {
+        VALUE: {"zlib": True, "complevel": 4, "_FillValue": np.nan},
+        STANDARD_DEVIATION: {"zlib": True, "complevel": 4, "_FillValue": np.nan},
+    }
+    for name in dataset.coords:
+        encoding[str(name)] = {"_FillValue": None}
+    if "time" in dataset.coords:
+        encoding["time"].update({"units": TIME_UNITS, "calendar": CALENDAR, "dtype": "int32"})
+    if "time_bounds" in dataset.coords:
+        encoding["time_bounds"].update(
+            {"units": TIME_UNITS, "calendar": CALENDAR, "dtype": "int32"}
+        )
+    return encoding
+
+
+def describe(spec: ConstraintSpec) -> str:
+    """A constraint spec as a paragraph, for ``--describe`` and the run log."""
+    units = f"{spec.units} {spec.constituent}".strip()
+    lines = [
+        f"{spec.name}: {spec.long_label} ({units}), from {spec.product}.",
+        f"  raw file   {spec.raw_file}",
+        f"  columns    value {spec.value_column!r}, sd {spec.sd_column!r}"
+        + (f", time {spec.time_column!r}" if spec.time_column else "")
+        + (
+            f"; rows kept where {spec.quality_column!r} == {spec.quality_pass!r}"
+            if spec.quality_column
+            else ""
+        ),
+        f"  time       {spec.time_structure.value}: {spec.time_reference}",
+        f"  units      {spec.units_provenance}",
+        f"  what       {spec.description}",
+    ]
+    if spec.notes:
+        lines.append(f"  note       {spec.notes}")
+    return "\n".join(lines)
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
+_SITE_ATTRS = {
+    "long_name": "Model site identifier",
+    "comment": "The handed-down 1-8000 identifier of the site table; never renumbered.",
+}
+_LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
+_LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
 
-def _field_attrs(name: str, statistic: str) -> dict[str, str]:
-    """Attributes for one canonical field, with the units caveat attached."""
-    source = CONSTRAINT_VARIABLE_ATTRS[name]
-    if statistic == "mean":
-        units, long_name = source["units"], source["long_name"]
-    else:
-        units = f"({source['units']})2"
-        long_name = f"{source['long_name']}: observation error variance"
-    return {
-        "units": units,
-        "long_name": long_name,
-        "source_name": source["source_name"],
-        "units_status": UNITS_STATUS,
-        "units_provenance": UNITS_PROVENANCE,
+
+def _data_root() -> Path:
+    root = os.environ.get(DATA_ROOT_ENV_VAR)
+    return Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+
+
+def _raw_dtypes(spec: ConstraintSpec) -> dict[str, Any]:
+    """What to hand pandas per column, so nothing is inferred."""
+    # site_id is read wide and checked before narrowing, as load_sites does:
+    # reading straight into int32 wraps silently. The value and sd are declared
+    # float64 because pandas infers int64 for an all-integer column and
+    # float_precision then does not apply.
+    dtypes: dict[str, Any] = {
+        SITE_COLUMN: np.int64,
+        spec.value_column: np.float64,
+        spec.sd_column: np.float64,
     }
+    if spec.time_column is not None:
+        dtypes[spec.time_column] = (
+            str if spec.time_structure is TimeStructure.DATED else np.int64
+        )
+    if spec.quality_column is not None:
+        dtypes[spec.quality_column] = str
+    for column in spec.raw_columns:
+        dtypes.setdefault(column, np.float64)
+    return dtypes
+
+
+def _apply_quality_filter(spec: ConstraintSpec, frame: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    if spec.quality_column is None:
+        return frame, 0
+    passes = frame[spec.quality_column] == spec.quality_pass
+    return frame[passes], int((~passes).sum())
+
+
+def _time_labels(spec: ConstraintSpec, frame: pd.DataFrame) -> pd.DatetimeIndex:
+    """The processed ``time`` value of every row, in row order."""
+    column = frame[spec.time_column]
+    if spec.time_structure is TimeStructure.ANNUAL:
+        stamps = pd.to_datetime(column.astype(np.int64).astype(str), format="%Y")
+    else:
+        stamps = pd.to_datetime(column, format="%Y-%m-%d")
+    return pd.DatetimeIndex(stamps).as_unit("ns")
+
+
+def _dated_arrays(
+    spec: ConstraintSpec,
+    frame: pd.DataFrame,
+    site_index: np.ndarray,
+    row_time: pd.DatetimeIndex,
+    n_sites: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    time = pd.DatetimeIndex(sorted(row_time.unique())).as_unit("ns")
+    time_index = time.get_indexer(row_time)
+    _check_no_duplicate_cells(site_index, time_index, spec)
+
+    value = np.full((n_sites, time.size), np.nan)
+    sd = np.full((n_sites, time.size), np.nan)
+    value[site_index, time_index] = frame[spec.value_column].to_numpy(np.float64)
+    sd[site_index, time_index] = frame[spec.sd_column].to_numpy(np.float64)
+    return value, sd
+
+
+def _static_arrays(
+    spec: ConstraintSpec, frame: pd.DataFrame, site_index: np.ndarray, n_sites: int
+) -> tuple[np.ndarray, np.ndarray]:
+    _check_static_copies_agree(spec, frame)
+    first = ~pd.Series(site_index).duplicated().to_numpy()
+    value = np.full(n_sites, np.nan)
+    sd = np.full(n_sites, np.nan)
+    value[site_index[first]] = frame[spec.value_column].to_numpy(np.float64)[first]
+    sd[site_index[first]] = frame[spec.sd_column].to_numpy(np.float64)[first]
+    return value, sd
+
+
+def _time_coords(spec: ConstraintSpec, row_time: pd.DatetimeIndex) -> dict[str, Any]:
+    time = pd.DatetimeIndex(sorted(row_time.unique())).as_unit("ns")
+    attrs = {
+        "standard_name": "time",
+        "axis": "T",
+        "long_name": _TIME_LONG_NAME[spec.time_structure],
+        "comment": spec.time_reference,
+    }
+    coords: dict[str, Any] = {"time": ("time", time.to_numpy(), attrs)}
+    if spec.has_time_bounds:
+        attrs["bounds"] = "time_bounds"
+        start = time.to_numpy()
+        end = (time + pd.DateOffset(years=1)).as_unit("ns").to_numpy()
+        coords["time_bounds"] = (
+            ("time", "bounds"),
+            np.stack([start, end], axis=1),
+            {
+                "long_name": "Calendar year the value is attributed to",
+                "comment": "The half-open interval [time, time + 1 year), in the CF bounds form.",
+            },
+        )
+    return coords
+
+
+_TIME_LONG_NAME = {
+    TimeStructure.ANNUAL: "Calendar year key",
+    TimeStructure.DATED: "Source date label",
+}
+
+
+def _sd_attributes(spec: ConstraintSpec) -> dict[str, Any]:
+    attrs: dict[str, Any] = {
+        "units": spec.units,
+        "long_name": f"{spec.long_label}: reported standard deviation",
+        "description": (
+            f"The standard deviation the source reports beside each {spec.value_column!r}; "
+            "what it measures is the producer's to say."
+        ),
+        "source_file": spec.raw_file,
+        "source_column": spec.sd_column,
+    }
+    if spec.constituent:
+        attrs["constituent"] = spec.constituent
+    return attrs
+
+
+def _dataset_attributes(spec: ConstraintSpec, *, n_read: int, n_dropped: int) -> dict[str, Any]:
+    return {
+        "Conventions": CF_CONVENTIONS,
+        "title": f"{spec.long_label} constraint from {spec.product}",
+        "constraint": spec.name,
+        "product": spec.product,
+        "source_file": spec.raw_file,
+        "time_structure": spec.time_structure.value,
+        "rows_read": n_read,
+        "rows_dropped_by_quality_flag": n_dropped,
+        "history": (
+            f"scripts/ingest_constraints.py: read data/raw/constraints/{spec.raw_file}"
+            + (
+                f", kept rows with {spec.quality_column} == {spec.quality_pass!r}"
+                if spec.quality_column
+                else ""
+            )
+            + (
+                ", collapsed the identical yearly copies"
+                if spec.time_structure is TimeStructure.STATIC
+                else ""
+            )
+            + ", placed the records on the site pool"
+        ),
+        "created": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+
+
+def _fields(
+    array: str,
+    names: Sequence[str] | None,
+    sites: Iterable[int] | None,
+    directory: Path | str | None,
+) -> dict[str, xr.DataArray]:
+    names = list(names) if names is not None else list(CONSTRAINT_NAMES)
+    wanted = None if sites is None else [int(site) for site in sites]
+    fields: dict[str, xr.DataArray] = {}
+    for name in names:
+        spec = resolve_constraint(name)
+        dataset = load_constraint(spec, constraint_path(spec, directory))
+        field = dataset[array].rename(name)
+        if wanted is not None:
+            missing = sorted(set(wanted) - set(dataset["site"].values.tolist()))
+            if missing:
+                raise ValueError(f"{name}: sites not in the pool: {missing[:10]}")
+            field = field.sel(site=wanted)
+        fields[name] = field
+    return fields
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_site_ids_fit_dtype(frame: pd.DataFrame, path: Path) -> None:
-    """Raise unless every site id survives narrowing to the stored width."""
-    stored = np.dtype(LONG_COLUMN_DTYPES["site_id"])
-    info = np.iinfo(stored)
-    site_id = frame["site_id"].to_numpy()
-    outside = (site_id < info.min) | (site_id > info.max)
-    if outside.any():
-        offenders = sorted(set(site_id[outside].tolist()))[:10]
+def _check_sites_in_pool(row_site: np.ndarray, pool: np.ndarray, spec: ConstraintSpec) -> None:
+    position = np.searchsorted(pool, row_site)
+    inside = (position < pool.size) & (pool[np.minimum(position, pool.size - 1)] == row_site)
+    if not inside.all():
+        offenders = sorted(set(row_site[~inside].tolist()))[:10]
+        raise ValueError(f"{spec.name}: site ids not in the site table: {offenders}")
+
+
+def _check_no_duplicate_cells(
+    site_index: np.ndarray, time_index: np.ndarray, spec: ConstraintSpec
+) -> None:
+    cells = pd.MultiIndex.from_arrays([site_index, time_index])
+    if cells.has_duplicates:
+        n = int(cells.duplicated().sum())
         raise ValueError(
-            f"{path}: site ids outside the range of {stored}: {offenders}. "
-            "Narrowing them would wrap to a different, valid-looking site."
+            f"{spec.name}: {n} rows share a (site, time) with another row. Two records "
+            "for one cell would silently overwrite each other."
         )
-    if (site_id < 1).any():
-        offenders = sorted(set(site_id[site_id < 1].tolist()))[:10]
-        raise ValueError(f"{path}: site ids below 1: {offenders}")
 
 
-def _check_schema(dataset: xr.Dataset, path: Path) -> None:
-    """Raise unless *dataset* matches the schema this module defines."""
-    missing = {OBSERVATION_MEAN, OBSERVATION_VARIANCE} - set(dataset.data_vars)
+def _check_static_copies_agree(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise unless every site carries one value across the raw time column."""
+    distinct = frame.groupby(SITE_COLUMN)[[spec.value_column, spec.sd_column]].nunique(
+        dropna=False
+    )
+    varying = distinct[(distinct > 1).any(axis=1)]
+    if not varying.empty:
+        raise ValueError(
+            f"{spec.name}: {len(varying)} sites carry different values in different "
+            f"years (first: {varying.index[:5].tolist()}). A static constraint must be "
+            "constant; if the source now varies in time its time_structure is wrong."
+        )
+
+
+def _check_product(dataset: xr.Dataset, spec: ConstraintSpec, path: Path) -> None:
+    """Raise unless *dataset* is the product the spec describes."""
+    missing = {VALUE, STANDARD_DEVIATION} - set(dataset.data_vars)
     if missing:
+        raise ValueError(f"{path}: missing data variables {sorted(missing)}")
+    for name in (VALUE, STANDARD_DEVIATION):
+        if dataset[name].dims != spec.dims:
+            raise ValueError(f"{path}: {name} has dims {dataset[name].dims}, expected {spec.dims}")
+        if dataset[name].attrs.get("units") != spec.units:
+            raise ValueError(
+                f"{path}: {name} has units {dataset[name].attrs.get('units')!r}, the spec "
+                f"says {spec.units!r}"
+            )
+    if dataset.attrs.get("constraint") != spec.name:
         raise ValueError(
-            f"{path}: missing data variables {sorted(missing)}; found "
-            f"{sorted(dataset.data_vars)}"
+            f"{path}: written for constraint {dataset.attrs.get('constraint')!r}, not {spec.name!r}"
         )
 
-    expected_dims = ("site", "time", "variable")
-    for name in (OBSERVATION_MEAN, OBSERVATION_VARIANCE):
-        if dataset[name].dims != expected_dims:
-            raise ValueError(
-                f"{path}: {name} has dims {dataset[name].dims}, expected "
-                f"{expected_dims}"
-            )
-
-    for coordinate in ("site", "time", "variable", "lon", "lat"):
+    for coordinate in ("site", "lon", "lat", *spec.dims):
         if coordinate not in dataset.coords:
             raise ValueError(f"{path}: missing the {coordinate!r} coordinate")
-
     for coordinate in ("lon", "lat"):
         if dataset[coordinate].dims != ("site",):
-            raise ValueError(
-                f"{path}: {coordinate} must be a non-dimension coordinate on "
-                f"site, has dims {dataset[coordinate].dims}"
-            )
-
-    stored = tuple(str(name) for name in dataset["variable"].values)
-    if stored != CONSTRAINT_VARIABLES:
+            raise ValueError(f"{path}: {coordinate} must be on site, has dims {dataset[coordinate].dims}")
+    if ("time_bounds" in dataset.coords) != spec.has_time_bounds:
         raise ValueError(
-            f"{path}: variable coordinate is {stored}, expected "
-            f"{CONSTRAINT_VARIABLES}"
+            f"{path}: time_bounds {'present' if 'time_bounds' in dataset.coords else 'absent'}, "
+            f"but a {spec.time_structure.value} constraint "
+            f"{'carries' if spec.has_time_bounds else 'does not carry'} them"
         )
 
     site = dataset["site"].values
-    if site.size == 0:
-        raise ValueError(f"{path}: holds no sites")
-    if np.any(np.diff(site) <= 0):
-        raise ValueError(f"{path}: site is not strictly ascending")
+    if site.size == 0 or np.any(np.diff(site) <= 0):
+        raise ValueError(f"{path}: site is empty or not strictly ascending")
+    if "time" in dataset.dims:
+        time = dataset["time"].values
+        if time.size == 0 or np.any(np.diff(time) <= np.timedelta64(0, "ns")):
+            raise ValueError(f"{path}: time is empty or not strictly ascending")
 
-    time = dataset["time"].values
-    if time.size == 0:
-        raise ValueError(f"{path}: holds no snapshots")
-    if np.any(np.diff(time) <= np.timedelta64(0, "ns")):
-        raise ValueError(
-            f"{path}: time is not strictly ascending. A repeated snapshot key "
-            "would make sel(time=...) return more than one snapshot."
-        )
+    observed = np.isfinite(dataset[VALUE].values)
+    if not np.array_equal(observed, np.isfinite(dataset[STANDARD_DEVIATION].values)):
+        raise ValueError(f"{path}: value and standard_deviation are missing in different cells")
