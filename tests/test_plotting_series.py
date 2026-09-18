@@ -140,7 +140,7 @@ def test_a_non_canonical_dim_is_rejected(ax):
 def test_something_other_than_a_data_array_is_rejected(ax):
     """A path or a frame is an adapter's input, not a plotter's."""
     with pytest.raises(ValueError, match="DataArray"):
-        plot_time_series("data/processed/constraints_annual.nc", ax=ax)
+        plot_time_series("data/processed/constraints/modis_leaf_area_index.nc", ax=ax)
 
 
 # ── show ──────────────────────────────────────────────────────────────────────

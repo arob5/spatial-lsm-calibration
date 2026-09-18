@@ -8,7 +8,7 @@ functions that read it into that form. It is the single description of that
 layout: the tests, the plotting layer and anything else that wants driver data
 get the schema from here rather than restating it.
 
-Unlike the site table and the annual constraints, the drivers have **no
+Unlike the site table and the constraints, the drivers have **no
 processed file**. SIPNET reads the raw ``.clim`` text directly (pySIPNET
 symlinks it into the run directory), and the full ensemble is 80,000 files, so
 rewriting it into a store would create a large cache that the model never

@@ -25,8 +25,8 @@ gap-filled NEE observations are ``(member, site, time)``, and a calibrated
 per-site parameter is ``(member, site)``.
 
 One array holds one variable, and variables are not combined into a
-``Dataset``: they do not share a time axis, NEE being 3-hourly, the biomass
-and leaf area constraints annual, and the initial conditions static. A group
+``Dataset``: they do not share a time axis, NEE being 3-hourly, the constraints
+annual, dated or static by product, and the initial conditions static. A group
 of variables is a ``dict[str, DataArray]``, which is what the multi-variable
 adapters return and what the readers in
 :mod:`sipnet_calibration.drivers` and :mod:`sipnet_calibration.constraints`
@@ -51,8 +51,8 @@ Identifiers
 ``time``
     Timestamps, whose meaning is the source's and is recorded in the
     coordinate's attributes rather than assumed: the drivers label the end of
-    each interval, and the annual constraints carry a nominal bookkeeping date
-    rather than an observation date.
+    each interval, and each constraint product carries its source's own label,
+    with CF ``time_bounds`` where the support is documented.
 
 Functions
 ---------
@@ -61,13 +61,14 @@ Functions
     does not hold.
 :func:`from_sipnet_result`, :func:`from_clim`, :func:`from_ic_store`,
 :func:`from_nee_store`, :func:`from_eki_predictions`
-    One adapter per source. They are also where unit conversion happens: each
-    variable has one canonical unit in the registry, adapters convert into it,
-    and nothing downstream reconciles units.
+    One adapter per source. Model-side adapters keep pySIPNET's names and
+    units; observation products keep their source units; the observation
+    operator converts the model into the observation's units before a
+    residual or an overlay is formed.
 
 Notes
 -----
-Nothing in this module is implemented yet. The drivers and the annual
+Nothing in this module is implemented yet. The drivers and the
 constraints already have readers of their own that produce the form described
 above, so it is the remaining sources -- SIPNET output, the initial
 conditions, the NEE observations and the calibration output -- that this

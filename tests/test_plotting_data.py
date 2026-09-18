@@ -45,6 +45,13 @@ def most_observed_site(field):
     return int(field["site"].values[int(np.argmax(counts.values))])
 
 
+def a_ragged_site(field):
+    """A site id observed in some but not all of the field's time labels."""
+    counts = field.notnull().sum("time").values
+    ragged = np.flatnonzero((counts > 0) & (counts < field.sizes["time"]))
+    return int(field["site"].values[ragged[0]])
+
+
 # ── drivers ───────────────────────────────────────────────────────────────────
 
 
@@ -112,7 +119,7 @@ def test_a_driver_field_draws_one_curve_per_site(ax, real_driver_field):
 # ── constraints ───────────────────────────────────────────────────────────────
 
 
-def test_annual_observations_draw_as_points_at_the_snapshot_keys(
+def test_annual_observations_draw_as_points_at_the_observed_years(
     ax, real_constraint_fields
 ):
     """Only the observed years appear; the unobserved cells are dropped.
@@ -121,8 +128,8 @@ def test_annual_observations_draw_as_points_at_the_snapshot_keys(
     support.
     """
     means, _ = real_constraint_fields
-    field = means["aboveground_wood_carbon"]
-    one = field.sel(site=most_observed_site(field))
+    field = means["landtrendr_aboveground_biomass"]
+    one = field.sel(site=a_ragged_site(field))
     plot_time_series(one, ax=ax, role="obs", show="points")
     drawn = ax.containers[0][0].get_ydata()
     assert len(drawn) == int(one.notnull().sum())
@@ -135,7 +142,7 @@ def test_the_error_bars_are_the_square_root_of_the_real_variances(
 ):
     """Each bar's half-length equals ``sqrt`` of that cell's variance."""
     means, variances = real_constraint_fields
-    name = "aboveground_wood_carbon"
+    name = "landtrendr_aboveground_biomass"
     site = most_observed_site(means[name])
     mean, variance = means[name].sel(site=site), variances[name].sel(site=site)
     plot_time_series(mean, ax=ax, role="obs", show="points", variance=variance)
@@ -150,7 +157,7 @@ def test_an_observation_overlay_keeps_the_model_panel(
 ):
     """A second call adds the observations without replacing what was there."""
     means, _ = real_constraint_fields
-    field = means["aboveground_wood_carbon"]
+    field = means["landtrendr_aboveground_biomass"]
     plot_time_series(real_driver_field.sel(site=1), ax=ax, role="posterior")
     bands_before = len(ax.collections)
     plot_time_series(
@@ -162,10 +169,16 @@ def test_an_observation_overlay_keeps_the_model_panel(
 
 
 def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fields):
-    """Four variables with four different units, one panel each, no shared y."""
+    """Every time-varying constraint, one panel each, no shared y.
+
+    The static soil carbon has no time axis and is left out; the two biomass
+    products share a unit, so the panel count, not the unit count, is the check.
+    """
     means, _ = real_constraint_fields
-    site = most_observed_site(means["aboveground_wood_carbon"])
-    one_site = {name: field.sel(site=site) for name, field in means.items()}
+    site = most_observed_site(means["landtrendr_aboveground_biomass"])
+    one_site = {
+        name: field.sel(site=site) for name, field in means.items() if "time" in field.dims
+    }
     _, axes = closing(
         plot_by_variable(
             one_site,
@@ -173,9 +186,9 @@ def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fi
             ncol=2,
         )
     )
-    assert len(axes) == len(means)
-    units = {axes[i].get_ylabel() for i in range(len(axes))}
-    assert len(units) == len(means)
+    assert len(axes) == len(one_site)
+    labels = [axes[i].get_ylabel() for i in range(len(axes))]
+    assert all(labels)
 
 
 # ── acceptance criteria ───────────────────────────────────────────────────────

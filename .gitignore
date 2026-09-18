@@ -13,6 +13,10 @@ main.py
 data/raw/*
 !data/raw/sites/
 !data/raw/constraints/
+# Un-ignoring the directory un-ignores everything in it; the two inputs that
+# still live on storage and are symlinked in are excluded again here.
+data/raw/constraints/nee
+data/raw/constraints/sda_8k_site_rdata
 data/processed/
 
 .claude/worktrees/
