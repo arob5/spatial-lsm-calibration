@@ -22,8 +22,7 @@ This is a research codebase, not a library.
 
 ## Quick start
 
-Requires [uv](https://docs.astral.sh/uv/). One data processing step below also
-needs `Rscript`.
+Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone https://github.com/arob5/spatial-lsm-calibration.git
@@ -52,8 +51,7 @@ will eventually replace the sequence with a single command.
 
 ```bash
 python scripts/ingest_sites.py                                                       # -> data/processed/sites/sites.csv
-Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json         # scratch, not products
-python scripts/ingest_constraints.py --long-table long.csv --manifest manifest.json  # -> data/processed/constraints_annual.nc
+python scripts/ingest_constraints.py                                                 # -> data/processed/constraints/<name>.nc, one per constraint
 python scripts/ingest_ic.py --jobs 16                                                # -> data/processed/ic.nc
 ```
 
@@ -186,7 +184,7 @@ To execute headlessly:
 | Period | 2012–2024 |
 | Drivers | ERA5, 3-hourly, ensemble |
 | Initial conditions | per-site, per-member netCDF |
-| Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), AGB, LAI, soil C and moisture (annual) |
+| Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), aboveground biomass (LandTrendr and GEDI, annual), leaf area index (MODIS 4-day composites, June to August), soil moisture (SMAP, one July value per year), soil organic carbon (SoilGrids, static) |
 
 Every input arrives in ensemble form. Note the sites are **scattered points, not
 a grid**, and the extent is North America rather than CONUS — assumptions to the
@@ -202,7 +200,7 @@ src/sipnet_calibration/
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
-data/raw/                 # inputs, never edited; only raw/sites/ is tracked
+data/raw/                 # inputs, never edited; raw/sites/ and raw/constraints/ are tracked
 data/processed/           # ingest output == the canonical format used throughout
 tests/
 ```

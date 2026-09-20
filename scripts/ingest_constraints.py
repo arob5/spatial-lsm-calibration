@@ -1,88 +1,64 @@
 #!/usr/bin/env python
-"""Build the annual constraints product.
+"""Build the processed constraint products, one netCDF per constraint.
 
 Overview
 --------
-Pivot the long table that ``scripts/export_constraints.R`` produces into the
-dense netCDF the rest of the project reads, renaming the source variables to
-the processed convention on the way. The R script does the reading and the one
-check that only R can do; this script makes every schema decision and every
-check that can be made from the flattened data.
-
-``sipnet_calibration.constraints`` holds the schema and the reader. This script
-is the writer, and its own round-trip check reads the file back with
-:func:`sipnet_calibration.constraints.load_constraints` -- the same function
-every consumer uses -- so the two cannot drift apart.
+For each constraint in ``sipnet_calibration.constraints.CONSTRAINTS``, read its
+raw file, check it, place its records on the site pool and write the result as
+``data/processed/constraints/<name>.nc``. Every decision about what a file
+holds -- columns, units, time structure, which rows to drop -- is a field of
+the constraint's spec in the library; this script is the orchestration and the
+checks, and its own round-trip check reads each file back with
+:func:`sipnet_calibration.constraints.load_constraint`, the same function every
+consumer uses.
 
 Input data
 ----------
-``--long-table``
-    CSV from ``export_constraints.R``: one row per observed
-    ``(snapshot, site, variable)`` triple, columns ``snapshot_date, site_id,
-    variable, mean, variance``. ``variable`` holds *source* names. Doubles are
-    written with ``%.17g`` and must be read with
-    ``float_precision="round_trip"``, which is why the reader lives in the
-    library rather than here.
+``--raw-root``, default ``data/raw/constraints/``
+    One gzipped CSV per constraint, named by ``spec.raw_file``, read exactly
+    by :func:`sipnet_calibration.constraints.read_raw`. See
+    ``data/raw/constraints/provenance.md`` for where they came from.
 
-``--manifest``
-    JSON from the same run, recording what R checked: per-snapshot
-    per-variable row counts, the exact extremes per variable, the empty
-    site-snapshots, and the largest absolute off-diagonal covariance element
-    seen.
-
-``--sites``
-    ``processed/sites/sites.csv``, which supplies the site pool and the
-    ``lon``/``lat`` coordinates.
+``--sites``, default ``data/processed/sites/sites.csv``
+    The site table: the pool the products are dense over, and the ``lon``/``lat``
+    coordinates.
 
 Output data
 -----------
-``--out``, default ``data/processed/constraints_annual.nc``::
+``--out-dir``, default ``data/processed/constraints/``, one file per constraint::
 
-    observation_mean(site, time, variable)      float64, NaN where unobserved
-    observation_variance(site, time, variable)  float64, NaN where unobserved
+    value(site[, time])               float64, NaN where unobserved
+    standard_deviation(site[, time])  float64, NaN in the same cells
 
-``site`` is the whole site pool, whether or not a site was ever observed;
-``time`` the annual snapshot keys the source carries; ``variable`` the processed
-variable names. ``lon`` and ``lat`` are non-dimension coordinates on ``site``.
-Unobserved cells are ``NaN``. The run prints the observed cell count and the
-file size, and the tests check the counts against the source.
+with ``site`` the whole pool, ``time`` the constraint's own labels (absent for
+a static constraint), ``time_bounds`` for an annual one, and every attribute
+the spec provides. ``sipnet_calibration.constraints`` documents the data model.
 
 Notes
 -----
-Most checks here compare the CSV against the manifest rather than trusting
-either. The one that matters most is diagonality: the Python side cannot see an
-off-diagonal element, because by the time the CSV exists it is gone, so it
-checks that R *made* the claim and refuses to write if it did not.
-
-Every parsed double is also re-formatted and compared against the text on disk,
-so a writer or parser that truncates is caught anywhere in the table rather
-than only at the extremes the manifest records.
+The ingest changes structure, never values: no unit conversion, no temporal
+alignment, no choice of which record stands for a year. The two structural
+steps that do drop or merge rows are declared by the spec and counted in the
+run report: rows failing a quality flag are dropped, and a static constraint's
+identical yearly copies are collapsed to one.
 
 Output is written to a ``.partial`` path and renamed only once it reads back
-bitwise through the library loader, so a failed check cannot leave a corrupt
-file where the canonical one belongs.
-
-Zero variances are written through unchanged. Most sit where the observation is
-zero too, but a few assert a non-zero value with no uncertainty at all, which
-weights as ``1/0``. Either way something downstream has to floor them; doing it
-here would hide a modeling decision inside an ingest script, so the count is
-reported instead.
+identically through the library loader, so a failed check cannot leave a
+corrupt file where the canonical one belongs.
 
 Usage
 -----
 ::
 
-    Rscript scripts/export_constraints.R --out long.csv --manifest manifest.json
-    python scripts/ingest_constraints.py --long-table long.csv \\
-        --manifest manifest.json
+    python scripts/ingest_constraints.py                         # every constraint
+    python scripts/ingest_constraints.py --constraint modis_leaf_area_index
+    python scripts/ingest_constraints.py --describe              # the specs, no I/O
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -90,25 +66,28 @@ import pandas as pd
 import xarray as xr
 
 from sipnet_calibration.constraints import (
-    CONSTRAINT_VARIABLE_ATTRS,
-    CONSTRAINT_VARIABLES,
-    OBSERVATION_MEAN,
-    OBSERVATION_VARIANCE,
-    SOURCE_VARIABLE_NAMES,
-    UNITS_PROVENANCE,
-    UNITS_STATUS,
-    default_constraints_path,
-    load_constraints,
-    read_long_table,
+    CONSTRAINT_NAMES,
+    SITE_COLUMN,
+    STANDARD_DEVIATION,
+    TIME_UNITS,
+    VALUE,
+    ConstraintSpec,
+    TimeStructure,
+    build_constraint,
+    constraint_path,
+    default_constraints_dir,
+    default_raw_dir,
+    describe,
+    load_constraint,
+    netcdf_encoding,
+    read_raw,
+    resolve_constraint,
 )
 from sipnet_calibration.sites import default_sites_path, load_sites
 
-#: Reference epoch for the stored time encoding. Written explicitly so nothing
-#: is inherited from a default.
-TIME_UNITS = "days since 2012-01-01"
-
-#: Compression applied to both data arrays.
-COMPRESSION = {"zlib": True, "complevel": 4, "_FillValue": np.nan}
+#: How far a raw file's lat/lon may sit from the site table before the site
+#: ids are taken to mean a different pool. The real files agree to 5e-13.
+COORDINATE_TOLERANCE_DEGREES = 1e-9
 
 
 class IngestError(Exception):
@@ -120,48 +99,61 @@ class IngestError(Exception):
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    out = args.out if args.out is not None else default_constraints_path()
+    names = args.constraint or list(CONSTRAINT_NAMES)
+
+    if args.describe:
+        print("\n\n".join(describe(resolve_constraint(name)) for name in names))
+        return 0
+
+    raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
+    out_dir = args.out_dir if args.out_dir is not None else default_constraints_dir()
     sites_path = args.sites if args.sites is not None else default_sites_path()
 
     try:
-        dataset = ingest(args.long_table, args.manifest, sites_path, out)
-    except (IngestError, OSError, ValueError) as error:
+        sites = load_sites(sites_path)
+        for name in names:
+            dataset = ingest(resolve_constraint(name), raw_root, sites, out_dir)
+            print(describe_product(dataset, constraint_path(name, out_dir)))
+    except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-
-    print(describe_constraints(dataset))
-    print(f"\nWrote {out} ({out.stat().st_size / 1e6:.1f} MB)")
     return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--long-table",
-        type=Path,
-        required=True,
-        help="The long CSV written by scripts/export_constraints.R.",
+        "--constraint",
+        action="append",
+        choices=CONSTRAINT_NAMES,
+        metavar="NAME",
+        help="A constraint to build; repeatable. Default: all of "
+        + ", ".join(CONSTRAINT_NAMES),
     )
     parser.add_argument(
-        "--manifest",
+        "--describe",
+        action="store_true",
+        help="Print each constraint's spec and exit without reading data.",
+    )
+    parser.add_argument(
+        "--raw-root",
         type=Path,
-        required=True,
-        help="The JSON manifest written alongside it.",
+        default=None,
+        help="Directory of the raw files. Default: data/raw/constraints.",
     )
     parser.add_argument(
         "--sites",
         type=Path,
         default=None,
-        help="The site table. Defaults to data/processed/sites/sites.csv.",
+        help="The site table. Default: data/processed/sites/sites.csv.",
     )
     parser.add_argument(
-        "--out",
+        "--out-dir",
         type=Path,
         default=None,
-        help="Where to write. Defaults to data/processed/constraints_annual.nc.",
+        help="Where to write. Default: data/processed/constraints.",
     )
     return parser.parse_args(argv)
 
@@ -169,502 +161,259 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the ingest steps, in the order main calls them ────────────────────────────
 
 
-def ingest(
-    long_table: Path, manifest_path: Path, sites_path: Path | None, out: Path
-) -> xr.Dataset:
-    """Read, check, build and write."""
-    manifest = read_manifest(manifest_path)
-    check_covariances_were_diagonal(manifest)
+def ingest(spec: ConstraintSpec, raw_root: Path, sites: pd.DataFrame, out_dir: Path) -> xr.Dataset:
+    """Read, check, build and write one constraint."""
+    frame = read_raw(spec, raw_root)
+    check_raw_frame(spec, frame, sites)
 
-    table = read_long_table(long_table)
-    sites = load_sites(sites_path)
-
-    check_table_matches_manifest(table, manifest)
-    check_snapshots_match_manifest(table, manifest)
-    check_extremes_round_tripped(table, manifest)
-    check_every_value_round_tripped(table, long_table)
-    check_no_duplicate_triples(table)
-    check_sites_are_in_the_site_table(table, sites)
-
-    renamed = rename_to_processed_variables(table)
-    dataset = build_dataset(build_grids(renamed, sites), manifest)
-    write_dataset(dataset, out)
+    dataset = build_constraint(spec, frame, sites)
+    write_product(dataset, constraint_path(spec, out_dir), spec)
     return dataset
 
 
-def read_manifest(path: Path) -> dict:
-    """Read the manifest ``export_constraints.R`` wrote."""
-    try:
-        manifest = json.loads(path.read_text())
-    except FileNotFoundError as error:
-        raise IngestError(
-            f"{path} not found. Produce it with scripts/export_constraints.R."
-        ) from error
-    except OSError as error:
-        raise IngestError(f"{path} could not be read: {error}") from error
-    except json.JSONDecodeError as error:
-        raise IngestError(f"{path} is not valid JSON: {error}") from error
-
-    if not isinstance(manifest, dict):
-        raise IngestError(
-            f"{path}: expected a JSON object, found {type(manifest).__name__}"
-        )
-
-    check_manifest_has_required_keys(manifest, path)
-    return manifest
+def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
+    """Every check on the raw rows, before anything is built from them."""
+    check_site_ids_are_valid(spec, frame)
+    check_sites_are_in_the_site_table(spec, frame, sites)
+    check_coordinates_match_site_table(spec, frame, sites)
+    check_key_is_unique(spec, frame)
+    check_value_and_sd_missing_together(spec, frame)
+    check_values_are_finite(spec, frame)
+    check_sd_is_not_negative(spec, frame)
+    check_quality_flag_values(spec, frame)
+    check_some_rows_are_observed(spec, frame)
+    check_time_column_parses(spec, frame)
+    if spec.time_structure is TimeStructure.STATIC:
+        check_static_copies_agree(spec, frame)
 
 
-def rename_to_processed_variables(table: pd.DataFrame) -> pd.DataFrame:
-    """Map the source variable names onto the processed ones."""
-    # Safe here rather than in R because the long table names the variable on
-    # every row, so a row carries its own identity and the rename cannot
-    # mis-pair a variance with a variable. In the source the pairing is
-    # positional, which is why R keeps the source names and the source order.
-    renamed = table.copy()
-    renamed["variable"] = renamed["variable"].map(SOURCE_VARIABLE_NAMES)
-    check_every_variable_was_renamed(renamed, table)
-    return renamed
-
-
-def build_grids(table: pd.DataFrame, sites: pd.DataFrame) -> Grids:
-    """Pivot the long table onto the dense ``(site, time, variable)`` grid.
-
-    Every site of the pool gets a row whether or not it was observed, so the
-    product's ``site`` axis is the pool rather than whichever sites happened to
-    carry an observation.
-    """
-    site = sites["site_id"].to_numpy(np.int32)
-    time = pd.DatetimeIndex(sorted(table["snapshot_date"].unique()))
-
-    shape = (site.size, time.size, len(CONSTRAINT_VARIABLES))
-    mean = np.full(shape, np.nan)
-    variance = np.full(shape, np.nan)
-
-    site_index = np.searchsorted(site, table["site_id"].to_numpy())
-    time_index = time.get_indexer(pd.to_datetime(table["snapshot_date"]))
-    variable_index = np.array(
-        [CONSTRAINT_VARIABLES.index(name) for name in table["variable"]]
-    )
-    check_indices_resolved(time_index)
-
-    mean[site_index, time_index, variable_index] = table["mean"].to_numpy()
-    variance[site_index, time_index, variable_index] = table["variance"].to_numpy()
-
-    return Grids(
-        mean=mean,
-        variance=variance,
-        site=site,
-        time=time,
-        lon=sites["lon"].to_numpy(np.float64),
-        lat=sites["lat"].to_numpy(np.float64),
-    )
-
-
-def build_dataset(grids: Grids, manifest: dict) -> xr.Dataset:
-    """Assemble the Dataset, with the attributes that travel with it."""
-    dims = ("site", "time", "variable")
-    dataset = xr.Dataset(
-        {
-            OBSERVATION_MEAN: (dims, grids.mean),
-            OBSERVATION_VARIANCE: (dims, grids.variance),
-        },
-        coords={
-            "site": grids.site,
-            "time": grids.time,
-            "variable": np.asarray(CONSTRAINT_VARIABLES, dtype=object),
-            "lon": ("site", grids.lon),
-            "lat": ("site", grids.lat),
-        },
-    )
-    annotate_dataset(dataset, manifest)
-    return dataset
-
-
-def write_dataset(dataset: xr.Dataset, out: Path) -> None:
-    """Write to a ``.partial`` path, verify the round trip, then rename.
-
-    A failed check leaves the partial file for inspection and nothing at the
-    canonical path, so a later read cannot pick up a half-written product.
-    """
+def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
+    """Write to a ``.partial`` path, verify the round trip, then rename."""
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_suffix(out.suffix + ".partial")
-    dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding())
-
-    check_round_trip(dataset, partial)
+    dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
+    check_round_trip(dataset, partial, spec)
     partial.replace(out)
 
 
-def describe_constraints(dataset: xr.Dataset) -> str:
+def describe_product(dataset: xr.Dataset, path: Path) -> str:
     """A short report of what was written, for the run log."""
+    value, sd = dataset[VALUE].values, dataset[STANDARD_DEVIATION].values
+    observed = np.isfinite(value)
+    sizes = " x ".join(f"{dataset.sizes[dim]} {dim}" for dim in dataset[VALUE].dims)
     lines = [
-        f"sites {dataset.sizes['site']}  snapshots {dataset.sizes['time']}  "
-        f"variables {dataset.sizes['variable']}",
-        f"snapshot keys {str(dataset['time'].values[0])[:10]} .. "
-        f"{str(dataset['time'].values[-1])[:10]}",
+        f"{dataset.attrs['constraint']}  ->  {path} ({path.stat().st_size / 1e6:.1f} MB)",
+        f"  {sizes}; observed {int(observed.sum())} of {observed.size} cells "
+        f"({observed.mean():.1%})",
+        f"  rows read {dataset.attrs['rows_read']}, dropped by quality flag "
+        f"{dataset.attrs['rows_dropped_by_quality_flag']}, collapsed as copies "
+        f"{dataset.attrs['rows_collapsed_as_copies']}",
     ]
-    mean, variance = dataset[OBSERVATION_MEAN], dataset[OBSERVATION_VARIANCE]
-    total = int(np.prod(mean.shape))
-    observed = int(np.isfinite(mean.values).sum())
-    lines.append(
-        f"observed {observed} of {total} cells ({observed / total:.1%}); "
-        f"the rest are NaN"
-    )
-    for index, name in enumerate(CONSTRAINT_VARIABLES):
-        column = mean.values[:, :, index]
-        variances = variance.values[:, :, index]
-        finite = np.isfinite(column)
-        n_zero = int((variances[np.isfinite(variances)] <= 0).sum())
-        extent = (
-            f"[{column[finite].min():.5g}, {column[finite].max():.5g}]"
-            if finite.any()
-            else "[none observed]"
-        )
+    if observed.any():
         lines.append(
-            f"  {name:<24s} n={finite.sum():>6d}  range {extent}  "
-            f"non-positive variances {n_zero}"
+            f"  value range [{value[observed].min():.5g}, {value[observed].max():.5g}] "
+            f"{dataset[VALUE].attrs['units']}; standard deviations of zero: "
+            f"{int((sd[observed] == 0).sum())}"
         )
+    if "time" in dataset.dims:
+        first, last = dataset["time"].values[[0, -1]]
+        lines.append(f"  time {str(first)[:10]} .. {str(last)[:10]}")
     return "\n".join(lines)
-
-
-# ── supporting types and helpers ──────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Grids:
-    """The dense arrays and the axes they are indexed on."""
-
-    mean: np.ndarray
-    variance: np.ndarray
-    site: np.ndarray
-    time: pd.DatetimeIndex
-    lon: np.ndarray
-    lat: np.ndarray
-
-
-def _same_extreme(formatted: str, expected: str) -> bool:
-    """Whether two ``%.17g`` extremes denote the same value.
-
-    A string comparison, because that is what detects a truncated digit. The
-    one exception is the sign of zero: R's ``min``/``max`` return the first of
-    tied values and numpy's return the signed one, so a column holding both
-    zeros can disagree on the sign of its extreme while every value round-trips
-    exactly. That is not a precision loss and must not be reported as one.
-    """
-    zeros = {"0", "-0"}
-    if formatted in zeros and expected in zeros:
-        return True
-    return formatted == expected
-
-
-def netcdf_encoding() -> dict:
-    """Explicit on-disk encoding, so nothing is inherited from a default."""
-    return {
-        OBSERVATION_MEAN: dict(COMPRESSION),
-        OBSERVATION_VARIANCE: dict(COMPRESSION),
-        "time": {
-            "units": TIME_UNITS,
-            "calendar": "proleptic_gregorian",
-            "dtype": "int32",
-        },
-    }
-
-
-def annotate_dataset(dataset: xr.Dataset, manifest: dict) -> None:
-    """Attach the attributes that have to travel with the product."""
-    dataset[OBSERVATION_MEAN].attrs = {
-        "long_name": "Observed annual constraint",
-        "units": "see the per-variable units in the dataset attributes",
-        "units_status": UNITS_STATUS,
-        "units_provenance": UNITS_PROVENANCE,
-    }
-    dataset[OBSERVATION_VARIANCE].attrs = {
-        "long_name": "Observation error variance",
-        "units": "the square of the corresponding observation's unit",
-        "units_status": UNITS_STATUS,
-        "units_provenance": UNITS_PROVENANCE,
-        "comment": (
-            "The source covariances are exactly diagonal, so these variances "
-            "are lossless. Some are exactly zero; flooring them is a modeling "
-            "decision and is not done here."
-        ),
-    }
-    for name, attrs in CONSTRAINT_VARIABLE_ATTRS.items():
-        for key, value in attrs.items():
-            dataset.attrs[f"variable_{name}_{key}"] = value
-
-    dataset["site"].attrs = {
-        "long_name": "Model site identifier",
-        "comment": "The handed-down 1-8000 identifier; never renumbered.",
-    }
-    dataset["time"].attrs = {
-        "long_name": "Annual snapshot key",
-        "time_zone": "none (nominal annual key)",
-        "time_label": "nominal",
-        "time_label_note": (
-            "The July 15 dates are the source product's annual bookkeeping "
-            "convention, not observation dates. 'nominal' extends the "
-            "start/middle/end/instant vocabulary the other products use, "
-            "because this label is a key rather than a time."
-        ),
-    }
-    dataset["variable"].attrs = {
-        "long_name": "Constrained variable",
-        "comment": (
-            "Processed names; each variable's source name is in the "
-            "variable_<name>_source_name dataset attribute."
-        ),
-    }
-    dataset.attrs.update(
-        {
-            "title": "Annual biomass, leaf area and soil constraints",
-            "source_mean_file": manifest.get("mean_file", ""),
-            "source_cov_file": manifest.get("cov_file", ""),
-            "source_resolution": "annual",
-            "history": (
-                "scripts/export_constraints.R -> scripts/ingest_constraints.py"
-            ),
-            "exported_at": manifest.get("generated_at", ""),
-            "covariances_all_diagonal": "true",
-            "n_observed_triples": int(manifest["n_rows"]),
-        }
-    )
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_manifest_has_required_keys(manifest: dict, path: Path) -> None:
-    """The manifest carries everything the later checks read."""
-    required = {
-        "variables",
-        "snapshot_dates",
-        "n_rows",
-        "counts_by_snapshot_variable",
-        "extremes",
-        "covariances_all_diagonal",
-        "max_abs_offdiagonal",
-    }
-    missing = sorted(required - set(manifest))
-    if missing:
-        raise IngestError(f"{path}: manifest is missing {missing}")
-
-
-def check_covariances_were_diagonal(manifest: dict) -> None:
-    """Refuse to write unless the R side confirmed every covariance diagonal.
-
-    Storing variances rather than matrices is lossless exactly when the source
-    covariances are diagonal, and that is no longer checkable from the CSV. So
-    this checks the claim was made and is affirmative.
-    """
-    if not manifest["covariances_all_diagonal"]:
+def check_site_ids_are_valid(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise unless every site id is a positive integer that fits the stored width."""
+    site = frame[SITE_COLUMN].to_numpy()
+    if not np.issubdtype(site.dtype, np.integer):
+        raise IngestError(f"{spec.raw_file}: {SITE_COLUMN} is not integer-valued")
+    info = np.iinfo(np.int32)
+    bad = (site < 1) | (site > info.max)
+    if bad.any():
         raise IngestError(
-            "the manifest reports the source covariances are not all diagonal "
-            f"(max |off-diagonal| = {manifest['max_abs_offdiagonal']!r}). The "
-            "processed form stores variances only, which is lossless just when "
-            "they are. The schema needs revisiting before this can be written; "
-            "see src/sipnet_calibration/constraints.py."
-        )
-    if manifest["max_abs_offdiagonal"] != 0:
-        raise IngestError(
-            "the manifest claims all covariances are diagonal but reports a "
-            f"non-zero max |off-diagonal| of {manifest['max_abs_offdiagonal']!r}"
-        )
-
-
-def check_table_matches_manifest(table: pd.DataFrame, manifest: dict) -> None:
-    """The long table is the one the manifest describes."""
-    expected = tuple(SOURCE_VARIABLE_NAMES)
-    if tuple(manifest["variables"]) != expected:
-        raise IngestError(
-            f"manifest variables {tuple(manifest['variables'])} do not match "
-            f"the expected source names {expected}"
-        )
-    if len(table) != manifest["n_rows"]:
-        raise IngestError(
-            f"the long table has {len(table)} rows, the manifest says "
-            f"{manifest['n_rows']}. They are out of step; regenerate both."
-        )
-
-    observed = table.groupby(["snapshot_date", "variable"], sort=True).size().to_dict()
-    for date, counts in manifest["counts_by_snapshot_variable"].items():
-        for variable, expected_count in counts.items():
-            actual = observed.get((date, variable), 0)
-            if actual != expected_count:
-                raise IngestError(
-                    f"{date} {variable}: the table has {actual} rows, the "
-                    f"manifest says {expected_count}"
-                )
-
-
-def check_snapshots_match_manifest(table: pd.DataFrame, manifest: dict) -> None:
-    """Every snapshot the source held carries rows in the table.
-
-    The time axis is built from the snapshots that carry observations, so a
-    snapshot observed nowhere would drop out of the product silently and shift
-    every later snapshot's index.
-    """
-    expected = set(manifest["snapshot_dates"])
-    observed = set(table["snapshot_date"])
-    missing = sorted(expected - observed)
-    if missing:
-        raise IngestError(
-            f"{len(missing)} snapshot(s) in the manifest carry no rows in the "
-            f"long table: {missing}. They would drop out of the time axis "
-            "rather than appearing as all-NaN."
-        )
-    unexpected = sorted(observed - expected)
-    if unexpected:
-        raise IngestError(
-            f"snapshot(s) in the long table the manifest does not list: "
-            f"{unexpected}"
-        )
-
-
-def check_extremes_round_tripped(table: pd.DataFrame, manifest: dict) -> None:
-    """The parsed extremes re-format to exactly the strings R wrote.
-
-    This is the truncation detector. The R side wrote every value with
-    ``%.17g``, which uniquely determines a float64; if the parse or the write
-    lost bits, an extreme will not re-format to the same characters.
-    """
-    for variable, expected in manifest["extremes"].items():
-        rows = table[table["variable"] == variable]
-        if rows.empty:
-            raise IngestError(
-                f"{variable}: the manifest has extremes, the table has no rows"
-            )
-        for column, keys in (
-            ("mean", ("mean_min", "mean_max")),
-            ("variance", ("variance_min", "variance_max")),
-        ):
-            values = rows[column].to_numpy()
-            for key, value in zip(keys, (values.min(), values.max())):
-                formatted = f"{value:.17g}"
-                if not _same_extreme(formatted, expected[key]):
-                    raise IngestError(
-                        f"{variable} {key}: R wrote {expected[key]!r}, this "
-                        f"parsed to {formatted!r}. A value lost precision "
-                        "between the two."
-                    )
-
-
-def check_every_value_round_tripped(table: pd.DataFrame, path: Path) -> None:
-    """Every parsed double re-formats to exactly the text on disk.
-
-    :func:`check_extremes_round_tripped` compares four strings per variable
-    against the manifest, which catches a truncating writer but sees nothing in
-    the interior. This reads the file back as text and checks all of it, which
-    costs about a second.
-    """
-    raw = pd.read_csv(
-        path,
-        usecols=["mean", "variance"],
-        dtype=str,
-        keep_default_na=False,
-        na_values=[],
-        index_col=False,
-    )
-    if len(raw) != len(table):
-        raise IngestError(
-            f"{path}: re-read gave {len(raw)} rows against {len(table)}"
-        )
-    for column in ("mean", "variance"):
-        written = raw[column].to_numpy()
-        formatted = np.array([f"{value:.17g}" for value in table[column]])
-        differ = np.where(
-            [not _same_extreme(f, w) for f, w in zip(formatted, written)]
-        )[0]
-        if differ.size:
-            first = int(differ[0])
-            raise IngestError(
-                f"{path}: {differ.size} {column} value(s) do not re-format to "
-                f"the text on disk; first at data row {first}, which reads "
-                f"{str(written[first])!r} and parsed to "
-                f"{str(formatted[first])!r}."
-            )
-
-
-def check_no_duplicate_triples(table: pd.DataFrame) -> None:
-    """No (snapshot, site, variable) triple appears twice."""
-    duplicated = table.duplicated(subset=["snapshot_date", "site_id", "variable"])
-    if duplicated.any():
-        examples = table.loc[duplicated, ["snapshot_date", "site_id", "variable"]]
-        raise IngestError(
-            f"{int(duplicated.sum())} duplicated (snapshot, site, variable) "
-            f"triples, for example:\n{examples.head().to_string(index=False)}"
+            f"{spec.raw_file}: site ids outside 1..{info.max}: "
+            f"{sorted(set(site[bad].tolist()))[:10]}"
         )
 
 
 def check_sites_are_in_the_site_table(
-    table: pd.DataFrame, sites: pd.DataFrame
+    spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
-    """The source's site pool is a subset of the site table's.
-
-    Two independent statements of the 8000-site pool -- the shapefile and the
-    constraint files -- and no reason for them to disagree, so a disagreement is
-    worth stopping for rather than dropping rows over.
-    """
-    unknown = sorted(set(table["site_id"]) - set(sites["site_id"]))
+    """Raise if a row names a site the site table does not have."""
+    unknown = sorted(set(frame[SITE_COLUMN]) - set(sites[SITE_COLUMN]))
     if unknown:
         raise IngestError(
-            f"{len(unknown)} site ids in the constraints are absent from the "
-            f"site table, for example {unknown[:10]}. Rebuild the site table "
-            "with scripts/ingest_sites.py, or the pools genuinely differ."
+            f"{spec.raw_file}: {len(unknown)} site ids are not in the site table, e.g. "
+            f"{unknown[:10]}. The file may belong to a different site pool."
         )
 
 
-def check_every_variable_was_renamed(
-    renamed: pd.DataFrame, original: pd.DataFrame
+def check_coordinates_match_site_table(
+    spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
-    """No source name fell through the rename as a null."""
-    unmapped = renamed["variable"].isna()
-    if unmapped.any():
-        names = sorted(set(original.loc[unmapped, "variable"]))
+    """Raise if a file's own lat/lon disagree with the site table for its site ids.
+
+    Only files carrying ``lat`` and ``lon`` are checked. The columns are
+    redundant with the site table and are kept in the raw files exactly for
+    this: a second, 6400-site pool exists upstream whose site 1 is elsewhere.
+    """
+    if not {"lat", "lon"} <= set(spec.raw_columns):
+        return
+    table = sites.set_index(SITE_COLUMN).loc[frame[SITE_COLUMN].to_numpy(), ["lon", "lat"]]
+    for column in ("lon", "lat"):
+        given = frame[column].to_numpy(np.float64)
+        if not np.isfinite(given).all():
+            raise IngestError(
+                f"{spec.raw_file}: {column} is missing or not finite in "
+                f"{int((~np.isfinite(given)).sum())} rows"
+            )
+        difference = np.abs(given - table[column].to_numpy())
+        if difference.max() > COORDINATE_TOLERANCE_DEGREES:
+            worst = int(np.argmax(difference))
+            raise IngestError(
+                f"{spec.raw_file}: {column} disagrees with the site table by up to "
+                f"{difference[worst]:.3g} degrees (site {frame[SITE_COLUMN].iloc[worst]}). "
+                "The site ids do not mean what the site table means."
+            )
+
+
+def check_key_is_unique(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise if two rows share a site (and time)."""
+    key = [SITE_COLUMN] + ([spec.time_column] if spec.time_column else [])
+    duplicated = frame.duplicated(key)
+    if duplicated.any():
+        example = frame.loc[duplicated, key].iloc[0].tolist()
         raise IngestError(
-            f"source variable names with no processed name: {names}. Add them "
-            "to SOURCE_VARIABLE_NAMES in sipnet_calibration.constraints."
+            f"{spec.raw_file}: {int(duplicated.sum())} rows repeat a {tuple(key)} key, "
+            f"e.g. {example}"
         )
 
 
-def check_indices_resolved(time_index: np.ndarray) -> None:
-    """Every snapshot date found a slot on the time axis."""
-    if np.any(time_index < 0):
-        raise IngestError("a snapshot date failed to index; this is a bug")
+def check_value_and_sd_missing_together(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise if a row has a value without a standard deviation or the reverse."""
+    value_missing = frame[spec.value_column].isna().to_numpy()
+    sd_missing = frame[spec.sd_column].isna().to_numpy()
+    mismatched = value_missing != sd_missing
+    if mismatched.any():
+        raise IngestError(
+            f"{spec.raw_file}: {int(mismatched.sum())} rows have {spec.value_column!r} "
+            f"and {spec.sd_column!r} missing in different places"
+        )
 
 
-def check_round_trip(dataset: xr.Dataset, path: Path) -> None:
-    """The written file reads back through the real loader, bitwise."""
-    reloaded = load_constraints(path)
-    try:
-        for name in (OBSERVATION_MEAN, OBSERVATION_VARIANCE):
-            written, read = dataset[name].values, reloaded[name].values
-            if written.shape != read.shape:
-                raise IngestError(
-                    f"{name}: wrote shape {written.shape}, read {read.shape}"
-                )
-            same = (written == read) | (np.isnan(written) & np.isnan(read))
-            if not same.all():
-                differ = ~same
-                numeric = differ & np.isfinite(written) & np.isfinite(read)
-                detail = (
-                    "worst numeric difference "
-                    f"{np.abs(written[numeric] - read[numeric]).max()!r}"
-                    if numeric.any()
-                    else "every disagreement is NaN against a value"
-                )
-                raise IngestError(
-                    f"{name}: {int(differ.sum())} cells changed on the round "
-                    f"trip; {detail}"
-                )
-        for coordinate in ("site", "time", "variable", "lon", "lat"):
-            if not np.array_equal(
-                dataset[coordinate].values, reloaded[coordinate].values
-            ):
-                raise IngestError(
-                    f"the {coordinate!r} coordinate changed on the round trip"
-                )
-    finally:
-        reloaded.close()
+def check_values_are_finite(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise on an infinite value or standard deviation; only ``NA`` may be missing."""
+    for column in (spec.value_column, spec.sd_column):
+        values = frame[column].to_numpy(np.float64)
+        infinite = np.isinf(values)
+        if infinite.any():
+            raise IngestError(
+                f"{spec.raw_file}: {column!r} is infinite in {int(infinite.sum())} rows"
+            )
+
+
+def check_some_rows_are_observed(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise if no row that passes the quality flag carries a value.
+
+    A file of nothing but ``NA`` would otherwise build an all-missing product
+    and replace the canonical file with it.
+    """
+    kept = frame
+    if spec.quality_column is not None:
+        kept = frame[frame[spec.quality_column] == spec.quality_pass]
+    if not kept[spec.value_column].notna().any():
+        raise IngestError(
+            f"{spec.raw_file}: no row carries an observed value"
+            + (" after the quality filter" if spec.quality_column else "")
+        )
+
+
+def check_sd_is_not_negative(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise on a negative standard deviation."""
+    sd = frame[spec.sd_column].to_numpy(np.float64)
+    negative = sd < 0
+    if negative.any():
+        raise IngestError(
+            f"{spec.raw_file}: {int(negative.sum())} negative standard deviations, "
+            f"smallest {sd[negative].min():.6g}"
+        )
+
+
+def check_quality_flag_values(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise if the quality column never takes the passing value.
+
+    An unexpected extra flag value is not an error -- it is a row that fails --
+    but a file where nothing passes means the spec's ``quality_pass`` is wrong.
+    """
+    if spec.quality_column is None:
+        return
+    values = frame[spec.quality_column]
+    if not (values == spec.quality_pass).any():
+        raise IngestError(
+            f"{spec.raw_file}: no row has {spec.quality_column!r} == {spec.quality_pass!r}; "
+            f"values seen: {sorted(map(str, values.unique().tolist()))[:10]}"
+        )
+
+
+def check_time_column_parses(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise if a time value is missing or is not a year or an ISO date."""
+    if spec.time_column is None:
+        return
+    column = frame[spec.time_column]
+    if column.isna().any():
+        raise IngestError(f"{spec.raw_file}: {spec.time_column!r} has missing values")
+    if spec.time_structure is TimeStructure.DATED:
+        try:
+            parsed = pd.to_datetime(column, format="%Y-%m-%d")
+        except (ValueError, TypeError) as error:
+            raise IngestError(
+                f"{spec.raw_file}: {spec.time_column!r} is not an ISO date column: {error}"
+            ) from error
+        # An empty string parses to NaT without raising.
+        if parsed.isna().any():
+            raise IngestError(
+                f"{spec.raw_file}: {spec.time_column!r} has {int(parsed.isna().sum())} "
+                "values that are not dates"
+            )
+    else:
+        years = column.to_numpy()
+        if not np.issubdtype(years.dtype, np.integer) or (years < 1900).any() or (years > 2100).any():
+            raise IngestError(f"{spec.raw_file}: {spec.time_column!r} does not hold years")
+
+
+def check_static_copies_agree(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Raise unless a static constraint carries one value per site across the file."""
+    if spec.time_column is None:
+        return
+    distinct = frame.groupby(SITE_COLUMN)[[spec.value_column, spec.sd_column]].nunique(
+        dropna=False
+    )
+    varying = distinct[(distinct > 1).any(axis=1)]
+    if not varying.empty:
+        raise IngestError(
+            f"{spec.raw_file}: {len(varying)} sites carry different values in different "
+            f"years (first: {varying.index[:5].tolist()}), but {spec.name} is declared "
+            "static. Either the source changed or the spec's time_structure is wrong."
+        )
+
+
+def check_round_trip(dataset: xr.Dataset, partial: Path, spec: ConstraintSpec) -> None:
+    """Raise unless the written file reads back identical through the library loader."""
+    with load_constraint(spec, partial) as written:
+        written = written.load()
+    if not written.identical(dataset):
+        raise IngestError(
+            f"{partial}: the written file does not read back identical to what was built. "
+            "The partial file is left in place for inspection."
+        )
+    if "time" in written.coords and written["time"].encoding.get("units") != TIME_UNITS:
+        # xarray silently changes the units when a label is not a whole day.
+        raise IngestError(
+            f"{partial}: time was encoded as {written['time'].encoding.get('units')!r}, not "
+            f"{TIME_UNITS!r}; a label is not a whole day. The partial file is left in place."
+        )
 
 
 if __name__ == "__main__":

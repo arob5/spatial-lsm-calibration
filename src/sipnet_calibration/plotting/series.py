@@ -168,10 +168,9 @@ def plot_time_series(
     Restricting the dimension names to ``member``, ``site`` and ``time`` is a
     guard rather than a requirement: the sample-dimension rule would work on
     any name. It is checked because a further dimension is usually a mistake.
-    Passing the stored form of the annual constraints, which carries a
-    ``variable`` dimension, would otherwise draw quantile bands across four
-    variables with four different units -- a plausible-looking figure of
-    nothing.
+    Passing an array that stacks several variables along a ``variable``
+    dimension would otherwise draw quantile bands across variables with
+    different units -- a plausible-looking figure of nothing.
 
     ``show="fan"`` also draws the median as a curve, and the legend entry goes
     on that curve rather than on a band.

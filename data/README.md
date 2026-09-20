@@ -87,8 +87,8 @@ data/
       sda_8k_site_rdata/obs.cov.Rdata     retained for validation
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
+    constraints/<name>.nc       one per constraint, <name> the raw file's stem
     ic.nc
-    agb_lai.nc
     nee.zarr/
 ```
 
@@ -598,17 +598,33 @@ unlike the other files it is **not one row per site-year**. `lai` runs 0 to 7
 and `sd` 0 to 24.8, both exact multiples of 0.1, which is the native MODIS
 scaling.
 
-`qc` takes the values 0 and 1, and **`qc == 1` is exactly equivalent to
-`sd > 20`**: 221,659 rows satisfy each, and no row satisfies one but not the
-other. Within that flagged set, **`lai == 0` is a no-data sentinel** -- all
-60,016 such rows carry `sd` of exactly 24.8, the file maximum, and all are
-flagged. After dropping flagged rows the minimum `lai` is 0.1 and no zeros
-remain.
+The 322 dates are 23 per year on a 4-day lattice inside a June 1 to August 29
+window, so the file is a summer-window extraction of the 4-day MCD15A3H
+composites, not a year-round record. The `date` is the composite's label as
+the extraction returned it; whether it marks the first day of the 4-day period
+is not confirmed (Note 23).
 
-Selecting, per site and year, the nearest observation by date to July 15 from
-the unflagged rows reproduces the `LAI` means in `obs.mean.Rdata` exactly, at
-all 99,632 of them. Nearest-date selection without the flag filter reproduces
-only 85.9%.
+`qc` is a **three-character string**, `"000"` or `"001"`, and **`qc == "001"`
+is exactly equivalent to `sd > 20`**: 221,659 rows satisfy each, and no row
+satisfies one but not the other. Within that flagged set, **`lai == 0` is a
+no-data sentinel** -- all 60,016 such rows carry `sd` of exactly 24.8, which
+is the product's fill value for `LaiStdDev_500m` (248) times its 0.1 scale
+factor, and all are flagged. After dropping flagged rows the minimum `lai` is
+0.1 and no zeros remain. The ingest drops the flagged rows and records how
+many in the product's attributes.
+
+The assembler's selection rule is fully reproduced: keep the unflagged rows,
+keep those within **30 days** of July 15, take the nearest, and on a tie
+between an earlier and a later composite take the **earlier**. That
+reproduces the `LAI` means in `obs.mean.Rdata` exactly, at all 99,632 of them,
+and `max(sd, 0.66)` reproduces every variance. The tie-break is load-bearing:
+within the window 4,840 site-years tie, the two candidates differ in 4,003 of
+them, and the later-date rule fails on exactly those. The window excludes 398
+site-years whose nearest unflagged composite is 31-45 days out. Nearest-date selection without the flag filter
+reproduces only 85.9%. The rule is what the PEcAn prep code does
+(`MODIS_LAI_prep.R`: `search_window = 30`, rows with `sd >= 20` dropped,
+`which.min` taking the first minimum), and it is encoded in
+`tests/test_constraints.py`, not in any product.
 
 #### `smap_soil_moisture.csv.gz`
 
@@ -629,8 +645,8 @@ observations.
 
 8000 sites x 13 years, 2012-2024; 103,870 rows carry values. `soc` and `sd` are
 **ten times** the corresponding values in `obs.mean.Rdata`, which are declared
-`kg C m-2`; this file is therefore in `Mg C ha-1` (Note 9). Ingest converts;
-the raw file keeps the source unit.
+`kg C m-2`; this file is therefore in `Mg C ha-1` (Note 9). The processed
+product keeps that unit; the factor is the observation operator's to apply.
 
 The values integrate **0-200 cm** (Note 21).
 
@@ -642,10 +658,14 @@ site-years as independent will weight this variable thirteen times too heavily.
 
 #### Retained for validation: `sda_8k_site_rdata/obs.{mean,cov}.Rdata`
 
-The nested assimilation inputs remain symlinked, and remain what
-`export_constraints.R` and `ingest_constraints.py` currently read. They are kept
-because they are what the reanalysis actually assimilated, which the
-per-variable files above cannot show.
+The nested assimilation inputs remain symlinked. No script reads them any
+longer; they are kept because they are what the reanalysis actually
+assimilated, which the per-variable files above cannot show, and because the
+questions going to their producers are still being formulated.
+`tests/test_constraints.py` checks that the new products reproduce them, via
+`processed/constraints_annual.nc`, the last output of the retired R and Python
+pipeline (repository commit `d533dfd` and earlier). No script writes that file
+any longer; the check runs where a copy is present and skips otherwise.
 
 Two R data files, each a single object nesting as year, then site, then
 observation: lists of length 13 keyed by date from `2012-07-15` to
@@ -711,8 +731,13 @@ must account for that floor.
 > extraction is not.
 
 > **Note 22.** The 0.66 floor on the `LAI` standard deviations appears only in
-> the assembled covariance file, not in any per-variable source, and no script
-> producing it has been found.
+> the assembled covariance file, not in any per-variable source. The script
+> that applies it is PEcAn's `MODIS_LAI_prep.R`; whether it is intended for
+> assimilation is a question for the producer.
+
+> **Note 23.** Whether the MODIS composite date labels the first day of the
+> 4-day period is not confirmed, so the processed product carries the date as
+> written and writes no `time_bounds`.
 
 **Source.** The observation inputs assimilated by [NALCR]. The per-variable
 files are the upstream sources from which those inputs were assembled.
@@ -729,8 +754,7 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | Script | Reads | Writes |
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
-| `export_constraints.R` | `raw/constraints/sda_8k_site_rdata/obs.{mean,cov}.Rdata` | a long CSV and a JSON manifest |
-| `ingest_constraints.py` | that CSV and manifest, `processed/sites/sites.csv` | `processed/constraints_annual.nc` |
+| `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
 | `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
 
@@ -740,36 +764,33 @@ never reads; `sipnet_calibration.drivers.load_drivers` parses the raw files for
 the sites a caller names and returns the canonical form directly. A cached
 subset, where a workflow wants one, is the caller's `to_zarr`.
 
-Reading the R data files requires R, and they are the only inputs that do.
-`obs.mean` is a list of lists of data frames, which `pyreadr` does not support,
-and R's `ncdf4` is not installed on the development machine, so R cannot write
-the netCDF either. `export_constraints.R` therefore does only what R must --
-read the objects and flatten them to one row per observed
-`(snapshot, site, variable)` triple -- and `ingest_constraints.py` makes every
-schema decision. The intermediate CSV is 322,515 rows and about 19 MB; it is
-scratch, not a product, and belongs outside `processed/`.
-
-Alongside the CSV, `export_constraints.R` writes a JSON manifest of what it
-checked: per-snapshot per-variable row counts, the exact extremes per variable,
-the empty site-snapshots, and the largest off-diagonal covariance element it
-saw. `ingest_constraints.py` checks the CSV against that manifest and refuses to
-write if the two disagree. The manifest exists because **the diagonality of the
-covariances can only be checked in R** -- by the time the CSV exists the
-off-diagonal is gone -- and the processed form stores variances rather than
-matrices, which is lossless exactly when they are diagonal.
+No ingest needs R. Each constraint's raw file is described by a
+`ConstraintSpec` in `sipnet_calibration.constraints` -- the columns that carry
+the site, the time, the value and its standard deviation, the units, the time
+structure and an optional quality flag -- and `ingest_constraints.py` reads the
+file, runs one generic set of checks driven by that spec, places the records on
+the site pool and writes the netCDF with the spec's fields as attributes.
+`python scripts/ingest_constraints.py --describe` prints every spec.
 
 Conversions applied during ingest rather than downstream:
 
-- **Constraints.** The covariance matrices are reduced to their diagonals. This
-  is lossless and asserted, not assumed. Zero variances are written through
-  unchanged; 929 `AbvGrndWood` variances are exactly zero. 925 of those sit
-  where the observation is zero too, but four assert a non-zero value with no
-  uncertainty at all: sites 5664 (2014), 6558 (2016) and 7167 (2015 and 2016),
-  all with a mean of 1.0. Either way flooring them is a modeling decision that
-  would be hidden if an ingest script made it. See open question 14.
-- **Net ecosystem exchange.** Converted from umol CO2 m-2 s-1 to the canonical
-  unit used throughout, so that nothing later has to reconcile units, and the
-  redundant `ens_mean` column is dropped.
+- **Constraints.** None to the values: the ingest changes structure, never
+  values. Units stay the raw file's (so SoilGrids soil carbon is `Mg ha-1`,
+  not the `kg m-2` of the assembled files), no record is chosen to stand for a
+  year, and nothing is aligned in time. Two structural steps are declared by
+  the spec and counted in the product's attributes: MODIS rows failing the
+  producer's quality flag are dropped, and SoilGrids' identical yearly copies
+  are collapsed to one value per site after a check that they are identical.
+  Zero standard deviations are written through unchanged; 929 LandTrendr
+  records carry one, 925 of them where the observation is zero too, but four
+  assert a non-zero value with no uncertainty at all: sites 5664 (2014), 6558
+  (2016) and 7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a
+  modeling decision that would be hidden if an ingest script made it. See open
+  question 14.
+- **Net ecosystem exchange.** None to the values, as for the constraints: the
+  product keeps the producer's umol CO2 m-2 s-1 and the observation operator
+  converts the model into it (the 2026-09-15 observation-operator design
+  decision). The redundant `ens_mean` column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which labeling a calibration uses, and how many exist, is
@@ -792,7 +813,7 @@ Formats are chosen according to the shape of each product.
 | Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
-| `constraints_annual.nc` | netCDF | `(site, time, variable)` for the mean and the variance | 2.2 MB |
+| `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
 | `ic.nc` | netCDF | `(member, site)` | 32 MB at 100 members |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
@@ -849,70 +870,57 @@ settings to each caller.
   are named literally `NA`, which a default read turns into a null, and an
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
 
-`constraints_annual.nc` carries the annual biomass, leaf area and soil
-constraints on a dense grid, with `NaN` where a site-snapshot-variable was not
-observed:
+The **constraints** are five files under `processed/constraints/`, one per
+constraint, named by the raw file's stem. Each is an `xarray.Dataset` of two
+`float64` variables, `NaN` where a site (and time) was not observed and in the
+same cells of both:
 
-| Variable | Dims | Type | Description |
-|---|---|---|---|
-| `observation_mean` | `(site, time, variable)` | float64 | The observation |
-| `observation_variance` | `(site, time, variable)` | float64 | Its error variance |
-
-`site` is the full 1-8000 pool, whether or not a site was ever observed; `time`
-is the thirteen July 15 snapshot keys. `lon` and `lat` are non-dimension
-coordinates on `site`, joined from the site table.
-
-The `variable` coordinate holds **processed** names. The source names are not
-ours to choose, but the processed ones follow the project convention of lower
-case with underscores and no unnecessary abbreviation, and each variable's
-source name is kept in the file's attributes as
-`variable_<name>_source_name`:
-
-| Source | Processed | Unit |
+| Variable | Dims | Description |
 |---|---|---|
-| `AbvGrndWood` | `aboveground_wood_carbon` | Mg C ha-1 |
-| `LAI` | `lai` | m2 m-2 |
-| `SoilMoistFrac` | `soil_moisture_percent` | percent |
-| `TotSoilCarb` | `total_soil_carbon` | kg C m-2 |
+| `value` | `(site, time)`, or `(site,)` | The observation, in the raw file's units |
+| `standard_deviation` | the same | The standard deviation the source reports beside it |
 
-The rename is applied by `ingest_constraints.py`, from a single mapping in
-`sipnet_calibration.constraints`. It happens there rather than in R because the
-intermediate long table names the variable on every row, so a row carries its
-own identity and the rename cannot mis-pair a variance with a variable. In the
-source the pairing is positional, which is why the R side keeps the source names
-and the source order. 8000 x 13 x 4 is 416,000 cells per array, of
-which 322,515 are observed, so the file is 2.2 MB compressed. Dense is chosen
-over a ragged encoding because the raggedness costs nothing to represent this
-way and dense is far easier to reason about.
+`site` is the full 1-8000 pool in every file, whether or not a site was ever
+observed, so any two products align on `site` without a join; `lon` and `lat`
+are non-dimension coordinates on it. `time` is each product's own:
 
-Three points about the layout.
+| Constraint | Time structure | `time` | `time_bounds` | Units |
+|---|---|---|---|---|
+| `landtrendr_aboveground_biomass` | annual | January 1 of 2012-2023 | the calendar year | `Mg ha-1`, constituent `C` |
+| `gedi_aboveground_biomass` | annual | January 1 of 2019-2024 | the calendar year | `Mg ha-1` |
+| `modis_leaf_area_index` | dated | the composite dates, 2011-2024 | none | `m2 m-2` |
+| `smap_soil_moisture` | dated | the July 15 keys, 2015-2024 | none | `percent` |
+| `soilgrids_soil_organic_carbon` | static | no time dimension | none | `Mg ha-1`, constituent `C` |
 
-- **Variances, not covariance matrices.** Every source covariance is diagonal,
-  so nothing is lost. Of the 104,000 site-snapshot entries, 103,029 are
-  matrices whose off-diagonal is checked element by element at every export;
-  953 are single-variable scalars, which have no off-diagonal; 18 are empty.
-  The check runs at every export, not once, because it is what makes the
-  choice lossless.
-- **`variable` is a dimension.** That is not a canonical field, whose dims must
-  be a subset of `(member, site, time)`. It is stored this way because the
-  observation operator indexes observations by exactly `(site, variable, time)`,
-  so flattening to the observation vector is a stack rather than a join, and
-  because all four variables share one `(site, time)` grid here.
-  `sipnet_calibration.constraints.constraint_fields` returns the canonical
-  per-variable view -- one `DataArray` per variable with dims `(site, time)` --
-  so the plotting layer and the likelihood are each served without reshaping the
-  other's form.
-- **The snapshot key is labeled `nominal`.** The July 15 dates are the source
-  product's annual bookkeeping convention, not observation dates, so the label
-  is neither an instant nor an interval boundary. The file records
-  `time_label = "nominal"` with a note saying so, rather than claiming one of
-  the interval conventions the other products use.
+An **annual** product labels each value with January 1 of its year -- a key,
+not an acquisition time -- and states the calendar year the value is
+attributed to as CF `time_bounds`. A **dated** product carries the source's
+own date label exactly as written, with no bounds: what the label marks (a
+4-day composite, a snapshot key) is documented but its exact placement is not,
+and the `comment` on `value` says what is known. A **static** product has no
+time dimension; the raw file's yearly copies were checked to be identical and
+collapsed. Which record stands for a model time, and how, is the observation
+operator's decision, not the product's.
 
-Each variable's unit is a dataset attribute, `variable_<name>_units`, beside
-`_long_name` and `_source_name`. The two data variables carry
-`units_status = "unconfirmed"` and a provenance string, because the units are
-documented for the reanalysis *output* rather than for these observation
-*inputs*. See open question 9.
+**The processed files follow the Climate and Forecast conventions, CF-1.11**,
+as pySIPNET's model output does, so the two sides read alike. The dataset
+declares `Conventions = "CF-1.11"`; `time` carries `standard_name = "time"`,
+`axis = "T"` and, where present, `bounds = "time_bounds"`; `lon` and `lat`
+carry `standard_name` and `units`; no coordinate is encoded with a
+`_FillValue`. No observation carries `cell_methods`, because CF has no
+vocabulary for "the nearest composite" or "an annual map"; the meaning of the
+label is written in words in the `time_reference` attribute, following
+pySIPNET's use of a `comment` where `cell_methods` cannot speak.
+
+Every attribute on `value` comes from the constraint's `ConstraintSpec`:
+`units`, `constituent` (where the unit is of a substance), `long_name`,
+`description`, `product`, `source_file`, `source_column`, `time_reference`,
+`units_provenance` and, where set, `sign_convention` and `comment`. The dataset
+counts what the ingest did to the rows: `rows_read`,
+`rows_dropped_by_quality_flag` and `rows_collapsed_as_copies`. The units
+are the raw file's, unchanged, and every one is inferred or documented for
+something adjacent rather than confirmed by the producer; `units_provenance`
+says which, in a sentence. See open question 9.
 
 The **drivers** are served by `sipnet_calibration.drivers.load_drivers(sites,
 ...)`, which parses the raw `.clim` files for the named sites and returns an
@@ -959,8 +967,8 @@ The following conventions apply to every product.
   Aggregation is the observation operator's business, specified per variable at
   model-specification time, so that different constraints can be used at
   different time scales without a re-ingest.
-- Uneven coverage is preserved rather than filled. The annual constraints in
-  particular are not rectangular over site, snapshot and variable, and
+- Uneven coverage is preserved rather than filled. The constraint products in
+  particular are ragged over site and time, and
   unobserved cells are `NaN` rather than zero -- a zero there would be an
   observation of no biomass, which is a different and real statement.
 
@@ -1197,9 +1205,16 @@ litter and roots, is also unconfirmed.
 
 **22. The leaf area index floor, and which version is authoritative.** The
 assembled covariance file floors the `LAI` standard deviations at 0.66,
-affecting 82.4% of observations; no per-variable source carries the floor and no
-script producing it has been found. Separately, a later revision of the MODIS
-extraction exists upstream which disagrees with the assembled file at 16,770 of
+affecting 82.4% of observations; no per-variable source carries the floor. The
+script that applies it is PEcAn's `MODIS_LAI_prep.R`, so what remains open is
+whether the floor is intended for assimilation. Separately, a later revision of
+the MODIS extraction exists upstream which disagrees with the assembled file at 16,770 of
 99,112 observations, spread evenly across all thirteen years and by as much as
 6.5 leaf area index units. Which extraction is authoritative determines what a
 future ingest should produce.
+
+**23. The MODIS composite date.** `modis_leaf_area_index.csv.gz` labels each
+value with a date on a 4-day lattice, and MCD15A3H is a 4-day composite, but
+neither the file nor the product's catalog page says whether the label is the
+first day of the compositing period. Until that is confirmed the processed
+product carries the label as written and writes no `time_bounds`.
