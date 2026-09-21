@@ -79,7 +79,7 @@ Three traps are worth knowing before writing an adapter:
 * The NEE csv carries an ``ens_mean`` column. It is a derived mean, not a
   member, and admitting it to the ``member`` dimension corrupts every quantile
   taken afterwards.
-* The producer's initial condition netCDFs must never be opened with CF time
+* PEcAn's initial condition source netCDFs must never be opened with CF time
   decoding on: their time units are an unsubstituted template,
   ``"days since [year]-01-01 00:00:00 UTC"``, which no calendar library can
   parse; ``cftime`` does not help. Nothing here should need to: the tracked

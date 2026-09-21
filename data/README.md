@@ -76,7 +76,7 @@ data/
     initial_conditions/         tracked: the converted ensemble and its record
       pecan_pool_initial_conditions.nc
       provenance.md
-      files/                    SCC only: symlink to the producer's 800,000 files,
+      files/                    SCC only: symlink to PEcAn's 800,000 source files,
                                 <site_id>/IC_site_<site_id>_<member>.nc
     constraints/              observations, tracked in version control
       landtrendr_aboveground_biomass.csv.gz
@@ -115,8 +115,8 @@ the same reason. `raw/constraints/` holds the five per-variable observation
 files, which are tracked because the upstream copies are edited and moved in
 place, so a symlink is not a stable input; see
 [Constraint observations](#constraint-observations). `raw/initial_conditions/`
-holds the initial condition ensemble converted from the producer's 800,000
-per-member files into one 26 MB array, which is the only form in which it
+holds the initial condition ensemble converted from PEcAn's 800,000
+per-member source files into one 26 MB array, which is the only form in which it
 exists off the SCC; see [Initial conditions](#initial-conditions). Everything
 else under `raw/`, including the much larger drivers and eddy-covariance files,
 lives on storage and is symlinked.
@@ -438,17 +438,17 @@ NALCR guide describes the forcing differently (Note 18).
 
 **What is tracked.** `pecan_pool_initial_conditions.nc`, one netCDF holding
 the whole ensemble on `(site, member)`: 8000 sites by 100 members, five
-`float64` variables in the producer's names with the producer's `units` and
+`float64` variables in the source files' names with their `units` and
 `long_name` strings, `NaN` where none of a site's files carries the variable,
-and the producer's 1-based member index as `member`. It was made once from the
-producer's files by `scripts/convert_initial_conditions.py` on the SCC, bit
-for bit and with nothing renamed, converted or masked;
+and the source files' 1-based member index as `member`. It was made once from
+those files by `scripts/raw_sources/convert_initial_conditions.py` on the SCC,
+bit for bit and with nothing renamed, converted or masked;
 [`raw/initial_conditions/provenance.md`](raw/initial_conditions/provenance.md)
 records the run and its md5. The conversion refuses any file off the source
 template below, so the template is confirmed for all 800,000 files, not
 inferred from three.
 
-**The producer's files.** One netCDF-3 classic file per site and ensemble
+**The source files.** One netCDF-3 classic file per site and ensemble
 member, `<site>/IC_site_<site>_<member>.nc`, written by PEcAn's
 `pool_ic_list2netcdf`. No global attributes; one unlimited `time` dimension of
 length 1; a `time` variable with value 1.0 and the attributes of Note 5; and
@@ -473,7 +473,7 @@ comes in four combinations:
 | `soil_organic_carbon_content` | `kg C m-2` | Soil Organic Carbon Content by Layer | 8000 |
 | `SoilMoistFrac` | `(-)` | Average Layer Fraction of Saturation | 7384 |
 
-**How they were made.** The producer's script is
+**How they were made.** The PEcAn preparation script is
 `/projectnb/dietzelab/dongchen/anchorSites/IC_prep_anchorSites.R` (Dongchen
 Zhang, 2024-03-27), the same code as
 `modules/assim.sequential/inst/anchor/IC_prep_anchorSites.Rmd` on PEcAn
@@ -528,7 +528,7 @@ which is why the ingest applies none of them (see
 > strings are PEcAn's `standard_vars` entry for the `time` dimension, verbatim.
 > The conversion asserts the template in every file, so a substituted year
 > upstream is noticed rather than averaged away, and both netCDFs carry the
-> three values as `source_time_*` attributes. Anyone reading a producer file
+> three values as `source_time_*` attributes. Anyone reading a source file
 > directly must disable CF time decoding; `read_source_file` in
 > `sipnet_calibration.initial_conditions` parses them with `scipy.io.netcdf_file`
 > and does not decode time at all. Tracked as
@@ -547,8 +547,8 @@ model runs underlying [NALCR]. The same files are used here. The script above
 targets the 343 anchor sites and writes elsewhere; the 8000-site files were
 written on 2025-07-23 by a run whose script was not found (a 6400-site
 predecessor, `NA_runs/IC/IC_pre`, is dated 2025-04-10). The files match the
-script's construction exactly, so it is recorded as the producer template with
-that caveat; see open question 24.
+script's construction exactly, so it is recorded as the template for that run
+with that caveat; see open question 24.
 
 ### Net ecosystem exchange
 
@@ -840,7 +840,6 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
-| `convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
 | `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
 
@@ -858,10 +857,27 @@ file, runs one generic set of checks driven by that spec, places the records on
 the site pool and writes the netCDF with the spec's fields as attributes.
 `python scripts/ingest_constraints.py --describe` prints every spec. The
 initial conditions follow the same pattern with an `InitialConditionSpec` per
-variable in `sipnet_calibration.initial_conditions`, and one step before it:
-`convert_initial_conditions.py` runs on the SCC, once, to lay the producer's
-800,000 files on `(site, member)` as the tracked raw file, and
-`ingest_initial_conditions.py --describe` prints the specs.
+variable in `sipnet_calibration.initial_conditions`, and
+`ingest_initial_conditions.py --describe` prints the specs. Their raw file is
+itself made by a script, which is **not** a pipeline step; see
+[Making a raw input](#making-a-raw-input) below.
+
+### Making a raw input
+
+One script is **not** part of the pipeline above and lives apart from it, in
+[`../scripts/raw_sources/`](../scripts/raw_sources):
+`convert_initial_conditions.py` *creates* a raw input rather than processing
+one. The initial conditions arrive as 800,000 per-member netCDFs that exist
+only on the SCC, so they are laid on `(site, member)` once, bit for bit, and
+the result is tracked here as
+`raw/initial_conditions/pecan_pool_initial_conditions.nc`; see
+[Initial conditions](#initial-conditions) for why, and
+`raw/initial_conditions/provenance.md` for the run. A normal working copy never
+runs it: it needs the SCC, and it is re-run only if the source files change.
+
+| Script | Reads | Writes |
+|---|---|---|
+| `raw_sources/convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
 
 Conversions applied during ingest rather than downstream:
 
@@ -879,8 +895,8 @@ Conversions applied during ingest rather than downstream:
   modeling decision that would be hidden if an ingest script made it. See open
   question 14.
 - **Initial conditions.** None to the values. The conversion is a re-layout
-  in the producer's names and units strings; the ingest renames the variables
-  to the spec names, renumbers `member` from the producer's 1-based index to
+  in the source files' names and units strings; the ingest renames the
+  variables to the spec names, renumbers `member` from their 1-based index to
   the project's 0-based one keeping the original as `source_member`, and drops
   the degenerate `time`. No state-to-parameter conversion and no unit
   conversion: three of the four SIPNET initial parameters depend on parameters
@@ -1056,7 +1072,7 @@ boolean `driver_present(member, site)`. The three local files are such a case:
 site 1 has members 1 and 2, site 27 has member 5.
 
 `initial_conditions.nc` carries the initial condition ensemble on
-`(member, site)`, in the producer's units, read through
+`(member, site)`, in the source files' units, read through
 `sipnet_calibration.initial_conditions.load_initial_conditions` and split into
 canonical fields by `initial_condition_fields`:
 
@@ -1069,16 +1085,17 @@ canonical fields by `initial_condition_fields`:
 | `initial_soil_moisture_saturation` | `SoilMoistFrac` | `percent` |
 
 `site` is the whole pool with `lon`/`lat`; `member` is 0-based with
-`source_member` carrying the producer's 1-based file index; there is no `time`,
+`source_member` carrying the source files' 1-based index; there is no `time`,
 and what the source's degenerate one claimed is kept in the `source_time_*`
-attributes. `NaN` has one meaning, that the producer had no source value at
-the site, uniform over the site's members and asserted on load. Each variable
+attributes. `NaN` has one meaning, that no source file for the site carries
+the variable, uniform over the site's members and asserted on load. Each variable
 carries its spec's fields as attributes: `units`, `long_name`, `description`,
 `product`, `source_name`, `source_units`, `source_long_name`,
 `sipnet_initial_condition` (the `pysipnet.parameters.InitialConditions` field
 PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
-`constituent` and `comment`. The dataset records the producer script and its
-caveat, the nominal date 2011-07-15 with where it comes from, `member_source =
+`constituent` and `comment`. The dataset records the PEcAn preparation script
+and its caveat as `source_script` and `source_script_note`, the nominal date
+2011-07-15 with where it comes from, `member_source =
 "ic"` and `member_correspondence` (Note 12). The names carry `initial_` because
 the product is the model's starting state -- PEcAn calls the format
 `pool_initial_conditions` -- and so that no name collides with a constraint
@@ -1169,8 +1186,8 @@ attribute is an unsubstituted template, so the intended reference year cannot be
 recovered from the file. This does not affect calibration, since the dimension is
 degenerate, but it does mean the files cannot be used for anything time-aware.
 The conversion asserts the template in every file and both netCDFs keep the
-strings verbatim; the date the producer sampled at, 2011-07-15, is known from
-its script rather than from the files and travels as `nominal_date`. Tracked as
+strings verbatim; the sampling date 2011-07-15 is known from the PEcAn script
+rather than from the files and travels as `nominal_date`. Tracked as
 [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
 **6. Initial condition variable sets.** *Resolved.* The ensemble has 100
@@ -1180,7 +1197,7 @@ two carbon pools and the soil carbon everywhere, `leaf_carbon_content` at 7664
 sites and `SoilMoistFrac` at 7384, thinning toward the Arctic. All five are
 specified in `sipnet_calibration.initial_conditions`. What the absences mean
 upstream (no MODIS composite passed quality control; no CCI retrieval) follows
-from the producer's code and is recorded in each spec's `description`.
+from PEcAn's code and is recorded in each spec's `description`.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217

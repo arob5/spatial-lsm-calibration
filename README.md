@@ -151,10 +151,14 @@ python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_s
 project environment. There are around 80,000 files at roughly a tenth of a
 second each, which is what `--jobs` is for.
 
-The initial conditions have no survey script: `scripts/convert_initial_conditions.py`
-reads all 800,000 of the producer's files with the library's own checks and
-writes the tracked raw file, so its run report is the survey. It runs on the
-SCC, once (`qsub scripts/convert_initial_conditions.qsub`), and the result is
+The initial conditions have no survey script, because the script that makes
+their raw file is also their survey:
+`scripts/raw_sources/convert_initial_conditions.py` reads all 800,000 source
+files with the library's own checks and prints what it found. It is **not** a
+pipeline step -- it *creates* a raw input rather than processing one, which is
+why it sits in `scripts/raw_sources/` rather than beside the ingest scripts. It
+needs the SCC, it ran once
+(`qsub scripts/raw_sources/convert_initial_conditions.qsub`), and its result is
 committed; see `data/raw/initial_conditions/provenance.md`.
 
 ### Running notebooks

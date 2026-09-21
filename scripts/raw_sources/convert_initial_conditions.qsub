@@ -1,0 +1,18 @@
+#!/bin/bash -l
+# Make the tracked raw initial condition file from PEcAn's source netCDFs, on
+# the SCC's dietzelab buy-in nodes. This is not a pipeline step; see the
+# script's docstring. Submit from the project checkout, with its venv synced
+# (`uv sync`):
+#
+#     qsub scripts/raw_sources/convert_initial_conditions.qsub
+#
+# Reading the 800,000 files takes a few minutes on 16 slots; the hard time
+# limit is generous. The log lands in the checkout as ic_convert.o<jobid>.
+#$ -P dietzelab
+#$ -l buyin
+#$ -pe omp 16
+#$ -l h_rt=02:00:00
+#$ -j y
+#$ -N ic_convert
+#$ -cwd
+uv run python scripts/raw_sources/convert_initial_conditions.py --jobs "$NSLOTS"

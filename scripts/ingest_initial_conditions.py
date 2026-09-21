@@ -4,20 +4,21 @@
 Overview
 --------
 Read ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``, check
-it, rename the producer's variables to the spec names, renumber the members,
+it, rename the source variables to the spec names, renumber the members,
 place the sites on the site pool and write
 ``data/processed/initial_conditions.nc``. Every decision about what a variable
 is -- its unit, its provenance, the SIPNET parameter it feeds -- is a field of
 its ``InitialConditionSpec`` in the library; this script is the orchestration
 and the checks, and its round-trip check reads the file back with
 ``sipnet_calibration.initial_conditions.load_initial_conditions``, the same
-function every consumer uses.
+function every reader of the product uses.
 
 Input data
 ----------
 ``--raw``, default ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``
     The converted raw file, five variables on ``(site, member)`` in source
-    names, written by ``convert_initial_conditions.py`` and read exactly by
+    names, written by ``scripts/raw_sources/convert_initial_conditions.py``
+    and read exactly by
     ``read_raw``.
 
 ``--sites``, default ``data/processed/sites/sites.csv``
@@ -34,24 +35,23 @@ Output data
     initial_soil_organic_carbon(member, site)          float64, kg C m-2
     initial_soil_moisture_saturation(member, site)     float64, percent
 
-``NaN`` where the producer had no source value at the site; ``member``
-0-based with ``source_member`` carrying the producer's 1-based index; ``site``
+``NaN`` where no source file for the site carried the variable; ``member``
+0-based with ``source_member`` carrying the source files' 1-based index; ``site``
 the whole pool. ``sipnet_calibration.initial_conditions`` documents the data
 model.
 
 Notes
 -----
 The ingest changes structure, never values. Negative wood and leaf carbon --
-a substantial share of the members with leaf carbon, in the producer's
-construction ``wood = biomass - leaf`` -- are written through and counted in
-the report,
+a substantial share of the members with leaf carbon, in PEcAn's construction
+``wood = biomass - leaf`` -- are written through and counted in the report,
 because dropping or flooring them is the experiment's decision and PEcAn's own
 handling (it kept the template default for such members) is recorded in the
 specs.
 
 The identity ``wood_carbon_content == AbvGrndWood - leaf_carbon_content``
 (and ``== AbvGrndWood`` where leaf is absent) is asserted bit for bit: it is
-how the producer built the wood pool, and a break means the source changed.
+how PEcAn built the wood pool, and a break means the source changed.
 
 Output is written to a ``.partial`` path and renamed only once it reads back
 bit-identical through the library loader.
@@ -229,18 +229,18 @@ def check_sites_are_the_site_table_pool(raw: xr.Dataset, sites: pd.DataFrame) ->
 
 
 def check_members_are_contiguous_from_one(raw: xr.Dataset) -> None:
-    """Raise unless the producer's member index runs 1..n with no gap."""
+    """Raise unless the source files' member index runs 1..n with no gap."""
     members = raw[MEMBER].values.astype(np.int64)
     expected = np.arange(1, members.size + 1)
     if not np.array_equal(members, expected):
         raise IngestError(
-            f"producer member indices are {members[:5].tolist()}... to {members[-1]}, "
+            f"source member indices are {members[:5].tolist()}... to {members[-1]}, "
             f"expected 1..{members.size}; renumbering to 0-based would hide the gap"
         )
 
 
 def check_wood_is_biomass_minus_leaf(raw: xr.Dataset) -> None:
-    """Raise unless the producer's wood identity holds bit for bit everywhere."""
+    """Raise unless PEcAn's wood identity holds bit for bit everywhere."""
     biomass = raw["AbvGrndWood"].values
     wood = raw["wood_carbon_content"].values
     leaf = raw["leaf_carbon_content"].values
@@ -255,7 +255,7 @@ def check_wood_is_biomass_minus_leaf(raw: xr.Dataset) -> None:
             f"wood_carbon_content differs from AbvGrndWood - leaf_carbon_content (or "
             f"AbvGrndWood where leaf is absent) at {int(mismatch.sum())} cells, first at "
             f"site {raw[SITE].values[np.argwhere(mismatch)[0][0]]}. That identity is how the "
-            "producer built the wood pool; a break means the source changed."
+            "PEcAn built the wood pool; a break means the source changed."
         )
 
 

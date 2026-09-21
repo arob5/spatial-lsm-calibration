@@ -3,15 +3,15 @@
 Where `pecan_pool_initial_conditions.nc` came from, how it was made, and how to
 tell whether it has drifted from its source.
 
-The producer's initial conditions are 800,000 netCDF-3 files, one per site and
-ensemble member, on the Boston University SCC. SIPNET never reads them: they
+The source initial conditions are 800,000 netCDF-3 files written by PEcAn, one
+per site and ensemble member, on the Boston University SCC. SIPNET never reads them: they
 are a PEcAn intermediate that PEcAn's `write.config.SIPNET` turns into
 parameters. They take 816 MB and 800,000 inodes for 32 MB of values, one file
 open per `(site, member)` cell, and they exist nowhere but the SCC. So they
 are **converted once into one array and the result is tracked in version
 control**, as the constraint CSVs are. The conversion changes structure only:
 the values are copied bit for bit, the variable names and the `units` and
-`long_name` strings are the producer's, and the member index is the producer's
+`long_name` strings are the source files', and the member index is their
 1-based file index.
 
 ## Source
@@ -36,7 +36,7 @@ file's `converted` attribute) on the SCC's dietzelab buy-in queue (`qsub -P
 dietzelab -l buyin`, which landed on `geo-int`, job 7670299), with
 
 ```bash
-qsub scripts/convert_initial_conditions.qsub      # runs scripts/convert_initial_conditions.py --jobs 16
+qsub scripts/raw_sources/convert_initial_conditions.qsub   # --jobs 16
 ```
 
 from this repository at the commit that introduced the script. The conversion
@@ -55,7 +55,7 @@ the `-999.0` fill or a non-finite value.
 |---|---|---|---|
 | `pecan_pool_initial_conditions.nc` | the tree above | 800,000 | `8591d0429e63585e114a321939dc6316` |
 
-The run report, which `scripts/convert_initial_conditions.py` prints:
+The run report, which the script prints:
 
 ```
 variable                       sites   min          median       max          negative
@@ -84,7 +84,7 @@ new = xr.open_dataset("<fresh conversion>")
 assert all(old[v].equals(new[v]) for v in old.data_vars)   # bit for bit, NaN included
 ```
 
-If the producer's tree changes -- a file re-dated, a site gaining a variable --
+If the source tree changes -- a file re-dated, a site gaining a variable --
 the conversion's checks either refuse it or the comparison above fails, which
 is the signal to re-open the questions in `data/README.md` before adopting the
 new file.

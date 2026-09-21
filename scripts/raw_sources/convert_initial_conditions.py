@@ -1,21 +1,27 @@
 #!/usr/bin/env python
-"""Convert the producer's 800,000 initial condition files into one raw netCDF.
+"""Make the tracked raw initial condition file out of PEcAn's 800,000 netCDFs.
+
+**Not part of the raw-to-processed pipeline.** This script sits upstream of
+``data/raw/``: it *creates* a raw input rather than processing one, it needs
+the SCC, where the source files are, and it ran once, in 2026-09, to produce
+the file that is now in version control. Nothing in a normal working copy has
+to run it. It lives under ``scripts/raw_sources/`` for that reason, beside no
+other pipeline script; the ingest that reads what it wrote is
+``scripts/ingest_initial_conditions.py``. Run this again only if the source
+files themselves change.
 
 Overview
 --------
 Read every ``<site>/IC_site_<site>_<member>.nc`` under the source root, check
 each against the source template, and lay the values on ``(site, member)`` as
-``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``, in the
-producer's variable names, units strings and 1-based member index. Values are
-copied bit for bit; nothing is renamed, converted or masked. The result is
-the raw input ``ingest_initial_conditions.py`` reads, and it is tracked in
-version control, so this script runs once, on the SCC, and again only if the
-producer's files change.
+``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``, in the source
+files' variable names, units strings and 1-based member index. Values are
+copied bit for bit; nothing is renamed, converted or masked.
 
 Input data
 ----------
 ``--root``, default ``data/raw/initial_conditions/files/``
-    The producer's tree: one directory per site, named by the 1-8000 site
+    The source tree: one directory per site, named by the 1-8000 site
     identifier, holding one netCDF-3 classic file per ensemble member. The
     file format is described in ``sipnet_calibration.initial_conditions`` and
     parsed by its ``read_source_directory``, which refuses anything outside
@@ -39,7 +45,7 @@ Notes
 The report printed at the end -- per-variable coverage, ranges and negative
 counts, the variable-set signatures, and the md5 of the written file -- is
 what ``data/raw/initial_conditions/provenance.md`` records. The numbers are
-printed rather than asserted because they describe the producer's data, not an
+printed rather than asserted because they describe the source data, not an
 invariant of ours; the invariants (a complete rectangle, presence uniform over
 members, the source template in every file) are the ``check_*`` functions and
 the per-file checks in the library.
@@ -52,17 +58,17 @@ Usage
 -----
 On the SCC, from the project checkout with its venv synced::
 
-    uv run python scripts/convert_initial_conditions.py --jobs 16
+    uv run python scripts/raw_sources/convert_initial_conditions.py --jobs 16
 
 or through the batch system, on the group's buy-in nodes::
 
-    qsub scripts/convert_initial_conditions.qsub
+    qsub scripts/raw_sources/convert_initial_conditions.qsub
 
 A quick check on a partial tree (the three files in a local checkout are not
 the site pool and do not form a rectangle, so this fails at the pool check, or
 at the rectangle check without a site table, by design)::
 
-    uv run python scripts/convert_initial_conditions.py --root data/raw/initial_conditions/files
+    uv run python scripts/raw_sources/convert_initial_conditions.py --root data/raw/initial_conditions/files
 """
 
 from __future__ import annotations
@@ -90,7 +96,7 @@ from sipnet_calibration.initial_conditions import (
 )
 from sipnet_calibration.sites import default_sites_path, load_sites
 
-SCRIPT = "scripts/convert_initial_conditions.py"
+SCRIPT = "scripts/raw_sources/convert_initial_conditions.py"
 
 
 class ConversionError(Exception):
@@ -139,7 +145,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--root",
         type=Path,
         default=None,
-        help="The producer's tree. Default: data/raw/initial_conditions/files.",
+        help="The source tree. Default: data/raw/initial_conditions/files.",
     )
     parser.add_argument(
         "--out",
@@ -185,7 +191,7 @@ def discover_sites(root: Path) -> list[int]:
     if strays:
         raise ConversionError(
             f"{root} holds entries that are not site directories: {strays[:10]}. The "
-            "producer's tree is one numeric directory per site and nothing else."
+            "source tree is one numeric directory per site and nothing else."
         )
     if not sites:
         raise ConversionError(f"{root} holds no site directories")

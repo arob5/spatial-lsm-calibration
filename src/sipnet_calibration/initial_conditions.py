@@ -1,5 +1,4 @@
-"""The initial condition ensemble: what each variable is, how the producer's
-files are read, and the processed product they become.
+"""The initial condition ensemble: variable specs and processing code.
 
 Overview
 --------
@@ -7,15 +6,15 @@ The reanalysis behind the 8000-site pool started every ensemble member from a
 set of initial state values drawn by a PEcAn script, one netCDF per site and
 member. This module holds one :class:`InitialConditionSpec` per variable in
 those files -- what the quantity is, where it came from, which SIPNET initial
-parameter PEcAn fed it into and how -- and the functions that read the files,
-the converted raw file and the processed product. The spec's fields are written
-into the processed netCDF as attributes, so it needs no description beyond
-itself; the raw file keeps the producer's own attribute strings.
+parameter PEcAn fed it into and how -- and the functions that read the source
+files, the converted raw file and the processed product. The spec's fields are
+written into the processed netCDF as attributes, so it needs no description
+beyond itself; the raw file keeps the source files' own attribute strings.
 
 The dependency runs one way, and the first arrow is taken once, on the SCC::
 
-    <site>/IC_site_<site>_<member>.nc  x 800,000              (PEcAn's files)
-      -> scripts/convert_initial_conditions.py   read_source_file(), build_raw()
+    <site>/IC_site_<site>_<member>.nc  x 800,000      (the PEcAn source files)
+      -> scripts/raw_sources/convert_initial_conditions.py
       -> raw/initial_conditions/pecan_pool_initial_conditions.nc   tracked
       -> scripts/ingest_initial_conditions.py    read_raw(), build_initial_conditions()
       -> processed/initial_conditions.nc
@@ -27,7 +26,7 @@ them; ``data/raw/initial_conditions/provenance.md`` records the conversion.
 Input data
 ----------
 ``data/raw/initial_conditions/files/<site>/IC_site_<site>_<member>.nc``
-    The producer's files, present only on the SCC. netCDF-3 classic, no
+    The source files, present only on the SCC. netCDF-3 classic, no
     global attributes, one unlimited ``time`` dimension of length 1 whose
     variable carries an undecodable units template, and three to five scalar
     ``float64`` variables named as :data:`SOURCE_NAMES`, each declaring
@@ -35,7 +34,7 @@ Input data
     :func:`read_source_file` parses one exactly and refuses anything else.
 
 ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``
-    The values of the same 800,000 files as one array, in the producer's
+    The values of the same 800,000 files as one array, in the source files'
     variable names, units strings and 1-based member index; the raw input
     everything else reads. :func:`read_raw` checks it against the specs.
 
@@ -53,7 +52,7 @@ length-1 record dimension whose units attribute is an unsubstituted template,
 and what it claimed is kept verbatim in the dataset attributes.
 
 **Data variables**, one per spec, all ``float64`` on ``(member, site)``,
-``NaN`` where the producer had no source value for the site. Units follow
+``NaN`` where no source file for the site carries the variable. Units follow
 pySIPNET's convention of a physical ``units`` string plus a ``constituent``
 attribute, so ``attrs["units"]`` is ``"kg m-2"`` and ``attrs["constituent"]``
 is ``"C"``, never ``"kg C m-2"``::
@@ -70,7 +69,7 @@ is ``"C"``, never ``"kg C m-2"``::
 Name                Dims         Meaning
 =================== ============ ===================================================
 ``member``          ``member``   ``int16``, 0-based, ascending; the project convention
-``source_member``   ``member``   ``int16``, the producer's 1-based file index
+``source_member``   ``member``   ``int16``, the 1-based index in the source file name
 ``site``            ``site``     ``int32``, the whole 1-8000 pool, ascending
 ``lon``, ``lat``    ``site``     ``float64``, from the site table
 =================== ============ ===================================================
@@ -81,19 +80,19 @@ carries the spec's ``units``, ``long_name``, ``description``, ``product``,
 ``sipnet_initial_condition``, ``pecan_conversion``, ``units_provenance`` and,
 when set, ``constituent`` and ``comment``. The dataset carries
 ``Conventions``, ``title``, ``product``, ``source_file``, ``source_root``,
-``producer_script``, ``producer_script_note``, ``nominal_date``,
+``source_script``, ``source_script_note``, ``nominal_date``,
 ``nominal_date_provenance``,
 ``source_time_units``, ``source_time_long_name``, ``source_time_value``,
 ``member_source``, ``member_correspondence``, ``n_sites``, ``n_members``,
 ``history`` and ``created``.
 
-**Values are the producer's, unchanged.** No unit conversion, no masking:
+**Values are the source files', unchanged.** No unit conversion, no masking:
 negative wood and leaf carbon are written through and counted in the ingest
 report, because dropping or flooring them is a modeling decision (see the
 ``comment`` of those two specs for what PEcAn itself did).
 
-**Missing values.** ``NaN`` has one meaning: the producer had no source value
-at that site, so none of its 100 files carries the variable. That absence is
+**Missing values.** ``NaN`` has one meaning: none of the site's 100 source
+files carries the variable. That absence is
 a property of the site, checked to be identical across members, and no file
 holds an explicit fill; both are asserted at conversion and on load.
 
@@ -110,11 +109,11 @@ Functions
     of sites.
 
 :func:`read_source_file`, :func:`read_source_directory`
-    Parse one of the producer's files exactly and run the per-file checks; or
+    Parse one source file exactly and run the per-file checks; or
     every file of one site's directory, refusing anything else in it.
 
 :func:`site_member_from_file_name`
-    The ``(site, member)`` a producer file name encodes.
+    The ``(site, member)`` a source file name encodes.
 
 :func:`build_raw`
     Assemble parsed files into the raw Dataset the conversion writes.
@@ -134,7 +133,7 @@ Functions
 
 :func:`default_source_root`, :func:`default_raw_dir`, :func:`raw_path`,
 :func:`default_product_path`
-    Where the producer's tree, the raw file and the product are expected to
+    Where the source tree, the raw file and the product are expected to
     be, all honoring ``$SIPNET_CALIBRATION_DATA``.
 
 Notes
@@ -212,8 +211,8 @@ __all__ = [
     "MEMBER",
     "NAME_PATTERN",
     "NOMINAL_DATE",
-    "PRODUCER_SCRIPT",
-    "PRODUCER_SCRIPT_NOTE",
+    "SOURCE_SCRIPT",
+    "SOURCE_SCRIPT_NOTE",
     "PRODUCT_FILE",
     "RAW_FILE",
     "SITE",
@@ -251,9 +250,10 @@ __all__ = [
 
 @dataclass(frozen=True)
 class InitialConditionSpec:
-    """Everything a consumer needs to know about one initial condition variable.
+    """Everything the rest of the project needs to know about one initial condition
+    variable.
 
-    One instance per variable of the producer's files. :meth:`xarray_attributes`
+    One instance per variable of the source files. :meth:`xarray_attributes`
     is what the processed netCDF stores, so the file describes itself.
     """
 
@@ -261,7 +261,7 @@ class InitialConditionSpec:
     """Processed name: the variable's name in the product and the registry key."""
 
     source_name: str
-    """The variable's name in the producer's files and in the raw file."""
+    """The variable's name in the source files and in the raw file."""
 
     long_label: str
     """Plot-ready name without units, e.g. ``"Initial leaf carbon"``."""
@@ -275,7 +275,7 @@ class InitialConditionSpec:
     """Substance the unit refers to, ``"C"`` for carbon, or ``""``."""
 
     description: str
-    """What the quantity is and how the producer constructed it, with the citation."""
+    """What the quantity is and how it was prepared, with the citation."""
 
     product: str
     """The upstream data product the ensemble was drawn from."""
@@ -305,7 +305,7 @@ class InitialConditionSpec:
         if self.source_name not in SOURCE_UNITS:
             raise ValueError(
                 f"{self.name!r}: source_name {self.source_name!r} is not a variable the "
-                f"producer's files carry: {sorted(SOURCE_UNITS)}"
+                f"source files carry: {sorted(SOURCE_UNITS)}"
             )
         if self.sipnet_initial_condition and (
             self.sipnet_initial_condition not in _SIPNET_INITIAL_CONDITION_FIELDS
@@ -318,12 +318,12 @@ class InitialConditionSpec:
 
     @property
     def source_units(self) -> str:
-        """The ``units`` string the producer's files carry for this variable."""
+        """The ``units`` string the source files carry for this variable."""
         return SOURCE_UNITS[self.source_name]
 
     @property
     def source_long_name(self) -> str:
-        """The ``long_name`` string the producer's files carry for this variable."""
+        """The ``long_name`` string the source files carry for this variable."""
         return SOURCE_LONG_NAMES[self.source_name]
 
     def xarray_attributes(self) -> dict[str, Any]:
@@ -354,7 +354,7 @@ class InitialConditionSpec:
 #: What a processed name must look like: lower case words joined by underscores.
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
-#: The ``units`` attribute each variable carries in the producer's files. The
+#: The ``units`` attribute each variable carries in the source files. The
 #: keys are the variables those files can hold; a file with any other variable
 #: is refused. These strings are PEcAn's ``standard_vars.csv`` entries and are
 #: recorded, not interpreted: soil moisture is a 0-100 percentage despite ``(-)``.
@@ -366,7 +366,7 @@ SOURCE_UNITS: dict[str, str] = {
     "SoilMoistFrac": "(-)",
 }
 
-#: The ``long_name`` attribute each variable carries in the producer's files.
+#: The ``long_name`` attribute each variable carries in the source files.
 SOURCE_LONG_NAMES: dict[str, str] = {
     "AbvGrndWood": "Above ground woody biomass",
     "wood_carbon_content": "Wood Carbon Content",
@@ -389,32 +389,32 @@ SOURCE_TIME_UNITS = "days since [year]-01-01 00:00:00 UTC"
 SOURCE_TIME_LONG_NAME = "Time middle averaging period"
 SOURCE_TIME_VALUE = 1.0
 
-#: The producer's file layout under the source root: one directory per site
+#: The source file layout under the source root: one directory per site
 #: holding one file per member, ``<member>`` being the 1-based member index.
 SOURCE_FILE_TEMPLATE = "{site}/IC_site_{site}_{member}.nc"
 
-#: The script that draws the ensemble and writes the files, and the caveat
-#: every reader must see beside it.
-PRODUCER_SCRIPT = (
+#: The PEcAn script that draws the ensemble and writes the source files, and
+#: the caveat every reader must see beside it.
+SOURCE_SCRIPT = (
     "/projectnb/dietzelab/dongchen/anchorSites/IC_prep_anchorSites.R (Dongchen Zhang, "
     "2024-03-27); the same code is modules/assim.sequential/inst/anchor/"
     "IC_prep_anchorSites.Rmd on PEcAn develop"
 )
-PRODUCER_SCRIPT_NOTE = (
+SOURCE_SCRIPT_NOTE = (
     "That script targets the 343 anchor sites. The 8000-site files were written on "
     "2025-07-23 by a run whose script was not found; they match the script's "
     "construction exactly (five variables, wood = biomass - leaf bitwise, soil "
-    "moisture in percent), so this is the producer template, not a confirmed "
+    "moisture in percent), so this is the template for that run, not a confirmed "
     "record. Open question 24 in data/README.md."
 )
 
-#: The date the producer sampled the source products at, from its script
+#: The date the PEcAn script sampled the source products at, from its own code
 #: (``time_poimt <- as.Date("2011-07-15")``, the variable name spelled as the
 #: script spells it). The files carry no date.
 NOMINAL_DATE = "2011-07-15"
 
 #: The sentence every units provenance ends with, because it is true of every one.
-_PRODUCER_UNCONFIRMED = "Not confirmed by the producer; see data/README.md, open question 24."
+_UNCONFIRMED = "Unconfirmed; see data/README.md, open question 24."
 
 _SIPNET_INITIAL_CONDITION_FIELDS: frozenset[str] = frozenset(InitialConditions.model_fields)
 
@@ -445,8 +445,8 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "only together with a coarse-root pool, which no file carries."
         ),
         units_provenance=(
-            "The target of the producer's ud_convert(x, 'Mg ha-1', 'kg m-2') and the "
-            "files' own units attribute, kg C m-2. " + _PRODUCER_UNCONFIRMED
+            "The target of the PEcAn script's ud_convert(x, 'Mg ha-1', 'kg m-2') and the "
+            "files' own units attribute, kg C m-2. " + _UNCONFIRMED
         ),
         comment=(
             "Where leaf_carbon_content is absent, wood_carbon_content is bitwise equal to "
@@ -461,14 +461,14 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         units="kg m-2",
         constituent="C",
         description=(
-            "The producer's derived wood pool: the member's aboveground biomass carbon "
+            "The derived wood pool: the member's aboveground biomass carbon "
             "draw minus its leaf carbon draw where a leaf draw exists, and the biomass "
             "draw itself where it does not. Present at every site. Negative wherever "
             "the leaf draw exceeds the biomass draw, which it does at a substantial "
             "share of the members that have leaf carbon; the ingest report counts them."
         ),
         product="Spawn and Gibbs (2020) biomass carbon minus MODIS-derived leaf carbon, "
-        "computed by the producer's script",
+        "computed by the PEcAn script",
         sipnet_initial_condition="total_wood_carbon",
         pecan_conversion=(
             "plantWoodInit = 1000 x wood_carbon_content / (1 - fineRootFrac - "
@@ -479,7 +479,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         units_provenance=(
             "Inherits the biomass draw's kg C m-2; the leaf draw subtracted from it is "
-            "nominally kg C m-2 (see initial_leaf_carbon). " + _PRODUCER_UNCONFIRMED
+            "nominally kg C m-2 (see initial_leaf_carbon). " + _UNCONFIRMED
         ),
         comment=(
             "Negative values are written through unchanged and counted in the ingest "
@@ -513,7 +513,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         units_provenance=(
             "LAI (m2 m-2) divided by SLA in m2 per kg leaf mass, so the values are kg "
             "leaf m-2 labeled kg C m-2; the leaf carbon fraction (about 0.48) is not "
-            "applied. " + _PRODUCER_UNCONFIRMED
+            "applied. " + _UNCONFIRMED
         ),
         comment=(
             "Negative at some members, all at grassland sites, matching the negative "
@@ -540,9 +540,9 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         sipnet_initial_condition="soil_carbon",
         pecan_conversion="soilInit = 1000 x soil_organic_carbon_content.",
         units_provenance=(
-            "The target of the producer's ud_convert(x, 'g cm-2', 'kg m-2') and the "
+            "The target of the PEcAn script's ud_convert(x, 'g cm-2', 'kg m-2') and the "
             "files' own units attribute, kg C m-2. The files' long name says 'by "
-            "Layer' but each holds one scalar. " + _PRODUCER_UNCONFIRMED
+            "Layer' but each holds one scalar. " + _UNCONFIRMED
         ),
         comment=(
             "Far fewer distinct values than members, because each site's members are "
@@ -575,7 +575,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "The CCI variable's own attributes (units 'percent', long name 'Percent of "
             "Saturation Soil Moisture', valid range 0-100) and the values, which run 0 "
             "to 100 with a median of 60. The files' units attribute is PEcAn's "
-            "standard_vars string '(-)'. " + _PRODUCER_UNCONFIRMED
+            "standard_vars string '(-)'. " + _UNCONFIRMED
         ),
     ),
 )
@@ -609,7 +609,7 @@ CF_CONVENTIONS = "CF-1.11"
 
 @dataclass(frozen=True)
 class SourceFile:
-    """One of the producer's files, parsed.
+    """One source file, parsed.
 
     Attributes
     ----------
@@ -627,7 +627,7 @@ class SourceFile:
 
 
 def default_source_root() -> Path:
-    """Where the producer's file tree is expected: ``data/raw/initial_conditions/files``.
+    """Where the source file tree is expected: ``data/raw/initial_conditions/files``.
 
     Present only on the SCC, as a symlink. ``$SIPNET_CALIBRATION_DATA``
     replaces ``data/`` when set.
@@ -665,7 +665,7 @@ def site_member_from_file_name(name: str) -> tuple[int, int] | None:
 
 
 def read_source_file(path: Path | str) -> SourceFile:
-    """Parse one of the producer's files exactly and run the per-file checks.
+    """Parse one source file exactly and run the per-file checks.
 
     Parameters
     ----------
@@ -730,7 +730,7 @@ def read_source_directory(root: Path | str, site: int) -> list[SourceFile]:
     Parameters
     ----------
     root:
-        The producer's tree.
+        The source tree.
     site:
         The site whose directory ``<root>/<site>`` to read.
 
@@ -761,8 +761,8 @@ def read_source_directory(root: Path | str, site: int) -> list[SourceFile]:
             continue
         if site_member_from_file_name(path.name) is None:
             raise ValueError(
-                f"{path}: not an IC_site_<site>_<member>.nc file; the producer's site "
-                "directories hold nothing else"
+                f"{path}: not an IC_site_<site>_<member>.nc file; a source site "
+                "directory holds nothing else"
             )
         records.append(read_source_file(path))
     if not records:
@@ -848,7 +848,7 @@ def build_raw(
                     "long_name": SOURCE_LONG_NAMES[name],
                     "source_fill_value": SOURCE_FILL_VALUE,
                     "comment": (
-                        "The producer's value, bit for bit; NaN where none of the site's "
+                        "The source file's value, bit for bit; NaN where none of the site's "
                         "files carries the variable."
                     ),
                 },
@@ -861,8 +861,8 @@ def build_raw(
                 MEMBER,
                 members.astype(np.int16),
                 {
-                    "long_name": "Producer's ensemble member index",
-                    "comment": "The 1-based <member> of the file name, as the producer numbered it.",
+                    "long_name": "Ensemble member index in the source file name",
+                    "comment": "The 1-based <member> of the source file name.",
                 },
             ),
         },
@@ -882,7 +882,7 @@ def build_raw(
             "history": (
                 f"{conversion_script}: read every {SOURCE_FILE_TEMPLATE} under the source "
                 "root, checked each against the source template, and laid the values on "
-                "(site, member) unchanged, in the producer's names and units strings"
+                "(site, member) unchanged, in the source files' names and units strings"
             ),
             "converted": _now(),
         },
@@ -928,8 +928,8 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
         raise FileNotFoundError(
             f"{path} is not a file. The raw file is tracked in version control; if it "
             "is missing from a checkout, regenerate it on the SCC with "
-            "scripts/convert_initial_conditions.py (see data/raw/initial_conditions/"
-            "provenance.md)."
+            "scripts/raw_sources/convert_initial_conditions.py (see "
+            "data/raw/initial_conditions/provenance.md)."
         )
     dataset = xr.open_dataset(path, engine="h5netcdf")
     try:
@@ -966,9 +966,9 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
     Notes
     -----
     Pure, and structural only: the values are the raw file's, transposed. The
-    member axis is renumbered from the producer's 1-based index to the
-    project's 0-based one, and the producer's index is kept as a coordinate so
-    a file name can always be recovered.
+    member axis is renumbered from the source files' 1-based index to the
+    project's 0-based one, and the source index is kept as a coordinate so a
+    source file name can always be recovered.
     """
     pool = np.sort(sites["site_id"].to_numpy(np.int64))
     raw_sites = raw[SITE].values.astype(np.int64)
@@ -1007,8 +1007,8 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
             MEMBER,
             source_member,
             {
-                "long_name": "Producer's ensemble member index",
-                "comment": "The 1-based <member> of the producer's file name.",
+                "long_name": "Ensemble member index in the source file name",
+                "comment": "The 1-based <member> of the source file name.",
             },
         ),
         SITE: (SITE, pool.astype(np.int32), _SITE_ATTRS),
@@ -1177,11 +1177,11 @@ def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
         ),
         "source_file": RAW_FILE,
         "source_root": str(raw.attrs.get("source_root", "")),
-        "producer_script": PRODUCER_SCRIPT,
-        "producer_script_note": PRODUCER_SCRIPT_NOTE,
+        "source_script": SOURCE_SCRIPT,
+        "source_script_note": SOURCE_SCRIPT_NOTE,
         "nominal_date": NOMINAL_DATE,
         "nominal_date_provenance": (
-            "The sampling date in the producer's script; the files themselves carry no "
+            "The sampling date in the PEcAn script; the source files themselves carry no "
             "date. Biomass is a 2010 annual map and soil carbon is undated."
         ),
         "source_time_units": SOURCE_TIME_UNITS,
@@ -1196,9 +1196,9 @@ def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
         "n_sites": int(raw.sizes[SITE]),
         "n_members": int(raw.sizes[MEMBER]),
         "history": (
-            f"scripts/ingest_initial_conditions.py: read {RAW_FILE}, renamed the producer's "
+            f"scripts/ingest_initial_conditions.py: read {RAW_FILE}, renamed the source "
             "variables to the spec names, renumbered member from 1-based to 0-based "
-            "keeping the producer's index as source_member, placed the sites on the site "
+            "keeping the source index as source_member, placed the sites on the site "
             "table's pool with lon/lat, and wrote the spec fields as attributes; values "
             "unchanged"
         ),
@@ -1217,7 +1217,7 @@ def _check_source_file_is_classic_with_no_global_attributes(handle: Any, path: P
     attrs = _attributes(handle)
     if attrs:
         raise ValueError(
-            f"{path}: carries global attributes {sorted(attrs)}; the producer's files carry none"
+            f"{path}: carries global attributes {sorted(attrs)}; source files carry none"
         )
     if set(handle.dimensions) != {"time"}:
         raise ValueError(
@@ -1252,7 +1252,7 @@ def _check_and_read_source_variables(handle: Any, path: Path) -> dict[str, float
             continue
         if name not in SOURCE_UNITS:
             raise ValueError(
-                f"{path}: variable {name!r} is not one the producer's files carry "
+                f"{path}: variable {name!r} is not one the source files carry "
                 f"({sorted(SOURCE_UNITS)}). A new variable is a spec change, not a new column."
             )
         if variable.dimensions != ("time",):
@@ -1396,7 +1396,7 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
     source_member = dataset[SOURCE_MEMBER].values
     if source_member.min() < 1 or np.any(np.diff(source_member) <= 0):
         raise ValueError(
-            f"{path}: source_member is not strictly ascending from 1 or more; a producer "
+            f"{path}: source_member is not strictly ascending from 1 or more; a source "
             "file name could not be recovered from it"
         )
     site = dataset[SITE].values

@@ -3,7 +3,7 @@ the ingest.
 
 Three layers. The specs are checked for internal consistency and against
 pySIPNET's ``InitialConditions`` fields. The parser, the conversion and the
-ingest are exercised on a small synthetic tree written in the producer's exact
+ingest are exercised on a small synthetic tree written in PEcAn's exact
 format -- netCDF-3 classic, the ``[year]`` template on ``time``, the
 ``_FillValue`` triple on every variable -- where every refusal can be
 provoked and the expected product written out by hand. Finally the three real
@@ -61,9 +61,9 @@ TRACKED_RAW = REPO_ROOT / "data" / "raw" / "initial_conditions" / module.RAW_FIL
 SITES_CSV = REPO_ROOT / "data" / "processed" / "sites" / "sites.csv"
 
 
-def _load_script(name: str):
-    """Import ``scripts/<name>.py``, which is a script."""
-    path = REPO_ROOT / "scripts" / f"{name}.py"
+def _load_script(name: str, package: str = "scripts"):
+    """Import a script by path, since scripts are not importable modules."""
+    path = REPO_ROOT / package / f"{name}.py"
     spec = importlib.util.spec_from_file_location(name, path)
     loaded = importlib.util.module_from_spec(spec)
     sys.modules[name] = loaded
@@ -71,7 +71,7 @@ def _load_script(name: str):
     return loaded
 
 
-convert = _load_script("convert_initial_conditions")
+convert = _load_script("convert_initial_conditions", "scripts/raw_sources")
 ingest = _load_script("ingest_initial_conditions")
 
 
@@ -80,7 +80,7 @@ ingest = _load_script("ingest_initial_conditions")
 SYNTHETIC_SITES = [1, 2, 3]
 SYNTHETIC_COORDS = {1: (-100.0, 40.0), 2: (-101.0, 41.0), 3: (-102.0, 42.0), 4: (-103.0, 43.0)}
 
-#: Per site, per member, the producer's values. Site 1 has every variable
+#: Per site, per member, the source values. Site 1 has every variable
 #: with a negative wood draw in member 2; site 2 lacks leaf and soil
 #: moisture, so its wood equals its biomass; site 3 lacks soil moisture only.
 SYNTHETIC_VALUES = {
@@ -513,7 +513,7 @@ def test_load_refuses_a_product_off_the_data_model(raw, sites_csv, tmp_path):
 def test_local_source_files_parse_to_their_known_values():
     path = LOCAL_SOURCE_ROOT / "1" / "IC_site_1_1.nc"
     if not path.exists():
-        pytest.skip("the producer's files are not in this working copy")
+        pytest.skip("the PEcAn source files are not in this working copy")
     record = read_source_file(path)
     assert record.site == 1 and record.member == 1
     assert set(record.values) == {"AbvGrndWood", "wood_carbon_content", "soil_organic_carbon_content"}
@@ -538,7 +538,7 @@ def test_tracked_raw_file_is_the_full_ensemble(tracked_raw):
         assert np.isfinite(tracked_raw[name].values).all()
 
 
-def test_tracked_raw_file_holds_the_producer_identities(tracked_raw):
+def test_tracked_raw_file_holds_the_pecan_identities(tracked_raw):
     biomass = tracked_raw["AbvGrndWood"].values
     wood = tracked_raw["wood_carbon_content"].values
     leaf = tracked_raw["leaf_carbon_content"].values
