@@ -73,8 +73,11 @@ data/
       pts.shp, pts.shx, pts.dbf, pts.prj, pts.cpg
     drivers/
       ERA5_<site_id>_<member>/ERA5.<member>.2012-01-01.2024-12-31.clim
-    initial_conditions/
-      <site_id>/IC_site_<site_id>_<member>.nc
+    initial_conditions/         tracked: the converted ensemble and its record
+      pecan_pool_initial_conditions.nc
+      provenance.md
+      files/                    SCC only: symlink to the producer's 800,000 files,
+                                <site_id>/IC_site_<site_id>_<member>.nc
     constraints/              observations, tracked in version control
       landtrendr_aboveground_biomass.csv.gz
       gedi_aboveground_biomass.csv.gz
@@ -88,7 +91,7 @@ data/
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
     constraints/<name>.nc       one per constraint, <name> the raw file's stem
-    ic.nc
+    initial_conditions.nc
     nee.zarr/
 ```
 
@@ -98,22 +101,25 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 [Meteorological drivers](#meteorological-drivers) and
 [Processed format](#processed-format).
 
-> **Note 1.** The per-site directory templates are inferred from three driver
-> directories and three initial-condition files rather than confirmed across
-> all 8000 sites.
+> **Note 1.** The driver directory template is inferred from three driver
+> directories rather than confirmed across all 8000 sites. The initial
+> condition template is confirmed: the conversion read all 800,000 files.
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with two exceptions, both small primary
-sources rather than pipeline outputs, and both inputs the repository cannot do
-without. `raw/sites/` holds the site shapefile, without which the repository
-carries no site information at all; `site_id_map.csv` is tracked for the same
-reason. `raw/constraints/` holds the five per-variable observation files, which
-are tracked because the upstream copies are edited and moved in place, so a
-symlink is not a stable input; see
-[Constraint observations](#constraint-observations). Everything else under
-`raw/`, including the much larger drivers, initial conditions and eddy-covariance
-files, lives on storage and is symlinked.
+directory is tracked in version control, with three exceptions, all small
+primary sources rather than pipeline outputs, and all inputs the repository
+cannot do without. `raw/sites/` holds the site shapefile, without which the
+repository carries no site information at all; `site_id_map.csv` is tracked for
+the same reason. `raw/constraints/` holds the five per-variable observation
+files, which are tracked because the upstream copies are edited and moved in
+place, so a symlink is not a stable input; see
+[Constraint observations](#constraint-observations). `raw/initial_conditions/`
+holds the initial condition ensemble converted from the producer's 800,000
+per-member files into one 26 MB array, which is the only form in which it
+exists off the SCC; see [Initial conditions](#initial-conditions). Everything
+else under `raw/`, including the much larger drivers and eddy-covariance files,
+lives on storage and is symlinked.
 
 ---
 
@@ -430,40 +436,118 @@ NALCR guide describes the forcing differently (Note 18).
 
 ### Initial conditions
 
-**Format.** One netCDF file per site and ensemble member, holding scalar initial
-values for the model's carbon pools. Each variable has a single `time` element.
-The example file contains the following.
+**What is tracked.** `pecan_pool_initial_conditions.nc`, one netCDF holding
+the whole ensemble on `(site, member)`: 8000 sites by 100 members, five
+`float64` variables in the producer's names with the producer's `units` and
+`long_name` strings, `NaN` where none of a site's files carries the variable,
+and the producer's 1-based member index as `member`. It was made once from the
+producer's files by `scripts/convert_initial_conditions.py` on the SCC, bit
+for bit and with nothing renamed, converted or masked;
+[`raw/initial_conditions/provenance.md`](raw/initial_conditions/provenance.md)
+records the run and its md5. The conversion refuses any file off the source
+template below, so the template is confirmed for all 800,000 files, not
+inferred from three.
 
-| Variable | Units | Long name | Example value |
+**The producer's files.** One netCDF-3 classic file per site and ensemble
+member, `<site>/IC_site_<site>_<member>.nc`, written by PEcAn's
+`pool_ic_list2netcdf`. No global attributes; one unlimited `time` dimension of
+length 1; a `time` variable with value 1.0 and the attributes of Note 5; and
+three to five scalar `float64` variables on `("time",)`, each with exactly the
+attributes `_FillValue = -999.0`, `long_name` and `units` from PEcAn's
+`standard_vars.csv`. No file holds the fill or a non-finite value. Which
+variables a file carries depends on the site only, never on the member, and
+comes in four combinations:
+
+| Variables present | Sites | Where |
+|---|---|---|
+| all five | 7113 | median latitude 47 N |
+| all but `SoilMoistFrac` | 551 | median 48 N |
+| all but `leaf_carbon_content` | 271 | median 63 N |
+| the three carbon pools only | 65 | median 78 N; the three local files are here |
+
+| Variable | Units attribute | Long name | Sites |
 |---|---|---|---|
-| `AbvGrndWood` | kg C m-2 | Above ground woody biomass | 0.05823572 |
-| `wood_carbon_content` | kg C m-2 | Wood Carbon Content | 0.05823572 |
-| `soil_organic_carbon_content` | kg C m-2 | Soil Organic Carbon Content by Layer | 13.08545431 |
-| `time` | see Note 5 | Time middle averaging period | 1.0 |
+| `AbvGrndWood` | `kg C m-2` | Above ground woody biomass | 8000 |
+| `wood_carbon_content` | `kg C m-2` | Wood Carbon Content | 8000 |
+| `leaf_carbon_content` | `kg C m-2` | Leaf Carbon Content | 7664 |
+| `soil_organic_carbon_content` | `kg C m-2` | Soil Organic Carbon Content by Layer | 8000 |
+| `SoilMoistFrac` | `(-)` | Average Layer Fraction of Saturation | 7384 |
 
-**Interpretation.** These are static initial conditions, so the length-1 `time`
-dimension carries no information and can be dropped on read. In the example file
-`AbvGrndWood` and `wood_carbon_content` hold the same value. Files for other
-sites are reported to include `leaf_carbon_content` and `SoilMoistFrac` as well,
-so ingest should treat the variable set as varying between files rather than
-fixed.
+**How they were made.** The producer's script is
+`/projectnb/dietzelab/dongchen/anchorSites/IC_prep_anchorSites.R` (Dongchen
+Zhang, 2024-03-27), the same code as
+`modules/assim.sequential/inst/anchor/IC_prep_anchorSites.Rmd` on PEcAn
+`develop` and the script Cami Webb's `IC_prep_guide.md` names for pool initial
+conditions. It draws 100 members per site at the nominal date **2011-07-15**
+(`time_poimt <- as.Date("2011-07-15")`), from these sources, with these PEcAn
+functions (fetched from `develop` on 2026-09-20):
+
+| Variable | Source product | Draw | Units on arrival |
+|---|---|---|---|
+| `AbvGrndWood` | Spawn and Gibbs (2020), *Global Aboveground and Belowground Biomass Carbon Density Maps for the Year 2010*, ORNL DAAC, [doi:10.3334/ORNLDAAC/1763](https://doi.org/10.3334/ORNLDAAC/1763), 300 m; the mean and uncertainty bands of `NA_runs/IC/AGB/agb_2010_global.tif` | `Prep_AGB_IC_from_2010_global`: normal with the pixel's mean and uncertainty (an uncertainty of 0 replaced by 0.1), negatives set to 0, then `ud_convert(x, "Mg ha-1", "kg m-2")` | Mg C ha-1 to kg C m-2; carbon by the product's definition |
+| `leaf_carbon_content` | MODIS MCD15A3H leaf area index via `MODIS_LAI_prep`: the composite nearest 2011-07-15 within 30 days, `sd >= 20` dropped. The extraction is byte-identical (md5 `873441b4...`) to the source of `constraints/modis_leaf_area_index.csv.gz` | normal with the composite's LAI and standard deviation, divided by one draw from the site PFT's 100 SLA samples (`SDA_8k_site/samples.Rdata`) | LAI over SLA in m2 per kg leaf mass, labeled kg C m-2; the leaf carbon fraction (about 0.48) is not applied |
+| `wood_carbon_content` | the two above | `AbvGrndWood - leaf_carbon_content` where a leaf draw exists, else `AbvGrndWood` | kg C m-2 |
+| `soil_organic_carbon_content` | ISCN generation 3 (`PEcAn.data.land::iscn_soc`: 200 profile stocks in g cm-2 for each of 43 CEC level-2 ecoregions); the site's ecoregion by point-in-polygon | `IC_ISCN_SOC`: 100 draws with replacement from the ecoregion's 200 values, then `ud_convert(x, "g cm-2", "kg m-2")` | g C cm-2 to kg C m-2; integration depth undocumented |
+| `SoilMoistFrac` | Copernicus C3S / ESA CCI *Soil moisture gridded data from 1978 to present*, [doi:10.24381/cds.d7782f18](https://doi.org/10.24381/cds.d7782f18), active sensor, daily, CDR v202212, 0.25 degree; variable `sm`, whose own attributes read `units = "percent"`, `long_name = "Percent of Saturation Soil Moisture"`, valid range 0-100 | `extract_SM_CDS`: the first day with a retrieval from 2011-07-15 forward within 30 days; normal with the retrieval and its uncertainty, negatives set to 0 | percent of saturation of the 2-5 cm surface layer; the files' `(-)` is the `standard_vars` string, not the data's |
+
+Two consequences of that construction are visible in the values and are
+asserted or reported by the ingest:
+
+- `wood_carbon_content` equals `AbvGrndWood` bit for bit wherever
+  `leaf_carbon_content` is absent, and equals `AbvGrndWood -
+  leaf_carbon_content` bit for bit elsewhere. `ingest_initial_conditions.py`
+  asserts the identity; a break means the source changed.
+- The leaf draw exceeds the biomass draw in a fifth of the members that have
+  one, so **`wood_carbon_content` is negative there**, at 5990 of the 8000
+  sites and at every member of 52 of them; `leaf_carbon_content` is itself
+  negative at 11,572 members, all at grassland sites, matching the share of
+  negative values in that PFT's SLA sample. The values are written through
+  unchanged and counted; see Note 6 for what PEcAn did with them.
+
+**How PEcAn used them.** `write.config.SIPNET` (the `poolinitcond` branch,
+through `PEcAn.data.land::prepare_pools`) turned each file into SIPNET
+initial parameters as follows. This is the mapping the experiment layer has to
+reproduce or consciously depart from; nothing here applies it.
+
+| File variable | SIPNET parameter | pySIPNET field | Conversion in PEcAn |
+|---|---|---|---|
+| `wood_carbon_content` | `plantWoodInit` | `total_wood_carbon` | `1000 x wood / (1 - fineRootFrac - coarseRootFrac)` since PEcAn commit `913dcec66` (2025-09-02, merged in PR #3544); `1000 x wood` before it. Which version ran the 8000-site reanalysis is open question 24. |
+| `leaf_carbon_content` | `laiInit` | `leaf_area_index` | `leaf x SLA` with the run's own SLA draw; then 0 if the PFT is deciduous (`fracLeafFall > 0.5`) and the run starts outside leaf-on |
+| `soil_organic_carbon_content` | `soilInit` | `soil_carbon` | `1000 x soil` |
+| `SoilMoistFrac` | `soilWFracInit` | `soil_wetness_fraction` | `SoilMoistFrac / 100`; SIPNET defines the parameter as a fraction of water holding capacity, a different fraction |
+| `AbvGrndWood` | none | none | unused: `prepare_pools` prefers `wood_carbon_content`, and would use `AbvGrndWood` only with a coarse-root pool, which no file carries |
+
+Three of the four conversions depend on parameters the calibration proposes,
+which is why the ingest applies none of them (see
+[Processed format](#processed-format)).
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
-> `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse.
-> These files must be opened with CF time decoding disabled, for example
-> `xarray.open_dataset(path, decode_times=False)`.
+> `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
+> with `long_name = "Time middle averaging period"` and the value 1.0; the
+> strings are PEcAn's `standard_vars` entry for the `time` dimension, verbatim.
+> The conversion asserts the template in every file, so a substituted year
+> upstream is noticed rather than averaged away, and both netCDFs carry the
+> three strings as `source_time_*` attributes. Anyone reading a producer file
+> directly must disable CF time decoding; `read_source_file` in
+> `sipnet_calibration.initial_conditions` parses them with `scipy.io.netcdf_file`
+> and does not decode time at all. Tracked as
+> [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
-> **Note 6.** The initial-condition ensemble has **100 members**, the same size
-> as the published reanalysis output. Confirmed for the project rather than
-> inferred from the files: this checkout holds three of the 800,000, and the
-> highest member index among them is 94. Which variables appear in which files
-> is still not established; that can only be answered where the files are.
+> **Note 6.** The ensemble has **100 members** at every one of the 8000 sites,
+> confirmed by the conversion. `prepare_pools` accepts a pool only if it is
+> numeric, not `NA` and not negative, so a member with negative
+> `wood_carbon_content` or `leaf_carbon_content` was **silently skipped and
+> SIPNET kept the template default** for that parameter in the reanalysis. What
+> this project should do with those members is a modeling decision recorded in
+> open question 24, not something the ingest settles.
 
 **Source.** Initial condition ensembles prepared for the 8000-site pool for the
-model runs underlying [NALCR]. The same files are used here. The published
-reanalysis output carries 100 ensemble members together with ensemble mean and
-standard deviation, and the initial condition files use the same ensemble size.
-That could not be confirmed against the data available here; see Note 6.
+model runs underlying [NALCR]. The same files are used here. The script above
+targets the 343 anchor sites and writes elsewhere; the 8000-site files were
+written on 2025-07-23 by a run whose script was not found (a 6400-site
+predecessor, `NA_runs/IC/IC_pre`, is dated 2025-04-10). The files match the
+script's construction exactly, so it is recorded as the producer template with
+that caveat; see open question 24.
 
 ### Net ecosystem exchange
 
@@ -755,7 +839,8 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
-| `ingest_ic.py` | `raw/initial_conditions/` | `processed/ic.nc` |
+| `convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
+| `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
 
 The drivers have no ingest script. SIPNET runs read the raw `.clim` files, so
@@ -770,7 +855,12 @@ the site, the time, the value and its standard deviation, the units, the time
 structure and an optional quality flag -- and `ingest_constraints.py` reads the
 file, runs one generic set of checks driven by that spec, places the records on
 the site pool and writes the netCDF with the spec's fields as attributes.
-`python scripts/ingest_constraints.py --describe` prints every spec.
+`python scripts/ingest_constraints.py --describe` prints every spec. The
+initial conditions follow the same pattern with an `InitialConditionSpec` per
+variable in `sipnet_calibration.initial_conditions`, and one step before it:
+`convert_initial_conditions.py` runs on the SCC, once, to lay the producer's
+800,000 files on `(site, member)` as the tracked raw file, and
+`ingest_initial_conditions.py --describe` prints the specs.
 
 Conversions applied during ingest rather than downstream:
 
@@ -787,6 +877,16 @@ Conversions applied during ingest rather than downstream:
   (2016) and 7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a
   modeling decision that would be hidden if an ingest script made it. See open
   question 14.
+- **Initial conditions.** None to the values. The conversion is a re-layout
+  in the producer's names and units strings; the ingest renames the variables
+  to the spec names, renumbers `member` from the producer's 1-based index to
+  the project's 0-based one keeping the original as `source_member`, and drops
+  the degenerate `time`. No state-to-parameter conversion and no unit
+  conversion: three of the four SIPNET initial parameters depend on parameters
+  the calibration proposes (see [Initial conditions](#initial-conditions)), so
+  the mapping is evaluated per proposed parameter vector in the experiment
+  layer. Negative wood and leaf draws pass through and are counted in the run
+  report.
 - **Net ecosystem exchange.** None to the values, as for the constraints: the
   product keeps the producer's umol CO2 m-2 s-1 and the observation operator
   converts the model into it (the 2026-09-15 observation-operator design
@@ -800,9 +900,10 @@ Conversions applied during ingest rather than downstream:
 
 ## Processed format
 
-`ingest_sites.py` and `ingest_constraints.py` are written, and the driver
-reader in `sipnet_calibration.drivers` is implemented; the rest of this section
-records the intended output of scripts not yet written.
+`ingest_sites.py`, `ingest_constraints.py` and `ingest_initial_conditions.py`
+are written, and the driver reader in `sipnet_calibration.drivers` is
+implemented; the rest of this section records the intended output of scripts
+not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
 is chosen to load directly as such: an `xarray.DataArray` per variable, with
@@ -814,7 +915,7 @@ Formats are chosen according to the shape of each product.
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
-| `ic.nc` | netCDF | `(member, site)` | 32 MB at 100 members |
+| `initial_conditions.nc` | netCDF | `(member, site)` | 26 MB compressed |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
 
@@ -972,9 +1073,41 @@ The following conventions apply to every product.
   unobserved cells are `NaN` rather than zero -- a zero there would be an
   observation of no biomass, which is a different and real statement.
 
+`initial_conditions.nc` carries the initial condition ensemble on
+`(member, site)`, in the producer's units, read through
+`sipnet_calibration.initial_conditions.load_initial_conditions` and split into
+canonical fields by `initial_condition_fields`:
+
+| Variable | Source variable | Units |
+|---|---|---|
+| `initial_aboveground_biomass_carbon` | `AbvGrndWood` | kg C m-2 |
+| `initial_wood_carbon` | `wood_carbon_content` | kg C m-2 |
+| `initial_leaf_carbon` | `leaf_carbon_content` | kg C m-2 |
+| `initial_soil_organic_carbon` | `soil_organic_carbon_content` | kg C m-2 |
+| `initial_soil_moisture_saturation` | `SoilMoistFrac` | percent |
+
+`site` is the whole pool with `lon`/`lat`; `member` is 0-based with
+`source_member` carrying the producer's 1-based file index; there is no `time`,
+and what the source's degenerate one claimed is kept in the `source_time_*`
+attributes. `NaN` has one meaning, that the producer had no source value at
+the site, uniform over the site's members and asserted on load. Each variable
+carries its spec's fields as attributes: `units`, `long_name`, `description`,
+`product`, `source_name`, `source_units`, `source_long_name`,
+`sipnet_initial_condition` (the `pysipnet.parameters.InitialConditions` field
+PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
+`constituent` and `comment`. The dataset records the producer script and its
+caveat, the nominal date 2011-07-15 with where it comes from, `member_source =
+"ic"` and `member_correspondence` (Note 12). The names carry `initial_` because
+the product is the model's starting state -- PEcAn calls the format
+`pool_initial_conditions` -- and so that no name collides with a constraint
+product's; `biomass` rather than the file's `woody` because the Spawn and
+Gibbs product is total aboveground biomass carbon.
+
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
-> known to derive from a driver ensemble.
+> known to derive from a driver ensemble. Every product with a `member`
+> dimension records `member_source` and `member_correspondence` attributes
+> saying so, because xarray aligns integer member labels silently.
 
 > **Note 13.** Whether the processed form should carry an additional
 > spatially-ordered site coordinate is undecided.
@@ -985,15 +1118,15 @@ The following conventions apply to every product.
 
 Numbered notes above refer to the corresponding entry here.
 
-**1. Per-site directory templates.** The driver template
-`ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim` holds for the three
-directories present and the initial-condition template
-`initial_conditions/<site>/IC_site_<site>_<member>.nc` for the three files
-present. Whether all 8000 site directories follow
-them has not been checked. The driver reader raises on any file it is asked
-for that departs from the template, and on a directory whose member disagrees
-with its file name; whether the 8000 x 10 set is complete can only be surveyed
-where the files are.
+**1. Per-site directory templates.** *Resolved for the initial conditions:*
+the conversion read all 800,000 files and found exactly 8000 site directories
+of 100 files each, every name on the template
+`<site>/IC_site_<site>_<member>.nc` with the directory's site. The driver
+template `ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim` still holds
+only for the three directories present. The driver reader raises on any file
+it is asked for that departs from the template, and on a directory whose
+member disagrees with its file name; whether the 8000 x 10 set is complete can
+only be surveyed where the files are.
 
 **2. Meaning of the `cluster` and `landcover` fields.** Neither is documented in
 the sources available. The evidence that they define sampling strata is
@@ -1030,20 +1163,23 @@ gap-filling behind [GAPFILL] used 25 driver members, and the reanalysis output
 carries 100. Kept numbered so the surrounding references do not shift. What
 remains open is member correspondence across sources, which is question 12.
 
-**5. Reference year for the initial-condition time coordinate.** The units
+**5. Reference year for the initial condition time coordinate.** The units
 attribute is an unsubstituted template, so the intended reference year cannot be
 recovered from the file. This does not affect calibration, since the dimension is
 degenerate, but it does mean the files cannot be used for anything time-aware.
-Tracked as
+The conversion asserts the template in every file and both netCDFs keep the
+strings verbatim; the date the producer sampled at, 2011-07-15, is known from
+its script rather than from the files and travels as `nominal_date`. Tracked as
 [issue #3](https://github.com/arob5/spatial-lsm-calibration/issues/3).
 
-**6. Initial-condition variable sets.** *The ensemble size is resolved: 100
-members, as Note 6 records.* What remains open is the variable set, which is
-reported to differ between files, with `leaf_carbon_content` and `SoilMoistFrac`
-appearing in some. Three files are available locally — site 1 members 1 and 2,
-and site 27 member 94 — and none of the three carries either variable, so the
-full set of combinations is still unconfirmed, and can only be surveyed on the
-SCC, where the files are.
+**6. Initial condition variable sets.** *Resolved.* The ensemble has 100
+members at every site, and the variable set varies by site only, in the four
+combinations tabulated under [Initial conditions](#initial-conditions): the
+two carbon pools and the soil carbon everywhere, `leaf_carbon_content` at 7664
+sites and `SoilMoistFrac` at 7384, thinning toward the Arctic. All five are
+specified in `sipnet_calibration.initial_conditions`. What the absences mean
+upstream (no MODIS composite passed quality control; no CCI retrieval) follows
+from the producer's code and is recorded in each spec's `description`.
 
 **7. Which release of the gap-filled product to use.** An updated release exists,
 combining the identifier map and the observations in a single file covering 217
@@ -1218,3 +1354,26 @@ value with a date on a 4-day lattice, and MCD15A3H is a 4-day composite, but
 neither the file nor the product's catalog page says whether the label is the
 first day of the compositing period. Until that is confirmed the processed
 product carries the label as written and writes no `time_bounds`.
+
+**24. The initial condition ensemble's production and use.** Questions for the
+producer, recorded here rather than asked yet. (a) Which script wrote the
+8000-site files on 2025-07-23? The anchor-site `IC_prep_anchorSites.R` is the
+template, and the files match its construction, but the run was not found; how
+does it differ from the 6400-site `IC_pre` of 2025-04-10? (b) Which PEcAn
+version ran the 8000-site reanalysis: with or without the root-fraction
+division in `plantWoodInit` (commit `913dcec66`, 2025-09-02)? (c)
+`wood_carbon_content = AbvGrndWood - leaf_carbon_content` is negative in a
+fifth of the members with leaf carbon and at every member of 52 sites, and
+`prepare_pools` then kept SIPNET's template default. Was that intended, and
+should this project treat those members as missing, floor them, or fall back to
+`AbvGrndWood`? (d) Leaf carbon is LAI over an SLA in m2 per kg leaf mass, so
+the `kg C m-2` label omits the leaf carbon fraction (about 0.48); intended? (e)
+The grassland PFT's SLA sample includes negative values, which produce the
+11,572 negative leaf-carbon members. (f) `SoilMoistFrac` is CCI percent of
+saturation of the top 2-5 cm, while SIPNET's `soilWFracInit` is a fraction of
+the water holding capacity of its whole bucket; is dividing by 100 the intended
+mapping? (g) What depth do the ISCN stocks integrate over, and how was the
+200 x 43 `iscn_soc` table built? Its members reach 1794 kg C m-2. (h) The
+nominal date is 2011-07-15 for runs starting 2012-01-01; intended? (i) Which
+biomass raster fed the 8000-site files, the 300 m `agb_2010_global.tif` or the
+1 km resample beside it?

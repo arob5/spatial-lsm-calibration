@@ -52,7 +52,7 @@ will eventually replace the sequence with a single command.
 ```bash
 python scripts/ingest_sites.py                                                       # -> data/processed/sites/sites.csv
 python scripts/ingest_constraints.py                                                 # -> data/processed/constraints/<name>.nc, one per constraint
-python scripts/ingest_ic.py --jobs 16                                                # -> data/processed/ic.nc
+python scripts/ingest_initial_conditions.py                                          # -> data/processed/initial_conditions.nc
 ```
 
 [`data/README.md`](data/README.md) is the authority on the per-product detail:
@@ -136,21 +136,10 @@ Once the work is pushed to `main`, upgrade as above and drop the overlay.
 
 ### Raw data survey
 
-Two diagnostics that answer questions about the raw data which can only be
-answered where the files are. They are **optional**, they run **before**
-processing, and they write a JSON summary rather than any processed product.
-Neither is part of the ingest pipeline.
-
-```bash
-python3 scripts/survey_ic_variables.py --root <IC root> --jobs 16 --out ic_survey.json
-```
-
-*Which variables do the initial condition files actually carry, and is the
-`(site, member)` ensemble a complete rectangle?* The files are not all alike, and
-`ingest_ic.py` treats an unregistered variable as fatal, so this is how to find
-out what is there first. It parses the netCDF-3 headers directly and imports
-nothing third-party, so it runs under a bare `python3` with no environment
-activated. `--sample N` surveys a random sample of sites instead of all of them.
+A diagnostic that answers a question about the raw data which can only be
+answered where the files are. It is **optional**, it runs **before**
+processing, and it writes a JSON summary rather than any processed product. It
+is not part of the ingest pipeline.
 
 ```bash
 python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_survey.json
@@ -158,9 +147,15 @@ python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_s
 
 *Does the driver directory template cover every site and member, and does every
 `.clim` file pass the reader's own checks?* It applies
-`sipnet_calibration.drivers.read_clim_file` to each file, so unlike the survey
-above it needs the project environment. There are around 80,000 files at roughly
-a tenth of a second each, which is what `--jobs` is for.
+`sipnet_calibration.drivers.read_clim_file` to each file, so it needs the
+project environment. There are around 80,000 files at roughly a tenth of a
+second each, which is what `--jobs` is for.
+
+The initial conditions have no survey script: `scripts/convert_initial_conditions.py`
+reads all 800,000 of the producer's files with the library's own checks and
+writes the tracked raw file, so its run report is the survey. It runs on the
+SCC, once (`qsub scripts/convert_initial_conditions.qsub`), and the result is
+committed; see `data/raw/initial_conditions/provenance.md`.
 
 ### Running notebooks
 
@@ -183,7 +178,7 @@ To execute headlessly:
 | Sites | 8000 irregular points, 7–82° N and 178° W–20° W (~3640 inside CONUS) |
 | Period | 2012–2024 |
 | Drivers | ERA5, 3-hourly, ensemble |
-| Initial conditions | per-site, per-member netCDF |
+| Initial conditions | 100-member ensemble of five pool sizes per site, drawn by PEcAn at a nominal 2011-07-15 |
 | Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), aboveground biomass (LandTrendr and GEDI, annual), leaf area index (MODIS 4-day composites, June to August), soil moisture (SMAP, one July value per year), soil organic carbon (SoilGrids, static) |
 
 Every input arrives in ensemble form. Note the sites are **scattered points, not
