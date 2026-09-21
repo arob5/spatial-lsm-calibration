@@ -13,10 +13,14 @@ main.py
 data/raw/*
 !data/raw/sites/
 !data/raw/constraints/
-# Un-ignoring the directory un-ignores everything in it; the two inputs that
-# still live on storage and are symlinked in are excluded again here.
+!data/raw/initial_conditions/
+# Un-ignoring the directory un-ignores everything in it; the inputs that
+# still live on storage and are symlinked in are excluded again here. The
+# initial conditions are tracked as one converted file; the producer's
+# 800,000-file tree it was made from is the SCC-only files/ symlink.
 data/raw/constraints/nee
 data/raw/constraints/sda_8k_site_rdata
+data/raw/initial_conditions/files
 data/processed/
 
 .claude/worktrees/

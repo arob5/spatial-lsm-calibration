@@ -1,0 +1,16 @@
+#!/bin/bash -l
+# Convert the producer's initial condition files on the SCC's dietzelab buy-in
+# nodes. Submit from the project checkout, with its venv synced (`uv sync`):
+#
+#     qsub scripts/convert_initial_conditions.qsub
+#
+# Reading the 800,000 files takes a few minutes on 16 slots; the hard time
+# limit is generous. The log lands beside the checkout as ic_convert.<jobid>.
+#$ -P dietzelab
+#$ -l buyin
+#$ -pe omp 16
+#$ -l h_rt=02:00:00
+#$ -j y
+#$ -N ic_convert
+#$ -cwd
+uv run python scripts/convert_initial_conditions.py --jobs "$NSLOTS"
