@@ -36,11 +36,14 @@ duplicate its content here — add data facts there instead.
 Facts specific to this working copy, which the README deliberately does not carry:
 
 - **Only a subset of `data/raw/` is present locally.** Drivers exist for
-  `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; initial conditions for site 1 members
-  1 and 2 and site 27 member 94. The NEE csv, the five constraint files
-  (tracked), the assembled `.Rdata` pair retained for validation, and the site
-  shapefile are complete. The full dataset lives on Boston University's SCC.
-  Anything that needs to hold across all 8000 sites cannot be verified here.
+  `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; of PEcAn's initial condition source
+  files, site 1 members 1 and 2 and site 27 member 94, under
+  `data/raw/initial_conditions/files/`. The NEE csv, the five constraint files
+  (tracked), the converted initial condition ensemble (tracked, all 8000 sites
+  x 100 members), the assembled `.Rdata` pair retained for validation, and the
+  site shapefile are complete. The full dataset lives on Boston University's
+  SCC. Anything about the drivers that needs to hold across all 8000 sites
+  cannot be verified here.
 - In the root checkout the storage-backed inputs are real copies, not symlinks;
   on SCC, and in a worktree that links them from the root, they are symlinks.
   The five constraint files and the site shapefile are tracked either way.
@@ -56,7 +59,10 @@ Facts specific to this working copy, which the README deliberately does not carr
 
 Operational rules that follow from the data and are easy to get wrong in code:
 
-- Open the IC netCDFs with `decode_times=False` (README note 5).
+- Never open one of PEcAn's initial condition source files with CF time
+  decoding on: the `time` units are an unparseable template (README note 5).
+  Use `initial_conditions.read_source_file`, or `decode_times=False` with
+  `engine="scipy"`. Everything downstream reads the tracked converted file.
 - Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
   drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
   takes only the slot from it.
@@ -69,6 +75,11 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Constraint products keep their **source units** and their source's own time
   labels. Nothing is converted or aligned at ingest; the observation operator
   does both. See the processed-data conventions below.
+- The initial condition product is in the source files' units, negative wood and
+  leaf draws included, and applies **no state-to-parameter mapping**: three of
+  the four SIPNET initial parameters depend on calibrated parameters, so the
+  mapping is the experiment layer's, per proposed parameter vector. Each spec's
+  `pecan_conversion` says what PEcAn did.
 
 ## Code conventions
 
@@ -314,9 +325,9 @@ while exercising the root's copy, which is the case worth remembering.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `drivers.py` and `projection.py` are implemented, `obs_ops.py`
-has `sipnet_time_index`, and the other modules carry the contract each is to
-satisfy.
+`constraints.py`, `initial_conditions.py`, `drivers.py` and `projection.py` are
+implemented, `obs_ops.py` has `sipnet_time_index`, and the other modules carry
+the contract each is to satisfy.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -330,6 +341,10 @@ src/sipnet_calibration/
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
                           # read_raw(), build_constraint(), load_constraint(),
                           # constraint_fields() -> canonical per-product view
+  initial_conditions.py   # InitialConditionSpec + INITIAL_CONDITIONS, one per
+                          # variable of the PEcAn source files; read_source_file(),
+                          # build_raw(), read_raw(), build_initial_conditions(),
+                          # load_initial_conditions(), initial_condition_fields()
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
   fields.py               # canonical field convention, validate_field(), adapters
@@ -345,8 +360,11 @@ src/sipnet_calibration/
     facet.py              # L3 the one generic facet function
     diagnostics.py        # L5 EKI history, marginals, coverage
 scripts/                  # ingest: data/raw/ -> data/processed/
+  raw_sources/            # NOT the pipeline: code that *makes* a tracked raw
+                          # input. SCC-only, run once.
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
-data/raw/                 # never edited; raw/sites/ and raw/constraints/ are tracked
+data/raw/                 # never edited; raw/sites/, raw/constraints/ and
+                          # raw/initial_conditions/ are tracked
 data/processed/           # ingest output == canonical plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
 tests/

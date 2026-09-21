@@ -20,7 +20,7 @@ A **canonical field** is an ``xarray.DataArray`` holding one variable, with
 * a ``name`` that is a key of the ``VARIABLES`` registry.
 
 Which dimensions are present depends on the quantity. A single deterministic
-run is ``(time,)``, an initial-condition ensemble is ``(member, site)``, the
+run is ``(time,)``, an initial condition ensemble is ``(member, site)``, the
 gap-filled NEE observations are ``(member, site, time)``, and a calibrated
 per-site parameter is ``(member, site)``.
 
@@ -59,7 +59,7 @@ Functions
 :func:`validate_field`
     Check an array against the form above and raise on the first property that
     does not hold.
-:func:`from_sipnet_result`, :func:`from_clim`, :func:`from_ic_store`,
+:func:`from_sipnet_result`, :func:`from_clim`,
 :func:`from_nee_store`, :func:`from_eki_predictions`
     One adapter per source. Model-side adapters keep pySIPNET's names and
     units; observation products keep their source units; the observation
@@ -79,11 +79,13 @@ Three traps are worth knowing before writing an adapter:
 * The NEE csv carries an ``ens_mean`` column. It is a derived mean, not a
   member, and admitting it to the ``member`` dimension corrupts every quantile
   taken afterwards.
-* The initial-condition netCDFs must be opened with ``decode_times=False``.
-  Their time units are an unsubstituted template,
+* PEcAn's initial condition source netCDFs must never be opened with CF time
+  decoding on: their time units are an unsubstituted template,
   ``"days since [year]-01-01 00:00:00 UTC"``, which no calendar library can
-  parse; ``cftime`` does not help. The dimension is length one and carries no
-  information (issue #3).
+  parse; ``cftime`` does not help. Nothing here should need to: the tracked
+  converted file and the processed product have no ``time`` at all, and
+  :func:`sipnet_calibration.initial_conditions.initial_condition_fields`
+  already returns canonical ``(member, site)`` fields (issue #3).
 * :func:`from_eki_predictions` unstacks a ``(J, N)`` block with the
   ``(site, variable, time)`` index from
   :func:`sipnet_calibration.obs_ops.obs_index`. It must be the same index the
