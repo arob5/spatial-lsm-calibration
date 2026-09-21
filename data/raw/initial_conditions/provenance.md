@@ -31,8 +31,9 @@ sites and the run that wrote these 8000-site files was not located.
 
 ## What was done
 
-Converted on **2026-09-20** on the SCC (`geo-int` buy-in queue, job 7670299)
-with
+Converted at **2026-09-21T01:16:15Z** (the evening of 2026-09-20 in Boston; the
+file's `converted` attribute) on the SCC's dietzelab buy-in queue (`qsub -P
+dietzelab -l buyin`, which landed on `geo-int`, job 7670299), with
 
 ```bash
 qsub scripts/convert_initial_conditions.qsub      # runs scripts/convert_initial_conditions.py --jobs 16

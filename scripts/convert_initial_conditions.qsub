@@ -5,7 +5,7 @@
 #     qsub scripts/convert_initial_conditions.qsub
 #
 # Reading the 800,000 files takes a few minutes on 16 slots; the hard time
-# limit is generous. The log lands beside the checkout as ic_convert.<jobid>.
+# limit is generous. The log lands in the checkout as ic_convert.o<jobid>.
 #$ -P dietzelab
 #$ -l buyin
 #$ -pe omp 16

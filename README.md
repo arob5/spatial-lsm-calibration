@@ -178,7 +178,7 @@ To execute headlessly:
 | Sites | 8000 irregular points, 7–82° N and 178° W–20° W (~3640 inside CONUS) |
 | Period | 2012–2024 |
 | Drivers | ERA5, 3-hourly, ensemble |
-| Initial conditions | 100-member ensemble of five pool sizes per site, drawn by PEcAn at a nominal 2011-07-15 |
+| Initial conditions | 100-member ensemble of up to five initial state values per site, drawn by PEcAn at a nominal 2011-07-15 |
 | Constraint data | NEE (3-hourly, 25-member, 209 Ameriflux sites of which 165 map to site ids), aboveground biomass (LandTrendr and GEDI, annual), leaf area index (MODIS 4-day composites, June to August), soil moisture (SMAP, one July value per year), soil organic carbon (SoilGrids, static) |
 
 Every input arrives in ensemble form. Note the sites are **scattered points, not

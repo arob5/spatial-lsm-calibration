@@ -20,7 +20,7 @@ A **canonical field** is an ``xarray.DataArray`` holding one variable, with
 * a ``name`` that is a key of the ``VARIABLES`` registry.
 
 Which dimensions are present depends on the quantity. A single deterministic
-run is ``(time,)``, an initial-condition ensemble is ``(member, site)``, the
+run is ``(time,)``, an initial condition ensemble is ``(member, site)``, the
 gap-filled NEE observations are ``(member, site, time)``, and a calibrated
 per-site parameter is ``(member, site)``.
 

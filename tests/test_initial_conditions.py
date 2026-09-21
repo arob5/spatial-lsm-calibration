@@ -559,3 +559,224 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     product = build_initial_conditions(tracked_raw, sites)
     assert product["initial_soil_organic_carbon"].dims == (MEMBER, SITE)
     assert product[SOURCE_MEMBER].values[0] == 1 and product[MEMBER].values[0] == 0
+
+
+# ── the gaps mutation testing found ───────────────────────────────────────────
+
+
+def _write_raw_variant(raw: Path, tmp_path: Path, mutate) -> Path:
+    """The synthetic raw file with *mutate* applied, written with the raw encoding."""
+    with read_raw(raw) as dataset:
+        variant = mutate(dataset.load().copy(deep=True))
+    path = tmp_path / "variant.nc"
+    variant.to_netcdf(path, engine="h5netcdf", encoding=raw_encoding(variant))
+    return path
+
+
+def test_ingest_main_reports_a_broken_identity_and_a_member_gap(raw, sites_csv, tmp_path, capsys):
+    def break_wood(dataset):
+        dataset["wood_carbon_content"].values[0, 0] += 1e-12
+        return dataset
+
+    def gap(dataset):
+        return dataset.assign_coords(member=np.array([1, 3], dtype=np.int16))
+
+    out = tmp_path / "p.nc"
+    for mutate, message in ((break_wood, "identity"), (gap, "1..2")):
+        variant = _write_raw_variant(raw, tmp_path, mutate)
+        assert ingest.main(["--raw", str(variant), "--sites", str(sites_csv), "--out", str(out)]) == 1
+        assert message in capsys.readouterr().err
+        assert not out.exists() and not out.with_suffix(".nc.partial").exists()
+
+
+def test_read_source_file_refuses_the_wrong_dtype_and_a_missing_attribute(tmp_path):
+    root = tmp_path / "files"
+    path = _write_source_file(root, 1, 1, SYNTHETIC_VALUES[2][1])
+    handle = netcdf_file(str(root / "1" / "IC_site_1_2.nc"), "w", version=1)
+    handle.createDimension("time", None)
+    time = handle.createVariable("time", "f8", ("time",))
+    time[:] = np.asarray([1.0])
+    time.units, time.long_name = SOURCE_TIME_UNITS, SOURCE_TIME_LONG_NAME
+    single = handle.createVariable("AbvGrndWood", "f4", ("time",))
+    single[:] = np.asarray([0.5], dtype="f4")
+    single.units, single.long_name = SOURCE_UNITS["AbvGrndWood"], SOURCE_LONG_NAMES["AbvGrndWood"]
+    single._FillValue = SOURCE_FILL_VALUE
+    handle.close()
+    with pytest.raises(ValueError, match="float64"):
+        read_source_file(root / "1" / "IC_site_1_2.nc")
+    assert read_source_file(path).values["AbvGrndWood"] == 3.0
+    # an attribute missing, not merely wrong or extra
+    handle = netcdf_file(str(root / "1" / "IC_site_1_3.nc"), "w", version=1)
+    handle.createDimension("time", None)
+    time = handle.createVariable("time", "f8", ("time",))
+    time[:] = np.asarray([1.0])
+    time.units, time.long_name = SOURCE_TIME_UNITS, SOURCE_TIME_LONG_NAME
+    bare = handle.createVariable("AbvGrndWood", "f8", ("time",))
+    bare[:] = np.asarray([0.5])
+    bare.units = SOURCE_UNITS["AbvGrndWood"]
+    handle.close()
+    with pytest.raises(ValueError, match="attributes"):
+        read_source_file(root / "1" / "IC_site_1_3.nc")
+
+
+def test_read_source_file_refuses_the_rest_of_the_template(tmp_path):
+    root = tmp_path / "files"
+
+    def write(name, *, version=1, extra_dim=False, fixed_time=False, time_value=1.0):
+        handle = netcdf_file(str(root / "1" / name), "w", version=version)
+        handle.createDimension("time", 1 if fixed_time else None)
+        if extra_dim:
+            handle.createDimension("layer", 1)
+        time = handle.createVariable("time", "f8", ("time",))
+        time[:] = np.asarray([time_value])
+        time.units, time.long_name = SOURCE_TIME_UNITS, SOURCE_TIME_LONG_NAME
+        var = handle.createVariable("AbvGrndWood", "f8", ("time",))
+        var[:] = np.asarray([0.5])
+        var.units, var.long_name = SOURCE_UNITS["AbvGrndWood"], SOURCE_LONG_NAMES["AbvGrndWood"]
+        var._FillValue = SOURCE_FILL_VALUE
+        handle.close()
+        return root / "1" / name
+
+    (root / "1").mkdir(parents=True)
+    with pytest.raises(ValueError, match="version byte"):
+        read_source_file(write("IC_site_1_1.nc", version=2))
+    with pytest.raises(ValueError, match="dimensions"):
+        read_source_file(write("IC_site_1_2.nc", extra_dim=True))
+    with pytest.raises(ValueError, match="unlimited"):
+        read_source_file(write("IC_site_1_3.nc", fixed_time=True))
+    with pytest.raises(ValueError, match="time value"):
+        read_source_file(write("IC_site_1_4.nc", time_value=2.0))
+
+
+def test_build_raw_refuses_ids_that_do_not_fit_and_unknown_names():
+    records = _records()
+    with pytest.raises(ValueError, match="int32"):
+        build_raw(records + [SourceFile(site=2**31, member=1, values=SYNTHETIC_VALUES[2][1]),
+                             SourceFile(site=2**31, member=2, values=SYNTHETIC_VALUES[2][2])],
+                  source_root="", conversion_script="")
+    with pytest.raises(ValueError, match="not one of"):
+        build_raw([SourceFile(site=1, member=1, values={"TotSoilCarb": 1.0})], source_root="", conversion_script="")
+
+
+def test_read_raw_refuses_the_rest_of_its_schema(raw, tmp_path):
+    cases = [
+        (lambda d: d.assign_coords(member=np.array([0, 1], dtype=np.int16)), "member"),
+        (lambda d: d.assign_coords(member=np.array([1, 40000], dtype=np.int64)), "int16"),
+        (lambda d: d.assign_coords(member=np.array([1.0, 2.0])), "integer"),
+        (lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending"),
+        (lambda d: d.transpose("member", "site"), "dims"),
+        (lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"].astype(np.float32)), "float64"),
+        (lambda d: _with_inf(d), "infinite"),
+        (lambda d: _without_attr(d, "n_source_files"), "n_source_files"),
+    ]
+    for mutate, message in cases:
+        with pytest.raises(ValueError, match=message):
+            read_raw(_write_raw_variant(raw, tmp_path, mutate))
+
+
+def _with_inf(dataset):
+    dataset["AbvGrndWood"].values[0, 0] = np.inf
+    return dataset
+
+
+def _without_attr(dataset, key):
+    del dataset.attrs[key]
+    return dataset
+
+
+def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
+    sites = load_sites(sites_csv)
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, sites)
+    path = tmp_path / "p.nc"
+
+    def refused(mutate, message, encode=True):
+        variant = mutate(product.copy(deep=True))
+        variant.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(variant) if encode else None)
+        with pytest.raises(ValueError, match=message):
+            load_initial_conditions(path)
+
+    refused(lambda d: d.assign_coords(member=np.array([1, 2], dtype=np.int16)), "0..n-1")
+    refused(lambda d: d.assign_coords(source_member=(MEMBER, np.array([1, 1], dtype=np.int16))), "source_member")
+    refused(lambda d: d.assign_coords(source_member=(MEMBER, np.array([0, 1], dtype=np.int16))), "source_member")
+    refused(lambda d: d.transpose(SITE, MEMBER), "dims")
+    refused(lambda d: d.assign_coords(lon=(SITE, d["lat"].values * 5)), "geographic")
+    refused(lambda d: d.assign_coords(lat=(SITE, np.array([np.nan, 1.0, 2.0]))), "non-finite")
+    refused(lambda d: d.drop_vars("lat"), "coordinate")
+    refused(lambda d: _rename_attr(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
+    refused(lambda d: _rename_attr(d, "initial_wood_carbon", "long_name", ""), "long_name")
+    refused(lambda d: d.assign_attrs(Conventions="CF-1.6"), "Conventions")
+    refused(lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending")
+
+
+def _rename_attr(dataset, variable, key, value):
+    dataset[variable].attrs[key] = value
+    return dataset
+
+
+def test_coordinates_carry_no_fill_value_on_disk(raw, sites_csv, tmp_path):
+    import h5netcdf
+
+    sites = load_sites(sites_csv)
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, sites)
+    path = tmp_path / "p.nc"
+    product.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(product))
+    for written in (path, raw):
+        with h5netcdf.File(written, "r") as handle:
+            for name in (SITE, MEMBER, SOURCE_MEMBER, "lon", "lat"):
+                if name in handle.variables:
+                    assert "_FillValue" not in handle.variables[name].attrs, (written, name)
+
+
+def test_biomass_spec_is_not_fed_to_sipnet():
+    spec = resolve_initial_condition("initial_aboveground_biomass_carbon")
+    assert spec.sipnet_initial_condition == ""
+    assert spec.xarray_attributes()["sipnet_initial_condition"] == "none"
+
+
+def test_conversion_limit_sites_and_a_variable_absent_everywhere(tree, tmp_path, capsys):
+    sites = _write_sites(tmp_path / "sites.csv")
+    out = tmp_path / "trial.nc"
+    assert convert.main(["--root", str(tree), "--out", str(out), "--sites", str(sites), "--jobs", "1", "--limit-sites", "2"]) == 0
+    text = capsys.readouterr().out
+    assert "pool check is skipped" in text and "SoilMoistFrac" in text
+    with read_raw(out) as dataset:
+        assert dataset.sizes[SITE] == 2
+    assert convert.main(["--root", str(tree), "--out", str(out), "--sites", str(sites), "--jobs", "1", "--limit-sites", "0"]) == 1
+    assert "at least 1" in capsys.readouterr().err
+    # a tree where no site carries soil moisture: the report prints dashes, exit 0
+    values = {site: {m: {k: v for k, v in rec.items() if k != "SoilMoistFrac"} for m, rec in members.items()}
+              for site, members in SYNTHETIC_VALUES.items()}
+    dry = _write_tree(tmp_path / "dry", values)
+    assert convert.main(["--root", str(dry), "--out", str(tmp_path / "dry.nc"), "--sites", str(sites), "--jobs", "1"]) == 0
+    assert "-            -" in capsys.readouterr().out
+    product = tmp_path / "dry_product.nc"
+    assert ingest.main(["--raw", str(tmp_path / "dry.nc"), "--sites", str(sites), "--out", str(product)]) == 0
+    assert product.exists()
+
+
+def test_conversion_refuses_a_named_site_table_that_is_absent(tree, tmp_path, capsys):
+    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--sites", str(tmp_path / "nope.csv"), "--jobs", "1"]) == 1
+    assert "does not exist" in capsys.readouterr().err
+
+
+def test_round_trip_checks_notice_a_file_that_differs(raw, sites_csv, tmp_path, monkeypatch):
+    sites = load_sites(sites_csv)
+    with read_raw(raw) as raw_dataset:
+        dataset = raw_dataset.load().copy(deep=True)
+        product = build_initial_conditions(raw_dataset, sites)
+    other = _write_raw_variant(raw, tmp_path, lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"] + 1))
+    with pytest.raises(convert.ConversionError, match="round-trip"):
+        convert.check_round_trip(dataset, other)
+    changed = product.copy(deep=True)
+    changed["initial_wood_carbon"].values[0, 0] += 1
+    path = tmp_path / "changed.nc"
+    changed.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(changed))
+    with pytest.raises(ingest.IngestError, match="round-trip"):
+        ingest.check_round_trip(product, path)
+    # a failing round trip leaves no .partial behind
+    monkeypatch.setattr(ingest, "check_round_trip", lambda d, p: (_ for _ in ()).throw(ingest.IngestError("boom")))
+    out = tmp_path / "never.nc"
+    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 1
+    assert not out.exists() and not out.with_suffix(".nc.partial").exists()

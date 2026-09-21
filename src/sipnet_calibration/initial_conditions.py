@@ -4,12 +4,13 @@ files are read, and the processed product they become.
 Overview
 --------
 The reanalysis behind the 8000-site pool started every ensemble member from a
-set of pool sizes drawn by a PEcAn script, one netCDF per site and member. This
-module holds one :class:`InitialConditionSpec` per variable in those files --
-what the quantity is, where it came from, which SIPNET initial parameter PEcAn
-fed it into and how -- and the functions that read the files, the converted raw
-file and the processed product. The spec's fields are written into both netCDFs
-as attributes, so neither needs a description beyond itself.
+set of initial state values drawn by a PEcAn script, one netCDF per site and
+member. This module holds one :class:`InitialConditionSpec` per variable in
+those files -- what the quantity is, where it came from, which SIPNET initial
+parameter PEcAn fed it into and how -- and the functions that read the files,
+the converted raw file and the processed product. The spec's fields are written
+into the processed netCDF as attributes, so it needs no description beyond
+itself; the raw file keeps the producer's own attribute strings.
 
 The dependency runs one way, and the first arrow is taken once, on the SCC::
 
@@ -34,9 +35,9 @@ Input data
     :func:`read_source_file` parses one exactly and refuses anything else.
 
 ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``
-    The same 800,000 values as one array, in the producer's variable names,
-    units strings and 1-based member index; the raw input everything else
-    reads. :func:`read_raw` checks it against the specs.
+    The values of the same 800,000 files as one array, in the producer's
+    variable names, units strings and 1-based member index; the raw input
+    everything else reads. :func:`read_raw` checks it against the specs.
 
 ``data/processed/sites/sites.csv``
     The site table, for the pool and the ``lon``/``lat`` coordinates.
@@ -52,13 +53,16 @@ length-1 record dimension whose units attribute is an unsubstituted template,
 and what it claimed is kept verbatim in the dataset attributes.
 
 **Data variables**, one per spec, all ``float64`` on ``(member, site)``,
-``NaN`` where the producer had no source value for the site::
+``NaN`` where the producer had no source value for the site. Units follow
+pySIPNET's convention of a physical ``units`` string plus a ``constituent``
+attribute, so ``attrs["units"]`` is ``"kg m-2"`` and ``attrs["constituent"]``
+is ``"C"``, never ``"kg C m-2"``::
 
-    initial_aboveground_biomass_carbon    kg C m-2   source AbvGrndWood
-    initial_wood_carbon                   kg C m-2   source wood_carbon_content
-    initial_leaf_carbon                   kg C m-2   source leaf_carbon_content
-    initial_soil_organic_carbon           kg C m-2   source soil_organic_carbon_content
-    initial_soil_moisture_saturation      percent    source SoilMoistFrac
+    initial_aboveground_biomass_carbon    kg m-2, C   source AbvGrndWood
+    initial_wood_carbon                   kg m-2, C   source wood_carbon_content
+    initial_leaf_carbon                   kg m-2, C   source leaf_carbon_content
+    initial_soil_organic_carbon           kg m-2, C   source soil_organic_carbon_content
+    initial_soil_moisture_saturation      percent     source SoilMoistFrac
 
 **Coordinates**
 
@@ -76,8 +80,9 @@ carries the spec's ``units``, ``long_name``, ``description``, ``product``,
 ``source_name``, ``source_units``, ``source_long_name``,
 ``sipnet_initial_condition``, ``pecan_conversion``, ``units_provenance`` and,
 when set, ``constituent`` and ``comment``. The dataset carries
-``Conventions``, ``title``, ``product``, ``source_file``, ``producer_script``,
-``producer_script_note``, ``nominal_date``, ``nominal_date_provenance``,
+``Conventions``, ``title``, ``product``, ``source_file``, ``source_root``,
+``producer_script``, ``producer_script_note``, ``nominal_date``,
+``nominal_date_provenance``,
 ``source_time_units``, ``source_time_long_name``, ``source_time_value``,
 ``member_source``, ``member_correspondence``, ``n_sites``, ``n_members``,
 ``history`` and ``created``.
@@ -104,8 +109,12 @@ Functions
     One canonical ``(member, site)`` field per spec, optionally for a subset
     of sites.
 
-:func:`read_source_file`
-    Parse one of the producer's files exactly and run the per-file checks.
+:func:`read_source_file`, :func:`read_source_directory`
+    Parse one of the producer's files exactly and run the per-file checks; or
+    every file of one site's directory, refusing anything else in it.
+
+:func:`site_member_from_file_name`
+    The ``(site, member)`` a producer file name encodes.
 
 :func:`build_raw`
     Assemble parsed files into the raw Dataset the conversion writes.
@@ -123,12 +132,17 @@ Functions
 :func:`describe`
     A spec rendered as a paragraph.
 
+:func:`default_source_root`, :func:`default_raw_dir`, :func:`raw_path`,
+:func:`default_product_path`
+    Where the producer's tree, the raw file and the product are expected to
+    be, all honoring ``$SIPNET_CALIBRATION_DATA``.
+
 Notes
 -----
 **One spec, no separate schema.** As ``ConstraintSpec`` does for the
 observations, the spec plays the role pySIPNET's ``VariableSpec`` plays for
-model output: one flat record per variable from which the attributes of both
-netCDFs are derived. ``sipnet_initial_condition`` names a field of
+model output: one flat record per variable from which the product's attributes
+are derived. ``sipnet_initial_condition`` names a field of
 ``pysipnet.parameters.InitialConditions`` and is checked against it at
 import, so the two vocabularies cannot drift.
 
@@ -395,7 +409,8 @@ PRODUCER_SCRIPT_NOTE = (
 )
 
 #: The date the producer sampled the source products at, from its script
-#: (``time_poimt <- as.Date("2011-07-15")``). The files carry no date.
+#: (``time_poimt <- as.Date("2011-07-15")``, the variable name spelled as the
+#: script spells it). The files carry no date.
 NOMINAL_DATE = "2011-07-15"
 
 #: The sentence every units provenance ends with, because it is true of every one.
@@ -449,11 +464,11 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "The producer's derived wood pool: the member's aboveground biomass carbon "
             "draw minus its leaf carbon draw where a leaf draw exists, and the biomass "
             "draw itself where it does not. Present at every site. Negative wherever "
-            "the leaf draw exceeds the biomass draw, which is 21% of the members that "
-            "have leaf carbon."
+            "the leaf draw exceeds the biomass draw, which it does at a substantial "
+            "share of the members that have leaf carbon; the ingest report counts them."
         ),
-        product="Derived by the producer's script from the Spawn and Gibbs (2020) biomass "
-        "map and MODIS MCD15A3H leaf area index",
+        product="Spawn and Gibbs (2020) biomass carbon minus MODIS-derived leaf carbon, "
+        "computed by the producer's script",
         sipnet_initial_condition="total_wood_carbon",
         pecan_conversion=(
             "plantWoodInit = 1000 x wood_carbon_content / (1 - fineRootFrac - "
@@ -482,7 +497,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "2011-07-15 within 30 days at the site (the same extraction as the "
             "modis_leaf_area_index constraint, rows with sd >= 20 dropped), one normal "
             "draw per member from its LAI and standard deviation, divided by one draw "
-            "from the site PFT's 100 specific leaf area samples. Absent at 336 sites, "
+            "from the site PFT's 100 specific leaf area samples. Absent at the sites, "
             "mostly high latitude, where no composite passed."
         ),
         product="MODIS MCD15A3H v061 leaf area index via PEcAn MODIS_LAI_prep, and the "
@@ -501,9 +516,9 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "applied. " + _PRODUCER_UNCONFIRMED
         ),
         comment=(
-            "Negative at 11,572 members, all at grassland sites, matching the share of "
-            "negative values in that PFT's specific leaf area sample. Written through "
-            "unchanged."
+            "Negative at some members, all at grassland sites, matching the negative "
+            "values in that PFT's specific leaf area sample. Written through unchanged "
+            "and counted in the ingest report."
         ),
     ),
     InitialConditionSpec(
@@ -530,8 +545,8 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "Layer' but each holds one scalar. " + _PRODUCER_UNCONFIRMED
         ),
         comment=(
-            "Only 84,479 distinct values across 800,000 members, because each site's "
-            "members are drawn from a 200-value pool."
+            "Far fewer distinct values than members, because each site's members are "
+            "drawn with replacement from a 200-value pool."
         ),
     ),
     InitialConditionSpec(
@@ -545,7 +560,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
             "CCI active-microwave climate data record (v202212, daily, 0.25 degree): the "
             "first day with a retrieval from 2011-07-15 forward within 30 days, one "
             "normal draw per member from the retrieval and its uncertainty, negatives "
-            "set to 0, by PEcAn extract_SM_CDS. Absent at 616 sites, mostly high "
+            "set to 0, by PEcAn extract_SM_CDS. Absent at the sites, mostly high "
             "latitude or densely vegetated, where the record has no retrieval."
         ),
         product="Copernicus C3S / ESA CCI Soil moisture gridded data from 1978 to present, "
@@ -812,6 +827,11 @@ def build_raw(
             raise ValueError(f"two files for site {record.site} member {record.member}")
         seen[i, j] = True
         for name, value in record.values.items():
+            if name not in arrays:
+                raise ValueError(
+                    f"site {record.site} member {record.member}: variable {name!r} is not "
+                    f"one of {list(SOURCE_NAMES)}"
+                )
             arrays[name][i, j] = value
     _check_every_site_has_every_member(seen, sites, members)
     _check_presence_is_uniform_over_members(arrays, sites)
@@ -904,10 +924,10 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
         variable is present for some members of a site and not others.
     """
     path = Path(path) if path is not None else raw_path()
-    if not path.exists():
+    if not path.is_file():
         raise FileNotFoundError(
-            f"{path} not found. It is tracked in version control; if it is missing from "
-            "a checkout, regenerate it on the SCC with "
+            f"{path} is not a file. The raw file is tracked in version control; if it "
+            "is missing from a checkout, regenerate it on the SCC with "
             "scripts/convert_initial_conditions.py (see data/raw/initial_conditions/"
             "provenance.md)."
         )
@@ -1031,9 +1051,9 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
         If the file does not match the data model.
     """
     path = Path(path) if path is not None else default_product_path()
-    if not path.exists():
+    if not path.is_file():
         raise FileNotFoundError(
-            f"{path} not found. Produce it with:\n  python scripts/ingest_initial_conditions.py"
+            f"{path} is not a file. Produce it with:\n  python scripts/ingest_initial_conditions.py"
         )
     dataset = xr.open_dataset(path, engine="h5netcdf")
     try:
@@ -1098,8 +1118,7 @@ def describe(spec: InitialConditionSpec) -> str:
         f"{spec.name}: {spec.long_label} ({units}), from {spec.product}.",
         f"  source     {spec.source_name!r}, units {spec.source_units!r}, "
         f"long name {spec.source_long_name!r}",
-        f"  sipnet     {spec.sipnet_initial_condition or 'not used by PEcAn'}: "
-        f"{spec.pecan_conversion}",
+        f"  sipnet     {spec.sipnet_initial_condition or 'none'}: {spec.pecan_conversion}",
         f"  units      {spec.units_provenance}",
         f"  what       {spec.description}",
     ]
@@ -1322,10 +1341,14 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
         values = array.values
         if np.isinf(values).any():
             raise ValueError(f"{path}: {name} holds an infinite value")
-    for coordinate in (SITE, MEMBER):
+    for coordinate, dtype in ((SITE, np.int32), (MEMBER, np.int16)):
         values = dataset[coordinate].values
         if values.size == 0 or np.any(np.diff(values) <= 0):
             raise ValueError(f"{path}: {coordinate} is empty or not strictly ascending")
+        if not np.issubdtype(values.dtype, np.integer):
+            raise ValueError(f"{path}: {coordinate} is {values.dtype}, expected an integer type")
+        # The product narrows these with astype, which wraps silently.
+        _check_site_ids_fit_dtype(values.astype(np.int64), dtype, f"{path}: {coordinate}")
     _check_presence_is_uniform_over_members(
         {name: dataset[name].values for name in SOURCE_NAMES}, dataset[SITE].values
     )
@@ -1355,6 +1378,8 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
                 f"{path}: {spec.name} was written from {array.attrs.get('source_name')!r}, "
                 f"the spec says {spec.source_name!r}"
             )
+        if array.attrs.get("long_name") != spec.long_label:
+            raise ValueError(f"{path}: {spec.name} lacks the spec's long_name")
         if np.isinf(array.values).any():
             raise ValueError(f"{path}: {spec.name} holds an infinite value")
     for coordinate in (MEMBER, SOURCE_MEMBER, SITE, "lon", "lat"):
@@ -1368,9 +1393,20 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
     member = dataset[MEMBER].values
     if member.size == 0 or not np.array_equal(member, np.arange(member.size)):
         raise ValueError(f"{path}: member is not 0..n-1")
+    source_member = dataset[SOURCE_MEMBER].values
+    if source_member.min() < 1 or np.any(np.diff(source_member) <= 0):
+        raise ValueError(
+            f"{path}: source_member is not strictly ascending from 1 or more; a producer "
+            "file name could not be recovered from it"
+        )
     site = dataset[SITE].values
     if site.size == 0 or np.any(np.diff(site) <= 0):
         raise ValueError(f"{path}: site is empty or not strictly ascending")
+    lon, lat = dataset["lon"].values, dataset["lat"].values
+    if not (np.isfinite(lon).all() and np.isfinite(lat).all()):
+        raise ValueError(f"{path}: lon or lat holds a non-finite value")
+    if np.abs(lon).max() > 180 or np.abs(lat).max() > 90:
+        raise ValueError(f"{path}: lon or lat is outside the geographic range; are they swapped?")
     _check_presence_is_uniform_over_members(
         {name: dataset[name].values.T for name in INITIAL_CONDITION_NAMES}, site
     )

@@ -107,9 +107,9 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with three exceptions, all small
-primary sources rather than pipeline outputs, and all inputs the repository
-cannot do without. `raw/sites/` holds the site shapefile, without which the
+directory is tracked in version control, with three exceptions: two small
+primary sources and one converted input, none of them a pipeline output and
+all of them inputs the repository cannot do without. `raw/sites/` holds the site shapefile, without which the
 repository carries no site information at all; `site_id_map.csv` is tracked for
 the same reason. `raw/constraints/` holds the five per-variable observation
 files, which are tracked because the upstream copies are edited and moved in
@@ -134,10 +134,10 @@ the identifiers are treated as fixed and are never renumbered.
 
 The site table as an ESRI point shapefile: 8000 `Point` records in `pts.shp`, with
 `pts.shx`, `pts.dbf`, `pts.prj` and `pts.cpg` alongside. Record *N* corresponds to
-site identifier *N*. This is the only site source in the repository, and the only
-file under `raw/` that is tracked in version control: it is small, it is a primary
-source rather than a pipeline output, and without it the repository carries no site
-information at all.
+site identifier *N*. This is the only site source in the repository, and one of the
+three inputs tracked under `raw/` (see [Directory layout](#directory-layout)):
+it is small, it is a primary source rather than a pipeline output, and without
+it the repository carries no site information at all.
 
 Geometry is in geographic coordinates on the WGS 84 datum, declared by `pts.prj`.
 Records are ordered by descending latitude. Coordinates span -178.754 to -20.013
@@ -479,7 +479,8 @@ Zhang, 2024-03-27), the same code as
 `modules/assim.sequential/inst/anchor/IC_prep_anchorSites.Rmd` on PEcAn
 `develop` and the script Cami Webb's `IC_prep_guide.md` names for pool initial
 conditions. It draws 100 members per site at the nominal date **2011-07-15**
-(`time_poimt <- as.Date("2011-07-15")`), from these sources, with these PEcAn
+(`time_poimt <- as.Date("2011-07-15")`, spelled as the script spells it), from
+these sources, with these PEcAn
 functions (fetched from `develop` on 2026-09-20):
 
 | Variable | Source product | Draw | Units on arrival |
@@ -527,7 +528,7 @@ which is why the ingest applies none of them (see
 > strings are PEcAn's `standard_vars` entry for the `time` dimension, verbatim.
 > The conversion asserts the template in every file, so a substituted year
 > upstream is noticed rather than averaged away, and both netCDFs carry the
-> three strings as `source_time_*` attributes. Anyone reading a producer file
+> three values as `source_time_*` attributes. Anyone reading a producer file
 > directly must disable CF time decoding; `read_source_file` in
 > `sipnet_calibration.initial_conditions` parses them with `scipy.io.netcdf_file`
 > and does not decode time at all. Tracked as
@@ -1054,6 +1055,36 @@ an error unless `allow_missing=True`, which fills it with `NaN` and adds a
 boolean `driver_present(member, site)`. The three local files are such a case:
 site 1 has members 1 and 2, site 27 has member 5.
 
+`initial_conditions.nc` carries the initial condition ensemble on
+`(member, site)`, in the producer's units, read through
+`sipnet_calibration.initial_conditions.load_initial_conditions` and split into
+canonical fields by `initial_condition_fields`:
+
+| Variable | Source variable | Units |
+|---|---|---|
+| `initial_aboveground_biomass_carbon` | `AbvGrndWood` | `kg m-2`, constituent `C` |
+| `initial_wood_carbon` | `wood_carbon_content` | `kg m-2`, constituent `C` |
+| `initial_leaf_carbon` | `leaf_carbon_content` | `kg m-2`, constituent `C` |
+| `initial_soil_organic_carbon` | `soil_organic_carbon_content` | `kg m-2`, constituent `C` |
+| `initial_soil_moisture_saturation` | `SoilMoistFrac` | `percent` |
+
+`site` is the whole pool with `lon`/`lat`; `member` is 0-based with
+`source_member` carrying the producer's 1-based file index; there is no `time`,
+and what the source's degenerate one claimed is kept in the `source_time_*`
+attributes. `NaN` has one meaning, that the producer had no source value at
+the site, uniform over the site's members and asserted on load. Each variable
+carries its spec's fields as attributes: `units`, `long_name`, `description`,
+`product`, `source_name`, `source_units`, `source_long_name`,
+`sipnet_initial_condition` (the `pysipnet.parameters.InitialConditions` field
+PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
+`constituent` and `comment`. The dataset records the producer script and its
+caveat, the nominal date 2011-07-15 with where it comes from, `member_source =
+"ic"` and `member_correspondence` (Note 12). The names carry `initial_` because
+the product is the model's starting state -- PEcAn calls the format
+`pool_initial_conditions` -- and so that no name collides with a constraint
+product's; `biomass` rather than the file's `woody` because the Spawn and
+Gibbs product is total aboveground biomass carbon.
+
 The following conventions apply to every product.
 
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
@@ -1072,36 +1103,6 @@ The following conventions apply to every product.
   particular are ragged over site and time, and
   unobserved cells are `NaN` rather than zero -- a zero there would be an
   observation of no biomass, which is a different and real statement.
-
-`initial_conditions.nc` carries the initial condition ensemble on
-`(member, site)`, in the producer's units, read through
-`sipnet_calibration.initial_conditions.load_initial_conditions` and split into
-canonical fields by `initial_condition_fields`:
-
-| Variable | Source variable | Units |
-|---|---|---|
-| `initial_aboveground_biomass_carbon` | `AbvGrndWood` | kg C m-2 |
-| `initial_wood_carbon` | `wood_carbon_content` | kg C m-2 |
-| `initial_leaf_carbon` | `leaf_carbon_content` | kg C m-2 |
-| `initial_soil_organic_carbon` | `soil_organic_carbon_content` | kg C m-2 |
-| `initial_soil_moisture_saturation` | `SoilMoistFrac` | percent |
-
-`site` is the whole pool with `lon`/`lat`; `member` is 0-based with
-`source_member` carrying the producer's 1-based file index; there is no `time`,
-and what the source's degenerate one claimed is kept in the `source_time_*`
-attributes. `NaN` has one meaning, that the producer had no source value at
-the site, uniform over the site's members and asserted on load. Each variable
-carries its spec's fields as attributes: `units`, `long_name`, `description`,
-`product`, `source_name`, `source_units`, `source_long_name`,
-`sipnet_initial_condition` (the `pysipnet.parameters.InitialConditions` field
-PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
-`constituent` and `comment`. The dataset records the producer script and its
-caveat, the nominal date 2011-07-15 with where it comes from, `member_source =
-"ic"` and `member_correspondence` (Note 12). The names carry `initial_` because
-the product is the model's starting state -- PEcAn calls the format
-`pool_initial_conditions` -- and so that no name collides with a constraint
-product's; `biomass` rather than the file's `woody` because the Spawn and
-Gibbs product is total aboveground biomass carbon.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
@@ -1242,7 +1243,7 @@ labelings to pull down and how the three classifications relate; see also
 Note 2.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
-*i*, initial-condition member *i* and the calibration ensemble were drawn jointly
+*i*, initial condition member *i* and the calibration ensemble were drawn jointly
 or independently determines whether arithmetic that pairs them is meaningful.
 Because xarray aligns on coordinate values automatically, an incorrect assumption
 here would combine unrelated members without any error being raised. One

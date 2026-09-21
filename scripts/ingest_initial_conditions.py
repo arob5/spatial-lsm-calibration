@@ -42,8 +42,9 @@ model.
 Notes
 -----
 The ingest changes structure, never values. Negative wood and leaf carbon --
-a fifth of the members with leaf carbon, in the producer's construction
-``wood = biomass - leaf`` -- are written through and counted in the report,
+a substantial share of the members with leaf carbon, in the producer's
+construction ``wood = biomass - leaf`` -- are written through and counted in
+the report,
 because dropping or flooring them is the experiment's decision and PEcAn's own
 handling (it kept the template default for such members) is recorded in the
 specs.
@@ -163,9 +164,12 @@ def write_product(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_suffix(out.suffix + ".partial")
-    dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
-    check_round_trip(dataset, partial)
-    partial.replace(out)
+    try:
+        dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
+        check_round_trip(dataset, partial)
+        partial.replace(out)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 def describe_product(dataset: xr.Dataset, out: Path) -> str:
@@ -182,10 +186,19 @@ def describe_product(dataset: xr.Dataset, out: Path) -> str:
         finite = values[present]
         lines.append(
             f"{spec.name:35s} {spec.units:9s} {int(present.any(axis=0).sum()):5d}   "
-            f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
-            f"{int((finite < 0).sum())}"
+            + _range(finite)
         )
     return "\n".join(lines)
+
+
+def _range(finite: np.ndarray) -> str:
+    """min, median, max and the negative count, or dashes for a variable absent everywhere."""
+    if finite.size == 0:
+        return f"{'-':<12s} {'-':<12s} {'-':<12s} -"
+    return (
+        f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
+        f"{int((finite < 0).sum())}"
+    )
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

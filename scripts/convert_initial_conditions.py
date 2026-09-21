@@ -58,8 +58,9 @@ or through the batch system, on the group's buy-in nodes::
 
     qsub scripts/convert_initial_conditions.qsub
 
-A quick check on a partial tree (the three files in a local checkout do not
-form a rectangle, so this fails at the rectangle check, by design)::
+A quick check on a partial tree (the three files in a local checkout are not
+the site pool and do not form a rectangle, so this fails at the pool check, or
+at the rectangle check without a site table, by design)::
 
     uv run python scripts/convert_initial_conditions.py --root data/raw/initial_conditions/files
 """
@@ -71,6 +72,7 @@ import hashlib
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 
 import numpy as np
@@ -106,16 +108,24 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         sites = discover_sites(root)
-        if args.limit_sites:
+        if args.limit_sites is not None:
+            # A trial run reads a prefix of the tree, which is not the pool, so the
+            # pool check is skipped and the result must not be committed.
+            if args.limit_sites < 1:
+                raise ConversionError("--limit-sites must be at least 1")
             sites = sites[: args.limit_sites]
-        check_site_directories_are_the_pool(sites, sites_path)
+            print(f"note: --limit-sites {args.limit_sites}; the pool check is skipped", flush=True)
+        else:
+            check_site_directories_are_the_pool(sites, sites_path, explicit=args.sites is not None)
         print(f"{len(sites)} site directories under {root}", flush=True)
 
         files = read_all_files(root, sites, jobs=args.jobs)
         dataset = build_raw(files, source_root=str(root), conversion_script=SCRIPT)
+        report = describe_raw(dataset, files)
         write_raw(dataset, out)
-        print(describe_raw(dataset, out, files))
-    except (ConversionError, OSError, ValueError) as error:
+        print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {_md5(out)})")
+        print(report)
+    except (ConversionError, OSError, ValueError, BrokenProcessPool) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
@@ -168,7 +178,7 @@ def discover_sites(root: Path) -> list[int]:
     for entry in sorted(root.iterdir()):
         if entry.name.startswith("."):
             continue  # filesystem debris such as .DS_Store
-        if entry.is_dir() and entry.name.isdigit() and str(int(entry.name)) == entry.name:
+        if entry.is_dir() and entry.name.isascii() and entry.name.isdigit() and str(int(entry.name)) == entry.name:
             sites.append(int(entry.name))
         else:
             strays.append(entry.name)
@@ -185,13 +195,19 @@ def discover_sites(root: Path) -> list[int]:
 def read_all_files(root: Path, sites: list[int], *, jobs: int) -> list[SourceFile]:
     """Parse every file of every site, in parallel over sites."""
     files: list[SourceFile] = []
-    with ProcessPoolExecutor(max_workers=max(1, jobs)) as pool:
+    pool = ProcessPoolExecutor(max_workers=max(1, jobs))
+    try:
         for i, batch in enumerate(
             pool.map(read_source_directory, [root] * len(sites), sites, chunksize=8), start=1
         ):
             files.extend(batch)
             if i % 500 == 0 or i == len(sites):
                 print(f"  ... {i} of {len(sites)} sites, {len(files)} files", flush=True)
+    except BaseException:
+        # A bad file should stop the run now, not after the other 799,999 are read.
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     return files
 
 
@@ -199,15 +215,17 @@ def write_raw(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_suffix(out.suffix + ".partial")
-    dataset.to_netcdf(partial, engine="h5netcdf", encoding=raw_encoding(dataset))
-    check_round_trip(dataset, partial)
-    partial.replace(out)
+    try:
+        dataset.to_netcdf(partial, engine="h5netcdf", encoding=raw_encoding(dataset))
+        check_round_trip(dataset, partial)
+        partial.replace(out)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
-def describe_raw(dataset: xr.Dataset, out: Path, files: list[SourceFile]) -> str:
+def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
     """The run report: what provenance.md records."""
     lines = [
-        f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {_md5(out)})",
         f"sites {dataset.sizes['site']}  members {dataset.sizes['member']}  files {len(files)}",
         "variable                       sites   min          median       max          negative",
     ]
@@ -215,11 +233,7 @@ def describe_raw(dataset: xr.Dataset, out: Path, files: list[SourceFile]) -> str
         values = dataset[name].values
         present = np.isfinite(values)
         finite = values[present]
-        lines.append(
-            f"{name:30s} {int(present.any(axis=1).sum()):5d}   "
-            f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
-            f"{int((finite < 0).sum())}"
-        )
+        lines.append(f"{name:30s} {int(present.any(axis=1).sum()):5d}   {_range(finite)}")
     signatures = Counter(tuple(sorted(record.values)) for record in files)
     lines.append("variable sets:")
     for signature, count in signatures.most_common():
@@ -228,6 +242,16 @@ def describe_raw(dataset: xr.Dataset, out: Path, files: list[SourceFile]) -> str
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
+
+
+def _range(finite: np.ndarray) -> str:
+    """min, median, max and the negative count, or dashes for a variable absent everywhere."""
+    if finite.size == 0:
+        return f"{'-':<12s} {'-':<12s} {'-':<12s} -"
+    return (
+        f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
+        f"{int((finite < 0).sum())}"
+    )
 
 
 def _md5(path: Path) -> str:
@@ -241,13 +265,18 @@ def _md5(path: Path) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_site_directories_are_the_pool(sites: list[int], sites_path: Path) -> None:
+def check_site_directories_are_the_pool(
+    sites: list[int], sites_path: Path, *, explicit: bool
+) -> None:
     """Raise unless the site directories are exactly the site table's pool.
 
-    Skipped, with a note, when the site table is not present; the ingest
-    repeats the comparison against the written file.
+    Skipped, with a note, when the *default* site table is not present; the
+    ingest repeats the comparison against the written file. A table named on
+    the command line has to exist.
     """
     if not sites_path.exists():
+        if explicit:
+            raise ConversionError(f"site table {sites_path} does not exist")
         print(f"note: {sites_path} absent; the pool check is left to the ingest", flush=True)
         return
     pool = load_sites(sites_path)["site_id"].to_numpy(np.int64)
