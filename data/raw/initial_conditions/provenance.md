@@ -31,9 +31,9 @@ sites and the run that wrote these 8000-site files was not located.
 
 ## What was done
 
-Converted at **2026-09-21T01:16:15Z** (the evening of 2026-09-20 in Boston; the
-file's `converted` attribute) on the SCC's dietzelab buy-in queue (`qsub -P
-dietzelab -l buyin`, which landed on `geo-int`, job 7670299), with
+Converted at **2026-09-21T20:24:19Z** (the file's `converted` attribute) on the
+SCC's dietzelab buy-in queue (`qsub -P dietzelab -l buyin`, which landed on
+`geo-int`, job 7681303), with
 
 ```bash
 qsub scripts/raw_sources/convert_initial_conditions.qsub   # --jobs 16
@@ -53,7 +53,7 @@ the `-999.0` fill or a non-finite value.
 
 | File in this directory | Source | Files read | md5 of the file as committed |
 |---|---|---|---|
-| `pecan_pool_initial_conditions.nc` | the tree above | 800,000 | `8591d0429e63585e114a321939dc6316` |
+| `pecan_pool_initial_conditions.nc` | the tree above | 800,000 | `865a7c46b2762796f89491cf42ecba20` |
 
 The run report, which the script prints:
 
