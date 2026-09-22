@@ -38,8 +38,10 @@ Data model
 ----------
 :func:`load_labeling` returns a ``pandas.DataFrame`` with one row per labeled
 site, in ascending ``site_id`` order, holding the columns of
-:data:`LABELING_COLUMNS` with the dtypes of :data:`LABELING_COLUMN_DTYPES`,
-which the read imposes.
+:data:`LABELING_COLUMNS`. ``site_id`` takes its dtype from
+:data:`LABELING_COLUMN_DTYPES`, which both the read and the build impose;
+``label`` is a categorical the spec builds, since its categories depend on
+which labeling it is.
 
 ============= ================== ==============================================
 Column        Dtype              Meaning
@@ -454,7 +456,7 @@ def load_labeling(
 
     return pd.DataFrame(
         {
-            SITE_COLUMN: frame[SITE_COLUMN].astype(np.int32),
+            SITE_COLUMN: frame[SITE_COLUMN].astype(LABELING_COLUMN_DTYPES[SITE_COLUMN]),
             LABEL_COLUMN: frame[LABEL_COLUMN].astype(label_dtype(spec)),
         }
     )
@@ -557,7 +559,7 @@ def build_labeling(spec: LabelingSpec, frame: pd.DataFrame) -> pd.DataFrame:
     _check_labels_are_declared(label, spec, spec.raw_file)
     built = pd.DataFrame(
         {
-            SITE_COLUMN: site.to_numpy(dtype=np.int32),
+            SITE_COLUMN: site.to_numpy(dtype=LABELING_COLUMN_DTYPES[SITE_COLUMN]),
             LABEL_COLUMN: pd.Categorical(label, dtype=label_dtype(spec)),
         }
     )
@@ -614,8 +616,8 @@ def _check_site_ids(site: pd.Series, source: object, *, sorted_required: bool = 
     """Identifiers are positive, fit ``int32``, are unique, and are ascending."""
     if site.isna().any():
         raise ValueError(f"{source}: {SITE_COLUMN} has a missing value.")
-    low, high = np.iinfo(np.int32).min, np.iinfo(np.int32).max
-    if site.min() < 1 or site.max() > high or site.min() < low:
+    high = np.iinfo(LABELING_COLUMN_DTYPES[SITE_COLUMN]).max
+    if site.min() < 1 or site.max() > high:
         raise ValueError(
             f"{source}: {SITE_COLUMN} runs {site.min()}-{site.max()}, which is not a "
             f"positive int32. Site identifiers are the 1-8000 of the site table."

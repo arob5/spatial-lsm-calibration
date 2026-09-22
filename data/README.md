@@ -851,13 +851,15 @@ files are the upstream sources from which those inputs were assembled.
 
 ### Site labelings
 
-A **labeling** maps every site to a class. Plant functional type is the only
-kind held so far, and it is not site metadata: which labeling a calibration uses
-is an experimental choice, so each is its own product rather than a column of
-the site table. See Note 11.
+A **labeling** maps sites to classes -- every site, where its spec says so.
+Plant functional type is the only kind held so far, and it is not site metadata:
+which labeling a calibration uses is an experimental choice, so each is its own
+product rather than a column of the site table. See Note 11.
 
-**Format.** `reanalysis_site_pft.csv`: two quoted columns, `site` and `pft`, one
-row per site, no missing values. `site` is the 1-8000 identifier shared with the
+**Format.** `reanalysis_site_pft.csv`: two columns, `site` and `pft`, one row
+per site, no missing values. The header and the class names are quoted; the
+identifiers are not, which is one of the things that tells this file from the
+older pool's (see below). `site` is the 1-8000 identifier shared with the
 rest of the project; `pft` is one of three class names.
 
 | Class | Sites | `landcover` classes | Latitude (min / median / max) |
@@ -868,20 +870,26 @@ rest of the project; `pft` is one of three class names.
 
 **The labeling is an exact aggregation of `landcover`.** Every one of the 8000
 sites follows the rule in the third column, with no exception in either
-direction; the cross-tabulation has no off-diagonal cell. That settles half of
-Note 2: whatever `landcover`'s eight classes mean, the reanalysis treated 1-2 as
-one group, 3-4 as a second and 5-8 as a third. Whether that rule is the intended
-one, and what the eight classes are, is open question 24(k). The relation is
+direction; the cross-tabulation has no off-diagonal cell. That does not settle
+Note 2, which asks what `cluster` and `landcover` mean, but it is evidence about
+`landcover`: whatever its eight classes are, the reanalysis read 1-2 as one
+group, 3-4 as a second and 5-8 as a third, which is consistent with an ordering
+by needleleaf, broadleaf-deciduous and non-forest. It still does not name the
+scheme. Whether the aggregation rule is the intended one, and what the eight
+classes are, is open question 24(k). The relation is
 measured rather than stated, so `ingest_labelings.py` asserts it and refuses a
 raw file that departs from it.
 
 **The classes are coarse, and two of the three names mislead.** Over a pool
-spanning 7-82 degrees north, `boreal.coniferous` is any needleleaf cover -- it
-holds Wind River at 46 N and Vaira Ranch, a California annual grassland with a
-few oaks -- and `semiarid.grassland_HPDA` is the catch-all for everything
-non-forest, including every Arctic site. A prior built on these labels inherits
-that coarseness, which is the argument for a class offset in the mean plus a
-smooth spatial residual rather than pooling on class alone.
+spanning 7-82 degrees north, neither name constrains what it says it does.
+`boreal.coniferous` carries no latitude restriction -- 805 of its 2369 sites lie
+south of 40 N -- and it is not reliably coniferous either: it holds Vaira Ranch
+(site 5692), a California annual grassland with a few oaks.
+`semiarid.grassland_HPDA` is the catch-all for everything non-forest, so 1004 of
+its sites lie north of the Arctic Circle and are neither semiarid nor grassland.
+A prior built on these labels inherits that coarseness, which is the argument for
+a class offset in the mean plus a smooth spatial residual rather than pooling on
+class alone.
 
 **Two upstream files are named `site_pft.csv`.** One directory above the source
 sits a sibling with the same header and the same three class names, labeling the
@@ -944,12 +952,12 @@ identifiers, and its coordinates agree with the site table to the four decimal
 places it prints. `leaf_phenology_neon.csv` is keyed on BETY identifiers around
 1000004875-1000004945 and shares none of ours, so it is **not joinable without a
 map**. Measured, each of its 39 sites has a nearest site in our pool at most
-0.0049 degrees away, which is under one 1/120-degree cell, so a nearest-cell
-join is available. Two cautions before using one. That the nearest site is the
-intended correspondence is an inference from proximity, not something
-established. And the margin is thin: the *second*-nearest site is as little as
-0.0052 degrees away at the tightest of the 39, so the match is unique but only
-just, which is the situation open question 3 describes.
+0.0049 degrees away, under one 1/120-degree cell, and the match is unambiguous:
+at every one of the 39 the second-nearest pool site is at least 1.36 times
+further, a gap of at least 0.0014 degrees. So a nearest-site join is available
+and no NEON tower is a close call between two pool sites. What is *not*
+established is that the nearest site is the intended correspondence. That is an
+inference from proximity, and only the producer or a published map settles it.
 
 **How PEcAn used it.** `write.configs.SIPNET.R` writes the **start year's**
 `leafonday` and `leafoffday` to the SIPNET parameters `leafOnDay` and
@@ -1007,11 +1015,12 @@ one `float32` variable per property on that dimension. No global attributes.
 | `soil_thermal_conductivity`, `soil_thermal_conductivity_at_saturation` | W m-1 K-1 |
 | `soil_albedo`, `soil_bulk_density`, `soil_thermal_capacity` | 1, kg m-3, J kg-1 K-1 |
 
-The three texture fractions sum to one in every layer, to float32 rounding. Most
-files carry all twenty variables; a small minority carry seventeen, lacking
-`soil_albedo`, `soil_bulk_density` and `soil_thermal_capacity` -- 20 of the
-10,000 files in the surveyed sample. In files that do carry them, those three are
-often `NaN` in the two deepest layers.
+The three texture fractions sum to one in every layer, to within about 4e-8,
+which is float32 rounding on values of order one. Most files carry all twenty
+variables; a small minority carry seventeen, lacking `soil_albedo`,
+`soil_bulk_density` and `soil_thermal_capacity` -- 20 of the 10,000 files in the
+surveyed sample. In files that do carry them, those three are often `NaN` in the
+two deepest layers.
 
 **Coverage.** 7693 of the 8000 sites have a directory, each holding exactly 100
 files and every name on the template: 769,300 files in all. **307 sites are
@@ -1031,12 +1040,14 @@ layer thickness as `c(depth[1], diff(depth))` -- so 5, 10, 15, 30, 40 and 100 cm
 **This matters more than its deferral suggests.** Over a 100-site, 10,000-file
 sample the `soilWHC` that formula gives runs **72.6 to 100.7 cm**, median 88.1.
 [pySIPNET]'s reference fixture and PEcAn's own `template.param` both use **12
-cm**. That is a factor of seven to eight in the single parameter setting how
-often the model is water-limited, and it also changes what `soilWFracInit` means,
-since that is a fraction of the bucket whose size this parameter is (open
-question 24(f)). A run set up for comparison with the reanalysis should use a
-value of order 50-100 cm, not 12. Whether the 2 m porosity integral is the
-intended `soilWHC` is part of open question 24(n).
+cm**. That is a factor of six to eight (median 7.3) in the single parameter
+setting how often the model is water-limited, and it also changes what
+`soilWFracInit` means, since that is a fraction of the bucket whose size this
+parameter is (open question 24(f)). Sharper still: `template.param` gives
+`soilWHC` a range of 0.1 to **36 cm**, so every value the ensemble implies lies
+above the top of PEcAn's own prior for it. A run set up for comparison with the
+reanalysis should use a value of order 70-100 cm, not 12. Whether the 2 m
+porosity integral is the intended `soilWHC` is part of open question 24(n).
 
 **Source.** [NALCR], at
 `anchorSites/NA_runs/soil_nc/soil_texture_output/soil_texture_ensemble`,
@@ -1087,7 +1098,8 @@ itself made by a script, which is **not** a pipeline step; see
 ### Surveys, which are not the pipeline either
 
 Three scripts under [`../scripts/`](../scripts) answer a question about raw
-data and write nothing: `survey_drivers.py`, `survey_phenology.py` and
+data and write nothing under `data/`: `survey_drivers.py`, `survey_phenology.py`
+and
 `survey_soil_texture.py`. Nothing under `processed/` depends on one, and no
 ingest calls one.
 
@@ -1247,7 +1259,7 @@ labeling rather than by its raw file, with two columns:
 | Column | Type | Description |
 |---|---|---|
 | `site_id` | int32 | Site identifier, ascending |
-| `label` | string | The class, exactly as the producer wrote it |
+| `label` | category | The class, exactly as the producer wrote it |
 
 The column is `label` rather than `pft` so that every labeling has one schema:
 code that pools over classes indexes `label` without knowing which labeling it
@@ -1438,12 +1450,13 @@ classes, fewer than the seventeen of the IGBP scheme, so it is likely an
 aggregation. Confirming both would take one question to the group that produced
 the site pool.
 
-*Partly settled by the PFT labeling.* The reanalysis's own three-class labeling
-is an exact function of `landcover`, grouping 1-2, 3-4 and 5-8; see
-[Site labelings](#site-labelings). So `landcover` is at least ordered by
-something the producer read as needleleaf, broadleaf-deciduous and non-forest,
-which is consistent with an aggregation of a standard scheme but does not name
-the eight classes. That naming is the outstanding half, asked as question
+*Evidence from the PFT labeling, on the `landcover` half only.* The
+reanalysis's own three-class labeling is an exact function of `landcover`,
+grouping 1-2, 3-4 and 5-8; see [Site labelings](#site-labelings). So `landcover`
+is at least ordered by something its producer read as needleleaf,
+broadleaf-deciduous and non-forest, which is consistent with an aggregation of a
+standard scheme. It names neither the eight classes nor anything about
+`cluster`, so both halves of this note stand; what it adds is asked as question
 24(k).
 
 **3. Sites resolving to the same model identifier.** The 8000-site pool is a
@@ -1544,9 +1557,10 @@ is the intended one is open question 24(k).
 
 What remains open is the **16-class table**, which exists upstream for the same
 8000 sites and is not in this repository. It is what a finer pooling structure
-would use, and PR D's coarse-to-fine transfer is designed for both being present
-at once. Obtaining it is the outstanding action; nothing in the design changes
-when it arrives, since `sipnet_calibration.labelings` takes a second spec.
+would use, and the planned transfer of priors from coarse classes to fine ones
+needs both present at once. Obtaining it is the outstanding action; nothing in
+the design changes when it arrives, since `sipnet_calibration.labelings` takes a
+second spec.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial condition member *i* and the calibration ensemble were drawn jointly
@@ -1702,7 +1716,8 @@ land cover classes? The second half is the outstanding part of Note 2.
 
 (n) The soil texture ensemble covers 7693 sites. What happened at the other
 307, and is the 2 m porosity integral the intended `soilWHC`? The value it
-gives is seven to eight times SIPNET's template default; see
+gives is six to eight times SIPNET's template default, and above the top of the
+range that template allows; see
 [Soil texture](#soil-texture).
 
 (o) *Answered in part.* `leaf_phenology_8k.csv` comes from

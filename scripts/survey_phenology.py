@@ -115,6 +115,10 @@ RECORDED: dict[str, dict[str, Any]] = {
         "median_day": {"leafonday": 149.0, "leafoffday": 262.0},
         "inverted_rows": 731,
         "inverted_sites": 308,
+        "inverted_leafoffday_median": 42.0,
+        # Only reachable with --sites, which the NEON file cannot use.
+        "identifiers_not_in_the_site_table": 0,
+        "sites_of_the_pool_absent": 0,
     },
     "leaf_phenology_neon.csv": {
         "rows": 390,
@@ -130,6 +134,7 @@ RECORDED: dict[str, dict[str, Any]] = {
         "median_day": {"leafonday": 126.5, "leafoffday": 271.0},
         "inverted_rows": 4,
         "inverted_sites": 1,
+        "inverted_leafoffday_median": 120.5,
     },
 }
 
@@ -157,7 +162,11 @@ def main(argv: list[str] | None = None) -> int:
     print(format_report(report))
 
     if args.out is not None:
-        args.out.write_text(json.dumps(report, indent=2, default=str))
+        try:
+            args.out.write_text(json.dumps(report, indent=2, default=str))
+        except OSError as error:
+            print(f"error: could not write {args.out}: {error}", file=sys.stderr)
+            return 2
         print(f"\nwrote {args.out}")
 
     if args.no_check:
@@ -207,6 +216,15 @@ def read_phenology(path: Path) -> pd.DataFrame:
     """Read a phenology CSV exactly, refusing a header that is not :data:`COLUMNS`."""
     if not path.exists():
         raise FileNotFoundError(f"{path} not found; see data/README.md, Leaf phenology")
+    try:
+        return _read_checked(path)
+    except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as error:
+        if isinstance(error, ValueError) and str(error).startswith(str(path)):
+            raise
+        raise ValueError(f"{path}: could not be parsed as a phenology table: {error}") from error
+
+
+def _read_checked(path: Path) -> pd.DataFrame:
     frame = pd.read_csv(
         path,
         dtype={
@@ -246,7 +264,15 @@ def build_report(
     report.update(survey_quality(frame))
     report.update(survey_days(frame))
     report.update(survey_inversions(frame))
-    report["site_table"] = survey_against_site_table(frame, sites)
+    table = survey_against_site_table(frame, sites)
+    report["site_table"] = table
+    # Lifted to the top level because compare_with_recorded only reaches that
+    # far, and these are the properties --sites exists to establish.
+    if table["checked"]:
+        report["identifiers_not_in_the_site_table"] = table[
+            "identifiers_not_in_the_site_table"
+        ]
+        report["sites_of_the_pool_absent"] = table["sites_of_the_pool_absent"]
     return report
 
 
@@ -398,9 +424,11 @@ def compare_with_recorded(report: dict[str, Any], file_name: str) -> list[str]:
     for key, expected in recorded.items():
         measured = report.get(key)
         if isinstance(expected, dict):
-            measured = {} if measured is None else measured
-            measured = {str(inner): value for inner, value in measured.items()}
-            expected = {str(inner): value for inner, value in expected.items()}
+            # Recursively, because the int keys live in the per-quality-value
+            # counts one level down, and a report round-tripped through --out's
+            # JSON comes back with those keys as strings.
+            measured = _stringify_keys({} if measured is None else measured)
+            expected = _stringify_keys(expected)
         if measured != expected:
             failures.append(f"{key}: recorded {expected}, measured {measured}")
     return failures
@@ -426,6 +454,19 @@ def format_comparison(failures: list[str], file_name: str) -> str:
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
+
+
+def _stringify_keys(value: Any) -> Any:
+    """*value* with every mapping key a string, at every depth.
+
+    JSON has only string keys, so a report written by ``--out`` and read back
+    compares equal to one measured in this process only after this.
+    """
+    if isinstance(value, dict):
+        return {str(key): _stringify_keys(inner) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_stringify_keys(inner) for inner in value]
+    return value
 
 
 def _or_none(value: Any) -> float | None:

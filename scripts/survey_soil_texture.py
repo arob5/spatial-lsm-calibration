@@ -53,7 +53,7 @@ failing for that reason.
 not a product.** ``write.configs.SIPNET.R`` takes layer thickness as
 ``c(depth[1], diff(depth))``, converts to centimeters and sums
 ``volume_fraction_of_water_in_soil_at_saturation`` times thickness over the
-profile. It is reported because the value it gives is seven to eight times
+profile. It is reported because the value it gives is six to eight times
 SIPNET's 12 cm template default, which matters to anyone setting up a run; a
 prior over the parameter is a later piece of work.
 
@@ -114,6 +114,13 @@ RECORDED: dict[str, Any] = {
     "members_per_site": [100],
     "file_names_off_template": 0,
     "member_range": [1, 100],
+    # From the content pass, so only as good as --sample; all three are
+    # structural rather than distributional, and hold for every file opened at
+    # any sample size. The soilWHC range is deliberately absent: it moves with
+    # the sample, so it is reported and never asserted.
+    "depths_are_the_expected_profile": True,
+    "unreadable_files": 0,
+    "files_with_missing_porosity": 0,
 }
 
 
@@ -141,7 +148,11 @@ def main(argv: list[str] | None = None) -> int:
     print(format_report(report))
 
     if args.out is not None:
-        args.out.write_text(json.dumps(report, indent=2, default=str))
+        try:
+            args.out.write_text(json.dumps(report, indent=2, default=str))
+        except OSError as error:
+            print(f"error: could not write {args.out}: {error}", file=sys.stderr)
+            return 2
         print(f"\nwrote {args.out}")
 
     if args.no_check:
@@ -165,7 +176,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--sample",
         type=int,
         default=25,
-        help="Sites to open files for, evenly spaced through those present. Default: 25.",
+        help="Sites to open files for, evenly spaced through those present. "
+        "0 opens none. Default: 25.",
     )
     parser.add_argument(
         "--all", action="store_true", help="Open every file rather than a sample."
@@ -196,7 +208,11 @@ def survey_coverage(root: Path) -> dict[str, Any]:
         if not entry.is_dir():
             off_template.append(entry.name)
             continue
-        if not entry.name.isdigit():
+        if not entry.name.isdecimal() or entry.name != str(int(entry.name)):
+            # isdecimal, not isdigit: the latter accepts superscripts and other
+            # non-decimal digits that int() then rejects. The round-trip catches
+            # "0027", which would otherwise collide with "27" and silently
+            # discard one directory's files.
             off_template.append(f"{entry.name}/")
             continue
         site = int(entry.name)
@@ -214,6 +230,11 @@ def survey_coverage(root: Path) -> dict[str, Any]:
 
     counts = sorted({len(members) for members in sites.values()})
     all_members = sorted({member for members in sites.values() for member in members})
+    if not all_members:
+        raise ValueError(
+            f"{root}: {len(sites)} site directories, none holding a file on the "
+            "template. An interrupted copy looks like this."
+        )
     return {
         "sites": sites,
         "sites_with_a_directory": len(sites),
@@ -235,7 +256,7 @@ def survey_content(
     chosen = sorted(sites) if every else _evenly_spaced(sorted(sites), sample)
     variables: Counter[tuple[str, ...]] = Counter()
     depth_sets: set[tuple[float, ...]] = set()
-    units: dict[str, str] = {}
+    units: dict[str, set[str]] = {}
     water_capacities: list[float] = []
     fraction_residuals: list[float] = []
     unreadable: list[str] = []
@@ -250,25 +271,35 @@ def survey_content(
                     variables[tuple(sorted(dataset.data_vars))] += 1
                     depth_sets.add(tuple(float(value) for value in dataset["depth"].values))
                     for name, array in dataset.data_vars.items():
-                        units.setdefault(name, str(array.attrs.get("units", "")))
+                        units.setdefault(name, set()).add(
+                            str(array.attrs.get("units", ""))
+                        )
                     if POROSITY in dataset.data_vars:
                         water_capacities.append(soil_water_holding_capacity(dataset))
                     if all(name in dataset.data_vars for name in TEXTURE_FRACTIONS):
-                        total = sum(dataset[name].values for name in TEXTURE_FRACTIONS)
+                        total = sum(
+                            dataset[name].values.astype(np.float64)
+                            for name in TEXTURE_FRACTIONS
+                        )
                         fraction_residuals.append(float(np.nanmax(np.abs(total - 1.0))))
             except (OSError, KeyError, ValueError) as error:
                 unreadable.append(f"{path.name}: {error}")
 
+    finite = [value for value in water_capacities if np.isfinite(value)]
     return {
         "sites_opened": len(chosen),
         "files_opened": opened,
+        "depths_are_the_expected_profile": bool(
+            depth_sets and depth_sets == {tuple(float(d) for d in DEPTHS_METERS)}
+        ),
+        "files_with_missing_porosity": len(water_capacities) - len(finite),
         "variable_sets": [
             {"variables": list(names), "files": count}
             for names, count in variables.most_common()
         ],
         "depth_sets": sorted(depth_sets),
-        "units": dict(sorted(units.items())),
-        "soil_water_holding_capacity_cm": _extremes(water_capacities),
+        "units": {name: sorted(seen) for name, seen in sorted(units.items())},
+        "soil_water_holding_capacity_cm": _extremes(finite),
         "max_texture_fraction_residual": max(fraction_residuals, default=None),
         "unreadable_files": len(unreadable),
         "first_unreadable": unreadable[:5],
@@ -282,10 +313,15 @@ def soil_water_holding_capacity(dataset: xr.Dataset) -> float:
     layer bottoms with the first layer's top at the surface; ``soilWHC`` is
     porosity times thickness, summed over the profile and converted to
     centimeters.
+
+    Returns ``nan`` where any layer's porosity is missing, which is what PEcAn
+    does: its ``sum`` takes the default ``na.rm = FALSE``, so one absent layer
+    makes the whole parameter ``NA``. Skipping the layer instead would return a
+    partial-profile integral that cannot be told from a genuinely dry profile.
     """
     depths = dataset["depth"].values
     thickness = np.concatenate([[depths[0]], np.diff(depths)])
-    return float(np.nansum(dataset[POROSITY].values * thickness) * 100.0)
+    return float(np.sum(dataset[POROSITY].values * thickness) * 100.0)
 
 
 def format_report(report: dict[str, Any]) -> str:
@@ -311,6 +347,8 @@ def format_report(report: dict[str, Any]) -> str:
         f"  distinct depth sets      : {[list(one) for one in report['depth_sets']]}",
         f"  unreadable files         : {report['unreadable_files']}"
         + (f" (first {report['first_unreadable']})" if report["first_unreadable"] else ""),
+        f"  depths as expected       : {_yes(report['depths_are_the_expected_profile'])}",
+        f"  files missing a porosity : {report['files_with_missing_porosity']}",
     ]
     lines += _format_variable_sets(report["variable_sets"])
     capacity = report["soil_water_holding_capacity_cm"]
@@ -327,8 +365,10 @@ def format_report(report: dict[str, Any]) -> str:
         width = max(len(name) for name in report["units"])
         lines.append("  variables and units:")
         lines += [
-            f"    {name:<{width}} : {unit or '(none)'}"
-            for name, unit in report["units"].items()
+            f"    {name:<{width}} : "
+            + " | ".join(unit or "(none)" for unit in seen)
+            + ("   <- DISAGREES ACROSS FILES" if len(seen) > 1 else "")
+            for name, seen in report["units"].items()
         ]
     return "\n".join(lines)
 
@@ -386,7 +426,11 @@ def _evenly_spaced(values: list[int], count: int) -> list[int]:
     sites, and so that a sample of an identifier-ordered pool spans it: the
     identifiers run north to south, so the first *n* would all be Arctic.
     """
-    if count >= len(values) or count <= 0:
+    if count < 0:
+        raise ValueError(f"sample must not be negative, got {count}")
+    if count == 0:
+        return []
+    if count >= len(values):
         return values
     positions = np.linspace(0, len(values) - 1, count).round().astype(int)
     return [values[position] for position in dict.fromkeys(positions.tolist())]
