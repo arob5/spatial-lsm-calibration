@@ -57,22 +57,24 @@ Data model
 **Data variables**, all ``float64`` on ``(member, site, time)``, one per
 consumed ``.clim`` column, named as :data:`DRIVER_VARIABLES`:
 
-==================== ====================== ========== =============
-Processed name       Source column          Units      Aggregation
-==================== ====================== ========== =============
-``air_temperature``  ``tair``               deg C      mean
-``soil_temperature`` ``tsoil``              deg C      mean
-``par``              ``par``                mol m-2    sum
-``precipitation``    ``precip``             mm         sum
-``vpd``              ``vpd``                Pa         mean
-``soil_vpd``         ``vpd_soil``           Pa         mean
-``vapor_pressure``   ``vpress``             Pa         mean
-``wind_speed``       ``wspd``               m s-1      mean
-==================== ====================== ========== =============
+==================== ====================== ========== =================
+Processed name       Source column          Units      Kind
+==================== ====================== ========== =================
+``air_temperature``  ``tair``               deg C      timestep_mean
+``soil_temperature`` ``tsoil``              deg C      timestep_mean
+``par``              ``par``                mol m-2    timestep_total
+``precipitation``    ``precip``             mm         timestep_total
+``vpd``              ``vpd``                Pa         timestep_mean
+``soil_vpd``         ``vpd_soil``           Pa         timestep_mean
+``vapor_pressure``   ``vpress``             Pa         timestep_mean
+``wind_speed``       ``wspd``               m s-1      timestep_mean
+==================== ====================== ========== =================
 
 ``par`` and ``precipitation`` are totals over the timestep, which is why they
-sum; the rest are means over it. Each variable carries ``units``,
-``long_name``, ``source_name`` and ``aggregation`` from
+sum when timesteps are combined; the rest are means over it and average. The
+``kind`` is pySIPNET's, read from its climate registry, and is what
+:func:`sipnet_calibration.obs_ops.aggregate_time` takes the rule from. Each
+variable carries ``units``, ``long_name``, ``source_name`` and ``kind`` from
 :data:`DRIVER_VARIABLE_ATTRS`, plus ``units_status`` and ``units_provenance``:
 the units are the ones the ``.clim`` format documents and SIPNET assumes when
 it reads the column, not units confirmed by the producer of these files.
@@ -193,7 +195,7 @@ Name the sites, get the canonical form::
     drivers = load_drivers(sites["site_id"])          # every member present
 
     drivers["air_temperature"].dims                   # ('member', 'site', 'time')
-    drivers["par"].attrs["aggregation"]               # 'sum'
+    drivers["par"].attrs["kind"]                      # 'timestep_total'
     drivers["time"].attrs["time_label"]               # 'interval_end'
 
     # Two members only, and tolerate sites that lack a file for one of them.
@@ -221,6 +223,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from pysipnet.variables import resolve_climate_variable
 
 from sipnet_calibration.obs_ops import sipnet_time_index
 from sipnet_calibration import conventions
@@ -317,59 +321,56 @@ UNITS_PROVENANCE = (
     "consistent with them, which is evidence and not confirmation."
 )
 
-#: Per-variable metadata, by processed name. ``aggregation`` is the temporal
-#: rule the variable's kind implies: ``par`` and ``precipitation`` are totals
-#: over the timestep and sum; the rest are means over it and average.
+#: Per-variable metadata, by processed name. ``kind`` is added below from
+#: pySIPNET's climate registry, which owns it.
 DRIVER_VARIABLE_ATTRS = {
     "air_temperature": {
         "units": "deg C",
         "long_name": "Mean air temperature over the timestep",
         "source_name": "tair",
-        "aggregation": "mean",
     },
     "soil_temperature": {
         "units": "deg C",
         "long_name": "Mean soil temperature over the timestep",
         "source_name": "tsoil",
-        "aggregation": "mean",
     },
     "par": {
         "units": "mol m-2",
         "long_name": "Photosynthetically active radiation, total over the timestep",
         "source_name": "par",
-        "aggregation": "sum",
     },
     "precipitation": {
         "units": "mm",
         "long_name": "Precipitation, total over the timestep",
         "source_name": "precip",
-        "aggregation": "sum",
     },
     "vpd": {
         "units": "Pa",
         "long_name": "Vapor pressure deficit",
         "source_name": "vpd",
-        "aggregation": "mean",
     },
     "soil_vpd": {
         "units": "Pa",
         "long_name": "Soil-to-air vapor pressure deficit",
         "source_name": "vpd_soil",
-        "aggregation": "mean",
     },
     "vapor_pressure": {
         "units": "Pa",
         "long_name": "Vapor pressure in the canopy airspace",
         "source_name": "vpress",
-        "aggregation": "mean",
     },
     "wind_speed": {
         "units": "m s-1",
         "long_name": "Mean wind speed over the timestep",
         "source_name": "wspd",
-        "aggregation": "mean",
     },
 }
+
+# Taken from pySIPNET rather than written down, so a change to a variable's
+# kind there cannot leave a stale copy here, and a source column that stops
+# resolving is an import error rather than a wrong aggregation rule.
+for _attrs in DRIVER_VARIABLE_ATTRS.values():
+    _attrs["kind"] = resolve_climate_variable(_attrs["source_name"]).kind.value
 
 #: The clock the time labels are on, and what a label marks.
 TIME_ZONE = "UTC"

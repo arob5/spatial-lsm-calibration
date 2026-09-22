@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from pysipnet.variables import resolve_climate_variable
 
 from sipnet_calibration.drivers import (
     CLIM_FILE_COLUMNS,
@@ -154,16 +155,17 @@ class TestSchemaConstants:
             assert re.fullmatch(r"[a-z][a-z0-9_]*", name), name
         assert "tair" not in DRIVER_VARIABLES and "wspd" not in DRIVER_VARIABLES
 
-    def test_every_variable_has_units_long_name_source_name_and_aggregation(self):
+    def test_every_variable_has_units_long_name_source_name_and_kind(self):
         assert set(DRIVER_VARIABLE_ATTRS) == set(DRIVER_VARIABLES)
         for name, attrs in DRIVER_VARIABLE_ATTRS.items():
-            assert set(attrs) == {"units", "long_name", "source_name", "aggregation"}
+            assert set(attrs) == {"units", "long_name", "source_name", "kind"}
             assert SOURCE_VARIABLE_NAMES[attrs["source_name"]] == name
 
-    def test_totals_sum_and_means_average(self):
+    def test_totals_and_means_carry_pysipnets_kind_for_their_source_column(self):
         for name, attrs in DRIVER_VARIABLE_ATTRS.items():
-            expected = "sum" if name in ("par", "precipitation") else "mean"
-            assert attrs["aggregation"] == expected, name
+            expected = "timestep_total" if name in ("par", "precipitation") else "timestep_mean"
+            assert attrs["kind"] == expected, name
+            assert resolve_climate_variable(attrs["source_name"]).kind.value == expected, name
 
     def test_timestep_constants_agree(self):
         assert TIMESTEP_HOURS == 24 * CLIM_FILE_CONSTANTS["length"] == 3.0
@@ -512,7 +514,9 @@ class TestLoadDrivers:
             attrs = dataset[name].attrs
             assert attrs["units"] == expected_units[name], name
             assert attrs["source_name"] == expected_source[name], name
-            assert attrs["aggregation"] == ("sum" if name in ("par", "precipitation") else "mean")
+            assert attrs["kind"] == (
+                "timestep_total" if name in ("par", "precipitation") else "timestep_mean"
+            )
             assert attrs["units_status"] == "format_documented"
             assert "not been confirmed" in attrs["units_provenance"]
             assert attrs["long_name"]
@@ -644,7 +648,7 @@ class TestDriverFields:
         assert driver_fields(stripped)["par"].attrs["units"] == "mol m-2"
         assert driver_fields(stripped)["par"].attrs["units_status"] == UNITS_STATUS
         assert fields["par"].attrs["units"] == "mol m-2"
-        assert fields["par"].attrs["aggregation"] == "sum"
+        assert fields["par"].attrs["kind"] == "timestep_total"
         assert fields["par"].attrs["units_status"] == UNITS_STATUS
         assert fields["vpd"].attrs["n_values_not_positive"] == 0
 
