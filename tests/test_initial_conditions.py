@@ -28,6 +28,7 @@ from scipy.io import netcdf_file
 
 from sipnet_calibration import initial_conditions as module
 from sipnet_calibration.initial_conditions import (
+    CONVERTED_SIPNET_FIELDS,
     INITIAL_CONDITION_NAMES,
     INITIAL_CONDITIONS,
     MEMBER,
@@ -52,6 +53,8 @@ from sipnet_calibration.initial_conditions import (
     read_source_file,
     resolve_initial_condition,
     site_member_from_file_name,
+    to_pysipnet_initial_conditions,
+    to_pysipnet_initial_conditions_table,
 )
 from sipnet_calibration.sites import SITE_COLUMNS, load_sites
 
@@ -505,6 +508,268 @@ def test_load_refuses_a_product_off_the_data_model(raw, sites_csv, tmp_path):
         load_initial_conditions(path)
     with pytest.raises(FileNotFoundError, match="ingest_initial_conditions"):
         load_initial_conditions(tmp_path / "missing.nc")
+
+
+# ── the conversion to SIPNET parameters ───────────────────────────────────────
+
+VALID_STATE = dict(
+    initial_soil_organic_carbon=13.085,
+    initial_wood_carbon=0.058,
+    initial_leaf_carbon=0.121,
+    initial_soil_moisture_saturation=60.0,
+)
+VALID_PARAMETERS = dict(
+    leaf_carbon_per_area=32.0,
+    fine_root_fraction=0.2,
+    coarse_root_fraction=0.25,
+    deciduous=False,
+)
+
+
+def ensemble_state(leaf=(0.12, 0.13)):
+    """A two-member, two-site state with the product's units on every variable."""
+
+    def field(name, values):
+        spec = resolve_initial_condition(name)
+        return xr.DataArray(
+            np.asarray(values, dtype=float),
+            dims=(MEMBER, SITE),
+            coords={MEMBER: [0, 1], SITE: [1, 27]},
+            attrs={"units": spec.units},
+        )
+
+    return {
+        "initial_soil_organic_carbon": field(
+            "initial_soil_organic_carbon", [[13.0, 20.0], [14.0, 21.0]]
+        ),
+        "initial_wood_carbon": field("initial_wood_carbon", [[0.05, 6.0], [0.06, 7.0]]),
+        "initial_leaf_carbon": field("initial_leaf_carbon", [list(leaf), list(leaf)]),
+        "initial_soil_moisture_saturation": field(
+            "initial_soil_moisture_saturation", [[60.0, 50.0], [61.0, 51.0]]
+        ),
+    }
+
+
+def test_conversion_applies_the_pecan_formulas_and_round_trips():
+    conditions = to_pysipnet_initial_conditions(**VALID_STATE, **VALID_PARAMETERS)
+
+    assert conditions.soil_carbon == pytest.approx(13085.0)
+    assert conditions.soil_wetness_fraction == pytest.approx(0.6)
+    assert conditions.total_wood_carbon == pytest.approx(1000 * 0.058 / (1 - 0.2 - 0.25))
+    assert conditions.leaf_area_index == pytest.approx(1000 * 0.121 / 32.0)
+
+    # Back to the state: SIPNET's own splits, run the other way.
+    assert conditions.soil_carbon / 1000 == pytest.approx(
+        VALID_STATE["initial_soil_organic_carbon"]
+    )
+    assert conditions.soil_wetness_fraction * 100 == pytest.approx(
+        VALID_STATE["initial_soil_moisture_saturation"]
+    )
+    wood = conditions.total_wood_carbon * (
+        1 - conditions.fine_root_fraction - conditions.coarse_root_fraction
+    )
+    assert wood / 1000 == pytest.approx(VALID_STATE["initial_wood_carbon"])
+    leaf = conditions.leaf_area_index * VALID_PARAMETERS["leaf_carbon_per_area"]
+    assert leaf / 1000 == pytest.approx(VALID_STATE["initial_leaf_carbon"])
+
+    # The two pools the ensemble says nothing about keep pySIPNET's defaults.
+    assert conditions.litter_carbon == 0.0 and conditions.snow_water_equivalent == 0.0
+
+
+def test_converted_fields_are_the_ones_the_specs_name():
+    assert set(CONVERTED_SIPNET_FIELDS) <= set(InitialConditions.model_fields)
+    named = {spec.sipnet_initial_condition for spec in INITIAL_CONDITIONS} - {""}
+    assert named < set(CONVERTED_SIPNET_FIELDS)
+    assert set(CONVERTED_SIPNET_FIELDS) - named == {"fine_root_fraction", "coarse_root_fraction"}
+
+
+def test_conversion_zeroes_the_lai_of_a_deciduous_pft():
+    evergreen = to_pysipnet_initial_conditions(**VALID_STATE, **VALID_PARAMETERS)
+    deciduous = to_pysipnet_initial_conditions(
+        **VALID_STATE, **{**VALID_PARAMETERS, "deciduous": True}
+    )
+    assert evergreen.leaf_area_index > 0
+    assert deciduous.leaf_area_index == 0.0
+    # Nothing else moves: the rule is about the leaves only.
+    assert deciduous.total_wood_carbon == evergreen.total_wood_carbon
+    assert deciduous.soil_carbon == evergreen.soil_carbon
+
+    # A deciduous PFT never reads the leaf carbon, so the members where it is
+    # absent or negative -- every grassland member -- still convert.
+    for leaf in (np.nan, -0.4):
+        conditions = to_pysipnet_initial_conditions(
+            **{**VALID_STATE, "initial_leaf_carbon": leaf},
+            **{**VALID_PARAMETERS, "deciduous": True},
+        )
+        assert conditions.leaf_area_index == 0.0
+    with pytest.raises(ValueError, match="initial_leaf_carbon"):
+        to_pysipnet_initial_conditions(
+            **{**VALID_STATE, "initial_leaf_carbon": np.nan}, **VALID_PARAMETERS
+        )
+
+
+@pytest.mark.parametrize(
+    ("fine", "coarse", "message"),
+    [
+        (0.6, 0.4, "must be below 1"),
+        (0.6, 0.5, "must be below 1"),
+        (1.0, 0.0, "must be below 1"),
+        (-0.1, 0.2, "fine_root_fraction is outside"),
+        (0.2, 1.5, "coarse_root_fraction is outside"),
+        (np.nan, 0.2, "fine_root_fraction is outside"),
+    ],
+)
+def test_conversion_refuses_root_fractions_that_leave_no_wood(fine, coarse, message):
+    with pytest.raises(ValueError, match=message):
+        to_pysipnet_initial_conditions(
+            **VALID_STATE,
+            **{**VALID_PARAMETERS, "fine_root_fraction": fine, "coarse_root_fraction": coarse},
+        )
+    # The guard is ours: pySIPNET takes the same pair without complaint, and the
+    # run it produces exits 0 with a negative wood pool (TARPS-group/pySIPNET#39).
+    if np.isfinite(fine) and np.isfinite(coarse) and 0 <= fine <= 1 and 0 <= coarse <= 1:
+        InitialConditions(
+            total_wood_carbon=100.0,
+            leaf_area_index=1.0,
+            soil_carbon=100.0,
+            soil_wetness_fraction=0.5,
+            fine_root_fraction=fine,
+            coarse_root_fraction=coarse,
+        )
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -1.0])
+@pytest.mark.parametrize(
+    "name",
+    ["initial_soil_organic_carbon", "initial_wood_carbon", "initial_soil_moisture_saturation"],
+)
+def test_conversion_refuses_state_that_is_not_physical(name, bad):
+    with pytest.raises(ValueError, match=f"{name} is negative, NaN or infinite"):
+        to_pysipnet_initial_conditions(**{**VALID_STATE, name: bad}, **VALID_PARAMETERS)
+
+
+@pytest.mark.parametrize("bad", [0.0, -32.0, np.nan])
+def test_conversion_refuses_a_leaf_carbon_per_area_that_is_not_positive(bad):
+    with pytest.raises(ValueError, match="leaf_carbon_per_area is not positive"):
+        to_pysipnet_initial_conditions(
+            **VALID_STATE, **{**VALID_PARAMETERS, "leaf_carbon_per_area": bad}
+        )
+
+
+@pytest.mark.parametrize("bad", [1, 1.0, np.nan, "yes"])
+def test_conversion_refuses_a_deciduous_flag_that_is_not_boolean(bad):
+    with pytest.raises(TypeError, match="deciduous"):
+        to_pysipnet_initial_conditions(**VALID_STATE, **{**VALID_PARAMETERS, "deciduous": bad})
+
+
+def test_conversion_table_is_the_single_member_form_cell_by_cell():
+    state = ensemble_state()
+    leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=MEMBER, coords={MEMBER: [0, 1]})
+    deciduous = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})
+
+    table = to_pysipnet_initial_conditions_table(
+        state,
+        leaf_carbon_per_area=leaf_carbon_per_area,
+        fine_root_fraction=0.2,
+        coarse_root_fraction=0.25,
+        deciduous=deciduous,
+    )
+
+    assert list(table.columns) == list(CONVERTED_SIPNET_FIELDS)
+    assert table.index.names == [MEMBER, SITE]
+    assert len(table) == 4
+    for member in (0, 1):
+        for site in (1, 27):
+            one = to_pysipnet_initial_conditions(
+                **{
+                    name: float(state[name].sel({MEMBER: member, SITE: site}))
+                    for name in state
+                },
+                leaf_carbon_per_area=float(leaf_carbon_per_area.sel({MEMBER: member})),
+                fine_root_fraction=0.2,
+                coarse_root_fraction=0.25,
+                deciduous=bool(deciduous.sel({SITE: site})),
+            )
+            row = table.loc[(member, site)]
+            assert InitialConditions(**row) == one
+    # The per-site PFT and the per-member parameter both landed where they belong.
+    assert (table.loc[(slice(None), 27), "leaf_area_index"] == 0.0).all()
+    assert table.loc[(0, 1), "leaf_area_index"] != table.loc[(1, 1), "leaf_area_index"]
+
+
+def test_conversion_table_takes_a_dataset_and_one_site():
+    state = ensemble_state()
+    dataset = xr.Dataset(state)
+    both = to_pysipnet_initial_conditions_table(
+        dataset, leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
+        coarse_root_fraction=0.25, deciduous=False,
+    )
+    assert len(both) == 4
+
+    one_site = to_pysipnet_initial_conditions_table(
+        dataset.sel({SITE: 1}), leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
+        coarse_root_fraction=0.25, deciduous=False,
+    )
+    assert one_site.index.name == MEMBER
+    assert one_site.index.tolist() == [0, 1]
+    assert one_site.loc[0].to_dict() == both.loc[(0, 1)].to_dict()
+
+
+def test_conversion_table_refuses_a_bad_state_naming_the_cells():
+    state = ensemble_state(leaf=(0.12, np.nan))
+    parameters = dict(
+        leaf_carbon_per_area=32.0, fine_root_fraction=0.2, coarse_root_fraction=0.25
+    )
+
+    with pytest.raises(ValueError, match=r"initial_leaf_carbon.*\(0, 27\)"):
+        to_pysipnet_initial_conditions_table(state, deciduous=False, **parameters)
+    # Deciduous at site 27 is where the absent leaf carbon is, so it converts.
+    deciduous = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})
+    to_pysipnet_initial_conditions_table(state, deciduous=deciduous, **parameters)
+
+    negative = ensemble_state()
+    negative["initial_wood_carbon"][1, 0] = -0.3
+    with pytest.raises(ValueError, match=r"initial_wood_carbon.*1 of 4 cells.*\(1, 1\)"):
+        to_pysipnet_initial_conditions_table(negative, deciduous=False, **parameters)
+
+    del state["initial_soil_organic_carbon"]
+    with pytest.raises(KeyError, match="initial_soil_organic_carbon"):
+        to_pysipnet_initial_conditions_table(state, deciduous=False, **parameters)
+
+
+def test_conversion_table_refuses_wrong_units_dims_and_unaligned_parameters():
+    parameters = dict(
+        leaf_carbon_per_area=32.0, fine_root_fraction=0.2, coarse_root_fraction=0.25,
+        deciduous=False,
+    )
+
+    converted = ensemble_state()
+    converted["initial_soil_organic_carbon"].attrs["units"] = "g m-2"
+    with pytest.raises(ValueError, match="units 'g m-2', not the product's 'kg m-2'"):
+        to_pysipnet_initial_conditions_table(converted, **parameters)
+
+    over_time = ensemble_state()
+    with pytest.raises(ValueError, match=r"\['time'\] is not among them"):
+        to_pysipnet_initial_conditions_table(
+            over_time,
+            **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="time")},
+        )
+
+    with pytest.raises(ValueError, match="cannot align|conflicting|not equal"):
+        to_pysipnet_initial_conditions_table(
+            ensemble_state(),
+            **{
+                **parameters,
+                "deciduous": xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 99]}),
+            },
+        )
+
+    # An input without its units attribute is taken at its word, so a hand-built
+    # field is usable; the check is against a contradiction, not for a label.
+    bare = ensemble_state()
+    for array in bare.values():
+        array.attrs.clear()
+    assert len(to_pysipnet_initial_conditions_table(bare, **parameters)) == 4
 
 
 # ── the real files ────────────────────────────────────────────────────────────

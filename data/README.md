@@ -521,6 +521,11 @@ reproduce or consciously depart from; nothing here applies it.
 Three of the four conversions depend on parameters the calibration proposes,
 which is why the ingest applies none of them (see
 [Processed format](#processed-format)).
+`sipnet_calibration.initial_conditions.to_pysipnet_initial_conditions` applies
+the mapping to one member per proposed parameter vector, and
+`to_pysipnet_initial_conditions_table` does it over a whole `(member, site)`
+ensemble. Both guard `fineRootFrac + coarseRootFrac < 1`, which neither PEcAn
+nor pySIPNET checks and SIPNET runs to completion without.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
 > `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
