@@ -80,6 +80,10 @@ data/
                                 <site_id>/IC_site_<site_id>_<member>.nc
     labelings/                site labelings, tracked in version control
       reanalysis_site_pft.csv
+      site_pft_16class.csv
+      provenance.md
+    covariates/               per-site predictors, tracked in version control
+      site_covariates_pft_assignment.csv
       provenance.md
     phenology/                MODIS leaf phenology
       leaf_phenology_8k.csv
@@ -116,8 +120,8 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with four exceptions: three small
-primary sources and one converted input, none of them a pipeline output and
+directory is tracked in version control, with five exceptions: three small
+primary sources and two derived inputs, none of them a pipeline output and
 all of them inputs the repository cannot do without. `raw/sites/` holds the site shapefile, without which the
 repository carries no site information at all; `site_id_map.csv` is tracked for
 the same reason. `raw/constraints/` holds the five per-variable observation
@@ -127,9 +131,10 @@ place, so a symlink is not a stable input; see
 holds the initial condition ensemble converted from PEcAn's 800,000
 per-member source files into one 26 MB array, which is the only form in which it
 exists off the SCC; see [Initial conditions](#initial-conditions).
-`raw/labelings/` holds the site labelings, each a few hundred kilobytes and, like
-the initial conditions, held nowhere else off the SCC; see
-[Site labelings](#site-labelings). Everything else under `raw/`, including the
+`raw/labelings/` and `raw/covariates/` hold the site labelings and the per-site
+predictors, a few megabytes in all and, like the initial conditions, held
+nowhere else off the SCC; see [Site labelings](#site-labelings) and
+[Site covariates](#site-covariates). Everything else under `raw/`, including the
 much larger drivers, eddy-covariance files, phenology and soil texture files,
 lives on storage and is symlinked.
 
@@ -903,10 +908,101 @@ a mismatch naming the other pool.
 
 **Source.** [NALCR]'s 8000-site state data assimilation, whose per-PFT trait
 posteriors are indexed by these class names -- which is why the names are kept
-verbatim rather than renamed to this project's convention. A finer labeling of
-the same pool, distinguishing 16 classes, is tracked beside it as
-`site_pft_16class_v4.csv` and is the labeling this project intends to calibrate
-under; see Note 11.
+verbatim rather than renamed to this project's convention.
+
+#### `site_pft_16class.csv`, the labeling this project calibrates under
+
+Sixteen classes over the same 8000 sites, assembled for this calibration by a
+colleague in the Dietze lab from MODIS land cover refined by clustering on
+climate, vegetation structure, soil and biogeography. It **supersedes** the
+three reanalysis classes for calibration; those are kept because the trait
+posteriors are indexed by them.
+
+**Format.** `index` is the 1-8000 site identifier, complete and unique;
+`final_pft` is the class, never missing. Sixteen further columns record how
+each label was arrived at. The producer supplied a display name per class,
+which `sipnet_calibration.labelings` carries on the spec; the internal names
+are the join keys and are never renamed.
+
+| Class | Sites | Display name |
+|---|---|---|
+| `Open_Vegetation_Complex_P1` | 1681 | High latitude grassland |
+| `Open_Vegetation_Complex_P2` | 998 | High seasonal open woodland |
+| `Open_Vegetation_Complex_P4` | 787 | Arid grassland |
+| `Open_Vegetation_Complex_P3` | 774 | Greener open woodland |
+| `Open_Shrublands__P1` | 666 | Cold Shrublands |
+| `CroplandPool__Cereal_Croplands` | 633 | Cereal Croplands |
+| `Evergreen_Needleleaf_Forest__P2` | 369 | Closed Long-season ENF |
+| `CroplandPool__Broad_Croplands` | 336 | Broad Croplands |
+| `Open_Shrublands__P2` | 332 | Warm Shrublands |
+| `Deciduous_Broadleaf_Forest__P1_P2_P3` | 263 | Strongly Seasonal High C-N DBF |
+| `Mixed_Forest__P2` | 262 | Closed Weakly Seasonal MF |
+| `Evergreen_Broadleaf_Forest` | 216 | Evergreen Broadleaf Forest |
+| `Deciduous_Broadleaf_Forest__P4_P5` | 212 | Weakly Seasonal Low C-N DBF |
+| `Permanent_Wetlands` | 169 | Permanent Wetlands |
+| `Evergreen_Needleleaf_Forest__P1` | 161 | Open Cold-seasonal ENF |
+| `Mixed_Forest__P1` | 141 | Open Strongly Seasonal MF |
+
+**It does not nest inside the three reanalysis classes.** Every one of the
+sixteen draws sites from at least two of the three, and twelve from all three.
+The old `boreal.coniferous` is the clearest case: of its 2369 sites only 483
+are needleleaf forest here, and 207 are evergreen **broadleaf** forest. A prior
+cannot be carried from the coarse labeling to this one by inheritance, which is
+what Note 11 records.
+
+**363 sites were assigned by proxy**, not directly: nearest median profile over
+up to fourteen ecological variables. Of those, 292 have a `distance_margin` at
+or below 0.02 against a mean nearest distance of 0.095, so the runner-up class
+is nearly as close as the one chosen. They concentrate in the Arctic classes.
+`second_nearest_final_pft` is kept in the file so a result's sensitivity to
+them can be measured rather than guessed at.
+
+**It is one half of a larger table.** The other half is
+[Site covariates](#site-covariates) below, which is also where the split, and
+what stands in for the md5 check it forfeits, are described.
+
+---
+
+### Site covariates
+
+Per-site predictors: neither an observation to fit nor a labeling to pool over.
+Nothing reads them yet. They are here because a spatial prior that puts a
+smooth residual on top of a class offset needs predictors for that residual,
+and these are the ones already assembled for this pool.
+
+**Format.** `site_covariates_pft_assignment.csv`, 8000 rows by 43 columns,
+keyed on `index`, which is the only column it shares with the labeling half.
+
+| Group | Columns |
+|---|---|
+| Position | `lat`, `lon` |
+| MODIS land cover | `LC_Type1`, `LC_Type1_name`, `LC_Type1_name_original`, `MODIS_LC_year`, `LC_Type3`, `LC_Prob3`, `LC_source_hdf`, `LC2`, `LC2_name`, `LC2_group` |
+| Climate | `KGC`, `MAT`, `T_warmest_q`, `MAP`, `P_seasonality`, `MaxCWD`, `GSL_median` |
+| Vegetation structure | `VCF_tree`, `LAI_max`, `NDVI_cv`, `EVI_min`, `SWIR`, `agb` |
+| Soil and terrain | `Soil_AWC`, `TWI`, `twi_was_na`, `PH`, `Sand`, `SOC`, `N` |
+| Biogeography | `BIOME_NAME`, `BIOME_NUM`, `REALM`, `ECO_ID`, `ECO_NAME`, `NNH`, `NNH_NAME` |
+| Disturbance and period | `Fire_frequency`, `start_date`, `end_date` |
+
+**No units, long names or source products are recorded** for any of them, in
+the file or anywhere else this repository has found. That is open question 25,
+and it is why there is no ingest for this file: a processed product whose units
+are unknown would assert something nobody has checked.
+
+**Coverage is ragged.** `LC_Type1_name_original` is absent for 3997 sites,
+`LC2_group` for 7047, `Fire_frequency` for 475 and the biome columns for about
+30. Eighteen numeric columns are complete over all 8000 sites.
+
+**These are the variables the sixteen classes were derived from**, so a model
+carrying both a class effect and these covariates relates the two by
+construction rather than by coincidence.
+
+**The split.** This file and `raw/labelings/site_pft_16class.csv` are one
+60-column source table cut in two by
+`scripts/raw_sources/split_site_pft_16class.py`. Neither half is byte-verbatim,
+so neither can be checked against the upstream md5; what replaces that check is
+recorded in [`raw/covariates/provenance.md`](raw/covariates/provenance.md) and
+enforced by the script's own assertions, chief among them that re-joining the
+halves reproduces the source cell for cell.
 
 ---
 
@@ -1147,20 +1243,31 @@ and the structural facts, and reports the rest.
 
 ### Making a raw input
 
-One script is **not** part of the pipeline above and lives apart from it, in
-[`../scripts/raw_sources/`](../scripts/raw_sources):
-`convert_initial_conditions.py` *creates* a raw input rather than processing
-one. The initial conditions arrive as 800,000 per-member netCDFs that exist
-only on the SCC, so they are laid on `(site, member)` once, bit for bit, and
+Two scripts are **not** part of the pipeline above and live apart from it, in
+[`../scripts/raw_sources/`](../scripts/raw_sources): each *creates* a raw input
+rather than processing one. The initial conditions arrive as 800,000 per-member
+netCDFs that exist only on the SCC, so they are laid on `(site, member)` once,
+bit for bit, and
 the result is tracked here as
 `raw/initial_conditions/pecan_pool_initial_conditions.nc`; see
 [Initial conditions](#initial-conditions) for why, and
 `raw/initial_conditions/provenance.md` for the run. A normal working copy never
 runs it: it needs the SCC, and it is re-run only if the source files change.
 
+`split_site_pft_16class.py` is the second. The 16-class labeling arrives as one
+60-column table holding two different things, a labeling and the covariates it
+was derived from, so the script cuts it along an explicit column partition and
+writes both halves. That forfeits the md5 check every other tracked raw input
+gets -- neither half can be compared against the upstream file -- so the script
+asserts instead that the halves partition the source, that both are keyed on
+the whole pool, and that **re-joining them reproduces the source cell for
+cell**, comparing as text so no float is reparsed. See
+[Site covariates](#site-covariates).
+
 | Script | Reads | Writes |
 |---|---|---|
 | `raw_sources/convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
+| `raw_sources/split_site_pft_16class.py` | the producer's 60-column PFT table (SCC only) | `raw/labelings/site_pft_16class.csv` and `raw/covariates/site_covariates_pft_assignment.csv`, both tracked |
 
 Conversions applied during ingest rather than downstream:
 
@@ -1583,7 +1690,7 @@ classifications relate. Whether the aggregation rule is the intended one is open
 question 24(k).
 
 *The 16-class table has since arrived* and is tracked as
-`raw/labelings/site_pft_16class_v4.csv`; it is the labeling this project intends
+`raw/labelings/site_pft_16class.csv`; it is the labeling this project intends
 to calibrate under, and nothing in the design changed when it came, since
 `sipnet_calibration.labelings` takes a second spec. What it settles is that the
 two labelings **do not nest**: every one of its sixteen classes draws sites from
@@ -1757,3 +1864,20 @@ and the QA vocabulary are established from the code. What is not: whether
 discarding the day flagged "poor" rather than passing the flag through is
 intended, and whether the `yday` conversion that inverts 731 site-years is
 known to the producer.
+
+**25. Units, provenance and vintage of the site covariates.** Nothing records
+what any column of `site_covariates_pft_assignment.csv` is in, where it came
+from, or what period it describes. `MAT` is plainly a temperature and `MAP` a
+precipitation total, but whether `MAP` is mm per year, what `SWIR` is a
+reflectance of, what `Soil_AWC` is a fraction or depth of, what `agb` and `SOC`
+are per unit area, and which product and epoch each was drawn from, are all
+unestablished. `start_date` and `end_date` are 2012-01-01 and 2024-12-31 in
+every row, which suggests the covariates are meant as period averages over the
+run window, but that is an inference from two constant columns.
+
+This is why there is no ingest for the file. The project's rule is that a
+processed product carries its source units and records where they came from; a
+product built from these would have nothing to record. Four questions to the
+producer would settle it: the unit of every numeric column, the source product
+and version of each, the period each summarizes, and what the fill convention
+is for the ragged columns. Until then the file is tracked and read by nothing.

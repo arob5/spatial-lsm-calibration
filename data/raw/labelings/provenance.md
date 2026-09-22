@@ -8,46 +8,74 @@ column of the site table: which labeling to use is an experimental choice, so
 each one is its own product. `data/README.md` sets out that reasoning under
 [Site labelings](../../README.md#site-labelings) and open question 11.
 
-These files are **copied into version control rather than symlinked**. Each is
-a few hundred kilobytes, and the copy here is the only form in which the
-labeling exists off the Boston University SCC.
+These files are **held in version control rather than symlinked**. Together
+they are a couple of megabytes, and they are the only form in which these
+labelings exist off the Boston University SCC.
 
-`reanalysis_site_pft.csv` was copied on **2026-09-21**,
-`site_pft_16class_v4.csv` on **2026-09-22**.
+The two got here differently, and the difference matters for how each is
+checked.
 
-## What was copied
+## `reanalysis_site_pft.csv`, a verbatim copy
 
-| File in this directory | Source path | Source size | Source md5 | Source date |
-|---|---|---|---|---|
-| `reanalysis_site_pft.csv` | `/projectnb/dietzelab/dongchen/anchorSites/NA_runs/SDA_8k_site/site_pft.csv` | 234,229 | `31ceffd6a37b67b0b24b62b83df22ea1` | 2025-07-17 |
-| `site_pft_16class_v4.csv` | `/projectnb/dietzelab/guYANG/SIPNET_Model_Calibration/Final_PFT_assignment_v4/final_8000_sites_with_final_pft_v4.csv` | 5,902,793 | `02a26a77525d62bc2836953d184c72fc` | 2025-06-23 |
+Copied on **2026-09-21**.
 
-**Byte-verbatim.** Nothing was parsed, reformatted or renamed; each file in this
-directory has the source md5 above. The values are integers and short strings,
-so none of the float precision care that
+| Source path | Source size | Source md5 | Source date |
+|---|---|---|---|
+| `/projectnb/dietzelab/dongchen/anchorSites/NA_runs/SDA_8k_site/site_pft.csv` | 234,229 | `31ceffd6a37b67b0b24b62b83df22ea1` | 2025-07-17 |
+
+**Byte-verbatim.** Nothing was parsed, reformatted or renamed; the file here
+has the source md5. Its values are integers and short strings, so none of the
+float precision care that
 [`raw/constraints/provenance.md`](../constraints/provenance.md) describes
-applies to `reanalysis_site_pft.csv`. `site_pft_16class_v4.csv` does carry
-float covariates, at the precision its producer wrote them; nothing here reads
-them yet, and anything that does should check that precision first.
+applies.
 
 ```bash
 md5sum reanalysis_site_pft.csv   # 31ceffd6a37b67b0b24b62b83df22ea1
-md5sum site_pft_16class_v4.csv   # 02a26a77525d62bc2836953d184c72fc
 ```
 
-## `site_pft_16class_v4.csv`
+## `site_pft_16class.csv`, one half of a split
 
-The labeling this project intends to calibrate under, superseding the three
-reanalysis classes. Produced by a colleague in the Dietze lab for the SIPNET
-calibration work and sent to us on 2026-09-22; the file itself is dated
-2025-06-23 and is version 4 of their assignment, which is where `v4` in the
-name comes from. It sits in a directory of intermediate products
+The labeling this project calibrates under, superseding the three reanalysis
+classes. Produced by a colleague in the Dietze lab for this calibration and
+sent to us on 2026-09-22; the source file is dated 2025-06-23 and is version 4
+of their assignment. It sits in a directory of intermediate products
 (`final_pft_counts_v4.csv`, `uncovered_sites_nearest_final_pft_assignment_v4.csv`
 and others) that are not copied here.
 
+**It is not a verbatim copy.** The source is a 60-column table holding two
+different things: this labeling and the covariates it was derived from.
+`scripts/raw_sources/split_site_pft_16class.py` cuts it in two, writing the
+labeling here and the covariates to
+[`raw/covariates/`](../covariates/provenance.md). Split on **2026-09-22**.
+
+| Source path | Source size | Source md5 | Source date |
+|---|---|---|---|
+| `/projectnb/dietzelab/guYANG/SIPNET_Model_Calibration/Final_PFT_assignment_v4/final_8000_sites_with_final_pft_v4.csv` | 5,902,793 | `02a26a77525d62bc2836953d184c72fc` | 2025-06-23 |
+
+| File in this directory | Rows | Columns | Size | md5 |
+|---|---|---|---|---|
+| `site_pft_16class.csv` | 8000 | 18 | 1,775,162 | `497718d8fda222051cac9fc66be68c13` |
+
+**What replaces the md5 check.** A split half cannot be compared against the
+upstream file, so the script asserts instead, before writing anything, that the
+two column sets partition the source sharing only the key, that both halves are
+keyed on the whole 1-8000 pool once each, that no site has an empty class, and
+that **re-joining the halves reproduces the source cell for cell**. Every cell
+is read and written as text, so no float is parsed and none can return at a
+different precision. `tests/test_split_site_pft_16class.py` drives each of
+those assertions to failure.
+
+```bash
+# Re-derive both halves from the source and compare.
+python scripts/raw_sources/split_site_pft_16class.py --source <the source above>
+md5sum site_pft_16class.csv   # 497718d8fda222051cac9fc66be68c13
+```
+
 **The key is `index`, and it is our site identifier**: the integers 1-8000, all
 present, no duplicates. **The class is `final_pft`**, one of sixteen values,
-never missing.
+never missing. The sixteen further columns record how each label was arrived
+at; `sipnet_calibration.labelings` declares the whole header, and the processed
+product keeps only `site_id` and `label`.
 
 The sixteen `final_pft` values are internal names; the producer supplied the
 display names alongside them, and the pairing is theirs, not ours:
@@ -70,16 +98,6 @@ display names alongside them, and the pairing is theirs, not ours:
 | `CroplandPool__Broad_Croplands` | Broad Croplands |
 | `CroplandPool__Cereal_Croplands` | Cereal Croplands |
 | `Permanent_Wetlands` | Permanent Wetlands |
-
-**It is not only a labeling.** The file is 60 columns wide: beside the class it
-carries MODIS land cover, climate (`MAT`, `MAP`, `P_seasonality`, `MaxCWD`,
-`GSL_median`, Koppen-Geiger), vegetation structure (`VCF_tree`, `LAI_max`,
-`NDVI_cv`, `EVI_min`, `agb`), soil and terrain (`Soil_AWC`, `TWI`, `PH`,
-`Sand`, `SOC`, `N`), WWF biome and ecoregion, fire frequency, and the workings
-of the classification itself. Eighteen numeric columns are complete over all
-8000 sites. That makes it a candidate source of spatial covariates for a
-hierarchical prior as well as the labeling, which is a reason to keep the whole
-file rather than the two columns the labeling needs.
 
 **How a site got its class**, from `final_pft_assignment_method`: 7637 sites
 directly, from the producer's own clustering of a land cover class; 363 by
@@ -164,5 +182,6 @@ B=/projectnb/dietzelab/dongchen/anchorSites/NA_runs/SDA_8k_site
 scp <host>:$B/site_pft.csv reanalysis_site_pft.csv
 
 C=/projectnb/dietzelab/guYANG/SIPNET_Model_Calibration/Final_PFT_assignment_v4
-scp <host>:$C/final_8000_sites_with_final_pft_v4.csv site_pft_16class_v4.csv
+scp <host>:$C/final_8000_sites_with_final_pft_v4.csv /tmp/source.csv
+python scripts/raw_sources/split_site_pft_16class.py --source /tmp/source.csv
 ```

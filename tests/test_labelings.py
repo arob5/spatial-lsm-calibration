@@ -456,3 +456,66 @@ def test_the_real_raw_file_has_the_specs_row_count(real_sites):
     if not (RAW_DIR / spec.raw_file).exists():
         pytest.skip("raw labelings not available in this working copy")
     assert len(read_raw(spec, RAW_DIR)) == spec.expected_rows
+
+
+# ── the 16-class labeling ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("spec", LABELINGS, ids=lambda spec: spec.name)
+def test_display_names_cover_exactly_the_classes(spec):
+    if spec.display_names is None:
+        pytest.skip("no display names declared")
+    assert set(spec.display_names) == set(spec.labels)
+
+
+def test_the_16class_spec_declares_no_landcover_relation():
+    """It comes from a different cover product, so no exact relation holds."""
+    assert resolve_labeling("pft_16class").landcover_mapping is None
+
+
+def test_display_names_must_cover_every_class():
+    kwargs = dict(
+        name="ok_name",
+        long_label="Fine",
+        label_kind="plant functional type",
+        labels=("a", "b"),
+        description="Fine.",
+        product="test",
+        raw_file="f.csv",
+        raw_columns=("site", "klass"),
+        site_column="site",
+        label_column="klass",
+        expected_rows=2,
+    )
+    with pytest.raises(ValueError, match="no entry for"):
+        LabelingSpec(**kwargs, display_names={"a": "A"})
+    with pytest.raises(ValueError, match="not classes of this labeling"):
+        LabelingSpec(**kwargs, display_names={"a": "A", "b": "B", "c": "C"})
+
+
+@pytest.fixture(scope="session")
+def real_16class(real_sites, tmp_path_factory) -> pd.DataFrame:
+    spec = resolve_labeling("pft_16class")
+    if not (RAW_DIR / spec.raw_file).exists():
+        pytest.skip("raw labelings not available in this working copy")
+    return ingest.ingest(spec, RAW_DIR, real_sites, tmp_path_factory.mktemp("l16"))
+
+
+def test_the_16class_labeling_covers_the_pool_with_all_sixteen(real_16class, real_sites):
+    spec = resolve_labeling("pft_16class")
+    assert len(real_16class) == len(real_sites)
+    assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.labels)
+
+
+def test_the_two_labelings_do_not_nest(real_product, real_16class):
+    """Recorded in data/README.md Note 11 and in the spec's own comment.
+
+    Every 16-class class draws from at least two of the three reanalysis
+    classes, so no class has a parent whose prior it could inherit.
+    """
+    joined = real_16class.merge(real_product, on=SITE_COLUMN, suffixes=("_16", "_3"))
+    spread = (
+        pd.crosstab(joined[f"{LABEL_COLUMN}_16"], joined[f"{LABEL_COLUMN}_3"]) > 0
+    ).sum(axis=1)
+    assert spread.min() >= 2
+    assert (spread == 3).sum() == 12

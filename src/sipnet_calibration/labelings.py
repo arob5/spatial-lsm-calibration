@@ -250,6 +250,14 @@ class LabelingSpec:
     values the pool actually uses and its values must all be in *labels*.
     """
 
+    display_names: Mapping[str, str] | None = None
+    """Plot-ready name per class, where the producer supplied one.
+
+    The class values are the producer's join keys and are never renamed, so a
+    figure or a table that wants readable labels looks them up here. ``None``
+    where the class names are already readable.
+    """
+
     comment: str = ""
     """Anything else a consumer must know before using the classes."""
 
@@ -281,6 +289,19 @@ class LabelingSpec:
             raise ValueError(f"Labeling {self.name!r}: site_column and label_column are the same.")
         if self.expected_rows <= 0:
             raise ValueError(f"Labeling {self.name!r}: expected_rows must be positive.")
+        if self.display_names is not None:
+            unknown = sorted(set(self.display_names) - set(self.labels))
+            if unknown:
+                raise ValueError(
+                    f"Labeling {self.name!r}: display_names names {unknown}, which are "
+                    f"not classes of this labeling."
+                )
+            absent = [label for label in self.labels if label not in self.display_names]
+            if absent:
+                raise ValueError(
+                    f"Labeling {self.name!r}: display_names has no entry for {absent}. "
+                    "Give every class a display name or none."
+                )
         if self.landcover_mapping is not None:
             unknown = sorted(set(self.landcover_mapping.values()) - set(self.labels))
             if unknown:
@@ -344,10 +365,110 @@ LABELINGS: tuple[LabelingSpec, ...] = (
             "The landcover relation is measured over all 8000 rows, not stated by the "
             "producer; see data/README.md open question 24(k).",
             "A finer 16-class labeling of the same pool is tracked as "
-            "raw/labelings/site_pft_16class_v4.csv and is the one this project intends "
+            "raw/labelings/site_pft_16class.csv and is the one this project intends "
             "to calibrate under. The two do not nest: every one of its classes draws "
             "sites from at least two of these three. See data/README.md open "
             "question 11.",
+        ),
+    ),
+    LabelingSpec(
+        name="pft_16class",
+        long_label="Sixteen-class PFT labeling",
+        label_kind="plant functional type",
+        # Ordered by cover type -- needleleaf, broadleaf, mixed, shrub, open,
+        # cropland, wetland -- rather than by site count, so that neighboring
+        # classes in a prior's class axis are ecologically neighboring too.
+        labels=(
+            "Evergreen_Needleleaf_Forest__P1",
+            "Evergreen_Needleleaf_Forest__P2",
+            "Evergreen_Broadleaf_Forest",
+            "Deciduous_Broadleaf_Forest__P1_P2_P3",
+            "Deciduous_Broadleaf_Forest__P4_P5",
+            "Mixed_Forest__P1",
+            "Mixed_Forest__P2",
+            "Open_Shrublands__P1",
+            "Open_Shrublands__P2",
+            "Open_Vegetation_Complex_P1",
+            "Open_Vegetation_Complex_P2",
+            "Open_Vegetation_Complex_P3",
+            "Open_Vegetation_Complex_P4",
+            "CroplandPool__Broad_Croplands",
+            "CroplandPool__Cereal_Croplands",
+            "Permanent_Wetlands",
+        ),
+        description=(
+            "The sixteen plant functional types this project calibrates under, one per "
+            "site. Assembled for the SIPNET calibration by a colleague in the Dietze "
+            "lab and received on 2026-09-22, from MODIS land cover refined by clustering "
+            "on climate, vegetation structure, soil and biogeography. 7637 sites were "
+            "assigned directly and 363 by nearest median ecological profile."
+        ),
+        product="Dietze lab PFT assignment",
+        raw_file="site_pft_16class.csv",
+        raw_columns=(
+            "index",
+            "final_pft_direct",
+            "final_source_type",
+            "source_file",
+            "pam_used_for_clustering",
+            "pam_k",
+            "pam_cluster",
+            "subpft_name",
+            "dbf_original_pam_cluster",
+            "cropland_final_group",
+            "final_pft",
+            "final_pft_assignment_method",
+            "final_pft_source_final",
+            "nearest_ecological_distance",
+            "second_nearest_final_pft",
+            "second_nearest_ecological_distance",
+            "distance_margin",
+            "n_vars_used_in_distance",
+        ),
+        site_column="index",
+        label_column="final_pft",
+        expected_rows=8000,
+        covers_pool=True,
+        # Not a function of the shapefile's landcover: the classes come from a
+        # different land cover product refined by clustering, so no exact
+        # relation holds and none is asserted.
+        landcover_mapping=None,
+        display_names=MappingProxyType(
+            {
+                "Evergreen_Needleleaf_Forest__P1": "Open Cold-seasonal ENF",
+                "Evergreen_Needleleaf_Forest__P2": "Closed Long-season ENF",
+                "Evergreen_Broadleaf_Forest": "Evergreen Broadleaf Forest",
+                "Deciduous_Broadleaf_Forest__P1_P2_P3": "Strongly Seasonal High C-N DBF",
+                "Deciduous_Broadleaf_Forest__P4_P5": "Weakly Seasonal Low C-N DBF",
+                "Mixed_Forest__P1": "Open Strongly Seasonal MF",
+                "Mixed_Forest__P2": "Closed Weakly Seasonal MF",
+                "Open_Shrublands__P1": "Cold Shrublands",
+                "Open_Shrublands__P2": "Warm Shrublands",
+                "Open_Vegetation_Complex_P1": "High latitude grassland",
+                "Open_Vegetation_Complex_P2": "High seasonal open woodland",
+                "Open_Vegetation_Complex_P3": "Greener open woodland",
+                "Open_Vegetation_Complex_P4": "Arid grassland",
+                "CroplandPool__Broad_Croplands": "Broad Croplands",
+                "CroplandPool__Cereal_Croplands": "Cereal Croplands",
+                "Permanent_Wetlands": "Permanent Wetlands",
+            }
+        ),
+        comment=(
+            "Does not nest inside reanalysis_3pft: every one of these classes draws "
+            "sites from at least two of those three, and twelve from all three, so a "
+            "prior cannot be transferred from the coarse labeling to this one by "
+            "inheritance."
+        ),
+        notes=(
+            "The raw file is one half of a 60-column table the producer assembled; the "
+            "other half is the covariates at raw/covariates/, split by "
+            "scripts/raw_sources/split_site_pft_16class.py. Those covariates are what "
+            "the classes were derived from, so a model using both a class effect and "
+            "them relates the two by construction.",
+            "363 sites were assigned by nearest ecological profile rather than directly, "
+            "and 292 of those have a runner-up class nearly as close as the one chosen; "
+            "second_nearest_final_pft and distance_margin are kept in the raw file so "
+            "that sensitivity can be measured.",
         ),
     ),
 )
@@ -579,6 +700,12 @@ def describe(spec: LabelingSpec) -> str:
         f"  source: {spec.product}, raw/labelings/{spec.raw_file}, {spec.expected_rows} rows",
         f"  {spec.description}",
     ]
+    if spec.display_names is not None:
+        width = max(len(label) for label in spec.labels)
+        lines.append("  display names:")
+        lines += [
+            f"    {label:<{width}} : {spec.display_names[label]}" for label in spec.labels
+        ]
     if spec.comment:
         lines.append(f"  comment: {spec.comment}")
     lines.extend(f"  note: {note}" for note in spec.notes)
