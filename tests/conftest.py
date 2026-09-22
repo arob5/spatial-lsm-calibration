@@ -14,15 +14,14 @@ The synthetic fixtures build canonical fields at each subset of the
 
 The real-data fixtures read the driver files and the constraint products
 present in this working copy, and skip when they are not there. The SIPNET
-output fixtures read pySIPNET's own test fixtures out of the checkout beside
-this one, since pySIPNET is installed from git and does not ship them; they
-skip when there is no such checkout, and the one that runs the model skips
-without a compiled binary too.
+output fixtures read the Niwot reference data pySIPNET ships inside the
+package, so they need neither a pySIPNET checkout nor a binary; the one that
+runs the model skips without a binary, which ``pysipnet install-sipnet``
+provides.
 """
 
 from __future__ import annotations
 
-import os
 import warnings
 from pathlib import Path
 
@@ -207,11 +206,6 @@ def real_constraint_fields() -> tuple[dict, dict]:
 # ── real SIPNET output ────────────────────────────────────────────────────────
 
 
-#: Inside a pySIPNET checkout: the independently-authored Niwot Ridge input set,
-#: and real SIPNET output from running the standard model on its first rows.
-NIWOT_REFERENCE = Path("tests/fixtures/niwot_reference")
-NIWOT_GOLDEN = Path("tests/fixtures/golden/niwot_standard.out.csv")
-
 #: The local driver file the 3-hourly tests run SIPNET on, if it is present.
 SITE_1_DRIVERS = (
     Path(__file__).resolve().parents[1]
@@ -222,63 +216,20 @@ SITE_1_DRIVERS = (
 SITE_1_DAYS = 8
 
 
-def pysipnet_checkout() -> Path | None:
-    """The pySIPNET source checkout, whose test fixtures are the only SIPNET inputs here.
-
-    pySIPNET is installed from git, so its ``tests/fixtures`` are not on the
-    Python path. ``$PYSIPNET_SOURCE`` names the checkout outright and is used
-    alone when it is set, so a wrong value is reported rather than quietly
-    replaced; otherwise the search walks up from here looking for a sibling
-    clone. Candidates under ``.claude`` are skipped: a pySIPNET *worktree*
-    parked beside this one is on whatever branch its session left it, where a
-    sibling clone is the checkout the pin was taken from. Returns ``None`` when
-    there is none, which is what the fixtures below skip on.
-    """
-    named = os.environ.get("PYSIPNET_SOURCE")
-    if named:
-        candidate = Path(named)
-        return candidate if _has_niwot_reference(candidate) else None
-    here = Path(__file__).resolve()
-    for parent in here.parents:
-        candidate = parent / "pySIPNET"
-        if ".claude" in candidate.parts:
-            continue
-        if _has_niwot_reference(candidate):
-            return candidate
-    return None
-
-
-def _has_niwot_reference(candidate: Path) -> bool:
-    """Whether *candidate* is a pySIPNET checkout carrying the reference inputs."""
-    return (candidate / NIWOT_REFERENCE / "sipnet.clim").is_file()
-
-
 @pytest.fixture(scope="session")
 def niwot_output():
-    """Real SIPNET output for the Niwot Ridge fixture, as a ``SIPNETOutput``.
+    """Real SIPNET output for the Niwot Ridge reference inputs, as a ``SIPNETOutput``.
 
-    pySIPNET's golden baseline: the standard model run on the first rows of the
-    reference climate, committed in its repository, so this needs no binary.
-    The climate's own step lengths come with it, which matters because Niwot's
-    steps alternate between day and night and are not all the same length --
-    the case a length-weighted mean exists for.
+    pySIPNET's golden baseline, shipped inside the package since its PR #40:
+    the standard model run on the first rows of the reference climate, paired
+    with that climate's own step lengths. No binary and no pySIPNET checkout
+    are needed. The step lengths matter because Niwot's steps alternate between
+    day and night and are not all the same length -- the case a length-weighted
+    mean exists for.
     """
-    checkout = pysipnet_checkout()
-    if checkout is None:
-        pytest.skip("no pySIPNET checkout beside this one; set $PYSIPNET_SOURCE")
-    golden = checkout / NIWOT_GOLDEN
-    if not golden.is_file():
-        pytest.skip(f"pySIPNET's golden output is not at {golden}")
+    from pysipnet import niwot_reference_output
 
-    from pysipnet.io.clim_io import read_clim_file
-    from pysipnet.output import SIPNETOutput
-
-    frame = pd.read_csv(golden)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        climate = read_clim_file(checkout / NIWOT_REFERENCE / "sipnet.clim")
-    lengths = climate.pandas["time_step_length"].to_numpy()[: len(frame)]
-    return SIPNETOutput.from_dataframe(frame, time_step_length=lengths, run_id="niwot-golden")
+    return niwot_reference_output()
 
 
 @pytest.fixture(scope="session")
@@ -287,21 +238,19 @@ def site_1_result(tmp_path_factory):
 
     :data:`SITE_1_DAYS` whole days of ``ERA5_1_1``, which is the only 3-hourly
     input here and so the only one that can show a daily total being eight
-    steps. Skipped where the driver file or the compiled binary is absent.
+    steps. Skipped where the driver file or a SIPNET binary is absent; the
+    binary is whatever :func:`pysipnet.build.find_binary` resolves, so
+    ``pysipnet install-sipnet`` is what makes this run.
     """
-    checkout = pysipnet_checkout()
-    if checkout is None:
-        pytest.skip("no pySIPNET checkout beside this one; set $PYSIPNET_SOURCE")
-    if not SITE_1_DRIVERS.is_file():
-        pytest.skip(f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS})")
-
+    from pysipnet.build import find_binary, missing_binary_message
     from pysipnet.io.clim_io import read_clim_file
     from pysipnet.parameters.model import ModelFlags
     from pysipnet.runner import SIPNETRunner
 
-    cache = _sipnet_cache_dir(checkout)
-    if cache is None:
-        pytest.skip("no compiled SIPNET binary; run 'make sipnet' in the pySIPNET checkout")
+    if not SITE_1_DRIVERS.is_file():
+        pytest.skip(f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS})")
+    if find_binary() is None:
+        pytest.skip(missing_binary_message())
 
     # Session-scoped, because the SIPNETResult holds the climate it ran on and
     # so outlives the fixture; pytest removes the directory afterwards.
@@ -315,12 +264,12 @@ def site_1_result(tmp_path_factory):
         # pySIPNET makes loud on purpose.
         warnings.simplefilter("ignore")
         climate = read_clim_file(climate_path)
-    parameters = niwot_parameters(checkout)
-    runner = SIPNETRunner(flags=ModelFlags.standard(), cache_dir=cache)
-    return runner.run(parameters, climate, run_id="site-1")
+    return SIPNETRunner(flags=ModelFlags.standard()).run(
+        niwot_parameters(), climate, run_id="site-1"
+    )
 
 
-def niwot_parameters(checkout: Path):
+def niwot_parameters():
     """The reference ``sipnet.param`` as a ``SIPNETParameters``.
 
     A stand-in for the production reader pySIPNET has not written yet (its
@@ -329,10 +278,11 @@ def niwot_parameters(checkout: Path):
     pySIPNET's own default, which is how the upstream fixture predating a
     submodel is read at all.
     """
+    from pysipnet import niwot_reference_files
     from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
     from pysipnet.parameters.model import SIPNETParameters
 
-    raw = read_param_file(checkout / NIWOT_REFERENCE / "sipnet.param")
+    raw = read_param_file(niwot_reference_files().param)
     groups: dict[str, dict[str, float]] = {name: {} for name in SIPNETParameters.model_fields}
     for dotted, sipnet_name in PYTHON_TO_SIPNET.items():
         group, _, field = dotted.partition(".")
@@ -344,13 +294,3 @@ def niwot_parameters(checkout: Path):
             for name, values in groups.items()
         }
     )
-
-
-def _sipnet_cache_dir(checkout: Path) -> Path | None:
-    """Where a compiled SIPNET binary is, preferring the one this venv would use."""
-    from pysipnet.runner import BINARY_NAME, SIPNETRunner
-
-    for cache in (SIPNETRunner().cache_dir, checkout / ".sipnet_cache"):
-        if (cache / BINARY_NAME).exists():
-            return cache
-    return None

@@ -517,10 +517,37 @@ plotting code. The load-bearing rules:
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
-- From a git/wheel install (every worktree venv), `build_sipnet()` fails: it runs
-  `git submodule update`, which needs a source checkout. `download_sipnet()` fetches the
-  pinned binary into the venv's `site-packages/.sipnet_cache/`, where `SIPNETRunner` looks.
-  The Niwot fixture (`tests/fixtures/niwot_reference`) is not in the wheel either.
+- **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and
+  real SIPNET output are available with no pySIPNET checkout: `niwot_reference_output()`
+  (a `SIPNETOutput`, 60 steps, no binary needed), `niwot_reference_climate()`,
+  `niwot_reference_files()` (`.param` / `.clim` / `.output` / `.readme` paths). The tests here
+  use the first; there is still no public `.param` reader (pySIPNET issue #19), so
+  `tests/conftest.py` carries a small one.
+- **The binary is found, not assumed** (PR #41). `pysipnet.build.find_binary()` returns `None`
+  when there is none and `missing_binary_message()` says where it looked; the search is
+  `$PYSIPNET_BINARY`, a bundled wheel, a checkout's `.sipnet_cache/<commit>/`, then
+  `$PYSIPNET_CACHE_DIR`-or-user-cache `/sipnet/<commit>/`. **A git install has none of these
+  until `pysipnet install-sipnet` runs** — this project installs pySIPNET from git, not
+  editable, so that command is the setup step, not a fallback. `SIPNETRunner` verifies the
+  binary matches the pinned tag before the first run.
+
+### Running on the SCC
+
+Two caches must be moved off `$HOME`, which is at its 10 GB quota with grace expired. A
+`uv` git clone fails with `Disk quota exceeded` before anything else does, so this is the
+first thing to set, not a tuning step:
+
+```bash
+export UV_CACHE_DIR=/projectnb/dietzelab/arober/uv_cache
+export PYSIPNET_CACHE_DIR=/projectnb/dietzelab/arober/pysipnet_cache
+export TMPDIR=/projectnb/dietzelab/arober/tmp
+```
+
+The published Linux SIPNET binary needs glibc 2.34 and the SCC is AlmaLinux 8.10 with
+glibc 2.28, so `pysipnet install-sipnet` compiles rather than downloading; `gcc`, `make`
+and `git` are on the login node and the build takes about seven seconds. The binary then
+lives at `$PYSIPNET_CACHE_DIR/sipnet/<commit>/sipnet` and any environment that exports
+`PYSIPNET_CACHE_DIR` finds it. A `qsub` script must export all three itself.
 
 ### TensorFlow Probability (JAX substrate)
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
