@@ -5,15 +5,17 @@ main.py
 .DS_Store
 
 # Raw inputs live on storage and are not distributed with the repository; processed
-# data is regenerable from them. Two exceptions are tracked, both small primary
-# sources rather than pipeline outputs, and both things the repo cannot function
-# without: the site shapefile, and the constraint observations. The constraint
-# files are held in the repository rather than symlinked because the upstream
-# copies are edited and moved in place; see data/raw/constraints/provenance.md.
+# data is regenerable from them. Four exceptions are tracked, none of them a
+# pipeline output and all of them things the repo cannot function without: the
+# site shapefile, the constraint observations, the converted initial condition
+# ensemble, and the site labelings. The constraint files are held in the
+# repository rather than symlinked because the upstream copies are edited and
+# moved in place; see data/raw/constraints/provenance.md.
 data/raw/*
 !data/raw/sites/
 !data/raw/constraints/
 !data/raw/initial_conditions/
+!data/raw/labelings/
 # Un-ignoring the directory un-ignores everything in it; the inputs that
 # still live on storage and are symlinked in are excluded again here. The
 # initial conditions are tracked as one converted file; PEcAn's 800,000-file

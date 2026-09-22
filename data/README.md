@@ -78,6 +78,14 @@ data/
       provenance.md
       files/                    SCC only: symlink to PEcAn's 800,000 source files,
                                 <site_id>/IC_site_<site_id>_<member>.nc
+    labelings/                site labelings, tracked in version control
+      reanalysis_site_pft.csv
+      provenance.md
+    phenology/                MODIS leaf phenology
+      leaf_phenology_8k.csv
+      leaf_phenology_neon.csv
+    soil_texture/             soil property ensemble
+      <site_id>/Soil_params_0-<site_id>_<member>.nc
     constraints/              observations, tracked in version control
       landtrendr_aboveground_biomass.csv.gz
       gedi_aboveground_biomass.csv.gz
@@ -90,6 +98,7 @@ data/
       sda_8k_site_rdata/obs.cov.Rdata     retained for validation
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
+    labelings/<name>.csv        one per labeling, keyed on site_id
     constraints/<name>.nc       one per constraint, <name> the raw file's stem
     initial_conditions.nc
     nee.zarr/
@@ -107,7 +116,7 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with three exceptions: two small
+directory is tracked in version control, with four exceptions: three small
 primary sources and one converted input, none of them a pipeline output and
 all of them inputs the repository cannot do without. `raw/sites/` holds the site shapefile, without which the
 repository carries no site information at all; `site_id_map.csv` is tracked for
@@ -117,8 +126,11 @@ place, so a symlink is not a stable input; see
 [Constraint observations](#constraint-observations). `raw/initial_conditions/`
 holds the initial condition ensemble converted from PEcAn's 800,000
 per-member source files into one 26 MB array, which is the only form in which it
-exists off the SCC; see [Initial conditions](#initial-conditions). Everything
-else under `raw/`, including the much larger drivers and eddy-covariance files,
+exists off the SCC; see [Initial conditions](#initial-conditions).
+`raw/labelings/` holds the site labelings, each a few hundred kilobytes and, like
+the initial conditions, held nowhere else off the SCC; see
+[Site labelings](#site-labelings). Everything else under `raw/`, including the
+much larger drivers, eddy-covariance files, phenology and soil texture files,
 lives on storage and is symlinked.
 
 ---
@@ -837,6 +849,207 @@ files are the upstream sources from which those inputs were assembled.
 
 ---
 
+### Site labelings
+
+A **labeling** maps every site to a class. Plant functional type is the only
+kind held so far, and it is not site metadata: which labeling a calibration uses
+is an experimental choice, so each is its own product rather than a column of
+the site table. See Note 11.
+
+**Format.** `reanalysis_site_pft.csv`: two quoted columns, `site` and `pft`, one
+row per site, no missing values. `site` is the 1-8000 identifier shared with the
+rest of the project; `pft` is one of three class names.
+
+| Class | Sites | `landcover` classes | Latitude (min / median / max) |
+|---|---|---|---|
+| `boreal.coniferous` | 2369 | 1, 2 | 7.0 / 48.4 / 67.8 |
+| `temperate.deciduous.HPDA` | 1537 | 3, 4 | 9.2 / 44.1 / 69.0 |
+| `semiarid.grassland_HPDA` | 4094 | 5, 6, 7, 8 | 7.2 / 52.5 / 82.5 |
+
+**The labeling is an exact aggregation of `landcover`.** Every one of the 8000
+sites follows the rule in the third column, with no exception in either
+direction; the cross-tabulation has no off-diagonal cell. That settles half of
+Note 2: whatever `landcover`'s eight classes mean, the reanalysis treated 1-2 as
+one group, 3-4 as a second and 5-8 as a third. Whether that rule is the intended
+one, and what the eight classes are, is open question 24(k). The relation is
+measured rather than stated, so `ingest_labelings.py` asserts it and refuses a
+raw file that departs from it.
+
+**The classes are coarse, and two of the three names mislead.** Over a pool
+spanning 7-82 degrees north, `boreal.coniferous` is any needleleaf cover -- it
+holds Wind River at 46 N and Vaira Ranch, a California annual grassland with a
+few oaks -- and `semiarid.grassland_HPDA` is the catch-all for everything
+non-forest, including every Arctic site. A prior built on these labels inherits
+that coarseness, which is the argument for a class offset in the mean plus a
+smooth spatial residual rather than pooling on class alone.
+
+**Two upstream files are named `site_pft.csv`.** One directory above the source
+sits a sibling with the same header and the same three class names, labeling the
+older 6400-site pool with identifiers 1-6400. Nothing inside either file says
+which it is, so the discriminator is the row count: the expected count is a field
+of each labeling's spec in `sipnet_calibration.labelings`, and the ingest refuses
+a mismatch naming the other pool.
+[`raw/labelings/provenance.md`](raw/labelings/provenance.md) tabulates both.
+
+**Source.** [NALCR]'s 8000-site state data assimilation, whose per-PFT trait
+posteriors are indexed by these class names -- which is why the names are kept
+verbatim rather than renamed to this project's convention. A finer labeling of
+the same pool, distinguishing 16 classes, exists upstream and is not held here;
+see Note 11.
+
+---
+
+### Leaf phenology
+
+Two tables of satellite-derived leaf-on and leaf-off dates. Nothing in the
+project reads them yet: they are a prior-specification input for `leafOffDay`,
+recorded here because they are present and because how they can be used is not
+obvious from the files.
+
+**Format.** One row per site-year, with the same eight columns in both files:
+
+| Column | Type | Description |
+|---|---|---|
+| `year` | integer | Calendar year |
+| `site_id` | integer | Site identifier; see below on which |
+| `lat`, `lon` | float | Coordinates, to four decimal places |
+| `leafonday` | integer or `NA` | Leaf-on day of year |
+| `leafoffday` | integer or `NA` | Leaf-off day of year |
+| `leafon_qa`, `leafoff_qa` | 0-3 | Quality of the day beside it |
+
+`leaf_phenology_8k.csv` is 96,000 rows, a complete rectangle of 8000 sites by
+the twelve years 2012-2023 with no duplicate site-year.
+`leaf_phenology_neon.csv` is 390 rows, 39 sites by 2012-2021.
+
+**Quality, and what is missing.** The flags are 0 "best", 1 "good", 2 "fair" and
+3 "poor", from the MCD12Q2 Collection 6 user guide by way of the comment in the
+extraction function. In both files a flag of 3 coincides **exactly** with a
+missing day, in both directions and in both columns, because the extraction sets
+the day to `NA` where the flag is 3. In the 8000-site file 62,475 leaf-on days
+are flagged best and 29,169 are missing; 6599 sites carry at least one leaf-on
+day and 6600 at least one leaf-off day. Median leaf-on is day 149 and median
+leaf-off day 262.
+
+**The two columns invert on 731 site-years, and the file is right to.** Across
+308 sites, `leafonday` is at or after `leafoffday`, with a median `leafoffday` of
+42. This is not corruption: the MODIS bands are days since 1970-01-01, the
+extraction guards against leaf-on falling after leaf-off **on that scale**, and
+only then converts each with `lubridate::yday`, which discards the year. A
+leaf-off falling in the following January therefore returns as a small day of
+year, past a guard that was correct where it ran. Anything that differences the
+two columns has to handle it.
+
+**Which site identifiers.** `leaf_phenology_8k.csv` is keyed on **our** 1-8000
+identifiers, and its coordinates agree with the site table to the four decimal
+places it prints. `leaf_phenology_neon.csv` is keyed on BETY identifiers around
+1000004875-1000004945 and shares none of ours, so it is **not joinable without a
+map**. Measured, each of its 39 sites has a nearest site in our pool at most
+0.0049 degrees away, which is under one 1/120-degree cell, so a nearest-cell
+join is available. Two cautions before using one. That the nearest site is the
+intended correspondence is an inference from proximity, not something
+established. And the margin is thin: the *second*-nearest site is as little as
+0.0052 degrees away at the tightest of the 39, so the match is unique but only
+just, which is the situation open question 3 describes.
+
+**How PEcAn used it.** `write.configs.SIPNET.R` writes the **start year's**
+`leafonday` and `leafoffday` to the SIPNET parameters `leafOnDay` and
+`leafOffDay`, one value for the whole run, skipping either where it is `NA`.
+Nothing multi-year is used.
+
+**Under this project's defaults SIPNET does not read `leafOnDay`.**
+[pySIPNET]'s `ModelFlags.gdd` defaults to `True`, and `leaf_on_day` is used only
+when `gdd` and `soil_phenol` are both off; leaf-on is then the growing
+degree-day threshold `gddLeafOn` instead. `leaf_off_day` has no default and is
+always read. So of the two columns only `leafoffday` feeds a parameter as things
+stand, and using both means running with `gdd = False`. Which build and which
+compile-time options the reanalysis itself ran is open question 24(j).
+
+**Source.** `leaf_phenology_8k.csv` is byte-identical to
+`SDA_8k_site/leaf_phenology.csv` in the reanalysis's own directory. Both files
+were produced by `PEcAn.data.remote::extract_phenology_MODIS` from **MODIS
+MCD12Q2 v061**, the Land Cover Dynamics product, taking leaf-on from the
+`MidGreenup.Num_Modes_01` band, leaf-off from `MidGreendown.Num_Modes_01` and the
+flags from bits 2 and 6 of `QA_Detailed.Num_Modes_01`; fill values of 32767 and
+flag-3 records become `NA`. The driver script is
+`anchorSites/NA_runs/MODIS_Phenology/script.R`, which requested 2012-2024 and
+returned twelve years. The upstream path of the NEON companion was not found.
+What remains unconfirmed is whether the flag-3 rule and the year-discarding
+conversion are intended; see open question 24(o).
+
+**Checked by** `scripts/survey_phenology.py`, which measures everything recorded
+above and exits non-zero if one of those characteristics no longer holds.
+
+---
+
+### Soil texture
+
+An ensemble of soil physical properties by depth, one netCDF per site and
+member. As with the phenology, nothing in the project reads it yet: it is a
+prior-specification input for `soilWHC`.
+
+**Format.** `<site_id>/Soil_params_0-<site_id>_<member>.nc`, members 1-100. The
+`0-` prefix is PEcAn's input identifier and is constant. Each file has a single
+`depth` dimension of six, whose values are **layer bottoms in meters** --
+0.05, 0.15, 0.3, 0.6, 1.0, 2.0 -- with the first layer's top at the surface, and
+one `float32` variable per property on that dimension. No global attributes.
+
+| Variable | Units |
+|---|---|
+| `fraction_of_sand_in_soil`, `fraction_of_silt_in_soil`, `fraction_of_clay_in_soil` | 1 |
+| `soil_type` | `string` (a numeric class code despite the attribute) |
+| `soil_hydraulic_b`, `soil_water_potential_at_saturation` | 1, m |
+| `soil_hydraulic_conductivity_at_saturation` | m s-1 |
+| `volume_fraction_of_water_in_soil_at_saturation` | m3 m-3 |
+| `volume_fraction_of_water_in_soil_at_field_capacity` | m3 m-3 |
+| `volume_fraction_of_condensed_water_in_soil_at_wilting_point` | m3 m-3 |
+| `volume_fraction_of_condensed_water_in_dry_soil` | m3 m-3 |
+| `thcond0`, `thcond1`, `thcond2`, `thcond3` | W m-1 K-1, W m-1 K-1, 1, 1 |
+| `soil_thermal_conductivity`, `soil_thermal_conductivity_at_saturation` | W m-1 K-1 |
+| `soil_albedo`, `soil_bulk_density`, `soil_thermal_capacity` | 1, kg m-3, J kg-1 K-1 |
+
+The three texture fractions sum to one in every layer, to float32 rounding. Most
+files carry all twenty variables; a small minority carry seventeen, lacking
+`soil_albedo`, `soil_bulk_density` and `soil_thermal_capacity` -- 20 of the
+10,000 files in the surveyed sample. In files that do carry them, those three are
+often `NaN` in the two deepest layers.
+
+**Coverage.** 7693 of the 8000 sites have a directory, each holding exactly 100
+files and every name on the template: 769,300 files in all. **307 sites are
+absent.** What happened at those is open question 24(n).
+
+**How PEcAn used it, and what that implies.** `write.configs.SIPNET.R` takes
+layer thickness as `c(depth[1], diff(depth))` -- so 5, 10, 15, 30, 40 and 100 cm
+-- and sets
+
+- `soilWHC` (cm) to `volume_fraction_of_water_in_soil_at_saturation` times
+  thickness, summed over the profile: **porosity integrated over 2 m**;
+- `litterWHC` to that product for the top layer alone, taken only where the top
+  layer is no deeper than 10 cm;
+- `litWaterDrainRate` to the top layer's
+  `soil_hydraulic_conductivity_at_saturation`, converted to cm day-1.
+
+**This matters more than its deferral suggests.** Over a 100-site, 10,000-file
+sample the `soilWHC` that formula gives runs **72.6 to 100.7 cm**, median 88.1.
+[pySIPNET]'s reference fixture and PEcAn's own `template.param` both use **12
+cm**. That is a factor of seven to eight in the single parameter setting how
+often the model is water-limited, and it also changes what `soilWFracInit` means,
+since that is a fraction of the bucket whose size this parameter is (open
+question 24(f)). A run set up for comparison with the reanalysis should use a
+value of order 50-100 cm, not 12. Whether the 2 m porosity integral is the
+intended `soilWHC` is part of open question 24(n).
+
+**Source.** [NALCR], at
+`anchorSites/NA_runs/soil_nc/soil_texture_output/soil_texture_ensemble`,
+symlinked into `raw/soil_texture/`. Which upstream soil product the ensemble was
+drawn from is not recorded in the files.
+
+**Checked by** `scripts/survey_soil_texture.py`, which measures the coverage and
+format above and exits non-zero if one of the recorded characteristics no longer
+holds. Its coverage pass is a directory listing and is quick; opening files is
+sampled by default. On a partial copy, pass `--no-check`.
+
+---
+
 ## Conversion to processed form
 
 Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
@@ -847,6 +1060,7 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | Script | Reads | Writes |
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
+| `ingest_labelings.py` | `raw/labelings/*.csv`, `processed/sites/sites.csv` | `processed/labelings/<name>.csv`, one per labeling |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
 | `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -869,6 +1083,28 @@ variable in `sipnet_calibration.initial_conditions`, and
 `ingest_initial_conditions.py --describe` prints the specs. Their raw file is
 itself made by a script, which is **not** a pipeline step; see
 [Making a raw input](#making-a-raw-input) below.
+
+### Surveys, which are not the pipeline either
+
+Three scripts under [`../scripts/`](../scripts) answer a question about raw
+data and write nothing: `survey_drivers.py`, `survey_phenology.py` and
+`survey_soil_texture.py`. Nothing under `processed/` depends on one, and no
+ingest calls one.
+
+The two added with the phenology and soil texture sections above do one thing a
+diagnostic does not: each carries the characteristics this document records for
+its files as a `RECORDED` table, compares the measurements against it, and
+**exits non-zero if one no longer holds**. That is what keeps the numbers in
+those sections from going stale in silence -- the property is described here and
+checked there, so a re-copied or regenerated input that changed is refused
+rather than absorbed. Where the two disagree, re-measure, then change this
+document and the script's table together.
+
+| Script | Surveys | Needs the SCC |
+|---|---|---|
+| `survey_drivers.py` | `raw/drivers/` coverage, format and value ranges | for coverage |
+| `survey_phenology.py` | `raw/phenology/*.csv` shape, flags and day distributions | no |
+| `survey_soil_texture.py` | `raw/soil_texture/` coverage, variables and `soilWHC` | for coverage |
 
 ### Making a raw input
 
@@ -912,6 +1148,13 @@ Conversions applied during ingest rather than downstream:
   the mapping is evaluated per proposed parameter vector in the experiment
   layer. Negative wood and leaf draws pass through and are counted in the run
   report.
+- **Site labelings.** None to the class names: they are the join key to the
+  reanalysis's per-PFT trait tables, so they are written exactly as the producer
+  wrote them, abbreviations and dots included. What changes is the column names,
+  which are this project's to choose (`site` and `pft` become `site_id` and
+  `label`), and the row order, which becomes ascending by `site_id`. The
+  `landcover` relation is asserted, not applied: the classes come from the file,
+  and a raw file departing from the relation is refused rather than corrected.
 - **Net ecosystem exchange.** None to the values, as for the constraints: the
   product keeps the producer's umol CO2 m-2 s-1 and the observation operator
   converts the model into it (the 2026-09-15 observation-operator design
@@ -939,6 +1182,7 @@ Formats are chosen according to the shape of each product.
 | Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
+| `labelings/<name>.csv` | CSV, one per labeling | table | ~0.2 MB each |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
 | `initial_conditions.nc` | netCDF | `(member, site)` | 26 MB compressed |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
@@ -967,7 +1211,8 @@ A `.dbf` null becomes the empty string in `site_name`, matching what an empty
 `ameriflux_site_id` means, and is an error in any numeric column: the integer
 columns cannot hold a missing value, and none of them has a spare code for one.
 
-There is deliberately no `pft` column; see Note 11. The Ameriflux column is
+There is deliberately no `pft` column; see Note 11. A labeling is joined on
+instead, from `processed/labelings/`. The Ameriflux column is
 renamed from that file's `Site_ID`, which is opaque about which of the two
 identifiers it means, and is provisional in that a newer release supersedes the
 map it comes from; see open question 7.
@@ -995,6 +1240,29 @@ settings to each caller.
 - Text columns are read with `keep_default_na=False`. Eight of the 8000 sites
   are named literally `NA`, which a default read turns into a null, and an
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
+
+The **labelings** are one CSV each under `processed/labelings/`, named by the
+labeling rather than by its raw file, with two columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `site_id` | int32 | Site identifier, ascending |
+| `label` | string | The class, exactly as the producer wrote it |
+
+The column is `label` rather than `pft` so that every labeling has one schema:
+code that pools over classes indexes `label` without knowing which labeling it
+was handed, and a labeling that is not a plant functional type labeling needs no
+schema change. Which kind of class a labeling holds is a field of its spec in
+`sipnet_calibration.labelings`, which also fixes the order the classes are
+indexed in -- `load_labeling` returns `label` as a categorical over exactly the
+spec's classes, in that order, so a class axis is stable and an undeclared class
+is an error rather than a new category.
+
+There are no other columns: coordinates and `landcover` are site metadata, and a
+caller joins `load_sites()` on `site_id`. Nothing is missing, either -- a site a
+labeling does not label is absent from its file rather than carrying a null
+class, and a labeling whose spec says it covers the pool is refused at ingest if
+it leaves a site out.
 
 The **constraints** are five files under `processed/constraints/`, one per
 constraint, named by the raw file's stem. Each is an `xarray.Dataset` of two
@@ -1170,6 +1438,14 @@ classes, fewer than the seventeen of the IGBP scheme, so it is likely an
 aggregation. Confirming both would take one question to the group that produced
 the site pool.
 
+*Partly settled by the PFT labeling.* The reanalysis's own three-class labeling
+is an exact function of `landcover`, grouping 1-2, 3-4 and 5-8; see
+[Site labelings](#site-labelings). So `landcover` is at least ordered by
+something the producer read as needleleaf, broadleaf-deciduous and non-forest,
+which is consistent with an aggregation of a standard scheme but does not name
+the eight classes. That naming is the outstanding half, asked as question
+24(k).
+
 **3. Sites resolving to the same model identifier.** The 8000-site pool is a
 subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
 fall in the same cell and resolve to one model site. The producer of [GAPFILL]
@@ -1249,23 +1525,28 @@ of question 22. No script producing it has been found, so whether the two are an
 intended pair is unknown. The directory is named as though its contents carry
 variable attributes; they do not (Note 10).
 
-**11. Where plant functional type labelings live, and which to use.** Two
-tables exist for the 8000 sites, distinguishing 16 and 3 classes respectively,
-and neither is present in this repository. The `landcover` field of the site
-shapefile is a third classification, with eight classes, and is present.
+**11. Where plant functional type labelings live, and which to use.**
+*Resolved for the three-class table, open for the finer one.* A labeling is not
+an intrinsic property of a site: some calibrations will not use PFTs at all,
+others will use different labelings, and the labeling is likely to be varied
+experimentally, so carrying one in the site table would bake an experimental
+choice into a key shared with collaborators. Labelings are therefore a separate
+processed product, one file per labeling at `processed/labelings/<name>.csv`
+keyed on `site_id`, so several coexist and a calibration names the one it used.
 
-This is no longer a question about `ingest_sites.py`, which deliberately does
-not join a PFT table. A labeling is not an intrinsic property of a site: some
-calibrations will not use PFTs at all, others will use different labelings, and
-the labeling is likely to be varied experimentally, so carrying one in the site
-table would bake an experimental choice into a key shared with collaborators.
+The three-class table the reanalysis assimilated under is now held as
+`raw/labelings/reanalysis_site_pft.csv` and ingested to
+`processed/labelings/reanalysis_3pft.csv`; see
+[Site labelings](#site-labelings). It turns out to be an exact aggregation of
+the shapefile's eight `landcover` classes, which answers how those two
+classifications relate and settles half of Note 2. Whether the aggregation rule
+is the intended one is open question 24(k).
 
-The agreed destination is a separate processed product, one file per labeling at
-`processed/labelings/<name>.csv`, keyed on `site_id`, so that several can
-coexist and a calibration names the one it used. Nothing is implemented yet
-because the tables are not in the repository. What remains open is which
-labelings to pull down and how the three classifications relate; see also
-Note 2.
+What remains open is the **16-class table**, which exists upstream for the same
+8000 sites and is not in this repository. It is what a finer pooling structure
+would use, and PR D's coarse-to-fine transfer is designed for both being present
+at once. Obtaining it is the outstanding action; nothing in the design changes
+when it arrives, since `sipnet_calibration.labelings` takes a second spec.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial condition member *i* and the calibration ensemble were drawn jointly
@@ -1381,8 +1662,12 @@ neither the file nor the product's catalog page says whether the label is the
 first day of the compositing period. Until that is confirmed the processed
 product carries the label as written and writes no `time_bounds`.
 
-**24. The initial condition ensemble's production and use.** Questions for the
-producer, recorded here rather than asked yet. (a) Which script wrote the
+**24. The reanalysis's inputs: how they were produced and used.** Questions for
+the producer, recorded here rather than asked yet. (a) to (i) are about the
+initial condition ensemble; (j), (k), (n) and (o) about the build and the other
+shared inputs. The gap is deliberate: (l) and (m), on the per-PFT trait samples,
+are recorded in the project's design log rather than here, because nothing in
+this repository reads those files yet. (a) Which script wrote the
 8000-site files on 2025-07-23? The anchor-site `IC_prep_anchorSites.R` is the
 template, and the files match its construction, but the run was not found; how
 does it differ from the 6400-site `IC_pre` of 2025-04-10? (b) Which PEcAn
@@ -1403,3 +1688,27 @@ mapping? (g) What depth do the ISCN stocks integrate over, and how was the
 nominal date is 2011-07-15 for runs starting 2012-01-01; intended? (i) Which
 biomass raster fed the 8000-site files, the 300 m `agb_2010_global.tif` or the
 1 km resample beside it?
+
+(j) Which SIPNET build ran the 8000-site assimilation, and with which
+compile-time options -- growing-degree-day against `leafOnDay` phenology, the
+litter pool, water-limited heterotrophic respiration? `pecan.xml` says
+`revision ssr` and the binary is a pre-v2 tree, so the options are not
+recoverable from either. It decides whether the `leafonday` column of
+[Leaf phenology](#leaf-phenology) fed anything at all.
+
+(k) `site_pft.csv` sends `landcover` 1-2, 3-4 and 5-8 to the three classes,
+exactly, over all 8000 sites. Is that the intended rule, and what are the eight
+land cover classes? The second half is the outstanding part of Note 2.
+
+(n) The soil texture ensemble covers 7693 sites. What happened at the other
+307, and is the 2 m porosity integral the intended `soilWHC`? The value it
+gives is seven to eight times SIPNET's template default; see
+[Soil texture](#soil-texture).
+
+(o) *Answered in part.* `leaf_phenology_8k.csv` comes from
+`PEcAn.data.remote::extract_phenology_MODIS` over MODIS MCD12Q2 v061, with the
+bands and QA bits named under [Leaf phenology](#leaf-phenology), so the product
+and the QA vocabulary are established from the code. What is not: whether
+discarding the day flagged "poor" rather than passing the flag through is
+intended, and whether the `yday` conversion that inverts 731 site-years is
+known to the producer.
