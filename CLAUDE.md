@@ -149,6 +149,13 @@ Raw variable names are not ours to choose; processed ones are.
   `data/README.md` is the exception, since recording measured characteristics of
   the raw data is its job — but even there, anything the code relies on is
   asserted in code as well, not just written down.
+- **Code does not cite the vault.** Docstrings, comments and provenance
+  strings never point at the Obsidian vault, a design log or the readiness
+  report: those live outside the repository, so a reader of the code cannot
+  follow the reference, and they move. A citation in code names a primary
+  source -- a paper, a line of the SIPNET source, a data producer or product
+  (BETY, ISCN), a pySIPNET module. Design reasoning goes the other way: the
+  vault cites the code.
 - **Keep low-level design reasoning out of docstrings.** A docstring says what
   something is, what it takes and what it returns. Why a design was chosen over
   an alternative, what bug it avoids, what would break if it were done the other
@@ -325,8 +332,8 @@ while exercising the root's copy, which is the case worth remembering.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `initial_conditions.py`, `drivers.py` and `projection.py` are
-implemented, `obs_ops.py` has `sipnet_time_index`, and the other modules carry
+`constraints.py`, `initial_conditions.py`, `drivers.py`, `projection.py` and
+`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`, and the other modules carry
 the contract each is to satisfy.
 
 ```
@@ -347,6 +354,11 @@ src/sipnet_calibration/
                           # load_initial_conditions(), initial_condition_fields()
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
+  parameterization.py     # the calibration vector: Coordinate (TFP prior on the
+                          # natural scale + CoordToParamMap), FixedParameter,
+                          # Parameterization with constrain/unconstrain/log_prior/
+                          # sample, to_pysipnet_parameters() -> (member, site)
+                          # Dataset, to_eki_gaussian_prior(); example_parameterization()
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
                           # shared with the likelihood
@@ -473,6 +485,21 @@ plotting code. The load-bearing rules:
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
+- From a git/wheel install (every worktree venv), `build_sipnet()` fails: it runs
+  `git submodule update`, which needs a source checkout. `download_sipnet()` fetches the
+  pinned binary into the venv's `site-packages/.sipnet_cache/`, where `SIPNETRunner` looks.
+  The Niwot fixture (`tests/fixtures/niwot_reference`) is not in the wheel either.
+
+### TensorFlow Probability (JAX substrate)
+- `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
+  (the unconstrained base) and `.bijector`; `sipnet_calibration.parameterization` stores one
+  prior per coordinate and reads both off it.
+- Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
+  raises `NotImplementedError`. Take them from `.distribution`.
+- `SoftmaxCentered`'s density on the simplex is against the embedded volume element,
+  `0.5 * logdet(J^T J)`, which differs from `log|det J|` of the first `k - 1` rows by `0.5 log k`.
+- Sampling takes `seed=` a `jax.random` key; `BatchBroadcast(dist, to_shape=(n,))` batches a
+  shared prior over groups.
 
 ### PyEns
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
