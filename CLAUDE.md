@@ -325,8 +325,8 @@ while exercising the root's copy, which is the case worth remembering.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `initial_conditions.py`, `drivers.py` and `projection.py` are
-implemented, `obs_ops.py` has `sipnet_time_index`, and the other modules carry
+`constraints.py`, `initial_conditions.py`, `drivers.py`, `projection.py` and
+`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`, and the other modules carry
 the contract each is to satisfy.
 
 ```

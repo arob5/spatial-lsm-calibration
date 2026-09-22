@@ -151,8 +151,11 @@ def test_logit_normal_median_and_interval():
 def test_logit_normal_from_samples_refuses_the_boundary():
     with pytest.raises(ValueError, match="outside the support"):
         logit_normal_from_samples([0.2, 0.5, 1.0])
-    prior = logit_normal_from_samples(np.random.default_rng(1).uniform(0.2, 0.4, 500))
-    assert 0.2 < float(prior.quantile(0.5)) < 0.4
+    rng = np.random.default_rng(1)
+    x = 1 / (1 + np.exp(-rng.normal(-0.8, 0.4, size=20_000)))
+    prior = logit_normal_from_samples(x)
+    assert float(prior.distribution.loc) == pytest.approx(-0.8, abs=0.02)
+    assert float(prior.distribution.scale) == pytest.approx(0.4, abs=0.02)
 
 
 def test_softmax_normal_is_centered_and_on_the_simplex():
@@ -171,6 +174,11 @@ def test_softmax_normal_accepts_one_center_per_group():
     prior = softmax_normal(center=[[0.2, 0.3, 0.5], [0.6, 0.3, 0.1]], logit_sd=0.5)
     assert tuple(prior.batch_shape) == (2,)
     assert tuple(prior.event_shape) == (3,)
+    np.testing.assert_allclose(prior.distribution.stddev(), 0.5)
+    per_element = softmax_normal(center=[0.25] * 4, logit_sd=[0.1, 0.2, 0.3])
+    np.testing.assert_allclose(per_element.distribution.stddev(), [0.1, 0.2, 0.3])
+    with pytest.raises(ValueError, match="one value per unconstrained element"):
+        softmax_normal(center=[0.25] * 4, logit_sd=[0.1, 0.2])
 
 
 def test_product_prior_is_independent_with_a_gaussian_base():
@@ -222,6 +230,11 @@ def test_identity_map_shorthand():
     assert isinstance(coordinate.coord_to_param, Identity)
     assert coordinate.coord_to_param.writes == ("wood_turnover_rate",)
     assert coordinate.element_labels == ("log(wood_turnover_rate)",)
+    scaled = Coordinate(
+        name="t", prior=tfd.Uniform(jnp.float64(1.0), jnp.float64(5.0)),
+        coord_to_param="optimum_photosynthesis_temperature", provenance="x",
+    )
+    assert scaled.element_labels == ("logit((optimum_photosynthesis_temperature - 1)/(5 - 1))",)
 
 
 # ── the specs and their checks ───────────────────────────────────────────────
@@ -263,6 +276,32 @@ def build(coordinates, fixed=(), sites=SITES, labelings=None):
     )
 
 
+def distinct_groups() -> Parameterization:
+    """A registry whose groups can be told apart: one prior per site and per
+    PFT with distinct medians and spreads, and a per-PFT fixed value."""
+    return Parameterization(
+        coordinates=(
+            Coordinate(
+                name="soil", prior=log_normal(median=[100.0, 200.0, 300.0], geometric_sd=[1.5, 2.0, 2.5]),
+                coord_to_param="soil_carbon", varies_by="site", provenance="test",
+            ),
+            Coordinate(
+                name="turnover", prior=log_normal(median=[0.01, 0.02], geometric_sd=[1.2, 1.3]),
+                coord_to_param="wood_turnover_rate", varies_by="pft", provenance="test",
+            ),
+            Coordinate(
+                name="allocation",
+                prior=softmax_normal(center=[[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]], logit_sd=[0.3, 0.6, 0.9]),
+                coord_to_param=ALLOCATION, varies_by="pft", provenance="test",
+            ),
+        ),
+        fixed=(FixedParameter(
+            name="leaf_carbon_fraction", value={"a": 0.4, "b": 0.5}, varies_by="pft", provenance="test",
+        ),),
+        sites=SITES, labelings={"pft": ("a", "b", "a")},   # site 27 is "b", the second group
+    )
+
+
 def rate(name="r", parameter="wood_turnover_rate", **kwargs):
     return Coordinate(
         name=name, prior=log_normal(median=0.01, geometric_sd=2.0),
@@ -295,6 +334,50 @@ def test_parameterization_refuses_unfixed_reads_and_missing_labelings():
         build((rate(varies_by="pft"),), labelings={"pft": ("a", "b")})
     with pytest.raises(ValueError, match="reserved"):
         build((rate(),), labelings={"member": PFT})
+
+
+def test_coordinate_refuses_unusable_priors_and_maps():
+    prior = log_normal(median=1.0, geometric_sd=2.0)
+    with pytest.raises(ValueError, match="rank above 1"):
+        Coordinate(
+            name="a", prior=log_normal(median=np.ones((2, 2)), geometric_sd=2.0),
+            coord_to_param="wood_turnover_rate", provenance="x",
+        )
+    with pytest.raises(ValueError, match="event shape .* rank above 1"):
+        Coordinate(
+            name="a", prior=tfd.Independent(tfd.Normal(jnp.zeros((2, 3)), jnp.float64(1.0)), 2),
+            coord_to_param="optimum_photosynthesis_temperature", provenance="x",
+        )
+    with pytest.raises(ValueError, match="not float64"):
+        Coordinate(name="a", prior=tfd.LogNormal(0.0, 1.0), coord_to_param="wood_turnover_rate", provenance="x")
+    with pytest.raises(TypeError, match="must be a TFP distribution"):
+        Coordinate(name="a", prior=tfb.Exp(), coord_to_param="wood_turnover_rate", provenance="x")
+    with pytest.raises(TypeError, match="must be a CoordToParamMap"):
+        Coordinate(name="a", prior=prior, coord_to_param={"writes": ()}, provenance="x")
+    mixture = tfd.MixtureSameFamily(
+        tfd.Categorical(probs=jnp.array([0.5, 0.5])), tfd.LogNormal(jnp.array([0.0, 1.0]), jnp.float64(1.0))
+    )
+    with pytest.raises(ValueError, match="no default event-space bijector"):
+        Coordinate(name="a", prior=mixture, coord_to_param="soil_carbon", provenance="x")
+    # ... whereas wrapping it in an explicit bijector is accepted.
+    wrapped = Coordinate(
+        name="a", prior=tfd.TransformedDistribution(mixture, tfb.Identity()),
+        coord_to_param="soil_carbon", provenance="x",
+    )
+    assert wrapped.bijector is not None
+
+
+def test_parameterization_refuses_bad_sites_and_labelings():
+    with pytest.raises(TypeError, match="site ids must be integers"):
+        build((rate(),), sites=(1.5, 27.0, 4711.0))
+    assert build((rate(),), sites=np.array([1.0, 27.0, 4711.0])).sites == SITES
+    with pytest.raises(TypeError, match="sequence of one label per site"):
+        build((rate(varies_by="pft"),), labelings={"pft": "abc"})
+    assert build((rate(varies_by="pft"),), labelings={"pft": np.array(PFT)}).group_labels("pft") == ("conifer", "deciduous")
+    with pytest.raises(ValueError, match="collide with a coordinate or SIPNET parameter"):
+        build((rate(),), labelings={"pft": PFT, "wood_turnover_rate": (1, 2, 3)})
+    with pytest.raises(ValueError, match="collide"):
+        build((rate(name="landcover"),), labelings={"pft": PFT, "landcover": (1, 2, 3)})
 
 
 def test_parameterization_refuses_wrong_prior_batch_and_fixed_coverage():
@@ -339,6 +422,31 @@ def test_domain_check_corners_are_far_but_finite():
     assert np.isfinite(np.exp(12.0)) and 0 < 1 / (1 + np.exp(12.0)) < 1e-5
 
 
+def test_domain_check_looks_at_the_corners_not_only_the_center():
+    # In domain at theta = 0 (the value 0.5), out of it at theta = +-12.
+    inside_at_center = Coordinate(
+        name="n", prior=tfd.Normal(jnp.float64(0.5), jnp.float64(0.1)),
+        coord_to_param="leaf_off_fall_fraction", provenance="x",
+    )
+    with pytest.raises(ValueError, match="outside its pySIPNET domain 'unit_interval'"):
+        build((inside_at_center,))
+
+
+def test_in_domain_predicates_at_the_boundaries():
+    D = ParameterDomain
+    assert in_domain(D.OPEN_UNIT_INTERVAL, np.array([0.5])) and not in_domain(D.OPEN_UNIT_INTERVAL, np.array([0.0]))
+    assert not in_domain(D.OPEN_UNIT_INTERVAL, np.array([1.0]))
+    assert in_domain(D.UNIT_INTERVAL, np.array([0.0, 1.0])) and not in_domain(D.UNIT_INTERVAL, np.array([1.0000001]))
+    assert in_domain(D.NON_NEGATIVE, np.array([0.0])) and not in_domain(D.POSITIVE, np.array([0.0]))
+    for domain in D:
+        assert not in_domain(domain, np.array([np.nan]))
+        assert not in_domain(domain, np.array([np.inf]))
+    with pytest.raises(ValueError, match="finite and positive"):
+        log_normal(median=np.inf, geometric_sd=2.0)
+    with pytest.raises(ValueError, match="ascending"):
+        build((rate(),), sites=(1, 1, 27), labelings={"pft": PFT})
+
+
 # ── layout ───────────────────────────────────────────────────────────────────
 
 
@@ -359,6 +467,11 @@ def test_layout_dimension_labels_and_slices(example):
     assert layout.labels[2] == "allocation[conifer][alr(leaf_allocation/coarse_root_allocation)]"
     assert layout.labels[-1] == "initial_soil_carbon[4711]"
     assert len(layout.labels) == 14
+    deciduous = [layout.labels[i] for i in layout.index("allocation", group="deciduous")]
+    assert deciduous == [
+        f"allocation[deciduous][{e}]" for e in layout.element_labels["allocation"]
+    ]
+    assert all("[conifer]" in layout.labels[i] for i in layout.index("allocation", group="conifer"))
     stops = [layout.slice(c).stop for c in layout.coordinates]
     assert stops == [2, 8, 10, 11, 14]
 
@@ -387,6 +500,10 @@ def test_layout_pack_unpack_round_trip(example, theta):
         example.layout.pack({k: v for k, v in parts.items() if k != "allocation"})
     with pytest.raises(ValueError, match="theta must be"):
         example.layout.unpack(theta[:, :5])
+    mismatched = dict(parts)
+    mismatched["allocation"] = parts["allocation"][0]
+    with pytest.raises(ValueError, match="leading dimensions disagree"):
+        example.layout.pack(mismatched)
 
 
 # ── bijectors and the log prior ──────────────────────────────────────────────
@@ -473,6 +590,15 @@ def test_sample_is_reproducible_and_per_coordinate(example):
     # Per-site draws are independent, not one value broadcast over sites.
     site_block = a[:, example.layout.slice("initial_soil_carbon")]
     assert not np.allclose(site_block[:, 0], site_block[:, 1])
+    # Coordinates get their own keys: standardized draws are neither identical
+    # nor correlated across coordinates.
+    gaussian = example.to_eki_gaussian_prior()
+    draws = np.asarray(example.sample(jax.random.key(7), n=20_000))
+    standardized = (draws - np.asarray(gaussian.mean)) / np.sqrt(np.diag(np.asarray(gaussian.cov.to_dense())))
+    correlation = np.corrcoef(standardized, rowvar=False)
+    off_block = np.abs(correlation - np.eye(14))
+    assert off_block.max() < 0.03
+    assert not np.allclose(standardized[:, 10], standardized[:, 8])  # leaf_fall vs base_soil_respiration
 
 
 # ── the EKI export ───────────────────────────────────────────────────────────
@@ -495,6 +621,32 @@ def test_eki_gaussian_matches_the_prior_moments(example):
     np.testing.assert_allclose(dense[8, 8], float(ln.distribution.scale) ** 2)
 
 
+def test_eki_gaussian_equals_the_analytic_unconstrained_moments(example):
+    gaussian = example.to_eki_gaussian_prior()
+    dense = np.asarray(gaussian.cov.to_dense())
+    for coordinate in example.coordinates:
+        prior = example._broadcast_unconstrained(coordinate)
+        sl = example.layout.slice(coordinate.name)
+        np.testing.assert_allclose(gaussian.mean[sl], np.ravel(prior.mean()), rtol=1e-12)
+        if coordinate.is_scalar:
+            np.testing.assert_allclose(np.diag(dense)[sl], np.ravel(prior.variance()), rtol=1e-12)
+        else:
+            expected = np.asarray(prior.covariance())
+            block = dense[sl, sl]
+            for g in range(expected.shape[0]):
+                k = coordinate.size
+                np.testing.assert_allclose(block[g * k:(g + 1) * k, g * k:(g + 1) * k], expected[g], rtol=1e-12)
+
+
+def test_eki_gaussian_refuses_a_zero_spread():
+    flat = Coordinate(
+        name="z", prior=tfd.LogNormal(jnp.float64(0.0), jnp.float64(0.0)),
+        coord_to_param="wood_turnover_rate", provenance="x",
+    )
+    with pytest.raises(ValueError, match="zero, negative or non-finite variance"):
+        build((flat,)).to_eki_gaussian_prior()
+
+
 def test_eki_gaussian_needs_a_key_for_non_analytic_moments():
     beta = Coordinate(
         name="b", prior=tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
@@ -504,10 +656,23 @@ def test_eki_gaussian_needs_a_key_for_non_analytic_moments():
     p = build((beta,))
     with pytest.raises(NotImplementedError, match="no analytic unconstrained moments"):
         p.to_eki_gaussian_prior()
+    with pytest.raises(ValueError, match="at least 2"):
+        p.to_eki_gaussian_prior(key=jax.random.key(0), n_moment_samples=1)
     gaussian = p.to_eki_gaussian_prior(key=jax.random.key(0), n_moment_samples=50_000)
     draws = np.asarray(p.sample(jax.random.key(1), n=50_000))
     assert float(gaussian.mean[0]) == pytest.approx(draws.mean(), abs=0.02)
+    assert gaussian.mean.dtype == jnp.float64
     assert p.describe()["theta_moments"].iloc[0] == "monte_carlo"
+    # Two Monte Carlo coordinates get different keys, so their estimates differ.
+    two = build((
+        beta,
+        Coordinate(
+            name="c", prior=tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
+            coord_to_param="leaf_on_reallocation_fraction", provenance="x",
+        ),
+    ))
+    mean = two.to_eki_gaussian_prior(key=jax.random.key(0), n_moment_samples=50).mean
+    assert float(mean[0]) != float(mean[1])
 
 
 # ── the override table and pySIPNET ──────────────────────────────────────────
@@ -537,6 +702,49 @@ def test_override_table_shape_names_and_attributes(example, theta):
     assert dict(single.sizes) == {"site": 3}
 
 
+def test_override_table_values_come_from_the_right_coordinate_and_group(example, theta):
+    table = example.to_pysipnet_parameters(theta)
+    natural = example.coordinates_table(theta, scale="natural")
+    for member in (0, 5):
+        for site, pft in zip(SITES, PFT, strict=True):
+            row = table.isel(member=member).sel(site=site)
+            assert float(row["soil_carbon"]) == float(natural["initial_soil_carbon"].isel(member=member).sel(site=site))
+            assert float(row["leaf_off_fall_fraction"]) == float(natural["leaf_fall_fraction"].isel(member=member))
+            assert float(row["base_soil_respiration_rate"]) == float(
+                natural["base_soil_respiration"].isel(member=member).sel(pft=pft)
+            )
+            allocation = natural["allocation"].isel(member=member).sel(pft=pft)
+            for name in ("leaf_allocation", "wood_allocation", "fine_root_allocation"):
+                assert float(row[name]) == float(allocation.sel(element=name))
+            photosynthesis = natural["photosynthesis"].isel(member=member)
+            capacity, share = (float(photosynthesis.sel(element=e)) for e in PHOTOSYNTHESIS.components)
+            assert float(row["max_photosynthesis_rate"]) == pytest.approx(capacity * 0.466 * (1 - share) / 0.76)
+
+
+def test_distinct_groups_are_gathered_onto_the_right_sites():
+    p = distinct_groups()
+    gaussian = p.to_eki_gaussian_prior()
+    # The Gaussian mean is each prior's base location, so constraining it gives
+    # the medians (and the softmax centers) group by group, in group order.
+    np.testing.assert_allclose(gaussian.mean[p.layout.slice("soil")], np.log([100.0, 200.0, 300.0]))
+    np.testing.assert_allclose(gaussian.mean[p.layout.slice("turnover")], np.log([0.01, 0.02]))
+    dense = np.asarray(gaussian.cov.to_dense())
+    np.testing.assert_allclose(np.diag(dense)[p.layout.slice("soil")], np.log([1.5, 2.0, 2.5]) ** 2)
+    np.testing.assert_allclose(np.diag(dense)[p.layout.slice("turnover")], np.log([1.2, 1.3]) ** 2)
+    np.testing.assert_allclose(np.diag(dense)[p.layout.slice("allocation")], np.tile([0.3, 0.6, 0.9], 2) ** 2)
+    table = p.to_pysipnet_parameters(gaussian.mean)
+    np.testing.assert_allclose(table["soil_carbon"].values, [100.0, 200.0, 300.0])
+    np.testing.assert_allclose(table["wood_turnover_rate"].values, [0.01, 0.02, 0.01])
+    np.testing.assert_allclose(table["leaf_carbon_fraction"].values, [0.4, 0.5, 0.4])
+    np.testing.assert_allclose(table["leaf_allocation"].values, [0.1, 0.4, 0.1], rtol=1e-12)
+    np.testing.assert_allclose(table["fine_root_allocation"].values, [0.3, 0.2, 0.3], rtol=1e-12)
+    frame = p.describe()
+    soil = frame[frame["coordinate"] == "soil"]
+    np.testing.assert_allclose(soil["natural_median"], [100.0, 200.0, 300.0])
+    np.testing.assert_allclose(soil["theta_sd"], np.log([1.5, 2.0, 2.5]))
+    assert list(soil["group"]) == list(SITES)
+
+
 def test_prior_draws_land_in_every_domain(example):
     table = example.to_pysipnet_parameters(example.sample(jax.random.key(5), n=2000))
     for name, values in table.data_vars.items():
@@ -553,6 +761,8 @@ def test_pysipnet_overrides_gives_one_run_of_floats(example, theta):
     assert kwargs["soil_carbon"] == float(table["soil_carbon"].isel(member=2).sel(site=27))
     with pytest.raises(ValueError, match="pass member="):
         pysipnet_overrides(table, site=27)
+    with pytest.raises(ValueError, match="position from 0"):
+        pysipnet_overrides(table, member=-1, site=27)
     single = example.to_pysipnet_parameters(theta[0])
     assert pysipnet_overrides(single, site=1)["leaf_carbon_fraction"] == 0.466
     with pytest.raises(ValueError, match="no member dim"):
@@ -686,6 +896,8 @@ def test_describe_has_one_row_per_column(example):
     assert (frame["theta_moments"] == "analytic").all()
     soil = frame[frame["coordinate"] == "base_soil_respiration"].iloc[0]
     assert soil["natural_2.5"] == pytest.approx(0.004) and soil["natural_97.5"] == pytest.approx(0.020)
+    ln = example.coordinate("base_soil_respiration").prior.distribution
+    assert soil["theta_mean"] == pytest.approx(float(ln.loc)) and soil["theta_sd"] == pytest.approx(float(ln.scale))
     assert soil["sipnet_parameters"] == "base_soil_respiration_rate"
     assert np.isnan(frame[frame["coordinate"] == "allocation"]["natural_median"]).all()
     assert frame[frame["coordinate"] == "initial_soil_carbon"]["group"].tolist() == list(SITES)

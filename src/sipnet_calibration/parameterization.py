@@ -73,16 +73,18 @@ member) with one ``float64`` variable per SIPNET parameter the
 parameterization sets, calibrated and fixed alike, keyed on the flat pySIPNET
 name. Shared and per-label values are broadcast and gathered onto the site
 axis, so a caller reads one run's overrides without knowing about groups.
-Each variable carries ``units``, ``sipnet_name`` and ``source``
-(``"coordinate <name>"`` or ``"fixed"``); the ``site`` coordinate carries
-every labeling as a non-dimension coordinate.
+Each variable carries ``units``, ``sipnet_name``, ``source``
+(``"coordinate <name>"`` or ``"fixed"``) and, where pySIPNET declares one,
+``constituent``; the ``site`` coordinate carries every labeling as a
+non-dimension coordinate.
 
 **The coordinates table.** :meth:`Parameterization.coordinates_table` returns
 ``dict[str, xarray.DataArray]``, one per coordinate, with dims drawn from
 ``member`` (when ``theta`` is an ensemble), the coordinate's ``varies_by``
-name (when it varies), and ``element`` (when it has several). It is a dict
-rather than a Dataset because ``element`` differs in length and labels from
-one coordinate to the next.
+name (when it varies), and ``element`` (when it has several); a ``site``
+dim carries every labeling as a non-dimension coordinate, as the override
+table does. It is a dict rather than a Dataset because ``element`` differs
+in length and labels from one coordinate to the next.
 
 Functions and classes
 ---------------------
@@ -122,9 +124,16 @@ leaves everything else alone.
 Why the override table holds arrays, not ``SIPNETParameters``. Building
 ``J x S`` validated Pydantic models per ensemble would dominate a run that is
 otherwise a subprocess. Validation happens at the run, where
-``SIPNETModel`` raises before invoking the binary; the import-time checks at
-the bottom of this module are what make that failure unreachable from a
-prior draw.
+``SIPNETModel`` raises before invoking the binary; the checks a
+``Parameterization`` runs when it is built (the ``check_*`` helpers at the
+bottom of this module) are what keep a prior draw from reaching that
+failure.
+
+A ``Parameterization`` holds live TFP objects and, with this TFP build,
+those built from ``TransformedDistribution`` or ``Blockwise`` (the simplex,
+the product prior) do not pickle. Ship the override table across process
+boundaries, not the ``Parameterization``: the table is a plain
+``xarray.Dataset``.
 
 Importing this module sets ``jax_enable_x64``, as ``import pyeki`` does, so
 an MCMC baseline that never imports pyEKI still computes in float64. The
@@ -203,7 +212,7 @@ def log_normal(*, median: Any, geometric_sd: Any) -> tfd.LogNormal:
     Examples
     --------
     >>> prior = log_normal(median=0.01, geometric_sd=2.0)
-    >>> float(prior.quantile(0.5))
+    >>> round(float(prior.quantile(0.5)), 6)
     0.01
     """
     median = _positive_array("log_normal median", median)
@@ -236,8 +245,7 @@ def log_normal_from_samples(x: Any) -> tfd.LogNormal:
     """Maximum-likelihood log-normal fit to strictly positive samples.
 
     Refuses NaN or non-positive values rather than dropping them, so the
-    caller counts what it excludes (a negative trait draw is not "handled",
-    it is reported).
+    caller counts what it excludes.
     """
     logs = jnp.log(_samples_in_support("log_normal_from_samples", x, lambda v: v > 0))
     return tfd.LogNormal(loc=jnp.mean(logs), scale=_positive_std(logs, "log_normal_from_samples"))
@@ -246,10 +254,14 @@ def log_normal_from_samples(x: Any) -> tfd.LogNormal:
 def logit_normal(*, median: Any, logit_sd: Any) -> tfd.LogitNormal:
     """Logit-normal on ``(0, 1)`` with the given median and logit-scale sd.
 
-    ``logit x ~ Normal(logit median, logit_sd)``. There is no natural-scale
-    spread statistic for this family that is exact and checkable, so the
-    spread is stated on the logit scale; ``logit_sd`` around 1.7 is close to
-    flat on ``(0, 1)``.
+    ``logit x ~ Normal(logit median, logit_sd)``. ``logit_sd`` around 1.7 is
+    close to flat on ``(0, 1)``.
+
+    Notes
+    -----
+    The spread is stated on the logit scale because this family has no
+    closed-form natural-scale moments, so no natural-scale spread statistic
+    would be exact.
     """
     median = _unit_interval_array("logit_normal median", median)
     logit_sd = _positive_array("logit_normal logit_sd", logit_sd)
@@ -293,7 +305,8 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
         ``log(center[:-1] / center[-1])``, so ``bijector.forward(base.loc)``
         is *center*.
     logit_sd:
-        Scale of the base, scalar or per element.
+        Scale of the base: a scalar, or one value per unconstrained element
+        (``k - 1`` of them). Any other shape is refused.
 
     Returns
     -------
@@ -316,6 +329,11 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
         raise ValueError("softmax_normal: center must sum to 1 along its last axis.")
     logit_sd = _positive_array("softmax_normal logit_sd", logit_sd)
     loc = jnp.log(center[..., :-1] / center[..., -1:])
+    if logit_sd.shape not in ((), loc.shape[-1:]):
+        raise ValueError(
+            "softmax_normal: logit_sd must be a scalar or one value per unconstrained "
+            f"element, shape {loc.shape[-1:]}; got shape {logit_sd.shape}."
+        )
     scale = jnp.broadcast_to(logit_sd, loc.shape)
     return tfd.TransformedDistribution(
         tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale), tfb.SoftmaxCentered()
@@ -401,7 +419,8 @@ class CoordToParamMap(Protocol):
 
 @dataclass(frozen=True)
 class Identity:
-    """One scalar coordinate to one SIPNET parameter. The default map."""
+    """One scalar coordinate to one SIPNET parameter; what a SIPNET parameter
+    name passed as ``coord_to_param`` stands for."""
 
     parameter: str
 
@@ -425,11 +444,9 @@ class Identity:
 class SimplexMap:
     """A point on the ``k``-simplex to ``k - 1`` SIPNET parameters.
 
-    The first ``k - 1`` components are written; the last is the residual
-    SIPNET computes itself and has no parameter for. Keeping the residual in
-    the coordinate is what makes every component strictly positive, so the
-    residual SIPNET recomputes is positive for every ``theta`` (see
-    :data:`ALLOCATION`).
+    The first ``k - 1`` components are written; the last is a residual SIPNET
+    recomputes itself and has no parameter for. :data:`ALLOCATION` says why
+    the residual is nonetheless part of the coordinate.
 
     Parameters
     ----------
@@ -487,7 +504,9 @@ class PhotosynthesisMap:
     -----
     Both outputs are positive for every ``P > 0``, ``rho in (0, 1)`` and
     ``aMaxFrac in (0, 1)``, so a log-normal on ``P`` and a logit-normal on
-    ``rho`` can never produce a value pySIPNET refuses. ``P`` reads as canopy
+    ``rho`` produce values pySIPNET accepts, up to float64: the sigmoid
+    saturates to exactly 1 beyond ``logit rho`` of about 37, dozens of prior
+    standard deviations out. ``P`` reads as canopy
     assimilation capacity per unit leaf carbon and ``rho`` as the share of it
     spent on basal foliar respiration. The vault's parameters note writes the
     pair as ``(P, phi)``; ``phi`` is reserved for hyperparameters in this
@@ -512,17 +531,22 @@ ALLOCATION = SimplexMap(
     writes=("leaf_allocation", "wood_allocation", "fine_root_allocation"),
     residual="coarse_root_allocation",
 )
-"""The allocation simplex.
+"""The allocation simplex: the 4-vector (leaf, wood, fine root, coarse root)
+to ``leaf_allocation``, ``wood_allocation`` and ``fine_root_allocation``.
 
-The natural value is the 4-vector (leaf, wood, fine root, coarse root). The
-first three are written; coarse root is not, because SIPNET has no parameter
-for it and recomputes exactly ``1 - (leaf + wood + fine root)`` at
-``sipnet.c:1113-1115``, calling ``exit()`` if that is not positive
+Notes
+-----
+Coarse root is not written because SIPNET has no parameter for it: it
+recomputes exactly ``1 - (leaf + wood + fine root)`` at
+``sipnet.c:1113-1115`` and calls ``exit()`` if that is not positive
 (``sipnet.c:1117-1122``; pySIPNET's ``SIPNETParameters`` validator enforces
-the same ``sum < 1`` first). With the coordinate on the simplex, every
-component is strictly positive and that exit is unreachable, which three
-independent fractions cannot promise. For EKI a dead member is a missing
-column, not a low-likelihood one.
+the same ``sum < 1`` first). Keeping coarse root in the coordinate is what
+puts every draw strictly inside the simplex, so no ``theta`` the prior can
+produce reaches that exit -- three independent fractions cannot promise
+that, and for EKI a dead member is a missing column, not a low-likelihood
+one. The guarantee is exact arithmetic's: in float64 the softmax saturates
+beyond ``|theta|`` of about 37, where the three written fractions round to a
+sum of exactly 1; that is dozens of prior standard deviations out.
 """
 
 PHOTOSYNTHESIS = PhotosynthesisMap()
@@ -542,7 +566,14 @@ SITE = "site"
 """The reserved ``varies_by`` value meaning one copy per site."""
 
 RESERVED_LABELING_NAMES = frozenset({SHARED, SITE, "member", "element"})
-"""Names a labeling cannot take, because they are dimension names already."""
+"""Names a labeling cannot take, because they are dimension names already. A
+labeling may not be named like a coordinate or a SIPNET parameter either."""
+
+DOMAIN_CHECK_CORNERS = (-12.0, 0.0, 12.0)
+"""Corners of the unconstrained cube at which
+:func:`check_map_image_is_in_domain` evaluates a coordinate. +-12 spans ten
+orders of magnitude on a log scale and reaches ``1 - 6e-6`` on a logit scale
+while staying inside float64; the check is about support, not plausibility."""
 
 
 @dataclass(frozen=True, eq=False, kw_only=True)
@@ -576,10 +607,15 @@ class Coordinate:
 
     Raises
     ------
+    TypeError
+        If *prior* is not a TFP distribution or *coord_to_param* is neither
+        a :class:`CoordToParamMap` nor a SIPNET parameter name.
     ValueError
         For a malformed name, an empty provenance, a map whose SIPNET
-        parameters do not exist, a prior batch shape of rank above 1, or a
-        map whose ``components`` do not match the prior's event size.
+        parameters do not exist, a prior that is not ``float64``, whose
+        batch shape has rank above 1, whose event has rank above 1, or that
+        has no default event-space bijector, or a map whose ``components``
+        do not match the prior's event size.
 
     Examples
     --------
@@ -605,10 +641,15 @@ class Coordinate:
             object.__setattr__(self, "coord_to_param", Identity(self.coord_to_param))
         check_coordinate_name(self.name)
         check_provenance_is_given(self.name, self.provenance)
+        check_prior_is_a_distribution(self)
+        check_coord_to_param_is_a_map(self)
         check_sipnet_parameters_exist(
             (*self.coord_to_param.writes, *self.coord_to_param.reads), f"coordinate {self.name}"
         )
+        check_prior_is_float64(self)
         check_prior_batch_rank(self)
+        check_prior_event_rank(self)
+        check_prior_has_a_bijector(self)
         check_components_match_prior(self)
 
     @property
@@ -724,7 +765,7 @@ class FixedParameter:
 # ── the layout ────────────────────────────────────────────────────────────────
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Layout:
     """Where each coordinate lives in ``theta``, by name.
 
@@ -749,13 +790,13 @@ class Layout:
 
     Examples
     --------
-    >>> layout = p.layout                                   # p: a Parameterization
-    >>> layout.dimension == theta.shape[-1]
-    True
-    >>> parts = layout.unpack(theta)                        # {name: (..., n_groups, size)}
-    >>> bool(jnp.allclose(layout.pack(parts), theta))
-    True
-    >>> layout.index("allocation", group="conifer")         # three columns
+    With ``p`` a :class:`Parameterization` and ``theta`` from ``p.sample``::
+
+        layout = p.layout
+        layout.dimension == theta.shape[-1]                # True
+        parts = layout.unpack(theta)                       # {name: (..., n_groups, size)}
+        layout.pack(parts)                                 # theta again
+        layout.index("allocation", group="conifer")        # array([2, 3, 4])
     """
 
     coordinates: tuple[str, ...]
@@ -839,7 +880,13 @@ class Layout:
                     f"got shape {part.shape}."
                 )
             pieces.append(part.reshape((*part.shape[:-2], expected[0] * expected[1])))
-        return jnp.concatenate(pieces, axis=-1)
+        try:
+            return jnp.concatenate(pieces, axis=-1)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Layout.pack: the parts' leading dimensions disagree; every part must "
+                f"share one leading shape. Got {[tuple(p.shape[:-1]) for p in pieces]}."
+            ) from error
 
     def _known(self, coordinate: str) -> str:
         if coordinate not in self.slices:
@@ -905,9 +952,9 @@ class Parameterization:
     def __post_init__(self) -> None:
         object.__setattr__(self, "coordinates", tuple(self.coordinates))
         object.__setattr__(self, "fixed", tuple(self.fixed))
-        object.__setattr__(self, "sites", tuple(int(s) for s in self.sites))
+        object.__setattr__(self, "sites", _as_site_ids(self.sites))
         object.__setattr__(
-            self, "labelings", {k: tuple(v) for k, v in dict(self.labelings).items()}
+            self, "labelings", {k: _as_labels(k, v) for k, v in dict(self.labelings).items()}
         )
         check_sites_are_ascending(self.sites)
         check_coordinate_names_are_unique(self.coordinates)
@@ -930,6 +977,7 @@ class Parameterization:
 
     @cached_property
     def layout(self) -> Layout:
+        """Where each coordinate lives in ``theta``; see :class:`Layout`."""
         return Layout(
             coordinates=tuple(c.name for c in self.coordinates),
             sizes={c.name: c.size for c in self.coordinates},
@@ -948,6 +996,7 @@ class Parameterization:
         return tuple(sorted(set(self.labelings[varies_by])))
 
     def n_groups(self, varies_by: str | None) -> int:
+        """The number of copies a coordinate with this ``varies_by`` has."""
         return len(self.group_labels(varies_by))
 
     def sites_with(self, labeling: str, label: Any) -> tuple[int, ...]:
@@ -1026,8 +1075,9 @@ class Parameterization:
         key, n_moment_samples:
             Used only for a coordinate without analytic unconstrained moments
             (a hand-built prior that is not a ``TransformedDistribution``):
-            that coordinate is moment matched from *n_moment_samples* draws.
-            Left at their defaults, such a coordinate raises instead.
+            that coordinate is moment matched from *n_moment_samples* draws
+            (at least 2) with its own split of *key*. Left at their defaults,
+            such a coordinate raises instead.
 
         Returns
         -------
@@ -1052,8 +1102,13 @@ class Parameterization:
         exact, because the prior is Gaussian in ``theta`` by construction.
         """
         means, blocks = [], []
-        for coordinate in self.coordinates:
-            mean, block = self._moment_block(coordinate, key, n_moment_samples)
+        keys = (
+            jax.random.split(key, len(self.coordinates))
+            if key is not None
+            else (None,) * len(self.coordinates)
+        )
+        for coordinate, subkey in zip(self.coordinates, keys, strict=True):
+            mean, block = self._moment_block(coordinate, subkey, n_moment_samples)
             means.append(mean)
             blocks.append(block)
         return Gaussian(mean=jnp.concatenate(means), cov=PSDBlockDiag(tuple(blocks)))
@@ -1078,16 +1133,20 @@ class Parameterization:
         dict[str, xarray.DataArray]
             Dims per array, each present only when needed: ``member`` for an
             ensemble; the coordinate's ``varies_by`` name (``site``, ``pft``,
-            ...) with the group labels as its coordinate; ``element`` with the
-            element labels — unconstrained (``log(...)``, ``alr(...)``) or
-            natural (``leaf``, ``wood``, ...) as *scale* says.
+            ...) with the group labels as its coordinate, a ``site`` dim also
+            carrying every labeling as a non-dimension coordinate; ``element``
+            with the element labels — unconstrained (``log(...)``,
+            ``alr(...)``) or natural (the map's ``components``,
+            ``leaf_allocation``, ..., ``coarse_root_allocation``) as *scale*
+            says.
 
         Examples
         --------
-        >>> t = p.coordinates_table(theta, scale="natural")
-        >>> t["allocation"].dims
-        ('member', 'pft', 'element')
-        >>> t["allocation"].sel(pft="conifer", element="coarse_root")   # the residual
+        With ``p`` the example parameterization and ``theta`` an ensemble::
+
+            t = p.coordinates_table(theta, scale="natural")
+            t["allocation"].dims                 # ('member', 'pft', 'element')
+            t["allocation"].sel(pft="conifer", element="coarse_root_allocation")
         """
         if scale not in ("unconstrained", "natural"):
             raise ValueError(f"scale must be 'unconstrained' or 'natural', got {scale!r}.")
@@ -1129,14 +1188,17 @@ class Parameterization:
             One ``float64`` variable per SIPNET parameter, calibrated and
             fixed alike, keyed on the flat pySIPNET name. Shared and per-label
             values are broadcast and gathered onto the site axis. Each
-            variable carries ``units``, ``sipnet_name`` and ``source``; the
-            ``site`` coordinate carries every labeling.
+            variable carries ``units``, ``sipnet_name``, ``source`` and, where
+            pySIPNET declares one, ``constituent``; the ``site`` coordinate
+            carries every labeling.
 
         Examples
         --------
-        >>> table = p.to_pysipnet_parameters(theta)
-        >>> table["leaf_allocation"].sel(site=27)          # (member,)
-        >>> table.sel(site=list(p.sites_with("pft", "deciduous")))
+        With ``p`` the example parameterization and ``theta`` an ensemble::
+
+            table = p.to_pysipnet_parameters(theta)
+            table["leaf_allocation"].sel(site=27)          # (member,)
+            table.sel(site=list(p.sites_with("pft", "deciduous")))
         """
         theta = _as_theta(theta, self.dimension)
         natural = self.constrain(theta)
@@ -1264,7 +1326,12 @@ class Parameterization:
         if coordinate.has_analytic_moments:
             mean = prior.mean()
             spread = prior.variance() if coordinate.is_scalar else prior.covariance()
-        elif key is not None and n_moment_samples > 1:
+        elif key is not None:
+            if n_moment_samples < 2:
+                raise ValueError(
+                    "n_moment_samples must be at least 2 for Monte Carlo moment matching; "
+                    f"got {n_moment_samples}."
+                )
             draws = prior.sample((n_moment_samples,), seed=key)
             mean = draws.mean(axis=0)
             if coordinate.is_scalar:
@@ -1278,6 +1345,9 @@ class Parameterization:
                 "moments. Build it with a prior helper (log_normal, logit_normal, ...) or "
                 "pass key= and n_moment_samples= to moment match by Monte Carlo."
             )
+        mean = jnp.asarray(mean, dtype=jnp.float64)
+        spread = jnp.asarray(spread, dtype=jnp.float64)
+        check_prior_spread_is_positive(coordinate, spread)
         if coordinate.is_scalar:
             return jnp.ravel(mean), PSDDiagonal(jnp.ravel(spread))
         blocks = tuple(DensePSD.from_matrix(spread[g]) for g in range(spread.shape[0]))
@@ -1320,17 +1390,21 @@ def pysipnet_overrides(
     site:
         The site id.
     member:
-        The ensemble member's position; required when the table has a
-        ``member`` dim.
+        The ensemble member's position, ``0`` to ``J - 1``; required when the
+        table has a ``member`` dim and refused when it does not.
 
     Examples
     --------
-    >>> model(**pysipnet_overrides(table, member=3, site=27))
+    With ``model`` a ``SIPNETModel`` and ``table`` an override table::
+
+        model(**pysipnet_overrides(table, member=3, site=27))
     """
     selected = table.sel({SITE: site})
     if "member" in selected.dims:
         if member is None:
             raise ValueError("the table has a member dim; pass member=.")
+        if member < 0:
+            raise ValueError(f"member is a position from 0; got {member}.")
         selected = selected.isel(member=member)
     elif member is not None:
         raise ValueError("the table has no member dim; do not pass member=.")
@@ -1357,8 +1431,8 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
     pft:
         One PFT label per site.
 
-    Coordinates
-    -----------
+    The coordinates::
+
     ``photosynthesis``           shared, size 2, :data:`PHOTOSYNTHESIS`
     ``allocation``               by ``"pft"``, size 3, :data:`ALLOCATION`
     ``base_soil_respiration``    by ``"pft"``, log-normal rate
@@ -1369,8 +1443,8 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
     ``leaf_carbon_fraction`` (by ``"pft"``), ``vapor_pressure_deficit_exponent``
     (shared).
     """
-    sites = tuple(int(s) for s in sites)
-    pft = tuple(pft)
+    sites = _as_site_ids(sites)
+    pft = _as_labels("pft", pft)
     labels = tuple(sorted(set(pft)))
     fixture = "Example fixture, not a reviewed prior. "
 
@@ -1396,9 +1470,11 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
         provenance=fixture
         + "Capacity median from the temperate-deciduous BETY medians aMax 58, "
         "baseFolRespFrac 0.17 (readiness report 5.4) with aMaxFrac 0.76 and cFracLeaf "
-        "0.466 (5.2); geometric sd 1.75 approximates the aMax 2.5-97.5% ratio 83/28. "
-        "Respiration share interval from the baseFolRespFrac 2.5-97.5% 0.10-0.39 at "
-        "fixed aMaxFrac. Deciduous values applied to every PFT here.",
+        "0.466 (5.2). Geometric sd 1.75 is about twice, on the log scale, the 1.32 "
+        "the BETY aMax 2.5-97.5% ratio 83/28 implies: a meta-analysis prior is to be "
+        "widened (5.3), by a factor not yet decided. Respiration share interval from "
+        "the baseFolRespFrac 2.5-97.5% 0.10-0.39 at fixed aMaxFrac. Deciduous values "
+        "applied to every PFT here.",
     )
     allocation = Coordinate(
         name="allocation",
@@ -1484,13 +1560,6 @@ _FLAT_SPECS: dict[str, ParameterSpec] = {
 }
 _SPEC_ORDER: dict[str, int] = {name: i for i, name in enumerate(_FLAT_SPECS)}
 
-#: Corners of the unconstrained cube at which :func:`check_map_image_is_in_domain`
-#: evaluates a coordinate. +-12 spans nine orders of magnitude on a log scale
-#: and reaches 1 - 6e-6 on a logit scale while staying inside float64; the
-#: check is about support, not plausibility.
-DOMAIN_CHECK_CORNERS = (-12.0, 0.0, 12.0)
-
-
 def _as_theta(theta: Any, dimension: int) -> Array:
     theta = jnp.asarray(theta, dtype=jnp.float64)
     if theta.ndim not in (1, 2) or theta.shape[-1] != dimension:
@@ -1522,7 +1591,7 @@ def _normal_from_interval(lower: Array, upper: Array, mass: float) -> tuple[Arra
         raise ValueError(f"mass must lie in (0, 1); got {mass}.")
     if not bool(jnp.all(upper > lower)):
         raise ValueError("upper must exceed lower.")
-    z = tfd.Normal(0.0, 1.0).quantile(jnp.float64(0.5 + mass / 2))
+    z = tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)).quantile(jnp.float64(0.5 + mass / 2))
     return (lower + upper) / 2.0, (upper - lower) / (2.0 * z)
 
 
@@ -1546,6 +1615,33 @@ def _positive_std(values: Array, what: str) -> Array:
     return std
 
 
+def _as_site_ids(sites: Any) -> tuple[int, ...]:
+    """Site ids as Python ints; refuses anything that is not an integer."""
+    out = []
+    for site in sites:
+        array = np.asarray(site)
+        integral = array.ndim == 0 and (
+            np.issubdtype(array.dtype, np.integer)
+            or (np.issubdtype(array.dtype, np.floating) and float(array).is_integer())
+        )
+        if not integral:
+            raise TypeError(f"site ids must be integers; got {site!r}.")
+        out.append(int(array))
+    return tuple(out)
+
+
+def _as_labels(name: str, labels: Any) -> tuple[Any, ...]:
+    """A labeling as a tuple of one label per site; refuses a string or a mapping."""
+    if isinstance(labels, (str, bytes, Mapping)):
+        raise TypeError(
+            f"labeling {name!r} must be a sequence of one label per site, not "
+            f"{type(labels).__name__}."
+        )
+    if hasattr(labels, "tolist"):  # numpy, jax, pandas
+        labels = labels.tolist()
+    return tuple(labels)
+
+
 def _position(labels: Sequence[Any], label: Any, what: str) -> int:
     try:
         return list(labels).index(label)
@@ -1556,10 +1652,9 @@ def _position(labels: Sequence[Any], label: Any, what: str) -> int:
 def _unconstrained_labels(bijector: tfb.Bijector, components: tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(bijector, tfb.SoftmaxCentered):
         return tuple(f"alr({c}/{components[-1]})" for c in components[:-1])
-    if isinstance(bijector, tfb.Blockwise):
+    if isinstance(bijector, tfb.Blockwise) and len(bijector.bijectors) == len(components):
         return tuple(
-            _scalar_unconstrained_label(b, c)
-            for b, c in zip(bijector.bijectors, components, strict=True)
+            _scalar_unconstrained_label(b, c) for b, c in zip(bijector.bijectors, components)
         )
     if len(components) == 1:
         return (_scalar_unconstrained_label(bijector, components[0]),)
@@ -1570,7 +1665,10 @@ def _scalar_unconstrained_label(bijector: tfb.Bijector, component: str) -> str:
     if isinstance(bijector, tfb.Exp):
         return f"log({component})"
     if isinstance(bijector, tfb.Sigmoid):
-        return f"logit({component})"
+        if bijector.low is None:
+            return f"logit({component})"
+        low, high = float(bijector.low), float(bijector.high)
+        return f"logit(({component} - {low:g})/({high:g} - {low:g}))"
     if isinstance(bijector, tfb.Identity):
         return component
     return f"{type(bijector).__name__}^-1({component})"
@@ -1642,9 +1740,59 @@ def check_sipnet_parameters_exist(names: Sequence[str], context: str) -> None:
     unknown = [n for n in names if n not in _FLAT_SPECS]
     if unknown:
         raise ValueError(
-            f"{context}: {unknown} are not pySIPNET parameter names. Use the flat field "
+            f"{context}: {unknown} are not pySIPNET parameter names. Use the flat parameter "
             "names of pysipnet.parameters.model.PARAMETER_SPECS, e.g. "
             "'max_photosynthesis_rate', not 'aMax'."
+        )
+
+
+def check_prior_is_a_distribution(coordinate: Coordinate) -> None:
+    if not isinstance(coordinate.prior, tfd.Distribution):
+        raise TypeError(
+            f"coordinate {coordinate.name!r}: prior must be a TFP distribution "
+            f"(tensorflow_probability.substrates.jax.distributions); got "
+            f"{type(coordinate.prior).__name__}."
+        )
+
+
+def check_coord_to_param_is_a_map(coordinate: Coordinate) -> None:
+    if not isinstance(coordinate.coord_to_param, CoordToParamMap):
+        raise TypeError(
+            f"coordinate {coordinate.name!r}: coord_to_param must be a CoordToParamMap "
+            "(with writes, reads, components and __call__) or a SIPNET parameter name; "
+            f"got {type(coordinate.coord_to_param).__name__}."
+        )
+
+
+def check_prior_is_float64(coordinate: Coordinate) -> None:
+    dtype = coordinate.prior.dtype
+    try:
+        is_float64 = jnp.dtype(dtype) == jnp.dtype(jnp.float64)
+    except TypeError:  # a structured dtype, as a joint distribution has
+        is_float64 = False
+    if not is_float64:
+        raise ValueError(
+            f"coordinate {coordinate.name!r}: prior dtype is {dtype}, not float64. TFP "
+            "builds float32 from Python floats and lists; pass jnp.float64 values or use "
+            "the prior helpers."
+        )
+
+
+def check_prior_event_rank(coordinate: Coordinate) -> None:
+    rank = len(tuple(coordinate.prior.event_shape))
+    if rank > 1:
+        raise ValueError(
+            f"coordinate {coordinate.name!r}: prior event shape {coordinate.prior.event_shape} "
+            "has rank above 1; a coordinate is a scalar or a vector."
+        )
+
+
+def check_prior_has_a_bijector(coordinate: Coordinate) -> None:
+    if coordinate.bijector is None:
+        raise ValueError(
+            f"coordinate {coordinate.name!r}: {type(coordinate.prior).__name__} has no "
+            "default event-space bijector. Give the prior as a TransformedDistribution "
+            "with an explicit bijector, e.g. TransformedDistribution(prior, Exp())."
         )
 
 
@@ -1728,6 +1876,13 @@ def check_labelings_cover_sites(parameterization: Parameterization) -> None:
                 f"labeling {name!r} has {len(labels)} labels for {len(parameterization.sites)} "
                 "sites; give one label per site, in site order."
             )
+    taken = {c.name for c in parameterization.coordinates} | set(_FLAT_SPECS)
+    colliding = sorted(taken & set(parameterization.labelings))
+    if colliding:
+        raise ValueError(
+            f"labeling names {colliding} collide with a coordinate or SIPNET parameter "
+            "name; both become variables of the tables this module builds."
+        )
     used = {c.varies_by for c in parameterization.coordinates} | {
         f.varies_by for f in parameterization.fixed
     }
@@ -1778,10 +1933,26 @@ def check_prior_batch_matches_groups(coordinate: Coordinate, n_groups: int) -> N
         )
 
 
+def check_prior_spread_is_positive(coordinate: Coordinate, spread: Array) -> None:
+    diagonal = spread if coordinate.is_scalar else jnp.diagonal(spread, axis1=-2, axis2=-1)
+    if not bool(jnp.all(jnp.isfinite(spread)) and jnp.all(diagonal > 0)):
+        raise ValueError(
+            f"coordinate {coordinate.name!r}: its unconstrained prior has a zero, negative "
+            "or non-finite variance, which pyEKI cannot whiten. Give every element a "
+            "positive spread (geometric_sd above 1, logit_sd above 0)."
+        )
+
+
 def check_map_image_is_in_domain(parameterization: Parameterization, coordinate: Coordinate) -> None:
     """Evaluate ``M_c(T_c(theta))`` at the corners of the unconstrained cube
     (:data:`DOMAIN_CHECK_CORNERS`) for every group, and test each SIPNET
-    parameter written against its ``ParameterDomain``."""
+    parameter written against its ``ParameterDomain``.
+
+    Exhaustive for the shipped maps and bijectors, whose outputs are monotone
+    in each unconstrained coordinate, so an excursion shows at a corner. A
+    hand-written map that is not monotone can leave a domain between the
+    corners and is not caught here.
+    """
     n_groups = parameterization.n_groups(coordinate.varies_by)
     corners = jnp.asarray(
         list(itertools.product(DOMAIN_CHECK_CORNERS, repeat=coordinate.size)), dtype=jnp.float64
