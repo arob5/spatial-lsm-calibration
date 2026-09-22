@@ -875,6 +875,42 @@ def test_for_site_resolves_each_coordinate_through_the_labels(example, theta):
         example.for_site(t, 99)
 
 
+def test_unset_parameters_and_require_complete(example):
+    from sipnet_calibration.parameterization import REQUIRED_SIPNET_PARAMETERS
+
+    # Required means "pySIPNET has no default": flag-dependent parameters and
+    # the zero-defaulted ones are not required.
+    assert "snow_melt_rate" not in REQUIRED_SIPNET_PARAMETERS
+    assert "litter_carbon" not in REQUIRED_SIPNET_PARAMETERS
+    assert "max_photosynthesis_rate" in REQUIRED_SIPNET_PARAMETERS
+    assert set(example.sipnet_parameters) == set(example.to_pysipnet_parameters(example.sample(jax.random.key(0), 1)).data_vars)
+    assert set(example.unset_sipnet_parameters) == set(REQUIRED_SIPNET_PARAMETERS) - set(example.sipnet_parameters)
+    assert "leaf_carbon_per_area" in example.unset_sipnet_parameters
+    assert not set(example.unset_sipnet_parameters) & set(example.sipnet_parameters)
+    with pytest.raises(ValueError, match="neither calibrated nor fixed: \\['total_wood_carbon'"):
+        Parameterization(
+            coordinates=example.coordinates, fixed=example.fixed, sites=example.sites,
+            labelings=example.labelings, require_complete=True,
+        )
+    # A vector that fixes everything it does not calibrate is complete.
+    filled = tuple(
+        FixedParameter(name=name, value=_in_domain_value(name), provenance="test")
+        for name in example.unset_sipnet_parameters
+    )
+    complete = Parameterization(
+        coordinates=example.coordinates, fixed=example.fixed + filled, sites=example.sites,
+        labelings=example.labelings, require_complete=True,
+    )
+    assert complete.unset_sipnet_parameters == ()
+
+
+def _in_domain_value(name: str) -> float:
+    return {
+        ParameterDomain.REAL: 1.0, ParameterDomain.POSITIVE: 1.0, ParameterDomain.NON_NEGATIVE: 1.0,
+        ParameterDomain.UNIT_INTERVAL: 0.5, ParameterDomain.OPEN_UNIT_INTERVAL: 0.5,
+    }[FLAT_SPECS[name].domain]
+
+
 def test_sites_with_and_coordinate_lookup(example):
     assert example.sites_with("pft", "deciduous") == (1, 4711)
     assert example.sites_with("pft", "grassland") == ()

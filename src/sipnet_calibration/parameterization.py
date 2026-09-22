@@ -26,8 +26,7 @@ The dependency runs one way::
       -> this module
       -> experiments/<task>/config.py           (names a Parameterization)
 
-Nothing here reads a data product. The design is
-``logs/2026-09-21_Parameterization Layer Design.md`` in the vault.
+Nothing here reads a data product.
 
 Vocabulary
 ----------
@@ -184,7 +183,7 @@ import xarray as xr  # noqa: E402
 from pyeki.gauss import Gaussian  # noqa: E402
 from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp  # noqa: E402
 from pysipnet.parameters.base import ParameterDomain, ParameterSpec  # noqa: E402
-from pysipnet.parameters.model import PARAMETER_SPECS  # noqa: E402
+from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters  # noqa: E402
 from tensorflow_probability.substrates import jax as tfp  # noqa: E402
 
 tfd = tfp.distributions
@@ -227,7 +226,7 @@ def log_normal_from_interval(*, lower: Any, upper: Any, mass: float = 0.95) -> t
 
     Two quantiles determine the two parameters exactly: the median is the
     geometric midpoint and the log-scale sd is set so that the interval
-    carries *mass*. This is the constructor for a 2.5 / 97.5% table.
+    carries *mass*.
 
     Examples
     --------
@@ -476,9 +475,8 @@ class PhotosynthesisMap:
     """The identifiable photosynthesis pair, replacing four parameters by two.
 
     ``aMax``, ``aMaxFrac``, ``baseFolRespFrac`` and ``cFracLeaf`` enter SIPNET
-    only through two quantities (``sipnet.c:614, 617, 633``; "SIPNET
-    Parameters" section 3.1 in the vault), leaving a two-dimensional exactly
-    flat direction. With ``aMaxFrac`` and ``cFracLeaf`` fixed, the coordinate
+    only through two quantities (``sipnet.c:614, 617, 633``), leaving a
+    two-dimensional exactly flat direction. With ``aMaxFrac`` and ``cFracLeaf`` fixed, the coordinate
     is
 
     .. math::
@@ -508,9 +506,8 @@ class PhotosynthesisMap:
     saturates to exactly 1 beyond ``logit rho`` of about 37, dozens of prior
     standard deviations out. ``P`` reads as canopy
     assimilation capacity per unit leaf carbon and ``rho`` as the share of it
-    spent on basal foliar respiration. The vault's parameters note writes the
-    pair as ``(P, phi)``; ``phi`` is reserved for hyperparameters in this
-    project, hence ``rho``.
+    spent on basal foliar respiration. ``phi`` is reserved for
+    hyperparameters in this project, hence ``rho`` for the share.
     """
 
     writes: tuple[str, ...] = ("max_photosynthesis_rate", "foliar_respiration_fraction")
@@ -542,11 +539,7 @@ recomputes exactly ``1 - (leaf + wood + fine root)`` at
 (``sipnet.c:1117-1122``; pySIPNET's ``SIPNETParameters`` validator enforces
 the same ``sum < 1`` first). Keeping coarse root in the coordinate is what
 puts every draw strictly inside the simplex, so no ``theta`` the prior can
-produce reaches that exit -- three independent fractions cannot promise
-that, and for EKI a dead member is a missing column, not a low-likelihood
-one. The guarantee is exact arithmetic's: in float64 the softmax saturates
-beyond ``|theta|`` of about 37, where the three written fractions round to a
-sum of exactly 1; that is dozens of prior standard deviations out.
+produce reaches that exit.
 """
 
 PHOTOSYNTHESIS = PhotosynthesisMap()
@@ -568,6 +561,17 @@ SITE = "site"
 RESERVED_LABELING_NAMES = frozenset({SHARED, SITE, "member", "element"})
 """Names a labeling cannot take, because they are dimension names already. A
 labeling may not be named like a coordinate or a SIPNET parameter either."""
+
+REQUIRED_SIPNET_PARAMETERS: tuple[str, ...] = tuple(
+    name
+    for group in SIPNETParameters.model_fields.values()
+    for name, field_info in group.annotation.model_fields.items()
+    if field_info.is_required()
+)
+"""The SIPNET parameters pySIPNET requires a value for, in declaration order:
+every parameter without a default. The flag-dependent ones (``snow_melt_rate``,
+``leaf_water_pool_depth``, the litter pair, the leaf-on thresholds) and the
+three that default to zero are not required and are not listed."""
 
 DOMAIN_CHECK_CORNERS = (-12.0, 0.0, 12.0)
 """Corners of the unconstrained cube at which
@@ -624,7 +628,7 @@ class Coordinate:
     ...     prior=log_normal_from_interval(lower=0.004, upper=0.020),
     ...     coord_to_param="base_soil_respiration_rate",
     ...     varies_by="pft",
-    ...     provenance="BETY som_respiration_rate 2.5-97.5% (readiness report 5.4).",
+    ...     provenance="BETY som_respiration_rate posterior, 2.5-97.5% quantiles.",
     ... )
     >>> soil.size, soil.element_labels
     (1, ('log(base_soil_respiration_rate)',))
@@ -738,7 +742,7 @@ class FixedParameter:
     --------
     >>> FixedParameter(
     ...     name="vapor_pressure_deficit_exponent", value=2.0,
-    ...     provenance="Braswell et al.; readiness report 5.2.",
+    ...     provenance="Braswell et al. (2005) fix the exponent at 2.",
     ... ).value
     2.0
     """
@@ -901,9 +905,9 @@ class Layout:
 class Parameterization:
     """A calibration vector: coordinates, fixed parameters, sites, labelings.
 
-    The one object an experiment's ``config.py`` names. Everything about the
-    vector's order is behind :attr:`layout`; everything about its prior is in
-    the coordinates.
+    Fully encodes the structure of the vector of calibration parameters: which
+    coordinates it holds, in what order (:attr:`layout`), their prior, and
+    the SIPNET parameters held fixed beside them.
 
     Parameters
     ----------
@@ -917,12 +921,22 @@ class Parameterization:
     labelings:
         ``{name: one label per site}`` for every ``varies_by`` used other
         than ``None`` and ``"site"``.
+    require_complete:
+        If true, refuse a vector that leaves any of
+        :data:`REQUIRED_SIPNET_PARAMETERS` neither calibrated nor fixed. Off
+        by default, so a partial vector (this module's example) can run on
+        top of a base parameter set.
 
     Attributes
     ----------
     dimension : int
         ``D``.
     layout : Layout
+    unset_sipnet_parameters : tuple[str, ...]
+        The required SIPNET parameters this vector neither calibrates nor
+        fixes. At a run they take the values of the ``SIPNETModel``'s base
+        parameter set, which is therefore part of the calibration's
+        specification whenever this is non-empty.
 
     Raises
     ------
@@ -930,8 +944,9 @@ class Parameterization:
         If a coordinate name repeats, two writers set one SIPNET parameter, a
         map reads a parameter nobody fixed, a labeling is missing or the wrong
         length, a prior's batch shape disagrees with its group count, a fixed
-        value misses a group, or a coordinate's transform can leave a SIPNET
-        parameter's domain.
+        value misses a group, a coordinate's transform can leave a SIPNET
+        parameter's domain, or *require_complete* is set and some required
+        parameter is unset.
 
     Examples
     --------
@@ -948,6 +963,7 @@ class Parameterization:
     fixed: tuple[FixedParameter, ...] = ()
     sites: tuple[int, ...]
     labelings: Mapping[str, Sequence[Any]] = field(default_factory=dict)
+    require_complete: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "coordinates", tuple(self.coordinates))
@@ -967,8 +983,25 @@ class Parameterization:
             check_fixed_value_covers_groups(parameter, self.group_labels(parameter.varies_by))
         for coordinate in self.coordinates:
             check_map_image_is_in_domain(self, coordinate)
+        if self.require_complete:
+            check_every_required_parameter_is_set(self)
 
     # -- structure -----------------------------------------------------------
+
+    @property
+    def sipnet_parameters(self) -> tuple[str, ...]:
+        """Every SIPNET parameter this vector sets, calibrated and fixed, in
+        pySIPNET's declaration order."""
+        written = {n for c in self.coordinates for n in c.coord_to_param.writes}
+        written |= {f.name for f in self.fixed}
+        return tuple(n for n in _FLAT_SPECS if n in written)
+
+    @property
+    def unset_sipnet_parameters(self) -> tuple[str, ...]:
+        """The :data:`REQUIRED_SIPNET_PARAMETERS` this vector leaves to the
+        base parameter set."""
+        written = set(self.sipnet_parameters)
+        return tuple(n for n in REQUIRED_SIPNET_PARAMETERS if n not in written)
 
     @property
     def dimension(self) -> int:
@@ -1113,7 +1146,7 @@ class Parameterization:
             blocks.append(block)
         return Gaussian(mean=jnp.concatenate(means), cov=PSDBlockDiag(tuple(blocks)))
 
-    # -- labeled views, for people and run loops -----------------------------
+    # -- labeled views ---------------------------------------------------------
 
     def coordinates_table(
         self, theta: Array, *, scale: str = "unconstrained"
@@ -1185,9 +1218,11 @@ class Parameterization:
         Returns
         -------
         xarray.Dataset
-            One ``float64`` variable per SIPNET parameter, calibrated and
-            fixed alike, keyed on the flat pySIPNET name. Shared and per-label
-            values are broadcast and gathered onto the site axis. Each
+            One ``float64`` variable per SIPNET parameter this vector sets
+            (:attr:`sipnet_parameters`), calibrated and fixed alike, keyed on
+            the flat pySIPNET name; :attr:`unset_sipnet_parameters` are absent
+            and take the base parameter set's values at the run. Shared and
+            per-label values are broadcast and gathered onto the site axis. Each
             variable carries ``units``, ``sipnet_name``, ``source`` and, where
             pySIPNET declares one, ``constituent``; the ``site`` coordinate
             carries every labeling.
@@ -1383,6 +1418,9 @@ def pysipnet_overrides(
 ) -> dict[str, float]:
     """One run's keyword arguments for ``SIPNETModel`` from an override table.
 
+    Only the parameters the table holds are returned; the model's base
+    parameter set supplies the rest.
+
     Parameters
     ----------
     table:
@@ -1420,9 +1458,10 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
 
     This module's worked example and test fixture, so that tests, later PRs
     and an experiment can import one reference registry. Every center traces
-    to a table in the 2026-09-21 readiness report (sections 5.2 and 5.4) and
+    to the BETY reanalysis trait posteriors or another named source, and
     every provenance string says what the value is not. Nothing comes from
-    ``template.param``.
+    ``template.param``. The vector is partial: :attr:`unset_sipnet_parameters`
+    lists what a run takes from its base parameter set.
 
     Parameters
     ----------
@@ -1448,9 +1487,9 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
     labels = tuple(sorted(set(pft)))
     fixture = "Example fixture, not a reviewed prior. "
 
-    # Temperate-deciduous row of readiness report table 5.4 (BETY medians and
-    # 2.5-97.5% quantiles), with aMaxFrac 0.76 and cFracLeaf 0.466 from its
-    # table 5.2: P = aMax (aMaxFrac + baseFolRespFrac) / cFracLeaf and
+    # Temperate-deciduous BETY medians and 2.5-97.5% quantiles, with aMaxFrac
+    # 0.76 and cFracLeaf 0.466 held fixed:
+    # P = aMax (aMaxFrac + baseFolRespFrac) / cFracLeaf and
     # rho = baseFolRespFrac / (aMaxFrac + baseFolRespFrac).
     a_max_frac, c_frac_leaf = 0.76, 0.466
     a_max, fol_resp = 58.0, 0.17
@@ -1468,12 +1507,12 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
         ),
         coord_to_param=PHOTOSYNTHESIS,
         provenance=fixture
-        + "Capacity median from the temperate-deciduous BETY medians aMax 58, "
-        "baseFolRespFrac 0.17 (readiness report 5.4) with aMaxFrac 0.76 and cFracLeaf "
-        "0.466 (5.2). Geometric sd 1.75 is about twice, on the log scale, the 1.32 "
-        "the BETY aMax 2.5-97.5% ratio 83/28 implies: a meta-analysis prior is to be "
-        "widened (5.3), by a factor not yet decided. Respiration share interval from "
-        "the baseFolRespFrac 2.5-97.5% 0.10-0.39 at fixed aMaxFrac. Deciduous values "
+        + "Capacity median from the temperate-deciduous BETY posterior medians aMax 58 "
+        "nmol g-1 s-1 and baseFolRespFrac 0.17, with aMaxFrac 0.76 and cFracLeaf 0.466 "
+        "(BETY leafC). Geometric sd 1.75 is about twice, on the log scale, the 1.32 the "
+        "BETY aMax 2.5-97.5% range 28-83 implies: a meta-analysis prior is to be "
+        "widened, by a factor not yet decided. Respiration share interval from the "
+        "baseFolRespFrac 2.5-97.5% range 0.10-0.39 at fixed aMaxFrac. Deciduous values "
         "applied to every PFT here.",
     )
     allocation = Coordinate(
@@ -1482,8 +1521,8 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
         coord_to_param=ALLOCATION,
         varies_by="pft",
         provenance=fixture
-        + "Center is the temperate-deciduous BETY allocation leaf 0.18, wood 0.40, fine "
-        "root 0.07 (readiness report 5.4), coarse root the 0.35 remainder; logit sd 0.5 "
+        + "Center is the temperate-deciduous BETY allocation posterior medians, leaf "
+        "0.18, wood 0.40, fine root 0.07, coarse root the 0.35 remainder; logit sd 0.5 "
         "is a placeholder. One copy per PFT, all with this prior.",
     )
     base_soil_respiration = Coordinate(
@@ -1492,8 +1531,8 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
         coord_to_param="base_soil_respiration_rate",
         varies_by="pft",
         provenance=fixture
-        + "BETY som_respiration_rate 2.5-97.5% 0.004-0.020 yr-1 (readiness report 5.4), "
-        "one BETY prior for every PFT; the same interval used for every PFT copy here.",
+        + "BETY som_respiration_rate posterior, 2.5-97.5% quantiles 0.004-0.020 yr-1; "
+        "BETY has one prior for every PFT, so every PFT copy uses this interval.",
     )
     leaf_fall_fraction = Coordinate(
         name="leaf_fall_fraction",
@@ -1510,33 +1549,34 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
         varies_by="site",
         provenance=fixture
         + "One prior per site, identical here: median 30 kg C m-2 (30000 g m-2 in "
-        "pySIPNET's units) is the center of the ISCN 12-75 kg C m-2 range at the test "
-        "sites (readiness report 5.1); geometric sd 2 spans roughly 7.7-117 at 95%. The "
-        "real per-site priors are fitted to the IC ensemble in a later PR.",
+        "pySIPNET's units) is the center of the 12-75 kg C m-2 that the ISCN-derived "
+        "initial soil carbon spans at the first test sites; geometric sd 2 spans "
+        "roughly 7.7-117 at 95%. The real per-site priors are fitted to the initial "
+        "condition ensemble in a later PR.",
     )
     fixed = (
         FixedParameter(
             name="daily_mean_photosynthesis_fraction",
             value=a_max_frac,
             provenance=fixture
-            + "0.76, within the BETY per-PFT median range 0.75-0.86 of readiness report "
-            "5.2. Fixed because it is one of the two exactly degenerate photosynthesis "
-            "directions (SIPNET Parameters 3.1).",
+            + "0.76, within the BETY per-PFT posterior median range 0.75-0.86. Fixed "
+            "because aMaxFrac spans one of the two exactly degenerate photosynthesis "
+            "directions (sipnet.c:614, 617, 633).",
         ),
         FixedParameter(
             name="leaf_carbon_fraction",
             value={label: c_frac_leaf for label in labels},
             varies_by="pft",
             provenance=fixture
-            + "BETY leafC for temperate deciduous, 0.466 (readiness report 5.2), applied "
-            "to every PFT label here; the real registry gives boreal conifer 0.506 and "
-            "grassland 0.483. Fixed for the same reason as aMaxFrac.",
+            + "BETY leafC posterior median for temperate deciduous, 0.466, applied to "
+            "every PFT label here; BETY gives boreal conifer 0.506 and grassland 0.483. "
+            "Fixed for the same reason as aMaxFrac.",
         ),
         FixedParameter(
             name="vapor_pressure_deficit_exponent",
             value=2.0,
-            provenance="Braswell et al. fix the exponent at 2; BETY draws of 1.0-2.9 would "
-            "add a near-degeneracy with dVpdSlope for nothing (readiness report 5.2).",
+            provenance="Braswell et al. (2005) fix the exponent at 2; the BETY draws of "
+            "1.0-2.9 would add a near-degeneracy with dVpdSlope for nothing.",
         ),
     )
     return Parameterization(
@@ -1940,6 +1980,16 @@ def check_prior_spread_is_positive(coordinate: Coordinate, spread: Array) -> Non
             f"coordinate {coordinate.name!r}: its unconstrained prior has a zero, negative "
             "or non-finite variance, which pyEKI cannot whiten. Give every element a "
             "positive spread (geometric_sd above 1, logit_sd above 0)."
+        )
+
+
+def check_every_required_parameter_is_set(parameterization: Parameterization) -> None:
+    unset = parameterization.unset_sipnet_parameters
+    if unset:
+        raise ValueError(
+            f"require_complete: {len(unset)} required SIPNET parameters are neither "
+            f"calibrated nor fixed: {list(unset)}. Add a Coordinate or a FixedParameter for "
+            "each, or build with require_complete=False to take them from the base set."
         )
 
 

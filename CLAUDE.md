@@ -149,6 +149,13 @@ Raw variable names are not ours to choose; processed ones are.
   `data/README.md` is the exception, since recording measured characteristics of
   the raw data is its job — but even there, anything the code relies on is
   asserted in code as well, not just written down.
+- **Code does not cite the vault.** Docstrings, comments and provenance
+  strings never point at the Obsidian vault, a design log or the readiness
+  report: those live outside the repository, so a reader of the code cannot
+  follow the reference, and they move. A citation in code names a primary
+  source -- a paper, a line of the SIPNET source, a data producer or product
+  (BETY, ISCN), a pySIPNET module. Design reasoning goes the other way: the
+  vault cites the code.
 - **Keep low-level design reasoning out of docstrings.** A docstring says what
   something is, what it takes and what it returns. Why a design was chosen over
   an alternative, what bug it avoids, what would break if it were done the other
