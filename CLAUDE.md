@@ -351,7 +351,8 @@ src/sipnet_calibration/
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
                           # read_raw(), build_constraint(), load_constraint(),
                           # constraint_fields() -> canonical per-product view
-  conventions.py          # CF_CONVENTIONS, shared by every processed product
+  conventions.py          # CF_CONVENTIONS and data_root(): the settings every
+                          # product has to agree on
   initial_conditions/     # one module per artifact; __init__ re-exports them all
     __init__.py           # curated exports + the product's data model
     names.py              # SITE/MEMBER, the two file names, the path helpers

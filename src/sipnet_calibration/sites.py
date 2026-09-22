@@ -168,7 +168,6 @@ Convert between coordinates and grid indices::
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,6 +175,8 @@ from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
+
+from sipnet_calibration import conventions
 
 __all__ = [
     "DATA_ROOT_ENV_VAR",
@@ -420,7 +421,9 @@ SITE_COLUMN_DTYPES = MappingProxyType(
 
 #: Environment variable naming the ``data/`` directory, for a checkout whose
 #: data lives elsewhere. Unset, the repository's own ``data/`` is used.
-DATA_ROOT_ENV_VAR = "SIPNET_CALIBRATION_DATA"
+#: Re-exported from :mod:`sipnet_calibration.conventions`, where it lives so
+#: that every product's paths move together.
+DATA_ROOT_ENV_VAR = conventions.DATA_ROOT_ENV_VAR
 
 
 def default_sites_path() -> Path:
@@ -431,8 +434,7 @@ def default_sites_path() -> Path:
     their paths in ``config.py`` rather than relying on this; it exists so that
     tests, notebooks and the ingest script agree on one default.
     """
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    data_root = Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    data_root = conventions.data_root()
     return data_root / "processed" / "sites" / "sites.csv"
 
 

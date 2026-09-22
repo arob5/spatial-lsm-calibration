@@ -174,7 +174,6 @@ Usage
 
 from __future__ import annotations
 
-import os
 import re
 import warnings
 from collections.abc import Iterable, Sequence
@@ -188,6 +187,7 @@ import pandas as pd
 import xarray as xr
 from pysipnet.units import validate_units
 
+from sipnet_calibration import conventions
 from sipnet_calibration.conventions import CF_CONVENTIONS
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
 
@@ -877,8 +877,7 @@ _LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "de
 
 
 def _data_root() -> Path:
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    return conventions.data_root()
 
 
 def _raw_dtypes(spec: ConstraintSpec) -> dict[str, Any]:

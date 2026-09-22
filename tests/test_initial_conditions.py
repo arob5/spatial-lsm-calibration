@@ -483,6 +483,33 @@ def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
     assert module.default_source_root() == root / "raw" / "initial_conditions" / "files"
 
 
+def test_every_product_reads_the_same_data_root(monkeypatch, tmp_path):
+    """The root lives in sipnet_calibration.conventions so that one setting
+    moves all of them. Four modules used to spell it out separately, and the
+    spelling broke here the moment a module moved a directory deeper."""
+    from sipnet_calibration import constraints, conventions, drivers, sites
+
+    monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(tmp_path))
+    assert conventions.data_root() == tmp_path
+    assert module.default_raw_dir() == tmp_path / "raw" / "initial_conditions"
+    assert constraints.default_raw_dir() == tmp_path / "raw" / "constraints"
+    assert sites.default_sites_path().is_relative_to(tmp_path)
+    assert drivers.default_drivers_root().is_relative_to(tmp_path)
+
+    monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
+    root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
+    for path in (
+        module.default_raw_dir(),
+        constraints.default_raw_dir(),
+        sites.default_sites_path(),
+        drivers.default_drivers_root(),
+    ):
+        assert path.is_relative_to(root), path
+
+    # sites still exports the name it used to own.
+    assert sites.DATA_ROOT_ENV_VAR == conventions.DATA_ROOT_ENV_VAR
+
+
 def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):
     monkeypatch.setenv(sites_module.DATA_ROOT_ENV_VAR, str(tmp_path))
     assert module.default_product_path() == tmp_path / "processed" / module.PRODUCT_FILE
@@ -901,11 +928,15 @@ def test_conversion_zeroes_the_lai_of_a_deciduous_pft():
 @pytest.mark.parametrize(
     ("fine", "coarse", "message"),
     [
-        (0.6, 0.4, "must be below 1"),
-        (0.6, 0.5, "must be below 1"),
-        (1.0, 0.0, "must be below 1"),
-        (0.0, 1.0, "must be below 1"),
-        (0.3, 0.8, "must be below 1"),
+        (0.6, 0.4, "must be below 0.99"),
+        (0.6, 0.5, "must be below 0.99"),
+        (1.0, 0.0, "must be below 0.99"),
+        (0.0, 1.0, "must be below 0.99"),
+        (0.3, 0.8, "must be below 0.99"),
+        # Finite but absurd: the remainder is 1e-16, so the aboveground pool is
+        # multiplied by 1e16. Refusing only a sum of 1 or more let this through.
+        (0.5, 0.5 - 1e-16, "must be below 0.99"),
+        (0.5, 0.4949, "must be below 0.99"),
         (-0.1, 0.2, "fine_root_fraction is outside"),
         (0.2, 1.5, "coarse_root_fraction is outside"),
         (np.nan, 0.2, "fine_root_fraction is outside"),
@@ -940,12 +971,36 @@ def test_conversion_refuses_state_that_is_not_physical(name, bad):
         to_pysipnet_initial_conditions(**{**VALID_STATE, name: bad}, **VALID_PARAMETERS)
 
 
-@pytest.mark.parametrize("bad", [0.0, -32.0, np.nan])
-def test_conversion_refuses_a_leaf_carbon_per_area_that_is_not_positive(bad):
-    with pytest.raises(ValueError, match="leaf_carbon_per_area is not positive"):
+@pytest.mark.parametrize("bad", [0.0, -32.0, np.nan, 1e-9, 1e-7])
+def test_conversion_refuses_a_leaf_carbon_per_area_below_sipnets_floor(bad):
+    """SIPNET's setupModel raises leafCSpWt to TINY = 1e-6 without saying so,
+    so a smaller value would be converted with one number and run with
+    another: laiInit x leafCSpWt recovers a different initial leaf carbon."""
+    with pytest.raises(ValueError, match="leaf_carbon_per_area is not finite and at least"):
         to_pysipnet_initial_conditions(
             **VALID_STATE, **{**VALID_PARAMETERS, "leaf_carbon_per_area": bad}
         )
+    # At the floor itself the conversion and the run agree, so it is accepted.
+    conditions = to_pysipnet_initial_conditions(
+        **VALID_STATE, **{**VALID_PARAMETERS, "leaf_carbon_per_area": 1e-6}
+    )
+    assert conditions.leaf_area_index == pytest.approx(
+        1000 * VALID_STATE["initial_leaf_carbon"] / 1e-6
+    )
+
+
+def test_conversion_refuses_soil_moisture_above_one_hundred():
+    """The product is a percent of saturation over 0 to 100; dividing by 100 is
+    what makes soilWFracInit a fraction."""
+    with pytest.raises(ValueError, match="initial_soil_moisture_saturation is above 100"):
+        to_pysipnet_initial_conditions(
+            **{**VALID_STATE, "initial_soil_moisture_saturation": 101.0}, **VALID_PARAMETERS
+        )
+    for edge in (0.0, 100.0):
+        conditions = to_pysipnet_initial_conditions(
+            **{**VALID_STATE, "initial_soil_moisture_saturation": edge}, **VALID_PARAMETERS
+        )
+        assert conditions.soil_wetness_fraction == pytest.approx(edge / 100)
 
 
 @pytest.mark.parametrize("bad", [1, 1.0, np.nan, "yes"])

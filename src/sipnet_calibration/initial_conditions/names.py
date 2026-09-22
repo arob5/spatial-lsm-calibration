@@ -20,12 +20,11 @@ The four path functions
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pandas as pd
 
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
+from sipnet_calibration import conventions
 
 __all__ = [
     "MEMBER",
@@ -67,7 +66,7 @@ def default_source_root() -> Path:
 
 def default_raw_dir() -> Path:
     """Where the converted raw file lives: ``data/raw/initial_conditions/``."""
-    return _data_root() / "raw" / "initial_conditions"
+    return conventions.data_root() / "raw" / "initial_conditions"
 
 
 def raw_path(directory: Path | str | None = None) -> Path:
@@ -78,7 +77,7 @@ def raw_path(directory: Path | str | None = None) -> Path:
 
 def default_product_path() -> Path:
     """Where the processed product is expected: ``data/processed/initial_conditions.nc``."""
-    return _data_root() / "processed" / PRODUCT_FILE
+    return conventions.data_root() / "processed" / PRODUCT_FILE
 
 
 #: CF attributes for the ``site`` coordinate, written by both build_raw and
@@ -87,19 +86,6 @@ _SITE_ATTRS = {
     "long_name": "Model site identifier",
     "comment": "The handed-down 1-8000 identifier of the site table; never renumbered.",
 }
-
-
-#: The package directory, ``src/sipnet_calibration``. The data root is found
-#: from here rather than by counting parents from this file, so that moving a
-#: module deeper into the package cannot silently retarget it -- which is what
-#: happened when ``initial_conditions.py`` became ``initial_conditions/``.
-_PACKAGE_DIRECTORY = Path(__file__).resolve().parents[1]
-
-
-def _data_root() -> Path:
-    """``data/`` beside the package's ``src``, or ``$SIPNET_CALIBRATION_DATA``."""
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else _PACKAGE_DIRECTORY.parents[1] / "data"
 
 
 def _utc_timestamp() -> str:

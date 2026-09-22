@@ -91,12 +91,14 @@ def to_pysipnet_initial_conditions(
         The member's pools in the product's units, ``kg m-2`` of carbon.
     initial_soil_moisture_saturation:
         The member's surface soil moisture in the product's units, percent of
-        saturation.
+        saturation, so between 0 and 100.
     leaf_carbon_per_area:
-        ``leafCSpWt``, g C m-2 of leaf, from the same parameter vector.
+        ``leafCSpWt``, g C m-2 of leaf, from the same parameter vector. Must be
+        at least SIPNET's ``TINY`` of 1e-6, which it is silently floored at.
     fine_root_fraction, coarse_root_fraction:
         ``fineRootFrac`` and ``coarseRootFrac``, the shares of the total wood
-        pool SIPNET splits off as roots. Their sum must be below 1.
+        pool SIPNET splits off as roots. Their sum must leave at least a
+        hundredth of the pool above ground.
     deciduous:
         Whether the site's PFT drops its leaves (PEcAn's ``fracLeafFall >
         0.5``). Our runs start on January 1, outside every leaf-on window, so a
@@ -113,8 +115,10 @@ def to_pysipnet_initial_conditions(
     ------
     ValueError
         If a pool the mapping reads is negative, NaN or infinite; if
-        *leaf_carbon_per_area* is not positive and finite; if either root
-        fraction is outside ``[0, 1]``; or if the two sum to 1 or more.
+        *initial_soil_moisture_saturation* is above 100; if
+        *leaf_carbon_per_area* is below SIPNET's own floor; if either root
+        fraction is outside ``[0, 1]``; or if the two leave less than a
+        hundredth of the wood pool above ground.
     TypeError
         If *deciduous* is not a boolean.
 
@@ -128,12 +132,25 @@ def to_pysipnet_initial_conditions(
     which version produced the reanalysis is open question 24 of
     ``data/README.md``; the divided form is what this implements.
 
-    **The root-fraction guard is ours.** SIPNET's initial wood pool is
-    ``total_wood_carbon x (1 - fine - coarse)``, so a sum of 1 or more divides
-    by zero or flips the pool's sign. pySIPNET validates the two fractions
-    separately but not their sum, and SIPNET runs a negative wood pool to
-    completion: exit 0, a full output file, empty stderr. Verified, and filed
-    upstream as TARPS-group/pySIPNET#39.
+    **Two guards are ours, and both are against SIPNET running nonsense
+    quietly.** Its initial wood pool is
+    ``total_wood_carbon x (1 - fine - coarse)``, so a root-fraction sum of 1 or
+    more divides by zero or flips the pool's sign; pySIPNET validates the two
+    fractions separately but not their sum, and SIPNET runs a negative wood
+    pool to completion -- exit 0, a full output file, empty stderr (verified,
+    and filed upstream as TARPS-group/pySIPNET#39). The floor is on the
+    remainder rather than the sum, because a sum just below 1 is finite and
+    just as wrong: at ``1 - 1e-16`` the aboveground pool is multiplied by
+    1e16. And ``setupModel`` silently raises ``leafCSpWt`` to its ``TINY`` of
+    1e-6, so below that the initial leaf carbon SIPNET recovers as
+    ``laiInit x leafCSpWt`` is not the one converted here; that is refused too.
+
+    **The soil moisture has an upper end as well as a lower one.** It is a
+    percent of saturation, documented over 0 to 100 by its source, and
+    dividing by 100 is what makes ``soilWFracInit`` a fraction. The other end
+    cannot be guarded: a value already given as a 0-1 fraction is a valid
+    percentage too and converts to a hundredth of what was meant, which only a
+    declared ``units`` attribute on the input catches.
 
     **Physically valid input only.** A negative or missing pool is refused, not
     floored or substituted. Wood carbon is negative wherever PEcAn's leaf draw
@@ -294,6 +311,19 @@ _KILOGRAM_IN_GRAMS = 1000.0
 #: Percent to fraction, for the soil moisture.
 _PERCENT_IN_ONE = 100.0
 
+#: The least share of ``total_wood_carbon`` that may remain above ground once
+#: the roots are split off. The conversion divides by that remainder, so a
+#: remainder near zero turns a plausible aboveground pool into an implausible
+#: total: at 0.01 the factor is already 100, against the 0.4 or so the
+#: reanalysis PFTs use. Below this the result is not a wood pool any more, and
+#: refusing it is cheaper than discovering it in a likelihood.
+_MINIMUM_WOOD_FRACTION = 0.01
+
+#: SIPNET's ``TINY`` (``sipnet/src/common/util.h``), which ``setupModel``
+#: silently floors ``leafCSpWt`` at to avoid dividing by zero. A proposal below
+#: it would be converted with one value and run with another.
+_SIPNET_TINY = 1e-6
+
 #: The four product variables the conversion reads. Its keyword arguments
 #: carry the same names, so a caller's state maps onto them without a lookup.
 _STATE_VARIABLES: tuple[str, ...] = (
@@ -367,9 +397,10 @@ def _sipnet_fields_from_state(
             population="cells whose PFT keeps its leaves",
         )
     if evergreen.any():
-        _check_leaf_carbon_per_area_is_positive(
+        _check_leaf_carbon_per_area_is_usable(
             leaf_carbon[evergreen], None if index is None else index[evergreen]
         )
+    _check_soil_moisture_is_a_percentage(wetness, index)
     _check_root_fractions_leave_wood(fine, coarse, index)
 
     # Only the evergreen cells are computed: a deciduous cell's leaf carbon is
@@ -559,16 +590,33 @@ def _check_state_is_physical(
         )
 
 
-def _check_leaf_carbon_per_area_is_positive(values: np.ndarray, index: pd.Index | None) -> None:
-    bad = ~np.isfinite(values) | (values <= 0.0)
+def _check_leaf_carbon_per_area_is_usable(values: np.ndarray, index: pd.Index | None) -> None:
+    bad = ~np.isfinite(values) | (values < _SIPNET_TINY)
     if bad.any():
         raise ValueError(
-            "leaf_carbon_per_area is not positive and finite"
+            f"leaf_carbon_per_area is not finite and at least {_SIPNET_TINY:g}"
             f"{_offending_cells(index, bad, values, 'cells whose PFT keeps its leaves')}. "
-            "It divides the leaf carbon to give "
-            "the initial LAI, and SIPNET's leafCSpWt is positive by definition, so a "
-            "specific leaf area draw that reaches zero or below has to be excluded by "
-            "the prior rather than absorbed here."
+            "It divides the leaf carbon to give the initial LAI, and SIPNET's leafCSpWt "
+            "is positive by definition. The floor is SIPNET's own TINY, which setupModel "
+            "silently raises leafCSpWt to: below it the run recovers "
+            "laiInit x leafCSpWt with the floored value, so the leaf carbon SIPNET "
+            "starts from is not the one converted here. A specific leaf area draw that "
+            "small has to be excluded by the prior rather than absorbed here."
+        )
+
+
+def _check_soil_moisture_is_a_percentage(values: np.ndarray, index: pd.Index | None) -> None:
+    bad = values > _PERCENT_IN_ONE
+    if bad.any():
+        raise ValueError(
+            "initial_soil_moisture_saturation is above 100"
+            f"{_offending_cells(index, bad, values)}. The product holds a percent of "
+            "saturation, whose source is documented over 0 to 100, and dividing by 100 "
+            "is what makes soilWFracInit a fraction. A value above 100 is either a "
+            "different quantity or a unit that is not percent.\n"
+            "Note that the other end cannot be checked: a value already expressed as a "
+            "0-1 fraction is a valid percentage too, and converts to a hundredth of "
+            "what was meant. Declaring `units` on the input is what catches that."
         )
 
 
@@ -584,16 +632,20 @@ def _check_root_fractions_leave_wood(
                 "pool."
             )
     total = fine + coarse
-    bad = total >= 1.0
+    bad = (1.0 - fine - coarse) < _MINIMUM_WOOD_FRACTION
     if bad.any():
         raise ValueError(
-            "fine_root_fraction + coarse_root_fraction must be below 1"
+            "fine_root_fraction + coarse_root_fraction must be below "
+            f"{1.0 - _MINIMUM_WOOD_FRACTION:g}"
             f"{_offending_cells(index, bad, total)}. SIPNET's initial wood pool is "
-            "total_wood_carbon x (1 - fine - coarse), so a sum of 1 or more divides by "
-            "zero here and would hand SIPNET a zero or negative wood pool, which it runs "
-            "to completion with: exit code 0, a full output file, empty stderr. pySIPNET "
-            "validates the two fractions separately and not their sum "
-            "(TARPS-group/pySIPNET#39), so this is the only guard there is."
+            "total_wood_carbon x (1 - fine - coarse), and the conversion divides by that "
+            "remainder. At a sum of 1 or more it is zero or negative, and SIPNET runs a "
+            "negative wood pool to completion: exit code 0, a full output file, empty "
+            "stderr. Just below 1 it is finite but absurd -- a sum of 1 - 1e-16 "
+            "multiplies the aboveground pool by 1e16 -- which nothing downstream would "
+            "catch either, so the guard is a floor on the remainder rather than on the "
+            "sum. pySIPNET validates the two fractions separately and not their sum at "
+            "all (TARPS-group/pySIPNET#39)."
         )
 
 
