@@ -29,18 +29,13 @@ from scipy.io import netcdf_file
 from sipnet_calibration import initial_conditions as module
 from sipnet_calibration.initial_conditions import (
     CONVERTED_SIPNET_FIELDS,
-    INITIAL_CONDITION_NAMES,
     INITIAL_CONDITIONS,
+    INITIAL_CONDITION_NAMES,
+    InitialConditionSpec,
     MEMBER,
     SITE,
-    SOURCE_FILL_VALUE,
-    SOURCE_LONG_NAMES,
+    SOURCE,
     SOURCE_MEMBER,
-    SOURCE_NAMES,
-    SOURCE_TIME_LONG_NAME,
-    SOURCE_TIME_UNITS,
-    SOURCE_UNITS,
-    InitialConditionSpec,
     SourceFile,
     build_initial_conditions,
     build_raw,
@@ -56,6 +51,8 @@ from sipnet_calibration.initial_conditions import (
     to_pysipnet_initial_conditions,
     to_pysipnet_initial_conditions_table,
 )
+import sipnet_calibration
+from sipnet_calibration import sites as sites_module
 from sipnet_calibration.sites import SITE_COLUMNS, load_sites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -132,6 +129,16 @@ SYNTHETIC_VALUES = {
 }
 
 
+def _source_attribute(variable, attribute, default):
+    """The source string for *variable*, or *default* for a made-up variable.
+
+    The synthetic files include variables the real format does not carry, so
+    that the parser's refusals can be provoked.
+    """
+    known = SOURCE.variables.get(variable)
+    return default if known is None else getattr(known, attribute)
+
+
 def _write_source_file(
     root: Path,
     site: int,
@@ -159,16 +166,16 @@ def _write_source_file(
     for key, value in (
         time_attrs
         if time_attrs is not None
-        else {"units": SOURCE_TIME_UNITS, "long_name": SOURCE_TIME_LONG_NAME}
+        else {"units": SOURCE.time_units, "long_name": SOURCE.time_long_name}
     ).items():
         setattr(time, key, value)
     for variable, value in values.items():
         array = handle.createVariable(variable, "f8", ("time",))
         array[:] = np.asarray([value] * len(time_values if time_values is not None else [1.0]))
         attrs = {
-            "units": SOURCE_UNITS.get(variable, "kg C m-2"),
-            "_FillValue": SOURCE_FILL_VALUE,
-            "long_name": SOURCE_LONG_NAMES.get(variable, variable),
+            "units": _source_attribute(variable, "units", "kg C m-2"),
+            "_FillValue": SOURCE.fill_value,
+            "long_name": _source_attribute(variable, "long_name", variable),
         }
         attrs.update((attribute_overrides or {}).get(variable, {}))
         attrs.update((extra_attrs or {}).get(variable, {}))
@@ -234,12 +241,37 @@ def raw(tree, tmp_path) -> Path:
     return out
 
 
+# ── the default paths ─────────────────────────────────────────────────────────
+
+
+def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
+    """The data root is the repository's, whatever the package's shape.
+
+    Derived here from ``sipnet_calibration.__file__`` rather than from the
+    module under test, so that a module moving deeper into the package cannot
+    move the data root with it and still agree with itself.
+    """
+    monkeypatch.delenv(sites_module.DATA_ROOT_ENV_VAR, raising=False)
+    root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
+
+    assert module.default_product_path() == root / "processed" / module.PRODUCT_FILE
+    assert module.default_raw_dir() == root / "raw" / "initial_conditions"
+    assert module.raw_path() == root / "raw" / "initial_conditions" / module.RAW_FILE
+    assert module.default_source_root() == root / "raw" / "initial_conditions" / "files"
+
+
+def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):
+    monkeypatch.setenv(sites_module.DATA_ROOT_ENV_VAR, str(tmp_path))
+    assert module.default_product_path() == tmp_path / "processed" / module.PRODUCT_FILE
+    assert module.default_source_root() == tmp_path / "raw" / "initial_conditions" / "files"
+
+
 # ── the specs ─────────────────────────────────────────────────────────────────
 
 
 def test_specs_are_one_per_source_variable_with_distinct_names():
     assert len({spec.name for spec in INITIAL_CONDITIONS}) == len(INITIAL_CONDITIONS)
-    assert {spec.source_name for spec in INITIAL_CONDITIONS} == set(SOURCE_NAMES)
+    assert {spec.source_name for spec in INITIAL_CONDITIONS} == set(SOURCE.names)
     assert INITIAL_CONDITION_NAMES == tuple(spec.name for spec in INITIAL_CONDITIONS)
 
 
@@ -329,7 +361,7 @@ def test_read_source_file_refuses_a_directory_or_name_mismatch(tmp_path):
 @pytest.mark.parametrize(
     ("defect", "message"),
     [
-        (dict(time_attrs={"units": "days since 2011-01-01 00:00:00 UTC", "long_name": SOURCE_TIME_LONG_NAME}), "issue #3"),
+        (dict(time_attrs={"units": "days since 2011-01-01 00:00:00 UTC", "long_name": SOURCE.time_long_name}), "issue #3"),
         (dict(time_values=[1.0, 2.0]), "records"),
         (dict(global_attrs={"title": "x"}), "global attributes"),
         (dict(extra_attrs={"AbvGrndWood": {"scale_factor": 0.1}}), "scale_factor"),
@@ -344,7 +376,7 @@ def test_read_source_file_refuses_a_file_off_the_template(tmp_path, defect, mess
 
 def test_read_source_file_refuses_fills_unknown_variables_and_empty_files(tmp_path):
     root = tmp_path / "files"
-    path = _write_source_file(root, 1, 1, {**SYNTHETIC_VALUES[2][1], "AbvGrndWood": SOURCE_FILL_VALUE})
+    path = _write_source_file(root, 1, 1, {**SYNTHETIC_VALUES[2][1], "AbvGrndWood": SOURCE.fill_value})
     with pytest.raises(ValueError, match="fill value"):
         read_source_file(path)
     path = _write_source_file(root, 1, 2, {**SYNTHETIC_VALUES[2][1], "TotSoilCarb": 1.0})
@@ -372,7 +404,7 @@ def test_build_raw_lays_values_on_site_member_with_nan_for_absent_variables():
     assert raw["wood_carbon_content"].sel(site=1, member=2).item() == -0.5
     assert raw["SoilMoistFrac"].attrs["units"] == "(-)"
     assert raw.attrs["n_source_files"] == 6
-    assert raw.attrs["source_time_units"] == SOURCE_TIME_UNITS
+    assert raw.attrs["source_time_units"] == SOURCE.time_units
 
 
 def test_build_raw_refuses_gaps_duplicates_and_mixed_presence():
@@ -390,7 +422,7 @@ def test_build_raw_refuses_gaps_duplicates_and_mixed_presence():
 
 def test_conversion_script_writes_a_raw_file_that_reads_back(raw):
     with read_raw(raw) as dataset:
-        assert set(dataset.data_vars) == set(SOURCE_NAMES)
+        assert set(dataset.data_vars) == set(SOURCE.names)
         assert dataset["soil_organic_carbon_content"].sel(site=2, member=2).item() == 13.085454307591759
         assert dataset.attrs["n_source_files"] == 6
     assert not raw.with_suffix(".nc.partial").exists()
@@ -1024,11 +1056,11 @@ def test_read_source_file_refuses_the_wrong_dtype_and_a_missing_attribute(tmp_pa
     handle.createDimension("time", None)
     time = handle.createVariable("time", "f8", ("time",))
     time[:] = np.asarray([1.0])
-    time.units, time.long_name = SOURCE_TIME_UNITS, SOURCE_TIME_LONG_NAME
+    time.units, time.long_name = SOURCE.time_units, SOURCE.time_long_name
     single = handle.createVariable("AbvGrndWood", "f4", ("time",))
     single[:] = np.asarray([0.5], dtype="f4")
-    single.units, single.long_name = SOURCE_UNITS["AbvGrndWood"], SOURCE_LONG_NAMES["AbvGrndWood"]
-    single._FillValue = SOURCE_FILL_VALUE
+    single.units, single.long_name = SOURCE.variables["AbvGrndWood"].units, SOURCE.variables["AbvGrndWood"].long_name
+    single._FillValue = SOURCE.fill_value
     handle.close()
     with pytest.raises(ValueError, match="float64"):
         read_source_file(root / "1" / "IC_site_1_2.nc")
@@ -1038,10 +1070,10 @@ def test_read_source_file_refuses_the_wrong_dtype_and_a_missing_attribute(tmp_pa
     handle.createDimension("time", None)
     time = handle.createVariable("time", "f8", ("time",))
     time[:] = np.asarray([1.0])
-    time.units, time.long_name = SOURCE_TIME_UNITS, SOURCE_TIME_LONG_NAME
+    time.units, time.long_name = SOURCE.time_units, SOURCE.time_long_name
     bare = handle.createVariable("AbvGrndWood", "f8", ("time",))
     bare[:] = np.asarray([0.5])
-    bare.units = SOURCE_UNITS["AbvGrndWood"]
+    bare.units = SOURCE.variables["AbvGrndWood"].units
     handle.close()
     with pytest.raises(ValueError, match="attributes"):
         read_source_file(root / "1" / "IC_site_1_3.nc")
@@ -1057,11 +1089,11 @@ def test_read_source_file_refuses_the_rest_of_the_template(tmp_path):
             handle.createDimension("layer", 1)
         time = handle.createVariable("time", "f8", ("time",))
         time[:] = np.asarray([time_value])
-        time.units, time.long_name = SOURCE_TIME_UNITS, SOURCE_TIME_LONG_NAME
+        time.units, time.long_name = SOURCE.time_units, SOURCE.time_long_name
         var = handle.createVariable("AbvGrndWood", "f8", ("time",))
         var[:] = np.asarray([0.5])
-        var.units, var.long_name = SOURCE_UNITS["AbvGrndWood"], SOURCE_LONG_NAMES["AbvGrndWood"]
-        var._FillValue = SOURCE_FILL_VALUE
+        var.units, var.long_name = SOURCE.variables["AbvGrndWood"].units, SOURCE.variables["AbvGrndWood"].long_name
+        var._FillValue = SOURCE.fill_value
         handle.close()
         return root / "1" / name
 

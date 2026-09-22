@@ -332,9 +332,12 @@ while exercising the root's copy, which is the case worth remembering.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `initial_conditions.py`, `drivers.py`, `projection.py` and
-`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`, and the other modules carry
-the contract each is to satisfy.
+`constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py` and
+`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`,
+and the other modules carry the contract each is to satisfy.
+`initial_conditions` is a package rather than a module: it spans several
+artifacts, and giving each its own file keeps that artifact's schema, writer,
+reader and checks together.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -348,10 +351,16 @@ src/sipnet_calibration/
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
                           # read_raw(), build_constraint(), load_constraint(),
                           # constraint_fields() -> canonical per-product view
-  initial_conditions.py   # InitialConditionSpec + INITIAL_CONDITIONS, one per
-                          # variable of the PEcAn source files; read_source_file(),
-                          # build_raw(), read_raw(), build_initial_conditions(),
-                          # load_initial_conditions(), initial_condition_fields()
+  conventions.py          # CF_CONVENTIONS, shared by every processed product
+  initial_conditions/     # one module per artifact; __init__ re-exports them all
+    __init__.py           # curated exports + the product's data model
+    names.py              # SITE/MEMBER, the two file names, the path helpers
+    source_files.py       # SOURCE (the PEcAn file format), read_source_file()
+    specs.py              # InitialConditionSpec + INITIAL_CONDITIONS
+    raw.py                # build_raw(), raw_encoding(), read_raw()
+    processed.py          # build_initial_conditions(), load_initial_conditions(),
+                          # netcdf_encoding(), initial_condition_fields()
+    sipnet_parameters.py  # to_pysipnet_initial_conditions() and its table form
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
   parameterization.py     # the calibration vector: Coordinate (TFP prior on the

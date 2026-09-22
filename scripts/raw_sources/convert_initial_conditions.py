@@ -85,7 +85,7 @@ import numpy as np
 import xarray as xr
 
 from sipnet_calibration.initial_conditions import (
-    SOURCE_NAMES,
+    SOURCE,
     SourceFile,
     build_raw,
     default_source_root,
@@ -235,7 +235,7 @@ def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
         f"sites {dataset.sizes['site']}  members {dataset.sizes['member']}  files {len(files)}",
         "variable                       sites   min          median       max          negative",
     ]
-    for name in SOURCE_NAMES:
+    for name in SOURCE.names:
         values = dataset[name].values
         present = np.isfinite(values)
         finite = values[present]
@@ -301,7 +301,7 @@ def check_site_directories_are_the_pool(
 def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
     """Raise unless the written file reads back bit-identical through the library."""
     with read_raw(partial) as read_back:
-        for name in SOURCE_NAMES:
+        for name in SOURCE.names:
             written, back = dataset[name].values, read_back[name].values
             if not np.array_equal(written, back, equal_nan=True):
                 raise ConversionError(f"{name} did not round-trip bit for bit through {partial}")

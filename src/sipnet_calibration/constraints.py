@@ -188,6 +188,7 @@ import pandas as pd
 import xarray as xr
 from pysipnet.units import validate_units
 
+from sipnet_calibration.conventions import CF_CONVENTIONS
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
 
 __all__ = [
@@ -570,8 +571,6 @@ VALUE = "value"
 #: Name of the standard-deviation array in the processed file.
 STANDARD_DEVIATION = "standard_deviation"
 
-#: The metadata conventions the processed files follow, as pySIPNET's output does.
-CF_CONVENTIONS = "CF-1.11"
 
 #: On-disk time encoding. Written explicitly so nothing is inherited from a default.
 TIME_UNITS = "days since 2000-01-01"
