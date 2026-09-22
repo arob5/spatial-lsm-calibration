@@ -333,11 +333,11 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py` and
-`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`,
-and the other modules carry the contract each is to satisfy.
-`initial_conditions` is a package rather than a module: it spans several
-artifacts, and giving each its own file keeps that artifact's schema, writer,
-reader and checks together.
+`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`
+and `aggregate_time`, `fields.py` has the model-output adapters, and the other
+modules carry the contract each is to satisfy. `initial_conditions` is a
+package rather than a module: it spans several artifacts, and giving each its
+own file keeps that artifact's schema, writer, reader and checks together.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -369,9 +369,12 @@ src/sipnet_calibration/
                           # Parameterization with constrain/unconstrain/log_prior/
                           # sample, to_pysipnet_parameters() -> (member, site)
                           # Dataset, to_eki_gaussian_prior(); example_parameterization()
-  fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
-                          # shared with the likelihood
+  fields.py               # canonical field convention; from_sipnet_output(),
+                          # stack_sipnet_outputs() over SIPNETOutput.select,
+                          # site_lookup(); validate_field() and the adapters
+                          # for the other sources (issue #6)
+  obs_ops.py              # sipnet_time_index, aggregate_time — shared with the
+                          # likelihood; obs_index (issue #6)
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -421,15 +424,30 @@ plotting code. The load-bearing rules:
   observation operator and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
   caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
-- **The caller names the resampling method; the variable's kind constrains
-  which are valid.** This is pySIPNET's rule since its PR #38, which removed
-  the per-variable `aggregation` default: `pysipnet.resample.resample(ds, freq,
-  how=...)` requires `how`, weights means by step length, and refuses a
-  method the kind does not support (a pool is not additive; a per-step total
-  is not averaged until it is a rate). SIPNET's `net_ecosystem_exchange` is
-  `g m-2` of C per timestep, so 3-hourly to daily is a **sum**, and a mean is
-  wrong by 8x while looking plausible; the fix is to say `how`, not to look
-  up a default.
+- **The variable's kind says which resampling methods are valid; the caller
+  may name one.** pySIPNET owns the first half: since its PR #38 every
+  variable has a `kind`, `RESAMPLING_METHODS_FOR_KIND` says what may be done
+  with it, and `pysipnet.resample.resample(ds, freq, how=...)` requires `how`,
+  weights means by step length and refuses a method the kind does not support
+  (a pool is not additive; a per-step total is not averaged until it is a
+  rate). `obs_ops.aggregate_time(field, freq, how=None)` is that operation for
+  a canonical field — a field may have `member` and `site` dims, which
+  `resample` does not reduce over — and it adds one thing: with no `how` it
+  takes **the method that leaves the variable the kind it already is**, read
+  off pySIPNET's `RESAMPLED_KIND` rather than written down. A total sums, a
+  step mean or a rate means, a pool or a running total takes its last value.
+  SIPNET's `net_ecosystem_exchange` is `g m-2` of C per timestep, so 3-hourly
+  to daily is a **sum**, and a mean is wrong by 8x while looking plausible;
+  the default is there so that omission cannot reach that error, and `how=` is
+  for asking deliberately for something else, such as the time-weighted mean
+  of a pool. An invalid pair is refused in pySIPNET's own words.
+- **A model field carries pySIPNET's names, units and kinds unchanged.**
+  `fields.from_sipnet_output` adds `site`, `member` and `lon`/`lat` and takes
+  nothing away but the row labels; the registry names are already
+  `lower_case_with_underscores`, so they are the processed names. Its time
+  axis is pySIPNET's: `time` at the step end with `time_step_start` and
+  `time_step_length` beside it, which is the CF bounds pair a `DataArray` can
+  carry.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
   Observation products keep their source units; the observation operator

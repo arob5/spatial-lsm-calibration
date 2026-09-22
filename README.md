@@ -194,7 +194,7 @@ contrary are wrong.
 ```
 src/sipnet_calibration/
   sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
-  fields.py               # canonical field convention, validate_field(), adapters
+  fields.py               # canonical field convention; SIPNET output adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
