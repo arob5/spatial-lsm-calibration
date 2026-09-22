@@ -333,16 +333,21 @@ LABELINGS: tuple[LabelingSpec, ...] = (
         ),
         comment=(
             "Three classes over a pool spanning 7-82 degrees north, so the classes are "
-            "coarse and two of the three names mislead: boreal.coniferous is any "
-            "needleleaf cover, and semiarid.grassland_HPDA is the catch-all for "
-            "everything non-forest, including every Arctic site. A prior built on these "
-            "labels inherits that coarseness."
+            "coarse and two of the three names mislead: boreal.coniferous is neither "
+            "boreal nor reliably coniferous (805 of its 2369 sites lie south of 40 N, "
+            "and it holds a California annual grassland), and semiarid.grassland_HPDA "
+            "is the catch-all for everything non-forest, 992 of its sites lying north "
+            "of the Arctic Circle. A prior built on these labels inherits that "
+            "coarseness."
         ),
         notes=(
             "The landcover relation is measured over all 8000 rows, not stated by the "
             "producer; see data/README.md open question 24(k).",
-            "A finer labeling of the same pool exists upstream and is not held here; "
-            "see data/README.md open question 11.",
+            "A finer 16-class labeling of the same pool is tracked as "
+            "raw/labelings/site_pft_16class_v4.csv and is the one this project intends "
+            "to calibrate under. The two do not nest: every one of its classes draws "
+            "sites from at least two of these three. See data/README.md open "
+            "question 11.",
         ),
     ),
 )

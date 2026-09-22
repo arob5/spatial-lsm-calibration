@@ -91,9 +91,10 @@ the 363, which is how to tell the two populations apart.
 **Caveats carried by the source itself.**
 
 - **The labeling does not nest inside the three reanalysis classes.** All
-  sixteen classes draw sites from all three, so it is a different partition of
-  the pool rather than a refinement of the old one. Anything that assumed a
-  coarse-to-fine transfer between them has to be reconsidered.
+  sixteen classes draws from at least two of the three, and twelve from all
+  three, so it is a different partition of the pool rather than a refinement of
+  the old one. Anything that assumed a coarse-to-fine transfer between them has
+  to be reconsidered.
 - **292 of the 363 proxy-assigned sites have a `distance_margin` at or below
   0.02**, against a mean nearest distance of 0.095 -- the runner-up class is
   nearly as close as the chosen one. `second_nearest_final_pft` is in the file,
@@ -146,10 +147,12 @@ Recorded here because they are properties of this file, not of our processing.
   all 8000 rows, with no row off the relation. That the rule is the intended
   one is open question 24(k); the ingest asserts it either way.
 - **The classes are coarse, and two of the three names mislead.**
-  `boreal.coniferous` is any needleleaf cover, with a median latitude of 48 N
-  and members as far south as 7 N; `semiarid.grassland_HPDA` is the catch-all
-  for everything non-forest and holds every Arctic site, with a median latitude
-  of 52 N. A prior built on these labels inherits that coarseness.
+  `boreal.coniferous` is not reliably needleleaf -- it holds Vaira Ranch, a
+  California annual grassland -- and carries no latitude restriction, 805 of its
+  2369 sites lying south of 40 N, median 48 N. `semiarid.grassland_HPDA` is the
+  catch-all for everything non-forest, so 992 of its sites lie north of the
+  Arctic Circle, median 52 N. A prior built on these labels inherits that
+  coarseness.
 - **No documentation of the file was found** beyond the reanalysis's own code.
 
 ## Re-copying

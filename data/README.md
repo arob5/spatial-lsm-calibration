@@ -885,8 +885,10 @@ spanning 7-82 degrees north, neither name constrains what it says it does.
 `boreal.coniferous` carries no latitude restriction -- 805 of its 2369 sites lie
 south of 40 N -- and it is not reliably coniferous either: it holds Vaira Ranch
 (site 5692), a California annual grassland with a few oaks.
-`semiarid.grassland_HPDA` is the catch-all for everything non-forest, so 1004 of
+`semiarid.grassland_HPDA` is the catch-all for everything non-forest, so 992 of
 its sites lie north of the Arctic Circle and are neither semiarid nor grassland.
+It does not hold every Arctic site either: of the 1107 sites above 66.5633 N,
+113 are `temperate.deciduous.HPDA` and 2 are `boreal.coniferous`.
 A prior built on these labels inherits that coarseness, which is the argument for
 a class offset in the mean plus a smooth spatial residual rather than pooling on
 class alone.
@@ -902,8 +904,9 @@ a mismatch naming the other pool.
 **Source.** [NALCR]'s 8000-site state data assimilation, whose per-PFT trait
 posteriors are indexed by these class names -- which is why the names are kept
 verbatim rather than renamed to this project's convention. A finer labeling of
-the same pool, distinguishing 16 classes, exists upstream and is not held here;
-see Note 11.
+the same pool, distinguishing 16 classes, is tracked beside it as
+`site_pft_16class_v4.csv` and is the labeling this project intends to calibrate
+under; see Note 11.
 
 ---
 
@@ -949,12 +952,12 @@ two columns has to handle it.
 
 **Which site identifiers.** `leaf_phenology_8k.csv` is keyed on **our** 1-8000
 identifiers, and its coordinates agree with the site table to the four decimal
-places it prints. `leaf_phenology_neon.csv` is keyed on BETY identifiers around
+places it prints. `leaf_phenology_neon.csv` is keyed on identifiers around
 1000004875-1000004945 and shares none of ours, so it is **not joinable without a
 map**. Measured, each of its 39 sites has a nearest site in our pool at most
 0.0049 degrees away, under one 1/120-degree cell, and the match is unambiguous:
 at every one of the 39 the second-nearest pool site is at least 1.36 times
-further, a gap of at least 0.0014 degrees. So a nearest-site join is available
+further, a gap of at least 0.0013 degrees. So a nearest-site join is available
 and no NEON tower is a close call between two pool sites. What is *not*
 established is that the nearest site is the intended correspondence. That is an
 inference from proximity, and only the producer or a published map settles it.
@@ -977,7 +980,9 @@ compile-time options the reanalysis itself ran is open question 24(j).
 were produced by `PEcAn.data.remote::extract_phenology_MODIS` from **MODIS
 MCD12Q2 v061**, the Land Cover Dynamics product, taking leaf-on from the
 `MidGreenup.Num_Modes_01` band, leaf-off from `MidGreendown.Num_Modes_01` and the
-flags from bits 2 and 6 of `QA_Detailed.Num_Modes_01`; fill values of 32767 and
+flags from the 2nd and 6th of the seven **two-bit fields** packed into
+`QA_Detailed.Num_Modes_01` -- bits 2-3 and 10-11 counting from zero, which is
+what a 0-3 value needs and a single bit could not give; fill values of 32767 and
 flag-3 records become `NA`. The driver script is
 `anchorSites/NA_runs/MODIS_Phenology/script.R`, which requested 2012-2024 and
 returned twelve years. The upstream path of the NEON companion was not found.
@@ -996,7 +1001,11 @@ member. As with the phenology, nothing in the project reads it yet: it is a
 prior-specification input for `soilWHC`.
 
 **Format.** `<site_id>/Soil_params_0-<site_id>_<member>.nc`, members 1-100. The
-`0-` prefix is PEcAn's input identifier and is constant. Each file has a single
+`0-` is the billions component of the site identifier: the producer's
+`soil_params_ensemble.R` builds the name from
+`paste0(siteid %/% 1e+09, "-", siteid %% 1e+09)`, so it is 0 here only because
+this pool's identifiers are 1-8000, and an identifier such as 1000004875 would
+give `1-4875`. Each file has a single
 `depth` dimension of six, whose values are **layer bottoms in meters** --
 0.05, 0.15, 0.3, 0.6, 1.0, 2.0 -- with the first layer's top at the surface, and
 one `float32` variable per property on that dimension. No global attributes.
@@ -1019,8 +1028,9 @@ The three texture fractions sum to one in every layer, to within about 4e-8,
 which is float32 rounding on values of order one. Most files carry all twenty
 variables; a small minority carry seventeen, lacking `soil_albedo`,
 `soil_bulk_density` and `soil_thermal_capacity` -- 20 of the 10,000 files in the
-surveyed sample. In files that do carry them, those three are often `NaN` in the
-two deepest layers.
+surveyed sample. In files that do carry them, those three are `NaN` in the top
+layer of no file and in about 20 percent of files at each of the five layers
+below it, with no concentration at depth.
 
 **Coverage.** 7693 of the 8000 sites have a directory, each holding exactly 100
 files and every name on the template: 769,300 files in all. **307 sites are
@@ -1051,13 +1061,23 @@ porosity integral is the intended `soilWHC` is part of open question 24(n).
 
 **Source.** [NALCR], at
 `anchorSites/NA_runs/soil_nc/soil_texture_output/soil_texture_ensemble`,
-symlinked into `raw/soil_texture/`. Which upstream soil product the ensemble was
-drawn from is not recorded in the files.
+symlinked into `raw/soil_texture/`. The files name no upstream product, but the
+function that writes them, PEcAn's `soil_params_ensemble.R`, documents its
+inputs as **SoilGrids250m**. That also settles the depths: SoilGrids' standard
+layers are 0-5, 5-15, 15-30, 30-60, 60-100 and 100-200 cm, exactly the six
+values of `depth`, so reading them as layer bottoms comes from the producer
+rather than from the assumption `write.configs.SIPNET.R` states in its own
+comment.
 
-**Checked by** `scripts/survey_soil_texture.py`, which measures the coverage and
-format above and exits non-zero if one of the recorded characteristics no longer
-holds. Its coverage pass is a directory listing and is quick; opening files is
-sampled by default. On a partial copy, pass `--no-check`.
+**Checked by** `scripts/survey_soil_texture.py`, which exits non-zero if a
+characteristic it records no longer holds. What it records is the coverage
+above, the depth profile, and that every file opened is readable and has a
+complete porosity. What it measures but does **not** assert is everything that
+moves with `--sample`: the variable and unit table, the 17-variable minority,
+the fraction-sum tolerance and the `soilWHC` range. Those four are reported on
+every run and are as good as the sample behind them, which for the figures above
+was 100 sites. Its coverage pass is a directory listing and is quick; opening
+files is sampled by default. On a partial copy, pass `--no-check`.
 
 ---
 
@@ -1098,19 +1118,26 @@ itself made by a script, which is **not** a pipeline step; see
 ### Surveys, which are not the pipeline either
 
 Three scripts under [`../scripts/`](../scripts) answer a question about raw
-data and write nothing under `data/`: `survey_drivers.py`, `survey_phenology.py`
-and
-`survey_soil_texture.py`. Nothing under `processed/` depends on one, and no
-ingest calls one.
+data and write nothing under `data/`: `survey_drivers.py`,
+`survey_phenology.py` and `survey_soil_texture.py`. Nothing under `processed/`
+depends on one, and no ingest calls one.
 
 The two added with the phenology and soil texture sections above do one thing a
-diagnostic does not: each carries the characteristics this document records for
-its files as a `RECORDED` table, compares the measurements against it, and
-**exits non-zero if one no longer holds**. That is what keeps the numbers in
-those sections from going stale in silence -- the property is described here and
+diagnostic does not: each carries a `RECORDED` table, compares its measurements
+against it, and **exits non-zero if one no longer holds**. That is what keeps
+those numbers from going stale in silence -- the property is described here and
 checked there, so a re-copied or regenerated input that changed is refused
 rather than absorbed. Where the two disagree, re-measure, then change this
 document and the script's table together.
+
+`RECORDED` is not every number in the sections above, and the difference
+matters. A characteristic is asserted only where it is exact over the whole
+input or structural over any sample; a distributional figure drawn from a
+sample is reported and never asserted, because it would fail on a different
+`--sample` without anything having changed. Each section says which of its
+numbers fall on which side. `survey_phenology.py` reads whole files, so
+everything it reports is asserted; `survey_soil_texture.py` asserts its coverage
+and the structural facts, and reports the rest.
 
 | Script | Surveys | Needs the SCC |
 |---|---|---|
@@ -1552,15 +1579,18 @@ The three-class table the reanalysis assimilated under is now held as
 `processed/labelings/reanalysis_3pft.csv`; see
 [Site labelings](#site-labelings). It turns out to be an exact aggregation of
 the shapefile's eight `landcover` classes, which answers how those two
-classifications relate and settles half of Note 2. Whether the aggregation rule
-is the intended one is open question 24(k).
+classifications relate. Whether the aggregation rule is the intended one is open
+question 24(k).
 
-What remains open is the **16-class table**, which exists upstream for the same
-8000 sites and is not in this repository. It is what a finer pooling structure
-would use, and the planned transfer of priors from coarse classes to fine ones
-needs both present at once. Obtaining it is the outstanding action; nothing in
-the design changes when it arrives, since `sipnet_calibration.labelings` takes a
-second spec.
+*The 16-class table has since arrived* and is tracked as
+`raw/labelings/site_pft_16class_v4.csv`; it is the labeling this project intends
+to calibrate under, and nothing in the design changed when it came, since
+`sipnet_calibration.labelings` takes a second spec. What it settles is that the
+two labelings **do not nest**: every one of its sixteen classes draws sites from
+at least two of the three reanalysis classes, and twelve from all three. So the
+planned transfer of priors from coarse classes to fine ones has no parent class
+to inherit from and has to be reconsidered. What remains open is how, if at all,
+the reanalysis's per-PFT trait posteriors map onto the sixteen.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial condition member *i* and the calibration ensemble were drawn jointly
@@ -1721,7 +1751,7 @@ range that template allows; see
 [Soil texture](#soil-texture).
 
 (o) *Answered in part.* `leaf_phenology_8k.csv` comes from
-`PEcAn.data.remote::extract_phenology_MODIS` over MODIS MCD12Q2 v061, with the
+`PEcAn.data.remote::extract_phenology_MODIS` over MODIS MCD12Q2, with the
 bands and QA bits named under [Leaf phenology](#leaf-phenology), so the product
 and the QA vocabulary are established from the code. What is not: whether
 discarding the day flagged "poor" rather than passing the flag through is
