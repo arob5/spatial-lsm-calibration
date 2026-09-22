@@ -1,18 +1,36 @@
-"""The initial condition ensemble: variable specs and processing code.
+"""The initial condition ensemble: the variables, the readers, and the
+conversion to SIPNET parameters.
 
 Overview
 --------
-The reanalysis behind the 8000-site pool started every ensemble member from a
-set of initial state values drawn by a PEcAn script, one netCDF per site and
-member. This module holds one :class:`InitialConditionSpec` per variable in
-those files -- what the quantity is, where it came from, which SIPNET initial
-parameter PEcAn fed it into and how -- the functions that read the source
-files, the converted raw file and the processed product, and the conversion
-from a member's state to SIPNET's own initial parameters. The spec's fields are
-written into the processed netCDF as attributes, so it needs no description
-beyond itself; the raw file keeps the source files' own attribute strings.
+Every member of the 8000-site ensemble starts SIPNET from a drawn initial
+state -- soil organic carbon, wood carbon, leaf carbon and surface soil
+moisture, one value per site and member. This module owns that data from
+PEcAn's files through to the parameters SIPNET reads, in six parts, and the
+file is laid out in this order:
 
-The dependency runs one way, and the first arrow is taken once, on the SCC::
+1. **What the source files contain.** The constants describing PEcAn's file
+   format and provenance, used both by the specs below and by the parser.
+2. **The variables.** One :class:`InitialConditionSpec` each: what the
+   quantity is, where PEcAn drew it from, which SIPNET initial parameter it
+   feeds and by what formula. The specs are the only description there is --
+   the processed netCDF stores their fields as its attributes, so the file
+   describes itself and the reader checks it against the same specs.
+3. **Reading the source files.** Parsing PEcAn's 800,000 netCDFs, one file or
+   one site at a time.
+4. **The raw file.** Building and reading the single tracked netCDF those
+   800,000 collapse into.
+5. **The processed product.** Building, reading and slicing
+   ``initial_conditions.nc``, whose shape the Data model below describes.
+6. **The conversion to SIPNET parameters.** Turning one member's state, plus
+   the parameters the mapping depends on, into a
+   ``pysipnet.parameters.InitialConditions``.
+
+A short preamble ahead of them fixes the dimension names and says where each
+file lives. Public names come first, in the order above; the private helpers
+and checks follow below them, under the same headings and in the same order.
+
+The data flows one way, and the first arrow is taken once, on the SCC::
 
     <site>/IC_site_<site>_<member>.nc  x 800,000      (the PEcAn source files)
       -> scripts/raw_sources/convert_initial_conditions.py
@@ -99,51 +117,33 @@ holds an explicit fill; both are asserted at conversion and on load.
 
 Functions
 ---------
-:func:`resolve_initial_condition`
-    The spec for a processed name, raising if there is none.
+Grouped as the file is, and documented where they are defined.
 
-:func:`load_initial_conditions`
-    Read the processed product and check it against the specs.
+**The variables.** :func:`resolve_initial_condition` looks a spec up by its
+processed name; :func:`describe` renders one as a paragraph for a run log.
 
-:func:`initial_condition_fields`
-    One canonical ``(member, site)`` field per spec, optionally for a subset
-    of sites.
+**Reading the source files.** :func:`read_source_file` parses one file and
+applies every per-file check; :func:`read_source_directory` does one site's
+directory and refuses anything else in it;
+:func:`site_member_from_file_name` decodes a file name.
 
-:func:`to_pysipnet_initial_conditions`
-    One member's state, with the parameters the mapping depends on, as a
-    ``pysipnet.parameters.InitialConditions``.
+**The raw file.** :func:`build_raw` assembles parsed files into the Dataset
+the conversion writes, and :func:`read_raw` reads it back and checks it.
 
-:func:`to_pysipnet_initial_conditions_table`
-    The same conversion over a whole ``(member, site)`` ensemble, as a table
-    of SIPNET field values.
+**The processed product.** :func:`build_initial_conditions` turns the raw
+Dataset into the product (pure; the ingest script adds the checks and the
+write), :func:`load_initial_conditions` reads and checks it, and
+:func:`initial_condition_fields` returns it as one canonical field per
+variable, optionally for a subset of sites.
 
-:func:`read_source_file`, :func:`read_source_directory`
-    Parse one source file exactly and run the per-file checks; or
-    every file of one site's directory, refusing anything else in it.
+**The conversion.** :func:`to_pysipnet_initial_conditions` converts one
+member; :func:`to_pysipnet_initial_conditions_table` converts a whole
+``(member, site)`` ensemble to a table of SIPNET field values.
 
-:func:`site_member_from_file_name`
-    The ``(site, member)`` a source file name encodes.
-
-:func:`build_raw`
-    Assemble parsed files into the raw Dataset the conversion writes.
-
-:func:`read_raw`
-    Read the converted raw file and check it against the specs.
-
-:func:`build_initial_conditions`
-    Turn the raw Dataset into the processed one. Pure; the ingest script wraps
-    it with the checks and the write.
-
-:func:`raw_encoding`, :func:`netcdf_encoding`
-    The on-disk encodings of the two files.
-
-:func:`describe`
-    A spec rendered as a paragraph.
-
-:func:`default_source_root`, :func:`default_raw_dir`, :func:`raw_path`,
-:func:`default_product_path`
-    Where the source tree, the raw file and the product are expected to
-    be, all honoring ``$SIPNET_CALIBRATION_DATA``.
+**Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
+:func:`raw_path` and :func:`default_product_path` say where each file is
+expected, all honoring ``$SIPNET_CALIBRATION_DATA``; :func:`raw_encoding` and
+:func:`netcdf_encoding` give the two files' on-disk encodings.
 
 Notes
 -----
@@ -152,7 +152,7 @@ observations, the spec plays the role pySIPNET's ``VariableSpec`` plays for
 model output: one flat record per variable from which the product's attributes
 are derived. ``sipnet_initial_condition`` names a field of
 ``pysipnet.parameters.InitialConditions`` and is checked against it at
-import, so the two vocabularies cannot drift.
+import, so a spec cannot name a field that does not exist.
 
 **Why the files are converted and the conversion tracked.** SIPNET never
 reads these files; they are a PEcAn intermediate, 816 MB and 800,000 inodes
@@ -178,12 +178,10 @@ conversion is a function of a state and a parameter vector,
 records the formula PEcAn applied, in ``pecan_conversion``.
 
 **Why the conversion refuses rather than repairs.** Wood carbon is negative
-over much of the ensemble and two variables are absent at some sites, so a
-caller cannot hand it the whole product; the ingest report counts both.
-Flooring or substituting there is a modeling decision that belongs to the
-prior on initial conditions, and PEcAn's own answer -- skip the pool, keep
-SIPNET's template default, say nothing -- is the failure mode a calibration
-can least afford.
+over much of the ensemble and two variables are absent at some sites, so the
+product does not convert unfiltered. Choosing what to do about that is the
+job of the prior on initial conditions, not of a unit conversion; see the
+Notes of :func:`to_pysipnet_initial_conditions`.
 
 Usage
 -----
@@ -249,16 +247,10 @@ from scipy.io import netcdf_file
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
 
 __all__ = [
+    # What the source files contain, and where the files live.
     "CF_CONVENTIONS",
-    "CONVERTED_SIPNET_FIELDS",
-    "INITIAL_CONDITIONS",
-    "INITIAL_CONDITION_NAMES",
-    "InitialConditionSpec",
     "MEMBER",
-    "NAME_PATTERN",
     "NOMINAL_DATE",
-    "SOURCE_SCRIPT",
-    "SOURCE_SCRIPT_NOTE",
     "PRODUCT_FILE",
     "RAW_FILE",
     "SITE",
@@ -267,33 +259,149 @@ __all__ = [
     "SOURCE_LONG_NAMES",
     "SOURCE_MEMBER",
     "SOURCE_NAMES",
+    "SOURCE_SCRIPT",
+    "SOURCE_SCRIPT_NOTE",
     "SOURCE_TIME_LONG_NAME",
     "SOURCE_TIME_UNITS",
     "SOURCE_TIME_VALUE",
     "SOURCE_UNITS",
-    "SourceFile",
-    "build_initial_conditions",
-    "build_raw",
     "default_product_path",
     "default_raw_dir",
     "default_source_root",
+    "raw_path",
+    # The variables.
+    "INITIAL_CONDITIONS",
+    "INITIAL_CONDITION_NAMES",
+    "InitialConditionSpec",
+    "NAME_PATTERN",
     "describe",
+    "resolve_initial_condition",
+    # Reading the source files.
+    "SourceFile",
+    "read_source_directory",
+    "read_source_file",
+    "site_member_from_file_name",
+    # The raw file and the processed product.
+    "build_initial_conditions",
+    "build_raw",
     "initial_condition_fields",
     "load_initial_conditions",
     "netcdf_encoding",
     "raw_encoding",
-    "raw_path",
     "read_raw",
-    "read_source_directory",
-    "read_source_file",
-    "resolve_initial_condition",
-    "site_member_from_file_name",
+    # The conversion to SIPNET parameters.
+    "CONVERTED_SIPNET_FIELDS",
     "to_pysipnet_initial_conditions",
     "to_pysipnet_initial_conditions_table",
 ]
 
+# ── names and paths ───────────────────────────────────────────────────────────
 
-# ── the spec ──────────────────────────────────────────────────────────────────
+#: Dimension and coordinate names.
+SITE = "site"
+MEMBER = "member"
+SOURCE_MEMBER = "source_member"
+
+#: The metadata conventions the product follows, as the constraint products do.
+CF_CONVENTIONS = "CF-1.11"
+
+#: The converted raw file and the processed product, under ``data/``.
+RAW_FILE = "pecan_pool_initial_conditions.nc"
+PRODUCT_FILE = "initial_conditions.nc"
+
+
+def default_source_root() -> Path:
+    """Where the source file tree is expected: ``data/raw/initial_conditions/files``.
+
+    Present only on the SCC, as a symlink. ``$SIPNET_CALIBRATION_DATA``
+    replaces ``data/`` when set.
+    """
+    return default_raw_dir() / "files"
+
+
+def default_raw_dir() -> Path:
+    """Where the converted raw file lives: ``data/raw/initial_conditions/``."""
+    return _data_root() / "raw" / "initial_conditions"
+
+
+def raw_path(directory: Path | str | None = None) -> Path:
+    """The converted raw file: ``<directory>/pecan_pool_initial_conditions.nc``."""
+    base = Path(directory) if directory is not None else default_raw_dir()
+    return base / RAW_FILE
+
+
+def default_product_path() -> Path:
+    """Where the processed product is expected: ``data/processed/initial_conditions.nc``."""
+    return _data_root() / "processed" / PRODUCT_FILE
+
+
+# ── 1. what the source files contain ──────────────────────────────────────────
+
+#: The source file layout under the source root: one directory per site
+#: holding one file per member, ``<member>`` being the 1-based member index.
+SOURCE_FILE_TEMPLATE = "{site}/IC_site_{site}_{member}.nc"
+
+#: The ``units`` attribute each variable carries in the source files. The
+#: keys are the variables those files can hold; a file with any other variable
+#: is refused. These strings are PEcAn's ``standard_vars.csv`` entries and are
+#: recorded, not interpreted: soil moisture is a 0-100 percentage despite ``(-)``.
+SOURCE_UNITS: dict[str, str] = {
+    "AbvGrndWood": "kg C m-2",
+    "wood_carbon_content": "kg C m-2",
+    "leaf_carbon_content": "kg C m-2",
+    "soil_organic_carbon_content": "kg C m-2",
+    "SoilMoistFrac": "(-)",
+}
+
+#: The ``long_name`` attribute each variable carries in the source files.
+SOURCE_LONG_NAMES: dict[str, str] = {
+    "AbvGrndWood": "Above ground woody biomass",
+    "wood_carbon_content": "Wood Carbon Content",
+    "leaf_carbon_content": "Leaf Carbon Content",
+    "soil_organic_carbon_content": "Soil Organic Carbon Content by Layer",
+    "SoilMoistFrac": "Average Layer Fraction of Saturation",
+}
+
+#: The source variable names, in the order the specs and the raw file carry them.
+SOURCE_NAMES: tuple[str, ...] = tuple(SOURCE_UNITS)
+
+#: The fill value every source variable declares. None is present in the
+#: ensemble, and :func:`read_source_file` refuses a file that holds one.
+SOURCE_FILL_VALUE = -999.0
+
+#: What the source's degenerate ``time`` variable carries: an unsubstituted
+#: template no calendar library can parse (issue #3), PEcAn's standard long
+#: name for the dimension, and the value 1.0. Asserted identical in every file.
+SOURCE_TIME_UNITS = "days since [year]-01-01 00:00:00 UTC"
+SOURCE_TIME_LONG_NAME = "Time middle averaging period"
+SOURCE_TIME_VALUE = 1.0
+
+#: The PEcAn script that draws the ensemble and writes the source files, and
+#: the caveat every reader must see beside it.
+SOURCE_SCRIPT = (
+    "/projectnb/dietzelab/dongchen/anchorSites/IC_prep_anchorSites.R (Dongchen Zhang, "
+    "2024-03-27); the same code is modules/assim.sequential/inst/anchor/"
+    "IC_prep_anchorSites.Rmd on PEcAn develop"
+)
+
+SOURCE_SCRIPT_NOTE = (
+    "That script targets the 343 anchor sites. The 8000-site files were written on "
+    "2025-07-23 by a run whose script was not found; they match the script's "
+    "construction exactly (five variables, wood = biomass - leaf bitwise, soil "
+    "moisture in percent), so this is the template for that run, not a confirmed "
+    "record. Open question 24 in data/README.md."
+)
+
+#: The date the PEcAn script sampled the source products at, from its own code
+#: (``time_poimt <- as.Date("2011-07-15")``, the variable name spelled as the
+#: script spells it). The files carry no date.
+NOMINAL_DATE = "2011-07-15"
+
+
+# ── 2. the variables ──────────────────────────────────────────────────────────
+
+#: What a processed name must look like: lower case words joined by underscores.
+NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
 
 @dataclass(frozen=True)
@@ -399,75 +507,16 @@ class InitialConditionSpec:
         return attrs
 
 
-#: What a processed name must look like: lower case words joined by underscores.
-NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
-
-#: The ``units`` attribute each variable carries in the source files. The
-#: keys are the variables those files can hold; a file with any other variable
-#: is refused. These strings are PEcAn's ``standard_vars.csv`` entries and are
-#: recorded, not interpreted: soil moisture is a 0-100 percentage despite ``(-)``.
-SOURCE_UNITS: dict[str, str] = {
-    "AbvGrndWood": "kg C m-2",
-    "wood_carbon_content": "kg C m-2",
-    "leaf_carbon_content": "kg C m-2",
-    "soil_organic_carbon_content": "kg C m-2",
-    "SoilMoistFrac": "(-)",
-}
-
-#: The ``long_name`` attribute each variable carries in the source files.
-SOURCE_LONG_NAMES: dict[str, str] = {
-    "AbvGrndWood": "Above ground woody biomass",
-    "wood_carbon_content": "Wood Carbon Content",
-    "leaf_carbon_content": "Leaf Carbon Content",
-    "soil_organic_carbon_content": "Soil Organic Carbon Content by Layer",
-    "SoilMoistFrac": "Average Layer Fraction of Saturation",
-}
-
-#: The source variable names, in the order the specs and the raw file carry them.
-SOURCE_NAMES: tuple[str, ...] = tuple(SOURCE_UNITS)
-
-#: The fill value every source variable declares. None is present in the
-#: ensemble, and :func:`read_source_file` refuses a file that holds one.
-SOURCE_FILL_VALUE = -999.0
-
-#: What the source's degenerate ``time`` variable carries: an unsubstituted
-#: template no calendar library can parse (issue #3), PEcAn's standard long
-#: name for the dimension, and the value 1.0. Asserted identical in every file.
-SOURCE_TIME_UNITS = "days since [year]-01-01 00:00:00 UTC"
-SOURCE_TIME_LONG_NAME = "Time middle averaging period"
-SOURCE_TIME_VALUE = 1.0
-
-#: The source file layout under the source root: one directory per site
-#: holding one file per member, ``<member>`` being the 1-based member index.
-SOURCE_FILE_TEMPLATE = "{site}/IC_site_{site}_{member}.nc"
-
-#: The PEcAn script that draws the ensemble and writes the source files, and
-#: the caveat every reader must see beside it.
-SOURCE_SCRIPT = (
-    "/projectnb/dietzelab/dongchen/anchorSites/IC_prep_anchorSites.R (Dongchen Zhang, "
-    "2024-03-27); the same code is modules/assim.sequential/inst/anchor/"
-    "IC_prep_anchorSites.Rmd on PEcAn develop"
-)
-SOURCE_SCRIPT_NOTE = (
-    "That script targets the 343 anchor sites. The 8000-site files were written on "
-    "2025-07-23 by a run whose script was not found; they match the script's "
-    "construction exactly (five variables, wood = biomass - leaf bitwise, soil "
-    "moisture in percent), so this is the template for that run, not a confirmed "
-    "record. Open question 24 in data/README.md."
-)
-
-#: The date the PEcAn script sampled the source products at, from its own code
-#: (``time_poimt <- as.Date("2011-07-15")``, the variable name spelled as the
-#: script spells it). The files carry no date.
-NOMINAL_DATE = "2011-07-15"
-
 #: The sentence every units provenance ends with, because it is true of every one.
+# These two are private but sit here rather than below with the other private
+# names: the registry uses them while the module is being imported.
+
+#: The caveat every spec's units_provenance ends with.
 _UNCONFIRMED = "Unconfirmed; see data/README.md, open question 24."
 
+#: Checked by InitialConditionSpec, so a spec cannot name a pySIPNET initial
+#: condition field that does not exist.
 _SIPNET_INITIAL_CONDITION_FIELDS: frozenset[str] = frozenset(InitialConditions.model_fields)
-
-
-# ── the registry ──────────────────────────────────────────────────────────────
 
 INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
     InitialConditionSpec(
@@ -640,20 +689,23 @@ def resolve_initial_condition(name: str) -> InitialConditionSpec:
     raise KeyError(f"No initial condition named {name!r}. Known: {list(INITIAL_CONDITION_NAMES)}")
 
 
-# ── the files ─────────────────────────────────────────────────────────────────
+def describe(spec: InitialConditionSpec) -> str:
+    """A spec as a paragraph, for ``--describe`` and the run log."""
+    units = f"{spec.units} {spec.constituent}".strip()
+    lines = [
+        f"{spec.name}: {spec.long_label} ({units}), from {spec.product}.",
+        f"  source     {spec.source_name!r}, units {spec.source_units!r}, "
+        f"long name {spec.source_long_name!r}",
+        f"  sipnet     {spec.sipnet_initial_condition or 'none'}: {spec.pecan_conversion}",
+        f"  units      {spec.units_provenance}",
+        f"  what       {spec.description}",
+    ]
+    if spec.comment:
+        lines.append(f"  comment    {spec.comment}")
+    return "\n".join(lines)
 
-#: The converted raw file and the processed product, under ``data/``.
-RAW_FILE = "pecan_pool_initial_conditions.nc"
-PRODUCT_FILE = "initial_conditions.nc"
 
-#: Dimension and coordinate names.
-SITE = "site"
-MEMBER = "member"
-SOURCE_MEMBER = "source_member"
-
-#: The metadata conventions the product follows, as the constraint products do.
-CF_CONVENTIONS = "CF-1.11"
-
+# ── 3. reading the source files ───────────────────────────────────────────────
 
 @dataclass(frozen=True)
 class SourceFile:
@@ -672,31 +724,6 @@ class SourceFile:
     site: int
     member: int
     values: Mapping[str, float]
-
-
-def default_source_root() -> Path:
-    """Where the source file tree is expected: ``data/raw/initial_conditions/files``.
-
-    Present only on the SCC, as a symlink. ``$SIPNET_CALIBRATION_DATA``
-    replaces ``data/`` when set.
-    """
-    return default_raw_dir() / "files"
-
-
-def default_raw_dir() -> Path:
-    """Where the converted raw file lives: ``data/raw/initial_conditions/``."""
-    return _data_root() / "raw" / "initial_conditions"
-
-
-def raw_path(directory: Path | str | None = None) -> Path:
-    """The converted raw file: ``<directory>/pecan_pool_initial_conditions.nc``."""
-    base = Path(directory) if directory is not None else default_raw_dir()
-    return base / RAW_FILE
-
-
-def default_product_path() -> Path:
-    """Where the processed product is expected: ``data/processed/initial_conditions.nc``."""
-    return _data_root() / "processed" / PRODUCT_FILE
 
 
 def site_member_from_file_name(name: str) -> tuple[int, int] | None:
@@ -818,6 +845,8 @@ def read_source_directory(root: Path | str, site: int) -> list[SourceFile]:
     return records
 
 
+# ── 4. the raw file ───────────────────────────────────────────────────────────
+
 def build_raw(
     files: Iterable[SourceFile],
     *,
@@ -932,7 +961,7 @@ def build_raw(
                 "root, checked each against the source template, and laid the values on "
                 "(site, member) unchanged, in the source files' names and units strings"
             ),
-            "converted": _now(),
+            "converted": _utc_timestamp(),
         },
     )
     return dataset
@@ -987,6 +1016,8 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
         raise
     return dataset
 
+
+# ── 5. the processed product ──────────────────────────────────────────────────
 
 def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset:
     """Turn the raw Dataset into the processed product the data model describes.
@@ -1159,23 +1190,7 @@ def initial_condition_fields(
     return {name: dataset[name] for name in wanted_names}
 
 
-def describe(spec: InitialConditionSpec) -> str:
-    """A spec as a paragraph, for ``--describe`` and the run log."""
-    units = f"{spec.units} {spec.constituent}".strip()
-    lines = [
-        f"{spec.name}: {spec.long_label} ({units}), from {spec.product}.",
-        f"  source     {spec.source_name!r}, units {spec.source_units!r}, "
-        f"long name {spec.source_long_name!r}",
-        f"  sipnet     {spec.sipnet_initial_condition or 'none'}: {spec.pecan_conversion}",
-        f"  units      {spec.units_provenance}",
-        f"  what       {spec.description}",
-    ]
-    if spec.comment:
-        lines.append(f"  comment    {spec.comment}")
-    return "\n".join(lines)
-
-
-# ── the conversion to SIPNET initial parameters ───────────────────────────────
+# ── 6. the conversion to SIPNET parameters ────────────────────────────────────
 
 #: The fields of ``pysipnet.parameters.InitialConditions`` the conversion sets,
 #: in the class's own order. ``litter_carbon`` and ``snow_water_equivalent`` are
@@ -1256,65 +1271,56 @@ def to_pysipnet_initial_conditions(
 
     Notes
     -----
-    **Two of the formulas are PEcAn's only up to a parameter.** PEcAn wrote the
-    leaf row as ``leaf x SLA`` with the run's own specific leaf area draw; this
-    writes it with SIPNET's own ``leafCSpWt``, and the two agree only where
-    ``leaf_carbon_per_area = 1000 / SLA``, which the leaf carbon fraction below
-    says they do not. And the wood divisor entered PEcAn only in September
-    2025: which version produced the reanalysis is open question 24 of
-    ``data/README.md``, so reproducing it exactly is not yet decidable. The
-    divided form is the one implemented.
+    **Two formulas are PEcAn's only up to a parameter.** PEcAn wrote the leaf
+    row as ``leaf x SLA``, using the run's own specific leaf area draw; this
+    uses SIPNET's ``leafCSpWt`` instead. The two agree only if
+    ``leaf_carbon_per_area = 1000 / SLA``, which the leaf carbon note below
+    explains they do not. The wood divisor entered PEcAn in September 2025, and
+    which version produced the reanalysis is open question 24 of
+    ``data/README.md``; the divided form is what this implements.
 
-    **The root-fraction guard is ours.** SIPNET's wood pool is
-    ``total_wood_carbon x (1 - fine - coarse)``, so a sum of 1 or more makes
-    the conversion divide by zero or flip the pool's sign. pySIPNET validates
-    the two fractions separately and not their sum, and SIPNET itself neither
-    checks nor complains: a run with a negative wood pool exits 0 with a full
-    output file and an empty stderr. Verified, and filed upstream as
-    TARPS-group/pySIPNET#39.
+    **The root-fraction guard is ours.** SIPNET's initial wood pool is
+    ``total_wood_carbon x (1 - fine - coarse)``, so a sum of 1 or more divides
+    by zero or flips the pool's sign. pySIPNET validates the two fractions
+    separately but not their sum, and SIPNET runs a negative wood pool to
+    completion: exit 0, a full output file, empty stderr. Verified, and filed
+    upstream as TARPS-group/pySIPNET#39.
 
-    **Physically valid input only.** A negative or missing pool is refused
-    rather than floored, substituted or dropped. Much of the ensemble is
-    neither -- wood carbon is negative wherever PEcAn's leaf draw exceeded its
-    biomass draw, and two variables are absent at the sites whose source files
-    do not carry them (the specs' ``description`` fields, and the ingest
-    report, say where) -- and what to do about that is a modeling
-    decision belonging to the prior on initial conditions, not a default hidden
-    in a unit conversion. PEcAn's own answer was to skip the pool silently and
-    leave SIPNET's template default in place, which is exactly the failure mode
-    a calibration cannot afford.
+    **Physically valid input only.** A negative or missing pool is refused, not
+    floored or substituted. Wood carbon is negative wherever PEcAn's leaf draw
+    exceeded its biomass draw, and two variables are absent at the sites whose
+    source files omit them (the specs' ``description`` fields and the ingest
+    report say where), so the product does not convert unfiltered. Which
+    members to use is a question for the prior on initial conditions. PEcAn's
+    own answer was to skip the pool and leave SIPNET's template default in
+    place, without saying so.
 
     **The leaf carbon is only nominally carbon.** PEcAn built
     ``initial_leaf_carbon`` as a MODIS LAI draw divided by a specific leaf area
-    draw expressed per kilogram of *leaf mass*, and never applied the leaf
-    carbon fraction of about 0.48, so the ``C`` in its ``kg C m-2`` label is not
-    earned. ``leaf_carbon_per_area`` is per m2 of *carbon*. The round trip from
-    LAI back to LAI therefore closes only when the same specific leaf area draw
-    defines *leaf_carbon_per_area* and the carbon fraction is applied
-    consistently. Converted with SIPNET's template value instead, the forested
+    draw expressed per kilogram of *leaf mass*, never applying the leaf carbon
+    fraction of about 0.48; ``leaf_carbon_per_area`` is per m2 of *carbon*. LAI
+    therefore converts back to LAI only under the same SLA draw with the carbon
+    fraction applied consistently. With SIPNET's template value the forested
     sites start at an implausible leaf area index.
 
-    **The LAI this produces is entangled with leaf_carbon_per_area.** Under the
-    default model flags SIPNET admits an exact one-parameter invariance: for any
-    ``gamma > 0``, scaling ``leafCSpWt`` and ``attenuation`` by ``gamma`` and
-    ``laiInit`` by ``1 / gamma`` leaves the initial leaf carbon
-    ``laiInit x leafCSpWt``, the product ``attenuation x leaf_carbon /
-    leafCSpWt`` that the light response actually depends on, and hence every
-    carbon and water output bitwise identical; only the LAI diagnostic moves.
-    So under NEE, biomass, soil carbon and soil water alone only the ratio
-    ``attenuation / leafCSpWt`` is identified, and the ``leaf_area_index`` this
-    function computes moves with the scaling that leaves those data unchanged.
-    LAI observations are the only thing in the planned constraint set that
-    breaks the degeneracy.
+    **The LAI is entangled with leaf_carbon_per_area.** Under the default model
+    flags SIPNET admits an exact invariance: for any ``gamma > 0``, scaling
+    ``leafCSpWt`` and ``attenuation`` by ``gamma`` and ``laiInit`` by
+    ``1 / gamma`` leaves the initial leaf carbon ``laiInit x leafCSpWt``
+    unchanged, and with it the product ``attenuation x leaf_carbon /
+    leafCSpWt`` that the light response depends on, hence every carbon and
+    water output bitwise identical; only the LAI diagnostic moves. Under NEE,
+    biomass, soil carbon and soil water alone, therefore, only the ratio
+    ``attenuation / leafCSpWt`` is identified. LAI observations are the only
+    constraint in the planned set that breaks the degeneracy.
 
-    **The soil wetness mapping equates two different fractions.** The product
-    is a percent of *saturation* of the 2-5 cm surface layer of a satellite
-    retrieval; ``soilWFracInit`` is a fraction of the water holding capacity of
-    SIPNET's single soil bucket. Dividing by 100 converts the units and not the
-    definition, and whether that is the intended correspondence is open
-    question 24 of ``data/README.md``. PEcAn did exactly this, and the
-    parameter is transient: SIPNET reads it once and the soil water pool
-    equilibrates within weeks.
+    **Soil wetness equates two different fractions.** The product is a percent
+    of *saturation* of a satellite retrieval's 2-5 cm surface layer;
+    ``soilWFracInit`` is a fraction of the water holding capacity of SIPNET's
+    single soil bucket. Dividing by 100 converts the units, not the definition,
+    and whether it is the intended correspondence is open question 24. PEcAn
+    did the same, and the parameter is transient: SIPNET reads it once and the
+    soil water pool equilibrates within weeks.
     """
     _check_arguments_are_scalar(
         initial_soil_organic_carbon=initial_soil_organic_carbon,
@@ -1326,7 +1332,7 @@ def to_pysipnet_initial_conditions(
         coarse_root_fraction=coarse_root_fraction,
         deciduous=deciduous,
     )
-    converted = _convert(
+    converted = _sipnet_fields_from_state(
         initial_soil_organic_carbon=np.array([initial_soil_organic_carbon]),
         initial_wood_carbon=np.array([initial_wood_carbon]),
         initial_leaf_carbon=np.array([initial_leaf_carbon]),
@@ -1376,12 +1382,12 @@ def to_pysipnet_initial_conditions_table(
     Returns
     -------
     pandas.DataFrame
-        One row per ``(member, site)`` cell, indexed by the dims of the
-        broadcast inputs, with :data:`CONVERTED_SIPNET_FIELDS` as columns.
-        Rows are ordered ``(member, site)``. ``InitialConditions(**table.loc[
-        cell])`` is what :func:`to_pysipnet_initial_conditions` returns for
-        that cell: every row that converts here also passes pySIPNET's own
-        field validation.
+        One row per cell, indexed by the dims the inputs broadcast to and
+        always ordered ``(member, site)``, with
+        :data:`CONVERTED_SIPNET_FIELDS` as columns. For any cell,
+        ``InitialConditions(**table.loc[cell])`` equals what
+        :func:`to_pysipnet_initial_conditions` returns for it, so every row
+        here also passes pySIPNET's own field validation.
 
     Raises
     ------
@@ -1399,17 +1405,16 @@ def to_pysipnet_initial_conditions_table(
 
     Notes
     -----
-    The whole ensemble does not convert: ``initial_wood_carbon`` is negative
+    The whole ensemble does not convert. ``initial_wood_carbon`` is negative
     over much of it and ``initial_leaf_carbon`` is absent at some sites, so the
-    members to run have to be chosen before this is called and the product
-    passed unfiltered is refused, by design. See the Notes of
-    :func:`to_pysipnet_initial_conditions`.
+    product passed unfiltered is refused and the members to run have to be
+    chosen first. See the Notes of :func:`to_pysipnet_initial_conditions`.
     """
-    arrays = {name: _pool_array(state, name) for name in _CONVERTED_POOLS}
-    arrays["leaf_carbon_per_area"] = _data_array(leaf_carbon_per_area)
-    arrays["fine_root_fraction"] = _data_array(fine_root_fraction)
-    arrays["coarse_root_fraction"] = _data_array(coarse_root_fraction)
-    arrays["deciduous"] = _data_array(deciduous)
+    arrays = {name: _state_variable(state, name) for name in _STATE_VARIABLES}
+    arrays["leaf_carbon_per_area"] = _as_data_array(leaf_carbon_per_area)
+    arrays["fine_root_fraction"] = _as_data_array(fine_root_fraction)
+    arrays["coarse_root_fraction"] = _as_data_array(coarse_root_fraction)
+    arrays["deciduous"] = _as_data_array(deciduous)
 
     _check_scalar_coordinates_agree(arrays)
     broadcast = xr.broadcast(*xr.align(*arrays.values(), join="exact"))
@@ -1419,7 +1424,7 @@ def to_pysipnet_initial_conditions_table(
     template = broadcast[0]
     index = _cell_index(template)
 
-    converted = _convert(
+    converted = _sipnet_fields_from_state(
         index=index,
         **{name: array.values.ravel() for name, array in zip(arrays, broadcast)},
     )
@@ -1429,32 +1434,41 @@ def to_pysipnet_initial_conditions_table(
     )
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── private: shared ───────────────────────────────────────────────────────────
 
-_SOURCE_FILE_NAME = re.compile(r"^IC_site_(?P<site>[1-9]\d*)_(?P<member>[1-9]\d*)\.nc$")
-
+#: CF attributes for the coordinates, written by both build_raw and
+#: build_initial_conditions.
 _SITE_ATTRS = {
     "long_name": "Model site identifier",
     "comment": "The handed-down 1-8000 identifier of the site table; never renumbered.",
 }
+
 _LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
+
 _LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
+
+
+def _data_root() -> Path:
+    """``data/``, or ``$SIPNET_CALIBRATION_DATA`` when it is set."""
+    root = os.environ.get(DATA_ROOT_ENV_VAR)
+    return Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+
+
+def _utc_timestamp() -> str:
+    """Now, as the ISO 8601 string the file attributes carry."""
+    return pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ── private: reading the source files ─────────────────────────────────────────
+
+_SOURCE_FILE_NAME = re.compile(r"^IC_site_(?P<site>[1-9]\d*)_(?P<member>[1-9]\d*)\.nc$")
 
 #: Attribute names each source data variable must carry, exactly.
 _SOURCE_VARIABLE_ATTRIBUTES = frozenset({"_FillValue", "long_name", "units"})
 
 
-def _data_root() -> Path:
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else Path(__file__).resolve().parents[2] / "data"
-
-
-def _now() -> str:
-    return pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _decode(value: Any) -> Any:
-    """A netCDF-3 attribute as a Python string or float."""
+def _decode_attribute(value: Any) -> Any:
+    """One netCDF-3 attribute as a Python string, float or list."""
     if isinstance(value, bytes):
         return value.decode("utf-8")
     if isinstance(value, np.ndarray):
@@ -1464,192 +1478,9 @@ def _decode(value: Any) -> Any:
     return value
 
 
-def _attributes(obj: Any) -> dict[str, Any]:
+def _netcdf_attributes(obj: Any) -> dict[str, Any]:
     """The attributes of a ``scipy.io.netcdf_file`` or one of its variables."""
-    return {str(key): _decode(value) for key, value in obj._attributes.items()}
-
-
-def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
-    return {
-        "Conventions": CF_CONVENTIONS,
-        "title": "Initial condition ensemble for the 8000-site pool",
-        "product": (
-            "PEcAn pool initial conditions drawn for the North American reanalysis; one "
-            "spec per variable in sipnet_calibration.initial_conditions"
-        ),
-        "source_file": RAW_FILE,
-        "source_root": str(raw.attrs.get("source_root", "")),
-        "source_script": SOURCE_SCRIPT,
-        "source_script_note": SOURCE_SCRIPT_NOTE,
-        "nominal_date": NOMINAL_DATE,
-        "nominal_date_provenance": (
-            "The sampling date in the PEcAn script; the source files themselves carry no "
-            "date. Biomass is a 2010 annual map and soil carbon is undated."
-        ),
-        "source_time_units": SOURCE_TIME_UNITS,
-        "source_time_long_name": SOURCE_TIME_LONG_NAME,
-        "source_time_value": SOURCE_TIME_VALUE,
-        "member_source": "ic",
-        "member_correspondence": (
-            "Not established: whether member i here corresponds to member i of the "
-            "drivers or of any other ensemble is unknown, and xarray aligns integer "
-            "member labels silently."
-        ),
-        "n_sites": int(raw.sizes[SITE]),
-        "n_members": int(raw.sizes[MEMBER]),
-        "history": (
-            f"scripts/ingest_initial_conditions.py: read {RAW_FILE}, renamed the source "
-            "variables to the spec names, renumbered member from 1-based to 0-based "
-            "keeping the source index as source_member, placed the sites on the site "
-            "table's pool with lon/lat, and wrote the spec fields as attributes; values "
-            "unchanged"
-        ),
-        "created": _now(),
-    }
-
-
-#: Grams in a kilogram: the ensemble's carbon pools are kg m-2 and SIPNET's g m-2.
-_KILOGRAM_IN_GRAMS = 1000.0
-
-#: Percent to fraction, for the soil moisture.
-_PERCENT_IN_ONE = 100.0
-
-#: The product variables the conversion reads, as its keywords name them.
-_CONVERTED_POOLS: tuple[str, ...] = (
-    "initial_soil_organic_carbon",
-    "initial_wood_carbon",
-    "initial_leaf_carbon",
-    "initial_soil_moisture_saturation",
-)
-
-
-def _convert(
-    *,
-    initial_soil_organic_carbon: np.ndarray,
-    initial_wood_carbon: np.ndarray,
-    initial_leaf_carbon: np.ndarray,
-    initial_soil_moisture_saturation: np.ndarray,
-    leaf_carbon_per_area: np.ndarray,
-    fine_root_fraction: np.ndarray,
-    coarse_root_fraction: np.ndarray,
-    deciduous: np.ndarray,
-    index: pd.Index | None,
-) -> dict[str, np.ndarray]:
-    """PEcAn's mapping on flat arrays of one common length: the one implementation.
-
-    *index* labels the cells for the refusal messages, or is ``None`` for a
-    single unlabeled one. Both public forms call this, so they cannot disagree.
-    """
-    soil = np.asarray(initial_soil_organic_carbon, dtype=float)
-    wood = np.asarray(initial_wood_carbon, dtype=float)
-    leaf = np.asarray(initial_leaf_carbon, dtype=float)
-    wetness = np.asarray(initial_soil_moisture_saturation, dtype=float)
-    leaf_carbon = np.asarray(leaf_carbon_per_area, dtype=float)
-    fine = np.asarray(fine_root_fraction, dtype=float)
-    coarse = np.asarray(coarse_root_fraction, dtype=float)
-    deciduous = np.asarray(deciduous)
-
-    _check_deciduous_is_boolean(deciduous)
-    _check_state_is_physical(
-        {
-            "initial_soil_organic_carbon": soil,
-            "initial_wood_carbon": wood,
-            "initial_soil_moisture_saturation": wetness,
-        },
-        index,
-    )
-    # The leaf carbon is read only where the PFT keeps its leaves, so only there
-    # does it have to be valid. Requiring a value the mapping never reads would
-    # refuse the sites whose source files carry no leaf carbon at all, and the
-    # members whose specific leaf area draw was negative -- every one of which
-    # is at a grassland site, though most grassland members are unaffected.
-    evergreen = ~deciduous
-    if evergreen.any():
-        _check_state_is_physical(
-            {"initial_leaf_carbon": leaf[evergreen]},
-            None if index is None else index[evergreen],
-            population="cells whose PFT keeps its leaves",
-        )
-    _check_leaf_carbon_per_area_is_positive(leaf_carbon, index)
-    _check_root_fractions_leave_wood(fine, coarse, index)
-
-    # Only the evergreen cells are computed: the deciduous ones were never
-    # validated, so evaluating them and discarding the result would let a value
-    # the mapping does not read overflow and, under np.seterr(all="raise"),
-    # abort the conversion of every other cell.
-    leaf_area_index = np.zeros(np.shape(leaf), dtype=float)
-    leaf_area_index[evergreen] = (
-        _KILOGRAM_IN_GRAMS * leaf[evergreen] / leaf_carbon[evergreen]
-    )
-    converted = {
-        "total_wood_carbon": _KILOGRAM_IN_GRAMS * wood / (1.0 - fine - coarse),
-        "leaf_area_index": leaf_area_index,
-        "soil_carbon": _KILOGRAM_IN_GRAMS * soil,
-        "soil_wetness_fraction": wetness / _PERCENT_IN_ONE,
-        "fine_root_fraction": fine,
-        "coarse_root_fraction": coarse,
-    }
-    _check_converted_values_are_finite(converted, index)
-    return converted
-
-
-def _pool_array(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -> xr.DataArray:
-    """One of the four variables of *state*, with its units checked."""
-    try:
-        array = state[name]
-    except KeyError:
-        raise KeyError(
-            f"{name!r} is not in the state; the conversion reads {list(_CONVERTED_POOLS)}."
-        ) from None
-    if not isinstance(array, xr.DataArray):
-        raise TypeError(
-            f"{name} is a {type(array).__name__}, not a DataArray. The table form "
-            "converts an ensemble; use to_pysipnet_initial_conditions for one member."
-        )
-    _check_units_are_the_products(array, name)
-    return array
-
-
-def _data_array(value: Any) -> xr.DataArray:
-    """A parameter as a ``DataArray``: a scalar becomes a zero-dimensional one."""
-    return value if isinstance(value, xr.DataArray) else xr.DataArray(value)
-
-
-def _cell_index(array: xr.DataArray) -> pd.Index | None:
-    """The row index of the table, in the order ``array.values.ravel()`` takes.
-
-    ``None`` when the broadcast inputs are all scalars, which leaves one
-    unlabeled cell.
-    """
-    if not array.dims:
-        return None
-    levels = [
-        array.coords[dim].values if dim in array.coords else np.arange(array.sizes[dim])
-        for dim in array.dims
-    ]
-    names = [str(dim) for dim in array.dims]
-    if len(levels) == 1:
-        return pd.Index(levels[0], name=names[0])
-    return pd.MultiIndex.from_product(levels, names=names)
-
-
-def _refused_cells(
-    index: pd.Index | None, bad: np.ndarray, values: np.ndarray, population: str = "cells"
-) -> str:
-    """The tail of a refusal: which cells failed, or the one value that did.
-
-    *population* names what ``bad`` was computed over, which is not always
-    every cell: the leaf carbon is only checked where the PFT keeps its leaves.
-    """
-    if index is None:
-        return f" (value {values[bad][0]})"
-    return (
-        f", at {int(np.count_nonzero(bad))} of {bad.size} {population}, for example "
-        f"{index[bad][:5].tolist()}"
-    )
-
-
-# ── checks ────────────────────────────────────────────────────────────────────
+    return {str(key): _decode_attribute(value) for key, value in obj._attributes.items()}
 
 
 def _check_source_file_is_classic_with_no_global_attributes(handle: Any, path: Path) -> None:
@@ -1657,7 +1488,7 @@ def _check_source_file_is_classic_with_no_global_attributes(handle: Any, path: P
         raise ValueError(
             f"{path}: netCDF-3 version byte is {handle.version_byte}, expected 1 (classic)"
         )
-    attrs = _attributes(handle)
+    attrs = _netcdf_attributes(handle)
     if attrs:
         raise ValueError(
             f"{path}: carries global attributes {sorted(attrs)}; source files carry none"
@@ -1676,7 +1507,7 @@ def _check_source_time_is_the_degenerate_template(handle: Any, path: Path) -> No
     if "time" not in handle.variables:
         raise ValueError(f"{path}: has no time variable")
     time = handle.variables["time"]
-    attrs = _attributes(time)
+    attrs = _netcdf_attributes(time)
     expected = {"units": SOURCE_TIME_UNITS, "long_name": SOURCE_TIME_LONG_NAME}
     if attrs != expected:
         raise ValueError(
@@ -1705,7 +1536,7 @@ def _check_and_read_source_variables(handle: Any, path: Path) -> dict[str, float
             )
         if variable.data.dtype.newbyteorder("=") != np.dtype(np.float64):
             raise ValueError(f"{path}: {name} is {variable.data.dtype}, expected float64")
-        attrs = _attributes(variable)
+        attrs = _netcdf_attributes(variable)
         expected = {
             "_FillValue": SOURCE_FILL_VALUE,
             "long_name": SOURCE_LONG_NAMES[name],
@@ -1733,6 +1564,8 @@ def _check_and_read_source_variables(handle: Any, path: Path) -> dict[str, float
         raise ValueError(f"{path}: carries no data variable")
     return values
 
+
+# ── private: the raw file ─────────────────────────────────────────────────────
 
 def _check_every_site_has_every_member(seen: np.ndarray, sites: np.ndarray, members: np.ndarray) -> None:
     if seen.all():
@@ -1800,6 +1633,47 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
             raise ValueError(f"{path}: missing the {key!r} attribute")
 
 
+# ── private: the processed product ────────────────────────────────────────────
+
+def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
+    return {
+        "Conventions": CF_CONVENTIONS,
+        "title": "Initial condition ensemble for the 8000-site pool",
+        "product": (
+            "PEcAn pool initial conditions drawn for the North American reanalysis; one "
+            "spec per variable in sipnet_calibration.initial_conditions"
+        ),
+        "source_file": RAW_FILE,
+        "source_root": str(raw.attrs.get("source_root", "")),
+        "source_script": SOURCE_SCRIPT,
+        "source_script_note": SOURCE_SCRIPT_NOTE,
+        "nominal_date": NOMINAL_DATE,
+        "nominal_date_provenance": (
+            "The sampling date in the PEcAn script; the source files themselves carry no "
+            "date. Biomass is a 2010 annual map and soil carbon is undated."
+        ),
+        "source_time_units": SOURCE_TIME_UNITS,
+        "source_time_long_name": SOURCE_TIME_LONG_NAME,
+        "source_time_value": SOURCE_TIME_VALUE,
+        "member_source": "ic",
+        "member_correspondence": (
+            "Not established: whether member i here corresponds to member i of the "
+            "drivers or of any other ensemble is unknown, and xarray aligns integer "
+            "member labels silently."
+        ),
+        "n_sites": int(raw.sizes[SITE]),
+        "n_members": int(raw.sizes[MEMBER]),
+        "history": (
+            f"scripts/ingest_initial_conditions.py: read {RAW_FILE}, renamed the source "
+            "variables to the spec names, renumbered member from 1-based to 0-based "
+            "keeping the source index as source_member, placed the sites on the site "
+            "table's pool with lon/lat, and wrote the spec fields as attributes; values "
+            "unchanged"
+        ),
+        "created": _utc_timestamp(),
+    }
+
+
 def _check_product(dataset: xr.Dataset, path: Path) -> None:
     """Raise unless *dataset* is the product the data model describes."""
     if set(dataset.data_vars) != set(INITIAL_CONDITION_NAMES):
@@ -1857,67 +1731,173 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
         raise ValueError(f"{path}: Conventions is {dataset.attrs.get('Conventions')!r}, expected {CF_CONVENTIONS!r}")
 
 
-def _check_deciduous_is_boolean(values: np.ndarray) -> None:
-    if values.dtype != np.bool_:
+# ── private: the conversion ───────────────────────────────────────────────────
+
+#: Grams in a kilogram: the ensemble's carbon pools are kg m-2 and SIPNET's g m-2.
+_KILOGRAM_IN_GRAMS = 1000.0
+
+#: Percent to fraction, for the soil moisture.
+_PERCENT_IN_ONE = 100.0
+
+#: The four product variables the conversion reads. Its keyword arguments
+#: carry the same names, so a caller's state maps onto them without a lookup.
+_STATE_VARIABLES: tuple[str, ...] = (
+    "initial_soil_organic_carbon",
+    "initial_wood_carbon",
+    "initial_leaf_carbon",
+    "initial_soil_moisture_saturation",
+)
+
+
+def _sipnet_fields_from_state(
+    *,
+    initial_soil_organic_carbon: np.ndarray,
+    initial_wood_carbon: np.ndarray,
+    initial_leaf_carbon: np.ndarray,
+    initial_soil_moisture_saturation: np.ndarray,
+    leaf_carbon_per_area: np.ndarray,
+    fine_root_fraction: np.ndarray,
+    coarse_root_fraction: np.ndarray,
+    deciduous: np.ndarray,
+    index: pd.Index | None,
+) -> dict[str, np.ndarray]:
+    """Convert one flat array per input into one flat array per SIPNET field.
+
+    Every input array holds one entry per cell and they are all the same
+    length; every returned array is that length, in that order. This is where
+    the formulas and the refusals live, and both public functions call it: the
+    single-member form passes arrays of length one, the table form passes the
+    broadcast ensemble.
+
+    Parameters
+    ----------
+    index:
+        Labels for the cells, used only to say which ones a refusal is about.
+        ``None`` for a single cell with no label, as the single-member form
+        passes.
+
+    Returns
+    -------
+    dict
+        :data:`CONVERTED_SIPNET_FIELDS` to its values.
+    """
+    soil = np.asarray(initial_soil_organic_carbon, dtype=float)
+    wood = np.asarray(initial_wood_carbon, dtype=float)
+    leaf = np.asarray(initial_leaf_carbon, dtype=float)
+    wetness = np.asarray(initial_soil_moisture_saturation, dtype=float)
+    leaf_carbon = np.asarray(leaf_carbon_per_area, dtype=float)
+    fine = np.asarray(fine_root_fraction, dtype=float)
+    coarse = np.asarray(coarse_root_fraction, dtype=float)
+    deciduous = np.asarray(deciduous)
+
+    _check_deciduous_is_boolean(deciduous)
+    _check_state_is_physical(
+        {
+            "initial_soil_organic_carbon": soil,
+            "initial_wood_carbon": wood,
+            "initial_soil_moisture_saturation": wetness,
+        },
+        index,
+    )
+    # The leaf carbon is read only where the PFT keeps its leaves, so only there
+    # does it have to be valid. Requiring a value the mapping never reads would
+    # refuse the sites whose source files carry no leaf carbon at all, and the
+    # members whose specific leaf area draw was negative -- every one of which
+    # is at a grassland site, though most grassland members are unaffected.
+    evergreen = ~deciduous
+    if evergreen.any():
+        _check_state_is_physical(
+            {"initial_leaf_carbon": leaf[evergreen]},
+            None if index is None else index[evergreen],
+            population="cells whose PFT keeps its leaves",
+        )
+    _check_leaf_carbon_per_area_is_positive(leaf_carbon, index)
+    _check_root_fractions_leave_wood(fine, coarse, index)
+
+    # Only the evergreen cells are computed: the deciduous ones were never
+    # validated, so evaluating them and discarding the result would let a value
+    # the mapping does not read overflow and, under np.seterr(all="raise"),
+    # abort the conversion of every other cell.
+    leaf_area_index = np.zeros(np.shape(leaf), dtype=float)
+    leaf_area_index[evergreen] = (
+        _KILOGRAM_IN_GRAMS * leaf[evergreen] / leaf_carbon[evergreen]
+    )
+    converted = {
+        "total_wood_carbon": _KILOGRAM_IN_GRAMS * wood / (1.0 - fine - coarse),
+        "leaf_area_index": leaf_area_index,
+        "soil_carbon": _KILOGRAM_IN_GRAMS * soil,
+        "soil_wetness_fraction": wetness / _PERCENT_IN_ONE,
+        "fine_root_fraction": fine,
+        "coarse_root_fraction": coarse,
+    }
+    _check_converted_values_are_finite(converted, index)
+    return converted
+
+
+def _state_variable(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -> xr.DataArray:
+    """The named variable of *state*, checked to be a ``DataArray`` in the
+    product's units."""
+    try:
+        array = state[name]
+    except KeyError:
+        raise KeyError(
+            f"{name!r} is not in the state; the conversion reads {list(_STATE_VARIABLES)}."
+        ) from None
+    if not isinstance(array, xr.DataArray):
         raise TypeError(
-            f"deciduous is {values.dtype}, expected boolean. It says whether the site's "
-            "PFT drops its leaves; casting a numeric or object array to bool would make "
-            "every non-zero value, NaN included, deciduous and silently zero the LAI."
+            f"{name} is a {type(array).__name__}, not a DataArray. The table form "
+            "converts an ensemble; use to_pysipnet_initial_conditions for one member."
         )
+    _check_units_are_the_products(array, name)
+    return array
 
 
-def _check_state_is_physical(
-    values: Mapping[str, np.ndarray], index: pd.Index | None, population: str = "cells"
-) -> None:
-    for name, array in values.items():
-        bad = ~np.isfinite(array) | (array < 0.0)
-        if not bad.any():
-            continue
-        raise ValueError(
-            f"{name} is negative, NaN or infinite"
-            f"{_refused_cells(index, bad, array, population)}. "
-            "The conversion takes physically valid state only. The ensemble's negative "
-            "wood and leaf members and the sites where a variable is absent are for the "
-            "initial condition prior to resolve; a unit conversion may not floor, "
-            "substitute or drop them."
-        )
+def _as_data_array(value: Any) -> xr.DataArray:
+    """A parameter as a ``DataArray``: a scalar becomes a zero-dimensional one."""
+    return value if isinstance(value, xr.DataArray) else xr.DataArray(value)
 
 
-def _check_leaf_carbon_per_area_is_positive(values: np.ndarray, index: pd.Index | None) -> None:
-    bad = ~np.isfinite(values) | (values <= 0.0)
-    if bad.any():
-        raise ValueError(
-            "leaf_carbon_per_area is not positive and finite"
-            f"{_refused_cells(index, bad, values)}. It divides the leaf carbon to give "
-            "the initial LAI, and SIPNET's leafCSpWt is positive by definition, so a "
-            "specific leaf area draw that reaches zero or below has to be excluded by "
-            "the prior rather than absorbed here."
-        )
+def _cell_index(array: xr.DataArray) -> pd.Index | None:
+    """The table's row index, in the order ``array.values.ravel()`` produces.
+
+    ``None`` when the inputs broadcast to no dimensions at all, which is one
+    cell with nothing to label it by.
+    """
+    if not array.dims:
+        return None
+    levels = [
+        array.coords[dim].values if dim in array.coords else np.arange(array.sizes[dim])
+        for dim in array.dims
+    ]
+    names = [str(dim) for dim in array.dims]
+    if len(levels) == 1:
+        return pd.Index(levels[0], name=names[0])
+    return pd.MultiIndex.from_product(levels, names=names)
 
 
-def _check_root_fractions_leave_wood(
-    fine: np.ndarray, coarse: np.ndarray, index: pd.Index | None
-) -> None:
-    for name, values in (("fine_root_fraction", fine), ("coarse_root_fraction", coarse)):
-        bad = ~np.isfinite(values) | (values < 0.0) | (values > 1.0)
-        if bad.any():
-            raise ValueError(
-                f"{name} is outside [0, 1] or not finite"
-                f"{_refused_cells(index, bad, values)}. It is a share of the total wood "
-                "pool."
-            )
-    total = fine + coarse
-    bad = total >= 1.0
-    if bad.any():
-        raise ValueError(
-            "fine_root_fraction + coarse_root_fraction must be below 1"
-            f"{_refused_cells(index, bad, total)}. SIPNET's initial wood pool is "
-            "total_wood_carbon x (1 - fine - coarse), so a sum of 1 or more divides by "
-            "zero here and would hand SIPNET a zero or negative wood pool, which it runs "
-            "to completion with: exit code 0, a full output file, empty stderr. pySIPNET "
-            "validates the two fractions separately and not their sum "
-            "(TARPS-group/pySIPNET#39), so this is the only guard there is."
-        )
+def _offending_cells(
+    index: pd.Index | None, bad: np.ndarray, values: np.ndarray, population: str = "cells"
+) -> str:
+    """The end of a refusal message: which cells are bad, or the bad value.
+
+    Parameters
+    ----------
+    index:
+        The cell labels, or ``None`` for a single unlabeled cell, in which case
+        the message carries the offending value instead of a position.
+    bad:
+        Boolean mask over the cells *population* describes.
+    population:
+        What *bad* was computed over. Not always every cell: the leaf carbon is
+        checked only where the PFT keeps its leaves, and a count against the
+        whole ensemble would misstate how much of it was examined.
+    """
+    if index is None:
+        return f" (value {values[bad][0]})"
+    return (
+        f", at {int(np.count_nonzero(bad))} of {bad.size} {population}, for example "
+        f"{index[bad][:5].tolist()}"
+    )
 
 
 def _check_arguments_are_scalar(**arguments: Any) -> None:
@@ -1956,20 +1936,66 @@ def _check_scalar_coordinates_agree(arrays: Mapping[str, xr.DataArray]) -> None:
                 )
 
 
-def _check_converted_values_are_finite(
-    values: Mapping[str, np.ndarray], index: pd.Index | None
+def _check_deciduous_is_boolean(values: np.ndarray) -> None:
+    if values.dtype != np.bool_:
+        raise TypeError(
+            f"deciduous is {values.dtype}, expected boolean. It says whether the site's "
+            "PFT drops its leaves; casting a numeric or object array to bool would make "
+            "every non-zero value, NaN included, deciduous and silently zero the LAI."
+        )
+
+
+def _check_state_is_physical(
+    values: Mapping[str, np.ndarray], index: pd.Index | None, population: str = "cells"
 ) -> None:
     for name, array in values.items():
-        bad = ~np.isfinite(array)
+        bad = ~np.isfinite(array) | (array < 0.0)
         if not bad.any():
             continue
         raise ValueError(
-            f"the conversion produced a {name} that is not finite"
-            f"{_refused_cells(index, bad, array)}. The inputs were all finite, so "
-            "the overflow is in the formula: a root-fraction sum a hair below 1, or "
-            "a pool large enough that the factor of 1000 leaves the float range. "
-            "pySIPNET would refuse the value, and a table may not carry a row the "
-            "single-member form would not return."
+            f"{name} is negative, NaN or infinite"
+            f"{_offending_cells(index, bad, array, population)}. "
+            "The conversion takes physically valid state only. The ensemble's negative "
+            "wood and leaf members and the sites where a variable is absent are for the "
+            "initial condition prior to resolve; a unit conversion may not floor, "
+            "substitute or drop them."
+        )
+
+
+def _check_leaf_carbon_per_area_is_positive(values: np.ndarray, index: pd.Index | None) -> None:
+    bad = ~np.isfinite(values) | (values <= 0.0)
+    if bad.any():
+        raise ValueError(
+            "leaf_carbon_per_area is not positive and finite"
+            f"{_offending_cells(index, bad, values)}. It divides the leaf carbon to give "
+            "the initial LAI, and SIPNET's leafCSpWt is positive by definition, so a "
+            "specific leaf area draw that reaches zero or below has to be excluded by "
+            "the prior rather than absorbed here."
+        )
+
+
+def _check_root_fractions_leave_wood(
+    fine: np.ndarray, coarse: np.ndarray, index: pd.Index | None
+) -> None:
+    for name, values in (("fine_root_fraction", fine), ("coarse_root_fraction", coarse)):
+        bad = ~np.isfinite(values) | (values < 0.0) | (values > 1.0)
+        if bad.any():
+            raise ValueError(
+                f"{name} is outside [0, 1] or not finite"
+                f"{_offending_cells(index, bad, values)}. It is a share of the total wood "
+                "pool."
+            )
+    total = fine + coarse
+    bad = total >= 1.0
+    if bad.any():
+        raise ValueError(
+            "fine_root_fraction + coarse_root_fraction must be below 1"
+            f"{_offending_cells(index, bad, total)}. SIPNET's initial wood pool is "
+            "total_wood_carbon x (1 - fine - coarse), so a sum of 1 or more divides by "
+            "zero here and would hand SIPNET a zero or negative wood pool, which it runs "
+            "to completion with: exit code 0, a full output file, empty stderr. pySIPNET "
+            "validates the two fractions separately and not their sum "
+            "(TARPS-group/pySIPNET#39), so this is the only guard there is."
         )
 
 
@@ -1991,4 +2017,21 @@ def _check_units_are_the_products(array: xr.DataArray, name: str) -> None:
             f"{name} carries units {units!r}, not the product's {spec.units!r}. The "
             "conversion applies the change to SIPNET's own units itself, so values "
             "converted already would be scaled twice."
+        )
+
+
+def _check_converted_values_are_finite(
+    values: Mapping[str, np.ndarray], index: pd.Index | None
+) -> None:
+    for name, array in values.items():
+        bad = ~np.isfinite(array)
+        if not bad.any():
+            continue
+        raise ValueError(
+            f"the conversion produced a {name} that is not finite"
+            f"{_offending_cells(index, bad, array)}. The inputs were all finite, so "
+            "the overflow is in the formula: a root-fraction sum a hair below 1, or "
+            "a pool large enough that the factor of 1000 leaves the float range. "
+            "pySIPNET would refuse the value, and a table may not carry a row the "
+            "single-member form would not return."
         )
