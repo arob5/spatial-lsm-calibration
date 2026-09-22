@@ -647,9 +647,13 @@ class TestAggregateTimeKeepsEveryMethodNaNAware:
 
 
 class TestAggregateTimeKeepsTheVariablesIdentity:
-    def test_the_name_survives(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
-        assert aggregate_time(field, "1D").name == "net_ecosystem_exchange"
+    def test_the_name_survives_every_method(self, niwot_output):
+        """A mean divides two arrays, which is where xarray drops the name."""
+        total = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        assert aggregate_time(total, "1D").name == "net_ecosystem_exchange"
+        pool = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
+        assert aggregate_time(pool, "1D").name == "soil_water"
+        assert aggregate_time(pool, "1D", how="mean").name == "soil_water"
 
     def test_a_field_stripped_of_attributes_is_recognized_by_its_name(self, niwot_output):
         """The registry fallback, for a field whose attrs were lost in transit."""
