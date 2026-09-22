@@ -13,10 +13,19 @@ The synthetic fixtures build canonical fields at each subset of the
 ``units``/``long_name`` in ``attrs``.
 
 The real-data fixtures read the driver files and the constraint products
-present in this working copy, and skip when they are not there.
+present in this working copy, and skip when they are not there. The SIPNET
+output fixtures read pySIPNET's own test fixtures out of the checkout beside
+this one, since pySIPNET is installed from git and does not ship them; they
+skip when there is no such checkout, and the one that runs the model skips
+without a compiled binary too.
 """
 
 from __future__ import annotations
+
+import os
+import tempfile
+import warnings
+from pathlib import Path
 
 import matplotlib
 
@@ -194,3 +203,136 @@ def real_constraint_fields() -> tuple[dict, dict]:
     except FileNotFoundError as error:
         pytest.skip(f"constraint products not available in this working copy: {error}")
     return means, {name: sd**2 for name, sd in sds.items()}
+
+
+# ── real SIPNET output ────────────────────────────────────────────────────────
+
+
+#: Inside a pySIPNET checkout: the independently-authored Niwot Ridge input set,
+#: and real SIPNET output from running the standard model on its first rows.
+NIWOT_REFERENCE = Path("tests/fixtures/niwot_reference")
+NIWOT_GOLDEN = Path("tests/fixtures/golden/niwot_standard.out.csv")
+
+#: The local driver file the 3-hourly tests run SIPNET on, if it is present.
+SITE_1_DRIVERS = (
+    Path(__file__).resolve().parents[1]
+    / "data/raw/drivers/ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim"
+)
+
+#: Whole days of it to run, at 8 steps per day.
+SITE_1_DAYS = 8
+
+
+def pysipnet_checkout() -> Path | None:
+    """The pySIPNET source checkout, whose test fixtures are the only SIPNET inputs here.
+
+    pySIPNET is installed from git, so its ``tests/fixtures`` are not on the
+    Python path; the checkout is found beside this repository, or wherever
+    ``$PYSIPNET_SOURCE`` says. Returns ``None`` when there is none, which is
+    what the fixtures below skip on.
+    """
+    named = os.environ.get("PYSIPNET_SOURCE")
+    candidates = [Path(named)] if named else []
+    here = Path(__file__).resolve()
+    candidates += [parent / "pySIPNET" for parent in here.parents]
+    for candidate in candidates:
+        if (candidate / NIWOT_REFERENCE / "sipnet.clim").is_file():
+            return candidate
+    return None
+
+
+@pytest.fixture(scope="session")
+def niwot_output():
+    """Real SIPNET output for the Niwot Ridge fixture, as a ``SIPNETOutput``.
+
+    pySIPNET's golden baseline: the standard model run on the first rows of the
+    reference climate, committed in its repository, so this needs no binary.
+    The climate's own step lengths come with it, which matters because Niwot's
+    steps alternate between day and night and are not all the same length --
+    the case a length-weighted mean exists for.
+    """
+    checkout = pysipnet_checkout()
+    if checkout is None:
+        pytest.skip("no pySIPNET checkout beside this one; set $PYSIPNET_SOURCE")
+    golden = checkout / NIWOT_GOLDEN
+    if not golden.is_file():
+        pytest.skip(f"pySIPNET's golden output is not at {golden}")
+
+    from pysipnet.io.clim_io import read_clim_file
+    from pysipnet.output import SIPNETOutput
+
+    frame = pd.read_csv(golden)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        climate = read_clim_file(checkout / NIWOT_REFERENCE / "sipnet.clim")
+    lengths = climate.pandas["time_step_length"].to_numpy()[: len(frame)]
+    return SIPNETOutput.from_dataframe(frame, time_step_length=lengths, run_id="niwot-golden")
+
+
+@pytest.fixture(scope="session")
+def site_1_result():
+    """A real SIPNET run of the Niwot parameters on this copy's 3-hourly site-1 drivers.
+
+    :data:`SITE_1_DAYS` whole days of ``ERA5_1_1``, which is the only 3-hourly
+    input here and so the only one that can show a daily total being eight
+    steps. Skipped where the driver file or the compiled binary is absent.
+    """
+    checkout = pysipnet_checkout()
+    if checkout is None:
+        pytest.skip("no pySIPNET checkout beside this one; set $PYSIPNET_SOURCE")
+    if not SITE_1_DRIVERS.is_file():
+        pytest.skip(f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS})")
+
+    from pysipnet.io.clim_io import read_clim_file
+    from pysipnet.parameters.model import ModelFlags
+    from pysipnet.runner import SIPNETRunner
+
+    cache = _sipnet_cache_dir(checkout)
+    if cache is None:
+        pytest.skip("no compiled SIPNET binary; run 'make sipnet' in the pySIPNET checkout")
+
+    climate_path = Path(tempfile.mkdtemp()) / "sipnet.clim"
+    rows = SITE_1_DRIVERS.read_text().splitlines(keepends=True)[: 8 * SITE_1_DAYS]
+    climate_path.write_text("".join(rows))
+    with warnings.catch_warnings():
+        # The site-1 record has exact zeros where SIPNET clamps, which pySIPNET
+        # warns about on read; it is a property of the file, not of this run.
+        warnings.simplefilter("ignore")
+        climate = read_clim_file(climate_path)
+        parameters = niwot_parameters(checkout)
+        runner = SIPNETRunner(flags=ModelFlags.standard(), cache_dir=cache)
+        return runner.run(parameters, climate, run_id="site-1")
+
+
+def niwot_parameters(checkout: Path):
+    """The reference ``sipnet.param`` as a ``SIPNETParameters``.
+
+    A stand-in for the production reader pySIPNET has not written yet (its
+    issue #19); built generically from the public name mapping so that a new
+    parameter needs no change here.
+    """
+    from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
+    from pysipnet.parameters.model import SIPNETParameters
+
+    raw = read_param_file(checkout / NIWOT_REFERENCE / "sipnet.param")
+    groups: dict[str, dict[str, float]] = {name: {} for name in SIPNETParameters.model_fields}
+    for dotted, sipnet_name in PYTHON_TO_SIPNET.items():
+        group, _, field = dotted.partition(".")
+        if group in groups and sipnet_name in raw:
+            groups[group][field] = raw[sipnet_name]
+    return SIPNETParameters(
+        **{
+            name: SIPNETParameters.model_fields[name].annotation(**values)
+            for name, values in groups.items()
+        }
+    )
+
+
+def _sipnet_cache_dir(checkout: Path) -> Path | None:
+    """Where a compiled SIPNET binary is, preferring the one this venv would use."""
+    from pysipnet.runner import BINARY_NAME, SIPNETRunner
+
+    for cache in (SIPNETRunner().cache_dir, checkout / ".sipnet_cache"):
+        if (cache / BINARY_NAME).exists():
+            return cache
+    return None
