@@ -28,7 +28,9 @@ from scipy.io import netcdf_file
 
 from sipnet_calibration import initial_conditions as module
 from sipnet_calibration.initial_conditions import (
+    CF_CONVENTIONS,
     CONVERTED_SIPNET_FIELDS,
+    SOURCE,
     INITIAL_CONDITIONS,
     INITIAL_CONDITION_NAMES,
     InitialConditionSpec,
@@ -37,6 +39,7 @@ from sipnet_calibration.initial_conditions import (
     SOURCE,
     SOURCE_MEMBER,
     SourceFile,
+    SourceVariable,
     build_initial_conditions,
     build_raw,
     describe,
@@ -45,6 +48,7 @@ from sipnet_calibration.initial_conditions import (
     netcdf_encoding,
     raw_encoding,
     read_raw,
+    read_source_directory,
     read_source_file,
     resolve_initial_condition,
     site_member_from_file_name,
@@ -241,6 +245,225 @@ def raw(tree, tmp_path) -> Path:
     return out
 
 
+# ── the source format, pinned to literals ─────────────────────────────────────
+
+
+def test_source_format_is_pinned_to_literals():
+    """The fixtures write files *from* SOURCE and the parser checks them
+    *against* SOURCE, so only literals here can catch a change to it."""
+    assert SOURCE.file_template == "{site}/IC_site_{site}_{member}.nc"
+    assert SOURCE.fill_value == -999.0
+    assert SOURCE.time_units == "days since [year]-01-01 00:00:00 UTC"
+    assert SOURCE.time_long_name == "Time middle averaging period"
+    assert SOURCE.time_value == 1.0
+    assert SOURCE.names == (
+        "AbvGrndWood",
+        "wood_carbon_content",
+        "leaf_carbon_content",
+        "soil_organic_carbon_content",
+        "SoilMoistFrac",
+    )
+    assert isinstance(SOURCE.names, tuple)
+    # The specs carry the same variables in the same order, which is the order
+    # build_raw lays the raw file out in.
+    assert tuple(spec.source_name for spec in INITIAL_CONDITIONS) == SOURCE.names
+    assert SOURCE.variables["SoilMoistFrac"].units == "(-)"
+    assert SOURCE.variables["AbvGrndWood"].long_name == "Above ground woody biomass"
+
+
+def test_source_format_cannot_be_mutated():
+    """A spec reads SOURCE at attribute-access time, so a mutable mapping here
+    would let an already-built spec start reporting different source units."""
+    with pytest.raises(TypeError):
+        SOURCE.variables["bogus"] = SourceVariable("bogus", "kg m-2", "Bogus")
+    with pytest.raises(TypeError):
+        del SOURCE.variables["AbvGrndWood"]
+    assert hash(SOURCE) == hash(SOURCE)
+
+
+# ── reading a site directory ──────────────────────────────────────────────────
+
+
+def test_read_source_directory_reads_one_site_in_file_name_order(tree):
+    records = read_source_directory(tree, 1)
+    assert [(r.site, r.member) for r in records] == [(1, 1), (1, 2)]
+
+
+def test_read_source_directory_skips_debris_and_refuses_strays(tree, tmp_path):
+    (tree / "1" / ".DS_Store").write_bytes(b"debris")
+    assert len(read_source_directory(tree, 1)) == 2
+
+    (tree / "1" / "notes.txt").write_text("x")
+    with pytest.raises(ValueError, match="holds nothing else"):
+        read_source_directory(tree, 1)
+    (tree / "1" / "notes.txt").unlink()
+
+    with pytest.raises(ValueError, match="no such site directory"):
+        read_source_directory(tree, 999)
+
+    empty = tmp_path / "empty"
+    (empty / "1").mkdir(parents=True)
+    with pytest.raises(ValueError, match="holds no files"):
+        read_source_directory(empty, 1)
+
+
+def test_read_source_file_refuses_a_layered_variable_and_an_unreadable_file(tmp_path):
+    """The per-variable dimension guard is what a layer-resolved upstream
+    variable would trip; the file-level one catches a different shape."""
+    root = tmp_path / "1"
+    root.mkdir()
+    path = root / "IC_site_1_1.nc"
+    with netcdf_file(str(path), "w") as handle:
+        handle.createDimension("time", None)
+        handle.createDimension("layer", 2)
+        time = handle.createVariable("time", "f8", ("time",))
+        time[:] = [SOURCE.time_value]
+        time.units, time.long_name = SOURCE.time_units, SOURCE.time_long_name
+        layered = handle.createVariable("AbvGrndWood", "f8", ("time", "layer"))
+        layered[:] = np.array([[1.0, 2.0]])
+        layered.units = SOURCE.variables["AbvGrndWood"].units
+        layered.long_name = SOURCE.variables["AbvGrndWood"].long_name
+        layered._FillValue = SOURCE.fill_value
+    with pytest.raises(ValueError, match=r"dimensions"):
+        read_source_file(path)
+
+    text = tmp_path / "2" / "IC_site_2_1.nc"
+    text.parent.mkdir()
+    text.write_text("this is not a netCDF file at all, but it is long enough to parse into")
+    with pytest.raises(ValueError, match="not readable as netCDF-3 classic"):
+        read_source_file(text)
+
+
+def test_read_source_file_refuses_a_truncated_file(tree, tmp_path):
+    """scipy raises IndexError from inside its own reader here, which is not a
+    ValueError and would escape the conversion script without naming the file.
+    """
+    good = (tree / "1" / "IC_site_1_1.nc").read_bytes()
+    path = tmp_path / "1" / "IC_site_1_1.nc"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(good[: len(good) // 2])
+    with pytest.raises(ValueError, match="not readable as netCDF-3 classic"):
+        read_source_file(path)
+
+
+def test_read_source_file_refuses_a_path_that_is_not_a_regular_file(tmp_path):
+    directory = tmp_path / "1" / "IC_site_1_1.nc"
+    directory.mkdir(parents=True)
+    with pytest.raises(ValueError, match="not a regular file"):
+        read_source_file(directory)
+
+    dangling = tmp_path / "2" / "IC_site_2_1.nc"
+    dangling.parent.mkdir()
+    dangling.symlink_to(tmp_path / "nowhere.nc")
+    with pytest.raises(ValueError, match="not a regular file"):
+        read_source_file(dangling)
+
+
+# ── the attribute contract, against literals rather than against the writer ──
+
+VARIABLE_ATTRIBUTES = (
+    "units", "long_name", "description", "product", "source_name", "source_units",
+    "source_long_name", "sipnet_initial_condition", "pecan_conversion",
+    "units_provenance",
+)
+PRODUCT_ATTRIBUTES = (
+    "Conventions", "title", "product", "source_file", "source_root", "source_script",
+    "source_script_note", "nominal_date", "nominal_date_provenance",
+    "source_time_units", "source_time_long_name", "source_time_value",
+    "member_source", "member_correspondence", "n_sites", "n_members", "history",
+    "created",
+)
+RAW_ATTRIBUTES = (
+    "title", "source_root", "source_layout", "source_format", "source_fill_value",
+    "source_time_units", "source_time_long_name", "source_time_value",
+    "n_source_files", "n_sites", "n_members", "conversion_script", "history",
+    "converted",
+)
+
+
+def test_product_attributes_are_the_documented_set(raw, sites_csv):
+    """Asserting the file against spec.xarray_attributes() compares the writer
+    to itself; these literals are what the package docstring promises."""
+    product = build_initial_conditions(read_raw(raw), load_sites(sites_csv))
+    assert tuple(product.attrs) == PRODUCT_ATTRIBUTES
+    for spec in INITIAL_CONDITIONS:
+        expected = VARIABLE_ATTRIBUTES + (("constituent",) if spec.constituent else ())
+        expected += ("comment",) if spec.comment else ()
+        assert set(product[spec.name].attrs) == set(expected), spec.name
+    assert set(product["lon"].attrs) == {"standard_name", "long_name", "units"}
+    assert product["lon"].attrs["standard_name"] == "longitude"
+    assert product["lat"].attrs["standard_name"] == "latitude"
+    assert set(product[SITE].attrs) == {"long_name", "comment"}
+
+
+def test_raw_attributes_are_the_documented_set(raw):
+    raw = read_raw(raw)
+    assert tuple(raw.attrs) == RAW_ATTRIBUTES
+    assert raw.attrs["source_fill_value"] == -999.0
+    assert raw.attrs["source_layout"] == "{site}/IC_site_{site}_{member}.nc"
+    assert raw.attrs["n_sites"] == raw.sizes[SITE]
+    assert raw.attrs["n_members"] == raw.sizes[MEMBER]
+    for name in SOURCE.names:
+        assert raw[name].attrs["source_fill_value"] == -999.0
+
+
+def test_product_declares_the_shared_cf_version():
+    assert CF_CONVENTIONS == "CF-1.11"
+
+
+# ── the checks the readers apply on load ─────────────────────────────────────
+
+
+def test_readers_refuse_a_variable_present_for_some_members_only(raw, sites_csv, tmp_path):
+    """NaN means "no source file for this site carries it", so it cannot vary
+    across a site's members. Both readers assert it, not just build_raw."""
+    dataset = read_raw(raw)
+    broken_raw = dataset.copy(deep=True)
+    broken_raw["SoilMoistFrac"].values[0, 0] = np.nan
+    path = tmp_path / "broken_raw.nc"
+    broken_raw.to_netcdf(path, engine="h5netcdf", encoding=raw_encoding(broken_raw))
+    with pytest.raises(ValueError, match="property of the site"):
+        read_raw(path)
+
+    product = build_initial_conditions(dataset, load_sites(sites_csv))
+    product["initial_soil_moisture_saturation"].values[0, 0] = np.nan
+    out = tmp_path / "product.nc"
+    product.to_netcdf(out, engine="h5netcdf", encoding=netcdf_encoding(product))
+    with pytest.raises(ValueError, match="property of the site"):
+        load_initial_conditions(out)
+
+
+def test_product_reader_refuses_infinities_and_misplaced_coordinates(raw, sites_csv, tmp_path):
+    base = build_initial_conditions(read_raw(raw), load_sites(sites_csv))
+
+    def refused(mutate, message):
+        variant = mutate(base.copy(deep=True))
+        path = tmp_path / "v.nc"
+        variant.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(variant))
+        with pytest.raises(ValueError, match=message):
+            load_initial_conditions(path)
+        path.unlink()
+
+    def infinite(dataset):
+        dataset["initial_wood_carbon"].values[:, 0] = np.inf
+        return dataset
+
+    refused(infinite, "infinite value")
+    refused(lambda d: d.assign_coords(lon=(MEMBER, d["lon"].values[: d.sizes[MEMBER]])),
+            "must be on site")
+    refused(lambda d: d.assign_coords(source_member=(SITE, d[SITE].values.astype(np.int16))),
+            "source_member must be on member")
+
+
+def test_build_raw_refuses_member_ids_that_do_not_fit_int16():
+    files = [
+        SourceFile(site=1, member=1, values={"AbvGrndWood": 1.0}),
+        SourceFile(site=1, member=40000, values={"AbvGrndWood": 2.0}),
+    ]
+    with pytest.raises(ValueError, match="int16"):
+        build_raw(files, source_root="r", conversion_script="s")
+
+
 # ── the default paths ─────────────────────────────────────────────────────────
 
 
@@ -311,7 +534,7 @@ def test_spec_refuses_a_bad_name_unit_source_or_sipnet_field():
     InitialConditionSpec(**good)
     with pytest.raises(ValueError, match="lower_case"):
         InitialConditionSpec(**{**good, "name": "InitialThing"})
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="substance"):
         InitialConditionSpec(**{**good, "units": "kg C m-2"})
     with pytest.raises(ValueError, match="source_name"):
         InitialConditionSpec(**{**good, "source_name": "TotSoilCarb"})
@@ -319,6 +542,9 @@ def test_spec_refuses_a_bad_name_unit_source_or_sipnet_field():
         InitialConditionSpec(**{**good, "sipnet_initial_condition": "plantWoodInit"})
     with pytest.raises(ValueError, match="pecan_conversion"):
         InitialConditionSpec(**{**good, "pecan_conversion": ""})
+    for empty in ("description", "long_label", "product"):
+        with pytest.raises(ValueError, match="description, long_label and product"):
+            InitialConditionSpec(**{**good, empty: ""})
 
 
 def test_resolve_and_describe():
@@ -507,7 +733,7 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
     with pytest.raises(ValueError, match="not in the pool"):
         initial_condition_fields(sites=[9], path=out)
-    with pytest.raises(KeyError):
+    with pytest.raises(KeyError, match="No initial condition named"):
         initial_condition_fields(["soil"], path=out)
 
 

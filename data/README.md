@@ -518,9 +518,11 @@ reproduce or consciously depart from; the ingest applies none of it.
 | `SoilMoistFrac` | `soilWFracInit` | `soil_wetness_fraction` | `SoilMoistFrac / 100`; SIPNET defines the parameter as a fraction of water holding capacity, a different fraction |
 | `AbvGrndWood` | none | none | unused: `prepare_pools` prefers `wood_carbon_content`, and would use `AbvGrndWood` only with a coarse-root pool, which no file carries |
 
-Three of the four conversions depend on parameters the calibration proposes,
-which is why the ingest applies none of them (see
-[Processed format](#processed-format)).
+Two of the four conversions read a parameter the calibration proposes -- the
+root fractions and the specific leaf weight -- which is why the ingest applies
+none of them (see [Processed format](#processed-format)). A third,
+`soilWFracInit`, takes no proposed parameter but is a fraction of a water
+holding capacity the calibration also proposes, so its meaning moves as well.
 `sipnet_calibration.initial_conditions.to_pysipnet_initial_conditions` applies
 the mapping to one `(member, site)` cell for one proposed parameter vector, and
 `to_pysipnet_initial_conditions_table` does it over a whole `(member, site)`

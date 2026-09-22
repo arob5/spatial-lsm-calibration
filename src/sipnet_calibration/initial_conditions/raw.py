@@ -3,15 +3,39 @@
 ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc`` holds every
 source file's values on ``(site, member)``, in the source files' own variable
 names, units strings and 1-based member index. It is written once, on the SCC,
-by ``scripts/raw_sources/convert_initial_conditions.py``, and is small enough
-to live in version control -- which is the only form in which the ensemble
-exists off the SCC.
+by ``scripts/raw_sources/convert_initial_conditions.py``, and is tracked.
 
-The writer and the reader are both here so that the file's schema is stated
-once: :func:`build_raw` assembles it, :func:`raw_encoding` says how it is
-stored, and :func:`read_raw` reads it back and checks it against the same
-rules. ``scripts/ingest_initial_conditions.py`` takes it from here to
+:func:`build_raw` assembles it, :func:`raw_encoding` says how it is stored,
+and :func:`read_raw` reads it back and checks it against the same rules.
+``scripts/ingest_initial_conditions.py`` takes it from here to
 :mod:`sipnet_calibration.initial_conditions.processed`.
+
+Data model
+----------
+**Dimensions**: ``site``, ``member`` -- in that order, the transpose of the
+product's.
+
+**Data variables**: one per :data:`SOURCE` variable, under the *source* names,
+all ``float64`` on ``(site, member)``, ``NaN`` where none of a site's files
+carries the variable. Each carries the source file's own ``units`` and
+``long_name`` strings verbatim, plus ``source_fill_value`` and a ``comment``.
+
+**Coordinates**: ``site`` ``int32`` ascending, the identifiers the source
+directories are named for; ``member`` ``int16`` ascending, the source files'
+**1-based** index, which the product renumbers.
+
+**Attributes**: ``title``, ``source_root``, ``source_layout``,
+``source_format``, ``source_fill_value``, the ``source_time_*`` triple,
+``n_source_files``, ``n_sites``, ``n_members``, ``conversion_script``,
+``history`` and ``converted``.
+
+**Values are the source files', bit for bit.** Nothing is renamed, converted
+or masked here, which is what keeps the file checkable against the originals.
+
+Notes
+-----
+The writer and the reader are both here so that the schema is stated once and
+the two cannot drift apart.
 """
 
 from __future__ import annotations
@@ -106,7 +130,7 @@ def build_raw(
                 )
             arrays[name][i, j] = value
     _check_every_site_has_every_member(seen, sites, members)
-    check_presence_is_uniform_over_members(arrays, sites)
+    _check_presence_is_uniform_over_members(arrays, sites)
 
     _check_site_ids_fit_dtype(sites, np.int32, "site")
     _check_site_ids_fit_dtype(members, np.int16, "member")
@@ -178,7 +202,8 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
     Parameters
     ----------
     path:
-        The netCDF to read. Defaults to :func:`raw_path`.
+        The netCDF to read. Defaults to
+        :func:`sipnet_calibration.initial_conditions.names.raw_path`.
 
     Returns
     -------
@@ -203,7 +228,10 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
             "scripts/raw_sources/convert_initial_conditions.py (see "
             "data/raw/initial_conditions/provenance.md)."
         )
-    dataset = xr.open_dataset(path, engine="h5netcdf")
+    try:
+        dataset = xr.open_dataset(path, engine="h5netcdf")
+    except OSError as error:
+        raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error})") from error
     try:
         _check_raw(dataset, path)
     except Exception:
@@ -223,12 +251,16 @@ def _check_every_site_has_every_member(seen: np.ndarray, sites: np.ndarray, memb
     )
 
 
-def check_presence_is_uniform_over_members(arrays: Mapping[str, np.ndarray], sites: np.ndarray) -> None:
+def _check_presence_is_uniform_over_members(
+    arrays: Mapping[str, np.ndarray], sites: np.ndarray
+) -> None:
     """Raise unless each variable is present for every member of a site or none.
 
-    Not private: :mod:`sipnet_calibration.initial_conditions.processed` asserts
-    the same invariant on the product, and it has to be the same rule, since it
-    is what gives ``NaN`` its one meaning.
+    Private to the package but shared across it, like ``_SITE_ATTRS`` and
+    ``_utc_timestamp`` in :mod:`sipnet_calibration.initial_conditions.names`:
+    :mod:`sipnet_calibration.initial_conditions.processed` asserts the same
+    invariant on the product, and it has to be the same rule, since it is what
+    gives ``NaN`` its one meaning.
     """
     for name, array in arrays.items():
         present = np.isfinite(array)
@@ -277,7 +309,7 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
             raise ValueError(f"{path}: {coordinate} is {values.dtype}, expected an integer type")
         # The product narrows these with astype, which wraps silently.
         _check_site_ids_fit_dtype(values.astype(np.int64), dtype, f"{path}: {coordinate}")
-    check_presence_is_uniform_over_members(
+    _check_presence_is_uniform_over_members(
         {name: dataset[name].values for name in SOURCE.names}, dataset[SITE].values
     )
     for key in ("source_time_units", "source_time_long_name", "source_time_value", "n_source_files"):

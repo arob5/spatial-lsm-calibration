@@ -6,18 +6,20 @@ Overview
 Every member of the 8000-site ensemble starts SIPNET from a drawn initial
 state -- soil organic carbon, wood carbon, leaf carbon and surface soil
 moisture, one value per site and member. This package owns that data from
-PEcAn's files through to the parameters SIPNET reads. Each module owns one
-artifact and everything about it: its schema, how it is written, how it is
-read back, and the checks both sides are held to.
+PEcAn's files through to the parameters SIPNET reads. Three of the modules own
+a stored artifact -- the source tree, the raw netCDF, the product -- and each
+holds everything about its own: the schema, how it is written, how it is read
+back, and the checks both sides are held to. The other three hold what those
+share: the names, the variable specs, and the conversion to SIPNET.
 
-======================  ====================================================
-:mod:`names`            dimension names, file locations
-:mod:`source_files`     PEcAn's 800,000 netCDFs: the format, and the parser
-:mod:`specs`            what each variable is; the registry
-:mod:`raw`              the tracked raw netCDF: build, encode, read
-:mod:`processed`        ``initial_conditions.nc``: build, encode, read, fields
-:mod:`sipnet_parameters`  the conversion to SIPNET's initial parameters
-======================  ====================================================
+========================  ==================================================
+``names``                 dimension names, file locations
+``source_files``          PEcAn's source netCDFs: the format, and the parser
+``specs``                 what each variable is; the registry
+``raw``                   the tracked raw netCDF: build, encode, read
+``processed``             the product: build, encode, read, canonical fields
+``sipnet_parameters``     the conversion to SIPNET's initial parameters
+========================  ==================================================
 
 Everything below is re-exported here, so a caller imports from
 ``sipnet_calibration.initial_conditions`` and never names a module.
@@ -109,8 +111,7 @@ holds an explicit fill; both are asserted at conversion and on load.
 
 Functions
 ---------
-Documented where they are defined; :mod:`specs` and
-:mod:`sipnet_parameters` are the two a caller reads first.
+Each is documented where it is defined.
 
 **The variables.** :func:`resolve_initial_condition` looks a spec up by its
 processed name; :func:`describe` renders one as a paragraph for a run log.
@@ -146,9 +147,9 @@ are derived. ``sipnet_initial_condition`` names a field of
 import, so a spec cannot name a field that does not exist.
 
 **Why the files are converted and the conversion tracked.** SIPNET never
-reads these files; they are a PEcAn intermediate, 816 MB and 800,000 inodes
-on the SCC for 32 MB of values, with one file open per ``(site, member)``
-cell. The conversion changes structure only -- bit-exact values, the source
+reads these files; they are a PEcAn intermediate, one small file per
+``(site, member)`` cell, whose inode count on the SCC dwarfs the size of the
+values in it. The conversion changes structure only -- bit-exact values, the source
 names and attribute strings, the source member index -- and the result is
 small enough to live in version control, which is the only form in which the
 ensemble exists off the SCC.
@@ -159,12 +160,13 @@ every name distinct from the constraint products' without inventing a product
 prefix. ``biomass`` rather than the file's ``woody`` for the first variable
 because the Spawn and Gibbs product is total aboveground biomass carbon.
 
-**Why the product stores state and not parameters.** Three of the four SIPNET
-initial parameters these feed depend on parameters the calibration proposes
-(the root fractions for ``plantWoodInit``, the specific leaf weight for
-``laiInit``, the water holding capacity for ``soilWFracInit``), so the ingest
-applies no conversion and the product holds the state in its own units. The
-conversion is a function of a state and a parameter vector,
+**Why the product stores state and not parameters.** Two of the four
+conversions read a parameter the calibration proposes -- the root fractions for
+``plantWoodInit``, the specific leaf weight for ``laiInit`` -- so the ingest
+applies none of them and the product holds the state in its own units. (A
+third, ``soilWFracInit``, takes no proposed parameter but is a fraction of a
+water holding capacity the calibration also proposes, so what it *means*
+moves too.) The conversion is a function of a state and a parameter vector,
 :func:`to_pysipnet_initial_conditions`, evaluated per proposal; each spec also
 records the formula PEcAn applied, in ``pecan_conversion``.
 
@@ -208,15 +210,20 @@ Usage
     )
     conditions.soil_carbon                                # 13085.0 g C m-2
 
-    usable = fields["initial_wood_carbon"] >= 0          # the prior's job, later
-    table = to_pysipnet_initial_conditions_table(         # every (member, site)
-        {name: field.where(usable, drop=True) for name, field in fields.items()},
+    # Which members to run is the prior's decision, not this module's, and the
+    # conversion refuses a negative pool rather than choosing for you. Pick the
+    # members first -- a whole (member, site) rectangle at a time, since a
+    # DataArray cannot be ragged.
+    site = {name: field.sel(site=4102) for name, field in fields.items()}
+    usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
+    table = to_pysipnet_initial_conditions_table(         # one row per member
+        {name: field.isel(member=usable) for name, field in site.items()},
         leaf_carbon_per_area=32.0,                        # scalar or per member
         fine_root_fraction=0.2,
         coarse_root_fraction=0.2,
         deciduous=True,                                   # scalar or per site
     )
-    table.loc[(0, 4102)]                                  # one cell's six fields
+    table.iloc[0]                                         # one cell's six fields
 """
 
 from __future__ import annotations

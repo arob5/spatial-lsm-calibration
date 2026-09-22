@@ -4,10 +4,12 @@ One :class:`InitialConditionSpec` per variable of the source files: what the
 quantity is, which upstream product PEcAn drew it from and how, which SIPNET
 initial parameter it feeds and by what formula, and how firm its units are.
 
-These specs are the only description of the ensemble there is. The processed
-netCDF stores a spec's fields as the variable's attributes, so the file
-describes itself, and its reader checks it against the same specs -- which is
-why nothing else in the package carries a schema of its own.
+These specs are the only description of the ensemble *in the code*: the
+processed netCDF stores a spec's fields as the variable's attributes, so the
+file describes itself, and its reader checks it against the same specs, which
+is why nothing else in the package carries a per-variable schema.
+``data/README.md`` carries the provenance and the open questions in full, and
+each spec's ``units_provenance`` points at it.
 
 Contents
 --------
@@ -308,8 +310,8 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         units_provenance=(
             "The CCI variable's own attributes (units 'percent', long name 'Percent of "
-            "Saturation Soil Moisture', valid range 0-100) and the values, which run 0 "
-            "to 100 with a median of 60. The files' units attribute is PEcAn's "
+            "Saturation Soil Moisture', valid range 0-100) and the values, which occupy "
+            "that range rather than 0-1. The files' units attribute is PEcAn's "
             "standard_vars string '(-)'. " + _UNCONFIRMED
         ),
     ),

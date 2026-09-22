@@ -1,14 +1,18 @@
-"""Metadata conventions every processed product in this project follows.
-
-One place for the constants that have to agree across products, so that two
-ingests cannot declare different ones. Each product's module imports what it
-needs from here and re-exports it, so a caller reading about the constraints
-or the initial conditions still finds the constant beside that product.
+"""Metadata conventions shared by the project's processed products.
 
 Contents
 --------
 :data:`CF_CONVENTIONS`
-    The value of the ``Conventions`` attribute each product's netCDF carries.
+    The ``Conventions`` attribute the netCDF products declare.
+
+Notes
+-----
+A constant lives here once it has to agree across products, so that two
+ingests cannot declare different values of it. A product's own module imports
+what it needs and re-exports it, so a caller reading about the constraints or
+the initial conditions still finds the constant beside that product. The
+netCDF products -- the constraints and the initial conditions -- are the ones
+this currently covers; the site table is a CSV and declares nothing.
 """
 
 from __future__ import annotations

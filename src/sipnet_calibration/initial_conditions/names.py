@@ -1,7 +1,8 @@
 """Dimension names, file locations, and the few helpers every module shares.
 
-The names of the dimensions and coordinates the two netCDFs use, where each
-file is expected on disk, and the small pieces -- the data root, a timestamp,
+The names of the dimensions and coordinates the two netCDFs use, where the
+source tree and each netCDF are expected on disk, and the small pieces --
+the data root, a timestamp,
 the site coordinate's attributes -- that more than one of the package's
 modules needs. Nothing here reads or writes anything.
 
@@ -11,9 +12,10 @@ Contents
     The dimension and coordinate names, spelled once.
 :data:`RAW_FILE`, :data:`PRODUCT_FILE`
     The two file names, without their directories.
-:func:`default_source_root`, :func:`default_raw_dir`, :func:`raw_path`,
-:func:`default_product_path`
-    Where each is expected, all honoring ``$SIPNET_CALIBRATION_DATA``.
+The four path functions
+    :func:`default_source_root`, :func:`default_raw_dir`, :func:`raw_path` and
+    :func:`default_product_path` say where each is expected, all honoring
+    ``$SIPNET_CALIBRATION_DATA``.
 """
 
 from __future__ import annotations
@@ -38,16 +40,19 @@ __all__ = [
 ]
 
 
-#: Dimension and coordinate names.
+#: The site dimension, carrying the 1-8000 identifier.
 SITE = "site"
 
+#: The ensemble member dimension, 0-based in the product.
 MEMBER = "member"
 
+#: The coordinate on ``member`` holding the source files' 1-based index.
 SOURCE_MEMBER = "source_member"
 
-#: The converted raw file and the processed product, under ``data/``.
+#: The converted raw file, under ``data/raw/initial_conditions/``.
 RAW_FILE = "pecan_pool_initial_conditions.nc"
 
+#: The processed product, under ``data/processed/``.
 PRODUCT_FILE = "initial_conditions.nc"
 
 
@@ -67,7 +72,7 @@ def default_raw_dir() -> Path:
 
 def raw_path(directory: Path | str | None = None) -> Path:
     """The converted raw file: ``<directory>/pecan_pool_initial_conditions.nc``."""
-    base = Path(directory) if directory is not None else default_raw_dir()
+    base = Path(directory) if directory else default_raw_dir()
     return base / RAW_FILE
 
 
@@ -76,7 +81,7 @@ def default_product_path() -> Path:
     return _data_root() / "processed" / PRODUCT_FILE
 
 
-#: CF attributes for the coordinates, written by both build_raw and
+#: CF attributes for the ``site`` coordinate, written by both build_raw and
 #: build_initial_conditions.
 _SITE_ATTRS = {
     "long_name": "Model site identifier",

@@ -119,6 +119,12 @@ def main(argv: list[str] | None = None) -> int:
             # pool check is skipped and the result must not be committed.
             if args.limit_sites < 1:
                 raise ConversionError("--limit-sites must be at least 1")
+            if args.out is None:
+                raise ConversionError(
+                    "--limit-sites needs an explicit --out. Its output is a prefix of "
+                    f"the tree rather than the pool, and the default path ({raw_path()}) "
+                    "is the tracked raw file, which a trial run must not overwrite."
+                )
             sites = sites[: args.limit_sites]
             print(f"note: --limit-sites {args.limit_sites}; the pool check is skipped", flush=True)
         else:

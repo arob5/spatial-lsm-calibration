@@ -17,8 +17,8 @@ Contents
     The fields both of them set.
 
 Both refuse state that is not physically valid rather than flooring or
-substituting it; the first function's Notes say why, and record what the
-conversion does and does not reproduce of PEcAn's own arithmetic.
+substituting it. :func:`to_pysipnet_initial_conditions`'s Notes say why, and
+record what the conversion does and does not reproduce of PEcAn's arithmetic.
 """
 
 from __future__ import annotations
@@ -157,8 +157,10 @@ def to_pysipnet_initial_conditions(
     ``leafCSpWt`` and ``attenuation`` by ``gamma`` and ``laiInit`` by
     ``1 / gamma`` leaves the initial leaf carbon ``laiInit x leafCSpWt``
     unchanged, and with it the product ``attenuation x leaf_carbon /
-    leafCSpWt`` that the light response depends on, hence every carbon and
-    water output bitwise identical; only the LAI diagnostic moves. Under NEE,
+    leafCSpWt`` that the light response depends on, so every carbon and water
+    output is unchanged and only the LAI diagnostic moves. (Exactly so in real
+    arithmetic; in float64 the rescaled products differ by an ulp often enough
+    to matter to a bitwise comparison, though not at output precision.) Under NEE,
     biomass, soil carbon and soil water alone, therefore, only the ratio
     ``attenuation / leafCSpWt`` is identified. LAI observations are the only
     constraint in the planned set that breaks the degeneracy.
@@ -214,7 +216,8 @@ def to_pysipnet_initial_conditions_table(
     ----------
     state:
         The initial conditions as a ``Dataset`` or as the ``dict`` of fields
-        :func:`initial_condition_fields` returns, in the product's units. Must
+        :func:`sipnet_calibration.initial_conditions.processed.initial_condition_fields`
+        returns, in the product's units. Must
         carry ``initial_soil_organic_carbon``, ``initial_wood_carbon``,
         ``initial_leaf_carbon`` and ``initial_soil_moisture_saturation``; any
         other variable is ignored. Where a variable declares ``units``, they
@@ -277,10 +280,12 @@ def to_pysipnet_initial_conditions_table(
         index=index,
         **{name: array.values.ravel() for name, array in zip(arrays, broadcast)},
     )
-    return pd.DataFrame(
+    table = pd.DataFrame(
         {name: converted[name] for name in CONVERTED_SIPNET_FIELDS},
         index=index if index is not None else pd.RangeIndex(1),
     )
+    _check_cells_are_addressable(table)
+    return table
 
 
 #: Grams in a kilogram: the ensemble's carbon pools are kg m-2 and SIPNET's g m-2.
@@ -361,25 +366,33 @@ def _sipnet_fields_from_state(
             None if index is None else index[evergreen],
             population="cells whose PFT keeps its leaves",
         )
-    _check_leaf_carbon_per_area_is_positive(leaf_carbon, index)
+    if evergreen.any():
+        _check_leaf_carbon_per_area_is_positive(
+            leaf_carbon[evergreen], None if index is None else index[evergreen]
+        )
     _check_root_fractions_leave_wood(fine, coarse, index)
 
-    # Only the evergreen cells are computed: the deciduous ones were never
-    # validated, so evaluating them and discarding the result would let a value
-    # the mapping does not read overflow and, under np.seterr(all="raise"),
-    # abort the conversion of every other cell.
-    leaf_area_index = np.zeros(np.shape(leaf), dtype=float)
-    leaf_area_index[evergreen] = (
-        _KILOGRAM_IN_GRAMS * leaf[evergreen] / leaf_carbon[evergreen]
-    )
-    converted = {
-        "total_wood_carbon": _KILOGRAM_IN_GRAMS * wood / (1.0 - fine - coarse),
-        "leaf_area_index": leaf_area_index,
-        "soil_carbon": _KILOGRAM_IN_GRAMS * soil,
-        "soil_wetness_fraction": wetness / _PERCENT_IN_ONE,
-        "fine_root_fraction": fine,
-        "coarse_root_fraction": coarse,
-    }
+    # Only the evergreen cells are computed: a deciduous cell's leaf carbon is
+    # deliberately not validated, so it must not reach the arithmetic either.
+    #
+    # errstate holds the whole formula block so that what a caller sees does
+    # not depend on their numpy error state: an overflow is reported by
+    # _check_converted_values_are_finite as the documented ValueError, rather
+    # than escaping as a RuntimeWarning or, under np.seterr(all="raise"), as a
+    # FloatingPointError from whichever formula happened to overflow first.
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore", under="ignore"):
+        leaf_area_index = np.zeros(np.shape(leaf), dtype=float)
+        leaf_area_index[evergreen] = (
+            _KILOGRAM_IN_GRAMS * leaf[evergreen] / leaf_carbon[evergreen]
+        )
+        converted = {
+            "total_wood_carbon": _KILOGRAM_IN_GRAMS * wood / (1.0 - fine - coarse),
+            "leaf_area_index": leaf_area_index,
+            "soil_carbon": _KILOGRAM_IN_GRAMS * soil,
+            "soil_wetness_fraction": wetness / _PERCENT_IN_ONE,
+            "fine_root_fraction": fine,
+            "coarse_root_fraction": coarse,
+        }
     _check_converted_values_are_finite(converted, index)
     return converted
 
@@ -425,6 +438,14 @@ def _cell_index(array: xr.DataArray) -> pd.Index | None:
     return pd.MultiIndex.from_product(levels, names=names)
 
 
+def _abbreviate(labels: list[Any]) -> str:
+    """A coordinate's labels for an error message, shortened past a handful."""
+    if not labels:
+        return "unlabeled"
+    shown = ", ".join(str(label) for label in labels[:5])
+    return shown if len(labels) <= 5 else f"{shown}, ... ({len(labels)} in all)"
+
+
 def _offending_cells(
     index: pd.Index | None, bad: np.ndarray, values: np.ndarray, population: str = "cells"
 ) -> str:
@@ -461,29 +482,55 @@ def _check_arguments_are_scalar(**arguments: Any) -> None:
 
 
 def _check_scalar_coordinates_agree(arrays: Mapping[str, xr.DataArray]) -> None:
-    """Refuse inputs selected for different members or sites.
+    """Refuse inputs that were selected down to different members or sites.
 
     ``xr.align`` compares the indexes of dimensions, and ``.sel(member=0)``
-    leaves ``member`` as a scalar coordinate on no dimension, which it
-    therefore ignores. Without this, a state selected for one member and a
-    parameter selected for another convert against each other silently, and
-    the table they produce has no member level in which to notice it.
+    leaves ``member`` as a scalar coordinate on no dimension, which alignment
+    therefore ignores. Two things have to be refused here, and broadcasting
+    turns both into a full, plausible table:
+
+    * two inputs selected to *different* single labels, which would be
+      converted against each other;
+    * one input selected to a single label while another still carries that
+      dimension, which would replicate the selected cell across every label of
+      the other and index the result by labels its state never came from.
     """
-    seen: dict[str, tuple[str, Any]] = {}
+    scalars: dict[str, tuple[str, Any]] = {}
+    dimensioned: dict[str, tuple[str, list[Any]]] = {}
     for name, array in arrays.items():
         for coordinate in (MEMBER, SITE):
-            if coordinate not in array.coords or array.coords[coordinate].ndim != 0:
-                continue
-            value = array.coords[coordinate].item()
-            held_by, held = seen.setdefault(coordinate, (name, value))
-            if held != value:
-                raise ValueError(
-                    f"{held_by} is for {coordinate} {held} and {name} for "
-                    f"{coordinate} {value}. Selecting a single {coordinate} with "
-                    "`.sel` leaves it as a scalar coordinate, which alignment does "
-                    "not compare, so these would otherwise have been converted "
-                    "against each other."
+            if coordinate in array.dims:
+                labels = (
+                    array.coords[coordinate].values.tolist()
+                    if coordinate in array.coords
+                    else []
                 )
+                dimensioned.setdefault(coordinate, (name, labels))
+            elif coordinate in array.coords and array.coords[coordinate].ndim == 0:
+                value = array.coords[coordinate].item()
+                held_by, held = scalars.setdefault(coordinate, (name, value))
+                if held != value:
+                    raise ValueError(
+                        f"{held_by} is for {coordinate} {held} and {name} for "
+                        f"{coordinate} {value}. Selecting a single {coordinate} with "
+                        "`.sel` leaves it as a scalar coordinate, which alignment does "
+                        "not compare, so these would otherwise have been converted "
+                        "against each other."
+                    )
+
+    for coordinate, (scalar_name, value) in scalars.items():
+        if coordinate not in dimensioned:
+            continue
+        dim_name, labels = dimensioned[coordinate]
+        if labels == [value]:
+            continue
+        raise ValueError(
+            f"{scalar_name} is for {coordinate} {value} alone, but {dim_name} still has "
+            f"a {coordinate} dimension ({_abbreviate(labels)}). Broadcasting would "
+            f"repeat {coordinate} {value} across every one of them and label the rows "
+            f"with the others, so select both sides to the same {coordinate}s, or "
+            "neither."
+        )
 
 
 def _check_deciduous_is_boolean(values: np.ndarray) -> None:
@@ -517,7 +564,8 @@ def _check_leaf_carbon_per_area_is_positive(values: np.ndarray, index: pd.Index 
     if bad.any():
         raise ValueError(
             "leaf_carbon_per_area is not positive and finite"
-            f"{_offending_cells(index, bad, values)}. It divides the leaf carbon to give "
+            f"{_offending_cells(index, bad, values, 'cells whose PFT keeps its leaves')}. "
+            "It divides the leaf carbon to give "
             "the initial LAI, and SIPNET's leafCSpWt is positive by definition, so a "
             "specific leaf area draw that reaches zero or below has to be excluded by "
             "the prior rather than absorbed here."
@@ -559,6 +607,18 @@ def _check_cells_are_member_and_site(array: xr.DataArray) -> None:
         )
 
 
+def _check_cells_are_addressable(table: pd.DataFrame) -> None:
+    if table.index.is_unique:
+        return
+    repeated = table.index[table.index.duplicated()].unique().tolist()
+    raise ValueError(
+        f"the inputs repeat {_abbreviate(repeated)}, so the table's rows cannot be "
+        "addressed one cell at a time: `table.loc[cell]` would return several rows and "
+        "the documented InitialConditions(**table.loc[cell]) would fail. Select each "
+        "member and site once."
+    )
+
+
 def _check_units_are_the_products(array: xr.DataArray, name: str) -> None:
     spec = resolve_initial_condition(name)
     units = array.attrs.get("units")
@@ -579,9 +639,12 @@ def _check_converted_values_are_finite(
             continue
         raise ValueError(
             f"the conversion produced a {name} that is not finite"
-            f"{_offending_cells(index, bad, array)}. The inputs were all finite, so "
-            "the overflow is in the formula: a root-fraction sum a hair below 1, or "
-            "a pool large enough that the factor of 1000 leaves the float range. "
-            "pySIPNET would refuse the value, and a table may not carry a row the "
-            "single-member form would not return."
+            f"{_offending_cells(index, bad, array)}. The inputs were all finite, so the "
+            "overflow is in the formula -- a pool large enough that the factor of 1000 "
+            "leaves the float range, or a divisor small enough to push past it. This "
+            "catches only what overflows to infinity: a root-fraction sum just below 1 "
+            "yields a finite but absurd wood pool, which passes here and which only a "
+            "prior on the fractions can exclude. pySIPNET would refuse a non-finite "
+            "value, and a table may not carry a row the single-member form would not "
+            "return."
         )

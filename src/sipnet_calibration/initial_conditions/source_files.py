@@ -2,10 +2,12 @@
 
 The ensemble arrives as 800,000 netCDF-3 files, one per ``(site, member)``,
 under ``data/raw/initial_conditions/files/`` and present only on the SCC. This
-module holds the contract those files satisfy and the parser that enforces it,
-so that a file is checked wherever it is read and all 800,000 are held to one
-set of rules. :mod:`sipnet_calibration.initial_conditions.raw` turns the parsed
-records into the single tracked netCDF everything else reads.
+module holds the contract those files satisfy and the parser that enforces it.
+:mod:`sipnet_calibration.initial_conditions.raw` turns the parsed records into
+the single tracked netCDF everything else reads.
+
+The rationale for parsing and checking in one place is in
+:func:`read_source_file`'s Notes.
 
 Contents
 --------
@@ -29,6 +31,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import numpy as np
@@ -100,6 +103,18 @@ class SourceFormat:
 
     time_value: float
     """That variable's one value."""
+
+    def __post_init__(self) -> None:
+        # frozen=True freezes the field, not the dict behind it. Without this a
+        # caller could add a variable, and the specs would follow: they read
+        # this mapping at attribute-access time, so an already-built spec would
+        # start reporting different source units.
+        object.__setattr__(self, "variables", MappingProxyType(dict(self.variables)))
+
+    def __hash__(self) -> int:
+        # dataclass(frozen=True) generates a __hash__ that hashes the fields,
+        # and a mapping is not hashable.
+        return hash((self.file_template, self.names, self.fill_value))
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -224,6 +239,11 @@ def read_source_file(path: Path | str) -> SourceFile:
     """
     path = Path(path)
     if not path.is_file():
+        if path.exists() or path.is_symlink():
+            raise ValueError(
+                f"{path} is not a regular file. On the SCC the source tree is symlinked, "
+                "so a broken link looks like this rather than like a missing file."
+            )
         raise FileNotFoundError(f"no such initial condition file: {path}")
     parsed = site_member_from_file_name(path.name)
     if parsed is None:
@@ -236,7 +256,11 @@ def read_source_file(path: Path | str) -> SourceFile:
         )
     try:
         handle = netcdf_file(str(path), "r", mmap=False, maskandscale=False)
-    except (OSError, ValueError, TypeError) as error:
+    except Exception as error:
+        # Deliberately broad. scipy's reader raises whatever the malformation
+        # happens to produce -- a file truncated inside the variable header
+        # reaches `frombuffer(b"", ">i")[0]` and raises IndexError -- and a
+        # traceback from one of 800,000 files does not say which file it was.
         raise ValueError(f"{path}: not readable as netCDF-3 classic ({error})") from error
     with handle:
         _check_source_file_is_classic_with_no_global_attributes(handle, path)

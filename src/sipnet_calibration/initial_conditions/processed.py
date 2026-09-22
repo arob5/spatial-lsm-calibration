@@ -4,8 +4,7 @@
 reads. It is the raw file transposed onto ``(member, site)``, renamed to the
 specs' processed names, placed on the site table's pool with ``lon``/``lat``,
 and given the specs' fields as attributes. The values are the source files',
-unchanged: no unit conversion and no masking, since flooring a negative pool
-is a modeling decision and not an ingest's to make.
+unchanged.
 
 The package docstring gives the data model in full -- dimensions, variables,
 coordinates, attributes and what ``NaN`` means.
@@ -43,8 +42,8 @@ from sipnet_calibration.initial_conditions.names import (
     _utc_timestamp,
     default_product_path,
 )
-from sipnet_calibration.initial_conditions.raw import (
-    check_presence_is_uniform_over_members,
+from sipnet_calibration.initial_conditions.raw import (  # a shared package internal
+    _check_presence_is_uniform_over_members,
 )
 from sipnet_calibration.initial_conditions.source_files import (
     NOMINAL_DATE,
@@ -72,7 +71,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
     Parameters
     ----------
     raw:
-        As :func:`read_raw` returns it.
+        As :func:`sipnet_calibration.initial_conditions.raw.read_raw` returns it.
     sites:
         The site table from :func:`sipnet_calibration.sites.load_sites`; its
         ``site_id`` is the pool and its ``lon``/``lat`` the coordinates.
@@ -162,7 +161,8 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     Parameters
     ----------
     path:
-        The netCDF to read. Defaults to :func:`default_product_path`.
+        The netCDF to read. Defaults to
+        :func:`sipnet_calibration.initial_conditions.names.default_product_path`.
 
     Returns
     -------
@@ -181,7 +181,10 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
         raise FileNotFoundError(
             f"{path} is not a file. Produce it with:\n  python scripts/ingest_initial_conditions.py"
         )
-    dataset = xr.open_dataset(path, engine="h5netcdf")
+    try:
+        dataset = xr.open_dataset(path, engine="h5netcdf")
+    except OSError as error:
+        raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error})") from error
     try:
         _check_product(dataset, path)
     except Exception:
@@ -201,12 +204,15 @@ def initial_condition_fields(
     Parameters
     ----------
     names:
-        Processed names, in the order the result should carry them. Defaults
-        to every one of :data:`INITIAL_CONDITION_NAMES`.
+        Processed names, in the order the result should carry them, or one
+        name on its own. Defaults to every one of
+        :data:`INITIAL_CONDITION_NAMES`.
     sites:
-        Site ids to keep, in the order given. Defaults to the whole pool.
+        Site ids to keep, in the order given, or one id on its own. Each must
+        be a whole number and appear once. Defaults to the whole pool.
     path:
-        The product to read. Defaults to :func:`default_product_path`.
+        The product to read. Defaults to
+        :func:`sipnet_calibration.initial_conditions.names.default_product_path`.
 
     Returns
     -------
@@ -216,8 +222,10 @@ def initial_condition_fields(
 
     Raises
     ------
+    TypeError
+        If *sites* is a string, or holds a value that is not a whole number.
     ValueError
-        If a requested site is not in the pool.
+        If a requested site is not in the pool, or is asked for twice.
     """
     if isinstance(names, str):
         names = [names]
@@ -226,7 +234,19 @@ def initial_condition_fields(
         resolve_initial_condition(name)
     if isinstance(sites, (int, np.integer)):
         sites = [sites]
-    wanted_sites = None if sites is None else [int(site) for site in sites]
+    elif isinstance(sites, str):
+        raise TypeError(
+            f"sites={sites!r} is a string, which would be read one character per site. "
+            "Pass an integer or a sequence of integers."
+        )
+    wanted_sites = None if sites is None else [_site_id(site) for site in sites]
+    if wanted_sites is not None and len(set(wanted_sites)) != len(wanted_sites):
+        duplicates = sorted({site for site in wanted_sites if wanted_sites.count(site) > 1})
+        raise ValueError(
+            f"sites repeats {duplicates}. A repeated site makes the site coordinate "
+            "non-unique, and a table built from it cannot be addressed one cell at a "
+            "time."
+        )
 
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
@@ -240,6 +260,17 @@ def initial_condition_fields(
 _LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
 
 _LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
+
+
+def _site_id(value: Any) -> int:
+    """A site identifier as an int, refusing anything that is not already whole."""
+    number = int(value)
+    if number != value:
+        raise TypeError(
+            f"site {value!r} is not a whole number; int() would silently truncate it to "
+            f"{number}, which is a different site."
+        )
+    return number
 
 
 def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
@@ -331,7 +362,7 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
         raise ValueError(f"{path}: lon or lat holds a non-finite value")
     if np.abs(lon).max() > 180 or np.abs(lat).max() > 90:
         raise ValueError(f"{path}: lon or lat is outside the geographic range; are they swapped?")
-    check_presence_is_uniform_over_members(
+    _check_presence_is_uniform_over_members(
         {name: dataset[name].values.T for name in INITIAL_CONDITION_NAMES}, site
     )
     if dataset.attrs.get("Conventions") != CF_CONVENTIONS:
