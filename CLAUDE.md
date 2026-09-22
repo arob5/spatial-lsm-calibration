@@ -347,6 +347,11 @@ src/sipnet_calibration/
                           # load_initial_conditions(), initial_condition_fields()
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
+  parameterization.py     # the calibration vector: Coordinate (TFP prior on the
+                          # natural scale + CoordToParamMap), FixedParameter,
+                          # Parameterization with constrain/unconstrain/log_prior/
+                          # sample, to_pysipnet_parameters() -> (member, site)
+                          # Dataset, to_eki_gaussian_prior(); example_parameterization()
   fields.py               # canonical field convention, validate_field(), adapters
   obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
                           # shared with the likelihood
@@ -473,6 +478,21 @@ plotting code. The load-bearing rules:
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
+- From a git/wheel install (every worktree venv), `build_sipnet()` fails: it runs
+  `git submodule update`, which needs a source checkout. `download_sipnet()` fetches the
+  pinned binary into the venv's `site-packages/.sipnet_cache/`, where `SIPNETRunner` looks.
+  The Niwot fixture (`tests/fixtures/niwot_reference`) is not in the wheel either.
+
+### TensorFlow Probability (JAX substrate)
+- `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
+  (the unconstrained base) and `.bijector`; `sipnet_calibration.parameterization` stores one
+  prior per coordinate and reads both off it.
+- Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
+  raises `NotImplementedError`. Take them from `.distribution`.
+- `SoftmaxCentered`'s density on the simplex is against the embedded volume element,
+  `0.5 * logdet(J^T J)`, which differs from `log|det J|` of the first `k - 1` rows by `0.5 log k`.
+- Sampling takes `seed=` a `jax.random` key; `BatchBroadcast(dist, to_shape=(n,))` batches a
+  shared prior over groups.
 
 ### PyEns
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)

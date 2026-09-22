@@ -31,6 +31,13 @@ dependencies = [
     "matplotlib>=3.7",
     "arviz>=0.13",
     "jax[cpu]>=0.4",
+    # Priors and bijectors for sipnet_calibration.parameterization come from
+    # TensorFlow Probability's JAX substrate (import
+    # tensorflow_probability.substrates.jax), never from in-house code. The
+    # stable tensorflow-probability release lags JAX, so the nightly channel is
+    # the right one; uv.lock pins the dated build. Verified 2026-09-21 on
+    # Python 3.14 with jax 0.8.3 and no TensorFlow installed.
+    "tfp-nightly",
     "jupyter",
     "ipykernel",
     "nbformat",
