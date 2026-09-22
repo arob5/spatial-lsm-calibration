@@ -71,7 +71,8 @@ Processed name       Source column          Units      Kind
 ==================== ====================== ========== =================
 
 ``par`` and ``precipitation`` are totals over the timestep, which is why they
-sum when timesteps are combined; the rest are means over it and average. The
+sum when timesteps are combined; the rest are means over it and are averaged.
+The
 ``kind`` is pySIPNET's, read from its climate registry, and is what
 :func:`sipnet_calibration.obs_ops.aggregate_time` takes the rule from. Each
 variable carries ``units``, ``long_name``, ``source_name`` and ``kind`` from

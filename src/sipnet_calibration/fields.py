@@ -15,8 +15,10 @@ The model-output adapters here read what pySIPNET produces, in memory; no
 script writes a processed file for them::
 
     SIPNETRunner / SIPNETModel  ->  SIPNETResult.outputs (SIPNETOutput)
-      -> from_sipnet_output()   ->  dict[str, DataArray] on (time,)
-      -> stack_sipnet_outputs() ->  dict[str, DataArray] on (member, site, time)
+
+    one run    -> from_sipnet_output()   -> dict[str, DataArray] on (time,)
+    many runs  -> stack_sipnet_outputs() -> dict[str, DataArray]
+                                              on (member, site, time)
 
 with ``data/processed/sites/sites.csv`` joined on for ``lon``/``lat``, read
 through :func:`sipnet_calibration.sites.load_sites`. The dependency runs one
@@ -27,7 +29,8 @@ What it reads
 -------------
 :class:`pysipnet.result.SIPNETResult` or :class:`pysipnet.output.SIPNETOutput`
     One SIPNET run. Only the variables asked for are read from it, so a
-    file-backed output holds one column per variable rather than all 35.
+    file-backed output holds one column per variable rather than the whole
+    frame.
 :func:`sipnet_calibration.sites.load_sites`
     The site table, for the ``lon``/``lat`` of a site id. Read only when a
     ``site`` label is given.
@@ -119,7 +122,7 @@ Functions
     ``(member, site, time)`` fields.
 :func:`site_lookup`
     The site table keyed on ``site_id``, for a caller adapting run after run.
-:func:`from_clim`, :func:`from_nee_store`, :func:`from_eki_predictions`
+``from_clim``, ``from_nee_store``, ``from_eki_predictions``
     Not written yet. The drivers and the constraints have readers of their own
     that already produce the form above
     (:func:`sipnet_calibration.drivers.driver_fields`,
@@ -136,10 +139,10 @@ field are ``.quantile(dim="member")``, ``.resample(time=...)`` and
 project re-exporting them, and every plotter would have to unwrap it. The
 convention plus a validator is the whole design.
 
-**Why the adapter selects.** ``SIPNETOutput.xarray`` reads and caches all 35
-columns. Across an ensemble that is every member's full output held at once,
-where one variable per member is what the caller asked for, so the adapter
-goes through ``select`` and never touches ``.xarray`` or ``.pandas``.
+**Why the adapter selects.** ``SIPNETOutput.xarray`` reads and caches every
+column SIPNET wrote. Across an ensemble that is every member's full output held
+at once, where one variable per member is what the caller asked for, so the
+adapter goes through ``select`` and never touches ``.xarray`` or ``.pandas``.
 
 **Why a missing run is not an error.** The caller supplies the mapping, so it
 already knows which ``(site, member)`` pairs it left out; those cells read
@@ -152,33 +155,25 @@ its climate file's ``time`` column into its output verbatim, and in the ERA5
 which is issue #9 seen from close up. pySIPNET builds its axis from that
 column, snapping each step's end onto the next step's start, so a day's eighth
 step ends a few seconds after midnight and a ``"1D"`` aggregation puts it in
-the next day. Each daily cell is still eight consecutive steps covering
-twenty-four hours; it is the window that is a step later than the one SIPNET's
-own ``day`` column marks. What that costs a daily comparison against an
+the next day. Each *interior* daily cell is still eight consecutive steps
+covering twenty-four hours; it is the window that is a step later than the one
+SIPNET's own ``day`` column marks. The cells at the two ends of a record hold
+whatever is left over, which for an extensive variable is a fraction of a day
+reported in the units of a whole one. What that costs a daily comparison against an
 observation has not been settled. It is not something an adapter can decide:
 rebuilding the axis from
 :func:`sipnet_calibration.obs_ops.sipnet_time_index`, which floors the hour
 onto its slot, would align the cells with SIPNET's days and put this project's
 labels at odds with pySIPNET's for the same run.
 
-Three traps are worth knowing before writing another adapter:
-
-* The NEE csv carries an ``ens_mean`` column. It is a derived mean, not a
-  member, and admitting it to the ``member`` dimension corrupts every quantile
-  taken afterwards.
-* PEcAn's initial condition source netCDFs must never be opened with CF time
-  decoding on: their time units are an unsubstituted template,
-  ``"days since [year]-01-01 00:00:00 UTC"``, which no calendar library can
-  parse; ``cftime`` does not help. Nothing here should need to: the tracked
-  converted file and the processed product have no ``time`` at all, and
-  :func:`sipnet_calibration.initial_conditions.initial_condition_fields`
-  already returns canonical ``(member, site)`` fields (issue #3).
-* :func:`from_eki_predictions` unstacks a ``(J, N)`` block with the
-  ``(site, variable, time)`` index from
-  :func:`sipnet_calibration.obs_ops.obs_index`. It must be the same index the
-  observation operator used to build the observation vector, or the
-  predictions come back mislabeled against the observations they are compared
-  with.
+One trap belongs to an adapter still to be written here.
+``from_eki_predictions`` will unstack a ``(J, N)`` block with the
+``(site, variable, time)`` index from ``obs_ops.obs_index``, and it must be the
+same index the observation operator used to build the observation vector, or
+the predictions come back mislabeled against the observations they are
+compared with. The traps of the observation and initial-condition sources are
+in ``CLAUDE.md``'s Data section, where they apply to the readers that already
+exist as well.
 
 Usage
 -----
@@ -322,21 +317,29 @@ def from_sipnet_output(
         If a variable is not a SIPNET output variable or alias, or if *site* is
         not in the site table.
     ValueError
-        If *variables* is empty, or *member* is negative, or *site* is not a
-        positive integer.
+        If *variables* is empty, unordered, or not a sequence of names; if the
+        run wrote no rows, which is what a failed run leaves; or if *member* or
+        *site* is not a whole number in range.
+    TypeError
+        If *output* is neither a ``SIPNETResult`` nor a ``SIPNETOutput``.
     FileNotFoundError
         If *site* is given, *sites* is not, and the site table is absent.
 
     Notes
     -----
-    Only the columns named are read from a file-backed output, and
-    ``.xarray``/``.pandas`` -- which read and cache all 35 -- are never
-    touched. That is what keeps an ensemble's memory proportional to the
-    variables asked for rather than to the runs.
+    Only the columns named are read from a file-backed output; see this
+    module's Notes for why ``.xarray`` and ``.pandas`` are never touched.
     """
     source = _output_of(output)
     names = _resolved_names(variables)
     dataset = source.select(names)
+    if TIME_DIM not in dataset.coords or dataset.sizes.get(TIME_DIM, 0) == 0:
+        raise ValueError(
+            "This SIPNET output has no rows, so there is nothing to put on a "
+            "time axis. That usually means the run failed; check "
+            "result.provenance.success and its stderr. Stacking an ensemble "
+            "hits this on the first member that did not run."
+        )
     # A DataArray cannot carry time_bounds -- its 'bounds' dimension is not a
     # field dimension -- so the attribute naming it would dangle.
     dataset[TIME_DIM].attrs = {
@@ -441,22 +444,38 @@ def stack_sipnet_outputs(
 
 def _output_of(output: SIPNETResult | SIPNETOutput) -> SIPNETOutput:
     """The :class:`SIPNETOutput` of a run, given either it or the result holding it."""
-    outputs = getattr(output, "outputs", None)
-    if outputs is not None:
-        return outputs
-    if not hasattr(output, "select"):
+    resolved = getattr(output, "outputs", output)
+    if hasattr(resolved, "select"):
+        return resolved
+    if resolved is output:
         raise TypeError(
             "Expected a pysipnet SIPNETResult or SIPNETOutput, got "
             f"{type(output).__name__}, which has neither .outputs nor .select."
         )
-    return output
+    raise TypeError(
+        f"Expected a pysipnet SIPNETResult, got {type(output).__name__} whose "
+        f".outputs is {type(resolved).__name__} rather than a SIPNETOutput."
+    )
 
 
 def _resolved_names(variables: str | Sequence[str]) -> list[str]:
     """Requested variables as pySIPNET registry names, in order, without repeats."""
     from pysipnet.variables import resolve_output_variable
 
-    requested = [variables] if isinstance(variables, str) else list(variables)
+    if isinstance(variables, str):
+        requested = [variables]
+    elif isinstance(variables, (set, frozenset)):
+        raise ValueError(
+            f"variables was given as a {type(variables).__name__}, which has no "
+            "order to keep. Pass a list or a tuple."
+        )
+    else:
+        try:
+            requested = list(variables)
+        except TypeError:
+            raise ValueError(
+                f"variables must be a name or a sequence of names, got {variables!r}."
+            ) from None
     if not requested:
         raise ValueError(
             "No variables were asked for. Name at least one SIPNET output "
@@ -493,9 +512,11 @@ def _identity_coords(
 
 def _bounded_integer(value: Any, *, name: str, dtype: type, minimum: int) -> Any:
     """*value* as *dtype*, raising if it is not a whole number at least *minimum*."""
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be an integer, got the boolean {value!r}.")
     try:
         as_int = int(value)
-    except (TypeError, ValueError) as error:
+    except (TypeError, ValueError, OverflowError) as error:
         raise ValueError(f"{name} must be an integer, got {value!r}.") from error
     if as_int != value:
         raise ValueError(f"{name} must be a whole number, got {value!r}.")
@@ -531,11 +552,12 @@ def _site_location(site: int, sites: pd.DataFrame | None) -> tuple[np.float64, n
     try:
         row = table.loc[site]
     except KeyError:
+        ids = table.index
         raise KeyError(
             f"Site {site} is not in the site table, which holds "
-            f"{len(table)} sites from {int(table['site_id'].min())} to "
-            f"{int(table['site_id'].max())}. Site identifiers are the "
-            "handed-down 1-8000 ids and are never renumbered."
+            f"{len(table)} sites from {int(ids.min())} to {int(ids.max())}. "
+            "Site identifiers are the handed-down 1-8000 ids and are never "
+            "renumbered."
         ) from None
     return np.float64(row["lon"]), np.float64(row["lat"])
 

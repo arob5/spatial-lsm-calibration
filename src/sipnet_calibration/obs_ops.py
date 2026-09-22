@@ -28,8 +28,9 @@ How a method is chosen
 ----------------------
 **Which methods mean anything is a property of the variable; which of them is
 wanted is the caller's.** pySIPNET settles the first half: every model and
-driver variable has a ``kind``, and :data:`RESAMPLING_METHODS_FOR_KIND` says
-what may be done with it. A total over a step adds; a pool at the end of a step
+driver variable has a ``kind``, and its
+``pysipnet.variables.RESAMPLING_METHODS_FOR_KIND`` says what may be done with
+it. A total over a step adds; a pool at the end of a step
 does not, because adding end-of-step values counts the same stock once per
 step; a rate or a step mean averages, weighted by step length, because SIPNET's
 steps are not all the same length. :func:`aggregate_time` refuses a method the
@@ -38,10 +39,12 @@ kind does not admit, in pySIPNET's own words.
 For the second half it supplies a default, which pySIPNET's ``resample``
 deliberately does not: the one method that leaves the variable the kind it
 already is (:data:`DEFAULT_METHOD_FOR_KIND`, derived from pySIPNET's
-``RESAMPLED_KIND``). A total sums, a step mean or a rate means, a pool takes
-its last value, a running total takes its last value. ``how=`` overrides it,
-and taking the time-weighted mean of a pool -- a different quantity, and a
-different kind -- is exactly what it is for.
+``RESAMPLED_KIND``). A total sums, a step mean or a rate means, a pool or
+a running total takes its last value. The one kind no method preserves is
+``timestep_start_coordinate``, a time column rather than a measurement, and it
+has no default. ``how=`` overrides the default, and taking the time-weighted
+mean of a pool -- a different quantity, and a different kind -- is exactly
+what it is for.
 
 SIPNET's ``net_ecosystem_exchange`` is a per-timestep total, so 3-hourly to
 daily is a **sum**; a mean is wrong by a factor of 8 and looks entirely
@@ -297,7 +300,13 @@ def aggregate_time(
         the calendar cell: the start is the earliest step start, the ``time``
         the latest step end, and the length the sum of the declared lengths, so
         a cell the record only partly fills can be told from a full one by
-        comparing the two.
+        comparing the two. A field without them -- a driver field, or an
+        observation -- gets calendar cell edges and **carries nothing about
+        cell coverage**, so the first and last cells of such a record are
+        partial with nothing to say so. For an extensive variable that is a
+        fraction of a period reported in the units of a whole one; until this
+        is settled (see the Notes) a caller comparing such daily totals against
+        anything should drop the boundary cells itself.
 
         ``time`` keeps the attributes that are still true of it and loses
         :data:`STALE_ON_A_COARSER_STEP`, which describe the step it had before.
@@ -305,7 +314,11 @@ def aggregate_time(
     Raises
     ------
     ValueError
-        If *field* has no ``time`` dimension; if *how* is not one of
+        If *field* has no ``time`` dimension, none left after the padding is
+        dropped, or timestamps that do not strictly increase; if its interval
+        coordinates are not one-dimensional on ``time``, which is what stacking
+        runs on different time axes leaves; if it declares a ``kind`` that is
+        not one of pySIPNET's; if *how* is not one of
         :data:`RESAMPLING_METHODS`; if the variable's kind does not admit
         *how*, with pySIPNET's own explanation and the methods that would
         work; if *how* is omitted and the variable's kind cannot be
@@ -328,6 +341,19 @@ def aggregate_time(
     A cell holding a ``NaN`` is ``NaN``, for every method. Aggregating half a
     day of a gappy record into a number that looks like a whole day is how a
     gap stops being visible.
+
+    A timestamp that is not a step of the field -- the padding xarray's
+    alignment leaves when runs of different lengths are stacked and one site is
+    then selected -- is dropped before anything is combined, rather than
+    treated as a gap. Leaving it in would turn every cell it fell in to
+    ``NaN``, interior cells included, because pySIPNET snaps each interior
+    step's end onto the next step's start while a truncated run's last end is
+    its declared length, so the odd timestamp lands mid-record.
+
+    What is **not** solved is the boundary cell of a field carrying no declared
+    step lengths; see Returns. A count of the steps that went into each cell
+    would settle it for every field at once, and is the obvious next thing
+    here.
     """
     if TIME_DIM not in field.dims:
         raise ValueError(
@@ -336,6 +362,8 @@ def aggregate_time(
         )
 
     _check_interval_coords_are_one_dimensional(field)
+    field = _only_real_steps(field)
+    _check_the_steps_are_aggregable(field)
     kind = _variable_kind(field)
     method = _method_for(field, kind, how)
     weights = _step_weights(field) if method == "mean" else None
@@ -396,6 +424,32 @@ def _check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
         )
 
 
+def _check_the_steps_are_aggregable(field: xr.DataArray) -> None:
+    """There is at least one step, and no two of them share or reverse a label.
+
+    Duplicate labels would be summed together as though they were consecutive
+    steps, which is how one record counted twice comes back looking like a
+    larger flux.
+    """
+    times = field[TIME_DIM].values
+    if times.size == 0:
+        raise ValueError(
+            f"{field.name!r} has no timesteps left to aggregate. An empty "
+            f"{TIME_DIM!r} comes from a selection that matched nothing, or from "
+            "a site of a stacked ensemble with no record of its own."
+        )
+    steps = np.diff(times.astype("datetime64[ns]").astype("int64"))
+    if (steps <= 0).any():
+        where = int(np.flatnonzero(steps <= 0)[0]) + 1
+        raise ValueError(
+            f"{field.name!r} has timestamps that do not increase: row {where} "
+            f"({times[where]}) does not follow row {where - 1} "
+            f"({times[where - 1]}). Sort the field on {TIME_DIM!r}, and drop or "
+            "combine the duplicates; two rows sharing a label would be added "
+            "together as though they were consecutive steps."
+        )
+
+
 def _variable_kind(field: xr.DataArray) -> VariableKind | None:
     """The field's pySIPNET kind, from its attributes or the registries, or ``None``."""
     declared = field.attrs.get("kind")
@@ -451,15 +505,23 @@ def _refuse(name: Any, kind: VariableKind, method: str) -> None:
     then be this project's to keep in step with pySIPNET's.
     """
     label = str(name) if name is not None else "the field"
+    # The probe cannot hold a variable named after one of the time coordinates
+    # it must carry, so a field with such a name is put to pySIPNET under a
+    # stand-in and named properly again in the message.
+    stand_in = label if label not in _PROBE_COORD_NAMES else "the_field"
     try:
-        pysipnet_resample(_refusal_probe(label, kind), "1D", how=method)
-    except ValueError:
-        raise
+        pysipnet_resample(_refusal_probe(stand_in, kind), "1D", how=method)
+    except ValueError as refusal:
+        raise ValueError(str(refusal).replace(repr(stand_in), repr(label), 1)) from None
     raise ValueError(
         f"Cannot aggregate {label!r} with {method!r}: it is of kind "
         f"{kind.value!r}, which admits only "
         f"{sorted(RESAMPLING_METHODS_FOR_KIND[kind])}."
     )
+
+
+#: Names the refusal probe's own coordinates occupy.
+_PROBE_COORD_NAMES = frozenset({TIME_DIM, START_COORD, LENGTH_COORD, "time_bounds"})
 
 
 def _refusal_probe(name: str, kind: VariableKind) -> xr.Dataset:
@@ -481,24 +543,28 @@ def _is_on_time(field: xr.DataArray, name: Any) -> bool:
     return TIME_DIM in field[name].dims
 
 
-def _step_mask(field: xr.DataArray) -> np.ndarray:
-    """Which timestamps are steps of this field rather than alignment padding.
+def _only_real_steps(field: xr.DataArray) -> xr.DataArray:
+    """*field* without the timestamps that are not steps of it.
 
     Selecting one site out of a stack of runs on different time axes leaves the
-    union of those axes, so the timestamps outside that site's own record have
-    no interval and must not be counted into a cell or weighted into a mean.
+    union of those axes, so a site's shorter record carries timestamps whose
+    interval coordinates are ``NaT``. They are not steps: leaving them in would
+    turn every cell that holds one into ``NaN``, boundary and interior alike,
+    and a ``NaT`` length casts to the ``int64`` sentinel rather than to a
+    missing value, which is a step of minus 292 years. Dropping them is the
+    only treatment that leaves the cells they fall in meaning what they say.
     """
-    if START_COORD not in field.coords:
-        return np.ones(field.sizes[TIME_DIM], dtype=bool)
-    return ~np.isnat(field[START_COORD].values)
+    mask = np.ones(field.sizes[TIME_DIM], dtype=bool)
+    for name in (START_COORD, LENGTH_COORD):
+        if name in field.coords:
+            mask &= ~np.isnat(field[name].values)
+    return field if mask.all() else field.isel({TIME_DIM: mask})
 
 
 def _step_days(field: xr.DataArray) -> np.ndarray:
-    """Declared step lengths in days, zero where there is no step."""
+    """Declared step lengths in days. Never ``NaT``: those are not steps."""
     nanoseconds = field[LENGTH_COORD].values.astype("timedelta64[ns]").astype("int64")
-    # A NaT casts to the int64 sentinel, which would be a wildly negative
-    # length rather than a missing one.
-    return np.where(_step_mask(field), nanoseconds / 86_400e9, 0.0)
+    return nanoseconds / 86_400e9
 
 
 def _step_weights(field: xr.DataArray) -> xr.DataArray:
@@ -543,8 +609,8 @@ def _nonempty_cells(field: xr.DataArray, freq: str) -> np.ndarray:
     ones no step lands in; an empty cell sums to zero, which is not a
     measurement.
     """
-    steps = _on_time(field, _step_mask(field).astype(float))
-    return np.asarray(_grouped(steps, freq).sum().values > 0)
+    ones = _on_time(field, np.ones(field.sizes[TIME_DIM]))
+    return np.asarray(_grouped(ones, freq).sum().values > 0)
 
 
 def _aggregated_time_coords(
@@ -561,15 +627,8 @@ def _aggregated_time_coords(
     if START_COORD not in field.coords or LENGTH_COORD not in field.coords:
         return {}
 
-    mask = _step_mask(field)
-    not_a_time = np.datetime64("NaT")
-    # skipna, because a cell holding a padded timestamp beside real steps would
-    # otherwise take NaT for its whole span; xarray does not skip it by default
-    # on a datetime reduction.
-    start = _grouped(_on_time(field, field[START_COORD].values), freq).min(skipna=True)
-    end = _grouped(
-        _on_time(field, np.where(mask, field[TIME_DIM].values, not_a_time)), freq
-    ).max(skipna=True)
+    start = _grouped(_on_time(field, field[START_COORD].values), freq).min()
+    end = _grouped(_on_time(field, field[TIME_DIM].values), freq).max()
     length = _grouped(_on_time(field, _step_days(field)), freq).sum()
 
     built = assemble_time_coords(

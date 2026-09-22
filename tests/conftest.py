@@ -23,7 +23,6 @@ without a compiled binary too.
 from __future__ import annotations
 
 import os
-import tempfile
 import warnings
 from pathlib import Path
 
@@ -227,18 +226,31 @@ def pysipnet_checkout() -> Path | None:
     """The pySIPNET source checkout, whose test fixtures are the only SIPNET inputs here.
 
     pySIPNET is installed from git, so its ``tests/fixtures`` are not on the
-    Python path; the checkout is found beside this repository, or wherever
-    ``$PYSIPNET_SOURCE`` says. Returns ``None`` when there is none, which is
-    what the fixtures below skip on.
+    Python path. ``$PYSIPNET_SOURCE`` names the checkout outright and is used
+    alone when it is set, so a wrong value is reported rather than quietly
+    replaced; otherwise the search walks up from here looking for a sibling
+    clone. Candidates under ``.claude`` are skipped: a pySIPNET *worktree*
+    parked beside this one is on whatever branch its session left it, where a
+    sibling clone is the checkout the pin was taken from. Returns ``None`` when
+    there is none, which is what the fixtures below skip on.
     """
     named = os.environ.get("PYSIPNET_SOURCE")
-    candidates = [Path(named)] if named else []
+    if named:
+        candidate = Path(named)
+        return candidate if _has_niwot_reference(candidate) else None
     here = Path(__file__).resolve()
-    candidates += [parent / "pySIPNET" for parent in here.parents]
-    for candidate in candidates:
-        if (candidate / NIWOT_REFERENCE / "sipnet.clim").is_file():
+    for parent in here.parents:
+        candidate = parent / "pySIPNET"
+        if ".claude" in candidate.parts:
+            continue
+        if _has_niwot_reference(candidate):
             return candidate
     return None
+
+
+def _has_niwot_reference(candidate: Path) -> bool:
+    """Whether *candidate* is a pySIPNET checkout carrying the reference inputs."""
+    return (candidate / NIWOT_REFERENCE / "sipnet.clim").is_file()
 
 
 @pytest.fixture(scope="session")
@@ -270,7 +282,7 @@ def niwot_output():
 
 
 @pytest.fixture(scope="session")
-def site_1_result():
+def site_1_result(tmp_path_factory):
     """A real SIPNET run of the Niwot parameters on this copy's 3-hourly site-1 drivers.
 
     :data:`SITE_1_DAYS` whole days of ``ERA5_1_1``, which is the only 3-hourly
@@ -291,17 +303,21 @@ def site_1_result():
     if cache is None:
         pytest.skip("no compiled SIPNET binary; run 'make sipnet' in the pySIPNET checkout")
 
-    climate_path = Path(tempfile.mkdtemp()) / "sipnet.clim"
+    # Session-scoped, because the SIPNETResult holds the climate it ran on and
+    # so outlives the fixture; pytest removes the directory afterwards.
+    climate_path = tmp_path_factory.mktemp("site-1-drivers") / "sipnet.clim"
     rows = SITE_1_DRIVERS.read_text().splitlines(keepends=True)[: 8 * SITE_1_DAYS]
     climate_path.write_text("".join(rows))
     with warnings.catch_warnings():
         # The site-1 record has exact zeros where SIPNET clamps, which pySIPNET
         # warns about on read; it is a property of the file, not of this run.
+        # Only the read is silenced: a warning about the run itself is the sort
+        # pySIPNET makes loud on purpose.
         warnings.simplefilter("ignore")
         climate = read_clim_file(climate_path)
-        parameters = niwot_parameters(checkout)
-        runner = SIPNETRunner(flags=ModelFlags.standard(), cache_dir=cache)
-        return runner.run(parameters, climate, run_id="site-1")
+    parameters = niwot_parameters(checkout)
+    runner = SIPNETRunner(flags=ModelFlags.standard(), cache_dir=cache)
+    return runner.run(parameters, climate, run_id="site-1")
 
 
 def niwot_parameters(checkout: Path):
@@ -309,7 +325,9 @@ def niwot_parameters(checkout: Path):
 
     A stand-in for the production reader pySIPNET has not written yet (its
     issue #19); built generically from the public name mapping so that a new
-    parameter needs no change here.
+    parameter needs no change here. A parameter the file does not name keeps
+    pySIPNET's own default, which is how the upstream fixture predating a
+    submodel is read at all.
     """
     from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
     from pysipnet.parameters.model import SIPNETParameters

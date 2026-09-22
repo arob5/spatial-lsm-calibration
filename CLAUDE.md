@@ -423,7 +423,8 @@ plotting code. The load-bearing rules:
 - **Temporal aggregation lives in `obs_ops.py`** and is imported by both the
   observation operator and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
-  caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
+  caller applies — `plot_time_series(aggregate_time(f, "1D"))` — never a
+  plotter keyword.
 - **The variable's kind says which resampling methods are valid; the caller
   may name one.** pySIPNET owns the first half: since its PR #38 every
   variable has a `kind`, `RESAMPLING_METHODS_FOR_KIND` says what may be done
@@ -442,12 +443,15 @@ plotting code. The load-bearing rules:
   for asking deliberately for something else, such as the time-weighted mean
   of a pool. An invalid pair is refused in pySIPNET's own words.
 - **A model field carries pySIPNET's names, units and kinds unchanged.**
-  `fields.from_sipnet_output` adds `site`, `member` and `lon`/`lat` and takes
-  nothing away but the row labels; the registry names are already
-  `lower_case_with_underscores`, so they are the processed names. Its time
-  axis is pySIPNET's: `time` at the step end with `time_step_start` and
-  `time_step_length` beside it, which is the CF bounds pair a `DataArray` can
-  carry.
+  `fields.from_sipnet_output` adds `site`, `member` and `lon`/`lat`; the
+  registry names are already `lower_case_with_underscores`, so they are the
+  processed names. Its time axis is pySIPNET's: `time` at the step end, with
+  `time_step_start` beside it, so the interval a value covers is
+  `[time_step_start, time]` — the pair pySIPNET writes as its CF `time_bounds`
+  variable. `time_bounds` itself cannot ride on a field, its `bounds`
+  dimension being no field dimension, so it and the `time` attribute naming it
+  are dropped, along with SIPNET's `year`/`day_of_year`/`hour_of_day` row
+  labels, which `time_step_start` already is.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
   Observation products keep their source units; the observation operator

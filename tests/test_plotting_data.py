@@ -201,16 +201,17 @@ def test_acceptance_one_panel_three_aggregations(ax, real_driver_field):
     processed product yet. Like NEE, ``par`` is a per-timestep total, so its
     daily value is a sum.
 
-    The aggregation is written at the call site as ``.resample(time="1D")
-    .sum()`` until ``obs_ops.aggregate_time`` exists (issue #6), which takes
-    the rule from the variable instead.
+    The aggregation is written at the call site, as the design spec requires,
+    and through ``obs_ops.aggregate_time``, which takes the method from the
+    variable's kind rather than having it named here.
     """
     from sipnet_calibration.drivers import driver_fields, load_drivers
+    from sipnet_calibration.obs_ops import aggregate_time
 
     par = driver_fields(load_drivers([1], members=[1]))["par"].sel(site=1, member=0)
     plot_time_series(par, ax=ax, role="prior", label="3-hourly")
-    plot_time_series(par.resample(time="1D").sum(), ax=ax, role="posterior", label="daily")
-    plot_time_series(par.resample(time="MS").sum(), ax=ax, role="truth", label="monthly")
+    plot_time_series(aggregate_time(par, "1D"), ax=ax, role="posterior", label="daily")
+    plot_time_series(aggregate_time(par, "MS"), ax=ax, role="truth", label="monthly")
 
     assert ax.get_legend_handles_labels()[1] == ["3-hourly", "daily", "monthly"]
     lengths = [len(artist.get_ydata()) for artist in ax.lines]

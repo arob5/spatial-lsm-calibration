@@ -85,6 +85,7 @@ class TestFromSipnetOutput:
 
     def test_the_time_axis_is_pysipnets_step_end_with_its_bounds_pair(self, niwot_output):
         field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        assert set(field.coords) == {"time", "time_step_start", "time_step_length"}
         assert set(field.coords) == set(MODEL_TIME_COORDS)
         assert field["time"].attrs["long_name"] == "End of timestep"
         starts = field["time_step_start"].values
@@ -282,3 +283,72 @@ class TestSiteLookup:
         xr.testing.assert_identical(
             plain["net_ecosystem_exchange"], keyed["net_ecosystem_exchange"]
         )
+
+
+class TestFromSipnetOutputRefusesBadInput:
+    def test_a_run_that_wrote_no_rows_says_so(self, niwot_output):
+        """The shape a failed run leaves; pySIPNET gives back an empty Dataset."""
+        from pysipnet.output import SIPNETOutput
+
+        empty = SIPNETOutput.from_dataframe(
+            niwot_output.pandas.iloc[0:0].copy(), time_step_length=np.empty(0)
+        )
+        with pytest.raises(ValueError, match="no rows"):
+            from_sipnet_output(empty, "nee")
+
+    def test_a_fractional_site_is_refused(self, niwot_output, sites_table):
+        with pytest.raises(ValueError, match="whole number"):
+            from_sipnet_output(niwot_output, "nee", site=1.5, sites=sites_table)
+
+    def test_a_boolean_is_not_an_identifier(self, niwot_output, sites_table):
+        with pytest.raises(ValueError, match="boolean"):
+            from_sipnet_output(niwot_output, "nee", site=True, sites=sites_table)
+        with pytest.raises(ValueError, match="boolean"):
+            from_sipnet_output(niwot_output, "nee", member=False)
+
+    def test_an_infinite_identifier_is_refused_as_a_value_error(self, niwot_output):
+        with pytest.raises(ValueError, match="member must be an integer"):
+            from_sipnet_output(niwot_output, "nee", member=float("inf"))
+
+    def test_variables_given_as_none_is_refused_as_a_value_error(self, niwot_output):
+        with pytest.raises(ValueError, match="must be a name or a sequence"):
+            from_sipnet_output(niwot_output, None)
+
+    def test_an_unordered_container_is_refused_because_order_is_promised(self, niwot_output):
+        with pytest.raises(ValueError, match="no\\s+order to keep"):
+            from_sipnet_output(niwot_output, {"nee", "wood_carbon"})
+
+    def test_a_result_whose_outputs_are_not_an_output_is_refused(self, niwot_output):
+        class NotAResult:
+            outputs = 42
+
+        with pytest.raises(TypeError, match="rather than a SIPNETOutput"):
+            from_sipnet_output(NotAResult(), "nee")
+
+    def test_a_repeated_variable_is_read_once(self, niwot_output, monkeypatch):
+        """``select`` must not be handed the same column twice."""
+        from pysipnet.output import SIPNETOutput
+
+        seen = []
+        original = SIPNETOutput.select
+
+        def record(self, variables, **kwargs):
+            seen.append(list(variables))
+            return original(self, variables, **kwargs)
+
+        monkeypatch.setattr(SIPNETOutput, "select", record)
+        from_sipnet_output(niwot_output, ["nee", "NEE", "net_ecosystem_exchange"])
+        assert seen == [["net_ecosystem_exchange"]]
+
+    def test_a_site_lookup_without_the_column_still_explains_a_missing_site(
+        self, sites_table, niwot_output
+    ):
+        keyed = sites_table.set_index("site_id")
+        with pytest.raises(KeyError, match="not in the site table"):
+            from_sipnet_output(niwot_output, "nee", site=99999, sites=keyed)
+
+
+class TestStackSipnetOutputsRefusesBadKeys:
+    def test_a_key_of_the_wrong_arity_names_the_contract(self, niwot_output, sites_table):
+        with pytest.raises(ValueError, match=r"\(site, member\) pair"):
+            stack_sipnet_outputs({(1, 0, 7): niwot_output}, "nee", sites=sites_table)
