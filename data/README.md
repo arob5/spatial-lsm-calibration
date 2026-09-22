@@ -508,7 +508,7 @@ asserted or reported by the ingest:
 **How PEcAn used them.** `write.config.SIPNET` (the `poolinitcond` branch,
 through `PEcAn.data.land::prepare_pools`) turned each file into SIPNET
 initial parameters as follows. This is the mapping the experiment layer has to
-reproduce or consciously depart from; nothing here applies it.
+reproduce or consciously depart from; the ingest applies none of it.
 
 | File variable | SIPNET parameter | pySIPNET field | Conversion in PEcAn |
 |---|---|---|---|
@@ -522,10 +522,11 @@ Three of the four conversions depend on parameters the calibration proposes,
 which is why the ingest applies none of them (see
 [Processed format](#processed-format)).
 `sipnet_calibration.initial_conditions.to_pysipnet_initial_conditions` applies
-the mapping to one member per proposed parameter vector, and
+the mapping to one `(member, site)` cell for one proposed parameter vector, and
 `to_pysipnet_initial_conditions_table` does it over a whole `(member, site)`
-ensemble. Both guard `fineRootFrac + coarseRootFrac < 1`, which neither PEcAn
-nor pySIPNET checks and SIPNET runs to completion without.
+ensemble. Both write the leaf row with SIPNET's own `leafCSpWt` rather than
+PEcAn's SLA draw, and both guard `fineRootFrac + coarseRootFrac < 1`, which
+pySIPNET does not check and SIPNET runs to completion without.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
 > `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
