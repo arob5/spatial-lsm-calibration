@@ -85,7 +85,7 @@ import numpy as np
 import xarray as xr
 
 from sipnet_calibration.initial_conditions import (
-    SOURCE_NAMES,
+    SOURCE,
     SourceFile,
     build_raw,
     default_source_root,
@@ -119,6 +119,12 @@ def main(argv: list[str] | None = None) -> int:
             # pool check is skipped and the result must not be committed.
             if args.limit_sites < 1:
                 raise ConversionError("--limit-sites must be at least 1")
+            if args.out is None:
+                raise ConversionError(
+                    "--limit-sites needs an explicit --out. Its output is a prefix of "
+                    f"the tree rather than the pool, and the default path ({raw_path()}) "
+                    "is the tracked raw file, which a trial run must not overwrite."
+                )
             sites = sites[: args.limit_sites]
             print(f"note: --limit-sites {args.limit_sites}; the pool check is skipped", flush=True)
         else:
@@ -235,7 +241,7 @@ def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
         f"sites {dataset.sizes['site']}  members {dataset.sizes['member']}  files {len(files)}",
         "variable                       sites   min          median       max          negative",
     ]
-    for name in SOURCE_NAMES:
+    for name in SOURCE.names:
         values = dataset[name].values
         present = np.isfinite(values)
         finite = values[present]
@@ -301,7 +307,7 @@ def check_site_directories_are_the_pool(
 def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
     """Raise unless the written file reads back bit-identical through the library."""
     with read_raw(partial) as read_back:
-        for name in SOURCE_NAMES:
+        for name in SOURCE.names:
             written, back = dataset[name].values, read_back[name].values
             if not np.array_equal(written, back, equal_nan=True):
                 raise ConversionError(f"{name} did not round-trip bit for bit through {partial}")

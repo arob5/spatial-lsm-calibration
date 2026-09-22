@@ -214,7 +214,6 @@ A cached subset, if a workflow wants one, is the caller's business::
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -224,6 +223,7 @@ import pandas as pd
 import xarray as xr
 
 from sipnet_calibration.obs_ops import sipnet_time_index
+from sipnet_calibration import conventions
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, load_sites
 
 __all__ = [
@@ -417,8 +417,7 @@ def default_drivers_root() -> Path:
     otherwise ``data/raw/drivers`` under this checkout. Experiments name their
     paths in ``config.py``.
     """
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    data_root = Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    data_root = conventions.data_root()
     return data_root / "raw" / "drivers"
 
 

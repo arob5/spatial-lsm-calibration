@@ -174,7 +174,6 @@ Usage
 
 from __future__ import annotations
 
-import os
 import re
 import warnings
 from collections.abc import Iterable, Sequence
@@ -188,6 +187,8 @@ import pandas as pd
 import xarray as xr
 from pysipnet.units import validate_units
 
+from sipnet_calibration import conventions
+from sipnet_calibration.conventions import CF_CONVENTIONS
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
 
 __all__ = [
@@ -570,8 +571,6 @@ VALUE = "value"
 #: Name of the standard-deviation array in the processed file.
 STANDARD_DEVIATION = "standard_deviation"
 
-#: The metadata conventions the processed files follow, as pySIPNET's output does.
-CF_CONVENTIONS = "CF-1.11"
 
 #: On-disk time encoding. Written explicitly so nothing is inherited from a default.
 TIME_UNITS = "days since 2000-01-01"
@@ -878,8 +877,7 @@ _LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "de
 
 
 def _data_root() -> Path:
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    return conventions.data_root()
 
 
 def _raw_dtypes(spec: ConstraintSpec) -> dict[str, Any]:

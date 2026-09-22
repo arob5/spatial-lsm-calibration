@@ -508,7 +508,7 @@ asserted or reported by the ingest:
 **How PEcAn used them.** `write.config.SIPNET` (the `poolinitcond` branch,
 through `PEcAn.data.land::prepare_pools`) turned each file into SIPNET
 initial parameters as follows. This is the mapping the experiment layer has to
-reproduce or consciously depart from; nothing here applies it.
+reproduce or consciously depart from; the ingest applies none of it.
 
 | File variable | SIPNET parameter | pySIPNET field | Conversion in PEcAn |
 |---|---|---|---|
@@ -518,9 +518,17 @@ reproduce or consciously depart from; nothing here applies it.
 | `SoilMoistFrac` | `soilWFracInit` | `soil_wetness_fraction` | `SoilMoistFrac / 100`; SIPNET defines the parameter as a fraction of water holding capacity, a different fraction |
 | `AbvGrndWood` | none | none | unused: `prepare_pools` prefers `wood_carbon_content`, and would use `AbvGrndWood` only with a coarse-root pool, which no file carries |
 
-Three of the four conversions depend on parameters the calibration proposes,
-which is why the ingest applies none of them (see
-[Processed format](#processed-format)).
+Two of the four conversions read a parameter the calibration proposes -- the
+root fractions and the specific leaf weight -- which is why the ingest applies
+none of them (see [Processed format](#processed-format)). A third,
+`soilWFracInit`, takes no proposed parameter but is a fraction of a water
+holding capacity the calibration also proposes, so its meaning moves as well.
+`sipnet_calibration.initial_conditions.to_pysipnet_initial_conditions` applies
+the mapping to one `(member, site)` cell for one proposed parameter vector, and
+`to_pysipnet_initial_conditions_table` does it over a whole `(member, site)`
+ensemble. Both write the leaf row with SIPNET's own `leafCSpWt` rather than
+PEcAn's SLA draw, and both guard `fineRootFrac + coarseRootFrac < 1`, which
+pySIPNET does not check and SIPNET runs to completion without.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
 > `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,

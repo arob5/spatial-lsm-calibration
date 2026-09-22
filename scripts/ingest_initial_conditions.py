@@ -78,7 +78,7 @@ from sipnet_calibration.initial_conditions import (
     INITIAL_CONDITIONS,
     MEMBER,
     SITE,
-    SOURCE_NAMES,
+    SOURCE,
     build_initial_conditions,
     default_product_path,
     describe,
@@ -207,10 +207,10 @@ def _range(finite: np.ndarray) -> str:
 def check_every_source_variable_has_a_spec() -> None:
     """Raise unless the specs cover exactly the variables the raw file can hold."""
     specified = {spec.source_name for spec in INITIAL_CONDITIONS}
-    if specified != set(SOURCE_NAMES):
+    if specified != set(SOURCE.names):
         raise IngestError(
             f"specs cover {sorted(specified)} but the source variables are "
-            f"{sorted(SOURCE_NAMES)}; a variable without a spec would be dropped silently"
+            f"{sorted(SOURCE.names)}; a variable without a spec would be dropped silently"
         )
 
 
