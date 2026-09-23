@@ -43,7 +43,7 @@ SIPNET parameter
     One of pySIPNET's flat parameter names, ``max_photosynthesis_rate``; the
     keyword ``SIPNETModel(**overrides)`` takes. Never "field".
 group
-    A coordinate *varies by* a labeling of the sites and takes one value per
+    A coordinate *varies by* a site-labels product and takes one value per
     group of it: one when shared, one per site, one per PFT, one per
     land-cover class.
 
@@ -63,7 +63,7 @@ A coordinate's ``varies_by`` decides its groups:
 =================== ============================================ ===============
 ``None``            one, labeled ``"shared"``                    1
 ``"site"``          the sites themselves                         ``S``
-a labeling name     the sorted distinct labels of that labeling  its label count
+a site-labels name  the sorted distinct labels of those labels   its label count
 =================== ============================================ ===============
 
 **The override table.** :meth:`Parameterization.to_pysipnet_parameters`
@@ -74,14 +74,14 @@ name. Shared and per-label values are broadcast and gathered onto the site
 axis, so a caller reads one run's overrides without knowing about groups.
 Each variable carries ``units``, ``sipnet_name``, ``source``
 (``"coordinate <name>"`` or ``"fixed"``) and, where pySIPNET declares one,
-``constituent``; the ``site`` coordinate carries every labeling as a
-non-dimension coordinate.
+``constituent``; the ``site`` coordinate carries every site-labels product as
+a non-dimension coordinate.
 
 **The coordinates table.** :meth:`Parameterization.coordinates_table` returns
 ``dict[str, xarray.DataArray]``, one per coordinate, with dims drawn from
 ``member`` (when ``theta`` is an ensemble), the coordinate's ``varies_by``
 name (when it varies), and ``element`` (when it has several); a ``site``
-dim carries every labeling as a non-dimension coordinate, as the override
+dim carries every site-labels product as a non-dimension coordinate, as the override
 table does. It is a dict rather than a Dataset because ``element`` differs
 in length and labels from one coordinate to the next.
 
@@ -558,9 +558,9 @@ SHARED = "shared"
 SITE = "site"
 """The reserved ``varies_by`` value meaning one copy per site."""
 
-RESERVED_LABELING_NAMES = frozenset({SHARED, SITE, "member", "element"})
-"""Names a labeling cannot take, because they are dimension names already. A
-labeling may not be named like a coordinate or a SIPNET parameter either."""
+RESERVED_SITE_LABELS_NAMES = frozenset({SHARED, SITE, "member", "element"})
+"""Names a site-labels product cannot take, because they are dimension names
+already. It may not be named like a coordinate or a SIPNET parameter either."""
 
 REQUIRED_SIPNET_PARAMETERS: tuple[str, ...] = tuple(
     name
@@ -603,7 +603,7 @@ class Coordinate:
         A :class:`CoordToParamMap`, or a SIPNET parameter name as shorthand
         for :class:`Identity`.
     varies_by:
-        ``None`` (shared), ``"site"``, or the name of a labeling the
+        ``None`` (shared), ``"site"``, or the name of a site-labels product the
         :class:`Parameterization` supplies.
     provenance:
         Where the prior came from, in words, with the citation. A placeholder
@@ -788,7 +788,7 @@ class Layout:
         Group labels per coordinate, in the order they occupy ``theta``.
     dims:
         The group dimension name per coordinate: ``"shared"``, ``"site"``, or
-        a labeling name.
+        a site-labels name.
     element_labels:
         Unconstrained element labels per coordinate.
 
@@ -903,7 +903,7 @@ class Layout:
 
 @dataclass(frozen=True, eq=False, kw_only=True)
 class Parameterization:
-    """A calibration vector: coordinates, fixed parameters, sites, labelings.
+    """A calibration vector: coordinates, fixed parameters, sites, site labels.
 
     Fully encodes the structure of the vector of calibration parameters: which
     coordinates it holds, in what order (:attr:`layout`), their prior, and
@@ -918,7 +918,7 @@ class Parameterization:
         must appear here.
     sites:
         Site ids, ascending; the project's 1-8000 ids, never renumbered.
-    labelings:
+    site_labels:
         ``{name: one label per site}`` for every ``varies_by`` used other
         than ``None`` and ``"site"``.
     require_complete:
@@ -942,7 +942,7 @@ class Parameterization:
     ------
     ValueError
         If a coordinate name repeats, two writers set one SIPNET parameter, a
-        map reads a parameter nobody fixed, a labeling is missing or the wrong
+        map reads a parameter nobody fixed, a site-labels product is missing or the wrong
         length, a prior's batch shape disagrees with its group count, a fixed
         value misses a group, a coordinate's transform can leave a SIPNET
         parameter's domain, or *require_complete* is set and some required
@@ -962,7 +962,7 @@ class Parameterization:
     coordinates: tuple[Coordinate, ...]
     fixed: tuple[FixedParameter, ...] = ()
     sites: tuple[int, ...]
-    labelings: Mapping[str, Sequence[Any]] = field(default_factory=dict)
+    site_labels: Mapping[str, Sequence[Any]] = field(default_factory=dict)
     require_complete: bool = False
 
     def __post_init__(self) -> None:
@@ -970,11 +970,11 @@ class Parameterization:
         object.__setattr__(self, "fixed", tuple(self.fixed))
         object.__setattr__(self, "sites", _as_site_ids(self.sites))
         object.__setattr__(
-            self, "labelings", {k: _as_labels(k, v) for k, v in dict(self.labelings).items()}
+            self, "site_labels", {k: _as_labels(k, v) for k, v in dict(self.site_labels).items()}
         )
         check_sites_are_ascending(self.sites)
         check_coordinate_names_are_unique(self.coordinates)
-        check_labelings_cover_sites(self)
+        check_site_labels_cover_sites(self)
         check_each_sipnet_parameter_has_one_writer(self.coordinates, self.fixed)
         check_reads_are_fixed(self.coordinates, self.fixed)
         for coordinate in self.coordinates:
@@ -1021,22 +1021,24 @@ class Parameterization:
 
     def group_labels(self, varies_by: str | None) -> tuple[Any, ...]:
         """The groups of a ``varies_by`` value, in the order they occupy
-        ``theta``: ``("shared",)``, the sites, or a labeling's sorted labels."""
+        ``theta``: ``("shared",)``, the sites, or a site-labels product's sorted
+        labels."""
         if varies_by is None:
             return (SHARED,)
         if varies_by == SITE:
             return self.sites
-        return tuple(sorted(set(self.labelings[varies_by])))
+        return tuple(sorted(set(self.site_labels[varies_by])))
 
     def n_groups(self, varies_by: str | None) -> int:
         """The number of copies a coordinate with this ``varies_by`` has."""
         return len(self.group_labels(varies_by))
 
-    def sites_with(self, labeling: str, label: Any) -> tuple[int, ...]:
-        """The sites carrying *label* under *labeling*."""
-        if labeling not in self.labelings:
-            raise KeyError(f"no labeling {labeling!r}; have {sorted(self.labelings)}.")
-        return tuple(s for s, lab in zip(self.sites, self.labelings[labeling], strict=True) if lab == label)
+    def sites_with(self, site_labels: str, label: Any) -> tuple[int, ...]:
+        """The sites carrying *label* under the *site_labels* product."""
+        if site_labels not in self.site_labels:
+            raise KeyError(f"no site labels {site_labels!r}; have {sorted(self.site_labels)}.")
+        labels = self.site_labels[site_labels]
+        return tuple(s for s, lab in zip(self.sites, labels, strict=True) if lab == label)
 
     def coordinate(self, name: str) -> Coordinate:
         """The coordinate called *name*."""
@@ -1167,7 +1169,7 @@ class Parameterization:
             Dims per array, each present only when needed: ``member`` for an
             ensemble; the coordinate's ``varies_by`` name (``site``, ``pft``,
             ...) with the group labels as its coordinate, a ``site`` dim also
-            carrying every labeling as a non-dimension coordinate; ``element``
+            carrying every site-labels product as a non-dimension coordinate; ``element``
             with the element labels — unconstrained (``log(...)``,
             ``alr(...)``) or natural (the map's ``components``,
             ``leaf_allocation``, ..., ``coarse_root_allocation``) as *scale*
@@ -1197,7 +1199,7 @@ class Parameterization:
             if dim != SHARED:
                 coords[dim] = list(self.group_labels(coordinate.varies_by))
             if dim == SITE:
-                coords.update({k: (SITE, list(v)) for k, v in self.labelings.items()})
+                coords.update({k: (SITE, list(v)) for k, v in self.site_labels.items()})
             array = xr.DataArray(values, dims=dims, coords=coords, name=coordinate.name)
             if dim == SHARED:
                 array = array.isel({SHARED: 0}, drop=True)
@@ -1225,7 +1227,7 @@ class Parameterization:
             per-label values are broadcast and gathered onto the site axis. Each
             variable carries ``units``, ``sipnet_name``, ``source`` and, where
             pySIPNET declares one, ``constituent``; the ``site`` coordinate
-            carries every labeling.
+            carries every site-labels product.
 
         Examples
         --------
@@ -1249,7 +1251,7 @@ class Parameterization:
 
         dims = (*(("member",) if theta.ndim == 2 else ()), SITE)
         coords: dict[str, Any] = {SITE: list(self.sites)}
-        coords.update({k: (SITE, list(v)) for k, v in self.labelings.items()})
+        coords.update({k: (SITE, list(v)) for k, v in self.site_labels.items()})
         variables = {
             name: (dims, np.asarray(values, dtype=np.float64), _parameter_attrs(name, source))
             for name, (values, source) in sorted(columns.items(), key=lambda kv: _spec_order(kv[0]))
@@ -1275,7 +1277,7 @@ class Parameterization:
             elif dim == SITE:
                 out[name] = array.sel({SITE: site})
             else:
-                out[name] = array.sel({dim: self.labelings[dim][position]})
+                out[name] = array.sel({dim: self.site_labels[dim][position]})
         return out
 
     def describe(self) -> pd.DataFrame:
@@ -1340,7 +1342,7 @@ class Parameterization:
             return np.arange(len(self.sites))
         labels = self.group_labels(varies_by)
         position = {label: i for i, label in enumerate(labels)}
-        return np.asarray([position[label] for label in self.labelings[varies_by]])
+        return np.asarray([position[label] for label in self.site_labels[varies_by]])
 
     def _onto_sites(self, coordinate: Coordinate, natural: Array) -> Array:
         """``(..., n_groups, k)`` gathered to ``(..., S, k)``."""
@@ -1589,7 +1591,7 @@ def example_parameterization(sites: Sequence[int], *, pft: Sequence[str]) -> Par
         ),
         fixed=fixed,
         sites=sites,
-        labelings={"pft": pft},
+        site_labels={"pft": pft},
     )
 
 
@@ -1671,10 +1673,10 @@ def _as_site_ids(sites: Any) -> tuple[int, ...]:
 
 
 def _as_labels(name: str, labels: Any) -> tuple[Any, ...]:
-    """A labeling as a tuple of one label per site; refuses a string or a mapping."""
+    """Site labels as a tuple of one label per site; refuses a string or a mapping."""
     if isinstance(labels, (str, bytes, Mapping)):
         raise TypeError(
-            f"labeling {name!r} must be a sequence of one label per site, not "
+            f"site labels {name!r} must be a sequence of one label per site, not "
             f"{type(labels).__name__}."
         )
     if hasattr(labels, "tolist"):  # numpy, jax, pandas
@@ -1906,30 +1908,32 @@ def check_coordinate_names_are_unique(coordinates: tuple[Coordinate, ...]) -> No
         raise ValueError("a Parameterization needs at least one coordinate.")
 
 
-def check_labelings_cover_sites(parameterization: Parameterization) -> None:
-    reserved = RESERVED_LABELING_NAMES & set(parameterization.labelings)
+def check_site_labels_cover_sites(parameterization: Parameterization) -> None:
+    reserved = RESERVED_SITE_LABELS_NAMES & set(parameterization.site_labels)
     if reserved:
-        raise ValueError(f"labeling names {sorted(reserved)} are reserved dimension names.")
-    for name, labels in parameterization.labelings.items():
+        raise ValueError(f"site-labels names {sorted(reserved)} are reserved dimension names.")
+    for name, labels in parameterization.site_labels.items():
         if len(labels) != len(parameterization.sites):
             raise ValueError(
-                f"labeling {name!r} has {len(labels)} labels for {len(parameterization.sites)} "
+                f"site labels {name!r} has {len(labels)} labels for {len(parameterization.sites)} "
                 "sites; give one label per site, in site order."
             )
     taken = {c.name for c in parameterization.coordinates} | set(_FLAT_SPECS)
-    colliding = sorted(taken & set(parameterization.labelings))
+    colliding = sorted(taken & set(parameterization.site_labels))
     if colliding:
         raise ValueError(
-            f"labeling names {colliding} collide with a coordinate or SIPNET parameter "
+            f"site-labels names {colliding} collide with a coordinate or SIPNET parameter "
             "name; both become variables of the tables this module builds."
         )
     used = {c.varies_by for c in parameterization.coordinates} | {
         f.varies_by for f in parameterization.fixed
     }
-    missing = sorted(v for v in used if v not in (None, SITE) and v not in parameterization.labelings)
+    missing = sorted(
+        v for v in used if v not in (None, SITE) and v not in parameterization.site_labels
+    )
     if missing:
         raise ValueError(
-            f"varies_by names {missing} have no labeling; pass labelings={{name: labels}}."
+            f"varies_by names {missing} have no site labels; pass site_labels={{name: labels}}."
         )
 
 

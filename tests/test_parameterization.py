@@ -250,10 +250,10 @@ def test_fixed_parameter_checks_domain_and_shape():
         FixedParameter(name="cFracLeaf", value=0.4, provenance="x")
 
 
-def build(coordinates, fixed=(), sites=SITES, labelings=None):
+def build(coordinates, fixed=(), sites=SITES, site_labels=None):
     return Parameterization(
         coordinates=coordinates, fixed=fixed, sites=sites,
-        labelings={"pft": PFT} if labelings is None else labelings,
+        site_labels={"pft": PFT} if site_labels is None else site_labels,
     )
 
 
@@ -279,7 +279,7 @@ def distinct_groups() -> Parameterization:
         fixed=(FixedParameter(
             name="leaf_carbon_fraction", value={"a": 0.4, "b": 0.5}, varies_by="pft", provenance="test",
         ),),
-        sites=SITES, labelings={"pft": ("a", "b", "a")},   # site 27 is "b", the second group
+        sites=SITES, site_labels={"pft": ("a", "b", "a")},   # site 27 is "b", the second group
     )
 
 
@@ -299,7 +299,7 @@ def test_parameterization_refuses_duplicate_names_and_writers():
         build((rate(),), fixed=(FixedParameter(name="wood_turnover_rate", value=0.01, provenance="x"),))
 
 
-def test_parameterization_refuses_unfixed_reads_and_missing_labelings():
+def test_parameterization_refuses_unfixed_reads_and_missing_site_labels():
     pair = Coordinate(
         name="p",
         prior=product_transformed_gaussian_prior(
@@ -309,12 +309,12 @@ def test_parameterization_refuses_unfixed_reads_and_missing_labelings():
     )
     with pytest.raises(ValueError, match="which are not fixed"):
         build((pair,))
-    with pytest.raises(ValueError, match="have no labeling"):
+    with pytest.raises(ValueError, match="have no site labels"):
         build((rate(varies_by="landcover"),))
     with pytest.raises(ValueError, match="one label per site"):
-        build((rate(varies_by="pft"),), labelings={"pft": ("a", "b")})
+        build((rate(varies_by="pft"),), site_labels={"pft": ("a", "b")})
     with pytest.raises(ValueError, match="reserved"):
-        build((rate(),), labelings={"member": PFT})
+        build((rate(),), site_labels={"member": PFT})
 
 
 def test_coordinate_refuses_unusable_priors_and_maps():
@@ -348,17 +348,17 @@ def test_coordinate_refuses_unusable_priors_and_maps():
     assert wrapped.bijector is not None
 
 
-def test_parameterization_refuses_bad_sites_and_labelings():
+def test_parameterization_refuses_bad_sites_and_site_labels():
     with pytest.raises(TypeError, match="site ids must be integers"):
         build((rate(),), sites=(1.5, 27.0, 4711.0))
     assert build((rate(),), sites=np.array([1.0, 27.0, 4711.0])).sites == SITES
     with pytest.raises(TypeError, match="sequence of one label per site"):
-        build((rate(varies_by="pft"),), labelings={"pft": "abc"})
-    assert build((rate(varies_by="pft"),), labelings={"pft": np.array(PFT)}).group_labels("pft") == ("conifer", "deciduous")
+        build((rate(varies_by="pft"),), site_labels={"pft": "abc"})
+    assert build((rate(varies_by="pft"),), site_labels={"pft": np.array(PFT)}).group_labels("pft") == ("conifer", "deciduous")
     with pytest.raises(ValueError, match="collide with a coordinate or SIPNET parameter"):
-        build((rate(),), labelings={"pft": PFT, "wood_turnover_rate": (1, 2, 3)})
+        build((rate(),), site_labels={"pft": PFT, "wood_turnover_rate": (1, 2, 3)})
     with pytest.raises(ValueError, match="collide"):
-        build((rate(name="landcover"),), labelings={"pft": PFT, "landcover": (1, 2, 3)})
+        build((rate(name="landcover"),), site_labels={"pft": PFT, "landcover": (1, 2, 3)})
 
 
 def test_parameterization_refuses_wrong_prior_batch_and_fixed_coverage():
@@ -425,7 +425,7 @@ def test_in_domain_predicates_at_the_boundaries():
     with pytest.raises(ValueError, match="finite and positive"):
         log_normal(median=np.inf, geometric_sd=2.0)
     with pytest.raises(ValueError, match="ascending"):
-        build((rate(),), sites=(1, 1, 27), labelings={"pft": PFT})
+        build((rate(),), sites=(1, 1, 27), site_labels={"pft": PFT})
 
 
 # ── layout ───────────────────────────────────────────────────────────────────
@@ -844,7 +844,7 @@ def test_unset_parameters_and_require_complete(example):
     with pytest.raises(ValueError, match="neither calibrated nor fixed: \\['total_wood_carbon'"):
         Parameterization(
             coordinates=example.coordinates, fixed=example.fixed, sites=example.sites,
-            labelings=example.labelings, require_complete=True,
+            site_labels=example.site_labels, require_complete=True,
         )
     # A vector that fixes everything it does not calibrate is complete.
     filled = tuple(
@@ -853,7 +853,7 @@ def test_unset_parameters_and_require_complete(example):
     )
     complete = Parameterization(
         coordinates=example.coordinates, fixed=example.fixed + filled, sites=example.sites,
-        labelings=example.labelings, require_complete=True,
+        site_labels=example.site_labels, require_complete=True,
     )
     assert complete.unset_sipnet_parameters == ()
 

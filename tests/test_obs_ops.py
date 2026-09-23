@@ -1,7 +1,7 @@
 """Tests for the observation-space operations.
 
 ``sipnet_time_index`` is checked against cases built by hand from SIPNET's
-``year``/``day``/``time`` labeling, including the drifting ``time`` column the
+``year``/``day``/``time`` row labels, including the drifting ``time`` column the
 ``.clim`` drivers carry (issue #9), so that a future change cannot start
 trusting that column's value.
 

@@ -1,4 +1,4 @@
-"""Tests for the labeling specs, the products they describe, and the ingest.
+"""Tests for the site-labels specs, the products they describe, and the ingest.
 
 Three layers, as the constraint tests have. The specs are checked for internal
 consistency and against the real raw files' headers. The conversion is
@@ -23,36 +23,36 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from sipnet_calibration.labelings import (
-    LABELING_COLUMN_DTYPES,
-    LABELING_COLUMNS,
-    LABELING_NAMES,
-    LABELINGS,
+from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
     SITE_COLUMN,
-    LabelingSpec,
-    build_labeling,
-    default_labelings_dir,
+    SITE_LABELS,
+    SITE_LABELS_COLUMN_DTYPES,
+    SITE_LABELS_COLUMNS,
+    SITE_LABELS_NAMES,
+    SiteLabelsSpec,
+    build_site_labels,
     default_raw_dir,
+    default_site_labels_dir,
     describe,
     label_dtype,
-    labeling_path,
-    load_labeling,
+    load_site_labels,
     read_raw,
-    resolve_labeling,
+    resolve_site_labels,
+    site_labels_path,
 )
 from sipnet_calibration.sites import SITE_COLUMNS, default_sites_path, load_sites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-RAW_DIR = REPO_ROOT / "data" / "raw" / "labelings"
+RAW_DIR = REPO_ROOT / "data" / "raw" / "site_labels"
 
 
 def _load_ingest_module():
-    """Import ``scripts/ingest_labelings.py``, which is a script."""
-    path = REPO_ROOT / "scripts" / "ingest_labelings.py"
-    spec = importlib.util.spec_from_file_location("ingest_labelings", path)
+    """Import ``scripts/ingest_site_labels.py``, which is a script."""
+    path = REPO_ROOT / "scripts" / "ingest_site_labels.py"
+    spec = importlib.util.spec_from_file_location("ingest_site_labels", path)
     loaded = importlib.util.module_from_spec(spec)
-    sys.modules["ingest_labelings"] = loaded
+    sys.modules["ingest_site_labels"] = loaded
     spec.loader.exec_module(loaded)
     return loaded
 
@@ -65,12 +65,12 @@ ingest = _load_ingest_module()
 SYNTHETIC_SITES = [1, 2, 3, 4]
 SYNTHETIC_LANDCOVER = {1: 1, 2: 2, 3: 3, 4: 5}
 
-SYNTHETIC_SPEC = LabelingSpec(
+SYNTHETIC_SPEC = SiteLabelsSpec(
     name="synthetic_3class",
-    long_label="Synthetic three-class labeling",
+    long_label="Synthetic three-class site labels",
     label_kind="plant functional type",
     labels=("conifer", "broadleaf", "grass"),
-    description="A labeling that exists only in these tests.",
+    description="Site labels that exist only in these tests.",
     product="test fixture",
     raw_file="synthetic_site_class.csv",
     raw_columns=("site", "klass"),
@@ -113,7 +113,7 @@ def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
     return path
 
 
-def _write_raw(root: Path, spec: LabelingSpec, rows: list[dict]) -> Path:
+def _write_raw(root: Path, spec: SiteLabelsSpec, rows: list[dict]) -> Path:
     """Write rows as the real raw file is written: quoted CSV."""
     root.mkdir(parents=True, exist_ok=True)
     path = root / spec.raw_file
@@ -135,32 +135,32 @@ def synthetic(tmp_path):
 
 
 def test_registry_names_are_unique_and_match_the_specs():
-    assert LABELING_NAMES == tuple(spec.name for spec in LABELINGS)
-    assert len(set(LABELING_NAMES)) == len(LABELING_NAMES)
+    assert SITE_LABELS_NAMES == tuple(spec.name for spec in SITE_LABELS)
+    assert len(set(SITE_LABELS_NAMES)) == len(SITE_LABELS_NAMES)
 
 
-def test_resolve_labeling_names_what_exists_when_asked_for_something_else():
+def test_resolve_site_labels_names_what_exists_when_asked_for_something_else():
     with pytest.raises(KeyError, match="reanalysis_3pft"):
-        resolve_labeling("no_such_labeling")
+        resolve_site_labels("no_such_site_labels")
 
 
-@pytest.mark.parametrize("spec", LABELINGS, ids=lambda spec: spec.name)
+@pytest.mark.parametrize("spec", SITE_LABELS, ids=lambda spec: spec.name)
 def test_spec_raw_file_names_a_file_in_the_raw_directory(spec):
     if not RAW_DIR.exists():
-        pytest.skip("raw labelings not available in this working copy")
+        pytest.skip("raw site labels not available in this working copy")
     assert (RAW_DIR / spec.raw_file).exists()
 
 
-@pytest.mark.parametrize("spec", LABELINGS, ids=lambda spec: spec.name)
+@pytest.mark.parametrize("spec", SITE_LABELS, ids=lambda spec: spec.name)
 def test_spec_raw_columns_are_the_real_files_header(spec):
     path = RAW_DIR / spec.raw_file
     if not path.exists():
-        pytest.skip("raw labelings not available in this working copy")
+        pytest.skip("raw site labels not available in this working copy")
     header = pd.read_csv(path, nrows=0)
     assert tuple(header.columns) == spec.raw_columns
 
 
-@pytest.mark.parametrize("spec", LABELINGS, ids=lambda spec: spec.name)
+@pytest.mark.parametrize("spec", SITE_LABELS, ids=lambda spec: spec.name)
 def test_landcover_mapping_sends_every_cover_class_to_a_declared_label(spec):
     if spec.landcover_mapping is None:
         pytest.skip("no landcover relation declared")
@@ -168,7 +168,7 @@ def test_landcover_mapping_sends_every_cover_class_to_a_declared_label(spec):
 
 
 def test_describe_names_the_classes_and_the_relation():
-    text = describe(resolve_labeling("reanalysis_3pft"))
+    text = describe(resolve_site_labels("reanalysis_3pft"))
     assert "boreal.coniferous" in text
     assert "landcover 5-8 -> semiarid.grassland_HPDA" in text
 
@@ -202,12 +202,12 @@ def test_spec_refuses_an_inconsistent_field(field, value, match):
     }
     kwargs[field] = value
     with pytest.raises(ValueError, match=match):
-        LabelingSpec(**kwargs)
+        SiteLabelsSpec(**kwargs)
 
 
 def test_spec_refuses_a_landcover_mapping_onto_an_undeclared_class():
     with pytest.raises(ValueError, match="not in labels"):
-        LabelingSpec(
+        SiteLabelsSpec(
             name="ok_name",
             long_label="Fine",
             label_kind="plant functional type",
@@ -230,17 +230,17 @@ def test_ingest_writes_the_data_model(synthetic):
     raw_root, sites, out_dir = synthetic
     product = ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
 
-    assert tuple(product.columns) == LABELING_COLUMNS
+    assert tuple(product.columns) == SITE_LABELS_COLUMNS
     assert product[SITE_COLUMN].dtype == np.int32
     assert product[SITE_COLUMN].tolist() == SYNTHETIC_SITES
     assert product[LABEL_COLUMN].tolist() == ["conifer", "conifer", "broadleaf", "grass"]
-    assert labeling_path(SYNTHETIC_SPEC, out_dir).exists()
+    assert site_labels_path(SYNTHETIC_SPEC, out_dir).exists()
 
 
 def test_label_is_a_categorical_over_the_specs_classes_in_order(synthetic):
     raw_root, sites, out_dir = synthetic
     ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
-    written = load_labeling(SYNTHETIC_SPEC, labeling_path(SYNTHETIC_SPEC, out_dir))
+    written = load_site_labels(SYNTHETIC_SPEC, site_labels_path(SYNTHETIC_SPEC, out_dir))
 
     assert written[LABEL_COLUMN].dtype == pd.CategoricalDtype(
         list(SYNTHETIC_SPEC.labels), ordered=False
@@ -252,7 +252,7 @@ def test_label_is_a_categorical_over_the_specs_classes_in_order(synthetic):
 def test_the_written_file_reads_back_as_what_was_built(synthetic):
     raw_root, sites, out_dir = synthetic
     product = ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
-    written = load_labeling(SYNTHETIC_SPEC, labeling_path(SYNTHETIC_SPEC, out_dir))
+    written = load_site_labels(SYNTHETIC_SPEC, site_labels_path(SYNTHETIC_SPEC, out_dir))
     pd.testing.assert_frame_equal(written, product)
 
 
@@ -260,15 +260,15 @@ def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path):
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
-    product = build_labeling(SYNTHETIC_SPEC, frame)
+    product = build_site_labels(SYNTHETIC_SPEC, frame)
     assert product[SITE_COLUMN].tolist() == SYNTHETIC_SITES
 
 
 def test_a_class_literally_named_na_survives_the_read(tmp_path):
     """``keep_default_na=False``: the eight sites named ``NA`` taught this lesson."""
-    spec = LabelingSpec(
+    spec = SiteLabelsSpec(
         name="na_class",
-        long_label="A labeling with a class named NA",
+        long_label="Site labels with a class named NA",
         label_kind="cover class",
         labels=("NA", "other"),
         description="Exists to prove the null handling.",
@@ -310,7 +310,7 @@ def test_nothing_is_written_when_a_raw_check_fails(synthetic):
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS[:3])
     with pytest.raises(ingest.IngestError):
         ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
-    assert not labeling_path(SYNTHETIC_SPEC, out_dir).exists()
+    assert not site_labels_path(SYNTHETIC_SPEC, out_dir).exists()
     assert not out_dir.exists() or not list(out_dir.glob("*.partial"))
 
 
@@ -336,7 +336,7 @@ def test_an_unlabeled_site_is_refused_when_the_spec_covers_the_pool(tmp_path):
     raw_root = tmp_path / "raw"
     sites = load_sites(_write_sites(tmp_path / "sites.csv", [1, 2, 3, 4, 5]))
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="unlabeled"):
         ingest.check_pool_is_completely_labeled(SYNTHETIC_SPEC, product, sites)
 
@@ -347,14 +347,14 @@ def test_an_undeclared_class_is_refused(tmp_path):
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     with pytest.raises(ValueError, match="does not declare"):
-        build_labeling(SYNTHETIC_SPEC, frame)
+        build_site_labels(SYNTHETIC_SPEC, frame)
 
 
 def test_a_declared_class_no_site_uses_is_refused(tmp_path, synthetic):
     raw_root, sites, _ = synthetic
     rows = [dict(row, klass="conifer") for row in SYNTHETIC_ROWS]
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="that no site has"):
         ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, product)
 
@@ -364,7 +364,7 @@ def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, s
     # Site 4 has landcover 5, which the mapping sends to grass.
     rows = SYNTHETIC_ROWS[:3] + [{"site": 4, "klass": "broadleaf"}]
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="landcover_mapping"):
         ingest.check_labels_match_landcover(SYNTHETIC_SPEC, product, sites)
 
@@ -376,7 +376,7 @@ def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
     sites = load_sites(sites_path)
     sites.loc[sites[SITE_COLUMN] == 4, "landcover"] = np.int8(7)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="does not cover"):
         ingest.check_labels_match_landcover(SYNTHETIC_SPEC, product, sites)
 
@@ -395,8 +395,8 @@ def test_an_absent_raw_file_points_at_the_provenance_record(tmp_path):
 
 
 def test_an_absent_product_names_the_command_that_makes_it(tmp_path):
-    with pytest.raises(FileNotFoundError, match="ingest_labelings.py"):
-        load_labeling("reanalysis_3pft", tmp_path / "absent.csv")
+    with pytest.raises(FileNotFoundError, match="ingest_site_labels.py"):
+        load_site_labels("reanalysis_3pft", tmp_path / "absent.csv")
 
 
 @pytest.mark.parametrize(
@@ -409,11 +409,11 @@ def test_an_absent_product_names_the_command_that_makes_it(tmp_path):
         ("site_id,label\n0,conifer\n", "positive int32"),
     ],
 )
-def test_load_labeling_refuses_a_file_off_the_data_model(tmp_path, content, match):
+def test_load_site_labels_refuses_a_file_off_the_data_model(tmp_path, content, match):
     path = tmp_path / "bad.csv"
     path.write_text(content)
     with pytest.raises(ValueError, match=match):
-        load_labeling(SYNTHETIC_SPEC, path)
+        load_site_labels(SYNTHETIC_SPEC, path)
 
 
 # ── the real file ─────────────────────────────────────────────────────────────
@@ -430,21 +430,21 @@ def real_sites() -> pd.DataFrame:
 @pytest.fixture(scope="session")
 def real_product(real_sites, tmp_path_factory) -> pd.DataFrame:
     """``reanalysis_3pft`` built from the tracked raw file."""
-    spec = resolve_labeling("reanalysis_3pft")
+    spec = resolve_site_labels("reanalysis_3pft")
     if not (RAW_DIR / spec.raw_file).exists():
-        pytest.skip("raw labelings not available in this working copy")
-    out_dir = tmp_path_factory.mktemp("labelings")
+        pytest.skip("raw site labels not available in this working copy")
+    out_dir = tmp_path_factory.mktemp("site_labels")
     return ingest.ingest(spec, RAW_DIR, real_sites, out_dir)
 
 
-def test_the_real_labeling_covers_the_whole_pool(real_product, real_sites):
+def test_the_real_site_labels_cover_the_whole_pool(real_product, real_sites):
     assert len(real_product) == len(real_sites)
     assert real_product[SITE_COLUMN].tolist() == real_sites[SITE_COLUMN].tolist()
 
 
-def test_the_real_labeling_is_exactly_the_landcover_aggregation(real_product, real_sites):
-    """The claim data/README.md makes under Site labelings, over all 8000 sites."""
-    spec = resolve_labeling("reanalysis_3pft")
+def test_the_real_site_labels_are_exactly_the_landcover_aggregation(real_product, real_sites):
+    """The claim data/README.md makes under Site labels, over all 8000 sites."""
+    spec = resolve_site_labels("reanalysis_3pft")
     joined = real_product.merge(real_sites[[SITE_COLUMN, "landcover"]], on=SITE_COLUMN)
     expected = joined["landcover"].map(dict(spec.landcover_mapping))
     assert (expected == joined[LABEL_COLUMN].astype(str)).all()
@@ -452,22 +452,22 @@ def test_the_real_labeling_is_exactly_the_landcover_aggregation(real_product, re
     assert set(expected) == set(spec.labels)
 
 
-def test_every_declared_class_is_used_by_the_real_labeling(real_product):
-    spec = resolve_labeling("reanalysis_3pft")
+def test_every_declared_class_is_used_by_the_real_site_labels(real_product):
+    spec = resolve_site_labels("reanalysis_3pft")
     assert set(real_product[LABEL_COLUMN].unique()) == set(spec.labels)
 
 
 def test_the_real_raw_file_has_the_specs_row_count(real_sites):
-    spec = resolve_labeling("reanalysis_3pft")
+    spec = resolve_site_labels("reanalysis_3pft")
     if not (RAW_DIR / spec.raw_file).exists():
-        pytest.skip("raw labelings not available in this working copy")
+        pytest.skip("raw site labels not available in this working copy")
     assert len(read_raw(spec, RAW_DIR)) == spec.expected_rows
 
 
-# ── the 16-class labeling ─────────────────────────────────────────────────────
+# ── the 16-class product ──────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("spec", LABELINGS, ids=lambda spec: spec.name)
+@pytest.mark.parametrize("spec", SITE_LABELS, ids=lambda spec: spec.name)
 def test_display_names_cover_exactly_the_classes(spec):
     if spec.display_names is None:
         pytest.skip("no display names declared")
@@ -476,7 +476,7 @@ def test_display_names_cover_exactly_the_classes(spec):
 
 def test_the_16class_spec_declares_no_landcover_relation():
     """It comes from a different cover product, so no exact relation holds."""
-    assert resolve_labeling("pft_16class").landcover_mapping is None
+    assert resolve_site_labels("pft_16class").landcover_mapping is None
 
 
 def test_display_names_must_cover_every_class():
@@ -494,26 +494,26 @@ def test_display_names_must_cover_every_class():
         expected_rows=2,
     )
     with pytest.raises(ValueError, match="no entry for"):
-        LabelingSpec(**kwargs, display_names={"a": "A"})
-    with pytest.raises(ValueError, match="not classes of this labeling"):
-        LabelingSpec(**kwargs, display_names={"a": "A", "b": "B", "c": "C"})
+        SiteLabelsSpec(**kwargs, display_names={"a": "A"})
+    with pytest.raises(ValueError, match="not classes of this product"):
+        SiteLabelsSpec(**kwargs, display_names={"a": "A", "b": "B", "c": "C"})
 
 
 @pytest.fixture(scope="session")
 def real_16class(real_sites, tmp_path_factory) -> pd.DataFrame:
-    spec = resolve_labeling("pft_16class")
+    spec = resolve_site_labels("pft_16class")
     if not (RAW_DIR / spec.raw_file).exists():
-        pytest.skip("raw labelings not available in this working copy")
+        pytest.skip("raw site labels not available in this working copy")
     return ingest.ingest(spec, RAW_DIR, real_sites, tmp_path_factory.mktemp("l16"))
 
 
-def test_the_16class_labeling_covers_the_pool_with_all_sixteen(real_16class, real_sites):
-    spec = resolve_labeling("pft_16class")
+def test_the_16class_site_labels_cover_the_pool_with_all_sixteen(real_16class, real_sites):
+    spec = resolve_site_labels("pft_16class")
     assert len(real_16class) == len(real_sites)
     assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.labels)
 
 
-def test_the_two_labelings_do_not_nest(real_product, real_16class):
+def test_the_two_site_labels_products_do_not_nest(real_product, real_16class):
     """Recorded in data/README.md Note 11 and in the spec's own comment.
 
     Every 16-class class draws from at least two of the three reanalysis
@@ -605,7 +605,7 @@ def test_a_failed_round_trip_leaves_the_partial_and_never_the_product(
     with pytest.raises(ingest.IngestError):
         ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
 
-    out = labeling_path(SYNTHETIC_SPEC, out_dir)
+    out = site_labels_path(SYNTHETIC_SPEC, out_dir)
     assert not out.exists()
     assert [path.name for path in out_dir.glob("*.partial")] == [f"{out.name}.partial"]
 
@@ -614,7 +614,7 @@ def test_a_failed_round_trip_leaves_an_existing_product_intact(synthetic, monkey
     """A failed rerun must not damage the file a previous run left behind."""
     raw_root, sites, out_dir = synthetic
     ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
-    out = labeling_path(SYNTHETIC_SPEC, out_dir)
+    out = site_labels_path(SYNTHETIC_SPEC, out_dir)
     before = out.read_bytes()
 
     def boom(*args, **kwargs):
@@ -632,8 +632,8 @@ def test_the_round_trip_check_compares_against_the_library_loader(
     """A product that does not read back as built is refused, not renamed."""
     raw_root, sites, out_dir = synthetic
     out_dir.mkdir(parents=True, exist_ok=True)
-    partial = labeling_path(SYNTHETIC_SPEC, out_dir).with_suffix(".csv.partial")
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    partial = site_labels_path(SYNTHETIC_SPEC, out_dir).with_suffix(".csv.partial")
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     product.iloc[:-1].to_csv(partial, index=False)
     with pytest.raises(ingest.IngestError, match="does not read back"):
         ingest.check_round_trip(SYNTHETIC_SPEC, product, partial)
@@ -644,7 +644,7 @@ def test_the_round_trip_check_compares_against_the_library_loader(
 
 def _argv(raw_root, sites_path, out_dir, *extra):
     return [
-        "--labeling", SYNTHETIC_SPEC.name,
+        "--site-labels", SYNTHETIC_SPEC.name,
         "--raw-root", str(raw_root),
         "--sites", str(sites_path),
         "--out-dir", str(out_dir),
@@ -654,23 +654,23 @@ def _argv(raw_root, sites_path, out_dir, *extra):
 
 @pytest.fixture
 def real_argv(tmp_path):
-    """A `main` invocation against the registry's own labeling and raw file."""
-    if not (RAW_DIR / resolve_labeling("reanalysis_3pft").raw_file).exists():
-        pytest.skip("raw labelings not available in this working copy")
+    """A `main` invocation against the registry's own product and raw file."""
+    if not (RAW_DIR / resolve_site_labels("reanalysis_3pft").raw_file).exists():
+        pytest.skip("raw site labels not available in this working copy")
     return tmp_path
 
 
 def test_main_exits_zero_and_writes_the_product(real_argv):
     out_dir = real_argv / "out"
-    code = ingest.main(["--labeling", "reanalysis_3pft", "--out-dir", str(out_dir)])
+    code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
     assert code == 0
-    assert labeling_path("reanalysis_3pft", out_dir).exists()
+    assert site_labels_path("reanalysis_3pft", out_dir).exists()
 
 
-def test_main_honors_the_labeling_argument(real_argv):
-    """Naming one labeling must not build the others."""
+def test_main_honors_the_site_labels_argument(real_argv):
+    """Naming one product must not build the others."""
     out_dir = real_argv / "out"
-    code = ingest.main(["--labeling", "reanalysis_3pft", "--out-dir", str(out_dir)])
+    code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
     assert code == 0
     assert [path.name for path in out_dir.glob("*.csv")] == ["reanalysis_3pft.csv"]
 
@@ -681,11 +681,11 @@ def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS[:3])
     # main resolves by name, so drive it through the registry's own spec with a
     # raw file of the wrong length.
-    spec = resolve_labeling("reanalysis_3pft")
+    spec = resolve_site_labels("reanalysis_3pft")
     _write_raw(raw_root, spec, [{"site": 1, "pft": spec.labels[0]}])
     code = ingest.main(
         [
-            "--labeling", spec.name,
+            "--site-labels", spec.name,
             "--raw-root", str(raw_root),
             "--sites", str(sites_path),
             "--out-dir", str(tmp_path / "out"),
@@ -705,9 +705,9 @@ def test_main_describes_without_reading_data(tmp_path, capsys):
     assert "reanalysis_3pft" in out and "pft_16class" in out
 
 
-def test_main_refuses_an_unknown_labeling(capsys):
+def test_main_refuses_unknown_site_labels(capsys):
     with pytest.raises(SystemExit) as exit_info:
-        ingest.main(["--labeling", "no_such_labeling"])
+        ingest.main(["--site-labels", "no_such_site_labels"])
     assert exit_info.value.code == 2
 
 
@@ -715,7 +715,7 @@ def test_describe_product_reports_the_pool_the_right_way_round(synthetic):
     raw_root, sites, out_dir = synthetic
     product = ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
     text = ingest.describe_product(
-        SYNTHETIC_SPEC, product, sites, labeling_path(SYNTHETIC_SPEC, out_dir)
+        SYNTHETIC_SPEC, product, sites, site_labels_path(SYNTHETIC_SPEC, out_dir)
     )
     assert f"{len(product)} of {len(sites)} in the pool" in text
     for label in SYNTHETIC_SPEC.labels:
@@ -726,7 +726,7 @@ def test_describe_product_survives_a_class_no_site_uses(synthetic):
     """A zero-count class must not KeyError out of the run report."""
     raw_root, sites, _ = synthetic
     spec = dataclasses.replace(SYNTHETIC_SPEC, landcover_mapping=None)
-    product = build_labeling(spec, read_raw(spec, raw_root))
+    product = build_site_labels(spec, read_raw(spec, raw_root))
     product = product[product[LABEL_COLUMN] != "grass"]
     text = ingest.describe_product(spec, product, sites, Path("x.csv"))
     assert "grass" in text
@@ -751,17 +751,17 @@ def test_exactly_one_unused_class_is_refused(tmp_path, synthetic):
     rows = [dict(row) for row in SYNTHETIC_ROWS]
     rows[3]["klass"] = "broadleaf"  # grass now unused, conifer and broadleaf are not
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match=r"\['grass'\]"):
         ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, product)
 
 
-def test_a_partial_labeling_is_allowed_when_the_spec_says_so(tmp_path):
+def test_partial_site_labels_are_allowed_when_the_spec_says_so(tmp_path):
     spec = dataclasses.replace(SYNTHETIC_SPEC, covers_pool=False, expected_rows=3)
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, spec, SYNTHETIC_ROWS[:3])
     sites = load_sites(_write_sites(tmp_path / "sites.csv"))
-    product = build_labeling(spec, read_raw(spec, raw_root))
+    product = build_site_labels(spec, read_raw(spec, raw_root))
     ingest.check_pool_is_completely_labeled(spec, product, sites)  # must not raise
 
 
@@ -778,15 +778,15 @@ def test_a_reordered_product_header_is_refused(tmp_path):
     path = tmp_path / "bad.csv"
     path.write_text("label,site_id\nconifer,1\n")
     with pytest.raises(ValueError, match="header is"):
-        load_labeling(SYNTHETIC_SPEC, path)
+        load_site_labels(SYNTHETIC_SPEC, path)
 
 
 def test_a_row_with_more_fields_than_the_header_is_refused(tmp_path):
-    """The parse hardening in `load_labeling`, which carries its own comment."""
+    """The parse hardening in `load_site_labels`, which carries its own comment."""
     path = tmp_path / "bad.csv"
     path.write_text("site_id,label\n1,conifer\n2,grass,extra\n")
     with pytest.raises(ValueError, match="could not be parsed"):
-        load_labeling(SYNTHETIC_SPEC, path)
+        load_site_labels(SYNTHETIC_SPEC, path)
 
 
 def test_an_identifier_too_large_for_int32_is_refused(tmp_path):
@@ -794,7 +794,7 @@ def test_an_identifier_too_large_for_int32_is_refused(tmp_path):
     path = tmp_path / "bad.csv"
     path.write_text(f"site_id,label\n{2**31},conifer\n")
     with pytest.raises(ValueError, match="positive int32"):
-        load_labeling(SYNTHETIC_SPEC, path)
+        load_site_labels(SYNTHETIC_SPEC, path)
 
 
 def test_a_class_named_na_survives_the_product_round_trip(tmp_path):
@@ -808,21 +808,21 @@ def test_a_class_named_na_survives_the_product_round_trip(tmp_path):
     )
     path = tmp_path / "p.csv"
     path.write_text("site_id,label\n1,NA\n2,other\n")
-    assert load_labeling(spec, path)[LABEL_COLUMN].tolist() == ["NA", "other"]
+    assert load_site_labels(spec, path)[LABEL_COLUMN].tolist() == ["NA", "other"]
 
 
 def test_an_empty_product_file_is_refused(tmp_path):
     path = tmp_path / "empty.csv"
     path.write_text("site_id,label\n")
     with pytest.raises(ValueError, match="holds no rows"):
-        load_labeling(SYNTHETIC_SPEC, path)
+        load_site_labels(SYNTHETIC_SPEC, path)
 
 
 def test_the_product_index_is_reset_after_sorting(tmp_path):
     """Without `ignore_index` the frame keeps the raw file's row numbers."""
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
-    product = build_labeling(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     assert product.index.tolist() == list(range(len(SYNTHETIC_ROWS)))
 
 
@@ -831,35 +831,35 @@ def test_the_product_index_is_reset_after_sorting(tmp_path):
 
 def test_the_registry_class_orders_are_what_was_run_against():
     """`labels` is a prior's class axis; reordering it silently would move it."""
-    assert resolve_labeling("reanalysis_3pft").labels == (
+    assert resolve_site_labels("reanalysis_3pft").labels == (
         "boreal.coniferous",
         "temperate.deciduous.HPDA",
         "semiarid.grassland_HPDA",
     )
-    sixteen = resolve_labeling("pft_16class").labels
+    sixteen = resolve_site_labels("pft_16class").labels
     assert sixteen[0] == "Evergreen_Needleleaf_Forest__P1"
     assert sixteen[-1] == "Permanent_Wetlands"
     assert len(sixteen) == 16
 
 
 def test_the_registry_declares_what_the_readme_says_it_does():
-    assert resolve_labeling("reanalysis_3pft").expected_rows == 8000
-    assert resolve_labeling("pft_16class").expected_rows == 8000
-    assert resolve_labeling("reanalysis_3pft").covers_pool is True
-    assert resolve_labeling("pft_16class").covers_pool is True
+    assert resolve_site_labels("reanalysis_3pft").expected_rows == 8000
+    assert resolve_site_labels("pft_16class").expected_rows == 8000
+    assert resolve_site_labels("reanalysis_3pft").covers_pool is True
+    assert resolve_site_labels("pft_16class").covers_pool is True
 
 
 def test_the_schema_constants_are_read_only():
-    """A caller mutating these would change every later read of a labeling."""
+    """A caller mutating these would change every later read of a product."""
     with pytest.raises(TypeError):
-        LABELING_COLUMN_DTYPES["site_id"] = np.int64
+        SITE_LABELS_COLUMN_DTYPES["site_id"] = np.int64
     with pytest.raises(TypeError):
-        resolve_labeling("reanalysis_3pft").landcover_mapping[1] = "x"
+        resolve_site_labels("reanalysis_3pft").landcover_mapping[1] = "x"
 
 
 def test_a_spec_cannot_be_mutated_after_construction():
     with pytest.raises(dataclasses.FrozenInstanceError):
-        resolve_labeling("reanalysis_3pft").expected_rows = 1
+        resolve_site_labels("reanalysis_3pft").expected_rows = 1
 
 
 @pytest.mark.parametrize(
@@ -889,7 +889,7 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
     }
     kwargs[field] = value
     with pytest.raises(ValueError, match=match):
-        LabelingSpec(**kwargs)
+        SiteLabelsSpec(**kwargs)
 
 
 # ── the default paths ─────────────────────────────────────────────────────────
@@ -897,12 +897,12 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
 
 def test_the_default_paths_honor_the_data_root_override(monkeypatch, tmp_path):
     monkeypatch.setenv("SIPNET_CALIBRATION_DATA", str(tmp_path))
-    assert default_raw_dir() == tmp_path / "raw" / "labelings"
-    assert default_labelings_dir() == tmp_path / "processed" / "labelings"
+    assert default_raw_dir() == tmp_path / "raw" / "site_labels"
+    assert default_site_labels_dir() == tmp_path / "processed" / "site_labels"
 
 
-def test_labeling_path_is_the_name_with_a_csv_suffix(tmp_path):
-    three = labeling_path("reanalysis_3pft", tmp_path)
+def test_site_labels_path_is_the_name_with_a_csv_suffix(tmp_path):
+    three = site_labels_path("reanalysis_3pft", tmp_path)
     assert three == tmp_path / "reanalysis_3pft.csv"
-    sixteen = labeling_path(resolve_labeling("pft_16class"), tmp_path)
+    sixteen = site_labels_path(resolve_site_labels("pft_16class"), tmp_path)
     assert sixteen.name == "pft_16class.csv"

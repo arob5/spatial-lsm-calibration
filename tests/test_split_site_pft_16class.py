@@ -19,7 +19,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_HALVES = (
-    REPO_ROOT / "data" / "raw" / "labelings" / "site_pft_16class.csv",
+    REPO_ROOT / "data" / "raw" / "site_labels" / "site_pft_16class.csv",
     REPO_ROOT / "data" / "raw" / "covariates" / "site_covariates_pft_assignment.csv",
 )
 
@@ -40,8 +40,8 @@ split = _load_script()
 
 
 def _source(rows: int = 4) -> pd.DataFrame:
-    """A miniature of the producer's table: the labeling columns plus covariates."""
-    frame = pd.DataFrame({column: ["x"] * rows for column in split.LABELING_COLUMNS})
+    """A miniature of the producer's table: the site-labels columns plus covariates."""
+    frame = pd.DataFrame({column: ["x"] * rows for column in split.SITE_LABELS_COLUMNS})
     frame[split.KEY_COLUMN] = [str(site) for site in range(1, rows + 1)]
     frame[split.LABEL_COLUMN] = ["Permanent_Wetlands"] * rows
     frame["MAT"] = ["1.5"] * rows
@@ -60,40 +60,40 @@ def _small_pool(monkeypatch):
 
 def test_the_halves_partition_the_source():
     source = _source()
-    labeling, covariates = split.split(source)
-    assert set(labeling.columns) | set(covariates.columns) == set(source.columns)
-    assert set(labeling.columns) & set(covariates.columns) == {split.KEY_COLUMN}
+    site_labels, covariates = split.split(source)
+    assert set(site_labels.columns) | set(covariates.columns) == set(source.columns)
+    assert set(site_labels.columns) & set(covariates.columns) == {split.KEY_COLUMN}
 
 
 def test_both_halves_keep_the_sources_column_order():
     source = _source()
-    labeling, covariates = split.split(source)
-    for half in (labeling, covariates):
+    site_labels, covariates = split.split(source)
+    for half in (site_labels, covariates):
         order = [column for column in source.columns if column in set(half.columns)]
         assert list(half.columns) == order
 
 
 def test_the_halves_rejoin_to_the_source():
     source = _source()
-    labeling, covariates = split.split(source)
-    split.check_the_rejoined_halves_reproduce_the_source(source, labeling, covariates)
+    site_labels, covariates = split.split(source)
+    split.check_the_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
 
 
 def test_the_rejoin_check_catches_a_changed_cell():
     source = _source()
-    labeling, covariates = split.split(source)
+    site_labels, covariates = split.split(source)
     covariates = covariates.copy()
     covariates.loc[0, "MAT"] = "999"
     with pytest.raises(split.SplitError, match="do not re-join"):
-        split.check_the_rejoined_halves_reproduce_the_source(source, labeling, covariates)
+        split.check_the_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
 
 
 def test_the_rejoin_check_catches_a_dropped_row():
     source = _source()
-    labeling, covariates = split.split(source)
+    site_labels, covariates = split.split(source)
     with pytest.raises(split.SplitError, match="re-joining gives"):
         split.check_the_rejoined_halves_reproduce_the_source(
-            source, labeling.iloc[:-1], covariates
+            source, site_labels.iloc[:-1], covariates
         )
 
 
@@ -105,23 +105,23 @@ def test_a_source_missing_a_declared_column_is_refused():
 
 def test_a_column_in_both_halves_is_refused():
     source = _source()
-    labeling, covariates = split.split(source)
-    covariates = covariates.join(labeling[[split.LABEL_COLUMN]])
+    site_labels, covariates = split.split(source)
+    covariates = covariates.join(site_labels[[split.LABEL_COLUMN]])
     with pytest.raises(split.SplitError, match="should share only"):
-        split.check_the_columns_partition_the_source(source, labeling, covariates)
+        split.check_the_columns_partition_the_source(source, site_labels, covariates)
 
 
 def test_a_half_that_is_not_the_whole_pool_is_refused():
     source = _source()
-    labeling, covariates = split.split(source)
+    site_labels, covariates = split.split(source)
     with pytest.raises(split.SplitError, match="not the whole site pool"):
-        split.check_both_halves_are_keyed_on_the_whole_pool(labeling.iloc[:-1], covariates)
+        split.check_both_halves_are_keyed_on_the_whole_pool(site_labels.iloc[:-1], covariates)
 
 
 def test_a_duplicated_site_is_refused():
     source = _source()
-    labeling, covariates = split.split(source)
-    doubled = pd.concat([labeling.iloc[:1], labeling.iloc[:-1]], ignore_index=True)
+    site_labels, covariates = split.split(source)
+    doubled = pd.concat([site_labels.iloc[:1], site_labels.iloc[:-1]], ignore_index=True)
     with pytest.raises(split.SplitError, match="repeats"):
         split.check_both_halves_are_keyed_on_the_whole_pool(doubled, covariates)
 
@@ -129,9 +129,9 @@ def test_a_duplicated_site_is_refused():
 def test_an_empty_class_is_refused():
     source = _source()
     source.loc[1, split.LABEL_COLUMN] = ""
-    labeling, _ = split.split(source)
+    site_labels, _ = split.split(source)
     with pytest.raises(split.SplitError, match="empty final_pft"):
-        split.check_the_label_column_is_complete(labeling)
+        split.check_the_label_column_is_complete(site_labels)
 
 
 def test_an_absent_source_points_at_the_provenance_record(tmp_path):
@@ -149,11 +149,11 @@ def test_the_source_is_read_as_text_so_no_float_is_reparsed(tmp_path):
 
 def test_writing_both_halves_round_trips(tmp_path):
     source = _source()
-    labeling, covariates = split.split(source)
-    written = split.write_halves(labeling, covariates, tmp_path / "l", tmp_path / "c")
-    assert set(written) == {split.LABELING_FILE, split.COVARIATES_FILE}
+    site_labels, covariates = split.split(source)
+    written = split.write_halves(site_labels, covariates, tmp_path / "l", tmp_path / "c")
+    assert set(written) == {split.SITE_LABELS_FILE, split.COVARIATES_FILE}
     for name, path in written.items():
-        expected = labeling if name == split.LABELING_FILE else covariates
+        expected = site_labels if name == split.SITE_LABELS_FILE else covariates
         back = pd.read_csv(path, dtype=str, keep_default_na=False, index_col=False)
         pd.testing.assert_frame_equal(back, expected.reset_index(drop=True))
 
@@ -164,7 +164,7 @@ def test_main_reports_and_exits_zero(tmp_path, capsys):
     code = split.main(
         [
             "--source", str(path),
-            "--labelings-dir", str(tmp_path / "l"),
+            "--site-labels-dir", str(tmp_path / "l"),
             "--covariates-dir", str(tmp_path / "c"),
         ]
     )
@@ -182,7 +182,7 @@ def test_main_reports_an_error_rather_than_a_traceback(tmp_path, capsys):
 def test_describe_needs_no_input(capsys):
     assert split.main(["--describe"]) == 0
     out = capsys.readouterr().out
-    assert split.LABELING_FILE in out and split.COVARIATES_FILE in out
+    assert split.SITE_LABELS_FILE in out and split.COVARIATES_FILE in out
 
 
 # ── the real halves ───────────────────────────────────────────────────────────
@@ -193,21 +193,21 @@ def test_the_committed_halves_rejoin_losslessly(monkeypatch):
     if not all(path.exists() for path in SOURCE_HALVES):
         pytest.skip("the split halves are not in this working copy")
     monkeypatch.setattr(split, "POOL", range(1, 8001))
-    labeling, covariates = (
+    site_labels, covariates = (
         pd.read_csv(path, dtype=str, keep_default_na=False, index_col=False)
         for path in SOURCE_HALVES
     )
-    split.check_both_halves_are_keyed_on_the_whole_pool(labeling, covariates)
-    split.check_the_label_column_is_complete(labeling)
-    assert set(labeling.columns) & set(covariates.columns) == {split.KEY_COLUMN}
-    assert len(labeling.columns) + len(covariates.columns) - 1 == 60
+    split.check_both_halves_are_keyed_on_the_whole_pool(site_labels, covariates)
+    split.check_the_label_column_is_complete(site_labels)
+    assert set(site_labels.columns) & set(covariates.columns) == {split.KEY_COLUMN}
+    assert len(site_labels.columns) + len(covariates.columns) - 1 == 60
 
 
-def test_the_committed_labeling_half_is_the_specs_raw_columns():
+def test_the_committed_site_labels_half_is_the_specs_raw_columns():
     """The spec and the split script have to agree on the column set."""
     if not SOURCE_HALVES[0].exists():
         pytest.skip("the split halves are not in this working copy")
-    from sipnet_calibration.labelings import resolve_labeling
+    from sipnet_calibration.site_labels import resolve_site_labels
 
     header = pd.read_csv(SOURCE_HALVES[0], nrows=0)
-    assert tuple(header.columns) == resolve_labeling("pft_16class").raw_columns
+    assert tuple(header.columns) == resolve_site_labels("pft_16class").raw_columns

@@ -78,7 +78,7 @@ data/
       provenance.md
       files/                    SCC only: symlink to PEcAn's 800,000 source files,
                                 <site_id>/IC_site_<site_id>_<member>.nc
-    labelings/                site labelings, tracked in version control
+    site_labels/              site labels, tracked in version control
       reanalysis_site_pft.csv
       site_pft_16class.csv
       provenance.md
@@ -102,7 +102,7 @@ data/
       sda_8k_site_rdata/obs.cov.Rdata     retained for validation
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
-    labelings/<name>.csv        one per labeling, keyed on site_id
+    site_labels/<name>.csv      one per product, keyed on site_id
     constraints/<name>.nc       one per constraint, <name> the raw file's stem
     initial_conditions.nc
     nee.zarr/
@@ -131,9 +131,9 @@ place, so a symlink is not a stable input; see
 holds the initial condition ensemble converted from PEcAn's 800,000
 per-member source files into one 26 MB array, which is the only form in which it
 exists off the SCC; see [Initial conditions](#initial-conditions).
-`raw/labelings/` and `raw/covariates/` hold the site labelings and the per-site
+`raw/site_labels/` and `raw/covariates/` hold the site labels and the per-site
 predictors, a few megabytes in all and, like the initial conditions, held
-nowhere else off the SCC; see [Site labelings](#site-labelings) and
+nowhere else off the SCC; see [Site labels](#site-labels) and
 [Site covariates](#site-covariates). Everything else under `raw/`, including the
 much larger drivers, eddy-covariance files, phenology and soil texture files,
 lives on storage and is symlinked.
@@ -854,12 +854,12 @@ files are the upstream sources from which those inputs were assembled.
 
 ---
 
-### Site labelings
+### Site labels
 
-A **labeling** maps sites to classes -- every site, where its spec says so.
-Plant functional type is the only kind held so far, and it is not site metadata:
-which labeling a calibration uses is an experimental choice, so each is its own
-product rather than a column of the site table. See Note 11.
+A **site-labels product** maps sites to classes -- every site, where its spec
+says so. Plant functional type is the only kind held so far, and it is not site
+metadata: which product a calibration uses is an experimental choice, so each is
+its own product rather than a column of the site table. See Note 11.
 
 **Format.** `reanalysis_site_pft.csv`: two columns, `site` and `pft`, one row
 per site, no missing values. The header and the class names are quoted; the
@@ -873,7 +873,7 @@ rest of the project; `pft` is one of three class names.
 | `temperate.deciduous.HPDA` | 1537 | 3, 4 | 9.2 / 44.1 / 69.0 |
 | `semiarid.grassland_HPDA` | 4094 | 5, 6, 7, 8 | 7.2 / 52.5 / 82.5 |
 
-**The labeling is an exact aggregation of `landcover`.** Every one of the 8000
+**These labels are an exact aggregation of `landcover`.** Every one of the 8000
 sites follows the rule in the third column, with no exception in either
 direction; the cross-tabulation has no off-diagonal cell. That does not settle
 Note 2, which asks what `cluster` and `landcover` mean, but it is evidence about
@@ -882,7 +882,7 @@ group, 3-4 as a second and 5-8 as a third, which is consistent with an ordering
 by needleleaf, broadleaf-deciduous and non-forest. It still does not name the
 scheme. Whether the aggregation rule is the intended one, and what the eight
 classes are, is open question 24(k). The relation is
-measured rather than stated, so `ingest_labelings.py` asserts it and refuses a
+measured rather than stated, so `ingest_site_labels.py` asserts it and refuses a
 raw file that departs from it.
 
 **The classes are coarse, and two of the three names mislead.** Over a pool
@@ -899,18 +899,18 @@ a class offset in the mean plus a smooth spatial residual rather than pooling on
 class alone.
 
 **Two upstream files are named `site_pft.csv`.** One directory above the source
-sits a sibling with the same header and the same three class names, labeling the
+sits a sibling with the same header and the same three class names, covering the
 older 6400-site pool with identifiers 1-6400. Nothing inside either file says
 which it is, so the discriminator is the row count: the expected count is a field
-of each labeling's spec in `sipnet_calibration.labelings`, and the ingest refuses
-a mismatch naming the other pool.
-[`raw/labelings/provenance.md`](raw/labelings/provenance.md) tabulates both.
+of each product's spec in `sipnet_calibration.site_labels`, and the ingest
+refuses a mismatch naming the other pool.
+[`raw/site_labels/provenance.md`](raw/site_labels/provenance.md) tabulates both.
 
 **Source.** [NALCR]'s 8000-site state data assimilation, whose per-PFT trait
 posteriors are indexed by these class names -- which is why the names are kept
 verbatim rather than renamed to this project's convention.
 
-#### `site_pft_16class.csv`, the labeling this project calibrates under
+#### `site_pft_16class.csv`, the labels this project calibrates under
 
 Sixteen classes over the same 8000 sites, assembled for this calibration by a
 colleague in the Dietze lab from MODIS land cover refined by clustering on
@@ -921,7 +921,7 @@ posteriors are indexed by them.
 **Format.** `index` is the 1-8000 site identifier, complete and unique;
 `final_pft` is the class, never missing. Sixteen further columns record how
 each label was arrived at. The producer supplied a display name per class,
-which `sipnet_calibration.labelings` carries on the spec; the internal names
+which `sipnet_calibration.site_labels` carries on the spec; the internal names
 are the join keys and are never renamed.
 
 | Class | Sites | Display name |
@@ -947,7 +947,7 @@ are the join keys and are never renamed.
 sixteen draws sites from at least two of the three, and twelve from all three.
 The old `boreal.coniferous` is the clearest case: of its 2369 sites only 483
 are needleleaf forest here, and 207 are evergreen **broadleaf** forest. A prior
-cannot be carried from the coarse labeling to this one by inheritance, which is
+cannot be carried from the coarse product to this one by inheritance, which is
 what Note 11 records.
 
 **363 sites were assigned by proxy**, not directly: nearest median profile over
@@ -965,13 +965,13 @@ what stands in for the md5 check it forfeits, are described.
 
 ### Site covariates
 
-Per-site predictors: neither an observation to fit nor a labeling to pool over.
+Per-site predictors: neither an observation to fit nor a class to pool over.
 Nothing reads them yet. They are here because a spatial prior that puts a
 smooth residual on top of a class offset needs predictors for that residual,
 and these are the ones already assembled for this pool.
 
 **Format.** `site_covariates_pft_assignment.csv`, 8000 rows by 43 columns,
-keyed on `index`, which is the only column it shares with the labeling half.
+keyed on `index`, which is the only column it shares with the site-labels half.
 
 | Group | Columns |
 |---|---|
@@ -996,7 +996,7 @@ are unknown would assert something nobody has checked.
 carrying both a class effect and these covariates relates the two by
 construction rather than by coincidence.
 
-**The split.** This file and `raw/labelings/site_pft_16class.csv` are one
+**The split.** This file and `raw/site_labels/site_pft_16class.csv` are one
 60-column source table cut in two by
 `scripts/raw_sources/split_site_pft_16class.py`. Neither half is byte-verbatim,
 so neither can be checked against the upstream md5; what replaces that check is
@@ -1192,7 +1192,7 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | Script | Reads | Writes |
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
-| `ingest_labelings.py` | `raw/labelings/*.csv`, `processed/sites/sites.csv` | `processed/labelings/<name>.csv`, one per labeling |
+| `ingest_site_labels.py` | `raw/site_labels/*.csv`, `processed/sites/sites.csv` | `processed/site_labels/<name>.csv`, one per product |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
 | `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -1259,10 +1259,10 @@ the result is tracked here as
 `raw/initial_conditions/provenance.md` for the run. A normal working copy never
 runs it: it needs the SCC, and it is re-run only if the source files change.
 
-`split_site_pft_16class.py` is the second. The 16-class labeling arrives as one
-60-column table holding two different things, a labeling and the covariates it
-was derived from, so the script cuts it along an explicit column partition and
-writes both halves. That forfeits the md5 check every other tracked raw input
+`split_site_pft_16class.py` is the second. The 16-class assignment arrives as one
+60-column table holding two different things, the site labels and the covariates
+they were derived from, so the script cuts it along an explicit column partition
+and writes both halves. That forfeits the md5 check every other tracked raw input
 gets -- neither half can be compared against the upstream file -- so the script
 asserts instead that the halves partition the source, that both are keyed on
 the whole pool, and that **re-joining them reproduces the source cell for
@@ -1272,7 +1272,7 @@ cell**, comparing as text so no float is reparsed. See
 | Script | Reads | Writes |
 |---|---|---|
 | `raw_sources/convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
-| `raw_sources/split_site_pft_16class.py` | the producer's 60-column PFT table (SCC only) | `raw/labelings/site_pft_16class.csv` and `raw/covariates/site_covariates_pft_assignment.csv`, both tracked |
+| `raw_sources/split_site_pft_16class.py` | the producer's 60-column PFT table (SCC only) | `raw/site_labels/site_pft_16class.csv` and `raw/covariates/site_covariates_pft_assignment.csv`, both tracked |
 
 Conversions applied during ingest rather than downstream:
 
@@ -1299,7 +1299,7 @@ Conversions applied during ingest rather than downstream:
   the mapping is evaluated per proposed parameter vector in the experiment
   layer. Negative wood and leaf draws pass through and are counted in the run
   report.
-- **Site labelings.** None to the class names: they are the join key to the
+- **Site labels.** None to the class names: they are the join key to the
   reanalysis's per-PFT trait tables, so they are written exactly as the producer
   wrote them, abbreviations and dots included. What changes is the column names,
   which are this project's to choose (`site` and `pft` become `site_id` and
@@ -1312,8 +1312,8 @@ Conversions applied during ingest rather than downstream:
   decision). The redundant `ens_mean` column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
-> of the site table. Which labeling a calibration uses, and how many exist, is
-> an experimental choice; see Note 11 under Open questions.
+> of the site table. Which site labels a calibration uses, and how many exist,
+> is an experimental choice; see Note 11 under Open questions.
 
 ---
 
@@ -1333,7 +1333,7 @@ Formats are chosen according to the shape of each product.
 | Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
-| `labelings/<name>.csv` | CSV, one per labeling | table | ~0.2 MB each |
+| `site_labels/<name>.csv` | CSV, one per product | table | ~0.2 MB each |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
 | `initial_conditions.nc` | netCDF | `(member, site)` | 26 MB compressed |
 | `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
@@ -1362,8 +1362,8 @@ A `.dbf` null becomes the empty string in `site_name`, matching what an empty
 `ameriflux_site_id` means, and is an error in any numeric column: the integer
 columns cannot hold a missing value, and none of them has a spare code for one.
 
-There is deliberately no `pft` column; see Note 11. A labeling is joined on
-instead, from `processed/labelings/`. The Ameriflux column is
+There is deliberately no `pft` column; see Note 11. Site labels are joined on
+instead, from `processed/site_labels/`. The Ameriflux column is
 renamed from that file's `Site_ID`, which is opaque about which of the two
 identifiers it means, and is provisional in that a newer release supersedes the
 map it comes from; see open question 7.
@@ -1392,27 +1392,27 @@ settings to each caller.
   are named literally `NA`, which a default read turns into a null, and an
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
 
-The **labelings** are one CSV each under `processed/labelings/`, named by the
-labeling rather than by its raw file, with two columns:
+The **site labels** are one CSV each under `processed/site_labels/`, named by
+the product rather than by its raw file, with two columns:
 
 | Column | Type | Description |
 |---|---|---|
 | `site_id` | int32 | Site identifier, ascending |
 | `label` | category | The class, exactly as the producer wrote it |
 
-The column is `label` rather than `pft` so that every labeling has one schema:
-code that pools over classes indexes `label` without knowing which labeling it
-was handed, and a labeling that is not a plant functional type labeling needs no
-schema change. Which kind of class a labeling holds is a field of its spec in
-`sipnet_calibration.labelings`, which also fixes the order the classes are
-indexed in -- `load_labeling` returns `label` as a categorical over exactly the
-spec's classes, in that order, so a class axis is stable and an undeclared class
-is an error rather than a new category.
+The column is `label` rather than `pft` so that every product has one schema:
+code that pools over classes indexes `label` without knowing which product it
+was handed, and a product whose classes are not plant functional types needs no
+schema change. Which kind of class a product holds is a field of its spec in
+`sipnet_calibration.site_labels`, which also fixes the order the classes are
+indexed in -- `load_site_labels` returns `label` as a categorical over exactly
+the spec's classes, in that order, so a class axis is stable and an undeclared
+class is an error rather than a new category.
 
 There are no other columns: coordinates and `landcover` are site metadata, and a
 caller joins `load_sites()` on `site_id`. Nothing is missing, either -- a site a
-labeling does not label is absent from its file rather than carrying a null
-class, and a labeling whose spec says it covers the pool is refused at ingest if
+product does not label is absent from its file rather than carrying a null
+class, and a product whose spec says it covers the pool is refused at ingest if
 it leaves a site out.
 
 The **constraints** are five files under `processed/constraints/`, one per
@@ -1589,9 +1589,9 @@ classes, fewer than the seventeen of the IGBP scheme, so it is likely an
 aggregation. Confirming both would take one question to the group that produced
 the site pool.
 
-*Evidence from the PFT labeling, on the `landcover` half only.* The
-reanalysis's own three-class labeling is an exact function of `landcover`,
-grouping 1-2, 3-4 and 5-8; see [Site labelings](#site-labelings). So `landcover`
+*Evidence from the PFT labels, on the `landcover` half only.* The
+reanalysis's own three classes are an exact function of `landcover`,
+grouping 1-2, 3-4 and 5-8; see [Site labels](#site-labels). So `landcover`
 is at least ordered by something its producer read as needleleaf,
 broadleaf-deciduous and non-forest, which is consistent with an aggregation of a
 standard scheme. It names neither the eight classes nor anything about
@@ -1677,28 +1677,29 @@ of question 22. No script producing it has been found, so whether the two are an
 intended pair is unknown. The directory is named as though its contents carry
 variable attributes; they do not (Note 10).
 
-**11. Where plant functional type labelings live, and which to use.**
-*Resolved for the three-class table, open for the finer one.* A labeling is not
+**11. Where plant functional type labels live, and which to use.**
+*Resolved for the three-class table, open for the finer one.* A class is not
 an intrinsic property of a site: some calibrations will not use PFTs at all,
-others will use different labelings, and the labeling is likely to be varied
-experimentally, so carrying one in the site table would bake an experimental
-choice into a key shared with collaborators. Labelings are therefore a separate
-processed product, one file per labeling at `processed/labelings/<name>.csv`
-keyed on `site_id`, so several coexist and a calibration names the one it used.
+others will use a different set of classes, and which set is used is likely to
+be varied experimentally, so carrying one in the site table would bake an
+experimental choice into a key shared with collaborators. Site labels are
+therefore a separate processed product, one file per product at
+`processed/site_labels/<name>.csv` keyed on `site_id`, so several coexist and a
+calibration names the one it used.
 
 The three-class table the reanalysis assimilated under is now held as
-`raw/labelings/reanalysis_site_pft.csv` and ingested to
-`processed/labelings/reanalysis_3pft.csv`; see
-[Site labelings](#site-labelings). It turns out to be an exact aggregation of
+`raw/site_labels/reanalysis_site_pft.csv` and ingested to
+`processed/site_labels/reanalysis_3pft.csv`; see
+[Site labels](#site-labels). It turns out to be an exact aggregation of
 the shapefile's eight `landcover` classes, which answers how those two
 classifications relate. Whether the aggregation rule is the intended one is open
 question 24(k).
 
 *The 16-class table has since arrived* and is tracked as
-`raw/labelings/site_pft_16class.csv`; it is the labeling this project intends
-to calibrate under, and nothing in the design changed when it came, since
-`sipnet_calibration.labelings` takes a second spec. What it settles is that the
-two labelings **do not nest**: every one of its sixteen classes draws sites from
+`raw/site_labels/site_pft_16class.csv`; it is the set of labels this project
+intends to calibrate under, and nothing in the design changed when it came, since
+`sipnet_calibration.site_labels` takes a second spec. What it settles is that the
+two products **do not nest**: every one of its sixteen classes draws sites from
 at least two of the three reanalysis classes, and twelve from all three. So the
 planned transfer of priors from coarse classes to fine ones has no parent class
 to inherit from and has to be reconsidered. What remains open is how, if at all,
@@ -1746,7 +1747,7 @@ and the driver reader asserts the drift model per file so that a regenerated
 file without it is noticed. The open question is for the producer: is the
 series intended to be exactly 3-hourly?
 
-**16. The driver clock and interval labeling.** The two sites are 54 degrees
+**16. The driver clock and interval labels.** The two sites are 54 degrees
 of longitude apart, so a UTC clock requires the diurnal PAR cycle to shift by
 3.6 h between them and a fixed local clock requires no shift. Measured, the
 first harmonic of the summer PAR cycle shifts by 3.6 h, and the PAR-centroid

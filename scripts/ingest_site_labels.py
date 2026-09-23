@@ -1,39 +1,39 @@
 #!/usr/bin/env python
-"""Build the processed site labelings, one CSV per labeling.
+"""Build the processed site labels, one CSV per site-labels product.
 
 Overview
 --------
-For each labeling in ``sipnet_calibration.labelings.LABELINGS``, read its raw
+For each product in ``sipnet_calibration.site_labels.SITE_LABELS``, read its raw
 table, check it against the site pool and write the result as
-``data/processed/labelings/<name>.csv``. Every decision about what a labeling
+``data/processed/site_labels/<name>.csv``. Every decision about what a product
 holds -- its classes, its raw columns, how many rows the file must have, how it
-relates to the site table's ``landcover`` -- is a field of the labeling's spec
+relates to the site table's ``landcover`` -- is a field of the product's spec
 in the library; this script is the orchestration and the checks, and its own
 round-trip check reads each file back with
-:func:`sipnet_calibration.labelings.load_labeling`, the same function every
+:func:`sipnet_calibration.site_labels.load_site_labels`, the same function every
 consumer uses.
 
 Input data
 ----------
-``--raw-root``, default ``data/raw/labelings/``
-    One CSV per labeling, named by ``spec.raw_file``, read exactly by
-    :func:`sipnet_calibration.labelings.read_raw`. See
-    ``data/raw/labelings/provenance.md`` for where each came from.
+``--raw-root``, default ``data/raw/site_labels/``
+    One CSV per product, named by ``spec.raw_file``, read exactly by
+    :func:`sipnet_calibration.site_labels.read_raw`. See
+    ``data/raw/site_labels/provenance.md`` for where each came from.
 
 ``--sites``, default ``data/processed/sites/sites.csv``
-    The site table: the pool a labeling must label, and the ``landcover``
+    The site table: the pool a product must label, and the ``landcover``
     column a ``landcover_mapping`` is checked against.
 
 Output data
 -----------
-``--out-dir``, default ``data/processed/labelings/``, one CSV per labeling::
+``--out-dir``, default ``data/processed/site_labels/``, one CSV per product::
 
     site_id,label
     1,semiarid.grassland_HPDA
     2,semiarid.grassland_HPDA
 
 ascending by ``site_id``, with ``label`` one of the spec's declared classes.
-``sipnet_calibration.labelings`` documents the data model.
+``sipnet_calibration.site_labels`` documents the data model.
 
 Notes
 -----
@@ -58,9 +58,9 @@ Usage
 -----
 ::
 
-    python scripts/ingest_labelings.py                        # every labeling
-    python scripts/ingest_labelings.py --labeling reanalysis_3pft
-    python scripts/ingest_labelings.py --describe             # the specs, no I/O
+    python scripts/ingest_site_labels.py                       # every product
+    python scripts/ingest_site_labels.py --site-labels reanalysis_3pft
+    python scripts/ingest_site_labels.py --describe            # the specs, no I/O
 """
 
 from __future__ import annotations
@@ -71,19 +71,19 @@ from pathlib import Path
 
 import pandas as pd
 
-from sipnet_calibration.labelings import (
+from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
-    LABELING_NAMES,
     SITE_COLUMN,
-    LabelingSpec,
-    build_labeling,
-    default_labelings_dir,
+    SITE_LABELS_NAMES,
+    SiteLabelsSpec,
+    build_site_labels,
     default_raw_dir,
+    default_site_labels_dir,
     describe,
-    labeling_path,
-    load_labeling,
+    load_site_labels,
     read_raw,
-    resolve_labeling,
+    resolve_site_labels,
+    site_labels_path,
 )
 from sipnet_calibration.sites import default_sites_path, load_sites
 
@@ -97,22 +97,22 @@ class IngestError(Exception):
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    names = args.labeling or list(LABELING_NAMES)
+    names = args.site_labels or list(SITE_LABELS_NAMES)
 
     if args.describe:
-        print("\n\n".join(describe(resolve_labeling(name)) for name in names))
+        print("\n\n".join(describe(resolve_site_labels(name)) for name in names))
         return 0
 
     raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
-    out_dir = args.out_dir if args.out_dir is not None else default_labelings_dir()
+    out_dir = args.out_dir if args.out_dir is not None else default_site_labels_dir()
     sites_path = args.sites if args.sites is not None else default_sites_path()
 
     try:
         sites = load_sites(sites_path)
         for name in names:
-            spec = resolve_labeling(name)
+            spec = resolve_site_labels(name)
             product = ingest(spec, raw_root, sites, out_dir)
-            print(describe_product(spec, product, sites, labeling_path(spec, out_dir)))
+            print(describe_product(spec, product, sites, site_labels_path(spec, out_dir)))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -124,22 +124,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--labeling",
+        "--site-labels",
         action="append",
-        choices=LABELING_NAMES,
+        choices=SITE_LABELS_NAMES,
         metavar="NAME",
-        help="A labeling to build; repeatable. Default: all of " + ", ".join(LABELING_NAMES),
+        help="A product to build; repeatable. Default: all of " + ", ".join(SITE_LABELS_NAMES),
     )
     parser.add_argument(
         "--describe",
         action="store_true",
-        help="Print each labeling's spec and exit without reading data.",
+        help="Print each product's spec and exit without reading data.",
     )
     parser.add_argument(
         "--raw-root",
         type=Path,
         default=None,
-        help="Directory of the raw files. Default: data/raw/labelings.",
+        help="Directory of the raw files. Default: data/raw/site_labels.",
     )
     parser.add_argument(
         "--sites",
@@ -151,7 +151,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=None,
-        help="Where to write. Default: data/processed/labelings.",
+        help="Where to write. Default: data/processed/site_labels.",
     )
     return parser.parse_args(argv)
 
@@ -160,19 +160,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def ingest(
-    spec: LabelingSpec, raw_root: Path, sites: pd.DataFrame, out_dir: Path
+    spec: SiteLabelsSpec, raw_root: Path, sites: pd.DataFrame, out_dir: Path
 ) -> pd.DataFrame:
-    """Read, check, build and write one labeling."""
+    """Read, check, build and write one site-labels product."""
     frame = read_raw(spec, raw_root)
     check_raw_frame(spec, frame, sites)
 
-    product = build_labeling(spec, frame)
+    product = build_site_labels(spec, frame)
     check_product(spec, product, sites)
-    write_product(spec, product, labeling_path(spec, out_dir))
+    write_product(spec, product, site_labels_path(spec, out_dir))
     return product
 
 
-def check_raw_frame(spec: LabelingSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
+def check_raw_frame(spec: SiteLabelsSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
     """Every check on the raw rows, before anything is built from them."""
     # First, because on the wrong file every later check also fails and says
     # something less useful about why.
@@ -181,14 +181,14 @@ def check_raw_frame(spec: LabelingSpec, frame: pd.DataFrame, sites: pd.DataFrame
     check_sites_are_in_the_site_table(spec, frame, sites)
 
 
-def check_product(spec: LabelingSpec, product: pd.DataFrame, sites: pd.DataFrame) -> None:
+def check_product(spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame) -> None:
     """Every check on the built product, before it is written."""
     check_labels_are_the_declared_set(spec, product)
     check_pool_is_completely_labeled(spec, product, sites)
     check_labels_match_landcover(spec, product, sites)
 
 
-def write_product(spec: LabelingSpec, product: pd.DataFrame, out: Path) -> None:
+def write_product(spec: SiteLabelsSpec, product: pd.DataFrame, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     out.parent.mkdir(parents=True, exist_ok=True)
     partial = out.with_suffix(out.suffix + ".partial")
@@ -198,7 +198,7 @@ def write_product(spec: LabelingSpec, product: pd.DataFrame, out: Path) -> None:
 
 
 def describe_product(
-    spec: LabelingSpec, product: pd.DataFrame, sites: pd.DataFrame, path: Path
+    spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame, path: Path
 ) -> str:
     """A short report of what was written, for the run log."""
     counts = product[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
@@ -210,7 +210,7 @@ def describe_product(
     )
     lines = [
         f"{path}",
-        f"  labeling              : {spec.name} ({spec.label_kind})",
+        f"  site labels           : {spec.name} ({spec.label_kind})",
         f"  sites labeled         : {len(product)} of {len(sites)} in the pool",
         f"  classes               : {len(spec.labels)}",
     ]
@@ -228,38 +228,38 @@ def describe_product(
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_row_count_is_the_expected_pool(spec: LabelingSpec, frame: pd.DataFrame) -> None:
+def check_row_count_is_the_expected_pool(spec: SiteLabelsSpec, frame: pd.DataFrame) -> None:
     """The raw file has the spec's row count, so it labels the pool we think.
 
     This is the check that tells two same-named upstream files apart; see the
-    script's Notes and ``data/raw/labelings/provenance.md``.
+    script's Notes and ``data/raw/site_labels/provenance.md``.
     """
     if len(frame) == spec.expected_rows:
         return
     raise IngestError(
         f"{spec.raw_file}: holds {len(frame)} rows, expected {spec.expected_rows}. "
         "The likely cause is a file of the right shape but the wrong pool: upstream, "
-        "the source of this file has a same-named sibling one directory up labeling "
+        "the source of this file has a same-named sibling one directory up covering "
         "the older 6400-site pool, with the same header and the same class names. "
-        "Check which file was copied against data/raw/labelings/provenance.md, or, if "
+        "Check which file was copied against data/raw/site_labels/provenance.md, or, if "
         f"the pool itself changed, change expected_rows on the {spec.name!r} spec."
     )
 
 
-def check_no_duplicate_sites(spec: LabelingSpec, frame: pd.DataFrame) -> None:
-    """No site is labeled twice; a labeling is a function of the site."""
+def check_no_duplicate_sites(spec: SiteLabelsSpec, frame: pd.DataFrame) -> None:
+    """No site is labeled twice; the class is a function of the site."""
     site = frame[spec.site_column]
     duplicated = site[site.duplicated()].unique()
     if duplicated.size:
         raise IngestError(
             f"{spec.raw_file}: sites {duplicated[:5].tolist()}"
             f"{' and more' if duplicated.size > 5 else ''} appear more than once. "
-            "A labeling gives each site exactly one class."
+            "A site-labels product gives each site exactly one class."
         )
 
 
 def check_sites_are_in_the_site_table(
-    spec: LabelingSpec, frame: pd.DataFrame, sites: pd.DataFrame
+    spec: SiteLabelsSpec, frame: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
     """Every identifier the raw file labels is a site in the pool."""
     unknown = sorted(set(frame[spec.site_column]) - set(sites[SITE_COLUMN]))
@@ -272,10 +272,10 @@ def check_sites_are_in_the_site_table(
         )
 
 
-def check_labels_are_the_declared_set(spec: LabelingSpec, product: pd.DataFrame) -> None:
+def check_labels_are_the_declared_set(spec: SiteLabelsSpec, product: pd.DataFrame) -> None:
     """Every class the spec declares is used, and no other class appears.
 
-    ``build_labeling`` already refuses an undeclared class. What this adds is
+    ``build_site_labels`` already refuses an undeclared class. What this adds is
     the other direction: a declared class that no site has usually means the
     spec and the file have drifted apart.
     """
@@ -290,7 +290,7 @@ def check_labels_are_the_declared_set(spec: LabelingSpec, product: pd.DataFrame)
 
 
 def check_pool_is_completely_labeled(
-    spec: LabelingSpec, product: pd.DataFrame, sites: pd.DataFrame
+    spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
     """Where the spec says so, every site in the pool has a class."""
     if not spec.covers_pool:
@@ -300,13 +300,13 @@ def check_pool_is_completely_labeled(
         raise IngestError(
             f"{spec.raw_file}: leaves {len(unlabeled)} of {len(sites)} sites unlabeled, "
             f"the first being {unlabeled[:5]}. {spec.name!r} declares covers_pool; a "
-            "labeling that is legitimately partial should set it False, and consumers "
+            "product that is legitimately partial should set it False, and consumers "
             "then have to handle a site with no class."
         )
 
 
 def check_labels_match_landcover(
-    spec: LabelingSpec, product: pd.DataFrame, sites: pd.DataFrame
+    spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
     """Where the spec records one, the class is that function of ``landcover``.
 
@@ -338,14 +338,14 @@ def check_labels_match_landcover(
             f"{spec.raw_file}: {len(disagreeing)} of {len(joined)} sites do not follow "
             f"{spec.name!r}'s landcover_mapping ({detail}). The relation is measured, "
             "not stated by the producer, so a raw file that breaks it is either a new "
-            "version of the labeling or the wrong file; see data/README.md open "
+            "version of the product or the wrong file; see data/README.md open "
             "question 24(k)."
         )
 
 
-def check_round_trip(spec: LabelingSpec, product: pd.DataFrame, partial: Path) -> None:
+def check_round_trip(spec: SiteLabelsSpec, product: pd.DataFrame, partial: Path) -> None:
     """The written file reads back through the library loader as what was built."""
-    written = load_labeling(spec, partial)
+    written = load_site_labels(spec, partial)
     try:
         pd.testing.assert_frame_equal(written, product)
     except AssertionError as error:

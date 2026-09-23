@@ -1,16 +1,16 @@
-# Site labeling provenance
+# Site labels provenance
 
 Where each file in this directory came from, what was done to it, and how to
 tell whether it has drifted from its source.
 
-A labeling maps every site to a class. It is **not** site metadata and is not a
-column of the site table: which labeling to use is an experimental choice, so
-each one is its own product. `data/README.md` sets out that reasoning under
-[Site labelings](../../README.md#site-labelings) and open question 11.
+A site-labels product maps every site to a class. It is **not** site metadata
+and is not a column of the site table: which product to use is an experimental
+choice, so each one is its own product. `data/README.md` sets out that reasoning
+under [Site labels](../../README.md#site-labels) and open question 11.
 
 These files are **held in version control rather than symlinked**. Together
 they are a couple of megabytes, and they are the only form in which these
-labelings exist off the Boston University SCC.
+site labels exist off the Boston University SCC.
 
 The two got here differently, and the difference matters for how each is
 checked.
@@ -35,7 +35,7 @@ md5sum reanalysis_site_pft.csv   # 31ceffd6a37b67b0b24b62b83df22ea1
 
 ## `site_pft_16class.csv`, one half of a split
 
-The labeling this project calibrates under, superseding the three reanalysis
+The site labels this project calibrates under, superseding the three reanalysis
 classes. Produced by a colleague in the Dietze lab for this calibration and
 sent to us on 2026-09-22; the source file is dated 2025-06-23 and is version 4
 of their assignment. It sits in a directory of intermediate products
@@ -43,9 +43,9 @@ of their assignment. It sits in a directory of intermediate products
 and others) that are not copied here.
 
 **It is not a verbatim copy.** The source is a 60-column table holding two
-different things: this labeling and the covariates it was derived from.
+different things: these site labels and the covariates they were derived from.
 `scripts/raw_sources/split_site_pft_16class.py` cuts it in two, writing the
-labeling here and the covariates to
+site labels here and the covariates to
 [`raw/covariates/`](../covariates/provenance.md). Split on **2026-09-22**.
 
 | Source path | Source size | Source md5 | Source date |
@@ -74,7 +74,7 @@ md5sum site_pft_16class.csv   # 497718d8fda222051cac9fc66be68c13
 **The key is `index`, and it is our site identifier**: the integers 1-8000, all
 present, no duplicates. **The class is `final_pft`**, one of sixteen values,
 never missing. The sixteen further columns record how each label was arrived
-at; `sipnet_calibration.labelings` declares the whole header, and the processed
+at; `sipnet_calibration.site_labels` declares the whole header, and the processed
 product keeps only `site_id` and `label`.
 
 The sixteen `final_pft` values are internal names; the producer supplied the
@@ -108,7 +108,7 @@ the 363, which is how to tell the two populations apart.
 
 **Caveats carried by the source itself.**
 
-- **The labeling does not nest inside the three reanalysis classes.** All
+- **These site labels do not nest inside the three reanalysis classes.** All
   sixteen classes draws from at least two of the three, and twelve from all
   three, so it is a different partition of the pool rather than a refinement of
   the old one. Anything that assumed a coarse-to-fine transfer between them has
@@ -132,8 +132,8 @@ name, the same two-column header and the same three class names. It labels the
 this project uses.
 
 Nothing inside either file announces which it is. The discriminators are the
-row count and the identifier set, so `sipnet_calibration.labelings` carries the
-expected row count on the spec and `scripts/ingest_labelings.py` refuses a file
+row count and the identifier set, so `sipnet_calibration.site_labels` carries the
+expected row count on the spec and `scripts/ingest_site_labels.py` refuses a file
 that does not match, naming the older pool in the message.
 
 | | 8000-site pool (used) | 6400-site pool (refused) |

@@ -4,14 +4,14 @@ Where each file in this directory came from, what was done to it, and how to
 tell whether it has drifted from its source.
 
 A **covariate table** is per-site data that is neither an observation to fit
-nor a labeling to pool over: climate, soil, terrain, vegetation structure,
+nor a class to pool over: climate, soil, terrain, vegetation structure,
 biogeography. Nothing in the project reads one yet. They are here because a
 spatial prior that puts a smooth residual on top of a class offset needs
 predictors for that residual, and these are the ones already assembled for this
 site pool.
 
 These files are **copied into version control rather than symlinked**, for the
-same reason as the labelings: they are a few megabytes, and the copy here is
+same reason as the site labels: they are a few megabytes, and the copy here is
 the only form in which they exist off the Boston University SCC.
 
 ## What is here
@@ -24,10 +24,10 @@ the only form in which they exist off the Boston University SCC.
 
 **This file is not a verbatim copy, and that is the one thing to know about
 it.** It is one half of a 60-column table the producer assembled to derive the
-16-class plant functional type assignment; the other half is the labeling
-itself, at
-[`raw/labelings/site_pft_16class.csv`](../labelings/site_pft_16class.csv). The
-two together are the source, column for column and cell for cell.
+16-class plant functional type assignment; the other half is the site labels
+themselves, at
+[`raw/site_labels/site_pft_16class.csv`](../site_labels/site_pft_16class.csv).
+The two together are the source, column for column and cell for cell.
 
 The split is made by `scripts/raw_sources/split_site_pft_16class.py`, which is
 **not** part of the ingest pipeline: like
@@ -68,7 +68,7 @@ md5sum data/raw/covariates/site_covariates_pft_assignment.csv  # 51e3e97c...
 ## What the columns are
 
 `index` is this project's 1-8000 site identifier, complete and unique. It is
-the only column shared with the labeling half, and the one to join on.
+the only column shared with the site-labels half, and the one to join on.
 
 | Group | Columns |
 |---|---|
@@ -97,7 +97,7 @@ question 25.
 - **`lat` and `lon` duplicate the site table**, which is the only redundancy in
   the file. Treat `data/processed/sites/sites.csv` as authoritative and use
   these as a check on the join, not as a source of coordinates.
-- **Nothing here is independent of the labeling.** These are the variables the
+- **Nothing here is independent of the site labels.** These are the variables the
   16 classes were derived from, so using both a class effect and these
   covariates in one model means the two are related by construction, not
   coincidence.

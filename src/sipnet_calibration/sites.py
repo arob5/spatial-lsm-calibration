@@ -65,11 +65,11 @@ conterminous-US bounding box. Their coordinates are cell centers of
 the exact representation of a position and the stored floats are a lossy
 rendering of it.
 
-There is deliberately **no plant functional type column**. A PFT labeling is not
+There is deliberately **no plant functional type column**. A PFT class is not
 an intrinsic property of a site: a calibration may not use PFTs at all, and
-different labelings can be applied to the same pool. Labelings are their own
-product under ``processed/labelings/``, keyed on ``site_id``, and a caller joins
-one on before selecting.
+several site-labels products can be applied to the same pool. Site labels are
+their own product under ``processed/site_labels/``, keyed on ``site_id``, and a
+caller joins one on before selecting.
 
 Functions
 ---------
@@ -139,15 +139,15 @@ Read the table and select from it::
         seed=0,
     )
 
-Select on a labeling by joining it on first, since PFT is not a column here::
+Select on site labels by joining them on first, since PFT is not a column here::
 
     import pandas as pd
 
-    # A real labeling is its own product under processed/labelings/, keyed on
-    # site_id. The join is the same whatever the labeling is called.
-    labeling = pd.DataFrame({"site_id": [4102, 4113], "pft": ["DBF", "ENF"]})
+    # Real site labels are their own product under processed/site_labels/, keyed
+    # on site_id. The join is the same whatever the product is called.
+    site_labels = pd.DataFrame({"site_id": [4102, 4113], "pft": ["DBF", "ENF"]})
     deciduous = select_sites(
-        sites.merge(labeling, on="site_id"), where=lambda s: s["pft"] == "DBF"
+        sites.merge(site_labels, on="site_id"), where=lambda s: s["pft"] == "DBF"
     )
 
 Convert between coordinates and grid indices::
@@ -596,10 +596,10 @@ def select_sites(
     Notes
     -----
     There is no ``pft=`` argument. PFT is not a column of the site table (see the
-    module docstring). PFT selection can be done by joining a labeling and passing
-    ``where``::
+    module docstring). PFT selection can be done by joining site labels on and
+    passing ``where``::
 
-        labeled = sites.merge(pd.read_csv(labeling), on="site_id")
+        labeled = sites.merge(pd.read_csv(site_labels), on="site_id")
         select_sites(labeled, where=lambda t: t["pft"] == "DBF")
 
     Examples
