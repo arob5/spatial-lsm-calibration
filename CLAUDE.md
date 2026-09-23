@@ -425,8 +425,10 @@ src/sipnet_calibration/
                           # stack_sipnet_outputs() over SIPNETOutput.select,
                           # site_lookup(); validate_field() and the adapters
                           # for the other sources (issue #6)
-  obs_ops.py              # sipnet_time_index, aggregate_time — shared with the
-                          # likelihood; obs_index (issue #6)
+  obs_ops.py              # sipnet_time_index, aggregate_time + aggregation_counts
+                          # (by frequency), reduce_windows + window_counts (by
+                          # interval) — shared with the likelihood; obs_index
+                          # (issue #6)
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams

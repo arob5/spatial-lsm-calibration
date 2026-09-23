@@ -373,9 +373,11 @@ DRIVER_VARIABLE_ATTRS = {
 for _attrs in DRIVER_VARIABLE_ATTRS.values():
     _attrs["kind"] = resolve_climate_variable(_attrs["source_name"]).kind.value
 
-#: The clock the time labels are on, and what a label marks.
+#: The clock the time labels are on, and what a label marks. The marking is
+#: the project-wide constant, so a consumer comparing two products reads one
+#: vocabulary.
 TIME_ZONE = "UTC"
-TIME_LABEL = "interval_end"
+TIME_LABEL = conventions.INTERVAL_END
 
 #: How well the clock is established.
 CLOCK_STATUS = "inferred"
@@ -790,7 +792,7 @@ def _time_attrs() -> dict[str, str]:
     return {
         "long_name": "Nominal timestamp of the timestep",
         "time_zone": TIME_ZONE,
-        "time_label": TIME_LABEL,
+        conventions.TIME_LABEL_ATTR: TIME_LABEL,
         "time_label_note": (
             "The value in the row labeled hour h covers the interval (h - 3, h]. "
             "Labels are the nominal year/day/3*slot instants; the source's own "
