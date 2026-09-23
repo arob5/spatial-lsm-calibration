@@ -17,14 +17,14 @@ other dimensions a canonical field may have.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 from pysipnet.resample import resample as pysipnet_resample
 from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, VariableKind
+
+from conftest import SITE_1_DRIVERS
 
 from sipnet_calibration.fields import from_sipnet_output, stack_sipnet_outputs
 from sipnet_calibration.obs_ops import (
@@ -35,14 +35,8 @@ from sipnet_calibration.obs_ops import (
     sipnet_time_index,
 )
 
-REAL_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "data"
-    / "raw"
-    / "drivers"
-    / "ERA5_1_1"
-    / "ERA5.1.2012-01-01.2024-12-31.clim"
-)
+#: The same file the run fixtures use, defined once in ``conftest``.
+REAL_FILE = SITE_1_DRIVERS
 
 
 def one_day(year: int, day_of_year: int, hours) -> pd.DatetimeIndex:
@@ -357,7 +351,7 @@ class TestAggregateTimeOnThreeHourlyOutput:
 
 
 class TestAggregateTimeOnEnsembles:
-    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output):
+    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, sites_table):
         runs = {(site, member): niwot_output for site in (1, 27) for member in (0, 1)}
         stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
         daily = aggregate_time(stacked, "1D")
@@ -369,14 +363,14 @@ class TestAggregateTimeOnEnsembles:
             for member in (0, 1):
                 assert np.allclose(daily.sel(site=site, member=member).values, one.values)
 
-    def test_lon_and_lat_survive_on_site(self, niwot_output):
+    def test_lon_and_lat_survive_on_site(self, niwot_output, sites_table):
         runs = {(site, 0): niwot_output for site in (1, 27)}
         daily = aggregate_time(
             stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"], "1D"
         )
         assert daily["lon"].dims == ("site",)
 
-    def test_per_site_interval_coordinates_are_refused(self, niwot_output):
+    def test_per_site_interval_coordinates_are_refused(self, niwot_output, sites_table):
         from pysipnet.output import SIPNETOutput
 
         short = SIPNETOutput.from_dataframe(
@@ -474,7 +468,7 @@ class TestAggregatedFieldsPlot:
         assert ax.get_ylabel() == "Net ecosystem exchange (g m-2)"
         assert np.allclose(ax.lines[0].get_ydata(), daily.values)
 
-    def test_an_aggregated_ensemble_fans(self, ax, niwot_output):
+    def test_an_aggregated_ensemble_fans(self, ax, niwot_output, sites_table):
         plotting = pytest.importorskip("sipnet_calibration.plotting")
         runs = {(1, member): niwot_output for member in (0, 1, 2)}
         stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
@@ -534,7 +528,9 @@ class TestAggregateTimeDropsAlignmentPadding:
             "net_ecosystem_exchange"
         ]
 
-    def test_a_padded_timestamp_does_not_empty_the_cell_it_falls_in(self, niwot_output):
+    def test_a_padded_timestamp_does_not_empty_the_cell_it_falls_in(
+        self, niwot_output, sites_table
+    ):
         alone = aggregate_time(
             from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"], "1D"
         )
@@ -543,7 +539,7 @@ class TestAggregateTimeDropsAlignmentPadding:
         assert np.allclose(together.values, alone.values)
         assert np.array_equal(together["time"].values, alone["time"].values)
 
-    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output):
+    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output, sites_table):
         short_side = aggregate_time(self.stacked(niwot_output).sel(site=1), "1D")
         assert not np.isnan(short_side.values).any()
         assert short_side.sizes["time"] < 30

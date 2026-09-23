@@ -26,15 +26,6 @@ from sipnet_calibration.fields import (
     site_lookup,
     stack_sipnet_outputs,
 )
-from sipnet_calibration.sites import load_sites
-
-
-@pytest.fixture(scope="session")
-def sites_table():
-    try:
-        return load_sites()
-    except FileNotFoundError as error:
-        pytest.skip(f"site table not available in this working copy: {error}")
 
 
 def rescaled(output, factor: float):

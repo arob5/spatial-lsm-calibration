@@ -34,12 +34,18 @@ uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pye
 uv sync
 ```
 
-`uv sync` on its own installs whatever `uv.lock` already pins and never moves
-it; the `--upgrade-package` line is what re-reads each `main`. Run both in the
-checkout or worktree whose `.venv` you are using, since each has its own.
-`uv.lock` is tracked, so a bump that changes it is a commit like any other —
-discard it with `git checkout -- uv.lock` when you were only testing, and note
-that the venv keeps the newer version until the next `uv sync`.
+`uv sync` on its own never re-reads a companion's branch: it installs the
+commit `uv.lock` already pins. The `--upgrade-package` line is what goes back
+to each `main`. Run both in the checkout or worktree whose `.venv` you are
+using, since each has its own.
+
+When a companion has not moved this is a no-op and leaves `uv.lock` untouched,
+so it does not dirty every branch. When one has, `uv.lock` changes — and that
+change is a commit like any other, the record of which version of each package
+a run used, so commit it rather than carrying it. If you were only testing and
+want it gone, `git checkout origin/main -- uv.lock` restores the base version
+(ask first if others share the checkout, per the destructive-command rule
+below), and the venv keeps the newer package until the next `uv sync`.
 
 Two consequences worth knowing. A companion's change reaches this project only
 once it is **pushed** to that repository's `main`. And upgrading pySIPNET does
@@ -352,6 +358,27 @@ exists on your branch alone — `ModuleNotFoundError` for something you are
 looking at in your editor. For a module that exists on both, the tests pass
 while exercising the root's copy, which is the case worth remembering.
 
+## Running on the SCC
+
+Two caches have to be moved off the home directory, which is small and
+quota-limited: `uv`'s own, and the one a SIPNET binary is installed into.
+A `uv` git clone is usually what fails first, with `Disk quota exceeded`, so
+set these before anything else rather than as a tuning step:
+
+```bash
+export UV_CACHE_DIR=/projectnb/dietzelab/<user>/uv_cache
+export PYSIPNET_CACHE_DIR=/projectnb/dietzelab/<user>/pysipnet_cache
+export TMPDIR=/projectnb/dietzelab/<user>/tmp
+```
+
+`pysipnet install-sipnet` compiles there rather than downloading, because the
+published Linux SIPNET binary is built against a newer glibc than the SCC
+provides; `pysipnet info` reports the reason it refused the prebuilt, and
+`gcc`, `make` and `git` on a login node are all the compile needs. The binary
+then lives under `$PYSIPNET_CACHE_DIR`, and any environment exporting that
+variable finds it. A `qsub` script has to export all three itself, and
+`#$ -P dietzelab` with `#$ -l buyin` is the queue.
+
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
@@ -532,7 +559,8 @@ plotting code. The load-bearing rules:
 - `SIPNETModel(runner, base_params=..., base_climate=...)(**overrides) -> SIPNETResult`
 - `ClimateStaging` is in `pysipnet.runner`, not `pysipnet.climate`
 - `SIPNETRunner(climate_staging=ClimateStaging.SYMLINK)` — staging goes on the runner, not the model
-- Parameter override keys are flat snake_case leaf names (`a_max`, not `photosynthesis.a_max`)
+- Parameter override keys are flat snake_case leaf names
+  (`max_photosynthesis_rate`, not `photosynthesis.max_photosynthesis_rate`)
 - `SIPNETOutput` selects with `out["nee"]` (a `DataArray`) and `out[["nee", "gpp"]]`
   (a `Dataset`); aliases resolve. `result.nee()` and `to_xarray()` are gone (pySIPNET PR #36).
 - The output `Dataset` is CF-1.11: `time` is the **end** of each step, `time_step_start` and
@@ -544,35 +572,20 @@ plotting code. The load-bearing rules:
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
 - **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and
   real SIPNET output are available with no pySIPNET checkout: `niwot_reference_output()`
-  (a `SIPNETOutput`, 60 steps, no binary needed), `niwot_reference_climate()`,
+  (a `SIPNETOutput`, no binary needed), `niwot_reference_climate()`,
   `niwot_reference_files()` (`.param` / `.clim` / `.output` / `.readme` paths). The tests here
   use the first; there is still no public `.param` reader (pySIPNET issue #19), so
   `tests/conftest.py` carries a small one.
 - **The binary is found, not assumed** (PR #41). `pysipnet.build.find_binary()` returns `None`
-  when there is none and `missing_binary_message()` says where it looked; the search is
-  `$PYSIPNET_BINARY`, a bundled wheel, a checkout's `.sipnet_cache/<commit>/`, then
-  `$PYSIPNET_CACHE_DIR`-or-user-cache `/sipnet/<commit>/`. **A git install has none of these
-  until `pysipnet install-sipnet` runs** — this project installs pySIPNET from git, not
-  editable, so that command is the setup step, not a fallback. `SIPNETRunner` verifies the
-  binary matches the pinned tag before the first run.
-
-### Running on the SCC
-
-Two caches must be moved off `$HOME`, which is at its 10 GB quota with grace expired. A
-`uv` git clone fails with `Disk quota exceeded` before anything else does, so this is the
-first thing to set, not a tuning step:
-
-```bash
-export UV_CACHE_DIR=/projectnb/dietzelab/arober/uv_cache
-export PYSIPNET_CACHE_DIR=/projectnb/dietzelab/arober/pysipnet_cache
-export TMPDIR=/projectnb/dietzelab/arober/tmp
-```
-
-The published Linux SIPNET binary needs glibc 2.34 and the SCC is AlmaLinux 8.10 with
-glibc 2.28, so `pysipnet install-sipnet` compiles rather than downloading; `gcc`, `make`
-and `git` are on the login node and the build takes about seven seconds. The binary then
-lives at `$PYSIPNET_CACHE_DIR/sipnet/<commit>/sipnet` and any environment that exports
-`PYSIPNET_CACHE_DIR` finds it. A `qsub` script must export all three itself.
+  when there is none and `missing_binary_message()` says where it looked. The search is
+  `$PYSIPNET_BINARY`, then a binary bundled in the wheel, then — only when pySIPNET is
+  running from a checkout — that checkout's cache, then `$PYSIPNET_CACHE_DIR` or the
+  platform user cache. Both caches are keyed by the pinned SIPNET commit, so bumping the
+  pin looks in a new, empty directory. **A git install has none of these until
+  `pysipnet install-sipnet` runs** — this project installs pySIPNET from git, not editable,
+  so that command is the setup step, not a fallback, and the checkout candidate never
+  applies. `SIPNETRunner` verifies the binary matches the pinned tag before the first run.
+  `pysipnet info` prints the pin, every path searched, and what was found.
 
 ### TensorFlow Probability (JAX substrate)
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`

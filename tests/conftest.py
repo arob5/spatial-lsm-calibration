@@ -23,7 +23,6 @@ provides.
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 
 import matplotlib
 
@@ -34,6 +33,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 import xarray as xr  # noqa: E402
+
+from sipnet_calibration import conventions  # noqa: E402
 
 #: The variable the synthetic fields stand in for, with the attributes a real
 #: driver field carries.
@@ -207,13 +208,31 @@ def real_constraint_fields() -> tuple[dict, dict]:
 
 
 #: The local driver file the 3-hourly tests run SIPNET on, if it is present.
+#: Through :func:`~sipnet_calibration.conventions.data_root`, so that a run
+#: pointed at another tree with ``$SIPNET_CALIBRATION_DATA`` moves this with
+#: everything else rather than half-relocating.
 SITE_1_DRIVERS = (
-    Path(__file__).resolve().parents[1]
-    / "data/raw/drivers/ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim"
+    conventions.data_root() / "raw/drivers/ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim"
 )
 
 #: Whole days of it to run, at 8 steps per day.
 SITE_1_DAYS = 8
+
+
+@pytest.fixture(scope="session")
+def sites_table():
+    """The real site table, or a skip when the ingest has not been run here.
+
+    Anything that labels a field with a ``site`` reaches for this, directly or
+    through :func:`~sipnet_calibration.fields.stack_sipnet_outputs`, so the
+    guard belongs in one place rather than in each module that happens to.
+    """
+    from sipnet_calibration.sites import load_sites
+
+    try:
+        return load_sites()
+    except FileNotFoundError as error:
+        pytest.skip(f"site table not available in this working copy: {error}")
 
 
 @pytest.fixture(scope="session")
@@ -226,6 +245,11 @@ def niwot_output():
     are needed. The step lengths matter because Niwot's steps alternate between
     day and night and are not all the same length -- the case a length-weighted
     mean exists for.
+
+    It carries ``ModelFlags.standard()``, so selecting a variable SIPNET wrote
+    as constant zero under those flags -- the nitrogen group, ``litter_carbon``,
+    ``methane_production`` -- is refused rather than handed back as zeros. A
+    test that wants one of those needs its own output.
     """
     from pysipnet import niwot_reference_output
 
@@ -248,7 +272,10 @@ def site_1_result(tmp_path_factory):
     from pysipnet.runner import SIPNETRunner
 
     if not SITE_1_DRIVERS.is_file():
-        pytest.skip(f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS})")
+        pytest.skip(
+            f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS}); "
+            "copy or link the ERA5_1_1 directory from the SCC"
+        )
     if find_binary() is None:
         pytest.skip(missing_binary_message())
 

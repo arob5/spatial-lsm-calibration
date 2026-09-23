@@ -7,7 +7,7 @@ coordinate by coordinate, so the identity ``log_prior`` rests on is verified
 rather than trusted. The registry checks are each provoked once. Finally the
 example registry is pushed through pySIPNET: 2000 prior draws land in every
 domain, one draw assembles into a validated ``SIPNETParameters``, and one
-draw runs the bundled Niwot fixture when the binary and fixture are present.
+draw runs the bundled Niwot fixture when the binary is present.
 """
 
 from __future__ import annotations
@@ -20,9 +20,12 @@ import numpy as np
 import pytest
 import xarray as xr
 from pysipnet import niwot_reference_files
+from pysipnet.build import find_binary, missing_binary_message
 from pysipnet.parameters.base import ParameterDomain
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
+
+from conftest import niwot_parameters
 
 from sipnet_calibration import parameterization as module
 from sipnet_calibration.parameterization import (
@@ -51,9 +54,6 @@ tfd, tfb = tfp.distributions, tfp.bijectors
 
 
 
-#: pySIPNET's Niwot Ridge reference inputs, which it ships inside the package
-#: (its PR #40), so no source checkout is involved.
-NIWOT = niwot_reference_files()
 
 SITES = (1, 27, 4711)
 PFT = ("deciduous", "conifer", "deciduous")
@@ -750,23 +750,6 @@ def test_pysipnet_overrides_gives_one_run_of_floats(example, theta):
         pysipnet_overrides(single, member=0, site=1)
 
 
-def niwot_parameters() -> SIPNETParameters:
-    """The Niwot fixture's ``.param`` file as a ``SIPNETParameters``.
-
-    Mirrors pySIPNET's own test helper: SIPNET names to flat field names
-    through ``PYTHON_TO_SIPNET``, grouped into the sub-models.
-    """
-    from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
-
-    flat = read_param_file(NIWOT.param)
-    groups: dict[str, dict[str, float]] = {}
-    for python_path, sipnet_name in PYTHON_TO_SIPNET.items():
-        if sipnet_name in flat:
-            group, name = python_path.split(".", 1)
-            groups.setdefault(group, {})[name] = flat[sipnet_name]
-    return SIPNETParameters.model_validate(groups)
-
-
 def with_overrides(base: SIPNETParameters, overrides: dict[str, float]) -> SIPNETParameters:
     dump = base.model_dump()
     group_of = {path.split(".", 1)[1]: path.split(".", 1)[0] for path in PARAMETER_SPECS}
@@ -794,14 +777,12 @@ def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
     from pysipnet.io.clim_io import read_clim_file
     from pysipnet.parameters.model import ModelFlags
 
-    from pysipnet.build import find_binary, missing_binary_message
-
     if find_binary() is None:
         pytest.skip(missing_binary_message())
     runner = SIPNETRunner(flags=ModelFlags.standard())
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # the fixture has a few vpd <= 0 rows
-        full = read_clim_file(NIWOT.clim, n_columns=14)
+        full = read_clim_file(niwot_reference_files().clim, n_columns=14)
     climate = ClimateDrivers.from_dataframe(full.pandas.head(8 * 30).copy(), n_columns=14)
     model = SIPNETModel(runner, base_params=niwot_parameters(), base_climate=climate)
 

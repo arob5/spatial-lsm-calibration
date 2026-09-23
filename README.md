@@ -29,11 +29,16 @@ git clone https://github.com/arob5/spatial-lsm-calibration.git
 cd spatial-lsm-calibration
 uv sync                     # create .venv from uv.lock, on the pinned 3.14
 source .venv/bin/activate   # run everything from inside this environment
+pysipnet install-sipnet     # the SIPNET binary, which no wheel carries
 pytest                      # check it works
 ```
 
 Nothing else needs cloning: the three companion packages are installed from
 git, and are described under [Companion packages](#companion-packages).
+`install-sipnet` downloads a published binary where one runs on this machine
+and compiles otherwise; `pysipnet info` says what it found. Without it the
+tests that run the model skip rather than fail, so the suite still passes —
+which is why it is worth doing up front.
 
 ### Generating the processed data
 
@@ -98,12 +103,16 @@ upgrades it deliberately. Ordinary use needs no local checkout of any of them.
 #### Upgrading a companion package
 
 New work on `main` in one of these repositories does **not** reach this project
-until the lock is refreshed. To refresh:
+until the lock is refreshed, and only once it is **pushed** — `uv` fetches from
+GitHub, not from any local clone. To refresh:
 
 ```bash
 uv lock --upgrade-package pysipnet
 uv sync
 ```
+
+All three are under active development, so `CLAUDE.md` makes refreshing all of
+them the first step of a working session rather than an occasional errand.
 
 The distribution names are `pysipnet`, `pyens` and `pyeki`; name several in one
 command to upgrade them together. `uv lock --upgrade` upgrades everything
@@ -193,13 +202,20 @@ contrary are wrong.
 
 ```
 src/sipnet_calibration/
+  conventions.py          # constants every product must agree on; data_root()
   sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
+  projection.py           # SITE_PROJECTION and the projected coordinates
+  constraints.py          # one spec per raw constraint file; load_constraint()
+  initial_conditions/     # the PEcAn IC ensemble, one module per artifact
+  drivers.py              # load_drivers() over the raw .clim files
+  parameterization.py     # the calibration vector, its priors and the pySIPNET map
   fields.py               # canonical field convention; SIPNET output adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
-data/raw/                 # inputs, never edited; raw/sites/ and raw/constraints/ are tracked
+data/raw/                 # inputs, never edited; raw/sites/, raw/constraints/ and
+                          # raw/initial_conditions/ are tracked
 data/processed/           # ingest output == the canonical format used throughout
 tests/
 ```

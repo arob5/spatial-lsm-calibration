@@ -13,11 +13,13 @@ here.
 
 Two fields are correctness, not cosmetics:
 
-* ``units`` -- the single canonical unit for the variable. Adapters convert into
-  it; ``validate_field()`` checks ``attrs["units"]`` against it. This is the
-  guard against plotting model NEE (a per-timestep total) against observed NEE
-  (apparently a rate) on one axis, which fails by orders of magnitude with no
-  visual cue. The canonical NEE unit is still an open question.
+* ``units`` -- the unit a field of this variable is expected to be in, for
+  ``validate_field()`` to check ``attrs["units"]`` against. Nothing converts on
+  the way in: a model field keeps pySIPNET's units and an observation product
+  keeps its source's, and the **observation operator** is what converts one to
+  the other. This is the guard against plotting model NEE (a per-timestep
+  total) against observed NEE (a rate) on one axis, which fails by orders of
+  magnitude with no visual cue.
 * ``center`` -- ``0.0`` for signed fluxes such as NEE, so maps get a diverging
   colormap centered correctly. A sequential colormap on a signed flux is a
   genuinely misleading figure.
