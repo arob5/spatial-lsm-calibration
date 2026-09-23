@@ -1105,6 +1105,9 @@ give `1-4875`. Each file has a single
 `depth` dimension of six, whose values are **layer bottoms in meters** --
 0.05, 0.15, 0.3, 0.6, 1.0, 2.0 -- with the first layer's top at the surface, and
 one `float32` variable per property on that dimension. No global attributes.
+The depth semantics are the producer's, not an inference: the extraction script
+below lists the source layers as `0-5cm`, `5-15cm`, `15-30cm`, `30-60cm`,
+`60-100cm` and `100-200cm`, whose bottoms are exactly these six values.
 
 | Variable | Units |
 |---|---|
@@ -1157,13 +1160,15 @@ porosity integral is the intended `soilWHC` is part of open question 24(n).
 
 **Source.** [NALCR], at
 `anchorSites/NA_runs/soil_nc/soil_texture_output/soil_texture_ensemble`,
-symlinked into `raw/soil_texture/`. The files name no upstream product, but the
-function that writes them, PEcAn's `soil_params_ensemble.R`, documents its
-inputs as **SoilGrids250m**. That also settles the depths: SoilGrids' standard
-layers are 0-5, 5-15, 15-30, 30-60, 60-100 and 100-200 cm, exactly the six
-values of `depth`, so reading them as layer bottoms comes from the producer
-rather than from the assumption `write.configs.SIPNET.R` states in its own
-comment.
+symlinked into `raw/soil_texture/`. The files themselves carry no attribute
+naming an upstream product, but the code that made them does, in two places:
+`anchorSites/NA_runs/soilgrids_texture_extract.R`, in the reanalysis's own
+directory, declares **SoilGrids250m version 2.0** (soilgrids.org) and lists the
+six depth intervals, and PEcAn's `soil_params_ensemble.R`, which turns the
+extracted texture into this ensemble, documents the same input. So the product,
+its version and the depth semantics are all established from the producer's
+code rather than inferred, and `write.configs.SIPNET.R`'s own comment -- which
+calls the layer-bottom reading an assumption -- is not what this rests on.
 
 **Checked by** `scripts/survey_soil_texture.py`, which exits non-zero if a
 characteristic it records no longer holds. What it records is the coverage
@@ -1852,9 +1857,12 @@ exactly, over all 8000 sites. Is that the intended rule, and what are the eight
 land cover classes? The second half is the outstanding part of Note 2.
 
 (n) The soil texture ensemble covers 7693 sites. What happened at the other
-307, and is the 2 m porosity integral the intended `soilWHC`? The value it
-gives is six to eight times SIPNET's template default, and above the top of the
-range that template allows; see
+307, and is the 2 m porosity integral the intended `soilWHC`? The integral
+itself is not in doubt -- the source layers and their depths are declared in
+`soilgrids_texture_extract.R` -- so what is being asked is whether integrating
+the whole 2 m profile is what the parameter was meant to receive, given that
+the value it gives is six to eight times SIPNET's template default and above
+the top of the range that template allows; see
 [Soil texture](#soil-texture).
 
 (o) *Answered in part.* `leaf_phenology_8k.csv` comes from

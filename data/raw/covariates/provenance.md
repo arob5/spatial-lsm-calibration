@@ -81,9 +81,13 @@ the only column shared with the labeling half, and the one to join on.
 | Disturbance and period | `Fire_frequency`, `start_date`, `end_date` |
 
 No units, no long names and no source product are recorded for any of them,
-either in the source file or anywhere this repository has found. Establishing
-those is the first piece of work for whoever ingests this; see
-`data/README.md` open question 25.
+either in the source file or anywhere this repository has found. Note that this
+is a statement about *these* columns: where the reanalysis's own inputs are
+concerned the producer's extraction scripts often do document the source, as
+`soilgrids_texture_extract.R` does for the soil texture ensemble. Nothing
+equivalent has been found for this table. Establishing the units and sources is
+the first piece of work for whoever ingests it; see `data/README.md` open
+question 25.
 
 ## Caveats carried by the source itself
 
