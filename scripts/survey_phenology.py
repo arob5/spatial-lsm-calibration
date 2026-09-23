@@ -67,7 +67,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -75,7 +74,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
+from sipnet_calibration import conventions
+from sipnet_calibration.sites import default_sites_path, load_sites
 
 #: The file's header, in order. Any other header is a different product.
 COLUMNS = (
@@ -140,9 +140,13 @@ RECORDED: dict[str, dict[str, Any]] = {
 
 
 def default_data_root() -> Path:
-    """The repository's ``data/``, honoring ``$SIPNET_CALIBRATION_DATA``."""
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else Path(__file__).resolve().parents[1] / "data"
+    """The repository's ``data/``, honoring ``$SIPNET_CALIBRATION_DATA``.
+
+    Delegates to :func:`sipnet_calibration.conventions.data_root`, which finds
+    it from the installed package rather than by counting parents from this
+    file, so moving a script does not silently retarget every path it reads.
+    """
+    return conventions.data_root()
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

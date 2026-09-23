@@ -140,7 +140,6 @@ List what exists, and what one is::
 
 from __future__ import annotations
 
-import os
 import re
 import warnings
 from dataclasses import dataclass, field
@@ -151,6 +150,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from sipnet_calibration import conventions
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
 
 __all__ = [
@@ -724,8 +724,7 @@ def describe(spec: LabelingSpec) -> str:
 
 
 def _data_root() -> Path:
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else Path(__file__).resolve().parents[2] / "data"
+    return conventions.data_root()
 
 
 def _raw_dtypes(spec: LabelingSpec) -> dict[str, Any]:

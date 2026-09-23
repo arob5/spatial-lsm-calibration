@@ -70,7 +70,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 from collections import Counter
@@ -80,7 +79,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
+from sipnet_calibration import conventions
 
 #: File name template, with the site repeated inside it. The ``0-`` prefix is
 #: PEcAn's input identifier and is constant across the ensemble.
@@ -125,9 +124,13 @@ RECORDED: dict[str, Any] = {
 
 
 def default_data_root() -> Path:
-    """The repository's ``data/``, honoring ``$SIPNET_CALIBRATION_DATA``."""
-    root = os.environ.get(DATA_ROOT_ENV_VAR)
-    return Path(root) if root else Path(__file__).resolve().parents[1] / "data"
+    """The repository's ``data/``, honoring ``$SIPNET_CALIBRATION_DATA``.
+
+    Delegates to :func:`sipnet_calibration.conventions.data_root`, which finds
+    it from the installed package rather than by counting parents from this
+    file, so moving a script does not silently retarget every path it reads.
+    """
+    return conventions.data_root()
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

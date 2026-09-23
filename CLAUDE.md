@@ -68,12 +68,15 @@ Facts specific to this working copy, which the README deliberately does not carr
 - **Only a subset of `data/raw/` is present locally.** Drivers exist for
   `ERA5_1_1`, `ERA5_1_2` and `ERA5_27_5`; of PEcAn's initial condition source
   files, site 1 members 1 and 2 and site 27 member 94, under
-  `data/raw/initial_conditions/files/`. The NEE csv, the five constraint files
-  (tracked), the converted initial condition ensemble (tracked, all 8000 sites
-  x 100 members), the assembled `.Rdata` pair retained for validation, and the
-  site shapefile are complete. The full dataset lives on Boston University's
-  SCC. Anything about the drivers that needs to hold across all 8000 sites
-  cannot be verified here.
+  `data/raw/initial_conditions/files/`; of the soil texture ensemble, sites 1
+  and 27 only, three files of 769,300, which is why
+  `scripts/survey_soil_texture.py` needs `--no-check` here. The NEE csv, the
+  five constraint files (tracked), the converted initial condition ensemble
+  (tracked, all 8000 sites x 100 members), the assembled `.Rdata` pair retained
+  for validation, the site shapefile, both leaf phenology CSVs, and the two
+  labelings and the covariate table (all tracked) are complete. The full
+  dataset lives on Boston University's SCC. Anything about the drivers that
+  needs to hold across all 8000 sites cannot be verified here.
 - In the root checkout the storage-backed inputs are real copies, not symlinks;
   on SCC, and in a worktree that links them from the root, they are symlinks.
   The five constraint files and the site shapefile are tracked either way.
@@ -384,12 +387,13 @@ variable finds it. A `qsub` script has to export all three itself, and
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py` and
-`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`
-and `aggregate_time`, `fields.py` has the model-output adapters, and the other
-modules carry the contract each is to satisfy. `initial_conditions` is a
-package rather than a module: it spans several artifacts, and giving each its
-own file keeps that artifact's schema, writer, reader and checks together.
+`constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
+`parameterization.py` and `labelings.py` are implemented, `obs_ops.py` has
+`sipnet_time_index` and `aggregate_time`, `fields.py` has the model-output
+adapters, and the other modules carry the contract each is to satisfy.
+`initial_conditions` is a package rather than a module: it spans several
+artifacts, and giving each its own file keeps that artifact's schema, writer,
+reader and checks together.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -416,6 +420,9 @@ src/sipnet_calibration/
     sipnet_parameters.py  # to_pysipnet_initial_conditions() and its table form
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
+  labelings.py            # LabelingSpec + LABELINGS, one per raw file; a site
+                          # labeling is site_id -> class, its own product per
+                          # labeling; read_raw(), build_labeling(), load_labeling()
   parameterization.py     # the calibration vector: Coordinate (TFP prior on the
                           # natural scale + CoordToParamMap), FixedParameter,
                           # Parameterization with constrain/unconstrain/log_prior/
@@ -437,11 +444,16 @@ src/sipnet_calibration/
     facet.py              # L3 the one generic facet function
     diagnostics.py        # L5 EKI history, marginals, coverage
 scripts/                  # ingest: data/raw/ -> data/processed/
+  survey_*.py             # NOT the pipeline: answer a question about raw data
+                          # and write nothing under data/. The phenology and
+                          # soil texture ones also assert what data/README.md
+                          # records and exit non-zero when it no longer holds.
   raw_sources/            # NOT the pipeline: code that *makes* a tracked raw
                           # input. SCC-only, run once.
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
-data/raw/                 # never edited; raw/sites/, raw/constraints/ and
-                          # raw/initial_conditions/ are tracked
+data/raw/                 # never edited; raw/sites/, raw/constraints/,
+                          # raw/initial_conditions/, raw/labelings/ and
+                          # raw/covariates/ are tracked
 data/processed/           # ingest output == canonical plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
 tests/
