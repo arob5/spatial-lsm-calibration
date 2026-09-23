@@ -74,8 +74,8 @@ Facts specific to this working copy, which the README deliberately does not carr
   five constraint files (tracked), the converted initial condition ensemble
   (tracked, all 8000 sites x 100 members), the assembled `.Rdata` pair retained
   for validation, the site shapefile, both leaf phenology CSVs, and the two
-  labelings and the covariate table (all tracked) are complete. The full
-  dataset lives on Boston University's SCC. Anything about the drivers that
+  site-labels products and the covariate table (all tracked) are complete. The
+  full dataset lives on Boston University's SCC. Anything about the drivers that
   needs to hold across all 8000 sites cannot be verified here.
 - In the root checkout the storage-backed inputs are real copies, not symlinks;
   on SCC, and in a worktree that links them from the root, they are symlinks.
@@ -388,7 +388,7 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameterization.py` and `labelings.py` are implemented, `obs_ops.py` has
+`parameterization.py` and `site_labels.py` are implemented, `obs_ops.py` has
 `sipnet_time_index` and `aggregate_time`, `fields.py` has the model-output
 adapters, and the other modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
@@ -420,9 +420,10 @@ src/sipnet_calibration/
     sipnet_parameters.py  # to_pysipnet_initial_conditions() and its table form
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
-  labelings.py            # LabelingSpec + LABELINGS, one per raw file; a site
-                          # labeling is site_id -> class, its own product per
-                          # labeling; read_raw(), build_labeling(), load_labeling()
+  site_labels.py          # SiteLabelsSpec + SITE_LABELS, one per raw file; a
+                          # site-labels product is site_id -> class, one product
+                          # per source; read_raw(), build_site_labels(),
+                          # load_site_labels()
   parameterization.py     # the calibration vector: Coordinate (TFP prior on the
                           # natural scale + CoordToParamMap), FixedParameter,
                           # Parameterization with constrain/unconstrain/log_prior/
@@ -452,7 +453,7 @@ scripts/                  # ingest: data/raw/ -> data/processed/
                           # input. SCC-only, run once.
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
 data/raw/                 # never edited; raw/sites/, raw/constraints/,
-                          # raw/initial_conditions/, raw/labelings/ and
+                          # raw/initial_conditions/, raw/site_labels/ and
                           # raw/covariates/ are tracked
 data/processed/           # ingest output == canonical plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
@@ -559,11 +560,12 @@ plotting code. The load-bearing rules:
   absent: its arm64 wheels stop at cp313 while the venv is on 3.14. What
   `plotting/maps.py` waits on is the vendored basemap.
 - `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
-  `site`. PFT is **not** site metadata and is not a column of the site table: a
-  labeling is an experimental choice, so labelings are their own product at
-  `data/processed/labelings/<name>.csv`, keyed on `site_id`, and a caller joins
-  one on before selecting. `member` is a 0-based integer, meaningful only within
-  one source. See the Data section above for the rules these imply.
+  `site`. PFT is **not** site metadata and is not a column of the site table:
+  which site labels to use is an experimental choice, so site labels are their
+  own product at `data/processed/site_labels/<name>.csv`, keyed on `site_id`,
+  and a caller joins one on before selecting. `member` is a 0-based integer,
+  meaningful only within one source. See the Data section above for the rules
+  these imply.
 
 ## Key API facts (hard-won from source reading)
 

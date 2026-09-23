@@ -266,7 +266,7 @@ class TestIngestScript:
         assert tuple(ingested["table"].columns) == SITE_COLUMNS
 
     def test_there_is_no_pft_column(self, ingested):
-        # A PFT labeling is an experimental choice and must not be baked into
+        # A PFT class is an experimental choice and must not be baked into
         # the shared key; it is its own product keyed on site_id.
         assert "pft" not in ingested["table"].columns
 
@@ -652,12 +652,12 @@ class TestSelectSites:
         assert len(mapped) == 185
 
     def test_where_filters_on_a_joined_column(self, ingested):
-        # The replacement for pft=: a labeling is joined on by the caller.
+        # The replacement for pft=: site labels are joined on by the caller.
         table = ingested["table"].head(10).copy()
-        labeling = pd.DataFrame(
+        site_labels = pd.DataFrame(
             {"site_id": table["site_id"], "pft": ["DBF"] * 4 + ["ENF"] * 6}
         )
-        labeled = table.merge(labeling, on="site_id")
+        labeled = table.merge(site_labels, on="site_id")
         assert len(select_sites(labeled, where=lambda t: t["pft"] == "DBF")) == 4
 
     def test_where_must_return_a_boolean_mask(self, ingested):
@@ -958,7 +958,7 @@ class TestPredicateMaskAlignment:
     def test_a_nullable_boolean_mask_with_missing_values_says_what_to_do(
         self, ingested
     ):
-        # The module's own documented pattern, on a labeling with a gap.
+        # The module's own documented pattern, on site labels with a gap.
         table = ingested["table"].head(4).copy()
         table["pft"] = pd.array(["DBF", None, "ENF", "DBF"], dtype="string")
         with pytest.raises(ValueError, match="fillna"):
@@ -987,8 +987,8 @@ class TestSelectByIdShape:
         assert list(by_id.columns) == list(by_bbox.columns) == list(SITE_COLUMNS)
 
     def test_it_preserves_column_order_on_a_joined_table(self, ingested):
-        labeling = pd.DataFrame({"pft": ["A", "B", "C"], "site_id": [1, 2, 3]})
-        joined = labeling.merge(ingested["table"], on="site_id")
+        site_labels = pd.DataFrame({"pft": ["A", "B", "C"], "site_id": [1, 2, 3]})
+        joined = site_labels.merge(ingested["table"], on="site_id")
         assert list(select_sites(joined, ids=[1, 2]).columns) == list(joined.columns)
 
     def test_float_ids_are_rejected_rather_than_truncated(self, ingested):

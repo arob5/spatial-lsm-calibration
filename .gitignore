@@ -8,14 +8,14 @@ main.py
 # data is regenerable from them. Five exceptions are tracked, none of them a
 # pipeline output and all of them things the repo cannot function without: the
 # site shapefile, the constraint observations, the converted initial condition
-# ensemble, the site labelings, and the site covariates. The constraint files
+# ensemble, the site labels, and the site covariates. The constraint files
 # are held in the repository rather than symlinked because the upstream copies
 # are edited and moved in place; see data/raw/constraints/provenance.md.
 data/raw/*
 !data/raw/sites/
 !data/raw/constraints/
 !data/raw/initial_conditions/
-!data/raw/labelings/
+!data/raw/site_labels/
 !data/raw/covariates/
 # Un-ignoring the directory un-ignores everything in it; the inputs that
 # still live on storage and are symlinked in are excluded again here. The

@@ -37,8 +37,8 @@ it means; it is the empty string for sites with no counterpart. The
 column set and dtypes come from ``SITE_COLUMNS`` and ``SITE_COLUMN_DTYPES`` in
 :mod:`sipnet_calibration.sites`, so this writer and
 :func:`sipnet_calibration.sites.load_sites` cannot drift apart. There is
-deliberately no ``pft`` column: a labeling is an experimental choice, not site
-metadata.
+deliberately no ``pft`` column: which site labels to use is an experimental
+choice, not site metadata.
 
 Notes
 -----

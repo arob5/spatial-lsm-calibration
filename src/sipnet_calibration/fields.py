@@ -70,9 +70,9 @@ Identifiers
     coordinate. Only 185 of the sites are Ameriflux sites, so an
     Ameriflux-keyed identifier cannot address the pool: ``ameriflux_site_id``
     is a non-dimension coordinate on ``site``, missing for the rest. Plant
-    functional type is not site metadata and is not carried here; a labeling
-    is an experimental choice and lives in its own product under
-    ``data/processed/labelings/``.
+    functional type is not site metadata and is not carried here; which site
+    labels to use is an experimental choice, and they live in their own product
+    under ``data/processed/site_labels/``.
 ``member``
     A 0-based ensemble index as ``int16``, meaningful only within the source
     it came from. Whether member *i* of one source corresponds to member *i*

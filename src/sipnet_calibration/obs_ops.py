@@ -18,7 +18,7 @@ Provided:
 Planned (issue #6):
 
 * ``obs_index(sites, variables, times) -> pd.MultiIndex`` -- the
-  ``(site, variable, time)`` labeling of the flat observation vector. The same
+  ``(site, variable, time)`` index of the flat observation vector. The same
   object must be used to flatten observations into ``y`` and to unstack EKI's
   ``(J, N)`` predictions back into canonical fields, or the two will mislabel
   relative to each other. (Note: this was originally expected to come from an
