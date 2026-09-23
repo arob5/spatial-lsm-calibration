@@ -21,11 +21,35 @@ The long-term vision:
 
 The first three are dependencies, installed from git rather than from sibling
 directories: `[tool.uv.sources]` tracks each repository's `main` branch and
-`uv.lock` pins an exact commit, so `uv sync` needs nothing beside the checkout
-and no companion moves until someone upgrades it. Take new work from one with
-`uv lock --upgrade-package <pysipnet|pyens|pyeki>`; the README also covers the
-editable-overlay workflow for developing one locally. Never modify their
-source from here.
+`uv.lock` pins an exact commit. A sibling clone of any of them is **not** what
+gets installed — `uv` fetches the pinned commit from GitHub — so nothing about
+a local checkout reaches this project, and unpushed work in one is invisible
+here. Never modify their source from here.
+
+**All three are under active development, so start any work here by taking
+their current `main`:**
+
+```bash
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
+uv sync
+```
+
+`uv sync` on its own installs whatever `uv.lock` already pins and never moves
+it; the `--upgrade-package` line is what re-reads each `main`. Run both in the
+checkout or worktree whose `.venv` you are using, since each has its own.
+`uv.lock` is tracked, so a bump that changes it is a commit like any other —
+discard it with `git checkout -- uv.lock` when you were only testing, and note
+that the venv keeps the newer version until the next `uv sync`.
+
+Two consequences worth knowing. A companion's change reaches this project only
+once it is **pushed** to that repository's `main`. And upgrading pySIPNET does
+not install a SIPNET binary: see the pySIPNET notes under "Key API facts".
+
+For tight iteration on a companion, where pushing before every check is too
+slow, the README covers overlaying an editable install on top of the synced
+environment. It makes a local clone live, at the cost of a venv that no longer
+matches `uv.lock` — which is how a checkout drifts without anyone noticing, so
+undo it with `uv sync` when done.
 
 ## Data
 
@@ -309,9 +333,10 @@ has, tell that session before you push — rewriting a branch moves the base of
 everything stacked on it, and they will have to rebase too.
 
 **A worktree isolates git, but it starts with no Python environment.** Give it
-its own, which takes one command and nothing beside it:
+its own, taking the companions' current `main` as above while you are there:
 
 ```bash
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
 uv sync
 uv run pytest
 ```
