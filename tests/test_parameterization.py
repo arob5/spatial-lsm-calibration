@@ -7,24 +7,25 @@ coordinate by coordinate, so the identity ``log_prior`` rests on is verified
 rather than trusted. The registry checks are each provoked once. Finally the
 example registry is pushed through pySIPNET: 2000 prior draws land in every
 domain, one draw assembles into a validated ``SIPNETParameters``, and one
-draw runs the bundled Niwot fixture when the binary and fixture are present.
+draw runs the bundled Niwot fixture when the binary is present.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
 import warnings
-from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import xarray as xr
+from pysipnet import niwot_reference_files
+from pysipnet.build import find_binary, missing_binary_message
 from pysipnet.parameters.base import ParameterDomain
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
+
+from conftest import niwot_parameters
 
 from sipnet_calibration import parameterization as module
 from sipnet_calibration.parameterization import (
@@ -53,26 +54,6 @@ tfd, tfb = tfp.distributions, tfp.bijectors
 
 
 
-def niwot_fixture_dir() -> Path:
-    """pySIPNET's ``tests/fixtures/niwot_reference``.
-
-    The package installs from git without its tests, so the fixture comes from
-    a source checkout: ``$PYSIPNET_SOURCE`` if set, else the ``pySIPNET``
-    directory beside the root checkout (found through the git common dir, so
-    a worktree resolves the same place as the root).
-    """
-    if "PYSIPNET_SOURCE" in os.environ:
-        source = Path(os.environ["PYSIPNET_SOURCE"])
-    else:
-        common = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            cwd=Path(__file__).parent, capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        source = Path(common).resolve().parent.parent / "pySIPNET"
-    return source / "tests" / "fixtures" / "niwot_reference"
-
-
-NIWOT = niwot_fixture_dir()
 
 SITES = (1, 27, 4711)
 PFT = ("deciduous", "conifer", "deciduous")
@@ -769,23 +750,6 @@ def test_pysipnet_overrides_gives_one_run_of_floats(example, theta):
         pysipnet_overrides(single, member=0, site=1)
 
 
-def niwot_parameters() -> SIPNETParameters:
-    """The Niwot fixture's ``.param`` file as a ``SIPNETParameters``.
-
-    Mirrors pySIPNET's own test helper: SIPNET names to flat field names
-    through ``PYTHON_TO_SIPNET``, grouped into the sub-models.
-    """
-    from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
-
-    flat = read_param_file(NIWOT / "sipnet.param")
-    groups: dict[str, dict[str, float]] = {}
-    for python_path, sipnet_name in PYTHON_TO_SIPNET.items():
-        if sipnet_name in flat:
-            group, name = python_path.split(".", 1)
-            groups.setdefault(group, {})[name] = flat[sipnet_name]
-    return SIPNETParameters.model_validate(groups)
-
-
 def with_overrides(base: SIPNETParameters, overrides: dict[str, float]) -> SIPNETParameters:
     dump = base.model_dump()
     group_of = {path.split(".", 1)[1]: path.split(".", 1)[0] for path in PARAMETER_SPECS}
@@ -794,12 +758,6 @@ def with_overrides(base: SIPNETParameters, overrides: dict[str, float]) -> SIPNE
     return SIPNETParameters.model_validate(dump)
 
 
-needs_niwot = pytest.mark.skipif(
-    not (NIWOT / "sipnet.param").exists(), reason=f"Niwot fixture not found under {NIWOT}"
-)
-
-
-@needs_niwot
 def test_override_table_validates_through_sipnet_parameters(example, theta):
     base = niwot_parameters()
     table = example.to_pysipnet_parameters(theta)
@@ -812,7 +770,6 @@ def test_override_table_validates_through_sipnet_parameters(example, theta):
             )
 
 
-@needs_niwot
 @pytest.mark.slow
 def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
     from pysipnet import SIPNETModel, SIPNETRunner
@@ -820,15 +777,12 @@ def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
     from pysipnet.io.clim_io import read_clim_file
     from pysipnet.parameters.model import ModelFlags
 
+    if find_binary() is None:
+        pytest.skip(missing_binary_message())
     runner = SIPNETRunner(flags=ModelFlags.standard())
-    if not runner.binary_path.exists():
-        pytest.skip(
-            f"SIPNET binary not found at {runner.binary_path}; fetch one with "
-            "pysipnet.download_sipnet() (or build_sipnet() from a source checkout)"
-        )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # the fixture has a few vpd <= 0 rows
-        full = read_clim_file(NIWOT / "sipnet.clim", n_columns=14)
+        full = read_clim_file(niwot_reference_files().clim, n_columns=14)
     climate = ClimateDrivers.from_dataframe(full.pandas.head(8 * 30).copy(), n_columns=14)
     model = SIPNETModel(runner, base_params=niwot_parameters(), base_climate=climate)
 

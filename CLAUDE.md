@@ -21,11 +21,41 @@ The long-term vision:
 
 The first three are dependencies, installed from git rather than from sibling
 directories: `[tool.uv.sources]` tracks each repository's `main` branch and
-`uv.lock` pins an exact commit, so `uv sync` needs nothing beside the checkout
-and no companion moves until someone upgrades it. Take new work from one with
-`uv lock --upgrade-package <pysipnet|pyens|pyeki>`; the README also covers the
-editable-overlay workflow for developing one locally. Never modify their
-source from here.
+`uv.lock` pins an exact commit. A sibling clone of any of them is **not** what
+gets installed — `uv` fetches the pinned commit from GitHub — so nothing about
+a local checkout reaches this project, and unpushed work in one is invisible
+here. Never modify their source from here.
+
+**All three are under active development, so start any work here by taking
+their current `main`:**
+
+```bash
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
+uv sync
+```
+
+`uv sync` on its own never re-reads a companion's branch: it installs the
+commit `uv.lock` already pins. The `--upgrade-package` line is what goes back
+to each `main`. Run both in the checkout or worktree whose `.venv` you are
+using, since each has its own.
+
+When a companion has not moved this is a no-op and leaves `uv.lock` untouched,
+so it does not dirty every branch. When one has, `uv.lock` changes — and that
+change is a commit like any other, the record of which version of each package
+a run used, so commit it rather than carrying it. If you were only testing and
+want it gone, `git checkout origin/main -- uv.lock` restores the base version
+(ask first if others share the checkout, per the destructive-command rule
+below), and the venv keeps the newer package until the next `uv sync`.
+
+Two consequences worth knowing. A companion's change reaches this project only
+once it is **pushed** to that repository's `main`. And upgrading pySIPNET does
+not install a SIPNET binary: see the pySIPNET notes under "Key API facts".
+
+For tight iteration on a companion, where pushing before every check is too
+slow, the README covers overlaying an editable install on top of the synced
+environment. It makes a local clone live, at the cost of a venv that no longer
+matches `uv.lock` — which is how a checkout drifts without anyone noticing, so
+undo it with `uv sync` when done.
 
 ## Data
 
@@ -309,9 +339,10 @@ has, tell that session before you push — rewriting a branch moves the base of
 everything stacked on it, and they will have to rebase too.
 
 **A worktree isolates git, but it starts with no Python environment.** Give it
-its own, which takes one command and nothing beside it:
+its own, taking the companions' current `main` as above while you are there:
 
 ```bash
+uv lock --upgrade-package pysipnet --upgrade-package pyens --upgrade-package pyeki
 uv sync
 uv run pytest
 ```
@@ -327,17 +358,38 @@ exists on your branch alone — `ModuleNotFoundError` for something you are
 looking at in your editor. For a module that exists on both, the tests pass
 while exercising the root's copy, which is the case worth remembering.
 
+## Running on the SCC
+
+Two caches have to be moved off the home directory, which is small and
+quota-limited: `uv`'s own, and the one a SIPNET binary is installed into.
+A `uv` git clone is usually what fails first, with `Disk quota exceeded`, so
+set these before anything else rather than as a tuning step:
+
+```bash
+export UV_CACHE_DIR=/projectnb/dietzelab/<user>/uv_cache
+export PYSIPNET_CACHE_DIR=/projectnb/dietzelab/<user>/pysipnet_cache
+export TMPDIR=/projectnb/dietzelab/<user>/tmp
+```
+
+`pysipnet install-sipnet` compiles there rather than downloading, because the
+published Linux SIPNET binary is built against a newer glibc than the SCC
+provides; `pysipnet info` reports the reason it refused the prebuilt, and
+`gcc`, `make` and `git` on a login node are all the compile needs. The binary
+then lives under `$PYSIPNET_CACHE_DIR`, and any environment exporting that
+variable finds it. A `qsub` script has to export all three itself, and
+`#$ -P dietzelab` with `#$ -l buyin` is the queue.
+
 ## Repository layout
 
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py` and
-`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`,
-and the other modules carry the contract each is to satisfy.
-`initial_conditions` is a package rather than a module: it spans several
-artifacts, and giving each its own file keeps that artifact's schema, writer,
-reader and checks together.
+`parameterization.py` are implemented, `obs_ops.py` has `sipnet_time_index`
+and `aggregate_time`, `fields.py` has the model-output adapters, and the other
+modules carry the contract each is to satisfy. `initial_conditions` is a
+package rather than a module: it spans several artifacts, and giving each its
+own file keeps that artifact's schema, writer, reader and checks together.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -369,9 +421,12 @@ src/sipnet_calibration/
                           # Parameterization with constrain/unconstrain/log_prior/
                           # sample, to_pysipnet_parameters() -> (member, site)
                           # Dataset, to_eki_gaussian_prior(); example_parameterization()
-  fields.py               # canonical field convention, validate_field(), adapters
-  obs_ops.py              # sipnet_time_index (done); aggregate_time (issue #6) —
-                          # shared with the likelihood
+  fields.py               # canonical field convention; from_sipnet_output(),
+                          # stack_sipnet_outputs() over SIPNETOutput.select,
+                          # site_lookup(); validate_field() and the adapters
+                          # for the other sources (issue #6)
+  obs_ops.py              # sipnet_time_index, aggregate_time — shared with the
+                          # likelihood; obs_index (issue #6)
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -420,16 +475,35 @@ plotting code. The load-bearing rules:
 - **Temporal aggregation lives in `obs_ops.py`** and is imported by both the
   observation operator and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
-  caller applies — `series_panel(agg(f, "1D"))` — never a plotter keyword.
-- **The caller names the resampling method; the variable's kind constrains
-  which are valid.** This is pySIPNET's rule since its PR #38, which removed
-  the per-variable `aggregation` default: `pysipnet.resample.resample(ds, freq,
-  how=...)` requires `how`, weights means by step length, and refuses a
-  method the kind does not support (a pool is not additive; a per-step total
-  is not averaged until it is a rate). SIPNET's `net_ecosystem_exchange` is
-  `g m-2` of C per timestep, so 3-hourly to daily is a **sum**, and a mean is
-  wrong by 8x while looking plausible; the fix is to say `how`, not to look
-  up a default.
+  caller applies — `plot_time_series(aggregate_time(f, "1D"))` — never a
+  plotter keyword.
+- **The variable's kind says which resampling methods are valid; the caller
+  may name one.** pySIPNET owns the first half: since its PR #38 every
+  variable has a `kind`, `RESAMPLING_METHODS_FOR_KIND` says what may be done
+  with it, and `pysipnet.resample.resample(ds, freq, how=...)` requires `how`,
+  weights means by step length and refuses a method the kind does not support
+  (a pool is not additive; a per-step total is not averaged until it is a
+  rate). `obs_ops.aggregate_time(field, freq, how=None)` is that operation for
+  a canonical field — a field may have `member` and `site` dims, which
+  `resample` does not reduce over — and it adds one thing: with no `how` it
+  takes **the method that leaves the variable the kind it already is**, read
+  off pySIPNET's `RESAMPLED_KIND` rather than written down. A total sums, a
+  step mean or a rate means, a pool or a running total takes its last value.
+  SIPNET's `net_ecosystem_exchange` is `g m-2` of C per timestep, so 3-hourly
+  to daily is a **sum**, and a mean is wrong by 8x while looking plausible;
+  the default is there so that omission cannot reach that error, and `how=` is
+  for asking deliberately for something else, such as the time-weighted mean
+  of a pool. An invalid pair is refused in pySIPNET's own words.
+- **A model field carries pySIPNET's names, units and kinds unchanged.**
+  `fields.from_sipnet_output` adds `site`, `member` and `lon`/`lat`; the
+  registry names are already `lower_case_with_underscores`, so they are the
+  processed names. Its time axis is pySIPNET's: `time` at the step end, with
+  `time_step_start` beside it, so the interval a value covers is
+  `[time_step_start, time]` — the pair pySIPNET writes as its CF `time_bounds`
+  variable. `time_bounds` itself cannot ride on a field, its `bounds`
+  dimension being no field dimension, so it and the `time` attribute naming it
+  are dropped, along with SIPNET's `year`/`day_of_year`/`hour_of_day` row
+  labels, which `time_step_start` already is.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
   Observation products keep their source units; the observation operator
@@ -485,7 +559,8 @@ plotting code. The load-bearing rules:
 - `SIPNETModel(runner, base_params=..., base_climate=...)(**overrides) -> SIPNETResult`
 - `ClimateStaging` is in `pysipnet.runner`, not `pysipnet.climate`
 - `SIPNETRunner(climate_staging=ClimateStaging.SYMLINK)` — staging goes on the runner, not the model
-- Parameter override keys are flat snake_case leaf names (`a_max`, not `photosynthesis.a_max`)
+- Parameter override keys are flat snake_case leaf names
+  (`max_photosynthesis_rate`, not `photosynthesis.max_photosynthesis_rate`)
 - `SIPNETOutput` selects with `out["nee"]` (a `DataArray`) and `out[["nee", "gpp"]]`
   (a `Dataset`); aliases resolve. `result.nee()` and `to_xarray()` are gone (pySIPNET PR #36).
 - The output `Dataset` is CF-1.11: `time` is the **end** of each step, `time_step_start` and
@@ -495,10 +570,22 @@ plotting code. The load-bearing rules:
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
 - `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
-- From a git/wheel install (every worktree venv), `build_sipnet()` fails: it runs
-  `git submodule update`, which needs a source checkout. `download_sipnet()` fetches the
-  pinned binary into the venv's `site-packages/.sipnet_cache/`, where `SIPNETRunner` looks.
-  The Niwot fixture (`tests/fixtures/niwot_reference`) is not in the wheel either.
+- **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and
+  real SIPNET output are available with no pySIPNET checkout: `niwot_reference_output()`
+  (a `SIPNETOutput`, no binary needed), `niwot_reference_climate()`,
+  `niwot_reference_files()` (`.param` / `.clim` / `.output` / `.readme` paths). The tests here
+  use the first; there is still no public `.param` reader (pySIPNET issue #19), so
+  `tests/conftest.py` carries a small one.
+- **The binary is found, not assumed** (PR #41). `pysipnet.build.find_binary()` returns `None`
+  when there is none and `missing_binary_message()` says where it looked. The search is
+  `$PYSIPNET_BINARY`, then a binary bundled in the wheel, then — only when pySIPNET is
+  running from a checkout — that checkout's cache, then `$PYSIPNET_CACHE_DIR` or the
+  platform user cache. Both caches are keyed by the pinned SIPNET commit, so bumping the
+  pin looks in a new, empty directory. **A git install has none of these until
+  `pysipnet install-sipnet` runs** — this project installs pySIPNET from git, not editable,
+  so that command is the setup step, not a fallback, and the checkout candidate never
+  applies. `SIPNETRunner` verifies the binary matches the pinned tag before the first run.
+  `pysipnet info` prints the pin, every path searched, and what was found.
 
 ### TensorFlow Probability (JAX substrate)
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`

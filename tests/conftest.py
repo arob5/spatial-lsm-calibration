@@ -13,10 +13,16 @@ The synthetic fixtures build canonical fields at each subset of the
 ``units``/``long_name`` in ``attrs``.
 
 The real-data fixtures read the driver files and the constraint products
-present in this working copy, and skip when they are not there.
+present in this working copy, and skip when they are not there. The SIPNET
+output fixtures read the Niwot reference data pySIPNET ships inside the
+package, so they need neither a pySIPNET checkout nor a binary; the one that
+runs the model skips without a binary, which ``pysipnet install-sipnet``
+provides.
 """
 
 from __future__ import annotations
+
+import warnings
 
 import matplotlib
 
@@ -27,6 +33,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 import xarray as xr  # noqa: E402
+
+from sipnet_calibration import conventions  # noqa: E402
 
 #: The variable the synthetic fields stand in for, with the attributes a real
 #: driver field carries.
@@ -194,3 +202,122 @@ def real_constraint_fields() -> tuple[dict, dict]:
     except FileNotFoundError as error:
         pytest.skip(f"constraint products not available in this working copy: {error}")
     return means, {name: sd**2 for name, sd in sds.items()}
+
+
+# ── real SIPNET output ────────────────────────────────────────────────────────
+
+
+#: The local driver file the 3-hourly tests run SIPNET on, if it is present.
+#: Through :func:`~sipnet_calibration.conventions.data_root`, so that a run
+#: pointed at another tree with ``$SIPNET_CALIBRATION_DATA`` moves this with
+#: everything else rather than half-relocating.
+SITE_1_DRIVERS = (
+    conventions.data_root() / "raw/drivers/ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim"
+)
+
+#: Whole days of it to run, at 8 steps per day.
+SITE_1_DAYS = 8
+
+
+@pytest.fixture(scope="session")
+def sites_table():
+    """The real site table, or a skip when the ingest has not been run here.
+
+    Anything that labels a field with a ``site`` reaches for this, directly or
+    through :func:`~sipnet_calibration.fields.stack_sipnet_outputs`, so the
+    guard belongs in one place rather than in each module that happens to.
+    """
+    from sipnet_calibration.sites import load_sites
+
+    try:
+        return load_sites()
+    except FileNotFoundError as error:
+        pytest.skip(f"site table not available in this working copy: {error}")
+
+
+@pytest.fixture(scope="session")
+def niwot_output():
+    """Real SIPNET output for the Niwot Ridge reference inputs, as a ``SIPNETOutput``.
+
+    pySIPNET's golden baseline, shipped inside the package since its PR #40:
+    the standard model run on the first rows of the reference climate, paired
+    with that climate's own step lengths. No binary and no pySIPNET checkout
+    are needed. The step lengths matter because Niwot's steps alternate between
+    day and night and are not all the same length -- the case a length-weighted
+    mean exists for.
+
+    It carries ``ModelFlags.standard()``, so selecting a variable SIPNET wrote
+    as constant zero under those flags -- the nitrogen group, ``litter_carbon``,
+    ``methane_production`` -- is refused rather than handed back as zeros. A
+    test that wants one of those needs its own output.
+    """
+    from pysipnet import niwot_reference_output
+
+    return niwot_reference_output()
+
+
+@pytest.fixture(scope="session")
+def site_1_result(tmp_path_factory):
+    """A real SIPNET run of the Niwot parameters on this copy's 3-hourly site-1 drivers.
+
+    :data:`SITE_1_DAYS` whole days of ``ERA5_1_1``, which is the only 3-hourly
+    input here and so the only one that can show a daily total being eight
+    steps. Skipped where the driver file or a SIPNET binary is absent; the
+    binary is whatever :func:`pysipnet.build.find_binary` resolves, so
+    ``pysipnet install-sipnet`` is what makes this run.
+    """
+    from pysipnet.build import find_binary, missing_binary_message
+    from pysipnet.io.clim_io import read_clim_file
+    from pysipnet.parameters.model import ModelFlags
+    from pysipnet.runner import SIPNETRunner
+
+    if not SITE_1_DRIVERS.is_file():
+        pytest.skip(
+            f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS}); "
+            "copy or link the ERA5_1_1 directory from the SCC"
+        )
+    if find_binary() is None:
+        pytest.skip(missing_binary_message())
+
+    # Session-scoped, because the SIPNETResult holds the climate it ran on and
+    # so outlives the fixture; pytest removes the directory afterwards.
+    climate_path = tmp_path_factory.mktemp("site-1-drivers") / "sipnet.clim"
+    rows = SITE_1_DRIVERS.read_text().splitlines(keepends=True)[: 8 * SITE_1_DAYS]
+    climate_path.write_text("".join(rows))
+    with warnings.catch_warnings():
+        # The site-1 record has exact zeros where SIPNET clamps, which pySIPNET
+        # warns about on read; it is a property of the file, not of this run.
+        # Only the read is silenced: a warning about the run itself is the sort
+        # pySIPNET makes loud on purpose.
+        warnings.simplefilter("ignore")
+        climate = read_clim_file(climate_path)
+    return SIPNETRunner(flags=ModelFlags.standard()).run(
+        niwot_parameters(), climate, run_id="site-1"
+    )
+
+
+def niwot_parameters():
+    """The reference ``sipnet.param`` as a ``SIPNETParameters``.
+
+    A stand-in for the production reader pySIPNET has not written yet (its
+    issue #19); built generically from the public name mapping so that a new
+    parameter needs no change here. A parameter the file does not name keeps
+    pySIPNET's own default, which is how the upstream fixture predating a
+    submodel is read at all.
+    """
+    from pysipnet import niwot_reference_files
+    from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
+    from pysipnet.parameters.model import SIPNETParameters
+
+    raw = read_param_file(niwot_reference_files().param)
+    groups: dict[str, dict[str, float]] = {name: {} for name in SIPNETParameters.model_fields}
+    for dotted, sipnet_name in PYTHON_TO_SIPNET.items():
+        group, _, field = dotted.partition(".")
+        if group in groups and sipnet_name in raw:
+            groups[group][field] = raw[sipnet_name]
+    return SIPNETParameters(
+        **{
+            name: SIPNETParameters.model_fields[name].annotation(**values)
+            for name, values in groups.items()
+        }
+    )

@@ -1,22 +1,25 @@
 """Per-variable display metadata *and* semantics.
 
-``VARIABLES[name] -> VarSpec(label, units, agg, cmap, center, sign, transform)``
+``VARIABLES[name] -> VarSpec(label, units, cmap, center, sign, transform)``
 
 This registry is what replaces per-variable plotting functions (``plot_nee``,
 ``plot_gpp``, ...) -- the combinatorial trap this suite exists to avoid.
 
-Three fields are correctness, not cosmetics:
+**The temporal aggregation rule is no longer this registry's.** It was to be an
+``agg`` field here; it is pySIPNET's ``kind`` instead, and
+:func:`sipnet_calibration.obs_ops.aggregate_time` reads that, falling back to
+pySIPNET's own variable registries by name. Nothing about aggregation belongs
+here.
 
-* ``agg`` -- the temporal aggregation rule. ``"sum"`` for per-timestep flux
-  totals (``nee``, ``gpp``, ``par``, ``precip``), ``"mean"`` for intensive state
-  (``tair``, ``vpd``), instantaneous for stocks (carbon pools, ``AbvGrndWood``,
-  ``LAI``). ``obs_ops.aggregate_time`` reads this. Defaulting everything to
-  ``"mean"`` makes every NEE aggregation in the project wrong by 8x.
-* ``units`` -- the single canonical unit for the variable. Adapters convert into
-  it; ``validate_field()`` checks ``attrs["units"]`` against it. This is the
-  guard against plotting model NEE (a per-timestep total) against observed NEE
-  (apparently a rate) on one axis, which fails by orders of magnitude with no
-  visual cue. The canonical NEE unit is still an open question.
+Two fields are correctness, not cosmetics:
+
+* ``units`` -- the unit a field of this variable is expected to be in, for
+  ``validate_field()`` to check ``attrs["units"]`` against. Nothing converts on
+  the way in: a model field keeps pySIPNET's units and an observation product
+  keeps its source's, and the **observation operator** is what converts one to
+  the other. This is the guard against plotting model NEE (a per-timestep
+  total) against observed NEE (a rate) on one axis, which fails by orders of
+  magnitude with no visual cue.
 * ``center`` -- ``0.0`` for signed fluxes such as NEE, so maps get a diverging
   colormap centered correctly. A sequential colormap on a signed flux is a
   genuinely misleading figure.
