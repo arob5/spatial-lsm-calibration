@@ -5,7 +5,8 @@ elements to existing matplotlib ``Axes`` objects. The supported elements are
 the ones that come up repeatedly when visualizing land surface modeling data
 and results: a single time series, an ensemble of them drawn as separate
 curves, an ensemble summarized as nested intervals, and observations with
-their error bars.
+their error bars; and, for maps, values at irregularly placed sites and on a
+raster.
 
 Each function takes an ``Axes`` and plain numpy arrays, adds one element to
 it, and returns what it added. They accept no pandas and no xarray, they
@@ -18,7 +19,15 @@ keywords are passed straight through to matplotlib.
 :func:`band`          one filled interval between explicit bounds
 :func:`fan`           nested central intervals computed from samples
 :func:`points`        scattered values, with optional error bars
+:func:`site_points`   one colored marker per site
+:func:`site_cells`    a nearest-site mosaic, capped at a radius
+:func:`site_triangles`  linear interpolation between sites
+:func:`raster`        a colored mesh of cells
 ====================  ==============================================
+
+The map primitives take projected coordinates, in the meters of
+:data:`sipnet_calibration.projection.SITE_PROJECTION`, and pass ``cmap`` and
+``norm`` through ``**style`` like any other keyword.
 
 Missing values
 --------------
@@ -26,7 +35,10 @@ Curves and bands keep ``NaN``, so a gap in the data is a gap in the drawing:
 :func:`line` and :func:`spaghetti` break the curve there, and :func:`band` and
 :func:`fan` draw one region per run of finite values rather than spanning the
 gap. :func:`points` instead drops the entries that are not finite, so what is
-drawn is exactly the values that were present.
+drawn is exactly the values that were present. The map primitives follow the
+same rule: a site whose value is missing gets no marker from
+:func:`site_points`, a transparent cell from :func:`site_cells` rather than a
+neighbor's value, and no triangle from :func:`site_triangles`.
 
 Usage
 -----
@@ -46,18 +58,26 @@ from typing import Any
 
 import numpy as np
 from matplotlib.axes import Axes
-from matplotlib.collections import PolyCollection
+from matplotlib.collections import PathCollection, PolyCollection, QuadMesh
 from matplotlib.container import ErrorbarContainer
+from matplotlib.image import AxesImage
 from matplotlib.lines import Line2D
+from matplotlib.tri import Triangulation
+from scipy.spatial import cKDTree
 
 from sipnet_calibration.plotting.style import BAND_ALPHAS
 
 __all__ = [
     "band",
+    "cells_from_index",
     "fan",
     "line",
     "nanquantile",
     "points",
+    "raster",
+    "site_cells",
+    "site_points",
+    "site_triangles",
     "spaghetti",
     "thinned_indices",
 ]
@@ -322,6 +342,242 @@ def points(
     return ax.errorbar(
         x[keep], y[keep], yerr=None if yerr is None else yerr[keep], **style
     )
+
+
+def site_points(
+    ax: Axes, x: np.ndarray, y: np.ndarray, values: np.ndarray, **style: Any
+) -> PathCollection:
+    """Draw one marker per site, colored by its value.
+
+    Parameters
+    ----------
+    ax:
+        The axes to draw on.
+    x, y:
+        Projected site coordinates, one-dimensional, length ``n``.
+    values:
+        One-dimensional, length ``n``. Sites whose value is not finite get no
+        marker.
+    **style:
+        Passed to ``Axes.scatter``: ``cmap``, ``norm``, ``s`` and so on.
+        Marker edges are off unless ``linewidths`` is given.
+
+    Returns
+    -------
+    matplotlib.collections.PathCollection
+        The markers, holding only the sites that were drawn.
+
+    Raises
+    ------
+    ValueError
+        If the arrays are not one-dimensional and the same length.
+    """
+    x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
+    _check_same_length(x=x, y=y, values=values)
+    keep = np.isfinite(values)
+    style.setdefault("linewidths", 0)
+    return ax.scatter(x[keep], y[keep], c=values[keep], **style)
+
+
+def site_cells(
+    ax: Axes,
+    x: np.ndarray,
+    y: np.ndarray,
+    values: np.ndarray,
+    *,
+    radius: float,
+    bounds: tuple[float, float, float, float],
+    pixels: int = 800,
+    **style: Any,
+) -> AxesImage:
+    """Color each pixel by its nearest site, if that site is within *radius*.
+
+    Parameters
+    ----------
+    ax:
+        The axes to draw on.
+    x, y:
+        Projected site coordinates, one-dimensional, length ``n``.
+    values:
+        One-dimensional, length ``n``. A site whose value is not finite leaves
+        its cell transparent; it still owns the cell.
+    radius:
+        The farthest a pixel's center may be from its site, in the units of
+        *x* and *y*. Pixels farther than this from every site are transparent.
+    bounds:
+        ``(x_min, y_min, x_max, y_max)``, the region to fill.
+    pixels:
+        Pixels across the width of *bounds*. They are square, so the height
+        follows.
+    **style:
+        Passed to ``Axes.imshow``: ``cmap``, ``norm`` and so on.
+
+    Returns
+    -------
+    matplotlib.image.AxesImage
+        The mosaic. It carries ``site_index``, an integer array of the image's
+        shape holding the position in *values* of each pixel's site, or ``-1``
+        where there is none, so its values can be replaced for a new frame with
+        ``image.set_data(cells_from_index(image.site_index, new_values))``.
+
+    Raises
+    ------
+    ValueError
+        If the arrays are not one-dimensional and the same length, *radius* is
+        not finite and positive, *bounds* is empty, or *pixels* is not a
+        positive integer.
+    """
+    x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
+    _check_same_length(x=x, y=y, values=values)
+    if not (np.isfinite(radius) and radius > 0):
+        raise ValueError(f"radius must be finite and positive, got {radius!r}")
+    if not isinstance(pixels, (int, np.integer)) or int(pixels) < 1:
+        raise ValueError(f"pixels must be a positive integer, got {pixels!r}")
+    x_min, y_min, x_max, y_max = (float(b) for b in bounds)
+    if not (x_max > x_min and y_max > y_min):
+        raise ValueError(f"bounds must have positive width and height, got {bounds}")
+
+    size = (x_max - x_min) / int(pixels)
+    n_x, n_y = int(pixels), max(1, int(np.ceil((y_max - y_min) / size)))
+    centers_x = x_min + size * (np.arange(n_x) + 0.5)
+    centers_y = y_min + size * (np.arange(n_y) + 0.5)
+    grid = np.stack(np.meshgrid(centers_x, centers_y), axis=-1).reshape(-1, 2)
+
+    if x.size:
+        distance, nearest = cKDTree(np.column_stack([x, y])).query(
+            grid, distance_upper_bound=radius
+        )
+        index = np.where(np.isfinite(distance), nearest, -1)
+    else:
+        index = np.full(len(grid), -1)
+    index = index.reshape(n_y, n_x)
+
+    style.setdefault("interpolation", "nearest")
+    image = ax.imshow(
+        cells_from_index(index, values),
+        origin="lower",
+        extent=(x_min, x_min + n_x * size, y_min, y_min + n_y * size),
+        **style,
+    )
+    image.site_index = index
+    return image
+
+
+def cells_from_index(index: np.ndarray, values: np.ndarray) -> np.ndarray:
+    """The image :func:`site_cells` draws, from its ``site_index`` and *values*."""
+    values = np.asarray(values, dtype=float)
+    cells = np.full(index.shape, np.nan)
+    owned = index >= 0
+    cells[owned] = values[index[owned]]
+    return cells
+
+
+def site_triangles(
+    ax: Axes,
+    x: np.ndarray,
+    y: np.ndarray,
+    values: np.ndarray,
+    *,
+    max_edge: float,
+    **style: Any,
+):
+    """Interpolate linearly between sites over their Delaunay triangulation.
+
+    Parameters
+    ----------
+    ax:
+        The axes to draw on.
+    x, y:
+        Projected site coordinates, one-dimensional, length ``n``.
+    values:
+        One-dimensional, length ``n``. A triangle with a corner whose value is
+        not finite is not drawn.
+    max_edge:
+        Triangles with any edge longer than this, in the units of *x* and *y*,
+        are not drawn, so no fill spans a gap in the sites wider than it.
+    **style:
+        Passed to ``Axes.tripcolor``. ``shading`` defaults to ``"gouraud"``,
+        which is the linear interpolation; ``"flat"`` colors each triangle by
+        the mean of its corners.
+
+    Returns
+    -------
+    matplotlib.collections.Collection
+        What ``tripcolor`` returns.
+
+    Raises
+    ------
+    ValueError
+        If the arrays are not one-dimensional and the same length, *max_edge*
+        is not positive, or there are fewer than three sites.
+    """
+    x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
+    _check_same_length(x=x, y=y, values=values)
+    if not max_edge > 0:
+        raise ValueError(f"max_edge must be positive, got {max_edge!r}")
+    if x.size < 3:
+        raise ValueError(f"a triangulation needs at least three sites, got {x.size}")
+
+    triangulation = Triangulation(x, y)
+    corners = triangulation.triangles
+    longest = np.max(
+        [
+            np.hypot(x[corners[:, a]] - x[corners[:, b]], y[corners[:, a]] - y[corners[:, b]])
+            for a, b in ((0, 1), (1, 2), (2, 0))
+        ],
+        axis=0,
+    )
+    missing = ~np.isfinite(values)
+    triangulation.set_mask((longest > max_edge) | missing[corners].any(axis=1))
+    style.setdefault("shading", "gouraud")
+    # Gouraud shading reads a value at every vertex, masked triangles included,
+    # so a missing value is given a stand-in that no drawn triangle uses.
+    return ax.tripcolor(triangulation, np.where(missing, 0.0, values), **style)
+
+
+def raster(
+    ax: Axes,
+    x_corners: np.ndarray,
+    y_corners: np.ndarray,
+    values: np.ndarray,
+    **style: Any,
+) -> QuadMesh:
+    """Draw a mesh of cells, each one colored by its value.
+
+    Parameters
+    ----------
+    ax:
+        The axes to draw on.
+    x_corners, y_corners:
+        Two-dimensional, ``(m + 1, n + 1)``: the projected corners of the
+        cells. A curvilinear mesh, such as a longitude/latitude grid after
+        projection, is fine.
+    values:
+        Two-dimensional, ``(m, n)``. Cells whose value is not finite are
+        transparent.
+    **style:
+        Passed to ``Axes.pcolormesh``.
+
+    Returns
+    -------
+    matplotlib.collections.QuadMesh
+        The mesh.
+
+    Raises
+    ------
+    ValueError
+        If the corners are not one larger than *values* in each dimension.
+    """
+    x_corners, y_corners = np.asarray(x_corners), np.asarray(y_corners)
+    values = np.asarray(values, dtype=float)
+    expected = (values.shape[0] + 1, values.shape[1] + 1) if values.ndim == 2 else None
+    if expected is None or x_corners.shape != expected or y_corners.shape != expected:
+        raise ValueError(
+            f"values of shape {values.shape} need corners of shape {expected}; got "
+            f"{x_corners.shape} and {y_corners.shape}"
+        )
+    style.setdefault("shading", "flat")
+    return ax.pcolormesh(x_corners, y_corners, np.ma.masked_invalid(values), **style)
 
 
 # ── shared utilities ────────────────────────────────────────────────────────

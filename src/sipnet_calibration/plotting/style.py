@@ -26,6 +26,8 @@ Functions
     Apply :data:`RC_PARAMS` to matplotlib's global ``rcParams``.
 :func:`axis_label`
     The axis label for a field, from its ``units`` and ``long_name``.
+:func:`category_colors`
+    One color per class of a categorical map.
 
 Usage
 -----
@@ -47,10 +49,12 @@ import xarray as xr
 
 __all__ = [
     "BAND_ALPHAS",
+    "CATEGORY_COLORS",
     "CURVE_COLORS",
     "RC_PARAMS",
     "ROLES",
     "axis_label",
+    "category_colors",
     "role_style",
     "use_project_style",
 ]
@@ -83,6 +87,12 @@ CURVE_COLORS: tuple[str, ...] = (
     "#CC79A7",
     "#F0E442",
 )
+
+#: Colors for the classes of a categorical map, by class position. Up to eight
+#: classes take Okabe-Ito, as :data:`CURVE_COLORS` plus black; more take
+#: matplotlib's ``tab20``, which is not safe under color vision deficiency but
+#: has enough distinct entries for the 16-class site labels.
+CATEGORY_COLORS: tuple[str, ...] = CURVE_COLORS + ("#000000",)
 
 #: Opacity of the widest and of the narrowest band of a fan. Intermediate
 #: bands are spaced linearly between the two, so a narrower interval is drawn
@@ -160,6 +170,36 @@ def role_style(role: str, kind: str = "line", **overrides: Any) -> dict[str, Any
         style["linestyle"] = "none"
     style.update(overrides)
     return style
+
+
+def category_colors(n: int) -> list[str]:
+    """One color per class, for *n* classes, keyed by class position.
+
+    Parameters
+    ----------
+    n:
+        The number of classes.
+
+    Returns
+    -------
+    list of str
+        :data:`CATEGORY_COLORS` for up to eight classes, ``tab20`` for up to
+        twenty. Class *i* gets entry *i* whichever classes a figure shows, so a
+        class keeps its color across figures of one product.
+
+    Raises
+    ------
+    ValueError
+        If *n* exceeds twenty; pass explicit colors instead.
+    """
+    if n <= len(CATEGORY_COLORS):
+        return list(CATEGORY_COLORS[:n])
+    if n <= 20:
+        return [matplotlib.colors.to_hex(c) for c in matplotlib.colormaps["tab20"].colors[:n]]
+    raise ValueError(
+        f"{n} classes is more than the palettes distinguish (20); pass colors "
+        "explicitly, one per class"
+    )
 
 
 def use_project_style() -> None:

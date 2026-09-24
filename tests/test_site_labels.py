@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from sipnet_calibration.site_labels import _check_labels_are_flag_meanings
 from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
     SITE_COLUMN,
@@ -39,6 +40,7 @@ from sipnet_calibration.site_labels import (
     load_site_labels,
     read_raw,
     resolve_site_labels,
+    site_labels_field,
     site_labels_path,
 )
 from sipnet_calibration.sites import SITE_COLUMNS, default_sites_path, load_sites
@@ -890,6 +892,46 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
     kwargs[field] = value
     with pytest.raises(ValueError, match=match):
         SiteLabelsSpec(**kwargs)
+
+
+# ── the categorical field ─────────────────────────────────────────────────────
+
+
+def test_site_labels_field_is_cf_flag_codes_with_locations(synthetic):
+    raw_root, sites, out_dir = synthetic
+    ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
+    field = site_labels_field(
+        SYNTHETIC_SPEC, sites=sites, path=site_labels_path(SYNTHETIC_SPEC, out_dir)
+    )
+
+    assert field.dims == ("site",) and field.dtype == np.int8
+    assert field["site"].values.tolist() == SYNTHETIC_SITES
+    assert field.attrs["flag_meanings"] == "conifer broadleaf grass"
+    assert field.attrs["flag_values"].tolist() == [0, 1, 2]
+    assert "units" not in field.attrs
+    meanings = field.attrs["flag_meanings"].split()
+    assert [meanings[code] for code in field.values] == ["conifer", "conifer", "broadleaf", "grass"]
+    np.testing.assert_array_equal(field["lon"].values, sites["lon"].to_numpy())
+    assert field.name == SYNTHETIC_SPEC.name
+    assert field.attrs["long_name"] == "Plant functional type (synthetic_3class)"
+
+
+def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):
+    raw_root, sites, out_dir = synthetic
+    ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
+    with pytest.raises(ValueError, match="not in the site table"):
+        site_labels_field(
+            SYNTHETIC_SPEC, sites=sites.iloc[:2], path=site_labels_path(SYNTHETIC_SPEC, out_dir)
+        )
+
+
+def test_a_class_name_with_whitespace_cannot_be_a_flag_meaning():
+    spaced = dataclasses.replace(
+        SYNTHETIC_SPEC, labels=("conifer", "broad leaf", "grass"),
+        landcover_mapping={1: "conifer", 2: "conifer", 3: "broad leaf", 5: "grass"},
+    )
+    with pytest.raises(ValueError, match="whitespace"):
+        _check_labels_are_flag_meanings(spaced)
 
 
 # ── the default paths ─────────────────────────────────────────────────────────

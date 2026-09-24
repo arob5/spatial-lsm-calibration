@@ -89,6 +89,10 @@ Functions
     Local distortion at given points: the scale factors, the angular
     deformation, the areal scale, and the rotation of projected north.
 
+:meth:`Projection.angular_distance`
+    The great-circle angle of a point from the projection center, which is how
+    the plotting layer decides what lies near enough to the center to draw.
+
 :meth:`Projection.crs`, :meth:`Projection.proj_string`, :meth:`Projection.projjson`
     The projection as a :class:`pyproj.CRS`, and its two serializations.
 
@@ -118,13 +122,13 @@ local anisotropy at the northernmost sites. This projection holds angular
 deformation under 14 degrees and anisotropy under 1.3 over the whole pool, which
 ``tests/test_projection.py`` asserts against the real site table.
 
-**Anisotropy is not only cosmetic here.** The spatial renderer planned in
-``plotting/maps.py`` is to triangulate *after* projecting, and a Delaunay
+**Anisotropy is not only cosmetic here.** The ``Triangles`` renderer in
+``plotting/maps.py`` triangulates *after* projecting, and a Delaunay
 triangulation is not affine-invariant, so a strong local anisotropy would make
 the mesh an artifact of the projection rather than of where the sites are. Its
-long-edge mask threshold is a projected length too, which means one ground
-distance only where the local scale is close to isotropic; :meth:`Projection.factors`
-is how a caller turns one into the other.
+long-edge threshold and the ``Cells`` radius are projected lengths too, which
+mean one ground distance only where the local scale is close to isotropic;
+:meth:`Projection.factors` is how a caller turns one into the other.
 
 **No datum transformation is involved.** The base CRS is WGS 84, matching the
 site coordinates, so nothing is shifted. A NAD83-based definition, such as the
@@ -416,6 +420,40 @@ class Projection:
             return _proj(self).get_factors(longitude, latitude, radians=False, errcheck=True)
         except pyproj.exceptions.ProjError as error:
             raise ValueError(_outside_domain_message(self, error)) from error
+
+    def angular_distance(self, lon, lat):
+        """Great-circle angle from the projection center, in degrees.
+
+        Parameters
+        ----------
+        lon, lat:
+            Degrees, longitude first, as :meth:`forward` takes them.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            Angles in ``[0, 180]``. Scalars in, a scalar out.
+
+        Raises
+        ------
+        ValueError
+            If any coordinate is not finite or a latitude is outside
+            ``[-90, 90]``.
+
+        Notes
+        -----
+        The angle is taken on a sphere, treating geodetic latitude as
+        spherical. It is for deciding what lies near enough the center to be
+        drawn -- the basemap clip and the raster crop in
+        ``plotting/`` -- where the at-most-0.2-degree difference from the
+        ellipsoidal angle is immaterial; the transform itself is ellipsoidal.
+        """
+        longitude, latitude, scalar = _check_coordinates(lon, lat)
+        lat_0, lon_0 = np.radians(self.lat_0), np.radians(self.lon_0)
+        phi, lam = np.radians(latitude), np.radians(longitude)
+        cosine = np.sin(lat_0) * np.sin(phi) + np.cos(lat_0) * np.cos(phi) * np.cos(lam - lon_0)
+        angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+        return float(angle) if scalar else angle
 
     @property
     def antipode(self) -> tuple[float, float]:
