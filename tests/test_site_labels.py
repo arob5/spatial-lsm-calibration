@@ -657,8 +657,11 @@ def _argv(raw_root, sites_path, out_dir, *extra):
 @pytest.fixture
 def real_argv(tmp_path):
     """A `main` invocation against the registry's own product and raw file."""
-    if not (RAW_DIR / resolve_site_labels("reanalysis_3pft").raw_file).exists():
+    # main reads both from its defaults, so check the paths it will read.
+    if not (default_raw_dir() / resolve_site_labels("reanalysis_3pft").raw_file).exists():
         pytest.skip("raw site labels not available in this working copy")
+    if not default_sites_path().exists():
+        pytest.skip("site table not available in this working copy")
     return tmp_path
 
 
