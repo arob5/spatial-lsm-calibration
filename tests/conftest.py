@@ -16,8 +16,8 @@ The real-data fixtures read the driver files and the constraint products
 present in this working copy, and skip when they are not there. The local
 driver files carry the drifting hour column of ``data/README.md`` Note 15,
 which pySIPNET refuses, so the driver fixtures read them with that one column
-rewritten to the regular 3-hourly labels the values sit on; every value is the
-file's own. The SIPNET output fixtures read the Niwot reference data pySIPNET ships inside the
+rewritten to regular 3-hourly labels; every value is the file's own. The SIPNET
+output fixtures read the Niwot reference data pySIPNET ships inside the
 package, so they need neither a pySIPNET checkout nor a binary; the one that
 runs the model skips without a binary, which ``pysipnet install-sipnet``
 provides.
@@ -170,20 +170,30 @@ def field_with_gaps() -> xr.DataArray:
 #: else rather than half-relocating.
 DRIVERS_ROOT = conventions.data_root() / "raw" / "drivers"
 
+#: The ``(site, member)`` pairs whose driver files this working copy holds, and
+#: the only ones the driver fixtures read. On the SCC the drivers root holds the
+#: whole ensemble, which no test needs.
+LOCAL_DRIVER_PAIRS = ((1, 1), (1, 2), (27, 5))
+
 
 def with_regular_hour_column(text: str) -> str:
     """A ``.clim`` file's text with its hour column set to ``3 * slot``.
 
-    The rows are 3-hourly, eight to a day and in order (``data/README.md``
-    open question 15), so the row at position ``k`` of a day starts at hour
-    ``3 * (k % 8)``. Only that column changes; every other field is kept as
-    written.
+    For the local ERA5 files: 14 tab-separated fields a row, 3-hourly, eight
+    rows to a day from hour 0 (``data/README.md`` open question 15), so the row
+    at position ``k`` of a day is labeled ``3 * (k % 8)``. Only that column
+    changes; every other field is kept as written. It fixes the drift of Note
+    15 and nothing else: the accumulated columns still cover the step ending at
+    the label (Note 16).
     """
     lines = []
     for k, line in enumerate(text.splitlines()):
         fields = line.split("\t")
+        assert len(fields) == 14, f"row {k} has {len(fields)} tab-separated fields, not 14"
+        assert int(float(fields[3]) // 3) == k % 8, f"row {k} is not in slot {k % 8}"
         fields[3] = f"{3 * (k % 8):9.6f}"
         lines.append("\t".join(fields))
+    assert len(lines) % 8 == 0, "the file does not hold whole days of eight rows"
     return "\n".join(lines) + "\n"
 
 
@@ -191,17 +201,19 @@ def with_regular_hour_column(text: str) -> str:
 def regular_drivers_root(tmp_path_factory) -> Path:
     """The local driver files, laid out as the originals, with regular hour labels.
 
-    Each ``ERA5_<site>_<member>/*.clim`` under :data:`DRIVERS_ROOT` is copied
-    through :func:`with_regular_hour_column`. Skipped when no driver files are
-    present.
+    The file of each pair in :data:`LOCAL_DRIVER_PAIRS` under
+    :data:`DRIVERS_ROOT` is copied through :func:`with_regular_hour_column`.
+    Skipped when none of them is present.
     """
-    files = sorted(DRIVERS_ROOT.glob("ERA5_*/ERA5.*.clim")) if DRIVERS_ROOT.is_dir() else []
+    files = []
+    for site, member in LOCAL_DRIVER_PAIRS:
+        files += sorted((DRIVERS_ROOT / f"ERA5_{site}_{member}").glob("ERA5.*.clim"))
     if not files:
-        pytest.skip(f"no driver files in this working copy under {DRIVERS_ROOT}")
+        pytest.skip(f"no local driver files in this working copy under {DRIVERS_ROOT}")
     root = tmp_path_factory.mktemp("regular-drivers")
     for path in files:
         target = root / path.parent.name / path.name
-        target.parent.mkdir()
+        target.parent.mkdir(exist_ok=True)
         target.write_text(with_regular_hour_column(path.read_text()))
     return root
 
@@ -317,7 +329,7 @@ def niwot_output():
 
 
 @pytest.fixture(scope="session")
-def site_1_result(tmp_path_factory, regular_drivers_root):
+def site_1_result(regular_drivers_root):
     """A real SIPNET run of the Niwot parameters on this copy's 3-hourly site-1 drivers.
 
     :data:`SITE_1_DAYS` whole days of ``ERA5_1_1`` from
@@ -341,18 +353,13 @@ def site_1_result(tmp_path_factory, regular_drivers_root):
     if find_binary() is None:
         pytest.skip(missing_binary_message())
 
-    # Session-scoped, because the SIPNETResult holds the climate it ran on and
-    # so outlives the fixture; pytest removes the directory afterwards.
-    climate_path = tmp_path_factory.mktemp("site-1-drivers") / "sipnet.clim"
-    rows = site_1_drivers.read_text().splitlines(keepends=True)[: 8 * SITE_1_DAYS]
-    climate_path.write_text("".join(rows))
     with warnings.catch_warnings():
         # The site-1 record has exact zeros where SIPNET clamps, which pySIPNET
         # warns about on read; it is a property of the file, not of this run.
         # Only the read is silenced: a warning about the run itself is the sort
         # pySIPNET makes loud on purpose.
         warnings.simplefilter("ignore")
-        climate = ClimateDrivers.from_file(climate_path)
+        climate = ClimateDrivers.from_file(site_1_drivers).head(8 * SITE_1_DAYS)
     return SIPNETRunner(flags=ModelFlags.standard()).run(
         niwot_parameters(), climate, run_id="site-1"
     )

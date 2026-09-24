@@ -208,6 +208,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from pysipnet.dataset import TIME_DIMENSION
+
 from sipnet_calibration.sites import load_sites
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -227,7 +229,7 @@ __all__ = [
 
 MEMBER_DIM = "member"
 SITE_DIM = "site"
-TIME_DIM = "time"
+TIME_DIM = TIME_DIMENSION
 
 #: The dimensions a canonical field may have, in canonical order.
 CANONICAL_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE_DIM, TIME_DIM)

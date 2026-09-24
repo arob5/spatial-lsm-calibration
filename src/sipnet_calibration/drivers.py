@@ -39,7 +39,9 @@ Input data
     :func:`default_drivers_root` says where the directory is expected to be.
     Each file is a SIPNET climate file, read by pySIPNET in whichever layout it
     has, and refused by pySIPNET if it fails its validation -- including a
-    ``time`` column that disagrees with the declared step lengths.
+    ``time`` column that disagrees with the declared step lengths. The ERA5
+    files as generated fail it for that reason (``data/README.md`` Note 15), so
+    until they are corrected :func:`load_drivers` refuses them.
 
 ``data/processed/sites/sites.csv``
     The site table, for the ``lon``/``lat`` coordinates and to confirm that the
@@ -69,9 +71,9 @@ units the producer has confirmed.
 ``n_values_below_zero``, and ``vapor_pressure_deficit``,
 ``soil_vapor_pressure_deficit`` and ``wind_speed`` carry
 ``n_values_not_positive``. The source files hold small negative excursions
-around zero and exact zeros where SIPNET would clamp; they are read through
-unchanged and counted, so that nobody has to rediscover that ``par > 0`` is not
-a daylight test.
+around zero, and exact zeros, which SIPNET clamps for the vapor pressure
+deficit and wind speed; they are read through unchanged and counted, so that
+nobody has to rediscover that radiation above zero is not a daylight test.
 
 With ``allow_missing=True`` there is one more variable, ``bool`` on
 ``(member, site)``::
@@ -102,10 +104,18 @@ Name                    Dims               Meaning
 
 **Time.** The time coordinates are pySIPNET's, taken unchanged from
 :attr:`pysipnet.climate.ClimateDrivers.xarray`: the same axis, with the same
-attributes, that a SIPNET run on the file has for its output. A row's labels
-are the start of its step on whatever clock the drivers use, and ``time`` is
-the step's end. The clock is ``time_zone``, on ``time`` and on the Dataset,
-which is ``"undeclared"`` unless the caller declares one.
+attributes, that a SIPNET run on the file has for its output. Its
+``year``/``day_of_year``/``hour_of_day`` row labels are not kept, since
+``time_step_start`` is the same instant. A row's labels are the start of its
+step on whatever clock the drivers use, and ``time`` is the step's end. The
+clock is ``time_zone``, on ``time`` and on the Dataset, which is
+``"undeclared"`` unless the caller declares one.
+
+These are the semantics of SIPNET's format, which the variable attributes
+state. They are true of a file that follows the format. The ERA5 files do not
+(``data/README.md`` Note 16): their radiation and precipitation cover the step
+ending at the label rather than starting there, and their other forcing
+columns are instantaneous at the label rather than means over the step.
 
 **Attributes** on the dataset: pySIPNET's -- ``Conventions``,
 ``time_convention``, ``time_zone``, ``time_axis_source`` and
@@ -205,8 +215,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
-from pysipnet.climate import ClimateDrivers
-from pysipnet.variables import CLIMATE_VARIABLES, TIME_COORDINATE_NAMES
+from pysipnet.climate import ClimateDrivers, normalize_time_zone
+from pysipnet.dataset import unfilled_coordinates
+from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration import conventions
 from sipnet_calibration.fields import TIME_COORDS
@@ -229,12 +240,10 @@ __all__ = [
 ]
 
 #: The driver variables, under pySIPNET's names, in climate-file column order:
-#: every column of pySIPNET's climate registry except the ones that become the
-#: time axis.
+#: every column of pySIPNET's climate registry outside its ``time`` group, which
+#: becomes the time axis.
 DRIVER_VARIABLES: tuple[str, ...] = tuple(
-    spec.name
-    for spec in CLIMATE_VARIABLES
-    if spec.name not in (*TIME_COORDINATE_NAMES, "time_step_length")
+    spec.name for spec in CLIMATE_VARIABLES if spec.group != "time"
 )
 
 #: Why the units are what they are. Recorded on every variable so that no
@@ -378,6 +387,10 @@ def read_driver_file(path: Path | str, *, time_zone: str | None = None) -> Clima
         If pySIPNET refuses the file, with pySIPNET's reason; or if
         photosynthetically active radiation or precipitation falls further
         below zero than :data:`NEGATIVE_TOLERANCE`. The message names the file.
+    OSError
+        If the file cannot be opened, as pySIPNET raises it:
+        ``FileNotFoundError`` for a missing file or a dangling link, among
+        others.
     """
     path = Path(path)
     try:
@@ -441,8 +454,9 @@ def load_drivers(
         site has a driver directory; if no requested pair has a file at all;
         or if a requested pair has no file and *allow_missing* is ``False``.
     ValueError
-        If *sites* or *members* is empty, or holds anything but positive whole
-        numbers; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
+        If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
+        or *members* is empty, or holds anything but positive whole numbers,
+        discovered members included; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
         repeats a ``site_id``; if a site is not in the site table; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
         :func:`read_driver_file`, its name does not follow the template, the
@@ -453,6 +467,7 @@ def load_drivers(
     root = Path(root) if root is not None else default_drivers_root()
     if not root.is_dir():
         raise FileNotFoundError(f"drivers root {root} is not a directory")
+    time_zone = normalize_time_zone(time_zone)
 
     site_ids = _site_ids(sites)
     table = sites_table if sites_table is not None else load_sites()
@@ -586,7 +601,7 @@ def _member_ids(
             raise FileNotFoundError(
                 f"no driver directories under {root} for sites {sites.tolist()}"
             )
-        return np.array(sorted(found), dtype=np.int16)
+        members = sorted(found)
     return _positive_integers(
         members,
         name="member indices (the source's 1-based directory indices)",
@@ -656,7 +671,6 @@ def _read_all(
         site, member = _site_member_from_directory(path.parent.name)
         _check_file_name_matches_contents(path, dataset, member=member)
         if reference is None:
-            _check_variables_are_the_driver_variables(dataset, path)
             reference, reference_path = dataset, path
             shape = present.shape + (dataset.sizes["time"],)
             arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLES}
@@ -742,7 +756,7 @@ def _assemble(
         "n_members": int(members.size),
         "coverage": "complete" if present.all() else "gaps",
     }
-    return dataset
+    return unfilled_coordinates(dataset)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -763,22 +777,6 @@ def _check_negative_excursions_bounded(frame: pd.DataFrame, path: Path) -> None:
                 f"-{NEGATIVE_TOLERANCE:g}, the lowest {values.min():.4g}. Small "
                 "negative excursions around zero are known; these are not small."
             )
-
-
-def _check_variables_are_the_driver_variables(dataset: xr.Dataset, path: Path) -> None:
-    """pySIPNET's climate Dataset holds exactly :data:`DRIVER_VARIABLES`.
-
-    :data:`DRIVER_VARIABLES` is derived from pySIPNET's registry, and the
-    Dataset is built from it too; a disagreement means one of the two changed
-    in a way this module has not caught up with.
-    """
-    found = tuple(str(name) for name in dataset.data_vars)
-    if found != DRIVER_VARIABLES:
-        raise ValueError(
-            f"{path}: pySIPNET's climate Dataset holds {list(found)}, where this "
-            f"module expects {list(DRIVER_VARIABLES)}. pySIPNET's climate registry "
-            "has changed; update DRIVER_VARIABLES."
-        )
 
 
 def _check_file_name_matches_contents(path: Path, dataset: xr.Dataset, *, member: int) -> None:
@@ -832,12 +830,6 @@ def _check_time_axes_identical(
                 f"{first} ({b[first]!r} against {a[first]!r}); every file read "
                 "together must share one time axis"
             )
-    zones = (reference.attrs.get("time_zone"), dataset.attrs.get("time_zone"))
-    if zones[0] != zones[1]:
-        raise ValueError(
-            f"{path} declares time_zone {zones[1]!r} where {reference_path} "
-            f"declares {zones[0]!r}"
-        )
 
 
 def _check_site_table_is_usable(table: pd.DataFrame) -> None:

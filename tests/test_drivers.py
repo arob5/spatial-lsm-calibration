@@ -17,7 +17,6 @@ axis as a SIPNET run on them.
 
 from __future__ import annotations
 
-import re
 import warnings
 from pathlib import Path
 
@@ -27,6 +26,8 @@ import pytest
 import xarray as xr
 from pysipnet.climate import ClimateDrivers
 from pysipnet.variables import CLIMATE_COLUMN_NAMES
+
+from conftest import DRIVERS_ROOT, LOCAL_DRIVER_PAIRS
 
 from sipnet_calibration.drivers import (
     DRIVER_PRESENT,
@@ -42,10 +43,10 @@ from sipnet_calibration.drivers import (
     read_driver_file,
 )
 from sipnet_calibration.fields import TIME_COORDS
+from sipnet_calibration.obs_ops import aggregate_time
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REAL_ROOT = REPO_ROOT / "data" / "raw" / "drivers"
 
 #: The 14 fields of a legacy-layout row, under SIPNET's own names.
 FILE_COLUMNS = (
@@ -210,7 +211,7 @@ class TestReadDriverFile:
             )
 
     def test_a_file_pysipnet_refuses_is_refused_with_its_path_and_pysipnets_reason(self, tmp_path):
-        """The drift of ``data/README.md`` Note 15: each label 2.46 s later
+        """The drift of ``data/README.md`` Note 15: each label 2.47 s later
         than the one before it plus the declared length."""
         rows = synthetic_rows()
         rows["time"] = np.linspace(0, 24 * 365 - 1, len(rows)) % 24
@@ -368,8 +369,11 @@ class TestLoadDrivers:
     def test_rejects_an_unusable_site_table(self, root, sites_table):
         with pytest.raises(ValueError, match="lacks column"):
             load_drivers([3], root=root, sites_table=sites_table.set_index("site_id"))
-        with pytest.raises(ValueError, match="lacks column"):
-            load_drivers([3], root=root, sites_table=sites_table.drop(columns=["lon"]))
+        for column in ("lon", "lat"):
+            with pytest.raises(ValueError, match="lacks column"):
+                load_drivers([3], root=root, sites_table=sites_table.drop(columns=[column]))
+        with pytest.raises(ValueError, match="must be a DataFrame"):
+            load_drivers([3], root=root, sites_table=sites_table.to_dict())
         duplicated = pd.concat([sites_table, sites_table.head(3)], ignore_index=True)
         with pytest.raises(ValueError, match="repeats site id"):
             load_drivers([3], root=root, sites_table=duplicated)
@@ -405,6 +409,49 @@ class TestLoadDrivers:
         assert dataset["soil_vapor_pressure_deficit"].attrs["n_values_not_positive"] == 4
         assert par.values[0, 0, 0] == -1e-6
         assert "n_values_below_zero" not in dataset["vapor_pressure_deficit"].attrs
+
+    def test_counts_are_over_every_file_present_and_nothing_else(self, tmp_path, sites_table):
+        for member, n_negative in ((1, 2), (2, 5)):
+            rows = synthetic_rows(seed=member)
+            rows.loc[list(range(n_negative)), "par"] = -1e-6
+            write_pair(tmp_path, 3, member, rows)
+        write_pair(tmp_path, 7, 1)
+        dataset = load_drivers(
+            [3, 7], members=[1, 2], root=tmp_path, sites_table=sites_table, allow_missing=True
+        )
+        assert not dataset[DRIVER_PRESENT].values.all()
+        attrs = dataset["photosynthetically_active_radiation"].attrs
+        assert attrs["n_values_below_zero"] == 7
+
+    def test_a_discovered_member_out_of_range_is_refused_as_requested_ones_are(
+        self, root, sites_table
+    ):
+        (root / "ERA5_3_40000").mkdir()
+        with pytest.raises(ValueError, match="member indices"):
+            load_drivers([3], root=root, sites_table=sites_table)
+
+    @pytest.mark.parametrize("time_zone", ["America/Denver", "EST"])
+    def test_an_invalid_clock_is_refused_before_any_file_is_read(
+        self, root, sites_table, time_zone
+    ):
+        with pytest.raises(ValueError, match="time_zone must be") as refusal:
+            load_drivers([3], root=root, sites_table=sites_table, time_zone=time_zone)
+        assert ".clim" not in str(refusal.value)
+
+    def test_aggregation_keeps_the_declared_clock(self, root, sites_table):
+        dataset = load_drivers([3], root=root, sites_table=sites_table, time_zone="UTC")
+        field = driver_fields(dataset)["air_temperature"].isel(site=0, member=0)
+        assert aggregate_time(field, "1D")["time"].attrs["time_zone"] == "UTC"
+
+    # pySIPNET's Dataset declares no units encoding for time and time_bounds.
+    @pytest.mark.filterwarnings("ignore:Variable time has datetime type:UserWarning")
+    def test_no_coordinate_is_written_with_a_fill_value(self, root, sites_table, tmp_path):
+        """CF forbids ``_FillValue`` on a coordinate."""
+        path = tmp_path / "drivers.nc"
+        load_drivers([3], root=root, sites_table=sites_table).to_netcdf(path)
+        with xr.open_dataset(path, decode_cf=False) as written:
+            for name in written.coords:
+                assert "_FillValue" not in written[name].attrs, name
 
     def test_missing_pair_raises_by_default(self, root, sites_table):
         write_pair(root, 3, 5)
@@ -451,10 +498,14 @@ class TestLoadDrivers:
         with pytest.raises(ValueError, match="file name says member 4, the directory says member 2"):
             load_drivers([3], root=root, sites_table=sites_table)
 
-    def test_rejects_file_name_dates_that_do_not_match_the_data(self, root, sites_table):
+    @pytest.mark.parametrize(
+        "name", ["ERA5.2.2013-01-01.2014-12-31.clim", "ERA5.2.2013-01-02.2013-12-31.clim"]
+    )
+    def test_rejects_file_name_dates_that_do_not_match_the_data(self, root, sites_table, name):
         path = driver_file(root, 3, 2)
-        path.rename(path.with_name("ERA5.2.2013-01-01.2014-12-31.clim"))
-        with pytest.raises(ValueError, match="file name covers 2013-01-01 to 2014-12-31"):
+        path.rename(path.with_name(name))
+        start, end = name.split(".")[2:4]
+        with pytest.raises(ValueError, match=f"file name covers {start} to {end}"):
             load_drivers([3], root=root, sites_table=sites_table)
 
     def test_rejects_a_file_name_off_the_template(self, root, sites_table):
@@ -480,6 +531,13 @@ class TestLoadDrivers:
         write_pair(root, 7, 6, rows)
         with pytest.raises(ValueError, match="time_step_start differs from"):
             load_drivers([3, 7], members=[6], root=root, sites_table=sites_table)
+        # The same starts, and a last step half as long: a different axis too.
+        rows = synthetic_rows(years=(2013,))
+        write_pair(root, 3, 8, rows)
+        rows.loc[len(rows) - 1, "length"] = 0.0625
+        write_pair(root, 7, 8, rows)
+        with pytest.raises(ValueError, match="time_step_length differs from"):
+            load_drivers([3, 7], members=[8], root=root, sites_table=sites_table)
 
     def test_round_trips_through_zarr(self, root, sites_table, tmp_path):
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
@@ -534,19 +592,21 @@ class TestDriverFields:
 # ── the real files ────────────────────────────────────────────────────────────
 
 
+#: The drivers root the real-file cases read, the fixtures' own.
+REAL_ROOT = DRIVERS_ROOT
+
+
 def real_pairs() -> list[tuple[int, int]]:
-    if not REAL_ROOT.is_dir():
-        return []
-    pairs = []
-    for directory in REAL_ROOT.iterdir():
-        match = re.fullmatch(r"ERA5_(\d+)_(\d+)", directory.name)
-        if match:
-            pairs.append((int(match.group(1)), int(match.group(2))))
-    return sorted(pairs)
+    """The pairs of :data:`LOCAL_DRIVER_PAIRS` that have a directory here."""
+    return [
+        (site, member)
+        for site, member in LOCAL_DRIVER_PAIRS
+        if (REAL_ROOT / f"ERA5_{site}_{member}").is_dir()
+    ]
 
 
 needs_real_files = pytest.mark.skipif(
-    not real_pairs(), reason="data/raw/drivers/ is not present in this checkout"
+    not real_pairs(), reason="the local driver files are not present in this checkout"
 )
 needs_site_table = pytest.mark.skipif(
     not default_sites_path().exists(), reason="processed/sites/sites.csv is not present"
@@ -567,8 +627,12 @@ class TestRealFiles:
     @needs_site_table
     def test_the_local_files_do_not_load(self):
         sites = sorted({site for site, _ in real_pairs()})
+        members = sorted({member for _, member in real_pairs()})
         with pytest.raises(ValueError, match="pySIPNET refused the file"):
-            load_drivers(sites, root=REAL_ROOT, sites_table=load_sites(), allow_missing=True)
+            load_drivers(
+                sites, members=members, root=REAL_ROOT, sites_table=load_sites(),
+                allow_missing=True,
+            )
 
     def test_with_regular_labels_the_local_files_load(self, real_drivers):
         present = real_drivers[DRIVER_PRESENT]

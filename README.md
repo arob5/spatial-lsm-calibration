@@ -158,7 +158,9 @@ python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_s
 `.clim` file pass the reader's checks?* It applies
 `sipnet_calibration.drivers.read_driver_file` -- pySIPNET's reader and
 validation, and the loader's own value check -- to each file, so it needs the
-project environment. There are around 80,000 files at roughly a tenth of a
+project environment. pySIPNET refuses the ERA5 files as generated
+(`data/README.md` Note 15), so until they are corrected it reports that
+refusal for each file and nothing about their values. There are around 80,000 files at roughly a tenth of a
 second each, which is what `--jobs` is for.
 
 The initial conditions have no survey script, because the script that makes
@@ -208,7 +210,7 @@ src/sipnet_calibration/
   projection.py           # SITE_PROJECTION and the projected coordinates
   constraints.py          # one spec per raw constraint file; load_constraint()
   initial_conditions/     # the PEcAn IC ensemble, one module per artifact
-  drivers.py              # load_drivers() over the raw .clim files, read by pySIPNET
+  drivers.py              # load_drivers(): the raw .clim files, read by pySIPNET
   parameter_vector.py     # ParameterVector: the calibration vector, its prior, and
                           # Flat / Fields / SIPNET table conversions
   fields.py               # canonical field convention; SIPNET output adapters

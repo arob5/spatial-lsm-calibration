@@ -95,8 +95,8 @@ Operational rules that follow from the data and are easy to get wrong in code:
   decoding on: the `time` units are an unparseable template (README note 5).
   Use `initial_conditions.read_source_file`, or `decode_times=False` with
   `engine="scipy"`. Everything downstream reads the tracked converted file.
-- Never build a timestamp from a `.clim` or SIPNET-output row label. The time
-  axis is pySIPNET's (`ClimateDrivers.xarray`, `SIPNETOutput`), and driver and
+- Never build a timestamp yourself from a `.clim` or SIPNET-output row label.
+  The time axis is pySIPNET's (`ClimateDrivers.xarray`, `SIPNETOutput`), and driver and
   model fields both carry it. The local ERA5 drivers' hour column drifts
   (README Note 15, issue #9), so pySIPNET refuses them until they are
   corrected; the tests read them through `tests/conftest.py`'s

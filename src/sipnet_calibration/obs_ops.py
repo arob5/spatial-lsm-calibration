@@ -58,11 +58,11 @@ daily-mean-of-quantile, and which one is wanted is a modeling choice.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, get_args
 
 import numpy as np
 import xarray as xr
-from pysipnet.dataset import TIME_ZONE_UNDECLARED, assemble_time_coords
+from pysipnet.dataset import TIME_DIMENSION, TIME_ZONE_UNDECLARED, assemble_time_coords
 from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.resample import resample as pysipnet_resample
 from pysipnet.variables import (
@@ -70,6 +70,7 @@ from pysipnet.variables import (
     RESAMPLED_KIND,
     RESAMPLING_METHODS_FOR_KIND,
     TIME_REFERENCE_FOR_KIND,
+    ResamplingMethod,
     VariableKind,
     resolve_climate_variable,
     resolve_output_variable,
@@ -85,8 +86,8 @@ __all__ = [
     "aggregate_time",
 ]
 
-#: The dimension timesteps are combined along.
-TIME_DIM = "time"
+#: The dimension timesteps are combined along, pySIPNET's.
+TIME_DIM = TIME_DIMENSION
 
 #: pySIPNET's coordinates for the interval a row covers. ``time`` is its end,
 #: :data:`START_COORD` its start and :data:`LENGTH_COORD` its declared
@@ -97,7 +98,7 @@ START_COORD = "time_step_start"
 LENGTH_COORD = "time_step_length"
 
 #: The ways consecutive steps may be combined, as pySIPNET names them.
-RESAMPLING_METHODS: tuple[str, ...] = ("sum", "mean", "last")
+RESAMPLING_METHODS: tuple[str, ...] = get_args(ResamplingMethod)
 
 
 def _kind_preserving_methods() -> dict[VariableKind, str]:
@@ -162,10 +163,10 @@ def aggregate_time(
         comparing the two. A field without them -- an observation, say -- gets
         calendar cell edges and **carries nothing about cell coverage**, so the
         first and last cells of such a record are partial with nothing to say
-        so. For an extensive variable that is a
-        fraction of a period reported in the units of a whole one; until this
-        is settled (see the Notes) a caller comparing such daily totals against
-        anything should drop the boundary cells itself.
+        so. For an extensive variable that is a fraction of a period reported
+        in the units of a whole one; until this is settled (see the Notes) a
+        caller comparing such daily totals against anything should drop the
+        boundary cells itself.
 
         ``time`` keeps the attributes that are still true of it and loses
         :data:`STALE_ON_A_COARSER_STEP`, which describe the step it had before.

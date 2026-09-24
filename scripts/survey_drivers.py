@@ -45,7 +45,10 @@ Notes
 -----
 Runs under the project environment rather than bare Python: the whole point is
 to apply the reader's own checks, so it imports them. A file pySIPNET refuses
-is read no further, so the value statistics cover only the files it accepts. Parsing costs about a
+is read no further, so the value statistics cover only the files it accepts.
+pySIPNET refuses the ERA5 files as generated for their drifting hour column
+(``data/README.md`` Note 15), so until they are corrected the report on them
+is the refusal alone. Parsing costs about a
 tenth of a second per file and there are 80,000, so a serial run is about two
 hours; ``--jobs`` parallelizes over files.
 
