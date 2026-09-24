@@ -48,10 +48,12 @@ A **canonical field** is an ``xarray.DataArray`` holding one variable, with
 Which dimensions are present depends on the quantity. A single deterministic
 run is ``(time,)``, an initial condition ensemble is ``(member, site)``, and
 the gap-filled NEE observations are ``(member, site, time)``. Calibration
-parameters are ``(member, site)``:
-:meth:`sipnet_calibration.parameter_vector.ParameterVector.fields` returns one
-canonical field per scalar component of the calibration vector, gathered into
-a ``Dataset`` because every one of them shares ``(member, site)``.
+parameters are ``(member, site)`` for an ensemble and ``(site,)`` for one
+value: :meth:`sipnet_calibration.parameter_vector.ParameterVector.fields`
+returns one per scalar component as a ``Dataset``, the one exception to the
+rule below, since every one of them shares those dims. Their names are
+``<parameter>`` or ``<parameter>.<component>``, the calibration vector's own,
+not registry names.
 
 One array holds one variable, and variables are not combined into a
 ``Dataset``: they do not share a time axis, NEE being 3-hourly, the constraints
