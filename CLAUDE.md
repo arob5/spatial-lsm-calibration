@@ -85,10 +85,9 @@ Facts specific to this working copy, which the README deliberately does not carr
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
   grounds that every arm64 wheel targets macOS 14 or newer; the machine has
   since been upgraded past that, and `pyproj` is now a dependency. `cartopy`
-  still has no wheel for the venv's Python — its arm64 wheels stop at cp313 and
-  the venv is on 3.14 — which is a Python-version problem rather than an OS one,
-  and `requires-python` does not exclude it. No R spatial package is
-  installable.
+  also installs now (0.26.0 ships a cp314 arm64 wheel) but is deliberately not
+  a dependency: the maps draw on plain `Axes` over a vendored basemap. No R
+  spatial package is installable.
 
 Operational rules that follow from the data and are easy to get wrong in code:
 
@@ -390,7 +389,8 @@ reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
 `parameter_vector.py` and `site_labels.py` are implemented, `obs_ops.py` has
 `sipnet_time_index` and `aggregate_time`, `fields.py` has the model-output
-adapters, and the other modules carry the contract each is to satisfy.
+adapters, the plotting package has series, maps and grids, and the other
+modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
 reader and checks together.
@@ -423,7 +423,7 @@ src/sipnet_calibration/
   site_labels.py          # SiteLabelsSpec + SITE_LABELS, one per raw file; a
                           # site-labels product is site_id -> class, one product
                           # per source; read_raw(), build_site_labels(),
-                          # load_site_labels()
+                          # load_site_labels(), site_labels_field() -> CF flags
   parameter_vector.py     # ParameterVector: a named random vector over sites, built
                           # from CalibrationParameters (TFP prior in natural space,
                           # varies_by, SIPNETMap) and FixedParameters; select(),
@@ -445,20 +445,26 @@ src/sipnet_calibration/
     registry.py           # VARIABLES
     primitives.py         # L1: (ax, plain numpy, **style) -> artist
     series.py             # L2 time series panels
-    maps.py               # L2 spatial panels + SpatialRenderer implementations
-    facet.py              # L3 the one generic facet function
+    maps.py               # L2 plot_map (points/cells/triangles renderers,
+                          # rasters, classes), member_summary, animate_map
+    basemap.py            # coastlines/borders/graticule on projected Axes
+    basemap_data/         # the built Natural Earth basemap, tracked
+    facet.py              # L3 build_plot_grid + by_site/by_variable and the
+                          # map grids: plot_map_grid/_by/_quantiles
     diagnostics.py        # L5 EKI history, marginals, coverage
-scripts/                  # ingest: data/raw/ -> data/processed/
+scripts/                  # ingest: data/raw/ -> data/processed/; and
+                          # build_basemap.py: raw/natural_earth -> basemap_data
   survey_*.py             # NOT the pipeline: answer a question about raw data
                           # and write nothing under data/. The phenology and
                           # soil texture ones also assert what data/README.md
                           # records and exit non-zero when it no longer holds.
   raw_sources/            # NOT the pipeline: code that *makes* a tracked raw
-                          # input. SCC-only, run once.
+                          # input, run once. SCC-only except the Natural
+                          # Earth download.
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
 data/raw/                 # never edited; raw/sites/, raw/constraints/,
-                          # raw/initial_conditions/, raw/site_labels/ and
-                          # raw/covariates/ are tracked
+                          # raw/initial_conditions/, raw/site_labels/,
+                          # raw/covariates/ and raw/natural_earth/ are tracked
 data/processed/           # ingest output == canonical plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
 tests/
@@ -536,10 +542,19 @@ plotting code. The load-bearing rules:
 - Style comes from the `VARIABLES` registry and `ROLES` palette, not per-call
   keywords. `center=0.0` for signed fluxes such as NEE is correctness, not
   cosmetics.
-- Spatial rendering goes through the `SpatialRenderer` protocol (default
-  `tripcolor` on the Delaunay triangulation, masking long edges; GP renderer
-  later). Sites are 8000 **irregular points** spanning 7-82 deg N, so a real
-  projection is required and CONUS-only assumptions are wrong.
+- **Maps never interpolate unless asked.** Site values go through a
+  `SiteRenderer`: `Points` (the default) and `Cells` (nearest site within a
+  fixed radius, blank beyond it) draw only sites' own values, so a sparse set
+  looks sparse; `Triangles` interpolates and is opt-in, continuous only. The
+  radius is fixed, never scaled to site spacing, which would be interpolation
+  by another name. `plot_map` refuses a `member` or `time` dim rather than
+  reducing it: use `member_summary`, `plot_map_by`, `plot_map_quantiles` or
+  `animate_map`. A GP is not fitted in plotting; its predictions are a
+  `(lat, lon)` raster or site values, mapped like any field. Categorical
+  fields are CF `flag_values`/`flag_meanings`, colored by class position so a
+  class keeps its color across figures. Sites are 8000 **irregular points**
+  spanning 7-82 deg N, so a real projection is required and CONUS-only
+  assumptions are wrong.
 - **The display projection is settled**: a Lambert Azimuthal Equal Area
   centered at 50 N, 100 W on WGS 84, held as `SITE_PROJECTION` in
   `sipnet_calibration.projection`, which provides `forward()`,
@@ -560,9 +575,11 @@ plotting code. The load-bearing rules:
   formula. `Projection.factors()` exposes PROJ's own distortion measures,
   which is how a caller converts the long-edge mask threshold between a
   projected length and a ground distance, and how it learns that projected
-  north rotates by about 150 degrees across the domain. `cartopy` is still
-  absent: its arm64 wheels stop at cp313 while the venv is on 3.14. What
-  `plotting/maps.py` waits on is the vendored basemap.
+  north rotates by about 150 degrees across the domain. Maps are plain `Axes`
+  in projected meters, with limits from `projected_bounds`, never cartopy's
+  `set_extent`, which gives a badly wrong frame on this projection. The
+  basemap is Natural Earth 1:50m, clipped to 100 degrees of arc around the
+  center (`Projection.angular_distance`) so nothing nears the antipode.
 - `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
   `site`. PFT is **not** site metadata and is not a column of the site table:
   which site labels to use is an experimental choice, so site labels are their

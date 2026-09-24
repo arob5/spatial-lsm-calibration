@@ -69,6 +69,10 @@ Functions
 :func:`load_site_labels`
     Read one processed site-labels product and check it against its spec.
 
+:func:`site_labels_field`
+    The same product as a ``(site,)`` array of CF flag codes with ``lon`` and
+    ``lat``, the form the map plotting layer draws.
+
 :func:`read_raw`
     Parse a product's raw file exactly, in its source column names.
 
@@ -151,9 +155,10 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from sipnet_calibration import conventions
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
+from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, load_sites
 
 __all__ = [
     "LABEL_COLUMN",
@@ -171,6 +176,7 @@ __all__ = [
     "load_site_labels",
     "read_raw",
     "resolve_site_labels",
+    "site_labels_field",
     "site_labels_path",
 ]
 
@@ -600,6 +606,68 @@ def load_site_labels(
     )
 
 
+def site_labels_field(
+    site_labels: str | SiteLabelsSpec,
+    *,
+    sites: pd.DataFrame | None = None,
+    path: Path | str | None = None,
+) -> xr.DataArray:
+    """A site-labels product as a categorical field on ``site``.
+
+    Parameters
+    ----------
+    site_labels:
+        A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
+    sites:
+        The site table, for ``lon``/``lat``. Defaults to
+        :func:`sipnet_calibration.sites.load_sites`.
+    path:
+        The product to read. Defaults to :func:`site_labels_path`.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``int8`` class codes on ``site`` (``int32``, ascending), one per labeled
+        site, with ``lon`` and ``lat`` on ``site``. The attributes follow CF's
+        convention for coded classes: ``flag_values`` is ``0 .. k-1`` and
+        ``flag_meanings`` the spec's class names, space-separated, in the spec's
+        order and all of them whether or not every class is used. There are no
+        ``units``. ``long_name`` names the label kind and the product, and the
+        array's name is the product's.
+
+    Raises
+    ------
+    ValueError
+        If a labeled site is not in the site table, or a class name contains
+        whitespace, which a CF flag meaning cannot.
+    """
+    spec = (
+        site_labels
+        if isinstance(site_labels, SiteLabelsSpec)
+        else resolve_site_labels(site_labels)
+    )
+    labels = load_site_labels(spec, path)
+    sites = load_sites() if sites is None else sites
+    _check_labels_are_flag_meanings(spec)
+    located = labels.merge(sites[["site_id", "lon", "lat"]], on=SITE_COLUMN, how="left")
+    _check_labeled_sites_are_in_the_site_table(located)
+    return xr.DataArray(
+        located[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
+        dims="site",
+        coords={
+            "site": ("site", located[SITE_COLUMN].to_numpy(np.int32), {"long_name": "Site identifier"}),
+            "lon": ("site", located["lon"].to_numpy(float), dict(_LON_ATTRS)),
+            "lat": ("site", located["lat"].to_numpy(float), dict(_LAT_ATTRS)),
+        },
+        attrs={
+            "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
+            "flag_values": np.arange(len(spec.labels), dtype=np.int8),
+            "flag_meanings": " ".join(spec.labels),
+        },
+        name=spec.name,
+    )
+
+
 def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFrame:
     """Parse a product's raw file exactly, in its source column names.
 
@@ -736,6 +804,10 @@ def describe(spec: SiteLabelsSpec) -> str:
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
+_LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
+_LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
+
+
 def _data_root() -> Path:
     return conventions.data_root()
 
@@ -790,4 +862,22 @@ def _check_labels_are_declared(label: pd.Series, spec: SiteLabelsSpec, source: o
         raise ValueError(
             f"{source}: holds classes {unknown} that {spec.name!r} does not declare. "
             f"Declared: {list(spec.labels)}. A new class is a spec change, not a new row."
+        )
+
+
+def _check_labels_are_flag_meanings(spec: SiteLabelsSpec) -> None:
+    spaced = [label for label in spec.labels if re.search(r"\s", label)]
+    if spaced:
+        raise ValueError(
+            f"class name(s) {spaced} of {spec.name!r} contain whitespace, which a CF "
+            "flag_meanings entry cannot; the categorical field cannot represent them"
+        )
+
+
+def _check_labeled_sites_are_in_the_site_table(located: pd.DataFrame) -> None:
+    unlocated = located.loc[located["lon"].isna(), SITE_COLUMN].tolist()
+    if unlocated:
+        raise ValueError(
+            f"site(s) {unlocated[:10]} are labeled but not in the site table, so they "
+            "have no lon/lat; the product and the table disagree about the pool"
         )

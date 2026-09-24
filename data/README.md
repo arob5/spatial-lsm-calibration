@@ -85,6 +85,9 @@ data/
     covariates/               per-site predictors, tracked in version control
       site_covariates_pft_assignment.csv
       provenance.md
+    natural_earth/            map basemap sources, tracked in version control
+      ne_50m_*.zip
+      provenance.md
     phenology/                MODIS leaf phenology
       leaf_phenology_8k.csv
       leaf_phenology_neon.csv
@@ -134,7 +137,11 @@ exists off the SCC; see [Initial conditions](#initial-conditions).
 `raw/site_labels/` and `raw/covariates/` hold the site labels and the per-site
 predictors, a few megabytes in all and, like the initial conditions, held
 nowhere else off the SCC; see [Site labels](#site-labels) and
-[Site covariates](#site-covariates). Everything else under `raw/`, including the
+[Site covariates](#site-covariates). `raw/natural_earth/` holds the Natural
+Earth archives the map basemap is built from; they are not project data, but
+tracking them makes the basemap rebuildable offline, and
+`raw/natural_earth/provenance.md` records where they came from. Everything else
+under `raw/`, including the
 much larger drivers, eddy-covariance files, phenology and soil texture files,
 lives on storage and is symlinked.
 
@@ -1248,7 +1255,7 @@ and the structural facts, and reports the rest.
 
 ### Making a raw input
 
-Two scripts are **not** part of the pipeline above and live apart from it, in
+Three scripts are **not** part of the pipeline above and live apart from it, in
 [`../scripts/raw_sources/`](../scripts/raw_sources): each *creates* a raw input
 rather than processing one. The initial conditions arrive as 800,000 per-member
 netCDFs that exist only on the SCC, so they are laid on `(site, member)` once,
@@ -1269,10 +1276,20 @@ the whole pool, and that **re-joining them reproduces the source cell for
 cell**, comparing as text so no float is reparsed. See
 [Site covariates](#site-covariates).
 
+`download_natural_earth.py` is the third, and the only one that runs off the
+SCC. It fetches the four Natural Earth 1:50m archives the map basemap is drawn
+from and refuses any whose md5 is not the one it records, since Natural Earth
+republishes a layer in place under the same URL. `scripts/build_basemap.py`
+then turns them into the clipped polylines the plotting layer ships with; that
+build is not ingest either, since its output lives in the package rather than
+under `processed/`.
+
 | Script | Reads | Writes |
 |---|---|---|
 | `raw_sources/convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
 | `raw_sources/split_site_pft_16class.py` | the producer's 60-column PFT table (SCC only) | `raw/site_labels/site_pft_16class.csv` and `raw/covariates/site_covariates_pft_assignment.csv`, both tracked |
+| `raw_sources/download_natural_earth.py` | `naciscdn.org`, Natural Earth's CDN | `raw/natural_earth/ne_50m_*.zip`, tracked |
+| `build_basemap.py` | `raw/natural_earth/ne_50m_*.zip` | `src/sipnet_calibration/plotting/basemap_data/natural_earth_50m.npz`, tracked |
 
 Conversions applied during ingest rather than downstream:
 

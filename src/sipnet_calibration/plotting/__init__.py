@@ -9,7 +9,8 @@ rather than in terms of matplotlib.
 ==================  ==================================================
 :mod:`primitives`   adds one element to an ``Axes``
 :mod:`series`       time series plots
-:mod:`maps`         spatial plots (not implemented)
+:mod:`maps`         maps of values or classes at sites, and of rasters
+:mod:`basemap`      the coastlines, boundaries and graticule under a map
 :mod:`facet`        grids of panels, and the figure around them
 :mod:`diagnostics`  inference diagnostics (not implemented)
 :mod:`style`        roles, colors and matplotlib settings
@@ -41,6 +42,17 @@ from sipnet_calibration.plotting.facet import (
     build_plot_grid,
     plot_by_site,
     plot_by_variable,
+    plot_map_by,
+    plot_map_grid,
+    plot_map_quantiles,
+)
+from sipnet_calibration.plotting.maps import (
+    Cells,
+    Points,
+    Triangles,
+    animate_map,
+    member_summary,
+    plot_map,
 )
 from sipnet_calibration.plotting.primitives import band, fan, line, points, spaghetti
 from sipnet_calibration.plotting.series import plot_time_series
@@ -56,6 +68,10 @@ from sipnet_calibration.plotting.style import (
 
 __all__ = [
     "BAND_ALPHAS",
+    "Cells",
+    "Points",
+    "Triangles",
+    "animate_map",
     "CURVE_COLORS",
     "RC_PARAMS",
     "ROLES",
@@ -64,8 +80,13 @@ __all__ = [
     "build_plot_grid",
     "fan",
     "line",
+    "member_summary",
     "plot_by_site",
     "plot_by_variable",
+    "plot_map",
+    "plot_map_by",
+    "plot_map_grid",
+    "plot_map_quantiles",
     "plot_time_series",
     "points",
     "role_style",

@@ -5,10 +5,11 @@ main.py
 .DS_Store
 
 # Raw inputs live on storage and are not distributed with the repository; processed
-# data is regenerable from them. Five exceptions are tracked, none of them a
+# data is regenerable from them. Six exceptions are tracked, none of them a
 # pipeline output and all of them things the repo cannot function without: the
 # site shapefile, the constraint observations, the converted initial condition
-# ensemble, the site labels, and the site covariates. The constraint files
+# ensemble, the site labels, the site covariates, and the Natural Earth archives
+# the map basemap is built from. The constraint files
 # are held in the repository rather than symlinked because the upstream copies
 # are edited and moved in place; see data/raw/constraints/provenance.md.
 data/raw/*
@@ -17,6 +18,7 @@ data/raw/*
 !data/raw/initial_conditions/
 !data/raw/site_labels/
 !data/raw/covariates/
+!data/raw/natural_earth/
 # Un-ignoring the directory un-ignores everything in it; the inputs that
 # still live on storage and are symlinked in are excluded again here. The
 # initial conditions are tracked as one converted file; PEcAn's 800,000-file

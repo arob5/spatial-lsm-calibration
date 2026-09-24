@@ -55,10 +55,10 @@ dependencies = [
     # 3.13 while this machine takes 3.8 on 3.14. All three were checked to
     # produce byte-identical output, PROJJSON schema version included.
     #
-    # cartopy is absent for an unrelated reason: its arm64 wheels stop at cp313
-    # while the development venv is on 3.14. Nothing in this project's metadata
-    # excludes it -- requires-python is >=3.12 -- so adopting it would mean
-    # adding an upper bound that does not exist today.
+    # cartopy is deliberately absent. Its wheels now cover 3.14 (0.26.0 ships
+    # cp314 arm64), but the maps are drawn on plain Axes in projected meters,
+    # with a basemap vendored from Natural Earth by scripts/build_basemap.py,
+    # so neither GeoAxes nor a run-time download of coastlines is needed.
     "pyproj>=3.7.1",
 ]
 
