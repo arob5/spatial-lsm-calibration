@@ -412,9 +412,11 @@ Columns follow the 14-column layout defined by [pySIPNET].
 | 14 | `soil_wetness` | | Legacy column, ignored by SIPNET; constant 0.6 |
 
 **Interpretation.** There is no datetime column; time is given by the `year`,
-`day` and `time` triple. The `time` column cannot be used as written (Note 15),
-so timestamps are assembled from `year`, `day` and the row's position within its
-day by `sipnet_calibration.obs_ops.sipnet_time_index`. The labels are UTC. For
+`day` and `time` triple, which SIPNET's format defines as the start of the
+step, and the time axis is pySIPNET's, built from those labels and `length`.
+The `time` column cannot be used as written (Note 15), so pySIPNET refuses
+these files, and `sipnet_calibration.drivers.load_drivers` with it, until they
+are corrected. The labels are UTC. For
 the accumulated columns a label marks the *end* of its three hours, not the
 start that SIPNET's format assumes, and the other forcing columns are
 instantaneous values at the label rather than means over the step (Note 16).
@@ -464,7 +466,8 @@ NALCR guide describes the forcing as hourly (Note 18).
 >
 > This is established from the generating code, the raw ERA5 files and ECMWF's
 > documentation, and it agrees with the diurnal PAR cycle (open question 16).
-> The driver reader still records `clock_status = "inferred"`.
+> The driver reader declares no clock: `time_zone` is `"undeclared"` unless a
+> caller passes one.
 
 > **Note 17.** `par` takes exactly two negative values, -1.926e-15 and
 > -1.374e-05, the latter in about 1350 rows per file, almost all between
@@ -1236,8 +1239,9 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 
 The drivers have no ingest script. SIPNET runs read the raw `.clim` files, so
 converting 80,000 of them into a store would produce a large copy the model
-never reads; `sipnet_calibration.drivers.load_drivers` parses the raw files for
-the sites a caller names and returns the canonical form directly. A cached
+never reads; `sipnet_calibration.drivers.load_drivers` reads the raw files for
+the sites a caller names, through pySIPNET, and returns the canonical form
+directly. A cached
 subset, where a workflow wants one, is the caller's `to_zarr`.
 
 No ingest needs R. Each constraint's raw file is described by a
@@ -1515,32 +1519,30 @@ something adjacent rather than confirmed by the producer; `units_provenance`
 says which, in a sentence. See open question 9.
 
 The **drivers** are served by `sipnet_calibration.drivers.load_drivers(sites,
-...)`, which parses the raw `.clim` files for the named sites and returns an
-`xarray.Dataset` with one `float64` variable per consumed column on
-`(member, site, time)`, `lon` and `lat` on `site`, and a `source_member_index`
-coordinate on `member` holding the 1-based index from the directory name. The
-`loc`, `length` and `soil_wetness` columns are asserted constant and not
-carried; `length` becomes the `timestep_days` attribute. The processed names
-follow the same convention as the constraints:
+...)`, which reads the raw `.clim` files for the named sites through pySIPNET's
+`ClimateDrivers` and returns an `xarray.Dataset` with one `float64` variable
+per value column on `(member, site, time)`, `lon` and `lat` on `site`, and a
+`source_member_index` coordinate on `member` holding the 1-based index from the
+directory name. The names, units, kinds and every other variable attribute are
+pySIPNET's climate registry's:
 
-| Source | Processed | Unit | Aggregation |
+| Source | Name | Unit | Aggregation |
 |---|---|---|---|
-| `tair` | `air_temperature` | deg C | mean |
-| `tsoil` | `soil_temperature` | deg C | mean |
-| `par` | `par` | mol m-2 | sum |
+| `tair` | `air_temperature` | degC | mean |
+| `tsoil` | `soil_temperature` | degC | mean |
+| `par` | `photosynthetically_active_radiation` | mol m-2 | sum |
 | `precip` | `precipitation` | mm | sum |
-| `vpd` | `vpd` | Pa | mean |
-| `vpd_soil` | `soil_vpd` | Pa | mean |
+| `vpd` | `vapor_pressure_deficit` | Pa | mean |
+| `vpd_soil` | `soil_vapor_pressure_deficit` | Pa | mean |
 | `vpress` | `vapor_pressure` | Pa | mean |
 | `wspd` | `wind_speed` | m s-1 | mean |
 
-Every variable carries `units_status = "format_documented"` with a provenance
-string: the units are what the `.clim` format documents and SIPNET assumes, not
-units the producer has confirmed. The `time` coordinate holds the nominal
-`year`/`day`/`3 x slot` instants and carries `time_zone = "UTC"`,
-`time_label = "interval_end"` and `clock_status = "inferred"`, per Note 16;
-keeping the nominal labels means a daily resample groups exactly the eight rows
-SIPNET itself calls one day. A requested `(site, member)` pair with no file is
+Every variable also carries a `units_provenance` sentence: the units are what
+the `.clim` format documents and SIPNET assumes, not units the producer has
+confirmed. The time coordinates are pySIPNET's, the same ones a SIPNET run on
+the file has for its output: `time` at the end of each step, with
+`time_step_start`, `time_step_length` and CF `time_bounds`, and `time_zone`
+`"undeclared"` unless the caller declares the clock. A requested `(site, member)` pair with no file is
 an error unless `allow_missing=True`, which fills it with `NaN` and adds a
 boolean `driver_present(member, site)`. The three local files are such a case:
 site 1 has members 1 and 2, site 27 has member 5.
@@ -1581,11 +1583,10 @@ The following conventions apply to every product.
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
   identifier is a non-dimension coordinate on `site`, absent where unknown.
 - `member` is a zero-based integer index, meaningful only within a single source.
-- Time is stored as a datetime index; SIPNET's `year`, `day` and `time` triple is
-  converted at the boundary by `sipnet_calibration.obs_ops.sipnet_time_index`,
-  which uses the `time` column only to identify a row's slot within its day
-  (Note 15). This applies to SIPNET output as well as to the drivers, since
-  SIPNET copies the column into its output verbatim.
+- Time is stored as a datetime index. For the drivers and SIPNET output it is
+  pySIPNET's axis, built by pySIPNET from SIPNET's `year`, `day` and `time`
+  labels and the drivers' step lengths, so a run and its drivers share one
+  axis; nothing here rebuilds it.
 - Each product is stored at the temporal resolution its source arrives in.
   Aggregation is the observation operator's business, specified per variable at
   model-specification time, so that different constraints can be used at
@@ -1807,12 +1808,10 @@ shortwave to 3e-5 W m-2, and precipitation and 2 m temperature likewise. A
 shift of one row in either direction does not match. So the series is exactly
 3-hourly, and only its labels drift.
 
-Nothing in the project uses the column's value. `sipnet_time_index` takes the
-slot from `floor(time / 3)`, which is correct because the drift is never
-negative and never reaches a full step. The driver reader asserts the drift
-model per file, so that a regenerated file without it is noticed. What remains
-open is for the producer: whether the files will be regenerated with the
-corrected PEcAn.
+pySIPNET checks every file's labels against its declared step lengths and
+refuses these, so the driver reader does too; correcting the files is separate
+work. What remains open is for the producer: whether the files will be
+regenerated with the corrected PEcAn.
 
 **16. The driver clock and interval labels.** The two sites are 54 degrees
 of longitude apart, so a UTC clock requires the diurnal PAR cycle to shift by
@@ -1839,8 +1838,7 @@ decide between them.
 
 So Note 16 is established, not inferred. It rests on
 [ECMWF's ERA5 documentation](https://confluence.ecmwf.int/display/CKB/ERA5%3A+data+documentation)
-under "Mean rates/fluxes and accumulations", and on the generating code. The
-reader still records `clock_status = "inferred"`.
+under "Mean rates/fluxes and accumulations", and on the generating code.
 
 Two points remain, both modeling choices rather than questions for the producer:
 - SIPNET's format wants start-of-interval labels.

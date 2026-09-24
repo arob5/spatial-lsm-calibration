@@ -227,7 +227,7 @@ def axis_label(field: xr.DataArray) -> str:
     Returns
     -------
     str
-        For example ``"Mean air temperature over the timestep (deg C)"``.
+        For example ``"Air temperature (degC)"``.
 
     Raises
     ------

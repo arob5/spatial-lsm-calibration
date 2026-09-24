@@ -95,9 +95,12 @@ Operational rules that follow from the data and are easy to get wrong in code:
   decoding on: the `time` units are an unparseable template (README note 5).
   Use `initial_conditions.read_source_file`, or `decode_times=False` with
   `engine="scipy"`. Everything downstream reads the tracked converted file.
-- Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
-  drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
-  takes only the slot from it.
+- Never build a timestamp from a `.clim` or SIPNET-output row label. The time
+  axis is pySIPNET's (`ClimateDrivers.xarray`, `SIPNETOutput`), and driver and
+  model fields both carry it. The local ERA5 drivers' hour column drifts
+  (README Note 15, issue #9), so pySIPNET refuses them until they are
+  corrected; the tests read them through `tests/conftest.py`'s
+  `regular_drivers_root`, which rewrites only that column.
 - Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
@@ -249,8 +252,7 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   the product stores, so a netCDF describes itself and there is no separate
   processed schema to keep in step. `ConstraintSpec` is the worked example.
 - **A unit that is inferred is recorded as inferred**, in a `units_provenance`
-  sentence on the spec and the product, not as a status enum. The drivers
-  predate this rule and still carry `units_status` and `clock_status`.
+  sentence on the spec and the product, not as a status enum.
 
 ### Products and their readers
 
@@ -388,7 +390,7 @@ The layout below is the **agreed target**, specified in
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
 `parameter_vector.py` and `site_labels.py` are implemented, `obs_ops.py` has
-`sipnet_time_index` and `aggregate_time`, `fields.py` has the model-output
+`aggregate_time`, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
@@ -418,8 +420,9 @@ src/sipnet_calibration/
     processed.py          # build_initial_conditions(), load_initial_conditions(),
                           # netcdf_encoding(), initial_condition_fields()
     sipnet_parameters.py  # to_pysipnet_initial_conditions() and its table form
-  drivers.py              # driver schema, load_drivers() reading raw .clim files
-                          # into (member, site, time); no processed file exists
+  drivers.py              # load_drivers(): raw .clim files read by pySIPNET's
+                          # ClimateDrivers, stacked into (member, site, time) on
+                          # pySIPNET's axis; no processed file exists
   site_labels.py          # SiteLabelsSpec + SITE_LABELS, one per raw file; a
                           # site-labels product is site_id -> class, one product
                           # per source; read_raw(), build_site_labels(),
@@ -437,8 +440,8 @@ src/sipnet_calibration/
                           # stack_sipnet_outputs() over SIPNETOutput.select,
                           # site_lookup(); validate_field() and the adapters
                           # for the other sources (issue #6)
-  obs_ops.py              # sipnet_time_index, aggregate_time — shared with the
-                          # likelihood; obs_index (issue #6)
+  obs_ops.py              # aggregate_time — shared with the likelihood;
+                          # obs_index (issue #6)
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -517,13 +520,16 @@ plotting code. The load-bearing rules:
   the default is there so that omission cannot reach that error, and `how=` is
   for asking deliberately for something else, such as the time-weighted mean
   of a pool. An invalid pair is refused in pySIPNET's own words.
-- **A model field carries pySIPNET's names, units and kinds unchanged.**
-  `fields.from_sipnet_output` adds `site`, `member` and `lon`/`lat`; the
-  registry names are already `lower_case_with_underscores`, so they are the
-  processed names. Its time axis is pySIPNET's: `time` at the step end, with
+- **Model and driver fields carry pySIPNET's names, units, kinds and time axis
+  unchanged.** `fields.from_sipnet_output` adds `site`, `member` and
+  `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the
+  drivers, read through `ClimateDrivers`. The registry names are already
+  `lower_case_with_underscores`, so they are the processed names. Both keep
+  `fields.TIME_COORDS`, pySIPNET's axis: `time` at the step end, with
   `time_step_start` beside it, so the interval a value covers is
   `[time_step_start, time]` — the pair pySIPNET writes as its CF `time_bounds`
-  variable. `time_bounds` itself cannot ride on a field, its `bounds`
+  variable — and a run's output and the drivers it ran on share one axis by
+  construction. `time_bounds` itself cannot ride on a field, its `bounds`
   dimension being no field dimension, so it and the `time` attribute naming it
   are dropped, along with SIPNET's `year`/`day_of_year`/`hour_of_day` row
   labels, which `time_step_start` already is.
@@ -604,7 +610,16 @@ plotting code. The load-bearing rules:
 - `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`,
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
-- `ClimateDrivers` has no `slice()` or `to_path()` — slice by reading/writing raw text lines
+- **`ClimateDrivers` owns the `.clim` format** (PRs #43, #45). It reads either layout, detected
+  from the file (there is no `n_columns` argument for a file), validates once on load, and
+  refuses labels that disagree with the declared step lengths: an overlap, or a drift from
+  the running sum of lengths beyond 5 minutes. `head(n)` gives a prefix; `to_file(path)`
+  writes one. `time_zone="UTC"` or `"UTC±HH:MM"` declares the labels' clock as metadata only,
+  and is `"undeclared"` otherwise: SIPNET has no clock of its own.
+- **An output's time axis is its drivers'** (PR #43): the runner passes `climate=` to
+  `SIPNETOutput`, and `SIPNETOutput.from_dataframe(df, climate=...)` does the same by hand.
+  `time_step_length=` is gone. Without drivers the axis falls back to the printed labels,
+  which SIPNET rounds to 0.01 h; the Dataset's `time_axis_source` says which was used.
 - **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and
   real SIPNET output are available with no pySIPNET checkout: `niwot_reference_output()`
   (a `SIPNETOutput`, no binary needed), `niwot_reference_climate()`,

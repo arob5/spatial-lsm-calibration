@@ -83,9 +83,10 @@ Identifiers
     first.
 ``time``
     Timestamps, whose meaning is the source's and is recorded in the
-    coordinate's attributes rather than assumed: the drivers label the end of
-    each interval, and each constraint product carries its source's own label,
-    with CF ``time_bounds`` where the support is documented.
+    coordinate's attributes rather than assumed. Model output and the drivers
+    carry pySIPNET's axis, the end of each step (see below); each constraint
+    product carries its source's own label, with CF ``time_bounds`` where the
+    support is documented.
 
 Model output
 ------------
@@ -97,7 +98,10 @@ here. pySIPNET's registry names are already
 so they are the processed names; aliases (``"nee"``) are accepted on the way
 in and resolved to them.
 
-Each field keeps three of pySIPNET's time coordinates:
+Each field keeps three of pySIPNET's time coordinates, :data:`TIME_COORDS`,
+the same three a driver field from
+:func:`sipnet_calibration.drivers.driver_fields` keeps -- a run's output and
+its drivers are on one axis:
 
 ===================== ===================================================
 ``time``              end of the timestep, the CF upper bound
@@ -153,23 +157,6 @@ adapter goes through ``select`` and never touches ``.xarray`` or ``.pandas``.
 already knows which ``(site, member)`` pairs it left out; those cells read
 ``NaN``. This differs from :func:`sipnet_calibration.drivers.load_drivers`,
 which discovers absence on disk and therefore has to report it.
-
-**The ERA5 drivers put a day's last step just past midnight.** SIPNET copies
-its climate file's ``time`` column into its output verbatim, and in the ERA5
-``.clim`` files that column drifts late within a year -- by seconds a step,
-which is issue #9 seen from close up. pySIPNET builds its axis from that
-column, snapping each step's end onto the next step's start, so a day's eighth
-step ends a few seconds after midnight and a ``"1D"`` aggregation puts it in
-the next day. Each *interior* daily cell is still eight consecutive steps
-covering twenty-four hours; it is the window that is a step later than the one
-SIPNET's own ``day`` column marks. The cells at the two ends of a record hold
-whatever is left over, which for an extensive variable is a fraction of a day
-reported in the units of a whole one. What that costs a daily comparison against an
-observation has not been settled. It is not something an adapter can decide:
-rebuilding the axis from
-:func:`sipnet_calibration.obs_ops.sipnet_time_index`, which floors the hour
-onto its slot, would align the cells with SIPNET's days and put this project's
-labels at odds with pySIPNET's for the same run.
 
 One trap belongs to an adapter still to be written here.
 ``from_eki_predictions`` will unstack a ``(J, N)`` block with the
@@ -230,7 +217,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "CANONICAL_DIMS",
     "MEMBER_DIM",
-    "MODEL_TIME_COORDS",
+    "TIME_COORDS",
     "SITE_DIM",
     "TIME_DIM",
     "from_sipnet_output",
@@ -245,9 +232,10 @@ TIME_DIM = "time"
 #: The dimensions a canonical field may have, in canonical order.
 CANONICAL_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE_DIM, TIME_DIM)
 
-#: pySIPNET time coordinates a model field keeps. ``time`` is the end of the
-#: step and ``time_step_start`` its start, so the two are the CF bounds pair.
-MODEL_TIME_COORDS: tuple[str, ...] = (TIME_DIM, "time_step_start", "time_step_length")
+#: pySIPNET's time coordinates, which a model field and a driver field both
+#: keep. ``time`` is the end of the step and ``time_step_start`` its start, so
+#: the two are the CF bounds pair.
+TIME_COORDS: tuple[str, ...] = (TIME_DIM, "time_step_start", "time_step_length")
 
 _LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
 _LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
@@ -312,7 +300,7 @@ def from_sipnet_output(
     dict
         Keyed by pySIPNET registry name, in the order requested. Each value is
         a ``DataArray`` with dimension ``time``, the ``time`` coordinates of
-        :data:`MODEL_TIME_COORDS`, scalar ``site``/``lon``/``lat`` and
+        :data:`TIME_COORDS`, scalar ``site``/``lon``/``lat`` and
         ``member`` coordinates for the labels that were given, and pySIPNET's
         variable attributes unchanged.
 
@@ -355,7 +343,7 @@ def from_sipnet_output(
     fields: dict[str, xr.DataArray] = {}
     for name in names:
         field = dataset[name]
-        drop = [str(c) for c in field.coords if str(c) not in MODEL_TIME_COORDS]
+        drop = [str(c) for c in field.coords if str(c) not in TIME_COORDS]
         if drop:
             field = field.drop_vars(drop)
         if labels:
@@ -390,7 +378,7 @@ def stack_sipnet_outputs(
         Keyed by pySIPNET registry name, in the order requested. Each value is
         a ``DataArray`` with dims ``(member, site, time)``, ascending in
         ``member`` and ``site``, with ``lon``/``lat`` on ``site`` and the
-        ``time`` coordinates of :data:`MODEL_TIME_COORDS`.
+        ``time`` coordinates of :data:`TIME_COORDS`.
 
     Raises
     ------

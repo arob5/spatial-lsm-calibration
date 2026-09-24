@@ -155,8 +155,9 @@ python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_s
 ```
 
 *Does the driver directory template cover every site and member, and does every
-`.clim` file pass the reader's own checks?* It applies
-`sipnet_calibration.drivers.read_clim_file` to each file, so it needs the
+`.clim` file pass the reader's checks?* It applies
+`sipnet_calibration.drivers.read_driver_file` -- pySIPNET's reader and
+validation, and the loader's own value check -- to each file, so it needs the
 project environment. There are around 80,000 files at roughly a tenth of a
 second each, which is what `--jobs` is for.
 
@@ -207,11 +208,11 @@ src/sipnet_calibration/
   projection.py           # SITE_PROJECTION and the projected coordinates
   constraints.py          # one spec per raw constraint file; load_constraint()
   initial_conditions/     # the PEcAn IC ensemble, one module per artifact
-  drivers.py              # load_drivers() over the raw .clim files
+  drivers.py              # load_drivers() over the raw .clim files, read by pySIPNET
   parameter_vector.py     # ParameterVector: the calibration vector, its prior, and
                           # Flat / Fields / SIPNET table conversions
   fields.py               # canonical field convention; SIPNET output adapters
-  obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
+  obs_ops.py              # aggregate_time — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)

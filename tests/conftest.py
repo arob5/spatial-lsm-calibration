@@ -13,8 +13,11 @@ The synthetic fixtures build canonical fields at each subset of the
 ``units``/``long_name`` in ``attrs``.
 
 The real-data fixtures read the driver files and the constraint products
-present in this working copy, and skip when they are not there. The SIPNET
-output fixtures read the Niwot reference data pySIPNET ships inside the
+present in this working copy, and skip when they are not there. The local
+driver files carry the drifting hour column of ``data/README.md`` Note 15,
+which pySIPNET refuses, so the driver fixtures read them with that one column
+rewritten to the regular 3-hourly labels the values sit on; every value is the
+file's own. The SIPNET output fixtures read the Niwot reference data pySIPNET ships inside the
 package, so they need neither a pySIPNET checkout nor a binary; the one that
 runs the model skips without a binary, which ``pysipnet install-sipnet``
 provides.
@@ -34,14 +37,16 @@ import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 import xarray as xr  # noqa: E402
 
+from pathlib import Path  # noqa: E402
+
 from sipnet_calibration import conventions  # noqa: E402
 
-#: The variable the synthetic fields stand in for, with the attributes a real
-#: driver field carries.
+#: The variable the synthetic fields stand in for, with the units and long
+#: name a real driver field carries from pySIPNET's climate registry.
 SYNTHETIC_NAME = "air_temperature"
 SYNTHETIC_ATTRS = {
-    "units": "deg C",
-    "long_name": "Mean air temperature over the timestep",
+    "units": "degC",
+    "long_name": "Air temperature",
 }
 
 #: Site ids and their coordinates, matching the two sites whose driver files
@@ -159,30 +164,89 @@ def field_with_gaps() -> xr.DataArray:
     return field.copy(data=values)
 
 
-@pytest.fixture(scope="session")
-def real_driver_field() -> xr.DataArray:
-    """``air_temperature`` from the driver files present in this working copy.
+#: The local driver files, under the data root. Through
+#: :func:`~sipnet_calibration.conventions.data_root`, so that a run pointed at
+#: another tree with ``$SIPNET_CALIBRATION_DATA`` moves this with everything
+#: else rather than half-relocating.
+DRIVERS_ROOT = conventions.data_root() / "raw" / "drivers"
 
-    Sites 1 and 27 by members 1, 2 and 5. Only three of the six pairs have a
-    file, so the field is half missing and ``driver_present`` says where.
+
+def with_regular_hour_column(text: str) -> str:
+    """A ``.clim`` file's text with its hour column set to ``3 * slot``.
+
+    The rows are 3-hourly, eight to a day and in order (``data/README.md``
+    open question 15), so the row at position ``k`` of a day starts at hour
+    ``3 * (k % 8)``. Only that column changes; every other field is kept as
+    written.
     """
-    drivers = pytest.importorskip("sipnet_calibration.drivers")
-    try:
-        dataset = drivers.load_drivers([1, 27], members=[1, 2, 5], allow_missing=True)
-    except (FileNotFoundError, ValueError) as error:
-        pytest.skip(f"driver files not available in this working copy: {error}")
-    return drivers.driver_fields(dataset)["air_temperature"]
+    lines = []
+    for k, line in enumerate(text.splitlines()):
+        fields = line.split("\t")
+        fields[3] = f"{3 * (k % 8):9.6f}"
+        lines.append("\t".join(fields))
+    return "\n".join(lines) + "\n"
 
 
 @pytest.fixture(scope="session")
-def real_driver_presence() -> xr.DataArray:
-    """``driver_present`` for the same request as :func:`real_driver_field`."""
-    drivers = pytest.importorskip("sipnet_calibration.drivers")
+def regular_drivers_root(tmp_path_factory) -> Path:
+    """The local driver files, laid out as the originals, with regular hour labels.
+
+    Each ``ERA5_<site>_<member>/*.clim`` under :data:`DRIVERS_ROOT` is copied
+    through :func:`with_regular_hour_column`. Skipped when no driver files are
+    present.
+    """
+    files = sorted(DRIVERS_ROOT.glob("ERA5_*/ERA5.*.clim")) if DRIVERS_ROOT.is_dir() else []
+    if not files:
+        pytest.skip(f"no driver files in this working copy under {DRIVERS_ROOT}")
+    root = tmp_path_factory.mktemp("regular-drivers")
+    for path in files:
+        target = root / path.parent.name / path.name
+        target.parent.mkdir()
+        target.write_text(with_regular_hour_column(path.read_text()))
+    return root
+
+
+@pytest.fixture(scope="session")
+def real_drivers(regular_drivers_root) -> xr.Dataset:
+    """The local drivers for sites 1 and 27 by members 1, 2 and 5.
+
+    Only three of the six pairs have a file, so the Dataset is half missing
+    and ``driver_present`` says where.
+    """
+    from sipnet_calibration import drivers
+    from sipnet_calibration.sites import load_sites
+
     try:
-        dataset = drivers.load_drivers([1, 27], members=[1, 2, 5], allow_missing=True)
-    except (FileNotFoundError, ValueError) as error:
-        pytest.skip(f"driver files not available in this working copy: {error}")
-    return dataset[drivers.DRIVER_PRESENT]
+        sites = load_sites()
+    except FileNotFoundError as error:
+        pytest.skip(f"site table not available in this working copy: {error}")
+    with warnings.catch_warnings():
+        # The files hold exact zeros of vpd where SIPNET clamps, which pySIPNET
+        # warns about on read; a property of the files, not of any test.
+        warnings.simplefilter("ignore")
+        return drivers.load_drivers(
+            [1, 27],
+            members=[1, 2, 5],
+            root=regular_drivers_root,
+            sites_table=sites,
+            allow_missing=True,
+        )
+
+
+@pytest.fixture(scope="session")
+def real_driver_field(real_drivers) -> xr.DataArray:
+    """``air_temperature`` from :func:`real_drivers`."""
+    from sipnet_calibration.drivers import driver_fields
+
+    return driver_fields(real_drivers)["air_temperature"]
+
+
+@pytest.fixture(scope="session")
+def real_driver_presence(real_drivers) -> xr.DataArray:
+    """``driver_present`` for the same request as :func:`real_driver_field`."""
+    from sipnet_calibration.drivers import DRIVER_PRESENT
+
+    return real_drivers[DRIVER_PRESENT]
 
 
 @pytest.fixture(scope="session")
@@ -207,13 +271,9 @@ def real_constraint_fields() -> tuple[dict, dict]:
 # ── real SIPNET output ────────────────────────────────────────────────────────
 
 
-#: The local driver file the 3-hourly tests run SIPNET on, if it is present.
-#: Through :func:`~sipnet_calibration.conventions.data_root`, so that a run
-#: pointed at another tree with ``$SIPNET_CALIBRATION_DATA`` moves this with
-#: everything else rather than half-relocating.
-SITE_1_DRIVERS = (
-    conventions.data_root() / "raw/drivers/ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim"
-)
+#: The local driver file the 3-hourly tests run SIPNET on, relative to a
+#: drivers root.
+SITE_1_DRIVERS = "ERA5_1_1/ERA5.1.2012-01-01.2024-12-31.clim"
 
 #: Whole days of it to run, at 8 steps per day.
 SITE_1_DAYS = 8
@@ -257,21 +317,23 @@ def niwot_output():
 
 
 @pytest.fixture(scope="session")
-def site_1_result(tmp_path_factory):
+def site_1_result(tmp_path_factory, regular_drivers_root):
     """A real SIPNET run of the Niwot parameters on this copy's 3-hourly site-1 drivers.
 
-    :data:`SITE_1_DAYS` whole days of ``ERA5_1_1``, which is the only 3-hourly
-    input here and so the only one that can show a daily total being eight
-    steps. Skipped where the driver file or a SIPNET binary is absent; the
-    binary is whatever :func:`pysipnet.build.find_binary` resolves, so
-    ``pysipnet install-sipnet`` is what makes this run.
+    :data:`SITE_1_DAYS` whole days of ``ERA5_1_1`` from
+    :func:`regular_drivers_root`, which is the only 3-hourly input here and so
+    the only one that can show a daily total being eight steps. Skipped where
+    the driver file or a SIPNET binary is absent; the binary is whatever
+    :func:`pysipnet.build.find_binary` resolves, so ``pysipnet install-sipnet``
+    is what makes this run.
     """
     from pysipnet.build import find_binary, missing_binary_message
-    from pysipnet.io.clim_io import read_clim_file
+    from pysipnet.climate import ClimateDrivers
     from pysipnet.parameters.model import ModelFlags
     from pysipnet.runner import SIPNETRunner
 
-    if not SITE_1_DRIVERS.is_file():
+    site_1_drivers = regular_drivers_root / SITE_1_DRIVERS
+    if not site_1_drivers.is_file():
         pytest.skip(
             f"site 1 drivers are not in this working copy ({SITE_1_DRIVERS}); "
             "copy or link the ERA5_1_1 directory from the SCC"
@@ -282,7 +344,7 @@ def site_1_result(tmp_path_factory):
     # Session-scoped, because the SIPNETResult holds the climate it ran on and
     # so outlives the fixture; pytest removes the directory afterwards.
     climate_path = tmp_path_factory.mktemp("site-1-drivers") / "sipnet.clim"
-    rows = SITE_1_DRIVERS.read_text().splitlines(keepends=True)[: 8 * SITE_1_DAYS]
+    rows = site_1_drivers.read_text().splitlines(keepends=True)[: 8 * SITE_1_DAYS]
     climate_path.write_text("".join(rows))
     with warnings.catch_warnings():
         # The site-1 record has exact zeros where SIPNET clamps, which pySIPNET
@@ -290,7 +352,7 @@ def site_1_result(tmp_path_factory):
         # Only the read is silenced: a warning about the run itself is the sort
         # pySIPNET makes loud on purpose.
         warnings.simplefilter("ignore")
-        climate = read_clim_file(climate_path)
+        climate = ClimateDrivers.from_file(climate_path)
     return SIPNETRunner(flags=ModelFlags.standard()).run(
         niwot_parameters(), climate, run_id="site-1"
     )

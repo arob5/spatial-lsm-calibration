@@ -532,7 +532,7 @@ def test_the_y_label_comes_from_the_attributes(ax, field_time):
     compared against the function that produced it.
     """
     plot_time_series(field_time, ax=ax)
-    assert ax.get_ylabel() == "Mean air temperature over the timestep (deg C)"
+    assert ax.get_ylabel() == "Air temperature (degC)"
     assert ax.get_ylabel() == axis_label(field_time)
 
 

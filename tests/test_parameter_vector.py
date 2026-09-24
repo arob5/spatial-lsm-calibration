@@ -27,7 +27,6 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from pysipnet import niwot_reference_files
 from pysipnet.build import find_binary, missing_binary_message
 from pysipnet.parameters.base import ParameterDomain
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
@@ -798,9 +797,7 @@ def test_sipnet_table_validates_through_sipnet_parameters(example, theta):
 
 @pytest.mark.slow
 def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
-    from pysipnet import SIPNETModel, SIPNETRunner
-    from pysipnet.climate import ClimateDrivers
-    from pysipnet.io.clim_io import read_clim_file
+    from pysipnet import SIPNETModel, SIPNETRunner, niwot_reference_climate
     from pysipnet.parameters.model import ModelFlags
 
     if find_binary() is None:
@@ -808,8 +805,7 @@ def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
     runner = SIPNETRunner(flags=ModelFlags.standard())
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # the fixture has a few vpd <= 0 rows
-        full = read_clim_file(niwot_reference_files().clim, n_columns=14)
-    climate = ClimateDrivers.from_dataframe(full.pandas.head(8 * 30).copy(), n_columns=14)
+        climate = niwot_reference_climate().head(8 * 30)
     model = SIPNETModel(runner, base_params=niwot_parameters(), base_climate=climate)
 
     table = example.sipnet_table(theta)

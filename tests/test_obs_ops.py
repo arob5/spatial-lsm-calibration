@@ -1,10 +1,5 @@
 """Tests for the observation-space operations.
 
-``sipnet_time_index`` is checked against cases built by hand from SIPNET's
-``year``/``day``/``time`` row labels, including the drifting ``time`` column the
-``.clim`` drivers carry (issue #9), so that a future change cannot start
-trusting that column's value.
-
 ``aggregate_time`` is checked against **real SIPNET output** and, where the
 inputs are present, a real run on this copy's 3-hourly site-1 drivers; the
 synthetic fields would only show that it agrees with a fixture this project
@@ -17,6 +12,8 @@ other dimensions a canonical field may have.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -26,141 +23,19 @@ from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, Vari
 
 from conftest import SITE_1_DRIVERS
 
+from sipnet_calibration.drivers import driver_fields, read_driver_file
 from sipnet_calibration.fields import from_sipnet_output, stack_sipnet_outputs
 from sipnet_calibration.obs_ops import (
     DEFAULT_METHOD_FOR_KIND,
     LENGTH_COORD,
     STALE_ON_A_COARSER_STEP,
     aggregate_time,
-    sipnet_time_index,
 )
 
-#: The same file the run fixtures use, defined once in ``conftest``.
-REAL_FILE = SITE_1_DRIVERS
 
-
-def one_day(year: int, day_of_year: int, hours) -> pd.DatetimeIndex:
-    n = len(hours)
-    return sipnet_time_index([year] * n, [day_of_year] * n, hours)
-
-
-class TestSipnetTimeIndex:
-    def test_builds_the_nominal_grid_from_year_day_and_slot(self):
-        index = one_day(2013, 1, [0, 3, 6, 9, 12, 15, 18, 21])
-        expected = pd.date_range("2013-01-01", periods=8, freq="3h").as_unit("ns")
-        pd.testing.assert_index_equal(index, expected, check_names=False)
-        assert index.dtype == np.dtype("datetime64[ns]")
-
-    def test_ignores_the_drift_in_the_time_column(self):
-        """A label of 23.00 in the last slot of 31 December still maps to 21:00."""
-        drifted = np.arange(8) * 3.000685 + 1.995  # what 31 December looks like
-        drifted[-1] = 23.0
-        index = one_day(2013, 365, drifted)
-        expected = pd.date_range("2013-12-31", periods=8, freq="3h").as_unit("ns")
-        pd.testing.assert_index_equal(index, expected, check_names=False)
-
-    def test_leap_day_is_placed_correctly(self):
-        assert one_day(2012, 60, [0.0])[0] == pd.Timestamp("2012-02-29")
-        assert one_day(2013, 60, [0.0])[0] == pd.Timestamp("2013-03-01")
-        assert one_day(2012, 366, [21.0])[0] == pd.Timestamp("2012-12-31 21:00")
-
-    def test_century_rule_for_leap_years(self):
-        assert one_day(2000, 366, [0.0])[0] == pd.Timestamp("2000-12-31")
-        with pytest.raises(ValueError, match="day_of_year 366 in non-leap year"):
-            one_day(2100, 366, [0.0])
-
-    def test_rejects_two_dimensional_input(self):
-        with pytest.raises(ValueError, match="one-dimensional"):
-            sipnet_time_index([[2013]], [[1]], [[0.0]])
-
-    def test_spans_a_year_boundary_in_row_order(self):
-        index = sipnet_time_index([2012, 2012, 2013, 2013], [366, 366, 1, 1], [18, 21, 0, 3])
-        expected = pd.DatetimeIndex(
-            ["2012-12-31 18:00", "2012-12-31 21:00", "2013-01-01 00:00", "2013-01-01 03:00"]
-        ).as_unit("ns")
-        pd.testing.assert_index_equal(index, expected, check_names=False)
-
-    def test_accepts_whole_number_floats(self):
-        index = sipnet_time_index([2013.0, 2013.0], [5.0, 5.0], [0.0, 3.0])
-        assert index[0] == pd.Timestamp("2013-01-05")
-
-    def test_other_timesteps(self):
-        daily = sipnet_time_index([2013, 2013], [1, 2], [0.0, 0.0], timestep_hours=24.0)
-        pd.testing.assert_index_equal(
-            daily, pd.DatetimeIndex(["2013-01-01", "2013-01-02"]).as_unit("ns"), check_names=False
-        )
-        hourly = sipnet_time_index([2013] * 24, [1] * 24, np.arange(24) + 0.01, timestep_hours=1.0)
-        pd.testing.assert_index_equal(
-            hourly, pd.date_range("2013-01-01", periods=24, freq="1h").as_unit("ns"), check_names=False
-        )
-
-    def test_empty_input_gives_an_empty_index(self):
-        index = sipnet_time_index([], [], [])
-        assert len(index) == 0 and index.dtype == np.dtype("datetime64[ns]")
-
-    def test_rejects_a_timestep_that_does_not_divide_24(self):
-        with pytest.raises(ValueError, match="divide 24"):
-            sipnet_time_index([2013], [1], [0.0], timestep_hours=5.0)
-        with pytest.raises(ValueError, match="divide 24"):
-            sipnet_time_index([2013], [1], [0.0], timestep_hours=0.0)
-        with pytest.raises(ValueError, match="divide 24"):
-            sipnet_time_index([2013], [1], [0.0], timestep_hours=float("inf"))
-        with pytest.raises(ValueError, match="must be a number"):
-            sipnet_time_index([2013], [1], [0.0], timestep_hours="three")
-
-    def test_rejects_unequal_lengths(self):
-        with pytest.raises(ValueError, match="same length"):
-            sipnet_time_index([2013, 2013], [1], [0.0])
-
-    def test_accepts_the_arguments_by_keyword(self):
-        index = sipnet_time_index(year=[2013], day_of_year=[2], hours_since_midnight=[6.5])
-        assert index[0] == pd.Timestamp("2013-01-02 06:00")
-
-    def test_rejects_non_whole_year_or_day(self):
-        with pytest.raises(ValueError, match="day_of_year must hold whole numbers"):
-            sipnet_time_index([2013], [1.5], [0.0])
-        with pytest.raises(ValueError, match="year must hold whole numbers"):
-            sipnet_time_index([2013.5], [1], [0.0])
-
-    def test_rejects_day_outside_the_year(self):
-        with pytest.raises(ValueError, match="within 1..366"):
-            sipnet_time_index([2013], [0], [0.0])
-        with pytest.raises(ValueError, match="within 1..366"):
-            sipnet_time_index([2013], [367], [0.0])
-
-    def test_rejects_day_366_in_a_non_leap_year(self):
-        with pytest.raises(ValueError, match="day_of_year 366 in non-leap year"):
-            sipnet_time_index([2013], [366], [0.0])
-
-    def test_rejects_a_time_outside_the_day(self):
-        with pytest.raises(ValueError, match=r"within \[0, 24\)"):
-            sipnet_time_index([2013], [1], [24.0])
-        with pytest.raises(ValueError, match=r"within \[0, 24\)"):
-            sipnet_time_index([2013], [1], [-0.5])
-        with pytest.raises(ValueError, match=r"within \[0, 24\)"):
-            sipnet_time_index([2013], [1], [np.nan])
-
-    def test_rejects_a_label_that_drifted_into_the_next_slot(self):
-        """Two consecutive rows whose labels fall in one slot collide, and are
-        refused rather than silently reassigned. A single label cannot reveal
-        a drift on its own: a skipped slot is accepted, which is why the
-        drivers module asserts the drift model on whole files instead."""
-        with pytest.raises(ValueError, match="not strictly increasing"):
-            sipnet_time_index([2013, 2013], [1, 1], [3.0, 3.1])
-        skipped = sipnet_time_index([2013, 2013], [1, 1], [0.0, 6.0])
-        assert list(skipped) == [pd.Timestamp("2013-01-01 00:00"), pd.Timestamp("2013-01-01 06:00")]
-
-    def test_rejects_rows_out_of_order(self):
-        with pytest.raises(ValueError, match="not strictly increasing"):
-            sipnet_time_index([2013, 2013], [2, 1], [0.0, 0.0])
-
-    @pytest.mark.skipif(not REAL_FILE.exists(), reason="the raw driver file is not present")
-    def test_reproduces_the_real_files_grid(self):
-        frame = pd.read_csv(REAL_FILE, sep=r"\s+", header=None, usecols=[1, 2, 3], names=["year", "day", "time"])
-        index = sipnet_time_index(frame["year"], frame["day"], frame["time"])
-        expected = pd.date_range("2012-01-01", "2024-12-31 21:00", freq="3h").as_unit("ns")
-        assert len(index) == 37992
-        pd.testing.assert_index_equal(index, expected, check_names=False)
+def site_1_member_1(real_drivers, name):
+    """One variable of the site-1, member-1 drivers, on ``time`` alone."""
+    return driver_fields(real_drivers)[name].sel(site=1, source_member_index=1)
 
 
 class TestDefaultMethodForKind:
@@ -322,14 +197,12 @@ class TestAggregateTimeOnThreeHourlyOutput:
         cells = raw.groupby(raw.index.ceil("D"))
         assert np.allclose(daily.values, cells.sum().to_numpy())
 
-        # Every interior cell holds eight steps. The two on the ends are short
-        # because the .clim hour column drifts late (issue #9): each day's last
-        # step end lands just past midnight, so the whole record sits a step
-        # later than SIPNET's own day column would put it.
+        # Every cell holds eight steps, the first and last included: a day's
+        # eighth step ends at midnight, which the right-closed cells put in the
+        # day that ended.
         counts = cells.size().to_numpy()
         assert len(counts) > 3
-        assert (counts[1:-1] == 8).all()
-        assert counts[0] < 8 and counts[-1] < 8
+        assert (counts == 8).all()
 
     def test_a_daily_pool_is_its_value_at_the_last_of_the_eight_steps(self, site_1_result):
         field = from_sipnet_output(site_1_result, "soil_water", site=1)["soil_water"]
@@ -340,8 +213,10 @@ class TestAggregateTimeOnThreeHourlyOutput:
     def test_a_day_of_steps_covers_twenty_four_hours(self, site_1_result):
         field = from_sipnet_output(site_1_result, "nee", site=1)["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
-        lengths = daily["time_step_length"].values[1:-1]
+        lengths = daily["time_step_length"].values
         assert (lengths == np.timedelta64(24, "h")).all()
+        spans = daily["time"].values - daily["time_step_start"].values
+        assert (spans == np.timedelta64(24, "h")).all()
 
     def test_the_site_label_and_its_coordinates_survive(self, site_1_result):
         field = from_sipnet_output(site_1_result, "nee", site=1)["net_ecosystem_exchange"]
@@ -374,8 +249,7 @@ class TestAggregateTimeOnEnsembles:
         from pysipnet.output import SIPNETOutput
 
         short = SIPNETOutput.from_dataframe(
-            niwot_output.pandas.iloc[:20].copy(),
-            time_step_length=niwot_output.time_step_length[:20],
+            niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
         stacked = stack_sipnet_outputs({(1, 0): niwot_output, (27, 0): short}, "nee")[
             "net_ecosystem_exchange"
@@ -387,37 +261,46 @@ class TestAggregateTimeOnEnsembles:
 
 
 class TestAggregateTimeOnDrivers:
-    def test_par_sums_and_temperature_means(self, real_driver_field):
-        drivers = pytest.importorskip("sipnet_calibration.drivers")
-        dataset = drivers.load_drivers([1], members=[1])
-        fields = drivers.driver_fields(dataset)
-        assert aggregate_time(fields["par"], "1D").attrs["kind"] == "timestep_total"
+    def test_totals_sum_and_means_mean(self, real_drivers):
+        fields = driver_fields(real_drivers)
+        daily_precipitation = aggregate_time(fields["precipitation"], "1D")
+        assert daily_precipitation.attrs["kind"] == "timestep_total"
         assert (
             aggregate_time(fields["air_temperature"], "1D").attrs["kind"] == "timestep_mean"
         )
 
-    def test_a_daily_par_total_is_its_eight_three_hourly_values(self, real_driver_field):
-        drivers = pytest.importorskip("sipnet_calibration.drivers")
-        par = drivers.driver_fields(drivers.load_drivers([1], members=[1]))["par"]
-        one = par.isel(member=0, site=0)
-        daily = aggregate_time(one, "1D")
-        raw = pd.Series(one.values, index=pd.DatetimeIndex(one["time"].values))
+    def test_a_daily_total_is_its_eight_three_hourly_values(self, real_drivers):
+        par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
+        daily = aggregate_time(par, "1D")
+        raw = pd.Series(par.values, index=pd.DatetimeIndex(par["time"].values))
         cells = raw.groupby(raw.index.ceil("D"))
         assert np.allclose(daily.values, cells.sum().to_numpy())
-        assert (cells.size().to_numpy()[1:-1] == 8).all()
+        assert (cells.size().to_numpy() == 8).all()
 
-    def test_the_drivers_have_no_declared_step_lengths_and_are_weighted_equally(
-        self, real_driver_field
-    ):
-        drivers = pytest.importorskip("sipnet_calibration.drivers")
-        tair = drivers.driver_fields(drivers.load_drivers([1], members=[1]))[
-            "air_temperature"
-        ].isel(member=0, site=0)
-        assert LENGTH_COORD not in tair.coords
+    def test_a_driver_mean_is_weighted_by_its_declared_step_lengths(self, real_drivers):
+        tair = site_1_member_1(real_drivers, "air_temperature")
+        assert LENGTH_COORD in tair.coords
         daily = aggregate_time(tair, "1D")
-        assert "weighted by" not in daily.attrs["resampling"]
+        assert "weighted by" in daily.attrs["resampling"]
         raw = pd.Series(tair.values, index=pd.DatetimeIndex(tair["time"].values))
         assert np.allclose(daily.values, raw.groupby(raw.index.ceil("D")).mean().to_numpy())
+
+    def test_a_driver_field_aggregates_as_pysipnet_resamples_its_drivers(
+        self, real_drivers, regular_drivers_root
+    ):
+        """Values, time coordinates and attributes, against pySIPNET's own
+        ``resample`` of the Dataset it builds for the same file."""
+        with warnings.catch_warnings():
+            # The file's exact zeros of vpd, which pySIPNET flags on read.
+            warnings.simplefilter("ignore")
+            own = read_driver_file(regular_drivers_root / SITE_1_DRIVERS).xarray
+        expected = pysipnet_resample(own, "1D", how={"precipitation": "sum"})["precipitation"]
+        daily = aggregate_time(site_1_member_1(real_drivers, "precipitation"), "1D")
+        np.testing.assert_allclose(daily.values, expected.values)
+        for name in ("time", "time_step_start", "time_step_length"):
+            np.testing.assert_array_equal(daily[name].values, expected[name].values)
+        assert daily.attrs["kind"] == expected.attrs["kind"]
+        assert daily.attrs["cell_methods"] == expected.attrs["cell_methods"]
 
     def test_unequal_steps_without_declared_lengths_refuse_a_mean(self, niwot_output):
         field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
@@ -489,22 +372,16 @@ class TestAggregatedTimeCoordinateDescribesItself:
         assert "bounds" in niwot_output.xarray["time"].attrs
         assert "bounds" not in aggregate_time(field, "1D")["time"].attrs
 
-    def test_a_driver_axis_keeps_what_is_still_true_of_it(self, real_driver_field):
-        drivers = pytest.importorskip("sipnet_calibration.drivers")
-        tair = drivers.driver_fields(drivers.load_drivers([1], members=[1]))[
-            "air_temperature"
-        ]
+    def test_a_driver_axis_is_rebuilt_in_pysipnets_words_too(self, real_drivers):
+        tair = site_1_member_1(real_drivers, "air_temperature")
         daily = aggregate_time(tair, "1D")
-        # Cells are labeled at their end, as the steps were.
-        assert daily["time"].attrs["time_label"] == tair["time"].attrs["time_label"]
+        assert daily["time"].attrs["long_name"] == "End of timestep"
         assert daily["time"].attrs["time_zone"] == tair["time"].attrs["time_zone"]
-        # The note stating the width of one driver interval is not.
-        assert "time_label_note" in tair["time"].attrs
-        assert "time_label_note" not in daily["time"].attrs
+        assert "bounds" not in daily["time"].attrs
 
-    def test_the_dropped_set_is_the_documented_two(self):
-        """A change detector: each is checked against a real source above."""
-        assert set(STALE_ON_A_COARSER_STEP) == {"bounds", "time_label_note"}
+    def test_the_dropped_set_is_the_documented_one(self):
+        """A change detector: it is checked against a real source above."""
+        assert set(STALE_ON_A_COARSER_STEP) == {"bounds"}
 
 
 class TestAggregateTimeDropsAlignmentPadding:
@@ -521,8 +398,7 @@ class TestAggregateTimeDropsAlignmentPadding:
         from pysipnet.output import SIPNETOutput
 
         short = SIPNETOutput.from_dataframe(
-            niwot_output.pandas.iloc[:20].copy(),
-            time_step_length=niwot_output.time_step_length[:20],
+            niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
         return stack_sipnet_outputs({(1, 0): short, (27, 0): niwot_output}, "nee")[
             "net_ecosystem_exchange"
@@ -594,22 +470,16 @@ class TestAggregateTimeRefusesUnusableTime:
 
 
 class TestAggregateTimeLabelsCells:
-    """Where a field carries no interval coordinates, the resample's own labels ship."""
+    """A cell is labeled at the last step end it holds, as pySIPNET labels it."""
 
-    def test_a_daily_driver_cell_is_labeled_at_its_end(self, real_driver_field):
-        drivers = pytest.importorskip("sipnet_calibration.drivers")
-        par = drivers.driver_fields(drivers.load_drivers([1], members=[1]))["par"].isel(
-            member=0, site=0
-        )
+    def test_a_daily_driver_cell_is_labeled_at_midnight_ending_it(self, real_drivers):
+        par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
         daily = aggregate_time(par, "1D")
-        raw = pd.Series(par.values, index=pd.DatetimeIndex(par["time"].values))
-        expected = raw.groupby(raw.index.ceil("D")).sum()
-        assert np.array_equal(
-            daily["time"].values, pd.DatetimeIndex(expected.index).to_numpy()
+        ends = pd.DatetimeIndex(daily["time"].values)
+        assert (ends == ends.normalize()).all()
+        np.testing.assert_array_equal(
+            daily["time_step_start"].values, (ends - pd.Timedelta(days=1)).to_numpy()
         )
-        # The steps of the cell labeled d end after midnight of d-1 and at
-        # midnight of d, which is what "interval_end" means one level coarser.
-        assert daily["time"].attrs["time_label"] == "interval_end"
 
     def test_a_model_cell_is_labeled_at_the_last_step_end_it_holds(self, niwot_output):
         field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
@@ -660,9 +530,8 @@ class TestAggregateTimeKeepsTheVariablesIdentity:
         assert daily.attrs["kind"] == "timestep_total"
         assert np.allclose(daily.values, aggregate_time(field, "1D").values)
 
-    def test_a_driver_name_resolves_through_the_climate_registry(self, real_driver_field):
-        drivers = pytest.importorskip("sipnet_calibration.drivers")
-        par = drivers.driver_fields(drivers.load_drivers([1], members=[1]))["par"]
+    def test_a_driver_name_resolves_through_the_climate_registry(self, real_drivers):
+        par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
         stripped = par.copy()
         stripped.attrs = {}
         assert aggregate_time(stripped, "1D").attrs["kind"] == "timestep_total"
