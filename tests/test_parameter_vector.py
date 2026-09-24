@@ -223,7 +223,7 @@ def test_identity_map_shorthand():
         name="t", prior=tfd.Uniform(jnp.float64(1.0), jnp.float64(5.0)),
         sipnet_map="optimum_photosynthesis_temperature", provenance="x",
     )
-    assert scaled.element_labels == ("logit((optimum_photosynthesis_temperature - 1)/(5 - 1))",)
+    assert scaled.element_labels == ("logit(optimum_photosynthesis_temperature in (1, 5))",)
 
 
 # ── the specs and their checks ───────────────────────────────────────────────
@@ -453,7 +453,7 @@ def test_layout_dimension_labels_and_slices(example):
         "leaf_fall_fraction": "shared", "initial_soil_carbon": "site",
     }
     assert layout.column_labels[0] == "photosynthesis[log(capacity)]"
-    assert layout.column_labels[2] == "allocation[conifer][alr(leaf_allocation/coarse_root_allocation)]"
+    assert layout.column_labels[2] == "allocation[conifer][alr(leaf_allocation:coarse_root_allocation)]"
     assert layout.column_labels[-1] == "initial_soil_carbon[4711]"
     assert len(layout.column_labels) == 14
     deciduous = [layout.column_labels[i] for i in layout.index("allocation", group="deciduous")]
@@ -469,7 +469,7 @@ def test_layout_index_narrows_by_group_and_element(example):
     layout = example.layout
     np.testing.assert_array_equal(layout.index("allocation", group="deciduous"), [5, 6, 7])
     np.testing.assert_array_equal(
-        layout.index("allocation", element="alr(wood_allocation/coarse_root_allocation)"), [3, 6]
+        layout.index("allocation", element="alr(wood_allocation:coarse_root_allocation)"), [3, 6]
     )
     np.testing.assert_array_equal(layout.index("initial_soil_carbon", group=27), [12])
     with pytest.raises(KeyError, match="not a group"):
@@ -768,7 +768,7 @@ def test_sipnet_overrides_gives_one_run_of_floats(example, theta):
     assert kwargs["soil_carbon"] == float(table["soil_carbon"].isel(member=2).sel(site=27))
     with pytest.raises(ValueError, match="pass member="):
         sipnet_overrides(table, site=27)
-    with pytest.raises(ValueError, match="position from 0"):
+    with pytest.raises(ValueError, match="not one of the table's member labels"):
         sipnet_overrides(table, member=-1, site=27)
     single = example.sipnet_table(theta[0])
     assert sipnet_overrides(single, site=1)["leaf_carbon_fraction"] == 0.466
@@ -845,7 +845,7 @@ def test_fields_data_model(example, theta):
     assert natural["leaf_fall_fraction"].attrs["varies_by"] == "shared"
     unconstrained = example.fields(theta, space="unconstrained")
     assert list(unconstrained.data_vars)[:2] == ["photosynthesis.log(capacity)", "photosynthesis.logit(respiration_share)"]
-    assert "allocation.alr(leaf_allocation/coarse_root_allocation)" in unconstrained
+    assert "allocation.alr(leaf_allocation:coarse_root_allocation)" in unconstrained
     assert unconstrained["initial_soil_carbon"].attrs["units"] == "1"
     np.testing.assert_array_equal(
         unconstrained.filter_by_attrs(parameter="allocation").sel(site=1).to_array().transpose("member", "variable"),
@@ -944,7 +944,8 @@ def _in_domain_value(name: str) -> float:
 
 def test_sites_with_and_parameter_lookup(example):
     assert example.sites_with("pft", "deciduous") == (1, 4711)
-    assert example.sites_with("pft", "grassland") == ()
+    with pytest.raises(KeyError, match="'grassland' is not a class of site labels 'pft'"):
+        example.sites_with("pft", "grassland")
     assert example["allocation"].sipnet_map is ALLOCATION
     assert example.parameter_names == example.layout.parameters
     with pytest.raises(KeyError):
@@ -1551,3 +1552,38 @@ def test_repr_of_a_one_site_vector_with_nothing_fixed():
     lines = repr(ParameterVector(parameters=(rate(),), sites=(1,))).splitlines()
     assert lines[0] == "ParameterVector  D = 1  |  1 site  |  site labels: none"
     assert lines[-2] == "  fixed: none"
+
+
+# ── member identity and netCDF names ─────────────────────────────────────────
+
+
+def test_a_sipnet_table_from_fields_keeps_the_members_it_was_given(example, theta):
+    from pyens import Axis
+
+    from sipnet_calibration.parameter_vector import pyens_grids
+
+    subset = example.fields(theta).sel(member=[1, 3])
+    table = example.sipnet_table(subset)
+    assert table["member"].values.tolist() == [1, 3] and table["member"].dtype == np.int16
+    full = example.sipnet_table(theta)
+    assert sipnet_overrides(table, member=3, site=27) == pytest.approx(sipnet_overrides(full, member=3, site=27))
+    with pytest.raises(ValueError, match="member 0 is not one of the table's member labels"):
+        sipnet_overrides(table, member=0, site=27)
+    sites = Axis("site", labels=list(example.sites))
+    grids = pyens_grids(table, members=Axis("member", labels=[1, 3]), sites=sites)
+    assert grids["soil_carbon"].value_at({Axis("member", labels=[1, 3]): 1, sites: 1}) == float(
+        full["soil_carbon"].sel(member=3, site=27)
+    )
+    with pytest.raises(ValueError, match="are not the table's member labels"):
+        pyens_grids(table, members=Axis("member", size=2), sites=sites)
+    with pytest.raises(ValueError, match="distinct integers"):
+        example.sipnet_table(example.fields(theta[:2]).assign_coords(member=[0, 0]))
+
+
+def test_unconstrained_fields_write_to_netcdf_and_read_back(example, theta, tmp_path):
+    unconstrained = example.fields(theta, space="unconstrained")
+    assert not any("/" in name for name in unconstrained.data_vars)
+    path = tmp_path / "unconstrained.nc"
+    unconstrained.to_netcdf(path, engine="h5netcdf")
+    with xr.open_dataset(path, engine="h5netcdf") as back:
+        np.testing.assert_array_equal(example.flat(back.load()), theta)

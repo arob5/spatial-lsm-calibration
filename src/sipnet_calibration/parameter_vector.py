@@ -92,15 +92,16 @@ and :meth:`ParameterVector.flat` refuses it.
 :mod:`sipnet_calibration.fields`):
 
 ============ ========================================================
-dims         ``member`` (0-based ``int16``) for an ensemble only;
-             ``site`` (``int32`` site ids, ascending)
+dims         ``member`` (``int16``) for an ensemble only: 0 to J-1
+             when built from Flat; ``site`` (``int32`` site ids,
+             ascending)
 variables    one float64 variable per scalar component in natural
              space, or per element in unconstrained space, on
              ``(member, site)`` or ``(site,)``: ``<parameter>`` when
              there is one (``initial_soil_carbon``),
              ``<parameter>.<component>`` or ``<parameter>.<element>``
              when there are several (``allocation.leaf_allocation``,
-             ``allocation.alr(leaf_allocation/coarse_root_allocation)``)
+             ``allocation.alr(leaf_allocation:coarse_root_allocation)``)
 variable     ``parameter`` (the calibration parameter's name),
 attributes   ``component`` (the component or element label, only when
              there are several), ``varies_by``
@@ -124,7 +125,8 @@ calibration parameter.
 **SIPNET table.** An ``xarray.Dataset`` with the same dims and coordinates as
 Fields, and one float64 variable per SIPNET parameter the vector sets,
 calibrated and fixed alike, keyed on the pySIPNET name, in
-``PARAMETER_SPECS`` order. Each variable carries ``units``, ``sipnet_name``,
+``PARAMETER_SPECS`` order. Built from Fields, it keeps their ``member``
+labels, so a subset of an ensemble keeps its members' identity. Each variable carries ``units``, ``sipnet_name``,
 ``constituent`` where pySIPNET declares one, and ``source``
 (``"parameter <name>"`` or ``"fixed"``); the dataset carries
 ``representation = "sipnet_parameters"``. A SIPNET parameter the vector
@@ -934,7 +936,9 @@ class CalibrationParameter:
     @property
     def element_labels(self) -> tuple[str, ...]:
         """Unconstrained element names: ``log(x)``, ``logit(x)``,
-        ``alr(a/residual)``, derived from the bijector."""
+        ``alr(a:residual)``, ``logit(x in (low, high))``, derived from the
+        bijector. None contains ``/``, so every Fields variable name is a
+        legal netCDF name."""
         return _unconstrained_labels(self.bijector, self.components)
 
     @property
@@ -1367,10 +1371,16 @@ class ParameterVector:
 
     def sites_with(self, site_labels_name: str, label: Any) -> tuple[int, ...]:
         """The sites carrying *label* under the site-labels product
-        *site_labels_name*."""
+        *site_labels_name*: ``()`` for a declared class no site here carries,
+        ``KeyError`` for a label that is not a declared class."""
         if site_labels_name not in self.site_labels:
             raise KeyError(
                 f"no site labels {site_labels_name!r}; have {sorted(self.site_labels)}."
+            )
+        if label not in self._declared_classes[site_labels_name]:
+            raise KeyError(
+                f"{label!r} is not a class of site labels {site_labels_name!r}; have "
+                f"{list(self._declared_classes[site_labels_name])}."
             )
         labels = self.site_labels[site_labels_name]
         return tuple(s for s, lab in zip(self.sites, labels, strict=True) if lab == label)
@@ -1611,7 +1621,9 @@ class ParameterVector:
         """Fields to Flat: the inverse of :meth:`fields`, in either space.
 
         Reads ``fields.attrs["space"]`` and applies the inverse bijector when
-        it is natural. Takes exactly the variables and sites this vector
+        it is natural. Rows follow the dataset's ``member`` order; Flat has
+        no member labels, and :meth:`sipnet_table` is where Fields' labels
+        are kept. Takes exactly the variables and sites this vector
         needs and ignores any others, so Fields from a larger vector project
         onto this one.
 
@@ -1663,7 +1675,9 @@ class ParameterVector:
         Parameters
         ----------
         x:
-            Flat, ``(D,)`` or ``(J, D)``, or Fields in either space.
+            Flat, ``(D,)`` or ``(J, D)``, whose members are labeled 0 to
+            ``J - 1``; or Fields in either space, whose ``member`` labels are
+            kept.
 
         Returns
         -------
@@ -1680,7 +1694,13 @@ class ParameterVector:
         Not invertible: the SIPNET maps are many-to-one once the fixed
         parameters are folded in.
         """
-        theta = self.flat(x) if isinstance(x, xr.Dataset) else _as_theta(x, self.dimension)
+        members = None
+        if isinstance(x, xr.Dataset):
+            theta = self.flat(x)
+            if MEMBER in x.dims and MEMBER in x.coords:
+                members = x[MEMBER].values
+        else:
+            theta = _as_theta(x, self.dimension)
         natural = self._natural_blocks(theta)
         lead = theta.shape[:-1]
         columns: dict[str, tuple[Array, str]] = {}
@@ -1697,7 +1717,8 @@ class ParameterVector:
             for name, (values, source) in sorted(columns.items(), key=lambda kv: _SPEC_ORDER[kv[0]])
         }
         attributes = {"representation": SIPNET_TABLE_REPRESENTATION}
-        return xr.Dataset(variables, coords=self._coordinates(theta), attrs=attributes)
+        coords = self._coordinates(theta, members=members)
+        return xr.Dataset(variables, coords=coords, attrs=attributes)
 
     # -- private: groups and sites -------------------------------------------
 
@@ -1798,8 +1819,9 @@ class ParameterVector:
         lon, lat = self._lon_lat
         return pd.DataFrame({"site_id": ids, "lon": lon[positions], "lat": lat[positions]})
 
-    def _coordinates(self, theta: Array) -> dict[str, Any]:
-        """The coordinates Fields and the SIPNET table share."""
+    def _coordinates(self, theta: Array, members: np.ndarray | None = None) -> dict[str, Any]:
+        """The coordinates Fields and the SIPNET table share; *members*
+        labels the ensemble, 0 to J-1 when ``None``."""
         coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=np.int32)}
         if self._lon_lat is not None:
             lon, lat = self._lon_lat
@@ -1808,7 +1830,9 @@ class ParameterVector:
         for name, labels in self.site_labels.items():
             coords[name] = (SITE, list(labels))
         if theta.ndim == 2:
-            coords[MEMBER] = _member_coordinate(theta.shape[0])
+            coords[MEMBER] = (
+                _member_coordinate(theta.shape[0]) if members is None else _member_labels(members)
+            )
         return coords
 
     @cached_property
@@ -1943,8 +1967,9 @@ def sipnet_overrides(
     site:
         The site id.
     member:
-        The ensemble member's position, ``0`` to ``J - 1``; required when the
-        table has a ``member`` dim and refused when it does not.
+        The ensemble member's label: ``0`` to ``J - 1`` for a table built from
+        Flat, or the Fields' own labels for one built from Fields. Required
+        when the table has a ``member`` dim and refused when it does not.
 
     Returns
     -------
@@ -1961,9 +1986,8 @@ def sipnet_overrides(
     if MEMBER in selected.dims:
         if member is None:
             raise ValueError("the table has a member dim; pass member=.")
-        if member < 0:
-            raise ValueError(f"member is a position from 0; got {member}.")
-        selected = selected.isel({MEMBER: member})
+        check_member_is_in_the_table(table, member)
+        selected = selected.sel({MEMBER: member})
     elif member is not None:
         raise ValueError("the table has no member dim; do not pass member=.")
     return {str(name): float(value) for name, value in selected.data_vars.items()}
@@ -1983,9 +2007,10 @@ def pyens_grids(
         in the table's order. Share it with the climate and initial-condition
         grids, so that they zip with these on the site axis.
     members:
-        The PyEns ``Axis`` of members, of the table's ``member`` length;
-        required when the table has a ``member`` dim and refused when it does
-        not.
+        The PyEns ``Axis`` of members, whose labels must be the table's
+        ``member`` labels in order (``Axis("member", size=J)`` for a table
+        built from Flat); required when the table has a ``member`` dim and
+        refused when it does not.
 
     Returns
     -------
@@ -2263,7 +2288,7 @@ def _position(labels: Sequence[Any], label: Any, what: str) -> int:
 
 def _unconstrained_labels(bijector: tfb.Bijector, components: tuple[str, ...]) -> tuple[str, ...]:
     if isinstance(bijector, tfb.SoftmaxCentered):
-        return tuple(f"alr({c}/{components[-1]})" for c in components[:-1])
+        return tuple(f"alr({c}:{components[-1]})" for c in components[:-1])
     if isinstance(bijector, tfb.Blockwise) and len(bijector.bijectors) == len(components):
         return tuple(
             _scalar_unconstrained_label(b, c) for b, c in zip(bijector.bijectors, components)
@@ -2280,7 +2305,7 @@ def _scalar_unconstrained_label(bijector: tfb.Bijector, component: str) -> str:
         if bijector.low is None:
             return f"logit({component})"
         low, high = float(bijector.low), float(bijector.high)
-        return f"logit(({component} - {low:g})/({high:g} - {low:g}))"
+        return f"logit({component} in ({low:g}, {high:g}))"
     if isinstance(bijector, tfb.Identity):
         return component
     return f"{type(bijector).__name__}^-1({component})"
@@ -2480,6 +2505,12 @@ def _member_coordinate(n_members: int) -> np.ndarray:
             f"{n_members} members do not fit the int16 member coordinate of a canonical field."
         )
     return np.arange(n_members, dtype=np.int16)
+
+
+def _member_labels(values: Any) -> np.ndarray:
+    """Member labels carried from Fields, as the canonical ``int16``."""
+    check_member_labels_are_usable(values)
+    return np.asarray(values).astype(np.int16)
 
 
 def _space_labels(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
@@ -3001,6 +3032,12 @@ def check_pyens_axes_match_table(table: xr.Dataset, sites: Axis, members: Axis |
                 f"pyens_grids: the member Axis has size {members.size}, the table "
                 f"{table.sizes[MEMBER]} members."
             )
+        labels = np.asarray(table[MEMBER].values).tolist()
+        if list(members.labels) != labels:
+            raise ValueError(
+                f"pyens_grids: the member Axis labels {list(members.labels)} are not the "
+                f"table's member labels {labels}, in order; use Axis('member', labels=...)."
+            )
     elif members is not None:
         raise ValueError("pyens_grids: the table has no member dim; do not pass members=.")
 
@@ -3114,4 +3151,27 @@ def check_natural_values_are_in_the_support(
             "of its bijector: a value outside its prior's support (a negative rate, a "
             "fraction at or beyond 0 or 1) or simplex components that do not sum to 1. No "
             "Flat vector maps to them."
+        )
+
+
+def check_member_labels_are_usable(values: Any) -> None:
+    labels = np.asarray(values)
+    integral = labels.ndim == 1 and (
+        np.issubdtype(labels.dtype, np.integer)
+        or (np.issubdtype(labels.dtype, np.floating) and np.all(np.mod(labels, 1) == 0))
+    )
+    fits = integral and labels.size > 0 and labels.min() >= 0 and labels.max() <= np.iinfo(np.int16).max
+    if not (fits and len(set(labels.tolist())) == labels.size):
+        raise ValueError(
+            "Fields member labels must be distinct integers from 0 to "
+            f"{np.iinfo(np.int16).max}, the canonical member coordinate; got {labels.tolist()[:10]}."
+        )
+
+
+def check_member_is_in_the_table(table: xr.Dataset, member: Any) -> None:
+    labels = np.asarray(table[MEMBER].values).tolist()
+    if member not in labels:
+        raise ValueError(
+            f"member {member!r} is not one of the table's member labels "
+            f"({labels[:5]}{', ...' if len(labels) > 5 else ''})."
         )
