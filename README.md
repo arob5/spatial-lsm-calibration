@@ -208,7 +208,8 @@ src/sipnet_calibration/
   constraints.py          # one spec per raw constraint file; load_constraint()
   initial_conditions/     # the PEcAn IC ensemble, one module per artifact
   drivers.py              # load_drivers() over the raw .clim files
-  parameterization.py     # the calibration vector, its priors and the pySIPNET map
+  parameter_vector.py     # ParameterVector: the calibration vector, its prior, and
+                          # Flat / Fields / SIPNET table conversions
   fields.py               # canonical field convention; SIPNET output adapters
   obs_ops.py              # aggregate_time, sipnet_time_index — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics

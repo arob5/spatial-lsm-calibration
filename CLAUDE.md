@@ -387,7 +387,7 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameterization.py` and `site_labels.py` are implemented, `obs_ops.py` has
+`parameter_vector.py` and `site_labels.py` are implemented, `obs_ops.py` has
 `sipnet_time_index` and `aggregate_time`, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
@@ -424,11 +424,15 @@ src/sipnet_calibration/
                           # site-labels product is site_id -> class, one product
                           # per source; read_raw(), build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
-  parameterization.py     # the calibration vector: Coordinate (TFP prior on the
-                          # natural scale + CoordToParamMap), FixedParameter,
-                          # Parameterization with constrain/unconstrain/log_prior/
-                          # sample, to_pysipnet_parameters() -> (member, site)
-                          # Dataset, to_eki_gaussian_prior(); example_parameterization()
+  parameter_vector.py     # ParameterVector: a named random vector over sites, built
+                          # from CalibrationParameters (TFP prior in natural space,
+                          # varies_by, SIPNETMap) and FixedParameters; select(),
+                          # sample/log_prior/gaussian_prior on Flat (J, D); three
+                          # value representations with named conversions:
+                          # fields() <-> flat() (Fields: Dataset of canonical
+                          # fields on (member, site), attrs["space"]), and
+                          # sipnet_table() -> sipnet_overrides() / pyens_grids();
+                          # example_parameter_vector()
   fields.py               # canonical field convention; from_sipnet_output(),
                           # stack_sipnet_outputs() over SIPNETOutput.select,
                           # site_lookup(); validate_field() and the adapters
@@ -620,8 +624,29 @@ plotting code. The load-bearing rules:
 
 ### TensorFlow Probability (JAX substrate)
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
-  (the unconstrained base) and `.bijector`; `sipnet_calibration.parameterization` stores one
-  prior per coordinate and reads both off it.
+  (the unconstrained base) and `.bijector`; `sipnet_calibration.parameter_vector` stores one
+  prior per calibration parameter and reads both off it.
+- `tfd.GaussianProcess(kernel, index_points, mean_fn)` with a `tfp.math.psd_kernels` kernel is a
+  multivariate normal over the index points (event `(S,)`, batch `()`, analytic `.mean()` and
+  `.covariance()`), so a GP prior needs no other package; `ParameterVector` admits it as a
+  *joint* prior over a scalar calibration parameter's groups (issue #33). Built without x64 it is
+  `float32`, which the vector refuses.
+- Batch slicing by an **integer** index array (`prior[np.array([0, 2])]`) works for `LogNormal`
+  and `LogitNormal` but **fails for a batched `softmax_normal`** once two or more indices are kept
+  (TFP's slicing of the `MultivariateNormalDiag` base), so `parameter_vector` rebuilds that family
+  from its sliced moments. Slicing by a **boolean** mask silently returns the wrong shape. TFP does
+  not slice event dimensions, so a joint prior is restricted by taking the Gaussian marginal of
+  its base.
+- TFP bijectors **cache** forward/inverse pairs: `b.forward(b.inverse(x))` hands `x` back
+  unchanged, so a check that an input lies in a bijector's image must re-apply `forward` to a
+  fresh copy of the array.
+- Several TFP distributions (`MultivariateNormalTriL`, `Weibull`, `Gumbel`, ...) are
+  `TransformedDistribution` subclasses over an internal reparameterization; their `.bijector` is
+  not a map from unconstrained space. `parameter_vector` reads `.distribution`/`.bijector` only
+  off an exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
+- With the pinned build, a distribution built from `TransformedDistribution` or `Blockwise`
+  (the simplex and product priors) pickles but fails `pickle.loads`; `LogNormal` and `LogitNormal`
+  round-trip. Send PyEns workers plain data (`pyens_grids`), never a `ParameterVector`.
 - Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
   raises `NotImplementedError`. Take them from `.distribution`.
 - `SoftmaxCentered`'s density on the simplex is against the embedded volume element,

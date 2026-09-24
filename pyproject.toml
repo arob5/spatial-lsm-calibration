@@ -31,7 +31,7 @@ dependencies = [
     "matplotlib>=3.7",
     "arviz>=0.13",
     "jax[cpu]>=0.4",
-    # Priors and bijectors for sipnet_calibration.parameterization come from
+    # Priors and bijectors for sipnet_calibration.parameter_vector come from
     # TensorFlow Probability's JAX substrate, imported as
     # tensorflow_probability.substrates.jax, never from in-house code. The
     # stable tensorflow-probability release lags JAX, so the nightly channel
