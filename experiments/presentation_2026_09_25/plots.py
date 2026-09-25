@@ -58,6 +58,8 @@ def mark_sites(ax: Axes, sites: Mapping[str, int] | None = None) -> Axes:
 def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
     """Sites per class of a site-labels product, most sites first, in the map's colors.
 
+    Each bar is labeled with its count and its share of all labeled sites.
+
     Parameters
     ----------
     site_labels:
@@ -74,11 +76,14 @@ def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
     order = np.argsort(-counts.to_numpy(), kind="stable")
     names = np.asarray(_display_names(spec))[order]
     colors = np.asarray(category_colors(len(names)))[order]
+    sorted_counts = counts.to_numpy()[order]
     figure, ax = plt.subplots(figsize=(7, 0.35 * len(names) + 1), layout="constrained")
-    ax.barh(names, counts.to_numpy()[order], color=colors)
+    ax.barh(names, sorted_counts, color=colors)
     ax.invert_yaxis()
     ax.set_xlabel("sites")
-    ax.bar_label(ax.containers[0], padding=3, fontsize=9)
+    labels = [_count_and_share(count, sorted_counts.sum()) for count in sorted_counts]
+    ax.bar_label(ax.containers[0], labels=labels, padding=3, fontsize=9)
+    ax.margins(x=0.18)  # room for the longest bar's label
     return figure
 
 
@@ -113,7 +118,12 @@ def label_crosstab(
 def label_crosstab_heatmap(
     rows: str = config.SITE_LABELS, columns: str = config.REANALYSIS_SITE_LABELS
 ) -> Figure:
-    """``label_crosstab`` drawn as an annotated heatmap.
+    """``label_crosstab`` drawn as an annotated heatmap, with totals.
+
+    Rows and columns are sorted by their totals, largest first. A last column
+    and a last row give each class's total over the other
+    product, as a count and a share of all sites; the corner is the number of
+    sites. The colors are the counts of the table itself, not the totals.
 
     Parameters
     ----------
@@ -125,16 +135,31 @@ def label_crosstab_heatmap(
     matplotlib.figure.Figure
     """
     table = label_crosstab(rows, columns)
+    table = table.iloc[
+        np.argsort(-table.sum(axis=1).to_numpy(), kind="stable"),
+        np.argsort(-table.sum(axis=0).to_numpy(), kind="stable"),
+    ]
     counts = table.to_numpy()
+    n_rows, n_columns = counts.shape
+    total = counts.sum()
     figure, ax = plt.subplots(
-        figsize=(1.6 * table.shape[1] + 3.5, 0.34 * table.shape[0] + 1.2), layout="constrained"
+        figsize=(1.6 * (n_columns + 1) + 3.5, 0.34 * (n_rows + 1) + 1.2), layout="constrained"
     )
     ax.imshow(counts, cmap="Blues", aspect="auto")
     for (i, j), count in np.ndenumerate(counts):
         color = "white" if count > 0.6 * counts.max() else "black"
         ax.text(j, i, count, ha="center", va="center", fontsize=9, color=color)
-    ax.set_xticks(range(table.shape[1]), table.columns, rotation=20, ha="right")
-    ax.set_yticks(range(table.shape[0]), table.index)
+    for i, count in enumerate(counts.sum(axis=1)):
+        ax.text(n_columns, i, _count_and_share(count, total), ha="center", va="center", fontsize=9)
+    for j, count in enumerate(counts.sum(axis=0)):
+        ax.text(j, n_rows, _count_and_share(count, total), ha="center", va="center", fontsize=9)
+    ax.text(n_columns, n_rows, total, ha="center", va="center", fontsize=9, fontweight="bold")
+    ax.axvline(n_columns - 0.5, color="black", linewidth=0.8)
+    ax.axhline(n_rows - 0.5, color="black", linewidth=0.8)
+    ax.set_xlim(-0.5, n_columns + 0.5)
+    ax.set_ylim(n_rows + 0.5, -0.5)
+    ax.set_xticks(range(n_columns + 1), [*table.columns, "total"], rotation=20, ha="right")
+    ax.set_yticks(range(n_rows + 1), [*table.index, "total"])
     ax.set_xlabel(resolve_site_labels(columns).name)
     ax.set_ylabel(resolve_site_labels(rows).name)
     return figure
@@ -303,6 +328,11 @@ def spec_table(specs: Iterable, fields: Sequence[str]) -> pd.DataFrame:
     """
     rows = {spec.name: {field: str(getattr(spec, field)) for field in fields} for spec in specs}
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def _count_and_share(count: int, total: int) -> str:
+    """``"1681 (21.0%)"``: a count and its percentage of *total*."""
+    return f"{count} ({100 * count / total:.1f}%)"
 
 
 def _display_names(spec) -> list[str]:

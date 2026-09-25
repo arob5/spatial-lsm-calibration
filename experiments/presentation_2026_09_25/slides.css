@@ -2,3 +2,13 @@
 .reveal table {
   font-size: 0.7em;
 }
+
+/* A small aside pinned to the top-right corner of a slide. */
+.reveal .slides section .corner-note {
+  position: absolute;
+  top: 0;
+  right: 0;
+  margin: 0;
+  font-size: 0.45em;
+  color: #666;
+}

@@ -102,6 +102,10 @@ pfts = site_labels_field("pft_16class")
 ax = plot_map(pfts, extent="NORTH_AMERICA");
 ```
 
+::: {.corner-note}
+Lambert azimuthal equal-area projection, centered at 50 °N, 100 °W
+:::
+
 ## Yang's 16 PFTs
 
 ```{python}
@@ -113,17 +117,6 @@ plots.class_counts();
 ```{python}
 plots.label_crosstab_heatmap();
 ```
-
-## Sites: assumptions
-
-- Sites are **8000 irregular points**, 7-82 °N, with ids 1-8000 that are a
-  shared key with collaborators.
-- A site-labels product is an **experimental choice, not site metadata**: one
-  product per source, joined on `site_id` when needed.
-- We calibrate under the **16-class product** from the Dietze lab, which
-  supersedes the reanalysis's three PFTs.
-- Maps use a **Lambert azimuthal equal-area** projection centered at 50 °N,
-  100 °W, with its distortion checked over the whole pool.
 
 ## Sites: open questions
 
