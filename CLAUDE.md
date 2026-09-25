@@ -76,8 +76,10 @@ Facts specific to this working copy, which the README deliberately does not carr
   files, site 1 members 1 and 2 and site 27 member 94, under
   `data/raw/initial_conditions/files/`; of the soil texture ensemble, sites 1
   and 27 only, three files of 769,300, which is why
-  `scripts/survey_soil_texture.py` needs `--no-check` here. The NEE csv, the
-  five constraint files (tracked), the converted initial condition ensemble
+  `scripts/survey_soil_texture.py` needs `--no-check` here. The two converted
+  NEE time series (`data/raw/net_ecosystem_exchange/*.nc`, not tracked, copied
+  from the SCC) and AmeriFlux's site listing beside them, the NEE tower table
+  (tracked), the five constraint files (tracked), the converted initial condition ensemble
   (tracked, all 8000 sites x 100 members), the assembled `.Rdata` pair retained
   for validation, the site shapefile, both leaf phenology CSVs, and the two
   site-labels data sources and the covariate table (all tracked) are complete.
@@ -116,16 +118,28 @@ Operational rules that follow from the data and are easy to get wrong in code:
   (README Note 15, issue #9), so pySIPNET refuses them until they are
   corrected; the tests read them through `tests/conftest.py`'s
   `regular_drivers_root`, which rewrites only that column.
-- Drop the NEE csv's `ens_mean` column; never admit it to the NEE ensemble's
-  member dim (`nee_member`, when NEE is ingested).
+- Never parse an AmeriFlux FLUXNET timestamp through a time zone, the
+  session's default included (R's `tz = ""`, pandas `tz_localize`): the stamps
+  are local standard time with no daylight saving, and a zone with DST drops or
+  duplicates the half-hours at each transition. Read them as naive
+  `YYYYMMDDHHMM` and shift by the tower's fixed `utc_offset_hours` from the
+  tower table. Every NEE file from before the AmeriFlux ingest broke this rule,
+  which is why none of them is used (`data/README.md`, Net ecosystem exchange).
+- A tower's pool site comes from the tower table, never from a nearest-point
+  search; the table records how each match was made.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
   `data/processed/sites/sites.csv`. There is no other site source.
-- Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
-  every constraint is ragged over site x time.
+- Do not assume rectangular coverage: observed NEE is mostly missing over
+  site x time, and every constraint is ragged over site x time.
 - Constraints keep their **source units** and their source's own time
   labels. Nothing is converted or aligned at ingest; the observation operator
   does both. See the processed-data conventions below.
+- Observed NEE keeps its source units too, with **one deliberate exception to
+  the time labels**: the processed files are on UTC, each tower's local
+  standard time shifted by its fixed `utc_offset_hours`. That is a relabeling
+  of the clock, not an alignment: every value keeps its own half-hour or hour,
+  and the offset each tower was shifted by is a coordinate of the file.
 - The initial conditions' processed file is in the source files' units, negative
   wood and leaf draws included, and applies **no state-to-parameter mapping**:
   three of the four SIPNET initial parameters depend on calibrated parameters,
@@ -792,11 +806,11 @@ pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
   __init__.py             # the module map and the dependency direction; no
                           # re-exports; turns on 64-bit JAX
-  sites.py                # SITE_GRID + grid conversions, load_sites(),
-                          # select_sites(site_ids=, bbox=, where=, n_random=,
-                          # seed=), EXTENTS (named lon/lat boxes), N_SITES;
-                          # site_lookup(), site_locations(), site_coordinates(),
-                          # the site-table and pool checks;
+  sites.py                # SITE_GRID + grid conversions and cell_of(),
+                          # load_sites(), select_sites(site_ids=, bbox=, where=,
+                          # n_random=, seed=), EXTENTS (named lon/lat boxes),
+                          # N_SITES; site_lookup(), site_locations(),
+                          # site_coordinates(), the site-table and pool checks;
                           # default_site_table_path()
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
@@ -832,6 +846,23 @@ src/sipnet_calibration/
                           # netcdf_encoding(), initial_condition_fields()
     sipnet_parameters.py  # to_sipnet_initial_conditions() and, for an ensemble,
                           # to_sipnet_initial_condition_fields()
+  net_ecosystem_exchange/ # observed NEE, laid out as initial_conditions/ is
+    __init__.py           # curated exports + the processed files' data model
+    names.py              # the raw (local standard time) and processed (UTC)
+                          # axes per resolution, file names, path helpers
+    source_files.py       # SOURCE (the AmeriFlux FULLSET CSV), read_source_file()
+    raw.py                # build_raw(), raw_encoding(), read_raw(): every tower on
+                          # one local-standard-time axis per resolution
+    towers.py             # the tower table: exact tower-to-site matching, one
+                          # primary tower per site and resolution,
+                          # recover_utc_offset() from SW_IN_POT,
+                          # shortwave_lag_steps(); read_tower_table()
+    specs.py              # NetEcosystemExchangeSpec + NET_ECOSYSTEM_EXCHANGE, one
+                          # per series (ameriflux_nee_<resolution>_ustar_<variable|constant>)
+    sources.py            # SOURCE_READERS: raw file -> (tower, time) UTC series
+    processed.py          # build_net_ecosystem_exchange(),
+                          # load_net_ecosystem_exchange(),
+                          # net_ecosystem_exchange_fields() and the companions
   drivers.py              # load_drivers(): raw .clim files read by pySIPNET's
                           # ClimateDrivers, stacked into (driver_member, site, time) on
                           # pySIPNET's axis; no processed file exists
@@ -922,15 +953,20 @@ scripts/                  # ingest: data/raw/ -> data/processed/; and
                           # and write nothing under data/. The phenology and
                           # soil texture ones also assert what data/README.md
                           # records and exit non-zero when it no longer holds.
-  raw_sources/            # NOT the pipeline: code that *makes* a tracked raw
-                          # input, run once. SCC-only except the Natural
-                          # Earth download.
+  raw_sources/            # NOT the pipeline: code that *makes* a raw input,
+                          # run once. SCC-only except the Natural Earth download
+                          # and the NEE tower table, which needs only the raw
+                          # NEE files.
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
 data/raw/                 # never edited; raw/sites/, raw/constraints/,
                           # raw/initial_conditions/, raw/site_labels/,
-                          # raw/covariates/ and raw/natural_earth/ are tracked
+                          # raw/covariates/ and raw/natural_earth/ are tracked,
+                          # and raw/net_ecosystem_exchange/'s tower table,
+                          # tower list and provenance (not its time series)
 data/processed/           # ingest output == the plotting input; untracked;
-                          # constraints/<name>.nc is one CF-1.11 netCDF per constraint
+                          # constraints/<name>.nc is one CF-1.11 netCDF per
+                          # constraint; net_ecosystem_exchange/<name>.nc one per
+                          # NEE series
 tests/                    # conftest.py: every fixture or builder two files use;
                           # storage-backed data found through
                           # conventions.data_root(), tracked inputs through
