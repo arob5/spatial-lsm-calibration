@@ -3,20 +3,25 @@
 Overview
 --------
 This module defines how the ERA5 driver ensemble is represented -- its
-dimensions, coordinates, variable names, units and dtype -- and provides the
-functions that read it into that form. It is the single description of that
-layout: the tests, the plotting layer and anything else that wants driver data
-get the schema from here rather than restating it.
+dimensions, coordinates, variables and attributes -- and provides the functions
+that read it into that form. Everything about a single ``.clim`` file belongs
+to pySIPNET, which owns the SIPNET climate format:
+:class:`pysipnet.climate.ClimateDrivers` parses it, validates it, names its
+columns and builds its time axis. What this module adds is the ensemble: the
+``ERA5_<site>_<member>`` directory layout, the stacking of many files into
+``(member, site, time)``, the site coordinates, and a few checks on the source
+that pySIPNET has no reason to make.
 
 Unlike the site table and the constraints, the drivers have **no
 processed file**. SIPNET reads the raw ``.clim`` text directly (pySIPNET
 symlinks it into the run directory), and the full ensemble is 80,000 files, so
 rewriting it into a store would create a large cache that the model never
-reads. Instead :func:`load_drivers` parses the raw files for the sites a caller
+reads. Instead :func:`load_drivers` reads the raw files for the sites a caller
 names and returns the canonical form in memory. The dependency still runs one
 way::
 
     raw/drivers/ERA5_<site>_<member>/ERA5.<member>.<start>.<end>.clim
+      -> pysipnet.climate.ClimateDrivers      one file
       -> this module          load_drivers() -> xarray.Dataset
 
 with ``processed/sites/sites.csv`` joined on for the site coordinates. Anyone
@@ -32,15 +37,11 @@ Input data
     holding one file ``ERA5.<member>.<start>.<end>.clim``. ``<site>`` is the
     1-8000 site identifier and ``<member>`` the source's 1-based member index.
     :func:`default_drivers_root` says where the directory is expected to be.
-
-    A ``.clim`` file is the 14-column SIPNET climate format: tab-delimited text
-    with space-padded fields and no header, one row per timestep, the columns
-    of :data:`CLIM_FILE_COLUMNS` in that order. The files are 3-hourly. Three
-    columns are constants, asserted at :data:`CLIM_FILE_CONSTANTS`; only
-    ``length`` is kept, as the ``timestep_days`` attribute. The ``time`` column
-    is a drifting hour-of-day label that must not be used as a timestamp
-    (issue #9), so :func:`read_clim_file` uses it only to identify a row's slot
-    within its day.
+    Each file is a SIPNET climate file, read by pySIPNET in whichever layout it
+    has, and refused by pySIPNET if it fails its validation -- including a
+    ``time`` column that disagrees with the declared step lengths. The ERA5
+    files as generated fail it for that reason (``data/README.md`` Note 15), so
+    until they are corrected :func:`load_drivers` refuses them.
 
 ``data/processed/sites/sites.csv``
     The site table, for the ``lon``/``lat`` coordinates and to confirm that the
@@ -52,39 +53,27 @@ Data model
 ----------
 :func:`load_drivers` returns an ``xarray.Dataset`` shaped as follows.
 
-**Dimensions**: ``member``, ``site``, ``time``.
+**Dimensions**: ``member``, ``site``, ``time``, and ``bounds`` for
+``time_bounds``.
 
-**Data variables**, all ``float64`` on ``(member, site, time)``, one per
-consumed ``.clim`` column, named as :data:`DRIVER_VARIABLES`:
+**Data variables**, all ``float64`` on ``(member, site, time)``: the eight
+value columns of the climate file, under pySIPNET's registry names, listed in
+:data:`DRIVER_VARIABLES` -- ``air_temperature``, ``soil_temperature``,
+``photosynthetically_active_radiation``, ``precipitation``,
+``vapor_pressure_deficit``, ``soil_vapor_pressure_deficit``,
+``vapor_pressure`` and ``wind_speed``. Each carries the attributes pySIPNET
+gives it -- ``units``, ``long_name``, ``description``, ``kind``,
+``time_reference``, ``cell_methods`` and the rest -- plus
+``units_provenance``: the units are the ones the SIPNET format documents, not
+units the producer has confirmed.
 
-==================== ====================== ========== =================
-Processed name       Source column          Units      Kind
-==================== ====================== ========== =================
-``air_temperature``  ``tair``               deg C      timestep_mean
-``soil_temperature`` ``tsoil``              deg C      timestep_mean
-``par``              ``par``                mol m-2    timestep_total
-``precipitation``    ``precip``             mm         timestep_total
-``vpd``              ``vpd``                Pa         timestep_mean
-``soil_vpd``         ``vpd_soil``           Pa         timestep_mean
-``vapor_pressure``   ``vpress``             Pa         timestep_mean
-``wind_speed``       ``wspd``               m s-1      timestep_mean
-==================== ====================== ========== =================
-
-``par`` and ``precipitation`` are totals over the timestep, which is why they
-sum when timesteps are combined; the rest are means over it and are averaged.
-The
-``kind`` is pySIPNET's, read from its climate registry, and is what
-:func:`sipnet_calibration.obs_ops.aggregate_time` takes the rule from. Each
-variable carries ``units``, ``long_name``, ``source_name`` and ``kind`` from
-:data:`DRIVER_VARIABLE_ATTRS`, plus ``units_status`` and ``units_provenance``:
-the units are the ones the ``.clim`` format documents and SIPNET assumes when
-it reads the column, not units confirmed by the producer of these files.
-
-``par`` and ``precipitation`` also carry ``n_values_below_zero``, and ``vpd``,
-``soil_vpd`` and ``wind_speed`` carry ``n_values_not_positive``. The source
-files hold small negative excursions around zero and exact zeros where SIPNET
-would clamp; they are read through unchanged and counted, so that nobody has to
-rediscover that ``par > 0`` is not a daylight test.
+``photosynthetically_active_radiation`` and ``precipitation`` also carry
+``n_values_below_zero``, and ``vapor_pressure_deficit``,
+``soil_vapor_pressure_deficit`` and ``wind_speed`` carry
+``n_values_not_positive``. The source files hold small negative excursions
+around zero, and exact zeros, which SIPNET clamps for the vapor pressure
+deficit and wind speed; they are read through unchanged and counted, so that
+nobody has to rediscover that radiation above zero is not a daylight test.
 
 With ``allow_missing=True`` there is one more variable, ``bool`` on
 ``(member, site)``::
@@ -96,27 +85,42 @@ requested pair must exist, so the variable is not written.
 
 **Coordinates**
 
-======================= ============ ==========================================
-Name                    Dims         Meaning
-======================= ============ ==========================================
-``member``              ``member``   0-based ``int16``, in ascending order
-``source_member_index`` ``member``   the 1-based index in the directory name
-``site``                ``site``     handed-down ``int32`` site id, ascending
-``lon``, ``lat``        ``site``     from the site table, ``float64``
-``time``                ``time``     ``datetime64[ns]``, 3-hourly, see below
-======================= ============ ==========================================
+======================= ================== ====================================
+Name                    Dims               Meaning
+======================= ================== ====================================
+``member``              ``member``         0-based ``int16``, in ascending order
+``source_member_index`` ``member``         the 1-based index in the directory
+                                           name
+``site``                ``site``           handed-down ``int32`` site id,
+                                           ascending
+``lon``, ``lat``        ``site``           from the site table, ``float64``
+``time``                ``time``           ``datetime64[ns]``, the end of each
+                                           step
+``time_step_start``     ``time``           the start of each step
+``time_step_length``    ``time``           each step's declared length,
+                                           ``timedelta64[ns]``
+``time_bounds``         ``time, bounds``   ``[time_step_start, time]``
+======================= ================== ====================================
 
-**Time.** Labels are the nominal ``year``/``day``/``3 * slot`` instants, built
-by :func:`sipnet_calibration.obs_ops.sipnet_time_index` and never from the
-``time`` column's value. The coordinate carries ``long_name``,
-``time_zone = "UTC"``, ``time_label = "interval_end"``, ``time_label_note``,
-``clock_status`` and ``clock_provenance``: the value in the row labeled hour
-``h`` covers the interval ``(h - 3, h]`` on a clock consistent with UTC. That
-is inferred from the data, not confirmed by the producer, which is what the
-status attribute says.
+**Time.** The time coordinates are pySIPNET's, taken unchanged from
+:attr:`pysipnet.climate.ClimateDrivers.xarray`: the same axis, with the same
+attributes, that a SIPNET run on the file has for its output. Its
+``year``/``day_of_year``/``hour_of_day`` row labels are not kept, since
+``time_step_start`` is the same instant. A row's labels are the start of its
+step on whatever clock the drivers use, and ``time`` is the step's end. The
+clock is ``time_zone``, on ``time`` and on the Dataset, which is
+``"undeclared"`` unless the caller declares one.
 
-**Attributes** on the dataset: ``title``, ``source_root``, ``source_layout``,
-``timestep_days``, ``member_source = "met"``, ``member_correspondence``,
+These are the semantics of SIPNET's format, which the variable attributes
+state. They are true of a file that follows the format. The ERA5 files do not
+(``data/README.md`` Note 16): their radiation and precipitation cover the step
+ending at the label rather than starting there, and their other forcing
+columns are instantaneous at the label rather than means over the step.
+
+**Attributes** on the dataset: pySIPNET's -- ``Conventions``,
+``time_convention``, ``time_zone``, ``time_axis_source`` and
+``time_step_length_source`` among them -- and ``title``, ``source_root``,
+``source_layout``, ``member_source = "met"``, ``member_correspondence``,
 ``n_sites``, ``n_members`` and ``coverage`` (``"complete"`` or ``"gaps"``).
 
 **Missing values.** There are none in the source. A ``NaN`` appears only under
@@ -134,10 +138,10 @@ Functions
     with dims ``(member, site, time)`` and its own units. This is the view the
     plotting layer wants.
 
-:func:`read_clim_file`
-    Parse one ``.clim`` file exactly, in source column names, and run the
-    per-file checks. The building block :func:`load_drivers` is made of, public
-    so that tests and one-off surveys apply the same checks the reader does.
+:func:`read_driver_file`
+    Read one ``.clim`` file through pySIPNET and apply this module's own check
+    on its values. The building block :func:`load_drivers` is made of, public
+    so that tests and one-off surveys read a file exactly as the loader does.
 
 :func:`available_members`
     Which member indices have a directory for a given site.
@@ -151,33 +155,20 @@ Functions
 
 Notes
 -----
+**Why pySIPNET reads the files.** The climate format, its validation and the
+meaning of its time columns are pySIPNET's, and SIPNET runs on exactly what
+pySIPNET reads. A second parser here would be a second definition of the same
+format, free to disagree with the one the model is run through. So nothing here
+parses ``.clim`` text or builds a time axis; a file pySIPNET refuses is refused
+here, with pySIPNET's reason.
+
 **Why a reader and not a store.** SIPNET consumes the raw text, so a store
 would be a second copy that only the analysis side reads, and the full
 ensemble is hundreds of gigabytes of text. Reading direct means what is
-plotted is parsed from the exact file the model ran on. The cost is that reads
+plotted is read from the exact file the model ran on. The cost is that reads
 are site-major only: a site's whole record is one file, but one timestep across
-the pool means parsing every file. Calibration and the per-site figures need
+the pool means reading every file. Calibration and the per-site figures need
 the former.
-
-**Why the time column is not the timestamp.** The ``time`` column is hour-of-
-day from a whole-year ``linspace`` reduced modulo 24 with an off-by-one
-endpoint (issue #9). It drifts by up to two hours within a year and is not
-monotone within a year. Its drift is always non-negative and below one step,
-so ``floor(time / 3)`` identifies the slot in every row, and the drift itself
-is asserted so that a corrected upstream file is noticed rather than silently
-accepted.
-
-**Why end-of-interval labels.** A PAR-phase test across two sites 54 degrees
-apart puts the drivers on a longitude-tracking clock consistent with UTC, with
-each row's PAR accumulated over the three hours *ending* at its nominal label.
-Keeping the nominal labels and recording ``time_label = "interval_end"`` means
-a daily resample groups exactly the eight rows SIPNET itself calls one day,
-the same :func:`~sipnet_calibration.obs_ops.sipnet_time_index` applies
-unchanged to SIPNET output, and no row acquires a 2011 date. Anything that
-needs interval-start semantics reads the label and shifts.
-
-**Why float64.** There is no disk to save, and the text carries up to eight
-significant figures in some columns, which float32 does not hold.
 
 **Member indices.** ``member`` is 0-based to match every other product;
 ``source_member_index`` keeps the 1-based file index beside it so the mapping
@@ -196,8 +187,8 @@ Name the sites, get the canonical form::
     drivers = load_drivers(sites["site_id"])          # every member present
 
     drivers["air_temperature"].dims                   # ('member', 'site', 'time')
-    drivers["par"].attrs["kind"]                      # 'timestep_total'
-    drivers["time"].attrs["time_label"]               # 'interval_end'
+    drivers["precipitation"].attrs["kind"]            # 'timestep_total'
+    drivers["time"].attrs["time_zone"]                # 'undeclared'
 
     # Two members only, and tolerate sites that lack a file for one of them.
     partial = load_drivers([1, 27], members=[1, 2], allow_missing=True)
@@ -206,7 +197,7 @@ Name the sites, get the canonical form::
 For plotting, take the per-variable view::
 
     fields = driver_fields(drivers)
-    fields["par"].attrs["units"]                      # 'mol m-2'
+    fields["photosynthetically_active_radiation"].attrs["units"]   # 'mol m-2'
 
 A cached subset, if a workflow wants one, is the caller's business::
 
@@ -224,171 +215,45 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.climate import ClimateDrivers, normalize_time_zone
+from pysipnet.dataset import unfilled_coordinates
+from pysipnet.variables import CLIMATE_VARIABLES
 
-from pysipnet.variables import resolve_climate_variable
-
-from sipnet_calibration.obs_ops import sipnet_time_index
 from sipnet_calibration import conventions
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, load_sites
+from sipnet_calibration.fields import TIME_COORDS
+from sipnet_calibration.sites import load_sites
 
 __all__ = [
-    "CLIM_FILE_COLUMNS",
-    "CLIM_FILE_CONSTANTS",
-    "CLOCK_PROVENANCE",
-    "CLOCK_STATUS",
     "DRIVER_DIRECTORY_TEMPLATE",
     "DRIVER_FILE_GLOB",
     "DRIVER_PRESENT",
-    "DRIVER_VARIABLE_ATTRS",
     "DRIVER_VARIABLES",
     "MEMBER_SOURCE",
     "NEGATIVE_TOLERANCE",
-    "SOURCE_VARIABLE_NAMES",
-    "STEPS_PER_DAY",
-    "TIME_LABEL",
-    "TIME_ZONE",
-    "TIMESTEP_HOURS",
     "UNITS_PROVENANCE",
-    "UNITS_STATUS",
     "available_members",
     "default_drivers_root",
     "driver_fields",
     "driver_file",
     "load_drivers",
-    "read_clim_file",
+    "read_driver_file",
 ]
 
-#: The 14 columns of a ``.clim`` file, in file order, under the names pySIPNET
-#: gives them. These are *source* names; :data:`SOURCE_VARIABLE_NAMES` maps the
-#: eight value columns onto processed names.
-CLIM_FILE_COLUMNS = (
-    "loc",
-    "year",
-    "day",
-    "time",
-    "length",
-    "tair",
-    "tsoil",
-    "par",
-    "precip",
-    "vpd",
-    "vpd_soil",
-    "vpress",
-    "wspd",
-    "soil_wetness",
+#: The driver variables, under pySIPNET's names, in climate-file column order:
+#: every column of pySIPNET's climate registry outside its ``time`` group, which
+#: becomes the time axis.
+DRIVER_VARIABLES: tuple[str, ...] = tuple(
+    spec.name for spec in CLIMATE_VARIABLES if spec.group != "time"
 )
 
-#: Columns that must hold one value in every row of every file, and the value.
-#: ``loc`` is a location index SIPNET only checks for constancy, ``length`` is
-#: the timestep in days, ``soil_wetness`` is a legacy column SIPNET discards.
-#: None of the three becomes a variable; ``length`` becomes the
-#: ``timestep_days`` attribute once it has been asserted.
-CLIM_FILE_CONSTANTS = {"loc": 0, "length": 0.125, "soil_wetness": 0.6}
-
-#: The timestep, in hours, implied by :data:`CLIM_FILE_CONSTANTS`.
-TIMESTEP_HOURS = 24 * CLIM_FILE_CONSTANTS["length"]
-
-#: Rows per day, implied by the timestep.
-STEPS_PER_DAY = int(round(24 / TIMESTEP_HOURS))
-
-#: Source column -> processed variable name, for the eight columns that become
-#: variables. Applied by :func:`load_drivers`; :func:`read_clim_file` keeps the
-#: source names because a ``.clim`` row is positional and carries no identity
-#: of its own.
-SOURCE_VARIABLE_NAMES = {
-    "tair": "air_temperature",
-    "tsoil": "soil_temperature",
-    "par": "par",
-    "precip": "precipitation",
-    "vpd": "vpd",
-    "vpd_soil": "soil_vpd",
-    "vpress": "vapor_pressure",
-    "wspd": "wind_speed",
-}
-
-#: The driver variables, by processed name, in file column order.
-DRIVER_VARIABLES = tuple(SOURCE_VARIABLE_NAMES.values())
-
-#: What is and is not settled about the units below.
-UNITS_STATUS = "format_documented"
-
-#: Why. Recorded on every variable so that no consumer can take the units as
-#: confirmed.
+#: Why the units are what they are. Recorded on every variable so that no
+#: consumer can take the units as confirmed.
 UNITS_PROVENANCE = (
     "The units the SIPNET climate-file format documents for this column "
-    "(pySIPNET climate.py, and the conversions in sipnet.c), which is what "
-    "SIPNET assumes when it reads the file. Whether the producer wrote the "
+    "(pySIPNET's climate registry, and the conversions in sipnet.c), which is "
+    "what SIPNET assumes when it reads the file. Whether the producer wrote the "
     "values in these units has not been confirmed; the magnitudes are "
     "consistent with them, which is evidence and not confirmation."
-)
-
-#: Per-variable metadata, by processed name. ``kind`` is added below from
-#: pySIPNET's climate registry, which owns it.
-DRIVER_VARIABLE_ATTRS = {
-    "air_temperature": {
-        "units": "deg C",
-        "long_name": "Mean air temperature over the timestep",
-        "source_name": "tair",
-    },
-    "soil_temperature": {
-        "units": "deg C",
-        "long_name": "Mean soil temperature over the timestep",
-        "source_name": "tsoil",
-    },
-    "par": {
-        "units": "mol m-2",
-        "long_name": "Photosynthetically active radiation, total over the timestep",
-        "source_name": "par",
-    },
-    "precipitation": {
-        "units": "mm",
-        "long_name": "Precipitation, total over the timestep",
-        "source_name": "precip",
-    },
-    "vpd": {
-        "units": "Pa",
-        "long_name": "Vapor pressure deficit",
-        "source_name": "vpd",
-    },
-    "soil_vpd": {
-        "units": "Pa",
-        "long_name": "Soil-to-air vapor pressure deficit",
-        "source_name": "vpd_soil",
-    },
-    "vapor_pressure": {
-        "units": "Pa",
-        "long_name": "Vapor pressure in the canopy airspace",
-        "source_name": "vpress",
-    },
-    "wind_speed": {
-        "units": "m s-1",
-        "long_name": "Mean wind speed over the timestep",
-        "source_name": "wspd",
-    },
-}
-
-# Taken from pySIPNET rather than written down, so a change to a variable's
-# kind there cannot leave a stale copy here, and a source column that stops
-# resolving is an import error rather than a wrong aggregation rule.
-for _attrs in DRIVER_VARIABLE_ATTRS.values():
-    _attrs["kind"] = resolve_climate_variable(_attrs["source_name"]).kind.value
-
-#: The clock the time labels are on, and what a label marks.
-TIME_ZONE = "UTC"
-TIME_LABEL = "interval_end"
-
-#: How well the clock is established.
-CLOCK_STATUS = "inferred"
-
-#: From what. Recorded on the ``time`` coordinate.
-CLOCK_PROVENANCE = (
-    "The diurnal PAR phase moves with longitude between site 1 (24.6 W) and "
-    "site 27 (78.6 W) by the amount a UTC clock requires, which excludes a "
-    "fixed local clock; and a PAR-centroid test at both sites places each "
-    "row's total over the three hours ending at its nominal label. 'UTC with "
-    "end-of-interval labels' and 'UTC-3 with start-of-interval labels' name "
-    "the same intervals and cannot be told apart. Not confirmed by the "
-    "producer. See issues #8 and #9."
 )
 
 #: Which ensemble the ``member`` coordinate indexes. Member indices are
@@ -406,9 +271,10 @@ DRIVER_PRESENT = "driver_present"
 DRIVER_DIRECTORY_TEMPLATE = "ERA5_{site}_{member}"
 DRIVER_FILE_GLOB = "ERA5.*.clim"
 
-#: How far below zero ``par`` and ``precip`` may go before a file is refused.
-#: The source holds excursions of order 1e-5 and 1e-15 that read as generator
-#: noise around zero; anything larger is a different problem.
+#: How far below zero photosynthetically active radiation and precipitation may
+#: go before a file is refused. The source holds excursions of order 1e-5 and
+#: 1e-15 that read as generator noise around zero; anything larger is a
+#: different problem.
 NEGATIVE_TOLERANCE = 1e-4
 
 
@@ -419,8 +285,7 @@ def default_drivers_root() -> Path:
     otherwise ``data/raw/drivers`` under this checkout. Experiments name their
     paths in ``config.py``.
     """
-    data_root = conventions.data_root()
-    return data_root / "raw" / "drivers"
+    return conventions.data_root() / "raw" / "drivers"
 
 
 def driver_file(root: Path | str, site: int, member: int) -> Path:
@@ -483,7 +348,7 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
         1-based member indices in ascending order, possibly empty. Only the
         directory's existence is consulted; whether the file inside it is
         present and well formed is :func:`driver_file` and
-        :func:`read_clim_file`'s business. A directory whose name is not
+        :func:`read_driver_file`'s business. A directory whose name is not
         exactly the template for its numbers, ``ERA5_3_01`` say, is ignored,
         since :func:`driver_file` could not find it either.
     """
@@ -500,85 +365,40 @@ def available_members(root: Path | str, site: int) -> tuple[int, ...]:
     return tuple(sorted(members))
 
 
-def read_clim_file(path: Path | str) -> pd.DataFrame:
-    """Parse one ``.clim`` file exactly and check it.
+def read_driver_file(path: Path | str, *, time_zone: str | None = None) -> ClimateDrivers:
+    """Read one ``.clim`` file through pySIPNET and check its values.
 
     Parameters
     ----------
     path:
         The file to read.
+    time_zone:
+        The clock the file's labels are on, ``"UTC"`` or a fixed offset such
+        as ``"UTC-07:00"``, passed to pySIPNET. ``None`` leaves it undeclared.
 
     Returns
     -------
-    pandas.DataFrame
-        The 14 columns of :data:`CLIM_FILE_COLUMNS` under their *source*
-        names, one row per timestep in file order. ``year`` and ``day`` are
-        ``int32``; every other column is ``float64``, parsed with
-        ``float_precision="round_trip"`` so the value is exactly the text.
+    pysipnet.climate.ClimateDrivers
+        The file, read and validated by pySIPNET.
 
     Raises
     ------
     ValueError
-        If any per-file check fails: an empty file, a row without 14 fields, a
-        field that is not a number, a non-finite value, a ``year`` or ``day``
-        that is not a whole number, a constant column off its value, a day
-        without exactly :data:`STEPS_PER_DAY` rows, days not running
-        ``1..n_days`` within each year, years not contiguous or not in
-        ascending order, a ``time`` column that does not follow the
-        drifting-label model of issue #9, or ``par``/``precip`` further below
-        zero than :data:`NEGATIVE_TOLERANCE`. The message names the file and
-        the invariant.
-
-    Notes
-    -----
-    The checks live here rather than in :func:`load_drivers` so that a file is
-    checked wherever it is parsed, and so that a one-off survey over the whole
-    ensemble applies exactly the checks the reader does.
-
-    The drift model is asserted, not merely tolerated, so that a corrected
-    upstream regeneration is noticed. When that happens the check, not the
-    caller, is what needs changing.
+        If pySIPNET refuses the file, with pySIPNET's reason; or if
+        photosynthetically active radiation or precipitation falls further
+        below zero than :data:`NEGATIVE_TOLERANCE`. The message names the file.
+    OSError
+        If the file cannot be opened, as pySIPNET raises it:
+        ``FileNotFoundError`` for a missing file or a dangling link, among
+        others.
     """
     path = Path(path)
     try:
-        raw = pd.read_csv(
-            path,
-            sep=r"\s+",
-            header=None,
-            dtype=np.float64,
-            float_precision="round_trip",
-            # A field reading "NA" must stay a parse failure, not become a
-            # quiet null; and no field may be absorbed into an index.
-            keep_default_na=False,
-            na_values=[],
-            index_col=False,
-        )
-    except pd.errors.EmptyDataError as error:
-        raise ValueError(f"{path}: holds no rows") from error
-    except pd.errors.ParserError as error:
-        raise ValueError(f"{path}: could not be parsed as a .clim file: {error}") from error
+        climate = ClimateDrivers.from_file(path, time_zone=time_zone)
     except ValueError as error:
-        raise ValueError(
-            f"{path}: a field could not be read as a number ({error}). A row with "
-            "fewer than 14 fields shows up here as an empty field."
-        ) from error
-
-    _check_column_count(raw, path)
-    raw.columns = list(CLIM_FILE_COLUMNS)
-    _check_no_missing_values(raw, path)
-
-    frame = raw
-    for column in ("year", "day"):
-        values = frame[column].to_numpy()
-        if np.any(values != np.floor(values)):
-            raise ValueError(f"{path}: {column} holds non-integer values")
-        frame[column] = values.astype(np.int32)
-
-    _check_constant_columns(frame, path)
-    _check_day_structure(frame, path)
-    _check_time_column_follows_drift_model(frame, path)
-    _check_negative_excursions_bounded(frame, path)
-    return frame
+        raise ValueError(f"{path}: pySIPNET refused the file: {error}") from error
+    _check_negative_excursions_bounded(climate.pandas, path)
+    return climate
 
 
 def load_drivers(
@@ -588,6 +408,7 @@ def load_drivers(
     root: Path | str | None = None,
     sites_table: pd.DataFrame | None = None,
     allow_missing: bool = False,
+    time_zone: str | None = None,
 ) -> xr.Dataset:
     """Read the drivers for the given sites into the canonical form.
 
@@ -614,13 +435,17 @@ def load_drivers(
         would propagate silently through any statistic over members. ``True``
         fills the pair with ``NaN`` and adds :data:`DRIVER_PRESENT`. At least
         one requested pair must have a file either way.
+    time_zone:
+        The clock the files' labels are on, declared to pySIPNET for every
+        file; see :func:`read_driver_file`. ``None`` leaves it undeclared.
 
     Returns
     -------
     xarray.Dataset
         The `Data model`_ described in the module docstring: the eight
         :data:`DRIVER_VARIABLES` on ``(member, site, time)``, ``float64``, with
-        ``lon``/``lat`` on ``site`` and ``source_member_index`` on ``member``.
+        pySIPNET's time coordinates, ``lon``/``lat`` on ``site`` and
+        ``source_member_index`` on ``member``.
 
     Raises
     ------
@@ -629,31 +454,20 @@ def load_drivers(
         site has a driver directory; if no requested pair has a file at all;
         or if a requested pair has no file and *allow_missing* is ``False``.
     ValueError
-        If *sites* or *members* is empty, or holds anything but positive whole
-        numbers; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
+        If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
+        or *members* is empty, or holds anything but positive whole numbers,
+        discovered members included; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
         repeats a ``site_id``; if a site is not in the site table; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
-        :func:`read_clim_file`'s checks, its name does not follow the
-        template, the directory and file-name members disagree, or the dates
-        in the file name do not match its first and last day; or if two files
-        do not share one ``(year, day, time)`` grid, since the ``time``
-        coordinate is built once and applied to every file.
-
-    Notes
-    -----
-    Parsing costs about a tenth of a second per file, so ten sites at ten
-    members take about ten seconds and two hundred sites a few minutes; the
-    Notes in the module docstring say why this is preferred to a store. Memory
-    is about 2.4 MB per site-member.
-
-    Values are read through unchanged: negative excursions of ``par`` and
-    ``precipitation`` around zero, and zeros of ``vpd``, ``soil_vpd`` and
-    ``wind_speed`` that SIPNET would clamp, are counted into the variable
-    attributes rather than altered.
+        :func:`read_driver_file`, its name does not follow the template, the
+        directory and file-name members disagree, or the dates in the file name
+        do not match its first and last day; or if two files are not on one
+        time axis, since the time coordinates are shared by every file.
     """
     root = Path(root) if root is not None else default_drivers_root()
     if not root.is_dir():
         raise FileNotFoundError(f"drivers root {root} is not a directory")
+    time_zone = normalize_time_zone(time_zone)
 
     site_ids = _site_ids(sites)
     table = sites_table if sites_table is not None else load_sites()
@@ -671,28 +485,27 @@ def load_drivers(
     if not allow_missing:
         _check_members_complete(present, sites=site_ids, members=member_ids, root=root)
 
-    arrays, time = _read_all(paths, present)
-    dataset = _assemble(
+    arrays, reference = _read_all(paths, present, time_zone=time_zone)
+    return _assemble(
         arrays,
         present=present,
-        time=time,
+        reference=reference,
         sites=site_ids,
         members=member_ids,
         table=table,
         root=root,
         allow_missing=allow_missing,
     )
-    return dataset
 
 
 def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     """One ``DataArray`` per driver variable, in :data:`DRIVER_VARIABLES` order.
 
     Each field has dims ``(member, site, time)``, is named for its variable,
-    carries that variable's attributes from :data:`DRIVER_VARIABLE_ATTRS`
-    with the units caveat attached, and keeps ``lon``/``lat`` and
-    ``source_member_index`` as non-dimension coordinates -- the canonical
-    field shape, which the Dataset already is per variable. This is the view
+    keeps that variable's attributes, and carries pySIPNET's
+    :data:`sipnet_calibration.fields.TIME_COORDS` with ``lon``/``lat`` and
+    ``source_member_index`` as non-dimension coordinates -- the canonical field
+    shape, and the same time coordinates a model field has. This is the view
     facet-by-variable consumes, matching
     :func:`sipnet_calibration.constraints.constraint_fields`.
 
@@ -704,13 +517,20 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     Returns
     -------
     dict
-        Keyed by processed variable name. :data:`DRIVER_PRESENT`, if present,
-        is not a field and is left out.
+        Keyed by variable name. :data:`DRIVER_PRESENT`, if present, is not a
+        field and is left out.
 
     Raises
     ------
     ValueError
         If any of :data:`DRIVER_VARIABLES` is absent from *dataset*.
+
+    Notes
+    -----
+    ``time_bounds`` does not ride on a field, its ``bounds`` dimension being no
+    field dimension, so ``time``'s ``bounds`` attribute is dropped with it, as
+    :func:`sipnet_calibration.fields.from_sipnet_output` does for a model
+    field.
     """
     missing = [name for name in DRIVER_VARIABLES if name not in dataset.data_vars]
     if missing:
@@ -721,7 +541,9 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     fields = {}
     for name in DRIVER_VARIABLES:
         field = dataset[name].copy(deep=False)
-        field.attrs = {**_variable_attrs(name), **dataset[name].attrs}
+        field["time"].attrs = {
+            key: value for key, value in field["time"].attrs.items() if key != "bounds"
+        }
         fields[name] = field
     return fields
 
@@ -731,13 +553,14 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 _DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
 _FILE_PATTERN = re.compile(r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$")
 
-#: Source columns whose sub-zero values are counted, and the attribute name.
-_COUNT_BELOW_ZERO = {"par": "n_values_below_zero", "precip": "n_values_below_zero"}
-_COUNT_NOT_POSITIVE = {
-    "vpd": "n_values_not_positive",
-    "vpd_soil": "n_values_not_positive",
-    "wspd": "n_values_not_positive",
-}
+#: Variables whose sub-zero or non-positive values are counted, and the
+#: attribute each count is written to.
+_COUNT_BELOW_ZERO = ("photosynthetically_active_radiation", "precipitation")
+_COUNT_NOT_POSITIVE = ("vapor_pressure_deficit", "soil_vapor_pressure_deficit", "wind_speed")
+
+#: The time coordinates the Dataset takes from pySIPNET: the ones a field
+#: keeps, and the CF bounds pair that only a Dataset can carry.
+_DATASET_TIME_COORDS = (*TIME_COORDS, "time_bounds")
 
 
 def _site_member_from_directory(name: str) -> tuple[int, int] | None:
@@ -761,46 +584,6 @@ def _dates_from_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
         raise ValueError(f"{path}: file name carries an invalid date: {error}") from error
 
 
-def _time_axis(frame: pd.DataFrame) -> pd.DatetimeIndex:
-    """The nominal timestamps of one parsed file.
-
-    Built by :func:`sipnet_calibration.obs_ops.sipnet_time_index` from
-    ``year``, ``day`` and the slot the ``time`` column identifies. Every file
-    read in one :func:`load_drivers` call must produce the same axis.
-    """
-    return sipnet_time_index(
-        year=frame["year"].to_numpy(),
-        day_of_year=frame["day"].to_numpy(),
-        hours_since_midnight=frame["time"].to_numpy(),
-        timestep_hours=TIMESTEP_HOURS,
-    )
-
-
-def _variable_attrs(name: str) -> dict[str, str]:
-    """Attributes for one variable, with the units caveat attached."""
-    return {
-        **DRIVER_VARIABLE_ATTRS[name],
-        "units_status": UNITS_STATUS,
-        "units_provenance": UNITS_PROVENANCE,
-    }
-
-
-def _time_attrs() -> dict[str, str]:
-    """Attributes for the ``time`` coordinate: clock, label, and their status."""
-    return {
-        "long_name": "Nominal timestamp of the timestep",
-        "time_zone": TIME_ZONE,
-        "time_label": TIME_LABEL,
-        "time_label_note": (
-            "The value in the row labeled hour h covers the interval (h - 3, h]. "
-            "Labels are the nominal year/day/3*slot instants; the source's own "
-            "time column drifts and is not used (issue #9)."
-        ),
-        "clock_status": CLOCK_STATUS,
-        "clock_provenance": CLOCK_PROVENANCE,
-    }
-
-
 def _site_ids(sites: Iterable[int]) -> np.ndarray:
     """Requested sites as a sorted, de-duplicated ``int32`` array."""
     return _positive_integers(sites, name="site identifiers", dtype=np.int32)
@@ -818,7 +601,7 @@ def _member_ids(
             raise FileNotFoundError(
                 f"no driver directories under {root} for sites {sites.tolist()}"
             )
-        return np.array(sorted(found), dtype=np.int16)
+        members = sorted(found)
     return _positive_integers(
         members,
         name="member indices (the source's 1-based directory indices)",
@@ -870,41 +653,40 @@ def _locate_files(
 
 
 def _read_all(
-    paths: dict[tuple[int, int], Path], present: np.ndarray
-) -> tuple[dict[str, np.ndarray], pd.DatetimeIndex]:
-    """Parse every located file into ``(member, site, time)`` arrays.
+    paths: dict[tuple[int, int], Path], present: np.ndarray, *, time_zone: str | None
+) -> tuple[dict[str, np.ndarray], xr.Dataset]:
+    """Read every located file into ``(member, site, time)`` arrays.
 
-    The first file read fixes the time axis; every later file is checked to
-    share its grid before its values are copied in. Cells with no file stay
-    ``NaN``.
+    The first file read supplies the time axis; every later file is checked to
+    be on the same one before its values are copied in. Cells with no file stay
+    ``NaN``. Returns the arrays and the first file's pySIPNET Dataset, whose
+    time coordinates and attributes the result takes.
     """
-    reference: pd.DataFrame | None = None
+    reference: xr.Dataset | None = None
     reference_path: Path | None = None
     arrays: dict[str, np.ndarray] = {}
-    time: pd.DatetimeIndex | None = None
 
     for (i, j), path in sorted(paths.items(), key=lambda item: (item[0][1], item[0][0])):
-        frame = read_clim_file(path)
+        dataset = read_driver_file(path, time_zone=time_zone).xarray
         site, member = _site_member_from_directory(path.parent.name)
-        _check_file_name_matches_contents(path, frame, site=site, member=member)
+        _check_file_name_matches_contents(path, dataset, member=member)
         if reference is None:
-            reference, reference_path = frame, path
-            time = _time_axis(frame)
-            shape = present.shape + (len(frame),)
-            arrays = {source: np.full(shape, np.nan) for source in SOURCE_VARIABLE_NAMES}
+            reference, reference_path = dataset, path
+            shape = present.shape + (dataset.sizes["time"],)
+            arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLES}
         else:
-            _check_grids_identical(reference, frame, reference_path=reference_path, path=path)
-        for source in SOURCE_VARIABLE_NAMES:
-            arrays[source][i, j, :] = frame[source].to_numpy()
-    assert time is not None
-    return arrays, time
+            _check_time_axes_identical(reference, dataset, reference_path=reference_path, path=path)
+        for name in DRIVER_VARIABLES:
+            arrays[name][i, j, :] = dataset[name].to_numpy()
+    assert reference is not None
+    return arrays, reference
 
 
 def _assemble(
     arrays: dict[str, np.ndarray],
     *,
     present: np.ndarray,
-    time: pd.DatetimeIndex,
+    reference: xr.Dataset,
     sites: np.ndarray,
     members: np.ndarray,
     table: pd.DataFrame,
@@ -915,14 +697,14 @@ def _assemble(
     dims = ("member", "site", "time")
     coordinates = table.set_index("site_id").loc[sites]
     data_vars = {}
-    for source, name in SOURCE_VARIABLE_NAMES.items():
-        values = arrays[source]
-        attrs = _variable_attrs(name)
+    for name in DRIVER_VARIABLES:
+        values = arrays[name]
+        attrs = {**reference[name].attrs, "units_provenance": UNITS_PROVENANCE}
         observed = values[present]
-        if source in _COUNT_BELOW_ZERO:
-            attrs[_COUNT_BELOW_ZERO[source]] = int(np.count_nonzero(observed < 0))
-        if source in _COUNT_NOT_POSITIVE:
-            attrs[_COUNT_NOT_POSITIVE[source]] = int(np.count_nonzero(observed <= 0))
+        if name in _COUNT_BELOW_ZERO:
+            attrs["n_values_below_zero"] = int(np.count_nonzero(observed < 0))
+        if name in _COUNT_NOT_POSITIVE:
+            attrs["n_values_not_positive"] = int(np.count_nonzero(observed <= 0))
         data_vars[name] = xr.DataArray(values, dims=dims, attrs=attrs)
     if allow_missing:
         data_vars[DRIVER_PRESENT] = xr.DataArray(
@@ -942,10 +724,9 @@ def _assemble(
             "site": sites.astype(np.int32),
             "lon": ("site", coordinates["lon"].to_numpy(np.float64)),
             "lat": ("site", coordinates["lat"].to_numpy(np.float64)),
-            "time": time,
+            **{name: reference[name].variable for name in _DATASET_TIME_COORDS},
         },
     )
-    dataset["time"].attrs = _time_attrs()
     dataset["member"].attrs = {
         "long_name": "Ensemble member",
         "comment": (
@@ -961,10 +742,10 @@ def _assemble(
         "comment": "The handed-down 1-8000 identifier; never renumbered.",
     }
     dataset.attrs = {
+        **reference.attrs,
         "title": "ERA5 meteorological drivers in SIPNET climate-file form",
         "source_root": str(root),
         "source_layout": f"{DRIVER_DIRECTORY_TEMPLATE}/{DRIVER_FILE_GLOB}",
-        "timestep_days": CLIM_FILE_CONSTANTS["length"],
         "member_source": MEMBER_SOURCE,
         "member_correspondence": (
             "Not established. Whether driver member i corresponds to "
@@ -975,151 +756,35 @@ def _assemble(
         "n_members": int(members.size),
         "coverage": "complete" if present.all() else "gaps",
     }
-    return dataset
+    return unfilled_coordinates(dataset)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_column_count(raw: pd.DataFrame, path: Path) -> None:
-    """Every row has exactly the 14 fields of :data:`CLIM_FILE_COLUMNS`.
-
-    The parser has already refused a row with more fields than the first and
-    an empty file; what remains is a first row of the wrong width, which is a
-    different layout.
-    """
-    expected = len(CLIM_FILE_COLUMNS)
-    if raw.shape[1] != expected:
-        raise ValueError(
-            f"{path}: expected {expected} fields per row, the first row has "
-            f"{raw.shape[1]}. Only the 14-column SIPNET climate layout is read."
-        )
-
-
-def _check_no_missing_values(frame: pd.DataFrame, path: Path) -> None:
-    """No value is missing or non-finite; SIPNET requires complete drivers.
-
-    The parse itself refuses an empty or non-numeric field, so what reaches
-    this check is a field that parsed to an infinity.
-    """
-    finite = np.isfinite(frame.to_numpy())
-    if not finite.all():
-        rows, columns = np.nonzero(~finite)
-        raise ValueError(
-            f"{path}: {rows.size} non-finite value(s); first at data row "
-            f"{int(rows[0])}, column {frame.columns[int(columns[0])]!r}"
-        )
-
-
-def _check_constant_columns(frame: pd.DataFrame, path: Path) -> None:
-    """``loc``, ``length`` and ``soil_wetness`` hold :data:`CLIM_FILE_CONSTANTS`.
-
-    ``length`` is the one that matters: the slot arithmetic and the
-    ``timestep_days`` attribute both assume it, so a file with a different
-    timestep must be refused rather than mislabeled.
-    """
-    for column, expected in CLIM_FILE_CONSTANTS.items():
-        values = frame[column].to_numpy()
-        if not np.all(values == expected):
-            seen = np.unique(values[values != expected])
-            raise ValueError(
-                f"{path}: {column} must be {expected!r} in every row; found "
-                f"{seen[:5].tolist()}"
-                + (
-                    ". A different length is a different timestep, which this "
-                    "reader does not handle."
-                    if column == "length"
-                    else ""
-                )
-            )
-
-
-def _check_day_structure(frame: pd.DataFrame, path: Path) -> None:
-    """Exactly :data:`STEPS_PER_DAY` rows per day and days ``1..n_days`` per year.
-
-    ``n_days`` must be 365 or 366 according to the year, and the years must be
-    contiguous. This is the structure the time axis is built from, so any
-    departure would produce a wrong axis rather than an error downstream.
-    """
-    year = frame["year"].to_numpy()
-    day = frame["day"].to_numpy()
-    years = np.unique(year)
-    if np.any(np.diff(years) != 1):
-        raise ValueError(f"{path}: years are not contiguous: {years.tolist()}")
-    # Rows must be grouped by year in ascending order for the per-year slices
-    # below to be the years they claim to be.
-    if np.any(np.diff(year) < 0):
-        raise ValueError(f"{path}: rows are not in ascending year order")
-
-    for value in years:
-        rows = day[year == value]
-        n_days = 366 if pd.Timestamp(int(value), 1, 1).is_leap_year else 365
-        expected = np.repeat(np.arange(1, n_days + 1), STEPS_PER_DAY)
-        if rows.size != expected.size:
-            raise ValueError(
-                f"{path}: year {value} has {rows.size} rows, expected "
-                f"{expected.size} ({n_days} days x {STEPS_PER_DAY} steps)"
-            )
-        if not np.array_equal(rows, expected):
-            first = int(np.flatnonzero(rows != expected)[0])
-            raise ValueError(
-                f"{path}: year {value} does not run 1..{n_days} with "
-                f"{STEPS_PER_DAY} rows per day; first departure at row {first} "
-                f"of the year (day {int(rows[first])}, expected {int(expected[first])})"
-            )
-
-
-def _check_time_column_follows_drift_model(frame: pd.DataFrame, path: Path) -> None:
-    """The ``time`` column is the modulo-24 ``linspace`` of issue #9.
-
-    For a year of ``n_days``, ``linspace(0, 24 * n_days - 1, STEPS_PER_DAY *
-    n_days) % 24`` must reproduce the column to within 1e-5 h. The label is
-    not used for anything, so this check exists only so that a file *without*
-    the artifact is noticed: it would mean the generator was corrected, and
-    the drift model documented here would then be wrong.
-    """
-    year = frame["year"].to_numpy()
-    time = frame["time"].to_numpy()
-    for value in np.unique(year):
-        labels = time[year == value]
-        n_days = labels.size // STEPS_PER_DAY
-        model = np.linspace(0, 24 * n_days - 1, labels.size) % 24
-        worst = float(np.max(np.abs(labels - model)))
-        if worst > 1e-5:
-            raise ValueError(
-                f"{path}: the time column in {value} departs from the "
-                f"modulo-24 linspace model of issue #9 by up to {worst:.3g} h. "
-                "Either the file was regenerated without the artifact, in which "
-                "case this check and the documentation need updating, or it is "
-                "not a file this reader understands."
-            )
-
-
 def _check_negative_excursions_bounded(frame: pd.DataFrame, path: Path) -> None:
-    """``par`` and ``precip`` never fall below ``-NEGATIVE_TOLERANCE``.
+    """Radiation and precipitation never fall below ``-NEGATIVE_TOLERANCE``.
 
     Small negatives are known and read through; a large one would be a
     different kind of problem and is refused.
     """
-    for column in ("par", "precip"):
-        values = frame[column].to_numpy()
+    for name in _COUNT_BELOW_ZERO:
+        values = frame[name].to_numpy()
         low = values < -NEGATIVE_TOLERANCE
         if low.any():
             raise ValueError(
-                f"{path}: {int(low.sum())} {column} value(s) below "
+                f"{path}: {int(low.sum())} {name} value(s) below "
                 f"-{NEGATIVE_TOLERANCE:g}, the lowest {values.min():.4g}. Small "
                 "negative excursions around zero are known; these are not small."
             )
 
 
-def _check_file_name_matches_contents(
-    path: Path, frame: pd.DataFrame, *, site: int, member: int
-) -> None:
-    """The directory's site and member agree with the file name and the data.
+def _check_file_name_matches_contents(path: Path, dataset: xr.Dataset, *, member: int) -> None:
+    """The directory's member agrees with the file name, and the dates with the data.
 
     The member index appears in both the directory and the file name and the
     two must agree; the ``<start>`` and ``<end>`` dates in the file name must
-    be the first and last day the data covers.
+    be the days the first and last steps start on, as the drivers label them.
     """
     match = _FILE_PATTERN.match(path.name)
     if match is None:
@@ -1132,12 +797,8 @@ def _check_file_name_matches_contents(
             f"directory says member {member}"
         )
     start, end = _dates_from_file_name(path)
-    first = pd.Timestamp(int(frame["year"].iloc[0]), 1, 1) + pd.Timedelta(
-        days=int(frame["day"].iloc[0]) - 1
-    )
-    last = pd.Timestamp(int(frame["year"].iloc[-1]), 1, 1) + pd.Timedelta(
-        days=int(frame["day"].iloc[-1]) - 1
-    )
+    starts = pd.DatetimeIndex(dataset["time_step_start"].values)
+    first, last = starts[0].normalize(), starts[-1].normalize()
     if (start, end) != (first, last):
         raise ValueError(
             f"{path}: the file name covers {start.date()} to {end.date()} but the "
@@ -1145,28 +806,29 @@ def _check_file_name_matches_contents(
         )
 
 
-def _check_grids_identical(
-    reference: pd.DataFrame, frame: pd.DataFrame, *, reference_path: Path, path: Path
+def _check_time_axes_identical(
+    reference: xr.Dataset, dataset: xr.Dataset, *, reference_path: Path, path: Path
 ) -> None:
-    """Two files share one ``(year, day, time)`` grid, value for value.
+    """Two files are on one time axis: the same step starts and lengths.
 
-    The ``time`` coordinate is built from the first file read and applied to
-    all of them, which is sound only if the grids are the same.
+    The time coordinates are taken from the first file read and applied to
+    all of them, which is sound only if every file's axis is the same.
     """
-    if len(frame) != len(reference):
+    if dataset.sizes["time"] != reference.sizes["time"]:
         raise ValueError(
-            f"{path} has {len(frame)} rows where {reference_path} has "
-            f"{len(reference)}; every file read together must share one grid"
+            f"{path} has {dataset.sizes['time']} steps where {reference_path} has "
+            f"{reference.sizes['time']}; every file read together must share one "
+            "time axis"
         )
-    for column in ("year", "day", "time"):
-        a = reference[column].to_numpy()
-        b = frame[column].to_numpy()
+    for name in ("time_step_start", "time_step_length"):
+        a = reference[name].to_numpy()
+        b = dataset[name].to_numpy()
         if not np.array_equal(a, b):
             first = int(np.flatnonzero(a != b)[0])
             raise ValueError(
-                f"{path}: {column} differs from {reference_path} first at data "
-                f"row {first} ({b[first]!r} against {a[first]!r}); every file "
-                "read together must share one (year, day, time) grid"
+                f"{path}: {name} differs from {reference_path} first at step "
+                f"{first} ({b[first]!r} against {a[first]!r}); every file read "
+                "together must share one time axis"
             )
 
 

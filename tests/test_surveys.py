@@ -48,6 +48,7 @@ def _load_script(name: str):
 
 phenology = _load_script("survey_phenology")
 soil = _load_script("survey_soil_texture")
+drivers_survey = _load_script("survey_drivers")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────
@@ -402,3 +403,37 @@ def test_the_local_soil_texture_files_are_on_the_template_and_readable():
     assert content["depths_are_the_expected_profile"] is True
     assert content["files_with_missing_porosity"] == 0
     assert content["max_texture_fraction_residual"] < 1e-6
+
+
+# ── the driver survey ─────────────────────────────────────────────────────────
+
+
+def _driver_pair(root: Path, rows) -> Path:
+    from test_drivers import write_pair
+
+    write_pair(root, 3, 1, rows)
+    return root / "ERA5_3_1"
+
+
+def test_the_driver_survey_reads_a_file_pysipnet_accepts(tmp_path):
+    from test_drivers import synthetic_rows
+
+    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path, synthetic_rows()))
+    assert facts.error is None and facts.n_rows == 2920
+    assert facts.data_dates == ("2013-01-01", "2013-12-31")
+    assert facts.constants["n_columns"] == [14.0]
+
+
+def test_the_driver_survey_names_the_check_a_file_fails(tmp_path):
+    """Coupled to ``read_driver_file``'s wording, which is why it is pinned."""
+    from test_drivers import synthetic_rows
+
+    drifting = synthetic_rows()
+    drifting["time"] = np.linspace(0, 24 * 365 - 1, len(drifting)) % 24
+    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path / "a", drifting))
+    assert facts.failed_check == "pysipnet"
+
+    negative = synthetic_rows()
+    negative.loc[7, "par"] = -0.01
+    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path / "b", negative))
+    assert facts.failed_check == "negative_excursions"

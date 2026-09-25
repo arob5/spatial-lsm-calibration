@@ -21,7 +21,7 @@ import xarray as xr
 
 from sipnet_calibration.fields import (
     CANONICAL_DIMS,
-    MODEL_TIME_COORDS,
+    TIME_COORDS,
     from_sipnet_output,
     site_lookup,
     stack_sipnet_outputs,
@@ -38,9 +38,7 @@ def rescaled(output, factor: float):
 
     frame = output.pandas.copy()
     frame["net_ecosystem_exchange"] = frame["net_ecosystem_exchange"] * factor
-    return SIPNETOutput.from_dataframe(
-        frame, time_step_length=output.time_step_length, run_id=f"x{factor}"
-    )
+    return SIPNETOutput.from_dataframe(frame, climate=output.climate, run_id=f"x{factor}")
 
 
 class TestFromSipnetOutput:
@@ -77,7 +75,7 @@ class TestFromSipnetOutput:
     def test_the_time_axis_is_pysipnets_step_end_with_its_bounds_pair(self, niwot_output):
         field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
         assert set(field.coords) == {"time", "time_step_start", "time_step_length"}
-        assert set(field.coords) == set(MODEL_TIME_COORDS)
+        assert set(field.coords) == set(TIME_COORDS)
         assert field["time"].attrs["long_name"] == "End of timestep"
         starts = field["time_step_start"].values
         lengths = field["time_step_length"].values
@@ -222,8 +220,7 @@ class TestStackSipnetOutputs:
         from pysipnet.output import SIPNETOutput
 
         short = SIPNETOutput.from_dataframe(
-            niwot_output.pandas.iloc[:20].copy(),
-            time_step_length=niwot_output.time_step_length[:20],
+            niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
         field = stack_sipnet_outputs(
             {(1, 0): niwot_output, (27, 0): short}, "nee", sites=sites_table
@@ -281,9 +278,7 @@ class TestFromSipnetOutputRefusesBadInput:
         """The shape a failed run leaves; pySIPNET gives back an empty Dataset."""
         from pysipnet.output import SIPNETOutput
 
-        empty = SIPNETOutput.from_dataframe(
-            niwot_output.pandas.iloc[0:0].copy(), time_step_length=np.empty(0)
-        )
+        empty = SIPNETOutput.from_dataframe(niwot_output.pandas.iloc[0:0].copy())
         with pytest.raises(ValueError, match="no rows"):
             from_sipnet_output(empty, "nee")
 

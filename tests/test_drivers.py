@@ -1,85 +1,81 @@
-"""Tests for the driver schema and the reader over the raw ``.clim`` files.
+"""Tests for the driver reader over the raw ``.clim`` files.
 
 Most cases run against small synthetic ``.clim`` files written to ``tmp_path``
-in the real layout -- whole years of rows, the drifting ``time`` column
-generated the way the source generates it, the three constant columns -- so
-that every check has a file that trips it and the expected answer can be
-written out by hand. The traps worth a file each: a ``time`` column that does
-*not* drift, a day with seven rows, a directory whose member disagrees with its
-file name, a pair with no file at all.
+in the real layout -- whole years of 3-hourly rows, 14 columns, tabs between
+space-padded fields -- so that every check has a file that trips it and the
+expected answer can be written out by hand. Everything about one file is
+pySIPNET's, and its own tests cover its parsing and validation; the cases here
+are about what this module adds: the directory layout, the stacking into
+``(member, site, time)``, the checks pySIPNET does not make, and that the time
+axis and the variable attributes are pySIPNET's, unchanged.
 
-The cases at the end run against the three real files under
-``data/raw/drivers/`` and are skipped when they are absent. Those are the ones
-that pin the drift model, the clock inference and the counts of non-physical
-values to the actual data.
+The cases at the end run against the local files under ``data/raw/drivers/``
+and are skipped when they are absent: that pySIPNET refuses them as they
+stand, and that their values, read with regular hour labels, land on the same
+axis as a SIPNET run on them.
 """
 
 from __future__ import annotations
 
-import re
+import warnings
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from pysipnet.variables import resolve_climate_variable
+from pysipnet.climate import ClimateDrivers
+from pysipnet.variables import CLIMATE_COLUMN_NAMES
+
+from conftest import DRIVERS_ROOT, LOCAL_DRIVER_PAIRS
 
 from sipnet_calibration.drivers import (
-    CLIM_FILE_COLUMNS,
-    CLIM_FILE_CONSTANTS,
-    CLOCK_STATUS,
     DRIVER_PRESENT,
-    DRIVER_VARIABLE_ATTRS,
     DRIVER_VARIABLES,
     MEMBER_SOURCE,
     NEGATIVE_TOLERANCE,
-    SOURCE_VARIABLE_NAMES,
-    STEPS_PER_DAY,
-    TIME_LABEL,
-    TIME_ZONE,
-    TIMESTEP_HOURS,
-    UNITS_STATUS,
+    UNITS_PROVENANCE,
     available_members,
     default_drivers_root,
     driver_fields,
     driver_file,
     load_drivers,
-    read_clim_file,
+    read_driver_file,
 )
+from sipnet_calibration.fields import TIME_COORDS
+from sipnet_calibration.obs_ops import aggregate_time
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-REAL_ROOT = REPO_ROOT / "data" / "raw" / "drivers"
 
-#: The eight value columns, in file order.
-VALUE_COLUMNS = tuple(SOURCE_VARIABLE_NAMES)
+#: The 14 fields of a legacy-layout row, under SIPNET's own names.
+FILE_COLUMNS = (
+    "loc", "year", "day", "time", "length", "tair", "tsoil", "par", "precip",
+    "vpd", "vpd_soil", "vpress", "wspd", "soil_wetness",
+)
+
+#: The value columns, in file order, under SIPNET's names and pySIPNET's.
+VALUE_COLUMNS = dict(zip(FILE_COLUMNS[5:13], DRIVER_VARIABLES, strict=True))
 
 
 # ── synthetic files ───────────────────────────────────────────────────────────
 
 
-def drifting_time_column(n_days: int) -> np.ndarray:
-    """The ``time`` column the source generator writes for a year of *n_days*."""
-    return np.linspace(0, 24 * n_days - 1, STEPS_PER_DAY * n_days) % 24
-
-
-def synthetic_rows(years=(2013,), *, seed=0, drift=True) -> pd.DataFrame:
-    """One whole year per entry of *years*, in the 14-column layout."""
+def synthetic_rows(years=(2013,), *, seed=0) -> pd.DataFrame:
+    """One whole year of 3-hourly rows per entry of *years*, in the 14-column layout."""
     rng = np.random.default_rng(seed)
     frames = []
     for year in years:
         n_days = 366 if pd.Timestamp(year, 1, 1).is_leap_year else 365
-        n = STEPS_PER_DAY * n_days
-        time = drifting_time_column(n_days) if drift else np.tile(np.arange(8) * 3.0, n_days)
+        n = 8 * n_days
         frames.append(
             pd.DataFrame(
                 {
-                    "loc": CLIM_FILE_CONSTANTS["loc"],
+                    "loc": 0,
                     "year": year,
-                    "day": np.repeat(np.arange(1, n_days + 1), STEPS_PER_DAY),
-                    "time": time,
-                    "length": CLIM_FILE_CONSTANTS["length"],
+                    "day": np.repeat(np.arange(1, n_days + 1), 8),
+                    "time": np.tile(np.arange(8) * 3.0, n_days),
+                    "length": 0.125,
                     "tair": rng.normal(5, 10, n).round(3),
                     "tsoil": rng.normal(4, 6, n).round(3),
                     "par": np.abs(rng.normal(3, 2, n)).round(4),
@@ -88,11 +84,11 @@ def synthetic_rows(years=(2013,), *, seed=0, drift=True) -> pd.DataFrame:
                     "vpd_soil": np.abs(rng.normal(200, 100, n)).round(2),
                     "vpress": np.abs(rng.normal(800, 200, n)).round(2) + 1.0,
                     "wspd": np.abs(rng.normal(3, 1, n)).round(3) + 0.1,
-                    "soil_wetness": CLIM_FILE_CONSTANTS["soil_wetness"],
+                    "soil_wetness": 0.6,
                 }
             )
         )
-    return pd.concat(frames, ignore_index=True)[list(CLIM_FILE_COLUMNS)]
+    return pd.concat(frames, ignore_index=True)[list(FILE_COLUMNS)]
 
 
 def write_rows(path: Path, rows: pd.DataFrame) -> Path:
@@ -102,7 +98,7 @@ def write_rows(path: Path, rows: pd.DataFrame) -> Path:
     lines = []
     for record in rows.itertuples(index=False):
         fields = []
-        for column, value in zip(CLIM_FILE_COLUMNS, record, strict=True):
+        for column, value in zip(FILE_COLUMNS, record, strict=True):
             fields.append(formats.get(column, "{}").format(value))
         lines.append("\t".join(fields))
     path.write_text("\n".join(lines) + "\n")
@@ -144,32 +140,18 @@ def root(tmp_path) -> Path:
 
 
 class TestSchemaConstants:
-    def test_every_source_column_maps_to_a_processed_name_in_file_order(self):
-        value_columns = [c for c in CLIM_FILE_COLUMNS if c not in ("loc", "year", "day", "time", "length", "soil_wetness")]
-        assert list(SOURCE_VARIABLE_NAMES) == value_columns
-        assert DRIVER_VARIABLES == tuple(SOURCE_VARIABLE_NAMES[c] for c in value_columns)
-        assert len(set(DRIVER_VARIABLES)) == len(DRIVER_VARIABLES)
-
-    def test_processed_names_follow_the_naming_convention(self):
-        for name in DRIVER_VARIABLES:
-            assert re.fullmatch(r"[a-z][a-z0-9_]*", name), name
-        assert "tair" not in DRIVER_VARIABLES and "wspd" not in DRIVER_VARIABLES
-
-    def test_every_variable_has_units_long_name_source_name_and_kind(self):
-        assert set(DRIVER_VARIABLE_ATTRS) == set(DRIVER_VARIABLES)
-        for name, attrs in DRIVER_VARIABLE_ATTRS.items():
-            assert set(attrs) == {"units", "long_name", "source_name", "kind"}
-            assert SOURCE_VARIABLE_NAMES[attrs["source_name"]] == name
-
-    def test_totals_and_means_carry_pysipnets_kind_for_their_source_column(self):
-        for name, attrs in DRIVER_VARIABLE_ATTRS.items():
-            expected = "timestep_total" if name in ("par", "precipitation") else "timestep_mean"
-            assert attrs["kind"] == expected, name
-            assert resolve_climate_variable(attrs["source_name"]).kind.value == expected, name
-
-    def test_timestep_constants_agree(self):
-        assert TIMESTEP_HOURS == 24 * CLIM_FILE_CONSTANTS["length"] == 3.0
-        assert STEPS_PER_DAY == 8
+    def test_the_variables_are_pysipnets_value_columns_in_file_order(self):
+        assert DRIVER_VARIABLES == (
+            "air_temperature",
+            "soil_temperature",
+            "photosynthetically_active_radiation",
+            "precipitation",
+            "vapor_pressure_deficit",
+            "soil_vapor_pressure_deficit",
+            "vapor_pressure",
+            "wind_speed",
+        )
+        assert set(DRIVER_VARIABLES) < set(CLIMATE_COLUMN_NAMES)
 
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -211,184 +193,66 @@ class TestPaths:
         assert available_members(root, 4) == ()
 
 
-# ── read_clim_file ────────────────────────────────────────────────────────────
+# ── read_driver_file ──────────────────────────────────────────────────────────
 
 
-class TestReadClimFile:
-    def test_parses_the_fourteen_columns_exactly(self, tmp_path):
+class TestReadDriverFile:
+    def test_returns_pysipnets_reading_of_the_file(self, tmp_path):
         rows = synthetic_rows()
         path = write_rows(tmp_path / "a.clim", rows)
-        frame = read_clim_file(path)
-        assert tuple(frame.columns) == CLIM_FILE_COLUMNS
-        assert frame["year"].dtype == np.int32 and frame["day"].dtype == np.int32
-        # Exact: every parsed double re-formats to the text on disk. The
-        # writer rounds ``time`` to six decimals, so the comparison is against
-        # the text rather than the pre-rounding doubles.
-        text = pd.read_csv(path, sep=r"\s+", header=None, dtype=str, names=CLIM_FILE_COLUMNS)
-        for column in VALUE_COLUMNS + ("time",):
-            assert frame[column].dtype == np.float64
-            assert [float(s) for s in text[column]] == frame[column].tolist()
-        for column in VALUE_COLUMNS:
-            np.testing.assert_array_equal(frame[column].to_numpy(), rows[column].to_numpy())
+        climate = read_driver_file(path)
+        assert isinstance(climate, ClimateDrivers)
+        assert climate.n_columns == 14
+        # pySIPNET parses with pandas' default float parser, which can land a
+        # unit in the last place away from the nearest double to the text.
+        for source, name in VALUE_COLUMNS.items():
+            np.testing.assert_allclose(
+                climate.pandas[name].to_numpy(), rows[source].to_numpy(), rtol=1e-15, atol=0
+            )
 
-    def test_rejects_a_row_with_the_wrong_field_count(self, tmp_path):
-        path = write_rows(tmp_path / "a.clim", synthetic_rows())
-        lines = path.read_text().splitlines()
-        lines[10] = lines[10] + "\t1.0"
-        path.write_text("\n".join(lines) + "\n")
-        with pytest.raises(ValueError, match="could not be parsed"):
-            read_clim_file(path)
-
-    def test_rejects_a_short_row(self, tmp_path):
-        path = write_rows(tmp_path / "a.clim", synthetic_rows())
-        lines = path.read_text().splitlines()
-        lines[10] = "\t".join(lines[10].split("\t")[:-1])
-        path.write_text("\n".join(lines) + "\n")
-        with pytest.raises(ValueError, match="could not be read as a number.*fewer than 14 fields"):
-            read_clim_file(path)
-
-    def test_rejects_a_thirteen_column_layout(self, tmp_path):
-        rows = synthetic_rows().drop(columns="loc")
-        path = tmp_path / "a.clim"
-        rows.to_csv(path, sep="\t", header=False, index=False)
-        with pytest.raises(ValueError, match="expected 14 fields"):
-            read_clim_file(path)
-
-    def test_rejects_a_nan_field(self, tmp_path):
-        """The text ``nan`` is not admitted as a number, so it fails the parse
-        rather than becoming a quiet null."""
-        path = write_rows(tmp_path / "a.clim", synthetic_rows())
-        text = path.read_text().splitlines()
-        fields = text[5].split("\t")
-        fields[7] = "nan"
-        text[5] = "\t".join(fields)
-        path.write_text("\n".join(text) + "\n")
-        with pytest.raises(ValueError, match="could not be read as a number"):
-            read_clim_file(path)
-
-    def test_rejects_an_infinite_value(self, tmp_path):
-        path = write_rows(tmp_path / "a.clim", synthetic_rows())
-        text = path.read_text().splitlines()
-        fields = text[5].split("\t")
-        fields[7] = "inf"
-        text[5] = "\t".join(fields)
-        path.write_text("\n".join(text) + "\n")
-        with pytest.raises(ValueError, match="non-finite.*column 'par'"):
-            read_clim_file(path)
-
-    def test_rejects_a_word_where_a_number_belongs(self, tmp_path):
-        path = write_rows(tmp_path / "a.clim", synthetic_rows())
-        text = path.read_text().splitlines()
-        fields = text[5].split("\t")
-        fields[7] = "NA"
-        text[5] = "\t".join(fields)
-        path.write_text("\n".join(text) + "\n")
-        with pytest.raises(ValueError, match="could not be read as a number"):
-            read_clim_file(path)
-
-    @pytest.mark.parametrize("column", ["loc", "length", "soil_wetness"])
-    def test_rejects_a_constant_column_off_its_value(self, tmp_path, column):
+    def test_a_file_pysipnet_refuses_is_refused_with_its_path_and_pysipnets_reason(self, tmp_path):
+        """The drift of ``data/README.md`` Note 15: each label 2.47 s later
+        than the one before it plus the declared length."""
         rows = synthetic_rows()
-        rows.loc[100, column] = 0.25 if column == "length" else 1
+        rows["time"] = np.linspace(0, 24 * 365 - 1, len(rows)) % 24
         path = write_rows(tmp_path / "a.clim", rows)
-        with pytest.raises(ValueError, match=f"{column} must be"):
-            read_clim_file(path)
+        with pytest.raises(ValueError, match=r"a\.clim: pySIPNET refused the file: .*drift"):
+            read_driver_file(path)
 
-    def test_rejects_a_day_without_eight_rows(self, tmp_path):
-        rows = synthetic_rows().drop(index=100).reset_index(drop=True)
-        path = write_rows(tmp_path / "a.clim", rows)
-        with pytest.raises(ValueError, match="has 2919 rows, expected 2920"):
-            read_clim_file(path)
-
-    def test_rejects_days_out_of_sequence(self, tmp_path):
+    def test_a_label_that_steps_backwards_is_refused(self, tmp_path):
         rows = synthetic_rows()
-        rows.loc[rows["day"] == 40, "day"] = 41  # two days now claim to be 41
-        rows.loc[rows.index[8 * 40 : 8 * 41], "day"] = 40  # swap them
+        rows.loc[100, "time"] -= 1.0
         path = write_rows(tmp_path / "a.clim", rows)
-        with pytest.raises(ValueError, match="does not run 1..365"):
-            read_clim_file(path)
+        with pytest.raises(ValueError, match="pySIPNET refused the file"):
+            read_driver_file(path)
 
-    def test_rejects_a_leap_year_with_365_days(self, tmp_path):
-        rows = synthetic_rows(years=(2013,))
-        rows["year"] = 2012
-        path = write_rows(tmp_path / "a.clim", rows)
-        with pytest.raises(ValueError, match="year 2012 has 2920 rows, expected 2928"):
-            read_clim_file(path)
-
-    def test_rejects_non_contiguous_years(self, tmp_path):
-        rows = synthetic_rows(years=(2013, 2015))
-        path = write_rows(tmp_path / "a.clim", rows)
-        with pytest.raises(ValueError, match="years are not contiguous"):
-            read_clim_file(path)
-
-    def test_rejects_a_time_column_without_the_drift(self, tmp_path):
-        path = write_rows(tmp_path / "a.clim", synthetic_rows(drift=False))
-        with pytest.raises(ValueError, match="departs from the modulo-24 linspace model"):
-            read_clim_file(path)
-
-    def test_drift_tolerance_is_tight(self, tmp_path):
-        """A single label 1e-4 h off the model is refused; the check promises
-        1e-5 h, and the real files sit at 5e-7 h."""
-        rows = synthetic_rows()
-        rows.loc[1000, "time"] += 1e-4
-        with pytest.raises(ValueError, match="departs from the modulo-24 linspace model"):
-            read_clim_file(write_rows(tmp_path / "a.clim", rows))
-
-    def test_rejects_years_in_descending_order(self, tmp_path):
-        rows = pd.concat(
-            [synthetic_rows(years=(2014,)), synthetic_rows(years=(2013,))], ignore_index=True
-        )
-        with pytest.raises(ValueError, match="ascending year order"):
-            read_clim_file(write_rows(tmp_path / "a.clim", rows))
-
-    def test_rejects_a_non_integer_day(self, tmp_path):
+    def test_the_declared_clock_is_passed_to_pysipnet(self, tmp_path):
         path = write_rows(tmp_path / "a.clim", synthetic_rows())
-        text = path.read_text().splitlines()
-        fields = text[5].split("\t")
-        fields[2] = "1.5"
-        text[5] = "\t".join(fields)
-        path.write_text("\n".join(text) + "\n")
-        with pytest.raises(ValueError, match="day holds non-integer values"):
-            read_clim_file(path)
-
-    def test_rejects_an_empty_file(self, tmp_path):
-        path = tmp_path / "a.clim"
-        path.write_text("")
-        with pytest.raises(ValueError, match="holds no rows"):
-            read_clim_file(path)
-        path.write_text("\n\n")
-        with pytest.raises(ValueError, match="holds no rows"):
-            read_clim_file(path)
-
-    def test_accepts_the_drifting_time_column(self, tmp_path):
-        rows = synthetic_rows(years=(2012, 2013))
-        frame = read_clim_file(write_rows(tmp_path / "a.clim", rows))
-        # The last slot of each year is labeled two hours late, and passes.
-        assert frame["time"].iloc[8 * 366 - 1] == pytest.approx(23.0)
-        assert frame["time"].iloc[-1] == pytest.approx(23.0)
+        assert read_driver_file(path).time_zone is None
+        assert read_driver_file(path, time_zone="UTC").time_zone == "UTC"
 
     @pytest.mark.parametrize("column", ["par", "precip"])
     def test_rejects_totals_far_below_zero(self, tmp_path, column):
         rows = synthetic_rows()
         rows.loc[7, column] = -0.01
-        with pytest.raises(ValueError, match=f"{column} value\\(s\\) below"):
-            read_clim_file(write_rows(tmp_path / "a.clim", rows))
+        with pytest.raises(ValueError, match=f"{VALUE_COLUMNS[column]} value\\(s\\) below"):
+            read_driver_file(write_rows(tmp_path / "a.clim", rows))
 
     def test_negative_tolerance_is_the_exact_bound(self, tmp_path):
         rows = synthetic_rows()
         rows.loc[7, "par"] = -NEGATIVE_TOLERANCE
-        read_clim_file(write_rows(tmp_path / "a.clim", rows))
+        read_driver_file(write_rows(tmp_path / "a.clim", rows))
         rows.loc[7, "par"] = -NEGATIVE_TOLERANCE * 1.01
-        with pytest.raises(ValueError, match="par value"):
-            read_clim_file(write_rows(tmp_path / "b.clim", rows))
+        with pytest.raises(ValueError, match="photosynthetically_active_radiation value"):
+            read_driver_file(write_rows(tmp_path / "b.clim", rows))
 
-    def test_reads_small_negative_par_through_unchanged(self, tmp_path):
+    def test_reads_small_negatives_through_unchanged(self, tmp_path):
         rows = synthetic_rows()
         rows.loc[7, "par"] = -1.374e-05
         rows.loc[8, "precip"] = -NEGATIVE_TOLERANCE / 2
-        frame = read_clim_file(write_rows(tmp_path / "a.clim", rows))
-        assert frame["par"].iloc[7] == -1.374e-05
-        assert frame["precip"].iloc[8] == -NEGATIVE_TOLERANCE / 2
+        frame = read_driver_file(write_rows(tmp_path / "a.clim", rows)).pandas
+        assert frame["photosynthetically_active_radiation"].iloc[7] == -1.374e-05
+        assert frame["precipitation"].iloc[8] == -NEGATIVE_TOLERANCE / 2
 
 
 # ── load_drivers ──────────────────────────────────────────────────────────────
@@ -397,29 +261,74 @@ class TestReadClimFile:
 class TestLoadDrivers:
     def test_returns_the_documented_dims_coords_and_dtypes(self, root, sites_table):
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
-        assert set(dataset.data_vars) == set(DRIVER_VARIABLES)
+        assert tuple(dataset.data_vars) == DRIVER_VARIABLES
         for name in DRIVER_VARIABLES:
             assert dataset[name].dims == ("member", "site", "time")
             assert dataset[name].dtype == np.float64
-        assert dataset.sizes == {"member": 2, "site": 2, "time": 2920}
+        assert dataset.sizes == {"member": 2, "site": 2, "time": 2920, "bounds": 2}
+        assert set(dataset.coords) == {
+            "member", "source_member_index", "site", "lon", "lat",
+            "time", "time_step_start", "time_step_length", "time_bounds",
+        }
         assert dataset["member"].dtype == np.int16
         assert dataset["site"].dtype == np.int32
         assert dataset["lon"].dims == ("site",) and dataset["lat"].dims == ("site",)
         np.testing.assert_array_equal(dataset["lon"].values, [-97.0, -93.0])
         np.testing.assert_array_equal(dataset["lat"].values, [41.5, 43.5])
         assert dataset["source_member_index"].dims == ("member",)
-        assert dataset["time"].dtype == np.dtype("datetime64[ns]")
+        assert dataset["time_bounds"].dims == ("time", "bounds")
         assert dataset.attrs["member_source"] == MEMBER_SOURCE
         assert dataset.attrs["coverage"] == "complete"
-        assert dataset.attrs["timestep_days"] == CLIM_FILE_CONSTANTS["length"]
 
     def test_values_are_the_files_values(self, root, sites_table):
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
-        frame = read_clim_file(driver_file(root, 7, 2))
-        for source, name in SOURCE_VARIABLE_NAMES.items():
+        frame = read_driver_file(driver_file(root, 7, 2)).pandas
+        for name in DRIVER_VARIABLES:
             np.testing.assert_array_equal(
-                dataset[name].sel(site=7, member=1).values, frame[source].to_numpy()
+                dataset[name].sel(site=7, member=1).values, frame[name].to_numpy()
             )
+
+    def test_the_time_axis_is_pysipnets(self, root, sites_table):
+        """Every time coordinate, values and attributes, is what pySIPNET's
+        own Dataset for the file holds: ``time`` at the step end."""
+        dataset = load_drivers([3], root=root, sites_table=sites_table)
+        own = read_driver_file(driver_file(root, 3, 1)).xarray
+        for name in (*TIME_COORDS, "time_bounds"):
+            np.testing.assert_array_equal(dataset[name].values, own[name].values)
+            assert dataset[name].attrs == own[name].attrs, name
+        starts = pd.date_range("2013-01-01", periods=2920, freq="3h").as_unit("ns")
+        np.testing.assert_array_equal(dataset["time_step_start"].values, starts.to_numpy())
+        np.testing.assert_array_equal(
+            dataset["time"].values, (starts + pd.Timedelta(hours=3)).to_numpy()
+        )
+
+    def test_the_clock_is_undeclared_unless_the_caller_declares_it(self, root, sites_table):
+        undeclared = load_drivers([3], root=root, sites_table=sites_table)
+        assert undeclared["time"].attrs["time_zone"] == "undeclared"
+        assert undeclared.attrs["time_zone"] == "undeclared"
+        declared = load_drivers([3], root=root, sites_table=sites_table, time_zone="UTC")
+        assert declared["time"].attrs["time_zone"] == "UTC"
+        assert declared.attrs["time_zone"] == "UTC"
+
+    def test_the_variable_attributes_are_pysipnets_plus_the_units_caveat(self, root, sites_table):
+        dataset = load_drivers([3], root=root, sites_table=sites_table)
+        own = read_driver_file(driver_file(root, 3, 1)).xarray
+        for name in DRIVER_VARIABLES:
+            attrs = dict(dataset[name].attrs)
+            assert attrs.pop("units_provenance") == UNITS_PROVENANCE
+            attrs.pop("n_values_below_zero", None)
+            attrs.pop("n_values_not_positive", None)
+            assert attrs == own[name].attrs, name
+        assert dataset["precipitation"].attrs["kind"] == "timestep_total"
+        assert dataset["air_temperature"].attrs["kind"] == "timestep_mean"
+
+    def test_the_dataset_attributes_are_pysipnets_plus_the_ensembles(self, root, sites_table):
+        dataset = load_drivers([3], root=root, sites_table=sites_table)
+        own = read_driver_file(driver_file(root, 3, 1)).xarray
+        for key, value in own.attrs.items():
+            assert dataset.attrs[key] == value, key
+        assert dataset.attrs["Conventions"] == "CF-1.11"
+        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
 
     def test_sites_come_back_ascending_whatever_order_is_given(self, root, sites_table):
         dataset = load_drivers([7, 3, 7], root=root, sites_table=sites_table)
@@ -431,9 +340,10 @@ class TestLoadDrivers:
         dataset = load_drivers([3, 7], members=[5, 1], root=root, sites_table=sites_table)
         np.testing.assert_array_equal(dataset["member"].values, [0, 1])
         np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 5])
-        frame = read_clim_file(driver_file(root, 3, 5))
+        frame = read_driver_file(driver_file(root, 3, 5)).pandas
         np.testing.assert_array_equal(
-            dataset["par"].sel(site=3, member=1).values, frame["par"].to_numpy()
+            dataset["photosynthetically_active_radiation"].sel(site=3, member=1).values,
+            frame["photosynthetically_active_radiation"].to_numpy(),
         )
 
     def test_members_none_means_every_member_found(self, root, sites_table):
@@ -459,70 +369,23 @@ class TestLoadDrivers:
     def test_rejects_an_unusable_site_table(self, root, sites_table):
         with pytest.raises(ValueError, match="lacks column"):
             load_drivers([3], root=root, sites_table=sites_table.set_index("site_id"))
-        with pytest.raises(ValueError, match="lacks column"):
-            load_drivers([3], root=root, sites_table=sites_table.drop(columns=["lon"]))
+        for column in ("lon", "lat"):
+            with pytest.raises(ValueError, match="lacks column"):
+                load_drivers([3], root=root, sites_table=sites_table.drop(columns=[column]))
+        with pytest.raises(ValueError, match="must be a DataFrame"):
+            load_drivers([3], root=root, sites_table=sites_table.to_dict())
         duplicated = pd.concat([sites_table, sites_table.head(3)], ignore_index=True)
         with pytest.raises(ValueError, match="repeats site id"):
             load_drivers([3], root=root, sites_table=duplicated)
 
     def test_a_directory_off_the_template_is_ignored_by_discovery(self, root, sites_table):
-        """``ERA5_3_01`` names member 1 but is not the directory ``driver_file``
+        """``ERA5_3_04`` names member 4 but is not the directory ``driver_file``
         would look in, so discovery does not report it."""
         write_pair(root, 3, 4)
         (root / "ERA5_3_4").rename(root / "ERA5_3_04")
         assert available_members(root, 3) == (1, 2)
         dataset = load_drivers([3], root=root, sites_table=sites_table)
         np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2])
-
-    def test_time_axis_is_the_nominal_three_hourly_grid(self, root, sites_table):
-        dataset = load_drivers([3], root=root, sites_table=sites_table)
-        expected = pd.date_range("2013-01-01", periods=2920, freq="3h").as_unit("ns")
-        pd.testing.assert_index_equal(dataset.indexes["time"], expected, check_names=False)
-
-    def test_time_attributes_record_clock_label_and_status(self, root, sites_table):
-        attrs = load_drivers([3], root=root, sites_table=sites_table)["time"].attrs
-        assert attrs["time_zone"] == TIME_ZONE == "UTC"
-        assert attrs["time_label"] == TIME_LABEL == "interval_end"
-        assert attrs["clock_status"] == CLOCK_STATUS == "inferred"
-        assert "clock_provenance" in attrs and "time_label_note" in attrs
-
-    def test_variable_attributes_carry_units_and_the_units_caveat(self, root, sites_table):
-        """Pinned as literals, not against the constants they were written
-        from: these are the values validate_field() will one day compare."""
-        expected_units = {
-            "air_temperature": "deg C",
-            "soil_temperature": "deg C",
-            "par": "mol m-2",
-            "precipitation": "mm",
-            "vpd": "Pa",
-            "soil_vpd": "Pa",
-            "vapor_pressure": "Pa",
-            "wind_speed": "m s-1",
-        }
-        expected_source = {
-            "air_temperature": "tair",
-            "soil_temperature": "tsoil",
-            "par": "par",
-            "precipitation": "precip",
-            "vpd": "vpd",
-            "soil_vpd": "vpd_soil",
-            "vapor_pressure": "vpress",
-            "wind_speed": "wspd",
-        }
-        dataset = load_drivers([3], root=root, sites_table=sites_table)
-        for name in DRIVER_VARIABLES:
-            attrs = dataset[name].attrs
-            assert attrs["units"] == expected_units[name], name
-            assert attrs["source_name"] == expected_source[name], name
-            assert attrs["kind"] == (
-                "timestep_total" if name in ("par", "precipitation") else "timestep_mean"
-            )
-            assert attrs["units_status"] == "format_documented"
-            assert "not been confirmed" in attrs["units_provenance"]
-            assert attrs["long_name"]
-        assert dataset.attrs["member_source"] == "met"
-        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
-        assert dataset["lon"].dtype == np.float64 and dataset["lat"].dtype == np.float64
 
     def test_non_physical_values_are_counted_not_altered(self, tmp_path, sites_table):
         rows = synthetic_rows(seed=1)
@@ -534,14 +397,61 @@ class TestLoadDrivers:
         rows.loc[[6], "wspd"] = 0.0
         rows.loc[[7, 8, 9, 10], "vpd_soil"] = 0.0
         write_pair(tmp_path, 3, 1, rows)
-        dataset = load_drivers([3], root=tmp_path, sites_table=sites_table)
-        assert dataset["par"].attrs["n_values_below_zero"] == 3
+        with warnings.catch_warnings():
+            # pySIPNET warns about the zero vpd and wind speed; they are the point.
+            warnings.simplefilter("ignore")
+            dataset = load_drivers([3], root=tmp_path, sites_table=sites_table)
+        par = dataset["photosynthetically_active_radiation"]
+        assert par.attrs["n_values_below_zero"] == 3
         assert dataset["precipitation"].attrs["n_values_below_zero"] == 1
-        assert dataset["vpd"].attrs["n_values_not_positive"] == 2
+        assert dataset["vapor_pressure_deficit"].attrs["n_values_not_positive"] == 2
         assert dataset["wind_speed"].attrs["n_values_not_positive"] == 1
-        assert dataset["soil_vpd"].attrs["n_values_not_positive"] == 4
-        assert dataset["par"].values[0, 0, 0] == -1e-6
-        assert "n_values_below_zero" not in dataset["vpd"].attrs
+        assert dataset["soil_vapor_pressure_deficit"].attrs["n_values_not_positive"] == 4
+        assert par.values[0, 0, 0] == -1e-6
+        assert "n_values_below_zero" not in dataset["vapor_pressure_deficit"].attrs
+
+    def test_counts_are_over_every_file_present_and_nothing_else(self, tmp_path, sites_table):
+        for member, n_negative in ((1, 2), (2, 5)):
+            rows = synthetic_rows(seed=member)
+            rows.loc[list(range(n_negative)), "par"] = -1e-6
+            write_pair(tmp_path, 3, member, rows)
+        write_pair(tmp_path, 7, 1)
+        dataset = load_drivers(
+            [3, 7], members=[1, 2], root=tmp_path, sites_table=sites_table, allow_missing=True
+        )
+        assert not dataset[DRIVER_PRESENT].values.all()
+        attrs = dataset["photosynthetically_active_radiation"].attrs
+        assert attrs["n_values_below_zero"] == 7
+
+    def test_a_discovered_member_out_of_range_is_refused_as_requested_ones_are(
+        self, root, sites_table
+    ):
+        (root / "ERA5_3_40000").mkdir()
+        with pytest.raises(ValueError, match="member indices"):
+            load_drivers([3], root=root, sites_table=sites_table)
+
+    @pytest.mark.parametrize("time_zone", ["America/Denver", "EST"])
+    def test_an_invalid_clock_is_refused_before_any_file_is_read(
+        self, root, sites_table, time_zone
+    ):
+        with pytest.raises(ValueError, match="time_zone must be") as refusal:
+            load_drivers([3], root=root, sites_table=sites_table, time_zone=time_zone)
+        assert ".clim" not in str(refusal.value)
+
+    def test_aggregation_keeps_the_declared_clock(self, root, sites_table):
+        dataset = load_drivers([3], root=root, sites_table=sites_table, time_zone="UTC")
+        field = driver_fields(dataset)["air_temperature"].isel(site=0, member=0)
+        assert aggregate_time(field, "1D")["time"].attrs["time_zone"] == "UTC"
+
+    # pySIPNET's Dataset declares no units encoding for time and time_bounds.
+    @pytest.mark.filterwarnings("ignore:Variable time has datetime type:UserWarning")
+    def test_no_coordinate_is_written_with_a_fill_value(self, root, sites_table, tmp_path):
+        """CF forbids ``_FillValue`` on a coordinate."""
+        path = tmp_path / "drivers.nc"
+        load_drivers([3], root=root, sites_table=sites_table).to_netcdf(path)
+        with xr.open_dataset(path, decode_cf=False) as written:
+            for name in written.coords:
+                assert "_FillValue" not in written[name].attrs, name
 
     def test_missing_pair_raises_by_default(self, root, sites_table):
         write_pair(root, 3, 5)
@@ -554,8 +464,9 @@ class TestLoadDrivers:
         present = dataset[DRIVER_PRESENT]
         assert present.dims == ("member", "site") and present.dtype == bool
         np.testing.assert_array_equal(present.values, [[True, True], [True, True], [True, False]])
-        assert np.isnan(dataset["par"].sel(site=7, member=2).values).all()
-        assert np.isfinite(dataset["par"].sel(site=3, member=2).values).all()
+        par = dataset["photosynthetically_active_radiation"]
+        assert np.isnan(par.sel(site=7, member=2).values).all()
+        assert np.isfinite(par.sel(site=3, member=2).values).all()
         assert dataset.attrs["coverage"] == "gaps"
 
     def test_driver_present_is_all_true_when_nothing_is_missing(self, root, sites_table):
@@ -587,10 +498,14 @@ class TestLoadDrivers:
         with pytest.raises(ValueError, match="file name says member 4, the directory says member 2"):
             load_drivers([3], root=root, sites_table=sites_table)
 
-    def test_rejects_file_name_dates_that_do_not_match_the_data(self, root, sites_table):
+    @pytest.mark.parametrize(
+        "name", ["ERA5.2.2013-01-01.2014-12-31.clim", "ERA5.2.2013-01-02.2013-12-31.clim"]
+    )
+    def test_rejects_file_name_dates_that_do_not_match_the_data(self, root, sites_table, name):
         path = driver_file(root, 3, 2)
-        path.rename(path.with_name("ERA5.2.2013-01-01.2014-12-31.clim"))
-        with pytest.raises(ValueError, match="file name covers 2013-01-01 to 2014-12-31"):
+        path.rename(path.with_name(name))
+        start, end = name.split(".")[2:4]
+        with pytest.raises(ValueError, match=f"file name covers {start} to {end}"):
             load_drivers([3], root=root, sites_table=sites_table)
 
     def test_rejects_a_file_name_off_the_template(self, root, sites_table):
@@ -599,23 +514,30 @@ class TestLoadDrivers:
         with pytest.raises(ValueError, match="does not follow"):
             load_drivers([3], root=root, sites_table=sites_table)
 
-    def test_rejects_two_files_on_different_grids(self, root, sites_table):
+    def test_rejects_two_files_on_different_time_axes(self, root, sites_table):
         write_pair(root, 7, 3, synthetic_rows(years=(2014,)))
         write_pair(root, 3, 3, synthetic_rows(years=(2013,)))
-        with pytest.raises(ValueError, match="year differs from"):
+        with pytest.raises(ValueError, match="time_step_start differs from"):
             load_drivers([3, 7], members=[3], root=root, sites_table=sites_table)
         write_pair(root, 7, 4, synthetic_rows(years=(2013, 2014)))
         write_pair(root, 3, 4, synthetic_rows(years=(2013,)))
-        with pytest.raises(ValueError, match="rows where"):
+        with pytest.raises(ValueError, match="steps where"):
             load_drivers([3, 7], members=[4], root=root, sites_table=sites_table)
-        # Same year and day columns, one time label perturbed within the drift
-        # tolerance: still a different grid.
+        # One label moved by a fraction of a second, well inside what pySIPNET
+        # accepts as rounding: still a different axis.
         rows = synthetic_rows(years=(2013,))
         write_pair(root, 3, 6, rows)
         rows.loc[100, "time"] += 5e-6
         write_pair(root, 7, 6, rows)
-        with pytest.raises(ValueError, match="time differs from"):
+        with pytest.raises(ValueError, match="time_step_start differs from"):
             load_drivers([3, 7], members=[6], root=root, sites_table=sites_table)
+        # The same starts, and a last step half as long: a different axis too.
+        rows = synthetic_rows(years=(2013,))
+        write_pair(root, 3, 8, rows)
+        rows.loc[len(rows) - 1, "length"] = 0.0625
+        write_pair(root, 7, 8, rows)
+        with pytest.raises(ValueError, match="time_step_length differs from"):
+            load_drivers([3, 7], members=[8], root=root, sites_table=sites_table)
 
     def test_round_trips_through_zarr(self, root, sites_table, tmp_path):
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
@@ -636,21 +558,24 @@ class TestDriverFields:
         for name, field in fields.items():
             assert field.name == name
             assert field.dims == ("member", "site", "time")
-            assert set(field.coords) >= {"lon", "lat", "source_member_index", "time", "site", "member"}
+            assert set(field.coords) == {
+                "member", "source_member_index", "site", "lon", "lat", *TIME_COORDS
+            }
+
+    def test_nothing_points_at_a_bounds_variable_a_field_cannot_carry(self, root, sites_table):
+        dataset = load_drivers([3], root=root, sites_table=sites_table)
+        assert dataset["time"].attrs["bounds"] == "time_bounds"
+        for field in driver_fields(dataset).values():
+            assert "bounds" not in field["time"].attrs
+        # The Dataset itself keeps it.
+        assert dataset["time"].attrs["bounds"] == "time_bounds"
 
     def test_fields_carry_the_variable_attributes(self, root, sites_table):
         dataset = load_drivers([3], root=root, sites_table=sites_table)
         fields = driver_fields(dataset)
-        # The registry attributes are supplied even when the dataset lost them,
-        # as a cache written by someone else might have.
-        stripped = dataset.copy()
-        stripped["par"].attrs = {}
-        assert driver_fields(stripped)["par"].attrs["units"] == "mol m-2"
-        assert driver_fields(stripped)["par"].attrs["units_status"] == UNITS_STATUS
-        assert fields["par"].attrs["units"] == "mol m-2"
-        assert fields["par"].attrs["kind"] == "timestep_total"
-        assert fields["par"].attrs["units_status"] == UNITS_STATUS
-        assert fields["vpd"].attrs["n_values_not_positive"] == 0
+        for name, field in fields.items():
+            assert field.attrs == dataset[name].attrs
+        assert fields["photosynthetically_active_radiation"].attrs["units"] == "mol m-2"
 
     def test_driver_present_is_not_a_field(self, root, sites_table):
         write_pair(root, 3, 5)
@@ -659,118 +584,72 @@ class TestDriverFields:
         assert DRIVER_PRESENT not in driver_fields(dataset)
 
     def test_rejects_a_dataset_missing_a_variable(self, root, sites_table):
-        dataset = load_drivers([3], root=root, sites_table=sites_table).drop_vars("vpd")
-        with pytest.raises(ValueError, match=r"missing driver variables \['vpd'\]"):
+        dataset = load_drivers([3], root=root, sites_table=sites_table).drop_vars("wind_speed")
+        with pytest.raises(ValueError, match=r"missing driver variables \['wind_speed'\]"):
             driver_fields(dataset)
 
 
 # ── the real files ────────────────────────────────────────────────────────────
 
 
+#: The drivers root the real-file cases read, the fixtures' own.
+REAL_ROOT = DRIVERS_ROOT
+
+
 def real_pairs() -> list[tuple[int, int]]:
-    if not REAL_ROOT.is_dir():
-        return []
-    pairs = []
-    for directory in REAL_ROOT.iterdir():
-        match = re.fullmatch(r"ERA5_(\d+)_(\d+)", directory.name)
-        if match:
-            pairs.append((int(match.group(1)), int(match.group(2))))
-    return sorted(pairs)
+    """The pairs of :data:`LOCAL_DRIVER_PAIRS` that have a directory here."""
+    return [
+        (site, member)
+        for site, member in LOCAL_DRIVER_PAIRS
+        if (REAL_ROOT / f"ERA5_{site}_{member}").is_dir()
+    ]
 
 
 needs_real_files = pytest.mark.skipif(
-    not real_pairs(), reason="data/raw/drivers/ is not present in this checkout"
+    not real_pairs(), reason="the local driver files are not present in this checkout"
 )
 needs_site_table = pytest.mark.skipif(
     not default_sites_path().exists(), reason="processed/sites/sites.csv is not present"
 )
 
 
-@pytest.fixture(scope="module")
-def frames() -> dict[tuple[int, int], pd.DataFrame]:
-    """The three real files, parsed once."""
-    return {pair: read_clim_file(driver_file(REAL_ROOT, *pair)) for pair in real_pairs()}
-
-
 @needs_real_files
 class TestRealFiles:
     """Against ``data/raw/drivers/``; skipped when the files are absent."""
 
-    def test_the_local_files_parse_and_pass_every_check(self, frames):
-        for frame in frames.values():
-            assert len(frame) == 37992
-            assert frame["year"].iloc[0] == 2012 and frame["year"].iloc[-1] == 2024
-
-    def test_the_drift_model_holds_to_five_in_ten_million_hours(self, frames):
-        for frame in frames.values():
-            for year, group in frame.groupby("year"):
-                n_days = len(group) // STEPS_PER_DAY
-                model = drifting_time_column(n_days)
-                assert np.abs(group["time"].to_numpy() - model).max() < 6e-7
-            # And the label is two hours late by the last slot of the year.
-            assert frame["time"].iloc[-1] == pytest.approx(23.0, abs=1e-6)
+    def test_pysipnet_refuses_the_local_files_for_their_drifting_labels(self):
+        """``data/README.md`` Note 15. Correcting the files is a separate piece
+        of work; until then this is the answer every one of them gives."""
+        for pair in real_pairs():
+            with pytest.raises(ValueError, match="pySIPNET refused the file: The labels drift"):
+                read_driver_file(driver_file(REAL_ROOT, *pair))
 
     @needs_site_table
-    def test_the_local_files_are_non_rectangular_and_load_with_allow_missing(self):
-        pairs = real_pairs()
-        sites = sorted({s for s, _ in pairs})
-        members = sorted({m for _, m in pairs})
-        if len(pairs) == len(sites) * len(members):
-            pytest.skip("the local files happen to form a rectangle")
-        with pytest.raises(FileNotFoundError, match="allow_missing=True"):
-            load_drivers(sites, root=REAL_ROOT, sites_table=load_sites())
-        dataset = load_drivers(sites, root=REAL_ROOT, sites_table=load_sites(), allow_missing=True)
-        present = dataset[DRIVER_PRESENT]
-        for site, member in pairs:
-            assert bool(present.sel(site=site, source_member_index=member).values) is True  # noqa: E712
-        assert int(present.sum()) == len(pairs)
-        assert dataset.attrs["coverage"] == "gaps"
-        assert str(dataset["time"].values[0]) == "2012-01-01T00:00:00.000000000"
-        assert str(dataset["time"].values[-1]) == "2024-12-31T21:00:00.000000000"
+    def test_the_local_files_do_not_load(self):
+        sites = sorted({site for site, _ in real_pairs()})
+        members = sorted({member for _, member in real_pairs()})
+        with pytest.raises(ValueError, match="pySIPNET refused the file"):
+            load_drivers(
+                sites, members=members, root=REAL_ROOT, sites_table=load_sites(),
+                allow_missing=True,
+            )
 
-    @needs_site_table
-    def test_par_phase_moves_with_longitude_as_a_utc_clock_requires(self, frames):
-        """The first-harmonic PAR phase shifts about 3.6 h between sites 1 and
-        27, not 0, which is the evidence behind ``clock_status``."""
-        by_site = {}
-        for (site, _member), frame in frames.items():
-            by_site.setdefault(site, frame)
-        if len(by_site) < 2:
-            pytest.skip("the clock test needs two sites")
-        table = load_sites().set_index("site_id")
+    def test_with_regular_labels_the_local_files_load(self, real_drivers):
+        present = real_drivers[DRIVER_PRESENT]
+        for site, member in real_pairs():
+            assert bool(present.sel(site=site, source_member_index=member).values)
+        assert int(present.sum()) == len(real_pairs())
+        assert real_drivers.attrs["coverage"] == "gaps"
+        assert str(real_drivers["time_step_start"].values[0]) == "2012-01-01T00:00:00.000000000"
+        assert str(real_drivers["time"].values[-1]) == "2025-01-01T00:00:00.000000000"
 
-        def phase_hours(frame: pd.DataFrame) -> float:
-            summer = frame[(frame["day"] >= 120) & (frame["day"] <= 240)]
-            slot = np.floor(summer["time"].to_numpy() / TIMESTEP_HOURS)
-            mean_by_slot = summer.groupby(slot)["par"].mean()
-            angle = 2 * np.pi * (TIMESTEP_HOURS * mean_by_slot.index.to_numpy()) / 24
-            phase = np.arctan2((mean_by_slot * np.sin(angle)).sum(), (mean_by_slot * np.cos(angle)).sum())
-            return float((phase % (2 * np.pi)) * 24 / (2 * np.pi))
+    def test_a_run_and_its_drivers_share_one_time_axis(self, real_drivers, site_1_result):
+        """The run's output and the drivers it ran on are aligned by
+        construction, not by any code here: both axes are pySIPNET's."""
+        from sipnet_calibration.fields import from_sipnet_output
 
-        sites = sorted(by_site)
-        west, east = min(sites, key=lambda s: table.loc[s, "lon"]), max(sites, key=lambda s: table.loc[s, "lon"])
-        shift = phase_hours(by_site[west]) - phase_hours(by_site[east])
-        utc_expects = (table.loc[east, "lon"] - table.loc[west, "lon"]) / 15
-        assert utc_expects > 1.0, "the two sites are too close in longitude to discriminate"
-        assert shift == pytest.approx(utc_expects, abs=0.6)
-
-    def test_non_physical_value_counts_match_the_files(self, frames):
-        for frame in frames.values():
-            assert (frame["par"] < 0).sum() > 0, "the source is known to hold negative par"
-            assert frame["par"].min() >= -NEGATIVE_TOLERANCE
-            assert frame["precip"].min() >= -NEGATIVE_TOLERANCE
-            assert (frame["wspd"] > 0).all()
-            assert (frame["vpress"] > 0).all()
-            assert (frame["vpd_soil"] == 0).mean() > 0.2
-
-    @needs_site_table
-    def test_the_product_counts_agree_with_the_files(self, frames):
-        pairs = real_pairs()
-        dataset = load_drivers(
-            sorted({s for s, _ in pairs}), root=REAL_ROOT, sites_table=load_sites(), allow_missing=True
-        )
-        assert dataset["par"].attrs["n_values_below_zero"] == sum(int((f["par"] < 0).sum()) for f in frames.values())
-        assert dataset["precipitation"].attrs["n_values_below_zero"] == sum(int((f["precip"] < 0).sum()) for f in frames.values())
-        assert dataset["vpd"].attrs["n_values_not_positive"] == sum(int((f["vpd"] <= 0).sum()) for f in frames.values())
-        assert dataset["soil_vpd"].attrs["n_values_not_positive"] == sum(int((f["vpd_soil"] <= 0).sum()) for f in frames.values())
-        assert dataset["wind_speed"].attrs["n_values_not_positive"] == 0
+        nee = from_sipnet_output(site_1_result, "nee")["net_ecosystem_exchange"]
+        par = driver_fields(real_drivers)["photosynthetically_active_radiation"]
+        head = par.sel(site=1, source_member_index=1).isel(time=slice(0, nee.sizes["time"]))
+        for name in TIME_COORDS:
+            np.testing.assert_array_equal(nee[name].values, head[name].values)

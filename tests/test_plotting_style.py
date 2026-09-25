@@ -152,7 +152,7 @@ def test_use_project_style_applies_rc_params():
 
 def test_axis_label_reads_the_attributes(field_time):
     """The label is ``"<long_name> (<units>)"`` from ``attrs``."""
-    assert axis_label(field_time) == "Mean air temperature over the timestep (deg C)"
+    assert axis_label(field_time) == "Air temperature (degC)"
 
 
 @pytest.mark.parametrize("missing", ["units", "long_name"])
@@ -168,4 +168,4 @@ def test_axis_label_on_a_real_driver_field(real_driver_field):
     """The real driver attributes give a usable label."""
     label = axis_label(real_driver_field)
     assert "air temperature" in label.lower()
-    assert label.endswith("(deg C)")
+    assert label.endswith("(degC)")

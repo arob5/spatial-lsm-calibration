@@ -2099,7 +2099,7 @@ dependencies = [
 [[package]]
 name = "pyens"
 version = "0.1.0"
-source = { git = "https://github.com/arob5/PyEns.git?branch=main#2fb808c22ef02e7c5a0314daa0746e39fcfd6b17" }
+source = { git = "https://github.com/arob5/PyEns.git?branch=main#8cf90b52aa4afff84434cc352bb4a1816fe5d02d" }
 
 [[package]]
 name = "pygments"
@@ -2196,7 +2196,7 @@ wheels = [
 [[package]]
 name = "pysipnet"
 version = "0.1.0.dev0"
-source = { git = "https://github.com/TARPS-group/pySIPNET.git?branch=main#6613c5658678debc96bbed1d048a0ea77496e9ad" }
+source = { git = "https://github.com/TARPS-group/pySIPNET.git?branch=main#7cefa01170c598813246ce8cdc85033c7caf7c76" }
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },

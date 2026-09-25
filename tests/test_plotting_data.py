@@ -104,7 +104,7 @@ def test_the_y_label_is_the_real_variable_and_unit(ax, real_driver_field):
     """The label comes from the reader's own attributes."""
     plot_time_series(real_driver_field.sel(site=1), ax=ax)
     assert ax.get_ylabel() == axis_label(real_driver_field)
-    assert ax.get_ylabel().endswith("(deg C)")
+    assert ax.get_ylabel().endswith("(degC)")
 
 
 def test_a_driver_field_draws_one_curve_per_site(ax, real_driver_field):
@@ -194,21 +194,23 @@ def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fi
 # ── acceptance criteria ───────────────────────────────────────────────────────
 
 
-def test_acceptance_one_panel_three_aggregations(ax, real_driver_field):
-    """Raw, daily and monthly ``par`` at one site, overlaid, in three lines.
+def test_acceptance_one_panel_three_aggregations(ax, real_drivers):
+    """Raw, daily and monthly PAR at one site, overlaid, in three lines.
 
-    Criterion 1 of the design spec, on ``par`` rather than NEE, which has no
-    processed product yet. Like NEE, ``par`` is a per-timestep total, so its
+    Criterion 1 of the design spec, on PAR rather than NEE, which has no
+    processed product yet. Like NEE, PAR is a per-timestep total, so its
     daily value is a sum.
 
     The aggregation is written at the call site, as the design spec requires,
     and through ``obs_ops.aggregate_time``, which takes the method from the
     variable's kind rather than having it named here.
     """
-    from sipnet_calibration.drivers import driver_fields, load_drivers
+    from sipnet_calibration.drivers import driver_fields
     from sipnet_calibration.obs_ops import aggregate_time
 
-    par = driver_fields(load_drivers([1], members=[1]))["par"].sel(site=1, member=0)
+    par = driver_fields(real_drivers)["photosynthetically_active_radiation"].sel(
+        site=1, source_member_index=1
+    )
     plot_time_series(par, ax=ax, role="prior", label="3-hourly")
     plot_time_series(aggregate_time(par, "1D"), ax=ax, role="posterior", label="daily")
     plot_time_series(aggregate_time(par, "MS"), ax=ax, role="truth", label="monthly")

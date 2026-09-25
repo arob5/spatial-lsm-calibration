@@ -3,8 +3,9 @@
 
 Overview
 --------
-Walk a drivers root, apply :func:`sipnet_calibration.drivers.read_clim_file`
-to every file, and report what holds across the whole ensemble: whether the
+Walk a drivers root, apply :func:`sipnet_calibration.drivers.read_driver_file`
+-- pySIPNET's reader and validation, and the loader's own value check -- to
+every file, and report what holds across the whole ensemble: whether the
 directory template covers every site and member, whether the ``(site, member)``
 set is a complete rectangle, and which files fail which check. The three files
 available locally settle the format; only the SCC can settle the coverage, and
@@ -31,19 +32,23 @@ A report to stdout and, with ``--out``, the same content as JSON:
   ``(site, member)`` pair has a directory and a file;
 * directories that do not match the template, and pairs with zero or several
   ``.clim`` files;
-* per check, the files that fail it, with the message;
+* per check, the files that fail it, with the message: ``pysipnet`` for a file
+  pySIPNET refuses, ``negative_excursions`` for the loader's own check;
 * the distinct ``(start, end)`` date pairs in file names;
-* the distinct constant-column values seen for ``loc``, ``length`` and
-  ``soil_wetness``, which are asserted per file but worth tabulating;
+* the distinct file layouts, ``loc`` values and step lengths seen;
 * per variable, the count of negative or non-positive values and the extremes,
-  summed over the files that parsed;
-* whether every file shares one ``(year, day, time)`` grid;
-* any file that failed to parse, with the reason.
+  summed over the files that were read;
+* whether every file shares one time axis;
+* any file that failed unexpectedly, with the reason.
 
 Notes
 -----
 Runs under the project environment rather than bare Python: the whole point is
-to apply the reader's own checks, so it imports them. Parsing costs about a
+to apply the reader's own checks, so it imports them. A file pySIPNET refuses
+is read no further, so the value statistics cover only the files it accepts.
+pySIPNET refuses the ERA5 files as generated for their drifting hour column
+(``data/README.md`` Note 15), so until they are corrected the report on them
+is the refusal alone. Parsing costs about a
 tenth of a second per file and there are 80,000, so a serial run is about two
 hours; ``--jobs`` parallelizes over files.
 
@@ -71,31 +76,20 @@ import numpy as np
 import pandas as pd
 
 from sipnet_calibration.drivers import (
-    CLIM_FILE_CONSTANTS,
     DRIVER_FILE_GLOB,
-    SOURCE_VARIABLE_NAMES,
-    read_clim_file,
+    DRIVER_VARIABLES,
+    read_driver_file,
 )
 
 DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
 FILE_PATTERN = re.compile(r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$")
 
-#: Which invariant a ``read_clim_file`` message is about, by a phrase it
+#: Which check a ``read_driver_file`` message is about, by a phrase it
 #: carries. Coupled to the reader's wording; a message no phrase matches is
-#: reported as ``unknown`` rather than dropped.
+#: reported as ``unknown`` rather than dropped. pySIPNET's own reasons are not
+#: split further here: the message carries them.
 CHECK_PHRASES = {
-    "holds no rows": "empty_file",
-    "could not be parsed": "column_count",
-    "expected 14 fields": "column_count",
-    "could not be read as a number": "non_numeric_field",
-    "non-finite value": "no_missing_values",
-    "non-integer values": "integer_year_day",
-    "must be": "constant_columns",
-    "years are not contiguous": "day_structure",
-    "ascending year order": "day_structure",
-    "rows, expected": "day_structure",
-    "does not run": "day_structure",
-    "linspace model": "time_drift_model",
+    "pySIPNET refused the file": "pysipnet",
     "below -": "negative_excursions",
 }
 
@@ -179,7 +173,8 @@ def survey_one_file(directory: Path) -> FileFacts:
         facts.name_dates = (name_match.group(2), name_match.group(3))
 
     try:
-        frame = read_clim_file(path)
+        climate = read_driver_file(path)
+        frame, axis = climate.pandas, climate.xarray
     except ValueError as error:
         facts.error = str(error)
         facts.failed_check = classify(facts.error)
@@ -190,24 +185,27 @@ def survey_one_file(directory: Path) -> FileFacts:
         return facts
 
     facts.n_rows = len(frame)
-    first = pd.Timestamp(int(frame["year"].iloc[0]), 1, 1) + pd.Timedelta(days=int(frame["day"].iloc[0]) - 1)
-    last = pd.Timestamp(int(frame["year"].iloc[-1]), 1, 1) + pd.Timedelta(days=int(frame["day"].iloc[-1]) - 1)
-    facts.data_dates = (str(first.date()), str(last.date()))
+    starts = pd.DatetimeIndex(axis["time_step_start"].values)
+    facts.data_dates = (str(starts[0].date()), str(starts[-1].date()))
     if facts.name_dates is not None and facts.name_dates != facts.data_dates:
         facts.name_problems.append("file name dates differ from the data")
     facts.grid_hash = hashlib.sha1(
-        np.ascontiguousarray(frame[["year", "day", "time"]].to_numpy(np.float64)).tobytes()
+        np.ascontiguousarray(axis["time_step_start"].values.astype("int64")).tobytes()
+        + np.ascontiguousarray(axis["time_step_length"].values.astype("int64")).tobytes()
     ).hexdigest()
-    for column in SOURCE_VARIABLE_NAMES:
-        values = frame[column].to_numpy()
-        facts.stats[column] = {
+    for name in DRIVER_VARIABLES:
+        values = frame[name].to_numpy()
+        facts.stats[name] = {
             "min": float(values.min()),
             "max": float(values.max()),
             "n_below_zero": int((values < 0).sum()),
             "n_not_positive": int((values <= 0).sum()),
         }
-    for column in CLIM_FILE_CONSTANTS:
-        facts.constants[column] = [float(v) for v in np.unique(frame[column].to_numpy())]
+    facts.constants = {
+        "n_columns": [float(climate.n_columns)],
+        "loc": [float(climate.loc)],
+        "time_step_length": [float(v) for v in np.unique(frame["time_step_length"].to_numpy())],
+    }
     return facts
 
 
@@ -225,7 +223,7 @@ def build_report(results: list[FileFacts], off_template: list[str]) -> dict[str,
 
     parsed = [r for r in results if r.n_rows is not None]
     stats: dict[str, dict[str, float | int]] = {}
-    for column in SOURCE_VARIABLE_NAMES:
+    for column in DRIVER_VARIABLES:
         per = [r.stats[column] for r in parsed if column in r.stats]
         if per:
             stats[column] = {
@@ -236,7 +234,7 @@ def build_report(results: list[FileFacts], off_template: list[str]) -> dict[str,
             }
     constants = {
         column: sorted({v for r in parsed for v in r.constants.get(column, [])})
-        for column in CLIM_FILE_CONSTANTS
+        for column in ("n_columns", "loc", "time_step_length")
     }
 
     return {
@@ -283,7 +281,7 @@ def print_report(report: dict[str, object]) -> None:
     print(f"distinct grids     {report['distinct_grid_hashes']}")
     print(f"constants          {report['constants_seen']}")
     for column, s in report["value_stats"].items():
-        print(f"  {column:12s} min {s['min']:12.5g} max {s['max']:12.5g} "
+        print(f"  {column:36s} min {s['min']:12.5g} max {s['max']:12.5g} "
               f"below zero {s['n_below_zero']:9d} not positive {s['n_not_positive']:9d}")
 
 
