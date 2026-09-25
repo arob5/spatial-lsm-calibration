@@ -39,8 +39,18 @@ Three sources are referenced throughout this document.
 - **[pySIPNET]** [pySIPNET](https://github.com/TARPS-group/pySIPNET), the SIPNET
   interface package, whose `pysipnet.climate` and `pysipnet.io.clim_io` modules
   define the SIPNET climate file format.
+- **[AMERIFLUX]** AmeriFlux FLUXNET data products, processed with ONEFlux
+  (Pastorello et al., 2020, *Scientific Data* 7:225,
+  [doi:10.1038/s41597-020-0534-3](https://doi.org/10.1038/s41597-020-0534-3)):
+  one dataset per site, each under CC-BY-4.0 with its own DOI, which the tower
+  table records. The variables are defined in the
+  [FLUXNET2015 FULLSET table](https://fluxnet.org/data/fluxnet2015-dataset/fullset-data-product/)
+  and the file conventions on AmeriFlux's
+  [data-variables page](https://ameriflux.lbl.gov/data/aboutdata/data-variables/).
 - **[GAPFILL]** Gap-filled eddy-covariance net ecosystem exchange, produced by
-  Yang Gu at Boston University. Unpublished; no citable reference at present.
+  Yang Gu at Boston University from the [AMERIFLUX] files. Unpublished; no
+  citable reference at present. Superseded here by the [AMERIFLUX] files
+  themselves; see [Net ecosystem exchange](#net-ecosystem-exchange).
 
 ### Relationship to the reanalysis
 
@@ -100,15 +110,25 @@ data/
       smap_soil_moisture.csv.gz
       soilgrids_soil_organic_carbon.csv.gz
       provenance.md
-      nee/ens_ec_3h.csv
       sda_8k_site_rdata/obs.mean.Rdata    retained for validation
       sda_8k_site_rdata/obs.cov.Rdata     retained for validation
+    net_ecosystem_exchange/   NEE; the small files tracked, the time series not
+      ameriflux_towers.csv          tracked: each tower's pool site, primary status,
+                                    UTC offset and exclusion
+      Unmatched_Sites.csv           tracked: the reanalysis's list of towers added
+                                    to the pool
+      provenance.md                 tracked
+      ameriflux_nee_half_hourly.nc  not tracked; made on the SCC, copied here
+      ameriflux_nee_hourly.nc       not tracked; made on the SCC, copied here
+      ameri_sites.tsv               not tracked: AmeriFlux's site listing, which
+                                    carries contact details
+      fluxnet/                      SCC only: symlink to the AmeriFlux FLUXNET download
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
     site_labels/<name>.csv      one per product, keyed on site_id
     constraints/<name>.nc       one per constraint, <name> the raw file's stem
     initial_conditions.nc
-    nee.zarr/
+    net_ecosystem_exchange/<name>.nc   one per NEE series
 ```
 
 The drivers have no processed form. SIPNET reads the raw `.clim` files itself,
@@ -140,10 +160,12 @@ nowhere else off the SCC; see [Site labels](#site-labels) and
 [Site covariates](#site-covariates). `raw/natural_earth/` holds the Natural
 Earth archives the map basemap is built from; they are not project data, but
 tracking them makes the basemap rebuildable offline, and
-`raw/natural_earth/provenance.md` records where they came from. Everything else
-under `raw/`, including the
-much larger drivers, eddy-covariance files, phenology and soil texture files,
-lives on storage and is symlinked.
+`raw/natural_earth/provenance.md` records where they came from.
+`raw/net_ecosystem_exchange/` holds the tower table, the reanalysis's list of
+towers added to the pool and the provenance record; its converted time series,
+at a few gigabytes, are made on the SCC and copied, not tracked. Everything
+else under `raw/`, including the much larger drivers, the AmeriFlux download,
+phenology and soil texture files, lives on storage and is symlinked.
 
 ---
 
@@ -237,8 +259,15 @@ is spatially compact, and class 6 spans the full latitude range.
 
 ### `site_id_map.csv`
 
-185 rows mapping Ameriflux site identifiers onto the integer site identifiers, by
-exact match.
+185 rows mapping Ameriflux site identifiers onto the integer site identifiers.
+**It is superseded** by `raw/net_ecosystem_exchange/ameriflux_towers.csv`,
+which matches every downloaded tower exactly and records how; this file stays
+tracked because the site table's `ameriflux_site_id` column is built from it.
+It is byte-identical to `chapter1/site_index_map.csv` in Yang Gu's directory,
+and it is *not* an exact match, as this section used to say: it is the subset,
+with NEE data, of a nearest-point search (the pool point nearest each tower by
+great-circle distance, kept under 1 km, the closest tower per point), written
+from `Soil_Param/.Rhistory` over the table `chapter1/data_prep.R` builds.
 
 | Column | Type | Description |
 |---|---|---|
@@ -249,13 +278,8 @@ All mapped sites lie within 25.35-47.16 north and 122.33-68.74 west, so the map
 covers the conterminous US only. Because site identifiers run in descending
 latitude, the mapped range 4102-7418 is a contiguous latitude band.
 
-This file and the [GAPFILL] net ecosystem exchange file do not cover the same
-sites: the NEE file contains 209 Ameriflux sites and this map contains 185, with
-165 in common, so calibration constrained by NEE is limited to those 165 sites.
-The producer attributes the omissions to three causes: some sites did not pass a
-validation test, some lacked the half-hourly data the gap-filling requires, and
-some resolved to the same model site identifier as another site. An updated
-release of the product covers more sites; see Note 7.
+Every pair it holds agrees with the exact matching of
+[Net ecosystem exchange](#net-ecosystem-exchange).
 
 #### Co-located instruments
 
@@ -279,8 +303,9 @@ The other two pair Ameriflux towers at one location. A further 163 unmapped site
 embed an identifier in their name, so the name field is not a fallback for the
 mapping.
 
-The choice of instrument is made here, per site, and recorded nowhere else. See
-Note 3, and Note 7 on the release that supersedes this map.
+The choice of instrument is made here, per site, and recorded nowhere else. The
+tower table that supersedes this map records every such choice and its reason;
+see Note 3 and [Net ecosystem exchange](#net-ecosystem-exchange).
 
 > **Note 3.** Because more than one Ameriflux site can fall within a single grid
 > cell, several may resolve to the same model site identifier. This file contains
@@ -312,10 +337,17 @@ lie at
 for zero-based indices, which is where the `lon_index` and `lat_index` columns
 of the processed site table come from.
 
-All 8000 sites fall on cell centers, but only to within 1.02e-6 degrees, about
-0.11 m. The residual is consistent with the coordinates having passed through
-32-bit floating point somewhere upstream: site 1's stored latitude is
-82.5458343506 where the exact center is 82.5458333333. The integer indices are
+All 8000 sites fall on cell centers, but offset by the **same** 1.0172526e-6
+degrees, about 0.11 m, west and north (to within 3e-14 across the pool): site
+1's stored latitude is 82.5458343506 where the nominal center is
+82.5458333333. That is not 32-bit rounding, as this document used to say,
+which would scatter; it is the origin of the raster the pool was cut from,
+`MODIS_NLCD_LC.tif` in the reanalysis's site-selection code
+(`anchorSites/downscale/downscale_anchorsites.Rmd`), whose geotransform starts
+at (-179.0000010173, 85.0000010173). `SITE_GRID` carries the shift as
+`edge_shift_lon`/`edge_shift_lat`, which `Grid.cell_of` uses to bin an
+arbitrary point, such as a flux tower, on the raster's real edges; the test
+suite asserts it against every site. The integer indices are
 therefore the exact representation of a site's position and the stored
 coordinates are a lossy rendering of it, which is why both are carried.
 
@@ -584,64 +616,107 @@ with that caveat; see open question 24.
 
 ### Net ecosystem exchange
 
-**Format.** A single CSV file of about 1.7 GB, with 3,547,921 data rows and 28
-columns.
+**Source.** [AMERIFLUX]: the AmeriFlux FLUXNET FULLSET files, one CSV per
+tower at half-hourly (HH) or hourly (HR) resolution, as Yang Gu downloaded them
+on 2025-08-19: 241 towers, 237 half-hourly and 4 hourly (`US-Ha1`, `US-MMS`,
+`US-Ne1`, `US-Ne2`), at site versions from 3-5 to 5-7. Every CSV matches the
+CRC-32 its zip records, so they are AmeriFlux's distribution as downloaded.
+`raw/net_ecosystem_exchange/provenance.md` records the conversion.
 
-| Column | Type | Description |
-|---|---|---|
-| `Site_ID` | string | Ameriflux site identifier; 209 distinct values |
-| `utc` | timestamp | ISO 8601, 3-hourly, 2012-01-01T03:00:00Z to 2025-01-01T03:00:00Z |
-| `ens01` to `ens25` | float | Twenty-five ensemble members |
-| `ens_mean` | float | Mean of `ens01` to `ens25` |
+**Format.** Each file has 236 columns, starts with `TIMESTAMP_START` and
+`TIMESTAMP_END` as `YYYYMMDDHHMM`, tiles whole years, and marks missing values
+`-9999`. The stamps are **local standard time, without daylight saving**, the
+zone being the site's BADM `UTC_OFFSET`, per AmeriFlux's data-variables page.
+The conversion keeps these columns, as the FULLSET table defines them:
 
-**Interpretation.** Values are in micromoles of CO2 per square meter per second
-(umol CO2 m-2 s-1), a rate, as confirmed by the producer. SIPNET reports net
-ecosystem exchange as a per-timestep total in g C m-2, so ingest must convert
-between the two.
-
-Each of the 25 member columns is the gap-filled series obtained from one member
-of a driver ensemble. The spread across members therefore reflects the
-propagation of driver uncertainty through the gap-filling procedure, and not
-measurement error or uncertainty in the gap-filling model itself. `ens_mean` is
-the average of the 25 members, exactly so to within 8e-14 in the site checked,
-and is therefore redundant. It must not be carried as a 26th ensemble member,
-since that biases any quantile computed across members.
-
-The sign convention is that positive values denote flux to the atmosphere and
-negative values denote uptake, matching SIPNET's own convention for net ecosystem
-exchange. At `US-UMB`, July means by hour run from +6.2 overnight to -20.8 at
-local midday, and monthly means are negative from June to September and positive
-from October to May.
-
-Temporal coverage is uneven across sites, and sparser than the row count alone
-suggests. A complete 3-hourly record over the file's date range would be about
-37,992 rows per site, but per-site counts range from 2,921 to 37,993 with a median
-of 17,537, so the average site covers about 45% of the period.
-
-| Coverage of the full period | Sites |
+| Columns | Meaning |
 |---|---|
-| at least 99% | 17 |
-| at least 90% | 28 |
-| at least 50% | 62 |
-| at least 25% | 144 |
+| `NEE_VUT_REF`, `NEE_VUT_USTAR50`, `NEE_CUT_REF`, `NEE_CUT_USTAR50` | NEE, umol CO2 m-2 s-1, filtered with a friction velocity (u*) threshold estimated per year (VUT) or for all years (CUT), the reference estimate (REF, chosen by model efficiency) or the 50th percentile of the threshold (USTAR50); gap-filled by marginal distribution sampling |
+| `..._QC` | 0 measured, 1 good, 2 medium, 3 poor gap-fill |
+| `..._RANDUNC` | random uncertainty, from measured data only |
+| `..._JOINTUNC` | random and u*-filtering uncertainty, `sqrt(RANDUNC^2 + ((NEE_84 - NEE_16)/2)^2)` |
+| `NIGHT` | 1 at night, from `SW_IN_POT` |
+| `SW_IN_POT`, `SW_IN_F`, `SW_IN_F_QC` | potential and measured incoming shortwave, for the clock checks below |
 
-Only 17 of the 209 sites have a near-complete record. Representing the file as a
-dense array over site and time therefore leaves roughly 55% of entries missing,
-and any per-site statistic must account for very unequal sample sizes.
+53 of the 241 files carry no `NEE_CUT_*` columns at all; they are stored as
+missing, so the constant-threshold products cover fewer sites. The sign
+convention is not stated in the FULLSET table; the values are positive at night
+and negative in summer daytime, so positive is taken to be release to the
+atmosphere, which is an inference from the data.
 
-> **Note 7.** An updated release of this product covers 217 sites, including
-> several absent here, but carries only the ensemble mean. Which release to use is
-> undecided.
+**The clock.** Converting a tower's stamps to UTC needs its offset, which the
+FULLSET files, AmeriFlux's public site API, `amerifluxr::amf_site_info()`, the
+site web pages and PEcAn's bundled BADM table do not carry; AmeriFlux publishes
+`UTC_OFFSET` only in the BADM, to account holders (Note 26). The offsets are
+therefore **recovered from each tower's own `SW_IN_POT`**, which ONEFlux
+computes from the site's coordinates and that offset on the file's stamps: of
+the candidate offsets from -12 to +12 hours in half hours, the one whose
+top-of-atmosphere shortwave matches `SW_IN_POT` is taken. The recovery is
+unambiguous at every tower (the runner-up fits between 2.7 and 11.9 times
+worse, median 11.1), and agrees with the two BADM values on the SCC, `US-CRT`
+and `US-Ha1`, both -5. Several towers are not on their location's civil zone
+(`US-ASH`, `US-ASM`, `US-PSH`, `US-PSL` in California on -7, `US-CdM` in Utah on
+-6), and their data agree with the recovered offset, so a zone looked up from
+location would have been wrong.
 
-> **Note 8.** In about a third of rows, all 25 ensemble members are identical:
-> 10,273 of 29,225 rows at `US-UMB`. Across the remaining rows the median
-> standard deviation over members is 0.147 and the median range is 0.565; over
-> all rows the median standard deviation is 0.067.
-> Since the members differ only in the driver realization used for gap-filling,
-> this is consistent with a directly measured timestep, which requires no
-> gap-filling, but that has not been confirmed.
+A second check tests that the data are on that clock: the mean diurnal cycle of
+measured `SW_IN_F` (QC 0) against `SW_IN_POT`. It lags by 0 at 228 towers and
+by one half-hour step at 12 (`CA-HPC`, `CA-SMC`, `US-CF1`, `US-CF3`, `US-CF4`,
+`US-EDN`, `US-GLE`, `US-NGC`, `US-NR1`, `US-PFc`, `US-SSH`, `US-xNW`), which is
+the resolution of the check and is recorded in the tower table's `comment`.
+`CA-Mtk`'s measured shortwave runs an hour after its `SW_IN_POT`, and it is
+excluded (Note 27).
 
-**Source.** [GAPFILL].
+Checked on the product: the phase of the June-August diurnal NEE cycle moves
+with longitude at -0.063 h per degree, where a UTC clock requires -0.067; its
+minimum falls a median 0.3 h before UTC solar noon; and it moves by 0.3 h
+between winter and July. The earlier derivatives below fail all three.
+
+**Tower to site.** The pool's AmeriFlux sites are members of the pool by
+construction: the reanalysis's site selection
+(`anchorSites/downscale/downscale_anchorsites.Rmd`) snapped its anchor sites and
+a list of added towers, `Unmatched_Sites.csv` (tracked here), onto the cells of
+its 1 km raster, so a tower's pool point is its cell center, exactly. The tower
+table matches each tower by one of three bases, never by distance: the site's
+name embeds its identifier (60 towers); it is the tower the list placed in an
+`ameriflux`-labeled cell (116); or its AmeriFlux coordinates fall in the site's
+cell (47, mostly NEON `US-x*` towers in cells named for NEON sites). That
+matches 223 towers to 215 sites; 18 towers match none and are left out. Eight
+sites hold two towers; the one the pool was built from is primary and carries
+the site's series (Note 3). Three towers the pool names sit in a neighboring
+cell by AmeriFlux's coordinates, 414-633 m from the site center (`CA-Cbo`,
+`US-Me2`, `US-MtB`); they are matched by name, with the disagreement in
+`comment` (Note 28). The matching agrees with the nearest-point matching
+behind `site_id_map.csv` on every tower both make.
+
+**The products.** One per series, at the source resolution, on 2012-2024 UTC:
+
+| Product | Sites |
+|---|---|
+| `ameriflux_nee_half_hourly_ustar_variable` (`NEE_VUT_REF`) | 210 |
+| `ameriflux_nee_half_hourly_ustar_constant` (`NEE_CUT_USTAR50`) | 170 |
+| `ameriflux_nee_hourly_ustar_variable` | 4 |
+| `ameriflux_nee_hourly_ustar_constant` | 4 |
+
+`sipnet_calibration.net_ecosystem_exchange` documents the data model. About
+half the site-steps of the half-hourly products hold a value, and about a third
+of those were measured rather than gap-filled.
+
+**Earlier derivatives, superseded.** Before this ingest the project held Yang
+Gu's `Gap_fill/results/ens_ec_3h.csv` ([GAPFILL]; 209 towers, 25 members,
+3-hourly), whose local copy under `raw/constraints/nee/` is superseded, and knew
+of `chapter1/eddy_cov_dat.csv` (217 sites). Both descend from these same files
+through `Validation/validation/ec_merge.R`, which parses the stamps with
+`tz = ""`, the SCC's New York zone with daylight saving: every site's stamps
+become raw + 5 h in winter and + 4 h in summer, whatever its zone, and each
+spring two half-hours are dropped. `ens_ec_3h.csv` is on that clock (issue #8);
+`eddy_cov_dat.csv`, the 3-hour mean of `NEE_CUT_USTAR50` with `NEE_VUT_USTAR50`
+substituted where missing and no quality filter, was converted a second time in
+the site's own zone and is 5 h late in winter and 3 h in summer. Both were
+reproduced exactly from the FULLSET files. At 3-hourly resolution neither can
+be corrected: the true-UTC bins are out of phase with SIPNET's steps. The 25
+members of `ens_ec_3h.csv` are XGBoost fits to resamples of each site's measured
+half-hours (Note 8), not driver realizations.
 
 ### Constraint observations
 
@@ -1202,7 +1277,7 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | `ingest_site_labels.py` | `raw/site_labels/*.csv`, `processed/sites/sites.csv` | `processed/site_labels/<name>.csv`, one per product |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
 | `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
-| `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
+| `ingest_net_ecosystem_exchange.py` | `raw/net_ecosystem_exchange/ameriflux_nee_*.nc`, `raw/net_ecosystem_exchange/ameriflux_towers.csv`, `processed/sites/sites.csv` | `processed/net_ecosystem_exchange/<name>.nc`, one per series |
 
 The drivers have no ingest script. SIPNET runs read the raw `.clim` files, so
 converting 80,000 of them into a store would produce a large copy the model
@@ -1255,7 +1330,7 @@ and the structural facts, and reports the rest.
 
 ### Making a raw input
 
-Three scripts are **not** part of the pipeline above and live apart from it, in
+Five scripts are **not** part of the pipeline above and live apart from it, in
 [`../scripts/raw_sources/`](../scripts/raw_sources): each *creates* a raw input
 rather than processing one. The initial conditions arrive as 800,000 per-member
 netCDFs that exist only on the SCC, so they are laid on `(site, member)` once,
@@ -1284,11 +1359,23 @@ then turns them into the clipped polylines the plotting layer ships with; that
 build is not ingest either, since its output lives in the package rather than
 under `processed/`.
 
+`convert_ameriflux_nee.py` and `build_ameriflux_towers.py` are the fourth and
+fifth. The first lays every tower's kept FULLSET columns on one
+local-standard-time axis per resolution, values and names unchanged, after
+checking each CSV against the CRC-32 its zip records; it needs the SCC, and its
+output, a few gigabytes, is copied rather than tracked. The second makes the
+tracked tower table from those files, AmeriFlux's site listing, the
+reanalysis's tower list and the site table, and runs wherever the raw files
+are. See [Net ecosystem exchange](#net-ecosystem-exchange) and
+`raw/net_ecosystem_exchange/provenance.md`.
+
 | Script | Reads | Writes |
 |---|---|---|
 | `raw_sources/convert_initial_conditions.py` | `raw/initial_conditions/files/` (SCC only) | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, tracked |
 | `raw_sources/split_site_pft_16class.py` | the producer's 60-column PFT table (SCC only) | `raw/site_labels/site_pft_16class.csv` and `raw/covariates/site_covariates_pft_assignment.csv`, both tracked |
 | `raw_sources/download_natural_earth.py` | `naciscdn.org`, Natural Earth's CDN | `raw/natural_earth/ne_50m_*.zip`, tracked |
+| `raw_sources/convert_ameriflux_nee.py` | `raw/net_ecosystem_exchange/fluxnet/` (SCC only) | `raw/net_ecosystem_exchange/ameriflux_nee_{half_hourly,hourly}.nc`, not tracked |
+| `raw_sources/build_ameriflux_towers.py` | the two files above, `ameri_sites.tsv`, `Unmatched_Sites.csv`, `processed/sites/sites.csv` | `raw/net_ecosystem_exchange/ameriflux_towers.csv`, tracked |
 | `build_basemap.py` | `raw/natural_earth/ne_50m_*.zip` | `src/sipnet_calibration/plotting/basemap_data/natural_earth_50m.npz`, tracked |
 
 Conversions applied during ingest rather than downstream:
@@ -1323,10 +1410,13 @@ Conversions applied during ingest rather than downstream:
   `label`), and the row order, which becomes ascending by `site_id`. The
   `landcover` relation is asserted, not applied: the classes come from the file,
   and a raw file departing from the relation is refused rather than corrected.
-- **Net ecosystem exchange.** None to the values, as for the constraints: the
-  product keeps the producer's umol CO2 m-2 s-1 and the observation operator
-  converts the model into it (the 2026-09-15 observation-operator design
-  decision). The redundant `ens_mean` column is dropped.
+- **Net ecosystem exchange.** None to the values: each product keeps
+  AmeriFlux's umol CO2 m-2 s-1, and the observation operator converts the
+  model into it. No quality filter, no preferred estimate, no fallback from one
+  estimate to another, no aggregation. What changes is structure: one series
+  per product, the primary tower of each pool site placed on that site, and
+  each tower's local-standard-time stamps relabeled as UTC step ends by its
+  fixed offset from the tower table, a whole number of steps.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which site labels a calibration uses, and how many exist,
@@ -1336,8 +1426,8 @@ Conversions applied during ingest rather than downstream:
 
 ## Processed format
 
-`ingest_sites.py`, `ingest_constraints.py` and `ingest_initial_conditions.py`
-are written, and the driver reader in `sipnet_calibration.drivers` is
+`ingest_sites.py`, `ingest_constraints.py`, `ingest_initial_conditions.py` and
+`ingest_net_ecosystem_exchange.py` are written, and the driver reader in `sipnet_calibration.drivers` is
 implemented; the rest of this section records the intended output of scripts
 not yet written.
 
@@ -1353,14 +1443,13 @@ Formats are chosen according to the shape of each product.
 | `site_labels/<name>.csv` | CSV, one per product | table | ~0.2 MB each |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
 | `initial_conditions.nc` | netCDF | `(member, site)` | 26 MB compressed |
-| `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
+| `net_ecosystem_exchange/<name>.nc` | netCDF, one per series, one chunk per site | `(site, time)` | about 250 MB half-hourly, 7 MB hourly |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
 
-Zarr is used for the arrays indexed by member, site and time because it maps
-directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
-reads only the requested sites, with no reshaping step. Lazy reads are backed by
-dask. The site table is CSV instead because it is small, tabular and read by
-people as often as by code.
+The time-series products are netCDF chunked one site at a time, so a lazy
+`.sel(site=...)` reads only the requested sites; Zarr, once planned for NEE,
+would buy nothing more. The site table is CSV instead because it is small,
+tabular and read by people as often as by code.
 
 `sites/sites.csv` carries every field of the shapefile, so that nothing is lost in
 translation, together with the grid indices and the Ameriflux identifier:
@@ -1617,14 +1706,14 @@ standard scheme. It names neither the eight classes nor anything about
 
 **3. Sites resolving to the same model identifier.** The 8000-site pool is a
 subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
-fall in the same cell and resolve to one model site. The producer of [GAPFILL]
-gives this as one reason sites were omitted from the identifier map, and this file
-contains no repeated identifiers, which suggests such cases were dropped. If a
-later release retains them, the calibration has to decide what two observation
-series attached to a single model prediction mean: whether both enter the
-likelihood, whether they are averaged first, and how the observation error
-covariance should treat them. This is a modeling question rather than a data one,
-and is unresolved.
+fall in the same cell and resolve to one model site. *Settled for now:* the
+tower table matches every such tower to the site, and one of them is
+**primary**, the one whose series the products carry: the tower the pool was
+built from where the site's name or the reanalysis's tower list says which, then
+the longer record. The others stay in the table, with `primary_reason` naming
+the primary. Whether two series attached to one model prediction should both
+enter the likelihood, be averaged first, or share an error covariance remains a
+modeling question, open for when it matters.
 
 **4. Driver ensemble size.** *Resolved: the driver ensemble has 10 members.*
 Only three driver directories are available locally (`ERA5_1_1`, `ERA5_1_2`,
@@ -1652,27 +1741,25 @@ specified in `sipnet_calibration.initial_conditions`. What the absences mean
 upstream (no MODIS composite passed quality control; no CCI retrieval) follows
 from PEcAn's code and is recorded in each spec's `description`.
 
-**7. Which release of the gap-filled product to use.** An updated release exists,
-combining the identifier map and the observations in a single file covering 217
-eddy-covariance sites. It includes sites absent from the release documented here,
-among them `US-Ha1`, and its site matching supersedes `site_id_map.csv`. It
-carries only the ensemble mean, however, so adopting it exchanges the ensemble
-spread for wider site coverage.
+**7. Which release of the gap-filled product to use.** *Resolved: neither.*
+The "updated release" is `chapter1/eddy_cov_dat.csv` (217 sites), and it carries
+not an ensemble mean but ONEFlux's own `NEE_CUT_USTAR50` averaged to 3 hours.
+Both it and the 25-member `ens_ec_3h.csv` carry timestamps converted to UTC
+through a time zone with daylight saving, so their values sit 3 to 5 hours
+(`eddy_cov_dat.csv`) or up to 4 hours (`ens_ec_3h.csv`) from their labels, and
+at 3-hourly resolution that cannot be undone. The products are now built from
+the AmeriFlux files they were derived from; see
+[Net ecosystem exchange](#net-ecosystem-exchange). The per-observation
+uncertainty the ensemble spread was meant to supply is better supplied by
+ONEFlux's own `RANDUNC` and `JOINTUNC`, which the products carry.
 
-That trade matters because the spread is currently the only per-observation
-uncertainty available for net ecosystem exchange, and an observation error
-covariance has to come from somewhere. Whether the ensemble can be obtained for
-the updated results, rather than only its mean, would settle the question; failing
-that, the choice is between coverage and a quantified uncertainty. Neither file is
-present in this repository.
-
-**8. Rows with identical ensemble members.** The members differ only in the
-driver realization used for gap-filling, so a timestep that was measured directly,
-and therefore needed no gap-filling, would be expected to take the same value in
-every member. That would make zero spread a usable flag for measured values, which
-matters for the observation error model, since measured and imputed values should
-not carry equal weight. The producer has not confirmed this reading, and it does
-not carry over to the updated release, which has no ensemble.
+**8. Rows with identical ensemble members.** *Resolved, from the producer's
+code:* the 25 members of `ens_ec_3h.csv` are XGBoost fits to 95% resamples of
+each site's measured half-hours, not a driver ensemble. Measured half-hours
+(`NEE_CUT_USTAR50_QC` 0) are kept identical in every member and every other
+half-hour is refilled, so a 3-hour row has identical members exactly when all
+its half-hours were measured (verified at `US-UMB`, both ways). The products now
+carry ONEFlux's `quality_flag`, which says the same thing per step directly.
 
 **9. Units of the constraint observations.** No unit is stated by any attribute
 in any of the five raw files. `Mg C ha-1` for LandTrendr biomass and `m2 m-2`
@@ -1727,10 +1814,10 @@ the reanalysis's per-PFT trait posteriors map onto the sixteen.
 or independently determines whether arithmetic that pairs them is meaningful.
 Because xarray aligns on coordinate values automatically, an incorrect assumption
 here would combine unrelated members without any error being raised. One
-connection is known: the members of [GAPFILL] are gap-filled series driven by
-successive members of a driver ensemble, so if that is the same ensemble used here,
-net ecosystem exchange member *i* and driver member *i* would share a realization.
-Whether it is the same ensemble has not been established.
+connection that was assumed is not there: the members of [GAPFILL] are resamples
+of a gap-filling model's training data, not runs driven by a driver ensemble,
+so they share no realization with the drivers (see Note 8). The NEE products
+have no members.
 
 **13. Site ordering in the processed form.** The 1-8000 identifiers are fixed, but
 a spatially coherent ordering, a Hilbert or Morton rank for instance, would
@@ -1907,3 +1994,24 @@ product built from these would have nothing to record. Four questions to the
 producer would settle it: the unit of every numeric column, the source product
 and version of each, the period each summarizes, and what the fill convention
 is for the ragged columns. Until then the file is tracked and read by nothing.
+
+**26. The towers' UTC offsets.** The offsets in the tower table are recovered
+from each tower's `SW_IN_POT`, reproducibly, and agree with the two BADM values
+available; the BADM `UTC_OFFSET` itself has not been read for the other 239. The
+all-sites BIF (`amerifluxr::amf_download_bif`, the `AA-Flx` file) needs an
+AmeriFlux account; once obtained, `build_ameriflux_towers.py` can record it
+beside the recovered value and assert that the two agree.
+
+**27. Towers whose measured shortwave is off their clock.** `CA-Mtk`'s measured
+shortwave runs an hour after the `SW_IN_POT` its stamps imply, so either its
+data are not on the offset ONEFlux used or the measurement is shifted; it is
+excluded until that is known. Twelve towers lag by one half-hour step, within
+the check's resolution, and are kept; whether any of them, `US-NR1` among them,
+has a genuine half-hour clock error is a question for the site teams.
+
+**28. Towers the pool names but places a cell away.** `CA-Cbo`, `US-Me2` and
+`US-MtB` are named by pool sites whose cells do not hold their AmeriFlux
+coordinates (414-633 m from the site center): the reanalysis took their
+coordinates from BETY, which disagrees with AmeriFlux. They are matched by name.
+Which coordinates are right, and whether the pool cell is representative of the
+tower's footprint, is unresolved.

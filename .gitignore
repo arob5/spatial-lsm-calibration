@@ -5,11 +5,11 @@ main.py
 .DS_Store
 
 # Raw inputs live on storage and are not distributed with the repository; processed
-# data is regenerable from them. Six exceptions are tracked, none of them a
+# data is regenerable from them. Seven exceptions are tracked, none of them a
 # pipeline output and all of them things the repo cannot function without: the
 # site shapefile, the constraint observations, the converted initial condition
-# ensemble, the site labels, the site covariates, and the Natural Earth archives
-# the map basemap is built from. The constraint files
+# ensemble, the site labels, the site covariates, the Natural Earth archives
+# the map basemap is built from, and the NEE tower table. The constraint files
 # are held in the repository rather than symlinked because the upstream copies
 # are edited and moved in place; see data/raw/constraints/provenance.md.
 data/raw/*
