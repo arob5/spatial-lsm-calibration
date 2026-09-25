@@ -117,7 +117,7 @@ dropped for the same reason, rather than left pointing at a variable that is
 not there. pySIPNET's ``year``/``day_of_year``/``hour_of_day`` row labels are
 dropped too; ``time_step_start`` is the same instant.
 
-:func:`sipnet_calibration.obs_ops.aggregate_time` needs
+:func:`sipnet_calibration.observation.alignment.aggregate_time` needs
 ``time_step_length`` for a length-weighted mean, which is why it is kept
 rather than recomputed.
 
@@ -160,7 +160,7 @@ which discovers absence on disk and therefore has to report it.
 
 One trap belongs to an adapter still to be written here.
 ``from_eki_predictions`` will unstack a ``(J, N)`` block with the
-``(site, variable, time)`` index from ``obs_ops.obs_index``, and it must be the
+``(site, variable, time)`` index from ``observation.vector.ObservationVector.index``, and it must be the
 same index the observation operator used to build the observation vector, or
 the predictions come back mislabeled against the observations they are
 compared with. The traps of the observation and initial-condition sources are
@@ -180,7 +180,7 @@ One run, no site pool involved::
 An ensemble over sites and members, keyed by the pair each run stands for::
 
     from sipnet_calibration.fields import stack_sipnet_outputs
-    from sipnet_calibration.obs_ops import aggregate_time
+    from sipnet_calibration.observation.alignment import aggregate_time
     from sipnet_calibration.plotting import plot_time_series
 
     runs = {(1, 0): first, (1, 1): second, (27, 0): third, (27, 1): fourth}
@@ -218,6 +218,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 __all__ = [
     "FIELD_DIMS",
+    "label_run",
     "MEMBER_DIM",
     "TIME_COORDS",
     "SITE_DIM",
@@ -262,6 +263,46 @@ def site_lookup(sites: pd.DataFrame) -> pd.DataFrame:
     if sites.index.name == "site_id":
         return sites
     return sites.set_index("site_id", drop=False)
+
+
+def label_run(
+    dataset: xr.Dataset,
+    *,
+    site: int | None = None,
+    member: int | None = None,
+    site_table: pd.DataFrame | None = None,
+) -> xr.Dataset:
+    """A run's output dataset labeled with the site and member it was.
+
+    pySIPNET's ``SIPNETOutput.select(names)`` gives one run's variables as a
+    CF Dataset on ``(time,)``; what it cannot know is which site of the pool
+    and which ensemble member the run was. This adds those as scalar
+    coordinates, ``site`` with its ``lon``/``lat`` from the site table and
+    ``member``, and changes nothing else: every variable, coordinate
+    (``time_bounds`` included) and attribute is pySIPNET's. The result is the
+    ``model_output`` the observation operators read.
+
+    Parameters
+    ----------
+    dataset:
+        The run's variables, from ``result.outputs.select(names)`` or
+        ``result.outputs[[...]]``.
+    site, member:
+        As for :func:`from_sipnet_output`.
+    site_table:
+        The site table, as :func:`sipnet_calibration.sites.load_sites` returns
+        it, read from disk when omitted and a *site* is given; pass it when
+        labeling many runs so it is read once.
+    """
+    if not isinstance(dataset, xr.Dataset):
+        raise TypeError(f"label_run takes an xarray Dataset, got {type(dataset).__name__}.")
+    if TIME_DIM not in dataset.coords or dataset.sizes.get(TIME_DIM, 0) == 0:
+        raise ValueError(
+            "This dataset has no rows, so there is nothing to label. That usually means "
+            "the run failed; check result.provenance.success and its stderr."
+        )
+    labels = _identity_coords(site=site, member=member, sites=site_table)
+    return dataset.assign_coords(labels) if labels else dataset
 
 
 def from_sipnet_output(

@@ -25,7 +25,7 @@ from conftest import SITE_1_DRIVERS
 
 from sipnet_calibration.drivers import driver_fields, read_driver_file
 from sipnet_calibration.fields import from_sipnet_output, stack_sipnet_outputs
-from sipnet_calibration.obs_ops import (
+from sipnet_calibration.observation.alignment import (
     DEFAULT_METHOD_FOR_KIND,
     LENGTH_COORD,
     STALE_ON_A_COARSER_STEP,

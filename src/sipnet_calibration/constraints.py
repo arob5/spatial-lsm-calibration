@@ -107,7 +107,9 @@ Functions
 
 :func:`constraint_fields`, :func:`constraint_standard_deviations`
     The ``value`` or ``standard_deviation`` arrays of several products, one
-    field per constraint, optionally for a subset of sites.
+    field per constraint, optionally for a subset of sites. An annual
+    product's array carries its ``time_bounds`` as the one-dimensional
+    coordinates ``time_bounds_start`` and ``time_bounds_end`` on ``time``.
 
 :func:`read_raw`
     Parse a raw file exactly, in its source column names.
@@ -1043,6 +1045,8 @@ def _fields(
         spec = resolve_constraint(name)
         dataset = load_constraint(spec, constraint_path(spec, directory))
         field = dataset[array].rename(name)
+        if "time_bounds" in dataset.coords:
+            field = field.assign_coords(_time_bounds_coords(dataset))
         if wanted is not None:
             missing = sorted(set(wanted) - set(dataset["site"].values.tolist()))
             if missing:
@@ -1050,6 +1054,30 @@ def _fields(
             field = field.sel(site=wanted)
         fields[name] = field
     return fields
+
+
+def _time_bounds_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
+    """CF ``time_bounds`` as two one-dimensional coordinates on ``time``.
+
+    A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
+    ``bounds`` dimension being none of the array's, so the pair rides along
+    as ``time_bounds_start`` and ``time_bounds_end``, the way pySIPNET's
+    model output carries ``time_step_start`` beside ``time``.
+    """
+    bounds = dataset["time_bounds"]
+    comment = "One edge of the CF time_bounds of the value at this label."
+    return {
+        "time_bounds_start": xr.DataArray(
+            bounds.isel(bounds=0).values,
+            dims="time",
+            attrs={"long_name": "Start of the interval the value is attributed to", "comment": comment},
+        ),
+        "time_bounds_end": xr.DataArray(
+            bounds.isel(bounds=1).values,
+            dims="time",
+            attrs={"long_name": "End of the interval the value is attributed to", "comment": comment},
+        ),
+    }
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

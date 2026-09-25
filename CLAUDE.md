@@ -442,10 +442,10 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameter_vector.py` and `site_labels.py` are implemented, `obs_ops.py` has
-`aggregate_time`, `fields.py` has the model-output
-adapters, the plotting package has series, maps and grids, and the other
-modules carry the contract each is to satisfy.
+`parameter_vector.py`, `site_labels.py` and the `observation/` package are
+implemented, `fields.py` has the model-output adapters, the plotting package
+has series, maps and grids, and the other modules carry the contract each is
+to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
 reader and checks together.
@@ -489,12 +489,24 @@ src/sipnet_calibration/
                           # fields on (member, site), attrs["space"]), and
                           # sipnet_table() -> sipnet_overrides() / pyens_grids();
                           # example_parameter_vector()
-  fields.py               # field convention; from_sipnet_output(),
+  fields.py               # field convention; label_run() (a run's Dataset
+                          # with site/member/lon/lat: the model_output the
+                          # observation operators read), from_sipnet_output(),
                           # stack_sipnet_outputs() over SIPNETOutput.select,
-                          # site_lookup(); validate_field() and the adapters
-                          # for the other sources (issue #6)
-  obs_ops.py              # aggregate_time — shared with the likelihood;
-                          # obs_index (issue #6)
+                          # site_lookup(); validate_field() (issue #6)
+  observation/            # the observation side of the inverse problem
+    __init__.py           # curated exports
+    alignment.py          # aggregate_time, reduce_windows, select_timestep_at,
+                          # windows_from_time_bounds, run_window, the counts;
+                          # shared with the plotting layer
+    units.py              # multiply/divide/add/subtract/step_length carrying
+                          # units, constituent and kind (conversion is
+                          # pysipnet.units.convert_dataarray_units)
+    operators.py          # ObservationOperator protocol; SelectTimestep,
+                          # ReduceOverTimeBounds, ReduceOverRun,
+                          # ComputeLeafAreaIndex; DEFAULT_OBS_OPS; check_operator
+    vector.py             # Observation, ObservationVector: index (site, product,
+                          # time), y, flat()/fields(), positions(), predict()
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
@@ -551,8 +563,8 @@ plotting code. The load-bearing rules:
   `.quantile`, which are the three operations this project needs. One
   `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
 - Plotters branch on **presence of the `member` dim**, never on a mode keyword.
-- **Temporal aggregation lives in `obs_ops.py`** and is imported by both the
-  observation operator and the plotting layer, so a predictive-check figure
+- **Temporal aggregation lives in `observation/alignment.py`** and is
+  imported by both the observation operators and the plotting layer, so a predictive-check figure
   cannot disagree with what the likelihood consumed. Aggregation is a verb the
   caller applies — `plot_time_series(aggregate_time(f, "1D"))` — never a
   plotter keyword.
@@ -562,7 +574,7 @@ plotting code. The load-bearing rules:
   with it, and `pysipnet.resample.resample(ds, freq, how=...)` requires `how`,
   weights means by step length and refuses a method the kind does not support
   (a pool is not additive; a per-step total is not averaged until it is a
-  rate). `obs_ops.aggregate_time(field, freq, how=None)` is that operation for
+  rate). `observation.alignment.aggregate_time(field, freq, how=None)` is that operation for
   a field — a field may have `member` and `site` dims, which
   `resample` does not reduce over — and it adds one thing: with no `how` it
   takes **the method that leaves the variable the kind it already is**, read
@@ -573,6 +585,38 @@ plotting code. The load-bearing rules:
   the default is there so that omission cannot reach that error, and `how=` is
   for asking deliberately for something else, such as the time-weighted mean
   of a pool. An invalid pair is refused in pySIPNET's own words.
+- **An observation operator is a callable checked at the boundary, not a
+  grammar.** `observation.ObservationOperator` is a protocol:
+  `operator(model_output: xr.Dataset, observed_values: xr.DataArray, *,
+  sipnet_parameters=None) -> xr.DataArray` on the observation's own
+  `(site[, time])` grid, declaring `output_variable_names` and
+  `sipnet_parameter_names`, and pointwise in `site` and `member` so it can
+  run on a worker (`check_operator` tests that). It returns whatever units
+  it produces, with `units`/`constituent` attrs; `ObservationVector.predict`
+  converts through `pysipnet.units.convert_dataarray_units` and refuses a
+  wrong dimension, grid, site set, or a NaN where the run succeeded. The
+  verbs it is written with carry pySIPNET's attributes: `multiply`,
+  `divide`, `add`, `subtract`, `step_length` (`observation.units`) and
+  `select_timestep_at` (the model step whose `(time_step_start, time]`
+  contains the label), `reduce_windows` (a step belongs to the window its
+  end falls in; means weighted by step length; a gap makes the window NaN)
+  and `windows_from_time_bounds` (`observation.alignment`). The library
+  binds a default operator only where the construction is documented
+  (`DEFAULT_OBS_OPS`, today MODIS LAI); which operator reads a product is a
+  modeling decision an experiment writes in `config.py`.
+- **The observation vector is site-major.** `ObservationVector.index` is a
+  `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
+  sites ascending, then products in declaration order, then times, with
+  `NaT` for a static product; `y` is Flat in that order, `flat()`/`fields()`
+  convert, and `positions()` finds a site's or a product's block. No
+  standard deviation, covariance or likelihood lives in the package; the
+  inference layer builds those from `y`, `index` and `positions`. A
+  `member` dim on an observation is refused: the experiment reduces an
+  observation ensemble before it enters.
+- **An annual constraint's array carries its `time_bounds`** as the 1-D
+  coordinates `time_bounds_start`/`time_bounds_end` on `time`
+  (`constraint_fields` adds them), which is what `ReduceOverTimeBounds`
+  reads; a dated or static product documents no interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
   unchanged.** `fields.from_sipnet_output` adds `site`, `member` and
   `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the
