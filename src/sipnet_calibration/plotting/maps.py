@@ -33,7 +33,9 @@ one-dimensional, monotonic coordinates in degrees. Both need ``units`` and
 ``long_name``.
 
 **Categorical fields** follow CF: integer codes, with ``flag_values`` and a
-space-separated ``flag_meanings`` naming each code's class.
+space-separated ``flag_meanings`` naming each code's class. An optional
+``flag_display_names``, a tuple aligned with ``flag_meanings``, is what the
+legend shows in their place; it is this project's attribute, not CF's.
 :func:`sipnet_calibration.site_labels.site_labels_field` makes one from a
 site-labels product. A class keeps its color in every map of the same product,
 because colors are keyed by the class's position in ``flag_meanings`` and not
@@ -308,6 +310,7 @@ class ColorScale:
 
     ``categories`` and ``colors`` are set for a categorical scale and ``None``
     otherwise; ``label`` is the colorbar label or the legend title.
+    ``display_names``, where set, is what the legend shows for each category.
     """
 
     cmap: Colormap
@@ -315,6 +318,7 @@ class ColorScale:
     label: str
     categories: tuple[str, ...] | None = None
     colors: tuple[str, ...] | None = None
+    display_names: tuple[str, ...] | None = None
 
     def mappable(self) -> ScalarMappable:
         """A ``ScalarMappable`` on this scale, for a colorbar."""
@@ -327,7 +331,8 @@ class ColorScale:
     def legend_handles(self, present: Sequence[int] | None = None) -> list[Patch]:
         """One patch per class, or per class in *present* (positions)."""
         positions = range(len(self.categories)) if present is None else sorted(present)
-        return [Patch(facecolor=self.colors[i], label=self.categories[i]) for i in positions]
+        names = self.display_names or self.categories
+        return [Patch(facecolor=self.colors[i], label=names[i]) for i in positions]
 
 
 def plot_map(
@@ -856,6 +861,14 @@ def _categories(field: xr.DataArray) -> tuple[str, ...]:
     return tuple(sorted(present))
 
 
+def _display_names(field: xr.DataArray, categories: tuple[str, ...]) -> tuple[str, ...] | None:
+    if "flag_display_names" not in field.attrs:
+        return None
+    names = tuple(str(name) for name in field.attrs["flag_display_names"])
+    _check_display_names_match(names, categories)
+    return names
+
+
 def _class_positions(field: xr.DataArray, categories: tuple[str, ...]) -> np.ndarray:
     """Each value's position in *categories*, as floats, ``NaN`` where missing."""
     values = np.asarray(field.values)
@@ -877,11 +890,18 @@ def _class_positions(field: xr.DataArray, categories: tuple[str, ...]) -> np.nda
 
 def _categorical_scale(fields, colors) -> ColorScale:
     categories = _categories(fields[0])
+    display_names = _display_names(fields[0], categories)
     for field in fields[1:]:
         if _categories(field) != categories:
             raise ValueError(
                 "categorical fields sharing a color scale must have the same classes, in the "
                 f"same order; got {categories} and {_categories(field)}"
+            )
+        if _display_names(field, categories) != display_names:
+            raise ValueError(
+                "categorical fields sharing a color scale must have the same "
+                f"flag_display_names; got {display_names} and "
+                f"{_display_names(field, categories)}"
             )
     palette = category_colors(len(categories)) if len(categories) else []
     for name, color in (colors or {}).items():
@@ -892,7 +912,7 @@ def _categorical_scale(fields, colors) -> ColorScale:
     count = max(len(categories), 1)
     norm = BoundaryNorm(np.arange(count + 1) - 0.5, count)
     label = fields[0].attrs.get("long_name") or (fields[0].name or "class")
-    return ColorScale(cmap, norm, str(label), tuple(categories), tuple(palette))
+    return ColorScale(cmap, norm, str(label), tuple(categories), tuple(palette), display_names)
 
 
 def _continuous_scale(fields, bounds, *, cmap, vmin, vmax, center, log, robust, norm) -> ColorScale:
@@ -1029,6 +1049,14 @@ def _check_flags_match(codes: np.ndarray, categories: tuple[str, ...]) -> None:
         raise ValueError(
             f"flag_values has {len(codes)} codes and flag_meanings {len(categories)} "
             "classes; they must pair up"
+        )
+
+
+def _check_display_names_match(names: tuple[str, ...], categories: tuple[str, ...]) -> None:
+    if len(names) != len(categories):
+        raise ValueError(
+            f"flag_display_names has {len(names)} names and flag_meanings "
+            f"{len(categories)} classes; they must pair up"
         )
 
 

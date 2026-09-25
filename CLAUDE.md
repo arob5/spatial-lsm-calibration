@@ -552,7 +552,9 @@ plotting code. The load-bearing rules:
   `animate_map`. A GP is not fitted in plotting; its predictions are a
   `(lat, lon)` raster or site values, mapped like any field. Categorical
   fields are CF `flag_values`/`flag_meanings`, colored by class position so a
-  class keeps its color across figures. Sites are 8000 **irregular points**
+  class keeps its color across figures; an optional `flag_display_names`
+  tuple (ours, not CF's) is what the legend shows, and `site_labels_field`
+  sets it from the spec's `display_names`. Sites are 8000 **irregular points**
   spanning 7-82 deg N, so a real projection is required and CONUS-only
   assumptions are wrong.
 - **The display projection is settled**: a Lambert Azimuthal Equal Area
