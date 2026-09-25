@@ -118,49 +118,63 @@ plots.class_counts();
 plots.label_crosstab_heatmap();
 ```
 
-## Sites: open questions
-
-- Site 4705 is named *Bartlett Experimental Forest (US-Bar)*, but its AmeriFlux
-  id in the site table is `US-xBR`, the NEON tower. Which tower's fluxes do we
-  compare against?
-- <!-- TODO: add your own -->
-
 # Meteorological drivers
 
-## Drivers: status
+## The ERA5 driver ensemble
 
-::: {.callout-note}
-**Being built.** Ensemble and map summaries over all 8000 sites x 10 members
-are computed on the SCC by `precompute_drivers.py` and read here from
-`outputs/`.
+Dongchen's SIPNET drivers, on the SCC at `{python} config.DRIVERS_SOURCE`:
+the ERA5 ensemble (10 members, 3-hourly, 0.5°, 2012–2024), converted to SIPNET
+`.clim` files by PEcAn.
+
+::: {.callout-warning}
+## Known issues
+
+1. **The time labels drift.** PEcAn's `met2cf.ERA5` spread each year's labels
+   over the wrong interval, by up to 2 hours at year end (fixed upstream in
+   PEcAn PR #3584). The values sit on a regular 3-hour grid (pySIPNET checks 
+   will error on the met files with the drift).
+2. **Instantaneous values read as means.** Temperature, humidity, wind and
+   pressure are instantaneous at the label; SIPNET treats every driver as a
+   mean over the step.
+3. **Accumulations are shifted one step.** Radiation and precipitation cover
+   the 3 hours ending at the label; SIPNET reads each row as the 3 hours
+   starting there.
+4. **Soil temperature** comes from a PEcAn `stats::convolve` step that weights
+   future air temperatures.
 :::
 
-Planned figures:
+- Every site in one 0.5° ERA5 grid cell has identical drivers.
+- The plots here use copies with only the hour column corrected, so only issue
+  1 is addressed.
 
-- the 10-member ensemble at Harvard Forest and Bartlett
-- maps of annual means and of ensemble spread
-- the **time-label drift**: each row's label against its position on a regular
-  3-hour grid
+## Harvard Forest, 2023
 
-## Drivers: assumptions
+```{python}
+#| echo: true
+from sipnet_calibration.drivers import driver_fields, load_drivers
 
-- ERA5 ensemble (10 members, 3-hourly, 0.5°), converted by PEcAn
-  (`extract.nc.ERA5`, `met2cf.ERA5`, `met2model.SIPNET`) to SIPNET `.clim`.
-- Radiation and precipitation are **accumulations over the 3 hours ending at
-  the label** (ECMWF's documentation).
-- Drivers are read through pySIPNET's `ClimateDrivers`, so model output and its
-  drivers share **one time axis by construction**.
+site = config.FEATURED_SITES["Harvard Forest"]
+drivers = driver_fields(load_drivers([site], root=config.RELABELED_DRIVERS_DIR))
+plots.driver_members(drivers, site);
+```
 
-## Drivers: open questions
+::: notes
+Daily values, one curve per member. The ten members are nearly
+indistinguishable at this scale: the spread between them is a small fraction
+of the seasonal range for every variable.
+:::
 
-- **The time labels drift.** PEcAn's `met2cf.ERA5` spread the labels over the
-  wrong interval (since fixed upstream, PEcAn PR #3584). The values sit on a
-  regular 3-hour grid; only the labels drift. pySIPNET refuses the files until
-  they are relabeled.
-- Temperature, humidity, wind and pressure are **instantaneous** at the label,
-  but SIPNET treats every driver as a step mean.
-- Soil temperature comes from a PEcAn `stats::convolve` step that weights
-  **future** air temperatures.
+## Harvard Forest, 1–14 July 2023
+
+```{python}
+#| echo: true
+plots.driver_members_window(drivers, site);
+```
+
+::: notes
+The same members at their own 3-hourly step, one color each. They follow the
+same weather and part by a degree or so at the peaks and troughs.
+:::
 
 # Initial conditions
 

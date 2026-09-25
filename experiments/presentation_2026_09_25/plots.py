@@ -9,16 +9,21 @@ featured sites, grouping by class, laying out panels.
 
 import textwrap
 from collections.abc import Iterable, Mapping, Sequence
+from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
 from matplotlib.axes import Axes
+from matplotlib.dates import DateFormatter, DayLocator, MonthLocator
 from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, ScalarFormatter
 
-from sipnet_calibration.plotting import member_summary, plot_map_grid
+from sipnet_calibration.obs_ops import aggregate_time
+from sipnet_calibration.plotting import (
+    member_summary, plot_by_variable, plot_map_grid, plot_time_series,
+)
 from sipnet_calibration.plotting.style import category_colors
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.site_labels import load_site_labels, resolve_site_labels
@@ -84,6 +89,71 @@ def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
     labels = [_count_and_share(count, sorted_counts.sum()) for count in sorted_counts]
     ax.bar_label(ax.containers[0], labels=labels, padding=3, fontsize=9)
     ax.margins(x=0.18)  # room for the longest bar's label
+    return figure
+
+
+def driver_members(
+    fields: Mapping[str, xr.DataArray], site: int, year: int = config.DRIVER_SERIES_YEAR
+) -> Figure:
+    """Every driver at one site through one year, daily, one curve per member.
+
+    Parameters
+    ----------
+    fields:
+        Variable name to ``(member, site, time)`` field, as
+        ``sipnet_calibration.drivers.driver_fields`` returns.
+    site:
+        The site to show.
+    year:
+        The calendar year, by the start of each day.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    daily = {
+        name: _days_of_year(aggregate_time(field.sel(site=site), "1D"), year)
+        for name, field in fields.items()
+    }
+    panel = partial(plot_time_series, show="spaghetti", label="_nolegend_")
+    figure, axes = _driver_panels(daily, panel)
+    for ax in axes:
+        ax.xaxis.set_major_locator(MonthLocator(bymonth=(1, 4, 7, 10)))
+        ax.xaxis.set_major_formatter(DateFormatter("%b"))
+    return figure
+
+
+def driver_members_window(
+    fields: Mapping[str, xr.DataArray],
+    site: int,
+    window: tuple[str, str] = config.DRIVER_SERIES_WINDOW,
+) -> Figure:
+    """Every driver at one site over a short window, at its own time step.
+
+    Each member is its own color, so members that lie on top of one another at
+    a coarser scale can be told apart.
+
+    Parameters
+    ----------
+    fields:
+        Variable name to ``(member, site, time)`` field, as
+        ``sipnet_calibration.drivers.driver_fields`` returns.
+    site:
+        The site to show.
+    window:
+        The first and last day, inclusive, by the start of each step.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    windowed = {
+        name: _steps_in_window(field.sel(site=site), window) for name, field in fields.items()
+    }
+    figure, axes = _driver_panels(windowed, _colored_members)
+    for ax in axes:
+        ax.xaxis.set_major_locator(DayLocator(interval=4))
+        ax.xaxis.set_major_formatter(DateFormatter("%-d %b"))
     return figure
 
 
@@ -328,6 +398,42 @@ def spec_table(specs: Iterable, fields: Sequence[str]) -> pd.DataFrame:
     """
     rows = {spec.name: {field: str(getattr(spec, field)) for field in fields} for spec in specs}
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def _driver_panels(data: Mapping[str, xr.DataArray], panel) -> tuple[Figure, np.ndarray]:
+    """One panel per driver in a 2 x 4 grid, with no legend and units on y."""
+    figure, axes = plot_by_variable(
+        dict(data), panel_fn=panel, ncol=4, panel_size=(3.6, 2.9), legend="none"
+    )
+    for ax, field in zip(axes, data.values()):
+        # The panel title names the variable, so the y label need only say units.
+        ax.set_ylabel(field.attrs.get("units", ""))
+        ax.set_xlabel("")
+    return figure, axes
+
+
+def _colored_members(field: xr.DataArray, ax: Axes) -> Axes:
+    """One ``(member, time)`` field as one curve per member, each its own color."""
+    colors = plt.get_cmap("tab10").colors
+    for i in range(field.sizes["member"]):
+        plot_time_series(
+            field.isel(member=i), ax=ax, color=colors[i % len(colors)], linewidth=1,
+            label="_nolegend_",
+        )
+    return ax
+
+
+def _steps_in_window(field: xr.DataArray, window: tuple[str, str]) -> xr.DataArray:
+    """The steps of *field* that start on or between the two days of *window*."""
+    start = field["time_step_start"].to_index()
+    first, last = pd.Timestamp(window[0]), pd.Timestamp(window[1]) + pd.Timedelta(days=1)
+    return field.isel(time=(start >= first) & (start < last))
+
+
+def _days_of_year(field: xr.DataArray, year: int) -> xr.DataArray:
+    """The daily cells of *field* that start in *year*."""
+    # A daily cell's time is its end, so select by its start instead.
+    return field.isel(time=(field["time_step_start"].dt.year == year).to_numpy())
 
 
 def _count_and_share(count: int, total: int) -> str:
