@@ -536,7 +536,7 @@ def stack_model_outputs(
     stacked = _concat(
         [_concat(per_site, SITE_DIM) for _, per_site in sorted(by_member.items())], MEMBER_DIM
     )
-    stacked = stacked.transpose(*CANONICAL_DIMS, ...)
+    stacked = stacked.transpose(*FIELD_DIMS, ...)
     return stacked.assign_coords(_site_locations(stacked[SITE_DIM].values, table))
 
 

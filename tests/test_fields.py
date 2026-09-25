@@ -392,7 +392,7 @@ class TestStackModelOutputs:
         stacked = stack_model_outputs(datasets, site_table=self._table())
         fields = stack_sipnet_outputs(runs, ["nee", "wood_carbon"], sites=self._table())
         assert isinstance(stacked, xr.Dataset)
-        assert stacked["net_ecosystem_exchange"].dims == CANONICAL_DIMS
+        assert stacked["net_ecosystem_exchange"].dims == FIELD_DIMS
         for name, field in fields.items():
             xr.testing.assert_identical(stacked[name], field)
         assert stacked["lon"].attrs["units"] == "degrees_east"
