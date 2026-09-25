@@ -31,8 +31,8 @@ is resolved as the drawing function's default, then the role asked for, then
 any keyword given explicitly.
 
 Temporal aggregation is not done here. It is applied by the caller with
-:func:`sipnet_calibration.obs_ops.aggregate_time`, which the observation
-operator also uses.
+:func:`sipnet_calibration.observation.time_alignment.aggregate_time`, which
+the observation operator also uses.
 
 Interactive inspection of a single run is out of scope; ``pysipnet.viz``
 covers it.

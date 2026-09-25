@@ -220,7 +220,7 @@ from pysipnet.dataset import unfilled_coordinates
 from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration import conventions
-from sipnet_calibration.fields import TIME_COORDS
+from sipnet_calibration.fields import TIME_COORDS, without_stale_time_attributes
 from sipnet_calibration.sites import load_sites
 
 __all__ = [
@@ -541,9 +541,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     fields = {}
     for name in DRIVER_VARIABLES:
         field = dataset[name].copy(deep=False)
-        field["time"].attrs = {
-            key: value for key, value in field["time"].attrs.items() if key != "bounds"
-        }
+        field["time"].attrs = without_stale_time_attributes(field["time"].attrs)
         fields[name] = field
     return fields
 

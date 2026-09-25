@@ -6,8 +6,9 @@ Where this sits
 pySIPNET owns the physical SIPNET parameters, their units and their domains.
 pyEKI takes a Gaussian prior on unconstrained ``R^D``, an initial ``(J, D)``
 ensemble drawn from it, and a callable forward model, and leaves transforms,
-constraints and priors to the caller. PyEns runs an ensemble declared as ``Grid``\\ s over ``Axis``\\ es.
-This module is what sits between them, and the dependency runs one way::
+constraints and priors to the caller. PyEns runs an ensemble declared as
+``Grid``\\ s over ``Axis``\\ es. This module is what sits between them, and the
+dependency runs one way::
 
     pysipnet.parameters.model.PARAMETER_SPECS   (names, domains, units)
     pyeki.gauss / pyeki.linalg                  (Gaussian, PSDBlockDiag, ...)
@@ -136,15 +137,15 @@ base parameter set supplies them.
 
 Conversions
 -----------
-===================== ================= ================================ ==========
-from                  to                call                             lossless
-===================== ================= ================================ ==========
-Flat                  Fields            ``vector.fields(theta, space=)`` yes
-Fields (either space) Flat              ``vector.flat(fields)``          yes [1]_
-Flat or Fields        SIPNET table      ``vector.sipnet_table(x)``       no
-SIPNET table          one run's kwargs  :func:`sipnet_overrides`         selection
-SIPNET table          PyEns ``Grid``\\ s :func:`pyens_grids`              selection
-===================== ================= ================================ ==========
+===================== ================== ================================ ==========
+from                  to                 call                             lossless
+===================== ================== ================================ ==========
+Flat                  Fields             ``vector.fields(theta, space=)`` yes
+Fields (either space) Flat               ``vector.flat(fields)``          yes [1]_
+Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``       no
+SIPNET table          one run's kwargs   :func:`sipnet_overrides`         selection
+SIPNET table          PyEns grids        :func:`pyens_grids`              selection
+===================== ================== ================================ ==========
 
 :meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
 variables and sites the vector needs (others are ignored, so a larger
@@ -1219,6 +1220,7 @@ class ParameterVector:
     parameter_names : tuple[str, ...]
         Calibration parameter names in layout order.
     sites : tuple[int, ...]
+        The site ids the vector covers, in the order of its site axis.
     site_labels : Mapping[str, tuple]
         The class of every site, per site-labels name, in site order.
     site_table : pandas.DataFrame

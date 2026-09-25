@@ -107,7 +107,9 @@ Functions
 
 :func:`constraint_fields`, :func:`constraint_standard_deviations`
     The ``value`` or ``standard_deviation`` arrays of several products, one
-    field per constraint, optionally for a subset of sites.
+    field per constraint, optionally for a subset of sites. An annual
+    product's array carries its ``time_bounds`` as the one-dimensional
+    coordinates ``time_bounds_start`` and ``time_bounds_end`` on ``time``.
 
 :func:`read_raw`
     Parse a raw file exactly, in its source column names.
@@ -188,24 +190,29 @@ import xarray as xr
 from pysipnet.units import validate_units
 
 from sipnet_calibration import conventions
-from sipnet_calibration.conventions import CF_CONVENTIONS
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
+from sipnet_calibration.conventions import (
+    CF_CONVENTIONS,
+    TIME_BOUNDS_END,
+    TIME_BOUNDS_START,
+)
 
 __all__ = [
     "CALENDAR",
     "CF_CONVENTIONS",
     "CONSTRAINTS",
     "CONSTRAINT_NAMES",
-    "ConstraintSpec",
     "MISSING_TOKEN",
     "NAME_PATTERN",
     "PRODUCER_UNCONFIRMED",
     "SITE_COLUMN",
     "STANDARD_DEVIATION",
+    "TIME_BOUNDS_END",
+    "TIME_BOUNDS_START",
     "TIME_REFERENCE_FOR_STRUCTURE",
     "TIME_UNITS",
-    "TimeStructure",
     "VALUE",
+    "ConstraintSpec",
+    "TimeStructure",
     "build_constraint",
     "constraint_fields",
     "constraint_path",
@@ -667,6 +674,11 @@ def constraint_fields(
     dict
         Constraint name to its ``value`` array, renamed to the constraint,
         with dims ``(site, time)`` or ``(site,)`` and the array's attributes.
+        An annual product's array also carries its CF ``time_bounds`` as the
+        one-dimensional coordinates ``time_bounds_start`` and
+        ``time_bounds_end`` on ``time``
+        (:data:`~sipnet_calibration.conventions.TIME_BOUNDS_START`,
+        :data:`~sipnet_calibration.conventions.TIME_BOUNDS_END`).
 
     Raises
     ------
@@ -1043,6 +1055,8 @@ def _fields(
         spec = resolve_constraint(name)
         dataset = load_constraint(spec, constraint_path(spec, directory))
         field = dataset[array].rename(name)
+        if "time_bounds" in dataset.coords:
+            field = field.assign_coords(_time_bounds_coords(dataset))
         if wanted is not None:
             missing = sorted(set(wanted) - set(dataset["site"].values.tolist()))
             if missing:
@@ -1050,6 +1064,30 @@ def _fields(
             field = field.sel(site=wanted)
         fields[name] = field
     return fields
+
+
+def _time_bounds_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
+    """CF ``time_bounds`` as two one-dimensional coordinates on ``time``.
+
+    A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
+    ``bounds`` dimension being none of the array's, so the pair rides along
+    as :data:`TIME_BOUNDS_START` and :data:`TIME_BOUNDS_END`, the way pySIPNET's
+    model output carries ``time_step_start`` beside ``time``.
+    """
+    bounds = dataset["time_bounds"]
+    comment = "One edge of the CF time_bounds of the value at this label."
+    return {
+        TIME_BOUNDS_START: xr.DataArray(
+            bounds.isel(bounds=0).values,
+            dims="time",
+            attrs={"long_name": "Start of the interval the value is attributed to", "comment": comment},
+        ),
+        TIME_BOUNDS_END: xr.DataArray(
+            bounds.isel(bounds=1).values,
+            dims="time",
+            attrs={"long_name": "End of the interval the value is attributed to", "comment": comment},
+        ),
+    }
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

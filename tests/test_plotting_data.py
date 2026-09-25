@@ -202,11 +202,11 @@ def test_acceptance_one_panel_three_aggregations(ax, real_drivers):
     daily value is a sum.
 
     The aggregation is written at the call site, as the design spec requires,
-    and through ``obs_ops.aggregate_time``, which takes the method from the
+    and through ``observation.time_alignment.aggregate_time``, which takes the method from the
     variable's kind rather than having it named here.
     """
     from sipnet_calibration.drivers import driver_fields
-    from sipnet_calibration.obs_ops import aggregate_time
+    from sipnet_calibration.observation.time_alignment import aggregate_time
 
     par = driver_fields(real_drivers)["photosynthetically_active_radiation"].sel(
         site=1, source_member_index=1

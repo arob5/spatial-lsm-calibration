@@ -198,7 +198,7 @@ Usage
         to_sipnet_initial_conditions, to_sipnet_initial_conditions_table,
     )
 
-    conditions = to_sipnet_initial_conditions(          # one member, one site
+    conditions = to_sipnet_initial_conditions(           # one member, one site
         initial_soil_organic_carbon=13.085,
         initial_wood_carbon=0.058,
         initial_leaf_carbon=0.121,
@@ -208,7 +208,7 @@ Usage
         coarse_root_fraction=0.2,
         deciduous=False,
     )
-    conditions.soil_carbon                                # 13085.0 g C m-2
+    conditions.soil_carbon                               # 13085.0 g C m-2
 
     # Which members to run is the prior's decision, not this module's, and the
     # conversion refuses a negative pool rather than choosing for you. Pick the
@@ -216,14 +216,14 @@ Usage
     # DataArray cannot be ragged.
     site = {name: field.sel(site=4102) for name, field in fields.items()}
     usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
-    table = to_sipnet_initial_conditions_table(         # one row per member
+    table = to_sipnet_initial_conditions_table(          # one row per member
         {name: field.isel(member=usable) for name, field in site.items()},
-        leaf_carbon_per_area=32.0,                        # scalar or per member
+        leaf_carbon_per_area=32.0,                       # scalar or per member
         fine_root_fraction=0.2,
         coarse_root_fraction=0.2,
-        deciduous=True,                                   # scalar or per site
+        deciduous=True,                                  # scalar or per site
     )
-    table.iloc[0]                                         # one cell's six fields
+    table.iloc[0]                                        # one cell's six fields
 """
 
 from __future__ import annotations
