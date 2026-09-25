@@ -17,10 +17,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from matplotlib.axes import Axes
-from matplotlib.dates import DateFormatter, DayLocator, MonthLocator
+from matplotlib.dates import DateFormatter, DayLocator, MonthLocator, YearLocator
 from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter, LogLocator
 
+from sipnet_calibration.constraints import CONSTRAINTS, constraint_fields
 from sipnet_calibration.obs_ops import aggregate_time
 from sipnet_calibration.plotting import (
     member_summary, plot_by_variable, plot_map_grid, plot_time_series,
@@ -212,6 +213,145 @@ def animation_columns(variables: Iterable[str] = config.DRIVER_ANIMATION_VARIABL
     return ":::: {.columns}\n" + "\n".join(columns) + "\n::::"
 
 
+def constraint_table() -> pd.DataFrame:
+    """Each constraint product's quantity, units, time structure and time support.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per product in ``CONSTRAINTS``, by display name.
+    """
+    rows = {
+        config.CONSTRAINT_DISPLAY_NAMES[spec.name]: {
+            "quantity": spec.long_label,
+            "units": spec.units,
+            "values": str(spec.time_structure),
+            "each value covers": config.CONSTRAINT_TIME_SUPPORT[spec.name],
+        }
+        for spec in CONSTRAINTS
+    }
+    return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def constraint_site_fields() -> dict[str, xr.DataArray]:
+    """Every constraint product as one field, titled by its display name.
+
+    Returns
+    -------
+    dict
+        Product name to its ``(site, time)`` field, or ``(site,)`` for a static
+        product, with ``long_name`` set to the display name.
+    """
+    fields = {}
+    for spec in CONSTRAINTS:
+        field = constraint_fields(spec.name)[spec.name]
+        field.attrs["long_name"] = config.CONSTRAINT_DISPLAY_NAMES[spec.name]
+        fields[spec.name] = field
+    return fields
+
+
+def constraint_maps(fields: Mapping[str, xr.DataArray], what: str = "mean") -> Figure:
+    """One map per constraint product: its mean over time, or its number of dates.
+
+    Parameters
+    ----------
+    fields:
+        As ``constraint_site_fields`` returns.
+    what:
+        ``"mean"`` for each site's mean over its dates, or ``"count"`` for how
+        many dates it has; a site with none is left blank either way.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    panels, colorbar_labels = {}, []
+    for field in fields.values():
+        if what == "mean":
+            panel = _constraint_site_mean(field)
+            colorbar_labels.append(f"mean ({field.attrs.get('units', '')})")
+        else:
+            panel = _constraint_date_count(field)
+            colorbar_labels.append("dates")
+        panels[field.attrs["long_name"]] = panel
+    figure, axes = plot_map_grid(
+        panels, scale="each", ncol=3, extent=config.MAP_EXTENT, robust=True,
+        panel_size=(5.0, 3.9),
+    )
+    for ax, label in zip(axes, colorbar_labels):
+        ax.set_title(ax.get_title(), pad=20)
+        # The colorbar is the map's inset axes; a short label fits its height.
+        for colorbar in ax.child_axes:
+            colorbar.set_ylabel(label)
+    return figure
+
+
+def constraint_site_means(fields: Mapping[str, xr.DataArray]) -> dict[str, xr.DataArray]:
+    """Each constraint product's mean over its dates at each site, titled by product.
+
+    Parameters
+    ----------
+    fields:
+        As ``constraint_site_fields`` returns.
+
+    Returns
+    -------
+    dict
+        Product name to ``(site,)`` field.
+    """
+    means = {}
+    for name, field in fields.items():
+        mean = _constraint_site_mean(field)
+        mean.attrs["long_name"] = field.attrs["long_name"]
+        means[name] = mean
+    return means
+
+
+def constraint_series_at_sites(
+    fields: Mapping[str, xr.DataArray], sites: Mapping[str, int] | None = None
+) -> Figure:
+    """Each dated constraint product over time, one row per site.
+
+    Parameters
+    ----------
+    fields:
+        As ``constraint_site_fields`` returns. Static products are left out.
+    sites:
+        Display name to site id. Defaults to ``config.FEATURED_SITES``.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    sites = config.FEATURED_SITES if sites is None else sites
+    dated = {name: field for name, field in fields.items() if "time" in field.dims}
+    figure, axes = plt.subplots(
+        len(sites), len(dated), figsize=(3.6 * len(dated), 3.0 * len(sites)),
+        layout="constrained", squeeze=False, sharex=True,
+    )
+    for column, field in enumerate(dated.values()):
+        for row, (site_name, site) in enumerate(sites.items()):
+            ax = axes[row, column]
+            series = field.sel(site=site).dropna("time")
+            if series.sizes["time"]:
+                # Points, not a line: a line would join the gaps between dates
+                # (MODIS LAI has only June to August) as if they were data.
+                plot_time_series(
+                    series, ax=ax, show="line", label="_nolegend_", marker="o", markersize=3,
+                    linestyle="none",
+                )
+            else:
+                ax.text(0.5, 0.5, "no data at this site", ha="center", va="center",
+                        transform=ax.transAxes)
+            ax.set_title(field.attrs["long_name"] if row == 0 else "")
+            ax.set_ylabel(f"{site_name}\n{field.attrs.get('units', '')}" if column == 0
+                          else field.attrs.get("units", ""))
+            ax.set_xlabel("")
+            ax.xaxis.set_major_locator(YearLocator(4))
+            ax.xaxis.set_major_formatter(DateFormatter("%Y"))
+    return figure
+
+
 def label_crosstab(
     rows: str = config.SITE_LABELS, columns: str = config.REANALYSIS_SITE_LABELS
 ) -> pd.DataFrame:
@@ -338,8 +478,8 @@ def negative_member_fraction(field: xr.DataArray) -> xr.DataArray:
     present = field.notnull().sum("member")
     fraction = (field < 0).sum("member") / present.where(present > 0)
     fraction.attrs = {
-        "long_name": f"{field.attrs.get('long_name', field.name)}: fraction of members below zero",
-        "units": "1",
+        "long_name": f"{_short_name(field)}: members below zero",
+        "units": "fraction",
     }
     fraction.name = f"{field.name}_negative_fraction"
     return fraction
@@ -452,6 +592,24 @@ def spec_table(specs: Iterable, fields: Sequence[str]) -> pd.DataFrame:
     return pd.DataFrame.from_dict(rows, orient="index")
 
 
+def _constraint_site_mean(field: xr.DataArray) -> xr.DataArray:
+    """A constraint field's mean over its dates at each site, units kept."""
+    mean = field.mean("time", keep_attrs=True) if "time" in field.dims else field.copy()
+    mean.attrs["long_name"] = "mean over dates" if "time" in field.dims else "value"
+    return mean
+
+
+def _constraint_date_count(field: xr.DataArray) -> xr.DataArray:
+    """How many dates a constraint field has at each site; blank where none."""
+    if "time" in field.dims:
+        count = field.notnull().sum("time").astype(float)
+    else:
+        count = field.notnull().astype(float)
+    count = count.where(count > 0)
+    count.attrs = {"long_name": "dates", "units": "1"}
+    return count
+
+
 def _classes_by_size(spec, labels: pd.DataFrame) -> np.ndarray:
     """Positions of *spec*'s classes, most sites first."""
     counts = labels["label"].value_counts().reindex(spec.labels, fill_value=0)
@@ -472,7 +630,8 @@ def _class_boxes(
     colors: Sequence[str], *, stat: str, log: bool,
 ) -> None:
     """Boxes of *field*'s per-site statistic, one per class, at positions 0, 1, ..."""
-    per_site = member_summary(field, stat).to_series().rename("value").rename_axis("site_id")
+    summary = member_summary(field, stat) if "member" in field.dims else field
+    per_site = summary.to_series().rename("value").rename_axis("site_id")
     joined = labels.merge(per_site.reset_index(), on="site_id").dropna()
     dropped = int((joined["value"] <= 0).sum()) if log else 0
     if log:
@@ -493,13 +652,15 @@ def _class_boxes(
         ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
     ax.set_title(textwrap.fill(_short_name(field), 18))
     units = field.attrs.get("units", "")
-    ax.set_xlabel(f"{units}\n{dropped} sites at or below 0 not shown" if dropped else units)
+    note = f"\n{dropped} sites \u2264 0 not\nshown on log axis" if dropped else ""
+    ax.set_xlabel(units + note)
 
 
 def _short_name(field: xr.DataArray) -> str:
     """A field's ``long_name`` without the ``Initial`` every initial condition starts with."""
     name = field.attrs.get("long_name", field.name)
-    return name.removeprefix("Initial ").capitalize()
+    name = name.removeprefix("Initial ")
+    return name[:1].upper() + name[1:]
 
 
 def _driver_panels(data: Mapping[str, xr.DataArray], panel) -> tuple[Figure, np.ndarray]:

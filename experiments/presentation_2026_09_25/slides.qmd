@@ -149,6 +149,10 @@ the ERA5 ensemble (10 members, 3-hourly, 0.5°, 2012–2024), converted to SIPNE
 
 ## Harvard Forest, 2023
 
+::: {.corner-note}
+Daily totals for PAR and precipitation, daily means otherwise; one line per member
+:::
+
 ```{python}
 #| echo: true
 from sipnet_calibration.drivers import driver_fields, load_drivers
@@ -166,6 +170,10 @@ of the seasonal range for every variable.
 
 ## Harvard Forest, 1–14 July 2023
 
+::: {.corner-note}
+3-hourly values as read; one color per member
+:::
+
 ```{python}
 #| echo: true
 plots.driver_members_window(drivers, site);
@@ -177,6 +185,10 @@ same weather and part by a degree or so at the peaks and troughs.
 :::
 
 ## The seasonal cycle
+
+::: {.corner-note}
+Ensemble mean of each calendar month, averaged over 2012–2024
+:::
 
 ```{python}
 #| output: asis
@@ -190,6 +202,10 @@ make_driver_animations.py.
 :::
 
 ## Drivers by PFT
+
+::: {.corner-note}
+Each box: sites' ensemble median of their 2012–2024 yearly mean or total
+:::
 
 ```{python}
 plots.by_class_grid(plots.driver_annual_means(), log=());
@@ -247,11 +263,19 @@ plots.spec_table(INITIAL_CONDITIONS, ["units", "constituent", "sipnet_initial_co
 
 ## Ensemble medians
 
+::: {.corner-note}
+Median over the 100 members at each site
+:::
+
 ```{python}
 plots.initial_condition_maps(ic, "median");
 ```
 
 ## Ensemble standard deviations
+
+::: {.corner-note}
+Standard deviation over the 100 members at each site
+:::
 
 ```{python}
 plots.initial_condition_maps(ic, "standard_deviation");
@@ -273,11 +297,19 @@ negative wherever the leaf draw exceeds the biomass draw.
 
 ## The ensemble at Harvard Forest and Bartlett
 
+::: {.corner-note}
+Histograms of the 100 members at each site
+:::
+
 ```{python}
 plots.members_at_sites(ic);
 ```
 
 ## By PFT
+
+::: {.corner-note}
+Each box: sites' median over the 100 members
+:::
 
 ```{python}
 plots.by_class_grid(ic);
@@ -293,15 +325,69 @@ most sites first, as in the class counts.
 ## Five constraint products
 
 ```{python}
-from sipnet_calibration.constraints import CONSTRAINTS
-
-plots.spec_table(CONSTRAINTS, ["long_label", "units", "time_structure"])
+constraints = plots.constraint_site_fields()
+plots.constraint_table()
 ```
 
 ::: {.callout-note}
-**To fill in:** one section per product (spec, coverage map, series at the
-featured sites, distribution by PFT, open questions). NEE follows once its
-ingest merges (#40).
+Temporal interpretation is based on informal conversations, need to verify with the source code.
+:::
+
+## Mean over each site's dates
+
+::: {.corner-note}
+Each site's mean over all its dates, across the product's whole record
+:::
+
+```{python}
+plots.constraint_maps(constraints, "mean");
+```
+
+## Number of dates at each site
+
+::: {.corner-note}
+Dates with a value at each site, across the product's whole record
+:::
+
+```{python}
+plots.constraint_maps(constraints, "count");
+```
+
+::: notes
+Every product is ragged over site and time: blank sites have no value at all.
+:::
+
+## At Harvard Forest and Bartlett
+
+::: {.corner-note}
+Each value as provided; no aggregation
+:::
+
+```{python}
+plots.constraint_series_at_sites(constraints);
+```
+
+::: notes
+SoilGrids is static, so it is left out here. The MODIS LAI drops to near 1 in
+some summers, which is worth checking against the product's quality flags.
+:::
+
+## By PFT
+
+::: {.corner-note}
+Each box: sites' mean over all their dates
+:::
+
+```{python}
+plots.by_class_grid(
+    plots.constraint_site_means(constraints),
+    log=("landtrendr_aboveground_biomass", "gedi_aboveground_biomass",
+         "soilgrids_soil_organic_carbon"),
+);
+```
+
+::: notes
+Each box is the spread over sites of each site's mean over its dates.
 :::
 
 # Parameters

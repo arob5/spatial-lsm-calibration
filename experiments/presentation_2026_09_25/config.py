@@ -80,6 +80,28 @@ DRIVERS_SOURCE = "/projectnb/dietzelab/dongchen/anchorSites/NA_runs/ERA5_2012_20
 #: and member, as symlinked into ``data/raw/initial_conditions/files`` there.
 INITIAL_CONDITIONS_SOURCE = "/projectnb/dietzelab/dongchen/anchorSites/NA_runs/IC/IC"
 
+#: A short display name for each constraint product, for panel titles.
+CONSTRAINT_DISPLAY_NAMES = {
+    "landtrendr_aboveground_biomass": "LandTrendr biomass",
+    "gedi_aboveground_biomass": "GEDI biomass",
+    "modis_leaf_area_index": "MODIS LAI",
+    "smap_soil_moisture": "SMAP soil moisture",
+    "soilgrids_soil_organic_carbon": "SoilGrids soil carbon",
+}
+
+#: What each constraint value covers in time, as its producer described it on
+#: 2026-09-25. Not yet recorded in data/README.md.
+CONSTRAINT_TIME_SUPPORT = {
+    "landtrendr_aboveground_biomass": "average over the calendar year",
+    "gedi_aboveground_biomass": "not yet known",
+    "modis_leaf_area_index": (
+        "8-day integral, the window sometimes extended; but the dates are 4 days "
+        "apart, June to August only"
+    ),
+    "smap_soil_moisture": "integral over the day",
+    "soilgrids_soil_organic_carbon": "ambiguous",
+}
+
 #: The site-labels product every by-class figure groups by.
 SITE_LABELS = "pft_16class"
 
