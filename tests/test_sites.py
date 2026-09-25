@@ -1275,3 +1275,50 @@ class TestDocstringExamples:
         for index, code in enumerate(self._usage_code_blocks(), start=1):
             compiled = compile(code, f"<docstring block {index}>", "exec")
             exec(compiled, namespace)  # noqa: S102 - the docstring is the input
+
+
+class TestCellOf:
+    """``Grid.cell_of`` bins arbitrary points on the pool raster's real edges."""
+
+    def test_every_site_departs_from_its_nominal_center_by_the_edge_shift(self):
+        lon, lat = _shapefile_coordinates()
+        lon_index, lat_index = SITE_GRID.lonlat_to_index(lon, lat)
+        nominal_lon, nominal_lat = SITE_GRID.index_to_lonlat(lon_index, lat_index)
+        np.testing.assert_allclose(lon - nominal_lon, SITE_GRID.edge_shift_lon, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(lat - nominal_lat, SITE_GRID.edge_shift_lat, rtol=0, atol=1e-12)
+
+    def test_a_site_center_falls_in_its_own_cell(self):
+        lon, lat = _shapefile_coordinates()
+        assert tuple(map(np.ndarray.tolist, SITE_GRID.cell_of(lon, lat))) == tuple(
+            map(np.ndarray.tolist, SITE_GRID.lonlat_to_index(lon, lat))
+        )
+
+    @pytest.mark.parametrize("site_id, lon, lat, lon_index, lat_index", REAL_SITES)
+    def test_a_point_just_inside_the_real_south_west_edge_stays_in_the_cell(
+        self, site_id, lon, lat, lon_index, lat_index
+    ):
+        half = 0.5 / SITE_GRID.cells_per_degree
+        inside = 4.5e-7  # about 0.05 m, less than the 0.11 m edge shift
+        assert SITE_GRID.cell_of(lon - half + inside, lat - half + inside) == (lon_index, lat_index)
+
+    def test_a_point_on_a_nominal_edge_is_placed_by_the_real_one(self):
+        # The real southern edge of row k lies north of the nominal one by the
+        # shift, so a point exactly on the nominal edge is in the row beneath.
+        # This is the case of US-xDS, whose latitude is exactly 28.125.
+        k = 2535
+        nominal_edge = SITE_GRID.south + k / SITE_GRID.cells_per_degree
+        _, lat_index = SITE_GRID.cell_of(-100.0, nominal_edge)
+        assert lat_index == k - 1
+
+    def test_rejects_points_off_the_grid_and_non_finite_points(self):
+        with pytest.raises(ValueError, match="longitude outside"):
+            SITE_GRID.cell_of(-179.5, 40.0)
+        with pytest.raises(ValueError, match="latitude outside"):
+            SITE_GRID.cell_of(-100.0, 6.5)
+        with pytest.raises(ValueError, match="finite"):
+            SITE_GRID.cell_of(float("nan"), 40.0)
+
+    def test_an_ideal_grid_has_no_shift(self):
+        grid = Grid(west=0.0, south=0.0, n_lon=10, n_lat=10, cells_per_degree=1)
+        assert grid.cell_of(0.0, 0.0) == (0, 0)
+        assert grid.cell_of(9.999, 9.999) == (9, 9)

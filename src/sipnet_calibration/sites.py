@@ -90,7 +90,8 @@ Functions
 
 :class:`Grid` and :data:`SITE_GRID`
     The lattice, and the conversions between coordinates and indices:
-    :meth:`Grid.lonlat_to_index` and :meth:`Grid.index_to_lonlat`.
+    :meth:`Grid.lonlat_to_index` and :meth:`Grid.index_to_lonlat`, and
+    :meth:`Grid.cell_of`, which bins an arbitrary point into its cell.
 
 Notes
 -----
@@ -216,6 +217,11 @@ class Grid:
         Number of cells along each axis.
     cells_per_degree:
         Cells per degree, the reciprocal of the step.
+    edge_shift_lon, edge_shift_lat:
+        How far, in degrees, the edges of the raster the lattice was cut from
+        lie from ``west`` and ``south``. Zero for an ideal lattice. Read only
+        by :meth:`cell_of`, which bins arbitrary points and so needs the real
+        edges; the index conversions are unaffected.
     """
 
     west: float
@@ -223,6 +229,8 @@ class Grid:
     n_lon: int
     n_lat: int
     cells_per_degree: int
+    edge_shift_lon: float = 0.0
+    edge_shift_lat: float = 0.0
 
     def __post_init__(self) -> None:
         if self.n_lon <= 0 or self.n_lat <= 0:
@@ -356,17 +364,70 @@ class Grid:
             return int(j), int(k)
         return j, k
 
+    def cell_of(self, lon, lat):
+        """Indices of the cells that contain the given points.
+
+        A binning operation, unlike :meth:`lonlat_to_index`: any point inside
+        the grid is accepted and assigned to the cell it falls in, with a cell
+        holding its west and south edges and not its east and north ones. The
+        edges are the raster's own, ``west + edge_shift_lon`` and
+        ``south + edge_shift_lat``.
+
+        Parameters
+        ----------
+        lon, lat:
+            Degrees, scalar or array-like. Broadcast against each other.
+
+        Returns
+        -------
+        tuple
+            ``(lon_index, lat_index)`` as integers. Scalars in, scalars out.
+
+        Raises
+        ------
+        ValueError
+            If any coordinate is not finite or lies outside the grid.
+        """
+        x, y = np.broadcast_arrays(np.asarray(lon, dtype=float), np.asarray(lat, dtype=float))
+        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
+            raise ValueError("coordinates must be finite to be placed in a cell")
+        west, south = self.west + self.edge_shift_lon, self.south + self.edge_shift_lat
+        j = np.floor((x - west) * self.cells_per_degree).astype(np.int64)
+        k = np.floor((y - south) * self.cells_per_degree).astype(np.int64)
+        if np.any(j < 0) or np.any(j >= self.n_lon):
+            raise ValueError(
+                f"longitude outside the grid ({west!r} to {west + self.n_lon / self.cells_per_degree!r})"
+            )
+        if np.any(k < 0) or np.any(k >= self.n_lat):
+            raise ValueError(
+                f"latitude outside the grid ({south!r} to {south + self.n_lat / self.cells_per_degree!r})"
+            )
+        if j.ndim == 0 and k.ndim == 0:
+            return int(j), int(k)
+        return j, k
+
 
 #: The grid the 8000 sites are defined on: 30 arcsecond (1/120 degree) cells
 #: spanning 179 W to 20 W and 7 N to 85 N, as 19080 x 9360 cells. This is the
 #: grid of the North American Land Carbon Reanalysis; see ``data/README.md``.
 #:
-#: Site coordinates are cell centers of this grid, but as stored they depart from
-#: exact centers by up to 1.02e-6 degrees (about 0.11 m), consistent with having
-#: passed through 32-bit floating point somewhere upstream. The integer indices
-#: are therefore the exact representation of a site's position and the stored
-#: coordinates are a lossy rendering of it.
-SITE_GRID = Grid(west=-179.0, south=7.0, n_lon=19080, n_lat=9360, cells_per_degree=120)
+#: Site coordinates are cell centers of this grid, but as stored every one of
+#: them departs from the nominal center by the same amount: 1.0172526e-6 degrees
+#: west and the same north (about 0.11 m). That is the origin of the raster the
+#: pool was cut from, ``MODIS_NLCD_LC.tif`` in the reanalysis's site-selection
+#: code, whose geotransform starts at (-179.0000010173, 85.0000010173); it is
+#: carried as ``edge_shift_lon``/``edge_shift_lat`` for :meth:`Grid.cell_of`, and
+#: ``tests/test_sites.py`` asserts it against every site. The integer indices
+#: are the exact representation of a site's position either way.
+SITE_GRID = Grid(
+    west=-179.0,
+    south=7.0,
+    n_lon=19080,
+    n_lat=9360,
+    cells_per_degree=120,
+    edge_shift_lon=-1.0172526e-6,
+    edge_shift_lat=1.0172526e-6,
+)
 
 
 # ── the site table ────────────────────────────────────────────────────────────

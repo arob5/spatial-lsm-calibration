@@ -70,8 +70,10 @@ Facts specific to this working copy, which the README deliberately does not carr
   files, site 1 members 1 and 2 and site 27 member 94, under
   `data/raw/initial_conditions/files/`; of the soil texture ensemble, sites 1
   and 27 only, three files of 769,300, which is why
-  `scripts/survey_soil_texture.py` needs `--no-check` here. The NEE csv, the
-  five constraint files (tracked), the converted initial condition ensemble
+  `scripts/survey_soil_texture.py` needs `--no-check` here. The two converted
+  NEE time series (`data/raw/net_ecosystem_exchange/*.nc`, not tracked, copied
+  from the SCC) and AmeriFlux's site listing beside them, the NEE tower table
+  (tracked), the five constraint files (tracked), the converted initial condition ensemble
   (tracked, all 8000 sites x 100 members), the assembled `.Rdata` pair retained
   for validation, the site shapefile, both leaf phenology CSVs, and the two
   site-labels products and the covariate table (all tracked) are complete. The
@@ -98,12 +100,20 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Never build a timestamp from the `.clim` or SIPNET-output `time` column; it
   drifts (README note 15, issue #9). Use `obs_ops.sipnet_time_index`, which
   takes only the slot from it.
-- Drop the NEE csv's `ens_mean` column; never admit it to the `member` dim.
+- Never parse an AmeriFlux FLUXNET timestamp through a time zone, the
+  session's default included (R's `tz = ""`, pandas `tz_localize`): the stamps
+  are local standard time with no daylight saving, and a zone with DST drops or
+  duplicates the half-hours at each transition. Read them as naive
+  `YYYYMMDDHHMM` and shift by the tower's fixed `utc_offset_hours` from the
+  tower table. Every NEE file from before the AmeriFlux ingest broke this rule,
+  which is why none of them is used (`data/README.md`, Net ecosystem exchange).
+- A tower's pool site comes from the tower table, never from a nearest-point
+  search; the table records how each match was made.
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
   `data/processed/sites/sites.csv`. There is no other site source.
-- Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
-  every constraint product is ragged over site x time.
+- Do not assume rectangular coverage: the NEE products and every constraint
+  product are ragged over site x time.
 - Constraint products keep their **source units** and their source's own time
   labels. Nothing is converted or aligned at ingest; the observation operator
   does both. See the processed-data conventions below.
@@ -398,7 +408,7 @@ reader and checks together.
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
-  sites.py                # SITE_GRID + grid conversions, load_sites(),
+  sites.py                # SITE_GRID + grid conversions and cell_of(), load_sites(),
                           # select_sites(ids=, bbox=, where=, sample=, seed=),
                           # EXTENTS (named lon/lat boxes)
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
@@ -418,6 +428,21 @@ src/sipnet_calibration/
     processed.py          # build_initial_conditions(), load_initial_conditions(),
                           # netcdf_encoding(), initial_condition_fields()
     sipnet_parameters.py  # to_pysipnet_initial_conditions() and its table form
+  net_ecosystem_exchange/ # observed NEE, laid out as initial_conditions/ is
+    __init__.py           # curated exports + the products' data model
+    names.py              # dims, the raw (local standard time) and product (UTC)
+                          # axes per resolution, file names, path helpers
+    source_files.py       # SOURCE (the AmeriFlux FULLSET CSV), read_source_file()
+    raw.py                # build_raw(), raw_encoding(), read_raw(): every tower on
+                          # one local-standard-time axis per resolution
+    towers.py             # the tower table: exact tower-to-site matching, one
+                          # primary tower per site, recover_utc_offset() from
+                          # SW_IN_POT, shortwave_lag_steps(); read_tower_table()
+    specs.py              # NetEcosystemExchangeSpec + NET_ECOSYSTEM_EXCHANGE, one
+                          # per series (ameriflux_nee_<resolution>_ustar_<variable|constant>)
+    sources.py            # SOURCE_READERS: raw file -> (tower, time) UTC series
+    processed.py          # build_net_ecosystem_exchange(), load_net_ecosystem_exchange(),
+                          # net_ecosystem_exchange_values() and the companions
   drivers.py              # driver schema, load_drivers() reading raw .clim files
                           # into (member, site, time); no processed file exists
   site_labels.py          # SiteLabelsSpec + SITE_LABELS, one per raw file; a
@@ -458,15 +483,19 @@ scripts/                  # ingest: data/raw/ -> data/processed/; and
                           # and write nothing under data/. The phenology and
                           # soil texture ones also assert what data/README.md
                           # records and exit non-zero when it no longer holds.
-  raw_sources/            # NOT the pipeline: code that *makes* a tracked raw
-                          # input, run once. SCC-only except the Natural
-                          # Earth download.
+  raw_sources/            # NOT the pipeline: code that *makes* a raw input,
+                          # run once. SCC-only except the Natural Earth download
+                          # and the NEE tower table, which needs only the raw
+                          # NEE files.
 experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
 data/raw/                 # never edited; raw/sites/, raw/constraints/,
                           # raw/initial_conditions/, raw/site_labels/,
-                          # raw/covariates/ and raw/natural_earth/ are tracked
+                          # raw/covariates/ and raw/natural_earth/ are tracked,
+                          # and raw/net_ecosystem_exchange/'s tower table,
+                          # tower list and provenance (not its time series)
 data/processed/           # ingest output == canonical plotting input; untracked;
-                          # constraints/<name>.nc is one CF-1.11 netCDF per constraint
+                          # constraints/<name>.nc is one CF-1.11 netCDF per constraint;
+                          # net_ecosystem_exchange/<name>.nc one per NEE series
 tests/
 ```
 
