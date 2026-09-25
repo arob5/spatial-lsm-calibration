@@ -67,6 +67,7 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import xarray as xr
+from pysipnet.parameters.base import ParameterSpec
 from pysipnet.parameters.model import (
     PARAMETER_SPECS,
     SIPNET_PARAMS_BY_GROUP,
@@ -91,8 +92,8 @@ __all__ = [
     "ReduceOverTimeBounds",
     "SelectTimestep",
     "check_operator",
-    "select_sites",
-    "sipnet_parameter_array",
+    "select_observed_sites",
+    "select_sipnet_parameter",
     "sipnet_parameter_spec",
 ]
 
@@ -142,7 +143,7 @@ class SelectTimestep:
         return ()
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
-        variable = select_sites(model_output[self.output_variable_name], observed_values)
+        variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
         return select_timestep_at(variable, observed_values[TIME])
 
 
@@ -171,7 +172,7 @@ class ReduceOverTimeBounds:
         return ()
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
-        variable = select_sites(model_output[self.output_variable_name], observed_values)
+        variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
         windows = windows_from_time_bounds(observed_values)
         return reduce_windows(variable, windows, self.how, labels=observed_values[TIME])
 
@@ -205,7 +206,7 @@ class ReduceOverRun:
                 f"ReduceOverRun reads a static observation, and {observed_values.name!r} "
                 f"has a {TIME!r} dimension; use ReduceOverTimeBounds or SelectTimestep."
             )
-        variable = select_sites(model_output[self.output_variable_name], observed_values)
+        variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
         reduced = reduce_windows(variable, run_window(variable), self.how)
         return reduced.isel({TIME: 0}, drop=True)
 
@@ -230,8 +231,8 @@ class ComputeLeafAreaIndex:
         return ("leaf_carbon_per_area",)
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
-        leaf_carbon = select_sites(model_output["leaf_carbon"], observed_values)
-        per_area = sipnet_parameter_array(sipnet_parameters, "leaf_carbon_per_area", leaf_carbon)
+        leaf_carbon = select_observed_sites(model_output["leaf_carbon"], observed_values)
+        per_area = select_sipnet_parameter(sipnet_parameters, "leaf_carbon_per_area", leaf_carbon)
         lai = divide(leaf_carbon, per_area)
         lai.name = "leaf_area_index"
         return select_timestep_at(lai, observed_values[TIME])
@@ -246,20 +247,58 @@ DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = {
 }
 
 
-def select_sites(variable: xr.DataArray, observed_values: xr.DataArray) -> xr.DataArray:
-    """*variable* at the observation's sites, raising if any is missing.
+def select_observed_sites(
+    model_variable: xr.DataArray, observed_values: xr.DataArray
+) -> xr.DataArray:
+    """Restrict a model output variable to the sites an observation observes.
 
-    A model array with a ``site`` dimension is selected down to the
-    observation's sites, in the observation's order. One with a scalar
-    ``site`` coordinate must be the observation's single site. One with no
-    site at all is refused: the correspondence would be a guess.
+    The operators call this first, so that everything after it works on the
+    observation's sites, in the observation's order. A variable with a
+    ``site`` dimension is selected down to those sites; a variable from one
+    run, carrying ``site`` as a scalar coordinate, is returned unchanged when
+    it is the observation's one site.
+
+    Parameters
+    ----------
+    model_variable:
+        One variable of a model output, as ``model_output[name]``: on
+        ``(time,)`` with a scalar ``site`` coordinate for one run, or on
+        ``(site, time)`` or ``(member, site, time)`` for a stack. Its ``site``
+        labels are the 1-8000 site ids.
+    observed_values:
+        The observed array of one product, ``(site[, time])``. Only its
+        ``site`` coordinate is read.
+
+    Returns
+    -------
+    xarray.DataArray
+        *model_variable* at the observed sites, in the order
+        *observed_values* lists them, with every other dimension, coordinate
+        and attribute unchanged. For a one-run variable, *model_variable*
+        itself.
+
+    Raises
+    ------
+    ValueError
+        If *observed_values* lists a site twice; if *model_variable* lacks a
+        site the observation observes; if *model_variable* is one run at a
+        site other than the observation's one site, or the observation
+        observes several sites; or if *model_variable* carries no ``site``
+        coordinate at all.
+
+    Notes
+    -----
+    A variable with no ``site`` is refused rather than assumed to be the
+    observed site: an unlabeled run could be any site, and matching it by
+    position would be a guess. :func:`sipnet_calibration.fields.label_run`
+    is what gives a run its site.
     """
     wanted = np.asarray(observed_values[SITE].values).ravel()
     who = _name_of(observed_values)
     if len(set(wanted.tolist())) != wanted.size:
         raise ValueError(f"{who} repeats a site; an observation names each site once.")
-    if SITE in variable.dims:
-        have = set(variable[SITE].values.tolist())
+    if SITE in model_variable.dims:
+        have = set(model_variable[SITE].values.tolist())
         missing = [int(s) for s in wanted if s not in have]
         if missing:
             raise ValueError(
@@ -267,33 +306,77 @@ def select_sites(variable: xr.DataArray, observed_values: xr.DataArray) -> xr.Da
                 "run the model at every observed site, or select the observations to "
                 "the sites that were run."
             )
-        return variable.sel({SITE: wanted})
-    if SITE in variable.coords:
-        site = int(variable[SITE].values)
+        return model_variable.sel({SITE: wanted})
+    if SITE in model_variable.coords:
+        site = int(model_variable[SITE].values)
         if wanted.size != 1 or int(wanted[0]) != site:
             raise ValueError(
                 f"the model output is one run at site {site}, and {who} observes "
                 f"site(s) {wanted.tolist()[:10]}; select the observation to that one site."
             )
-        return variable
+        return model_variable
     raise ValueError(
         f"the model output carries no {SITE!r} coordinate, so it cannot be matched to "
         f"the sites {who} observes; label the run with fields.label_run(site=...)."
     )
 
 
-def sipnet_parameter_array(
-    sipnet_parameters: xr.Dataset | Mapping[str, Any] | None, name: str, like: xr.DataArray
+def select_sipnet_parameter(
+    sipnet_parameters: xr.Dataset | Mapping[str, Any] | None,
+    sipnet_parameter_name: str,
+    model_variable: xr.DataArray,
 ) -> xr.DataArray:
-    """One SIPNET parameter's values as a ``DataArray`` with pySIPNET's units.
+    """The values one SIPNET parameter took in the runs a model variable holds.
 
-    From a SIPNET table (a ``Dataset`` on ``(member, site)`` or ``(site,)``,
-    selected to *like*'s sites), or from a mapping of scalars for one run.
-    The result carries ``units`` and ``constituent`` from
-    ``pysipnet.parameters.model.PARAMETER_SPECS``, so the arithmetic verbs can
-    combine it with a model variable.
+    An operator that reads a SIPNET parameter, as the leaf area index
+    operator reads ``leaf_carbon_per_area``, calls this to get the
+    parameter's values lined up with the model variable it combines them
+    with. The result carries pySIPNET's ``units`` and ``constituent`` for
+    the parameter, so :func:`~sipnet_calibration.observation.units.divide`
+    and the other arithmetic verbs can combine it with the variable and keep
+    the attributes right.
+
+    Parameters
+    ----------
+    sipnet_parameters:
+        The values the runs used, in either of two forms. A SIPNET table: an
+        ``xr.Dataset`` with one variable per SIPNET parameter, on
+        ``(member, site)`` or ``(site,)``, as
+        :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_table`
+        returns it. Or, for one run, a mapping from SIPNET parameter name to
+        a number, as :func:`~sipnet_calibration.parameter_vector.sipnet_overrides`
+        returns it; a key may be the flat name, an alias, or SIPNET's own
+        name.
+    sipnet_parameter_name:
+        The SIPNET parameter to select: pySIPNET's flat name
+        (``"leaf_carbon_per_area"``) or an alias of it.
+    model_variable:
+        The model output variable the values will be combined with. From a
+        SIPNET table, the rows returned are the ones at its ``site`` and
+        ``member`` labels, in its order; a dimension it does not have is left
+        whole.
+
+    Returns
+    -------
+    xarray.DataArray
+        Named *sipnet_parameter_name*, with attributes ``units``,
+        ``long_name`` and, where pySIPNET declares one, ``constituent``. From
+        a SIPNET table, the parameter's variable at *model_variable*'s sites
+        and members; from a mapping, a 0-d array of the run's value, which
+        broadcasts against *model_variable*.
+
+    Raises
+    ------
+    ValueError
+        If *sipnet_parameters* is ``None``; if a SIPNET table has no variable
+        for the parameter, or lacks a ``site`` or ``member`` label that
+        *model_variable* has; or if a mapping has no entry for the parameter
+        under any of its names, or the entry is not a number.
+    KeyError
+        If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
-    spec = sipnet_parameter_spec(name)
+    spec = sipnet_parameter_spec(sipnet_parameter_name)
+    name = sipnet_parameter_name
     attrs = {"units": spec.units, "long_name": spec.long_label}
     if spec.constituent:
         attrs["constituent"] = spec.constituent
@@ -308,12 +391,13 @@ def sipnet_parameter_array(
                 f"the SIPNET table has no variable {name!r}, which this operator reads; "
                 f"it has {list(sipnet_parameters.data_vars)[:10]}."
             )
-        array = sipnet_parameters[name]
+        values = sipnet_parameters[name]
         selectors = {}
         for dim in (SITE, MEMBER):
-            if dim in array.dims and dim in like.coords:
-                wanted = np.asarray(like[dim].values).ravel()
-                missing = [x for x in wanted.tolist() if x not in set(array[dim].values.tolist())]
+            if dim in values.dims and dim in model_variable.coords:
+                wanted = np.asarray(model_variable[dim].values).ravel()
+                present = set(values[dim].values.tolist())
+                missing = [x for x in wanted.tolist() if x not in present]
                 if missing:
                     raise ValueError(
                         f"the SIPNET table's {name!r} has no {dim} label(s) {missing[:10]} "
@@ -322,11 +406,11 @@ def sipnet_parameter_array(
                     )
                 selectors[dim] = wanted
         if selectors:
-            array = array.sel(selectors)
-        array = array.copy()
-        array.attrs = attrs
-        array.name = name
-        return array
+            values = values.sel(selectors)
+        values = values.copy()
+        values.attrs = attrs
+        values.name = name
+        return values
     flat = resolve_parameter_name(name)
     value = None
     for key in (name, flat, spec.sipnet_name):
@@ -345,13 +429,41 @@ def sipnet_parameter_array(
     return xr.DataArray(float(value), name=name, attrs=attrs)
 
 
-def sipnet_parameter_spec(name: str) -> Any:
-    """pySIPNET's ``ParameterSpec`` for a flat parameter name or alias."""
-    flat = resolve_parameter_name(name)
+def sipnet_parameter_spec(sipnet_parameter_name: str) -> ParameterSpec:
+    """pySIPNET's description of one SIPNET parameter.
+
+    ``pysipnet.parameters.model.PARAMETER_SPECS`` is keyed by the dotted
+    path of a parameter (``"leaf.leaf_carbon_per_area"``), while the rest of
+    this repository names a parameter by its flat name; this finds the spec
+    from the flat name.
+
+    Parameters
+    ----------
+    sipnet_parameter_name:
+        pySIPNET's flat name for the parameter (``"leaf_carbon_per_area"``),
+        or an alias of it, including SIPNET's own name (``"leafCSpWt"``).
+
+    Returns
+    -------
+    pysipnet.parameters.base.ParameterSpec
+        The parameter's spec: ``units``, ``constituent``, ``long_label``,
+        ``sipnet_name``, ``domain`` and the rest of what pySIPNET records.
+
+    Raises
+    ------
+    KeyError
+        If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
+    ValueError
+        If the name resolves but no parameter group holds it, which would
+        mean pySIPNET's registries disagree.
+    """
+    flat = resolve_parameter_name(sipnet_parameter_name)
     for group, names in SIPNET_PARAMS_BY_GROUP.items():
         if flat in names:
             return PARAMETER_SPECS[f"{group}.{flat}"]
-    raise ValueError(f"{name!r} resolves to {flat!r}, which no parameter group holds.")
+    raise ValueError(
+        f"{sipnet_parameter_name!r} resolves to {flat!r}, which no parameter group holds."
+    )
 
 
 def check_operator(

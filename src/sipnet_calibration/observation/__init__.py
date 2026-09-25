@@ -45,8 +45,8 @@ from sipnet_calibration.observation.operators import (
     ReduceOverTimeBounds,
     SelectTimestep,
     check_operator,
-    select_sites,
-    sipnet_parameter_array,
+    select_observed_sites,
+    select_sipnet_parameter,
     sipnet_parameter_spec,
 )
 from sipnet_calibration.observation.units import add, divide, multiply, step_length, subtract
@@ -73,9 +73,9 @@ __all__ = [
     "multiply",
     "reduce_windows",
     "run_window",
-    "select_sites",
+    "select_observed_sites",
+    "select_sipnet_parameter",
     "select_timestep_at",
-    "sipnet_parameter_array",
     "sipnet_parameter_spec",
     "step_length",
     "subtract",
