@@ -183,9 +183,11 @@ the ones most often broken.
   dims are a subset of `(member, site, time)`, with `lon`/`lat` on `site` and `units`/`long_name`
   in its attributes. The word "canonical" is not used with it; `fields.py`
   holds the generic operations on fields and nothing else.
-- **A callable class is an imperative verb** (`SelectTimestep`,
-  `ComputeLeafAreaIndex`); a protocol or a record is a noun
-  (`ObservationOperator`, `Observation`).
+- **A class whose call is its whole interface may be named as an imperative
+  verb**, for what the call does (`SelectTimestep`, `ComputeLeafAreaIndex`).
+  This is not a rule for every callable class: a protocol, a record, or an
+  object with an interface of its own beyond the call is a noun
+  (`ObservationOperator`, `Observation`, a model object).
 - **No abbreviations** beyond the universal ones, as above:
   `constraint_standard_deviations`, not `constraint_sds`. Names that are
   pandas', xarray's or pySIPNET's own (`how`, `freq`, `coords`, `dims`) stay,
