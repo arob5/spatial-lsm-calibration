@@ -178,6 +178,33 @@ same weather and part by a degree or so at the peaks and troughs.
 
 # Initial conditions
 
+## The initial condition ensemble
+
+Dongchen's PEcAn initial conditions, on the SCC at
+`{python} config.INITIAL_CONDITIONS_SOURCE`: 100 members at each of the 8000
+sites, one file per site and member, converted here into one product.
+
+::: {.callout-warning}
+## Known issues
+
+1. **Units are unconfirmed** for every variable.
+2. **Wood goes negative**: it is the biomass draw minus the leaf draw, drawn
+   independently. Drop, floor, or replace?
+3. **Leaf carbon** is LAI / SLA with no carbon fraction applied: kg of leaf
+   labeled kg C.
+4. **Soil moisture** is percent of saturation; SIPNET's initial value is a
+   fraction of its bucket's water holding capacity.
+5. ISCN soil carbon stocks have an **undocumented integration depth**.
+6. Which **PEcAn version** ran the reanalysis? The wood conversion changed on
+   2025-09-02.
+:::
+
+- Leaf carbon and soil moisture are absent at some sites.
+- Values are kept as the source files give them, negative draws included.
+  Turning them into SIPNET's initial parameters needs calibrated parameters
+  (leaf area is leaf carbon times specific leaf area), so that happens for
+  each proposed parameter vector, not in the product.
+
 ## The product
 
 ```{python}
@@ -194,10 +221,16 @@ from sipnet_calibration.initial_conditions import INITIAL_CONDITIONS
 plots.spec_table(INITIAL_CONDITIONS, ["units", "constituent", "sipnet_initial_condition"])
 ```
 
-## Wood carbon
+## Ensemble medians
 
 ```{python}
-plots.ensemble_summary_maps(ic["initial_wood_carbon"]);
+plots.initial_condition_maps(ic, "median");
+```
+
+## Ensemble standard deviations
+
+```{python}
+plots.initial_condition_maps(ic, "standard_deviation");
 ```
 
 ## Wood carbon goes negative
@@ -214,40 +247,22 @@ Wood is the biomass draw minus the leaf draw, drawn independently, so it goes
 negative wherever the leaf draw exceeds the biomass draw.
 :::
 
-## Soil organic carbon by PFT
-
-```{python}
-plots.by_class(ic["initial_soil_organic_carbon"], log=True);
-```
-
-## The ensemble at the featured sites
+## The ensemble at Harvard Forest and Bartlett
 
 ```{python}
 plots.members_at_sites(ic);
 ```
 
-## Initial conditions: assumptions
+## By PFT
 
-- Ingest changes **structure, never values**: the source files' units, and
-  negative draws kept.
-- **No state-to-parameter mapping at ingest.** Three of SIPNET's four initial
-  parameters depend on calibrated parameters (for example leaf area from leaf
-  carbon x specific leaf area), so the mapping is applied per proposed
-  parameter vector.
-- Every variable's source and PEcAn conversion is recorded on its spec, as
-  above.
+```{python}
+plots.by_class_grid(ic);
+```
 
-## Initial conditions: open questions
-
-- **Units are unconfirmed** for every variable (data README, open question 24).
-- **Negative wood**: drop, floor, or replace?
-- **Leaf carbon** is LAI / SLA with no carbon fraction applied: kg of leaf
-  labeled kg C.
-- **Soil moisture** is percent of saturation; SIPNET's initial value is a
-  fraction of its bucket's water holding capacity.
-- ISCN soil carbon stocks have an **undocumented integration depth**.
-- Which PEcAn version ran the reanalysis (the wood conversion changed on
-  2025-09-02)?
+::: notes
+Each box is the spread over sites of the per-site ensemble median. Classes run
+most sites first, as in the class counts.
+:::
 
 # Constraints
 

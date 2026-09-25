@@ -3,8 +3,8 @@
 Each public function draws one figure from the library's loaders and plotting
 functions and returns it; ``slides.qmd`` calls them. Nothing here saves a file:
 the deck renders what is returned. What a slide shows as code is the library
-call itself, so these functions hold only the plumbing around it -- marking the
-featured sites, grouping by class, laying out panels.
+call itself, so these functions hold only the plumbing around it -- grouping
+by class, laying out panels.
 """
 
 import textwrap
@@ -18,46 +18,16 @@ import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.dates import DateFormatter, DayLocator, MonthLocator
 from matplotlib.figure import Figure
-from matplotlib.ticker import LogLocator, ScalarFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator
 
 from sipnet_calibration.obs_ops import aggregate_time
 from sipnet_calibration.plotting import (
     member_summary, plot_by_variable, plot_map_grid, plot_time_series,
 )
 from sipnet_calibration.plotting.style import category_colors
-from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.site_labels import load_site_labels, resolve_site_labels
-from sipnet_calibration.sites import load_sites
 
 import config
-
-
-def mark_sites(ax: Axes, sites: Mapping[str, int] | None = None) -> Axes:
-    """Mark and name *sites* on a map drawn by ``plot_map``.
-
-    Parameters
-    ----------
-    ax:
-        A map's axes, in the site projection's meters.
-    sites:
-        Display name to site id. Defaults to ``config.FEATURED_SITES``.
-
-    Returns
-    -------
-    matplotlib.axes.Axes
-        *ax*.
-    """
-    sites = config.FEATURED_SITES if sites is None else sites
-    table = load_sites().set_index("site_id")
-    for i, (name, site) in enumerate(sites.items()):
-        x, y = SITE_PROJECTION.forward(table.at[site, "lon"], table.at[site, "lat"])
-        ax.plot(x, y, marker="*", markersize=14, color="black", markeredgecolor="white", zorder=5)
-        # Stagger the labels: the featured sites can be a few km apart.
-        ax.annotate(
-            name, (x, y), xytext=(10, 6 - 16 * i), textcoords="offset points", fontsize=11,
-            fontweight="bold", zorder=5,
-        )
-    return ax
 
 
 def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
@@ -75,12 +45,10 @@ def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
     matplotlib.figure.Figure
     """
     spec = resolve_site_labels(site_labels)
-    counts = load_site_labels(spec)["label"].value_counts().reindex(spec.labels, fill_value=0)
-    # A class's color is set by its position in the spec, as on the maps, so
-    # the colors are reordered with the classes.
-    order = np.argsort(-counts.to_numpy(), kind="stable")
-    names = np.asarray(_display_names(spec))[order]
-    colors = np.asarray(category_colors(len(names)))[order]
+    labels = load_site_labels(spec)
+    order = _classes_by_size(spec, labels)
+    names, colors = _names_and_colors(spec, order)
+    counts = labels["label"].value_counts().reindex(spec.labels, fill_value=0)
     sorted_counts = counts.to_numpy()[order]
     figure, ax = plt.subplots(figsize=(7, 0.35 * len(names) + 1), layout="constrained")
     ax.barh(names, sorted_counts, color=colors)
@@ -235,34 +203,34 @@ def label_crosstab_heatmap(
     return figure
 
 
-def ensemble_summary_maps(field: xr.DataArray, **map_kwargs) -> Figure:
-    """The ensemble median beside the ensemble standard deviation.
+def initial_condition_maps(fields: Mapping[str, xr.DataArray], stat: str = "median") -> Figure:
+    """One map per initial condition of one statistic over its members.
 
     Parameters
     ----------
-    field:
-        A ``(member, site)`` field.
-    **map_kwargs:
-        Passed to ``plot_map_grid``.
+    fields:
+        Name to ``(member, site)`` field, as ``initial_condition_fields``
+        returns.
+    stat:
+        The statistic over members, as ``member_summary`` takes it.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
-    panels = {
-        "ensemble median": member_summary(field, "median"),
-        "ensemble standard deviation": member_summary(field, "standard_deviation"),
-    }
-    for panel in panels.values():
-        # The panel title says which statistic; the colorbar needs only units.
-        panel.attrs["long_name"] = field.attrs.get("long_name", field.name)
-    map_kwargs.setdefault("extent", config.MAP_EXTENT)
-    map_kwargs.setdefault("robust", True)
-    figure, axes = plot_map_grid(panels, scale="each", ncol=2, **map_kwargs)
-    for ax in axes.flat:
-        if ax.get_visible():
-            mark_sites(ax)
-            ax.set_title(ax.get_title(), pad=18)
+    panels = {}
+    for field in fields.values():
+        summary = member_summary(field, stat)
+        # The panel title names the variable, so the colorbar names the statistic.
+        summary.attrs["long_name"] = stat.replace("_", " ")
+        panels[textwrap.fill(_short_name(field), 30)] = summary
+    figure, axes = plot_map_grid(
+        panels, scale="each", ncol=3, extent=config.MAP_EXTENT, robust=True,
+        panel_size=(5.0, 3.9),
+    )
+    for ax in axes:
+        # Lift the title clear of the longitude labels along the map's top edge.
+        ax.set_title(ax.get_title(), pad=20)
     return figure
 
 
@@ -290,59 +258,57 @@ def negative_member_fraction(field: xr.DataArray) -> xr.DataArray:
     return fraction
 
 
-def by_class(
-    field: xr.DataArray, site_labels: str = config.SITE_LABELS, *, stat: str = "median",
-    log: bool = False,
+def by_class_grid(
+    fields: Mapping[str, xr.DataArray],
+    site_labels: str = config.SITE_LABELS,
+    *,
+    stat: str = "median",
+    log: Iterable[str] = (
+        "initial_aboveground_biomass_carbon", "initial_leaf_carbon",
+        "initial_soil_organic_carbon",
+    ),
 ) -> Figure:
-    """One box per class of the per-site ensemble statistic.
+    """One panel per field of boxes by class of the per-site ensemble statistic.
+
+    Classes run most sites first, as in ``class_counts``, in the map's colors.
 
     Parameters
     ----------
-    field:
-        A ``(member, site)`` field.
+    fields:
+        Name to ``(member, site)`` field.
     site_labels:
         The site-labels name to group by.
     stat:
         The per-site statistic over members, as ``member_summary`` takes it.
     log:
-        A logarithmic value axis, for skewed stocks; values at or below zero
-        are left out of the boxes and counted in the title.
+        The fields drawn on a logarithmic axis, for skewed stocks; their values
+        at or below zero are left out and counted under the axis.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
     spec = resolve_site_labels(site_labels)
-    per_site = member_summary(field, stat).to_series().rename("value").rename_axis("site_id")
-    joined = load_site_labels(spec).merge(per_site.reset_index(), on="site_id").dropna()
-    dropped = int((joined["value"] <= 0).sum()) if log else 0
-    if log:
-        joined = joined[joined["value"] > 0]
-    groups = [joined.loc[joined["label"] == label, "value"].to_numpy() for label in spec.labels]
-    names = _display_names(spec)
-
-    figure, ax = plt.subplots(figsize=(8, 0.38 * len(names) + 1.2), layout="constrained")
-    boxes = ax.boxplot(groups, orientation="horizontal", tick_labels=names, patch_artist=True,
-                       showfliers=False, widths=0.6,
-                       medianprops={"color": "black"})
-    for patch, color in zip(boxes["boxes"], category_colors(len(names))):
-        patch.set_facecolor(color)
-    ax.invert_yaxis()
-    if log:
-        ax.set_xscale("log")
-        ax.xaxis.set_major_locator(LogLocator(subs=(1.0, 2.0, 5.0)))
-        ax.xaxis.set_major_formatter(ScalarFormatter())
-    units = field.attrs.get("units", "")
-    ax.set_xlabel(f"{field.attrs.get('long_name', field.name)}, per-site {stat} ({units})")
-    if dropped:
-        ax.set_title(f"{dropped} sites at or below zero left out of the log axis", fontsize=10)
+    labels = load_site_labels(spec)
+    order = _classes_by_size(spec, labels)
+    names, colors = _names_and_colors(spec, order)
+    classes = [spec.labels[i] for i in order]
+    log = set(log)
+    figure, axes = plt.subplots(
+        1, len(fields), sharey=True, figsize=(2.6 * len(fields) + 3.0, 0.36 * len(names) + 1.6),
+        layout="constrained", squeeze=False,
+    )
+    for ax, (name, field) in zip(axes[0], fields.items()):
+        _class_boxes(ax, field, labels, classes, colors, stat=stat, log=name in log)
+    axes[0, 0].set_yticks(range(len(names)), names)
+    axes[0, 0].invert_yaxis()
     return figure
 
 
 def members_at_sites(
     fields: Mapping[str, xr.DataArray], sites: Mapping[str, int] | None = None
 ) -> Figure:
-    """Histograms of the ensemble members, one row per variable, one column per site.
+    """Histograms of the ensemble members, one row per site, one column per variable.
 
     Parameters
     ----------
@@ -357,11 +323,11 @@ def members_at_sites(
     """
     sites = config.FEATURED_SITES if sites is None else sites
     figure, axes = plt.subplots(
-        len(fields), len(sites), figsize=(3.6 * len(sites), 2.0 * len(fields)),
+        len(sites), len(fields), figsize=(3.0 * len(fields), 3.0 * len(sites)),
         layout="constrained", squeeze=False,
     )
-    for row, (name, field) in enumerate(fields.items()):
-        for column, (site_name, site) in enumerate(sites.items()):
+    for column, (name, field) in enumerate(fields.items()):
+        for row, (site_name, site) in enumerate(sites.items()):
             ax = axes[row, column]
             values = field.sel(site=site).to_numpy()
             values = values[np.isfinite(values)]
@@ -373,11 +339,10 @@ def members_at_sites(
                 ax.text(0.5, 0.5, "absent at this site", ha="center", va="center",
                         transform=ax.transAxes)
             if row == 0:
-                ax.set_title(site_name)
+                ax.set_title(textwrap.fill(_short_name(field), 18))
             if column == 0:
-                label = field.attrs.get("long_name", name).removeprefix("Initial ")
-                ax.set_ylabel(textwrap.fill(label, 22), fontsize=9)
-            ax.set_xlabel(field.attrs.get("units", ""), fontsize=9)
+                ax.set_ylabel(f"{site_name}\nmembers")
+            ax.set_xlabel(field.attrs.get("units", ""))
     return figure
 
 
@@ -398,6 +363,56 @@ def spec_table(specs: Iterable, fields: Sequence[str]) -> pd.DataFrame:
     """
     rows = {spec.name: {field: str(getattr(spec, field)) for field in fields} for spec in specs}
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def _classes_by_size(spec, labels: pd.DataFrame) -> np.ndarray:
+    """Positions of *spec*'s classes, most sites first."""
+    counts = labels["label"].value_counts().reindex(spec.labels, fill_value=0)
+    return np.argsort(-counts.to_numpy(), kind="stable")
+
+
+def _names_and_colors(spec, order: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Display names and colors of *spec*'s classes, in *order*."""
+    # A class's color is set by its position in the spec, as on the maps, so
+    # the colors are reordered with the classes.
+    names = np.asarray(_display_names(spec))[order]
+    colors = np.asarray(category_colors(len(spec.labels)))[order]
+    return names, colors
+
+
+def _class_boxes(
+    ax: Axes, field: xr.DataArray, labels: pd.DataFrame, classes: Sequence[str],
+    colors: Sequence[str], *, stat: str, log: bool,
+) -> None:
+    """Boxes of *field*'s per-site statistic, one per class, at positions 0, 1, ..."""
+    per_site = member_summary(field, stat).to_series().rename("value").rename_axis("site_id")
+    joined = labels.merge(per_site.reset_index(), on="site_id").dropna()
+    dropped = int((joined["value"] <= 0).sum()) if log else 0
+    if log:
+        joined = joined[joined["value"] > 0]
+    groups = [joined.loc[joined["label"] == label, "value"].to_numpy() for label in classes]
+    boxes = ax.boxplot(
+        groups, positions=range(len(groups)), orientation="horizontal", patch_artist=True,
+        showfliers=False, widths=0.6, medianprops={"color": "black"},
+    )
+    for patch, color in zip(boxes["boxes"], colors):
+        patch.set_facecolor(color)
+    if log:
+        ax.set_xscale("log")
+        low, high = ax.get_xlim()
+        # Ticks at 1 and 3 of each decade on a short axis; decades only on a long one.
+        subs = (1.0,) if np.log10(high / low) > 2.5 else (1.0, 3.0)
+        ax.xaxis.set_major_locator(LogLocator(subs=subs))
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}"))
+    ax.set_title(textwrap.fill(_short_name(field), 18))
+    units = field.attrs.get("units", "")
+    ax.set_xlabel(f"{units}\n{dropped} sites at or below 0 not shown" if dropped else units)
+
+
+def _short_name(field: xr.DataArray) -> str:
+    """A field's ``long_name`` without the ``Initial`` every initial condition starts with."""
+    name = field.attrs.get("long_name", field.name)
+    return name.removeprefix("Initial ").capitalize()
 
 
 def _driver_panels(data: Mapping[str, xr.DataArray], panel) -> tuple[Figure, np.ndarray]:

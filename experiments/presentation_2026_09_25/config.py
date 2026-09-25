@@ -76,6 +76,10 @@ DRIVER_SERIES_WINDOW = ("2023-07-01", "2023-07-14")
 #: into ``data/raw/drivers`` there.
 DRIVERS_SOURCE = "/projectnb/dietzelab/dongchen/anchorSites/NA_runs/ERA5_2012_2024"
 
+#: Where Dongchen's PEcAn initial condition files live on the SCC, one per site
+#: and member, as symlinked into ``data/raw/initial_conditions/files`` there.
+INITIAL_CONDITIONS_SOURCE = "/projectnb/dietzelab/dongchen/anchorSites/NA_runs/IC/IC"
+
 #: The site-labels product every by-class figure groups by.
 SITE_LABELS = "pft_16class"
 
