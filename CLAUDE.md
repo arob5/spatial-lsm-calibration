@@ -134,7 +134,7 @@ Raw variable names are not ours to choose; processed ones are.
   a processed product.
 - **Avoid abbreviations** unless they are universal. So `soil_organic_carbon`,
   not `soc`; `aboveground_biomass`, not `agb`; `standard_deviation`, not `sd`.
-  `lai` is fine, and so are `lon`/`lat`, which the canonical field convention
+  `lai` is fine, and so are `lon`/`lat`, which the field convention
   fixes.
 - The correspondence from source to processed belongs in **one explicit spec**
   in the library beside the schema, not spread across a script. See
@@ -149,9 +149,53 @@ Raw variable names are not ours to choose; processed ones are.
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
-- **The `VARIABLES` registry is keyed on processed names**, so a canonical
+- **The `VARIABLES` registry is keyed on processed names**, so a
   field's `name` is a processed name. That is what makes `validate_field()`
   usable against anything an adapter produces.
+
+### Naming in code
+
+The rules that keep a name from having to be looked up. The first four are
+the ones most often broken; the worked examples are in `parameter_vector.py`.
+
+- **A name and the thing are named differently.** A string or tuple of
+  strings is `<thing>_name` / `<thing>_names`; the things themselves are the
+  plural noun. `parameter_names` and `sipnet_parameter_names` are names;
+  `sipnet_parameters` are values. `variable` and `parameter` never mean a
+  string.
+- **A variable holding one representation of a concept says which.** The
+  parameter vector's Flat is `theta`, its Fields is `<thing>_fields`, its
+  SIPNET table is `sipnet_table`; the observation vector's Flat is `y`. A
+  pySIPNET object is named for its class (`sipnet_result`, `sipnet_output`,
+  `sipnet_parameters`); the labeled xarray of a run's output is
+  `model_output`. Nobody should have to ask whether a value is a
+  `ParameterVector`, a `CalibrationParameter` or a SIPNET parameter.
+- **`sipnet_` prefixes anything in pySIPNET's vocabulary**: names, values,
+  objects. The bare word or `calibration_` is this repository's vocabulary.
+  `pysipnet_` is not used: this repository reaches SIPNET only through
+  pySIPNET, so a second prefix would have no second referent.
+- **An `xr.Dataset` when the variables share one grid, a
+  `dict[str, DataArray]` when they do not.** One run's or one stack's model
+  output shares a time axis and is a Dataset; the constraint products have
+  three time structures and are a dict. A dict is named for what it holds and
+  its key (`observed_values`, keyed by product name).
+- **A field is one thing.** An xarray object whose dims are a subset of
+  `(member, site, time)`, with `lon`/`lat` on `site` and `units`/`long_name`
+  in its attributes. The word "canonical" is not used with it; `fields.py`
+  holds the generic operations on fields and nothing else.
+- **A callable class is an imperative verb** (`SelectTimestep`,
+  `ComputeLeafAreaIndex`); a protocol or a record is a noun
+  (`ObservationOperator`, `Observation`).
+- **No abbreviations** beyond the universal ones, as above:
+  `constraint_standard_deviations`, not `constraint_sds`. Keyword names that
+  are pandas' or pySIPNET's (`how`, `freq`) stay, because matching
+  `pysipnet.resample(how=)` is worth more than spelling them out.
+- **An argument is named for what it is for**, never for where it sits: not
+  `at`, not `data`, not `x`.
+
+Existing code is brought into line by mechanical rename PRs, one module at a
+time, with the tests renamed alongside; `logs/2026-09-24_Naming
+Conventions.md` in the vault lists what still changes.
 
 ### File organization
 
@@ -414,7 +458,7 @@ src/sipnet_calibration/
   projections/            # the stored definition, generated from the dataclass
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
                           # read_raw(), build_constraint(), load_constraint(),
-                          # constraint_fields() -> canonical per-product view
+                          # constraint_fields() -> one field per product
   conventions.py          # CF_CONVENTIONS and data_root(): the settings every
                           # product has to agree on
   initial_conditions/     # one module per artifact; __init__ re-exports them all
@@ -425,7 +469,7 @@ src/sipnet_calibration/
     raw.py                # build_raw(), raw_encoding(), read_raw()
     processed.py          # build_initial_conditions(), load_initial_conditions(),
                           # netcdf_encoding(), initial_condition_fields()
-    sipnet_parameters.py  # to_pysipnet_initial_conditions() and its table form
+    sipnet_parameters.py  # to_sipnet_initial_conditions() and its table form
   drivers.py              # load_drivers(): raw .clim files read by pySIPNET's
                           # ClimateDrivers, stacked into (member, site, time) on
                           # pySIPNET's axis; no processed file exists
@@ -438,11 +482,11 @@ src/sipnet_calibration/
                           # varies_by, SIPNETMap) and FixedParameters; select(),
                           # sample/log_prior/gaussian_prior on Flat (J, D); three
                           # value representations with named conversions:
-                          # fields() <-> flat() (Fields: Dataset of canonical
+                          # fields() <-> flat() (Fields: Dataset of
                           # fields on (member, site), attrs["space"]), and
                           # sipnet_table() -> sipnet_overrides() / pyens_grids();
                           # example_parameter_vector()
-  fields.py               # canonical field convention; from_sipnet_output(),
+  fields.py               # field convention; from_sipnet_output(),
                           # stack_sipnet_outputs() over SIPNETOutput.select,
                           # site_lookup(); validate_field() and the adapters
                           # for the other sources (issue #6)
@@ -474,7 +518,7 @@ experiments/<task>/       # config.py (source of truth) + plots.py (L4 reports)
 data/raw/                 # never edited; raw/sites/, raw/constraints/,
                           # raw/initial_conditions/, raw/site_labels/,
                           # raw/covariates/ and raw/natural_earth/ are tracked
-data/processed/           # ingest output == canonical plotting input; untracked;
+data/processed/           # ingest output == the plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
 tests/
 ```
@@ -516,7 +560,7 @@ plotting code. The load-bearing rules:
   weights means by step length and refuses a method the kind does not support
   (a pool is not additive; a per-step total is not averaged until it is a
   rate). `obs_ops.aggregate_time(field, freq, how=None)` is that operation for
-  a canonical field — a field may have `member` and `site` dims, which
+  a field — a field may have `member` and `site` dims, which
   `resample` does not reduce over — and it adds one thing: with no `how` it
   takes **the method that leaves the variable the kind it already is**, read
   off pySIPNET's `RESAMPLED_KIND` rather than written down. A total sums, a

@@ -410,9 +410,9 @@ def test_an_error_field_without_show_points_is_rejected(ax, field_time):
 
 def test_a_misaligned_error_field_is_rejected(ax, field_time):
     """An error field on a different time axis raises rather than aligning."""
-    from conftest import make_canonical_field
+    from conftest import make_field
 
-    other = make_canonical_field(("time",), n_time=field_time.sizes["time"] + 3)
+    other = make_field(("time",), n_time=field_time.sizes["time"] + 3)
     with pytest.raises(ValueError, match="not aligned"):
         plot_time_series(field_time, ax=ax, show="points", variance=other)
 

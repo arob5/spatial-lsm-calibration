@@ -7,7 +7,7 @@ window. The plotting tests assert on artist data and properties --
 limits -- and never on rendered images, which are brittle across matplotlib
 versions and say nothing about why a test failed.
 
-The synthetic fixtures build canonical fields at each subset of the
+The synthetic fixtures build fields at each subset of the
 ``(member, site, time)`` dimensions, with a real ``DatetimeIndex`` on
 ``time``, ``lon``/``lat`` as non-dimension coordinates on ``site``, and
 ``units``/``long_name`` in ``attrs``.
@@ -57,20 +57,20 @@ SYNTHETIC_LON = (-24.5625, -78.5625)
 SYNTHETIC_LAT = (82.5458, 44.0654)
 
 
-def make_canonical_field(
+def make_field(
     dims: tuple[str, ...],
     *,
     n_time: int = 24,
     n_member: int = 3,
     seed: int = 0,
 ) -> xr.DataArray:
-    """A synthetic canonical field with exactly *dims*, in canonical order.
+    """A synthetic field with exactly *dims*, in the order fields are written.
 
     Parameters
     ----------
     dims:
         Any subset of ``("member", "site", "time")``, in any order; the result
-        is transposed into canonical order.
+        is transposed into that order.
     n_time:
         Length of the ``time`` dim, 3-hourly from 2012-01-01. Ignored when
         ``time`` is not in *dims*.
@@ -87,7 +87,7 @@ def make_canonical_field(
     """
     unknown = set(dims) - {"member", "site", "time"}
     if unknown:
-        raise ValueError(f"not canonical dims: {sorted(unknown)}")
+        raise ValueError(f"not field dims: {sorted(unknown)}")
 
     sizes = {"member": n_member, "site": len(SYNTHETIC_SITES), "time": n_time}
     order = tuple(d for d in ("member", "site", "time") if d in dims)
@@ -122,31 +122,31 @@ def ax():
 @pytest.fixture
 def field_time() -> xr.DataArray:
     """``(time,)`` -- one deterministic run."""
-    return make_canonical_field(("time",))
+    return make_field(("time",))
 
 
 @pytest.fixture
 def field_member_time() -> xr.DataArray:
     """``(member, time)`` -- an ensemble at one site."""
-    return make_canonical_field(("member", "time"))
+    return make_field(("member", "time"))
 
 
 @pytest.fixture
 def field_site_time() -> xr.DataArray:
     """``(site, time)`` -- one curve per site, the sample dim being ``site``."""
-    return make_canonical_field(("site", "time"))
+    return make_field(("site", "time"))
 
 
 @pytest.fixture
 def field_member_site_time() -> xr.DataArray:
     """``(member, site, time)`` -- two sample dims at once."""
-    return make_canonical_field(("member", "site", "time"))
+    return make_field(("member", "site", "time"))
 
 
 @pytest.fixture
 def field_member_site() -> xr.DataArray:
     """``(member, site)`` -- no ``time``, so no series panel can draw it."""
-    return make_canonical_field(("member", "site"))
+    return make_field(("member", "site"))
 
 
 @pytest.fixture
@@ -157,7 +157,7 @@ def field_with_gaps() -> xr.DataArray:
     ``NaN`` and the band gaps; timestep 9 is ``NaN`` for the first member
     only, so the quantiles there are finite and taken over the rest.
     """
-    field = make_canonical_field(("member", "time"))
+    field = make_field(("member", "time"))
     values = field.values.copy()
     values[:, 5] = np.nan
     values[0, 9] = np.nan
@@ -274,7 +274,7 @@ def real_constraint_fields() -> tuple[dict, dict]:
     constraints = pytest.importorskip("sipnet_calibration.constraints")
     try:
         means = constraints.constraint_fields()
-        sds = constraints.constraint_sds()
+        sds = constraints.constraint_standard_deviations()
     except FileNotFoundError as error:
         pytest.skip(f"constraint products not available in this working copy: {error}")
     return means, {name: sd**2 for name, sd in sds.items()}

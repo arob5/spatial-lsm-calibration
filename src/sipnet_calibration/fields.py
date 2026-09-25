@@ -37,7 +37,7 @@ What it reads
 
 The form
 --------
-A **canonical field** is an ``xarray.DataArray`` holding one variable, with
+A **field** is an ``xarray.DataArray`` holding one variable, with
 
 * dimensions drawn from ``member``, ``site`` and ``time``, in any combination;
 * ``lon`` and ``lat`` as non-dimension coordinates on ``site``, whenever
@@ -124,7 +124,7 @@ rather than recomputed.
 Functions
 ---------
 :func:`from_sipnet_output`
-    One run's chosen variables as canonical fields, optionally labeled with a
+    One run's chosen variables as fields, optionally labeled with a
     site and a member.
 :func:`stack_sipnet_outputs`
     Many runs, each labeled ``(site, member)``, stacked into
@@ -231,7 +231,7 @@ MEMBER_DIM = "member"
 SITE_DIM = "site"
 TIME_DIM = TIME_DIMENSION
 
-#: The dimensions a canonical field may have, in canonical order.
+#: The dimensions a field may have, in the order they are written.
 CANONICAL_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE_DIM, TIME_DIM)
 
 #: pySIPNET's time coordinates, which a model field and a driver field both
@@ -266,20 +266,20 @@ def site_lookup(sites: pd.DataFrame) -> pd.DataFrame:
 
 def from_sipnet_output(
     output: SIPNETResult | SIPNETOutput,
-    variables: str | Sequence[str],
+    output_variable_names: str | Sequence[str],
     *,
     site: int | None = None,
     member: int | None = None,
     sites: pd.DataFrame | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The named variables of one SIPNET run, as canonical fields.
+    """The named variables of one SIPNET run, as fields.
 
     Parameters
     ----------
     output:
         A :class:`pysipnet.result.SIPNETResult` or the
         :class:`pysipnet.output.SIPNETOutput` inside one.
-    variables:
+    output_variable_names:
         One name, or a sequence of them. pySIPNET's names and aliases are both
         accepted (``"nee"``, ``"NEE"`` and ``"net_ecosystem_exchange"`` are the
         same variable); the keys of the result are always the registry name.
@@ -312,7 +312,7 @@ def from_sipnet_output(
         If a variable is not a SIPNET output variable or alias, or if *site* is
         not in the site table.
     ValueError
-        If *variables* is empty, unordered, or not a sequence of names; if the
+        If *output_variable_names* is empty, unordered, or not a sequence of names; if the
         run wrote no rows, which is what a failed run leaves; or if *member* or
         *site* is not a whole number in range.
     TypeError
@@ -326,7 +326,7 @@ def from_sipnet_output(
     module's Notes for why ``.xarray`` and ``.pandas`` are never touched.
     """
     source = _output_of(output)
-    names = _resolved_names(variables)
+    names = _resolved_names(output_variable_names)
     dataset = source.select(names)
     if TIME_DIM not in dataset.coords or dataset.sizes.get(TIME_DIM, 0) == 0:
         raise ValueError(
@@ -356,7 +356,7 @@ def from_sipnet_output(
 
 def stack_sipnet_outputs(
     runs: Mapping[tuple[int, int], SIPNETResult | SIPNETOutput],
-    variables: str | Sequence[str],
+    output_variable_names: str | Sequence[str],
     *,
     sites: pd.DataFrame | None = None,
 ) -> dict[str, xr.DataArray]:
@@ -369,7 +369,7 @@ def stack_sipnet_outputs(
         ``site`` is the 1-8000 identifier and ``member`` the 0-based ensemble
         index. The pairs need not form a full rectangle; a pair left out reads
         as ``NaN``.
-    variables:
+    output_variable_names:
         As for :func:`from_sipnet_output`.
     sites:
         The site table. Read once from disk when omitted.
@@ -411,7 +411,7 @@ def stack_sipnet_outputs(
     if not runs:
         raise ValueError("runs is empty; there is nothing to stack.")
 
-    names = _resolved_names(variables)
+    names = _resolved_names(output_variable_names)
     table = site_lookup(sites if sites is not None else load_sites())
     keys = sorted(_run_key(key) for key in runs)
 
@@ -453,28 +453,29 @@ def _output_of(output: SIPNETResult | SIPNETOutput) -> SIPNETOutput:
     )
 
 
-def _resolved_names(variables: str | Sequence[str]) -> list[str]:
-    """Requested variables as pySIPNET registry names, in order, without repeats."""
+def _resolved_names(output_variable_names: str | Sequence[str]) -> list[str]:
+    """Requested variable names as pySIPNET registry names, in order, without repeats."""
     from pysipnet.variables import resolve_output_variable
 
-    if isinstance(variables, str):
-        requested = [variables]
-    elif isinstance(variables, (set, frozenset)):
+    if isinstance(output_variable_names, str):
+        requested = [output_variable_names]
+    elif isinstance(output_variable_names, (set, frozenset)):
         raise ValueError(
-            f"variables was given as a {type(variables).__name__}, which has no "
-            "order to keep. Pass a list or a tuple."
+            f"output_variable_names was given as a {type(output_variable_names).__name__}, "
+            "which has no order to keep. Pass a list or a tuple."
         )
     else:
         try:
-            requested = list(variables)
+            requested = list(output_variable_names)
         except TypeError:
             raise ValueError(
-                f"variables must be a name or a sequence of names, got {variables!r}."
+                "output_variable_names must be a name or a sequence of names, got "
+                f"{output_variable_names!r}."
             ) from None
     if not requested:
         raise ValueError(
             "No variables were asked for. Name at least one SIPNET output "
-            "variable, e.g. variables=['nee']."
+            "variable, e.g. output_variable_names=['nee']."
         )
     names: list[str] = []
     for item in requested:

@@ -39,7 +39,7 @@ from sipnet_calibration.constraints import (
     build_constraint,
     constraint_fields,
     constraint_path,
-    constraint_sds,
+    constraint_standard_deviations,
     describe,
     load_constraint,
     netcdf_encoding,
@@ -499,7 +499,7 @@ def test_constraint_fields_and_sds_select_sites_in_the_order_given(
     assert field.attrs["units"] == "Mg ha-1"
     assert field.sel(site=1).values.tolist() == [10.0, 11.0]
 
-    sds = constraint_sds([ANNUAL.name], sites=[1], directory=out_dir)[ANNUAL.name]
+    sds = constraint_standard_deviations([ANNUAL.name], sites=[1], directory=out_dir)[ANNUAL.name]
     assert sds.values.tolist() == [[2.0, 0.0]]
     assert "standard deviation" in sds.attrs["long_name"]
 
