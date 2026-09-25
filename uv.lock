@@ -2101,6 +2101,12 @@ name = "pyens"
 version = "0.1.0"
 source = { git = "https://github.com/arob5/PyEns.git?branch=main#6f02c6c2bc472b623874abf287da796c63e8bc41" }
 
+[package.optional-dependencies]
+xarray = [
+    { name = "numpy" },
+    { name = "xarray" },
+]
+
 [[package]]
 name = "pygments"
 version = "2.20.0"
@@ -2620,7 +2626,7 @@ dependencies = [
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyeki" },
-    { name = "pyens" },
+    { name = "pyens", extra = ["xarray"] },
     { name = "pyproj" },
     { name = "pyshp" },
     { name = "pysipnet" },
@@ -2650,7 +2656,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.24" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyeki", git = "https://github.com/TARPS-group/pyEKI.git?branch=main" },
-    { name = "pyens", git = "https://github.com/arob5/PyEns.git?branch=main" },
+    { name = "pyens", extras = ["xarray"], git = "https://github.com/arob5/PyEns.git?branch=main" },
     { name = "pyproj", specifier = ">=3.7.1" },
     { name = "pyshp", specifier = ">=3.1" },
     { name = "pysipnet", git = "https://github.com/TARPS-group/pySIPNET.git?branch=main" },

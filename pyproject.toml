@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pysipnet",
-    "pyens",
+    # The xarray extra provides pyens.xarray, which builds PyEns field specs
+    # from xarray objects.
+    "pyens[xarray]",
     "pyeki",
     "numpy>=1.24",
     "pandas>=2.0",
