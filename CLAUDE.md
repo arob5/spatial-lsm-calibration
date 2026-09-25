@@ -150,13 +150,13 @@ Raw variable names are not ours to choose; processed ones are.
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
 - **The `VARIABLES` registry is keyed on processed names**, so a
-  field's `name` is a processed name. That is what makes `validate_field()`
-  usable against anything an adapter produces.
+  field's `name` is a processed name. That is what will make `validate_field()`
+  (owed, issue #6) usable against anything an adapter produces.
 
 ### Naming in code
 
 The rules that keep a name from having to be looked up. The first four are
-the ones most often broken; the worked examples are in `parameter_vector.py`.
+the ones most often broken.
 
 - **A name and the thing are named differently.** A string or tuple of
   strings is `<thing>_name` / `<thing>_names`; the things themselves are the
@@ -179,17 +179,18 @@ the ones most often broken; the worked examples are in `parameter_vector.py`.
   output shares a time axis and is a Dataset; the constraint products have
   three time structures and are a dict. A dict is named for what it holds and
   its key (`observed_values`, keyed by product name).
-- **A field is one thing.** An xarray object whose dims are a subset of
-  `(member, site, time)`, with `lon`/`lat` on `site` and `units`/`long_name`
+- **A field is one thing.** An `xr.DataArray` holding one variable, whose
+  dims are a subset of `(member, site, time)`, with `lon`/`lat` on `site` and `units`/`long_name`
   in its attributes. The word "canonical" is not used with it; `fields.py`
   holds the generic operations on fields and nothing else.
 - **A callable class is an imperative verb** (`SelectTimestep`,
   `ComputeLeafAreaIndex`); a protocol or a record is a noun
   (`ObservationOperator`, `Observation`).
 - **No abbreviations** beyond the universal ones, as above:
-  `constraint_standard_deviations`, not `constraint_sds`. Keyword names that
-  are pandas' or pySIPNET's (`how`, `freq`) stay, because matching
-  `pysipnet.resample(how=)` is worth more than spelling them out.
+  `constraint_standard_deviations`, not `constraint_sds`. Names that are
+  pandas', xarray's or pySIPNET's own (`how`, `freq`, `coords`, `dims`) stay,
+  because matching `pysipnet.resample(how=)` or `DataArray.coords` is worth
+  more than spelling them out.
 - **An argument is named for what it is for**, never for where it sits: not
   `at`, not `data`, not `x`.
 
@@ -541,7 +542,7 @@ Conventions:
 Read `logs/2026-08-28_Plotting Design Spec.md` in the vault before writing
 plotting code. The load-bearing rules:
 
-- **Canonical field**: an `xr.DataArray` with dims a *subset* of
+- **Field**: an `xr.DataArray` with dims a *subset* of
   `(member, site, time)`, `lon`/`lat` as non-dimension coords on `site`, and
   units/`long_name` in `attrs`. It is a **convention plus `validate_field()`**,
   not a wrapper class — a wrapper would fight xarray's `.sel`/`.resample`/

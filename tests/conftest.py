@@ -274,10 +274,12 @@ def real_constraint_fields() -> tuple[dict, dict]:
     constraints = pytest.importorskip("sipnet_calibration.constraints")
     try:
         means = constraints.constraint_fields()
-        sds = constraints.constraint_standard_deviations()
+        standard_deviations = constraints.constraint_standard_deviations()
     except FileNotFoundError as error:
         pytest.skip(f"constraint products not available in this working copy: {error}")
-    return means, {name: sd**2 for name, sd in sds.items()}
+    return means, {
+        name: standard_deviation**2 for name, standard_deviation in standard_deviations.items()
+    }
 
 
 # ── real SIPNET output ────────────────────────────────────────────────────────

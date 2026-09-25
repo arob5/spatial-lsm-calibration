@@ -217,7 +217,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pysipnet.result import SIPNETResult
 
 __all__ = [
-    "CANONICAL_DIMS",
+    "FIELD_DIMS",
     "MEMBER_DIM",
     "TIME_COORDS",
     "SITE_DIM",
@@ -232,7 +232,7 @@ SITE_DIM = "site"
 TIME_DIM = TIME_DIMENSION
 
 #: The dimensions a field may have, in the order they are written.
-CANONICAL_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE_DIM, TIME_DIM)
+FIELD_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE_DIM, TIME_DIM)
 
 #: pySIPNET's time coordinates, which a model field and a driver field both
 #: keep. ``time`` is the end of the step and ``time_step_start`` its start, so
@@ -429,7 +429,7 @@ def stack_sipnet_outputs(
         by_member = [
             _concat(fields, SITE_DIM) for _, fields in sorted(collected[name].items())
         ]
-        field = _concat(by_member, MEMBER_DIM).transpose(*CANONICAL_DIMS)
+        field = _concat(by_member, MEMBER_DIM).transpose(*FIELD_DIMS)
         stacked[name] = field.assign_coords(_site_locations(field[SITE_DIM].values, table))
     return stacked
 

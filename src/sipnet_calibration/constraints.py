@@ -166,8 +166,8 @@ Usage
     fields["soilgrids_soil_organic_carbon"].dims          # ('site',)
     fields["landtrendr_aboveground_biomass"].attrs["units"]   # 'Mg ha-1'
 
-    sds = constraint_standard_deviations(["modis_leaf_area_index"])
-    variance = sds["modis_leaf_area_index"] ** 2
+    standard_deviations = constraint_standard_deviations(["modis_leaf_area_index"])
+    variance = standard_deviations["modis_leaf_area_index"] ** 2
 
     print(describe(resolve_constraint("smap_soil_moisture")))
 """

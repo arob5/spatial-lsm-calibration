@@ -20,7 +20,7 @@ import pytest
 import xarray as xr
 
 from sipnet_calibration.fields import (
-    CANONICAL_DIMS,
+    FIELD_DIMS,
     TIME_COORDS,
     from_sipnet_output,
     site_lookup,
@@ -166,11 +166,11 @@ def runs(niwot_output):
 
 
 class TestStackSipnetOutputs:
-    def test_the_dims_are_canonical_and_ascending(self, runs, sites_table):
+    def test_the_dims_are_the_field_order_and_ascending(self, runs, sites_table):
         field = stack_sipnet_outputs(runs, "nee", sites=sites_table)[
             "net_ecosystem_exchange"
         ]
-        assert field.dims == CANONICAL_DIMS
+        assert field.dims == FIELD_DIMS
         assert list(field["site"].values) == [1, 27]
         assert list(field["member"].values) == [0, 1]
 
@@ -197,7 +197,7 @@ class TestStackSipnetOutputs:
         field = stack_sipnet_outputs({(1, 0): niwot_output}, "nee", sites=sites_table)[
             "net_ecosystem_exchange"
         ]
-        assert field.dims == CANONICAL_DIMS
+        assert field.dims == FIELD_DIMS
         assert field.sizes["member"] == 1 and field.sizes["site"] == 1
         assert field["lon"].dims == ("site",)
 

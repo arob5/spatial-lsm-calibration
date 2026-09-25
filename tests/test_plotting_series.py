@@ -92,7 +92,7 @@ def test_stacking_is_not_a_quantile_of_quantiles(ax, field_member_site_time):
 def test_the_stored_dimension_order_does_not_matter(ax):
     """A field stored as ``(time, member)`` still gives one curve per member.
 
-    Nothing upstream promises canonical dimension order, and reshaping without
+    Nothing upstream promises the field dimension order, and reshaping without
     transposing first scrambles members across timesteps: it produces a
     plausible figure of the wrong data. Written because removing the transpose
     in ``_stacked_samples`` left every other test passing.
@@ -126,7 +126,7 @@ def test_a_field_without_time_is_rejected(ax, field_member_site):
     assert "member" in str(raised.value)
 
 
-def test_a_non_canonical_dim_is_rejected(ax):
+def test_a_dim_outside_the_field_convention_is_rejected(ax):
     """A ``variable`` dim raises rather than being fanned over."""
     data = xr.DataArray(
         np.zeros((3, 4)),

@@ -2508,7 +2508,7 @@ def _member_coordinate(n_members: int) -> np.ndarray:
 
 
 def _member_labels(values: Any) -> np.ndarray:
-    """Member labels carried from Fields, as the canonical ``int16``."""
+    """Member labels carried from Fields, as the field convention's ``int16``."""
     check_member_labels_are_usable(values)
     return np.asarray(values).astype(np.int16)
 
@@ -3164,7 +3164,7 @@ def check_member_labels_are_usable(values: Any) -> None:
     if not (fits and len(set(labels.tolist())) == labels.size):
         raise ValueError(
             "Fields member labels must be distinct integers from 0 to "
-            f"{np.iinfo(np.int16).max}, the canonical member coordinate; got {labels.tolist()[:10]}."
+            f"{np.iinfo(np.int16).max}, the field convention's member coordinate; got {labels.tolist()[:10]}."
         )
 
 
