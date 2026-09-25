@@ -472,6 +472,23 @@ M:\ \pi \ &\mapsto\ \big(\texttt{leafAllocation},\ \texttt{woodAllocation},\ \te
 \end{aligned}
 $$
 
-SIPNET recomputes coarse root as $1 - (\pi_1 + \pi_2 + \pi_3)$ and **exits if it
-is not positive**; keeping $\pi_4$ in $\vartheta$ means no draw can reach that
-exit.
+SIPNET recomputes coarse root as $1 - (\pi_1 + \pi_2 + \pi_3)$ and exits if it
+is not positive; keeping $\pi_4$ in $\vartheta$ ensures we don't have to wait for 
+SIPNET to run to catch this error.
+
+# Other data issues
+
+## Other data issues
+
+**NEE**
+
+- Potential timezone issue for NEE: timestamps to UTC through a time zone with 
+daylight saving: values sit 3 to 5 hours from their labels
+
+**Soil texture** (the input for SIPNET's water holding capacity, `soilWHC`; not
+used yet)
+
+- 307 of the 8000 sites have no files.
+- PEcAn sets `soilWHC` to porosity integrated over 2 m: 73 to 101 cm, against
+  12 cm in SIPNET's template and above the template's own upper bound of 36 cm.
+- Issues I have noted in Slack regarding soil physics workflow
