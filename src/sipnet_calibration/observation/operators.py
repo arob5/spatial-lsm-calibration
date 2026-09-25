@@ -232,7 +232,9 @@ class ComputeLeafAreaIndex:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         leaf_carbon = select_observed_sites(model_output["leaf_carbon"], observed_values)
-        per_area = extract_sipnet_parameter_at_coords(sipnet_parameters, "leaf_carbon_per_area", leaf_carbon)
+        per_area = extract_sipnet_parameter_at_coords(
+            sipnet_parameters, "leaf_carbon_per_area", leaf_carbon
+        )
         lai = divide(leaf_carbon, per_area)
         lai.name = "leaf_area_index"
         return select_timestep_at(lai, observed_values[TIME])
@@ -248,58 +250,60 @@ DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = {
 
 
 def select_observed_sites(
-    field: xr.DataArray, observed_values: xr.DataArray
+    source_field: xr.DataArray, target_field: xr.DataArray
 ) -> xr.DataArray:
-    """Restrict a field to the sites an observation observes.
+    """Restrict a field to the sites another field is on.
 
-    The operators call this first on an output variable, so that everything
-    after it works on the observation's sites, in the observation's order. A
-    field with a ``site`` dimension is selected down to those sites; a field
-    from one run, carrying ``site`` as a scalar coordinate, is returned
-    unchanged when it is the observation's one site.
+    The operators call this first, with an output variable as the source and
+    the observed values as the target, so that everything after it works on
+    the observation's sites, in the observation's order. A source with a
+    ``site`` dimension is selected down to the target's sites; a source from
+    one run, carrying ``site`` as a scalar coordinate, is returned unchanged
+    when it is the target's one site. Only the two fields' ``site``
+    coordinates are read.
 
     Parameters
     ----------
-    field:
-        A field with site labels: typically one output variable of a model
+    source_field:
+        The field to restrict: typically one output variable of a model
         output, ``model_output[name]``, on ``(time,)`` with a scalar ``site``
         coordinate for one run, or on ``(site, time)`` or
         ``(member, site, time)`` for a stack. Its ``site`` labels are the
         1-8000 site ids.
-    observed_values:
-        The observed array of one product, ``(site[, time])``. Only its
-        ``site`` coordinate is read.
+    target_field:
+        The field whose sites the result is on: typically the observed values
+        of one product, ``(site[, time])``.
 
     Returns
     -------
     xarray.DataArray
-        *field* at the observed sites, in the order
-        *observed_values* lists them, with every other dimension, coordinate
-        and attribute unchanged. For a one-run field, *field*
+        *source_field* at the target's sites, in the order
+        *target_field* lists them, with every other dimension, coordinate
+        and attribute unchanged. For a one-run source, *source_field*
         itself.
 
     Raises
     ------
     ValueError
-        If *observed_values* lists a site twice; if *field* lacks a
-        site the observation observes; if *field* is one run at a
+        If *target_field* lists a site twice; if *source_field* lacks a
+        site the observation observes; if *source_field* is one run at a
         site other than the observation's one site, or the observation
-        observes several sites; or if *field* carries no ``site``
+        observes several sites; or if *source_field* carries no ``site``
         coordinate at all.
 
     Notes
     -----
-    A field with no ``site`` is refused rather than assumed to be the
+    A source with no ``site`` is refused rather than assumed to be the
     observed site: an unlabeled run could be any site, and matching it by
     position would be a guess. :func:`sipnet_calibration.fields.label_run`
     is what gives a run its site.
     """
-    wanted = np.asarray(observed_values[SITE].values).ravel()
-    who = _name_of(observed_values)
+    wanted = np.asarray(target_field[SITE].values).ravel()
+    who = _name_of(target_field)
     if len(set(wanted.tolist())) != wanted.size:
         raise ValueError(f"{who} repeats a site; an observation names each site once.")
-    if SITE in field.dims:
-        have = set(field[SITE].values.tolist())
+    if SITE in source_field.dims:
+        have = set(source_field[SITE].values.tolist())
         missing = [int(s) for s in wanted if s not in have]
         if missing:
             raise ValueError(
@@ -307,15 +311,15 @@ def select_observed_sites(
                 "run the model at every observed site, or select the observations to "
                 "the sites that were run."
             )
-        return field.sel({SITE: wanted})
-    if SITE in field.coords:
-        site = int(field[SITE].values)
+        return source_field.sel({SITE: wanted})
+    if SITE in source_field.coords:
+        site = int(source_field[SITE].values)
         if wanted.size != 1 or int(wanted[0]) != site:
             raise ValueError(
                 f"the model output is one run at site {site}, and {who} observes "
                 f"site(s) {wanted.tolist()[:10]}; select the observation to that one site."
             )
-        return field
+        return source_field
     raise ValueError(
         f"the model output carries no {SITE!r} coordinate, so it cannot be matched to "
         f"the sites {who} observes; label the run with fields.label_run(site=...)."

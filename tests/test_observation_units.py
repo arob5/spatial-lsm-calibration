@@ -209,3 +209,15 @@ class TestKindAlgebra:
         nee = nee.assign_coords(time_step_length=("time", lengths))
         days = step_length(nee)
         assert np.isnan(days.values[5]) and np.isfinite(days.values[4])
+
+
+class TestConstituentLeadsTheUnits:
+    """pySIPNET reads a constituent as qualifying the first unit token."""
+
+    def test_a_product_puts_the_constituents_unit_first_in_either_order(self, niwot):
+        nee = niwot["net_ecosystem_exchange"]
+        per_day = _parameter(1.0, "d-1", constituent="")
+        for product in (multiply(nee, per_day), multiply(per_day, nee)):
+            assert product.attrs["units"] == "g m-2 d-1"
+            converted = convert_dataarray_units(product, to_units="umol m-2 s-1", to_constituent="CO2")
+            assert converted.attrs["constituent"] == "CO2"

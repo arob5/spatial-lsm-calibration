@@ -71,34 +71,44 @@ _TOKEN = re.compile(r"^([A-Za-z]+)(-?\d+)?$")
 
 def multiply(a: Any, b: Any) -> xr.DataArray:
     """``a * b`` with ``units``, ``constituent`` and ``kind`` carried through."""
-    ua, ca, ka = _describe(a, "multiply")
-    ub, cb, kb = _describe(b, "multiply")
+    ua, ca, ka = _unit_attrs_of(a, "multiply")
+    ub, cb, kb = _unit_attrs_of(b, "multiply")
     kind = _product_kind(ka, ua, kb, ub, "*")
-    units = _combine_units(ua, ub, +1)
     constituent = _product_constituent(ca, cb)
-    return _result(_value(a) * _value(b), units, constituent, kind, a, b, "*")
+    # pySIPNET reads a constituent as qualifying the first unit token, so the
+    # operand that carries it leads the product's unit string.
+    units = _combine_units(ub, ua, +1) if cb and not ca else _combine_units(ua, ub, +1)
+    return _labeled_result(
+        _operand_values(a) * _operand_values(b), units, constituent, kind, a, b, "*"
+    )
 
 
 def divide(a: Any, b: Any) -> xr.DataArray:
     """``a / b`` with ``units``, ``constituent`` and ``kind`` carried through."""
-    ua, ca, ka = _describe(a, "divide")
-    ub, cb, kb = _describe(b, "divide")
+    ua, ca, ka = _unit_attrs_of(a, "divide")
+    ub, cb, kb = _unit_attrs_of(b, "divide")
     kind = _product_kind(ka, ua, kb, ub, "/")
     units = _combine_units(ua, ub, -1)
     constituent = _quotient_constituent(ca, cb)
-    return _result(_value(a) / _value(b), units, constituent, kind, a, b, "/")
+    return _labeled_result(
+        _operand_values(a) / _operand_values(b), units, constituent, kind, a, b, "/"
+    )
 
 
 def add(a: Any, b: Any) -> xr.DataArray:
     """``a + b``; the operands must agree in units, constituent and kind."""
-    units, constituent, kind = _same_description(a, b, "add")
-    return _result(_value(a) + _value(b), units, constituent, kind, a, b, "+")
+    units, constituent, kind = _shared_unit_attrs(a, b, "add")
+    return _labeled_result(
+        _operand_values(a) + _operand_values(b), units, constituent, kind, a, b, "+"
+    )
 
 
 def subtract(a: Any, b: Any) -> xr.DataArray:
     """``a - b``; the operands must agree in units, constituent and kind."""
-    units, constituent, kind = _same_description(a, b, "subtract")
-    return _result(_value(a) - _value(b), units, constituent, kind, a, b, "-")
+    units, constituent, kind = _shared_unit_attrs(a, b, "subtract")
+    return _labeled_result(
+        _operand_values(a) - _operand_values(b), units, constituent, kind, a, b, "-"
+    )
 
 
 def step_length(array: xr.DataArray, units: str = "d") -> xr.DataArray:
@@ -131,12 +141,13 @@ def step_length(array: xr.DataArray, units: str = "d") -> xr.DataArray:
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
-def _value(operand: Any) -> Any:
+def _operand_values(operand: Any) -> Any:
+    """An operand as xarray arithmetic takes it: the array itself, or a float."""
     return operand if isinstance(operand, xr.DataArray) else float(operand)
 
 
-def _describe(operand: Any, what: str) -> tuple[str, str, VariableKind | None]:
-    """The ``(units, constituent, kind)`` an operand declares."""
+def _unit_attrs_of(operand: Any, what: str) -> tuple[str, str, VariableKind | None]:
+    """The ``(units, constituent, kind)`` an operand declares; ``("1", "", None)`` for a number."""
     if isinstance(operand, xr.DataArray):
         units = operand.attrs.get("units")
         if not isinstance(units, str):
@@ -158,7 +169,8 @@ def _describe(operand: Any, what: str) -> tuple[str, str, VariableKind | None]:
     return "1", "", None
 
 
-def _tokens(units: str) -> dict[str, int]:
+def _exponents_by_symbol(units: str) -> dict[str, int]:
+    """A UDUNITS string as ``{symbol: exponent}``, in the order the symbols appear."""
     exponents: dict[str, int] = {}
     for token in units.split():
         if token == "1":
@@ -172,8 +184,9 @@ def _tokens(units: str) -> dict[str, int]:
 
 
 def _combine_units(ua: str, ub: str, sign: int) -> str:
-    exponents = _tokens(ua)
-    for symbol, exponent in _tokens(ub).items():
+    """*ua* times *ub* (``sign=+1``) or over it (``sign=-1``), *ua*'s symbols first."""
+    exponents = _exponents_by_symbol(ua)
+    for symbol, exponent in _exponents_by_symbol(ub).items():
         exponents[symbol] = exponents.get(symbol, 0) + sign * exponent
     parts = [
         symbol if exponent == 1 else f"{symbol}{exponent}"
@@ -261,9 +274,10 @@ def _product_kind(
     )
 
 
-def _same_description(a: Any, b: Any, what: str) -> tuple[str, str, VariableKind | None]:
-    ua, ca, ka = _describe(a, what)
-    ub, cb, kb = _describe(b, what)
+def _shared_unit_attrs(a: Any, b: Any, what: str) -> tuple[str, str, VariableKind | None]:
+    """The ``(units, constituent, kind)`` two operands share, raising if they differ."""
+    ua, ca, ka = _unit_attrs_of(a, what)
+    ub, cb, kb = _unit_attrs_of(b, what)
     if ua != ub or ca != cb or ka != kb:
         raise ValueError(
             f"{what} needs operands that agree in units, constituent and kind; got "
@@ -273,13 +287,14 @@ def _same_description(a: Any, b: Any, what: str) -> tuple[str, str, VariableKind
     return ua, ca, ka
 
 
-def _name(operand: Any) -> str:
+def _operand_label(operand: Any) -> str:
+    """How an operand is named in the result's ``derivation``: its name, or its value."""
     if isinstance(operand, xr.DataArray):
         return str(operand.name) if operand.name is not None else "array"
     return repr(operand)
 
 
-def _result(
+def _labeled_result(
     values: xr.DataArray,
     units: str,
     constituent: str,
@@ -288,6 +303,13 @@ def _result(
     b: Any,
     op: str,
 ) -> xr.DataArray:
+    """*values* with the attributes that are true of ``a op b``, and no name.
+
+    ``units`` and ``constituent`` as combined; ``kind`` with the
+    ``time_reference`` and ``cell_methods`` pySIPNET gives that kind; the
+    kinded operand's ``sign_convention``; and a ``derivation`` naming both
+    operands.
+    """
     attrs: dict[str, Any] = {"units": units}
     if constituent:
         attrs["constituent"] = constituent
@@ -300,10 +322,10 @@ def _result(
         source = a if isinstance(a, xr.DataArray) and a.attrs.get("kind") else b
         if isinstance(source, xr.DataArray) and "sign_convention" in source.attrs:
             attrs["sign_convention"] = source.attrs["sign_convention"]
-    attrs["long_name"] = f"{_name(a)} {op} {_name(b)}"
-    attrs["derivation"] = f"{_name(a)} {op} {_name(b)}"
+    derivation = f"{_operand_label(a)} {op} {_operand_label(b)}"
+    attrs["long_name"] = derivation
+    attrs["derivation"] = derivation
     result = values.copy()
     result.attrs = attrs
-    if result.name is None or op in "*/+-":
-        result.name = None
+    result.name = None
     return result
