@@ -11,10 +11,10 @@ Contents
 --------
 :data:`SOURCE` is the format, one :class:`SourceFormat`: the file-name pattern,
 a :class:`SourceColumn` per column the conversion keeps, which of those a file
-may lack, the fill value, and the flag vocabularies. :func:`read_source_file`
-holds a file to it.
+may lack, the fill value, and the flag vocabularies.
 
-:func:`read_source_file` parses one file onto the raw axis,
+:func:`read_source_file` parses one file onto the raw axis, holding it to that
+format;
 :func:`discover_source_files` lists a directory's FULLSET files, and
 :func:`parse_file_name` decodes a file name. Each parsed file is a
 :class:`SourceFile`.
@@ -292,13 +292,16 @@ def read_source_file(path: Path | str) -> SourceFile:
     header = _read_header(path)
     absent = _check_columns(header, path)
     present = [name for name in SOURCE.names if name not in absent]
-    frame = pd.read_csv(
-        path,
-        usecols=[*_TIMESTAMP_COLUMNS, *present],
-        dtype={**{name: np.int64 for name in _TIMESTAMP_COLUMNS}, **{name: np.float64 for name in present}},
-        na_filter=False,
-        float_precision="round_trip",
-    )
+    try:
+        frame = pd.read_csv(
+            path,
+            usecols=[*_TIMESTAMP_COLUMNS, *present],
+            dtype={**{name: np.int64 for name in _TIMESTAMP_COLUMNS}, **{name: np.float64 for name in present}},
+            na_filter=False,
+            float_precision="round_trip",
+        )
+    except (ValueError, TypeError) as error:
+        raise ValueError(f"{path.name}: a field is empty or not a number ({error})") from error
     start = _check_stamps(frame, resolution, first_year, last_year, path)
 
     n_raw = len(resolution.raw_step_starts())

@@ -112,8 +112,8 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - Never renumber the 1-8000 site ids; they are a shared key with collaborators.
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
   `data/processed/sites/sites.csv`. There is no other site source.
-- Do not assume rectangular coverage: the NEE products are mostly missing over
-  site x time, and every constraint product is ragged over site x time.
+- Do not assume rectangular coverage: the NEE products and every constraint
+  product are ragged over site x time.
 - Constraint products keep their **source units** and their source's own time
   labels. Nothing is converted or aligned at ingest; the observation operator
   does both. See the processed-data conventions below.

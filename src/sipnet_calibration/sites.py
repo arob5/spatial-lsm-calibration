@@ -388,16 +388,20 @@ class Grid:
         ValueError
             If any coordinate is not finite or lies outside the grid.
         """
-        x = np.asarray(lon, dtype=float)
-        y = np.asarray(lat, dtype=float)
+        x, y = np.broadcast_arrays(np.asarray(lon, dtype=float), np.asarray(lat, dtype=float))
         if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
             raise ValueError("coordinates must be finite to be placed in a cell")
-        j = np.floor((x - (self.west + self.edge_shift_lon)) * self.cells_per_degree).astype(np.int64)
-        k = np.floor((y - (self.south + self.edge_shift_lat)) * self.cells_per_degree).astype(np.int64)
+        west, south = self.west + self.edge_shift_lon, self.south + self.edge_shift_lat
+        j = np.floor((x - west) * self.cells_per_degree).astype(np.int64)
+        k = np.floor((y - south) * self.cells_per_degree).astype(np.int64)
         if np.any(j < 0) or np.any(j >= self.n_lon):
-            raise ValueError(f"longitude outside the grid ({self.west} to {self.east})")
+            raise ValueError(
+                f"longitude outside the grid ({west!r} to {west + self.n_lon / self.cells_per_degree!r})"
+            )
         if np.any(k < 0) or np.any(k >= self.n_lat):
-            raise ValueError(f"latitude outside the grid ({self.south} to {self.north})")
+            raise ValueError(
+                f"latitude outside the grid ({south!r} to {south + self.n_lat / self.cells_per_degree!r})"
+            )
         if j.ndim == 0 and k.ndim == 0:
             return int(j), int(k)
         return j, k

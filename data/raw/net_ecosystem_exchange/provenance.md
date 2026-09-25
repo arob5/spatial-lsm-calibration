@@ -39,7 +39,7 @@ the files' `converted` attributes, on the SCC's dietzelab buy-in queue (job
 qsub -v UV_CACHE_DIR=...,PYSIPNET_CACHE_DIR=... scripts/raw_sources/convert_ameriflux_nee.qsub
 ```
 
-from this repository at the commit that introduced the script. Before reading
+from this repository at commit `c527722`, which introduced the script. Before reading
 any CSV the conversion checked each against the size and CRC-32 its zip records;
 all 241 match, so the CSVs are AmeriFlux's distribution as downloaded. It then
 parsed every file with `sipnet_calibration.net_ecosystem_exchange.read_source_file`,

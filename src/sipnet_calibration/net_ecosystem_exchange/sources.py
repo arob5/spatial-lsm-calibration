@@ -15,7 +15,8 @@ Data model
 **Coordinates**: ``tower``, the AmeriFlux identifier; ``time``,
 ``datetime64[ns]``, the UTC end of each step on the product axis
 (:meth:`~sipnet_calibration.net_ecosystem_exchange.names.Resolution.product_step_starts`
-plus one step); ``utc_offset`` on ``tower``, hours, the shift applied.
+plus one step); ``utc_offset`` on ``tower``, hours, the shift applied. The
+``resolution`` attribute names the resolution.
 
 **Data variables**: ``value`` (``float64``, ``NaN`` missing) is always
 present; ``quality_flag`` and ``night`` (``int8``, ``-1`` missing) and

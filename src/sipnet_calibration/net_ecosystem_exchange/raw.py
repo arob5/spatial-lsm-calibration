@@ -4,8 +4,8 @@
 ``ameriflux_nee_hourly.nc`` hold the kept columns of every tower's FULLSET file,
 laid on one shared local-standard-time axis, in the source's own column names
 and values. They are written once, on the SCC, by
-``scripts/raw_sources/convert_ameriflux_nee.py``, and are not tracked: at about
-a gigabyte they are copied to a checkout rather than committed.
+``scripts/raw_sources/convert_ameriflux_nee.py``, and are not tracked: they are
+copied to a checkout rather than committed.
 
 :func:`build_raw` assembles one, :func:`raw_encoding` says how it is stored, and
 :func:`read_raw` reads it back and checks it.
@@ -19,8 +19,8 @@ Data model
 a flag column as ``int8`` with ``-1`` for missing. Missing means the source
 reported its fill value, the step lies outside the tower's file, or the file
 does not carry the column at all (``absent_columns``). Each carries the source
-column's ``units``, ``long_name`` and, for a flag, CF ``flag_values`` and
-``flag_meanings``.
+column's ``units``, ``long_name``, ``source_fill_value`` and a ``comment`` and,
+for a flag, CF ``flag_values`` and ``flag_meanings``.
 
 **Coordinates**
 
@@ -65,6 +65,7 @@ import xarray as xr
 from sipnet_calibration.net_ecosystem_exchange.names import (
     RAW_END,
     RAW_START,
+    RESOLUTIONS,
     TIME_INDEX,
     TOWER,
     Resolution,
@@ -226,7 +227,7 @@ def read_raw(source: Resolution | str | Path) -> xr.Dataset:
     ----------
     source:
         A resolution, or its name, to read the file at the default path; or the
-        path of a raw file.
+        path of a raw file, as a ``Path`` or a string.
 
     Returns
     -------
@@ -240,11 +241,12 @@ def read_raw(source: Resolution | str | Path) -> xr.Dataset:
     ValueError
         If the file does not match the data model.
     """
-    if isinstance(source, Path):
-        path = source
+    if isinstance(source, Resolution):
+        path = raw_path(source)
+    elif isinstance(source, str) and source in RESOLUTIONS:
+        path = raw_path(resolve_resolution(source))
     else:
-        resolution = resolve_resolution(source) if isinstance(source, str) else source
-        path = raw_path(resolution)
+        path = Path(source)
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} is not a file. The raw files are not tracked: copy them from the SCC, "

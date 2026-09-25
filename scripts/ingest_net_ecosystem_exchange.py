@@ -149,6 +149,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def check_raw(raw: xr.Dataset, tower_table: pd.DataFrame) -> None:
     """Every check on a raw file beyond the schema ``read_raw`` enforces."""
     check_every_raw_tower_is_in_the_tower_table(raw, tower_table)
+    check_every_primary_tower_is_in_its_raw_file(raw, tower_table)
     check_resolutions_agree(raw, tower_table)
 
 
@@ -201,6 +202,17 @@ def check_every_raw_tower_is_in_the_tower_table(raw: xr.Dataset, tower_table: pd
         raise IngestError(
             f"towers of {raw.attrs.get('resolution')} raw file not in the tower table: {missing[:10]}. "
             "Rebuild the table with scripts/raw_sources/build_ameriflux_towers.py."
+        )
+
+
+def check_every_primary_tower_is_in_its_raw_file(raw: xr.Dataset, tower_table: pd.DataFrame) -> None:
+    """Raise unless every primary tower of the raw file's resolution is in the raw file."""
+    primary = tower_table[tower_table["primary"] & (tower_table["resolution_minutes"] == raw.attrs["resolution_minutes"])]
+    missing = sorted(set(primary["tower"]) - set(raw[TOWER].values.tolist()))
+    if missing:
+        raise IngestError(
+            f"primary towers of the tower table are not in the {raw.attrs.get('resolution')} raw file: "
+            f"{missing[:10]}. The table and the raw files are from different runs."
         )
 
 

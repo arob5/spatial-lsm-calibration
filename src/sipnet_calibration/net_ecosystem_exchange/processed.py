@@ -351,14 +351,15 @@ def _site_ids(sites: Iterable[int] | int | None) -> list[int] | None:
             f"sites={sites!r} is a string, which would be read one character per site. "
             "Pass an integer or a sequence of integers."
         )
-    if isinstance(sites, (int, np.integer)):
+    if np.ndim(sites) == 0:
         sites = [sites]
     wanted = []
     for site in sites:
-        number = int(site)
-        if number != site:
+        if isinstance(site, (bool, np.bool_)) or not isinstance(site, (int, float, np.integer, np.floating)):
+            raise TypeError(f"site {site!r} is not a site identifier")
+        if not np.isfinite(site) or int(site) != site:
             raise TypeError(f"site {site!r} is not a whole number")
-        wanted.append(number)
+        wanted.append(int(site))
     if len(set(wanted)) != len(wanted):
         raise ValueError(f"sites repeats {sorted({s for s in wanted if wanted.count(s) > 1})}")
     return wanted

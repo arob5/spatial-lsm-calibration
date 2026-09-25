@@ -26,7 +26,7 @@ Everything below is re-exported here, so a caller imports from
 The data flows one way. The first two arrows are taken once, on the SCC and
 wherever the raw files are; the third anywhere::
 
-    AMF_<tower>_FLUXNET_FULLSET_{HH,HR}_<years>_<version>.csv  x 241   (the download)
+    AMF_<tower>_FLUXNET_FULLSET_{HH,HR}_<years>_<version>.csv, one per tower  (the download)
       -> scripts/raw_sources/convert_ameriflux_nee.py
       -> raw/net_ecosystem_exchange/ameriflux_nee_{half_hourly,hourly}.nc    not tracked
       -> scripts/raw_sources/build_ameriflux_towers.py    + ameri_sites.tsv, Unmatched_Sites.csv,
@@ -50,6 +50,11 @@ Input data
     One row per tower: its pool site and how it was matched, whether it is the
     site's primary tower, its UTC offset, and why it is excluded, if it is.
     Tracked. :func:`read_tower_table` checks it.
+
+``data/raw/net_ecosystem_exchange/Unmatched_Sites.csv`` and ``ameri_sites.tsv``
+    The reanalysis's list of towers added to the pool (tracked) and AmeriFlux's
+    site listing (not tracked); read by :func:`read_pool_input_list` and
+    :func:`read_ameriflux_site_list` when the tower table is built.
 
 ``data/processed/sites/sites.csv``
     The site table, for the ``lon``/``lat`` of each site.
@@ -142,12 +147,12 @@ Notes
 -----
 **Why the source is AmeriFlux's own files.** Every earlier derivative of them
 in this project's inputs converted the stamps to UTC through a time zone with
-daylight saving, and one twice, leaving values 3 to 5 hours from their labels;
-at 3-hourly resolution that cannot be undone, because the bins themselves are
-out of phase. ``data/README.md`` has the account.
+daylight saving, one of them twice, leaving values up to 5 hours from their
+labels; at 3-hourly resolution that cannot be undone, because the bins
+themselves are out of phase. ``data/README.md`` has the account.
 
-**Why one product per series.** Each is then a plain canonical array, ready to
-be an observation, and a new source is one reader and one spec rather than a
+**Why one product per series.** Each is then a plain ``(site, time)`` array,
+ready to be an observation, and a new source is one reader and one spec rather than a
 new product layout.
 
 Usage
@@ -192,6 +197,7 @@ from sipnet_calibration.net_ecosystem_exchange.names import (
     tower_table_path,
 )
 from sipnet_calibration.net_ecosystem_exchange.processed import (
+    SITE_COORDINATES,
     build_net_ecosystem_exchange,
     load_net_ecosystem_exchange,
     net_ecosystem_exchange_joint_uncertainties,
@@ -200,10 +206,12 @@ from sipnet_calibration.net_ecosystem_exchange.processed import (
     net_ecosystem_exchange_values,
     netcdf_encoding,
 )
-from sipnet_calibration.net_ecosystem_exchange.raw import build_raw, raw_encoding, read_raw
+from sipnet_calibration.net_ecosystem_exchange.raw import TOWER_COORDINATES, build_raw, raw_encoding, read_raw
 from sipnet_calibration.net_ecosystem_exchange.source_files import (
     SOURCE,
+    SourceColumn,
     SourceFile,
+    SourceFormat,
     discover_source_files,
     parse_file_name,
     read_source_file,
@@ -216,13 +224,18 @@ from sipnet_calibration.net_ecosystem_exchange.sources import (
 from sipnet_calibration.net_ecosystem_exchange.specs import (
     NET_ECOSYSTEM_EXCHANGE,
     NET_ECOSYSTEM_EXCHANGE_NAMES,
+    SOURCES,
     NetEcosystemExchangeSpec,
     describe,
     resolve_net_ecosystem_exchange,
 )
 from sipnet_calibration.net_ecosystem_exchange.towers import (
     MATCH_BASES,
+    MAXIMUM_SHORTWAVE_LAG_MINUTES,
+    MINIMUM_OFFSET_SEPARATION,
+    TOWER_COLUMN_DTYPES,
     TOWER_COLUMNS,
+    OffsetFit,
     build_tower_table,
     match_towers,
     read_ameriflux_site_list,
@@ -238,16 +251,23 @@ __all__ = [
     "HALF_HOURLY",
     "HOURLY",
     "MATCH_BASES",
+    "MAXIMUM_SHORTWAVE_LAG_MINUTES",
     "MEMBER",
+    "MINIMUM_OFFSET_SEPARATION",
     "NET_ECOSYSTEM_EXCHANGE",
     "NET_ECOSYSTEM_EXCHANGE_NAMES",
     "NetEcosystemExchangeSpec",
+    "OffsetFit",
     "RESOLUTIONS",
     "Resolution",
     "SITE",
+    "SITE_COORDINATES",
     "SOURCE",
+    "SOURCES",
     "SOURCE_READERS",
+    "SourceColumn",
     "SourceFile",
+    "SourceFormat",
     "TIME",
     "TIME_BOUNDS",
     "TIME_INDEX",
@@ -255,6 +275,8 @@ __all__ = [
     "TIME_STEP_START",
     "TOWER",
     "TOWER_COLUMNS",
+    "TOWER_COLUMN_DTYPES",
+    "TOWER_COORDINATES",
     "TOWER_SERIES_VARIABLES",
     "ameriflux_site_list_path",
     "build_net_ecosystem_exchange",
