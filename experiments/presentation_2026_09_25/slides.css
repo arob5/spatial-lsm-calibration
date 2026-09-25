@@ -1,0 +1,4 @@
+/* Spec tables are wide; keep them on the slide. */
+.reveal table {
+  font-size: 0.7em;
+}
