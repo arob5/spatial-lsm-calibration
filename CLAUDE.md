@@ -629,19 +629,20 @@ plotting code. The load-bearing rules:
   source (`DEFAULT_OBS_OPS`, today MODIS LAI as SIPNET's own
   `plantLeafC / leafCSpWt`, `sipnet.c`); which operator reads a product is a
   modeling decision an experiment writes in `config.py`.
-- **The forward model is one class over existing pieces.** `forward.ForwardModel(model,
-  parameter_vector, climate=, backend=, observation_vector=)` is pyEKI's `(J, D) -> (J, N)`:
-  `parameter_vector.sipnet_table` maps theta to a SIPNET table, PyEns runs `SIPNETModel` once
-  per `(member, site)` through a `PartialSpec` built once (climate and site id fixed on one
-  site axis, the table's parameter names free), each worker labels its run with `label_run`
-  and applies the observation vector's operators to it, and the driver places the per-site
-  predictions with `ObservationVector.flat`. A run that fails at its parameters
-  (`SIPNETRunError`, pydantic's `ValidationError`, a timeout) makes the whole member's row NaN;
-  anything else a worker returns is the machinery failing and is raised. Without an
-  observation vector, `evaluate(theta).model_output` is the prior-predictive `(member, site,
-  time)` Dataset of `output_variable_names`, aggregated on the worker with `freq=`. Under any
-  backend but `SequentialBackend` the drivers must be file-backed. `compute.scc_backend` is
-  the SCC preset.
+- **The forward model is one class over existing pieces.**
+  `forward.ForwardModel(model, parameter_vector, climate=, backend=,
+  observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its module docstring
+  says how the pieces compose. The rules a session can get wrong: the
+  observation operators run **on the worker**, each run receiving only its
+  site's slice of the observation vector, so a product observed at few sites
+  costs nothing at the others; a run that fails at its parameters
+  (`SIPNETRunError`, pydantic's `ValidationError`, a timeout, or a non-finite
+  value in a read variable, `ModelOutputNotFinite`) makes the **whole
+  member's** row NaN, and anything else a worker returns is the machinery
+  failing and is raised with the collected runs on the error's `evaluation`;
+  under any backend but `SequentialBackend` the drivers must be file-backed;
+  `freq=` is for the prior-predictive path only. `compute.scc_backend` is the
+  SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
   `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
   sites ascending, then products in declaration order, then times, with

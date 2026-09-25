@@ -21,26 +21,13 @@ its own.
 
 What it reads
 -------------
-``model``
-    A :class:`pysipnet.model.SIPNETModel`: the runner (flags, timeout, output
-    directory) and the base parameter set every run starts from.
-``parameter_vector``
-    A :class:`~sipnet_calibration.parameter_vector.ParameterVector`, which
-    fixes the site set and maps ``theta`` to a SIPNET table.
-``climate``
-    ``{site id: ClimateDrivers}`` covering every site of the vector. Under
-    any backend but ``SequentialBackend`` the drivers must be file-backed
-    (``ClimateDrivers.from_path``), or each run would carry a copy.
-``backend``
-    A PyEns backend: ``SequentialBackend``, ``LocalBackend`` or the SCC's
-    ``GridEngineBackend`` (see :mod:`sipnet_calibration.compute`).
-``observation_vector``
-    An :class:`~sipnet_calibration.observation.ObservationVector`, optional.
-    With it, each run's operators are applied **on the worker**, so what
-    comes back from a run is that site's predictions and nothing else, and
-    :meth:`ForwardModel.__call__` is defined. Without it, each run returns
-    the named output variables (``output_variable_names``), aggregated on
-    the worker with ``freq`` if given: the prior-predictive path.
+A :class:`pysipnet.model.SIPNETModel`, a
+:class:`~sipnet_calibration.parameter_vector.ParameterVector`, one
+``ClimateDrivers`` per site, a PyEns backend, and either an
+:class:`~sipnet_calibration.observation.ObservationVector` (the calibration
+path: each run reduced to its site's predictions on the worker) or the
+output variable names each run should return (the prior-predictive path).
+:class:`ForwardModel`'s ``Parameters`` say what each is for.
 
 Data model
 ----------
@@ -48,7 +35,8 @@ Data model
 produced:
 
 ============== ==========================================================
-``theta``      ``(B, D)`` float64, as received (a ``(D,)`` input is one row)
+``theta``      ``(B, D)`` float64, coerced from what was received (a ``(D,)``
+               input is one row)
 ``sipnet_table`` the SIPNET table that was run, ``(member, site)``
 ``model_output`` ``xr.Dataset`` on ``(member, site, time)`` of the output
                variables, ``NaN`` where a run failed; ``None`` when an
@@ -59,18 +47,24 @@ produced:
 ``run_succeeded`` bool ``(member, site)``
 ``failures``   a frame with ``member``, ``site``, ``error`` and ``message``,
                one row per failed run
-``valid``      bool ``(B,)``: every run of the member succeeded and its
-               predictions are finite
+``valid``      bool ``(B,)``: every run of the member succeeded and, where
+               there are predictions, they are finite
 ============== ==========================================================
 
 A run **fails at its parameters** when pySIPNET refuses them
 (``pydantic.ValidationError``), SIPNET exits non-zero or writes nothing
-(``SIPNETRunError``), or the run times out: the member's row is ``NaN``, which
-pyEKI repairs and a sampler rejects. Anything else that comes back from a
-worker (a PyEns ``TaskFailedError``, a ``RemoteError`` of another type, a
-missing binary, an import error) is the **machinery** failing, says nothing
-about the parameters, and is raised after the batch is collected, with the
-evaluation attached for diagnosis.
+(``SIPNETRunError``), the run times out (``subprocess.TimeoutExpired``), or
+the output it wrote holds a non-finite value in a variable that was read
+(:class:`ModelOutputNotFinite`, a blow-up SIPNET exits 0 on): the member's
+row is ``NaN``, which pyEKI repairs and a sampler rejects. Anything else that
+comes back from a worker (a PyEns ``TaskFailedError``, a ``RemoteError`` of
+another type, a missing binary, an import error) is the **machinery**
+failing, says nothing about the parameters, and is raised after the batch is
+collected as a ``RuntimeError`` whose ``evaluation`` attribute holds what was
+collected (``run_succeeded`` and ``failures`` filled, no predictions or
+output), for diagnosis. On the prior-predictive path a batch in which every
+run failed at its parameters is also raised, since there is no time axis to
+stack NaN onto.
 
 Functions
 ---------
@@ -79,21 +73,34 @@ Functions
     ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input.
 :class:`ForwardEvaluation`
     The record above.
+:data:`MODEL_FAILURES`, :class:`ModelOutputNotFinite`
+    The exceptions that mean a run failed at its parameters.
 
 Notes
 -----
-**The `PartialSpec` is built once.** Its fixed inputs, the climate and the
-site id along one site axis, and its free fields, the SIPNET parameter
-names the vector sets, hold for the lifetime of the model, and the site axis
-is what every call's parameter grids zip with. The free names are learned by
-mapping one prior draw through ``sipnet_table`` in ``__init__``, which also
-fails fast on a bad initial-condition hook or an unknown name before
-anything is queued.
+**The ``PartialSpec`` is built once.** Its fixed inputs, the climate, the
+site id and the site's slice of the observation vector along one site axis,
+and its free fields, the SIPNET parameter names the vector sets, hold for the
+lifetime of the model, and the site axis is what every call's parameter grids
+zip with. The free names are learned by mapping one prior draw through
+``sipnet_table`` in ``__init__``, which fails fast, before anything is
+queued, on a hook that does not return a ``(member, site)`` table over the
+vector's sites in pySIPNET's parameter names.
 
 **The operators run on the worker** because reading a run's output back on
 the driver costs more than the run (pySIPNET parses the whole file), and an
 observation operator is pointwise in site, so each worker can reduce its own
-run to the observed cells. The driver only places small arrays.
+run to the observed cells. Each run receives only its site's slice of the
+observation vector, as an input field along the site axis, so a run at a
+site no product observes carries nothing and returns nothing, and a
+process backend pickles a few kilobytes per run rather than the whole
+vector. The driver only places small arrays.
+
+**Runs on different time axes** (sites with driver records of different
+lengths) are stacked by an outer join on the prior-predictive path, so the
+shorter records are ``NaN``-padded and the interval coordinates gain a
+``site`` or ``member`` dimension; select one site before aggregating such
+a stack, as :func:`~sipnet_calibration.observation.aggregate_time` asks.
 
 **Parameters an operator reads but the vector does not set** (a fixed
 SIPNET parameter, say ``leaf_carbon_per_area`` for the LAI operator) are
@@ -104,6 +111,7 @@ Usage
 -----
 ::
 
+    import pyeki.eki
     from pyens import LocalBackend
     from sipnet_calibration.forward import ForwardModel
 
@@ -113,7 +121,7 @@ Usage
 
     prior = ForwardModel(model, vector, climate=climate, backend=LocalBackend(8),
                          output_variable_names=("nee", "leaf_carbon"), freq="1D")
-    fields = prior.evaluate(vector.sample(key, 100)).model_output      # (member, site, time)
+    model_output = prior.evaluate(vector.sample(key, 100)).model_output  # (member, site, time)
 """
 
 from __future__ import annotations
@@ -143,11 +151,19 @@ from sipnet_calibration.observation import ObservationVector, aggregate_time
 from sipnet_calibration.parameter_vector import ParameterVector
 from sipnet_calibration.sites import load_sites
 
-__all__ = ["MODEL_FAILURES", "ForwardEvaluation", "ForwardModel"]
+__all__ = ["MODEL_FAILURES", "ForwardEvaluation", "ForwardModel", "ModelOutputNotFinite"]
 
 SITE = "site"
 MEMBER = "member"
 TIME = "time"
+
+class ModelOutputNotFinite(RuntimeError):
+    """A run completed but wrote a non-finite value in a variable that was read.
+
+    SIPNET exits 0 on a blow-up, so the failure shows only in the output; it
+    is a failure at the run's parameters, and pickles as a plain message.
+    """
+
 
 #: The exceptions that mean a run failed **at its parameters**: the member's
 #: row becomes NaN. Everything else a worker returns is the machinery failing
@@ -156,6 +172,7 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
     SIPNETRunError,
     ValidationError,
     subprocess.TimeoutExpired,
+    ModelOutputNotFinite,
 )
 
 
@@ -173,7 +190,7 @@ class ForwardEvaluation:
 
 
 class ForwardModel:
-    """G: unconstrained calibration parameters to predictions, over a site set.
+    """The forward map: unconstrained calibration parameters to predictions.
 
     Parameters
     ----------
@@ -195,7 +212,8 @@ class ForwardModel:
     freq:
         Without an observation vector, aggregate each run's output on the
         worker to this pandas frequency with
-        :func:`~sipnet_calibration.observation.aggregate_time`.
+        :func:`~sipnet_calibration.observation.aggregate_time`. Refused with
+        an observation vector, whose operators decide their own alignment.
     to_sipnet_table:
         ``theta (B, D) -> SIPNET table (member, site)``; defaults to
         ``parameter_vector.sipnet_table``. The hook for an experiment that
@@ -227,6 +245,7 @@ class ForwardModel:
         self.backend = backend
         self.observation_vector = observation_vector
         self.freq = freq
+        check_freq_is_for_the_prior_predictive(freq, observation_vector)
         self._to_sipnet_table = to_sipnet_table or parameter_vector.sipnet_table
         self.climate = {int(s): climate[s] for s in self.sites if s in climate}
         check_climate_covers_the_sites(climate, self.sites)
@@ -250,7 +269,6 @@ class ForwardModel:
         self._run = _Run(
             model=model,
             output_variable_names=self.output_variable_names,
-            observation_vector=observation_vector,
             freq=freq,
             base_values=self._base_values,
             site_table=self.site_table,
@@ -291,7 +309,12 @@ class ForwardModel:
 
         outputs, succeeded, failures, broken = _sort_records(result, members, self.sites)
         if broken:
-            raise _machinery_error(broken)
+            partial = ForwardEvaluation(
+                theta=batch, sipnet_table=table, model_output=None, predictions=None,
+                run_succeeded=succeeded, failures=failures,
+                valid=np.zeros(len(members), dtype=bool),
+            )
+            raise _machinery_error(broken, partial)
         if self.observation_vector is not None:
             predictions = _place_predictions(outputs, self.observation_vector, members)
             # A member with any failed run is invalid as a whole: pyEKI updates
@@ -327,11 +350,16 @@ class ForwardModel:
     def _build_partial(self) -> PartialSpec:
         climate = Grid({s: self.climate[s] for s in self.sites}, along=self._site_axis)
         site_ids = Grid(list(self.sites), along=self._site_axis)
+        observations = Grid(
+            {s: _site_slice(self.observation_vector, s) for s in self.sites}, along=self._site_axis
+        )
         placeholders = {
             name: Grid([0.0] * len(self.sites), along=self._site_axis)
             for name in self.sipnet_parameter_names
         }
-        spec = EnsembleSpec(inputs={"climate": climate, "site": site_ids, **placeholders})
+        spec = EnsembleSpec(
+            inputs={"climate": climate, "site": site_ids, "observations": observations, **placeholders}
+        )
         return spec.freeze(free=list(self.sipnet_parameter_names))
 
 
@@ -348,45 +376,74 @@ class _RunOutput:
 
 @dataclass(frozen=True)
 class _Run:
-    """One SIPNET run, reduced on the worker; picklable, built once per model."""
+    """One SIPNET run, reduced on the worker; picklable, built once per model.
+
+    ``observations`` is the site's slice of the observation vector, or
+    ``None`` on the prior-predictive path and at a site no product observes.
+    """
 
     model: SIPNETModel
     output_variable_names: tuple[str, ...]
-    observation_vector: ObservationVector | None
     freq: str | None
     base_values: dict[str, float]
     site_table: pd.DataFrame
 
-    def __call__(self, *, climate: ClimateDrivers, site: int, **sipnet_parameters: Any) -> _RunOutput:
+    def __call__(
+        self,
+        *,
+        climate: ClimateDrivers,
+        site: int,
+        observations: ObservationVector | None = None,
+        **sipnet_parameters: Any,
+    ) -> _RunOutput:
         result = self.model(climate=climate, **sipnet_parameters)
         dataset = label_run(
             result.outputs.select(list(self.output_variable_names)),
             site=int(site),
             site_table=self.site_table,
         )
-        if self.observation_vector is None:
-            if self.freq is not None:
-                dataset = _aggregated(dataset, self.freq)
+        _check_output_is_finite(dataset, int(site))
+        if self.freq is not None:
+            dataset = _aggregated(dataset, self.freq)
+        if observations is None:
             return _RunOutput(model_output=dataset, predictions=None)
-        if int(site) not in self.observation_vector.sites:
-            return _RunOutput(model_output=None, predictions={})
-        observed = self.observation_vector.select(sites=[int(site)])
         values = {**self.base_values, **{k: float(v) for k, v in sipnet_parameters.items()}}
         return _RunOutput(
-            model_output=None, predictions=observed.predict(dataset, sipnet_parameters=values)
+            model_output=None, predictions=observations.predict(dataset, sipnet_parameters=values)
         )
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
+def _site_slice(vector: ObservationVector | None, site: int) -> ObservationVector | None:
+    """The observation vector restricted to one site, or ``None`` with no cell there."""
+    if vector is None or vector.positions(site=site).size == 0:
+        return None
+    return vector.select(sites=[site])
+
+
+def _check_output_is_finite(dataset: xr.Dataset, site: int) -> None:
+    """Raise :class:`ModelOutputNotFinite` if a read variable holds a non-finite value."""
+    for name, variable in dataset.data_vars.items():
+        values = np.asarray(variable.values, dtype=np.float64)
+        if not np.isfinite(values).all():
+            where = int(np.flatnonzero(~np.isfinite(values.ravel()))[0])
+            raise ModelOutputNotFinite(
+                f"the run at site {site} wrote a non-finite {name!r} (first at flat position "
+                f"{where} of {values.size}); SIPNET exits 0 on a blow-up, so this counts as a "
+                "failure at the run's parameters."
+            )
+
+
 def _as_batch(theta: Any, dimension: int) -> np.ndarray:
     array = np.asarray(theta, dtype=np.float64)
     if array.ndim == 1:
         array = array[None, :]
-    if array.ndim != 2 or array.shape[1] != dimension:
+    if array.ndim != 2 or array.shape[1] != dimension or array.shape[0] == 0:
         raise ValueError(
-            f"theta must be (D,) or (B, D) with D = {dimension}, got shape {array.shape}."
+            f"theta must be (D,) or (B, D) with B >= 1 and D = {dimension}, got shape "
+            f"{array.shape}."
         )
     if not np.isfinite(array).all():
         raise ValueError("theta holds a non-finite value; the parameter vector never produces one.")
@@ -426,6 +483,11 @@ def _site_table_with_locations(
         own = vector.site_table
         table = own if {"lon", "lat"} <= set(own.columns) else load_sites()
     table = site_lookup(table)
+    if not {"lon", "lat"} <= set(table.columns):
+        raise ValueError(
+            "the site table must carry 'lon' and 'lat' columns, as load_sites() returns them; "
+            f"got {list(table.columns)}."
+        )
     missing = [s for s in sites if s not in table.index]
     if missing:
         raise ValueError(f"the site table has no row for site(s) {missing[:10]}.")
@@ -492,19 +554,26 @@ def _is_model_failure(error: BaseException) -> bool:
     if isinstance(error, MODEL_FAILURES):
         return True
     if isinstance(error, RemoteError):
-        return getattr(error, "type_name", "") in {t.__name__ for t in MODEL_FAILURES}
+        # PyEns qualifies the name ("pysipnet.runner.SIPNETRunError"); compare the class name.
+        name = str(getattr(error, "type_name", "")).rsplit(".", 1)[-1]
+        return name in {t.__name__ for t in MODEL_FAILURES}
     return False
 
 
-def _machinery_error(broken: list[tuple[dict, BaseException]]) -> RuntimeError:
+def _machinery_error(
+    broken: list[tuple[dict, BaseException]], evaluation: ForwardEvaluation
+) -> RuntimeError:
     coordinate, error = broken[0]
     kinds = sorted({type(e).__name__ for _, e in broken})
-    return RuntimeError(
+    raised = RuntimeError(
         f"{len(broken)} run(s) failed in the machinery rather than at their parameters "
         f"({', '.join(kinds)}); the first, at {coordinate}, says: {error}. A "
         f"{TaskFailedError.__name__}, a missing binary or an import error on a worker says "
-        "nothing about the parameters, so it is raised rather than turned into a NaN row."
+        "nothing about the parameters, so it is raised rather than turned into a NaN row; "
+        "the runs that were collected are on this error's `evaluation` attribute."
     )
+    raised.evaluation = evaluation  # type: ignore[attr-defined]
+    return raised
 
 
 def _place_predictions(
@@ -547,7 +616,10 @@ def _stack_model_output(
         stacked = xr.concat(per_site, dim=SITE, join="outer", coords="different", compat="equals", combine_attrs="override")
         per_member.append(stacked.assign_coords({MEMBER: int(member)}))
     if not per_member:
-        raise RuntimeError("every run failed at its parameters; there is no model output to stack.")
+        raise RuntimeError(
+            "every run failed at its parameters; there is no model output to stack NaN onto. "
+            "Draw parameters the model can run, or check failures on the evaluation."
+        )
     dataset = xr.concat(per_member, dim=MEMBER, join="outer", coords="different", compat="equals", combine_attrs="override")
     dataset = dataset.reindex({MEMBER: members, SITE: list(sites)}).transpose(MEMBER, SITE, TIME, ...)
     lon = site_table.loc[list(sites), "lon"].to_numpy(dtype=np.float64)
@@ -629,10 +701,26 @@ def check_table_is_a_sipnet_table(
         )
     if table[SITE].values.tolist() != list(sites):
         raise ValueError("the SIPNET table's sites are not the parameter vector's sites, in order.")
-    if expected is not None and tuple(str(n) for n in table.data_vars) != tuple(expected):
+    for name in table.data_vars:
+        try:
+            resolve_parameter_name(str(name))
+        except KeyError as error:
+            raise ValueError(
+                f"the SIPNET table sets {name!r}, which is not a pySIPNET parameter: {error}"
+            ) from None
+    if expected is not None and set(str(n) for n in table.data_vars) != set(expected):
         raise ValueError(
-            f"the SIPNET table sets {list(table.data_vars)}, but the model was built for "
-            f"{list(expected)}; a ForwardModel's free fields are fixed when it is built."
+            f"the SIPNET table sets {sorted(table.data_vars)}, but the model was built for "
+            f"{sorted(expected)}; a ForwardModel's free fields are fixed when it is built."
+        )
+
+
+def check_freq_is_for_the_prior_predictive(freq: Any, vector: ObservationVector | None) -> None:
+    if freq is not None and vector is not None:
+        raise ValueError(
+            "freq= aggregates model output for the prior predictive; with an observation "
+            "vector the operators decide their own alignment, so freq would be ignored. "
+            "Drop one of the two."
         )
 
 

@@ -57,7 +57,16 @@ def scc_backend(
         ``max_concurrent``, ...). ``directives`` given here are appended to
         :data:`SCC_DIRECTIVES`.
     """
-    extra = tuple(options.pop("directives", ()))
+    extra = options.pop("directives", ())
+    if isinstance(extra, str):
+        raise TypeError("directives must be a sequence of strings, not one string.")
+    extra = tuple(extra)
+    for directive in extra:
+        if directive.split()[:1] == ["-P"] or directive.startswith("-l buyin"):
+            raise ValueError(
+                f"{directive!r} would override the project's queue directives "
+                f"{SCC_DIRECTIVES}; qsub takes the last -P it sees."
+            )
     directives = (*SCC_DIRECTIVES, f"-v {','.join(SCC_EXPORTED_VARIABLES)}", *extra)
     return GridEngineBackend(
         walltime=walltime,
