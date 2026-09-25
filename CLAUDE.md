@@ -435,7 +435,10 @@ provides; `pysipnet info` reports the reason it refused the prebuilt, and
 `gcc`, `make` and `git` on a login node are all the compile needs. The binary
 then lives under `$PYSIPNET_CACHE_DIR`, and any environment exporting that
 variable finds it. A `qsub` script has to export all three itself, and
-`#$ -P dietzelab` with `#$ -l buyin` is the queue.
+`#$ -P dietzelab` with `#$ -l buyin` is the queue. For PyEns jobs,
+`compute.scc_backend` writes those directives and a `-v` exporting the
+cache, binary and data variables; its module docstring says why `TMPDIR` is
+left to Grid Engine.
 
 ## Repository layout
 
@@ -443,10 +446,10 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameter_vector.py`, `site_labels.py` and the `observation/` package are
-implemented, `fields.py` has the model-output adapters, the plotting package
-has series, maps and grids, and the other modules carry the contract each is
-to satisfy.
+`parameter_vector.py`, `site_labels.py`, `forward.py`, `compute.py` and the
+`observation/` package are implemented, `fields.py` has the model-output
+adapters, the plotting package has series, maps and grids, and the other
+modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
 reader and checks together.
@@ -637,21 +640,27 @@ plotting code. The load-bearing rules:
   site's slice of the observation vector and returning that slice's Flat,
   which the calling process writes at `positions(site=)` (right because the
   vector is site-major, which `__init__` checks per site); a run at a site no
-  product observes returns nothing, so such a product costs nothing at the
-  other sites. The SIPNET table a `to_sipnet_table` hook returns must be on
-  exactly `(member, site)`, members `0` to `J - 1` in `theta`'s row order and
-  sites in the parameter vector's. A run that fails at its parameters
-  (`SIPNETRunError`, pydantic's `ValidationError`, a timeout, or a non-finite
-  value in a read variable, `ModelOutputNotFinite`; across a process boundary
-  matched on PyEns's fully qualified `RemoteError.type_name`) makes the
-  **whole member's** row NaN, and anything else a worker returns is the
-  machinery failing and is raised with the collected runs on the error's
-  `evaluation`, as is a prior-predictive batch in which every run failed. The
-  prior-predictive output is stacked by `fields.stack_model_outputs`, so it
-  carries no `time_bounds` or SIPNET row labels; `freq=` is for that path
-  only, and aggregates each run with `observation.aggregate_time` by the
-  method that keeps its kind, as the plots do. Under any backend but `SequentialBackend` the drivers
-  must be file-backed. `compute.scc_backend` is the SCC preset.
+  product observes returns nothing, so a product costs nothing at the sites
+  it does not observe. The SIPNET table a `to_sipnet_table` hook returns must
+  be on exactly `(member, site)` with every variable on both, members `0` to
+  `J - 1` in `theta`'s row order, sites in the parameter vector's, and each
+  variable named by pySIPNET's flat parameter name (an alias such as `aMax`
+  passes pySIPNET's lookup but `SIPNETModel` refuses it on every run). A run
+  that fails at its parameters (`SIPNETRunError`, pydantic's
+  `ValidationError`, a timeout, or a non-finite value in a read variable,
+  `ModelOutputNotFiniteError`; across a process boundary matched on PyEns's
+  fully qualified `RemoteError.type_name`) makes the **whole member's** row
+  NaN, and anything else a worker returns is the machinery failing and is
+  raised with the collected runs on the error's `evaluation`, as is a
+  prior-predictive batch in which every run failed. The prior-predictive
+  output is stacked by `fields.stack_model_outputs`, so it carries no
+  `time_bounds` or SIPNET row labels; `freq=` is for that path only, and
+  aggregates each run's variables one at a time with
+  `observation.aggregate_time` by the method that keeps its kind, as a
+  predictive-check figure does, the Dataset gaining pySIPNET's
+  `resampling_frequency` and `time_step_length_source`. Under any backend
+  but `SequentialBackend` the drivers must be file-backed.
+  `compute.scc_backend` is the SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
   `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
   sites ascending, then products in declaration order, then times, with
