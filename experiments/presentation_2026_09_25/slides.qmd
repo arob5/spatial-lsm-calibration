@@ -13,6 +13,7 @@ format:
     highlight-style: github
     fig-align: center
     css: slides.css
+    mermaid-format: svg
 jupyter: python3
 execute:
   warning: false
@@ -26,14 +27,48 @@ import config
 import plots
 from sipnet_calibration.plotting import plot_map, use_project_style
 
+# Scale up project style defaults for slide deck. Scaling relative to font.size
 use_project_style()
-# Slides are viewed larger than a notebook: sharper images, larger text.
-plt.rcParams.update({"figure.dpi": 200, "font.size": 11})
+plt.rcParams.update({
+    "figure.dpi": 200,
+    "figure.figsize": (14, 7),
+    "font.size": 15,
+    "axes.titlesize": "large",
+    "axes.labelsize": "medium",
+    "xtick.labelsize": "small",
+    "ytick.labelsize": "small",
+    "legend.fontsize": "small",
+    "legend.title_fontsize": "medium",
+})
 ```
+
+## The packages
+
+```{mermaid}
+%%| fig-width: 13
+flowchart LR
+  PE["PyEns<br/>parallel ensemble runs"]
+  PS["pySIPNET<br/>one SIPNET run:<br/>inputs, outputs, units"]
+  PK["pyEKI<br/>ensemble Kalman inversion"]
+  SC["sipnet_calibration<br/>sites, data, priors<br/>and calibration"]
+  PE -. optional .-> PS
+  PS --> SC
+  PE --> SC
+  PK --> SC
+```
+
+Arrows point from a package to the one that uses it; dashed is optional.
+
+::: notes
+The three companions are separate repositories, installed here from git and
+pinned to exact commits in uv.lock. pySIPNET works on its own; it uses PyEns
+only when asked to run an ensemble.
+:::
 
 ## The pipeline
 
 ```{mermaid}
+%%| fig-width: 14
 flowchart LR
   S[Sites + PFTs] --> P[Parameter vector]
   S --> D[Drivers]
@@ -62,8 +97,7 @@ then how model output meets the data.
 from sipnet_calibration.site_labels import site_labels_field
 
 pfts = site_labels_field("pft_16class")
-ax = plot_map(pfts, extent="NORTH_AMERICA")
-plots.mark_sites(ax);
+ax = plot_map(pfts, extent="NORTH_AMERICA");
 ```
 
 ## Sixteen classes

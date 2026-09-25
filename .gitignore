@@ -3,6 +3,7 @@ __pycache__/
 main.py
 .venv/
 .DS_Store
+.vscode/
 
 # Raw inputs live on storage and are not distributed with the repository; processed
 # data is regenerable from them. Six exceptions are tracked, none of them a
