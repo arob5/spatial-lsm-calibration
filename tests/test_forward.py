@@ -408,7 +408,6 @@ class TestRealSipnet:
             pytest.skip(missing_binary_message())
         from conftest import niwot_parameters
         from sipnet_calibration.fields import label_run
-        from sipnet_calibration.observation import sipnet_parameter_array  # noqa: F401  (import check)
         from sipnet_calibration.parameter_vector import sipnet_overrides
 
         model = SIPNETModel(SIPNETRunner(flags=ModelFlags.standard(), timeout=120.0), base_params=niwot_parameters())
