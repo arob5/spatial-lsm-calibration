@@ -337,6 +337,9 @@ class TestTowerTable:
         assert not table.at["US-Fff", "primary"]
         assert table.at["US-Fff", "excluded_reason"].startswith("clock")
 
+    def test_an_excluded_clock_is_not_also_noted_as_tolerated(self, table):
+        assert "tolerance" not in table.at["US-Fff", "comment"]
+
     def test_offsets_are_recovered(self, table):
         for tower, row in TOWERS.items():
             assert table.at[tower, "utc_offset_hours"] == row[3]

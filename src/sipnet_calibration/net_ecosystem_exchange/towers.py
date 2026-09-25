@@ -624,7 +624,10 @@ def _clock_reason(separation: float, lag, step_minutes: int) -> str:
 
 
 def _lag_note(lag, step_minutes: int) -> str:
+    """A note for a lag the check allows but that is not zero; excluded lags have a reason instead."""
     if lag is pd.NA or lag is None or int(lag) == 0:
+        return ""
+    if abs(int(lag)) * step_minutes > MAXIMUM_SHORTWAVE_LAG_MINUTES:
         return ""
     return (
         f"measured shortwave sits {int(lag) * step_minutes} minutes from SW_IN_POT, within "
