@@ -216,6 +216,8 @@ src/sipnet_calibration/
   fields.py               # field convention; SIPNET output adapters
   observation/            # operators, the observation vector, and the
                           # time-alignment verbs
+  forward.py              # ForwardModel: theta -> predictions through PyEns
+  compute.py              # the SCC backend preset
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
