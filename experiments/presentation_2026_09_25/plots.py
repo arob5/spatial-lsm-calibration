@@ -56,7 +56,7 @@ def mark_sites(ax: Axes, sites: Mapping[str, int] | None = None) -> Axes:
 
 
 def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
-    """Sites per class of a site-labels product, in the map's colors.
+    """Sites per class of a site-labels product, most sites first, in the map's colors.
 
     Parameters
     ----------
@@ -69,9 +69,13 @@ def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
     """
     spec = resolve_site_labels(site_labels)
     counts = load_site_labels(spec)["label"].value_counts().reindex(spec.labels, fill_value=0)
-    names = _display_names(spec)
+    # A class's color is set by its position in the spec, as on the maps, so
+    # the colors are reordered with the classes.
+    order = np.argsort(-counts.to_numpy(), kind="stable")
+    names = np.asarray(_display_names(spec))[order]
+    colors = np.asarray(category_colors(len(names)))[order]
     figure, ax = plt.subplots(figsize=(7, 0.35 * len(names) + 1), layout="constrained")
-    ax.barh(names, counts.to_numpy(), color=category_colors(len(names)))
+    ax.barh(names, counts.to_numpy()[order], color=colors)
     ax.invert_yaxis()
     ax.set_xlabel("sites")
     ax.bar_label(ax.containers[0], padding=3, fontsize=9)

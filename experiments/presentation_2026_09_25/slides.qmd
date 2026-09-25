@@ -1,6 +1,6 @@
 ---
-title: "Spatial calibration of SIPNET"
-subtitle: "Building the pipeline, one piece at a time"
+title: "Towards a Spatial Calibration of SIPNET"
+subtitle: "A Python-based workflow"
 author: "Andrew Roberts"
 date: 2026-09-25
 format:
@@ -42,22 +42,21 @@ plt.rcParams.update({
 })
 ```
 
-## The packages
+## The Python Package Ecosystem
 
 ```{mermaid}
-%%| fig-width: 13
-flowchart LR
-  PE["PyEns<br/>parallel ensemble runs"]
-  PS["pySIPNET<br/>one SIPNET run:<br/>inputs, outputs, units"]
-  PK["pyEKI<br/>ensemble Kalman inversion"]
-  SC["sipnet_calibration<br/>sites, data, priors<br/>and calibration"]
+%%| fig-height: 7.5
+%%{init: {"flowchart": {"nodeSpacing": 60, "rankSpacing": 70}}}%%
+flowchart TB
+  PE["<b>PyEns</b><br/>parallel ensemble runs"]
+  PS["<b>pySIPNET</b><br/>one SIPNET run:<br/>inputs, outputs, units"]
+  PK["<b>pyEKI</b><br/>ensemble Kalman inversion"]
+  SC["<b>sipnet_calibration</b><br/>sites, data, priors<br/>and calibration"]
   PE -. optional .-> PS
   PS --> SC
   PE --> SC
   PK --> SC
 ```
-
-Arrows point from a package to the one that uses it; dashed is optional.
 
 ::: notes
 The three companions are separate repositories, installed here from git and
@@ -65,14 +64,19 @@ pinned to exact commits in uv.lock. pySIPNET works on its own; it uses PyEns
 only when asked to run an ensemble.
 :::
 
-## The pipeline
+## The Modeling Pipeline
 
 ```{mermaid}
-%%| fig-width: 14
+%%| fig-width: 15.5
+%%| fig-height: 7.5
+%%{init: {"flowchart": {"nodeSpacing": 150}}}%%
 flowchart LR
-  S[Sites + PFTs] --> P[Parameter vector]
+  S[Sites] --> T[PFTs]
+  S --> P[Parameter vector]
   S --> D[Drivers]
   S --> I[Initial conditions]
+  T -. optional .-> P
+  T -. optional .-> I
   P --> M[SIPNET]
   D --> M
   I --> M
@@ -81,16 +85,14 @@ flowchart LR
   C[Constraints] --> L
 ```
 
-Each piece today: **what it is, what we assume, what is still open.**
-
 ::: notes
 Order of the talk follows the arrows: inputs first, then the parameter vector,
 then how model output meets the data.
 :::
 
-# Sites and plant functional types
+# Sites and PFTs
 
-## 8000 sites across North America
+## Dongchen's 8000 sites
 
 ```{python}
 #| echo: true
@@ -100,13 +102,13 @@ pfts = site_labels_field("pft_16class")
 ax = plot_map(pfts, extent="NORTH_AMERICA");
 ```
 
-## Sixteen classes
+## Yang's 16 PFTs
 
 ```{python}
 plots.class_counts();
 ```
 
-## Against the reanalysis's three PFTs
+## Compared to 3 reanalysis PFTs
 
 ```{python}
 plots.label_crosstab_heatmap();
