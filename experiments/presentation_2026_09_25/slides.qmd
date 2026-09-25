@@ -331,6 +331,8 @@ plots.constraint_table()
 
 ::: {.callout-note}
 Temporal interpretation is based on informal conversations, need to verify with the source code.
+The MODIS LAI dates are 4 days apart and cover June to August only, which
+does not match an 8-day integral.
 :::
 
 ## Mean over each site's dates
@@ -392,25 +394,84 @@ Each box is the spread over sites of each site's mean over its dates.
 
 # Parameters
 
-## The parameter vector
+## From the sampler to SIPNET
 
-::: {.callout-note}
-**To fill in.** `ParameterVector` is on main (#36): priors in natural space,
-`varies_by` for shared, per-site or per-class copies, and a map to SIPNET's
-parameters. Worked example: the photosynthesis parameterization.
-:::
+```{mermaid}
+%%| fig-width: 15.5
+%%| fig-height: 5.5
+%%{init: {"flowchart": {"nodeSpacing": 70, "rankSpacing": 80}}}%%
+flowchart LR
+  U["<b>θ in ℝ<sup>D</sup></b><br/>unconstrained<br/>where EKI/MCMC operate"]
+  N["<b>ϑ<sub>c</sub></b><br/>calibration parameter<br/>in natural space,<br/>where the prior is defined"]
+  S["<b>SIPNET parameters</b><br/>aMax, baseFolRespFrac,<br/>leafAllocation, ..."]
+  F["<b>fixed SIPNET parameters</b><br/>aMaxFrac, cFracLeaf, ..."]
+  R["<b>SIPNET run</b>"]
+  U -- "T<sub>c</sub>: bijector<br/>invertible" --> N
+  N -- "M<sub>c</sub>: SIPNET map" --> S
+  F -- "read by M<sub>c</sub>" --> S
+  S --> R
+```
 
-# Observation operator and prior predictive
+- **T~c~** is chosen according to parameter constraints; e.g., exp for a positive paramter
+- **M~c~** folds in fixed parameters, so it need not be invertible.
+- I've set up the code so each calibration parameter is shared, has one copy per PFT (or other grouping), or one copy per site.
 
-## Observation operator: status
+## Example: Photosynthesis parameterization
 
-::: {.callout-note}
-**Not ready yet.** The observation module is being implemented and there are
-no baseline priors. This section will show the operator's design and the
-traps it guards against.
-:::
+SIPNET uses its four photosynthesis parameters only through
 
-- SIPNET's NEE is **g C m⁻² per step** (a total); observed NEE is **µmol CO₂
-  m⁻² s⁻¹** (a rate). They are converted through Pint before any comparison.
-- 3-hourly to daily NEE is a **sum**; a mean is wrong by 8x and looks
-  plausible.
+$$
+A = \frac{\texttt{aMax}\cdot\texttt{aMaxFrac}}{\texttt{cFracLeaf}},
+\qquad
+R = \frac{\texttt{aMax}\cdot\texttt{baseFolRespFrac}}{\texttt{cFracLeaf}},
+$$
+
+the gross photosynthetic capacity and the basal foliar respiration per unit
+of leaf carbon.
+
+- Any change to the four that keeps $A$ and $R$ fixed leaves every output
+  unchanged
+- We can calibrate two parameters, and fix $\texttt{aMaxFrac}$ and $\texttt{cFracLeaf}$.
+
+## Photosynthesis: T and M
+
+The calibration parameter is capacity and respiration share,
+$\vartheta = (P, \rho)$ with $P = A + R$ and $\rho = R / (A + R)$.
+
+$$
+T:\ \theta \in \mathbb{R}^2 \ \mapsto\ (P, \rho) = \big(e^{\theta_1},\ \sigma(\theta_2)\big),
+\qquad \sigma(x) = \frac{1}{1 + e^{-x}}
+$$
+
+$$
+\begin{aligned}
+M:\ (P, \rho) \ &\mapsto\ \big(\texttt{aMax},\ \texttt{baseFolRespFrac}\big) \\
+&= \left(\frac{P\,\texttt{cFracLeaf}\,(1 - \rho)}{\texttt{aMaxFrac}},\ \frac{\rho\,\texttt{aMaxFrac}}{1 - \rho}\right)
+\end{aligned}
+$$
+
+$M$ reads the fixed $\texttt{aMaxFrac}$ and $\texttt{cFracLeaf}$.
+
+## Allocation: T and M
+
+The calibration parameter is the carbon allocation to leaf, wood, fine root
+and coarse root, a point on the simplex: $\vartheta = \pi = (\pi_1, \pi_2, \pi_3, \pi_4)$,
+$\pi_i > 0$, $\sum_i \pi_i = 1$.
+
+$$
+T:\ \theta \in \mathbb{R}^3 \ \mapsto\ \pi, \qquad
+\pi_i = \frac{e^{\theta_i}}{1 + \sum_{j=1}^{3} e^{\theta_j}}\ (i \le 3),
+\qquad
+\pi_4 = \frac{1}{1 + \sum_{j=1}^{3} e^{\theta_j}}
+$$
+
+$$
+\begin{aligned}
+M:\ \pi \ &\mapsto\ \big(\texttt{leafAllocation},\ \texttt{woodAllocation},\ \texttt{fineRootAllocation}\big) \\
+&= (\pi_1, \pi_2, \pi_3)
+\end{aligned}
+$$
+
+SIPNET recomputes coarse root as $1 - (\pi_1 + \pi_2 + \pi_3)$ and **exits if it
+is not positive**; keeping $\pi_4$ in $\vartheta$ means no draw can reach that
+exit.
