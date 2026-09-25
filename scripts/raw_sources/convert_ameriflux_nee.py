@@ -55,9 +55,11 @@ On the SCC, from a checkout with its venv synced::
 
     uv run python scripts/raw_sources/convert_ameriflux_nee.py --jobs 8
 
-or through the batch system::
+or through the batch system, passing the cache locations CLAUDE.md's "Running
+on the SCC" sets::
 
-    qsub scripts/raw_sources/convert_ameriflux_nee.qsub
+    qsub -v UV_CACHE_DIR=$UV_CACHE_DIR,PYSIPNET_CACHE_DIR=$PYSIPNET_CACHE_DIR \
+        scripts/raw_sources/convert_ameriflux_nee.qsub
 """
 
 from __future__ import annotations
@@ -106,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root if args.root is not None else default_source_root()
     out_dir = args.out_dir if args.out_dir is not None else default_raw_dir()
     try:
+        if args.root is not None and args.out_dir is None and root.resolve() != default_source_root().resolve():
+            raise ConversionError(
+                "--root other than the default needs an explicit --out-dir, so that another "
+                f"download cannot overwrite the real raw files in {default_raw_dir()}"
+            )
         paths = discover_source_files(root)
         if args.towers:
             paths = select_towers(paths, args.towers, out_dir_given=args.out_dir is not None)
@@ -127,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
             write_raw(dataset, out)
             print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {_md5(out)})")
             print(describe_raw(resolution, of_resolution))
-    except (ConversionError, OSError, ValueError, BrokenProcessPool) as error:
+    except (ConversionError, OSError, ValueError, BrokenProcessPool, zipfile.BadZipFile) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
@@ -257,7 +264,11 @@ def check_every_file_matches_its_zip(paths: list[Path], fingerprints: dict[str, 
         archive = _zip_for(path)
         if not archive.is_file():
             raise ConversionError(f"{path.name}: no zip {archive.name} beside it to check against")
-        with zipfile.ZipFile(archive) as zipped:
+        try:
+            zipped = zipfile.ZipFile(archive)
+        except zipfile.BadZipFile as error:
+            raise ConversionError(f"{archive.name} is not a readable zip ({error})") from error
+        with zipped:
             try:
                 info = zipped.getinfo(path.name)
             except KeyError as error:

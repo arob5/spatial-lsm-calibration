@@ -194,8 +194,8 @@ class NetEcosystemExchangeSpec:
         return self._uncertainty_attributes(
             self.random_uncertainty_column,
             "random uncertainty",
-            "ONEFlux's random uncertainty of the half-hour, estimated from measured data "
-            "only; defined for measured steps.",
+            "ONEFlux's random uncertainty of the step, estimated from measured data only "
+            "and reported at gap-filled steps as well as measured ones.",
         )
 
     def joint_uncertainty_attributes(self) -> dict[str, Any]:
@@ -237,8 +237,7 @@ _TIME_REFERENCE = (
 
 _UNITS_PROVENANCE = (
     "The FLUXNET2015 FULLSET variable table gives umolCO2 m-2 s-1 for half-hourly and hourly "
-    f"NEE ({SOURCE.documentation}); the files are ONEFlux output in that format, which is "
-    "the documented source of the unit."
+    f"NEE ({SOURCE.documentation}), and the files are ONEFlux output in that format."
 )
 
 _VARIABLE = (

@@ -8,11 +8,16 @@ more than one module needs. Nothing here reads or writes anything.
 Contents
 --------
 :data:`TOWER`, :data:`TIME_INDEX`, :data:`SITE`, :data:`TIME`, :data:`BOUNDS`, :data:`MEMBER`
-    The dimension names, spelled once, and the time coordinate names beside
-    them.
-:class:`Resolution`, :data:`RESOLUTIONS`
+    The dimension names, spelled once, with :data:`TIME_STEP_START`,
+    :data:`TIME_STEP_LENGTH` and :data:`TIME_BOUNDS`, the products' other time
+    coordinates.
+:data:`RAW_START`, :data:`RAW_END`, :data:`PRODUCT_START`, :data:`PRODUCT_END`
+    The ends of the raw (local standard time) and product (UTC) axes.
+:class:`Resolution`, :data:`RESOLUTIONS`, :func:`resolve_resolution`
     The two source resolutions, half-hourly and hourly, with their step and
     their raw and product time axes.
+:data:`TOWER_TABLE_FILE`, :data:`AMERIFLUX_SITE_LIST_FILE`, :data:`POOL_INPUT_LIST_FILE`
+    The file names of the tower table and its two inputs.
 The path functions
     :func:`default_raw_dir`, :func:`default_source_root`, :func:`raw_path`,
     :func:`tower_table_path`, :func:`ameriflux_site_list_path`,

@@ -36,7 +36,7 @@ Input data
 
 Output data
 -----------
-``--out``, default ``data/raw/net_ecosystem_exchange/ameriflux_towers.csv``
+``--out``, default ``<raw dir>/ameriflux_towers.csv``
     One row per tower, the columns of ``TOWER_COLUMNS``; ``read_tower_table``
     documents and checks them.
 
@@ -96,7 +96,7 @@ class BuildError(Exception):
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     raw_dir = args.raw_dir if args.raw_dir is not None else default_raw_dir()
-    out = args.out if args.out is not None else tower_table_path()
+    out = args.out if args.out is not None else tower_table_path(raw_dir)
     try:
         site_list = read_ameriflux_site_list(args.site_list or ameriflux_site_list_path(raw_dir))
         pool_input_list = read_pool_input_list(args.pool_input_list or pool_input_list_path(raw_dir))
@@ -123,7 +123,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sites", type=Path, default=None, help="Default: data/processed/sites/sites.csv.")
     parser.add_argument(
         "--out", type=Path, default=None,
-        help="Where to write. Default: data/raw/net_ecosystem_exchange/ameriflux_towers.csv.",
+        help="Where to write. Default: <raw dir>/ameriflux_towers.csv.",
     )
     return parser.parse_args(argv)
 
