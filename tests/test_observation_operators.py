@@ -257,3 +257,79 @@ class TestCheckOperator:
 
         with pytest.raises(ValueError, match="not pointwise in 'site'"):
             check_operator(SiteMean(), stack, _observed([1, 2], labels))
+
+
+class TestSiteOrderAndCoverage:
+    def test_an_operator_follows_an_observation_out_of_model_order(self, stack, labels):
+        observed = _observed([2, 1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        predicted = check_operator(SelectTimestep("wood_carbon"), stack, observed)
+        assert predicted["site"].values.tolist() == [2, 1]
+        np.testing.assert_allclose(predicted.sel(site=2, member=0).values, 1.5 * predicted.sel(site=1, member=0).values)
+
+    def test_an_operator_returning_model_order_is_refused(self, stack, labels):
+        @dataclass(frozen=True)
+        class ModelOrder:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                sites = sorted(observed_values["site"].values.tolist())
+                return select_timestep_at(model_output["wood_carbon"].sel(site=sites), observed_values["time"])
+
+        with pytest.raises(ValueError, match="sites, in order"):
+            check_operator(ModelOrder(), stack, _observed([2, 1], labels, units="Mg ha-1", constituent="C"))
+
+    def test_check_operator_handles_a_run_over_more_sites_than_observed(self, stack, labels):
+        wider = xr.concat([stack, (stack.isel(site=[1]) * 2).assign_coords(site=[3])], dim="site")
+        for name in VARIABLES:
+            wider[name].attrs = stack[name].attrs
+        observed = _observed([1, 2], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        predicted = check_operator(SelectTimestep("wood_carbon"), wider, observed)
+        assert predicted["site"].values.tolist() == [1, 2]
+
+    def test_check_operator_with_a_scalar_site_observation(self, one_run, labels):
+        observed = _observed([1], labels, units="Mg ha-1", constituent="C").isel(site=0)
+        predicted = check_operator(SelectTimestep("wood_carbon"), one_run, observed)
+        assert int(predicted["site"]) == 1
+
+
+class TestReduceOverTimeBoundsValues:
+    def test_the_label_need_not_be_a_bound_edge(self, one_run, labels):
+        observed = _observed([1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass", bounds=True)
+        shifted = observed.assign_coords(time=observed["time"].values - np.timedelta64(12, "h"))
+        predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, shifted)
+        np.testing.assert_array_equal(predicted["time"].values, shifted["time"].values)
+        from sipnet_calibration.observation import reduce_windows, windows_from_time_bounds
+
+        expected = reduce_windows(one_run["wood_carbon"], windows_from_time_bounds(shifted), "mean")
+        np.testing.assert_array_equal(predicted.values, expected.values)
+
+    def test_the_mean_over_a_window_is_the_length_weighted_mean(self, one_run, labels):
+        observed = _observed([1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass", bounds=True)
+        predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, observed)
+        wood = one_run["wood_carbon"]
+        ends = pd.DatetimeIndex(wood["time"].values)
+        lengths = wood["time_step_length"].values.astype("timedelta64[ns]").astype("float64")
+        for k, label in enumerate(labels):
+            inside = (ends > label - pd.Timedelta("1D")) & (ends <= label)
+            expected = np.average(wood.values[inside], weights=lengths[inside])
+            np.testing.assert_allclose(predicted.values[k], expected)
+
+
+class TestParameterLookups:
+    def test_a_table_missing_the_runs_members_is_named(self, stack, labels):
+        table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0]])}, coords={"member": [0], "site": [1, 2]})
+        with pytest.raises(ValueError, match=r"no member label\(s\) \[1\]"):
+            ComputeLeafAreaIndex()(stack, _observed([1, 2], labels), sipnet_parameters=table)
+
+    def test_an_alias_key_in_a_mapping_is_found(self, one_run, labels):
+        predicted = ComputeLeafAreaIndex()(one_run, _observed([1], labels), sipnet_parameters={"leafCSpWt": 270.0})
+        assert np.isfinite(predicted.values).all()
+
+    def test_a_non_numeric_mapping_value_is_refused(self, one_run, labels):
+        with pytest.raises(ValueError, match="must be a number"):
+            ComputeLeafAreaIndex()(one_run, _observed([1], labels), sipnet_parameters={"leaf_carbon_per_area": "270"})
+
+    def test_repeated_observed_sites_are_refused(self, stack, labels):
+        with pytest.raises(ValueError, match="repeats a site"):
+            select_sites(stack["wood_carbon"], _observed([1, 1], labels))

@@ -175,3 +175,37 @@ class TestUnitStrings:
         assert "output_decimals" not in rate.attrs
         assert "sipnet_name" not in rate.attrs
         assert rate.attrs["derivation"] == "net_ecosystem_exchange / time_step_length"
+
+
+class TestKindAlgebra:
+    def test_dividing_by_a_model_variable_is_refused(self, niwot):
+        with pytest.raises(ValueError, match="cannot divide by a model variable"):
+            divide(_parameter(1.0, "1", constituent=""), niwot["net_ecosystem_exchange"])
+
+    def test_a_pool_times_a_per_day_parameter_is_refused(self, niwot):
+        turnover = _parameter(0.01, "d-1", constituent="", name="leaf_turnover_rate")
+        with pytest.raises(ValueError, match="no pySIPNET kind names the result"):
+            multiply(niwot["wood_carbon"], turnover)
+
+    def test_a_total_times_a_per_day_is_a_rate_and_back(self, niwot):
+        nee = niwot["net_ecosystem_exchange"]
+        per_day = _parameter(1.0, "d-1", constituent="")
+        rate = multiply(nee, per_day)
+        assert rate.attrs["kind"] == "daily_rate" and rate.attrs["units"] == "g m-2 d-1"
+        total = divide(rate, per_day)
+        assert total.attrs["kind"] == "timestep_total" and total.attrs["units"] == "g m-2"
+
+    def test_a_rate_carries_the_rates_time_reference(self, niwot):
+        nee = niwot["net_ecosystem_exchange"]
+        rate = divide(nee, step_length(nee))
+        assert rate.attrs["time_reference"] != nee.attrs["time_reference"]
+        assert rate.attrs["cell_methods"] == "time: mean"
+        assert rate.attrs["sign_convention"] == nee.attrs["sign_convention"]
+
+    def test_a_missing_step_length_is_missing(self, niwot):
+        nee = niwot["net_ecosystem_exchange"].copy()
+        lengths = nee["time_step_length"].values.copy()
+        lengths[5] = np.timedelta64("NaT", "ns")
+        nee = nee.assign_coords(time_step_length=("time", lengths))
+        days = step_length(nee)
+        assert np.isnan(days.values[5]) and np.isfinite(days.values[4])

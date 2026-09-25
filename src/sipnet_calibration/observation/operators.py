@@ -3,15 +3,15 @@ observed quantity, on that quantity's own grid.
 
 Where this sits
 ---------------
-An operator is ``H_k`` in the chain ``G = flatten o (H_1, ..., H_S) o (M_1,
-..., M_S) o T``: it reads what SIPNET wrote (through
-:func:`sipnet_calibration.fields.label_run`, a labeled ``xr.Dataset``), and
-where needed the SIPNET parameter values the run used (a row of a SIPNET table
-from :class:`~sipnet_calibration.parameter_vector.ParameterVector`), and
-returns what the instrument would have read. The
-:class:`~sipnet_calibration.observation.vector.ObservationVector` calls it, converts
-the result into the observation's units and checks it; a predictive-check
-figure calls it directly.
+An operator reads what SIPNET wrote (through
+:func:`sipnet_calibration.fields.label_run`, a labeled ``xr.Dataset``) and,
+where needed, the SIPNET parameter values the run used (a row of a SIPNET
+table from :class:`~sipnet_calibration.parameter_vector.ParameterVector`),
+and returns what the instrument would have read. The
+:class:`~sipnet_calibration.observation.vector.ObservationVector` calls it,
+converts the result into the observation's units and checks it; a
+predictive-check figure calls it directly. In the notation of the inference
+design it is the output-to-observation map, one per observed product.
 
 The contract
 ------------
@@ -67,7 +67,11 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import xarray as xr
-from pysipnet.parameters.model import PARAMETER_SPECS, SIPNET_PARAMS_BY_GROUP, resolve_parameter_name
+from pysipnet.parameters.model import (
+    PARAMETER_SPECS,
+    SIPNET_PARAMS_BY_GROUP,
+    resolve_parameter_name,
+)
 from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration.observation.alignment import (
@@ -99,7 +103,7 @@ TIME = "time"
 
 @runtime_checkable
 class ObservationOperator(Protocol):
-    """H_k: one site's model output to a prediction of one observed quantity."""
+    """Model output to a prediction of one observed quantity, on that quantity's grid."""
 
     output_variable_names: tuple[str, ...]
     sipnet_parameter_names: tuple[str, ...]
@@ -251,28 +255,30 @@ def select_sites(variable: xr.DataArray, observed_values: xr.DataArray) -> xr.Da
     site at all is refused: the correspondence would be a guess.
     """
     wanted = np.asarray(observed_values[SITE].values).ravel()
+    who = _name_of(observed_values)
+    if len(set(wanted.tolist())) != wanted.size:
+        raise ValueError(f"{who} repeats a site; an observation names each site once.")
     if SITE in variable.dims:
         have = set(variable[SITE].values.tolist())
         missing = [int(s) for s in wanted if s not in have]
         if missing:
             raise ValueError(
-                f"the model output has no site(s) {missing[:10]} that "
-                f"{observed_values.name!r} observes; run the model at every observed "
-                "site, or select the observations to the sites that were run."
+                f"the model output has no site(s) {missing[:10]} that {who} observes; "
+                "run the model at every observed site, or select the observations to "
+                "the sites that were run."
             )
         return variable.sel({SITE: wanted})
     if SITE in variable.coords:
         site = int(variable[SITE].values)
         if wanted.size != 1 or int(wanted[0]) != site:
             raise ValueError(
-                f"the model output is one run at site {site}, and "
-                f"{observed_values.name!r} observes site(s) {wanted.tolist()[:10]}; select "
-                "the observation to that one site."
+                f"the model output is one run at site {site}, and {who} observes "
+                f"site(s) {wanted.tolist()[:10]}; select the observation to that one site."
             )
         return variable
     raise ValueError(
         f"the model output carries no {SITE!r} coordinate, so it cannot be matched to "
-        f"{observed_values.name!r}'s sites; label the run with fields.label_run(site=...)."
+        f"the sites {who} observes; label the run with fields.label_run(site=...)."
     )
 
 
@@ -306,19 +312,36 @@ def sipnet_parameter_array(
         selectors = {}
         for dim in (SITE, MEMBER):
             if dim in array.dims and dim in like.coords:
-                selectors[dim] = like[dim].values
+                wanted = np.asarray(like[dim].values).ravel()
+                missing = [x for x in wanted.tolist() if x not in set(array[dim].values.tolist())]
+                if missing:
+                    raise ValueError(
+                        f"the SIPNET table's {name!r} has no {dim} label(s) {missing[:10]} "
+                        f"that the model output has; the table and the runs must cover the "
+                        f"same {dim}s."
+                    )
+                selectors[dim] = wanted
         if selectors:
             array = array.sel(selectors)
         array = array.copy()
         array.attrs = attrs
         array.name = name
         return array
-    try:
-        value = sipnet_parameters[name]
-    except (KeyError, TypeError):
+    flat = resolve_parameter_name(name)
+    value = None
+    for key in (name, flat, spec.sipnet_name):
+        try:
+            value = sipnet_parameters[key]
+            break
+        except (KeyError, TypeError):
+            continue
+    if value is None:
+        raise ValueError(f"sipnet_parameters has no entry {name!r}, which this operator reads.")
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
         raise ValueError(
-            f"sipnet_parameters has no entry {name!r}, which this operator reads."
-        ) from None
+            f"sipnet_parameters[{name!r}] must be a number for one run, got "
+            f"{type(value).__name__}; pass a SIPNET table for several runs."
+        )
     return xr.DataArray(float(value), name=name, attrs=attrs)
 
 
@@ -355,6 +378,11 @@ def check_operator(
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
+
+
+def _name_of(observed_values: xr.DataArray) -> str:
+    """How an observed array is called in a message."""
+    return repr(observed_values.name) if observed_values.name is not None else "the observation"
 
 
 def _output_name(name: str) -> str:
@@ -433,18 +461,28 @@ def _check_pointwise(
     sipnet_parameters: Any,
     result: xr.DataArray,
 ) -> None:
+    observed_sites = np.asarray(observed_values[SITE].values).ravel().tolist()
     for dim in (MEMBER, SITE):
         if dim not in model_output.dims or model_output.sizes[dim] < 2:
             continue
-        label = model_output[dim].values[-1]
+        if dim == SITE:
+            if len(observed_sites) < 2 or SITE not in observed_values.dims:
+                continue
+            label = observed_sites[-1]
+            slice_observed = observed_values.sel({SITE: [label]})
+        else:
+            label = model_output[dim].values[-1]
+            slice_observed = observed_values
         slice_output = model_output.sel({dim: label})
-        slice_observed = observed_values.sel({SITE: [label]}) if dim == SITE else observed_values
         slice_parameters = sipnet_parameters
         if isinstance(sipnet_parameters, xr.Dataset) and dim in sipnet_parameters.dims:
             slice_parameters = sipnet_parameters.sel({dim: label})
         expected = operator(slice_output, slice_observed, sipnet_parameters=slice_parameters)
         got = result.sel({dim: label})
-        if not np.allclose(np.asarray(got.values, float), np.asarray(expected.values, float), equal_nan=True):
+        same = np.allclose(
+            np.asarray(got.values, float), np.asarray(expected.values, float), equal_nan=True
+        )
+        if not same:
             raise ValueError(
                 f"{type(operator).__name__} is not pointwise in {dim!r}: its value on the "
                 f"stack differs from its value on the {dim}={label!r} slice alone."

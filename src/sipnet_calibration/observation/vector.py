@@ -6,29 +6,30 @@ Where this sits
 ---------------
 ::
 
-    constraints.constraint_fields() / the NEE product   observed arrays, (site[, time])
+    constraints.constraint_fields(), a future NEE product   observed arrays, (site[, time])
       -> Observation(product_name, values, operator)     one per product
       -> ObservationVector([...])                        the cells, in Flat order
            .y                                            what pyEKI compares against
            .predict(model_output, sipnet_parameters=)    H applied, converted, checked
            .flat(fields) / .fields(values)               Fields <-> Flat
 
-The ``ForwardModel`` flattens predictions with it into pyEKI's ``(J, N)``;
-the inference layer reads ``y``, ``index`` and ``positions`` off it to build
-the error model; a predictive-check figure unstacks a ``(J, N)`` block with
+The forward model flattens predictions with it into pyEKI's ``(J, N)``; the
+inference layer reads ``y``, ``index`` and ``positions`` off it to build the
+error model; a predictive-check figure unstacks a ``(J, N)`` block with
 ``fields``. It imports nothing from the product modules: an observation is
 built from arrays, and reads their attributes.
 
 What it reads
 -------------
-:class:`Observation.values`
-    A field ``(site[, time])`` with ``NaN`` where nothing was observed, and
+:attr:`Observation.values`
+    A field ``(site[, time])`` with ``NaN`` where nothing was observed, finite
+    elsewhere, integer ``site`` labels, naive datetime ``time`` labels, and
     ``units`` (and ``constituent``, where the quantity has one) in its
     attributes. An annual product's array also carries its ``time_bounds``
     as ``time_bounds_start``/``time_bounds_end``. A ``member`` dimension is
     refused: an observation ensemble is reduced to one value per cell by the
     experiment before it enters the vector.
-:class:`Observation.operator`
+:attr:`Observation.operator`
     An :class:`~sipnet_calibration.observation.operators.ObservationOperator`.
 
 Data model
@@ -48,7 +49,18 @@ read it off ``index`` and ``positions`` and never assume it.
 
 Functions
 ---------
-:class:`Observation`, :class:`ObservationVector`.
+:class:`Observation`
+    One product's values and operator; ``sites``, ``is_static``, ``n_cells``
+    and ``cells()`` (the observed cells as a frame).
+:class:`ObservationVector`
+    ``product_names``, ``sites``, ``dimension``, ``index``,
+    ``output_variable_names`` and ``sipnet_parameter_names`` (the union over
+    the operators), ``observed_values`` (Fields) and ``y`` (Flat);
+    ``select(product_names=, sites=, time=)`` for a sub-vector;
+    ``positions(site=, product_name=)`` for where a block sits in Flat;
+    ``flat(fields)`` and ``fields(values)`` between the representations;
+    ``predict(model_output, sipnet_parameters=)`` for every operator applied,
+    converted and checked; ``describe()`` for one row per product.
 
 Notes
 -----
@@ -72,20 +84,24 @@ Usage
 ::
 
     from sipnet_calibration.constraints import constraint_fields
-    from sipnet_calibration.observation import DEFAULT_OBS_OPS, Observation, ObservationVector, SelectTimestep
+    from sipnet_calibration.observation import (
+        DEFAULT_OBS_OPS, Observation, ObservationVector, ReduceOverTimeBounds,
+    )
 
-    observed = constraint_fields(["modis_leaf_area_index", "landtrendr_aboveground_biomass"], sites=sites)
+    names = ["modis_leaf_area_index", "landtrendr_aboveground_biomass"]
+    observed = constraint_fields(names, sites=sites)
     vector = ObservationVector([
         Observation("modis_leaf_area_index", observed["modis_leaf_area_index"],
                     DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-        Observation("landtrendr_aboveground_biomass", observed["landtrendr_aboveground_biomass"],
-                    SelectTimestep("wood_carbon")),
+        Observation("landtrendr_aboveground_biomass",
+                    observed["landtrendr_aboveground_biomass"],
+                    ReduceOverTimeBounds("wood_carbon", "mean")),  # the experiment's reading
     ]).select(time=slice("2012", "2024"))
 
-    vector.dimension, vector.y.shape                     # N, (N,)
+    vector.dimension, vector.y.shape           # N, (N,)
     predictions = vector.predict(model_output, sipnet_parameters=table)   # Fields
-    g = vector.flat(predictions)                         # (J, N) for a (member, site, time) model output
-    vector.fields(g)["modis_leaf_area_index"]            # back to (member, site, time)
+    g = vector.flat(predictions)               # (J, N) for a (member, site, time) output
+    vector.fields(g)["modis_leaf_area_index"]  # back to (member, site, time)
 """
 
 from __future__ import annotations
@@ -127,7 +143,7 @@ class Observation:
         check_values_are_a_field(self.product_name, self.values)
         check_values_have_units(self.product_name, self.values)
         check_operator_declares_names(self.product_name, self.operator)
-        object.__setattr__(self, "values", _ordered(self.values))
+        object.__setattr__(self, "values", _ordered(self.values).rename(self.product_name))
 
     @property
     def sites(self) -> tuple[int, ...]:
@@ -141,10 +157,16 @@ class Observation:
     def n_cells(self) -> int:
         return int(self.values.notnull().sum())
 
+    def __repr__(self) -> str:
+        return f"Observation({self.product_name!r}, {self.n_cells} cells, {self.operator!r})"
+
     def cells(self) -> pd.DataFrame:
         """The observed cells as a frame with ``site``, ``time`` and ``value`` columns."""
         mask = self.values.notnull()
-        sites = np.broadcast_to(self.values[SITE].values[:, None] if not self.is_static else self.values[SITE].values, self.values.shape)
+        site_labels = self.values[SITE].values
+        if not self.is_static:
+            site_labels = site_labels[:, None]
+        sites = np.broadcast_to(site_labels, self.values.shape)
         if self.is_static:
             times = np.full(self.values.shape, np.datetime64("NaT", "ns"))
         else:
@@ -259,10 +281,20 @@ class ObservationVector:
         is refused. ``time`` does not apply to a static product.
         """
         chosen = self._observations
+        if isinstance(product_names, str):
+            product_names = [product_names]
+        if isinstance(sites, (int, np.integer)):
+            sites = [int(sites)]
+        if time is not None and not isinstance(time, slice):
+            raise TypeError(
+                f"time must be a slice such as slice('2012', '2024'), got {type(time).__name__}."
+            )
         if product_names is not None:
             unknown = [n for n in product_names if n not in self._by_name]
             if unknown:
-                raise KeyError(f"no observation of {unknown}; the vector holds {list(self.product_names)}.")
+                raise KeyError(
+                    f"no observation of {unknown}; the vector holds {list(self.product_names)}."
+                )
             chosen = tuple(self._by_name[n] for n in product_names)
         kept: list[Observation] = []
         for o in chosen:
@@ -339,6 +371,11 @@ class ObservationVector:
         if block.shape[1] != self.dimension:
             raise ValueError(
                 f"values has {block.shape[1]} entries and the vector {self.dimension}."
+            )
+        if block.shape[0] > np.iinfo(np.int16).max:
+            raise ValueError(
+                f"a block of {block.shape[0]} members cannot be labeled: member is an "
+                f"int16 coordinate, so at most {np.iinfo(np.int16).max} members."
             )
         out: dict[str, xr.DataArray] = {}
         for o in self._observations:
@@ -471,7 +508,8 @@ def _read_cells(
     site_labels = xr.DataArray(cells.get_level_values(SITE).values, dims="cell")
     selectors: dict[str, Any] = {SITE: site_labels}
     if not is_static:
-        selectors[TIME] = xr.DataArray(_nanoseconds(cells.get_level_values(TIME).values), dims="cell")
+        times = _nanoseconds(cells.get_level_values(TIME).values)
+        selectors[TIME] = xr.DataArray(times, dims="cell")
     picked = array.sel(selectors)
     if members is not None:
         picked = picked.transpose(MEMBER, "cell")
@@ -483,11 +521,10 @@ def _cell_positions(o: Observation, cells: pd.MultiIndex) -> tuple[np.ndarray, n
     rows = np.array([site_position[int(s)] for s in cells.get_level_values(SITE)], dtype=np.int64)
     if o.is_static:
         return rows, np.array([], dtype=np.int64)
-    time_position = {int(t): i for i, t in enumerate(_nanoseconds(o.values[TIME].values).astype("int64"))}
-    cols = np.array(
-        [time_position[int(t)] for t in _nanoseconds(cells.get_level_values(TIME).values).astype("int64")],
-        dtype=np.int64,
-    )
+    observed_times = _nanoseconds(o.values[TIME].values).astype("int64")
+    time_position = {int(t): i for i, t in enumerate(observed_times)}
+    cell_times = _nanoseconds(cells.get_level_values(TIME).values).astype("int64")
+    cols = np.array([time_position[int(t)] for t in cell_times], dtype=np.int64)
     return rows, cols
 
 
@@ -532,13 +569,39 @@ def check_values_are_a_field(name: str, values: Any) -> None:
         )
     if SITE not in values.coords:
         raise ValueError(f"{name}: values carry no site coordinate.")
+    if values[SITE].dtype.kind not in "iu":
+        raise ValueError(
+            f"{name}: site labels must be integers (the 1-8000 site ids), got dtype "
+            f"{values[SITE].dtype}."
+        )
     if len(set(values[SITE].values.tolist())) != values.sizes[SITE]:
         raise ValueError(f"{name}: the site coordinate has duplicates.")
-    if TIME in values.dims and values.indexes[TIME].has_duplicates:
-        raise ValueError(f"{name}: the time coordinate has duplicates.")
+    if values.dtype.kind not in "iuf":
+        raise ValueError(f"{name}: values must be numeric, got dtype {values.dtype}.")
+    if TIME in values.dims:
+        if TIME not in values.coords:
+            raise ValueError(f"{name}: values have a time dimension but no time coordinate.")
+        if isinstance(values[TIME].dtype, pd.api.extensions.ExtensionDtype) or not np.issubdtype(
+            values[TIME].dtype, np.datetime64
+        ):
+            raise ValueError(
+                f"{name}: time labels must be naive datetime64, got dtype "
+                f"{values[TIME].dtype}; a time-zone-aware or object coordinate is not "
+                "one the model axis can be matched against."
+            )
+        if np.isnat(values[TIME].values).any():
+            raise ValueError(
+                f"{name}: the time coordinate holds NaT, which the index reserves for a "
+                "static product; drop those labels."
+            )
+        if values.indexes[TIME].has_duplicates:
+            raise ValueError(f"{name}: the time coordinate has duplicates.")
 
 
 def check_values_have_units(name: str, values: xr.DataArray) -> None:
+    observed = values.values[~np.isnan(values.values.astype(np.float64))]
+    if not np.isfinite(observed).all():
+        raise ValueError(f"{name}: an observed value is infinite; an observation is finite or NaN.")
     units = values.attrs.get("units")
     if not isinstance(units, str):
         raise ValueError(
@@ -582,7 +645,9 @@ def check_product_names_are_unique(observations: Sequence[Observation]) -> None:
 def check_there_are_observed_cells(observations: Sequence[Observation]) -> None:
     empty = [o.product_name for o in observations if o.n_cells == 0]
     if empty:
-        raise ValueError(f"{empty} hold no observed cell; drop them or select sites that were observed.")
+        raise ValueError(
+            f"{empty} hold no observed cell; drop them or select sites that were observed."
+        )
 
 
 def check_y_is_finite(y: np.ndarray, index: pd.MultiIndex) -> None:
@@ -596,7 +661,10 @@ def check_y_is_finite(y: np.ndarray, index: pd.MultiIndex) -> None:
 
 def check_fields_hold_the_products(fields: Any, names: Sequence[str]) -> None:
     if not isinstance(fields, Mapping):
-        raise TypeError(f"fields must be a mapping from product name to DataArray, got {type(fields).__name__}.")
+        raise TypeError(
+            f"fields must be a mapping from product name to DataArray, got "
+            f"{type(fields).__name__}."
+        )
     missing = [n for n in names if n not in fields]
     if missing:
         raise ValueError(f"fields lack the product(s) {missing}.")
@@ -642,12 +710,16 @@ def check_model_output_carries(model_output: xr.Dataset, names: Sequence[str]) -
 
 def check_parameters_are_given(names: Sequence[str], sipnet_parameters: Any) -> None:
     if names and sipnet_parameters is None:
-        raise ValueError(f"the operators read SIPNET parameters {list(names)}; pass sipnet_parameters=.")
+        raise ValueError(
+            f"the operators read SIPNET parameters {list(names)}; pass sipnet_parameters=."
+        )
 
 
 def check_prediction_is_an_array(name: str, predicted: Any) -> None:
     if not isinstance(predicted, xr.DataArray):
-        raise TypeError(f"{name}: the operator returned {type(predicted).__name__}, not a DataArray.")
+        raise TypeError(
+            f"{name}: the operator returned {type(predicted).__name__}, not a DataArray."
+        )
     if not isinstance(predicted.attrs.get("units"), str):
         raise ValueError(
             f"{name}: the operator's result carries no 'units' attribute, so it cannot be "
@@ -665,7 +737,9 @@ def check_prediction_is_on_the_grid(
         raise ValueError(f"{name}: the prediction is not on the observation's sites, in order.")
     if o.is_static:
         if TIME in predicted.dims:
-            raise ValueError(f"{name}: the prediction has a time dimension for a static observation.")
+            raise ValueError(
+                f"{name}: the prediction has a time dimension for a static observation."
+            )
     elif TIME not in predicted.dims or not np.array_equal(
         _nanoseconds(predicted[TIME].values), _nanoseconds(o.values[TIME].values)
     ):

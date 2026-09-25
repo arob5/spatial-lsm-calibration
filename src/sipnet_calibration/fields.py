@@ -131,14 +131,15 @@ Functions
     ``(member, site, time)`` fields.
 :func:`site_lookup`
     The site table keyed on ``site_id``, for a caller adapting run after run.
-``from_clim``, ``from_nee_store``, ``from_eki_predictions``
+``from_clim``, ``from_nee_store``
     Not written yet. The drivers and the constraints have readers of their own
     that already produce the form above
     (:func:`sipnet_calibration.drivers.driver_fields`,
     :func:`sipnet_calibration.constraints.constraint_fields`,
     :func:`sipnet_calibration.initial_conditions.initial_condition_fields`),
-    so it is the NEE observations and the calibration output that are still
-    owed. ``validate_field`` is owed with them (issue #6).
+    so it is the NEE observations that are still owed; a block of
+    predictions is unstacked by ``ObservationVector.fields``.
+    ``validate_field`` is owed with them (issue #6).
 
 Notes
 -----
@@ -158,14 +159,12 @@ already knows which ``(site, member)`` pairs it left out; those cells read
 ``NaN``. This differs from :func:`sipnet_calibration.drivers.load_drivers`,
 which discovers absence on disk and therefore has to report it.
 
-One trap belongs to an adapter still to be written here.
-``from_eki_predictions`` will unstack a ``(J, N)`` block with the
-``(site, variable, time)`` index from ``observation.vector.ObservationVector.index``, and it must be the
-same index the observation operator used to build the observation vector, or
-the predictions come back mislabeled against the observations they are
-compared with. The traps of the observation and initial-condition sources are
-in ``CLAUDE.md``'s Data section, where they apply to the readers that already
-exist as well.
+A ``(J, N)`` block of predictions is unstacked by
+:meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns the
+``(site, product, time)`` index the block was flattened with, so the two
+cannot mislabel against each other. The traps of the observation and
+initial-condition sources are in ``CLAUDE.md``'s Data section, where they
+apply to the readers that already exist as well.
 
 Usage
 -----
@@ -586,6 +585,12 @@ def _site_locations(site_ids: np.ndarray, sites: pd.DataFrame) -> dict[str, xr.D
 def _site_location(site: int, sites: pd.DataFrame | None) -> tuple[np.float64, np.float64]:
     """The ``lon``/``lat`` of *site* in the site table, read from disk if not supplied."""
     table = site_lookup(sites if sites is not None else load_sites())
+    if table.index.has_duplicates:
+        repeated = sorted(set(table.index[table.index.duplicated()].tolist()))
+        raise ValueError(
+            f"The site table lists site(s) {repeated[:10]} more than once; a site has one "
+            "row. load_sites() never produces this."
+        )
     try:
         row = table.loc[site]
     except KeyError:

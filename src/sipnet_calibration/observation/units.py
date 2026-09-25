@@ -36,10 +36,15 @@ carries all three.
   constituent the numerator lacks, or two different constituents, is refused.
   ``add`` and ``subtract`` require the same constituent.
 * **Kind**: in a product or quotient, at most one operand has a kind and the
-  result keeps it, with two exceptions from pySIPNET's own tables: a
-  ``timestep_total`` divided by a time is a ``daily_rate``, and a
-  ``daily_rate`` multiplied by a time is a ``timestep_total``. Two kinded
-  operands in a product or quotient are refused (a state times a flux is not
+  result keeps it, with two exceptions matching pySIPNET's kinds: a
+  ``timestep_total`` divided by a time, or multiplied by a per-time, is a
+  ``daily_rate``; a ``daily_rate`` multiplied by a time, or divided by a
+  per-time, is a ``timestep_total``. (The kind is named ``daily_rate``
+  whatever the time unit; the units say which.) Any other combination of a
+  kinded operand with a time or a per-time is refused, because it would
+  change what the value is over a step without a kind to say so: a pool
+  times a turnover rate is a flux SIPNET reports itself. Two kinded operands
+  in a product or quotient are refused (a state times a flux is not
   something SIPNET reports). ``add`` and ``subtract`` require the same kind.
 
 The algebra is deliberately not closed. An operator that needs more sets the
@@ -55,7 +60,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 from pysipnet.units import unit_registry, validate_units
-from pysipnet.variables import VariableKind
+from pysipnet.variables import CELL_METHODS_FOR_KIND, TIME_REFERENCE_FOR_KIND, VariableKind
 
 from sipnet_calibration.observation.alignment import LENGTH_COORD, TIME_DIM
 
@@ -68,9 +73,9 @@ def multiply(a: Any, b: Any) -> xr.DataArray:
     """``a * b`` with ``units``, ``constituent`` and ``kind`` carried through."""
     ua, ca, ka = _describe(a, "multiply")
     ub, cb, kb = _describe(b, "multiply")
+    kind = _product_kind(ka, ua, kb, ub, "*")
     units = _combine_units(ua, ub, +1)
     constituent = _product_constituent(ca, cb)
-    kind = _product_kind(ka, ua, kb, ub, "*")
     return _result(_value(a) * _value(b), units, constituent, kind, a, b, "*")
 
 
@@ -78,9 +83,9 @@ def divide(a: Any, b: Any) -> xr.DataArray:
     """``a / b`` with ``units``, ``constituent`` and ``kind`` carried through."""
     ua, ca, ka = _describe(a, "divide")
     ub, cb, kb = _describe(b, "divide")
+    kind = _product_kind(ka, ua, kb, ub, "/")
     units = _combine_units(ua, ub, -1)
     constituent = _quotient_constituent(ca, cb)
-    kind = _product_kind(ka, ua, kb, ub, "/")
     return _result(_value(a) / _value(b), units, constituent, kind, a, b, "/")
 
 
@@ -101,7 +106,8 @@ def step_length(array: xr.DataArray, units: str = "d") -> xr.DataArray:
 
     Reads pySIPNET's ``time_step_length`` coordinate and returns it on the
     same ``time`` coordinate in *units* (``"d"``, ``"h"`` or ``"s"``), so that
-    ``divide(total, step_length(total))`` is a rate.
+    ``divide(total, step_length(total))`` is a rate. A missing length (the
+    ``NaT`` padding a stack of unequal records carries) is ``NaN``.
     """
     if LENGTH_COORD not in array.coords:
         raise ValueError(
@@ -111,7 +117,8 @@ def step_length(array: xr.DataArray, units: str = "d") -> xr.DataArray:
     per_unit = {"d": 86_400e9, "h": 3_600e9, "s": 1e9}
     if units not in per_unit:
         raise ValueError(f"units must be one of {sorted(per_unit)}, got {units!r}.")
-    nanoseconds = array[LENGTH_COORD].values.astype("timedelta64[ns]").astype("float64")
+    lengths = array[LENGTH_COORD].values.astype("timedelta64[ns]")
+    nanoseconds = np.where(np.isnat(lengths), np.nan, lengths.astype("float64"))
     return xr.DataArray(
         nanoseconds / per_unit[units],
         dims=TIME_DIM,
@@ -203,8 +210,14 @@ def _quotient_constituent(ca: str, cb: str) -> str:
     )
 
 
-def _is_time(units: str) -> bool:
-    return unit_registry.Quantity(1.0, units).dimensionality == unit_registry.Quantity(1.0, "s").dimensionality
+def _time_power(units: str) -> int | None:
+    """``1`` for a time, ``-1`` for a per-time, ``0`` for no time dimension, else ``None``."""
+    dims = dict(unit_registry.Quantity(1.0, units).dimensionality)
+    if not dims:
+        return 0
+    if set(dims) == {"[time]"} and dims["[time]"] in (1, -1):
+        return int(dims["[time]"])
+    return None if "[time]" in dims else 0
 
 
 def _product_kind(
@@ -216,19 +229,36 @@ def _product_kind(
             f"with {op!r}; only one operand of a product or quotient may be a model "
             "variable. Combine a variable with a parameter, a constant or step_length()."
         )
-    kind, other_units = (ka, ub) if ka is not None else (kb, ua)
-    if kind is None:
+    if ka is None and kb is None:
         return None
-    if kind is VariableKind.TIMESTEP_TOTAL and op == "/" and ka is not None and _is_time(ub):
-        return VariableKind.DAILY_RATE
-    if kind is VariableKind.DAILY_RATE and op == "*" and _is_time(other_units):
-        return VariableKind.TIMESTEP_TOTAL
-    if kind is VariableKind.TIMESTEP_TOTAL and op == "/" and kb is not None:
+    if kb is not None and op == "/":
         raise ValueError(
-            "cannot divide by a per-step total; divide the total by step_length() to make "
-            "it a rate first."
+            f"cannot divide by a model variable of kind {kb.value!r}; a per-step total or "
+            "a pool in the denominator has no kind SIPNET names. Divide the variable by "
+            "the other operand instead, or divide a total by step_length() first."
         )
-    return kind
+    kind, other_units = (ka, ub) if ka is not None else (kb, ua)
+    # How the other operand's time dimension enters the result: op "*" adds
+    # its power, op "/" (variable in the numerator) subtracts it.
+    power = _time_power(other_units)
+    if power is None:
+        raise ValueError(
+            f"cannot combine a {kind.value!r} variable with {other_units!r}, whose time "
+            "dimension is neither a time nor a per-time; the result's kind is undefined."
+        )
+    effect = power if op == "*" else -power
+    if effect == 0:
+        return kind
+    if kind is VariableKind.TIMESTEP_TOTAL and effect == -1:
+        return VariableKind.DAILY_RATE
+    if kind is VariableKind.DAILY_RATE and effect == 1:
+        return VariableKind.TIMESTEP_TOTAL
+    raise ValueError(
+        f"cannot {'multiply' if op == '*' else 'divide'} a {kind.value!r} variable "
+        f"{'by' if op == '/' else 'with'} {other_units!r}: that changes what the value is "
+        "over a step, and no pySIPNET kind names the result. Only a total per time (a "
+        "rate) and a rate times a time (a total) are defined."
+    )
 
 
 def _same_description(a: Any, b: Any, what: str) -> tuple[str, str, VariableKind | None]:
@@ -263,10 +293,13 @@ def _result(
         attrs["constituent"] = constituent
     if kind is not None:
         attrs["kind"] = kind.value
+        attrs["time_reference"] = TIME_REFERENCE_FOR_KIND[kind]
+        cell_methods = CELL_METHODS_FOR_KIND[kind]
+        if cell_methods is not None:
+            attrs["cell_methods"] = cell_methods
         source = a if isinstance(a, xr.DataArray) and a.attrs.get("kind") else b
-        for key in ("time_reference", "cell_methods", "sign_convention"):
-            if isinstance(source, xr.DataArray) and key in source.attrs:
-                attrs[key] = source.attrs[key]
+        if isinstance(source, xr.DataArray) and "sign_convention" in source.attrs:
+            attrs["sign_convention"] = source.attrs["sign_convention"]
     attrs["long_name"] = f"{_name(a)} {op} {_name(b)}"
     attrs["derivation"] = f"{_name(a)} {op} {_name(b)}"
     result = values.copy()

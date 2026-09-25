@@ -16,6 +16,7 @@ constants copied out of it.
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 
@@ -338,3 +339,37 @@ class TestStackSipnetOutputsRefusesBadKeys:
     def test_a_key_of_the_wrong_arity_names_the_contract(self, niwot_output, sites_table):
         with pytest.raises(ValueError, match=r"\(site, member\) pair"):
             stack_sipnet_outputs({(1, 0, 7): niwot_output}, "nee", sites=sites_table)
+
+
+class TestLabelRun:
+    def _table(self):
+        return pd.DataFrame({"site_id": [1, 27], "lon": [-105.0, -70.0], "lat": [40.0, 45.0]}).set_index("site_id", drop=False)
+
+    def test_adds_the_labels_and_nothing_else(self, niwot_output):
+        from sipnet_calibration.fields import label_run
+
+        dataset = niwot_output.select(["wood_carbon"])
+        labeled = label_run(dataset, site=27, member=3, site_table=self._table())
+        assert int(labeled["site"]) == 27 and int(labeled["member"]) == 3
+        assert float(labeled["lon"]) == -70.0 and float(labeled["lat"]) == 45.0
+        assert labeled["site"].dtype == np.int32 and labeled["member"].dtype == np.int16
+        xr.testing.assert_identical(labeled.drop_vars(["site", "member", "lon", "lat"]), dataset)
+
+    def test_an_empty_run_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import label_run
+
+        with pytest.raises(ValueError, match="no rows"):
+            label_run(niwot_output.select(["wood_carbon"]).isel(time=slice(0, 0)), site=1, site_table=self._table())
+
+    def test_a_site_table_with_a_repeated_site_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import label_run
+
+        table = pd.concat([self._table(), self._table().iloc[[0]]])
+        with pytest.raises(ValueError, match="more than once"):
+            label_run(niwot_output.select(["wood_carbon"]), site=1, site_table=table)
+
+    def test_no_labels_returns_the_dataset_unchanged(self, niwot_output):
+        from sipnet_calibration.fields import label_run
+
+        dataset = niwot_output.select(["wood_carbon"])
+        xr.testing.assert_identical(label_run(dataset), dataset)

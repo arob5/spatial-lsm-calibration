@@ -302,3 +302,94 @@ class TestRealProducts:
         np.testing.assert_array_equal(vector.flat(fields), vector.y)
         sites = vector.index.get_level_values("site").values
         assert (np.diff(sites) >= 0).all()
+
+
+class TestTwinObservations:
+    """Observations built from the model output are reproduced exactly."""
+
+    def test_the_state_at_the_labels_in_the_observations_units(self, one_run, times):
+        wood = one_run["wood_carbon"]
+        ends = pd.DatetimeIndex(wood["time"].values)
+        at = ends.get_indexer(times)
+        observed = xr.DataArray(
+            wood.values[at][None, :] * 0.01,  # g m-2 -> Mg ha-1
+            dims=("site", "time"), coords={"site": [1], "time": times},
+            attrs={"units": "Mg ha-1", "constituent": "C"}, name="landtrendr_aboveground_biomass",
+        )
+        vector = ObservationVector([Observation("landtrendr_aboveground_biomass", observed, SelectTimestep("wood_carbon"))])
+        predicted = vector.flat(vector.predict(one_run))
+        np.testing.assert_allclose(predicted, vector.y, rtol=1e-12)
+
+    def test_leaf_area_index_from_leaf_carbon_and_the_parameter(self, one_run, times):
+        leaf = one_run["leaf_carbon"]
+        at = pd.DatetimeIndex(leaf["time"].values).get_indexer(times)
+        observed = xr.DataArray(
+            (leaf.values[at] / 270.0)[None, :], dims=("site", "time"), coords={"site": [1], "time": times},
+            attrs={"units": "m2 m-2"}, name="modis_leaf_area_index",
+        )
+        vector = ObservationVector([Observation("modis_leaf_area_index", observed, DEFAULT_OBS_OPS["modis_leaf_area_index"])])
+        predicted = vector.flat(vector.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 270.0}))
+        np.testing.assert_allclose(predicted, vector.y, rtol=1e-12)
+        wrong = vector.flat(vector.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 135.0}))
+        np.testing.assert_allclose(wrong, 2 * vector.y, rtol=1e-12)
+
+
+class TestMoreRefusals:
+    def test_an_operator_on_the_wrong_time_labels_is_refused_by_predict(self, lai, stack, table):
+        @dataclass(frozen=True)
+        class OffGrid:
+            output_variable_names = ("leaf_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                out = select_timestep_at(model_output["leaf_carbon"].sel(site=observed_values["site"].values), observed_values["time"])
+                out = out.assign_coords(time=out["time"].values + np.timedelta64(1, "h"))
+                out.attrs = {"units": "1"}
+                return out
+
+        vector = ObservationVector([Observation("modis_leaf_area_index", lai, OffGrid())])
+        with pytest.raises(ValueError, match="time labels"):
+            vector.predict(stack)
+
+    def test_an_infinite_observation_is_refused(self, lai):
+        lai[0, 0] = np.inf
+        with pytest.raises(ValueError, match="infinite"):
+            Observation("x", lai, SelectTimestep("wood_carbon"))
+
+    def test_a_nat_label_is_refused(self, lai):
+        broken = lai.assign_coords(time=[lai["time"].values[0], np.datetime64("NaT"), lai["time"].values[2]])
+        with pytest.raises(ValueError, match="NaT"):
+            Observation("x", broken, SelectTimestep("wood_carbon"))
+
+    def test_float_site_labels_are_refused(self, lai):
+        with pytest.raises(ValueError, match="site labels must be integers"):
+            Observation("x", lai.assign_coords(site=[1.0, 2.5]), SelectTimestep("wood_carbon"))
+
+    def test_an_aware_time_coordinate_is_refused(self, lai):
+        aware = lai.assign_coords(time=pd.DatetimeIndex(lai["time"].values).tz_localize("UTC"))
+        with pytest.raises(ValueError, match="naive datetime64"):
+            Observation("x", aware, SelectTimestep("wood_carbon"))
+
+    def test_mixed_member_and_no_member_fields_are_refused(self, vector):
+        fields = vector.fields(np.zeros((2, vector.dimension)))
+        fields["modis_leaf_area_index"] = fields["modis_leaf_area_index"].isel(member=0, drop=True)
+        with pytest.raises(ValueError, match="member dimension"):
+            vector.flat(fields)
+
+    def test_fields_label_members_from_zero(self, vector):
+        fields = vector.fields(np.zeros((3, vector.dimension)))
+        assert fields["modis_leaf_area_index"]["member"].values.tolist() == [0, 1, 2]
+        assert fields["modis_leaf_area_index"]["member"].dtype == np.int16
+
+    def test_too_many_members_are_refused(self, vector):
+        with pytest.raises(ValueError, match="at most"):
+            vector.fields(np.zeros((40000, vector.dimension)))
+
+    def test_select_accepts_one_name_and_one_site(self, vector):
+        assert vector.select(product_names="landtrendr_aboveground_biomass").dimension == 3
+        assert vector.select(sites=2).sites == (2,)
+        with pytest.raises(TypeError, match="slice"):
+            vector.select(time="2012")
+
+    def test_observation_values_are_named_for_the_product(self, lai):
+        assert Observation("x", lai.rename(None), SelectTimestep("wood_carbon")).values.name == "x"
