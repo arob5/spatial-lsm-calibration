@@ -617,28 +617,32 @@ plotting code. The load-bearing rules:
 - `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`,
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
-- **`pysipnet.units` converts units** (PR #47). `conversion_factor(*, units, constituent="",
-  to_units, to_constituent=None)` returns a float; `convert_units(values, *, units, ...)` takes
-  the same keywords and scales unlabeled values whose units the caller states;
-  `convert_dataarray_units(array, *, to_units, to_constituent=None)` reads `units` and
+- **`pysipnet.units` converts units** (pySIPNET PRs #46, #47). `conversion_factor(*, units,
+  constituent="", to_units, to_constituent=None)` returns a float; `convert_units(values, *,
+  units, ...)` takes the same keywords and scales unlabeled values whose units the caller
+  states; `convert_dataarray_units(array, *, to_units, to_constituent=None)` reads `units` and
   `constituent` from `array.attrs`, refuses an array with no `units` attr, scales the data, sets
-  the new `units`/`constituent`, and drops the unit-dependent attrs `output_decimals`,
-  `sipnet_internal_units` and `sipnet_internal_conversion` (`sipnet_internal_name` stays). The
-  constituent qualifies the **first** unit token, which must be an amount or a mass of it:
-  `"m-2 g"` with `constituent="C"` is refused. The tables are `MOLAR_MASS`, `DENSITY` and
-  `ATOMS_PER_MOLECULE`. For example, `g m-2 d-1` of C to `umol m-2 s-1` of CO2 is 0.96362, and
-  `Mg ha-1` to `g m-2` is 100.
+  the new `units`/`constituent`, and drops the unit-dependent attrs (`output_decimals`, and on
+  climate variables `sipnet_internal_units` and `sipnet_internal_conversion`). Where a
+  conversion needs a molar mass or a density, the constituent qualifies the **first** unit
+  token, which must then be an amount or a mass of it, or for H2O also a depth or a volume. The
+  tables are `MOLAR_MASS`, `DENSITY` and `ATOMS_PER_MOLECULE`. For example, `g m-2 d-1` of C to
+  `umol m-2 s-1` of CO2 is 0.96362, and `Mg ha-1` to `g m-2` is 100. A per-step total such as
+  SIPNET's `nee` (`g m-2`) is refused against a rate until it is divided by its step length.
 - **`ClimateDrivers` owns the `.clim` format** (PRs #43, #45). It reads either layout, detected
   from the file (there is no `n_columns` argument for a file), validates once on load, and
   refuses labels that disagree with the declared step lengths: an overlap, or a drift from
-  the running sum of lengths beyond 5 minutes. `head(n)` gives a prefix; `to_file(path)`
-  writes one. `time_zone="UTC"` or `"UTC±HH:MM"` declares the labels' clock as metadata only,
-  and is `"undeclared"` otherwise: SIPNET has no clock of its own.
-- The readers are `ClimateDrivers.from_file(path, *, time_zone=None)` and
+  the running sum of lengths beyond `pysipnet.dataset.DRIFT_TOLERANCE` (5 minutes). `head(n)`
+  gives a prefix; `to_file(path)` writes one. `time_zone="UTC"` or `"UTC±HH:MM"` declares the
+  labels' clock as metadata only, and is `"undeclared"` otherwise: SIPNET has no clock of its
+  own.
+- `ClimateDrivers.from_file(path, *, time_zone=None)` and
   `pysipnet.io.clim_io.read_clim_file(path, *, time_zone=None)` (not re-exported from
-  `pysipnet.io`). The drift tolerance is `pysipnet.dataset.DRIFT_TOLERANCE`, 300 s cumulative,
-  and the raw ERA5 `.clim` files exceed it, so both readers refuse them; tests read the drivers through `conftest.regular_drivers_root`.
-  `pysipnet.dataset.assemble_time_coords(*, start, end, length, attributes_for, length_source,
+  `pysipnet.io`) read and validate at once, so both refuse the local ERA5 files.
+  `ClimateDrivers.from_path(path, *, time_zone=None)` only opens the file: a SIPNET run on it
+  completes, and the refusal comes at the first read (`.xarray`, `.pandas`, or the output's
+  Dataset). The tests use the `regular_drivers_root` fixture in `tests/conftest.py`.
+- `pysipnet.dataset.assemble_time_coords(*, start, end, length, attributes_for, length_source,
   time_zone)` is keyword-only and `time_zone=` is required.
 - **An output's time axis is its drivers'** (PR #43): the runner passes `climate=` to
   `SIPNETOutput`, and `SIPNETOutput.from_dataframe(df, *, climate=None, flags=None,
@@ -698,8 +702,9 @@ plotting code. The load-bearing rules:
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
 - `sipnet_member_fields(members_axis, **{param_name: list_of_floats})` from `pysipnet.ensemble` builds `Grid` specs
 - `result.succeeded` is a list of `RunRecord`; access output via `rec.output`
-- **`pyens.xarray`** (the `xarray` extra, declared here as `pyens[xarray]`) builds specs from
-  labeled data: `axes_of(obj)`, `field_from_dataarray(array, *, along=None, axes=None)`,
+- **`pyens.xarray`** (PyEns PR #7; the `xarray` extra, declared here as `pyens[xarray]`)
+  builds specs from labeled data: `axes_of(obj)`,
+  `field_from_dataarray(array, *, along=None, axes=None)`,
   `fields_from_dataset(dataset, *, along=None, axes=None)` and
   `dataset_as_field(dataset, *, along, axes=None)`. A dim with a coordinate becomes
   `Axis(dim, labels=[...])`, one without becomes `Axis(dim, size=n)`; datetime labels become
@@ -710,18 +715,23 @@ plotting code. The load-bearing rules:
 - **Trap:** `Axis("member", size=J)` is not equal to `Axis("member", labels=[0, ..., J-1])`, and
   an `EnsembleSpec` holding both raises "two axes named 'member' have different structures".
   `fields_from_dataset` makes the labeled form from a `member` coordinate, while
-  `parameter_vector.pyens_grids` is documented with the sized form built by hand, so the two
-  cannot be mixed. The ForwardModel must take every axis from the table through `axes_of` and
-  never build one by hand.
+  `parameter_vector.pyens_grids` is documented with the sized form built by hand, so grids made
+  the two ways cannot share a spec unless both are given the same `Axis` (`pyens_grids`
+  accepts `axes_of(table)["member"]`; `fields_from_dataset` accepts `axes=`). The ForwardModel
+  must take every axis from the table through `axes_of` and never build one by hand.
 
 ### pyEKI
-- There is deliberately no log-likelihood helper. `pyeki.gauss.Gaussian(y, noise_cov)`, with
-  `noise_cov` a `PSDLinOp` (`DensePSD.from_matrix(R)`; `DensePSD(L)` takes a Cholesky factor),
-  scores a batch of predictions with `log_density(predictions)`, `(..., N) -> (...)`, by the
-  symmetry of the density in point and mean. It equals
-  `-pyeki.eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2`, requires
-  `noise_cov` to support `whiten` and `logdet`, and gives NaN for a row holding a NaN outside
-  debug mode; the caller maps that to `-inf`.
+- There is deliberately no log-likelihood helper (as of pyEKI PR #31).
+  `pyeki.gauss.Gaussian(y, noise_cov)`, with `noise_cov` a `PSDLinOp`, scores a batch of
+  predictions with `log_density(predictions)`, `(..., N) -> (...)`, by the symmetry of the
+  density in point and mean. It equals
+  `-pyeki.eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2` and requires
+  `noise_cov` to support `whiten` and `logdet`. Build `noise_cov` with
+  `DensePSD.from_matrix(R)`: `DensePSD(L)` takes the **lower** Cholesky factor and checks only
+  that it is square and finite, so passing `R` or an upper factor gives a wrong density
+  silently. Outside debug mode (`pyeki.linalg.set_debug_checks(True)` turns it on), a row
+  holding a NaN or an inf scores NaN, and so does every row when `noise_cov` is singular or
+  holds a NaN; the caller maps that to `-inf`.
 
 ### ProbPipe (deferred — not a current dependency)
 
