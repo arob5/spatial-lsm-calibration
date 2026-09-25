@@ -19,9 +19,9 @@ from sipnet_calibration.observation import (
     ReduceOverTimeBounds,
     SelectTimestep,
     check_operator,
+    extract_sipnet_parameter_at_coords,
     select_observed_sites,
     select_timestep_at,
-    select_sipnet_parameter,
     sipnet_parameter_spec,
 )
 from sipnet_calibration.observation.alignment import TIME_BOUNDS_END, TIME_BOUNDS_START
@@ -186,9 +186,9 @@ class TestSelectObservedSites:
         assert picked["site"].values.tolist() == [2, 1]
 
 
-class TestSelectSipnetParameter:
+class TestExtractSipnetParameterAtCoords:
     def test_carries_pysipnets_units(self):
-        array = select_sipnet_parameter({"leaf_carbon_per_area": 270.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
+        array = extract_sipnet_parameter_at_coords({"leaf_carbon_per_area": 270.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
         assert array.attrs["units"] == "g m-2" and array.attrs["constituent"] == "C"
         assert float(array) == 270.0
 
@@ -197,8 +197,8 @@ class TestSelectSipnetParameter:
 
     def test_selects_the_arrays_sites_and_members_from_a_table(self):
         table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}, coords={"member": [0, 1], "site": [1, 2, 3]})
-        model_variable = xr.DataArray(np.zeros((2, 2)), dims=("member", "site"), coords={"member": [0, 1], "site": [3, 1]})
-        array = select_sipnet_parameter(table, "leaf_carbon_per_area", model_variable)
+        target_field = xr.DataArray(np.zeros((2, 2)), dims=("member", "site"), coords={"member": [0, 1], "site": [3, 1]})
+        array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", target_field)
         np.testing.assert_array_equal(array.values, [[3.0, 1.0], [6.0, 4.0]])
 
 
