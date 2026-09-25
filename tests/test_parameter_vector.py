@@ -1068,38 +1068,6 @@ def test_select_by_labels_intersects_with_sites_and_refuses_the_unknown(example)
         example.select(sites=(27,), labels={"pft": "deciduous"})
 
 
-# ── pyens_grids ──────────────────────────────────────────────────────────────
-
-
-def test_pyens_grids_hold_the_table_as_plain_floats(example, theta):
-    import pickle
-
-    from pyens import Axis, EnsembleSpec
-
-    from sipnet_calibration.parameter_vector import pyens_grids
-
-    table = example.sipnet_table(theta)
-    members = Axis("member", size=8)
-    sites = Axis("site", labels=list(example.sites))
-    grids = pyens_grids(table, members=members, sites=sites)
-    assert set(grids) == set(table.data_vars)
-    grid = pickle.loads(pickle.dumps(grids["soil_carbon"]))
-    value = grid.value_at({members: 5, sites: 1})
-    assert type(value) is float and value == float(table["soil_carbon"].isel(member=5, site=1))
-    spec = EnsembleSpec(inputs=grids)
-    assert spec.n_runs == 8 * 3
-    inputs = spec.sel(member=2, site=27)
-    assert inputs == sipnet_overrides(table, member=2, site=27)
-    single = pyens_grids(example.sipnet_table(theta[0]), sites=sites)
-    assert single["leaf_carbon_fraction"].value_at({sites: 2}) == 0.466
-    with pytest.raises(ValueError, match="are not the table's site ids"):
-        pyens_grids(table, members=members, sites=Axis("site", labels=[27, 1, 4711]))
-    with pytest.raises(ValueError, match="pass members="):
-        pyens_grids(table, sites=sites)
-    with pytest.raises(ValueError, match="size 4"):
-        pyens_grids(table, members=Axis("member", size=4), sites=sites)
-
-
 # ── site-labels products ─────────────────────────────────────────────────────
 
 
@@ -1481,21 +1449,6 @@ def test_a_product_is_read_by_site_id_whatever_its_row_order():
     assert vector.site_labels["pft"] == ("needleleaf", "broadleaf", "grass")
 
 
-def test_pyens_grids_axis_handling(example, theta):
-    from pyens import Axis
-
-    from sipnet_calibration.parameter_vector import pyens_grids
-
-    table = example.sipnet_table(theta)
-    members, sites = Axis("member", size=8), Axis("site", labels=list(example.sites))
-    grids = pyens_grids(table.transpose("site", "member"), members=members, sites=sites)
-    assert grids["soil_carbon"].value_at({members: 3, sites: 0}) == float(table["soil_carbon"].isel(member=3, site=0))
-    with pytest.raises(ValueError, match="do not pass members"):
-        pyens_grids(example.sipnet_table(theta[0]), members=Axis("member", size=1), sites=sites)
-    with pytest.raises(ValueError, match="the member Axis has size 2, the table 8 members"):
-        pyens_grids(table, members=Axis("member", size=2), sites=sites)
-
-
 def test_construction_refusals_the_suite_did_not_reach():
     with pytest.raises(ValueError, match="joint prior over groups has batch"):
         CalibrationParameter(
@@ -1554,10 +1507,6 @@ def test_repr_of_a_one_site_vector_with_nothing_fixed():
 
 
 def test_a_sipnet_table_from_fields_keeps_the_members_it_was_given(example, theta):
-    from pyens import Axis
-
-    from sipnet_calibration.parameter_vector import pyens_grids
-
     subset = example.fields(theta).sel(member=[1, 3])
     table = example.sipnet_table(subset)
     assert table["member"].values.tolist() == [1, 3] and table["member"].dtype == np.int16
@@ -1565,13 +1514,14 @@ def test_a_sipnet_table_from_fields_keeps_the_members_it_was_given(example, thet
     assert sipnet_overrides(table, member=3, site=27) == pytest.approx(sipnet_overrides(full, member=3, site=27))
     with pytest.raises(ValueError, match="member 0 is not one of the table's member labels"):
         sipnet_overrides(table, member=0, site=27)
-    sites = Axis("site", labels=list(example.sites))
-    grids = pyens_grids(table, members=Axis("member", labels=[1, 3]), sites=sites)
-    assert grids["soil_carbon"].value_at({Axis("member", labels=[1, 3]): 1, sites: 1}) == float(
+    from pyens.xarray import fields_from_dataset
+
+    grids = fields_from_dataset(table)
+    member_axis, site_axis = grids["soil_carbon"].axes
+    assert list(member_axis.labels) == [1, 3]
+    assert grids["soil_carbon"].value_at({member_axis: 1, site_axis: 1}) == float(
         full["soil_carbon"].sel(member=3, site=27)
     )
-    with pytest.raises(ValueError, match="are not the table's member labels"):
-        pyens_grids(table, members=Axis("member", size=2), sites=sites)
     with pytest.raises(ValueError, match="distinct integers"):
         example.sipnet_table(example.fields(theta[:2]).assign_coords(member=[0, 0]))
 

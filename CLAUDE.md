@@ -488,8 +488,14 @@ src/sipnet_calibration/
                           # value representations with named conversions:
                           # fields() <-> flat() (Fields: Dataset of
                           # fields on (member, site), attrs["space"]), and
-                          # sipnet_table() -> sipnet_overrides() / pyens_grids();
+                          # sipnet_table() -> sipnet_overrides(), and PyEns grids
+                          # through pyens.xarray.fields_from_dataset;
                           # example_parameter_vector()
+  forward.py              # ForwardModel: theta (J, D) -> predictions (J, N),
+                          # SIPNET once per (member, site) through PyEns, the
+                          # observation operators applied on the worker;
+                          # ForwardEvaluation; the failure split
+  compute.py              # scc_backend(): the SCC GridEngineBackend preset
   fields.py               # field convention; label_run() (a run's Dataset
                           # with site/member/lon/lat: the model_output the
                           # observation operators read), from_sipnet_output(),
@@ -623,6 +629,19 @@ plotting code. The load-bearing rules:
   source (`DEFAULT_OBS_OPS`, today MODIS LAI as SIPNET's own
   `plantLeafC / leafCSpWt`, `sipnet.c`); which operator reads a product is a
   modeling decision an experiment writes in `config.py`.
+- **The forward model is one class over existing pieces.** `forward.ForwardModel(model,
+  parameter_vector, climate=, backend=, observation_vector=)` is pyEKI's `(J, D) -> (J, N)`:
+  `parameter_vector.sipnet_table` maps theta to a SIPNET table, PyEns runs `SIPNETModel` once
+  per `(member, site)` through a `PartialSpec` built once (climate and site id fixed on one
+  site axis, the table's parameter names free), each worker labels its run with `label_run`
+  and applies the observation vector's operators to it, and the driver places the per-site
+  predictions with `ObservationVector.flat`. A run that fails at its parameters
+  (`SIPNETRunError`, pydantic's `ValidationError`, a timeout) makes the whole member's row NaN;
+  anything else a worker returns is the machinery failing and is raised. Without an
+  observation vector, `evaluate(theta).model_output` is the prior-predictive `(member, site,
+  time)` Dataset of `output_variable_names`, aggregated on the worker with `freq=`. Under any
+  backend but `SequentialBackend` the drivers must be file-backed. `compute.scc_backend` is
+  the SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
   `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
   sites ascending, then products in declaration order, then times, with
@@ -818,7 +837,8 @@ plotting code. The load-bearing rules:
   off an exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
 - With the pinned build, a distribution built from `TransformedDistribution` or `Blockwise`
   (the simplex and product priors) pickles but fails `pickle.loads`; `LogNormal` and `LogitNormal`
-  round-trip. Send PyEns workers plain data (`pyens_grids`), never a `ParameterVector`.
+  round-trip. Send PyEns workers plain data (a SIPNET table through
+  `pyens.xarray.fields_from_dataset`), never a `ParameterVector`.
 - Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
   raises `NotImplementedError`. Take them from `.distribution`.
 - `SoftmaxCentered`'s density on the simplex is against the embedded volume element,
@@ -842,11 +862,10 @@ plotting code. The load-bearing rules:
   `Grid({site_id: drivers}, along=Axis("site", labels=[...]))` zips with the result.
 - **Trap:** `Axis("member", size=J)` is not equal to `Axis("member", labels=[0, ..., J-1])`, and
   an `EnsembleSpec` holding both raises "two axes named 'member' have different structures".
-  `fields_from_dataset` makes the labeled form from a `member` coordinate, while
-  `parameter_vector.pyens_grids` is documented with the sized form built by hand, so grids made
-  the two ways cannot share a spec unless both are given an equal `Axis` (the labeled form;
-  passing the same object is simplest: `pyens_grids` accepts `axes_of(table)["member"]`;
-  `fields_from_dataset` accepts `axes=`). Build each axis
+  `fields_from_dataset` makes the labeled form from a `member` coordinate, so a `Grid` built by
+  hand beside it must use an equal `Axis`, the labeled form; passing the same object is simplest
+  (`fields_from_dataset` accepts `axes=`;
+  `ForwardModel` builds its site axis once and passes it to every grid). Build each axis
   once and pass that object everywhere it is used. Equal axes zip, so two sources that both
   put a 0-based `member` coordinate on their ensemble dim (the SIPNET table, the drivers, the
   initial conditions) are paired member by member, silently, whenever their sizes match.

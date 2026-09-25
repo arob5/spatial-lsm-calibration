@@ -7,12 +7,12 @@ pySIPNET owns the physical SIPNET parameters, their units and their domains.
 pyEKI takes a Gaussian prior on unconstrained ``R^D``, an initial ``(J, D)``
 ensemble drawn from it, and a callable forward model, and leaves transforms,
 constraints and priors to the caller. PyEns runs an ensemble declared as
-``Grid``\\ s over ``Axis``\\ es. This module is what sits between them, and the
-dependency runs one way::
+``Grid``\\ s over ``Axis``\\ es, built from a SIPNET table by
+``pyens.xarray.fields_from_dataset``. This module is what sits between
+them, and the dependency runs one way::
 
     pysipnet.parameters.model.PARAMETER_SPECS   (names, domains, units)
     pyeki.gauss / pyeki.linalg                  (Gaussian, PSDBlockDiag, ...)
-    pyens                                       (Axis, Grid)
     tensorflow_probability.substrates.jax       (distributions, bijectors)
       -> this module
       -> experiments/<task>/config.py           (builds a ParameterVector)
@@ -137,7 +137,6 @@ base parameter set supplies them.
 
 Conversions
 -----------
-===================== ================== ================================ ==========
 from                  to                 call                             lossless
 ===================== ================== ================================ ==========
 Flat                  Fields             ``vector.fields(theta, space=)`` yes
@@ -146,6 +145,16 @@ Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``       no
 SIPNET table          one run's kwargs   :func:`sipnet_overrides`         selection
 SIPNET table          PyEns grids        :func:`pyens_grids`              selection
 ===================== ================== ================================ ==========
+=======
+===================== ================== ====================================== ==========
+from                  to                 call                                   lossless
+===================== ================== ====================================== ==========
+Flat                  Fields             ``vector.fields(theta, space=)``       yes
+Fields (either space) Flat               ``vector.flat(fields)``                yes [1]_
+Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``             no
+SIPNET table          one run's kwargs   :func:`sipnet_overrides`               selection
+SIPNET table          PyEns ``Grid``\\ s  ``pyens.xarray.fields_from_dataset``  yes
+===================== ================== ====================================== ==========
 
 :meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
 variables and sites the vector needs (others are ignored, so a larger
@@ -172,7 +181,7 @@ SIPNET maps: the :class:`SIPNETMap` protocol, :class:`Identity`,
 :data:`ALLOCATION` and :data:`PHOTOSYNTHESIS`.
 
 :class:`CalibrationParameter`, :class:`FixedParameter`, :class:`Layout`,
-:class:`ParameterVector`; :func:`sipnet_overrides` and :func:`pyens_grids`;
+:class:`ParameterVector`; :func:`sipnet_overrides`;
 :func:`example_parameter_vector`, the worked example and test fixture.
 
 Constants: :data:`REQUIRED_SIPNET_PARAMETERS`; :data:`NATURAL`,
@@ -224,7 +233,7 @@ failure.
 objects, and those built from ``TransformedDistribution`` or ``Blockwise``
 (the simplex, the product prior) do not survive ``pickle.loads`` with this
 TFP build. Ship the SIPNET table, or the ``Grid``\\ s of plain floats
-:func:`pyens_grids` makes from it, never the vector.
+``pyens.xarray.fields_from_dataset`` makes from it, never the vector.
 
 Importing this module sets ``jax_enable_x64``, as ``import pyeki`` does, so
 an MCMC baseline that never imports pyEKI still computes in float64. The
@@ -237,12 +246,12 @@ Build a vector for three sites of the reanalysis's three-PFT site labels,
 look at it, subset it, draw from it, and take the draws to SIPNET::
 
     import jax
-    from pyens import Axis, EnsembleSpec
+    from pyens import EnsembleSpec
+    from pyens.xarray import fields_from_dataset
     from sipnet_calibration.parameter_vector import (
         ALLOCATION, PHOTOSYNTHESIS, CalibrationParameter, FixedParameter,
         ParameterVector, log_normal, log_normal_from_interval, logit_normal,
-        product_transformed_gaussian_prior, pyens_grids, sipnet_overrides,
-        softmax_normal,
+        product_transformed_gaussian_prior, sipnet_overrides, softmax_normal,
     )
     from sipnet_calibration.site_labels import load_site_labels
     from sipnet_calibration.sites import load_sites, select_sites
@@ -332,10 +341,8 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     # Convert to SIPNET parameters, for one run and for a PyEns spec.
     table = vector.sipnet_table(theta)                 # SIPNET table: Dataset (member, site), fixed included
     kwargs = sipnet_overrides(table, member=3, site=865)          # dict[str, float]: model(**kwargs)
-    members = Axis("member", size=50)
-    site_axis = Axis("site", labels=list(vector.sites))
-    grids = pyens_grids(table, members=members, sites=site_axis)  # dict[str, Grid] along [member, site]
-    spec = EnsembleSpec(inputs=grids)                  # 150 runs; add a climate Grid on site_axis
+    grids = fields_from_dataset(table)                 # dict[str, Grid] along [member, site]
+    spec = EnsembleSpec(inputs=grids)                  # 150 runs; add a climate Grid on the site axis
 
     # Back from a pyEKI result, and across vectors.
     posterior = vector.fields(eki.state.ensemble)      # Fields, natural space; eki: a pyeki EKIResult
@@ -364,7 +371,6 @@ import pandas as pd  # noqa: E402
 import xarray as xr  # noqa: E402
 from pyeki.gauss import Gaussian  # noqa: E402
 from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp  # noqa: E402
-from pyens import Axis, Grid  # noqa: E402
 from pysipnet.parameters.base import ParameterDomain, ParameterSpec  # noqa: E402
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters  # noqa: E402
 from tensorflow_probability.substrates import jax as tfp  # noqa: E402
@@ -1181,7 +1187,7 @@ class ParameterVector:
     on ``(member, site)``, from :meth:`fields` and back through
     :meth:`flat`. The *SIPNET table* is an ``xarray.Dataset`` of SIPNET
     parameters on the same dims, from :meth:`sipnet_table`, which
-    :func:`sipnet_overrides` and :func:`pyens_grids` read.
+    :func:`sipnet_overrides` and ``pyens.xarray.fields_from_dataset`` read.
 
     Parameters
     ----------
@@ -1993,54 +1999,6 @@ def sipnet_overrides(
     elif member is not None:
         raise ValueError("the table has no member dim; do not pass member=.")
     return {str(name): float(value) for name, value in selected.data_vars.items()}
-
-
-def pyens_grids(
-    table: xr.Dataset, *, sites: Axis, members: Axis | None = None
-) -> dict[str, Grid]:
-    """A whole ensemble of runs as PyEns grids, from a SIPNET table.
-
-    Parameters
-    ----------
-    table:
-        A SIPNET table, from :meth:`ParameterVector.sipnet_table`.
-    sites:
-        The PyEns ``Axis`` of sites. Its labels must be the table's site ids,
-        in the table's order. Share it with the climate and initial-condition
-        grids, so that they zip with these on the site axis.
-    members:
-        The PyEns ``Axis`` of members, whose labels must be the table's
-        ``member`` labels in order (``Axis("member", size=J)`` for a table
-        built from Flat); required when the table has a ``member`` dim and
-        refused when it does not.
-
-    Returns
-    -------
-    dict[str, pyens.Grid]
-        One ``Grid`` per SIPNET parameter, along ``[members, sites]`` (or
-        ``[sites]``), holding Python floats: plain data, safe to send to
-        PyEns workers. ``EnsembleSpec(inputs={**grids, "climate": ...})``.
-
-    Raises
-    ------
-    ValueError
-        If an axis does not match the table.
-
-    Examples
-    --------
-    ::
-
-        members = Axis("member", size=table.sizes["member"])
-        site_axis = Axis("site", labels=table["site"].values.tolist())
-        grids = pyens_grids(table, members=members, sites=site_axis)
-    """
-    check_pyens_axes_match_table(table, sites, members)
-    dims = (MEMBER, SITE) if MEMBER in table.dims else (SITE,)
-    along = [members, sites] if MEMBER in table.dims else [sites]
-    return {
-        str(name): Grid(np.asarray(variable.transpose(*dims).values).tolist(), along=along)
-        for name, variable in table.data_vars.items()
-    }
 
 
 # ── the example ───────────────────────────────────────────────────────────────
@@ -3017,31 +2975,6 @@ def check_group_values_agree_across_sites(
         f"{vector.group_labels(parameter.varies_by)[group]!r} ({members}). Fields must hold one "
         "value per group, repeated at every site of the group."
     )
-
-
-def check_pyens_axes_match_table(table: xr.Dataset, sites: Axis, members: Axis | None) -> None:
-    ids = np.asarray(table[SITE].values).tolist()
-    if list(sites.labels) != ids:
-        raise ValueError(
-            f"pyens_grids: the site Axis labels {list(sites.labels)} are not the table's site "
-            f"ids {ids}, in order."
-        )
-    if MEMBER in table.dims:
-        if members is None:
-            raise ValueError("pyens_grids: the table has a member dim; pass members=.")
-        if members.size != table.sizes[MEMBER]:
-            raise ValueError(
-                f"pyens_grids: the member Axis has size {members.size}, the table "
-                f"{table.sizes[MEMBER]} members."
-            )
-        labels = np.asarray(table[MEMBER].values).tolist()
-        if list(members.labels) != labels:
-            raise ValueError(
-                f"pyens_grids: the member Axis labels {list(members.labels)} are not the "
-                f"table's member labels {labels}, in order; use Axis('member', labels=...)."
-            )
-    elif members is not None:
-        raise ValueError("pyens_grids: the table has no member dim; do not pass members=.")
 
 
 def check_parameters_have_their_types(
