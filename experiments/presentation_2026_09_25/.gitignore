@@ -1,0 +1,6 @@
+# Rendered deck and Quarto's caches: all regenerable from slides.qmd.
+/slides.html
+/slides_files/
+/.quarto/
+# Driver summaries computed on the SCC and copied back.
+/outputs/

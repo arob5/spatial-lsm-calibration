@@ -1,0 +1,248 @@
+---
+title: "Spatial calibration of SIPNET"
+subtitle: "Building the pipeline, one piece at a time"
+author: "Andrew Roberts"
+date: 2026-09-25
+format:
+  revealjs:
+    width: 1600
+    height: 900
+    slide-number: true
+    code-line-numbers: false
+    code-overflow: wrap
+    highlight-style: github
+    fig-align: center
+    css: slides.css
+jupyter: python3
+execute:
+  warning: false
+---
+
+```{python}
+#| include: false
+import matplotlib.pyplot as plt
+
+import config
+import plots
+from sipnet_calibration.plotting import plot_map, use_project_style
+
+use_project_style()
+# Slides are viewed larger than a notebook: sharper images, larger text.
+plt.rcParams.update({"figure.dpi": 200, "font.size": 11})
+```
+
+## The pipeline
+
+```{mermaid}
+flowchart LR
+  S[Sites + PFTs] --> P[Parameter vector]
+  S --> D[Drivers]
+  S --> I[Initial conditions]
+  P --> M[SIPNET]
+  D --> M
+  I --> M
+  M --> H[Observation operator]
+  H --> L[Likelihood]
+  C[Constraints] --> L
+```
+
+Each piece today: **what it is, what we assume, what is still open.**
+
+::: notes
+Order of the talk follows the arrows: inputs first, then the parameter vector,
+then how model output meets the data.
+:::
+
+# Sites and plant functional types
+
+## 8000 sites across North America
+
+```{python}
+#| echo: true
+from sipnet_calibration.site_labels import site_labels_field
+
+pfts = site_labels_field("pft_16class")
+ax = plot_map(pfts, extent="NORTH_AMERICA")
+plots.mark_sites(ax);
+```
+
+## Sixteen classes
+
+```{python}
+plots.class_counts();
+```
+
+## Against the reanalysis's three PFTs
+
+```{python}
+plots.label_crosstab_heatmap();
+```
+
+## Sites: assumptions
+
+- Sites are **8000 irregular points**, 7-82 °N, with ids 1-8000 that are a
+  shared key with collaborators.
+- A site-labels product is an **experimental choice, not site metadata**: one
+  product per source, joined on `site_id` when needed.
+- We calibrate under the **16-class product** from the Dietze lab, which
+  supersedes the reanalysis's three PFTs.
+- Maps use a **Lambert azimuthal equal-area** projection centered at 50 °N,
+  100 °W, with its distortion checked over the whole pool.
+
+## Sites: open questions
+
+- Site 4705 is named *Bartlett Experimental Forest (US-Bar)*, but its AmeriFlux
+  id in the site table is `US-xBR`, the NEON tower. Which tower's fluxes do we
+  compare against?
+- <!-- TODO: add your own -->
+
+# Meteorological drivers
+
+## Drivers: status
+
+::: {.callout-note}
+**Being built.** Ensemble and map summaries over all 8000 sites x 10 members
+are computed on the SCC by `precompute_drivers.py` and read here from
+`outputs/`.
+:::
+
+Planned figures:
+
+- the 10-member ensemble at Harvard Forest and Bartlett
+- maps of annual means and of ensemble spread
+- the **time-label drift**: each row's label against its position on a regular
+  3-hour grid
+
+## Drivers: assumptions
+
+- ERA5 ensemble (10 members, 3-hourly, 0.5°), converted by PEcAn
+  (`extract.nc.ERA5`, `met2cf.ERA5`, `met2model.SIPNET`) to SIPNET `.clim`.
+- Radiation and precipitation are **accumulations over the 3 hours ending at
+  the label** (ECMWF's documentation).
+- Drivers are read through pySIPNET's `ClimateDrivers`, so model output and its
+  drivers share **one time axis by construction**.
+
+## Drivers: open questions
+
+- **The time labels drift.** PEcAn's `met2cf.ERA5` spread the labels over the
+  wrong interval (since fixed upstream, PEcAn PR #3584). The values sit on a
+  regular 3-hour grid; only the labels drift. pySIPNET refuses the files until
+  they are relabeled.
+- Temperature, humidity, wind and pressure are **instantaneous** at the label,
+  but SIPNET treats every driver as a step mean.
+- Soil temperature comes from a PEcAn `stats::convolve` step that weights
+  **future** air temperatures.
+
+# Initial conditions
+
+## The product
+
+```{python}
+#| echo: true
+from sipnet_calibration.initial_conditions import initial_condition_fields
+
+ic = initial_condition_fields()   # name -> (member, site) DataArray
+ic["initial_wood_carbon"].sizes
+```
+
+```{python}
+from sipnet_calibration.initial_conditions import INITIAL_CONDITIONS
+
+plots.spec_table(INITIAL_CONDITIONS, ["units", "constituent", "sipnet_initial_condition"])
+```
+
+## Wood carbon
+
+```{python}
+plots.ensemble_summary_maps(ic["initial_wood_carbon"]);
+```
+
+## Wood carbon goes negative
+
+```{python}
+#| echo: true
+wood = ic["initial_wood_carbon"]
+negative = plots.negative_member_fraction(wood)
+ax = plot_map(negative, extent="NORTH_AMERICA")
+```
+
+::: notes
+Wood is the biomass draw minus the leaf draw, drawn independently, so it goes
+negative wherever the leaf draw exceeds the biomass draw.
+:::
+
+## Soil organic carbon by PFT
+
+```{python}
+plots.by_class(ic["initial_soil_organic_carbon"], log=True);
+```
+
+## The ensemble at the featured sites
+
+```{python}
+plots.members_at_sites(ic);
+```
+
+## Initial conditions: assumptions
+
+- Ingest changes **structure, never values**: the source files' units, and
+  negative draws kept.
+- **No state-to-parameter mapping at ingest.** Three of SIPNET's four initial
+  parameters depend on calibrated parameters (for example leaf area from leaf
+  carbon x specific leaf area), so the mapping is applied per proposed
+  parameter vector.
+- Every variable's source and PEcAn conversion is recorded on its spec, as
+  above.
+
+## Initial conditions: open questions
+
+- **Units are unconfirmed** for every variable (data README, open question 24).
+- **Negative wood**: drop, floor, or replace?
+- **Leaf carbon** is LAI / SLA with no carbon fraction applied: kg of leaf
+  labeled kg C.
+- **Soil moisture** is percent of saturation; SIPNET's initial value is a
+  fraction of its bucket's water holding capacity.
+- ISCN soil carbon stocks have an **undocumented integration depth**.
+- Which PEcAn version ran the reanalysis (the wood conversion changed on
+  2025-09-02)?
+
+# Constraints
+
+## Five constraint products
+
+```{python}
+from sipnet_calibration.constraints import CONSTRAINTS
+
+plots.spec_table(CONSTRAINTS, ["long_label", "units", "time_structure"])
+```
+
+::: {.callout-note}
+**To fill in:** one section per product (spec, coverage map, series at the
+featured sites, distribution by PFT, open questions). NEE follows once its
+ingest merges (#40).
+:::
+
+# Parameters
+
+## The parameter vector
+
+::: {.callout-note}
+**To fill in.** `ParameterVector` is on main (#36): priors in natural space,
+`varies_by` for shared, per-site or per-class copies, and a map to SIPNET's
+parameters. Worked example: the photosynthesis parameterization.
+:::
+
+# Observation operator and prior predictive
+
+## Observation operator: status
+
+::: {.callout-note}
+**Not ready yet.** The observation module is being implemented and there are
+no baseline priors. This section will show the operator's design and the
+traps it guards against.
+:::
+
+- SIPNET's NEE is **g C m⁻² per step** (a total); observed NEE is **µmol CO₂
+  m⁻² s⁻¹** (a rate). They are converted through Pint before any comparison.
+- 3-hourly to daily NEE is a **sum**; a mean is wrong by 8x and looks
+  plausible.
