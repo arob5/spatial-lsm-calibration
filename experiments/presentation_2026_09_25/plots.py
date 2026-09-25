@@ -7,6 +7,7 @@ call itself, so these functions hold only the plumbing around it -- grouping
 by class, laying out panels.
 """
 
+import calendar
 import textwrap
 from collections.abc import Iterable, Mapping, Sequence
 from functools import partial
@@ -123,6 +124,92 @@ def driver_members_window(
         ax.xaxis.set_major_locator(DayLocator(interval=4))
         ax.xaxis.set_major_formatter(DateFormatter("%-d %b"))
     return figure
+
+
+def load_driver_summary(stem: str) -> xr.Dataset:
+    """One of the summaries ``precompute_drivers.py`` writes, by file stem.
+
+    Parameters
+    ----------
+    stem:
+        ``"driver_annual"`` or ``"driver_monthly_climatology"``.
+
+    Returns
+    -------
+    xarray.Dataset
+    """
+    return xr.load_dataset(config.DRIVER_SUMMARY_DIR / f"{stem}.nc", engine="h5netcdf")
+
+
+def driver_climatology_frames(field: xr.DataArray) -> xr.DataArray:
+    """A ``(member, site, month)`` climatology as ensemble-mean maps, one per month.
+
+    The month dimension is renamed for the variable and labeled by month name,
+    so that ``animate_map`` titles each frame, for example, "Air temperature,
+    July".
+
+    Parameters
+    ----------
+    field:
+        One variable of ``driver_monthly_climatology``.
+
+    Returns
+    -------
+    xarray.DataArray
+        On ``(site, <variable name>,)``, with ``lon``/``lat`` kept.
+    """
+    mean = field.mean("member", keep_attrs=True)
+    summed = field.attrs.get("resampling", "").startswith("sum")
+    mean.attrs["long_name"] = "ensemble mean, monthly total" if summed else "ensemble mean"
+    dim = f"{_short_name(field)},"
+    names = [calendar.month_name[month] for month in field["month"].to_numpy()]
+    return mean.rename(month=dim).assign_coords({dim: names})
+
+
+def driver_annual_means(variables: Iterable[str] = config.DRIVER_PFT_VARIABLES) -> dict:
+    """Each driver's per-site mean over the years, from ``driver_annual``.
+
+    Parameters
+    ----------
+    variables:
+        The driver variables to take.
+
+    Returns
+    -------
+    dict
+        Name to ``(member, site)`` field, its ``long_name`` saying whether it
+        is a yearly total or a yearly mean.
+    """
+    annual = load_driver_summary("driver_annual")
+    fields = {}
+    for name in variables:
+        field = annual[name].mean("year", keep_attrs=True)
+        summed = field.attrs.get("resampling", "").startswith("sum")
+        field.attrs["long_name"] += ", yearly total" if summed else ", yearly mean"
+        fields[name] = field
+    return fields
+
+
+def animation_columns(variables: Iterable[str] = config.DRIVER_ANIMATION_VARIABLES) -> str:
+    """Markdown placing each variable's GIF side by side, for an ``asis`` cell.
+
+    Parameters
+    ----------
+    variables:
+        The variables whose GIFs ``make_driver_animations.py`` wrote.
+
+    Returns
+    -------
+    str
+    """
+    variables = list(variables)
+    width = f"{100 / len(variables):.0f}%"
+    directory = config.DRIVER_ANIMATION_DIR.relative_to(config.EXPERIMENT_DIR)
+    columns = [
+        f'::: {{.column width="{width}"}}\n![]({directory / f"{name}.gif"})\n:::'
+        for name in variables
+    ]
+    return ":::: {.columns}\n" + "\n".join(columns) + "\n::::"
 
 
 def label_crosstab(

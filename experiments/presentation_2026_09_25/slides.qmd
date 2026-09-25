@@ -176,6 +176,30 @@ The same members at their own 3-hourly step, one color each. They follow the
 same weather and part by a degree or so at the peaks and troughs.
 :::
 
+## The seasonal cycle
+
+```{python}
+#| output: asis
+print(plots.animation_columns())
+```
+
+::: notes
+The ensemble mean of each month's value, averaged over 2012-2024, at all 8000
+sites. Summarized on the SCC by precompute_drivers.py and animated by
+make_driver_animations.py.
+:::
+
+## Drivers by PFT
+
+```{python}
+plots.by_class_grid(plots.driver_annual_means(), log=());
+```
+
+::: notes
+Each box is the spread over sites of the per-site ensemble median of the
+13-year mean.
+:::
+
 # Initial conditions
 
 ## The initial condition ensemble

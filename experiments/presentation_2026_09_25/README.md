@@ -15,6 +15,7 @@ states what it is, what is assumed, and what is still open.
 | `slides.css` | slide styling |
 | `precompute_drivers.py` | annual values and monthly climatology of every site's drivers, on the SCC |
 | `precompute_drivers.qsub` | runs it as an array job, then combines the parts |
+| `make_driver_animations.py` | GIFs of the monthly driver climatology for `config.DRIVER_ANIMATION_VARIABLES`, from those summaries |
 
 ## Where it runs
 

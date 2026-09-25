@@ -2,5 +2,6 @@
 /slides.html
 /slides_files/
 /.quarto/
+/slides.quarto_ipynb
 # Driver summaries computed on the SCC and copied back.
 /outputs/

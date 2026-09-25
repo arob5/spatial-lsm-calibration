@@ -101,3 +101,16 @@ RELABELED_DRIVERS_DIR = OUTPUT_DIR / "drivers_relabeled"
 #: The annual values and monthly climatology of every site's drivers, written
 #: by ``precompute_drivers.py`` on the SCC; untracked.
 DRIVER_SUMMARY_DIR = OUTPUT_DIR / "driver_summaries"
+
+#: The drivers animated through their monthly climatology, and where
+#: ``make_driver_animations.py`` writes one GIF per variable; untracked.
+DRIVER_ANIMATION_VARIABLES = ("air_temperature", "precipitation")
+DRIVER_ANIMATION_DIR = OUTPUT_DIR / "driver_animations"
+
+#: The drivers compared across PFTs by their per-site 13-year mean.
+DRIVER_PFT_VARIABLES = (
+    "air_temperature",
+    "photosynthetically_active_radiation",
+    "precipitation",
+    "vapor_pressure_deficit",
+)
