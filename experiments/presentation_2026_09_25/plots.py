@@ -9,16 +9,21 @@ featured sites, grouping by class, laying out panels.
 
 import textwrap
 from collections.abc import Iterable, Mapping, Sequence
+from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
 from matplotlib.axes import Axes
+from matplotlib.dates import DateFormatter, DayLocator, MonthLocator
 from matplotlib.figure import Figure
 from matplotlib.ticker import LogLocator, ScalarFormatter
 
-from sipnet_calibration.plotting import member_summary, plot_map_grid
+from sipnet_calibration.obs_ops import aggregate_time
+from sipnet_calibration.plotting import (
+    member_summary, plot_by_variable, plot_map_grid, plot_time_series,
+)
 from sipnet_calibration.plotting.style import category_colors
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.site_labels import load_site_labels, resolve_site_labels
@@ -56,7 +61,9 @@ def mark_sites(ax: Axes, sites: Mapping[str, int] | None = None) -> Axes:
 
 
 def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
-    """Sites per class of a site-labels product, in the map's colors.
+    """Sites per class of a site-labels product, most sites first, in the map's colors.
+
+    Each bar is labeled with its count and its share of all labeled sites.
 
     Parameters
     ----------
@@ -69,12 +76,84 @@ def class_counts(site_labels: str = config.SITE_LABELS) -> Figure:
     """
     spec = resolve_site_labels(site_labels)
     counts = load_site_labels(spec)["label"].value_counts().reindex(spec.labels, fill_value=0)
-    names = _display_names(spec)
+    # A class's color is set by its position in the spec, as on the maps, so
+    # the colors are reordered with the classes.
+    order = np.argsort(-counts.to_numpy(), kind="stable")
+    names = np.asarray(_display_names(spec))[order]
+    colors = np.asarray(category_colors(len(names)))[order]
+    sorted_counts = counts.to_numpy()[order]
     figure, ax = plt.subplots(figsize=(7, 0.35 * len(names) + 1), layout="constrained")
-    ax.barh(names, counts.to_numpy(), color=category_colors(len(names)))
+    ax.barh(names, sorted_counts, color=colors)
     ax.invert_yaxis()
     ax.set_xlabel("sites")
-    ax.bar_label(ax.containers[0], padding=3, fontsize=9)
+    labels = [_count_and_share(count, sorted_counts.sum()) for count in sorted_counts]
+    ax.bar_label(ax.containers[0], labels=labels, padding=3, fontsize=9)
+    ax.margins(x=0.18)  # room for the longest bar's label
+    return figure
+
+
+def driver_members(
+    fields: Mapping[str, xr.DataArray], site: int, year: int = config.DRIVER_SERIES_YEAR
+) -> Figure:
+    """Every driver at one site through one year, daily, one curve per member.
+
+    Parameters
+    ----------
+    fields:
+        Variable name to ``(member, site, time)`` field, as
+        ``sipnet_calibration.drivers.driver_fields`` returns.
+    site:
+        The site to show.
+    year:
+        The calendar year, by the start of each day.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    daily = {
+        name: _days_of_year(aggregate_time(field.sel(site=site), "1D"), year)
+        for name, field in fields.items()
+    }
+    panel = partial(plot_time_series, show="spaghetti", label="_nolegend_")
+    figure, axes = _driver_panels(daily, panel)
+    for ax in axes:
+        ax.xaxis.set_major_locator(MonthLocator(bymonth=(1, 4, 7, 10)))
+        ax.xaxis.set_major_formatter(DateFormatter("%b"))
+    return figure
+
+
+def driver_members_window(
+    fields: Mapping[str, xr.DataArray],
+    site: int,
+    window: tuple[str, str] = config.DRIVER_SERIES_WINDOW,
+) -> Figure:
+    """Every driver at one site over a short window, at its own time step.
+
+    Each member is its own color, so members that lie on top of one another at
+    a coarser scale can be told apart.
+
+    Parameters
+    ----------
+    fields:
+        Variable name to ``(member, site, time)`` field, as
+        ``sipnet_calibration.drivers.driver_fields`` returns.
+    site:
+        The site to show.
+    window:
+        The first and last day, inclusive, by the start of each step.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    windowed = {
+        name: _steps_in_window(field.sel(site=site), window) for name, field in fields.items()
+    }
+    figure, axes = _driver_panels(windowed, _colored_members)
+    for ax in axes:
+        ax.xaxis.set_major_locator(DayLocator(interval=4))
+        ax.xaxis.set_major_formatter(DateFormatter("%-d %b"))
     return figure
 
 
@@ -109,7 +188,12 @@ def label_crosstab(
 def label_crosstab_heatmap(
     rows: str = config.SITE_LABELS, columns: str = config.REANALYSIS_SITE_LABELS
 ) -> Figure:
-    """``label_crosstab`` drawn as an annotated heatmap.
+    """``label_crosstab`` drawn as an annotated heatmap, with totals.
+
+    Rows and columns are sorted by their totals, largest first. A last column
+    and a last row give each class's total over the other
+    product, as a count and a share of all sites; the corner is the number of
+    sites. The colors are the counts of the table itself, not the totals.
 
     Parameters
     ----------
@@ -121,16 +205,31 @@ def label_crosstab_heatmap(
     matplotlib.figure.Figure
     """
     table = label_crosstab(rows, columns)
+    table = table.iloc[
+        np.argsort(-table.sum(axis=1).to_numpy(), kind="stable"),
+        np.argsort(-table.sum(axis=0).to_numpy(), kind="stable"),
+    ]
     counts = table.to_numpy()
+    n_rows, n_columns = counts.shape
+    total = counts.sum()
     figure, ax = plt.subplots(
-        figsize=(1.6 * table.shape[1] + 3.5, 0.34 * table.shape[0] + 1.2), layout="constrained"
+        figsize=(1.6 * (n_columns + 1) + 3.5, 0.34 * (n_rows + 1) + 1.2), layout="constrained"
     )
     ax.imshow(counts, cmap="Blues", aspect="auto")
     for (i, j), count in np.ndenumerate(counts):
         color = "white" if count > 0.6 * counts.max() else "black"
         ax.text(j, i, count, ha="center", va="center", fontsize=9, color=color)
-    ax.set_xticks(range(table.shape[1]), table.columns, rotation=20, ha="right")
-    ax.set_yticks(range(table.shape[0]), table.index)
+    for i, count in enumerate(counts.sum(axis=1)):
+        ax.text(n_columns, i, _count_and_share(count, total), ha="center", va="center", fontsize=9)
+    for j, count in enumerate(counts.sum(axis=0)):
+        ax.text(j, n_rows, _count_and_share(count, total), ha="center", va="center", fontsize=9)
+    ax.text(n_columns, n_rows, total, ha="center", va="center", fontsize=9, fontweight="bold")
+    ax.axvline(n_columns - 0.5, color="black", linewidth=0.8)
+    ax.axhline(n_rows - 0.5, color="black", linewidth=0.8)
+    ax.set_xlim(-0.5, n_columns + 0.5)
+    ax.set_ylim(n_rows + 0.5, -0.5)
+    ax.set_xticks(range(n_columns + 1), [*table.columns, "total"], rotation=20, ha="right")
+    ax.set_yticks(range(n_rows + 1), [*table.index, "total"])
     ax.set_xlabel(resolve_site_labels(columns).name)
     ax.set_ylabel(resolve_site_labels(rows).name)
     return figure
@@ -299,6 +398,47 @@ def spec_table(specs: Iterable, fields: Sequence[str]) -> pd.DataFrame:
     """
     rows = {spec.name: {field: str(getattr(spec, field)) for field in fields} for spec in specs}
     return pd.DataFrame.from_dict(rows, orient="index")
+
+
+def _driver_panels(data: Mapping[str, xr.DataArray], panel) -> tuple[Figure, np.ndarray]:
+    """One panel per driver in a 2 x 4 grid, with no legend and units on y."""
+    figure, axes = plot_by_variable(
+        dict(data), panel_fn=panel, ncol=4, panel_size=(3.6, 2.9), legend="none"
+    )
+    for ax, field in zip(axes, data.values()):
+        # The panel title names the variable, so the y label need only say units.
+        ax.set_ylabel(field.attrs.get("units", ""))
+        ax.set_xlabel("")
+    return figure, axes
+
+
+def _colored_members(field: xr.DataArray, ax: Axes) -> Axes:
+    """One ``(member, time)`` field as one curve per member, each its own color."""
+    colors = plt.get_cmap("tab10").colors
+    for i in range(field.sizes["member"]):
+        plot_time_series(
+            field.isel(member=i), ax=ax, color=colors[i % len(colors)], linewidth=1,
+            label="_nolegend_",
+        )
+    return ax
+
+
+def _steps_in_window(field: xr.DataArray, window: tuple[str, str]) -> xr.DataArray:
+    """The steps of *field* that start on or between the two days of *window*."""
+    start = field["time_step_start"].to_index()
+    first, last = pd.Timestamp(window[0]), pd.Timestamp(window[1]) + pd.Timedelta(days=1)
+    return field.isel(time=(start >= first) & (start < last))
+
+
+def _days_of_year(field: xr.DataArray, year: int) -> xr.DataArray:
+    """The daily cells of *field* that start in *year*."""
+    # A daily cell's time is its end, so select by its start instead.
+    return field.isel(time=(field["time_step_start"].dt.year == year).to_numpy())
+
+
+def _count_and_share(count: int, total: int) -> str:
+    """``"1681 (21.0%)"``: a count and its percentage of *total*."""
+    return f"{count} ({100 * count / total:.1f}%)"
 
 
 def _display_names(spec) -> list[str]:

@@ -13,7 +13,8 @@ states what it is, what is assumed, and what is still open.
 | `plots.py` | one function per figure, over the library's loaders and plotters |
 | `slides.qmd` | the deck: prose, assumptions, open questions, and the code shown |
 | `slides.css` | slide styling |
-| `precompute_drivers.py` | *planned*: driver summaries over all sites, run on the SCC |
+| `precompute_drivers.py` | annual values and monthly climatology of every site's drivers, on the SCC |
+| `precompute_drivers.qsub` | runs it as an array job, then combines the parts |
 
 ## Where it runs
 

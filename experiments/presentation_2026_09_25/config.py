@@ -65,6 +65,17 @@ DRIVER_SITES = tuple(
     sorted({*NEW_ENGLAND_SITES.values(), *(s for sites in PFT_SITES.values() for s in sites)})
 )
 
+#: The year the driver time series show, by the start of each daily cell.
+DRIVER_SERIES_YEAR = 2023
+
+#: The first and last day, inclusive, of the short window the drivers are also
+#: shown over, at their own 3-hourly step.
+DRIVER_SERIES_WINDOW = ("2023-07-01", "2023-07-14")
+
+#: Where Dongchen's ERA5 driver ensemble lives on the SCC, as symlinked
+#: into ``data/raw/drivers`` there.
+DRIVERS_SOURCE = "/projectnb/dietzelab/dongchen/anchorSites/NA_runs/ERA5_2012_2024"
+
 #: The site-labels product every by-class figure groups by.
 SITE_LABELS = "pft_16class"
 
@@ -82,3 +93,7 @@ OUTPUT_DIR = EXPERIMENT_DIR / "outputs"
 #: corrected, written by ``relabel_drivers.py`` in the ``data/raw/drivers/``
 #: layout. A temporary stand-in for regenerated drivers; untracked.
 RELABELED_DRIVERS_DIR = OUTPUT_DIR / "drivers_relabeled"
+
+#: The annual values and monthly climatology of every site's drivers, written
+#: by ``precompute_drivers.py`` on the SCC; untracked.
+DRIVER_SUMMARY_DIR = OUTPUT_DIR / "driver_summaries"

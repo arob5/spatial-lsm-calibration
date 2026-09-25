@@ -1,0 +1,32 @@
+#!/bin/bash -l
+# Run precompute_drivers.py on the SCC: as an array job, one task per share of
+# the sites; or, submitted without -t, as the step that combines the parts.
+#
+# Submit from this directory, with SIPNET_CALIBRATION_DATA exported if this
+# checkout's data/ lacks the drivers or the processed site table (-V passes it
+# on):
+#
+#   mkdir -p outputs/driver_summaries/logs
+#   qsub -t 1-100 precompute_drivers.qsub
+#   qsub -hold_jid precompute_drivers -N combine_drivers precompute_drivers.qsub
+#
+#$ -P dietzelab
+#$ -l buyin
+#$ -N precompute_drivers
+#$ -l h_rt=03:00:00
+#$ -cwd
+#$ -V
+#$ -j y
+#$ -o outputs/driver_summaries/logs/
+
+set -euo pipefail
+
+# pySIPNET warns about every file's non-positive vapor pressure deficits, which
+# the driver reader already counts; the warnings would drown the log.
+python="../../.venv/bin/python -W ignore::UserWarning"
+
+if [ "${SGE_TASK_ID:-undefined}" = "undefined" ]; then
+    $python precompute_drivers.py --combine
+else
+    $python precompute_drivers.py --task "$SGE_TASK_ID" --n-tasks "$SGE_TASK_LAST"
+fi
