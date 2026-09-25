@@ -88,13 +88,12 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pysipnet.arithmetic import step_length
-from pysipnet.dataset import TIME_DIMENSION, TIME_ZONE_UNDECLARED, assemble_time_coords
-from pysipnet.resample import STEP_LENGTH_RESAMPLED
+from pysipnet.dataset import TIME_DIMENSION
+from pysipnet.resample import STEP_LENGTH_RESAMPLED, check_resampling_method
 from pysipnet.resample import resample as pysipnet_resample
 from pysipnet.variables import (
     CELL_METHODS_FOR_KIND,
     RESAMPLED_KIND,
-    RESAMPLING_METHODS_FOR_KIND,
     TIME_REFERENCE_FOR_KIND,
     ResamplingMethod,
     VariableKind,
@@ -172,6 +171,11 @@ def aggregate_time(
 ) -> xr.DataArray:
     """Combine a field's timesteps into coarser ones.
 
+    A field carrying pySIPNET's interval coordinates, as model output and
+    drivers do, is aggregated by pySIPNET's own
+    :func:`~pysipnet.resample.resample`; one without them, such as an
+    observation, on the same right-closed calendar cells here.
+
     Parameters
     ----------
     field:
@@ -224,8 +228,9 @@ def aggregate_time(
         than the field's own steps, which would interpolate rather than
         aggregate; if its interval coordinates are not one-dimensional on
         ``time``, which is what stacking runs on different time axes leaves;
-        if it declares a ``kind`` that is not one of pySIPNET's; if *how* is
-        not one of :data:`RESAMPLING_METHODS`; if the variable's kind does not
+        if it declares a ``kind`` that is not one of pySIPNET's, or carries
+        pySIPNET's interval coordinates but no kind to check *how* against; if
+        *how* is not one of :data:`RESAMPLING_METHODS`; if the variable's kind does not
         admit *how*, with pySIPNET's own explanation and the methods that
         would work; if *how* is omitted and the variable's kind cannot be
         determined; or if a mean is asked for on unequal steps that carry no
@@ -262,21 +267,14 @@ def aggregate_time(
     the caller knows how many values a full cell holds.
     """
     field = _checked_steps(field)
-    check_frequency(freq)
-    check_not_upsampling(field, freq)
     kind = _variable_kind(field)
     method = _method_for(field, kind, how)
-    weights = _step_weights(field) if method == "mean" else None
-
-    values = _combine(_without_interval_coords(field), freq, method, weights)
-    keep = _nonempty_cells(field, freq)
-    values = values.isel({TIME_DIM: keep})
-
-    result = values.rename(field.name) if field.name is not None else values
-    result = result.assign_coords(_aggregated_time_coords(field, freq, keep))
+    if START_COORD in field.coords and LENGTH_COORD in field.coords:
+        check_kind_is_known_for_interval_steps(field, kind)
+        result = pysipnet_resample(field, freq, how=method)
+    else:
+        result = _aggregated_on_calendar_cells(field, freq, kind, method)
     result[TIME_DIM].attrs = _without_stale_interval_attrs(result[TIME_DIM].attrs)
-    weighted = method == "mean" and LENGTH_COORD in field.coords
-    result.attrs = _aggregated_attrs(field.attrs, kind, method, freq, weighted)
     return result
 
 
@@ -595,9 +593,6 @@ _LEVEL_KINDS: frozenset[VariableKind] = frozenset(
     {VariableKind.TIMESTEP_END_STATE, VariableKind.TIMESTEP_MEAN, VariableKind.DAILY_RATE}
 )
 
-#: Names the refusal probe's own coordinates occupy.
-_PROBE_COORD_NAMES = frozenset({TIME_DIM, START_COORD, LENGTH_COORD, "time_bounds"})
-
 #: How the steps a cell or window combines are summarized in its interval
 #: coordinates: the earliest start, the latest end and the summed length.
 _SPAN_OF_STEPS: dict[str, str] = {START_COORD: "min", TIME_DIM: "max", LENGTH_COORD: "sum"}
@@ -660,8 +655,8 @@ def _method_for(field: xr.DataArray, kind: VariableKind | None, how: str | None)
             f"Unknown resampling method {how!r} for {field_label(field)}; choose from "
             f"{list(RESAMPLING_METHODS)}."
         )
-    if kind is not None and how not in RESAMPLING_METHODS_FOR_KIND[kind]:
-        _refuse(field, kind, how)
+    if kind is not None:
+        check_resampling_method(kind, how, name=_plain_label(field))
     return how
 
 
@@ -683,42 +678,11 @@ def _window_method_for(field: xr.DataArray, kind: VariableKind | None, how: Any)
     return how
 
 
-def _refuse(field: xr.DataArray, kind: VariableKind, method: str) -> None:
-    """Raise pySIPNET's own explanation of why *method* is meaningless for *kind*.
-
-    Obtained by putting the pair to ``pysipnet.resample.resample``, on two rows
-    that exist only to be refused, rather than by restating a reason that would
-    then be this project's to keep in step with pySIPNET's.
-    """
-    label = field_label(field)
-    # The probe cannot hold a variable named after one of the time coordinates
-    # it must carry, so a field with such a name, or none, is put to pySIPNET
-    # under a stand-in and named properly again in the message.
-    name = None if field.name is None else str(field.name)
-    stand_in = name if name is not None and name not in _PROBE_COORD_NAMES else "the_field"
-    try:
-        pysipnet_resample(_refusal_probe(stand_in, kind), "1D", how=method)
-    except ValueError as refusal:
-        raise ValueError(str(refusal).replace(repr(stand_in), label, 1)) from None
-    raise ValueError(
-        f"Cannot aggregate {label} with {method!r}: it is of kind {kind.value!r}, which "
-        f"admits only {sorted(RESAMPLING_METHODS_FOR_KIND[kind])}."
-    )
-
-
-def _refusal_probe(name: str, kind: VariableKind) -> xr.Dataset:
-    """Two rows with pySIPNET's time layout, holding one variable of *kind*."""
-    start = np.array(["2000-01-01T00:00", "2000-01-01T12:00"], dtype="datetime64[ns]")
-    length = np.array([12, 12], dtype="timedelta64[h]").astype("timedelta64[ns]")
-    coords = assemble_time_coords(
-        start=start,
-        end=start + length,
-        length=length,
-        attributes_for=lambda _name: {},
-        length_source="a probe, to obtain pySIPNET's refusal",
-        time_zone=TIME_ZONE_UNDECLARED,
-    )
-    return xr.Dataset({name: (TIME_DIM, np.zeros(2), {"kind": kind.value})}, coords=coords)
+def _plain_label(field: xr.DataArray) -> str:
+    """The field's name or derivation unquoted, for a message that quotes it."""
+    if field.name is not None:
+        return str(field.name)
+    return str(field.attrs.get("derivation") or "the field")
 
 
 def _only_real_steps(field: xr.DataArray) -> xr.DataArray:
@@ -804,36 +768,22 @@ def _nonempty_cells(field: xr.DataArray, freq: str) -> np.ndarray:
     return np.asarray(_grouped(ones, freq).sum().values > 0)
 
 
-def _aggregated_time_coords(
-    field: xr.DataArray, freq: str, keep: np.ndarray
-) -> dict[str, xr.DataArray]:
-    """The ``time`` coordinates of the coarser field.
+def _aggregated_on_calendar_cells(
+    field: xr.DataArray, freq: str, kind: VariableKind | None, method: str
+) -> xr.DataArray:
+    """A field without pySIPNET's interval coordinates, combined on calendar cells.
 
-    A field carrying pySIPNET's interval coordinates gets them back, describing
-    the span its steps covered and built by pySIPNET's own
-    ``assemble_time_coords`` so the wording cannot drift. One that does not
-    keeps its own ``time`` attributes on the calendar cell edges. Either way
-    the caller drops :data:`STALE_ON_A_COARSER_STEP`.
+    pySIPNET's ``resample`` needs the interval coordinates, so an observation
+    field is aggregated here, by the same right-closed cells and equal weights.
     """
-    if START_COORD not in field.coords or LENGTH_COORD not in field.coords:
-        return {}
-    # pandas bins exactly as xarray's resample does, and sums the lengths as
-    # integer nanoseconds rather than through a float.
-    cells = _steps_frame(field).resample(freq, closed="right", label="right")
-    spans = cells.agg(_SPAN_OF_STEPS).iloc[np.flatnonzero(keep)]
-    built = assemble_time_coords(
-        start=spans[START_COORD].to_numpy("datetime64[ns]"),
-        end=spans[TIME_DIM].to_numpy("datetime64[ns]"),
-        length=spans[LENGTH_COORD].to_numpy("timedelta64[ns]"),
-        attributes_for=lambda name: dict(field[name].attrs) if name in field.coords else {},
-        length_source=STEP_LENGTH_RESAMPLED,
-        time_zone=field[TIME_DIM].attrs.get("time_zone", TIME_ZONE_UNDECLARED),
-    )
-    return {
-        name: xr.DataArray(values, dims=TIME_DIM, attrs=_without_stale_interval_attrs(attrs))
-        for name, (_dims, values, attrs) in built.items()
-        if name in (TIME_DIM, START_COORD, LENGTH_COORD)
-    }
+    check_frequency(freq)
+    check_not_upsampling(field, freq)
+    weights = _step_weights(field) if method == "mean" else None
+    values = _combine(field, freq, method, weights)
+    values = values.isel({TIME_DIM: _nonempty_cells(field, freq)})
+    result = values.rename(field.name) if field.name is not None else values
+    result.attrs = _aggregated_attrs(field.attrs, kind, method, freq)
+    return result
 
 
 def _without_stale_interval_attrs(attrs: Mapping[str, Any]) -> dict[str, Any]:
@@ -842,17 +792,12 @@ def _without_stale_interval_attrs(attrs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _aggregated_attrs(
-    attrs: Mapping[str, Any],
-    kind: VariableKind | None,
-    method: str,
-    freq: str,
-    weighted: bool,
+    attrs: Mapping[str, Any], kind: VariableKind | None, method: str, freq: str
 ) -> dict[str, Any]:
     """The variable's attributes, rewritten to describe what the values now are."""
     out = _with_resampled_kind(attrs, kind, method)
-    weighting = f", weighted by {LENGTH_COORD}" if weighted else ""
     of_kind = f" of {kind.value} values" if kind is not None else ""
-    out["resampling"] = f"{method}{of_kind} over {freq}{weighting}"
+    out["resampling"] = f"{method}{of_kind} over {freq}"
     return out
 
 
@@ -1110,6 +1055,23 @@ def _checked_instants(times: Any) -> tuple[pd.DatetimeIndex, dict]:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_kind_is_known_for_interval_steps(
+    field: xr.DataArray, kind: VariableKind | None
+) -> None:
+    """A field with pySIPNET's interval coordinates says what kind it is.
+
+    pySIPNET's ``resample``, which aggregates such a field, checks the method
+    against the kind and refuses a field that has none.
+    """
+    if kind is None:
+        raise ValueError(
+            f"{field_label(field)} carries pySIPNET's interval coordinates but no 'kind' "
+            "attribute, and is not a SIPNET output or climate variable, so the method "
+            f"cannot be checked against it. Set attrs['kind'] to one of "
+            f"{[k.value for k in VariableKind]}."
+        )
 
 
 def check_run_spans_the_windows(

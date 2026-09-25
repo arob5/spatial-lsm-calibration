@@ -173,7 +173,12 @@ class TestAggregateTimeChoosesTheMethod:
         anonymous.attrs = {"units": "g m-2", "long_name": "Something observed"}
         with pytest.raises(ValueError, match="carries no 'kind' attribute"):
             aggregate_time(anonymous, "1D")
-        assert aggregate_time(anonymous, "1D", how="sum").sizes["time"] > 0
+        # pySIPNET checks a method against the kind, so a field with its
+        # interval coordinates needs one even when told how.
+        with pytest.raises(ValueError, match="interval coordinates but no 'kind'"):
+            aggregate_time(anonymous, "1D", how="sum")
+        observed = anonymous.drop_vars(["time_step_start", "time_step_length"])
+        assert aggregate_time(observed, "1D", how="sum").sizes["time"] > 0
 
     def test_a_nonsense_kind_is_refused(self, niwot_output):
         field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]

@@ -577,8 +577,10 @@ plotting code. The load-bearing rules:
   weights means by step length and refuses a method the kind does not support
   (a pool is not additive; a per-step total is not averaged until it is a
   rate). `observation.time_alignment.aggregate_time(field, freq, how=None)`
-  is that operation for a field — a field may have `member` and `site` dims,
-  which `resample` does not reduce over — and it adds one thing: with no
+  is that operation for a field: a field carrying pySIPNET's interval
+  coordinates goes through `resample` itself, which keeps `member` and `site`
+  dims (pySIPNET PR #49), and one without them, such as an observation, is
+  combined on the same calendar cells here. It adds one thing: with no
   `how` it takes **the method that leaves the variable the kind it already
   is**, read off pySIPNET's `RESAMPLED_KIND` rather than written down. A
   total sums, a step mean or a rate means, a pool or a running total takes

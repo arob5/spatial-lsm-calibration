@@ -412,7 +412,7 @@ class TestRefusalsTheMutationsFound:
         array = niwot["wood_carbon"]
         with pytest.raises(ValueError, match="offset alias"):
             aggregate_time(array, "daily")
-        with pytest.raises(ValueError, match="interpolate rather than aggregate"):
+        with pytest.raises(ValueError, match="shorter than the shortest step"):
             aggregate_time(array, "1h")
         with pytest.raises(ValueError, match="offset alias"):
             aggregation_counts(array, 3)
