@@ -27,12 +27,17 @@ from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, Vari
 from conftest import SITE_1_DRIVERS
 
 from sipnet_calibration.fields import from_sipnet_output, stack_sipnet_outputs
+from sipnet_calibration import conventions
 from sipnet_calibration.obs_ops import (
     DEFAULT_METHOD_FOR_KIND,
     LENGTH_COORD,
     STALE_ON_A_COARSER_STEP,
+    WINDOW_REDUCTIONS,
     aggregate_time,
+    aggregation_counts,
+    reduce_windows,
     sipnet_time_index,
+    window_counts,
 )
 
 #: The same file the run fixtures use, defined once in ``conftest``.
@@ -666,3 +671,310 @@ class TestAggregateTimeKeepsTheVariablesIdentity:
         stripped = par.copy()
         stripped.attrs = {}
         assert aggregate_time(stripped, "1D").attrs["kind"] == "timestep_total"
+
+
+class TestAggregationCounts:
+    """What tells a partial cell from a full one where nothing else does."""
+
+    def test_counts_align_with_the_aggregate(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        counts = aggregation_counts(field, "1D")
+        assert counts.sizes["time"] == aggregate_time(field, "1D").sizes["time"]
+        assert counts.dtype == np.int64
+        assert counts.attrs == {}
+
+    def test_a_count_is_the_number_of_values_that_are_not_missing(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
+        expected = raw.groupby(raw.index.ceil("D")).count()
+        assert np.array_equal(aggregation_counts(field, "1D").values, expected.to_numpy())
+
+    def test_a_gap_is_not_counted(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        values = field.values.copy()
+        values[0] = np.nan
+        counts = aggregation_counts(field.copy(data=values), "1D")
+        assert int(counts.values[0]) == int(aggregation_counts(field, "1D").values[0]) - 1
+
+    def test_the_boundary_cells_of_a_driver_record_are_visibly_partial(
+        self, real_driver_field
+    ):
+        """The case aggregate_time alone cannot report: no declared step lengths."""
+        drivers = pytest.importorskip("sipnet_calibration.drivers")
+        par = drivers.driver_fields(drivers.load_drivers([1], members=[1]))["par"].isel(
+            member=0, site=0
+        )
+        counts = aggregation_counts(par, "1D")
+        assert int(counts.values[0]) < 8
+        assert (counts.values[1:-1] == 8).all()
+
+    def test_a_field_with_no_kind_can_still_be_counted(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        stripped = field.rename("observed_thing")
+        stripped.attrs = {}
+        assert int(aggregation_counts(stripped, "1D").sum()) == field.sizes["time"]
+
+
+class TestReduceWindows:
+    @staticmethod
+    def blocks(start="1998-11-01", periods=4, freq="10D", closed="right"):
+        edges = pd.date_range(start, periods=periods, freq=freq)
+        return pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed=closed)
+
+    def test_a_window_sum_is_the_sum_of_the_rows_labeled_inside_it(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        windows = self.blocks()
+        total = reduce_windows(field, windows, "sum")
+        raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
+        for i, window in enumerate(windows):
+            inside = raw[(raw.index > window.left) & (raw.index <= window.right)]
+            assert float(total.values[i]) == pytest.approx(inside.sum())
+
+    def test_every_reduction_matches_pandas(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        windows = self.blocks()
+        raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
+        cut = pd.cut(raw.index, windows.astype(f"interval[datetime64[{raw.index.unit}], right]"))
+        for how in WINDOW_REDUCTIONS:
+            expected = raw.groupby(cut, observed=False).agg(how)
+            ours = reduce_windows(field, windows, how)
+            assert np.allclose(ours.values, expected.to_numpy()), how
+
+    def test_the_closed_side_decides_a_label_on_a_shared_edge(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        stamps = pd.DatetimeIndex(field["time"].values)
+        edges = pd.DatetimeIndex([stamps[0], stamps[2], stamps[4]])
+        right = pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="right")
+        left = pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="left")
+        assert int(window_counts(field, right).values[0]) == 2
+        assert int(window_counts(field, left).values[0]) == 2
+        # The row labeled exactly on the middle edge falls on either side.
+        assert float(reduce_windows(field, right, "sum").values[0]) == pytest.approx(
+            float(field.values[1] + field.values[2])
+        )
+        assert float(reduce_windows(field, left, "sum").values[0]) == pytest.approx(
+            float(field.values[0] + field.values[1])
+        )
+
+    def test_rows_outside_every_window_are_ignored(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        windows = self.blocks(periods=2)
+        assert int(window_counts(field, windows).sum()) < field.sizes["time"]
+
+    def test_a_window_holding_nothing_is_missing(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        far = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["2050-01-01"]), pd.DatetimeIndex(["2050-02-01"]), closed="right"
+        )
+        assert np.isnan(reduce_windows(field, far, "sum").values).all()
+        assert int(window_counts(field, far).values[0]) == 0
+
+    def test_min_count_masks_a_thin_window(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        windows = self.blocks()
+        counts = window_counts(field, windows)
+        assert not np.isnan(reduce_windows(field, windows, "sum", min_count=1).values).any()
+        thin = reduce_windows(field, windows, "sum", min_count=int(counts.max()) + 1)
+        assert np.isnan(thin.values).all()
+
+    def test_the_default_labels_are_the_right_edges_marked_as_interval_ends(
+        self, niwot_output
+    ):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        windows = self.blocks()
+        reduced = reduce_windows(field, windows, "sum")
+        assert np.array_equal(
+            reduced["time"].values, pd.DatetimeIndex(windows.right).to_numpy()
+        )
+        assert reduced["time"].attrs[conventions.TIME_LABEL_ATTR] == conventions.INTERVAL_END
+
+    def test_given_labels_keep_their_own_attributes(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        windows = self.blocks()
+        labels = xr.DataArray(
+            pd.DatetimeIndex(["1998-11-05", "1998-11-15", "1998-11-25"]).to_numpy(),
+            dims="time",
+            attrs={"long_name": "Observation date", "comment": "the observation's own"},
+        )
+        reduced = reduce_windows(field, windows, "sum", labels=labels)
+        assert reduced["time"].attrs["long_name"] == "Observation date"
+        assert np.array_equal(reduced["time"].values, labels.values)
+
+    def test_the_other_dimensions_and_their_coordinates_survive(self, niwot_output):
+        runs = {(site, member): niwot_output for site in (1, 27) for member in (0, 1)}
+        stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
+        reduced = reduce_windows(stacked, self.blocks(), "sum")
+        assert reduced.dims == ("member", "site", "time")
+        assert reduced["lon"].dims == ("site",)
+        one = reduce_windows(
+            from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"],
+            self.blocks(),
+            "sum",
+        )
+        assert np.allclose(reduced.sel(site=1, member=0).values, one.values)
+
+    def test_the_variable_keeps_its_name_and_attributes_plus_the_reduction(
+        self, niwot_output
+    ):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        reduced = reduce_windows(field, self.blocks(), "mean")
+        assert reduced.name == "net_ecosystem_exchange"
+        assert reduced.attrs["units"] == field.attrs["units"]
+        assert reduced.attrs["reduction"] == "mean"
+        # Unlike aggregate_time, the kind is the observation's business.
+        assert reduced.attrs["kind"] == field.attrs["kind"]
+
+    def test_calendar_windows_agree_with_aggregate_time(self, niwot_output):
+        """The two are the same operation where the windows are a frequency."""
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        daily = aggregate_time(field, "1D")
+        stamps = pd.DatetimeIndex(field["time"].values)
+        edges = pd.date_range(
+            stamps.min().floor("D"), stamps.max().ceil("D") + pd.Timedelta("1D"), freq="1D"
+        )
+        windows = pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="right")
+        by_window = reduce_windows(field, windows, "sum")
+        kept = ~np.isnan(by_window.values)
+        assert np.allclose(by_window.values[kept], daily.values)
+
+
+class TestWindowInputsAreChecked:
+    @staticmethod
+    def field(niwot_output):
+        return from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+
+    def test_windows_must_be_an_interval_index(self, niwot_output):
+        with pytest.raises(ValueError, match="must be a pandas.IntervalIndex"):
+            reduce_windows(self.field(niwot_output), pd.DatetimeIndex(["1998-11-01"]), "sum")
+
+    def test_overlapping_windows_are_refused(self, niwot_output):
+        windows = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["1998-11-01", "1998-11-05"]),
+            pd.DatetimeIndex(["1998-11-10", "1998-11-20"]),
+            closed="right",
+        )
+        with pytest.raises(ValueError, match="overlap"):
+            reduce_windows(self.field(niwot_output), windows, "sum")
+
+    def test_decreasing_windows_are_refused(self, niwot_output):
+        windows = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["1998-11-20", "1998-11-01"]),
+            pd.DatetimeIndex(["1998-11-25", "1998-11-05"]),
+            closed="right",
+        )
+        with pytest.raises(ValueError, match="increasing order"):
+            reduce_windows(self.field(niwot_output), windows, "sum")
+
+    def test_empty_windows_are_refused(self, niwot_output):
+        empty = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex([]), pd.DatetimeIndex([]), closed="right"
+        )
+        with pytest.raises(ValueError, match="nothing to reduce into"):
+            reduce_windows(self.field(niwot_output), empty, "sum")
+
+    def test_numeric_windows_are_refused(self, niwot_output):
+        with pytest.raises(ValueError, match="intervals of datetimes"):
+            reduce_windows(
+                self.field(niwot_output), pd.IntervalIndex.from_breaks([0, 1, 2]), "sum"
+            )
+
+    def test_a_time_zone_mismatch_is_refused_rather_than_matching_nothing(
+        self, niwot_output
+    ):
+        edges = pd.date_range("1998-11-01", periods=2, freq="10D", tz="UTC")
+        windows = pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="right")
+        with pytest.raises(ValueError, match="time zone"):
+            reduce_windows(self.field(niwot_output), windows, "sum")
+
+    def test_an_unknown_reduction_is_refused(self, niwot_output):
+        windows = TestReduceWindows.blocks()
+        with pytest.raises(ValueError, match="how must be one of"):
+            reduce_windows(self.field(niwot_output), windows, "median")
+
+    def test_min_count_must_be_a_positive_integer(self, niwot_output):
+        windows = TestReduceWindows.blocks()
+        with pytest.raises(ValueError, match="at least 1"):
+            reduce_windows(self.field(niwot_output), windows, "sum", min_count=0)
+        with pytest.raises(ValueError, match="must be an integer"):
+            reduce_windows(self.field(niwot_output), windows, "sum", min_count=1.5)
+
+    def test_numeric_labels_are_refused(self, niwot_output):
+        windows = TestReduceWindows.blocks()
+        with pytest.raises(ValueError, match="must be timestamps"):
+            reduce_windows(self.field(niwot_output), windows, "sum", labels=[0, 1, 2])
+
+    def test_one_label_per_window(self, niwot_output):
+        windows = TestReduceWindows.blocks()
+        with pytest.raises(ValueError, match="one label per"):
+            reduce_windows(
+                self.field(niwot_output),
+                windows,
+                "sum",
+                labels=pd.DatetimeIndex(["1998-11-05"]),
+            )
+
+
+class TestTimeAxisIsChecked:
+    def test_a_dataset_is_refused_by_name(self, niwot_output):
+        with pytest.raises(ValueError, match="one field at a time"):
+            aggregate_time(niwot_output.select(["nee"]), "1D")
+
+    def test_a_non_datetime_time_coordinate_is_refused(self):
+        field = xr.DataArray(
+            np.arange(4.0), dims="time", coords={"time": [0, 1, 2, 3]},
+            name="net_ecosystem_exchange", attrs={"kind": "timestep_total"},
+        )
+        with pytest.raises(ValueError, match="needs datetimes"):
+            aggregate_time(field, "1D")
+
+    def test_a_missing_timestamp_is_refused(self):
+        times = pd.DatetimeIndex(["2000-01-01", pd.NaT, "2000-01-03"])
+        field = xr.DataArray(
+            np.arange(3.0), dims="time", coords={"time": times},
+            name="net_ecosystem_exchange", attrs={"kind": "timestep_total"},
+        )
+        with pytest.raises(ValueError, match="missing timestamp"):
+            aggregate_time(field, "1D")
+
+    def test_a_nonsense_frequency_is_refused(self, niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        with pytest.raises(ValueError, match="offset alias"):
+            aggregate_time(field, "banana")
+
+    def test_upsampling_is_refused_rather_than_returning_mostly_missing(
+        self, niwot_output
+    ):
+        daily = aggregate_time(
+            from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"], "1D"
+        )
+        with pytest.raises(ValueError, match="interpolate rather than aggregate"):
+            aggregate_time(daily, "1h")
+
+
+class TestCountsAlignWithTheAggregateTheyDescribe:
+    """A count that did not line up with its aggregate would be worse than none."""
+
+    @staticmethod
+    def gappy(niwot_output):
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        return xr.concat(
+            [field.isel(time=slice(0, 4)), field.isel(time=slice(-4, None))], "time"
+        )
+
+    def test_the_empty_cells_dropped_from_one_are_dropped_from_the_other(
+        self, niwot_output
+    ):
+        gappy = self.gappy(niwot_output)
+        assert (
+            aggregation_counts(gappy, "1D").sizes["time"]
+            == aggregate_time(gappy, "1D").sizes["time"]
+        )
+
+    def test_the_cells_are_right_closed_as_aggregate_time_makes_them(self, niwot_output):
+        """Not xarray's left-closed default, which would count a different day."""
+        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
+        right_closed = raw.groupby(raw.index.ceil("D")).count()
+        assert np.array_equal(
+            aggregation_counts(field, "1D").values, right_closed.to_numpy()
+        )

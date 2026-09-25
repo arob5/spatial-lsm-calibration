@@ -14,6 +14,12 @@ Provided:
   within its day, never as the timestamp.
 * ``aggregate_time(field, freq, *, how=None) -> DataArray`` -- combine a
   canonical field's timesteps into coarser ones.
+* ``aggregation_counts(field, freq) -> DataArray`` -- how many values each of
+  those cells was formed from.
+* ``reduce_windows(field, windows, how, *, labels=, min_count=) -> DataArray``
+  -- the same reduction into arbitrary non-overlapping intervals rather than a
+  regular frequency, labeled as the caller asks, and
+  ``window_counts(field, windows, *, labels=)`` beside it.
 
 Planned (issue #6):
 
@@ -51,6 +57,30 @@ daily is a **sum**; a mean is wrong by a factor of 8 and looks entirely
 plausible. That is the error the default exists to make impossible to reach by
 omission.
 
+A frequency or a window
+-----------------------
+:func:`aggregate_time` groups by a calendar frequency and is the model side:
+the variable's kind decides the method, and the result is described in
+pySIPNET's vocabulary. :func:`reduce_windows` groups by any set of
+non-overlapping intervals and is the observation side: the caller names the
+method outright, because a window carries no frequency to infer from and the
+kind describes the field's own steps rather than what an observation wants of
+them. An observation operator forming a predicted value over an observation's
+own support uses the second, passing that observation's ``time`` coordinate as
+the labels.
+
+Both are right-closed, because ``time`` is the end of a step: a step ending at
+midnight belongs to the day that ended.
+
+**Counting what a cell was formed from is separate from forming it.** A field
+carrying pySIPNET's ``time_step_length`` already says how much of a cell was
+covered, but a driver field or an observation carries no such coordinate, and
+then the first and last cell of every record are partial with nothing to say
+so -- for an extensive variable, a fraction of a period in the units of a whole
+one. :func:`aggregation_counts` and :func:`window_counts` are what a caller
+masks on. They are not folded into the aggregate, which would change what every
+consumer receives to serve the callers that care.
+
 Aggregation is a verb the caller applies, never a plotter keyword::
 
     plot_time_series(aggregate_time(nee, "1D"))   # yes
@@ -81,6 +111,8 @@ from pysipnet.variables import (
     resolve_output_variable,
 )
 
+from sipnet_calibration import conventions
+
 __all__ = [
     "DEFAULT_METHOD_FOR_KIND",
     "LENGTH_COORD",
@@ -88,8 +120,12 @@ __all__ = [
     "STALE_ON_A_COARSER_STEP",
     "START_COORD",
     "TIME_DIM",
+    "WINDOW_REDUCTIONS",
     "aggregate_time",
+    "aggregation_counts",
+    "reduce_windows",
     "sipnet_time_index",
+    "window_counts",
 ]
 
 #: The dimension timesteps are combined along.
@@ -103,8 +139,20 @@ TIME_DIM = "time"
 START_COORD = "time_step_start"
 LENGTH_COORD = "time_step_length"
 
-#: The ways consecutive steps may be combined, as pySIPNET names them.
+#: The ways consecutive steps may be combined, as pySIPNET names them. This is
+#: what :func:`aggregate_time` admits, because every one of its methods is
+#: checked against a pySIPNET kind and those are the only three its tables
+#: define.
 RESAMPLING_METHODS: tuple[str, ...] = ("sum", "mean", "last")
+
+#: What :func:`reduce_windows` admits, which is wider. Nothing checks a window
+#: reduction against a kind -- the caller states outright what it wants of the
+#: observation it is forming -- so the extremes and the leading edge of a
+#: window are available as well.
+WINDOW_REDUCTIONS: tuple[str, ...] = ("sum", "mean", "min", "max", "first", "last")
+
+#: The coordinate :func:`reduce_windows` groups by, internal to one call.
+_WINDOW = "_window"
 
 
 def _kind_preserving_methods() -> dict[VariableKind, str]:
@@ -355,15 +403,12 @@ def aggregate_time(
     would settle it for every field at once, and is the obvious next thing
     here.
     """
-    if TIME_DIM not in field.dims:
-        raise ValueError(
-            f"aggregate_time needs a {TIME_DIM!r} dimension; {field.name!r} has "
-            f"dims {tuple(str(d) for d in field.dims)}."
-        )
-
+    _check_the_time_axis(field)
+    _check_frequency(freq)
     _check_interval_coords_are_one_dimensional(field)
     field = _only_real_steps(field)
     _check_the_steps_are_aggregable(field)
+    _check_not_upsampling(field, freq)
     kind = _variable_kind(field)
     method = _method_for(field, kind, how)
     weights = _step_weights(field) if method == "mean" else None
@@ -381,6 +426,166 @@ def aggregate_time(
     weighted = method == "mean" and LENGTH_COORD in field.coords
     result.attrs = _aggregated_attrs(field.attrs, kind, method, freq, weighted)
     return result
+
+
+def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
+    """How many values each cell of :func:`aggregate_time` is formed from.
+
+    The count of values that are not missing, per cell. It is what tells a
+    partial cell from a full one on a field carrying no declared step lengths
+    -- a driver field, or an observation -- where the aggregate itself says
+    nothing about coverage and the first and last cell of any record are
+    partial.
+
+    Parameters
+    ----------
+    field:
+        As :func:`aggregate_time`. Its attributes are not read, so a field
+        with no ``kind`` can still be counted.
+    freq:
+        As :func:`aggregate_time`.
+
+    Returns
+    -------
+    xarray.DataArray
+        Integer counts on the same ``time`` axis and dimensions as the
+        aggregate, so it aligns with it and can mask it directly. Zero where a
+        cell held nothing. No attributes: it is a count of a field, not a
+        field.
+
+    Raises
+    ------
+    ValueError
+        As :func:`aggregate_time`, for the ``time`` axis and *freq*.
+
+    Notes
+    -----
+    The cells are labeled as :func:`xarray.DataArray.resample` labels them, not
+    as :func:`aggregate_time` relabels a field that carries pySIPNET's interval
+    coordinates, so compare the two by position rather than by label on such a
+    field.
+    """
+    _check_frequency(freq)
+    _check_the_time_axis(field)
+    _check_not_upsampling(field, freq)
+    return _count_by_period(field, freq)
+
+
+def reduce_windows(
+    field: xr.DataArray,
+    windows: pd.IntervalIndex,
+    how: str,
+    *,
+    labels: Any = None,
+    min_count: int = 1,
+) -> xr.DataArray:
+    """Reduce *field* along ``time`` into the given windows.
+
+    The general form of :func:`aggregate_time`: the periods are any set of
+    non-overlapping intervals rather than a regular frequency, and the result
+    is labeled as the caller asks. A row belongs to the window containing its
+    ``time`` label; rows outside every window are ignored.
+
+    Parameters
+    ----------
+    field:
+        As :func:`aggregate_time`.
+    windows:
+        A ``pandas.IntervalIndex`` of datetimes, non-overlapping, increasing,
+        naive or in the field's time zone. Its ``closed`` side decides which
+        of two adjacent windows a label on their shared edge belongs to:
+        ``"right"`` matches end-labeled rows, ``"left"`` start-labeled ones.
+    how:
+        One of :data:`WINDOW_REDUCTIONS`. Required, and not defaulted from the
+        variable's kind: a window has no frequency to infer anything from, and
+        the kind describes the field's own steps rather than what an
+        observation wants of them.
+    labels:
+        The ``time`` coordinate of the result, one label per window, strictly
+        increasing. Defaults to each window's right edge, marked
+        ``time_label = "interval_end"``. An observation operator passes the
+        observation's own ``time`` coordinate, whose attributes are kept.
+    min_count:
+        A window formed from fewer values that are not missing comes back as
+        ``NaN``.
+
+    Returns
+    -------
+    xarray.DataArray
+        One value per window, with *field*'s other dimensions and their
+        coordinates untouched and its ``time`` coordinate replaced by
+        *labels*. The variable's attributes are carried through with
+        ``reduction`` added; unlike :func:`aggregate_time` the ``kind`` is left
+        alone, because what a window reduction produces is the observation's
+        business rather than pySIPNET's. A window holding no rows is ``NaN``.
+
+    Raises
+    ------
+    ValueError
+        If *field* fails the checks of :func:`aggregate_time`; if *how* is not
+        in :data:`WINDOW_REDUCTIONS`; if *windows* is not a datetime
+        ``IntervalIndex``, is empty, holds ``NaT``, overlaps, is not
+        increasing, or is in a different time zone from the field; if *labels*
+        are not timestamps, not one per window, or not strictly increasing; or
+        if *min_count* is not an integer of at least 1.
+
+    Notes
+    -----
+    Membership is by the row's label, not by the interval the row covers, so a
+    right-closed window ``(a, b]`` collects the end-labeled steps that end in
+    it -- which is how SIPNET's own daily bookkeeping groups its steps. For
+    midpoint membership, shift the labels by half a step first.
+    """
+    how = _check_window_reduction(how)
+    _check_min_count(min_count)
+    _check_the_time_axis(field)
+    field = _only_real_steps(field)
+    stamps = _time_index(field)
+    windows = _checked_windows(windows, stamps)
+    labels, label_attrs = _checked_labels(labels, windows)
+
+    membership = windows.get_indexer(stamps)
+    counts = _count_by_window(field, membership, len(windows))
+    reduced = _reduce_by_window(field, membership, how, len(windows))
+    reduced = reduced.where(counts >= int(min_count))
+
+    reduced = reduced.assign_coords({TIME_DIM: labels})
+    reduced[TIME_DIM].attrs = label_attrs
+    reduced.name = field.name
+    reduced.attrs = {**field.attrs, "reduction": how}
+    return reduced
+
+
+def window_counts(
+    field: xr.DataArray, windows: pd.IntervalIndex, *, labels: Any = None
+) -> xr.DataArray:
+    """How many values each window of :func:`reduce_windows` is formed from.
+
+    Parameters
+    ----------
+    field, windows, labels:
+        As :func:`reduce_windows`.
+
+    Returns
+    -------
+    xarray.DataArray
+        Integer counts aligned with what :func:`reduce_windows` returns, zero
+        where a window held nothing, carrying no attributes.
+
+    Raises
+    ------
+    ValueError
+        As :func:`reduce_windows`, for the field, the windows and the labels.
+    """
+    _check_the_time_axis(field)
+    field = _only_real_steps(field)
+    stamps = _time_index(field)
+    windows = _checked_windows(windows, stamps)
+    labels, label_attrs = _checked_labels(labels, windows)
+    counts = _count_by_window(field, windows.get_indexer(stamps), len(windows))
+    counts = counts.assign_coords({TIME_DIM: labels})
+    counts[TIME_DIM].attrs = label_attrs
+    return counts
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
@@ -424,6 +629,41 @@ def _check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
         )
 
 
+def _check_the_time_axis(field: xr.DataArray) -> None:
+    """*field* is a DataArray carrying a datetime ``time`` coordinate.
+
+    Checked before anything reads the axis, so that a Dataset, a missing
+    coordinate or SIPNET's raw ``year``/``day``/``hour`` columns are named for
+    what they are rather than failing somewhere inside a groupby.
+    """
+    if not isinstance(field, xr.DataArray):
+        advice = (
+            " A Dataset holds several variables, whose kinds differ; aggregate "
+            "one field at a time."
+            if isinstance(field, xr.Dataset)
+            else ""
+        )
+        raise ValueError(f"expected an xarray.DataArray, got {type(field).__name__}.{advice}")
+    if TIME_DIM not in field.dims:
+        raise ValueError(
+            f"aggregating in time needs a {TIME_DIM!r} dimension; {field.name!r} has "
+            f"dims {tuple(str(d) for d in field.dims)}."
+        )
+    if TIME_DIM not in field.coords:
+        raise ValueError(
+            f"{field.name!r} has a {TIME_DIM!r} dimension but no {TIME_DIM!r} "
+            "coordinate, so there is nothing to group its rows by."
+        )
+    dtype = field.coords[TIME_DIM].dtype
+    if not _is_datetime(dtype):
+        raise ValueError(
+            f"the {TIME_DIM!r} coordinate of {field.name!r} has dtype {dtype}, and "
+            "aggregation needs datetimes. SIPNET's output and the .clim drivers "
+            "carry year, day and hour columns instead; build the axis with "
+            "sipnet_time_index first."
+        )
+
+
 def _check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     """There is at least one step, and no two of them share or reverse a label.
 
@@ -432,6 +672,12 @@ def _check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     larger flux.
     """
     times = field[TIME_DIM].values
+    if pd.isna(times).any():
+        raise ValueError(
+            f"the {TIME_DIM!r} coordinate of {field.name!r} holds a missing "
+            "timestamp (NaT), so its rows cannot be grouped. Drop those rows, "
+            "or rebuild the axis with sipnet_time_index."
+        )
     if times.size == 0:
         raise ValueError(
             f"{field.name!r} has no timesteps left to aggregate. An empty "
@@ -667,6 +913,97 @@ def _on_time(field: xr.DataArray, values: np.ndarray) -> xr.DataArray:
     return xr.DataArray(values, dims=TIME_DIM, coords={TIME_DIM: field[TIME_DIM]})
 
 
+def _is_datetime(dtype: Any) -> bool:
+    """Whether *dtype* is a datetime one, time-zone-aware ones included."""
+    if isinstance(dtype, pd.api.extensions.ExtensionDtype):
+        return isinstance(dtype, pd.DatetimeTZDtype)
+    return bool(np.issubdtype(dtype, np.datetime64))
+
+
+def _time_index(field: xr.DataArray) -> pd.DatetimeIndex:
+    """The field's ``time`` coordinate as a pandas index."""
+    return pd.DatetimeIndex(field.coords[TIME_DIM].to_index())
+
+
+def _reduce(grouped: Any, method: str) -> xr.DataArray:
+    """Apply *method* to a resample or groupby object.
+
+    ``skipna`` makes ``first``/``last`` the first and last *observed* value of
+    a window rather than its first and last row.
+    """
+    if method in ("first", "last"):
+        return getattr(grouped, method)(skipna=True)
+    return getattr(grouped, method)()
+
+
+def _rows_per_period(field: xr.DataArray, freq: str) -> xr.DataArray:
+    """How many rows of the time axis fall in each cell, missing or not."""
+    ones = _on_time(field, np.ones(field.sizes[TIME_DIM]))
+    return _grouped(ones, freq).sum().fillna(0)
+
+
+def _count_by_period(field: xr.DataArray, freq: str) -> xr.DataArray:
+    """Values that are not missing, per cell, as ``int64``.
+
+    Through :func:`_grouped`, so the cells are the ones
+    :func:`aggregate_time` forms rather than xarray's left-closed default, and
+    the empty ones are dropped as it drops them. A count that did not line up
+    with the aggregate it describes would be worse than no count.
+    """
+    # An empty cell sums to NaN; fill before the cast, which is otherwise
+    # platform-dependent (0 on arm64, INT64_MIN on x86-64).
+    counts = _grouped(field.notnull(), freq).sum()
+    counts = counts.fillna(0).astype(np.int64)
+    counts = counts.isel({TIME_DIM: _nonempty_cells(field, freq)})
+    counts.name = None
+    counts.attrs = {}
+    return counts
+
+
+def _members(field: xr.DataArray, membership: np.ndarray) -> xr.DataArray:
+    """The rows inside some window, with the window index as a coordinate."""
+    inside = np.flatnonzero(membership >= 0)
+    rows = field.isel({TIME_DIM: inside})
+    return rows.assign_coords({_WINDOW: (TIME_DIM, membership[inside])})
+
+
+def _empty_windows(field: xr.DataArray, n_windows: int, fill: Any, dtype: Any) -> xr.DataArray:
+    """One entry per window when no row falls in any of them."""
+    shape = [n_windows if dim == TIME_DIM else field.sizes[dim] for dim in field.dims]
+    coords = {name: coord for name, coord in field.coords.items() if TIME_DIM not in coord.dims}
+    return xr.DataArray(np.full(shape, fill, dtype=dtype), dims=field.dims, coords=coords)
+
+
+def _by_window(reduced_groups: xr.DataArray, n_windows: int, dims: Any) -> xr.DataArray:
+    """One entry per window, in the field's dimension order, without labels."""
+    full = reduced_groups.reindex({_WINDOW: np.arange(n_windows)})
+    full = full.rename({_WINDOW: TIME_DIM}).drop_vars(TIME_DIM, errors="ignore")
+    return full.transpose(*dims)
+
+
+def _reduce_by_window(
+    field: xr.DataArray, membership: np.ndarray, how: str, n_windows: int
+) -> xr.DataArray:
+    """*field* reduced per window, ``NaN`` where a window has no rows."""
+    if not (membership >= 0).any():
+        return _empty_windows(field, n_windows, np.nan, float)
+    reduced = _reduce(_members(field, membership).groupby(_WINDOW), how)
+    return _by_window(reduced, n_windows, field.dims)
+
+
+def _count_by_window(
+    field: xr.DataArray, membership: np.ndarray, n_windows: int
+) -> xr.DataArray:
+    """Values that are not missing, per window, as ``int64``."""
+    if not (membership >= 0).any():
+        return _empty_windows(field, n_windows, 0, np.int64)
+    counts = _members(field, membership).notnull().groupby(_WINDOW).sum()
+    counts = _by_window(counts, n_windows, field.dims).fillna(0).astype(np.int64)
+    counts.name = None
+    counts.attrs = {}
+    return counts
+
+
 def _aggregated_attrs(
     attrs: Mapping[str, Any],
     kind: VariableKind | None,
@@ -691,3 +1028,150 @@ def _aggregated_attrs(
     # The source file's printf precision no longer describes a combined value.
     out.pop("output_decimals", None)
     return out
+
+
+def _check_frequency(freq: str) -> None:
+    """Raise unless *freq* is a pandas offset alias naming a positive period.
+
+    ``to_offset(None)`` returns ``None`` rather than raising, hence the
+    explicit test for it.
+    """
+    bad = f"freq must be a pandas offset alias such as '1D', 'MS' or 'YS', got {freq!r}"
+    if not isinstance(freq, str):
+        raise ValueError(bad)
+    try:
+        offset = pd.tseries.frequencies.to_offset(freq)
+    except Exception as error:
+        raise ValueError(bad) from error
+    if offset is None:
+        raise ValueError(bad)
+    if offset.n <= 0:
+        raise ValueError(
+            f"freq={freq!r} names a period of {offset.n} steps, which cannot group "
+            "anything; pass a positive frequency."
+        )
+
+
+def _check_not_upsampling(field: xr.DataArray, freq: str) -> None:
+    """Raise if every period of *freq* is shorter than the field's own spacing.
+
+    Upsampling returns a field that is mostly ``NaN`` and raises nothing. The
+    comparison is the smallest gap in the time axis against the longest period
+    *freq* produces on it, so a sparse or gapped field at its own cadence
+    passes, and calendar periods of varying length are measured rather than
+    assumed.
+    """
+    stamps = _time_index(field)
+    if len(stamps) < 2:
+        return
+    labels = pd.DatetimeIndex(_rows_per_period(field, freq).coords[TIME_DIM].to_index())
+    # The label differences give every period's length but the last one's, so
+    # the boundary after the last label is appended.
+    offset = pd.tseries.frequencies.to_offset(freq)
+    edges = labels.append(pd.DatetimeIndex([labels[-1] + offset]))
+    spacing = int(np.diff(stamps.as_unit("ns").asi8).min())
+    period = int(np.diff(edges.as_unit("ns").asi8).max())
+    if spacing > period:
+        raise ValueError(
+            f"freq={freq!r} produces periods of at most {pd.Timedelta(period, 'ns')} on a "
+            f"field whose rows are at least {pd.Timedelta(spacing, 'ns')} apart, so this "
+            "would interpolate rather than aggregate and return a field that is mostly "
+            "missing. Pass a coarser frequency."
+        )
+
+
+def _check_window_reduction(how: Any) -> str:
+    """Raise unless *how* is one of :data:`WINDOW_REDUCTIONS`."""
+    if not isinstance(how, str) or how not in WINDOW_REDUCTIONS:
+        raise ValueError(f"how must be one of {list(WINDOW_REDUCTIONS)}, got {how!r}.")
+    return str(how)
+
+
+def _check_min_count(min_count: Any) -> None:
+    """Raise unless *min_count* is an integer of at least 1."""
+    if isinstance(min_count, bool) or not isinstance(min_count, (int, np.integer)):
+        raise ValueError(
+            f"min_count must be an integer, got {min_count!r}. It counts values, so a "
+            "fraction of one has no meaning."
+        )
+    if int(min_count) < 1:
+        raise ValueError(
+            f"min_count must be at least 1, got {min_count!r}. Zero would let a window "
+            "formed from no observations produce a value, which for a sum is the zero "
+            "this argument exists to prevent."
+        )
+
+
+def _checked_windows(windows: Any, stamps: pd.DatetimeIndex) -> pd.IntervalIndex:
+    """*windows* checked, and put in the datetime resolution of *stamps*.
+
+    pandas refuses to index one datetime resolution with another, and the two
+    routinely differ: ``sipnet_time_index`` produces nanoseconds where a window
+    built from dates is microseconds.
+    """
+    if not isinstance(windows, pd.IntervalIndex):
+        raise ValueError(
+            "windows must be a pandas.IntervalIndex, for instance from "
+            "pd.IntervalIndex.from_arrays(starts, ends, closed='right'); got "
+            f"{type(windows).__name__}."
+        )
+    if len(windows) == 0:
+        raise ValueError("windows is empty, so there is nothing to reduce into.")
+    if not _is_datetime(windows.left.dtype):
+        raise ValueError(f"windows must be intervals of datetimes, got {windows.left.dtype}.")
+    left, right = pd.DatetimeIndex(windows.left), pd.DatetimeIndex(windows.right)
+    if left.hasnans or right.hasnans:
+        raise ValueError("windows hold a missing edge (NaT).")
+    if left.tz != stamps.tz:
+        raise ValueError(
+            f"windows are in time zone {left.tz} and the field's time coordinate in "
+            f"{stamps.tz}; pandas matches no rows across that difference. Localize or "
+            "convert one of them first."
+        )
+    if windows.is_overlapping:
+        raise ValueError(
+            "windows overlap, so a row could belong to two of them; reduce into "
+            "non-overlapping windows."
+        )
+    if not left.is_monotonic_increasing:
+        raise ValueError("windows must be in increasing order.")
+    unit = stamps.unit
+    return pd.IntervalIndex.from_arrays(
+        left.as_unit(unit), right.as_unit(unit), closed=windows.closed
+    )
+
+
+def _checked_labels(labels: Any, windows: pd.IntervalIndex) -> tuple[pd.DatetimeIndex, dict]:
+    """The result's ``time`` coordinate and its attributes.
+
+    *labels* checked against *windows*, keeping a ``DataArray``'s attributes;
+    or the windows' right edges, marked as interval ends.
+    """
+    if labels is None:
+        index = pd.DatetimeIndex(windows.right)
+        attrs = {
+            conventions.TIME_LABEL_ATTR: conventions.INTERVAL_END,
+            "time_label_note": "Each label is the right edge of its window.",
+        }
+        what = "the windows' right edges"
+    else:
+        values = labels.values if isinstance(labels, xr.DataArray) else np.asarray(labels).ravel()
+        if values.dtype.kind in "iufb":
+            raise ValueError(
+                f"labels must be timestamps, got dtype {values.dtype}; numbers would be "
+                "read as nanoseconds since 1970."
+            )
+        index = pd.DatetimeIndex(values)
+        attrs = dict(labels.attrs) if isinstance(labels, xr.DataArray) else {}
+        what = "labels"
+    if len(index) != len(windows):
+        raise ValueError(
+            f"labels has {len(index)} entries for {len(windows)} windows; one label per "
+            "window."
+        )
+    if index.hasnans or not index.is_monotonic_increasing or index.has_duplicates:
+        raise ValueError(
+            f"{what} must be strictly increasing timestamps with no NaT; pass labels= to "
+            "name the windows otherwise."
+        )
+    return index, attrs
