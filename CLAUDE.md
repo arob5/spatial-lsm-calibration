@@ -15,9 +15,14 @@ The long-term vision:
 | Package | Source | Role |
 |---------|--------|------|
 | `pySIPNET` | `TARPS-group/pySIPNET` | SIPNET model interface; `SIPNETModel(**overrides)` |
-| `PyEns` | `arob5/PyEns` | Parallel ensemble execution via `ProcessPoolExecutor` |
+| `PyEns` | `arob5/PyEns` | Parallel ensemble execution via `ProcessPoolExecutor`, and the xarray-to-Grid bridge (`pyens.xarray`) |
 | `pyEKI` | `TARPS-group/pyEKI` | Solving inverse problems with ensemble Kalman methods |
 | `ProbPipe` | `TARPS-group/prob-pipe` (also on PyPI) | **Not currently a dependency** — API in flux; planned migration target for inference. See below. |
+
+The boundary between them: PyEns owns the shape of an ensemble and the
+translation of labeled data into and out of it; pySIPNET owns one SIPNET run's
+inputs and outputs; this repository owns what varies and why. A function
+belongs in pySIPNET only if deleting SIPNET from it leaves nothing.
 
 The first three are dependencies, installed from git rather than from sibling
 directories: `[tool.uv.sources]` tracks each repository's `main` branch and
@@ -612,16 +617,34 @@ plotting code. The load-bearing rules:
 - `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`,
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
   token inside a unit string: `"g C m-2"` is wrong, `"g m-2"` + `constituent="C"` is right.
+- **`pysipnet.units` converts units** (PR #47). `conversion_factor(*, units, constituent="",
+  to_units, to_constituent=None)` returns a float; `convert_units(values, *, units, ...)` takes
+  the same keywords and scales unlabeled values whose units the caller states;
+  `convert_dataarray_units(array, *, to_units, to_constituent=None)` reads `units` and
+  `constituent` from `array.attrs`, refuses an array with no `units` attr, scales the data, sets
+  the new `units`/`constituent`, and drops the unit-dependent attrs `output_decimals`,
+  `sipnet_internal_units` and `sipnet_internal_conversion` (`sipnet_internal_name` stays). The
+  constituent qualifies the **first** unit token, which must be an amount or a mass of it:
+  `"m-2 g"` with `constituent="C"` is refused. The tables are `MOLAR_MASS`, `DENSITY` and
+  `ATOMS_PER_MOLECULE`. For example, `g m-2 d-1` of C to `umol m-2 s-1` of CO2 is 0.96362, and
+  `Mg ha-1` to `g m-2` is 100.
 - **`ClimateDrivers` owns the `.clim` format** (PRs #43, #45). It reads either layout, detected
   from the file (there is no `n_columns` argument for a file), validates once on load, and
   refuses labels that disagree with the declared step lengths: an overlap, or a drift from
   the running sum of lengths beyond 5 minutes. `head(n)` gives a prefix; `to_file(path)`
   writes one. `time_zone="UTC"` or `"UTC±HH:MM"` declares the labels' clock as metadata only,
   and is `"undeclared"` otherwise: SIPNET has no clock of its own.
+- The readers are `ClimateDrivers.from_file(path, *, time_zone=None)` and
+  `pysipnet.io.clim_io.read_clim_file(path, *, time_zone=None)` (not re-exported from
+  `pysipnet.io`). The drift tolerance is `pysipnet.dataset.DRIFT_TOLERANCE`, 300 s cumulative,
+  and the raw ERA5 `.clim` files exceed it, so both readers refuse them; tests read the drivers through `conftest.regular_drivers_root`.
+  `pysipnet.dataset.assemble_time_coords(*, start, end, length, attributes_for, length_source,
+  time_zone)` is keyword-only and `time_zone=` is required.
 - **An output's time axis is its drivers'** (PR #43): the runner passes `climate=` to
-  `SIPNETOutput`, and `SIPNETOutput.from_dataframe(df, climate=...)` does the same by hand.
-  `time_step_length=` is gone. Without drivers the axis falls back to the printed labels,
-  which SIPNET rounds to 0.01 h; the Dataset's `time_axis_source` says which was used.
+  `SIPNETOutput`, and `SIPNETOutput.from_dataframe(df, *, climate=None, flags=None,
+  run_id=None)` does the same by hand. `time_step_length=` is gone. Without drivers the axis
+  falls back to the printed labels, which SIPNET rounds to 0.01 h; the Dataset's
+  `time_axis_source` says which was used.
 - **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and
   real SIPNET output are available with no pySIPNET checkout: `niwot_reference_output()`
   (a `SIPNETOutput`, no binary needed), `niwot_reference_climate()`,
@@ -675,6 +698,30 @@ plotting code. The load-bearing rules:
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
 - `sipnet_member_fields(members_axis, **{param_name: list_of_floats})` from `pysipnet.ensemble` builds `Grid` specs
 - `result.succeeded` is a list of `RunRecord`; access output via `rec.output`
+- **`pyens.xarray`** (the `xarray` extra, declared here as `pyens[xarray]`) builds specs from
+  labeled data: `axes_of(obj)`, `field_from_dataarray(array, *, along=None, axes=None)`,
+  `fields_from_dataset(dataset, *, along=None, axes=None)` and
+  `dataset_as_field(dataset, *, along, axes=None)`. A dim with a coordinate becomes
+  `Axis(dim, labels=[...])`, one without becomes `Axis(dim, size=n)`; datetime labels become
+  ISO strings; a 0-d variable becomes `Fixed`. On a SIPNET table from `example_parameter_vector`
+  the int32 `site` and int16 `member` coordinates become plain `int` labels, a non-dimension
+  coordinate such as `pft` is ignored, and a hand-built label-keyed
+  `Grid({site_id: drivers}, along=Axis("site", labels=[...]))` zips with the result.
+- **Trap:** `Axis("member", size=J)` is not equal to `Axis("member", labels=[0, ..., J-1])`, and
+  an `EnsembleSpec` holding both raises "two axes named 'member' have different structures".
+  `fields_from_dataset` makes the labeled form from a `member` coordinate, while
+  `parameter_vector.pyens_grids` is documented with the sized form built by hand, so the two
+  cannot be mixed. The ForwardModel must take every axis from the table through `axes_of` and
+  never build one by hand.
+
+### pyEKI
+- There is deliberately no log-likelihood helper. `pyeki.gauss.Gaussian(y, noise_cov)`, with
+  `noise_cov` a `PSDLinOp` (`DensePSD.from_matrix(R)`; `DensePSD(L)` takes a Cholesky factor),
+  scores a batch of predictions with `log_density(predictions)`, `(..., N) -> (...)`, by the
+  symmetry of the density in point and mean. It equals
+  `-pyeki.eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2`, requires
+  `noise_cov` to support `whiten` and `logdet`, and gives NaN for a row holding a NaN outside
+  debug mode; the caller maps that to `-inf`.
 
 ### ProbPipe (deferred — not a current dependency)
 
