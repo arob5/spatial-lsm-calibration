@@ -137,15 +137,6 @@ base parameter set supplies them.
 
 Conversions
 -----------
-from                  to                 call                             lossless
-===================== ================== ================================ ==========
-Flat                  Fields             ``vector.fields(theta, space=)`` yes
-Fields (either space) Flat               ``vector.flat(fields)``          yes [1]_
-Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``       no
-SIPNET table          one run's kwargs   :func:`sipnet_overrides`         selection
-SIPNET table          PyEns grids        :func:`pyens_grids`              selection
-===================== ================== ================================ ==========
-=======
 ===================== ================== ====================================== ==========
 from                  to                 call                                   lossless
 ===================== ================== ====================================== ==========
@@ -153,7 +144,7 @@ Flat                  Fields             ``vector.fields(theta, space=)``       
 Fields (either space) Flat               ``vector.flat(fields)``                yes [1]_
 Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``             no
 SIPNET table          one run's kwargs   :func:`sipnet_overrides`               selection
-SIPNET table          PyEns ``Grid``\\ s  ``pyens.xarray.fields_from_dataset``  yes
+SIPNET table          PyEns grids        ``pyens.xarray.fields_from_dataset``   values
 ===================== ================== ====================================== ==========
 
 :meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
