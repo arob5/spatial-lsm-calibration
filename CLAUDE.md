@@ -19,17 +19,18 @@ The long-term vision:
 | `pyEKI` | `TARPS-group/pyEKI` | Solving inverse problems with ensemble Kalman methods |
 | `ProbPipe` | `TARPS-group/prob-pipe` (also on PyPI) | **Not currently a dependency** — API in flux; planned migration target for inference. See below. |
 
-The boundary between them: PyEns owns the shape of an ensemble and the
-translation of labeled data into and out of it; pySIPNET owns one SIPNET run's
-inputs and outputs; this repository owns what varies and why. A function
-belongs in pySIPNET only if deleting SIPNET from it leaves nothing.
-
 The first three are dependencies, installed from git rather than from sibling
 directories: `[tool.uv.sources]` tracks each repository's `main` branch and
 `uv.lock` pins an exact commit. A sibling clone of any of them is **not** what
 gets installed — `uv` fetches the pinned commit from GitHub — so nothing about
 a local checkout reaches this project, and unpushed work in one is invisible
 here. Never modify their source from here.
+
+The boundary between them: PyEns owns the shape of an ensemble and the
+translation of labeled data into and out of it; pySIPNET owns one SIPNET run's
+inputs and outputs; pyEKI owns the ensemble Kalman update; this repository owns
+what varies and why. A function belongs in pySIPNET only if deleting SIPNET from
+it leaves nothing.
 
 **All three are under active development, so start any work here by taking
 their current `main`:**
@@ -717,8 +718,10 @@ plotting code. The load-bearing rules:
   `fields_from_dataset` makes the labeled form from a `member` coordinate, while
   `parameter_vector.pyens_grids` is documented with the sized form built by hand, so grids made
   the two ways cannot share a spec unless both are given the same `Axis` (`pyens_grids`
-  accepts `axes_of(table)["member"]`; `fields_from_dataset` accepts `axes=`). The ForwardModel
-  must take every axis from the table through `axes_of` and never build one by hand.
+  accepts `axes_of(table)["member"]`; `fields_from_dataset` accepts `axes=`). Build each axis
+  once and pass that object everywhere it is used. Equal axes zip, so two sources that both
+  put a 0-based `member` coordinate on their ensemble dim (the SIPNET table, the drivers, the
+  initial conditions) are paired member by member, silently, whenever their sizes match.
 
 ### pyEKI
 - There is deliberately no log-likelihood helper (as of pyEKI PR #31).
