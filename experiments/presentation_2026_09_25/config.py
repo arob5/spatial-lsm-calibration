@@ -93,3 +93,7 @@ OUTPUT_DIR = EXPERIMENT_DIR / "outputs"
 #: corrected, written by ``relabel_drivers.py`` in the ``data/raw/drivers/``
 #: layout. A temporary stand-in for regenerated drivers; untracked.
 RELABELED_DRIVERS_DIR = OUTPUT_DIR / "drivers_relabeled"
+
+#: The annual values and monthly climatology of every site's drivers, written
+#: by ``precompute_drivers.py`` on the SCC; untracked.
+DRIVER_SUMMARY_DIR = OUTPUT_DIR / "driver_summaries"
