@@ -131,15 +131,13 @@ Functions
     ``(member, site, time)`` fields.
 :func:`site_lookup`
     The site table keyed on ``site_id``, for a caller adapting run after run.
-``from_clim``, ``from_nee_store``
-    Not written yet. The drivers and the constraints have readers of their own
-    that already produce the form above
+``validate_field``
+    Not written yet (issue #6). The drivers, the constraints and the initial
+    conditions have readers of their own that already produce the form above
     (:func:`sipnet_calibration.drivers.driver_fields`,
     :func:`sipnet_calibration.constraints.constraint_fields`,
     :func:`sipnet_calibration.initial_conditions.initial_condition_fields`),
-    so it is the NEE observations that are still owed; a block of
-    predictions is unstacked by ``ObservationVector.fields``.
-    ``validate_field`` is owed with them (issue #6).
+    and a block of predictions is unstacked by ``ObservationVector.fields``.
 
 Notes
 -----

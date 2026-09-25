@@ -6,12 +6,13 @@ Where this sits
 ---------------
 ::
 
-    constraints.constraint_fields(), a future NEE product   observed arrays, (site[, time])
-      -> Observation(product_name, values, operator)     one per product
-      -> ObservationVector([...])                        the cells, in Flat order
-           .y                                            what pyEKI compares against
-           .predict(model_output, sipnet_parameters=)    H applied, converted, checked
-           .flat(fields) / .fields(values)               Fields <-> Flat
+    constraints.constraint_fields()                  observed arrays, (site[, time])
+      -> Observation(product_name, values, operator) one per product
+      -> ObservationVector([...])                    the cells, in Flat order
+           .y                                        what pyEKI compares against
+           .predict(model_output, sipnet_parameters=)
+                                                     H applied, converted, checked
+           .flat(fields) / .fields(values)           Fields <-> Flat
 
 The forward model flattens predictions with it into pyEKI's ``(J, N)``; the
 inference layer reads ``y``, ``index`` and ``positions`` off it to build the
