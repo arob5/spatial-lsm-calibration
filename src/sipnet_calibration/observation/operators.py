@@ -18,8 +18,9 @@ The contract
 :class:`ObservationOperator` is a protocol. An operator declares
 ``output_variable_names``, the pySIPNET output variables it reads (so a worker
 reads only those columns), and ``sipnet_parameter_names``, the SIPNET
-parameters it reads (so the parameter vector can be checked to set them). Its
-call is::
+parameters it reads (so the forward model can supply them: from the run's
+values, or from the base parameter set where the parameter vector does not set
+them). Its call is::
 
     operator(model_output, observed_values, *, sipnet_parameters=None) -> DataArray
 
@@ -42,13 +43,14 @@ call is::
 
 The library ships four operators, each a frozen dataclass named for what it
 does, and one default binding, :data:`DEFAULT_OBS_OPS`, which holds only the
-product whose construction is documented. How to read the model for the other
-products is a modeling decision the experiment writes in its ``config.py``.
+product whose construction is established from a primary source. How to read
+the model for the other products is a modeling decision the experiment writes
+in its ``config.py``.
 
 The checks at the bottom of this module are the contract's, and
 :class:`~sipnet_calibration.observation.vector.ObservationVector` applies the
 same ones: :func:`check_operator_declares_names`,
-:func:`check_model_output_serves` and
+:func:`check_model_output_carries_what_is_read` and
 :func:`check_result_is_on_the_observation_grid`.
 
 Usage
@@ -78,9 +80,9 @@ from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.fields import field_label
+from sipnet_calibration.fields import coordinate_labels, field_label, missing_labels
 from sipnet_calibration.observation.time_alignment import (
-    WINDOW_REDUCTIONS,
+    check_how_is_a_window_reduction,
     check_run_spans_the_windows,
     reduce_windows,
     run_window,
@@ -89,13 +91,13 @@ from sipnet_calibration.observation.time_alignment import (
 )
 
 __all__ = [
-    "ComputeLeafAreaIndex",
     "DEFAULT_OBS_OPS",
+    "ComputeLeafAreaIndex",
     "ObservationOperator",
     "ReduceOverRun",
     "ReduceOverTimeBounds",
     "SelectTimestep",
-    "check_model_output_serves",
+    "check_model_output_carries_what_is_read",
     "check_operator",
     "check_operator_declares_names",
     "check_result_is_on_the_observation_grid",
@@ -188,6 +190,8 @@ class ReduceOverTimeBounds:
 
     Raises
     ------
+    TypeError
+        On construction, if *how* is not a string.
     ValueError
         On construction, if *output_variable_name* is not a pySIPNET output
         variable or *how* is not a window reduction. On a call, if the
@@ -204,7 +208,7 @@ class ReduceOverTimeBounds:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_variable_name", _output_name(self.output_variable_name))
-        check_how_is_a_window_reduction(self.how)
+        check_how_is_a_window_reduction(self.how, type(self).__name__)
 
     @property
     def output_variable_names(self) -> tuple[str, ...]:
@@ -217,8 +221,8 @@ class ReduceOverTimeBounds:
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
         windows = windows_from_time_bounds(observed_values)
-        label = field_label(observed_values, "the observation")
-        check_run_spans_the_windows(variable, windows, label)
+        observation = field_label(observed_values, "the observation")
+        check_run_spans_the_windows(variable, windows, f"{type(self).__name__} on {observation}")
         return reduce_windows(variable, windows, self.how, labels=observed_values[TIME])
 
 
@@ -241,6 +245,8 @@ class ReduceOverRun:
 
     Raises
     ------
+    TypeError
+        On construction, if *how* is not a string.
     ValueError
         On construction, if *output_variable_name* is not a pySIPNET output
         variable or *how* is not a window reduction. On a call, if the
@@ -254,7 +260,7 @@ class ReduceOverRun:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_variable_name", _output_name(self.output_variable_name))
-        check_how_is_a_window_reduction(self.how)
+        check_how_is_a_window_reduction(self.how, type(self).__name__)
 
     @property
     def output_variable_names(self) -> tuple[str, ...]:
@@ -283,6 +289,9 @@ class ComputeLeafAreaIndex:
 
     Raises
     ------
+    TypeError
+        On a call, if a mapping of SIPNET parameters holds a value that is
+        not a number.
     ValueError
         On a call, if the observation has no ``time`` dimension, or for any
         refusal of :func:`select_observed_sites`,
@@ -309,10 +318,11 @@ class ComputeLeafAreaIndex:
         return select_timestep_at(lai, observed_values[TIME])
 
 
-#: The library's default operator per product: only the bindings whose
-#: construction is documented (see ``data/README.md`` and the constraint
-#: specs). How to read the model for the other products is a modeling
-#: decision, and an experiment binds its own in ``config.py``.
+#: The library's default operator per product. It binds only the
+#: constructions established from a primary source: today MODIS leaf area
+#: index, as SIPNET's own ``plantLeafC / leafCSpWt`` (``sipnet.c``). How to
+#: read the model for the other products is a modeling decision, and an
+#: experiment binds its own in ``config.py``.
 DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = {
     "modis_leaf_area_index": ComputeLeafAreaIndex(),
 }
@@ -367,25 +377,14 @@ def select_observed_sites(
     position would be a guess. :func:`sipnet_calibration.fields.label_run`
     is what gives a run its site.
     """
-    wanted = _labels_of(target_field[SITE])
-    who = field_label(target_field, "the observation")
-    check_sites_are_listed_once(wanted, who)
+    wanted = coordinate_labels(target_field[SITE])
+    message_name = field_label(target_field, "the observation")
+    check_sites_are_listed_once(wanted, message_name)
     if SITE in source_field.dims:
-        missing = _labels_missing_from(source_field, SITE, wanted)
-        if missing:
-            raise ValueError(
-                f"the model output has no site(s) {missing[:10]} that {who} observes; "
-                "run the model at every observed site, or select the observations to "
-                "the sites that were run."
-            )
+        check_model_output_has_the_observed_sites(source_field, wanted, message_name)
         return source_field.sel({SITE: wanted})
-    check_run_is_labeled_with_a_site(source_field, who)
-    site = int(source_field[SITE].values)
-    if wanted != [site]:
-        raise ValueError(
-            f"the model output is one run at site {site}, and {who} observes "
-            f"site(s) {wanted[:10]}; select the observation to that one site."
-        )
+    check_run_is_labeled_with_a_site(source_field, message_name)
+    check_run_is_at_the_observed_site(source_field, wanted, message_name)
     return source_field
 
 
@@ -439,14 +438,16 @@ def extract_sipnet_parameter_at_coords(
 
     Raises
     ------
+    TypeError
+        If a mapping's entry for the parameter is not a number.
     ValueError
         If *sipnet_parameters* is ``None``; if a SIPNET table has no variable
         for the parameter, has a ``site`` or ``member`` dimension the target
         has no coordinate for, lacks a ``site`` or ``member`` label that
         *target_field* has, or carries a scalar label the target's disagree
         with; if a mapping has no entry for the parameter under any of its
-        names, or the entry is not a number; or if a value is not finite or
-        lies outside the parameter's pySIPNET domain.
+        names; or if a value is not finite or lies outside the parameter's
+        pySIPNET domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
@@ -475,8 +476,8 @@ def check_operator(
     given where parameters are read; that the result is on *observed_values*'
     grid and carries ``units``; and, when *model_output* has ``site`` or
     ``member`` dimensions of two or more, that the operator is pointwise: its
-    value on the stack equals its value on the last slice of each of ``site``
-    and ``member`` alone.
+    value on the stack equals, label by label, its value on the last slice of
+    each of ``site`` and ``member`` alone.
 
     Parameters
     ----------
@@ -493,28 +494,29 @@ def check_operator(
     Raises
     ------
     TypeError
-        If the operator is not callable, *model_output* is not a ``Dataset``,
-        or the result is not a ``DataArray``.
+        If the operator is not callable or its declarations are not tuples of
+        strings, *model_output* is not a ``Dataset``, or the result is not a
+        ``DataArray``.
     ValueError
-        Naming the first rule broken: a declaration that is not a tuple of
-        names or names an alias; a variable the model output lacks, or
-        parameters read and not given; a result without ``units``, off the
-        observation's sites, time labels or member dimension; or a result
-        that is not pointwise. The operator's own refusals pass through.
+        Naming the first rule broken: a declaration that names an alias; a
+        variable the model output lacks, or parameters read and not given; a
+        result without ``units``, off the observation's sites, time labels or
+        member dimension; or a result that is not pointwise. The operator's
+        own refusals pass through.
     KeyError
         If a declared name is not in pySIPNET's registries.
     """
-    label = type(operator).__name__
+    message_name = type(operator).__name__
     check_operator_declares_names(operator)
-    check_model_output_serves(
+    check_model_output_carries_what_is_read(
         model_output,
         output_variable_names=operator.output_variable_names,
         sipnet_parameter_names=operator.sipnet_parameter_names,
         sipnet_parameters=sipnet_parameters,
-        reader=label,
+        message_name=message_name,
     )
     result = operator(model_output, observed_values, sipnet_parameters=sipnet_parameters)
-    check_result_is_on_the_observation_grid(label, result, observed_values, model_output)
+    check_result_is_on_the_observation_grid(result, observed_values, model_output, message_name)
     check_operator_is_pointwise(operator, model_output, observed_values, sipnet_parameters, result)
     return result
 
@@ -531,17 +533,6 @@ def _output_name(name: str) -> str:
         ) from None
 
 
-def _labels_of(coordinate: xr.DataArray) -> list:
-    """A coordinate's labels as a flat list, whether it is a dimension or a scalar."""
-    return np.asarray(coordinate.values).ravel().tolist()
-
-
-def _labels_missing_from(field: xr.DataArray, dim: str, wanted: Sequence[Any]) -> list:
-    """The labels in *wanted* that *field*'s *dim* coordinate lacks, in order."""
-    wanted_index = pd.Index(wanted)
-    return wanted_index[~wanted_index.isin(field.indexes[dim])].tolist()
-
-
 def _table_values_at(
     table: xr.Dataset, name: str, target_field: xr.DataArray
 ) -> xr.DataArray:
@@ -552,14 +543,8 @@ def _table_values_at(
     for dim in (SITE, MEMBER):
         if dim in values.dims:
             check_target_has_a_coordinate_for(target_field, dim, name)
-            wanted = _labels_of(target_field[dim])
-            missing = _labels_missing_from(values, dim, wanted)
-            if missing:
-                raise ValueError(
-                    f"the SIPNET table's {name!r} has no {dim} label(s) {missing[:10]} "
-                    f"that the model output has; the table and the runs must cover the "
-                    f"same {dim}s."
-                )
+            wanted = coordinate_labels(target_field[dim])
+            check_table_has_the_labels(values, dim, wanted, name)
             # A scalar label selects without keeping the dimension, as the
             # target, one run, has none.
             selectors[dim] = wanted[0] if target_field[dim].ndim == 0 else wanted
@@ -579,12 +564,11 @@ def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
         except KeyError:
             continue
     if value is None:
-        raise ValueError(f"sipnet_parameters has no entry {name!r}, which this operator reads.")
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
         raise ValueError(
-            f"sipnet_parameters[{name!r}] must be a number for one run, got "
-            f"{type(value).__name__}; pass a SIPNET table for several runs."
+            f"sipnet_parameters has no entry {name!r}, which this operator reads; add it "
+            "under its flat name, an alias or SIPNET's own name."
         )
+    check_mapping_value_is_a_number(value, name)
     return float(value)
 
 
@@ -600,7 +584,7 @@ def _pointwise_slices(
     slices = []
     if MEMBER in model_output.dims and model_output.sizes[MEMBER] >= 2:
         slices.append((MEMBER, model_output[MEMBER].values[-1], observed_values))
-    observed_sites = _labels_of(observed_values[SITE])
+    observed_sites = coordinate_labels(observed_values[SITE])
     if (
         SITE in model_output.dims
         and model_output.sizes[SITE] >= 2
@@ -612,35 +596,71 @@ def _pointwise_slices(
     return slices
 
 
+def _on_a_dimension(array: xr.DataArray, dim: str, label: Any) -> xr.DataArray:
+    """*array* with *dim* as a dimension of one label, whatever form it had it in."""
+    if dim in array.dims:
+        return array
+    if dim in array.coords:
+        return array.expand_dims(dim)
+    return array.expand_dims({dim: [label]})
+
+
+def _agree_by_label(got: xr.DataArray, expected: xr.DataArray) -> bool:
+    """Whether two arrays hold the same values at the same labels, in any dim order."""
+    if set(got.dims) != set(expected.dims):
+        return False
+    try:
+        got, expected = xr.align(got, expected.transpose(*got.dims), join="exact")
+    except ValueError:
+        return False
+    return bool(
+        np.allclose(
+            np.asarray(got.values, float), np.asarray(expected.values, float), equal_nan=True
+        )
+    )
+
+
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_operator_declares_names(operator: Any, product_name: str | None = None) -> None:
+def check_operator_declares_names(operator: Any, message_name: str | None = None) -> None:
     """The operator is callable and declares pySIPNET names for what it reads.
 
     ``output_variable_names`` and ``sipnet_parameter_names`` must each be a
     tuple of strings; every output variable name must be a pySIPNET registry
     name and every SIPNET parameter name pySIPNET's flat name, not an alias,
     since those are what the model output and a SIPNET table carry.
-    *product_name*, when given, prefixes the message.
+
+    Parameters
+    ----------
+    operator:
+        The operator to check.
+    message_name:
+        What the message calls the operator's owner, such as the product it
+        predicts; prefixes the message when given.
 
     Raises
     ------
     TypeError
-        If *operator* is not callable.
+        If *operator* is not callable, or a declaration is not a tuple of
+        strings.
     ValueError
-        If a declaration is not a tuple of strings, or declares an alias.
+        If a declaration names an alias.
     KeyError
         If a declared name is not in pySIPNET's registries.
     """
-    who = f"{product_name}: the operator" if product_name else type(operator).__name__
+    who = f"{message_name}: the operator" if message_name else type(operator).__name__
     if not callable(operator):
-        raise TypeError(f"{who} must be callable, got {type(operator).__name__}.")
+        raise TypeError(
+            f"{who} must be callable, got {type(operator).__name__}; pass an "
+            "ObservationOperator such as SelectTimestep('wood_carbon')."
+        )
     for attribute in ("output_variable_names", "sipnet_parameter_names"):
         names = getattr(operator, attribute, None)
         if not isinstance(names, tuple) or not all(isinstance(n, str) for n in names):
-            raise ValueError(
-                f"{who} must declare {attribute} as a tuple of names, got {names!r}."
+            raise TypeError(
+                f"{who} must declare {attribute} as a tuple of names, got {names!r}; "
+                "declare e.g. ('wood_carbon',), or () for none."
             )
     for name in operator.output_variable_names:
         registry_name = resolve_output_variable(name).name
@@ -658,13 +678,13 @@ def check_operator_declares_names(operator: Any, product_name: str | None = None
             )
 
 
-def check_model_output_serves(
+def check_model_output_carries_what_is_read(
     model_output: Any,
     *,
     output_variable_names: Sequence[str],
     sipnet_parameter_names: Sequence[str],
     sipnet_parameters: Any,
-    reader: str = "the operators",
+    message_name: str = "the operators",
 ) -> None:
     """The model output carries what is read, and the parameters are given if read.
 
@@ -677,8 +697,8 @@ def check_model_output_serves(
         vector's.
     sipnet_parameters:
         What they will be given.
-    reader:
-        Who reads them, for the message.
+    message_name:
+        What the message calls the reader.
 
     Raises
     ------
@@ -696,26 +716,23 @@ def check_model_output_serves(
     missing = [n for n in output_variable_names if n not in model_output.data_vars]
     if missing:
         raise ValueError(
-            f"the model output lacks {missing}, which {reader} read; it has "
-            f"{list(model_output.data_vars)[:10]}."
+            f"the model output lacks {missing}, which {message_name} read; it has "
+            f"{list(model_output.data_vars)[:10]}. Select those variables from each run."
         )
     if sipnet_parameter_names and sipnet_parameters is None:
         raise ValueError(
-            f"{reader} read SIPNET parameters {list(sipnet_parameter_names)}; pass "
+            f"{message_name} read SIPNET parameters {list(sipnet_parameter_names)}; pass "
             "sipnet_parameters=."
         )
 
 
 def check_result_is_on_the_observation_grid(
-    label: str, result: Any, observed_values: xr.DataArray, model_output: xr.Dataset
+    result: Any, observed_values: xr.DataArray, model_output: xr.Dataset, message_name: str
 ) -> None:
     """An operator's result is a labeled array on the observation's grid.
 
     Parameters
     ----------
-    label:
-        Who produced *result*, for the message: an operator's type name, or
-        the product it predicts.
     result:
         What the operator returned.
     observed_values:
@@ -723,6 +740,9 @@ def check_result_is_on_the_observation_grid(
         or a scalar coordinate.
     model_output:
         The model output it was called with, for its ``member`` dimension.
+    message_name:
+        What the message calls the producer of *result*: an operator's type
+        name, or the product it predicts.
 
     Raises
     ------
@@ -736,34 +756,67 @@ def check_result_is_on_the_observation_grid(
         datetime units), or has a ``time`` dimension for a static observation.
     """
     if not isinstance(result, xr.DataArray):
-        raise TypeError(f"{label}: the operator returned {type(result).__name__}, not a DataArray.")
+        raise TypeError(
+            f"{message_name}: the operator returned {type(result).__name__}, not a "
+            "DataArray; return the labeled array the time-alignment verbs give."
+        )
     if not isinstance(result.attrs.get("units"), str):
         raise ValueError(
-            f"{label}: the operator's result carries no 'units' attribute, so it cannot be "
-            "converted into the observation's units. Write the operator with "
+            f"{message_name}: the operator's result carries no 'units' attribute, so it "
+            "cannot be converted into the observation's units. Write the operator with "
             "pysipnet.arithmetic, which labels its results, or set attrs['units'] on "
             "its result."
         )
     if MEMBER in result.dims and MEMBER not in model_output.dims:
-        raise ValueError(f"{label}: the result has a member dimension the model output lacks.")
-    wanted_sites = _labels_of(observed_values[SITE])
-    if SITE in result.dims:
-        if _labels_of(result[SITE]) != wanted_sites:
-            raise ValueError(f"{label}: the result is not on the observation's sites, in order.")
-    elif SITE in result.coords:
-        if _labels_of(result[SITE]) != wanted_sites:
-            raise ValueError(f"{label}: the result is not at the observation's site.")
-    else:
-        raise ValueError(f"{label}: the result carries no site.")
+        raise ValueError(
+            f"{message_name}: the result has a member dimension the model output lacks; "
+            "an operator keeps the model output's members and adds none."
+        )
+    check_result_is_at_the_observed_sites(result, observed_values, message_name)
+    check_result_is_on_the_observed_time_labels(result, observed_values, message_name)
+
+
+def check_result_is_at_the_observed_sites(
+    result: xr.DataArray, observed_values: xr.DataArray, message_name: str
+) -> None:
+    """The result's ``site``, a dimension or a scalar, is the observation's, in order."""
+    wanted_sites = coordinate_labels(observed_values[SITE])
+    if SITE not in result.coords:
+        raise ValueError(
+            f"{message_name}: the result carries no site; select the model output with "
+            "select_observed_sites, which keeps the observation's site labels."
+        )
+    if coordinate_labels(result[SITE]) != wanted_sites:
+        where = "on the observation's sites, in order" if SITE in result.dims else (
+            "at the observation's site"
+        )
+        raise ValueError(
+            f"{message_name}: the result is not {where} "
+            f"({coordinate_labels(result[SITE])[:10]} for {wanted_sites[:10]}); select "
+            "the model output with select_observed_sites, which follows the observation."
+        )
+
+
+def check_result_is_on_the_observed_time_labels(
+    result: xr.DataArray, observed_values: xr.DataArray, message_name: str
+) -> None:
+    """A dated observation's result is on its ``time`` labels; a static one's has none."""
     if TIME in observed_values.dims:
         # numpy compares datetime64 across units, so a label in seconds
         # matches the same instant in nanoseconds.
         if TIME not in result.dims or not np.array_equal(
             result[TIME].values, observed_values[TIME].values
         ):
-            raise ValueError(f"{label}: the result is not on the observation's time labels.")
+            raise ValueError(
+                f"{message_name}: the result is not on the observation's time labels; "
+                "read the model at observed_values['time'], as select_timestep_at and "
+                "reduce_windows(labels=...) do."
+            )
     elif TIME in result.dims:
-        raise ValueError(f"{label}: the result has a time dimension for a static observation.")
+        raise ValueError(
+            f"{message_name}: the result has a time dimension for a static observation; "
+            "reduce the model over the run, as ReduceOverRun does."
+        )
 
 
 def check_operator_is_pointwise(
@@ -773,58 +826,79 @@ def check_operator_is_pointwise(
     sipnet_parameters: Any,
     result: xr.DataArray,
 ) -> None:
-    """The operator on the stack equals the operator on the last slice of each dim."""
+    """The operator on the stack equals, by label, the operator on the last slice of each dim."""
     for dim, label, slice_observed in _pointwise_slices(model_output, observed_values):
         slice_output = model_output.sel({dim: label})
         slice_parameters = sipnet_parameters
         if isinstance(sipnet_parameters, xr.Dataset) and dim in sipnet_parameters.dims:
             slice_parameters = sipnet_parameters.sel({dim: label})
         expected = operator(slice_output, slice_observed, sipnet_parameters=slice_parameters)
-        got = result.sel({dim: label})
-        same = np.allclose(
-            np.asarray(got.values, float), np.asarray(expected.values, float), equal_nan=True
-        )
-        if not same:
+        # A result without the dim reduced over it, which the comparison shows.
+        got = result.sel({dim: [label]}) if dim in result.dims else result
+        got, expected = _on_a_dimension(got, dim, label), _on_a_dimension(expected, dim, label)
+        if not _agree_by_label(got, expected):
             raise ValueError(
                 f"{type(operator).__name__} is not pointwise in {dim!r}: its value on the "
-                f"stack differs from its value on the {dim}={label!r} slice alone."
+                f"stack differs from its value on the {dim}={label!r} slice alone. An "
+                f"operator must compute each {dim} from that {dim}'s model output only."
             )
 
 
-def check_how_is_a_window_reduction(how: Any) -> None:
-    if how not in WINDOW_REDUCTIONS:
-        raise ValueError(f"how must be one of {list(WINDOW_REDUCTIONS)}, got {how!r}.")
-
-
-def check_observation_is_dated(observed_values: xr.DataArray, reader: str) -> None:
+def check_observation_is_dated(observed_values: xr.DataArray, message_name: str) -> None:
     if TIME not in observed_values.dims:
         raise ValueError(
-            f"{reader} reads the model at each observed time label, and "
+            f"{message_name} reads the model at each observed time label, and "
             f"{field_label(observed_values, 'the observation')} has no {TIME!r} "
             "dimension; a static observation is read over the whole run, with "
             "ReduceOverRun."
         )
 
 
-def check_observation_is_static(observed_values: xr.DataArray, reader: str) -> None:
+def check_observation_is_static(observed_values: xr.DataArray, message_name: str) -> None:
     if TIME in observed_values.dims:
         raise ValueError(
-            f"{reader} reads a static observation, and "
+            f"{message_name} reads a static observation, and "
             f"{field_label(observed_values, 'the observation')} has a {TIME!r} dimension; "
             "use ReduceOverTimeBounds or SelectTimestep."
         )
 
 
-def check_sites_are_listed_once(sites: Sequence[Any], who: str) -> None:
+def check_sites_are_listed_once(sites: Sequence[Any], message_name: str) -> None:
     if pd.Index(sites).has_duplicates:
-        raise ValueError(f"{who} repeats a site; an observation names each site once.")
+        raise ValueError(
+            f"{message_name} repeats a site; an observation names each site once, so "
+            "combine the repeated rows."
+        )
 
 
-def check_run_is_labeled_with_a_site(source_field: xr.DataArray, who: str) -> None:
+def check_model_output_has_the_observed_sites(
+    source_field: xr.DataArray, wanted: Sequence[Any], message_name: str
+) -> None:
+    missing = missing_labels(source_field, SITE, wanted)
+    if missing:
+        raise ValueError(
+            f"the model output has no site(s) {missing[:10]} that {message_name} observes; "
+            "run the model at every observed site, or select the observations to the "
+            "sites that were run."
+        )
+
+
+def check_run_is_labeled_with_a_site(source_field: xr.DataArray, message_name: str) -> None:
     if SITE not in source_field.coords:
         raise ValueError(
             f"the model output carries no {SITE!r} coordinate, so it cannot be matched to "
-            f"the sites {who} observes; label the run with fields.label_run(site=...)."
+            f"the sites {message_name} observes; label the run with fields.label_run(site=...)."
+        )
+
+
+def check_run_is_at_the_observed_site(
+    source_field: xr.DataArray, wanted: Sequence[Any], message_name: str
+) -> None:
+    site = int(source_field[SITE].values)
+    if list(wanted) != [site]:
+        raise ValueError(
+            f"the model output is one run at site {site}, and {message_name} observes "
+            f"site(s) {list(wanted)[:10]}; select the observation to that one site."
         )
 
 
@@ -832,7 +906,20 @@ def check_table_has_the_parameter(table: xr.Dataset, name: str) -> None:
     if name not in table.data_vars:
         raise ValueError(
             f"the SIPNET table has no variable {name!r}, which this operator reads; "
-            f"it has {list(table.data_vars)[:10]}."
+            f"it has {list(table.data_vars)[:10]}. Build the table with every parameter "
+            "the operators declare."
+        )
+
+
+def check_table_has_the_labels(
+    values: xr.DataArray, dim: str, wanted: Sequence[Any], name: str
+) -> None:
+    missing = missing_labels(values, dim, wanted)
+    if missing:
+        raise ValueError(
+            f"the SIPNET table's {name!r} has no {dim} label(s) {missing[:10]} "
+            f"that the model output has; the table and the runs must cover the "
+            f"same {dim}s."
         )
 
 
@@ -852,10 +939,18 @@ def check_scalar_table_label_agrees(
     if dim not in target_field.coords:
         return
     label = values[dim].values.item()
-    target_labels = _labels_of(target_field[dim])
+    target_labels = coordinate_labels(target_field[dim])
     if any(t != label for t in target_labels):
         raise ValueError(
             f"the SIPNET table's {name!r} is for {dim} {label!r} alone, and the model "
             f"output is at {dim}(s) {target_labels[:10]}; pass the table for every {dim} "
             "the runs were."
+        )
+
+
+def check_mapping_value_is_a_number(value: Any, name: str) -> None:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
+        raise TypeError(
+            f"sipnet_parameters[{name!r}] must be a number for one run, got "
+            f"{type(value).__name__}; pass a SIPNET table for several runs."
         )

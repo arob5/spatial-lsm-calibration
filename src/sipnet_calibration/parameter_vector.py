@@ -144,7 +144,7 @@ Flat                  Fields             ``vector.fields(theta, space=)`` yes
 Fields (either space) Flat               ``vector.flat(fields)``          yes [1]_
 Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``       no
 SIPNET table          one run's kwargs   :func:`sipnet_overrides`         selection
-SIPNET table          PyEns ``Grid``\\ s  :func:`pyens_grids`              selection
+SIPNET table          PyEns grids        :func:`pyens_grids`              selection
 ===================== ================== ================================ ==========
 
 :meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
@@ -1220,6 +1220,7 @@ class ParameterVector:
     parameter_names : tuple[str, ...]
         Calibration parameter names in layout order.
     sites : tuple[int, ...]
+        The site ids the vector covers, in the order of its site axis.
     site_labels : Mapping[str, tuple]
         The class of every site, per site-labels name, in site order.
     site_table : pandas.DataFrame

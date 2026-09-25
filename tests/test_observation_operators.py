@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 from pysipnet import niwot_reference_output
 
+from sipnet_calibration.constraints import TIME_BOUNDS_END, TIME_BOUNDS_START
 from sipnet_calibration.fields import label_run
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
@@ -25,7 +26,6 @@ from sipnet_calibration.observation import (
     select_observed_sites,
     select_timestep_at,
 )
-from sipnet_calibration.observation.time_alignment import TIME_BOUNDS_END, TIME_BOUNDS_START
 
 VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon", "net_ecosystem_exchange", "soil_wetness_fraction"]
 
@@ -382,7 +382,10 @@ class TestReduceOverTimeBoundsValues:
         shifted = observed.assign_coords(time=observed["time"].values - np.timedelta64(12, "h"))
         predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, shifted)
         np.testing.assert_array_equal(predicted["time"].values, shifted["time"].values)
-        from sipnet_calibration.observation import reduce_windows, windows_from_time_bounds
+        from sipnet_calibration.observation import (
+            reduce_windows,
+            windows_from_time_bounds,
+        )
 
         expected = reduce_windows(one_run["wood_carbon"], windows_from_time_bounds(shifted), "mean")
         np.testing.assert_array_equal(predicted.values, expected.values)
@@ -406,7 +409,7 @@ class TestParameterLookups:
             ComputeLeafAreaIndex()(stack, _observed([1, 2], labels), sipnet_parameters=table)
 
     def test_a_non_numeric_mapping_value_is_refused(self, one_run, labels):
-        with pytest.raises(ValueError, match="must be a number"):
+        with pytest.raises(TypeError, match="must be a number"):
             ComputeLeafAreaIndex()(one_run, _observed([1], labels), sipnet_parameters={"leaf_carbon_per_area": "270"})
 
     def test_repeated_observed_sites_are_refused(self, stack, labels):
@@ -448,7 +451,7 @@ class TestParameterLookupsAtScalarCoordinates:
         assert array.dims == () and float(array) == 270.0
 
     def test_a_boolean_mapping_value_is_refused(self):
-        with pytest.raises(ValueError, match="must be a number"):
+        with pytest.raises(TypeError, match="must be a number"):
             extract_sipnet_parameter_at_coords({"leaf_carbon_per_area": True}, "leaf_carbon_per_area", xr.DataArray(0.0))
 
 
@@ -494,7 +497,7 @@ class TestCheckOperatorContract:
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
                 return select_timestep_at(model_output["wood_carbon"], observed_values["time"])
 
-        with pytest.raises(ValueError, match="tuple of names"):
+        with pytest.raises(TypeError, match="tuple of names"):
             check_operator(Listed(), one_run, _observed([1], labels))
 
     def test_an_unregistered_name_is_a_key_error(self, one_run, labels):
@@ -538,39 +541,39 @@ class TestTheGridCheck:
         return select_timestep_at(one_run["wood_carbon"], labels)
 
     def test_a_result_on_the_grid_passes_with_a_scalar_or_a_dimension_site(self, one_run, labels, result):
-        check_result_is_on_the_observation_grid("x", result, _observed([1], labels), one_run)
-        check_result_is_on_the_observation_grid("x", result.expand_dims("site"), _observed([1], labels), one_run)
-        check_result_is_on_the_observation_grid("x", result, _observed([1], labels).isel(site=0), one_run)
+        check_result_is_on_the_observation_grid(result, _observed([1], labels), one_run, "x")
+        check_result_is_on_the_observation_grid(result.expand_dims("site"), _observed([1], labels), one_run, "x")
+        check_result_is_on_the_observation_grid(result, _observed([1], labels).isel(site=0), one_run, "x")
 
     def test_labels_are_compared_as_instants_across_units(self, one_run, labels, result):
         coarse = _observed([1], labels.as_unit("s"))
         assert coarse["time"].dtype == np.dtype("datetime64[s]")
-        check_result_is_on_the_observation_grid("x", result, coarse, one_run)
+        check_result_is_on_the_observation_grid(result, coarse, one_run, "x")
 
     def test_a_spurious_member_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="member dimension the model output lacks"):
-            check_result_is_on_the_observation_grid("x", result.drop_vars("member").expand_dims(member=[0]), _observed([1], labels), one_run)
+            check_result_is_on_the_observation_grid(result.drop_vars("member").expand_dims(member=[0]), _observed([1], labels), one_run, "x")
 
     def test_a_scalar_site_result_at_the_wrong_site_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="not at the observation's site"):
-            check_result_is_on_the_observation_grid("x", result.assign_coords(site=2), _observed([1], labels), one_run)
+            check_result_is_on_the_observation_grid(result.assign_coords(site=2), _observed([1], labels), one_run, "x")
 
     def test_a_result_with_no_site_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="carries no site"):
-            check_result_is_on_the_observation_grid("x", result.drop_vars(["site", "lon", "lat"]), _observed([1], labels), one_run)
+            check_result_is_on_the_observation_grid(result.drop_vars(["site", "lon", "lat"]), _observed([1], labels), one_run, "x")
 
     def test_a_time_dimension_for_a_static_observation_is_refused(self, one_run, result):
         static = xr.DataArray([1.0], dims="site", coords={"site": [1]}, attrs={"units": "Mg ha-1"})
         with pytest.raises(ValueError, match="time dimension for a static observation"):
-            check_result_is_on_the_observation_grid("x", result, static, one_run)
+            check_result_is_on_the_observation_grid(result, static, one_run, "x")
 
     def test_a_result_without_time_for_a_dated_observation_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="time labels"):
-            check_result_is_on_the_observation_grid("x", result.isel(time=0), _observed([1], labels), one_run)
+            check_result_is_on_the_observation_grid(result.isel(time=0), _observed([1], labels), one_run, "x")
 
     def test_the_label_prefixes_the_message(self, one_run, labels, result):
         with pytest.raises(ValueError, match="^my_product: "):
-            check_result_is_on_the_observation_grid("my_product", result.assign_coords(site=2), _observed([1], labels), one_run)
+            check_result_is_on_the_observation_grid(result.assign_coords(site=2), _observed([1], labels), one_run, "my_product")
 
     def test_an_operator_returning_the_wrong_site_is_refused_by_check_operator(self, one_run, labels):
         @dataclass(frozen=True)
@@ -583,3 +586,105 @@ class TestTheGridCheck:
 
         with pytest.raises(ValueError, match="not at the observation's site"):
             check_operator(WrongSite(), one_run, _observed([1], labels).isel(site=0))
+
+
+class TestPointwiseIsComparedByLabel:
+    def test_a_pointwise_operator_that_always_returns_a_site_dimension_passes(self, stack, labels):
+        """On one site's slice its result is (member, site=1, time), the stack's sliced (member, time)."""
+
+        @dataclass(frozen=True)
+        class AlwaysOnSite:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
+                if "site" not in picked.dims:
+                    picked = picked.expand_dims("site")
+                return picked.transpose(*[d for d in ("member", "site", "time") if d in picked.dims])
+
+        observed = _observed([1, 2], labels, units="Mg ha-1", constituent="C")
+        assert check_operator(AlwaysOnSite(), stack, observed).dims == ("member", "site", "time")
+
+    def test_a_pointwise_operator_returning_its_own_dim_order_passes(self, stack, labels):
+        @dataclass(frozen=True)
+        class Transposed:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
+                return picked.transpose("time", ...)
+
+        observed = _observed([1, 2], labels, units="Mg ha-1", constituent="C")
+        assert check_operator(Transposed(), stack, observed).dims[0] == "time"
+
+    def test_an_operator_that_drops_the_member_dimension_is_not_pointwise(self, stack, labels):
+        @dataclass(frozen=True)
+        class FirstMember:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                wood = model_output["wood_carbon"]
+                if "member" in wood.dims:
+                    wood = wood.isel(member=0, drop=True)
+                return select_timestep_at(select_observed_sites(wood, observed_values), observed_values["time"])
+
+        with pytest.raises(ValueError, match="not pointwise in 'member'"):
+            check_operator(FirstMember(), stack, _observed([1, 2], labels, units="Mg ha-1", constituent="C"))
+
+
+class _Declares:
+    def __init__(self, names):
+        self.output_variable_names = names
+        self.sipnet_parameter_names = ()
+
+    def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+        raise AssertionError("not called")
+
+
+class TestDeclarationsAndConstruction:
+    def test_a_declaration_holding_a_non_string_is_a_type_error(self):
+        with pytest.raises(TypeError, match="tuple of names"):
+            check_operator_declares_names(_Declares((1,)))
+
+    def test_the_message_name_prefixes_a_declaration_refusal(self):
+        with pytest.raises(ValueError, match=r"^p: the operator declares 'nee'"):
+            check_operator_declares_names(_Declares(("nee",)), "p")
+
+    def test_reduce_over_run_refuses_an_unknown_reduction_when_built(self):
+        with pytest.raises(ValueError, match="how must be one of .* for ReduceOverRun"):
+            ReduceOverRun("soil_carbon", "median")
+
+    def test_a_reduction_that_is_not_a_string_is_a_type_error(self):
+        with pytest.raises(TypeError, match="how must be a string"):
+            ReduceOverTimeBounds("wood_carbon", None)
+
+    def test_units_that_are_not_a_string_are_refused(self, one_run, labels):
+        result = select_timestep_at(one_run["wood_carbon"], labels)
+        result.attrs["units"] = None
+        with pytest.raises(ValueError, match="no 'units'"):
+            check_result_is_on_the_observation_grid(result, _observed([1], labels), one_run, "x")
+
+
+class TestTheOperatorsNameThemselves:
+    def test_a_window_reduction_on_output_without_intervals_names_the_operator(self, one_run, labels):
+        bare = one_run.drop_vars(["time_step_start", "time_step_length", "time_bounds"], errors="ignore")
+        observed = _observed([1], labels, units="g m-2", constituent="C", name="annual", bounds=True)
+        with pytest.raises(ValueError, match="^ReduceOverTimeBounds on 'annual' reads the interval"):
+            ReduceOverTimeBounds("wood_carbon", "last")(bare, observed)
+
+    def test_a_window_beyond_the_record_names_the_operator_and_observation(self, one_run):
+        observed = TestReduceOverTimeBounds._one_window("1998-01-01", "1999-01-01")
+        with pytest.raises(ValueError, match="^ReduceOverTimeBounds on 'annual_total': the window"):
+            ReduceOverTimeBounds("net_ecosystem_exchange", "sum")(one_run, observed)
+
+
+class TestScalarTableLabels:
+    def test_a_scalar_table_member_serves_a_run_without_a_member(self, one_run):
+        run = one_run.drop_vars("member")
+        table = xr.Dataset(
+            {"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0]])}, coords={"member": [0], "site": [1, 2]}
+        ).isel(member=0)
+        assert float(extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", run["leaf_carbon"])) == 270.0

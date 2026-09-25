@@ -8,8 +8,8 @@ Contents
     Where ``data/`` is, and the variable that relocates it.
 :data:`TIME_BOUNDS_START`, :data:`TIME_BOUNDS_END`
     The names of the one-dimensional coordinates a field carries for CF
-    ``time_bounds``, written by the constraints and read by the observation
-    operators.
+    ``time_bounds``, added by the constraints' reader and read by the
+    observation operators.
 
 Notes
 -----
@@ -19,8 +19,9 @@ what it needs and re-exports it, so a caller reading about the constraints or
 the initial conditions still finds the constant beside that product. The
 netCDF products -- the constraints and the initial conditions -- are the ones
 this currently covers; the site table is a CSV and declares nothing. The
-time-bounds coordinate names are here because a product writes them and the
-observation operators read them.
+time-bounds coordinate names are here because a product's reader adds them
+and the observation operators read them; :mod:`sipnet_calibration.constraints`
+re-exports them.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ CF_CONVENTIONS = "CF-1.11"
 #: attributed to, one-dimensional on ``time``: CF ``time_bounds`` split into
 #: its two edges, since a ``DataArray`` cannot carry the two-dimensional
 #: ``(time, bounds)`` variable.
-#: :func:`sipnet_calibration.constraints.constraint_fields` writes them and
+#: :func:`sipnet_calibration.constraints.constraint_fields` adds them and
 #: :func:`sipnet_calibration.observation.time_alignment.windows_from_time_bounds`
 #: reads them.
 TIME_BOUNDS_START = "time_bounds_start"

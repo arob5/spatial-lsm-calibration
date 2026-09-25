@@ -214,7 +214,8 @@ src/sipnet_calibration/
   parameter_vector.py     # ParameterVector: the calibration vector, its prior, and
                           # Flat / Fields / SIPNET table conversions
   fields.py               # field convention; SIPNET output adapters
-  observation/            # operators, the observation vector, and the time-alignment verbs
+  observation/            # operators, the observation vector, and the
+                          # time-alignment verbs
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)

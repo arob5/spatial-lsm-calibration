@@ -10,8 +10,9 @@ Planned:
   reused on parameter space instead of output space. This is the payoff of the
   hierarchical model and the reason the map layer must not assume model output.
 
-EKI hands back flat blocks that know nothing about space or time: ``(J, P)``
-parameter ensembles and ``(J, N)`` predictions. The ``(site, variable, time)``
-MultiIndex from pyEKI's ``index`` layer is what unstacks them into fields;
-see :mod:`sipnet_calibration.fields`.
+EKI hands back flat blocks that know nothing about space or time: ``(J, D)``
+parameter ensembles and ``(J, N)`` predictions. A ``(J, N)`` block is unstacked
+by :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns
+the ``(site, product, time)`` index it was flattened with; a ``(J, D)`` block
+by :meth:`sipnet_calibration.parameter_vector.ParameterVector.fields`.
 """

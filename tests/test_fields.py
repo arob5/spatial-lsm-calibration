@@ -140,7 +140,7 @@ class TestFromSipnetOutput:
             from_sipnet_output(niwot_output, "net_exchange")
 
     def test_no_variables_is_refused(self, niwot_output):
-        with pytest.raises(ValueError, match="No variables were asked for"):
+        with pytest.raises(ValueError, match="no variables were asked for"):
             from_sipnet_output(niwot_output, [])
 
     def test_a_site_outside_the_table_is_refused(self, niwot_output, sites_table):
@@ -297,12 +297,12 @@ class TestFromSipnetOutputRefusesBadInput:
         with pytest.raises(ValueError, match="member must be an integer"):
             from_sipnet_output(niwot_output, "nee", member=float("inf"))
 
-    def test_variables_given_as_none_is_refused_as_a_value_error(self, niwot_output):
-        with pytest.raises(ValueError, match="must be a name or a sequence"):
+    def test_variables_given_as_none_is_refused_as_a_type_error(self, niwot_output):
+        with pytest.raises(TypeError, match="must be a name or a sequence"):
             from_sipnet_output(niwot_output, None)
 
     def test_an_unordered_container_is_refused_because_order_is_promised(self, niwot_output):
-        with pytest.raises(ValueError, match="no\\s+order to keep"):
+        with pytest.raises(TypeError, match="no\\s+order to keep"):
             from_sipnet_output(niwot_output, {"nee", "wood_carbon"})
 
     def test_a_result_whose_outputs_are_not_an_output_is_refused(self, niwot_output):
@@ -455,3 +455,150 @@ class TestFieldLabel:
         assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"})) == "'a / b'"
         assert field_label(xr.DataArray(0.0)) == "the field"
         assert field_label(xr.DataArray(0.0), "the observation") == "the observation"
+
+
+def _small_table(*sites):
+    return pd.DataFrame({"site_id": list(sites), "lon": [-105.0 + s for s in sites], "lat": [40.0] * len(sites)})
+
+
+class TestStackModelOutputsRefusesRunsThatDisagree:
+    def test_runs_carrying_different_variables_are_refused(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        wood = niwot_output.select(["wood_carbon"])
+        both = niwot_output.select(["wood_carbon", "nee"])
+        for model_outputs in ({(1, 0): wood, (27, 0): both}, {(1, 0): both, (1, 1): wood}):
+            with pytest.raises(ValueError, match="carries the variables"):
+                stack_model_outputs(model_outputs, site_table=_small_table(1, 27))
+
+    @pytest.mark.parametrize("attribute, value", [("units", "kg m-2"), ("constituent", "N"), ("kind", "timestep_mean")])
+    def test_runs_describing_a_variable_differently_are_refused(self, niwot_output, attribute, value):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        wood = niwot_output.select(["wood_carbon"])
+        other = wood.copy()
+        other["wood_carbon"].attrs = {**wood["wood_carbon"].attrs, attribute: value}
+        with pytest.raises(ValueError, match=f"describes 'wood_carbon' as .*'{attribute}': '{value}'"):
+            stack_model_outputs({(1, 0): wood, (27, 0): other}, site_table=_small_table(1, 27))
+
+    def test_runs_given_out_of_order_are_stacked_ascending(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        run = niwot_output.select(["wood_carbon"])
+        stacked = stack_model_outputs({(27, 0): run * 2, (1, 0): run}, site_table=_small_table(1, 27))
+        assert stacked["site"].values.tolist() == [1, 27]
+        assert stacked["lon"].values.tolist() == [-104.0, -78.0]
+        np.testing.assert_allclose(stacked["wood_carbon"].sel(member=0, site=27).values, 2 * run["wood_carbon"].values)
+
+    def test_a_run_labeled_with_several_sites_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        run = niwot_output.select(["wood_carbon"]).expand_dims(site=[1, 27])
+        with pytest.raises(ValueError, match=r"is labeled site=\[1, 27\]"):
+            stack_model_outputs({(1, 0): run}, site_table=_small_table(1, 27))
+
+    def test_something_that_is_not_a_mapping_is_named(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        with pytest.raises(TypeError, match="^model_outputs must be a mapping"):
+            stack_model_outputs([niwot_output.select(["nee"])], site_table=_small_table(1))
+
+
+class TestCheckSiteTableLocatesTheSites:
+    def test_a_table_that_locates_every_site_passes(self):
+        from sipnet_calibration.fields import check_site_table_locates_the_sites
+
+        check_site_table_locates_the_sites(_small_table(1, 27), [27, 1])
+        check_site_table_locates_the_sites(site_lookup(_small_table(1, 27)), [1])
+
+    def test_a_table_without_lat_is_refused(self):
+        from sipnet_calibration.fields import check_site_table_locates_the_sites
+
+        with pytest.raises(ValueError, match=r"no \['lat'\] column"):
+            check_site_table_locates_the_sites(_small_table(1).drop(columns="lat"), [1])
+
+    def test_a_table_without_site_ids_is_refused(self):
+        from sipnet_calibration.fields import check_site_table_locates_the_sites
+
+        with pytest.raises(ValueError, match="no 'site_id' column or index"):
+            check_site_table_locates_the_sites(_small_table(1).drop(columns="site_id"), [1])
+
+    def test_a_repeated_site_is_refused_even_when_not_asked_for(self):
+        from sipnet_calibration.fields import check_site_table_locates_the_sites
+
+        table = pd.concat([_small_table(1, 27), _small_table(27)])
+        with pytest.raises(ValueError, match=r"lists site\(s\) \[27\] more than once"):
+            check_site_table_locates_the_sites(table, [1])
+
+    def test_a_missing_site_is_a_key_error_naming_it(self):
+        from sipnet_calibration.fields import check_site_table_locates_the_sites
+
+        with pytest.raises(KeyError, match=r"site\(s\) \[5\] are not in the site table"):
+            check_site_table_locates_the_sites(_small_table(1, 27), [1, 5])
+
+    def test_label_run_applies_it(self, niwot_output):
+        from sipnet_calibration.fields import label_run
+
+        with pytest.raises(ValueError, match="'lat'"):
+            label_run(niwot_output.select(["nee"]), site=1, site_table=_small_table(1).drop(columns="lat"))
+
+
+class TestLabelHelpers:
+    def test_missing_labels_keeps_the_order_asked_for(self):
+        from sipnet_calibration.fields import missing_labels
+
+        source = xr.DataArray(np.zeros(2), dims="site", coords={"site": [1, 2]})
+        assert missing_labels(source, "site", [9, 3, 1]) == [9, 3]
+        assert missing_labels(source, "site", [2, 1]) == []
+
+    def test_coordinate_labels_of_a_dimension_and_a_scalar(self):
+        from sipnet_calibration.fields import coordinate_labels
+
+        assert coordinate_labels(xr.DataArray([0, 0], dims="site", coords={"site": [3, 1]})["site"]) == [3, 1]
+        assert coordinate_labels(xr.Dataset(coords={"site": 5})["site"]) == [5]
+
+    def test_field_label_unquoted(self):
+        from sipnet_calibration.fields import field_label
+
+        assert field_label(xr.DataArray(0.0, name="wood_carbon"), quoted=False) == "wood_carbon"
+        assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"}), quoted=False) == "a / b"
+        assert field_label(xr.DataArray(0.0), "the observation", quoted=False) == "the observation"
+
+    def test_without_stale_time_attributes(self):
+        from sipnet_calibration.fields import (
+            STALE_TIME_ATTRIBUTE_NAMES,
+            without_stale_time_attributes,
+        )
+
+        assert STALE_TIME_ATTRIBUTE_NAMES == ("bounds",)
+        assert without_stale_time_attributes({"bounds": "time_bounds", "axis": "T"}) == {"axis": "T"}
+
+    def test_the_time_coordinates_are_the_named_constants(self):
+        from sipnet_calibration.fields import (
+            TIME_DIM,
+            TIME_STEP_LENGTH,
+            TIME_STEP_START,
+        )
+
+        assert TIME_COORDS == (TIME_DIM, TIME_STEP_START, TIME_STEP_LENGTH)
+        assert (TIME_STEP_START, TIME_STEP_LENGTH) == ("time_step_start", "time_step_length")
+
+
+class TestResolveOutputVariableNamesDelegates:
+    def test_a_legacy_column_is_resolved_as_pysipnet_resolves_it(self):
+        from pysipnet.variables import LEGACY_OUTPUT_COLUMNS
+
+        from sipnet_calibration.fields import resolve_output_variable_names
+
+        legacy, name = next(iter(LEGACY_OUTPUT_COLUMNS.items()))
+        assert resolve_output_variable_names([legacy, name]) == [name]
+
+    def test_a_set_and_a_non_iterable_are_type_errors(self):
+        from sipnet_calibration.fields import resolve_output_variable_names
+
+        with pytest.raises(TypeError, match="no order to keep"):
+            resolve_output_variable_names({"nee"})
+        with pytest.raises(TypeError, match="a name or a sequence of names"):
+            resolve_output_variable_names(3)
+        with pytest.raises(ValueError, match="no variables were asked for"):
+            resolve_output_variable_names(())

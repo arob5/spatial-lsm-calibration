@@ -93,7 +93,7 @@ class TestObservation:
             Observation("x", bare, SelectTimestep("wood_carbon"))
 
     def test_refuses_an_operator_without_declarations(self, lai):
-        with pytest.raises(ValueError, match="must declare output_variable_names"):
+        with pytest.raises(TypeError, match="must declare output_variable_names"):
             Observation("x", lai, lambda *a, **k: None)
 
     def test_orders_sites_and_times(self, lai):
@@ -176,8 +176,11 @@ class TestRepresentations:
     def test_fields_of_y_are_the_observed_values(self, vector, lai, wood, soil):
         fields = vector.fields(vector.y)
         for name, original in [("modis_leaf_area_index", lai), ("landtrendr_aboveground_biomass", wood), ("soilgrids_soil_organic_carbon", soil)]:
-            np.testing.assert_array_equal(fields[name].values, original.values)
+            # soil is observed at site 1 only, so its grid holds site 1 alone
+            kept = original.sel(site=fields[name]["site"].values)
+            np.testing.assert_array_equal(fields[name].values, kept.values)
             assert fields[name].attrs["units"] == original.attrs["units"]
+        assert fields["soilgrids_soil_organic_carbon"]["site"].values.tolist() == [1]
 
     def test_flat_of_the_fields_is_y(self, vector):
         np.testing.assert_array_equal(vector.flat(vector.fields(vector.y)), vector.y)
@@ -302,7 +305,11 @@ class TestRealProducts:
         assert np.isfinite(vector.y).all()
         fields = vector.fields(vector.y)
         for name, array in observed.items():
-            np.testing.assert_array_equal(fields[name].values, array.values)
+            kept = array.sel(site=fields[name]["site"].values)
+            if "time" in array.dims:
+                kept = kept.sel(time=fields[name]["time"].values)
+            np.testing.assert_array_equal(fields[name].values, kept.values)
+            assert int(fields[name].notnull().sum()) == int(array.notnull().sum())
         np.testing.assert_array_equal(vector.flat(fields), vector.y)
         sites = vector.index.get_level_values("site").values
         assert (np.diff(sites) >= 0).all()
@@ -338,7 +345,7 @@ class TestTwinObservations:
         np.testing.assert_allclose(wrong, 2 * vector.y, rtol=1e-12)
 
 
-class TestMoreRefusals:
+class TestObservationInputsAndBlockShapes:
     def test_an_operator_on_the_wrong_time_labels_is_refused_by_predict(self, lai, stack, table):
         @dataclass(frozen=True)
         class OffGrid:
@@ -512,7 +519,7 @@ class TestObservationRefusals:
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
                 return model_output["wood_carbon"]
 
-        with pytest.raises(ValueError, match="tuple of names"):
+        with pytest.raises(TypeError, match="tuple of names"):
             Observation("x", lai, Listed())
 
 
@@ -617,3 +624,150 @@ class TestPredictSharesTheOperatorChecks:
 
         with pytest.raises(TypeError, match="not a DataArray"):
             ObservationVector([Observation("modis_leaf_area_index", lai, Numpy())]).predict(stack)
+
+
+class TestObservationKeepsOnlyObservedLabels:
+    def test_unobserved_sites_and_labels_are_dropped_on_construction(self, times):
+        values = xr.DataArray(
+            [[100.0, np.nan, np.nan], [np.nan, np.nan, np.nan], [np.nan, np.nan, 120.0]],
+            dims=("site", "time"), coords={"site": [1, 5, 9], "time": times},
+            attrs={"units": "Mg ha-1", "constituent": "C"},
+        )
+        observation = Observation("wood", values, SelectTimestep("wood_carbon"))
+        assert observation.sites == (1, 9)
+        assert observation.values["time"].values.tolist() == [times[0].value, times[2].value]
+        assert observation.n_cells == 2
+
+    def test_a_static_products_unobserved_sites_are_dropped(self, soil):
+        assert Observation("soil", soil, ReduceOverRun("soil_carbon", "mean")).sites == (1,)
+
+    def test_predict_needs_no_model_output_at_an_unobserved_site(self, one_run, times):
+        values = xr.DataArray(
+            [[100.0, np.nan, 110.0], [np.nan, np.nan, np.nan]], dims=("site", "time"),
+            coords={"site": [1, 5], "time": times}, attrs={"units": "Mg ha-1", "constituent": "C"},
+        )
+        vector = ObservationVector([Observation("wood", values, SelectTimestep("wood_carbon"))])
+        predicted = vector.predict(one_run)  # one run at site 1; site 5 is observed nowhere
+        assert predicted["wood"]["site"].values.tolist() == [1]
+        assert predicted["wood"]["time"].values.tolist() == [times[0].value, times[2].value]
+
+    def test_a_real_product_at_unobserved_sites_predicts_from_the_observed_ones(self):
+        constraints = pytest.importorskip("sipnet_calibration.constraints")
+        try:
+            wood = constraints.constraint_fields(["landtrendr_aboveground_biomass"], sites=[1, 27, 3851])
+        except FileNotFoundError as error:
+            pytest.skip(str(error))
+        array = wood["landtrendr_aboveground_biomass"]
+        observation = Observation("wood", array, SelectTimestep("wood_carbon"))
+        observed_sites = [int(s) for s in array["site"].values if bool(array.sel(site=s).notnull().any())]
+        assert list(observation.sites) == observed_sites
+        assert bool(observation.values.notnull().any("site").all())
+
+
+class TestObservationRefusesAScalarMember:
+    def test_a_scalar_member_coordinate_is_refused(self, lai):
+        with pytest.raises(ValueError, match="member scalar coordinate"):
+            Observation("x", lai.expand_dims(member=[4]).isel(member=0), SelectTimestep("wood_carbon"))
+
+    def test_the_same_values_without_it_are_accepted(self, lai):
+        member = lai.expand_dims(member=[4]).isel(member=0)
+        assert Observation("x", member.drop_vars("member"), SelectTimestep("wood_carbon")).n_cells == 4
+
+
+class TestSiteIdsAreIntegers:
+    @pytest.mark.parametrize("sites", [True, [1.7], ["1"], "1", [None]])
+    def test_select_refuses_what_is_not_a_site_id(self, vector, sites):
+        with pytest.raises((TypeError, ValueError), match="site id"):
+            vector.select(sites=sites)
+
+    def test_a_boolean_or_string_is_a_type_error_and_a_fraction_a_value_error(self, vector):
+        with pytest.raises(TypeError):
+            vector.select(sites=True)
+        with pytest.raises(TypeError):
+            vector.select(sites=["1"])
+        with pytest.raises(ValueError, match="whole number"):
+            vector.select(sites=[1.7])
+        with pytest.raises(ValueError, match="whole number"):
+            vector.positions(site=27.9)
+        with pytest.raises(TypeError):
+            vector.positions(site=True)
+
+    @pytest.mark.parametrize("sites", [np.int64(2), np.array([2]), np.array(2), [np.int32(2)], 2.0])
+    def test_numpy_integers_and_whole_numbers_are_accepted(self, vector, sites):
+        assert vector.select(sites=sites).sites == (2,)
+
+    def test_positions_accepts_a_numpy_integer(self, vector):
+        assert vector.positions(site=np.int64(2)).tolist() == vector.positions(site=2).tolist()
+
+
+class TestObservationIdentity:
+    def test_observations_compare_and_hash_by_identity(self, lai):
+        first = Observation("x", lai, SelectTimestep("wood_carbon"))
+        second = Observation("x", lai, SelectTimestep("wood_carbon"))
+        assert first == first and first != second
+        assert len({first, second, first}) == 2
+
+
+class TestObservationLoadsLazyValues:
+    def test_dask_backed_values_are_loaded_and_read_only(self, lai):
+        pytest.importorskip("dask")
+        observation = Observation("x", lai.chunk({"site": 1}), SelectTimestep("wood_carbon"))
+        assert isinstance(observation.values.variable._data, np.ndarray)
+        with pytest.raises(ValueError, match="read-only"):
+            observation.values.values[0, 0] = -1.0
+        assert observation.values.values[0, 0] == 3.0
+
+    def test_file_backed_values_are_loaded_and_read_only(self, lai, tmp_path):
+        path = tmp_path / "lai.nc"
+        lai.to_netcdf(path)
+        with xr.open_dataarray(path) as lazy:
+            observation = Observation("x", lazy, SelectTimestep("wood_carbon"))
+        with pytest.raises(ValueError, match="read-only"):
+            observation.values.values[0, 0] = -1.0
+        assert observation.values.values[0, 0] == 3.0
+
+
+class TestBlockSizes:
+    def test_as_many_members_as_int16_labels_from_zero_is_accepted(self, vector):
+        fields = vector.fields(np.zeros((32768, vector.dimension)))
+        assert int(fields["modis_leaf_area_index"]["member"].values[-1]) == 32767
+
+    def test_one_more_is_refused(self, vector):
+        with pytest.raises(ValueError, match="at most 32768 members"):
+            vector.fields(np.zeros((32769, vector.dimension)))
+
+
+class TestFailureMaskIsMatchedByLabel:
+    def test_a_gap_at_the_only_observed_site_of_a_larger_stack_is_refused(self, stack, times):
+        values = xr.DataArray(
+            [[1.0, 2.0]], dims=("site", "time"), coords={"site": [2], "time": times[:2]},
+            attrs={"units": "g m-2", "constituent": "C"},
+        )
+
+        @dataclass(frozen=True)
+        class Gappy:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                picked = select_observed_sites(model_output["wood_carbon"], observed_values)
+                out = select_timestep_at(picked, observed_values["time"])
+                out[..., -1] = np.nan
+                return out
+
+        with pytest.raises(ValueError, match="although the run succeeded"):
+            ObservationVector([Observation("wood", values, Gappy())]).predict(stack)
+
+
+class TestObservationNamesAndUnits:
+    def test_a_product_name_that_is_not_a_string_is_a_type_error(self, lai):
+        with pytest.raises(TypeError, match="product_name must be a string"):
+            Observation(3, lai, SelectTimestep("wood_carbon"))
+
+    def test_an_empty_product_name_is_a_value_error(self, lai):
+        with pytest.raises(ValueError, match="product_name is empty"):
+            Observation("", lai, SelectTimestep("wood_carbon"))
+
+    def test_a_substance_inside_the_units_is_refused_in_pysipnets_words(self, lai):
+        with pytest.raises(ValueError, match="substance token"):
+            Observation("x", lai.assign_attrs(units="g C m-2"), SelectTimestep("wood_carbon"))
