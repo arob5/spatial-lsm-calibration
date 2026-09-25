@@ -19,6 +19,7 @@ data/raw/*
 !data/raw/site_labels/
 !data/raw/covariates/
 !data/raw/natural_earth/
+!data/raw/net_ecosystem_exchange/
 # Un-ignoring the directory un-ignores everything in it; the inputs that
 # still live on storage and are symlinked in are excluded again here. The
 # initial conditions are tracked as one converted file; PEcAn's 800,000-file
@@ -26,6 +27,14 @@ data/raw/*
 data/raw/constraints/nee
 data/raw/constraints/sda_8k_site_rdata
 data/raw/initial_conditions/files
+# The NEE tower table, the reanalysis's tower list and the provenance record
+# are tracked; the converted time series (about a gigabyte), the link to the
+# AmeriFlux download and AmeriFlux's site listing, which carries contact
+# details, are not.
+data/raw/net_ecosystem_exchange/*.nc
+data/raw/net_ecosystem_exchange/*.nc.partial
+data/raw/net_ecosystem_exchange/fluxnet
+data/raw/net_ecosystem_exchange/ameri_sites.tsv
 data/processed/
 
 .claude/worktrees/
