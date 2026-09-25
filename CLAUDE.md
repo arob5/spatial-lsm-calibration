@@ -634,15 +634,24 @@ plotting code. The load-bearing rules:
   observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its module docstring
   says how the pieces compose. The rules a session can get wrong: the
   observation operators run **on the worker**, each run receiving only its
-  site's slice of the observation vector, so a product observed at few sites
-  costs nothing at the others; a run that fails at its parameters
+  site's slice of the observation vector and returning that slice's Flat,
+  which the calling process writes at `positions(site=)` (right because the
+  vector is site-major, which `__init__` checks per site); a run at a site no
+  product observes returns nothing, so such a product costs nothing at the
+  other sites. The SIPNET table a `to_sipnet_table` hook returns must be on
+  exactly `(member, site)`, members `0` to `J - 1` in `theta`'s row order and
+  sites in the parameter vector's. A run that fails at its parameters
   (`SIPNETRunError`, pydantic's `ValidationError`, a timeout, or a non-finite
-  value in a read variable, `ModelOutputNotFinite`) makes the **whole
-  member's** row NaN, and anything else a worker returns is the machinery
-  failing and is raised with the collected runs on the error's `evaluation`;
-  under any backend but `SequentialBackend` the drivers must be file-backed;
-  `freq=` is for the prior-predictive path only. `compute.scc_backend` is the
-  SCC preset.
+  value in a read variable, `ModelOutputNotFinite`; across a process boundary
+  matched on PyEns's fully qualified `RemoteError.type_name`) makes the
+  **whole member's** row NaN, and anything else a worker returns is the
+  machinery failing and is raised with the collected runs on the error's
+  `evaluation`, as is a prior-predictive batch in which every run failed. The
+  prior-predictive output is stacked by `fields.stack_model_outputs`, so it
+  carries no `time_bounds` or SIPNET row labels; `freq=` is for that path
+  only, and aggregates each run with `observation.aggregate_time` by the
+  method that keeps its kind, as the plots do. Under any backend but `SequentialBackend` the drivers
+  must be file-backed. `compute.scc_backend` is the SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
   `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
   sites ascending, then products in declaration order, then times, with

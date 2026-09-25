@@ -18,6 +18,7 @@ an MCMC step (one map per proposal); run a sampler locally.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -54,19 +55,30 @@ def scc_backend(
         *runs_per_job* is given.
     **options:
         Any other ``GridEngineBackend`` field (``slots``, ``setup``,
-        ``max_concurrent``, ...). ``directives`` given here are appended to
-        :data:`SCC_DIRECTIVES`.
+        ``max_concurrent``, ...). ``directives`` given here, a sequence of
+        strings, are appended to the project's.
+
+    Returns
+    -------
+    pyens.GridEngineBackend
+        With the directives :data:`SCC_DIRECTIVES`, then a ``-v`` directive
+        exporting :data:`SCC_EXPORTED_VARIABLES` from the submitting shell,
+        then any given in *options*.
+
+    Raises
+    ------
+    TypeError
+        If ``directives`` is not a sequence of strings (one string, ``None``,
+        or an entry that is not a string).
+    ValueError
+        If a directive names a project (``-P``) or sets the ``buyin``
+        resource, either of which would override the project's queue.
     """
     extra = options.pop("directives", ())
-    if isinstance(extra, str):
-        raise TypeError("directives must be a sequence of strings, not one string.")
-    extra = tuple(extra)
+    check_directives_are_strings(extra)
     for directive in extra:
-        if directive.split()[:1] == ["-P"] or directive.startswith("-l buyin"):
-            raise ValueError(
-                f"{directive!r} would override the project's queue directives "
-                f"{SCC_DIRECTIVES}; qsub takes the last -P it sees."
-            )
+        check_directive_keeps_the_project(directive)
+        check_directive_keeps_buyin(directive)
     directives = (*SCC_DIRECTIVES, f"-v {','.join(SCC_EXPORTED_VARIABLES)}", *extra)
     return GridEngineBackend(
         walltime=walltime,
@@ -76,3 +88,42 @@ def scc_backend(
         directives=directives,
         **options,
     )
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_directives_are_strings(directives: Any) -> None:
+    if isinstance(directives, str):
+        raise TypeError("directives must be a sequence of strings, not one string.")
+    if not isinstance(directives, Sequence):
+        raise TypeError(
+            "directives must be a sequence of strings such as ('-l mem_per_core=4G',), got "
+            f"{type(directives).__name__}."
+        )
+    wrong = [d for d in directives if not isinstance(d, str)]
+    if wrong:
+        raise TypeError(f"every entry of directives must be a string, got {wrong[:5]!r}.")
+
+
+def check_directive_keeps_the_project(directive: str) -> None:
+    option = directive.split()[:1]
+    if option and option[0].startswith("-P"):
+        raise ValueError(
+            f"{directive!r} names a project, which would override the project's "
+            f"{SCC_DIRECTIVES[0]!r}: qsub takes the last -P it sees. Drop it; every job of "
+            "this project goes to dietzelab."
+        )
+
+
+def check_directive_keeps_buyin(directive: str) -> None:
+    tokens = directive.split()
+    if not tokens or not tokens[0].startswith("-l"):
+        return
+    resources = ",".join([tokens[0][2:], *tokens[1:]]).split(",")
+    if any(r.split("=", 1)[0].strip() == "buyin" for r in resources):
+        raise ValueError(
+            f"{directive!r} sets the buyin resource, which would override the project's "
+            f"{SCC_DIRECTIVES[1]!r}. Drop it; every job of this project runs on the buy-in "
+            "nodes."
+        )
