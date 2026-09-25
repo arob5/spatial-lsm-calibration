@@ -173,8 +173,8 @@ class TestEvaluate:
         assert forward(theta[0]).shape == (observations.dimension,)
         assert forward(theta).shape == (3, observations.dimension)
         assert forward(theta[:1]).shape == (1, observations.dimension)
-        assert forward.n_predictions == observations.dimension
-        assert forward.dimension == theta.shape[1]
+        assert forward.output_dimension == observations.dimension
+        assert forward.input_dimension == theta.shape[1]
 
     def test_the_lai_operator_reads_the_base_leaf_carbon_per_area(self, forward, observations, theta):
         assert forward.sipnet_parameter_names == forward.parameter_vector.sipnet_parameter_names

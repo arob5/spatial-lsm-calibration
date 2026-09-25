@@ -277,14 +277,18 @@ class ForwardModel:
     # ── identity ──────────────────────────────────────────────────────────────
 
     @property
-    def dimension(self) -> int:
-        """``D``, the length of ``theta``."""
+    def input_dimension(self) -> int:
+        """``D``, the length of ``theta``: the parameter vector's dimension."""
         return self.parameter_vector.dimension
 
     @property
-    def n_predictions(self) -> int:
-        """``N``, the length of a predictions row; raises without an observation vector."""
-        check_has_observation_vector(self.observation_vector, "n_predictions")
+    def output_dimension(self) -> int:
+        """``N``, the length of a predictions row: the observation vector's dimension.
+
+        Raises without an observation vector, since the model output then has
+        no flat form.
+        """
+        check_has_observation_vector(self.observation_vector, "output_dimension")
         assert self.observation_vector is not None
         return self.observation_vector.dimension
 
@@ -294,13 +298,13 @@ class ForwardModel:
             if self.observation_vector is not None
             else f"output_variable_names={self.output_variable_names!r}, freq={self.freq!r}"
         )
-        return f"ForwardModel(D={self.dimension}, sites={len(self.sites)}, {what})"
+        return f"ForwardModel(D={self.input_dimension}, sites={len(self.sites)}, {what})"
 
     # ── evaluation ────────────────────────────────────────────────────────────
 
     def evaluate(self, theta: Any) -> ForwardEvaluation:
         """Run SIPNET once per member and site, and collect what came back."""
-        batch = _as_batch(theta, self.dimension)
+        batch = _as_batch(theta, self.input_dimension)
         table = self._to_sipnet_table(batch)
         check_table_is_a_sipnet_table(table, self.sites, expected=self.sipnet_parameter_names)
         members = np.asarray(table[MEMBER].values)
@@ -436,13 +440,13 @@ def _check_output_is_finite(dataset: xr.Dataset, site: int) -> None:
             )
 
 
-def _as_batch(theta: Any, dimension: int) -> np.ndarray:
+def _as_batch(theta: Any, input_dimension: int) -> np.ndarray:
     array = np.asarray(theta, dtype=np.float64)
     if array.ndim == 1:
         array = array[None, :]
-    if array.ndim != 2 or array.shape[1] != dimension or array.shape[0] == 0:
+    if array.ndim != 2 or array.shape[1] != input_dimension or array.shape[0] == 0:
         raise ValueError(
-            f"theta must be (D,) or (B, D) with B >= 1 and D = {dimension}, got shape "
+            f"theta must be (D,) or (B, D) with B >= 1 and D = {input_dimension}, got shape "
             f"{array.shape}."
         )
     if not np.isfinite(array).all():
