@@ -9,15 +9,15 @@ lives here.
 
 Contents
 --------
-:func:`to_pysipnet_initial_conditions`
+:func:`to_sipnet_initial_conditions`
     One ``(member, site)`` cell to a ``pysipnet.parameters.InitialConditions``.
-:func:`to_pysipnet_initial_conditions_table`
+:func:`to_sipnet_initial_conditions_table`
     A whole ensemble to a table of the same field values, one row per cell.
 :data:`CONVERTED_SIPNET_FIELDS`
     The fields both of them set.
 
 Both refuse state that is not physically valid rather than flooring or
-substituting it. :func:`to_pysipnet_initial_conditions`'s Notes say why, and
+substituting it. :func:`to_sipnet_initial_conditions`'s Notes say why, and
 record what the conversion does and does not reproduce of PEcAn's arithmetic.
 """
 
@@ -36,8 +36,8 @@ from sipnet_calibration.initial_conditions.specs import resolve_initial_conditio
 
 __all__ = [
     "CONVERTED_SIPNET_FIELDS",
-    "to_pysipnet_initial_conditions",
-    "to_pysipnet_initial_conditions_table",
+    "to_sipnet_initial_conditions",
+    "to_sipnet_initial_conditions_table",
 ]
 
 
@@ -55,7 +55,7 @@ CONVERTED_SIPNET_FIELDS: tuple[str, ...] = (
 )
 
 
-def to_pysipnet_initial_conditions(
+def to_sipnet_initial_conditions(
     *,
     initial_soil_organic_carbon: float,
     initial_wood_carbon: float,
@@ -214,7 +214,7 @@ def to_pysipnet_initial_conditions(
     return InitialConditions(**{name: float(values[0]) for name, values in converted.items()})
 
 
-def to_pysipnet_initial_conditions_table(
+def to_sipnet_initial_conditions_table(
     state: xr.Dataset | Mapping[str, xr.DataArray],
     *,
     leaf_carbon_per_area: float | xr.DataArray,
@@ -224,7 +224,7 @@ def to_pysipnet_initial_conditions_table(
 ) -> pd.DataFrame:
     """The conversion over a whole ``(member, site)`` ensemble, as a table.
 
-    :func:`to_pysipnet_initial_conditions` cell by cell: the same formulas and
+    :func:`to_sipnet_initial_conditions` cell by cell: the same formulas and
     the same refusals, one row per cell. The prior predictive needs a parameter
     set for every member of every site it runs, and a table is what the
     ensemble layer feeds them from.
@@ -240,7 +240,7 @@ def to_pysipnet_initial_conditions_table(
         other variable is ignored. Where a variable declares ``units``, they
         are checked against the spec.
     leaf_carbon_per_area, fine_root_fraction, coarse_root_fraction, deciduous:
-        As in :func:`to_pysipnet_initial_conditions`, each either a scalar or a
+        As in :func:`to_sipnet_initial_conditions`, each either a scalar or a
         ``DataArray`` over any subset of the dims of *state*, so that a
         parameter drawn per member and a PFT property held per site both
         broadcast. Where both sides label a dim, the labels must match exactly;
@@ -255,7 +255,7 @@ def to_pysipnet_initial_conditions_table(
         always ordered ``(member, site)``, with
         :data:`CONVERTED_SIPNET_FIELDS` as columns. For any cell,
         ``InitialConditions(**table.loc[cell])`` equals what
-        :func:`to_pysipnet_initial_conditions` returns for it, so every row
+        :func:`to_sipnet_initial_conditions` returns for it, so every row
         here also passes pySIPNET's own field validation.
 
     Raises
@@ -266,7 +266,7 @@ def to_pysipnet_initial_conditions_table(
         If a value of *state* is not a ``DataArray``, or *deciduous* is not
         boolean.
     ValueError
-        For the refusals of :func:`to_pysipnet_initial_conditions`, naming the
+        For the refusals of :func:`to_sipnet_initial_conditions`, naming the
         offending cells; if the inputs broadcast to dims other than ``member``
         and ``site``; if their indexes do not match, or they were selected for
         different members or sites; or if a variable's ``units`` are not the
@@ -277,7 +277,7 @@ def to_pysipnet_initial_conditions_table(
     The whole ensemble does not convert. ``initial_wood_carbon`` is negative
     over much of it and ``initial_leaf_carbon`` is absent at some sites, so the
     product passed unfiltered is refused and the members to run have to be
-    chosen first. See the Notes of :func:`to_pysipnet_initial_conditions`.
+    chosen first. See the Notes of :func:`to_sipnet_initial_conditions`.
     """
     arrays = {name: _state_variable(state, name) for name in _STATE_VARIABLES}
     arrays["leaf_carbon_per_area"] = _as_data_array(leaf_carbon_per_area)
@@ -440,7 +440,7 @@ def _state_variable(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -
     if not isinstance(array, xr.DataArray):
         raise TypeError(
             f"{name} is a {type(array).__name__}, not a DataArray. The table form "
-            "converts an ensemble; use to_pysipnet_initial_conditions for one member."
+            "converts an ensemble; use to_sipnet_initial_conditions for one member."
         )
     _check_units_are_the_products(array, name)
     return array
@@ -507,7 +507,7 @@ def _check_arguments_are_scalar(**arguments: Any) -> None:
         if np.ndim(value) != 0:
             raise TypeError(
                 f"{name} has {np.ndim(value)} dimensions; this form converts one "
-                "member at one site. Use to_pysipnet_initial_conditions_table for "
+                "member at one site. Use to_sipnet_initial_conditions_table for "
                 "an ensemble."
             )
 

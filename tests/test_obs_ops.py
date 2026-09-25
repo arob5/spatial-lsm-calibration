@@ -7,7 +7,7 @@ wrote. The load-bearing tests are the ones that compare it with
 ``pysipnet.resample.resample`` -- values, time coordinates, attributes and
 refusal message alike -- because the two are meant to be the same operation,
 differing only in that one supplies a default method and reduces over the
-other dimensions a canonical field may have.
+other dimensions a field may have.
 """
 
 from __future__ import annotations

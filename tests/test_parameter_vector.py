@@ -911,9 +911,9 @@ def test_unset_parameters_and_require_complete(example):
     assert "litter_carbon" not in REQUIRED_SIPNET_PARAMETERS
     assert "max_photosynthesis_rate" in REQUIRED_SIPNET_PARAMETERS
     assert set(example.sipnet_parameter_names) == set(example.sipnet_table(example.sample(jax.random.key(0), 1)).data_vars)
-    assert set(example.unset_sipnet_parameters) == set(REQUIRED_SIPNET_PARAMETERS) - set(example.sipnet_parameter_names)
-    assert "leaf_carbon_per_area" in example.unset_sipnet_parameters
-    assert not set(example.unset_sipnet_parameters) & set(example.sipnet_parameter_names)
+    assert set(example.unset_sipnet_parameter_names) == set(REQUIRED_SIPNET_PARAMETERS) - set(example.sipnet_parameter_names)
+    assert "leaf_carbon_per_area" in example.unset_sipnet_parameter_names
+    assert not set(example.unset_sipnet_parameter_names) & set(example.sipnet_parameter_names)
     with pytest.raises(ValueError, match="neither calibrated nor fixed: \\['total_wood_carbon'"):
         ParameterVector(
             parameters=example.parameters, fixed=example.fixed, sites=example.sites,
@@ -922,13 +922,13 @@ def test_unset_parameters_and_require_complete(example):
     # A vector that fixes everything it does not calibrate is complete.
     filled = tuple(
         FixedParameter(name=name, value=_in_domain_value(name), provenance="test")
-        for name in example.unset_sipnet_parameters
+        for name in example.unset_sipnet_parameter_names
     )
     complete = ParameterVector(
         parameters=example.parameters, fixed=example.fixed + filled, sites=example.sites,
         site_labels=example.site_labels, require_complete=True,
     )
-    assert complete.unset_sipnet_parameters == ()
+    assert complete.unset_sipnet_parameter_names == ()
 
 
 def _in_domain_value(name: str) -> float:
@@ -982,7 +982,7 @@ def test_repr_summarizes_parameters_groups_and_what_is_fixed(example):
     assert rows["initial_soil_carbon"][1:4] == ["site", "3", "1"]
     assert lines[7].startswith("  fixed: daily_mean_photosynthesis_fraction (shared)")
     assert lines[8] == (
-        f"  unset: {len(example.unset_sipnet_parameters)} required SIPNET parameters, taken "
+        f"  unset: {len(example.unset_sipnet_parameter_names)} required SIPNET parameters, taken "
         "from the run's base parameter set"
     )
 
@@ -1454,7 +1454,7 @@ def test_select_restricts_per_site_fixed_values_and_keeps_require_complete(examp
     )
     assert dict(vector.select(sites=(27, 4711)).fixed[0].value) == {27: 0.45, 4711: 0.5}
     filled = tuple(
-        FixedParameter(name=n, value=_in_domain_value(n), provenance="t") for n in example.unset_sipnet_parameters
+        FixedParameter(name=n, value=_in_domain_value(n), provenance="t") for n in example.unset_sipnet_parameter_names
     )
     complete = ParameterVector(
         parameters=example.parameters, fixed=example.fixed + filled, sites=example.sites,

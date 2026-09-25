@@ -213,7 +213,7 @@ src/sipnet_calibration/
   drivers.py              # load_drivers(): the raw .clim files, read by pySIPNET
   parameter_vector.py     # ParameterVector: the calibration vector, its prior, and
                           # Flat / Fields / SIPNET table conversions
-  fields.py               # canonical field convention; SIPNET output adapters
+  fields.py               # field convention; SIPNET output adapters
   obs_ops.py              # aggregate_time — shared with the likelihood
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/

@@ -105,9 +105,9 @@ Functions
 :func:`load_constraint`
     Read one processed product and check it against its spec.
 
-:func:`constraint_fields`, :func:`constraint_sds`
+:func:`constraint_fields`, :func:`constraint_standard_deviations`
     The ``value`` or ``standard_deviation`` arrays of several products, one
-    canonical field per constraint, optionally for a subset of sites.
+    field per constraint, optionally for a subset of sites.
 
 :func:`read_raw`
     Parse a raw file exactly, in its source column names.
@@ -152,7 +152,7 @@ Usage
 
     from sipnet_calibration.constraints import (
         constraint_fields,
-        constraint_sds,
+        constraint_standard_deviations,
         describe,
         load_constraint,
         resolve_constraint,
@@ -166,8 +166,8 @@ Usage
     fields["soilgrids_soil_organic_carbon"].dims          # ('site',)
     fields["landtrendr_aboveground_biomass"].attrs["units"]   # 'Mg ha-1'
 
-    sds = constraint_sds(["modis_leaf_area_index"])
-    variance = sds["modis_leaf_area_index"] ** 2
+    standard_deviations = constraint_standard_deviations(["modis_leaf_area_index"])
+    variance = standard_deviations["modis_leaf_area_index"] ** 2
 
     print(describe(resolve_constraint("smap_soil_moisture")))
 """
@@ -209,7 +209,7 @@ __all__ = [
     "build_constraint",
     "constraint_fields",
     "constraint_path",
-    "constraint_sds",
+    "constraint_standard_deviations",
     "default_constraints_dir",
     "default_raw_dir",
     "describe",
@@ -649,7 +649,7 @@ def constraint_fields(
     sites: Iterable[int] | None = None,
     directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The observations of several constraints, one canonical field each.
+    """The observations of several constraints, one field each.
 
     Parameters
     ----------
@@ -676,7 +676,7 @@ def constraint_fields(
     return _fields(VALUE, names, sites, directory)
 
 
-def constraint_sds(
+def constraint_standard_deviations(
     names: Sequence[str] | None = None,
     *,
     sites: Iterable[int] | None = None,

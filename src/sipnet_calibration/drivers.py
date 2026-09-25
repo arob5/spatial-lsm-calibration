@@ -134,7 +134,7 @@ Functions
     return the Dataset above.
 
 :func:`driver_fields`
-    Split the Dataset into canonical fields -- one ``DataArray`` per variable
+    Split the Dataset into fields -- one ``DataArray`` per variable
     with dims ``(member, site, time)`` and its own units. This is the view the
     plotting layer wants.
 
@@ -504,7 +504,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     Each field has dims ``(member, site, time)``, is named for its variable,
     keeps that variable's attributes, and carries pySIPNET's
     :data:`sipnet_calibration.fields.TIME_COORDS` with ``lon``/``lat`` and
-    ``source_member_index`` as non-dimension coordinates -- the canonical field
+    ``source_member_index`` as non-dimension coordinates -- the field
     shape, and the same time coordinates a model field has. This is the view
     facet-by-variable consumes, matching
     :func:`sipnet_calibration.constraints.constraint_fields`.

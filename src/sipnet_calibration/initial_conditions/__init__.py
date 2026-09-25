@@ -17,7 +17,7 @@ share: the names, the variable specs, and the conversion to SIPNET.
 ``source_files``          PEcAn's source netCDFs: the format, and the parser
 ``specs``                 what each variable is; the registry
 ``raw``                   the tracked raw netCDF: build, encode, read
-``processed``             the product: build, encode, read, canonical fields
+``processed``             the product: build, encode, read, fields
 ``sipnet_parameters``     the conversion to SIPNET's initial parameters
 ========================  ==================================================
 
@@ -125,11 +125,11 @@ the conversion writes, and :func:`read_raw` reads it back and checks it.
 
 **The processed product.** :func:`build_initial_conditions` turns the raw
 Dataset into the product, :func:`load_initial_conditions` reads and checks it,
-and :func:`initial_condition_fields` returns it as one canonical field per
+and :func:`initial_condition_fields` returns it as one field per
 variable, optionally for a subset of sites.
 
-**The conversion.** :func:`to_pysipnet_initial_conditions` converts one
-member; :func:`to_pysipnet_initial_conditions_table` converts a whole
+**The conversion.** :func:`to_sipnet_initial_conditions` converts one
+member; :func:`to_sipnet_initial_conditions_table` converts a whole
 ``(member, site)`` ensemble to a table of SIPNET field values.
 
 **Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
@@ -167,14 +167,14 @@ applies none of them and the product holds the state in its own units. (A
 third, ``soilWFracInit``, takes no proposed parameter but is a fraction of a
 water holding capacity the calibration also proposes, so what it *means*
 moves too.) The conversion is a function of a state and a parameter vector,
-:func:`to_pysipnet_initial_conditions`, evaluated per proposal; each spec also
+:func:`to_sipnet_initial_conditions`, evaluated per proposal; each spec also
 records the formula PEcAn applied, in ``pecan_conversion``.
 
 **Why the conversion refuses rather than repairs.** Wood carbon is negative
 over much of the ensemble and two variables are absent at some sites, so the
 product does not convert unfiltered. Choosing what to do about that is the
 job of the prior on initial conditions, not of a unit conversion; see the
-Notes of :func:`to_pysipnet_initial_conditions`.
+Notes of :func:`to_sipnet_initial_conditions`.
 
 Usage
 -----
@@ -195,10 +195,10 @@ Usage
     print(describe(resolve_initial_condition("initial_soil_moisture_saturation")))
 
     from sipnet_calibration.initial_conditions import (
-        to_pysipnet_initial_conditions, to_pysipnet_initial_conditions_table,
+        to_sipnet_initial_conditions, to_sipnet_initial_conditions_table,
     )
 
-    conditions = to_pysipnet_initial_conditions(          # one member, one site
+    conditions = to_sipnet_initial_conditions(          # one member, one site
         initial_soil_organic_carbon=13.085,
         initial_wood_carbon=0.058,
         initial_leaf_carbon=0.121,
@@ -216,7 +216,7 @@ Usage
     # DataArray cannot be ragged.
     site = {name: field.sel(site=4102) for name, field in fields.items()}
     usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
-    table = to_pysipnet_initial_conditions_table(         # one row per member
+    table = to_sipnet_initial_conditions_table(         # one row per member
         {name: field.isel(member=usable) for name, field in site.items()},
         leaf_carbon_per_area=32.0,                        # scalar or per member
         fine_root_fraction=0.2,
@@ -249,8 +249,8 @@ from sipnet_calibration.initial_conditions.processed import (
 from sipnet_calibration.initial_conditions.raw import build_raw, raw_encoding, read_raw
 from sipnet_calibration.initial_conditions.sipnet_parameters import (
     CONVERTED_SIPNET_FIELDS,
-    to_pysipnet_initial_conditions,
-    to_pysipnet_initial_conditions_table,
+    to_sipnet_initial_conditions,
+    to_sipnet_initial_conditions_table,
 )
 from sipnet_calibration.initial_conditions.source_files import (
     NOMINAL_DATE,
@@ -314,6 +314,6 @@ __all__ = [
     "read_raw",
     # The conversion to SIPNET parameters.
     "CONVERTED_SIPNET_FIELDS",
-    "to_pysipnet_initial_conditions",
-    "to_pysipnet_initial_conditions_table",
+    "to_sipnet_initial_conditions",
+    "to_sipnet_initial_conditions_table",
 ]

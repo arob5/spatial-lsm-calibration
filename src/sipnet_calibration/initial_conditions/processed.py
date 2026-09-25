@@ -19,7 +19,7 @@ Contents
 :func:`load_initial_conditions`
     Read it and check it against the specs.
 :func:`initial_condition_fields`
-    The product as one canonical field per variable.
+    The product as one field per variable.
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ def initial_condition_fields(
     sites: Iterable[int] | None = None,
     path: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The initial conditions as canonical fields, one per variable.
+    """The initial conditions as fields, one per variable.
 
     Parameters
     ----------

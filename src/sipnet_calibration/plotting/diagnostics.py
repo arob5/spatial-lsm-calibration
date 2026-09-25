@@ -12,6 +12,6 @@ Planned:
 
 EKI hands back flat blocks that know nothing about space or time: ``(J, P)``
 parameter ensembles and ``(J, N)`` predictions. The ``(site, variable, time)``
-MultiIndex from pyEKI's ``index`` layer is what unstacks them into canonical
-fields; see :mod:`sipnet_calibration.fields`.
+MultiIndex from pyEKI's ``index`` layer is what unstacks them into fields;
+see :mod:`sipnet_calibration.fields`.
 """

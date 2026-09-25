@@ -580,9 +580,9 @@ root fractions and the specific leaf weight -- which is why the ingest applies
 none of them (see [Processed format](#processed-format)). A third,
 `soilWFracInit`, takes no proposed parameter but is a fraction of a water
 holding capacity the calibration also proposes, so its meaning moves as well.
-`sipnet_calibration.initial_conditions.to_pysipnet_initial_conditions` applies
+`sipnet_calibration.initial_conditions.to_sipnet_initial_conditions` applies
 the mapping to one `(member, site)` cell for one proposed parameter vector, and
-`to_pysipnet_initial_conditions_table` does it over a whole `(member, site)`
+`to_sipnet_initial_conditions_table` does it over a whole `(member, site)`
 ensemble. Both write the leaf row with SIPNET's own `leafCSpWt` rather than
 PEcAn's SLA draw, and both guard `fineRootFrac + coarseRootFrac < 1`, which
 pySIPNET does not check and SIPNET runs to completion without.
@@ -1551,7 +1551,7 @@ site 1 has members 1 and 2, site 27 has member 5.
 `initial_conditions.nc` carries the initial condition ensemble on
 `(member, site)`, in the source files' units, read through
 `sipnet_calibration.initial_conditions.load_initial_conditions` and split into
-canonical fields by `initial_condition_fields`:
+fields by `initial_condition_fields`:
 
 | Variable | Source variable | Units |
 |---|---|---|

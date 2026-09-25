@@ -88,7 +88,7 @@ what :meth:`ParameterVector.sample` returns and what
 :meth:`ParameterVector.log_prior` and pyEKI consume. NaN is never produced
 and :meth:`ParameterVector.flat` refuses it.
 
-**Fields.** An ``xarray.Dataset`` of canonical fields (see
+**Fields.** An ``xarray.Dataset`` of fields (see
 :mod:`sipnet_calibration.fields`):
 
 ============ ========================================================
@@ -131,7 +131,7 @@ labels, so a subset of an ensemble keeps its members' identity. Each variable ca
 (``"parameter <name>"`` or ``"fixed"``); the dataset carries
 ``representation = "sipnet_parameters"``. A SIPNET parameter the vector
 neither calibrates nor fixes is absent, never NaN:
-:attr:`ParameterVector.unset_sipnet_parameters` lists them, and the run's
+:attr:`ParameterVector.unset_sipnet_parameter_names` lists them, and the run's
 base parameter set supplies them.
 
 Conversions
@@ -1176,7 +1176,7 @@ class ParameterVector:
     Its values have three representations, which the module docstring
     defines in full. *Flat* is a float64 ``(D,)`` or ``(J, D)`` array in
     unconstrained space, what :meth:`sample` returns and :meth:`log_prior`
-    and pyEKI consume. *Fields* is an ``xarray.Dataset`` of canonical fields
+    and pyEKI consume. *Fields* is an ``xarray.Dataset`` of fields
     on ``(member, site)``, from :meth:`fields` and back through
     :meth:`flat`. The *SIPNET table* is an ``xarray.Dataset`` of SIPNET
     parameters on the same dims, from :meth:`sipnet_table`, which
@@ -1224,7 +1224,7 @@ class ParameterVector:
     site_table : pandas.DataFrame
         ``site_id``, ``lon``/``lat`` when known, and one column per
         site-labels name.
-    sipnet_parameter_names, unset_sipnet_parameters : tuple[str, ...]
+    sipnet_parameter_names, unset_sipnet_parameter_names : tuple[str, ...]
         What the vector sets, calibrated and fixed, and the required SIPNET
         parameters it leaves to a run's base parameter set, which is then
         part of the calibration's specification.
@@ -1319,7 +1319,7 @@ class ParameterVector:
         return tuple(n for n in _FLAT_SPECS if n in written)
 
     @property
-    def unset_sipnet_parameters(self) -> tuple[str, ...]:
+    def unset_sipnet_parameter_names(self) -> tuple[str, ...]:
         """The :data:`REQUIRED_SIPNET_PARAMETERS` this vector leaves to the
         base parameter set."""
         written = set(self.sipnet_parameter_names)
@@ -1686,7 +1686,7 @@ class ParameterVector:
             vector sets (:attr:`sipnet_parameter_names`), calibrated and
             fixed alike, on ``(member, site)`` or ``(site,)``, each carrying
             ``units``, ``sipnet_name``, ``source`` and, where pySIPNET
-            declares one, ``constituent``. :attr:`unset_sipnet_parameters`
+            declares one, ``constituent``. :attr:`unset_sipnet_parameter_names`
             are absent and take the base parameter set's values at the run.
 
         Notes
@@ -2055,7 +2055,7 @@ def example_parameter_vector(
     to the BETY reanalysis trait posteriors or another named source, or says
     it is a placeholder, and every provenance string says what the value is
     not. Nothing comes from ``template.param``. The vector is partial:
-    :attr:`ParameterVector.unset_sipnet_parameters` lists what a run takes
+    :attr:`ParameterVector.unset_sipnet_parameter_names` lists what a run takes
     from its base parameter set.
 
     Parameters
@@ -2499,16 +2499,16 @@ def _monte_carlo_moments(
 
 
 def _member_coordinate(n_members: int) -> np.ndarray:
-    """0-based member positions as ``int16``, the canonical field dtype."""
+    """0-based member positions as ``int16``, the field dtype."""
     if n_members > np.iinfo(np.int16).max + 1:
         raise ValueError(
-            f"{n_members} members do not fit the int16 member coordinate of a canonical field."
+            f"{n_members} members do not fit the int16 member coordinate of a field."
         )
     return np.arange(n_members, dtype=np.int16)
 
 
 def _member_labels(values: Any) -> np.ndarray:
-    """Member labels carried from Fields, as the canonical ``int16``."""
+    """Member labels carried from Fields, as the field convention's ``int16``."""
     check_member_labels_are_usable(values)
     return np.asarray(values).astype(np.int16)
 
@@ -2581,7 +2581,7 @@ def _summary(vector: ParameterVector) -> str:
         lines.append("  " + "  ".join(cells) + "  " + row[-1])
     fixed = ", ".join(f"{f.name} ({f.varies_by or SHARED})" for f in vector.fixed)
     lines.append(f"  fixed: {fixed or 'none'}")
-    unset = len(vector.unset_sipnet_parameters)
+    unset = len(vector.unset_sipnet_parameter_names)
     lines.append(
         f"  unset: {unset} required SIPNET parameters, taken from the run's base parameter set"
         if unset
@@ -2902,7 +2902,7 @@ def check_prior_spread_is_positive(parameter: CalibrationParameter, spread: Arra
 
 
 def check_every_required_parameter_is_set(vector: ParameterVector) -> None:
-    unset = vector.unset_sipnet_parameters
+    unset = vector.unset_sipnet_parameter_names
     if unset:
         raise ValueError(
             f"require_complete: {len(unset)} required SIPNET parameters are neither "
@@ -3164,7 +3164,7 @@ def check_member_labels_are_usable(values: Any) -> None:
     if not (fits and len(set(labels.tolist())) == labels.size):
         raise ValueError(
             "Fields member labels must be distinct integers from 0 to "
-            f"{np.iinfo(np.int16).max}, the canonical member coordinate; got {labels.tolist()[:10]}."
+            f"{np.iinfo(np.int16).max}, the field convention's member coordinate; got {labels.tolist()[:10]}."
         )
 
 

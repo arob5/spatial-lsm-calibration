@@ -387,9 +387,9 @@ def test_plot_by_variable_falls_back_to_the_variable_name(closing, field_time):
 
 def test_plot_by_variable_accepts_fields_on_different_time_axes(closing, field_time):
     """Two variables on different time axes in one call."""
-    from conftest import make_canonical_field
+    from conftest import make_field
 
-    fields = {"a": field_time, "b": make_canonical_field(("time",), n_time=7)}
+    fields = {"a": field_time, "b": make_field(("time",), n_time=7)}
     _, axes = closing(plot_by_variable(fields, ncol=2))
     assert len(axes[0].lines[0].get_ydata()) != len(axes[1].lines[0].get_ydata())
 

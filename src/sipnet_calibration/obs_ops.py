@@ -8,14 +8,14 @@ disagree with what the likelihood consumed.
 Provided:
 
 * ``aggregate_time(field, freq, *, how=None) -> DataArray`` -- combine a
-  canonical field's timesteps into coarser ones.
+  field's timesteps into coarser ones.
 
 Planned (issue #6):
 
 * ``obs_index(sites, variables, times) -> pd.MultiIndex`` -- the
   ``(site, variable, time)`` index of the flat observation vector. The same
   object must be used to flatten observations into ``y`` and to unstack EKI's
-  ``(J, N)`` predictions back into canonical fields, or the two will mislabel
+  ``(J, N)`` predictions back into fields, or the two will mislabel
   relative to each other. (Note: this was originally expected to come from an
   ``index`` layer in pyEKI. That layer does not exist -- it is this module's job.)
 
@@ -133,7 +133,7 @@ def aggregate_time(
     Parameters
     ----------
     field:
-        A canonical field with a ``time`` dimension; any other dimensions are
+        A field with a ``time`` dimension; any other dimensions are
         carried through untouched. A field produced by
         :func:`sipnet_calibration.fields.from_sipnet_output` or by
         :func:`sipnet_calibration.drivers.driver_fields` carries the ``kind``
