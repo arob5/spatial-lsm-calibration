@@ -67,12 +67,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import xarray as xr
-from pysipnet.parameters.base import ParameterSpec
-from pysipnet.parameters.model import (
-    PARAMETER_SPECS,
-    SIPNET_PARAMS_BY_GROUP,
-    resolve_parameter_name,
-)
+from pysipnet.arithmetic import divide_with_units
+from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration.observation.alignment import (
@@ -82,7 +78,6 @@ from sipnet_calibration.observation.alignment import (
     select_timestep_at,
     windows_from_time_bounds,
 )
-from sipnet_calibration.observation.units import divide
 
 __all__ = [
     "ComputeLeafAreaIndex",
@@ -94,7 +89,6 @@ __all__ = [
     "check_operator",
     "extract_sipnet_parameter_at_coords",
     "select_observed_sites",
-    "sipnet_parameter_spec",
 ]
 
 SITE = "site"
@@ -235,7 +229,7 @@ class ComputeLeafAreaIndex:
         per_area = extract_sipnet_parameter_at_coords(
             sipnet_parameters, "leaf_carbon_per_area", leaf_carbon
         )
-        lai = divide(leaf_carbon, per_area)
+        lai = divide_with_units(leaf_carbon, per_area)
         lai.name = "leaf_area_index"
         return select_timestep_at(lai, observed_values[TIME])
 
@@ -336,17 +330,17 @@ def extract_sipnet_parameter_at_coords(
     An operator that reads a SIPNET parameter, as the leaf area index
     operator reads ``leaf_carbon_per_area``, calls this to get the
     parameter's values lined up with the output variable it combines them
-    with. The result carries pySIPNET's ``units`` and ``constituent`` for
-    the parameter, so :func:`~sipnet_calibration.observation.units.divide`
-    and the other arithmetic verbs can combine it with the variable and keep
-    the attributes right.
+    with. The result is labeled by pySIPNET's
+    :func:`~pysipnet.parameters.model.parameter_dataarray`, so
+    :mod:`pysipnet.arithmetic` can combine it with the variable and keep the
+    attributes right.
 
     Parameters
     ----------
     sipnet_parameters:
         The values the runs used, in either of two forms. A SIPNET table: an
-        ``xr.Dataset`` with one variable per SIPNET parameter, on
-        ``(member, site)`` or ``(site,)``, as
+        ``xr.Dataset`` with one variable per SIPNET parameter, under
+        pySIPNET's flat names, on ``(member, site)`` or ``(site,)``, as
         :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_table`
         returns it. Or, for one run, a mapping from SIPNET parameter name to
         a number, as :func:`~sipnet_calibration.parameter_vector.sipnet_overrides`
@@ -354,7 +348,7 @@ def extract_sipnet_parameter_at_coords(
         name.
     sipnet_parameter_name:
         The SIPNET parameter to select: pySIPNET's flat name
-        (``"leaf_carbon_per_area"``) or an alias of it.
+        (``"leaf_carbon_per_area"``), an alias of it, or SIPNET's own name.
     target_field:
         The field the values will be combined with, typically an output
         variable. Only its ``site`` and ``member`` coordinate labels are read,
@@ -365,111 +359,33 @@ def extract_sipnet_parameter_at_coords(
     Returns
     -------
     xarray.DataArray
-        Named *sipnet_parameter_name*, with attributes ``units``,
-        ``long_name`` and, where pySIPNET declares one, ``constituent``. From
-        a SIPNET table, the parameter's variable at *target_field*'s sites
-        and members; from a mapping, a 0-d array of the run's value, which
-        broadcasts against *target_field*.
+        Named by the parameter's flat name, with the attributes
+        ``parameter_dataarray`` gives it: ``units``, ``long_name``,
+        ``description``, ``sipnet_name`` and, where pySIPNET declares one,
+        ``constituent``. From a SIPNET table, the parameter's variable at
+        *target_field*'s sites and members; from a mapping, a 0-d array of
+        the run's value, which broadcasts against *target_field*.
 
     Raises
     ------
     ValueError
         If *sipnet_parameters* is ``None``; if a SIPNET table has no variable
         for the parameter, or lacks a ``site`` or ``member`` label that
-        *target_field* has; or if a mapping has no entry for the parameter
-        under any of its names, or the entry is not a number.
+        *target_field* has; if a mapping has no entry for the parameter
+        under any of its names, or the entry is not a number; or if a value
+        is not finite and inside the parameter's pySIPNET domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
-    spec = sipnet_parameter_spec(sipnet_parameter_name)
-    name = sipnet_parameter_name
-    attrs = {"units": spec.units, "long_name": spec.long_label}
-    if spec.constituent:
-        attrs["constituent"] = spec.constituent
+    name = resolve_parameter_name(sipnet_parameter_name)
     if sipnet_parameters is None:
         raise ValueError(
             f"this operator reads the SIPNET parameter {name!r}; pass sipnet_parameters= "
             "(a SIPNET table or a mapping of the run's values)."
         )
     if isinstance(sipnet_parameters, xr.Dataset):
-        if name not in sipnet_parameters.data_vars:
-            raise ValueError(
-                f"the SIPNET table has no variable {name!r}, which this operator reads; "
-                f"it has {list(sipnet_parameters.data_vars)[:10]}."
-            )
-        values = sipnet_parameters[name]
-        selectors = {}
-        for dim in (SITE, MEMBER):
-            if dim in values.dims and dim in target_field.coords:
-                wanted = np.asarray(target_field[dim].values).ravel()
-                present = set(values[dim].values.tolist())
-                missing = [x for x in wanted.tolist() if x not in present]
-                if missing:
-                    raise ValueError(
-                        f"the SIPNET table's {name!r} has no {dim} label(s) {missing[:10]} "
-                        f"that the model output has; the table and the runs must cover the "
-                        f"same {dim}s."
-                    )
-                selectors[dim] = wanted
-        if selectors:
-            values = values.sel(selectors)
-        values = values.copy()
-        values.attrs = attrs
-        values.name = name
-        return values
-    flat = resolve_parameter_name(name)
-    value = None
-    for key in (name, flat, spec.sipnet_name):
-        try:
-            value = sipnet_parameters[key]
-            break
-        except (KeyError, TypeError):
-            continue
-    if value is None:
-        raise ValueError(f"sipnet_parameters has no entry {name!r}, which this operator reads.")
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
-        raise ValueError(
-            f"sipnet_parameters[{name!r}] must be a number for one run, got "
-            f"{type(value).__name__}; pass a SIPNET table for several runs."
-        )
-    return xr.DataArray(float(value), name=name, attrs=attrs)
-
-
-def sipnet_parameter_spec(sipnet_parameter_name: str) -> ParameterSpec:
-    """pySIPNET's description of one SIPNET parameter.
-
-    ``pysipnet.parameters.model.PARAMETER_SPECS`` is keyed by the dotted
-    path of a parameter (``"leaf.leaf_carbon_per_area"``), while the rest of
-    this repository names a parameter by its flat name; this finds the spec
-    from the flat name.
-
-    Parameters
-    ----------
-    sipnet_parameter_name:
-        pySIPNET's flat name for the parameter (``"leaf_carbon_per_area"``),
-        or an alias of it, including SIPNET's own name (``"leafCSpWt"``).
-
-    Returns
-    -------
-    pysipnet.parameters.base.ParameterSpec
-        The parameter's spec: ``units``, ``constituent``, ``long_label``,
-        ``sipnet_name``, ``domain`` and the rest of what pySIPNET records.
-
-    Raises
-    ------
-    KeyError
-        If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
-    ValueError
-        If the name resolves but no parameter group holds it, which would
-        mean pySIPNET's registries disagree.
-    """
-    flat = resolve_parameter_name(sipnet_parameter_name)
-    for group, names in SIPNET_PARAMS_BY_GROUP.items():
-        if flat in names:
-            return PARAMETER_SPECS[f"{group}.{flat}"]
-    raise ValueError(
-        f"{sipnet_parameter_name!r} resolves to {flat!r}, which no parameter group holds."
-    )
+        return parameter_dataarray(name, _table_values_at(sipnet_parameters, name, target_field))
+    return parameter_dataarray(name, _mapping_value(sipnet_parameters, name))
 
 
 def check_operator(
@@ -510,6 +426,52 @@ def _output_name(name: str) -> str:
         raise ValueError(
             f"{name!r} is not a pySIPNET output variable or alias: {error}"
         ) from None
+
+
+def _table_values_at(
+    table: xr.Dataset, name: str, target_field: xr.DataArray
+) -> xr.DataArray:
+    """A SIPNET table's variable *name* at *target_field*'s ``site`` and ``member`` labels."""
+    if name not in table.data_vars:
+        raise ValueError(
+            f"the SIPNET table has no variable {name!r}, which this operator reads; "
+            f"it has {list(table.data_vars)[:10]}."
+        )
+    values = table[name]
+    selectors = {}
+    for dim in (SITE, MEMBER):
+        if dim in values.dims and dim in target_field.coords:
+            wanted = np.asarray(target_field[dim].values).ravel()
+            present = set(values[dim].values.tolist())
+            missing = [x for x in wanted.tolist() if x not in present]
+            if missing:
+                raise ValueError(
+                    f"the SIPNET table's {name!r} has no {dim} label(s) {missing[:10]} "
+                    f"that the model output has; the table and the runs must cover the "
+                    f"same {dim}s."
+                )
+            selectors[dim] = wanted
+    return values.sel(selectors) if selectors else values
+
+
+def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
+    """One run's value of *name* from a mapping keyed by any of its names."""
+    value = None
+    for key, candidate in sipnet_parameters.items():
+        try:
+            if resolve_parameter_name(str(key)) == name:
+                value = candidate
+                break
+        except KeyError:
+            continue
+    if value is None:
+        raise ValueError(f"sipnet_parameters has no entry {name!r}, which this operator reads.")
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
+        raise ValueError(
+            f"sipnet_parameters[{name!r}] must be a number for one run, got "
+            f"{type(value).__name__}; pass a SIPNET table for several runs."
+        )
+    return float(value)
 
 
 def _check_how(how: str) -> None:

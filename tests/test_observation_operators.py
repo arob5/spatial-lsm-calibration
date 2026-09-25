@@ -22,7 +22,6 @@ from sipnet_calibration.observation import (
     extract_sipnet_parameter_at_coords,
     select_observed_sites,
     select_timestep_at,
-    sipnet_parameter_spec,
 )
 from sipnet_calibration.observation.alignment import TIME_BOUNDS_END, TIME_BOUNDS_START
 
@@ -192,8 +191,27 @@ class TestExtractSipnetParameterAtCoords:
         assert array.attrs["units"] == "g m-2" and array.attrs["constituent"] == "C"
         assert float(array) == 270.0
 
-    def test_resolves_an_alias(self):
-        assert sipnet_parameter_spec("leafCSpWt").sipnet_name == "leafCSpWt"
+    def test_is_labeled_by_pysipnet(self):
+        array = extract_sipnet_parameter_at_coords({"leaf_carbon_per_area": 270.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
+        assert array.name == "leaf_carbon_per_area"
+        assert array.attrs["sipnet_name"] == "leafCSpWt" and "kind" not in array.attrs
+
+    def test_a_mapping_key_may_be_any_name_of_the_parameter(self):
+        array = extract_sipnet_parameter_at_coords({"leafCSpWt": 270.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
+        assert float(array) == 270.0
+
+    def test_the_parameter_may_be_asked_for_by_an_alias(self):
+        table = xr.Dataset({"leaf_carbon_per_area": (("site",), [1.0, 2.0])}, coords={"site": [1, 2]})
+        array = extract_sipnet_parameter_at_coords(table, "leafCSpWt", xr.DataArray([0.0], dims="site", coords={"site": [2]}))
+        assert array.name == "leaf_carbon_per_area" and array.values.tolist() == [2.0]
+
+    def test_a_value_outside_the_domain_is_refused(self):
+        with pytest.raises(ValueError, match="domain"):
+            extract_sipnet_parameter_at_coords({"leaf_carbon_per_area": -1.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
+
+    def test_a_missing_entry_is_refused(self):
+        with pytest.raises(ValueError, match="no entry"):
+            extract_sipnet_parameter_at_coords({"soil_carbon": 1.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
 
     def test_selects_the_arrays_sites_and_members_from_a_table(self):
         table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}, coords={"member": [0, 1], "site": [1, 2, 3]})

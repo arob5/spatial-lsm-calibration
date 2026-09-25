@@ -499,9 +499,6 @@ src/sipnet_calibration/
     alignment.py          # aggregate_time, reduce_windows, select_timestep_at,
                           # windows_from_time_bounds, run_window, the counts;
                           # shared with the plotting layer
-    units.py              # multiply/divide/add/subtract/step_length carrying
-                          # units, constituent and kind (conversion is
-                          # pysipnet.units.convert_dataarray_units)
     operators.py          # ObservationOperator protocol; SelectTimestep,
                           # ReduceOverTimeBounds, ReduceOverRun,
                           # ComputeLeafAreaIndex; DEFAULT_OBS_OPS; check_operator
@@ -595,9 +592,10 @@ plotting code. The load-bearing rules:
   it produces, with `units`/`constituent` attrs; `ObservationVector.predict`
   converts through `pysipnet.units.convert_dataarray_units` and refuses a
   wrong dimension, grid, site set, or a NaN where the run succeeded. The
-  verbs it is written with carry pySIPNET's attributes: `multiply`,
-  `divide`, `add`, `subtract`, `step_length` (`observation.units`) and
-  `select_timestep_at` (the model step whose `(time_step_start, time]`
+  verbs it is written with carry pySIPNET's attributes: its arithmetic is
+  `pysipnet.arithmetic` (`divide_with_units`, `step_length`, ...), a SIPNET
+  parameter is labeled by `pysipnet.parameters.model.parameter_dataarray`,
+  and the alignment verbs are `select_timestep_at` (the model step whose `(time_step_start, time]`
   contains the label), `reduce_windows` (a step belongs to the window its
   end falls in; means weighted by step length; a gap makes the window NaN)
   and `windows_from_time_bounds` (`observation.alignment`). The library
@@ -721,6 +719,18 @@ plotting code. The load-bearing rules:
   tables are `MOLAR_MASS`, `DENSITY` and `ATOMS_PER_MOLECULE`. For example, `g m-2 d-1` of C to
   `umol m-2 s-1` of CO2 is 0.96362, and `Mg ha-1` to `g m-2` is 100. A per-step total such as
   SIPNET's `nee` (`g m-2`) is refused against a rate until it is divided by its step length.
+- **`pysipnet.arithmetic` combines labeled arrays** (pySIPNET PR #48): `multiply_with_units`,
+  `divide_with_units`, `add_with_units`, `subtract_with_units` return a `DataArray` whose
+  `units`, `constituent` and `kind` (with `time_reference`, `cell_methods`) are true of the
+  result, named `None`, with a `derivation` attr naming the operands. At most one operand of a
+  product or quotient has a kind, never the denominator; a `timestep_total` over a time is a
+  `daily_rate` and back (`KIND_AFTER_TIME_POWER` in `pysipnet.variables`); every other change of
+  time dimension is refused. Index coordinates must match exactly, and conflicting non-index
+  coordinates are refused. `step_length(data, units="d")` is the `time_step_length` coordinate
+  as a float array, so `divide_with_units(nee, step_length(nee))` is `g m-2 d-1` of C.
+  `parameter_dataarray(name, values, dims=, coords=)` and `SIPNETParameters.dataarray(name)`
+  label a parameter's values from `ParameterSpec.xarray_attributes()` (no `kind`) and refuse
+  values outside its domain (`ParameterDomain.contains`, sharing the Pydantic bounds).
 - **`ClimateDrivers` owns the `.clim` format** (PRs #43, #45). It reads either layout, detected
   from the file (there is no `n_columns` argument for a file), validates once on load, and
   refuses labels that disagree with the declared step lengths: an overlap, or a drift from

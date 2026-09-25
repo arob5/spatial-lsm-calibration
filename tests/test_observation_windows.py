@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
 from sipnet_calibration.observation.alignment import (
     LENGTH_COORD,
@@ -200,6 +201,19 @@ class TestSelectTimestepAt:
     def test_a_total_has_no_value_at_an_instant(self, niwot):
         with pytest.raises(ValueError, match="no value at an instant"):
             select_timestep_at(niwot["net_ecosystem_exchange"], pd.DatetimeIndex(niwot["time"].values[[3]]))
+
+    def test_an_unnamed_result_is_called_by_its_derivation(self, niwot):
+        doubled = multiply_with_units(niwot["net_ecosystem_exchange"], 2.0)
+        with pytest.raises(ValueError, match=r"'net_ecosystem_exchange \* 2\.0' is of kind"):
+            select_timestep_at(doubled, pd.DatetimeIndex(niwot["time"].values[[3]]))
+
+    def test_a_total_over_its_step_length_has_a_value_at_an_instant(self, niwot):
+        nee = niwot["net_ecosystem_exchange"]
+        rate = divide_with_units(nee, step_length(nee))
+        starts = pd.DatetimeIndex(rate[START_COORD].values)
+        picked = select_timestep_at(rate, starts[[5]] + pd.Timedelta("30min"))
+        assert picked.attrs["kind"] == "daily_rate" and picked.attrs["units"] == "g m-2 d-1"
+        assert picked.values[0] == pytest.approx(float(rate.values[5]), rel=1e-12)
 
     def test_a_running_total_has_no_value_at_an_instant(self, niwot):
         with pytest.raises(ValueError, match="no value at an instant"):

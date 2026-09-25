@@ -724,8 +724,9 @@ def check_prediction_is_an_array(name: str, predicted: Any) -> None:
     if not isinstance(predicted.attrs.get("units"), str):
         raise ValueError(
             f"{name}: the operator's result carries no 'units' attribute, so it cannot be "
-            "converted into the observation's units. Write the operator with the "
-            "observation.units verbs, or set attrs['units'] on its result."
+            "converted into the observation's units. Write the operator with "
+            "pysipnet.arithmetic, which labels its results, or set attrs['units'] on "
+            "its result."
         )
 
 

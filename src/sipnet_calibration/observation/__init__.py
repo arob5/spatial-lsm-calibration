@@ -14,11 +14,12 @@ Two abstractions and a handful of functions:
 The verbs the operators are written with: temporal alignment in
 :mod:`~sipnet_calibration.observation.alignment` (``aggregate_time``,
 ``reduce_windows``, ``select_timestep_at``, the window builders and the
-counts) and attribute-carrying arithmetic in
-:mod:`~sipnet_calibration.observation.units` (``multiply``, ``divide``,
-``add``, ``subtract``, ``step_length``). Unit conversion is pySIPNET's
-:func:`pysipnet.units.convert_dataarray_units`, which :meth:`ObservationVector.predict`
-applies.
+counts). Arithmetic that keeps ``units``, ``constituent`` and ``kind`` true
+is pySIPNET's :mod:`pysipnet.arithmetic` (``divide_with_units``,
+``step_length`` and the rest), and a SIPNET parameter's values are labeled by
+its :func:`~pysipnet.parameters.model.parameter_dataarray`. Unit conversion is
+pySIPNET's :func:`pysipnet.units.convert_dataarray_units`, which
+:meth:`ObservationVector.predict` applies.
 
 The error model and the likelihood are not here; they belong to the
 inference layer, which reads ``y``, ``index`` and ``positions`` off the
@@ -47,9 +48,7 @@ from sipnet_calibration.observation.operators import (
     check_operator,
     extract_sipnet_parameter_at_coords,
     select_observed_sites,
-    sipnet_parameter_spec,
 )
-from sipnet_calibration.observation.units import add, divide, multiply, step_length, subtract
 from sipnet_calibration.observation.vector import INDEX_LEVELS, Observation, ObservationVector
 
 __all__ = [
@@ -65,20 +64,14 @@ __all__ = [
     "ReduceOverTimeBounds",
     "SelectTimestep",
     "WINDOW_REDUCTIONS",
-    "add",
     "aggregate_time",
     "aggregation_counts",
     "check_operator",
-    "divide",
     "extract_sipnet_parameter_at_coords",
-    "multiply",
     "reduce_windows",
     "run_window",
     "select_observed_sites",
     "select_timestep_at",
-    "sipnet_parameter_spec",
-    "step_length",
-    "subtract",
     "window_counts",
     "windows_from_time_bounds",
 ]
