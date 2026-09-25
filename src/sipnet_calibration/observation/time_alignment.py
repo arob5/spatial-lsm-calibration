@@ -1112,6 +1112,52 @@ def _checked_instants(times: Any) -> tuple[pd.DatetimeIndex, dict]:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
+def check_run_spans_the_windows(
+    field: xr.DataArray, windows: pd.IntervalIndex, label: str
+) -> None:
+    """Each window lies within the model field's record, less a step at each edge.
+
+    A window the run covers only in part would be reduced over the part it
+    covers, and an annual total over one month of model output would pass for
+    the year's. Less than one step missing at either end of the record is
+    allowed, so a window edge falling inside a step, or a record ending a few
+    hours short of the window, is not refused.
+
+    Parameters
+    ----------
+    field:
+        A model field carrying pySIPNET's interval coordinates.
+    windows:
+        The windows it is to be reduced over, as
+        :func:`windows_from_time_bounds` builds them.
+    label:
+        How the observation is called in the message.
+
+    Raises
+    ------
+    ValueError
+        Naming the first window that reaches a whole step or more beyond the
+        record, and the record's span.
+    """
+    field = _checked_steps(field)
+    check_has_interval_coords(field, "check_run_spans_the_windows")
+    starts = pd.DatetimeIndex(field[START_COORD].to_index())
+    ends = _time_index(field)
+    first_step, last_step = ends[0] - starts[0], ends[-1] - starts[-1]
+    before = (starts[0] - windows.left) >= first_step
+    after = (windows.right - ends[-1]) >= last_step
+    short = np.flatnonzero(np.asarray(before) | np.asarray(after))
+    if short.size:
+        window = windows[int(short[0])]
+        raise ValueError(
+            f"{label}: the window {window} reaches beyond the model record "
+            f"({starts[0]} to {ends[-1]}) by a step or more, so a reduction over it "
+            f"would cover only part of it ({short.size} of {len(windows)} windows). "
+            "Run the model over every observed window, or select the observations "
+            "to the record (ObservationVector.select(time=...))."
+        )
+
+
 def check_the_time_axis(field: Any) -> None:
     """*field* is a DataArray with a datetime ``time`` coordinate and no NaT."""
     if not isinstance(field, xr.DataArray):

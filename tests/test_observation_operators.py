@@ -113,6 +113,48 @@ class TestReduceOverTimeBounds:
             assert predicted.values[k] == wood.values[inside][-1]
             assert predicted["time_step_start"].values[k] == starts[inside].min()
 
+    @staticmethod
+    def _one_window(start, end):
+        return xr.DataArray(
+            [[5.0]], dims=("site", "time"),
+            coords={"site": [1], "time": [pd.Timestamp(end)],
+                    TIME_BOUNDS_START: ("time", [pd.Timestamp(start)]),
+                    TIME_BOUNDS_END: ("time", [pd.Timestamp(end)])},
+            attrs={"units": "g m-2", "constituent": "C"}, name="annual_total",
+        )
+
+    def test_a_window_the_run_covers_only_in_part_is_refused(self, one_run):
+        # The Niwot record is November 1998; a calendar-1998 total is not its sum.
+        with pytest.raises(ValueError, match="reaches beyond the model record"):
+            ReduceOverTimeBounds("net_ecosystem_exchange", "sum")(
+                one_run, self._one_window("1998-01-01", "1999-01-01")
+            )
+
+    def test_a_window_inside_the_record_is_reduced(self, one_run):
+        wood = one_run["wood_carbon"]
+        starts = pd.DatetimeIndex(wood["time_step_start"].values)
+        ends = pd.DatetimeIndex(wood["time"].values)
+        predicted = ReduceOverTimeBounds("wood_carbon", "last")(
+            one_run, self._one_window(starts[0], ends[-1])
+        )
+        assert predicted.values.ravel()[0] == wood.values[-1]
+
+    def test_less_than_a_step_short_at_each_edge_is_allowed(self, one_run):
+        wood = one_run["wood_carbon"]
+        starts = pd.DatetimeIndex(wood["time_step_start"].values)
+        ends = pd.DatetimeIndex(wood["time"].values)
+        first, last = ends[0] - starts[0], ends[-1] - starts[-1]
+        observed = self._one_window(starts[0] - first / 2, ends[-1] + last / 2)
+        ReduceOverTimeBounds("wood_carbon", "last")(one_run, observed)
+        with pytest.raises(ValueError, match="reaches beyond the model record"):
+            ReduceOverTimeBounds("wood_carbon", "last")(
+                one_run, self._one_window(starts[0], ends[-1] + last)
+            )
+        with pytest.raises(ValueError, match="reaches beyond the model record"):
+            ReduceOverTimeBounds("wood_carbon", "last")(
+                one_run, self._one_window(starts[0] - first, ends[-1])
+            )
+
     def test_refuses_an_observation_without_bounds(self, one_run, labels):
         observed = _observed([1], labels, units="Mg ha-1", constituent="C")
         with pytest.raises(ValueError, match="documents no interval"):

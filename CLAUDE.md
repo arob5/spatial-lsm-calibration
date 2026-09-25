@@ -607,7 +607,9 @@ plotting code. The load-bearing rules:
   whose `(time_step_start, time]` contains the label), `reduce_windows` (a
   step belongs to the window its end falls in; means weighted by step
   length; a gap makes the window NaN) and `windows_from_time_bounds`
-  (`observation.time_alignment`). The library binds a default operator only
+  (`observation.time_alignment`). `ReduceOverTimeBounds` refuses a window
+  reaching a step or more beyond the model record, so a partial year never
+  passes for a year (`check_run_spans_the_windows`). The library binds a default operator only
   where the construction is documented (`DEFAULT_OBS_OPS`, today MODIS LAI);
   which operator reads a product is a modeling decision an experiment writes
   in `config.py`.

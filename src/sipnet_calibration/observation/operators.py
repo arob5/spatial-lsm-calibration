@@ -81,6 +81,7 @@ from pysipnet.variables import resolve_output_variable
 from sipnet_calibration.fields import field_label
 from sipnet_calibration.observation.time_alignment import (
     WINDOW_REDUCTIONS,
+    check_run_spans_the_windows,
     reduce_windows,
     run_window,
     select_timestep_at,
@@ -190,7 +191,10 @@ class ReduceOverTimeBounds:
     ValueError
         On construction, if *output_variable_name* is not a pySIPNET output
         variable or *how* is not a window reduction. On a call, if the
-        observation carries no time bounds, or for any refusal of
+        observation carries no time bounds; if a window reaches a step or more
+        beyond the model record, which would reduce over part of it
+        (:func:`~sipnet_calibration.observation.time_alignment.check_run_spans_the_windows`);
+        or for any refusal of
         :func:`select_observed_sites` or
         :func:`~sipnet_calibration.observation.time_alignment.reduce_windows`.
     """
@@ -213,6 +217,8 @@ class ReduceOverTimeBounds:
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
         windows = windows_from_time_bounds(observed_values)
+        label = field_label(observed_values, "the observation")
+        check_run_spans_the_windows(variable, windows, label)
         return reduce_windows(variable, windows, self.how, labels=observed_values[TIME])
 
 
