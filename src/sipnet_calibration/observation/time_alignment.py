@@ -142,13 +142,6 @@ RESAMPLING_METHODS: tuple[str, ...] = get_args(ResamplingMethod)
 #: or a rate and refused for a total or a running total.
 WINDOW_REDUCTIONS: tuple[str, ...] = (*RESAMPLING_METHODS, "min", "max", "first")
 
-#: The kinds for which ``min``, ``max`` and ``first`` over a window mean
-#: something: the value is a level, so its extremes and its first reading are
-#: levels too. A per-step total or a running total has no such reading.
-_LEVEL_KINDS: frozenset[VariableKind] = frozenset(
-    {VariableKind.TIMESTEP_END_STATE, VariableKind.TIMESTEP_MEAN, VariableKind.DAILY_RATE}
-)
-
 #: The coordinates an observation field carries for the interval each of its
 #: values is attributed to, one-dimensional on ``time``: the CF ``time_bounds``
 #: pair, which a ``DataArray`` cannot carry two-dimensionally.
@@ -165,33 +158,15 @@ SELECTED_STEP_COORD = "selected_timestep_end"
 #: :mod:`sipnet_calibration.fields`).
 STALE_ON_A_COARSER_STEP: tuple[str, ...] = ("bounds",)
 
-
-#: The coordinate :func:`reduce_windows` groups by, internal to one call.
-_WINDOW = "_window"
-
-
-def _kind_preserving_methods() -> dict[VariableKind, str]:
-    """The one method per kind that leaves a variable the kind it already is.
-
-    Read off pySIPNET's ``RESAMPLED_KIND`` rather than written down, so a
-    change there is either carried through or raises here.
-    """
-    defaults: dict[VariableKind, str] = {}
-    for (kind, method), resulting in RESAMPLED_KIND.items():
-        if resulting != kind:
-            continue
-        if kind in defaults:
-            raise RuntimeError(
-                f"pySIPNET admits both {defaults[kind]!r} and {method!r} as "
-                f"kind-preserving for {kind.value!r}, so there is no one "
-                "default; aggregate_time must be given an explicit rule."
-            )
-        defaults[kind] = method
-    return defaults
-
-
-#: What :func:`aggregate_time` does when ``how`` is not given.
-DEFAULT_METHOD_FOR_KIND: dict[VariableKind, str] = _kind_preserving_methods()
+#: What :func:`aggregate_time` does when ``how`` is not given: the one method
+#: per kind that leaves a variable the kind it already is, read off pySIPNET's
+#: ``RESAMPLED_KIND`` rather than written down. That exactly one method
+#: preserves each kind is checked against pySIPNET's table by the tests.
+DEFAULT_METHOD_FOR_KIND: dict[VariableKind, str] = {
+    kind: method
+    for (kind, method), resulting in RESAMPLED_KIND.items()
+    if resulting == kind
+}
 
 
 def aggregate_time(
@@ -587,6 +562,16 @@ def window_counts(
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
+
+#: The kinds for which ``min``, ``max`` and ``first`` over a window mean
+#: something: the value is a level, so its extremes and its first reading are
+#: levels too. A per-step total or a running total has no such reading.
+_LEVEL_KINDS: frozenset[VariableKind] = frozenset(
+    {VariableKind.TIMESTEP_END_STATE, VariableKind.TIMESTEP_MEAN, VariableKind.DAILY_RATE}
+)
+
+#: The coordinate :func:`reduce_windows` groups by, internal to one call.
+_WINDOW = "_window"
 
 
 def _check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:

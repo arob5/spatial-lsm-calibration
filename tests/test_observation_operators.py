@@ -23,7 +23,7 @@ from sipnet_calibration.observation import (
     select_observed_sites,
     select_timestep_at,
 )
-from sipnet_calibration.observation.alignment import TIME_BOUNDS_END, TIME_BOUNDS_START
+from sipnet_calibration.observation.time_alignment import TIME_BOUNDS_END, TIME_BOUNDS_START
 
 VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon", "net_ecosystem_exchange", "soil_wetness_fraction"]
 

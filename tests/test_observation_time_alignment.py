@@ -25,7 +25,7 @@ from conftest import SITE_1_DRIVERS
 
 from sipnet_calibration.drivers import driver_fields, read_driver_file
 from sipnet_calibration.fields import from_sipnet_output, stack_sipnet_outputs
-from sipnet_calibration.observation.alignment import (
+from sipnet_calibration.observation.time_alignment import (
     DEFAULT_METHOD_FOR_KIND,
     LENGTH_COORD,
     STALE_ON_A_COARSER_STEP,
@@ -40,7 +40,7 @@ def site_1_member_1(real_drivers, name):
 
 class TestDefaultMethodForKind:
     def test_exactly_one_method_per_kind_preserves_it_which_is_why_there_is_a_default(self):
-        """The uniqueness `_kind_preserving_methods` relies on, over pySIPNET's table."""
+        """The uniqueness `DEFAULT_METHOD_FOR_KIND` relies on, over pySIPNET's table."""
         for kind in VariableKind:
             preserving = [
                 method

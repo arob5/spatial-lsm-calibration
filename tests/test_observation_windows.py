@@ -1,4 +1,4 @@
-"""The window and instant readings in ``sipnet_calibration.observation.alignment``:
+"""The window and instant readings in ``sipnet_calibration.observation.time_alignment``:
 ``reduce_windows``, ``select_timestep_at``, the window builders and the counts.
 """
 
@@ -10,7 +10,7 @@ import pytest
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
-from sipnet_calibration.observation.alignment import (
+from sipnet_calibration.observation.time_alignment import (
     LENGTH_COORD,
     SELECTED_STEP_COORD,
     START_COORD,

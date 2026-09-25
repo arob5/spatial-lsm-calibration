@@ -118,7 +118,7 @@ dropped for the same reason, rather than left pointing at a variable that is
 not there. pySIPNET's ``year``/``day_of_year``/``hour_of_day`` row labels are
 dropped too; ``time_step_start`` is the same instant.
 
-:func:`sipnet_calibration.observation.alignment.aggregate_time` needs
+:func:`sipnet_calibration.observation.time_alignment.aggregate_time` needs
 ``time_step_length`` for a length-weighted mean, which is why it is kept
 rather than recomputed.
 
@@ -178,7 +178,7 @@ One run, no site pool involved::
 An ensemble over sites and members, keyed by the pair each run stands for::
 
     from sipnet_calibration.fields import stack_sipnet_outputs
-    from sipnet_calibration.observation.alignment import aggregate_time
+    from sipnet_calibration.observation.time_alignment import aggregate_time
     from sipnet_calibration.plotting import plot_time_series
 
     runs = {(1, 0): first, (1, 1): second, (27, 0): third, (27, 1): fourth}

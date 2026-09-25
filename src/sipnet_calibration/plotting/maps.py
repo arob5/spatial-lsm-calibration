@@ -1017,7 +1017,7 @@ def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
     if "time" in extra:
         advice.append(
             "for 'time', select a step with field.sel(time=...), aggregate with "
-            "observation.alignment.aggregate_time, draw panels with facet.plot_map_by(field, 'time'), "
+            "observation.time_alignment.aggregate_time, draw panels with facet.plot_map_by(field, 'time'), "
             "or play it with maps.animate_map(field)"
         )
     raise ValueError(

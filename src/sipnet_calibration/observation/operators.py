@@ -71,7 +71,7 @@ from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.observation.alignment import (
+from sipnet_calibration.observation.time_alignment import (
     WINDOW_REDUCTIONS,
     reduce_windows,
     run_window,

@@ -12,7 +12,7 @@ Two abstractions and a handful of functions:
   ``y``, ``index``, ``positions`` and ``predict``.
 
 The verbs the operators are written with: temporal alignment in
-:mod:`~sipnet_calibration.observation.alignment` (``aggregate_time``,
+:mod:`~sipnet_calibration.observation.time_alignment` (``aggregate_time``,
 ``reduce_windows``, ``select_timestep_at``, the window builders and the
 counts). Arithmetic that keeps ``units``, ``constituent`` and ``kind`` true
 is pySIPNET's :mod:`pysipnet.arithmetic` (``divide_with_units``,
@@ -26,7 +26,7 @@ inference layer, which reads ``y``, ``index`` and ``positions`` off the
 vector.
 """
 
-from sipnet_calibration.observation.alignment import (
+from sipnet_calibration.observation.time_alignment import (
     DEFAULT_METHOD_FOR_KIND,
     RESAMPLING_METHODS,
     WINDOW_REDUCTIONS,

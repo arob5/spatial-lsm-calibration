@@ -43,7 +43,7 @@ from sipnet_calibration.drivers import (
     read_driver_file,
 )
 from sipnet_calibration.fields import TIME_COORDS
-from sipnet_calibration.observation.alignment import aggregate_time
+from sipnet_calibration.observation.time_alignment import aggregate_time
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

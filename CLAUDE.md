@@ -496,7 +496,7 @@ src/sipnet_calibration/
                           # site_lookup(); validate_field() (issue #6)
   observation/            # the observation side of the inverse problem
     __init__.py           # curated exports
-    alignment.py          # aggregate_time, reduce_windows, select_timestep_at,
+    time_alignment.py     # aggregate_time, reduce_windows, select_timestep_at,
                           # windows_from_time_bounds, run_window, the counts;
                           # shared with the plotting layer
     operators.py          # ObservationOperator protocol; SelectTimestep,
@@ -560,9 +560,9 @@ plotting code. The load-bearing rules:
   `.quantile`, which are the three operations this project needs. One
   `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
 - Plotters branch on **presence of the `member` dim**, never on a mode keyword.
-- **Temporal aggregation lives in `observation/alignment.py`** and is
-  imported by both the observation operators and the plotting layer, so a predictive-check figure
-  cannot disagree with what the likelihood consumed. Aggregation is a verb the
+- **Temporal aggregation lives in `observation/time_alignment.py`** and is
+  imported by both the observation operators and the plotting layer, so a
+  predictive-check figure cannot disagree with what the likelihood consumed. Aggregation is a verb the
   caller applies — `plot_time_series(aggregate_time(f, "1D"))` — never a
   plotter keyword.
 - **The variable's kind says which resampling methods are valid; the caller
@@ -571,8 +571,9 @@ plotting code. The load-bearing rules:
   with it, and `pysipnet.resample.resample(ds, freq, how=...)` requires `how`,
   weights means by step length and refuses a method the kind does not support
   (a pool is not additive; a per-step total is not averaged until it is a
-  rate). `observation.alignment.aggregate_time(field, freq, how=None)` is that operation for
-  a field — a field may have `member` and `site` dims, which
+  rate). `observation.time_alignment.aggregate_time(field, freq, how=None)`
+  is that operation for a field — a field may have `member` and `site` dims,
+  which
   `resample` does not reduce over — and it adds one thing: with no `how` it
   takes **the method that leaves the variable the kind it already is**, read
   off pySIPNET's `RESAMPLED_KIND` rather than written down. A total sums, a
@@ -595,10 +596,10 @@ plotting code. The load-bearing rules:
   verbs it is written with carry pySIPNET's attributes: its arithmetic is
   `pysipnet.arithmetic` (`divide_with_units`, `step_length`, ...), a SIPNET
   parameter is labeled by `pysipnet.parameters.model.parameter_dataarray`,
-  and the alignment verbs are `select_timestep_at` (the model step whose `(time_step_start, time]`
-  contains the label), `reduce_windows` (a step belongs to the window its
+  and the time-alignment verbs are `select_timestep_at` (the model step
+  whose `(time_step_start, time]` contains the label), `reduce_windows` (a step belongs to the window its
   end falls in; means weighted by step length; a gap makes the window NaN)
-  and `windows_from_time_bounds` (`observation.alignment`). The library
+  and `windows_from_time_bounds` (`observation.time_alignment`). The library
   binds a default operator only where the construction is documented
   (`DEFAULT_OBS_OPS`, today MODIS LAI); which operator reads a product is a
   modeling decision an experiment writes in `config.py`.
