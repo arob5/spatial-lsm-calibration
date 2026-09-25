@@ -47,7 +47,7 @@ A **field** is an ``xarray.DataArray`` holding one variable, with
 
 Which dimensions are present depends on the quantity. A single deterministic
 run is ``(time,)``, an initial condition ensemble is ``(member, site)``, and
-the gap-filled NEE observations are ``(member, site, time)``. Calibration
+an ensemble of runs over sites is ``(member, site, time)``. Calibration
 parameters are ``(member, site)`` for an ensemble and ``(site,)`` for one
 value: :meth:`sipnet_calibration.parameter_vector.ParameterVector.fields`
 returns one per scalar component as a ``Dataset``, the one exception to the
@@ -56,8 +56,9 @@ rule below, since every one of them shares those dims. Their names are
 not registry names.
 
 One array holds one variable, and variables are not combined into a
-``Dataset``: they do not share a time axis, NEE being 3-hourly, the constraints
-annual, dated or static by product, and the initial conditions static. A group
+``Dataset``: they do not share a time axis, model output being on SIPNET's
+steps, the constraints annual, dated or static by product, and the initial
+conditions static. A group
 of variables is a ``dict[str, DataArray]``, which is what the multi-variable
 adapters return and what the readers in
 :mod:`sipnet_calibration.drivers` and :mod:`sipnet_calibration.constraints`
