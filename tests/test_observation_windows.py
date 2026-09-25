@@ -480,3 +480,141 @@ class TestBoundsOrientation:
         )
         with pytest.raises(ValueError, match="must follow its start"):
             windows_from_time_bounds(observed)
+
+
+class TestEveryFunctionChecksTheStack:
+    """Runs on different time axes, stacked, have interval coordinates per site."""
+
+    @pytest.fixture
+    def per_site(self, niwot):
+        full = niwot["wood_carbon"].assign_coords(site=1)
+        short = niwot["wood_carbon"].isel(time=slice(0, 40)).assign_coords(site=2)
+        stacked = xr.concat([full, short], dim="site", join="outer", coords="different", compat="equals", combine_attrs="override")
+        assert stacked[START_COORD].dims == ("site", "time")
+        return stacked
+
+    def test_run_window_refuses_it(self, per_site):
+        with pytest.raises(ValueError, match="different time axes"):
+            run_window(per_site)
+
+    def test_aggregation_counts_refuses_it(self, per_site):
+        with pytest.raises(ValueError, match="different time axes"):
+            aggregation_counts(per_site, "1D")
+
+    def test_window_counts_refuses_it(self, per_site, niwot):
+        with pytest.raises(ValueError, match="different time axes"):
+            window_counts(per_site, _daily_windows(niwot["wood_carbon"]))
+
+    def test_run_window_refuses_a_record_with_no_steps(self, niwot):
+        with pytest.raises(ValueError, match="no timesteps left"):
+            run_window(niwot["wood_carbon"].isel(time=slice(0, 0)))
+
+
+class TestCombinedLengthsAreExact:
+    """Step lengths are summed as integer nanoseconds, not through float days."""
+
+    @pytest.fixture
+    def year(self):
+        n = 8760
+        ends = pd.date_range("2001-01-01T01:00", periods=n, freq="1h").as_unit("ns")
+        length = np.full(n, 3_600 * 10**9 + 1, dtype="int64").view("timedelta64[ns]")  # 1 h + 1 ns
+        return xr.DataArray(
+            np.ones(n), dims="time",
+            coords={"time": ends, START_COORD: ("time", (ends - pd.Timedelta("1h")).values), LENGTH_COORD: ("time", length)},
+            attrs={"kind": "timestep_total", "units": "g m-2"}, name="x",
+        ), int(length.astype("int64").sum())
+
+    def test_a_yearly_cell(self, year):
+        field, exact = year
+        assert int(aggregate_time(field, "YS")[LENGTH_COORD].values.astype("int64")[0]) == exact
+
+    def test_a_run_window(self, year):
+        field, exact = year
+        reduced = reduce_windows(field, run_window(field), "sum")
+        assert int(reduced[LENGTH_COORD].values.astype("int64")[0]) == exact
+
+
+class TestWindowAndLabelRefusals:
+    @staticmethod
+    def bounded(start, end):
+        return xr.DataArray(
+            [[1.0]], dims=("site", "time"),
+            coords={"site": [1], "time": pd.DatetimeIndex(["2012-01-01"]), TIME_BOUNDS_START: ("time", start), TIME_BOUNDS_END: ("time", end)},
+            name="annual",
+        )
+
+    def test_a_missing_bound_is_refused(self):
+        with pytest.raises(ValueError, match="'annual': a time bound is missing"):
+            windows_from_time_bounds(self.bounded(pd.DatetimeIndex([pd.NaT]), pd.DatetimeIndex(["2013-01-01"])))
+
+    def test_bounds_that_are_not_datetimes_are_refused(self):
+        with pytest.raises(ValueError, match="must hold datetimes"):
+            windows_from_time_bounds(self.bounded([2012], pd.DatetimeIndex(["2013-01-01"])))
+
+    def test_decreasing_windows_are_refused(self, niwot):
+        windows = _daily_windows(niwot["wood_carbon"])[::-1]
+        with pytest.raises(ValueError, match="increasing order"):
+            reduce_windows(niwot["wood_carbon"], windows, "last")
+
+    def test_empty_windows_are_refused(self, niwot):
+        with pytest.raises(ValueError, match="windows is empty"):
+            reduce_windows(niwot["wood_carbon"], _daily_windows(niwot["wood_carbon"])[:0], "last")
+
+    def test_a_window_with_a_missing_edge_is_refused(self, niwot):
+        t = pd.Timestamp(niwot["time"].values[0])
+        windows = pd.IntervalIndex.from_arrays(pd.DatetimeIndex([t, pd.NaT]), pd.DatetimeIndex([t + pd.Timedelta("1D"), pd.NaT]), closed="right")
+        with pytest.raises(ValueError, match="missing edge"):
+            reduce_windows(niwot["wood_carbon"], windows, "last")
+
+    def test_numeric_windows_are_refused(self, niwot):
+        with pytest.raises(ValueError, match="intervals of datetimes"):
+            reduce_windows(niwot["wood_carbon"], pd.IntervalIndex.from_breaks([0, 1, 2]), "last")
+
+    def test_integer_labels_are_refused(self, niwot):
+        with pytest.raises(ValueError, match="must be timestamps"):
+            select_timestep_at(niwot["wood_carbon"], np.array([1, 2]))
+
+    def test_no_labels_are_refused(self, niwot):
+        with pytest.raises(ValueError, match="no labels were given"):
+            select_timestep_at(niwot["wood_carbon"], pd.DatetimeIndex([]))
+
+    def test_a_missing_timestamp_on_the_axis_is_refused(self, niwot):
+        array = niwot["wood_carbon"]
+        broken = array.assign_coords(time=np.where(np.arange(array.sizes["time"]) == 3, np.datetime64("NaT"), array["time"].values))
+        with pytest.raises(ValueError, match=r"missing timestamp \(NaT\)"):
+            aggregate_time(broken, "1D")
+
+    def test_a_zero_frequency_is_refused(self, niwot):
+        with pytest.raises(ValueError, match="positive frequency"):
+            aggregate_time(niwot["wood_carbon"], "0D")
+
+    def test_a_dataset_is_a_type_error(self, niwot):
+        with pytest.raises(TypeError, match="align one at a time"):
+            aggregate_time(niwot, "1D")
+
+
+class TestOwnCadenceAndExtremes:
+    def test_aggregating_at_the_fields_own_cadence_is_the_field(self):
+        daily = xr.DataArray(
+            np.arange(10.0), dims="time", coords={"time": pd.date_range("2000-01-02", periods=10, freq="D")},
+            attrs={"kind": "timestep_total"}, name="x",
+        )
+        again = aggregate_time(daily, "1D")
+        np.testing.assert_array_equal(again.values, daily.values)
+        np.testing.assert_array_equal(again["time"].values, daily["time"].values)
+
+    def test_an_empty_calendar_cell_is_dropped_not_zero(self, niwot):
+        nee = niwot["net_ecosystem_exchange"]
+        day = pd.Timestamp(nee["time"].values[0]).floor("D") + pd.Timedelta("3D")
+        inside = (nee["time"] > np.datetime64(day)) & (nee["time"] <= np.datetime64(day + pd.Timedelta("1D")))
+        daily = aggregate_time(nee.isel(time=~inside.values), "1D")
+        assert np.datetime64(day + pd.Timedelta("1D")) not in daily["time"].values
+        assert daily.sizes["time"] == aggregate_time(nee, "1D").sizes["time"] - 1
+
+    @pytest.mark.parametrize("how, method", [("min", "minimum"), ("max", "maximum"), ("first", "point")])
+    def test_the_cell_methods_of_an_extreme_say_which(self, niwot, how, method):
+        array = niwot["wood_carbon"]
+        reduced = reduce_windows(array, _daily_windows(array), how)
+        assert reduced.attrs["cell_methods"] == f"time: {method}"
+        assert reduced.attrs["kind"] == "timestep_end_state"
+        assert reduced.attrs["time_reference"] == f"the {how} of the timestep_end_state values over the window"

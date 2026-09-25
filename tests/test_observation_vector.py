@@ -14,10 +14,12 @@ from sipnet_calibration.fields import label_run
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
     INDEX_LEVELS,
+    ComputeLeafAreaIndex,
     Observation,
     ObservationVector,
     ReduceOverRun,
     SelectTimestep,
+    select_observed_sites,
     select_timestep_at,
 )
 
@@ -278,16 +280,18 @@ class TestPredict:
             vector.predict({name: stack[name] for name in VARIABLES})
 
 
-class TestRealProducts:
-    @pytest.fixture(scope="class")
-    def observed(self):
-        constraints = pytest.importorskip("sipnet_calibration.constraints")
-        names = ["modis_leaf_area_index", "landtrendr_aboveground_biomass", "soilgrids_soil_organic_carbon"]
-        try:
-            return constraints.constraint_fields(names, sites=[3851, 3871, 3875])
-        except FileNotFoundError as error:
-            pytest.skip(str(error))
+@pytest.fixture(scope="module")
+def observed():
+    """Three real constraint products at three sites, where the processed files exist."""
+    constraints = pytest.importorskip("sipnet_calibration.constraints")
+    names = ["modis_leaf_area_index", "landtrendr_aboveground_biomass", "soilgrids_soil_organic_carbon"]
+    try:
+        return constraints.constraint_fields(names, sites=[3851, 3871, 3875])
+    except FileNotFoundError as error:
+        pytest.skip(str(error))
 
+
+class TestRealProducts:
     def test_the_vector_round_trips_the_ragged_products(self, observed):
         vector = ObservationVector([
             Observation("modis_leaf_area_index", observed["modis_leaf_area_index"], DEFAULT_OBS_OPS["modis_leaf_area_index"]),
@@ -393,3 +397,223 @@ class TestMoreRefusals:
 
     def test_observation_values_are_named_for_the_product(self, lai):
         assert Observation("x", lai.rename(None), SelectTimestep("wood_carbon")).values.name == "x"
+
+
+class TestSelectKeepsOnlyObservedLabels:
+    """A sub-vector's operators read the model only where a kept site is observed."""
+
+    def test_a_one_site_selection_drops_the_other_sites_labels(self, vector, lai, times):
+        sub = vector.select(sites=[1])
+        # lai is observed at site 1 on the first and last label only
+        kept = sub["modis_leaf_area_index"].values
+        assert kept["time"].values.tolist() == [times[0].value, times[2].value]
+        np.testing.assert_array_equal(sub.y, vector.y[vector.positions(site=1)])
+        assert sub.index.equals(vector.index[vector.positions(site=1)])
+
+    def test_a_one_site_slice_predicts_from_that_sites_shorter_run(self, one_run, times):
+        wood = xr.DataArray(
+            [[100.0, np.nan, np.nan], [np.nan, np.nan, 120.0]], dims=("site", "time"),
+            coords={"site": [1, 2], "time": times}, attrs={"units": "Mg ha-1", "constituent": "C"},
+        )
+        vector = ObservationVector([Observation("wood", wood, SelectTimestep("wood_carbon"))])
+        short = one_run.isel(time=slice(0, 30))  # ends before the label only site 2 is observed at
+        predicted = vector.select(sites=[1]).predict(short)
+        assert predicted["wood"].sizes["time"] == 1
+
+    def test_a_generator_of_sites_is_read_once_for_every_product(self, vector):
+        sub = vector.select(sites=(site for site in (1, 2)))
+        assert sub.product_names == vector.product_names
+        np.testing.assert_array_equal(sub.y, vector.y)
+
+    def test_selecting_thousands_of_sites_keeps_every_chosen_one(self):
+        n = 8000
+        values = xr.DataArray(
+            np.ones((n, 2)), dims=("site", "time"),
+            coords={"site": np.arange(1, n + 1), "time": pd.date_range("2000-01-01", periods=2)},
+            attrs={"units": "Mg ha-1", "constituent": "C"},
+        )
+        vector = ObservationVector([Observation("wood", values, SelectTimestep("wood_carbon"))])
+        sub = vector.select(sites=range(1, n + 1, 2))
+        assert sub.sites == tuple(range(1, n + 1, 2))
+
+    def test_an_unknown_product_is_refused(self, vector):
+        with pytest.raises(KeyError, match="no observation of 'nothing'"):
+            vector.select(product_names=["nothing"])
+
+    def test_products_come_in_the_requested_order(self, vector):
+        names = ("soilgrids_soil_organic_carbon", "modis_leaf_area_index")
+        assert vector.select(product_names=list(names)).product_names == names
+
+
+class TestObservationHoldsItsOwnValues:
+    def test_a_write_to_the_callers_array_does_not_reach_the_observation(self, lai):
+        observation = Observation("x", lai, SelectTimestep("wood_carbon"))
+        lai[1, 0] = 5.0  # an unobserved cell of the caller's array
+        assert observation.n_cells == 4
+        assert np.isnan(observation.values.values[1, 0])
+
+    def test_the_stored_values_are_read_only(self, vector):
+        dimension = vector.dimension
+        with pytest.raises(ValueError, match="read-only"):
+            vector.observed_values["modis_leaf_area_index"][0, 1] = 1.0
+        with pytest.raises(ValueError, match="read-only"):
+            vector["modis_leaf_area_index"].values.values[0, 1] = 1.0
+        assert vector["modis_leaf_area_index"].n_cells == 4 and vector.dimension == dimension
+
+
+class TestVectorSites:
+    def test_a_site_observed_nowhere_is_not_a_site_of_the_vector(self, soil):
+        vector = ObservationVector([Observation("soil", soil, ReduceOverRun("soil_carbon", "mean"))])
+        assert soil["site"].values.tolist() == [1, 2]
+        assert vector.sites == (1,)
+
+    def test_sites_are_ascending_across_products(self, times):
+        first = xr.DataArray([[1.0], [2.0]], dims=("site", "time"), coords={"site": [27, 3], "time": times[:1]}, attrs={"units": "m2 m-2"})
+        second = xr.DataArray([4.0, 5.0], dims="site", coords={"site": [8, 1]}, attrs={"units": "Mg ha-1", "constituent": "C"})
+        vector = ObservationVector([
+            Observation("a", first, SelectTimestep("leaf_carbon")),
+            Observation("b", second, ReduceOverRun("soil_carbon", "mean")),
+        ])
+        assert vector.sites == (1, 3, 8, 27)
+
+
+class TestObservationRefusals:
+    def test_duplicate_sites_are_refused(self, lai):
+        with pytest.raises(ValueError, match="site coordinate has duplicates"):
+            Observation("x", lai.assign_coords(site=[1, 1]), SelectTimestep("wood_carbon"))
+
+    def test_duplicate_times_are_refused(self, lai):
+        repeated = lai.assign_coords(time=[lai["time"].values[0]] * 2 + [lai["time"].values[2]])
+        with pytest.raises(ValueError, match="time coordinate has duplicates"):
+            Observation("x", repeated, SelectTimestep("wood_carbon"))
+
+    def test_an_operator_that_is_not_callable_is_refused(self, lai):
+        with pytest.raises(TypeError, match="must be callable"):
+            Observation("x", lai, "wood_carbon")
+
+    def test_an_alias_declared_by_an_operator_is_refused(self, lai):
+        @dataclass(frozen=True)
+        class Aliased:
+            output_variable_names = ("plantWoodC",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                return model_output["wood_carbon"]
+
+        with pytest.raises(ValueError, match="alias"):
+            Observation("x", lai, Aliased())
+
+    def test_declarations_as_a_list_are_refused(self, lai):
+        @dataclass(frozen=True)
+        class Listed:
+            output_variable_names = ["wood_carbon"]
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                return model_output["wood_carbon"]
+
+        with pytest.raises(ValueError, match="tuple of names"):
+            Observation("x", lai, Listed())
+
+
+class TestFlatRefusals:
+    def test_a_field_missing_an_observed_site_is_refused(self, vector):
+        fields = vector.fields(vector.y)
+        fields["modis_leaf_area_index"] = fields["modis_leaf_area_index"].sel(site=[1])
+        with pytest.raises(ValueError, match=r"lacks observed site\(s\) \[2\]"):
+            vector.flat(fields)
+
+    def test_a_missing_product_is_refused(self, vector):
+        fields = vector.fields(vector.y)
+        del fields["soilgrids_soil_organic_carbon"]
+        with pytest.raises(ValueError, match="lack the product"):
+            vector.flat(fields)
+
+    def test_member_labels_that_disagree_are_refused(self, vector):
+        fields = vector.fields(np.zeros((2, vector.dimension)))
+        fields["soilgrids_soil_organic_carbon"] = fields["soilgrids_soil_organic_carbon"].assign_coords(member=[5, 6])
+        with pytest.raises(ValueError, match="disagree on their member labels"):
+            vector.flat(fields)
+
+    def test_member_need_not_be_the_leading_dimension(self, vector):
+        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        fields = vector.fields(block)
+        fields["modis_leaf_area_index"] = fields["modis_leaf_area_index"].transpose("site", "time", "member")
+        np.testing.assert_array_equal(vector.flat(fields), block)
+
+    def test_labels_in_seconds_are_read_by_instant(self, lai, one_run):
+        coarse = lai.assign_coords(time=lai["time"].values.astype("datetime64[s]"))
+        vector = ObservationVector([Observation("modis_leaf_area_index", coarse, SelectTimestep("leaf_carbon"))])
+        assert vector["modis_leaf_area_index"].values["time"].dtype == np.dtype("datetime64[s]")
+        np.testing.assert_array_equal(vector.flat(vector.fields(vector.y)), vector.y)
+        wide = xr.full_like(lai, 7.0)  # nanosecond labels, as a prediction carries them
+        fields = {"modis_leaf_area_index": wide}
+        assert vector.flat(fields).tolist() == [7.0] * vector.dimension
+
+
+class TestFailedRuns:
+    def test_a_run_with_only_some_missing_steps_has_not_failed(self, lai, stack):
+        padded = stack.copy(deep=True)
+        tail = padded["time"].values[-10:]
+        padded["leaf_carbon"].loc[{"member": 1, "site": 2, "time": tail}] = np.nan
+
+        @dataclass(frozen=True)
+        class Gappy:
+            output_variable_names = ("leaf_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                leaf = select_observed_sites(model_output["leaf_carbon"], observed_values)
+                out = select_timestep_at(leaf, observed_values["time"])
+                out.loc[{"member": 1, "site": 2, "time": out["time"].values[-1]}] = np.nan
+                out.attrs = {"units": "1"}
+                return out
+
+        with pytest.raises(ValueError, match="although the run succeeded"):
+            ObservationVector([Observation("modis_leaf_area_index", lai, Gappy())]).predict(padded)
+
+    def test_one_read_variable_missing_throughout_is_a_failed_run(self, vector, stack, table):
+        failed = stack.copy(deep=True)
+        failed["wood_carbon"].loc[{"member": 1, "site": 2}] = np.nan  # leaf and soil carbon finite
+        block = vector.flat(vector.predict(failed, sipnet_parameters=table))
+        wood = vector.positions(site=2, product_name="landtrendr_aboveground_biomass")
+        assert np.isnan(block[1, wood]).all()
+        assert np.isfinite(block[0]).all()
+
+    def test_the_failure_mask_is_matched_by_site_label(self, lai, stack, table):
+        reordered = stack.isel(site=[1, 0]).copy(deep=True)
+        reordered["leaf_carbon"].loc[{"member": 1, "site": 2}] = np.nan
+        vector = ObservationVector([Observation("modis_leaf_area_index", lai, ComputeLeafAreaIndex())])
+        block = vector.flat(vector.predict(reordered, sipnet_parameters=table))
+        assert np.isnan(block[1, vector.positions(site=2)]).all()
+        assert np.isfinite(block[1, vector.positions(site=1)]).all()
+
+
+class TestPredictSharesTheOperatorChecks:
+    def test_a_result_with_a_spurious_member_is_refused(self, lai, one_run):
+        @dataclass(frozen=True)
+        class Spurious:
+            output_variable_names = ("leaf_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                out = select_timestep_at(model_output["leaf_carbon"], observed_values["time"])
+                out = out.drop_vars("member").expand_dims(member=[0, 1])
+                out.attrs = {"units": "1"}
+                return out
+
+        vector = ObservationVector([Observation("modis_leaf_area_index", lai, Spurious())]).select(sites=[1])
+        with pytest.raises(ValueError, match="member dimension the model output lacks"):
+            vector.predict(one_run)
+
+    def test_a_result_that_is_not_an_array_is_a_type_error(self, lai, stack):
+        @dataclass(frozen=True)
+        class Numpy:
+            output_variable_names = ("leaf_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                return np.zeros(3)
+
+        with pytest.raises(TypeError, match="not a DataArray"):
+            ObservationVector([Observation("modis_leaf_area_index", lai, Numpy())]).predict(stack)

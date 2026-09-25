@@ -7,9 +7,9 @@ This registry is what replaces per-variable plotting functions (``plot_nee``,
 
 **The temporal aggregation rule is no longer this registry's.** It was to be an
 ``agg`` field here; it is pySIPNET's ``kind`` instead, and
-:func:`sipnet_calibration.observation.time_alignment.aggregate_time` reads that, falling back to
-pySIPNET's own variable registries by name. Nothing about aggregation belongs
-here.
+:func:`sipnet_calibration.observation.time_alignment.aggregate_time` reads
+that, falling back to pySIPNET's own variable registries by name. Nothing
+about aggregation belongs here.
 
 Two fields are correctness, not cosmetics:
 

@@ -190,8 +190,7 @@ import xarray as xr
 from pysipnet.units import validate_units
 
 from sipnet_calibration import conventions
-from sipnet_calibration.conventions import CF_CONVENTIONS
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR
+from sipnet_calibration.conventions import CF_CONVENTIONS, TIME_BOUNDS_END, TIME_BOUNDS_START
 
 __all__ = [
     "CALENDAR",
@@ -669,6 +668,11 @@ def constraint_fields(
     dict
         Constraint name to its ``value`` array, renamed to the constraint,
         with dims ``(site, time)`` or ``(site,)`` and the array's attributes.
+        An annual product's array also carries its CF ``time_bounds`` as the
+        one-dimensional coordinates ``time_bounds_start`` and
+        ``time_bounds_end`` on ``time``
+        (:data:`~sipnet_calibration.conventions.TIME_BOUNDS_START`,
+        :data:`~sipnet_calibration.conventions.TIME_BOUNDS_END`).
 
     Raises
     ------
@@ -1061,18 +1065,18 @@ def _time_bounds_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 
     A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
     ``bounds`` dimension being none of the array's, so the pair rides along
-    as ``time_bounds_start`` and ``time_bounds_end``, the way pySIPNET's
+    as :data:`TIME_BOUNDS_START` and :data:`TIME_BOUNDS_END`, the way pySIPNET's
     model output carries ``time_step_start`` beside ``time``.
     """
     bounds = dataset["time_bounds"]
     comment = "One edge of the CF time_bounds of the value at this label."
     return {
-        "time_bounds_start": xr.DataArray(
+        TIME_BOUNDS_START: xr.DataArray(
             bounds.isel(bounds=0).values,
             dims="time",
             attrs={"long_name": "Start of the interval the value is attributed to", "comment": comment},
         ),
-        "time_bounds_end": xr.DataArray(
+        TIME_BOUNDS_END: xr.DataArray(
             bounds.isel(bounds=1).values,
             dims="time",
             attrs={"long_name": "End of the interval the value is attributed to", "comment": comment},

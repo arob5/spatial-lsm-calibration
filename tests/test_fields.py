@@ -373,3 +373,85 @@ class TestLabelRun:
 
         dataset = niwot_output.select(["wood_carbon"])
         xr.testing.assert_identical(label_run(dataset), dataset)
+
+    def test_a_dataarray_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import label_run
+
+        with pytest.raises(TypeError, match="Dataset"):
+            label_run(niwot_output.select(["wood_carbon"])["wood_carbon"], site=1, site_table=self._table())
+
+
+class TestStackModelOutputs:
+    def _table(self):
+        return pd.DataFrame({"site_id": [1, 27], "lon": [-105.0, -70.0], "lat": [40.0, 45.0]}).set_index("site_id", drop=False)
+
+    def test_is_the_dataset_stack_sipnet_outputs_splits_into_fields(self, runs):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        datasets = {key: run.select(["nee", "wood_carbon"]) for key, run in runs.items()}
+        stacked = stack_model_outputs(datasets, site_table=self._table())
+        fields = stack_sipnet_outputs(runs, ["nee", "wood_carbon"], sites=self._table())
+        assert isinstance(stacked, xr.Dataset)
+        assert stacked["net_ecosystem_exchange"].dims == CANONICAL_DIMS
+        for name, field in fields.items():
+            xr.testing.assert_identical(stacked[name], field)
+        assert stacked["lon"].attrs["units"] == "degrees_east"
+        assert set(stacked.coords) == {"member", "site", "lon", "lat", *TIME_COORDS}
+        assert "bounds" not in stacked["time"].attrs
+
+    def test_runs_labeled_by_label_run_are_stacked_and_left_unchanged(self, niwot_output):
+        from sipnet_calibration.fields import label_run, stack_model_outputs
+
+        labeled = {
+            (site, 0): label_run(niwot_output.select(["nee"]), site=site, site_table=self._table())
+            for site in (1, 27)
+        }
+        before = {key: dataset.copy(deep=True) for key, dataset in labeled.items()}
+        stacked = stack_model_outputs(labeled, site_table=self._table())
+        assert stacked["site"].values.tolist() == [1, 27] and stacked["member"].values.tolist() == [0]
+        for key, dataset in labeled.items():
+            xr.testing.assert_identical(dataset, before[key])
+
+    def test_a_run_labeled_with_another_site_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import label_run, stack_model_outputs
+
+        labeled = label_run(niwot_output.select(["nee"]), site=27, site_table=self._table())
+        with pytest.raises(ValueError, match=r"keyed \(site=1, member=0\) is labeled site=\[27\]"):
+            stack_model_outputs({(1, 0): labeled}, site_table=self._table())
+
+    def test_a_run_with_no_rows_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        empty = niwot_output.select(["nee"]).isel(time=slice(0, 0))
+        with pytest.raises(ValueError, match="no rows"):
+            stack_model_outputs({(1, 0): empty}, site_table=self._table())
+
+    def test_something_that_is_not_a_dataset_is_refused(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        with pytest.raises(TypeError, match="Dataset"):
+            stack_model_outputs({(1, 0): niwot_output}, site_table=self._table())
+
+
+class TestResolveOutputVariableNames:
+    def test_resolves_aliases_in_order_without_repeats(self):
+        from sipnet_calibration.fields import resolve_output_variable_names
+
+        assert resolve_output_variable_names(["wood_carbon", "nee", "NEE"]) == ["wood_carbon", "net_ecosystem_exchange"]
+        assert resolve_output_variable_names("nee") == ["net_ecosystem_exchange"]
+
+    def test_a_name_that_is_not_a_string_is_a_type_error(self):
+        from sipnet_calibration.fields import resolve_output_variable_names
+
+        with pytest.raises(TypeError, match="must be strings"):
+            resolve_output_variable_names(["nee", 3])
+
+
+class TestFieldLabel:
+    def test_a_name_then_a_derivation_then_the_default(self):
+        from sipnet_calibration.fields import field_label
+
+        assert field_label(xr.DataArray(0.0, name="wood_carbon")) == "'wood_carbon'"
+        assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"})) == "'a / b'"
+        assert field_label(xr.DataArray(0.0)) == "the field"
+        assert field_label(xr.DataArray(0.0), "the observation") == "the observation"

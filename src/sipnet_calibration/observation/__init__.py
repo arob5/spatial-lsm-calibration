@@ -6,10 +6,17 @@ Two abstractions and a handful of functions:
   :class:`SelectTimestep`, :class:`ReduceOverTimeBounds`,
   :class:`ReduceOverRun`, :class:`ComputeLeafAreaIndex`, with
   :data:`DEFAULT_OBS_OPS` binding a product to its default operator where the
-  construction is documented.
+  construction is documented. An operator is written with
+  :func:`select_observed_sites`, which restricts the model output to the
+  observed sites, and :func:`extract_sipnet_parameter_at_coords`, which lines
+  a SIPNET parameter's values up with it; :func:`check_operator` checks one
+  against the contract, through the same checks the vector applies
+  (:func:`check_operator_declares_names`, :func:`check_model_output_serves`,
+  :func:`check_result_is_on_the_observation_grid`).
 * :class:`Observation` and :class:`ObservationVector`: the observed cells of
   an experiment in a fixed order, with Fields and Flat representations,
-  ``y``, ``index``, ``positions`` and ``predict``.
+  ``y``, ``index`` (levels :data:`INDEX_LEVELS`), ``positions`` and
+  ``predict``.
 
 The verbs the operators are written with: temporal alignment in
 :mod:`~sipnet_calibration.observation.time_alignment` (``aggregate_time``,
@@ -17,9 +24,9 @@ The verbs the operators are written with: temporal alignment in
 counts). Arithmetic that keeps ``units``, ``constituent`` and ``kind`` true
 is pySIPNET's :mod:`pysipnet.arithmetic` (``divide_with_units``,
 ``step_length`` and the rest), and a SIPNET parameter's values are labeled by
-its :func:`~pysipnet.parameters.model.parameter_dataarray`. Unit conversion is
-pySIPNET's :func:`pysipnet.units.convert_dataarray_units`, which
-:meth:`ObservationVector.predict` applies.
+pySIPNET's :func:`~pysipnet.parameters.model.parameter_dataarray`. Unit
+conversion is pySIPNET's :func:`pysipnet.units.convert_dataarray_units`,
+which :meth:`ObservationVector.predict` applies.
 
 The error model and the likelihood are not here; they belong to the
 inference layer, which reads ``y``, ``index`` and ``positions`` off the
@@ -45,7 +52,10 @@ from sipnet_calibration.observation.operators import (
     ReduceOverRun,
     ReduceOverTimeBounds,
     SelectTimestep,
+    check_model_output_serves,
     check_operator,
+    check_operator_declares_names,
+    check_result_is_on_the_observation_grid,
     extract_sipnet_parameter_at_coords,
     select_observed_sites,
 )
@@ -66,7 +76,10 @@ __all__ = [
     "WINDOW_REDUCTIONS",
     "aggregate_time",
     "aggregation_counts",
+    "check_model_output_serves",
     "check_operator",
+    "check_operator_declares_names",
+    "check_result_is_on_the_observation_grid",
     "extract_sipnet_parameter_at_coords",
     "reduce_windows",
     "run_window",

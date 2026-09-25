@@ -493,7 +493,11 @@ src/sipnet_calibration/
                           # with site/member/lon/lat: the model_output the
                           # observation operators read), from_sipnet_output(),
                           # stack_sipnet_outputs() over SIPNETOutput.select,
-                          # site_lookup(); validate_field() (issue #6)
+                          # stack_model_outputs() (runs' Datasets to one
+                          # on (member, site, time)),
+                          # resolve_output_variable_names(), field_label(),
+                          # site_lookup(); validate_field() is still owed
+                          # (issue #6)
   observation/            # the observation side of the inverse problem
     __init__.py           # curated exports
     time_alignment.py     # aggregate_time, reduce_windows, select_timestep_at,
@@ -502,6 +506,7 @@ src/sipnet_calibration/
     operators.py          # ObservationOperator protocol; SelectTimestep,
                           # ReduceOverTimeBounds, ReduceOverRun,
                           # ComputeLeafAreaIndex; DEFAULT_OBS_OPS; check_operator
+                          # and the contract's checks the vector shares
     vector.py             # Observation, ObservationVector: index (site, product,
                           # time), y, flat()/fields(), positions(), predict()
   plotting/
@@ -562,9 +567,9 @@ plotting code. The load-bearing rules:
 - Plotters branch on **presence of the `member` dim**, never on a mode keyword.
 - **Temporal aggregation lives in `observation/time_alignment.py`** and is
   imported by both the observation operators and the plotting layer, so a
-  predictive-check figure cannot disagree with what the likelihood consumed. Aggregation is a verb the
-  caller applies — `plot_time_series(aggregate_time(f, "1D"))` — never a
-  plotter keyword.
+  predictive-check figure cannot disagree with what the likelihood consumed.
+  Aggregation is a verb the caller applies —
+  `plot_time_series(aggregate_time(f, "1D"))` — never a plotter keyword.
 - **The variable's kind says which resampling methods are valid; the caller
   may name one.** pySIPNET owns the first half: since its PR #38 every
   variable has a `kind`, `RESAMPLING_METHODS_FOR_KIND` says what may be done
@@ -573,11 +578,11 @@ plotting code. The load-bearing rules:
   (a pool is not additive; a per-step total is not averaged until it is a
   rate). `observation.time_alignment.aggregate_time(field, freq, how=None)`
   is that operation for a field — a field may have `member` and `site` dims,
-  which
-  `resample` does not reduce over — and it adds one thing: with no `how` it
-  takes **the method that leaves the variable the kind it already is**, read
-  off pySIPNET's `RESAMPLED_KIND` rather than written down. A total sums, a
-  step mean or a rate means, a pool or a running total takes its last value.
+  which `resample` does not reduce over — and it adds one thing: with no
+  `how` it takes **the method that leaves the variable the kind it already
+  is**, read off pySIPNET's `RESAMPLED_KIND` rather than written down. A
+  total sums, a step mean or a rate means, a pool or a running total takes
+  its last value.
   SIPNET's `net_ecosystem_exchange` is `g m-2` of C per timestep, so 3-hourly
   to daily is a **sum**, and a mean is wrong by 8x while looking plausible;
   the default is there so that omission cannot reach that error, and `how=` is
@@ -592,17 +597,20 @@ plotting code. The load-bearing rules:
   run on a worker (`check_operator` tests that). It returns whatever units
   it produces, with `units`/`constituent` attrs; `ObservationVector.predict`
   converts through `pysipnet.units.convert_dataarray_units` and refuses a
-  wrong dimension, grid, site set, or a NaN where the run succeeded. The
+  wrong dimension, grid, site set, or a NaN where the run succeeded, through
+  the same checks `check_operator` applies (`check_operator_declares_names`,
+  `check_model_output_serves`, `check_result_is_on_the_observation_grid`). The
   verbs it is written with carry pySIPNET's attributes: its arithmetic is
   `pysipnet.arithmetic` (`divide_with_units`, `step_length`, ...), a SIPNET
   parameter is labeled by `pysipnet.parameters.model.parameter_dataarray`,
   and the time-alignment verbs are `select_timestep_at` (the model step
-  whose `(time_step_start, time]` contains the label), `reduce_windows` (a step belongs to the window its
-  end falls in; means weighted by step length; a gap makes the window NaN)
-  and `windows_from_time_bounds` (`observation.time_alignment`). The library
-  binds a default operator only where the construction is documented
-  (`DEFAULT_OBS_OPS`, today MODIS LAI); which operator reads a product is a
-  modeling decision an experiment writes in `config.py`.
+  whose `(time_step_start, time]` contains the label), `reduce_windows` (a
+  step belongs to the window its end falls in; means weighted by step
+  length; a gap makes the window NaN) and `windows_from_time_bounds`
+  (`observation.time_alignment`). The library binds a default operator only
+  where the construction is documented (`DEFAULT_OBS_OPS`, today MODIS LAI);
+  which operator reads a product is a modeling decision an experiment writes
+  in `config.py`.
 - **The observation vector is site-major.** `ObservationVector.index` is a
   `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
   sites ascending, then products in declaration order, then times, with
@@ -611,11 +619,14 @@ plotting code. The load-bearing rules:
   standard deviation, covariance or likelihood lives in the package; the
   inference layer builds those from `y`, `index` and `positions`. A
   `member` dim on an observation is refused: the experiment reduces an
-  observation ensemble before it enters.
+  observation ensemble before it enters. `select(sites=...)` keeps only the
+  time labels a kept site is observed at, so a one-site slice's operators
+  read the model only inside that site's record.
 - **An annual constraint's array carries its `time_bounds`** as the 1-D
   coordinates `time_bounds_start`/`time_bounds_end` on `time`
-  (`constraint_fields` adds them), which is what `ReduceOverTimeBounds`
-  reads; a dated or static product documents no interval.
+  (`constraint_fields` adds them; the names are `conventions.TIME_BOUNDS_START`
+  and `TIME_BOUNDS_END`), which is what `ReduceOverTimeBounds` reads; a dated
+  or static product documents no interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
   unchanged.** `fields.from_sipnet_output` adds `site`, `member` and
   `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the
@@ -819,8 +830,9 @@ plotting code. The load-bearing rules:
   an `EnsembleSpec` holding both raises "two axes named 'member' have different structures".
   `fields_from_dataset` makes the labeled form from a `member` coordinate, while
   `parameter_vector.pyens_grids` is documented with the sized form built by hand, so grids made
-  the two ways cannot share a spec unless both are given the same `Axis` (`pyens_grids`
-  accepts `axes_of(table)["member"]`; `fields_from_dataset` accepts `axes=`). Build each axis
+  the two ways cannot share a spec unless both are given an equal `Axis` (the labeled form;
+  passing the same object is simplest: `pyens_grids` accepts `axes_of(table)["member"]`;
+  `fields_from_dataset` accepts `axes=`). Build each axis
   once and pass that object everywhere it is used. Equal axes zip, so two sources that both
   put a 0-based `member` coordinate on their ensemble dim (the SIPNET table, the drivers, the
   initial conditions) are paired member by member, silently, whenever their sizes match.

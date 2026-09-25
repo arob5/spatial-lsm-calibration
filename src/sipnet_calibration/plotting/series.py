@@ -13,9 +13,10 @@ calling it repeatedly, and a grid of panels is built by
 from :mod:`sipnet_calibration.plotting.style`.
 
 Temporal aggregation is applied by the caller before plotting, using
-:func:`sipnet_calibration.observation.time_alignment.aggregate_time`, which takes the rule from
-the variable. The same function is used by the observation operator, so a
-predictive check is drawn at the aggregation the likelihood consumed.
+:func:`sipnet_calibration.observation.time_alignment.aggregate_time`, which
+takes the rule from the variable. The same function is used by the observation
+operator, so a predictive check is drawn at the aggregation the likelihood
+consumed.
 
 Usage
 -----
