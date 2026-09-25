@@ -304,6 +304,19 @@ def test_the_legend_lists_the_classes_present_in_order(ax, categorical):
     assert [t.get_text() for t in ax.get_legend().get_texts()] == ["conifer", "grass"]
 
 
+def test_the_legend_shows_display_names_while_colors_stay_keyed_on_classes(ax, categorical):
+    named = categorical.assign_attrs(flag_display_names=("Conifer forest", "Broadleaf forest", "Grassland"))
+    plot_map(named.isel(site=[0, 1, 2]), ax, colors={"grass": "#123456"})
+    legend = ax.get_legend()
+    assert [t.get_text() for t in legend.get_texts()] == ["Conifer forest", "Grassland"]
+    assert to_hex(legend.legend_handles[1].get_facecolor()) == "#123456"
+
+
+def test_display_names_that_do_not_pair_with_the_classes_are_refused(ax, categorical):
+    with pytest.raises(ValueError, match="flag_display_names has 2 names"):
+        plot_map(categorical.assign_attrs(flag_display_names=("A", "B")), ax)
+
+
 def test_string_valued_classes_and_color_overrides(ax):
     field = site_field([-100.0, -99.0], [40.0, 40.0], np.array(["b", "a"], dtype=object))
     plot_map(field, ax, colors={"b": "#123456"})
@@ -477,6 +490,12 @@ def test_a_shared_categorical_grid_has_one_figure_legend(categorical):
     assert [t.get_text() for t in figure.legends[0].get_texts()] == ["conifer", "deciduous", "grass"]
 
 
+def test_a_shared_scale_refuses_fields_whose_display_names_differ(categorical):
+    named = categorical.assign_attrs(flag_display_names=("A", "B", "C"))
+    with pytest.raises(ValueError, match="same flag_display_names"):
+        plot_map_grid({"named": named, "plain": categorical}, scale="shared")
+
+
 def test_a_shared_scale_refuses_categorical_beside_continuous(categorical, dense):
     with pytest.raises(ValueError, match="categorical and continuous"):
         plot_map_grid({"a": categorical, "b": dense}, scale="shared")
@@ -495,6 +514,21 @@ def test_the_site_pool_maps_by_class(sites_table):
     ax = plot_map(field)
     assert len(data_artist(ax).get_offsets()) == field.sizes["site"]
     assert len(ax.get_legend().get_texts()) == 3
+
+
+def test_the_site_pool_maps_by_sixteen_classes_with_display_names(sites_table):
+    from sipnet_calibration.site_labels import resolve_site_labels, site_labels_field
+
+    try:
+        field = site_labels_field("pft_16class", sites=sites_table)
+    except FileNotFoundError as error:
+        pytest.skip(str(error))
+    spec = resolve_site_labels("pft_16class")
+    ax = plot_map(field)
+    legend = ax.get_legend()
+    assert [t.get_text() for t in legend.get_texts()] == [spec.display_names[label] for label in spec.labels]
+    colors = [to_hex(handle.get_facecolor()) for handle in legend.legend_handles]
+    assert len(set(colors)) == len(spec.labels)
 
 
 def test_initial_wood_carbon_quantiles_over_conus():

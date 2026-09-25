@@ -658,18 +658,27 @@ def _argv(raw_root, sites_path, out_dir, *extra):
 def real_argv(tmp_path):
     """A `main` invocation against the registry's own product and raw file."""
     # main reads both from its defaults, so check the paths it will read.
-    if not (default_raw_dir() / resolve_site_labels("reanalysis_3pft").raw_file).exists():
-        pytest.skip("raw site labels not available in this working copy")
+    for spec in SITE_LABELS:
+        if not (default_raw_dir() / spec.raw_file).exists():
+            pytest.skip("raw site labels not available in this working copy")
     if not default_sites_path().exists():
         pytest.skip("site table not available in this working copy")
     return tmp_path
 
 
-def test_main_exits_zero_and_writes_the_product(real_argv):
+@pytest.mark.parametrize("name", SITE_LABELS_NAMES)
+def test_main_exits_zero_and_writes_the_product(real_argv, name):
     out_dir = real_argv / "out"
-    code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
+    code = ingest.main(["--site-labels", name, "--out-dir", str(out_dir)])
     assert code == 0
-    assert site_labels_path("reanalysis_3pft", out_dir).exists()
+    written = load_site_labels(name, site_labels_path(name, out_dir))
+    assert len(written) == resolve_site_labels(name).expected_rows
+
+
+def test_main_with_no_arguments_builds_every_product(real_argv):
+    out_dir = real_argv / "out"
+    assert ingest.main(["--out-dir", str(out_dir)]) == 0
+    assert sorted(path.stem for path in out_dir.glob("*.csv")) == sorted(SITE_LABELS_NAMES)
 
 
 def test_main_honors_the_site_labels_argument(real_argv):
@@ -917,6 +926,29 @@ def test_site_labels_field_is_cf_flag_codes_with_locations(synthetic):
     np.testing.assert_array_equal(field["lon"].values, sites["lon"].to_numpy())
     assert field.name == SYNTHETIC_SPEC.name
     assert field.attrs["long_name"] == "Plant functional type (synthetic_3class)"
+    assert "flag_display_names" not in field.attrs
+
+
+def test_site_labels_field_carries_display_names_in_flag_order(synthetic):
+    raw_root, sites, out_dir = synthetic
+    named = dataclasses.replace(
+        SYNTHETIC_SPEC,
+        display_names={"grass": "Grassland", "conifer": "Conifer forest", "broadleaf": "Broadleaf forest"},
+    )
+    ingest.ingest(named, raw_root, sites, out_dir)
+    field = site_labels_field(named, sites=sites, path=site_labels_path(named, out_dir))
+    assert field.attrs["flag_display_names"] == ("Conifer forest", "Broadleaf forest", "Grassland")
+
+
+def test_the_16class_field_labels_every_site_with_readable_names(real_16class, real_sites, tmp_path):
+    spec = resolve_site_labels("pft_16class")
+    path = site_labels_path(spec, tmp_path)
+    real_16class.to_csv(path, index=False)
+    field = site_labels_field(spec, sites=real_sites, path=path)
+    assert field.sizes["site"] == len(real_sites)
+    assert field.attrs["flag_meanings"].split() == list(spec.labels)
+    assert field.attrs["flag_display_names"] == tuple(spec.display_names[label] for label in spec.labels)
+    assert sorted(np.unique(field.values).tolist()) == list(range(len(spec.labels)))
 
 
 def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):

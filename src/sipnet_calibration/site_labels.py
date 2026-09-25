@@ -633,7 +633,10 @@ def site_labels_field(
         ``flag_meanings`` the spec's class names, space-separated, in the spec's
         order and all of them whether or not every class is used. There are no
         ``units``. ``long_name`` names the label kind and the product, and the
-        array's name is the product's.
+        array's name is the product's. Where the spec has
+        :attr:`~SiteLabelsSpec.display_names`, ``flag_display_names`` holds
+        them as a tuple aligned with ``flag_meanings``; it is this project's
+        attribute, not CF's, and is absent otherwise.
 
     Raises
     ------
@@ -651,6 +654,15 @@ def site_labels_field(
     _check_labels_are_flag_meanings(spec)
     located = labels.merge(sites[["site_id", "lon", "lat"]], on=SITE_COLUMN, how="left")
     _check_labeled_sites_are_in_the_site_table(located)
+    attrs = {
+        "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
+        "flag_values": np.arange(len(spec.labels), dtype=np.int8),
+        "flag_meanings": " ".join(spec.labels),
+    }
+    if spec.display_names is not None:
+        # A tuple, since a display name may contain spaces and flag_meanings
+        # is space-separated.
+        attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.labels)
     return xr.DataArray(
         located[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
         dims="site",
@@ -659,11 +671,7 @@ def site_labels_field(
             "lon": ("site", located["lon"].to_numpy(float), dict(_LON_ATTRS)),
             "lat": ("site", located["lat"].to_numpy(float), dict(_LAT_ATTRS)),
         },
-        attrs={
-            "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
-            "flag_values": np.arange(len(spec.labels), dtype=np.int8),
-            "flag_meanings": " ".join(spec.labels),
-        },
+        attrs=attrs,
         name=spec.name,
     )
 

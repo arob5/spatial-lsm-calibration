@@ -1587,3 +1587,39 @@ def test_unconstrained_fields_write_to_netcdf_and_read_back(example, theta, tmp_
     unconstrained.to_netcdf(path, engine="h5netcdf")
     with xr.open_dataset(path, engine="h5netcdf") as back:
         np.testing.assert_array_equal(example.flat(back.load()), theta)
+
+
+# ── the sixteen-class site labels ─────────────────────────────────────────────
+
+
+def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels():
+    from sipnet_calibration.site_labels import load_site_labels, resolve_site_labels
+    from sipnet_calibration.sites import load_sites
+
+    try:
+        sites, labels = load_sites(), load_site_labels("pft_16class")
+    except FileNotFoundError as error:
+        pytest.skip(f"processed site table or site labels not available in this working copy: {error}")
+    classes = resolve_site_labels("pft_16class").labels
+    vector = ParameterVector(
+        parameters=(rate(varies_by="pft"),),
+        fixed=(FixedParameter(
+            name="leaf_carbon_fraction", value={c: 0.4 + 0.01 * i for i, c in enumerate(classes)},
+            varies_by="pft", provenance="test",
+        ),),
+        sites=sites, site_labels={"pft": labels},
+    )
+    assert vector.group_labels("pft") == classes
+    assert vector.dimension == len(classes)
+
+    theta = vector.sample(jax.random.key(0), n=4)
+    turnover = vector.fields(theta)["r"]
+    by_site = labels.set_index("site_id")["label"].astype(str)
+    assert (turnover["pft"].to_series().astype(str) == by_site.reindex(turnover["site"].values).values).all()
+    # One draw per class, shared by every site of that class.
+    grouped = turnover.groupby("pft")
+    assert (grouped.max("site") == grouped.min("site")).all()
+
+    wetland = vector.select(labels={"pft": "Permanent_Wetlands"})
+    assert wetland.dimension == 1
+    assert set(wetland.sites) == set(by_site.index[by_site == "Permanent_Wetlands"])
