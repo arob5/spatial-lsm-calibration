@@ -1,0 +1,20 @@
+#!/bin/bash -l
+# Make the raw NEE files from AmeriFlux's FLUXNET download, on the SCC's
+# dietzelab buy-in nodes. This is not a pipeline step; see the script's
+# docstring. Submit from the project checkout, with its venv synced (`uv sync`)
+# and data/raw/net_ecosystem_exchange/fluxnet linked to the download:
+#
+#     qsub scripts/raw_sources/convert_ameriflux_nee.qsub
+#
+# The conversion holds every tower's columns in memory, about 8 GB for the
+# half-hourly file, so it asks for 8 slots with 8 GB each. The log lands in the
+# checkout as nee_convert.o<jobid>.
+#$ -P dietzelab
+#$ -l buyin
+#$ -pe omp 8
+#$ -l mem_per_core=8G
+#$ -l h_rt=03:00:00
+#$ -j y
+#$ -N nee_convert
+#$ -cwd
+uv run python scripts/raw_sources/convert_ameriflux_nee.py --jobs "$NSLOTS"
