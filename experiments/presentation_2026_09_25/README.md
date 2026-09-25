@@ -7,7 +7,9 @@ states what it is, what is assumed, and what is still open.
 
 | File | Role |
 |---|---|
-| `config.py` | the deck's choices: featured sites, site labels, map extent, paths |
+| `config.py` | the deck's choices: featured sites, the sites and driver members it runs, site labels, map extent, paths |
+| `draw_pft_sites.py` | draws `config.PFT_SITES`, three sites per 16-class PFT; rerun to reproduce it |
+| `relabel_drivers.py` | temporary: copies the drivers of `config.DRIVER_SITES` with their drifting hour column corrected, on the SCC |
 | `plots.py` | one function per figure, over the library's loaders and plotters |
 | `slides.qmd` | the deck: prose, assumptions, open questions, and the code shown |
 | `slides.css` | slide styling |
@@ -20,6 +22,11 @@ and rendered locally. The driver figures need all 8000 sites x 10 members,
 which only the SCC has: `precompute_drivers.py` writes small summaries to
 `outputs/` there, and they are copied back with `rsync`. `outputs/` is
 untracked.
+
+Until the ERA5 drivers are regenerated, pySIPNET refuses them because their
+hour column drifts (`data/README.md` Note 15). `relabel_drivers.py` writes
+corrected copies to `config.RELABELED_DRIVERS_DIR`, which is the drivers root
+to pass wherever one is taken. It corrects that column only.
 
 The processed products have to exist first. From the worktree root:
 
