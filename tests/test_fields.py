@@ -1224,6 +1224,29 @@ class TestStackBatchDims:
         with pytest.raises(ValueError, match="no batch dim records"):
             unstack_batch_dims(_field(("sample", "site", "time")))
 
+    @pytest.mark.parametrize("record", ["sample initial_condition_member", '"sample"', "[1, 2]"])
+    def test_unstack_refuses_a_record_not_in_the_json_form_with_advice(self, record):
+        """The pre-JSON space-separated record raised a raw JSONDecodeError, and a
+        JSON string was read character by character."""
+        from sipnet_calibration.fields import STACKED_DIMS_ATTRIBUTE, stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        stacked["run"].attrs[STACKED_DIMS_ATTRIBUTE] = record
+        with pytest.raises(ValueError, match="not a JSON list of dim names.*restack"):
+            unstack_batch_dims(stacked)
+
+    def test_unstack_refuses_a_companion_record_not_in_the_json_form(self):
+        from sipnet_calibration.fields import (
+            STACKED_COMPANIONS_ATTRIBUTE,
+            stack_batch_dims,
+            unstack_batch_dims,
+        )
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        stacked["run"].attrs[STACKED_COMPANIONS_ATTRIBUTE] = "source_index:initial_condition_member"
+        with pytest.raises(ValueError, match="not a JSON object.*restack"):
+            unstack_batch_dims(stacked)
+
     def test_labels_from_restores_a_field_made_from_flat(self):
         """The Flat round trip: stacked -> Flat -> a vector's fields -> unstacked."""
         from sipnet_calibration.fields import (

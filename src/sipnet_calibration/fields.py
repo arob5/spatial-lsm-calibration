@@ -734,6 +734,7 @@ def unstack_batch_dims(
         If *field* is not a field; if no batch dim, or more than one,
         records a stack (:data:`STACKED_DIMS_ATTRIBUTE`, which some xarray
         operations drop), or the stack was selected to one entry; if a
+        record is not in the JSON form :func:`stack_batch_dims` writes; if a
         ``<dim>_label`` coordinate it names is missing, or holds labels that
         are not integers (as a ``reindex`` leaves them); if *field* carries
         a coordinate named like a stacked dim; if two rows carry the same
@@ -1196,10 +1197,19 @@ def recorded_stacked_dims(coordinate: xr.DataArray) -> tuple[str, ...] | None:
     tuple of str or None
         The names in its :data:`STACKED_DIMS_ATTRIBUTE`, as
         :func:`stack_batch_dims` wrote them; ``None`` when it records none.
+
+    Raises
+    ------
+    ValueError
+        If the record is not a JSON list of names, such as the
+        space-separated form it took before it was JSON.
     """
     if STACKED_DIMS_ATTRIBUTE not in coordinate.attrs:
         return None
-    return tuple(str(dim) for dim in json.loads(str(coordinate.attrs[STACKED_DIMS_ATTRIBUTE])))
+    text = coordinate.attrs[STACKED_DIMS_ATTRIBUTE]
+    record = _json_or_none(text)
+    check_stack_record_is_a_list_of_names(record, text, str(coordinate.name))
+    return tuple(record)
 
 
 def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
@@ -1285,8 +1295,18 @@ def _recorded_companions(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]
     """The companion coordinates a stacked coordinate's attributes record."""
     if STACKED_COMPANIONS_ATTRIBUTE not in record:
         return {}
-    entries = json.loads(str(record[STACKED_COMPANIONS_ATTRIBUTE]))
-    return {str(name): tuple(str(dim) for dim in on) for name, on in entries.items()}
+    text = record[STACKED_COMPANIONS_ATTRIBUTE]
+    entries = _json_or_none(text)
+    check_companion_record_maps_names_to_dims(entries, text)
+    return {str(name): tuple(on) for name, on in entries.items()}
+
+
+def _json_or_none(text: Any) -> Any:
+    """*text* decoded as JSON, or ``None`` when it is not JSON."""
+    try:
+        return json.loads(str(text))
+    except json.JSONDecodeError:
+        return None
 
 
 def _companion_on(
@@ -1883,6 +1903,35 @@ def check_one_batch_dim_is_stacked(
         f"{message_name}: no batch dim records a stack in {STACKED_DIMS_ATTRIBUTE!r}, as "
         f"stack_batch_dims leaves it.{hint}"
     )
+
+
+def check_stack_record_is_a_list_of_names(record: Any, text: Any, name: str) -> None:
+    """A stacked coordinate's :data:`STACKED_DIMS_ATTRIBUTE` is a JSON list of names."""
+    if not (isinstance(record, list) and all(isinstance(dim, str) for dim in record)):
+        raise ValueError(
+            f"the stacked coordinate {name!r} records {STACKED_DIMS_ATTRIBUTE}={text!r}, which "
+            "is not a JSON list of dim names such as '[\"sample\", \"driver_member\"]', the "
+            "form stack_batch_dims writes (a space-separated record is the form before it "
+            "was JSON); restack the field from its unstacked form with "
+            "fields.stack_batch_dims."
+        )
+
+
+def check_companion_record_maps_names_to_dims(record: Any, text: Any) -> None:
+    """A :data:`STACKED_COMPANIONS_ATTRIBUTE` is a JSON object of name to dim names."""
+    if not (
+        isinstance(record, dict)
+        and all(
+            isinstance(on, list) and all(isinstance(dim, str) for dim in on)
+            for on in record.values()
+        )
+    ):
+        raise ValueError(
+            f"the stacked coordinate records {STACKED_COMPANIONS_ATTRIBUTE}={text!r}, which is "
+            "not a JSON object of coordinate name to dim names such as "
+            "'{\"source_index\": [\"driver_member\"]}', the form stack_batch_dims writes; "
+            "restack the field from its unstacked form with fields.stack_batch_dims."
+        )
 
 
 def check_stack_labels_are_present(
