@@ -651,14 +651,15 @@ def select_sites(
     KeyError
         If *ids* names a site the table does not hold.
     TypeError
-        If *ids* is one id, a string or a set, or holds a boolean, a float or
-        a value that is not a number; if *bbox* is not a sequence of four
-        numbers; or if *sample* is a boolean or not an integer.
+        If *ids* is one id, a string, a set or a mapping, or holds a
+        boolean, a float or a value that is not a number; if *bbox* is not a
+        sequence of four numbers; or if *sample* is a boolean or not an
+        integer.
     ValueError
         If *ids* holds duplicates or values that are not site ids, is a
-        two-dimensional array, or the table lists a site twice; if *bbox* is malformed; if *where* does not
-        return a usable mask; or if *sample* is negative or exceeds the number
-        of rows available.
+        two-dimensional array, or the table lists a site twice; if *bbox* is
+        malformed; if *where* does not return a usable mask; or if *sample*
+        is negative or exceeds the number of rows available.
 
     Notes
     -----

@@ -32,7 +32,7 @@ from pysipnet.parameters.base import ParameterDomain
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import niwot_parameters
+from conftest import niwot_parameters, site_table_of
 from sipnet_calibration import parameter_vector as module
 from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
 from sipnet_calibration.parameter_vector import (
@@ -887,8 +887,17 @@ def test_select_by_site_labels_takes_integer_classes(classes):
         vector.select(labels={"pft": np.int64(1)})
 
 
+@pytest.mark.parametrize("site_id", [0, -3, 2**31], ids=["zero", "negative", "past int32"])
+def test_a_site_table_whose_site_id_is_not_a_site_id_is_refused(site_id):
+    table = site_table_of(1, 27)
+    # Kept ascending, so the refusal is of the id itself, not of the order.
+    table["site_id"] = np.array([site_id, 27] if site_id < 1 else [1, site_id], dtype=np.int64)
+    with pytest.raises(ValueError, match=r"site_id\[\d\] must be a site id from 1 to 2147483647"):
+        example_parameter_vector(sites=table, pft=PFT[:2])
+
+
 def test_fields_carry_lon_lat_from_a_site_table():
-    table = pd.DataFrame({"site_id": [1, 27, 4711], "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]})
+    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
     vector = example_parameter_vector(sites=table, pft=PFT)
     fields = vector.fields(vector.sample(jax.random.key(0), n=2))
     np.testing.assert_allclose(fields["lon"], [-24.6, -78.6, -107.3])

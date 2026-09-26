@@ -197,7 +197,6 @@ from sipnet_calibration.observation.time_alignment import (
 )
 from sipnet_calibration.parameter_vector import ParameterVector
 from sipnet_calibration.sites import (
-    check_site_table_locates_the_sites,
     load_sites,
     site_locations,
     site_lookup,
@@ -353,8 +352,11 @@ class ForwardModel:
             output_variable_names, observation_vector
         )
         check_output_variables_can_be_returned(self.output_variable_names, model, freq)
-        self.site_table = _site_table_for(site_table, parameter_vector, self.sites)
-        self._site_locations = site_locations(self.sites, self.site_table)
+        chosen_site_table = _chosen_site_table(site_table, parameter_vector)
+        # site_locations checks the table locates the sites, once, before
+        # the lookup below relies on it.
+        self._site_locations = site_locations(self.sites, chosen_site_table)
+        self.site_table = site_lookup(chosen_site_table).loc[list(self.sites)]
         self._to_sipnet_table = to_sipnet_table or parameter_vector.sipnet_table
         self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
         self._base_values = _base_values_for(
@@ -625,16 +627,14 @@ def _output_variable_names(
     return names
 
 
-def _site_table_for(
-    site_table: pd.DataFrame | None, parameter_vector: ParameterVector, sites: Sequence[int]
+def _chosen_site_table(
+    site_table: pd.DataFrame | None, parameter_vector: ParameterVector
 ) -> pd.DataFrame:
-    """The site table's rows for *sites*, keyed on ``site_id``."""
-    chosen = site_table
-    if chosen is None:
-        own = parameter_vector.site_table
-        chosen = own if {LON, LAT} <= set(own.columns) else load_sites()
-    check_site_table_locates_the_sites(chosen, sites)
-    return site_lookup(chosen).loc[list(sites)]
+    """*site_table*, else the vector's own when it has ``lon``/``lat``, else the default one."""
+    if site_table is not None:
+        return site_table
+    own = parameter_vector.site_table
+    return own if {LON, LAT} <= set(own.columns) else load_sites()
 
 
 def _base_values_for(
