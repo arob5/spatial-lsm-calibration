@@ -29,8 +29,11 @@ run's. When a write or a check fails, the ``.partial`` files this run wrote are
 kept and their paths printed to standard error, and the error is raised. A
 kept file cannot be mistaken for the processed file, since its name differs,
 and it is what the failed check was looking at, so it is kept for inspection
-rather than deleted; a rerun replaces it. The destinations are never touched:
-each holds its previous good file, or nothing.
+rather than deleted; a rerun replaces it. A directory the run made for a
+destination is removed again if the failure leaves it empty. The destinations
+are not touched: each holds its previous good file, or nothing -- unless a
+write wrote a destination itself rather than the ``.partial`` path it was
+given, which is caught before any check runs and reported as such.
 
 The final rename is :meth:`pathlib.Path.replace`, which is atomic on a POSIX
 filesystem, so each destination is at every moment either its previous file
@@ -85,7 +88,8 @@ def write_checked(path: Path | str, write: FileStep, check: FileStep) -> Path:
     Parameters
     ----------
     path:
-        The destination. Its directory is created if absent.
+        The destination. Its directory is created if absent, and removed
+        again if a failure leaves it empty.
     write:
         Called with the ``.partial`` path; writes the whole file there.
     check:
@@ -100,10 +104,15 @@ def write_checked(path: Path | str, write: FileStep, check: FileStep) -> Path:
 
     Raises
     ------
+    FileNotFoundError
+        If *write* did not write the ``.partial`` file.
+    ValueError
+        If *write* changed *path* itself.
     BaseException
         Whatever *write*, *check* or the final rename raises, an interrupt
         included. The ``.partial`` file, if this run wrote one, is then kept
-        and its path printed to standard error, and *path* is left as it was.
+        and its path printed to standard error, and *path* is left as it was
+        unless *write* wrote it.
     """
     return write_checked_together([(path, write, check)])[0]
 
@@ -128,6 +137,11 @@ def write_checked_together(files: Iterable[tuple[Path | str, FileStep, FileStep]
 
     Raises
     ------
+    ValueError
+        If two files have one destination, before anything is written; or if
+        a write changed a destination rather than only its ``.partial`` file.
+    FileNotFoundError
+        If a write did not write its ``.partial`` file.
     BaseException
         Whatever a write, a check or a rename raises, an interrupt included.
 
@@ -136,7 +150,10 @@ def write_checked_together(files: Iterable[tuple[Path | str, FileStep, FileStep]
     **All or nothing for a failed write or check.** If any write or check
     fails, no destination is touched: each keeps its previous file, or
     nothing, and the ``.partial`` files this run wrote are kept and their
-    paths printed.
+    paths printed. Every write is checked to have written its ``.partial``
+    file and left its destination alone before any check runs; a write that
+    wrote its destination has already replaced it, and the report says so
+    rather than that it is unchanged.
 
     **A failed rename is reported.** The renames are one per file, so they
     cannot be made atomic together. If the rename of one file fails, the
@@ -146,18 +163,26 @@ def write_checked_together(files: Iterable[tuple[Path | str, FileStep, FileStep]
     again.
     """
     staged = [_StagedFile(Path(path), write, check) for path, write, check in files]
+    check_destinations_are_distinct([file.destination for file in staged])
+    made = _make_directories([file.destination.parent for file in staged])
     for file in staged:
-        file.destination.parent.mkdir(parents=True, exist_ok=True)
         # A stale partial from an earlier run would otherwise be reported as
         # this run's, or be what a check validates if a write wrote nothing.
         file.partial.unlink(missing_ok=True)
+    before = {file.destination: _file_state(file.destination) for file in staged}
     try:
         for file in staged:
             file.write(file.partial)
         for file in staged:
+            check_write_left_the_destination_alone(
+                file.destination, before[file.destination], partial=file.partial
+            )
+            check_partial_was_written(file.partial)
+        for file in staged:
             file.check(file.partial)
     except BaseException:
-        _report_kept_partials(staged)
+        _report_kept_partials(staged, before)
+        _remove_empty_directories(made)
         raise
     moved: list[_StagedFile] = []
     try:
@@ -165,7 +190,7 @@ def write_checked_together(files: Iterable[tuple[Path | str, FileStep, FileStep]
             file.partial.replace(file.destination)
             moved.append(file)
     except BaseException:
-        _report_failed_move(staged, moved)
+        _report_failed_move(staged, moved, before)
         raise
     return [file.destination for file in staged]
 
@@ -206,24 +231,109 @@ class _StagedFile:
         return partial_path(self.destination)
 
 
-def _report_kept_partials(staged: list[_StagedFile]) -> None:
-    """Print where each ``.partial`` this run wrote is, and that its destination is unchanged."""
+#: What a destination was before the writes: its inode, size and modification
+#: time, or ``None`` when it did not exist.
+_FileState = tuple[int, int, int] | None
+
+
+def _file_state(path: Path) -> _FileState:
+    """*path*'s inode, size and modification time, or ``None`` if it does not exist."""
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return status.st_ino, status.st_size, status.st_mtime_ns
+
+
+def _make_directories(directories: list[Path]) -> list[Path]:
+    """Create each of *directories* that is absent; the ones made, deepest first."""
+    made: list[Path] = []
+    for directory in directories:
+        missing = [d for d in (directory, *directory.parents) if not d.exists()]
+        directory.mkdir(parents=True, exist_ok=True)
+        made.extend(d for d in missing if d not in made)
+    return sorted(made, key=lambda d: len(d.parts), reverse=True)
+
+
+def _remove_empty_directories(directories: list[Path]) -> None:
+    """Remove each of *directories*, deepest first, that a failure left empty."""
+    for directory in directories:
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+
+
+def _report_kept_partials(staged: list[_StagedFile], before: dict[Path, _FileState]) -> None:
+    """Print where each ``.partial`` this run wrote is, and what became of its destination."""
     for file in staged:
+        changed = _file_state(file.destination) != before.get(file.destination)
         if file.partial.exists():
+            status = (
+                f"{file.destination} was changed by the write too and no longer holds its "
+                "previous content"
+                if changed
+                else f"{file.destination} is unchanged"
+            )
             print(
-                f"kept the partial file for inspection: {file.partial}; {file.destination} "
-                "is unchanged, and a rerun overwrites the partial file.",
+                f"kept the partial file for inspection: {file.partial}; {status}, and a "
+                "rerun overwrites the partial file.",
+                file=sys.stderr,
+            )
+        elif changed:
+            print(
+                f"the write wrote {file.destination} rather than {file.partial}, so "
+                f"{file.destination} no longer holds its previous content; rerun once the "
+                "write writes the path it is given.",
                 file=sys.stderr,
             )
 
 
-def _report_failed_move(staged: list[_StagedFile], moved: list[_StagedFile]) -> None:
+def _report_failed_move(
+    staged: list[_StagedFile], moved: list[_StagedFile], before: dict[Path, _FileState]
+) -> None:
     """Print which destinations were replaced before a rename failed, and which were not."""
-    _report_kept_partials([file for file in staged if file not in moved])
+    _report_kept_partials([file for file in staged if file not in moved], before)
     if moved:
         print(
             "the files were not all moved into place: "
             f"{[str(file.destination) for file in moved]} hold the new content and the "
             "rest their previous content; rerun to write them together.",
             file=sys.stderr,
+        )
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_destinations_are_distinct(destinations: list[Path]) -> None:
+    """No destination is given twice, which would move one file over the other."""
+    seen: set[Path] = set()
+    for destination in destinations:
+        resolved = destination.resolve()
+        if resolved in seen:
+            raise ValueError(
+                f"write_checked_together was given {destination} more than once; give "
+                "each file once."
+            )
+        seen.add(resolved)
+
+
+def check_write_left_the_destination_alone(
+    destination: Path, before: _FileState, *, partial: Path
+) -> None:
+    """A write changed only its ``.partial`` file, not its destination."""
+    if _file_state(destination) != before:
+        raise ValueError(
+            f"the write changed {destination}; a write writes only the path it is "
+            f"given, {partial}, which is moved into place once it is checked."
+        )
+
+
+def check_partial_was_written(partial: Path) -> None:
+    """A write wrote its ``.partial`` file."""
+    if not partial.is_file():
+        raise FileNotFoundError(
+            f"the write did not write {partial}; a write writes the whole file to the "
+            "path it is given."
         )

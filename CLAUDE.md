@@ -589,11 +589,15 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   pass, so a failed run cannot leave a corrupt file at the canonical path.
   On a failure the `.partial` file is **kept for inspection and its path
   printed**; it cannot be mistaken for the processed file, and a rerun
-  overwrites it (a stale `.partial` is removed before a run writes). Every
+  overwrites it (a stale `.partial` is removed before a run writes). A write
+  must write the path it is given and nothing else, which is checked before
+  any check runs; a directory made for the destination is removed if a
+  failure leaves it empty. Every
   script that writes a processed file, a tracked raw input or a generated
   definition does this, with no protocol of its own; files that belong
-  together go through `io.write_checked_together`, which moves none of them
-  unless all were written and checked. A survey script's `--out` report is
+  together go through `io.write_checked_together`, which refuses one
+  destination given twice and moves none of them unless all were written and
+  checked. A survey script's `--out` report is
   not such a file.
 
 ## Writing conventions

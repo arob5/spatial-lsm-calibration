@@ -95,9 +95,53 @@ class TestWriteChecked:
         out = tmp_path / "product.csv"
         partial_path(out).write_text("stale")
         seen = []
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(FileNotFoundError, match="did not write"):
             write_checked(out, lambda partial: None, lambda partial: seen.append(partial.exists()))
-        assert seen == [False] and not out.exists()
+        assert seen == [] and not out.exists()
+
+    def test_a_write_that_writes_the_destination_is_caught_and_reported_truthfully(
+        self, tmp_path, capsys
+    ):
+        out = tmp_path / "product.csv"
+        out.write_text("previous\n")
+        seen = []
+        with pytest.raises(ValueError, match="changed .*product.csv; a write writes only"):
+            write_checked(out, lambda partial: out.write_text("direct\n"), seen.append)
+        assert seen == []
+        err = capsys.readouterr().err
+        assert "unchanged" not in err
+        assert f"{out} no longer holds its previous content" in err
+
+    def test_a_write_that_writes_both_is_not_reported_as_leaving_the_destination(
+        self, tmp_path, capsys
+    ):
+        out = tmp_path / "product.csv"
+        out.write_text("previous\n")
+
+        def both(partial):
+            partial.write_text("new\n")
+            out.write_text("direct\n")
+
+        with pytest.raises(ValueError, match="a write writes only"):
+            write_checked(out, both, lambda partial: None)
+        err = capsys.readouterr().err
+        assert str(partial_path(out)) in err and "unchanged" not in err
+
+    def test_a_failed_run_leaves_no_directory_it_made_empty(self, tmp_path):
+        out = tmp_path / "new" / "nested" / "product.csv"
+
+        def no_write(partial):
+            raise OSError("no space")
+
+        with pytest.raises(OSError):
+            write_checked(out, no_write, lambda partial: None)
+        assert not (tmp_path / "new").exists()
+
+    def test_a_failed_check_keeps_the_directory_holding_the_partial(self, tmp_path):
+        out = tmp_path / "new" / "product.csv"
+        with pytest.raises(ValueError):
+            write_checked(out, _write("bad\n"), _refuse)
+        assert partial_path(out).read_text() == "bad\n"
 
     def test_an_interrupt_keeps_the_partial_and_prints_its_path(self, tmp_path, capsys):
         out = tmp_path / "product.csv"
@@ -139,6 +183,20 @@ class TestWriteCheckedTogether:
         err = capsys.readouterr().err
         for name in ("a", "b"):
             assert str(partial_path(tmp_path / f"{name}.txt")) in err
+
+    def test_one_destination_given_twice_is_refused_before_anything_is_written(
+        self, tmp_path
+    ):
+        out = tmp_path / "a.txt"
+        out.write_text("previous")
+        with pytest.raises(ValueError, match="a.txt more than once"):
+            write_checked_together(
+                [
+                    (out, _write("first"), lambda partial: None),
+                    (tmp_path / "." / "a.txt", _write("second"), lambda partial: None),
+                ]
+            )
+        assert out.read_text() == "previous" and not partial_path(out).exists()
 
     def test_every_write_runs_before_any_check(self, tmp_path):
         calls = []
