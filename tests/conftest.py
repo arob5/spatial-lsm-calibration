@@ -349,7 +349,7 @@ def real_site_table():
     """The real site table, or a skip when the ingest has not been run here.
 
     Anything that labels a field with a ``site`` reaches for this, directly or
-    through :func:`~sipnet_calibration.fields.stack_sipnet_outputs`, so the
+    through :func:`~sipnet_calibration.fields.stack_model_outputs`, so the
     guard belongs in one place rather than in each module that happens to.
     """
     from sipnet_calibration.sites import load_sites

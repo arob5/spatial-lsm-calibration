@@ -746,9 +746,9 @@ class TestRealFiles:
     def test_a_run_and_its_drivers_share_one_time_axis(self, real_drivers, site_1_result):
         """The run's output and the drivers it ran on are aligned by
         construction, not by any code here: both axes are pySIPNET's."""
-        from sipnet_calibration.fields import from_sipnet_output
+        from sipnet_calibration.fields import label_run
 
-        nee = from_sipnet_output(site_1_result, ["nee"])["net_ecosystem_exchange"]
+        nee = label_run(site_1_result, output_variable_names=["nee"])["net_ecosystem_exchange"]
         par = driver_fields(real_drivers)["photosynthetically_active_radiation"]
         head = par.sel(site=1, source_index=1).isel(time=slice(0, nee.sizes["time"]))
         for name in TIME_COORD_NAMES:

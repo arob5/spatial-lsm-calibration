@@ -561,8 +561,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     -----
     ``time_bounds`` does not ride on a field, its ``bounds`` dimension being no
     field dimension, so ``time``'s ``bounds`` attribute is dropped with it, as
-    :func:`sipnet_calibration.fields.from_sipnet_output` does for a model
-    field.
+    :func:`sipnet_calibration.fields.label_run` does for a model output.
     """
     missing = [name for name in DRIVER_VARIABLE_NAMES if name not in dataset.data_vars]
     if missing:
