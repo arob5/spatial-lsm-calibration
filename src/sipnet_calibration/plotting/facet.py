@@ -15,7 +15,7 @@ by default, one color scale with a single colorbar:
 
 ===========================  =================================================
 :func:`plot_map_grid`        one map per entry of a ``dict`` of fields
-:func:`plot_map_by`          one map per batch label, or per time step
+:func:`plot_map_by`          one map per batch label, or per time label
 :func:`plot_map_quantiles`   one map per quantile over a batch dim
 ===========================  =================================================
 
@@ -39,13 +39,13 @@ Usage
     figure, axes = plot_by_site(air_temperature, sites=six_sites, share="y")
 
     # One map per quantile over the initial conditions' members, on one scale.
-    member = "initial_condition_member"
-    figure, axes = plot_map_quantiles(wood, batch_dim=member, extent="CONUS", log=True)
+    batch_dim = "initial_condition_member"
+    figure, axes = plot_map_quantiles(wood, batch_dim=batch_dim, extent="CONUS", log=True)
 
     # Mean and standard deviation, each on its own scale.
     figure, axes = plot_map_grid({
-        "mean": summarize_batch(wood, "mean", batch_dim=member),
-        "standard deviation": summarize_batch(wood, "standard_deviation", batch_dim=member),
+        "mean": summarize_batch(wood, "mean", batch_dim=batch_dim),
+        "standard deviation": summarize_batch(wood, "standard_deviation", batch_dim=batch_dim),
     })
 
     # The general form.
@@ -69,7 +69,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from sipnet_calibration.conventions import SAMPLE, SITE
-from sipnet_calibration.fields import validate_field
+from sipnet_calibration.fields import batch_dims, validate_field
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
@@ -382,14 +382,16 @@ def plot_map_grid(
     ------
     ValueError
         If *fields* is empty or *scale* is not in :data:`SCALE_MODES`, and
-        whatever :func:`~sipnet_calibration.plotting.maps.plot_map` raises for a
-        panel.
+        whatever :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map`
+        raises for a panel, every panel checked before any is drawn.
     """
-    if not fields:
-        raise ValueError("fields is empty; there is nothing to draw")
-    if scale not in SCALE_MODES:
-        raise ValueError(f"scale must be one of {list(SCALE_MODES)}, got {scale!r}")
+    check_map_grid_has_a_field(fields)
+    check_scale_mode_is_known(scale)
     arrays = list(fields.values())
+    # Every panel is checked before the frame and a shared scale read their
+    # values, which a panel that is not a map would break with a raw error.
+    for array in arrays:
+        maps.check_field_is_a_map(array)
     bounds = maps.map_bounds(arrays, extent)
     color = {k: map_kwargs.pop(k) for k in maps.COLOR_KEYWORDS if k in map_kwargs}
     shared = maps.color_scale(arrays, bounds=bounds, **color) if scale == "shared" else None
@@ -419,7 +421,7 @@ def plot_map_by(
     scale: str = "shared",
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One map per value of *dim*: per batch label, or per time step.
+    """One map per value of *dim*: per batch label, or per time label.
 
     Parameters
     ----------
@@ -451,13 +453,13 @@ def plot_map_by(
     ValueError
         If *field* is not a field
         (:func:`sipnet_calibration.fields.validate_field`); if it has no
-        *dim*, *values* names one it does not hold, or *n_max* is less than 1.
+        *dim*, or a batch dim other than *dim* (with advice on each); if
+        *values* names one it does not hold, or *n_max* is less than 1; and
+        whatever :func:`plot_map_grid` raises for a panel.
     """
     validate_field(field)
-    if dim not in field.dims:
-        raise ValueError(
-            f"plot_map_by needs a DataArray with a {dim!r} dimension; got {list(field.dims)}"
-        )
+    check_field_has_the_dim_to_split(field, dim)
+    check_field_has_no_other_batch_dim(field, dim, "plot_map_by draws one map per")
     n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
@@ -510,13 +512,15 @@ def plot_map_quantiles(
     TypeError
         If *dim=* is passed: the batch dim is named with *batch_dim*.
     ValueError
-        If *quantiles* is empty, and whatever
+        If *quantiles* is empty; if *field* has a batch dim other than
+        *batch_dim* (with advice on each); and whatever
         :func:`~sipnet_calibration.plotting.maps.summarize_batch` raises.
     """
     check_quantile_grid_keywords_are_not_retired(grid_kwargs)
     quantiles = [float(q) for q in quantiles]
-    if not quantiles:
-        raise ValueError("quantiles must name at least one quantile")
+    check_quantiles_are_given(quantiles)
+    validate_field(field)
+    check_field_has_no_other_batch_dim(field, batch_dim, "quantile maps are taken over")
     panels = {
         maps.quantile_label(q): maps.summarize_batch(field, q, batch_dim=batch_dim)
         for q in quantiles
@@ -548,6 +552,43 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_map_grid_has_a_field(fields: Mapping[str, Any]) -> None:
+    """A map grid is given at least one field."""
+    if not fields:
+        raise ValueError("fields is empty; there is nothing to draw. Pass {title: field}.")
+
+
+def check_scale_mode_is_known(scale: str) -> None:
+    """The scale mode of a map grid is one of :data:`SCALE_MODES`."""
+    if scale not in SCALE_MODES:
+        raise ValueError(f"scale must be one of {list(SCALE_MODES)}, got {scale!r}")
+
+
+def check_field_has_the_dim_to_split(field: xr.DataArray, dim: str) -> None:
+    """The field to draw one map per value of *dim* has *dim*."""
+    if dim not in field.dims:
+        raise ValueError(
+            f"plot_map_by needs a DataArray with a {dim!r} dimension; got "
+            f"{list(field.dims)}. Pass one of them, such as 'time' or a batch dim."
+        )
+
+
+def check_field_has_no_other_batch_dim(field: xr.DataArray, dim: str, what: str) -> None:
+    """Every panel is one map: no batch dim beside *dim*, the one the panels are over."""
+    others = [d for d in batch_dims(field) if d != dim]
+    if others:
+        raise ValueError(
+            f"{what} {dim}, but the field also has the batch dim(s) {others}, so a panel "
+            "would not be one map; " + "; ".join(maps.batch_dim_advice(field, others))
+        )
+
+
+def check_quantiles_are_given(quantiles: Sequence[float]) -> None:
+    """At least one quantile is asked for."""
+    if not quantiles:
+        raise ValueError("quantiles must name at least one quantile, such as (0.05, 0.5, 0.95).")
 
 
 def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any]) -> None:

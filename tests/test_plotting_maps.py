@@ -613,3 +613,112 @@ def test_plot_map_quantiles_refuses_the_retired_dim_keyword_naming_batch_dim(ens
     """It fell through to matplotlib as an unknown artist property."""
     with pytest.raises(TypeError, match="batch_dim='sample'"):
         plot_map_quantiles(ensemble, dim="sample")
+
+
+# ── the entry points validate first ───────────────────────────────────────────
+
+
+def _without_units(field):
+    bare = field.copy()
+    bare.attrs = {}
+    return bare
+
+
+def test_a_table_is_refused_as_a_type_error(ax):
+    import pandas as pd
+
+    with pytest.raises(TypeError, match="expected an xarray.DataArray"):
+        plot_map(pd.DataFrame({"x": [1.0]}), ax=ax)
+
+
+def test_summarize_batch_refuses_a_field_without_units(ensemble):
+    """With its validate_field removed, a field without units was summarized."""
+    with pytest.raises(ValueError, match="attrs\\['units'\\]"):
+        summarize_batch(_without_units(ensemble), "mean")
+
+
+def test_plot_map_by_refuses_a_non_field_in_the_fields_words(ensemble):
+    import matplotlib.pyplot as plt
+
+    before = plt.get_fignums()
+    with pytest.raises(ValueError, match="attrs\\['units'\\]; set them"):
+        plot_map_by(_without_units(ensemble), "sample")
+    assert plt.get_fignums() == before
+
+
+def test_animate_map_refuses_a_non_field_in_the_fields_words(dense):
+    import matplotlib.pyplot as plt
+
+    before = plt.get_fignums()
+    with pytest.raises(ValueError, match="attrs\\['units'\\]; set them"):
+        animate_map(_without_units(frames(dense)))
+    assert plt.get_fignums() == before
+
+
+def test_quantile_maps_take_the_batch_dim_named(ensemble):
+    renamed = ensemble.rename(sample="initial_condition_member")
+    figure, axes = plot_map_quantiles(renamed, batch_dim="initial_condition_member")
+    assert len(np.ravel(axes)) == 3
+
+
+# ── a second batch dim is refused before a shared scale is computed ───────────
+
+
+def _two_batch_dims(ensemble):
+    return ensemble.expand_dims(driver_member=[0, 1]).transpose("sample", "driver_member", "site")
+
+
+@pytest.mark.parametrize("scale", ["shared", "each"])
+def test_plot_map_by_refuses_a_second_batch_dim_with_advice(ensemble, scale):
+    """With a shared scale it crashed with a raw IndexError."""
+    with pytest.raises(ValueError, match="'driver_member'.*plot_map_quantiles"):
+        plot_map_by(_two_batch_dims(ensemble), "sample", scale=scale)
+
+
+def test_plot_map_quantiles_refuses_a_second_batch_dim_with_advice(ensemble):
+    with pytest.raises(ValueError, match="'driver_member'.*summarize_batch"):
+        plot_map_quantiles(_two_batch_dims(ensemble))
+
+
+def test_a_shared_map_grid_checks_every_panel_first(ensemble):
+    with pytest.raises(ValueError, match="'sample'.*plot_map_by"):
+        plot_map_grid({"a": ensemble, "b": ensemble}, scale="shared")
+
+
+def test_animating_a_batch_dim_of_a_field_with_time_is_refused(ensemble):
+    moving = ensemble.expand_dims(time=pd_dates(2)).transpose("sample", "site", "time")
+    with pytest.raises(ValueError, match="for 'time'"):
+        animate_map(moving, "sample")
+
+
+def pd_dates(n):
+    import pandas as pd
+
+    return pd.date_range("2012-01-01", periods=n)
+
+
+# ── one definition of categorical ─────────────────────────────────────────────
+
+
+def test_a_boolean_field_is_mapped_as_classes(ax, dense):
+    """``run_succeeded`` and ``driver_present`` validate, and were refused for units."""
+    flags = (dense > dense.median()).rename("run_succeeded")
+    flags.attrs = {"long_name": "Whether the run succeeded"}
+    plot_map(flags, ax=ax)
+    assert data_artist(ax).get_array().size == dense.sizes["site"]
+
+
+def test_flag_values_alone_are_mapped_as_classes(ax, categorical):
+    codes = categorical.copy()
+    codes.attrs = {"long_name": "Class", "flag_values": np.array([0, 1, 2], dtype=np.int8)}
+    plot_map(codes, ax=ax)
+    np.testing.assert_array_equal(data_artist(ax).get_array(), [0.0, 2.0, 2.0, 1.0])
+
+
+def test_run_succeeded_is_mapped(ax):
+    from conftest import make_field
+
+    field = make_field(("sample", "site"))
+    succeeded = (field > -10).rename("run_succeeded")
+    succeeded.attrs = {"long_name": "Whether the run succeeded"}
+    plot_map(succeeded.isel(sample=0), ax=ax)

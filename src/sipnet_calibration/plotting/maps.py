@@ -21,8 +21,8 @@ The kind of map follows from the data, never from a mode keyword:
 Kind                  Dimensions           Recognized by
 ====================  ===================  =====================================
 values at sites       ``(site,)``          ``site`` dim, numeric values
-classes at sites      ``(site,)``          a ``flag_meanings`` attribute, or
-                                           string values
+classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`:
+                                           CF flags, strings or booleans
 raster                ``(lat, lon)``       ``lat`` and ``lon`` are dimensions
 ====================  ===================  =====================================
 
@@ -40,7 +40,9 @@ legend shows in their place; it is this project's attribute, not CF's.
 :func:`sipnet_calibration.site_labels.site_labels_field` makes one from a
 site-labels product. A class keeps its color in every map of the same product,
 because colors are keyed by the class's position in ``flag_meanings`` and not
-by which classes a map happens to show.
+by which classes a map happens to show. Without ``flag_meanings`` the classes
+are the ``flag_values`` codes, ``false`` and ``true`` for a boolean field
+(``run_succeeded``, ``driver_present``), or the strings present, sorted.
 
 **Missing values.** A site that is in the field with a missing value is drawn
 as missing: no marker, or a transparent cell. A site that is not in the field
@@ -137,7 +139,7 @@ from matplotlib.colors import BoundaryNorm, Colormap, ListedColormap, LogNorm, N
 from matplotlib.patches import Patch
 
 from sipnet_calibration.conventions import LAT, LON, SAMPLE, SITE, TIME, FrozenMapping
-from sipnet_calibration.fields import batch_dims, validate_field
+from sipnet_calibration.fields import batch_dims, is_categorical, validate_field
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
     DEFAULT_LAYERS,
@@ -159,6 +161,8 @@ __all__ = [
     "SiteRenderer",
     "Triangles",
     "animate_map",
+    "batch_dim_advice",
+    "check_field_is_a_map",
     "color_scale",
     "coordinate_label",
     "map_bounds",
@@ -474,7 +478,7 @@ def summarize_batch(
             "batch_dim= naming one."
         )
     dim = batch_dim
-    if _is_categorical(field):
+    if is_categorical(field):
         raise ValueError("a categorical field has no mean, median or quantiles of its codes")
     if isinstance(stat, str):
         reducers = {
@@ -536,14 +540,19 @@ def animate_map(
     TypeError
         If *field* is not a ``DataArray``.
     ValueError
-        If *field* is not a field (:func:`sipnet_calibration.fields.validate_field`);
-        if it has no *dim*, or a batch dim other than *dim*; or if a single
-        step of it is not a map.
+        If *field* is not a field
+        (:func:`sipnet_calibration.fields.validate_field`); if it has no
+        *dim*, or a batch dim other than *dim*; or if a single step of it is
+        not a map (:func:`check_field_is_a_map`), checked before any frame is
+        drawn.
     """
     validate_field(field)
-    _check_animation_dim_is_present(field, dim)
-    _check_animation_has_no_batch_dim(field, dim)
+    check_animation_dim_is_present(field, dim)
+    check_animation_has_no_batch_dim(field, dim)
     frames = [field.isel({dim: i}) for i in range(field.sizes[dim])]
+    # Every frame has the first's dims, so checking it checks them all, before
+    # the shared scale reads their values.
+    check_field_is_a_map(frames[0])
     color, rest = _split_color_keywords(map_kwargs)
     bounds = map_bounds(frames, rest.pop("extent", None))
     scale = color_scale(frames, bounds=bounds, **color)
@@ -650,7 +659,7 @@ def color_scale(
         disagree on their classes; if *colors* names an unknown class; if
         *log* is combined with *center* or meets a nonpositive value.
     """
-    categorical = [_is_categorical(field) for field in fields]
+    categorical = [is_categorical(field) for field in fields]
     if any(categorical) and not all(categorical):
         raise ValueError("a color scale cannot be shared by categorical and continuous fields")
     if all(categorical) and fields:
@@ -681,6 +690,32 @@ def coordinate_label(dim: str, value: Any) -> str:
         stamp = pd.Timestamp(value)
         return stamp.strftime("%Y-%m-%d") if stamp == stamp.normalize() else stamp.strftime("%Y-%m-%d %H:%M")
     return f"{dim} {value}"
+
+
+def batch_dim_advice(field: xr.DataArray, dims: Sequence[str]) -> list[str]:
+    """What to do with each batch dim in *dims* before mapping *field*, one sentence each.
+
+    Parameters
+    ----------
+    field:
+        The field that carries them.
+    dims:
+        Its batch dims to advise on.
+
+    Returns
+    -------
+    list of str
+        For each dim, the functions that draw it, select it or reduce it.
+    """
+    return [
+        f"for the batch dim {dim!r}, draw one map per label with "
+        f"facet.plot_map_by(field, {dim!r}), quantile maps with "
+        f"facet.plot_map_quantiles(field, batch_dim={dim!r}), select one with "
+        f"field.isel({dim}=0), or reduce first with "
+        f"maps.summarize_batch(field, stat, batch_dim={dim!r})"
+        for dim in dims
+    ]
+
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
@@ -739,11 +774,12 @@ def _draw_map(field, ax, *, render, extent, colorbar, basemap, graticule, style,
     The scale is *scale* when given, as the grids and animations pass it, and
     otherwise resolved from *color* over this field alone.
     """
-    is_raster = _check_map_field(field)
+    check_field_is_a_map(field)
+    is_raster = SITE not in field.dims
     renderer = None if is_raster else _resolved_renderer(render)
     if is_raster and render is not None:
         raise ValueError("render applies to site fields; a raster is drawn cell by cell")
-    categorical = _is_categorical(field)
+    categorical = is_categorical(field)
     if categorical and renderer is not None and renderer.interpolates:
         raise ValueError(
             "a categorical field cannot be interpolated between sites; use "
@@ -833,7 +869,7 @@ def _plotted_values(field: xr.DataArray, scale: ColorScale | None) -> np.ndarray
     """The numbers a map colors: the values, or each class's position."""
     if SITE not in field.dims:
         field = field.transpose(LAT, LON)
-    if not _is_categorical(field):
+    if not is_categorical(field):
         values = np.asarray(field.values, dtype=float)
     else:
         categories = scale.categories if scale is not None and scale.categories else _categories(field)
@@ -867,16 +903,27 @@ def _cell_edges(centers: np.ndarray) -> np.ndarray:
     return np.concatenate([[2 * centers[0] - middle[0]], middle, [2 * centers[-1] - middle[-1]]])
 
 
-def _is_categorical(field: xr.DataArray) -> bool:
-    return "flag_meanings" in field.attrs or np.asarray(field.values).dtype.kind in "OUS"
+#: The classes of a boolean field, in the order of their codes.
+_BOOLEAN_CLASSES: tuple[str, ...] = ("false", "true")
 
 
 def _categories(field: xr.DataArray) -> tuple[str, ...]:
+    """The classes of a categorical field, in the order their colors are keyed by."""
     if "flag_meanings" in field.attrs:
         return tuple(str(field.attrs["flag_meanings"]).split())
-    values = np.asarray(field.values).ravel()
-    present = {str(v) for v in values if isinstance(v, str) and v != ""}
+    if "flag_values" in field.attrs:
+        return tuple(str(code) for code in np.asarray(field.attrs["flag_values"]).ravel())
+    if field.dtype.kind == "b":
+        return _BOOLEAN_CLASSES
+    present = {name for name in map(_class_name, np.asarray(field.values).ravel()) if name}
     return tuple(sorted(present))
+
+
+def _class_name(value: Any) -> str | None:
+    """The class a string or bytes value names, or ``None`` for a missing one."""
+    if isinstance(value, bytes):
+        value = value.decode()
+    return value if isinstance(value, str) and value != "" else None
 
 
 def _display_names(field: xr.DataArray, categories: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -890,10 +937,11 @@ def _display_names(field: xr.DataArray, categories: tuple[str, ...]) -> tuple[st
 def _class_positions(field: xr.DataArray, categories: tuple[str, ...]) -> np.ndarray:
     """Each value's position in *categories*, as floats, ``NaN`` where missing."""
     values = np.asarray(field.values)
-    if "flag_meanings" not in field.attrs:
+    if field.dtype.kind == "b" and not {"flag_values", "flag_meanings"} & set(field.attrs):
+        return values.astype(float)
+    if not {"flag_values", "flag_meanings"} & set(field.attrs):
         lookup = {name: position for position, name in enumerate(categories)}
-        flat = [lookup.get(str(v), np.nan) if isinstance(v, str) and v != "" else np.nan
-                for v in values.ravel()]
+        flat = [lookup.get(_class_name(v), np.nan) for v in values.ravel()]
         return np.asarray(flat, dtype=float).reshape(values.shape)
     codes = np.asarray(field.attrs.get("flag_values", np.arange(len(categories))), dtype=float).ravel()
     _check_flags_match(codes, categories)
@@ -988,75 +1036,93 @@ def _automatic_marker_area(ax, x, y, values, bounds) -> float:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_map_field(field: xr.DataArray) -> bool:
-    """Raise unless *field* is a map; return whether it is a raster."""
+def check_field_is_a_map(field: Any) -> None:
+    """*field* is a map: a field with a ``site`` dim alone, or a ``(lat, lon)`` raster.
+
+    Runs :func:`~sipnet_calibration.fields.validate_field` (after refusing a
+    non-``DataArray`` with this module's advice), then
+    :func:`check_site_map_is_on_site_alone` or
+    :func:`check_raster_is_on_lat_and_lon_alone`, and
+    :func:`check_field_has_a_spatial_dim_to_map` when it is neither.
+    """
+    check_field_is_a_dataarray_to_map(field)
+    validate_field(field)
+    if SITE in field.dims:
+        check_site_map_is_on_site_alone(field)
+    elif {LAT, LON} <= set(field.dims):
+        check_raster_is_on_lat_and_lon_alone(field)
+    else:
+        check_field_has_a_spatial_dim_to_map(field)
+
+
+def check_field_is_a_dataarray_to_map(field: Any) -> None:
+    """A map is drawn from a ``DataArray``."""
     if not isinstance(field, xr.DataArray):
         raise TypeError(
             f"expected an xarray.DataArray, got {type(field).__name__}. Tables and "
             "files are converted by an adapter, such as "
             "sipnet_calibration.site_labels.site_labels_field."
         )
-    validate_field(field)
-    dims = set(field.dims)
-    if SITE in dims:
-        _check_only(field, {SITE})
-        for name in (LON, LAT):
-            if name not in field.coords or field.coords[name].dims != (SITE,):
-                raise ValueError(
-                    f"a site map needs {name!r} as a coordinate on 'site'. The readers in "
-                    "sipnet_calibration add it; for an array built by hand, join it from "
-                    "sipnet_calibration.sites.load_sites()."
-                )
-        return False
-    if {LAT, LON} <= dims:
-        _check_only(field, {LAT, LON})
-        for name in (LAT, LON):
-            values = np.asarray(field[name].values, dtype=float)
-            steps = np.diff(values)
-            if values.ndim != 1 or not (np.all(steps > 0) or np.all(steps < 0)):
-                raise ValueError(f"a raster's {name!r} coordinate must be one-dimensional and strictly monotonic")
-        return True
+
+
+def check_site_map_is_on_site_alone(field: xr.DataArray) -> None:
+    """A site map has no dim but ``site``, and ``lon``/``lat`` on it."""
+    _check_only(field, {SITE})
+    for name in (LON, LAT):
+        if name not in field.coords or field.coords[name].dims != (SITE,):
+            raise ValueError(
+                f"a site map needs {name!r} as a coordinate on 'site'. The readers in "
+                "sipnet_calibration add it; for an array built by hand, join it from "
+                "sipnet_calibration.sites.load_sites()."
+            )
+
+
+def check_raster_is_on_lat_and_lon_alone(field: xr.DataArray) -> None:
+    """A raster has no dims but ``lat`` and ``lon``, each one-dimensional and monotonic."""
+    _check_only(field, {LAT, LON})
+    for name in (LAT, LON):
+        values = np.asarray(field[name].values, dtype=float)
+        steps = np.diff(values)
+        if values.ndim != 1 or not (np.all(steps > 0) or np.all(steps < 0)):
+            raise ValueError(
+                f"a raster's {name!r} coordinate must be one-dimensional and strictly "
+                "monotonic; sort it with .sortby, or regrid onto a regular lat/lon grid."
+            )
+
+
+def check_field_has_a_spatial_dim_to_map(field: xr.DataArray) -> None:
+    """A map has a ``site`` dim, or ``lat`` and ``lon`` dims."""
     raise ValueError(
         f"a map needs a 'site' dimension, or 'lat' and 'lon' dimensions for a raster; "
-        f"the array has {list(field.dims)}"
+        f"the array has {list(field.dims)}. Select a batch or time label away, or map "
+        "each one with facet.plot_map_by."
     )
 
 
-def _check_animation_dim_is_present(field: xr.DataArray, dim: str) -> None:
+def check_animation_dim_is_present(field: xr.DataArray, dim: str) -> None:
     """The field to animate has the dim it is played through."""
     if dim not in field.dims:
         raise ValueError(
-            f"animate_map needs a DataArray with a {dim!r} dimension; got {list(field.dims)}"
+            f"animate_map needs a DataArray with a {dim!r} dimension; got "
+            f"{list(field.dims)}. Pass dim= naming one of them, such as 'time'."
         )
 
 
-def _check_animation_has_no_batch_dim(field: xr.DataArray, dim: str) -> None:
+def check_animation_has_no_batch_dim(field: xr.DataArray, dim: str) -> None:
     """Each frame of the animation is one map: no batch dim beside the one played."""
     batch = [d for d in batch_dims(field) if d != dim]
     if batch:
         raise ValueError(
             f"an animation draws one map per {dim}, but the array also has the batch dim(s) "
-            f"{batch}; " + "; ".join(_batch_dim_advice(field, batch))
+            f"{batch}; " + "; ".join(batch_dim_advice(field, batch))
         )
-
-
-def _batch_dim_advice(field: xr.DataArray, dims: Sequence[str]) -> list[str]:
-    """What to do with each batch dim in *dims* before mapping *field*."""
-    return [
-        f"for the batch dim {dim!r}, draw one map per label with "
-        f"facet.plot_map_by(field, {dim!r}), quantile maps with "
-        f"facet.plot_map_quantiles(field, batch_dim={dim!r}), select one with "
-        f"field.isel({dim}=0), or reduce first with "
-        f"maps.summarize_batch(field, stat, batch_dim={dim!r})"
-        for dim in dims
-    ]
 
 
 def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
     extra = [dim for dim in field.dims if dim not in allowed]
     if not extra:
         return
-    advice = _batch_dim_advice(field, [d for d in batch_dims(field) if d in extra])
+    advice = batch_dim_advice(field, [d for d in batch_dims(field) if d in extra])
     if TIME in extra:
         advice.append(
             "for 'time', select a step with field.sel(time=...), aggregate with "

@@ -540,3 +540,9 @@ def test_an_overlay_adds_to_the_existing_artists(ax, field_sample_time, field_ti
     assert len(ax.lines) >= lines_after_first
     assert len(ax.collections) == 2
     assert ax.get_legend_handles_labels()[1] == ["posterior", "obs"]
+
+
+def test_label_by_a_scalar_coordinate_is_refused(ax):
+    field = make_field(("sample", "time")).assign_coords(run=7)
+    with pytest.raises(ValueError, match="not among the batch dims"):
+        plot_time_series(field, show="spaghetti", label_by="run", ax=ax)
