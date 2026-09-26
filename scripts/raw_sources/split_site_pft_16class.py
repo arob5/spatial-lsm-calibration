@@ -30,12 +30,12 @@ Input data
 
 Output data
 -----------
-``--site-labels-dir``, default ``data/raw/site_labels/``
+``--site-labels-dir``, default the repository's ``data/raw/site_labels/``
     ``site_pft_16class.csv``: ``index``, ``final_pft`` and the columns
     recording how each label was assigned, in the source's own column order
     and with its values written through unchanged.
 
-``--covariates-dir``, default ``data/raw/covariates/``
+``--covariates-dir``, default the repository's ``data/raw/covariates/``
     ``site_covariates_pft_assignment.csv``: ``index`` and every other column,
     likewise unchanged.
 
@@ -122,6 +122,12 @@ SITE_LABELS_COLUMNS = (
     "n_vars_used_in_distance",
 )
 
+#: Where the two halves go by default: this repository's tracked raw inputs,
+#: whatever the working directory or ``$SIPNET_CALIBRATION_DATA``, since a
+#: tracked input is found from the checkout.
+DEFAULT_SITE_LABELS_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "site_labels"
+DEFAULT_COVARIATES_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "covariates"
+
 #: Output file names, which are what the provenance records name.
 SITE_LABELS_FILE = "site_pft_16class.csv"
 COVARIATES_FILE = "site_covariates_pft_assignment.csv"
@@ -163,14 +169,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--site-labels-dir",
         type=Path,
-        default=Path("data/raw/site_labels"),
-        help="Where the site-labels half goes. Default: data/raw/site_labels.",
+        default=DEFAULT_SITE_LABELS_DIR,
+        help="Where the site-labels half goes. Default: the repository's data/raw/site_labels.",
     )
     parser.add_argument(
         "--covariates-dir",
         type=Path,
-        default=Path("data/raw/covariates"),
-        help="Where the covariate half goes. Default: data/raw/covariates.",
+        default=DEFAULT_COVARIATES_DIR,
+        help="Where the covariate half goes. Default: the repository's data/raw/covariates.",
     )
     parser.add_argument(
         "--describe",

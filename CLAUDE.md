@@ -90,7 +90,8 @@ Facts specific to this working copy, which the README deliberately does not carr
   `conventions.data_root()`.** `data_root()` (and `$SIPNET_CALIBRATION_DATA`)
   says where the storage-backed part of `data/` is, which on the SCC or with
   the variable set is another tree; a tracked file is always in the checkout.
-  The tests (`conftest.REPOSITORY`) and the Natural Earth scripts follow this;
+  The tests (`conftest.REPOSITORY`), the Natural Earth scripts and
+  `split_site_pft_16class.py` follow this;
   the library's own `default_raw_dir()` resolvers for tracked directories
   still go through `data_root()` until the data-source cleanup (PR 5d).
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can

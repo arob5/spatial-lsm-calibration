@@ -44,6 +44,19 @@ def _small_pool(monkeypatch):
     monkeypatch.setattr(split, "N_SITES", 4)
 
 
+# ── where the halves go ───────────────────────────────────────────────────────
+
+
+def test_the_default_destinations_are_the_repositorys_whatever_the_working_directory(
+    monkeypatch, tmp_path
+):
+    """The halves are tracked raw inputs, found from the checkout, not from the cwd."""
+    monkeypatch.chdir(tmp_path)
+    args = split.parse_args([])
+    assert args.site_labels_dir == REPOSITORY / "data" / "raw" / "site_labels"
+    assert args.covariates_dir == REPOSITORY / "data" / "raw" / "covariates"
+
+
 # ── the split itself ──────────────────────────────────────────────────────────
 
 
