@@ -461,24 +461,24 @@ def test_layout_dimension_labels_and_slices(example):
     assert layout.entry_labels[2] == "allocation[conifer][alr(leaf_allocation:coarse_root_allocation)]"
     assert layout.entry_labels[-1] == "initial_soil_carbon[4711]"
     assert len(layout.entry_labels) == 14
-    deciduous = [layout.entry_labels[i] for i in layout.index("allocation", group="deciduous")]
+    deciduous = [layout.entry_labels[i] for i in layout.positions("allocation", group="deciduous")]
     assert deciduous == [
         f"allocation[deciduous][{e}]" for e in layout.element_labels["allocation"]
     ]
-    assert all("[conifer]" in layout.entry_labels[i] for i in layout.index("allocation", group="conifer"))
+    assert all("[conifer]" in layout.entry_labels[i] for i in layout.positions("allocation", group="conifer"))
     stops = [layout.slice(c).stop for c in layout.parameter_names]
     assert stops == [2, 8, 10, 11, 14]
 
 
 def test_layout_index_narrows_by_group_and_element(example):
     layout = example.layout
-    np.testing.assert_array_equal(layout.index("allocation", group="deciduous"), [5, 6, 7])
+    np.testing.assert_array_equal(layout.positions("allocation", group="deciduous"), [5, 6, 7])
     np.testing.assert_array_equal(
-        layout.index("allocation", element="alr(wood_allocation:coarse_root_allocation)"), [3, 6]
+        layout.positions("allocation", element="alr(wood_allocation:coarse_root_allocation)"), [3, 6]
     )
-    np.testing.assert_array_equal(layout.index("initial_soil_carbon", group=27), [12])
+    np.testing.assert_array_equal(layout.positions("initial_soil_carbon", group=27), [12])
     with pytest.raises(KeyError, match="not a group"):
-        layout.index("allocation", group="grassland")
+        layout.positions("allocation", group="grassland")
     with pytest.raises(KeyError, match="no calibration parameter"):
         layout.slice("nope")
 
@@ -684,7 +684,7 @@ def test_gaussian_prior_needs_a_key_for_non_analytic_moments():
     draws = np.asarray(p.sample(jax.random.key(1), n=50_000))
     assert float(gaussian.mean[0]) == pytest.approx(draws.mean(), abs=0.02)
     assert gaussian.mean.dtype == jnp.float64
-    assert p.describe()["theta_moments"].iloc[0] == "monte_carlo"
+    assert p.describe_entries()["theta_moments"].iloc[0] == "monte_carlo"
     # Two Monte Carlo calibration parameters get different keys, so their estimates differ.
     two = build((
         beta,
@@ -711,9 +711,11 @@ def test_sipnet_parameter_fields_shape_names_and_attributes(example, theta):
         "leaf_carbon_fraction", "vapor_pressure_deficit_exponent",
     }
     assert sipnet_parameter_fields["soil_carbon"].attrs == {
-        "units": "g m-2", "sipnet_name": "soilInit", "set_by": "parameter initial_soil_carbon",
-        "constituent": "C",
+        **PARAMETER_SPECS["initial_conditions.soil_carbon"].xarray_attributes(),
+        "set_by": "parameter initial_soil_carbon",
     }
+    assert sipnet_parameter_fields["soil_carbon"].attrs["sipnet_name"] == "soilInit"
+    assert sipnet_parameter_fields["soil_carbon"].attrs["constituent"] == "C"
     assert sipnet_parameter_fields["leaf_carbon_fraction"].attrs["set_by"] == "fixed"
     assert sipnet_parameter_fields.attrs == {"representation": "sipnet_parameter_fields"}
     assert list(sipnet_parameter_fields["pft"].values) == list(PFT)
@@ -766,7 +768,7 @@ def test_distinct_groups_are_gathered_onto_the_right_sites():
     np.testing.assert_allclose(sipnet_parameter_fields["leaf_carbon_fraction"].values, [0.4, 0.5, 0.4])
     np.testing.assert_allclose(sipnet_parameter_fields["leaf_allocation"].values, [0.1, 0.4, 0.1], rtol=1e-12)
     np.testing.assert_allclose(sipnet_parameter_fields["fine_root_allocation"].values, [0.3, 0.2, 0.3], rtol=1e-12)
-    frame = p.describe()
+    frame = p.describe_entries()
     soil = frame[frame["parameter"] == "soil"]
     np.testing.assert_allclose(soil["natural_median"], [100.0, 200.0, 300.0])
     np.testing.assert_allclose(soil["theta_sd"], np.log([1.5, 2.0, 2.5]))
@@ -1011,10 +1013,10 @@ def test_unset_parameters_and_require_complete(example):
     assert "snow_melt_rate" not in REQUIRED_SIPNET_PARAMETER_NAMES
     assert "litter_carbon" not in REQUIRED_SIPNET_PARAMETER_NAMES
     assert "max_photosynthesis_rate" in REQUIRED_SIPNET_PARAMETER_NAMES
-    assert set(example.sipnet_parameter_names) == set(example.sipnet_parameter_fields(example.sample(jax.random.key(0), 1)).data_vars)
-    assert set(example.unset_sipnet_parameter_names) == set(REQUIRED_SIPNET_PARAMETER_NAMES) - set(example.sipnet_parameter_names)
+    assert set(example.sipnet_parameter_names_written) == set(example.sipnet_parameter_fields(example.sample(jax.random.key(0), 1)).data_vars)
+    assert set(example.unset_sipnet_parameter_names) == set(REQUIRED_SIPNET_PARAMETER_NAMES) - set(example.sipnet_parameter_names_written)
     assert "leaf_carbon_per_area" in example.unset_sipnet_parameter_names
-    assert not set(example.unset_sipnet_parameter_names) & set(example.sipnet_parameter_names)
+    assert not set(example.unset_sipnet_parameter_names) & set(example.sipnet_parameter_names_written)
     with pytest.raises(ValueError, match="neither calibrated nor fixed: \\['total_wood_carbon'"):
         ParameterVector(
             parameters=example.parameters, fixed=example.fixed, sites=example.sites,
@@ -1052,7 +1054,7 @@ def test_sites_with_and_parameter_lookup(example):
 
 
 def test_describe_has_one_row_per_column(example):
-    frame = example.describe()
+    frame = example.describe_entries()
     assert len(frame) == 14
     assert list(frame["parameter"]) == [example.layout.entry_labels[i].split("[")[0] for i in range(14)]
     assert (frame["provenance"].str.len() > 0).all()
@@ -1064,16 +1066,35 @@ def test_describe_has_one_row_per_column(example):
     assert soil["natural_2.5"] == pytest.approx(0.004) and soil["natural_97.5"] == pytest.approx(0.020)
     ln = example["base_soil_respiration"].prior.distribution
     assert soil["theta_mean"] == pytest.approx(float(ln.loc)) and soil["theta_sd"] == pytest.approx(float(ln.scale))
-    assert soil["sipnet_parameters"] == "base_soil_respiration_rate"
+    assert soil["sipnet_parameter_names_written"] == "base_soil_respiration_rate"
+    assert frame.index.name == "entry"
+    assert list(zip(frame["parameter"], frame["group"], frame["element"])) == example.index.tolist()
     assert np.isnan(frame[frame["parameter"] == "allocation"]["natural_median"]).all()
     assert frame[frame["parameter"] == "initial_soil_carbon"]["group"].tolist() == list(SITES)
+
+
+def test_describe_has_one_row_per_calibration_parameter(example):
+    frame = example.describe()
+    assert list(frame.index) == list(example.parameter_names)
+    assert frame.loc["allocation", "varies_by"] == "pft"
+    assert frame.loc["allocation", "groups"] == 2 and frame.loc["allocation", "size"] == 3
+    assert frame["entries"].sum() == example.dimension
+    assert frame.loc["photosynthesis", "sipnet_parameter_names_written"] == (
+        "max_photosynthesis_rate, foliar_respiration_fraction"
+    )
 
 
 # ── the summary and the module's usage session ───────────────────────────────
 
 
-def test_repr_summarizes_parameters_groups_and_what_is_fixed(example):
-    text = repr(example)
+def test_repr_is_one_line(example):
+    assert repr(example) == (
+        f"ParameterVector(D=14, parameters={list(example.parameter_names)}, sites=3)"
+    )
+
+
+def test_summary_tabulates_parameters_groups_and_what_is_fixed(example):
+    text = example.summary()
     lines = text.splitlines()
     assert lines[0] == "ParameterVector  D = 14  |  3 sites  |  site labels: pft {conifer, deciduous}"
     assert lines[1].split()[:5] == ["parameter", "varies", "by", "groups", "size"]
@@ -1112,9 +1133,9 @@ def test_the_module_usage_session_runs_and_prints_what_it_says():
     code = _usage_session()
     exec(compile(code, "parameter_vector usage", "exec"), namespace)
     vector = namespace["vector"]
-    after = code.split("print(vector)\n", 1)[1].splitlines()
+    after = code.split("print(vector.summary())\n", 1)[1].splitlines()
     printed = [line[2:] for line in itertools.takewhile(lambda line: line.startswith("# "), after)]
-    assert printed == repr(vector).splitlines()
+    assert printed == vector.summary().splitlines()
     assert vector.dimension == 13
     assert namespace["conifer"].dimension == 8 and namespace["two"].dimension == 9
     assert namespace["spec"].n_runs == 150
@@ -1149,7 +1170,7 @@ def test_select_by_sites_slices_per_site_priors_and_moves_draws_across():
     np.testing.assert_allclose(small.gaussian_prior().mean[small.layout.slice("turnover")], np.log([0.01]))
     assert small.fixed[0].value == {"a": 0.4}
     projected = small.flat(vector.fields(theta))
-    np.testing.assert_array_equal(projected[:, small.layout.slice("soil")], theta[:, vector.layout.index("soil", group=1).tolist() + vector.layout.index("soil", group=4711).tolist()])
+    np.testing.assert_array_equal(projected[:, small.layout.slice("soil")], theta[:, vector.layout.positions("soil", group=1).tolist() + vector.layout.positions("soil", group=4711).tolist()])
     np.testing.assert_allclose(
         small.fields(projected)["turnover"], vector.fields(theta)["turnover"].sel(site=[1, 4711])
     )
@@ -1243,7 +1264,7 @@ def test_a_joint_prior_is_read_off_its_event_shape():
     soil = joint_soil()
     assert soil.is_joint and soil.joint_groups == 3 and soil.size == 1
     assert not rate().is_joint
-    assert "joint over groups" in repr(joint_vector())
+    assert "joint over groups" in joint_vector().summary()
     with pytest.raises(ValueError, match="joint prior is over 3"):
         ParameterVector(parameters=(joint_soil(),), sites=(1, 27))
     with pytest.raises(ValueError, match="needs an elementwise bijector"):
@@ -1283,7 +1304,7 @@ def test_a_joint_prior_is_one_dense_block_of_the_gaussian_and_converts_like_any_
     np.testing.assert_allclose(fields["soil"], np.exp(theta[:, :3]), rtol=1e-12)
     np.testing.assert_allclose(vector.flat(fields), theta, rtol=1e-10, atol=1e-10)
     np.testing.assert_allclose(vector.sipnet_parameter_fields(theta)["soil_carbon"], np.exp(theta[:, :3]), rtol=1e-12)
-    frame = vector.describe()
+    frame = vector.describe_entries()
     soil = frame[frame["parameter"] == "soil"]
     np.testing.assert_allclose(soil["theta_sd"], np.sqrt(np.diag(COVARIANCE)))
     assert soil["natural_median"].isna().all()
@@ -1510,8 +1531,8 @@ def test_fields_attributes_follow_the_space_and_the_component(example, theta):
 
 
 def test_the_sipnet_parameter_fields_are_in_pysipnet_order_from_either_space(example, theta):
-    order = [n for n in FLAT_SPECS if n in example.sipnet_parameter_names]
-    assert list(example.sipnet_parameter_names) == order
+    order = [n for n in FLAT_SPECS if n in example.sipnet_parameter_names_written]
+    assert list(example.sipnet_parameter_names_written) == order
     assert list(example.sipnet_parameter_fields(theta).data_vars) == order
     xr.testing.assert_allclose(
         example.sipnet_parameter_fields(example.fields(theta, space="unconstrained")), example.sipnet_parameter_fields(theta), rtol=1e-12
@@ -1549,7 +1570,7 @@ def test_select_restricts_per_site_fixed_values_and_keeps_require_complete(examp
         site_labels=example.site_labels, require_complete=True,
     )
     assert complete.select(sites=(1,)).require_complete
-    assert repr(complete).splitlines()[-1] == "  unset: none; every required SIPNET parameter is calibrated or fixed"
+    assert complete.summary().splitlines()[-1] == "  unset: none; every required SIPNET parameter is calibrated or fixed"
 
 
 def test_a_joint_prior_over_classes_is_restricted_to_its_marginal():
@@ -1629,8 +1650,8 @@ def test_a_data_source_member_dim_name_is_reserved(name):
         ParameterVector(parameters=(rate(),), sites=SITES, site_labels={name: PFT})
 
 
-def test_repr_of_a_one_site_vector_with_nothing_fixed():
-    lines = repr(ParameterVector(parameters=(rate(),), sites=(1,))).splitlines()
+def test_summary_of_a_one_site_vector_with_nothing_fixed():
+    lines = ParameterVector(parameters=(rate(),), sites=(1,)).summary().splitlines()
     assert lines[0] == "ParameterVector  D = 1  |  1 site  |  site labels: none"
     assert lines[-2] == "  fixed: none"
 
@@ -2046,3 +2067,70 @@ class TestTheRepresentationsValidators:
             module.validate_sipnet_overrides({"aMax": 1.0})
         with pytest.raises(TypeError, match="mapping"):
             module.validate_sipnet_overrides([("soil_carbon", 1.0)])
+
+
+# ── the vector conventions ───────────────────────────────────────────────────
+
+
+class TestTheVectorConventions:
+    def test_the_pieces_are_the_calibration_parameters(self, example):
+        assert list(example) == list(example.parameter_names)
+        assert len(example) == 5
+        assert "allocation" in example and "nothing" not in example and 0 not in example
+
+    def test_the_index_is_one_row_per_entry(self, example):
+        index = example.index
+        assert index.names == list(module.INDEX_LEVELS)
+        assert len(index) == example.dimension
+        assert index[0] == ("photosynthesis", "shared", "log(capacity)")
+        assert index.get_level_values("group")[-3:].tolist() == list(SITES)
+
+    def test_positions_select_by_parameter_group_and_element(self, example):
+        allocation = example.positions(parameter_name="allocation")
+        assert allocation.dtype == np.int64
+        np.testing.assert_array_equal(allocation, example.layout.positions("allocation"))
+        np.testing.assert_array_equal(
+            example.positions(parameter_name="allocation", group="deciduous"), [5, 6, 7]
+        )
+        np.testing.assert_array_equal(example.positions(group=27), [12])
+        assert example.positions(group="nothing").size == 0
+        assert example.positions().tolist() == list(range(example.dimension))
+        with pytest.raises(KeyError):
+            example.positions(parameter_name="nothing")
+
+    def test_select_refuses_a_repeated_name_and_keeps_the_vector_order(self, example):
+        with pytest.raises(ValueError, match="more than once"):
+            example.select(parameter_names=["allocation", "allocation"])
+        with pytest.raises(ValueError, match="more than once"):
+            example.select(sites=[1, 1])
+        small = example.select(parameter_names=["initial_soil_carbon", "allocation"])
+        assert small.parameter_names == ("allocation", "initial_soil_carbon")
+
+    def test_restrict_to_sites_ignores_sites_the_vector_does_not_have(self, example):
+        small = example.restrict_to_sites([27, 99, 1])
+        assert small.sites == (1, 27)
+        with pytest.raises(KeyError, match="not in this vector"):
+            example.select(sites=[27, 99])
+        with pytest.raises(ValueError, match="none of the vector's sites"):
+            example.restrict_to_sites([99])
+
+    def test_a_sample_by_member_batch_reaches_flat_through_a_stack(self, theta):
+        """Two batch dims are stacked into one new one, whose rows are Flat's."""
+        from sipnet_calibration.fields import stack_batch_dims
+
+        vector = example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
+        fields = vector.fields(theta)
+        crossed = fields.expand_dims(initial_condition_member=np.arange(2)).transpose(
+            "sample", "initial_condition_member", "site"
+        )
+        with pytest.raises(ValueError, match="stack_batch_dims"):
+            vector.flat(crossed)
+        stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+        rows = vector.flat(stacked)
+        assert rows.shape == (2 * theta.shape[0], vector.dimension)
+        np.testing.assert_allclose(rows[::2], theta, rtol=1e-10, atol=1e-10)
+        np.testing.assert_allclose(rows[1::2], theta, rtol=1e-10, atol=1e-10)
+
+    def test_the_sipnet_parameter_names_written_are_named_for_their_direction(self, example):
+        assert not hasattr(example, "sipnet_parameter_names")
+        assert "soil_carbon" in example.sipnet_parameter_names_written

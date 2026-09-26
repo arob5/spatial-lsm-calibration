@@ -252,7 +252,7 @@ class TestEvaluate:
         self, forward, observation_vector, theta
     ):
         """The vector leaves it to the base parameter set, which the run used."""
-        assert forward.sipnet_parameter_names == forward.parameter_vector.sipnet_parameter_names
+        assert forward.sipnet_parameter_names == forward.parameter_vector.sipnet_parameter_names_written
         assert "leaf_carbon_per_area" not in forward.sipnet_parameter_names
         predictions = forward(theta)
         lai = observation_vector.fields(predictions)["modis_leaf_area_index"]
