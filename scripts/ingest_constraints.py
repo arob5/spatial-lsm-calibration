@@ -19,7 +19,7 @@ Input data
     by :func:`sipnet_calibration.constraints.read_raw`. See
     ``data/raw/constraints/provenance.md`` for where they came from.
 
-``--sites``, default ``data/processed/sites/sites.csv``
+``--site-table``, default ``data/processed/sites/sites.csv``
     The site table: the pool the processed files are dense over, and the ``lon``/``lat``
     coordinates.
 
@@ -116,10 +116,10 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
     out_dir = args.out_dir if args.out_dir is not None else default_constraints_dir()
-    sites_path = args.sites if args.sites is not None else default_sites_path()
+    site_table_path = args.site_table or default_sites_path()
 
     try:
-        site_table = load_sites(sites_path)
+        site_table = load_sites(site_table_path)
         for name in names:
             dataset = ingest(resolve_constraint(name), raw_root, site_table, out_dir)
             print(describe_processed_file(dataset, constraint_path(name, out_dir)))
@@ -153,7 +153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory of the raw files. Default: data/raw/constraints.",
     )
     parser.add_argument(
-        "--sites",
+        "--site-table",
         type=Path,
         default=None,
         help="The site table. Default: data/processed/sites/sites.csv.",

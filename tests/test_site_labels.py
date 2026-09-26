@@ -353,9 +353,9 @@ def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, s
 
 def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
     raw_root = tmp_path / "raw"
-    sites_path = tmp_path / "sites.csv"
-    _write_sites(sites_path)
-    site_table = load_sites(sites_path)
+    site_table_path = tmp_path / "sites.csv"
+    _write_sites(site_table_path)
+    site_table = load_sites(site_table_path)
     site_table.loc[site_table[SITE_ID] == 4, "landcover"] = np.int8(7)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
     site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
@@ -624,11 +624,11 @@ def test_the_round_trip_check_compares_against_the_library_loader(
 # ── main ──────────────────────────────────────────────────────────────────────
 
 
-def _argv(raw_root, sites_path, out_dir, *extra):
+def _argv(raw_root, site_table_path, out_dir, *extra):
     return [
         "--site-labels", SYNTHETIC_SPEC.name,
         "--raw-root", str(raw_root),
-        "--sites", str(sites_path),
+        "--site-table", str(site_table_path),
         "--out-dir", str(out_dir),
         *extra,
     ]
@@ -670,7 +670,7 @@ def test_main_honors_the_site_labels_argument(real_argv):
 
 
 def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
-    sites_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites.csv")
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS[:3])
     # main resolves by name, so drive it through the registry's own spec with a
@@ -681,7 +681,7 @@ def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
         [
             "--site-labels", spec.name,
             "--raw-root", str(raw_root),
-            "--sites", str(sites_path),
+            "--site-table", str(site_table_path),
             "--out-dir", str(tmp_path / "out"),
         ]
     )

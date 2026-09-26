@@ -21,7 +21,7 @@ Input data
     and read exactly by
     ``read_raw``.
 
-``--sites``, default ``data/processed/sites/sites.csv``
+``--site-table``, default ``data/processed/sites/sites.csv``
     The site table: the pool the processed file is on, and the ``lon``/``lat``
     coordinates.
 
@@ -120,10 +120,10 @@ def main(argv: list[str] | None = None) -> int:
 
     raw = args.raw if args.raw is not None else raw_path()
     out = args.out if args.out is not None else default_processed_path()
-    sites_path = args.sites if args.sites is not None else default_sites_path()
+    site_table_path = args.site_table or default_sites_path()
 
     try:
-        site_table = load_sites(sites_path)
+        site_table = load_sites(site_table_path)
         with read_raw(raw) as raw_dataset:
             check_raw(raw_dataset, site_table)
             dataset = build_initial_conditions(raw_dataset, site_table)
@@ -150,7 +150,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "pecan_pool_initial_conditions.nc.",
     )
     parser.add_argument(
-        "--sites",
+        "--site-table",
         type=Path,
         default=None,
         help="The site table. Default: data/processed/sites/sites.csv.",

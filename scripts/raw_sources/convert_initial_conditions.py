@@ -27,7 +27,7 @@ Input data
     parsed by its ``read_source_directory``, which refuses anything outside
     the template.
 
-``--sites``, default ``data/processed/sites/sites.csv``
+``--site-table``, default ``data/processed/sites/sites.csv``
     The site table, used only to check that the site directories are exactly
     the pool. Skipped with a note if the table is absent.
 
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root if args.root is not None else default_source_root()
     out = args.out if args.out is not None else raw_path()
-    sites_path = args.sites if args.sites is not None else default_sites_path()
+    site_table_path = args.site_table or default_sites_path()
 
     try:
         sites = discover_sites(root)
@@ -136,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
             sites = sites[: args.limit_sites]
             print(f"note: --limit-sites {args.limit_sites}; the pool check is skipped", flush=True)
         else:
-            check_site_directories_are_the_pool(sites, sites_path, explicit=args.sites is not None)
+            check_site_directories_are_the_pool(
+                sites, site_table_path, explicit=args.site_table is not None
+            )
         print(f"{len(sites)} site directories under {root}", flush=True)
 
         files = read_all_files(root, sites, jobs=args.jobs)
@@ -168,7 +170,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Where to write. Default: data/raw/initial_conditions/pecan_pool_initial_conditions.nc.",
     )
     parser.add_argument(
-        "--sites",
+        "--site-table",
         type=Path,
         default=None,
         help="The site table, to check the directories are the pool. Default: "
@@ -264,7 +266,7 @@ def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
 
 
 def check_site_directories_are_the_pool(
-    sites: list[int], sites_path: Path, *, explicit: bool
+    sites: list[int], site_table_path: Path, *, explicit: bool
 ) -> None:
     """Raise unless the site directories are exactly the site table's pool.
 
@@ -272,21 +274,24 @@ def check_site_directories_are_the_pool(
     ingest repeats the comparison against the written file. A table named on
     the command line has to exist.
     """
-    if not sites_path.exists():
-        check_a_named_site_table_exists(sites_path, explicit=explicit)
-        print(f"note: {sites_path} absent; the pool check is left to the ingest", flush=True)
+    if not site_table_path.exists():
+        check_a_named_site_table_exists(site_table_path, explicit=explicit)
+        print(
+            f"note: {site_table_path} absent; the pool check is left to the ingest",
+            flush=True,
+        )
         return
     check_sites_are_the_site_table(
-        load_sites(sites_path), sites, message_name="the site directories"
+        load_sites(site_table_path), sites, message_name="the site directories"
     )
 
 
-def check_a_named_site_table_exists(sites_path: Path, *, explicit: bool) -> None:
+def check_a_named_site_table_exists(site_table_path: Path, *, explicit: bool) -> None:
     """A site table named on the command line exists."""
-    if explicit and not sites_path.exists():
+    if explicit and not site_table_path.exists():
         raise ConversionError(
-            f"site table {sites_path} does not exist; build it with scripts/ingest_sites.py "
-            "or name another with --sites."
+            f"site table {site_table_path} does not exist; build it with "
+            "scripts/ingest_sites.py or name another with --site-table."
         )
 
 

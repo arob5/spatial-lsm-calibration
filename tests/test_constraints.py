@@ -735,9 +735,9 @@ def test_describe_exits_zero_without_touching_data(capsys):
 
 
 def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys):
-    sites_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
     code = ingest.main(
-        ["--raw-root", str(tmp_path / "absent"), "--sites", str(sites_path),
+        ["--raw-root", str(tmp_path / "absent"), "--site-table", str(site_table_path),
          "--out-dir", str(tmp_path / "out"), "--constraint", "smap_soil_moisture"]
     )
     assert code == 1
@@ -747,13 +747,13 @@ def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys
 
 
 def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch, capsys):
-    sites_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
     _write_raw(raw_root, ANNUAL, ANNUAL_ROWS)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
     monkeypatch.setattr(ingest, "CONSTRAINT_NAMES", (ANNUAL.name,))
     code = ingest.main(
-        ["--raw-root", str(raw_root), "--sites", str(sites_path), "--out-dir", str(tmp_path / "out")]
+        ["--raw-root", str(raw_root), "--site-table", str(site_table_path), "--out-dir", str(tmp_path / "out")]
     )
     assert code == 0
     assert "observed 4 of 8 elements" in capsys.readouterr().out

@@ -147,7 +147,8 @@ does not follow a rule below yet, the rule says which PR changes it.
 One concept, one word; one word, one concept. A word this glossary does not
 list is either added here or not used for a project concept. The retired words
 are gone from the code, except where a rule below names the PR that retires
-them.
+them, and except `SiteLabelsSpec.label_kind`, whose "kind" is not pySIPNET's
+and which the data-source cleanup (PR 5d) renames.
 
 **Space and sites.**
 
@@ -501,8 +502,8 @@ the ones most often broken.
   `dict[str, DataArray]` when they do not.** One run's or one stack's model
   output shares a time axis and is a Dataset; the constraint data sources have
   three time structures and are a dict. A dict is named for what it holds and
-  its key (`observed_values`, keyed by source name; `run_outputs_by_sample_site`
-  where the key order matters).
+  its key (`observed_values_by_source`, keyed by observation source name;
+  `run_outputs_by_sample_site` where the key order matters).
 - **A field is one thing**, as the field contract above defines it. The word
   "canonical" is not used with it; `fields.py` holds the generic operations on
   fields and nothing else.
