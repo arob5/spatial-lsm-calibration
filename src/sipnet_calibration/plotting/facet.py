@@ -466,9 +466,7 @@ def plot_map_by(
         chosen = available[thinned_indices(len(available), n_max)]
     else:
         chosen = np.asarray(getattr(values, "values", values))
-        missing = [v for v in chosen if v not in available]
-        if missing:
-            raise ValueError(f"no such {dim} value(s) in the field: {missing[:5]}")
+        check_values_are_on_the_dim(available, chosen, dim)
     panels = {maps.coordinate_label(dim, value): field.sel({dim: value}) for value in chosen}
     if len(panels) < len(chosen):
         panels = {f"{dim} {value}": field.sel({dim: value}) for value in chosen}
@@ -582,6 +580,16 @@ def check_field_has_no_other_batch_dim(field: xr.DataArray, dim: str, what: str)
         raise ValueError(
             f"{what} {dim}, but the field also has the batch dim(s) {others}, so a panel "
             "would not be one map; " + "; ".join(maps.batch_dim_advice(field, others))
+        )
+
+
+def check_values_are_on_the_dim(available: np.ndarray, chosen: np.ndarray, dim: str) -> None:
+    """Every value asked for is one of the field's labels on *dim*."""
+    missing = [v for v in chosen if v not in available]
+    if missing:
+        raise ValueError(
+            f"no such {dim} value(s) in the field: {missing[:5]}; pass values= from the "
+            f"field's {dim} labels."
         )
 
 
