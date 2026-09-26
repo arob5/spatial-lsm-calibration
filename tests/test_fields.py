@@ -15,6 +15,8 @@ constants copied out of it.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -979,6 +981,82 @@ class TestValidateField:
             validate_field(field.assign_coords(sample=field["sample"].values.astype(dtype)))
 
 
+    def test_time_before_the_spatial_dim_is_refused(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("sample", "site", "time"), n_time=4)
+        with pytest.raises(ValueError, match="not in the order"):
+            validate_field(field.transpose("sample", "time", "site"))
+
+    def test_lon_on_a_dim_other_than_the_spatial_dim_is_refused(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("site", "time"), n_time=4)
+        moved = field.assign_coords(lon=("time", np.linspace(-100.0, -90.0, 4)))
+        with pytest.raises(ValueError, match="'lon' must be float64 on"):
+            validate_field(moved)
+
+    def test_time_labels_that_are_not_datetimes_are_refused(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("time",), n_time=4).assign_coords(time=np.arange(4))
+        with pytest.raises(ValueError, match="naive datetime64"):
+            validate_field(field)
+
+    def test_a_repeated_time_label_is_refused(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("time",), n_time=4).isel(time=[0, 1, 1, 2])
+        with pytest.raises(ValueError, match="not strictly increasing"):
+            validate_field(field)
+
+    def test_a_boolean_or_string_field_needs_no_units(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("site",))
+        validate_field((field > 0).rename("mask"))
+        classes = field.copy(data=np.asarray(["a", "b"]))
+        classes.attrs = {}
+        validate_field(classes)
+
+    def test_unsigned_labels_make_a_batch_dim(self):
+        from sipnet_calibration.fields import batch_dims, validate_field
+
+        field = _field(("sample", "time")).assign_coords(sample=np.arange(3, dtype=np.uint32))
+        assert batch_dims(field) == ("sample",)
+        validate_field(field)
+
+    def test_unsigned_labels_beyond_int64_are_refused(self):
+        from sipnet_calibration.fields import validate_field
+
+        labels = np.asarray([0, 1, 2**63], dtype=np.uint64)
+        with pytest.raises(ValueError, match="fit int64"):
+            validate_field(_field(("sample", "time")).assign_coords(sample=labels))
+
+    def test_a_string_field_with_missing_values_is_categorical(self):
+        from sipnet_calibration.fields import is_categorical, validate_field
+
+        field = _field(("time",), n_time=3)
+        gaps = field.copy(data=np.asarray(["a", None, np.nan], dtype=object))
+        gaps.attrs = {}
+        assert is_categorical(gaps)
+        validate_field(gaps)
+        nothing = field.copy(data=np.asarray([None, None, None], dtype=object))
+        nothing.attrs = {}
+        assert not is_categorical(nothing)
+
+    def test_source_index_is_never_a_batch_dim(self):
+        from sipnet_calibration.fields import batch_dims, validate_field
+
+        field = _field(("driver_member", "site")).assign_coords(
+            source_index=("driver_member", [1, 2, 3])
+        )
+        swapped = field.swap_dims(driver_member="source_index")
+        assert batch_dims(swapped) == ()
+        with pytest.raises(ValueError, match="neither a batch dim"):
+            validate_field(swapped)
+
+
 class TestStackBatchDims:
     def _two_batch_dims(self):
         field = _field(("sample", "initial_condition_member", "site", "time"), n_time=4)
@@ -1016,7 +1094,10 @@ class TestStackBatchDims:
         assert stacked.dims == ("run", "site", "time")
         assert stacked["run"].values.tolist() == list(range(9))
         assert stacked["run"].dtype == np.int64
-        assert stacked["run"].attrs["stacked_dims"] == "sample initial_condition_member"
+        assert json.loads(stacked["run"].attrs["stacked_dims"]) == [
+            "sample",
+            "initial_condition_member",
+        ]
         assert stacked["sample_label"].values.tolist() == [5, 5, 5, 9, 9, 9, 12, 12, 12]
         assert stacked["initial_condition_member_label"].values.tolist() == [0, 1, 2] * 3
         np.testing.assert_array_equal(
@@ -1169,6 +1250,125 @@ class TestStackBatchDims:
             unstack_batch_dims(stacked.rename(run="sample"), labels_from=stacked)
 
 
+    def test_stacking_a_field_out_of_order_is_refused(self):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        field = self._two_batch_dims().transpose("site", "sample", "initial_condition_member", "time")
+        with pytest.raises(ValueError, match="not in the order"):
+            stack_batch_dims(field, into="run")
+
+    def test_label_names_the_field_already_carries_are_refused(self):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        field = self._two_batch_dims().assign_coords(sample_label=("sample", [1, 2, 3]))
+        with pytest.raises(ValueError, match="the names the stacked labels would take"):
+            stack_batch_dims(field, into="run")
+
+    def test_into_may_not_be_the_fields_own_name(self):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        field = self._two_batch_dims().rename("run")
+        with pytest.raises(ValueError, match="the field's own name"):
+            stack_batch_dims(field, into="run")
+
+    @pytest.mark.parametrize("into", ["driver_member", "initial_condition_member"])
+    def test_into_may_not_be_a_data_source_member_name(self, into):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        field = _field(("chain", "draw", "site"))
+        with pytest.raises(ValueError, match="a data source's member"):
+            stack_batch_dims(field, into=into)
+
+    def test_the_stacked_dim_carries_the_attributes_of_its_name(self):
+        from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
+        from sipnet_calibration.fields import STACKED_DIMS_ATTRIBUTE, stack_batch_dims
+
+        field = _field(("chain", "draw", "site"))
+        as_sample = stack_batch_dims(field, into="sample")["sample"].attrs
+        assert {k: as_sample[k] for k in SAMPLE_ATTRIBUTES} == dict(SAMPLE_ATTRIBUTES)
+        as_run = stack_batch_dims(field, into="run")["run"].attrs
+        assert set(as_run) == {STACKED_DIMS_ATTRIBUTE}
+
+    def test_unstacking_a_field_out_of_order_is_refused(self):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        with pytest.raises(ValueError, match="not in the order"):
+            unstack_batch_dims(stacked.transpose("site", "run", "time"))
+
+    def test_two_batch_dims_that_record_a_stack_are_refused(self):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        other = stack_batch_dims(_field(("a", "b", "site", "time"), n_time=4), into="chain")
+        both = stacked.expand_dims(chain=other["chain"].values[:2]).assign_coords(
+            chain=("chain", other["chain"].values[:2], dict(other["chain"].attrs))
+        )
+        with pytest.raises(ValueError, match="each record a stack"):
+            unstack_batch_dims(both)
+
+    def test_an_unstacked_batch_dim_beside_the_stacked_one_is_kept(self):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        with_chain = stacked.expand_dims(chain=np.arange(2))
+        assert unstack_batch_dims(with_chain).dims == (
+            "sample", "initial_condition_member", "chain", "site", "time"
+        )
+
+    @pytest.mark.parametrize("on", [(), ("site",)])
+    def test_a_coordinate_named_like_a_stacked_dim_is_refused(self, on):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        value = 4 if not on else (on, [4, 5])
+        with pytest.raises(ValueError, match="named like the stacked dim 'sample'"):
+            unstack_batch_dims(stacked.assign_coords(sample=value))
+
+    def test_labels_made_float_by_a_reindex_are_refused(self):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        padded = stacked.reindex(run=np.arange(12))
+        with pytest.raises(ValueError, match="not integers"):
+            unstack_batch_dims(padded)
+
+    @pytest.mark.parametrize("name", ["x:y", "x y", "x,y"])
+    def test_a_companion_of_any_name_returns_to_its_dim(self, name):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        field = self._two_batch_dims().assign_coords({name: ("sample", [1, 2, 3])})
+        xr.testing.assert_identical(
+            unstack_batch_dims(stack_batch_dims(field, into="run")), field
+        )
+
+    def test_a_stack_selected_to_one_entry_says_so(self):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        with pytest.raises(ValueError, match="selected to one entry"):
+            unstack_batch_dims(stacked.isel(run=2))
+
+    def test_labels_from_refuses_labels_the_field_carries_already(self):
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        stacked = stack_batch_dims(self._two_batch_dims(), into="run")
+        with pytest.raises(ValueError, match="carries .* already"):
+            unstack_batch_dims(stacked, labels_from=stacked)
+
+    def test_the_unstacked_field_is_validated(self, monkeypatch):
+        from sipnet_calibration import fields
+
+        stacked = fields.stack_batch_dims(self._two_batch_dims(), into="run")
+        seen = []
+        original = fields.validate_field
+        monkeypatch.setattr(
+            fields, "validate_field", lambda f, **k: (seen.append(f.dims), original(f, **k))
+        )
+        fields.unstack_batch_dims(stacked)
+        assert seen[-1] == ("sample", "initial_condition_member", "site", "time")
+
+
 class TestBatchCoordinate:
     def test_a_coordinate_carries_the_attributes_of_its_dim(self):
         from sipnet_calibration.conventions import (
@@ -1205,6 +1405,51 @@ class TestScalarBatchLabels:
         one = field.isel(sample=0, driver_member=1, site=0, time=0)
         assert scalar_batch_labels(one) == ("sample", "driver_member")
         assert scalar_batch_labels(field) == ()
+
+
+    def test_sipnets_row_labels_are_not_batch_labels(self, niwot_output):
+        from sipnet_calibration.fields import scalar_batch_labels
+
+        one_step = niwot_output.select(["nee"]).isel(time=0)
+        assert scalar_batch_labels(one_step) == ()
+
+    def test_any_other_scalar_integer_coordinate_is_a_batch_label(self):
+        from sipnet_calibration.fields import scalar_batch_labels
+
+        assert scalar_batch_labels(_field(("time",)).assign_coords(seed=42)) == ("seed",)
+
+
+class TestBatchDimNames:
+    def test_a_name_that_is_not_a_string_is_a_type_error(self):
+        from sipnet_calibration.fields import check_batch_dim_name_is_not_reserved
+
+        with pytest.raises(TypeError, match="a batch dim name is a string"):
+            check_batch_dim_name_is_not_reserved(3, message_name="batch_dim")
+
+    @pytest.mark.parametrize("name", ["", "site", "time", "source_index", "lon"])
+    def test_an_empty_or_reserved_name_is_refused(self, name):
+        from sipnet_calibration.fields import check_batch_dim_name_is_not_reserved
+
+        with pytest.raises(ValueError, match="cannot name a batch dim"):
+            check_batch_dim_name_is_not_reserved(name, message_name="batch_dim")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "time_step_start", "time_step_length", "time_bounds", "bounds",
+            "year", "day_of_year", "hour_of_day", "net_ecosystem_exchange",
+        ],
+    )
+    def test_a_name_the_model_output_uses_is_refused(self, name):
+        from sipnet_calibration.fields import check_batch_dim_name_is_not_a_model_output_name
+
+        with pytest.raises(ValueError, match="the model output"):
+            check_batch_dim_name_is_not_a_model_output_name(
+                name, ["net_ecosystem_exchange"], message_name="batch_dim"
+            )
+        check_batch_dim_name_is_not_a_model_output_name(
+            "sample", ["net_ecosystem_exchange"], message_name="batch_dim"
+        )
 
 
 class TestPyEnsPairsSameNamesAndCrossesDifferentOnes:

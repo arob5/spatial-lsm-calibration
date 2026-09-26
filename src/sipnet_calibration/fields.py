@@ -70,9 +70,9 @@ A **field** is an ``xarray.DataArray`` holding one variable. What
   coordinates, where present, on ``time`` alone (scalars once one time is
   selected).
 * ``units`` in ``attrs``, valid by pySIPNET's ``validate_units``, unless the
-  field is categorical: CF ``flag_values`` or ``flag_meanings``, or values
-  that are strings, bytes or booleans (an object array only when every
-  element is a string).
+  field is categorical (:func:`is_categorical`): CF ``flag_values`` or
+  ``flag_meanings``, or values that are strings, bytes or booleans (an object
+  array only when every element is a string or missing).
 
 Conventions a creator follows, which :func:`validate_field` does not check:
 batch labels are created ``int64``
@@ -94,8 +94,9 @@ batch dim made from batched Flat is named
 :data:`~sipnet_calibration.conventions.SAMPLE` by default, with labels ``0``
 to ``n_samples - 1`` in row order; a data source's own ensemble is named for
 its source (``initial_condition_member``, ``driver_member``). Batch labels
-are ``int64``
-(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`).
+are created ``int64``
+(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`); any integer
+dtype is accepted.
 
 Which dims are present depends on the quantity. A single deterministic run is
 ``(time,)``, an initial condition ensemble is
@@ -129,7 +130,8 @@ Identifiers
     labels to use is an experimental choice, and they live in their own product
     under ``data/processed/site_labels/``.
 a batch dim
-    ``int64`` labels, meaningful only within the dim's own name. Whether
+    Integer labels, created ``int64`` (any integer dtype is accepted),
+    meaningful only within the dim's own name. Whether
     member *i* of one data source corresponds to member *i* of another is not
     established, which is why the two carry different names.
 ``time``
@@ -187,6 +189,8 @@ Functions
 :func:`batch_coordinate`, :func:`scalar_batch_labels`
     A batch dim's ``int64`` coordinate with its attributes, and the scalar
     coordinates of a field that are batch labels.
+:func:`is_categorical`
+    Whether a field holds classes, which need no ``units``.
 :func:`from_sipnet_output`
     One run's chosen variables as fields, optionally labeled with a site and
     batch labels.
@@ -207,6 +211,8 @@ Functions
 :func:`coordinate_labels`, :func:`missing_labels`
     A coordinate's labels as a list, and the labels a field's coordinate
     lacks, in the order asked for.
+:func:`recorded_stacked_dims`
+    The dims a stacked coordinate records, in order.
 :func:`without_stale_time_attributes`
     ``time`` attributes less
     :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
@@ -247,9 +253,9 @@ at once, where one variable per run is what the caller asked for, so the
 adapter goes through ``select`` and never touches ``.xarray`` or ``.pandas``.
 
 **Why a missing run is not an error.** The caller supplies the mapping, so it
-already knows which runs it left out; those cells read ``NaN``. This differs
-from :func:`sipnet_calibration.drivers.load_drivers`, which discovers absence
-on disk and therefore has to report it.
+already knows which runs it left out; their entries of the stack read
+``NaN``. This differs from :func:`sipnet_calibration.drivers.load_drivers`,
+which discovers absence on disk and therefore has to report it.
 
 A ``(J, N)`` batch of predictions is unstacked by
 :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns the
@@ -308,6 +314,9 @@ rest from the stacked field::
 
 For a Dataset, such as a parameter vector's Fields,
 ``fields_dataset.map(lambda field: stack_batch_dims(field, into="run"))``.
+The round trip needs fields (``int32`` ``site`` with ``lon``/``lat``): a
+vector built from bare site ids gives arrays without them, which are not
+fields yet and are refused.
 
 Adapting run after run, with the site table read once::
 
@@ -322,6 +331,7 @@ Adapting run after run, with the site table read once::
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -335,20 +345,23 @@ from pysipnet.variables import (
 
 from sipnet_calibration.conventions import (
     BATCH_LABEL_DTYPE,
+    BOUNDS,
     DATA_SOURCE_MEMBER_ATTRIBUTES,
     DATA_SOURCE_MEMBER_NAMES,
     LAT,
     LON,
+    NON_BATCH_DIM_NAMES,
     POINT,
     SAMPLE,
     SAMPLE_ATTRIBUTES,
+    SIPNET_ROW_LABEL_NAMES,
     SITE,
     SITE_ATTRIBUTES,
     SITE_DTYPE,
-    SOURCE_INDEX,
     SPATIAL_DIM_NAMES,
     STALE_TIME_ATTRIBUTE_NAMES,
     TIME,
+    TIME_BOUNDS,
     TIME_COORD_NAMES,
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -371,20 +384,26 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from pysipnet.result import SIPNETResult
 
 __all__ = [
+    "MODEL_OUTPUT_COORDINATE_NAMES",
     "STACKED_COMPANIONS_ATTRIBUTE",
     "STACKED_DIMS_ATTRIBUTE",
     "STACKED_LABEL_SUFFIX",
     "batch_coordinate",
     "batch_dims",
     "check_at_most_one_batch_dim",
+    "check_batch_dim_name_is_not_a_data_source_member",
+    "check_batch_dim_name_is_not_a_model_output_name",
     "check_batch_dim_name_is_not_reserved",
     "check_batch_labels_are_a_mapping",
     "check_dims_are_batch_spatial_or_time",
+    "check_labeled_dims_are_batch_spatial_or_time",
     "coordinate_labels",
     "field_label",
     "from_sipnet_output",
+    "is_categorical",
     "label_run",
     "missing_labels",
+    "recorded_stacked_dims",
     "resolve_output_variable_names",
     "scalar_batch_labels",
     "stack_batch_dims",
@@ -402,15 +421,28 @@ __all__ = [
 STACKED_LABEL_SUFFIX = "_label"
 
 #: The attribute of a stacked batch coordinate naming the dims stacked into
-#: it, in their order, separated by spaces (``"sample driver_member"``).
+#: it, in their order, as a JSON list (``'["sample", "driver_member"]'``), so
+#: that any name survives it and a netCDF file can carry it.
 #: :func:`unstack_batch_dims` reads only these names back.
 STACKED_DIMS_ATTRIBUTE = "stacked_dims"
 
 #: The attribute of a stacked batch coordinate naming each coordinate that was
-#: on stacked dims alone, with those dims (``"source_index:driver_member"``,
-#: space-separated, dims joined by commas), so that
+#: on stacked dims alone, with those dims, as a JSON object
+#: (``'{"source_index": ["driver_member"]}'``), so that
 #: :func:`unstack_batch_dims` puts it back on them.
 STACKED_COMPANIONS_ATTRIBUTE = "stacked_companions"
+
+#: The names pySIPNET's model output uses besides its variables: its time
+#: coordinates, the CF ``time_bounds`` variable and its ``bounds`` dim, and
+#: SIPNET's row labels. A batch dim may take none of them, since labeling a
+#: run with one would replace pySIPNET's coordinate
+#: (:func:`check_batch_dim_name_is_not_a_model_output_name`).
+MODEL_OUTPUT_COORDINATE_NAMES: tuple[str, ...] = (
+    *TIME_COORD_NAMES,
+    TIME_BOUNDS,
+    BOUNDS,
+    *SIPNET_ROW_LABEL_NAMES,
+)
 
 
 # ── the field contract ────────────────────────────────────────────────────────
@@ -499,13 +531,16 @@ def batch_dims(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:
 def scalar_batch_labels(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:
     """The scalar coordinates of *field* that are batch labels, in coordinate order.
 
-    A batch label left by selecting a batch dim away, as ``.isel(sample=k)``
-    leaves ``sample``: a zero-dimensional coordinate holding an integer,
-    whose name is not a spatial name
-    (:data:`~sipnet_calibration.conventions.SPATIAL_DIM_NAMES`, so neither
-    ``site`` nor ``lon``/``lat``), not ``time`` and not
-    :data:`~sipnet_calibration.conventions.SOURCE_INDEX`, the file index
-    beside a data source's member.
+    A batch label is what selecting a batch dim away leaves, as
+    ``.isel(sample=k)`` leaves ``sample``: a zero-dimensional coordinate
+    holding an integer, whose name is not one of
+    :data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES` (the spatial
+    names, ``time`` and ``source_index``) nor one of SIPNET's row labels
+    (:data:`~sipnet_calibration.conventions.SIPNET_ROW_LABEL_NAMES`, which a
+    run selected to one time leaves). Any other scalar integer coordinate
+    counts, ``seed=42`` say: a run that carries one is labeled by it, so a
+    stacker refuses it unless its ``key_dims`` name it, and it is dropped
+    otherwise.
 
     Parameters
     ----------
@@ -522,8 +557,35 @@ def scalar_batch_labels(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:
         for name, coordinate in field.coords.items()
         if coordinate.ndim == 0
         and coordinate.dtype.kind in "iu"
-        and name not in SPATIAL_DIM_NAMES
-        and name not in (TIME, SOURCE_INDEX)
+        and name not in NON_BATCH_DIM_NAMES
+        and name not in SIPNET_ROW_LABEL_NAMES
+    )
+
+
+def is_categorical(field: xr.DataArray) -> bool:
+    """Whether *field* holds classes rather than a quantity with units.
+
+    Parameters
+    ----------
+    field:
+        The array to look at.
+
+    Returns
+    -------
+    bool
+        ``True`` when *field* carries CF ``flag_values`` or ``flag_meanings``,
+        or holds strings, bytes or booleans; an object array counts when every
+        element is a string or missing (``None`` or ``NaN``) and one at least
+        is a string. A categorical field needs no ``units``.
+    """
+    if {"flag_values", "flag_meanings"} & set(field.attrs) or field.dtype.kind in "USb":
+        return True
+    if field.dtype.kind != "O":
+        return False
+    values = np.asarray(field.values).ravel()
+    strings = [isinstance(value, str) for value in values]
+    return any(strings) and all(
+        is_string or _is_missing(value) for is_string, value in zip(strings, values)
     )
 
 
@@ -575,9 +637,12 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
         A field with at least one batch dim.
     into:
         The name of the stacked dim, first in the result's dims. It is a new
-        index, so it takes a new name: none of the dims stacked, no
-        coordinate of *field*, no ``<dim>_label`` name the stack creates,
-        and no reserved name (:func:`check_batch_dim_name_is_not_reserved`).
+        index, so it takes a new name: none of the dims stacked, not
+        *field*'s own name, no coordinate of *field*, no ``<dim>_label``
+        name the stack creates, no reserved name
+        (:func:`check_batch_dim_name_is_not_reserved`) and no data source's
+        member name
+        (:func:`check_batch_dim_name_is_not_a_data_source_member`).
 
     Returns
     -------
@@ -598,9 +663,10 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
         If *field* is not a ``DataArray`` or *into* is not a string.
     ValueError
         If *field* is not a field (:func:`validate_field`) or has no batch
-        dim; if *into* is a reserved name, one of the dims stacked, a
-        coordinate of *field*, or one of the ``<dim>_label`` names the stack
-        creates; or if *field* carries one of those names already.
+        dim; if *into* is a reserved name, a data source's member name, one
+        of the dims stacked, *field*'s own name, a coordinate of *field*, or
+        one of the ``<dim>_label`` names the stack creates; or if *field*
+        carries one of those names already.
 
     Notes
     -----
@@ -619,10 +685,10 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
     stacked = field.transpose(*dims, *rest).stack({into: list(dims)}, create_index=False)
     stacked = stacked.rename(label_names)
     coordinate = batch_coordinate(into, np.arange(stacked.sizes[into]))
-    coordinate.attrs[STACKED_DIMS_ATTRIBUTE] = " ".join(dims)
+    coordinate.attrs[STACKED_DIMS_ATTRIBUTE] = json.dumps(list(dims))
     if companions:
-        coordinate.attrs[STACKED_COMPANIONS_ATTRIBUTE] = " ".join(
-            f"{name}:{','.join(on)}" for name, on in companions.items()
+        coordinate.attrs[STACKED_COMPANIONS_ATTRIBUTE] = json.dumps(
+            {name: list(on) for name, on in companions.items()}
         )
     return stacked.assign_coords({into: coordinate}).transpose(into, *rest)
 
@@ -654,7 +720,8 @@ def unstack_batch_dims(
         first appear along the stacked dim, which is their original order
         when every row is there; a combination of labels the stacked dim
         lacks is ``NaN``. The label coordinates' attributes and the
-        companion coordinates are restored.
+        companion coordinates are restored. The result is checked to be a
+        field.
 
     Raises
     ------
@@ -663,9 +730,12 @@ def unstack_batch_dims(
     ValueError
         If *field* is not a field; if no batch dim, or more than one,
         records a stack (:data:`STACKED_DIMS_ATTRIBUTE`, which some xarray
-        operations drop); if a ``<dim>_label`` coordinate it names is
-        missing; if two rows carry the same labels; or if *labels_from* is
-        on another batch dim or other rows.
+        operations drop), or the stack was selected to one entry; if a
+        ``<dim>_label`` coordinate it names is missing, or holds labels that
+        are not integers (as a ``reindex`` leaves them); if *field* carries
+        a coordinate named like a stacked dim; if two rows carry the same
+        labels; or if *labels_from* is on another batch dim or other rows,
+        or *field* carries label coordinates of its own already.
 
     Notes
     -----
@@ -681,9 +751,11 @@ def unstack_batch_dims(
         field = _with_stack_record_from(field, labels_from)
     stacked_dim = _stacked_dim(field)
     record = field[stacked_dim].attrs
-    originals = str(record[STACKED_DIMS_ATTRIBUTE]).split()
+    originals = list(recorded_stacked_dims(field[stacked_dim]) or ())
     label_names = [f"{dim}{STACKED_LABEL_SUFFIX}" for dim in originals]
     check_stack_labels_are_present(field, stacked_dim, label_names)
+    check_stack_labels_are_integers(field, label_names)
+    check_field_carries_no_stacked_dim_name(field, originals)
     check_stacked_rows_are_distinct(field, label_names)
     companions = _recorded_companions(record)
     saved = {name: field[name] for name in [*label_names, *companions] if name in field.coords}
@@ -703,6 +775,7 @@ def unstack_batch_dims(
     unstacked = unstacked.transpose(*originals, *rest)
     for name, on in companions.items():
         unstacked = unstacked.assign_coords({name: _companion_on(saved, name, on, unstacked)})
+    validate_field(unstacked, message_name=f"the unstacked {field_label(field)}")
     return unstacked
 
 
@@ -1107,6 +1180,25 @@ def missing_labels(field: xr.DataArray | xr.Dataset, dim: str, labels: Iterable[
     return wanted[~wanted.isin(field.indexes[dim])].tolist()
 
 
+def recorded_stacked_dims(coordinate: xr.DataArray) -> tuple[str, ...] | None:
+    """The dims a stacked coordinate records, in the order they were stacked.
+
+    Parameters
+    ----------
+    coordinate:
+        A batch dim's coordinate, such as ``stacked["run"]``.
+
+    Returns
+    -------
+    tuple of str or None
+        The names in its :data:`STACKED_DIMS_ATTRIBUTE`, as
+        :func:`stack_batch_dims` wrote them; ``None`` when it records none.
+    """
+    if STACKED_DIMS_ATTRIBUTE not in coordinate.attrs:
+        return None
+    return tuple(str(dim) for dim in json.loads(str(coordinate.attrs[STACKED_DIMS_ATTRIBUTE])))
+
+
 def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
     """*attrs* of a ``time`` coordinate less its stale attributes.
 
@@ -1140,19 +1232,15 @@ _INTERVAL_COORD_NAMES: tuple[str, ...] = (TIMESTEP_START, TIMESTEP_LENGTH, WINDO
 
 
 def _is_batch_dim(field: xr.DataArray | xr.Dataset, dim: str) -> bool:
-    """Whether *dim* of *field* is a batch dim: not reserved, integer labels."""
-    if dim in SPATIAL_DIM_NAMES or dim == TIME or dim not in field.indexes:
+    """Whether *dim* of *field* is a batch dim: not a non-batch name, integer labels."""
+    if dim in NON_BATCH_DIM_NAMES or dim not in field.indexes:
         return False
     return field.indexes[dim].dtype.kind in "iu"
 
 
-def _is_categorical(field: xr.DataArray) -> bool:
-    """Whether *field* holds classes: CF flags, strings, bytes or booleans."""
-    if {"flag_values", "flag_meanings"} & set(field.attrs) or field.dtype.kind in "USb":
-        return True
-    if field.dtype.kind == "O":
-        return all(isinstance(value, str) for value in np.asarray(field.values).ravel())
-    return False
+def _is_missing(value: Any) -> bool:
+    """Whether one element of an object array is a missing value, ``None`` or ``NaN``."""
+    return value is None or (isinstance(value, float) and np.isnan(value))
 
 
 def _dim_rank(field: xr.DataArray, dim: str) -> int | None:
@@ -1184,10 +1272,10 @@ def _companion_coordinates(field: xr.DataArray, dims: tuple[str, ...]) -> dict[s
 
 def _recorded_companions(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]]:
     """The companion coordinates a stacked coordinate's attributes record."""
-    entries = str(record.get(STACKED_COMPANIONS_ATTRIBUTE, "")).split()
-    return {
-        name: tuple(on.split(",")) for name, on in (entry.split(":", 1) for entry in entries)
-    }
+    if STACKED_COMPANIONS_ATTRIBUTE not in record:
+        return {}
+    entries = json.loads(str(record[STACKED_COMPANIONS_ATTRIBUTE]))
+    return {str(name): tuple(str(dim) for dim in on) for name, on in entries.items()}
 
 
 def _companion_on(
@@ -1221,6 +1309,7 @@ def _with_stack_record_from(field: xr.DataArray, labels_from: Any) -> xr.DataArr
         for name, coordinate in source.coords.items()
         if name != source_dim and coordinate.dims == (source_dim,)
     }
+    check_labels_from_adds_no_label_the_field_carries(field, copied)
     coordinate = field[source_dim].copy()
     coordinate.attrs.update(
         {
@@ -1415,58 +1504,113 @@ def check_field_is_a_dataarray(field: Any, message_name: str | None = None) -> N
 
 
 def check_field_dims_are_field_dims(field: xr.DataArray, message_name: str) -> None:
-    """Every dim is a batch dim, a spatial dim or ``time``, in that order, one space."""
+    """Every dim is a batch dim, a spatial dim or ``time``, in that order, one space.
+
+    Runs :func:`check_dims_are_batch_spatial_or_time`,
+    :func:`check_field_point_labels_are_integers`,
+    :func:`check_field_has_at_most_one_spatial_dim`,
+    :func:`check_field_dims_are_in_order`,
+    :func:`check_field_batch_labels_are_distinct` and
+    :func:`check_field_batch_labels_fit_int64`, in that order.
+    """
     check_dims_are_batch_spatial_or_time(field, message_name=message_name)
-    dims = [str(d) for d in field.dims]
-    ranks = [_dim_rank(field, d) for d in dims]
-    if POINT in dims and field.indexes[POINT].dtype.kind not in "iu":
-        raise ValueError(
-            f"{message_name}: point labels are integers, got {field.indexes[POINT].dtype}; "
-            "label the points 0 to n - 1 and keep any names as a coordinate on point."
-        )
-    spatial = frozenset(d for d in dims if d in SPATIAL_DIM_NAMES)
-    if spatial not in _SPATIAL_DIM_SETS:
-        raise ValueError(
-            f"{message_name}: spatial dims {sorted(spatial)}; a field has at most one: "
-            "site, point, or a raster pair (lat, lon) or (y, x). Select the others away."
-        )
-    if ranks != sorted(ranks):
-        raise ValueError(
-            f"{message_name}: dims {tuple(dims)} are not in the order (*batch, space, "
-            "time); transpose it, with .transpose(*batch_dims, space, 'time')."
-        )
-    for dim in batch_dims(field):
-        if field.indexes[dim].has_duplicates:
-            raise ValueError(
-                f"{message_name}: the batch dim {dim!r} repeats a label; batch labels are "
-                "distinct integers."
-            )
+    check_field_point_labels_are_integers(field, message_name)
+    check_field_has_at_most_one_spatial_dim(field, message_name)
+    check_field_dims_are_in_order(field, message_name)
+    check_field_batch_labels_are_distinct(field, message_name)
+    check_field_batch_labels_fit_int64(field, message_name)
 
 
 def check_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message_name: str) -> None:
     """Every dim of *field* is labeled and is a batch dim, a spatial dim or ``time``.
 
-    The part of the field contract that holds in any dim order, which the
-    vectors' ``flat`` and :func:`sipnet_calibration.parameter_vector.sipnet_overrides`
-    apply to what they read.
+    Runs :func:`check_dims_are_labeled` and
+    :func:`check_labeled_dims_are_batch_spatial_or_time`, in that order.
     """
-    dims = [str(d) for d in field.dims]
-    unindexed = [d for d in dims if d not in field.indexes]
+    # The part of the field contract that holds in any dim order, which the
+    # vectors' flat and parameter_vector.sipnet_overrides apply to what they
+    # read.
+    check_dims_are_labeled(field, message_name=message_name)
+    check_labeled_dims_are_batch_spatial_or_time(field, message_name=message_name)
+
+
+def check_dims_are_labeled(field: xr.DataArray, *, message_name: str) -> None:
+    """Every dim of *field* has an index coordinate."""
+    unindexed = [str(d) for d in field.dims if d not in field.indexes]
     if unindexed:
         raise ValueError(
             f"{message_name}: dim(s) {unindexed} carry no coordinate; a field labels every "
             "dim (a batch dim with integers), so a structural axis such as bounds is "
             "not a dim of a field. Label it, or split it into a dict of fields."
         )
-    structural = [d for d in dims if _dim_rank(field, d) is None]
+
+
+def check_labeled_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message_name: str) -> None:
+    """Every labeled dim of *field* is a batch dim, a spatial dim or ``time``."""
+    structural = [
+        str(d) for d in field.dims if d in field.indexes and _dim_rank(field, str(d)) is None
+    ]
     if structural:
         dtypes = {d: str(field.indexes[d].dtype) for d in structural}
         raise ValueError(
             f"{message_name}: dim(s) {structural} are neither a batch dim (a dim whose "
-            f"coordinate holds integers), a spatial dim nor time; they are labeled "
-            f"{dtypes}. A structural axis (variable, quantile, a PFT class) is never a "
-            "dim of a field: select it away, or split it into a dict of fields."
+            f"coordinate holds integers, not named {list(NON_BATCH_DIM_NAMES)}), a spatial "
+            f"dim nor time; they are labeled {dtypes}. A structural axis (variable, "
+            "quantile, a PFT class) is never a dim of a field: select it away, or split "
+            "it into a dict of fields."
         )
+
+
+def check_field_point_labels_are_integers(field: xr.DataArray, message_name: str) -> None:
+    """A ``point`` dim is labeled with integers."""
+    if POINT in field.dims and field.indexes[POINT].dtype.kind not in "iu":
+        raise ValueError(
+            f"{message_name}: point labels are integers, got {field.indexes[POINT].dtype}; "
+            "label the points 0 to n - 1 and keep any names as a coordinate on point."
+        )
+
+
+def check_field_has_at_most_one_spatial_dim(field: xr.DataArray, message_name: str) -> None:
+    """A field has no spatial dim, ``site``, ``point``, or one raster pair."""
+    spatial = frozenset(str(d) for d in field.dims if d in SPATIAL_DIM_NAMES)
+    if spatial not in _SPATIAL_DIM_SETS:
+        raise ValueError(
+            f"{message_name}: spatial dims {sorted(spatial)}; a field has at most one: "
+            "site, point, or a raster pair (lat, lon) or (y, x). Select the others away."
+        )
+
+
+def check_field_dims_are_in_order(field: xr.DataArray, message_name: str) -> None:
+    """A field's dims are in the order ``(*batch, space, time)``."""
+    dims = [str(d) for d in field.dims]
+    ranks = [_dim_rank(field, d) for d in dims]
+    if ranks != sorted(ranks):
+        raise ValueError(
+            f"{message_name}: dims {tuple(dims)} are not in the order (*batch, space, "
+            "time); transpose it, with .transpose(*batch_dims, space, 'time')."
+        )
+
+
+def check_field_batch_labels_are_distinct(field: xr.DataArray, message_name: str) -> None:
+    """No batch dim repeats a label."""
+    for dim in batch_dims(field):
+        if field.indexes[dim].has_duplicates:
+            raise ValueError(
+                f"{message_name}: the batch dim {dim!r} repeats a label; batch labels are "
+                "distinct integers, so drop the repeats or relabel the dim."
+            )
+
+
+def check_field_batch_labels_fit_int64(field: xr.DataArray, message_name: str) -> None:
+    """Every batch label fits ``int64``, the dtype batch labels are created in."""
+    limit = np.iinfo(BATCH_LABEL_DTYPE).max
+    for dim in batch_dims(field):
+        labels = field.indexes[dim]
+        if labels.dtype == np.uint64 and labels.size and labels.max() > limit:
+            raise ValueError(
+                f"{message_name}: the batch dim {dim!r} holds labels that do not fit int64 "
+                f"(up to {int(labels.max())}); relabel it, for example 0 to n - 1."
+            )
 
 
 def check_field_site_holds_site_ids(field: xr.DataArray, message_name: str) -> None:
@@ -1489,10 +1633,10 @@ def check_field_site_holds_site_ids(field: xr.DataArray, message_name: str) -> N
 def check_field_locations_are_on_the_spatial_dim(field: xr.DataArray, message_name: str) -> None:
     """``lon``/``lat`` are ``float64`` on a ``site`` or ``point`` dim, or scalars beside one.
 
-    A ``site`` or ``point`` dim carries them on it alone; a scalar ``site`` or
-    ``point`` carries them as scalars; with neither, they may only be
-    scalars (or, on a projected raster, on its ``y``/``x`` dims), never on a
-    batch dim or ``time``.
+    Runs :func:`check_field_location_is_on_the_dim` for a ``site`` or
+    ``point`` dim, :func:`check_field_location_is_a_scalar` for a scalar
+    ``site`` or ``point``, and :func:`check_field_locations_are_off_batch_and_time`
+    when there is neither.
     """
     for dim in (SITE, POINT):
         if dim in field.dims:
@@ -1504,6 +1648,11 @@ def check_field_locations_are_on_the_spatial_dim(field: xr.DataArray, message_na
             for name in (LON, LAT):
                 check_field_location_is_a_scalar(field, name, dim, message_name)
             return
+    check_field_locations_are_off_batch_and_time(field, message_name)
+
+
+def check_field_locations_are_off_batch_and_time(field: xr.DataArray, message_name: str) -> None:
+    """With no site or point, ``lon``/``lat`` are scalars, raster dims, or on ``y``/``x``."""
     raster = {str(d) for d in field.dims} & {X, Y}
     for name in (LON, LAT):
         if name in field.coords and name not in field.dims:
@@ -1529,7 +1678,8 @@ def check_field_location_is_on_the_dim(
     if coordinate.dims != (dim,) or coordinate.dtype != np.float64:
         raise ValueError(
             f"{message_name}: {name!r} must be float64 on ({dim},), got "
-            f"{coordinate.dtype} on {coordinate.dims}."
+            f"{coordinate.dtype} on {coordinate.dims}; locate the {dim}s again with "
+            "sites.site_coordinates, or cast with .astype('float64')."
         )
 
 
@@ -1547,7 +1697,8 @@ def check_field_location_is_a_scalar(
     if coordinate.dims != () or coordinate.dtype != np.float64:
         raise ValueError(
             f"{message_name}: {name!r} must be a float64 scalar beside the scalar {dim}, got "
-            f"{coordinate.dtype} on {coordinate.dims}."
+            f"{coordinate.dtype} on {coordinate.dims}; select the {dim} with its location, "
+            "as .isel and .sel of a site dim do."
         )
 
 
@@ -1575,11 +1726,8 @@ def check_field_time_is_a_time_axis(field: xr.DataArray, message_name: str) -> N
 
 
 def check_field_interval_coordinates_are_on_time(field: xr.DataArray, message_name: str) -> None:
-    """pySIPNET's timestep coordinates and the window coordinates are on ``time`` alone.
-
-    On ``(time,)`` when ``time`` is a dim, and scalars when it is not, as
-    ``.isel(time=k)`` leaves them.
-    """
+    """The timestep and window coordinates are on ``(time,)``, or scalars with no ``time``."""
+    # Scalars once time is selected away, as .isel(time=k) leaves them.
     expected = (TIME,) if TIME in field.dims else ()
     for name in _INTERVAL_COORD_NAMES:
         if name in field.coords and field[name].dims != expected:
@@ -1592,13 +1740,9 @@ def check_field_interval_coordinates_are_on_time(field: xr.DataArray, message_na
 
 
 def check_field_units_are_valid(field: xr.DataArray, message_name: str) -> None:
-    """``units`` is present and valid by pySIPNET, unless the field is categorical.
-
-    A categorical field has CF ``flag_values`` or ``flag_meanings``, or values
-    that are strings (``U``, ``S``, or an object array holding only strings),
-    bytes or booleans; it has classes, not units.
-    """
-    if _is_categorical(field):
+    """``units`` is present and valid by pySIPNET, unless the field is categorical."""
+    # A categorical field (is_categorical) has classes, not units.
+    if is_categorical(field):
         return
     units = field.attrs.get("units")
     if not isinstance(units, str):
@@ -1615,29 +1759,73 @@ def check_field_units_are_valid(field: xr.DataArray, message_name: str) -> None:
 def check_field_has_a_batch_dim(dims: tuple[str, ...], message_name: str) -> None:
     """A field to stack has at least one batch dim."""
     if not dims:
-        raise ValueError(f"{message_name}: the field has no batch dim to stack.")
+        raise ValueError(
+            f"{message_name}: the field has no batch dim to stack; stack only a field with "
+            "one or more (its batch dims are the integer-labeled dims other than the "
+            "spatial dim and time), and flatten this one as it is."
+        )
 
 
 def check_stack_names_are_free(
     field: xr.DataArray, into: Any, dims: tuple[str, ...], label_names: tuple[str, ...]
 ) -> None:
-    """The stacked dim's name is new, and its label coordinates' names are free on *field*."""
+    """The stacked dim's name is new, and its label coordinates' names are free on *field*.
+
+    Runs :func:`check_batch_dim_name_is_not_reserved`,
+    :func:`check_batch_dim_name_is_not_a_data_source_member`,
+    :func:`check_stack_name_is_not_a_stacked_dim`,
+    :func:`check_stack_name_is_not_a_label_name`,
+    :func:`check_stack_name_is_not_the_fields_name`,
+    :func:`check_stack_name_is_not_a_coordinate` and
+    :func:`check_stack_label_names_are_free`, in that order.
+    """
     check_batch_dim_name_is_not_reserved(into, message_name="into")
+    check_batch_dim_name_is_not_a_data_source_member(into, message_name="into")
+    check_stack_name_is_not_a_stacked_dim(into, dims)
+    check_stack_name_is_not_a_label_name(into, label_names)
+    check_stack_name_is_not_the_fields_name(field, into)
+    check_stack_name_is_not_a_coordinate(field, into)
+    check_stack_label_names_are_free(field, label_names)
+
+
+def check_stack_name_is_not_a_stacked_dim(into: str, dims: tuple[str, ...]) -> None:
+    """The stacked dim is not named for one of the dims stacked into it."""
     if into in dims:
         raise ValueError(
             f"into={into!r} is one of the dims stacked ({list(dims)}); a stacked dim is a new "
             "index, labeled 0 to n - 1, so it takes a new name, such as 'run'."
         )
+
+
+def check_stack_name_is_not_a_label_name(into: str, label_names: tuple[str, ...]) -> None:
+    """The stacked dim is not named like a label coordinate the stack creates."""
     if into in label_names:
         raise ValueError(
             f"into={into!r} is one of the names the stacked labels would take "
             f"({list(label_names)}); stack into another name, such as 'run'."
         )
+
+
+def check_stack_name_is_not_the_fields_name(field: xr.DataArray, into: str) -> None:
+    """The stacked dim is not named like the field itself."""
+    if field.name == into:
+        raise ValueError(
+            f"into={into!r} is the field's own name, which a dim of it cannot share (xarray "
+            "refuses the Dataset); stack into another name, or rename the field."
+        )
+
+
+def check_stack_name_is_not_a_coordinate(field: xr.DataArray, into: str) -> None:
+    """The stacked dim is not named like a coordinate *field* carries."""
     if into in field.coords:
         raise ValueError(
             f"into={into!r} is a coordinate of the field already; drop it, or stack into "
             "another name."
         )
+
+
+def check_stack_label_names_are_free(field: xr.DataArray, label_names: tuple[str, ...]) -> None:
+    """*field* carries none of the ``<dim>_label`` names the stack creates."""
     taken = [name for name in label_names if name in field.coords]
     if taken:
         raise ValueError(
@@ -1656,6 +1844,18 @@ def check_one_batch_dim_is_stacked(
         raise ValueError(
             f"{message_name}: the batch dims {list(recording)} each record a stack; unstack "
             "one at a time, selecting the others away."
+        )
+    selected = [
+        str(name)
+        for name, coordinate in field.coords.items()
+        if coordinate.ndim == 0 and STACKED_DIMS_ATTRIBUTE in coordinate.attrs
+    ]
+    if selected:
+        raise ValueError(
+            f"{message_name}: the stack {selected[0]!r} was selected to one entry "
+            f"({selected[0]}={field[selected[0]].values.item()}), so there is no stacked dim "
+            "left to unstack; its labels are the scalar <dim>_label coordinates. Select "
+            f"with a list, .isel({selected[0]}=[k]), to keep the dim."
         )
     labeled = [
         str(name) for name in field.coords if str(name).endswith(STACKED_LABEL_SUFFIX)
@@ -1689,8 +1889,31 @@ def check_stack_labels_are_present(
         )
 
 
+def check_stack_labels_are_integers(field: xr.DataArray, label_names: Sequence[str]) -> None:
+    """Every ``<dim>_label`` coordinate of the stack holds integers."""
+    bad = {name: str(field[name].dtype) for name in label_names if field[name].dtype.kind not in "iu"}
+    if bad:
+        raise ValueError(
+            f"the stack's label coordinates {bad} are not integers, as a reindex of the "
+            "stacked dim leaves them (NaN for a new row); select the rows the stack had "
+            "before unstacking."
+        )
+
+
+def check_field_carries_no_stacked_dim_name(field: xr.DataArray, originals: Sequence[str]) -> None:
+    """*field* carries no coordinate named like a dim the stack restores."""
+    clashing = [dim for dim in originals if dim in field.coords]
+    if clashing:
+        raise ValueError(
+            f"the field carries a coordinate named like the stacked dim {clashing[0]!r}, "
+            "which unstacking restores as a dim; drop it first, with "
+            f".drop_vars({clashing})."
+        )
+
+
 def check_stacked_rows_are_distinct(field: xr.DataArray, label_names: Sequence[str]) -> None:
-    """No two rows of the stacked dim carry the same labels, which one cell cannot hold."""
+    """No two rows of the stacked dim carry the same labels."""
+    # One entry of the unstacked field cannot hold two rows' values.
     rows = pd.MultiIndex.from_arrays([field[name].values for name in label_names])
     if rows.has_duplicates:
         raise ValueError(
@@ -1705,6 +1928,18 @@ def check_labels_from_is_a_dataarray(labels_from: Any) -> None:
         raise TypeError(
             f"labels_from must be the stacked field or its stacked coordinate, a DataArray, "
             f"got {type(labels_from).__name__}; for a Dataset or dict pass one array at a time."
+        )
+
+
+def check_labels_from_adds_no_label_the_field_carries(
+    field: xr.DataArray, copied: Iterable[str]
+) -> None:
+    """*field* carries none of the label and companion coordinates *labels_from* gives."""
+    carried = [name for name in copied if name in field.coords]
+    if carried:
+        raise ValueError(
+            f"the field carries {carried} already, which labels_from would replace; "
+            "unstack it without labels_from, or drop them first."
         )
 
 
@@ -1728,7 +1963,7 @@ def check_at_most_one_batch_dim(dims: Sequence[str], *, message_name: str) -> No
     """Something to flatten has at most one batch dim, since Flat has one row axis."""
     if len(dims) > 1:
         raise ValueError(
-            f"{message_name} carry the batch dims {list(dims)}, and Flat has one row axis; "
+            f"{message_name} carries the batch dims {list(dims)}, and Flat has one row axis; "
             "reduce all but one, or stack them into a new dim with "
             "fields.stack_batch_dims(field, into='run'): for a Dataset, "
             "dataset.map(lambda field: stack_batch_dims(field, into='run')), and for a "
@@ -1737,13 +1972,45 @@ def check_at_most_one_batch_dim(dims: Sequence[str], *, message_name: str) -> No
 
 
 def check_batch_dim_name_is_not_reserved(name: Any, *, message_name: str) -> None:
-    """*name* can name a batch dim: a string, not a spatial name, ``time`` or ``source_index``."""
+    """*name* can name a batch dim: a non-empty string, not one of ``NON_BATCH_DIM_NAMES``."""
     if not isinstance(name, str):
-        raise TypeError(f"{message_name}: a batch dim name is a string, got {type(name).__name__}.")
-    if name in SPATIAL_DIM_NAMES or name in (TIME, SOURCE_INDEX) or not name:
+        raise TypeError(
+            f"{message_name}: a batch dim name is a string, got {type(name).__name__}; name "
+            "the batch dim for what it indexes, such as 'sample'."
+        )
+    if name in NON_BATCH_DIM_NAMES or not name:
         raise ValueError(
-            f"{message_name}: {name!r} cannot name a batch dim; {list(SPATIAL_DIM_NAMES)}, "
-            f"{TIME!r} and {SOURCE_INDEX!r} are reserved. Name it for what it indexes, such "
+            f"{message_name}: {name!r} cannot name a batch dim; {list(NON_BATCH_DIM_NAMES)} "
+            "are reserved and a name is not empty. Name it for what it indexes, such as "
+            "'sample'."
+        )
+
+
+def check_batch_dim_name_is_not_a_data_source_member(name: str, *, message_name: str) -> None:
+    """*name* is not a data source's member dim, whose labels are that source's members."""
+    if name in DATA_SOURCE_MEMBER_NAMES:
+        raise ValueError(
+            f"{message_name}: {name!r} is a data source's member dim, whose labels are that "
+            "source's members (source_index - 1); a batch dim made here is a new index, so "
+            "name it for what it indexes, such as 'sample' or 'run'."
+        )
+
+
+def check_batch_dim_name_is_not_a_model_output_name(
+    name: str, output_variable_names: Iterable[str], *, message_name: str
+) -> None:
+    """*name* is no output variable and none of :data:`MODEL_OUTPUT_COORDINATE_NAMES`."""
+    what = (
+        "an output variable"
+        if name in set(output_variable_names)
+        else "a coordinate or dim"
+        if name in MODEL_OUTPUT_COORDINATE_NAMES
+        else None
+    )
+    if what is not None:
+        raise ValueError(
+            f"{message_name}: batch dim {name!r} is {what} of the model output; labeling a "
+            "run with it would replace that. Name the batch dim for what it indexes, such "
             "as 'sample'."
         )
 
@@ -1837,11 +2104,12 @@ def check_run_labels_match_the_key(
 
 def check_batch_name_is_not_the_model_outputs(dataset: xr.Dataset, name: str) -> None:
     """A batch name is no variable, dim or coordinate of the run, bar its own label."""
+    check_batch_dim_name_is_not_a_model_output_name(
+        name, map(str, dataset.data_vars), message_name="batch"
+    )
     own = {*scalar_batch_labels(dataset), SITE}
     what = (
-        "a variable"
-        if name in dataset.data_vars
-        else "a dim"
+        "a dim"
         if name in dataset.dims
         else "a coordinate"
         if name in dataset.coords and name not in own
@@ -1863,8 +2131,9 @@ def check_run_batch_labels_are_key_dims(
         labels = {name: coordinate_labels(dataset[name])[0] for name in dropped}
         raise ValueError(
             f"the run keyed {_key_label(key_dims, key)} is labeled {labels}, and key_dims "
-            f"{list(key_dims)} does not name it, so the stack would lose it; add it to "
-            "key_dims and to the key, or drop the label."
+            f"{list(key_dims)} does not name it, so the stack would lose it (any scalar "
+            "integer coordinate is a batch label); add it to key_dims and to the key, or "
+            "drop the coordinate."
         )
 
 

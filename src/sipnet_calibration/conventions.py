@@ -7,14 +7,17 @@ Dimensions
     dims :data:`INITIAL_CONDITION_MEMBER` and :data:`DRIVER_MEMBER`,
     collected in :data:`DATA_SOURCE_MEMBER_NAMES`; and the reserved spatial
     names :data:`POINT`, :data:`LAT`, :data:`LON`, :data:`Y`, :data:`X`,
-    collected in :data:`SPATIAL_DIM_NAMES`.
+    collected in :data:`SPATIAL_DIM_NAMES`; :data:`NON_BATCH_DIM_NAMES`, the
+    names no batch dim takes; :data:`BOUNDS`, the second dim of
+    :data:`TIME_BOUNDS`.
 Coordinates
     :data:`SOURCE_INDEX`, the 1-based file index beside a data source's
     own ensemble dim;
     :data:`LON` and :data:`LAT` on a site or a point; pySIPNET's timestep
     coordinates :data:`TIMESTEP_START` and :data:`TIMESTEP_LENGTH`, with
     ``time`` collected in :data:`TIME_COORD_NAMES`; an observation's window
-    edges :data:`WINDOW_START` and :data:`WINDOW_END`.
+    edges :data:`WINDOW_START` and :data:`WINDOW_END`; SIPNET's row labels,
+    :data:`SIPNET_ROW_LABEL_NAMES`.
 Columns
     :data:`SITE_ID`, the site table's key.
 Variables
@@ -60,10 +63,11 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
-from pysipnet.dataset import TIME_DIMENSION
+from pysipnet.dataset import BOUNDS_DIMENSION, TIME_DIMENSION
 
 __all__ = [
     "BATCH_LABEL_DTYPE",
+    "BOUNDS",
     "CF_CONVENTIONS",
     "DATA_ROOT_ENV_VAR",
     "DATA_SOURCE_MEMBER_ATTRIBUTES",
@@ -75,12 +79,14 @@ __all__ = [
     "LON",
     "LON_ATTRIBUTES",
     "NAME_PATTERN",
+    "NON_BATCH_DIM_NAMES",
     "POINT",
     "SAMPLE",
     "SAMPLE_ATTRIBUTES",
     "SITE",
     "SITE_ATTRIBUTES",
     "SITE_DTYPE",
+    "SIPNET_ROW_LABEL_NAMES",
     "SITE_ID",
     "SOURCE_INDEX",
     "SOURCE_INDEX_ATTRIBUTES",
@@ -115,7 +121,7 @@ TIME = TIME_DIMENSION
 SAMPLE = "sample"
 
 #: The batch dimension of PEcAn's initial condition ensemble, in the
-#: processed product and every field made from it.
+#: processed file and every field made from it.
 INITIAL_CONDITION_MEMBER = "initial_condition_member"
 
 #: The batch dimension of the ERA5 driver ensemble.
@@ -191,6 +197,18 @@ WINDOW_END = "time_bounds_end"
 #: from a member. One name for every data source.
 SOURCE_INDEX = "source_index"
 
+#: The names that are never a batch dimension, whatever their labels, and
+#: that no batch dimension may take: the spatial names, ``time``, and
+#: :data:`SOURCE_INDEX`, which sits beside a data source's member dim as a
+#: coordinate of it.
+NON_BATCH_DIM_NAMES: tuple[str, ...] = (*SPATIAL_DIM_NAMES, TIME, SOURCE_INDEX)
+
+#: SIPNET's own row labels, the start of each step, which pySIPNET's output
+#: carries as integer or float coordinates on ``time``. A field drops them,
+#: since ``time_step_start`` is the same instant; they are neither batch
+#: labels nor names a batch dimension may take.
+SIPNET_ROW_LABEL_NAMES: tuple[str, ...] = ("year", "day_of_year", "hour_of_day")
+
 
 # ── variables ─────────────────────────────────────────────────────────────────
 
@@ -199,6 +217,11 @@ SOURCE_INDEX = "source_index"
 #: stores for its timesteps. Its second dimension is pySIPNET's
 #: ``pysipnet.dataset.BOUNDS_DIMENSION``.
 TIME_BOUNDS = "time_bounds"
+
+#: The second dimension of :data:`TIME_BOUNDS`, pySIPNET's
+#: ``pysipnet.dataset.BOUNDS_DIMENSION``: the two edges of each interval. It
+#: has no coordinate, so it is never a dimension of a field.
+BOUNDS = BOUNDS_DIMENSION
 
 
 # ── columns ───────────────────────────────────────────────────────────────────
