@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import re
+import time
 
 import pytest
 
-from sipnet_calibration.io import file_md5, partial_path, utc_timestamp, write_checked
+from sipnet_calibration.io import (
+    file_md5,
+    partial_path,
+    utc_timestamp,
+    write_checked,
+    write_checked_together,
+)
 
 
 def _write(text):
@@ -67,6 +75,110 @@ class TestWriteChecked:
         write_checked(out, _write("good\n"), lambda partial: None)
         assert out.read_text() == "good\n" and not partial_path(out).exists()
 
+    def test_a_stale_partial_is_removed_before_an_early_failure_and_not_reported(
+        self, tmp_path, capsys
+    ):
+        """A rerun that fails before it writes must not report the last run's
+        file as its own."""
+        out = tmp_path / "product.csv"
+        partial_path(out).write_text("STALE FROM LAST WEEK")
+
+        def fails_first(partial):
+            raise OSError("encoding could not be built")
+
+        with pytest.raises(OSError, match="encoding"):
+            write_checked(out, fails_first, lambda partial: None)
+        assert not partial_path(out).exists()
+        assert capsys.readouterr().err == ""
+
+    def test_a_check_never_sees_a_stale_partial(self, tmp_path):
+        out = tmp_path / "product.csv"
+        partial_path(out).write_text("stale")
+        seen = []
+        with pytest.raises(FileNotFoundError):
+            write_checked(out, lambda partial: None, lambda partial: seen.append(partial.exists()))
+        assert seen == [False] and not out.exists()
+
+    def test_an_interrupt_keeps_the_partial_and_prints_its_path(self, tmp_path, capsys):
+        out = tmp_path / "product.csv"
+
+        def interrupted(partial):
+            partial.write_text("half")
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            write_checked(out, interrupted, lambda partial: None)
+        assert partial_path(out).read_text() == "half"
+        assert str(partial_path(out)) in capsys.readouterr().err
+
+
+class TestWriteCheckedTogether:
+    def _files(self, tmp_path, texts, check=lambda partial: None):
+        return [
+            (tmp_path / f"{name}.txt", _write(text), check) for name, text in texts.items()
+        ]
+
+    def test_every_file_is_moved_in_once_every_check_passes(self, tmp_path):
+        written = write_checked_together(self._files(tmp_path, {"a": "1", "b": "2"}))
+        assert [path.read_text() for path in written] == ["1", "2"]
+        assert not list(tmp_path.glob("*.partial"))
+
+    def test_a_failed_second_check_moves_no_file_and_keeps_both_partials(
+        self, tmp_path, capsys
+    ):
+        write_checked_together(self._files(tmp_path, {"a": "old a", "b": "old b"}))
+
+        def refuse_b(partial):
+            if partial.name.startswith("b"):
+                raise ValueError("b is wrong")
+
+        with pytest.raises(ValueError, match="b is wrong"):
+            write_checked_together(self._files(tmp_path, {"a": "new a", "b": "new b"}, refuse_b))
+        assert (tmp_path / "a.txt").read_text() == "old a"
+        assert (tmp_path / "b.txt").read_text() == "old b"
+        err = capsys.readouterr().err
+        for name in ("a", "b"):
+            assert str(partial_path(tmp_path / f"{name}.txt")) in err
+
+    def test_every_write_runs_before_any_check(self, tmp_path):
+        calls = []
+
+        def write(name):
+            return lambda partial: calls.append(f"write {name}") or partial.write_text(name)
+
+        def check(name):
+            return lambda partial: calls.append(f"check {name}")
+
+        write_checked_together(
+            [(tmp_path / name, write(name), check(name)) for name in ("a", "b")]
+        )
+        assert calls == ["write a", "write b", "check a", "check b"]
+
+    def test_a_failed_rename_is_reported_with_which_file_is_new(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from pathlib import Path
+
+        write_checked_together(self._files(tmp_path, {"a": "old a", "b": "old b"}))
+        real_replace = Path.replace
+
+        def fail_on_b(self, target):
+            if Path(target).name == "b.txt":
+                raise OSError("disk full")
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", fail_on_b)
+        with pytest.raises(OSError, match="disk full"):
+            write_checked_together(self._files(tmp_path, {"a": "new a", "b": "new b"}))
+        monkeypatch.undo()
+
+        assert (tmp_path / "a.txt").read_text() == "new a"
+        assert (tmp_path / "b.txt").read_text() == "old b"
+        assert partial_path(tmp_path / "b.txt").read_text() == "new b"
+        err = capsys.readouterr().err
+        assert "not all moved into place" in err and str(tmp_path / "a.txt") in err
+        assert str(partial_path(tmp_path / "b.txt")) in err
+
 
 def test_the_partial_path_sits_beside_its_destination(tmp_path):
     assert partial_path(tmp_path / "a.nc") == tmp_path / "a.nc.partial"
@@ -82,3 +194,17 @@ def test_file_md5_is_the_digest_of_the_whole_file(tmp_path):
 
 def test_utc_timestamp_is_iso_8601_in_utc():
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", utc_timestamp())
+
+
+def test_utc_timestamp_is_utc_whatever_the_local_time_zone(monkeypatch):
+    monkeypatch.setenv("TZ", "Asia/Tokyo")
+    time.tzset()
+    try:
+        stamp = datetime.datetime.strptime(utc_timestamp(), "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=datetime.timezone.utc
+        )
+        now = datetime.datetime.now(datetime.timezone.utc)
+        assert abs((now - stamp).total_seconds()) < 120
+    finally:
+        monkeypatch.undo()
+        time.tzset()
