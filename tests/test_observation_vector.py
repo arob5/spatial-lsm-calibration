@@ -241,7 +241,8 @@ class TestPredict:
         block = vector.flat(vector.predict(stack, sipnet_parameters=table))
         assert block.shape == (2, vector.dimension)
         assert np.isfinite(block).all()
-        # the second sample's pools are half the first's, and its leaf carbon per area double
+        # the second sample's pools are half the first's, and its leaf carbon per
+        # area double
         wood = np.concatenate([vector.positions(product_name=n) for n in ("landtrendr_aboveground_biomass", "soilgrids_soil_organic_carbon")])
         np.testing.assert_allclose(block[1, wood], 0.5 * block[0, wood])
         lai = vector.positions(product_name="modis_leaf_area_index")

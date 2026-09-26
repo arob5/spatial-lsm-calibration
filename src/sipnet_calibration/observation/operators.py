@@ -34,9 +34,10 @@ them). Its call is::
 * ``sipnet_parameters`` is the SIPNET table for these ``(*batch, site)``, a
   ``(site,)`` table, or a mapping of scalars for one run.
 * The result is on ``observed_values``' ``site`` and ``time`` grid, with the
-  model output's batch dims if any and no dim that neither the model output
-  nor the observation has, and carries ``units`` and, where the quantity has one, ``constituent``
-  attributes saying what it is. It need not be in the observation's units.
+  model output's batch dims if any and no dim that neither the model output nor
+  the observation has, and carries ``units`` and, where the quantity has one,
+  ``constituent`` attributes saying what it is. It need not be in the
+  observation's units.
 * The operator is **pointwise in site and in every batch dim**: applied to a
   stack it equals itself applied to each slice. That is what lets it run on
   the worker. :func:`check_operator` tests it.
@@ -449,13 +450,14 @@ def extract_sipnet_parameter_at_coords(
     ValueError
         If *sipnet_parameters* is ``None``; if a SIPNET table has no variable
         for the parameter, has a dimension the target has no coordinate for,
-        lacks a label of it that *target_field* has, or carries a scalar
-        label the target's disagree with (a stacked target's ``<dim>_label``
+        lacks a label of it that *target_field* has, or carries a scalar label
+        the target's disagree with (a stacked target's ``<dim>_label``
         coordinates included, or lost); if a batch dim of *target_field* is a
-        stack of a dim the table has (:func:`~sipnet_calibration.fields.stack_batch_dims`),
-        whose labels are not the table's; if a mapping has no entry for the
-        parameter under any of its names; or if a value is not finite or
-        lies outside the parameter's pySIPNET domain.
+        stack of a dim the table has
+        (:func:`~sipnet_calibration.fields.stack_batch_dims`), whose labels are
+        not the table's; if a mapping has no entry for the parameter under any
+        of its names; or if a value is not finite or lies outside the
+        parameter's pySIPNET domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """

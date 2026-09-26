@@ -965,17 +965,17 @@ plotting code. The load-bearing rules:
 
 - **Field**: as the field contract under "Code conventions" defines it. One
   `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
-- Every plotter calls `fields.validate_field` first and branches on
-  **presence of a batch dim**, found with `fields.batch_dims`, never on a mode
-  keyword. `plot_time_series` fans over batch dims of any name and refuses a
-  `site` dim (select a site, or facet with `plot_by_site`); `plot_map` refuses
-  a batch dim with advice naming it (`plot_map_by`,
-  `plot_map_quantiles(batch_dim=)`, `summarize_batch(field, stat,
-  batch_dim=)`); `plot_map_by` and `plot_map_quantiles` refuse a batch dim
-  besides the one their panels are over with the same advice, and the map
-  grids and `animate_map` check every panel is a map
-  (`maps.check_field_is_a_map`) before a shared scale reads its values. No plotter types a dim name: `SITE`, `TIME`, `LON`, `LAT`
-  and `SAMPLE` come from `conventions`.
+- Every plotter calls `fields.validate_field` first and branches on **presence
+  of a batch dim**, found with `fields.batch_dims`, never on a mode keyword.
+  `plot_time_series` fans over batch dims of any name and refuses a `site` dim
+  (select a site, or facet with `plot_by_site`); `plot_map` refuses a batch dim
+  with advice naming it (`plot_map_by`, `plot_map_quantiles(batch_dim=)`,
+  `summarize_batch(field, stat, batch_dim=)`); `plot_map_by` and
+  `plot_map_quantiles` refuse a batch dim besides the one their panels are over
+  with the same advice, and the map grids and `animate_map` check every panel
+  is a map (`maps.check_field_is_a_map`) before a shared scale reads its
+  values. No plotter types a dim name: `SITE`, `TIME`, `LON`, `LAT` and
+  `SAMPLE` come from `conventions`.
 - **Temporal aggregation lives in `observation/time_alignment.py`**: the
   observation operators are written with it, and it is the verb a caller
   applies before plotting, so a predictive-check figure cannot disagree with
@@ -1274,27 +1274,30 @@ plotting code. The load-bearing rules:
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
 - `sipnet_member_fields(members_axis, **{param_name: list_of_floats})` from `pysipnet.ensemble` builds `Grid` specs
 - `result.succeeded` is a list of `RunRecord`; access output via `rec.output`
-- **`pyens.xarray`** (PyEns PR #7; the `xarray` extra, declared here as `pyens[xarray]`)
-  builds specs from labeled data: `axes_of(obj)`,
+- **`pyens.xarray`** (PyEns PR #7; the `xarray` extra, declared here as
+  `pyens[xarray]`) builds specs from labeled data: `axes_of(obj)`,
   `field_from_dataarray(array, *, along=None, axes=None)`,
   `fields_from_dataset(dataset, *, along=None, axes=None)` and
-  `dataset_as_field(dataset, *, along, axes=None)`. A dim with a coordinate becomes
-  `Axis(dim, labels=[...])`, one without becomes `Axis(dim, size=n)`; datetime labels become
-  ISO strings; a 0-d variable becomes `Fixed`. On a SIPNET table from `example_parameter_vector`
-  the int32 `site` and int64 `sample` coordinates become plain `int` labels, a non-dimension
-  coordinate such as `pft` is ignored, and a hand-built label-keyed
-  `Grid({site_id: drivers}, along=Axis("site", labels=[...]))` zips with the result.
-- **The pairing rule is the dim name.** PyEns makes one axis per dim, named for it: two
-  batch dims of **one name zip** (paired label by label) and two of **different names cross**
-  (every combination, multiplying the runs). So the SIPNET table's `sample`, the drivers'
-  `driver_member` and the initial conditions' `initial_condition_member` cross, and pairing two
-  ensembles deliberately is spelled by giving their dims one name. Same-named axes must be equal
-  or PyEns raises: `Axis("sample", size=J)` is not equal to `Axis("sample", labels=[0, ...,
-  J-1])` ("two axes named 'sample' have different structures"). `fields_from_dataset` makes the
-  labeled form from a coordinate, so a `Grid` built by hand beside it must use an equal `Axis`;
-  passing the same object is simplest (`fields_from_dataset` accepts `axes=`; `ForwardModel`
-  builds its site axis once and passes it to every grid). `tests/test_fields.py` pins both
-  halves of the rule against PyEns.
+  `dataset_as_field(dataset, *, along, axes=None)`. A dim with a coordinate
+  becomes `Axis(dim, labels=[...])`, one without becomes `Axis(dim, size=n)`;
+  datetime labels become ISO strings; a 0-d variable becomes `Fixed`. On a
+  SIPNET table from `example_parameter_vector` the int32 `site` and int64
+  `sample` coordinates become plain `int` labels, a non-dimension coordinate
+  such as `pft` is ignored, and a hand-built label-keyed `Grid({site_id:
+  drivers}, along=Axis("site", labels=[...]))` zips with the result.
+- **The pairing rule is the dim name.** PyEns makes one axis per dim, named for
+  it: two batch dims of **one name zip** (paired label by label) and two of
+  **different names cross** (every combination, multiplying the runs). So the
+  SIPNET table's `sample`, the drivers' `driver_member` and the initial
+  conditions' `initial_condition_member` cross, and pairing two ensembles
+  deliberately is spelled by giving their dims one name. Same-named axes must
+  be equal or PyEns raises: `Axis("sample", size=J)` is not equal to
+  `Axis("sample", labels=[0, ..., J-1])` ("two axes named 'sample' have
+  different structures"). `fields_from_dataset` makes the labeled form from a
+  coordinate, so a `Grid` built by hand beside it must use an equal `Axis`;
+  passing the same object is simplest (`fields_from_dataset` accepts `axes=`;
+  `ForwardModel` builds its site axis once and passes it to every grid).
+  `tests/test_fields.py` pins both halves of the rule against PyEns.
 
 ### pyEKI
 - There is deliberately no log-likelihood helper (as of pyEKI PR #31).

@@ -1342,16 +1342,16 @@ Conversions applied during ingest rather than downstream:
   (2016) and 7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a
   modeling decision that would be hidden if an ingest script made it. See open
   question 14.
-- **Initial conditions.** None to the values. The conversion is a re-layout
-  in the source files' names and units strings; the ingest renames the
-  variables to the spec names, renames `member` to `initial_condition_member`
-  and renumbers it from the 1-based index to a 0-based one, keeping the
-  original as `source_index`, and drops the degenerate `time`. No
-  state-to-parameter conversion and no unit conversion: three of the four SIPNET initial parameters depend on parameters
-  the calibration proposes (see [Initial conditions](#initial-conditions)), so
-  the mapping is evaluated per proposed parameter vector in the experiment
-  layer. Negative wood and leaf draws pass through and are counted in the run
-  report.
+- **Initial conditions.** None to the values. The conversion is a re-layout in
+  the source files' names and units strings; the ingest renames the variables
+  to the spec names, renames `member` to `initial_condition_member` and
+  renumbers it from the 1-based index to a 0-based one, keeping the original as
+  `source_index`, and drops the degenerate `time`. No state-to-parameter
+  conversion and no unit conversion: three of the four SIPNET initial
+  parameters depend on parameters the calibration proposes (see [Initial
+  conditions](#initial-conditions)), so the mapping is evaluated per proposed
+  parameter vector in the experiment layer. Negative wood and leaf draws pass
+  through and are counted in the run report.
 - **Site labels.** None to the class names: they are the join key to the
   reanalysis's per-PFT trait tables, so they are written exactly as the producer
   wrote them, abbreviations and dots included. What changes is the column names,

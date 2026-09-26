@@ -7,8 +7,8 @@ window. The plotting tests assert on artist data and properties --
 limits -- and never on rendered images, which are brittle across matplotlib
 versions and say nothing about why a test failed.
 
-The synthetic fixtures build fields at each subset of the
-``(sample, site, time)`` dimensions (and of other batch dims), with a real ``DatetimeIndex`` on
+The synthetic fixtures build fields at each subset of the ``(sample, site,
+time)`` dimensions (and of other batch dims), with a real ``DatetimeIndex`` on
 ``time``, ``lon``/``lat`` as non-dimension coordinates on ``site``, and
 ``units``/``long_name`` in ``attrs``.
 

@@ -126,11 +126,10 @@ calibration parameter.
 
 **SIPNET table.** An ``xarray.Dataset`` with the same dims and coordinates as
 Fields, and one float64 variable per SIPNET parameter the vector sets,
-calibrated and fixed alike, keyed on the pySIPNET name, in
-``PARAMETER_SPECS`` order. Built from Fields, it keeps their batch dim and
-its labels, so a subset of a batch keeps its samples' identity. Each
-variable carries ``units``, ``sipnet_name``,
-``constituent`` where pySIPNET declares one, and ``source``
+calibrated and fixed alike, keyed on the pySIPNET name, in ``PARAMETER_SPECS``
+order. Built from Fields, it keeps their batch dim and its labels, so a subset
+of a batch keeps its samples' identity. Each variable carries ``units``,
+``sipnet_name``, ``constituent`` where pySIPNET declares one, and ``source``
 (``"parameter <name>"`` or ``"fixed"``); the dataset carries
 ``representation = "sipnet_parameters"``. A SIPNET parameter the vector
 neither calibrates nor fixes is absent, never NaN:

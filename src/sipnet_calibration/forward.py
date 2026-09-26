@@ -338,12 +338,12 @@ class ForwardModel:
         If *batch_dim* is a name it may not be (above); if neither
         *output_variable_names* nor *observation_vector* is given; *freq* is
         given with an observation vector or is not a pandas offset alias; a
-        site has no drivers, or in-memory drivers under a process backend; the observation vector observes a site the
-        parameter vector does not run; the output variables do not cover the
-        operators, or one is switched off by the model's flags, or (with
-        *freq*) has a kind no method keeps; the site table lacks
-        ``lon``/``lat`` or lists a site twice; or *to_sipnet_table* does not
-        return a SIPNET table for the batch.
+        site has no drivers, or in-memory drivers under a process backend; the
+        observation vector observes a site the parameter vector does not run;
+        the output variables do not cover the operators, or one is switched off
+        by the model's flags, or (with *freq*) has a kind no method keeps; the
+        site table lacks ``lon``/``lat`` or lists a site twice; or
+        *to_sipnet_table* does not return a SIPNET table for the batch.
     KeyError
         If an output variable name is not a pySIPNET output variable, or a
         site of the parameter vector is not in the given site table.
