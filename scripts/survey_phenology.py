@@ -75,7 +75,7 @@ import numpy as np
 import pandas as pd
 
 from sipnet_calibration import conventions
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import N_SITES, default_sites_path, load_sites
 
 #: The file's header, in order. Any other header is a different product.
 COLUMNS = (
@@ -103,7 +103,7 @@ QUALITY_MEANINGS = {0: "best", 1: "good", 2: "fair", 3: "poor"}
 RECORDED: dict[str, dict[str, Any]] = {
     "leaf_phenology_8k.csv": {
         "rows": 96_000,
-        "sites": 8000,
+        "sites": N_SITES,
         "years": list(range(2012, 2024)),
         "complete_rectangle": True,
         "quality_counts": {

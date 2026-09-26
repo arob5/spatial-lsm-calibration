@@ -31,6 +31,7 @@ import xarray as xr
 
 from conftest import load_script
 from sipnet_calibration.conventions import data_root
+from sipnet_calibration.sites import N_SITES
 
 PHENOLOGY_DIR = data_root() / "raw" / "phenology"
 SOIL_TEXTURE_DIR = data_root() / "raw" / "soil_texture"
@@ -329,9 +330,9 @@ def test_the_sample_is_deterministic_and_bounded():
 
 def test_the_sample_spans_the_identifier_range():
     """Identifiers run north to south, so a head-of-list sample would be Arctic."""
-    chosen = soil._evenly_spaced(list(range(1, 8001)), 25)
+    chosen = soil._evenly_spaced(list(range(1, N_SITES + 1)), 25)
     assert chosen[0] == 1
-    assert chosen[-1] == 8000
+    assert chosen[-1] == N_SITES
 
 
 # ── the soil texture survey's checker ─────────────────────────────────────────

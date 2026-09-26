@@ -45,7 +45,7 @@ from sipnet_calibration.constraints import (
     resolve_constraint,
 )
 from sipnet_calibration.conventions import CF_CONVENTIONS, data_root
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import N_SITES, default_sites_path, load_sites
 
 #: The tracked raw files, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "constraints"
@@ -815,7 +815,7 @@ def real_products(tmp_path_factory) -> dict[str, xr.Dataset]:
 @needs_real_files
 def test_every_real_product_is_dense_over_the_pool(real_products):
     for name, product in real_products.items():
-        assert product.sizes["site"] == 8000, name
+        assert product.sizes["site"] == N_SITES, name
         observed = np.isfinite(product[VALUE].values)
         assert observed.any(), name
         assert np.array_equal(observed, np.isfinite(product[STANDARD_DEVIATION].values)), name

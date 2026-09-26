@@ -57,7 +57,7 @@ from sipnet_calibration.initial_conditions import (
     to_sipnet_initial_conditions,
     to_sipnet_initial_conditions_table,
 )
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.sites import N_SITES, load_sites
 
 LOCAL_SOURCE_ROOT = data_root() / "raw" / "initial_conditions" / "files"
 TRACKED_RAW = REPOSITORY / "data" / "raw" / "initial_conditions" / module.RAW_FILE
@@ -1279,7 +1279,7 @@ def tracked_raw() -> xr.Dataset:
 
 
 def test_tracked_raw_file_is_the_full_ensemble(tracked_raw):
-    assert tracked_raw.sizes == {SITE: 8000, MEMBER: 100}
+    assert tracked_raw.sizes == {SITE: N_SITES, MEMBER: 100}
     assert tracked_raw[SITE].values.tolist() == list(range(1, 8001))
     assert tracked_raw[MEMBER].values.tolist() == list(range(1, 101))
     assert tracked_raw.attrs["n_source_files"] == 800000
