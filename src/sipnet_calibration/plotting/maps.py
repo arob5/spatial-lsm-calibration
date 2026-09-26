@@ -1068,20 +1068,17 @@ def check_field_is_a_dataarray_to_map(field: Any) -> None:
 
 
 def check_site_map_is_on_site_alone(field: xr.DataArray) -> None:
-    """A site map has no dim but ``site``, and ``lon``/``lat`` on it."""
-    _check_only(field, {SITE})
-    for name in (LON, LAT):
-        if name not in field.coords or field.coords[name].dims != (SITE,):
-            raise ValueError(
-                f"a site map needs {name!r} as a coordinate on 'site'. The readers in "
-                "sipnet_calibration add it; for an array built by hand, join it from "
-                "sipnet_calibration.sites.load_sites()."
-            )
+    """A site map has no dim but ``site``.
+
+    Its ``lon``/``lat`` on ``site`` are the field contract's, which
+    :func:`~sipnet_calibration.fields.validate_field` checks first.
+    """
+    check_map_has_only_its_spatial_dims(field, {SITE})
 
 
 def check_raster_is_on_lat_and_lon_alone(field: xr.DataArray) -> None:
     """A raster has no dims but ``lat`` and ``lon``, each one-dimensional and monotonic."""
-    _check_only(field, {LAT, LON})
+    check_map_has_only_its_spatial_dims(field, {LAT, LON})
     for name in (LAT, LON):
         values = np.asarray(field[name].values, dtype=float)
         steps = np.diff(values)
@@ -1129,7 +1126,8 @@ def check_animation_has_no_batch_dim(field: xr.DataArray, dim: str) -> None:
         )
 
 
-def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
+def check_map_has_only_its_spatial_dims(field: xr.DataArray, allowed: set[str]) -> None:
+    """A map has no dim beyond its spatial ones, with advice for each extra dim."""
     extra = [dim for dim in field.dims if dim not in allowed]
     if not extra:
         return
