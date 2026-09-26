@@ -372,23 +372,31 @@ from tensorflow_probability.substrates import jax as tfp
 # SITE, the site dimension's name, is also the reserved ``varies_by`` value
 # meaning one copy per site. Calibration parameter names match NAME_PATTERN.
 from sipnet_calibration.conventions import (
+    BATCH_LABEL_DTYPE,
+    DATA_SOURCE_MEMBER_NAMES,
     LAT,
     LAT_ATTRIBUTES,
     LON,
     LON_ATTRIBUTES,
     NAME_PATTERN,
     POINT,
-    BATCH_LABEL_DTYPE,
     SAMPLE,
-    SAMPLE_ATTRIBUTES,
     SITE,
     SITE_DTYPE,
     SITE_ID,
+    SOURCE_INDEX,
     FrozenMapping,
     X,
     Y,
 )
-from sipnet_calibration.fields import batch_dims, check_batch_dim_name_is_free
+from sipnet_calibration.fields import (
+    batch_coordinate,
+    batch_dims,
+    check_at_most_one_batch_dim,
+    check_batch_dim_name_is_not_reserved,
+    check_batch_labels_are_a_mapping,
+    check_dims_are_batch_spatial_or_time,
+)
 from sipnet_calibration.site_labels import LABEL_COLUMN
 from sipnet_calibration.sites import (
     check_site_table_has_locations,
@@ -400,6 +408,8 @@ from sipnet_calibration.validation import (
     as_frozen_mapping,
     as_names,
     as_sequence,
+    as_batch_label,
+    as_site_id,
     as_site_ids,
     is_one_vector,
 )
@@ -825,12 +835,16 @@ SHARED = "shared"
 """Group label, and ``varies_by`` attribute value, of a calibration parameter
 that does not vary."""
 
-RESERVED_SITE_LABELS_NAMES = frozenset({SHARED, SITE, SAMPLE, POINT, LON, LAT, X, Y, SITE_ID})
+RESERVED_SITE_LABELS_NAMES = frozenset(
+    {SHARED, SITE, SAMPLE, POINT, LON, LAT, X, Y, SITE_ID, SOURCE_INDEX, *DATA_SOURCE_MEMBER_NAMES}
+)
 """Names a site-labels product cannot take in a vector, because they are
 dimension or coordinate names already, or reserved for one. It may not be
 named like a calibration parameter or a SIPNET parameter either."""
 
-RESERVED_PARAMETER_NAMES = frozenset({SITE, SAMPLE, POINT, LON, LAT, X, Y})
+RESERVED_PARAMETER_NAMES = frozenset(
+    {SITE, SAMPLE, POINT, LON, LAT, X, Y, SOURCE_INDEX, *DATA_SOURCE_MEMBER_NAMES}
+)
 """Names a calibration parameter cannot take, because a Fields variable of
 that name would collide with a coordinate, or with a dimension name reserved
 for one."""
@@ -1742,12 +1756,14 @@ class ParameterVector:
         check_fields_hold_the_sites(fields, self.sites)
         fields = fields.sel({SITE: list(self.sites)})
         batch = batch_dims(fields)
-        check_fields_have_at_most_one_batch_dim(batch)
+        check_at_most_one_batch_dim(batch, message_name="Fields")
         dims = (*batch, SITE)
         parts = {}
         for parameter in self.parameters:
             names = _fields_variable_names(parameter, space)
             check_fields_hold_the_variables(fields, names, parameter.name)
+            for name in names:
+                check_dims_are_batch_spatial_or_time(fields[name], message_name=repr(name))
             check_fields_variables_are_in_the_space(fields, names, space)
             on_sites = np.stack([_variable_values(fields[n], dims) for n in names], axis=-1)
             check_fields_values_are_finite(on_sites, parameter.name)
@@ -1837,7 +1853,7 @@ class ParameterVector:
         if parameter.is_joint and parameter.joint_groups == len(declared):
             return _restricted(parameter, _joint_marginal(parameter, positions), positions)
         if not parameter.is_joint and tuple(parameter.prior.batch_shape) == (len(declared),):
-            return _restricted(parameter, _batch_slice(parameter, positions), positions)
+            return _restricted(parameter, _prior_for_groups(parameter, positions), positions)
         return parameter
 
     def _fixed_restricted_to_groups(self, parameter: FixedParameter) -> FixedParameter:
@@ -1863,7 +1879,7 @@ class ParameterVector:
         if parameter.is_joint:
             return _restricted(parameter, _joint_marginal(parameter, positions), positions)
         if tuple(parameter.prior.batch_shape) == (len(self.sites),):
-            return _restricted(parameter, _batch_slice(parameter, positions), positions)
+            return _restricted(parameter, _prior_for_groups(parameter, positions), positions)
         return parameter
 
     def _fixed_restricted_to_sites(
@@ -1937,8 +1953,7 @@ class ParameterVector:
                 if batch_labels is None
                 else _as_batch_labels(batch_labels)
             )
-            attributes = dict(SAMPLE_ATTRIBUTES) if batch_dim == SAMPLE else {}
-            coords[batch_dim] = (batch_dim, values, attributes)
+            coords[batch_dim] = batch_coordinate(batch_dim, values)
         return coords
 
     @cached_property
@@ -2083,20 +2098,45 @@ def sipnet_overrides(
     dict[str, float]
         ``{SIPNET parameter: value}``, Python floats.
 
+    Raises
+    ------
+    TypeError
+        If *site* or a batch label is a boolean, a float or not an integer,
+        or *batch* is not a mapping.
+    ValueError
+        If a table variable has a dim that is neither a batch dim (integer
+        labels), ``site`` nor ``time``; or if *batch* does not name exactly
+        the table's batch dims.
+    KeyError
+        If *site*, or a batch label, is not in the table.
+
     Examples
     --------
     With ``model`` a ``SIPNETModel`` and ``table`` a SIPNET table::
 
         model(**sipnet_overrides(table, batch={"sample": 3}, site=27))
     """
-    selected = table.sel({SITE: site})
-    requested = dict(batch or {})
+    site_id = as_site_id(site, message_name="site")
+    requested = _requested_batch_labels(batch)
+    for name, variable in table.data_vars.items():
+        check_dims_are_batch_spatial_or_time(variable, message_name=repr(str(name)))
+    selected = table.sel({SITE: site_id})
     check_batch_labels_name_the_table_batch_dims(batch_dims(selected), requested)
     for dim, label in requested.items():
         check_batch_label_is_in_the_table(table, dim, label)
     if requested:
         selected = selected.sel(requested)
     return {str(name): float(value) for name, value in selected.data_vars.items()}
+
+
+def _requested_batch_labels(batch: Any) -> dict[str, int]:
+    """*batch* as ``{dim: label}`` with plain-integer labels, or empty for ``None``."""
+    if batch is None:
+        return {}
+    check_batch_labels_are_a_mapping(batch)
+    return {
+        dim: as_batch_label(label, message_name=f"batch[{dim!r}]") for dim, label in batch.items()
+    }
 
 
 # ── the example ───────────────────────────────────────────────────────────────
@@ -2486,9 +2526,9 @@ def _restricted(
     return restricted
 
 
-def _batch_slice(parameter: CalibrationParameter, positions: np.ndarray) -> tfd.Distribution:
-    """An independent-copies prior restricted to the batch members at
-    *positions*."""
+def _prior_for_groups(parameter: CalibrationParameter, positions: np.ndarray) -> tfd.Distribution:
+    """An independent-copies prior, one group per entry of its TFP batch
+    shape, restricted to the groups at *positions*."""
     prior = parameter.prior
     if type(prior) in (tfd.LogNormal, tfd.LogitNormal):
         batch = tuple(prior.batch_shape)
@@ -2511,8 +2551,8 @@ def _batch_slice(parameter: CalibrationParameter, positions: np.ndarray) -> tfd.
     except Exception as error:
         raise ValueError(
             f"calibration parameter {parameter.name!r}: TFP cannot restrict its "
-            f"{type(prior).__name__} prior to fewer groups; give it one batch member per "
-            "group the vector has."
+            f"{type(prior).__name__} prior to fewer groups; give its TFP batch shape one "
+            "entry per group the vector has."
         ) from error
 
 
@@ -3186,25 +3226,23 @@ def check_batch_labels_are_distinct_integers(values: Any) -> None:
         )
 
 
-def check_fields_have_at_most_one_batch_dim(batch: tuple[str, ...]) -> None:
-    """Fields to flatten have at most one batch dim, since Flat has one row axis."""
-    if len(batch) > 1:
-        raise ValueError(
-            f"Fields have the batch dims {list(batch)}, and Flat has one row axis; reduce "
-            "all but one, or stack them with fields.stack_batch_dims first."
-        )
-
-
 def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
     """*batch_dim* can name a batch dim of this vector's Fields and SIPNET table.
 
-    Not a spatial name or ``time``
-    (:func:`sipnet_calibration.fields.check_batch_dim_name_is_free`), not a
-    site-labels name (a coordinate on ``site``), and not a calibration
-    parameter name (a Fields variable).
+    Not a reserved name
+    (:func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`),
+    not a site-labels name (a coordinate on ``site``), and not a name a
+    variable of either takes: a SIPNET parameter name, a Fields variable name
+    in either space, or a calibration parameter name.
     """
-    check_batch_dim_name_is_free(batch_dim, message_name="batch_dim")
+    check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
     taken = {**dict.fromkeys(vector.site_labels, "a site-labels name")}
+    taken.update(dict.fromkeys(vector.sipnet_parameter_names, "a SIPNET parameter name"))
+    for parameter in vector.parameters:
+        for space in SPACES:
+            taken.update(
+                dict.fromkeys(_fields_variable_names(parameter, space), "a Fields variable name")
+            )
     taken.update(dict.fromkeys(vector.parameter_names, "a calibration parameter name"))
     if batch_dim in taken or batch_dim in (SHARED, SITE_ID):
         what = taken.get(batch_dim, "a reserved name")

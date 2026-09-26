@@ -77,9 +77,14 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.conventions import LAT, LON, SITE, SOURCE_INDEX
-from sipnet_calibration.initial_conditions import (
+from sipnet_calibration.conventions import (
     INITIAL_CONDITION_MEMBER,
+    LAT,
+    LON,
+    SITE,
+    SOURCE_INDEX,
+)
+from sipnet_calibration.initial_conditions import (
     INITIAL_CONDITIONS,
     RAW_MEMBER,
     SOURCE,

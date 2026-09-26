@@ -33,8 +33,8 @@ import pandas as pd
 import xarray as xr
 from pysipnet.parameters import InitialConditions
 
-from sipnet_calibration.conventions import LAT, LON, SITE, SPATIAL_DIM_NAMES, TIME
-from sipnet_calibration.fields import batch_dims
+from sipnet_calibration.conventions import SITE, SPATIAL_DIM_NAMES, TIME
+from sipnet_calibration.fields import batch_dims, scalar_batch_labels
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [
@@ -293,7 +293,7 @@ def to_sipnet_initial_conditions_table(
 
     _check_scalar_coordinates_agree(arrays)
     broadcast = xr.broadcast(*xr.align(*arrays.values(), join="exact"))
-    _check_cells_are_batch_and_site(broadcast[0])
+    _check_dims_are_batch_and_site(broadcast[0])
     order = [str(dim) for dim in broadcast[0].dims if dim != SITE]
     order += [SITE] if SITE in broadcast[0].dims else []
     broadcast = [array.transpose(*order) for array in broadcast]
@@ -459,19 +459,15 @@ def _as_data_array(value: Any) -> xr.DataArray:
 
 
 def _label_coordinate_names(arrays: Mapping[str, xr.DataArray]) -> list[str]:
-    """``site``, then every dim of an input and every integer scalar coordinate, once each."""
+    """``site``, then every dim of an input and every scalar batch label, once each.
+
+    A scalar batch label is as :func:`sipnet_calibration.fields.scalar_batch_labels`
+    defines it.
+    """
     names: dict[str, None] = {SITE: None}
     for array in arrays.values():
         names.update(dict.fromkeys(str(dim) for dim in array.dims))
-        names.update(
-            dict.fromkeys(
-                str(name)
-                for name, coordinate in array.coords.items()
-                if coordinate.ndim == 0
-                and coordinate.dtype.kind in "iu"
-                and name not in (LON, LAT)
-            )
-        )
+        names.update(dict.fromkeys(scalar_batch_labels(array)))
     return [name for name in names if name not in SPATIAL_DIM_NAMES or name == SITE]
 
 
@@ -543,8 +539,8 @@ def _check_scalar_coordinates_agree(arrays: Mapping[str, xr.DataArray]) -> None:
     ``.sel(initial_condition_member=0)`` leaves ``initial_condition_member`` as
     a scalar coordinate on no dimension, which alignment therefore ignores.
     ``site`` is checked, and so is every batch label: a name that is a dim of
-    some input, or an integer scalar coordinate of one. Two things have to be refused here, and broadcasting
-    turns both into a full, plausible table:
+    some input, or a scalar batch label of one. Two things have to be refused
+    here, and broadcasting turns both into a full, plausible table:
 
     * two inputs selected to *different* single labels, which would be
       converted against each other;
@@ -675,7 +671,7 @@ def _check_root_fractions_leave_wood(
         )
 
 
-def _check_cells_are_batch_and_site(array: xr.DataArray) -> None:
+def _check_dims_are_batch_and_site(array: xr.DataArray) -> None:
     batch = set(batch_dims(array))
     extra = [
         str(dim)

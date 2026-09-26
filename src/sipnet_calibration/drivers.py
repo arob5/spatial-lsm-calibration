@@ -53,7 +53,7 @@ Data model
 ----------
 :func:`load_drivers` returns an ``xarray.Dataset`` shaped as follows.
 
-**Dimensions**: ``driver_member`` (:data:`DRIVER_MEMBER`, the drivers' own
+**Dimensions**: ``driver_member`` (:data:`~sipnet_calibration.conventions.DRIVER_MEMBER`, the drivers' own
 ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 ``time_bounds``.
 
@@ -227,11 +227,12 @@ from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration.conventions import (
     BATCH_LABEL_DTYPE,
+    DATA_SOURCE_MEMBER_ATTRIBUTES,
+    DRIVER_MEMBER,
     SITE,
     SITE_DTYPE,
     SOURCE_INDEX,
     SOURCE_INDEX_ATTRIBUTES,
-    SOURCE_MEMBER_ATTRIBUTES,
     TIME,
     TIME_BOUNDS,
     TIME_COORD_NAMES,
@@ -246,7 +247,6 @@ from sipnet_calibration.validation import as_positive_integers, as_site_ids, tru
 __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
     "DRIVER_FILE_GLOB",
-    "DRIVER_MEMBER",
     "DRIVER_PRESENT",
     "DRIVER_VARIABLES",
     "NEGATIVE_TOLERANCE",
@@ -275,11 +275,6 @@ UNITS_PROVENANCE = (
     "values in these units has not been confirmed; the magnitudes are "
     "consistent with them, which is evidence and not confirmation."
 )
-
-#: The drivers' own ensemble dim, a batch dim named for its source so that it
-#: crosses rather than pairs with any other ensemble (the samples, the initial
-#: conditions).
-DRIVER_MEMBER = "driver_member"
 
 #: Name of the presence variable written under ``allow_missing=True``.
 DRIVER_PRESENT = "driver_present"
@@ -725,7 +720,7 @@ def _assemble(
             DRIVER_MEMBER: (
                 DRIVER_MEMBER,
                 np.arange(members.size, dtype=BATCH_LABEL_DTYPE),
-                dict(SOURCE_MEMBER_ATTRIBUTES),
+                dict(DATA_SOURCE_MEMBER_ATTRIBUTES),
             ),
             SOURCE_INDEX: (
                 DRIVER_MEMBER,

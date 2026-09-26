@@ -1476,8 +1476,11 @@ def test_flat_reads_sites_by_label_and_ignores_extras(example, theta):
     np.testing.assert_allclose(example.flat(xr.concat([fields, extra], dim="site")), theta, rtol=1e-10, atol=1e-10)
     with pytest.raises(ValueError, match="'site' coordinate"):
         example.flat(fields.drop_vars(["site", "pft"]))
-    with pytest.raises(ValueError, match="must be on"):
+    with pytest.raises(ValueError, match="carry no coordinate"):
         example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].expand_dims(time=2)))
+    timed = fields["initial_soil_carbon"].expand_dims(time=pd.date_range("2012-01-01", periods=2))
+    with pytest.raises(ValueError, match="must be on"):
+        example.flat(fields.assign(initial_soil_carbon=timed))
 
 
 def test_select_restricts_per_site_fixed_values_and_keeps_require_complete(example):
@@ -1566,6 +1569,15 @@ def test_construction_refusals_the_suite_did_not_reach():
             rate(name=name)
 
 
+@pytest.mark.parametrize("name", ["initial_condition_member", "driver_member", "source_index"])
+def test_a_data_source_member_dim_name_is_reserved(name):
+    """A parameter or site-labels product would collide where the IC conversion crosses them."""
+    with pytest.raises(ValueError, match="is reserved"):
+        rate(name=name)
+    with pytest.raises(ValueError, match="reserved"):
+        ParameterVector(parameters=(rate(),), sites=SITES, site_labels={name: PFT})
+
+
 def test_repr_of_a_one_site_vector_with_nothing_fixed():
     lines = repr(ParameterVector(parameters=(rate(),), sites=(1,))).splitlines()
     assert lines[0] == "ParameterVector  D = 1  |  1 site  |  site labels: none"
@@ -1636,25 +1648,89 @@ def test_a_scalar_batch_coordinate_gives_one_vector(example, theta):
     np.testing.assert_allclose(flat, theta[2], rtol=1e-10, atol=1e-10)
 
 
-def test_two_batch_dims_are_refused_until_stacked(theta):
-    from sipnet_calibration.fields import stack_batch_dims
-
+def _located_example():
     table = pd.DataFrame(
         {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
     )
-    located = example_parameter_vector(sites=table, pft=PFT)
+    return example_parameter_vector(sites=table, pft=PFT)
+
+
+def test_two_batch_dims_are_refused_until_stacked(theta):
+    from sipnet_calibration.fields import stack_batch_dims
+
+    located = _located_example()
     fields = located.fields(theta, space="unconstrained")
     crossed = fields.expand_dims(initial_condition_member=[0, 1]).transpose(
         "sample", "initial_condition_member", "site"
     )
-    with pytest.raises(ValueError, match="stack_batch_dims"):
+    with pytest.raises(ValueError, match="stack_batch_dims") as refusal:
         located.flat(crossed)
-    stacked = xr.Dataset(
-        {name: stack_batch_dims(crossed[name]) for name in crossed.data_vars}, attrs=crossed.attrs
-    )
+    # The advice for a Dataset is the call that runs.
+    assert "dataset.map(lambda field: stack_batch_dims(field, into='run'))" in str(refusal.value)
+    stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
     flat = located.flat(stacked)
     assert flat.shape == (2 * len(theta), located.dimension)
     np.testing.assert_allclose(flat[::2], theta, rtol=1e-10, atol=1e-10)
+
+
+def test_the_flat_round_trip_of_a_stack_unstacks(theta):
+    """Stacked Fields -> Flat -> fields(batch_dim=) -> unstacked, as documented."""
+    from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+    located = _located_example()
+    fields = located.fields(theta[:3], space="unconstrained")
+    crossed = fields.expand_dims(initial_condition_member=[4, 1]).transpose(
+        "sample", "initial_condition_member", "site"
+    )
+    stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+    made = located.fields(located.flat(stacked), space="unconstrained", batch_dim="run")
+    restored = made.map(
+        lambda array: unstack_batch_dims(array, labels_from=stacked[array.name])
+    )
+    for name in crossed.data_vars:
+        xr.testing.assert_allclose(restored[name], crossed[name])
+        assert restored[name].dims == crossed[name].dims
+
+
+@pytest.mark.parametrize(
+    "name", ["soil_carbon", "leaf_carbon_fraction", "allocation.leaf_allocation", "allocation"]
+)
+def test_a_batch_dim_may_not_take_a_sipnet_parameter_or_fields_variable_name(
+    example, theta, name
+):
+    variables = set(example.fields(theta).data_vars) | set(example.sipnet_table(theta).data_vars)
+    assert name in variables or name in example.parameter_names
+    with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+        example.fields(theta, batch_dim=name)
+    with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+        example.sipnet_table(theta, batch_dim=name)
+
+
+def test_a_dim_without_integer_labels_is_refused_in_the_fields_words(example, theta):
+    fields = example.fields(theta)
+    for broken in (fields.drop_vars("sample"), fields.assign_coords(sample=np.arange(8.0))):
+        with pytest.raises(ValueError, match="neither a batch dim|carry no coordinate"):
+            example.flat(broken)
+        with pytest.raises(ValueError, match="neither a batch dim|carry no coordinate"):
+            example.sipnet_table(broken)
+    table = example.sipnet_table(theta)
+    with pytest.raises(ValueError, match="carry no coordinate"):
+        sipnet_overrides(table.drop_vars("sample"), batch={"sample": 0}, site=27)
+
+
+def test_sipnet_overrides_takes_integer_labels_only(example, theta):
+    table = example.sipnet_table(theta)
+    for label in (1.0, True):
+        with pytest.raises(TypeError, match="integer"):
+            sipnet_overrides(table, batch={"sample": label}, site=27)
+    for site in (27.0, True):
+        with pytest.raises(TypeError, match="integer"):
+            sipnet_overrides(table, batch={"sample": 1}, site=site)
+    with pytest.raises(TypeError, match="batch must be a mapping"):
+        sipnet_overrides(table, batch=3, site=27)
+    assert sipnet_overrides(table, batch={"sample": np.int64(1)}, site=np.int32(27)) == (
+        sipnet_overrides(table, batch={"sample": 1}, site=27)
+    )
 
 
 def test_unconstrained_fields_write_to_netcdf_and_read_back(example, theta, tmp_path):

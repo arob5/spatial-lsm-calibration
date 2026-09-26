@@ -192,7 +192,7 @@ from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE
 from sipnet_calibration.fields import (
-    check_batch_dim_name_is_free,
+    check_batch_dim_name_is_not_reserved,
     label_run,
     resolve_output_variable_names,
     stack_model_outputs,
@@ -345,7 +345,7 @@ class ForwardModel:
         site_table: pd.DataFrame | None = None,
         batch_dim: str = SAMPLE,
     ) -> None:
-        check_batch_dim_name_is_free(batch_dim, message_name="batch_dim")
+        check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
         check_forward_model_arguments(
             model,
             parameter_vector,

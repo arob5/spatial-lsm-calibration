@@ -79,8 +79,15 @@ from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import LAT, LON, SITE, TIME, FrozenMapping
-from sipnet_calibration.fields import batch_dims, coordinate_labels, field_label, missing_labels
+from sipnet_calibration.conventions import SITE, TIME, FrozenMapping
+from sipnet_calibration.fields import (
+    STACKED_LABEL_SUFFIX,
+    batch_dims,
+    coordinate_labels,
+    field_label,
+    missing_labels,
+    scalar_batch_labels,
+)
 from sipnet_calibration.observation.time_alignment import (
     check_how_is_a_window_reduction,
     check_run_spans_the_windows,
@@ -543,6 +550,7 @@ def _table_values_at(
     """
     check_table_has_the_parameter(table, name)
     values = table[name]
+    check_target_is_not_a_stack_of_table_dims(target_field, values, name)
     selectors: dict[str, Any] = {}
     for dim in map(str, values.dims):
         check_target_has_a_coordinate_for(target_field, dim, name)
@@ -551,19 +559,10 @@ def _table_values_at(
         # A scalar label selects without keeping the dimension, as the
         # target, one run, has none.
         selectors[dim] = wanted[0] if target_field[dim].ndim == 0 else wanted
-    for dim in _scalar_label_names(values):
+    scalar_site = [SITE] if SITE in values.coords and values[SITE].ndim == 0 else []
+    for dim in [*scalar_site, *scalar_batch_labels(values)]:
         check_scalar_table_label_agrees(values, target_field, dim, name)
     return values.sel(selectors) if selectors else values
-
-
-def _scalar_label_names(values: xr.DataArray) -> list[str]:
-    """The table's scalar ``site`` and integer batch labels, left by ``.sel``."""
-    return [
-        str(name)
-        for name, coordinate in values.coords.items()
-        if coordinate.ndim == 0
-        and (name == SITE or (coordinate.dtype.kind in "iu" and name not in (LON, LAT)))
-    ]
 
 
 def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
@@ -931,6 +930,29 @@ def check_table_has_the_labels(
             f"that the model output has; the table and the runs must cover the "
             f"same {dim}s."
         )
+
+
+def check_target_is_not_a_stack_of_table_dims(
+    target_field: xr.DataArray, values: xr.DataArray, name: str
+) -> None:
+    """No batch dim of the target is a stack of a dim the table has.
+
+    A stack's ``0..n-1`` labels are not the labels of the dims stacked into it,
+    whatever the stacked dim is called, so the table cannot be read at them.
+    """
+    for dim in batch_dims(target_field):
+        stacked = [
+            str(d) for d in values.dims
+            if f"{d}{STACKED_LABEL_SUFFIX}" in target_field.coords
+            and target_field[f"{d}{STACKED_LABEL_SUFFIX}"].dims == (dim,)
+        ]
+        if stacked:
+            raise ValueError(
+                f"the model output's {dim!r} is a stack of {stacked}, which the SIPNET table's "
+                f"{name!r} is on; its labels are not the table's. Select from the table by "
+                "the original labels, or unstack the model output with "
+                "fields.unstack_batch_dims first."
+            )
 
 
 def check_target_has_a_coordinate_for(target_field: xr.DataArray, dim: str, name: str) -> None:

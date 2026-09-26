@@ -6,11 +6,12 @@ are expected on disk. Nothing here reads or writes anything.
 
 Contents
 --------
-:data:`INITIAL_CONDITION_MEMBER`, :data:`RAW_MEMBER`
-    The member dimension of the processed product, and of the raw file,
-    spelled once. The site dimension is
-    :data:`sipnet_calibration.conventions.SITE`, and the 1-based source index
-    beside the processed member is
+:data:`RAW_MEMBER`
+    The member dimension of the raw file, spelled once. The processed
+    product's is
+    :data:`sipnet_calibration.conventions.INITIAL_CONDITION_MEMBER`, the site
+    dimension :data:`sipnet_calibration.conventions.SITE`, and the 1-based
+    source index beside the processed member
     :data:`sipnet_calibration.conventions.SOURCE_INDEX`.
 :data:`RAW_FILE`, :data:`PRODUCT_FILE`
     The two file names, without their directories.
@@ -27,7 +28,6 @@ from pathlib import Path
 from sipnet_calibration import conventions
 
 __all__ = [
-    "INITIAL_CONDITION_MEMBER",
     "PRODUCT_FILE",
     "RAW_FILE",
     "RAW_MEMBER",
@@ -37,11 +37,6 @@ __all__ = [
     "raw_path",
 ]
 
-
-#: The product's ensemble dim: the initial conditions' own members, a batch
-#: dim named for its source, ``0`` to ``n - 1``, so that it crosses rather
-#: than pairs with any other ensemble (the samples, the drivers).
-INITIAL_CONDITION_MEMBER = "initial_condition_member"
 
 #: The raw file's ensemble dim, holding the source files' 1-based index. The
 #: raw file is never edited, so it keeps this name;

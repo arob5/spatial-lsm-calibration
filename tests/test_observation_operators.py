@@ -824,3 +824,20 @@ class TestTwoBatchDimsPassThroughTheOperators:
             predicted.sel(initial_condition_member=1).values,
             2.0 * predicted.sel(initial_condition_member=0).values,
         )
+
+
+class TestAStackedTargetIsNotReadAtATablesLabels:
+    """A stack of ``(sample, driver_member)`` labeled ``sample`` 0..n-1 is not
+    theta's ``sample``; reading the table at those labels picked wrong rows."""
+
+    def test_a_target_stacked_over_a_table_dim_is_refused(self, stack):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        relabeled = stack_batch_dims(crossed, into="run").rename(run="sample")
+        table = xr.Dataset(
+            {"leaf_carbon_per_area": (("sample", "site"), np.arange(8.0).reshape(4, 2) + 1)},
+            coords={"sample": [0, 1, 2, 3], "site": [1, 2]},
+        )
+        with pytest.raises(ValueError, match="is a stack"):
+            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", relabeled)

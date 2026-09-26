@@ -800,17 +800,12 @@ class TestPredictOverAnyBatchDim:
         )
         with pytest.raises(ValueError, match="stack_batch_dims"):
             vector.flat(predicted)
-        stacked = {name: stack_batch_dims(field) for name, field in predicted.items()}
+        stacked = {name: stack_batch_dims(field, into="run") for name, field in predicted.items()}
         block = vector.flat(stacked)
         assert block.shape == (4, vector.dimension)
-        back = vector.fields(block)
-        labels = [
-            name for name in stacked["modis_leaf_area_index"].coords if name.endswith("_label")
-        ]
+        back = vector.fields(block, batch_dim="run")
         restored = unstack_batch_dims(
-            back["modis_leaf_area_index"].assign_coords(
-                {name: stacked["modis_leaf_area_index"][name] for name in labels}
-            )
+            back["modis_leaf_area_index"], labels_from=stacked["modis_leaf_area_index"]
         )
         observed = vector["modis_leaf_area_index"].values.notnull()
         assert restored.dims == predicted["modis_leaf_area_index"].dims
@@ -854,3 +849,58 @@ class TestObservationNamesAndUnits:
     def test_a_substance_inside_the_units_is_refused_in_pysipnets_words(self, lai):
         with pytest.raises(ValueError, match="substance token"):
             Observation("x", lai.assign_attrs(units="g C m-2"), SelectTimestep("wood_carbon"))
+
+
+class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
+    def test_a_scalar_batch_label_on_an_observation_gives_way_to_the_batch_dim(self, soil, lai):
+        """Before, the observation's scalar ``sample=4`` overwrote the created batch
+        coordinate, and flat then failed with a raw xarray error."""
+        labeled = soil.assign_coords(sample=np.int64(4))
+        vector = ObservationVector([
+            Observation("soilgrids_soil_organic_carbon", labeled, ReduceOverRun("soil_carbon", "mean")),
+            Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+        ])
+        block = np.arange(3 * vector.dimension, dtype=float).reshape(3, -1)
+        fields = vector.fields(block)
+        soil_field = fields["soilgrids_soil_organic_carbon"]
+        assert soil_field.dims == ("sample", "site")
+        assert soil_field["sample"].values.tolist() == [0, 1, 2]
+        np.testing.assert_array_equal(vector.flat(fields), block)
+
+    @pytest.mark.parametrize("name", ["time_bounds_start", "ameriflux_site_id", "modis_leaf_area_index"])
+    def test_a_batch_dim_named_like_an_observation_coordinate_is_refused(self, lai, times, name):
+        windowed = lai.assign_coords(
+            time_bounds_start=("time", times - pd.Timedelta("1D")),
+            ameriflux_site_id=("site", ["US-A", "US-B"]),
+        )
+        vector = ObservationVector([
+            Observation("modis_leaf_area_index", windowed, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+        ])
+        block = np.zeros((2, vector.dimension))
+        with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+            vector.fields(block, batch_dim=name)
+
+    def test_a_reserved_name_is_refused(self, vector):
+        with pytest.raises(ValueError, match="cannot name a batch dim"):
+            vector.fields(np.zeros((2, vector.dimension)), batch_dim="source_index")
+
+
+class TestFlatRefusesADimThatIsNotABatchDim:
+    def test_a_dropped_or_float_batch_coordinate_is_refused_in_the_fields_words(self, vector):
+        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        fields = vector.fields(block)
+        dropped = {name: field.drop_vars("sample") for name, field in fields.items()}
+        with pytest.raises(ValueError, match="carry no coordinate"):
+            vector.flat(dropped)
+        floats = {name: field.assign_coords(sample=[0.0, 1.0]) for name, field in fields.items()}
+        with pytest.raises(ValueError, match="neither a batch dim"):
+            vector.flat(floats)
+
+    def test_several_batch_dims_are_refused_with_advice_for_a_dict(self, vector):
+        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        crossed = {
+            name: field.expand_dims(driver_member=[0, 1])
+            for name, field in vector.fields(block).items()
+        }
+        with pytest.raises(ValueError, match="for a\\s+dict, one call per entry"):
+            vector.flat(crossed)

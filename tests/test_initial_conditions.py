@@ -29,6 +29,7 @@ from sipnet_calibration import initial_conditions as module
 from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
     DATA_ROOT_ENV_VAR,
+    INITIAL_CONDITION_MEMBER,
     SITE,
     SOURCE_INDEX,
     data_root,
@@ -36,7 +37,6 @@ from sipnet_calibration.conventions import (
 from sipnet_calibration.initial_conditions import (
     CONVERTED_SIPNET_FIELDS,
     INITIAL_CONDITION_NAMES,
-    INITIAL_CONDITION_MEMBER,
     INITIAL_CONDITIONS,
     RAW_MEMBER,
     SOURCE,

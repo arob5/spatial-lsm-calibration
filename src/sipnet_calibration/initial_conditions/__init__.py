@@ -61,7 +61,7 @@ follows. Variables, dims, coordinates and units are checked on load against
 the specs; the dtypes are what the writer produces.
 
 **Dimensions**: ``initial_condition_member``
-(:data:`~sipnet_calibration.initial_conditions.names.INITIAL_CONDITION_MEMBER`,
+(:data:`~sipnet_calibration.conventions.INITIAL_CONDITION_MEMBER`,
 the ensemble's own members, a batch dim named for its source so that it
 crosses rather than pairs with the samples or the drivers), ``site``. There
 is no ``time``: the source's is a
@@ -239,7 +239,6 @@ Usage
 from __future__ import annotations
 
 from sipnet_calibration.initial_conditions.names import (
-    INITIAL_CONDITION_MEMBER,
     PRODUCT_FILE,
     RAW_FILE,
     RAW_MEMBER,
@@ -282,7 +281,6 @@ from sipnet_calibration.initial_conditions.specs import (
 
 __all__ = [
     # Names and paths.
-    "INITIAL_CONDITION_MEMBER",
     "PRODUCT_FILE",
     "RAW_FILE",
     "RAW_MEMBER",

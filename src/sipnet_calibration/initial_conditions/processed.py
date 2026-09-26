@@ -35,16 +35,16 @@ import xarray as xr
 from sipnet_calibration.conventions import (
     BATCH_LABEL_DTYPE,
     CF_CONVENTIONS,
+    DATA_SOURCE_MEMBER_ATTRIBUTES,
+    INITIAL_CONDITION_MEMBER,
     LAT,
     LON,
     SITE,
     SITE_ID,
     SOURCE_INDEX,
     SOURCE_INDEX_ATTRIBUTES,
-    SOURCE_MEMBER_ATTRIBUTES,
 )
 from sipnet_calibration.initial_conditions.names import (
-    INITIAL_CONDITION_MEMBER,
     RAW_FILE,
     RAW_MEMBER,
     default_product_path,
@@ -129,7 +129,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
         INITIAL_CONDITION_MEMBER: (
             INITIAL_CONDITION_MEMBER,
             np.arange(source_index.size, dtype=BATCH_LABEL_DTYPE),
-            dict(SOURCE_MEMBER_ATTRIBUTES),
+            dict(DATA_SOURCE_MEMBER_ATTRIBUTES),
         ),
         SOURCE_INDEX: (INITIAL_CONDITION_MEMBER, source_index, dict(SOURCE_INDEX_ATTRIBUTES)),
         **site_coordinates(pool.tolist(), sites),

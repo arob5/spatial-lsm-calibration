@@ -3,7 +3,9 @@
 Contents
 --------
 Dimensions
-    :data:`SITE`, :data:`TIME`, :data:`SAMPLE`, and the reserved spatial
+    :data:`SITE`, :data:`TIME`, :data:`SAMPLE`; the data sources' ensemble
+    dims :data:`INITIAL_CONDITION_MEMBER` and :data:`DRIVER_MEMBER`,
+    collected in :data:`DATA_SOURCE_MEMBER_NAMES`; and the reserved spatial
     names :data:`POINT`, :data:`LAT`, :data:`LON`, :data:`Y`, :data:`X`,
     collected in :data:`SPATIAL_DIM_NAMES`.
 Coordinates
@@ -20,7 +22,7 @@ Variables
     or pySIPNET's output stores.
 Attributes
     :data:`SITE_ATTRIBUTES`, :data:`LON_ATTRIBUTES`, :data:`LAT_ATTRIBUTES`,
-    :data:`SAMPLE_ATTRIBUTES`, :data:`SOURCE_MEMBER_ATTRIBUTES` and
+    :data:`SAMPLE_ATTRIBUTES`, :data:`DATA_SOURCE_MEMBER_ATTRIBUTES` and
     :data:`SOURCE_INDEX_ATTRIBUTES`, the attributes of those coordinates,
     one wording each;
     :data:`STALE_TIME_ATTRIBUTE_NAMES`, the ``time`` attributes a field drops.
@@ -64,6 +66,10 @@ __all__ = [
     "BATCH_LABEL_DTYPE",
     "CF_CONVENTIONS",
     "DATA_ROOT_ENV_VAR",
+    "DATA_SOURCE_MEMBER_ATTRIBUTES",
+    "DATA_SOURCE_MEMBER_NAMES",
+    "DRIVER_MEMBER",
+    "INITIAL_CONDITION_MEMBER",
     "LAT",
     "LAT_ATTRIBUTES",
     "LON",
@@ -78,7 +84,6 @@ __all__ = [
     "SITE_ID",
     "SOURCE_INDEX",
     "SOURCE_INDEX_ATTRIBUTES",
-    "SOURCE_MEMBER_ATTRIBUTES",
     "SPATIAL_DIM_NAMES",
     "STALE_TIME_ATTRIBUTE_NAMES",
     "TIME",
@@ -108,6 +113,17 @@ TIME = TIME_DIMENSION
 #: takes ``batch_dim=`` to name it otherwise, and all default to this, so the
 #: Fields of the two vectors align on one dim.
 SAMPLE = "sample"
+
+#: The batch dimension of PEcAn's initial condition ensemble, in the
+#: processed product and every field made from it.
+INITIAL_CONDITION_MEMBER = "initial_condition_member"
+
+#: The batch dimension of the ERA5 driver ensemble.
+DRIVER_MEMBER = "driver_member"
+
+#: The batch dimensions of the data sources' own ensembles, each named for its
+#: source so that two of them never pair by accident.
+DATA_SOURCE_MEMBER_NAMES: tuple[str, ...] = (INITIAL_CONDITION_MEMBER, DRIVER_MEMBER)
 
 #: The spatial dimension of locations that are not sites, such as spatial
 #: prediction targets: integer labels with no meaning beyond the field, and
@@ -294,13 +310,16 @@ SAMPLE_ATTRIBUTES = FrozenMapping(
 )
 
 #: The attributes of a data source's own ensemble dim, such as
-#: ``initial_condition_member``. Read-only, as :data:`SITE_ATTRIBUTES`.
-SOURCE_MEMBER_ATTRIBUTES = FrozenMapping(
+#: ``initial_condition_member``, whose label is its member's identity: its
+#: :data:`SOURCE_INDEX` less one, whatever subset of the members is loaded.
+#: Read-only, as :data:`SITE_ATTRIBUTES`.
+DATA_SOURCE_MEMBER_ATTRIBUTES = FrozenMapping(
     {
         "long_name": "Ensemble member of the data source",
         "comment": (
-            "0-based, meaningful only within this data source; source_index is the "
-            "member's 1-based index in the source's file names."
+            "0-based: source_index - 1, the member's 1-based index in the source's file "
+            "names less one, whatever members are loaded; meaningful only within this "
+            "data source."
         ),
     }
 )
