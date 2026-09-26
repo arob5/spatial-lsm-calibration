@@ -38,18 +38,18 @@ VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon", "net_ecosystem_exchang
 
 @pytest.fixture(scope="module")
 def one_run():
-    """One Niwot run labeled as site 1, member 0."""
+    """One Niwot run labeled as sample 0 at site 1."""
     return label_run(
         niwot_reference_output().select(VARIABLES),
         site=1,
-        member=0,
+        batch={"sample": 0},
         site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True),
     )
 
 
 @pytest.fixture(scope="module")
 def stack():
-    """Two sites and two members built from the Niwot run by known factors."""
+    """Two samples and two sites built from the Niwot run by known factors."""
     return niwot_stack_of(VARIABLES)
 
 
@@ -86,8 +86,8 @@ class TestSelectTimestep:
             [1, 2], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
         )
         predicted = check_operator(SelectTimestep("wood_carbon"), stack, observed)
-        assert predicted.dims == ("member", "site", "time")
-        np.testing.assert_allclose(predicted.sel(site=2, member=1).values, 0.75 * predicted.sel(site=1, member=0).values)
+        assert predicted.dims == ("sample", "site", "time")
+        np.testing.assert_allclose(predicted.sel(site=2, sample=1).values, 0.75 * predicted.sel(site=1, sample=0).values)
 
 
 class TestReduceOverTimeBounds:
@@ -178,7 +178,7 @@ class TestReduceOverRun:
     def test_pointwise_over_a_stack(self, stack):
         observed = xr.DataArray([1.0, 1.0], dims="site", coords={"site": [1, 2]}, attrs={"units": "Mg ha-1", "constituent": "C"}, name="soilgrids_soil_organic_carbon")
         predicted = check_operator(ReduceOverRun("soil_carbon", "last"), stack, observed)
-        assert predicted.dims == ("member", "site")
+        assert predicted.dims == ("sample", "site")
 
 
 class TestComputeLeafAreaIndex:
@@ -201,11 +201,11 @@ class TestComputeLeafAreaIndex:
 
     def test_the_parameter_varies_by_member_and_site(self, stack, labels):
         observed = dated_observation([1, 2], labels)
-        table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"member": [0, 1], "site": [1, 2]})
+        table = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"sample": [0, 1], "site": [1, 2]})
         predicted = check_operator(ComputeLeafAreaIndex(), stack, observed, sipnet_parameters=table)
         leaf = select_timestep_at(stack["leaf_carbon"], labels)
-        np.testing.assert_allclose(predicted.sel(member=1, site=2).values, leaf.sel(member=1, site=2).values / 270.0)
-        np.testing.assert_allclose(predicted.sel(member=0, site=2).values, leaf.sel(member=0, site=2).values / 135.0)
+        np.testing.assert_allclose(predicted.sel(sample=1, site=2).values, leaf.sel(sample=1, site=2).values / 270.0)
+        np.testing.assert_allclose(predicted.sel(sample=0, site=2).values, leaf.sel(sample=0, site=2).values / 135.0)
 
     def test_the_parameter_is_required(self, one_run, labels):
         with pytest.raises(ValueError, match="pass sipnet_parameters"):
@@ -264,9 +264,9 @@ class TestExtractSipnetParameterAtCoords:
         with pytest.raises(ValueError, match="no entry"):
             extract_sipnet_parameter_at_coords({"soil_carbon": 1.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
 
-    def test_selects_the_arrays_sites_and_members_from_a_table(self):
-        table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}, coords={"member": [0, 1], "site": [1, 2, 3]})
-        target_field = xr.DataArray(np.zeros((2, 2)), dims=("member", "site"), coords={"member": [0, 1], "site": [3, 1]})
+    def test_selects_the_arrays_sites_and_samples_from_a_table(self):
+        table = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}, coords={"sample": [0, 1], "site": [1, 2, 3]})
+        target_field = xr.DataArray(np.zeros((2, 2)), dims=("sample", "site"), coords={"sample": [0, 1], "site": [3, 1]})
         array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", target_field)
         np.testing.assert_array_equal(array.values, [[3.0, 1.0], [6.0, 4.0]])
 
@@ -347,7 +347,7 @@ class TestSiteOrderAndCoverage:
         )
         predicted = check_operator(SelectTimestep("wood_carbon"), stack, observed)
         assert predicted["site"].values.tolist() == [2, 1]
-        np.testing.assert_allclose(predicted.sel(site=2, member=0).values, 1.5 * predicted.sel(site=1, member=0).values)
+        np.testing.assert_allclose(predicted.sel(site=2, sample=0).values, 1.5 * predicted.sel(site=1, sample=0).values)
 
     def test_an_operator_returning_model_order_is_refused(self, stack, labels):
         @dataclass(frozen=True)
@@ -414,8 +414,8 @@ class TestReduceOverTimeBoundsValues:
 
 class TestParameterLookups:
     def test_a_table_missing_the_runs_members_is_named(self, stack, labels):
-        table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0]])}, coords={"member": [0], "site": [1, 2]})
-        with pytest.raises(ValueError, match=r"no member label\(s\) \[1\]"):
+        table = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0]])}, coords={"sample": [0], "site": [1, 2]})
+        with pytest.raises(ValueError, match=r"no sample label\(s\) \[1\]"):
             ComputeLeafAreaIndex()(
                 stack, dated_observation([1, 2], labels), sipnet_parameters=table
             )
@@ -434,16 +434,16 @@ class TestParameterLookups:
 
 
 class TestParameterLookupsAtScalarCoordinates:
-    """A one-run model output carries site and member as scalars."""
+    """A one-run model output carries site and its batch labels as scalars."""
 
     @pytest.fixture
     def table(self):
         return xr.Dataset(
-            {"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0], [540.0, 90.0]])},
-            coords={"member": [0, 1], "site": [1, 2]},
+            {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 90.0]])},
+            coords={"sample": [0, 1], "site": [1, 2]},
         )
 
-    def test_a_scalar_site_and_member_select_one_value(self, one_run, table):
+    def test_a_scalar_site_and_sample_select_one_value(self, one_run, table):
         array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", one_run["leaf_carbon"])
         assert array.dims == () and float(array) == 270.0
 
@@ -456,8 +456,8 @@ class TestParameterLookupsAtScalarCoordinates:
         np.testing.assert_allclose(predicted.values, expected)
 
     def test_a_table_dimension_the_target_has_no_coordinate_for_is_refused(self, stack, table):
-        unlabeled = stack["leaf_carbon"].isel(member=0, drop=True)  # site, but no member
-        with pytest.raises(ValueError, match="carries no member coordinate"):
+        unlabeled = stack["leaf_carbon"].isel(sample=0, drop=True)  # site, but no sample
+        with pytest.raises(ValueError, match="carries no sample coordinate"):
             extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", unlabeled)
 
     def test_a_scalar_table_site_is_not_used_at_every_site(self, stack, table):
@@ -497,13 +497,13 @@ class TestCheckOperatorContract:
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
                 picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
-                if "member" not in picked.dims:
+                if "sample" not in picked.dims:
                     return picked
-                mixed = picked.mean("member").expand_dims(member=picked["member"].values).transpose(*picked.dims)
+                mixed = picked.mean("sample").expand_dims(sample=picked["sample"].values).transpose(*picked.dims)
                 mixed.attrs = picked.attrs
                 return mixed
 
-        with pytest.raises(ValueError, match="not pointwise in 'member'"):
+        with pytest.raises(ValueError, match="not pointwise in 'sample'"):
             check_operator(
                 MemberMean(),
                 stack,
@@ -583,9 +583,9 @@ class TestTheGridCheck:
         check_result_is_on_the_observation_grid(result, coarse, one_run, "x")
 
     def test_a_spurious_member_is_refused(self, one_run, labels, result):
-        with pytest.raises(ValueError, match="member dimension the model output lacks"):
+        with pytest.raises(ValueError, match=r"dim\(s\) \['sample'\] that neither the model output"):
             check_result_is_on_the_observation_grid(
-                result.drop_vars("member").expand_dims(member=[0]),
+                result.drop_vars("sample").expand_dims(sample=[0]),
                 dated_observation([1], labels),
                 one_run,
                 "x",
@@ -638,7 +638,7 @@ class TestTheGridCheck:
 
 class TestPointwiseIsComparedByLabel:
     def test_a_pointwise_operator_that_always_returns_a_site_dimension_passes(self, stack, labels):
-        """On one site's slice its result is (member, site=1, time), the stack's sliced (member, time)."""
+        """On one site's slice its result is (sample, site=1, time), the stack's sliced (sample, time)."""
 
         @dataclass(frozen=True)
         class AlwaysOnSite:
@@ -649,10 +649,10 @@ class TestPointwiseIsComparedByLabel:
                 picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
                 if "site" not in picked.dims:
                     picked = picked.expand_dims("site")
-                return picked.transpose(*[d for d in ("member", "site", "time") if d in picked.dims])
+                return picked.transpose(*[d for d in ("sample", "site", "time") if d in picked.dims])
 
         observed = dated_observation([1, 2], labels, units="Mg ha-1", constituent="C")
-        assert check_operator(AlwaysOnSite(), stack, observed).dims == ("member", "site", "time")
+        assert check_operator(AlwaysOnSite(), stack, observed).dims == ("sample", "site", "time")
 
     def test_a_pointwise_operator_returning_its_own_dim_order_passes(self, stack, labels):
         @dataclass(frozen=True)
@@ -675,11 +675,11 @@ class TestPointwiseIsComparedByLabel:
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
                 wood = model_output["wood_carbon"]
-                if "member" in wood.dims:
-                    wood = wood.isel(member=0, drop=True)
+                if "sample" in wood.dims:
+                    wood = wood.isel(sample=0, drop=True)
                 return select_timestep_at(select_observed_sites(wood, observed_values), observed_values["time"])
 
-        with pytest.raises(ValueError, match="not pointwise in 'member'"):
+        with pytest.raises(ValueError, match="not pointwise in 'sample'"):
             check_operator(
                 FirstMember(),
                 stack,
@@ -737,8 +737,208 @@ class TestTheOperatorsNameThemselves:
 
 class TestScalarTableLabels:
     def test_a_scalar_table_member_serves_a_run_without_a_member(self, one_run):
-        run = one_run.drop_vars("member")
+        run = one_run.drop_vars("sample")
         table = xr.Dataset(
-            {"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0]])}, coords={"member": [0], "site": [1, 2]}
-        ).isel(member=0)
+            {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0]])}, coords={"sample": [0], "site": [1, 2]}
+        ).isel(sample=0)
         assert float(extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", run["leaf_carbon"])) == 270.0
+
+
+class TestEveryBatchDimOfATableIsSelectedOrRefused:
+    """Regression for a table whose batch dim was not named ``member``: it
+    used to be broadcast whole into one run, silently, and its labels were
+    never selected."""
+
+    @pytest.fixture
+    def table(self):
+        return xr.Dataset(
+            {"leaf_carbon_per_area": (("driver_member", "site"), [[270.0, 135.0], [540.0, 90.0]])},
+            coords={"driver_member": [5, 6], "site": [1, 2]},
+        )
+
+    def test_a_table_batch_dim_of_any_name_is_refused_against_a_run_without_it(self, one_run, table):
+        with pytest.raises(ValueError, match="'driver_member'.*would broadcast"):
+            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", one_run["leaf_carbon"])
+
+    def test_a_table_batch_dim_of_any_name_is_selected_at_the_runs_labels(self, one_run, table):
+        run = one_run["leaf_carbon"].assign_coords(driver_member=6)
+        array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", run)
+        assert array.dims == () and float(array) == 540.0
+
+    def test_labels_the_table_lacks_are_refused_rather_than_joined_away(self, stack, table):
+        target = stack["leaf_carbon"].rename(sample="driver_member")  # labels 0 and 1
+        with pytest.raises(ValueError, match=r"no driver_member label\(s\) \[0, 1\]"):
+            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", target)
+
+    def test_a_scalar_batch_label_of_any_name_must_agree(self, stack, table):
+        target = stack["leaf_carbon"].rename(sample="driver_member").assign_coords(driver_member=[5, 6])
+        with pytest.raises(ValueError, match="for driver_member 5 alone"):
+            extract_sipnet_parameter_at_coords(
+                table.sel(driver_member=5), "leaf_carbon_per_area", target
+            )
+
+    def test_an_operator_mixing_a_batch_dim_of_any_name_is_not_pointwise(self, stack, labels):
+        @dataclass(frozen=True)
+        class MeanOverDriverMembers:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+                picked = select_timestep_at(
+                    select_observed_sites(model_output["wood_carbon"], observed_values),
+                    observed_values["time"],
+                )
+                if "driver_member" not in picked.dims:
+                    return picked
+                mixed = picked.mean("driver_member").expand_dims(
+                    driver_member=picked["driver_member"].values
+                ).transpose(*picked.dims)
+                mixed.attrs = picked.attrs
+                return mixed
+
+        with pytest.raises(ValueError, match="not pointwise in 'driver_member'"):
+            check_operator(
+                MeanOverDriverMembers(),
+                stack.rename(sample="driver_member"),
+                dated_observation([1, 2], labels, units="Mg ha-1", constituent="C"),
+            )
+
+
+class TestTwoBatchDimsPassThroughTheOperators:
+    def test_sample_by_initial_condition_member_is_pointwise_in_both(self, stack, labels):
+        crossed = xr.concat(
+            [stack, stack * 2.0], dim=pd.Index([0, 1], name="initial_condition_member"), coords="minimal",
+        )
+        for name in crossed.data_vars:
+            crossed[name].attrs = stack[name].attrs
+        crossed = crossed.transpose("sample", "initial_condition_member", "site", "time")
+        table = xr.Dataset(
+            {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])},
+            coords={"sample": [0, 1], "site": [1, 2]},
+        )
+        predicted = check_operator(
+            ComputeLeafAreaIndex(), crossed, dated_observation([1, 2], labels), sipnet_parameters=table
+        )
+        assert predicted.dims == ("sample", "initial_condition_member", "site", "time")
+        np.testing.assert_allclose(
+            predicted.sel(initial_condition_member=1).values,
+            2.0 * predicted.sel(initial_condition_member=0).values,
+        )
+
+
+class TestAStackedTargetIsNotReadAtATablesLabels:
+    """A stack of ``(sample, driver_member)`` labeled ``sample`` 0..n-1 is not
+    theta's ``sample``; reading the table at those labels picked wrong rows."""
+
+    def test_a_target_stacked_over_a_table_dim_is_refused(self, stack):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        relabeled = stack_batch_dims(crossed, into="run").rename(run="sample")
+        table = xr.Dataset(
+            {"leaf_carbon_per_area": (("sample", "site"), np.arange(8.0).reshape(4, 2) + 1)},
+            coords={"sample": [0, 1, 2, 3], "site": [1, 2]},
+        )
+        with pytest.raises(ValueError, match="is a stack"):
+            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", relabeled)
+
+    def _stacked_leaf_carbon(self, stack):
+        """Leaf carbon over (sample 0..1, driver_member 0..1) stacked into ``run``."""
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        return stack_batch_dims(crossed, into="run")
+
+    def _table(self):
+        return xr.Dataset(
+            {"leaf_carbon_per_area": (("sample", "site"), [[20.0, 40.0], [30.0, 60.0], [99.0, 99.0]])},
+            coords={"sample": [0, 1, 3], "site": [1, 2]},
+        )
+
+    def test_a_table_for_one_sample_is_refused_against_a_stack_of_others(self, stack):
+        """Sample 3's parameter was applied, silently, to runs of samples 0 and 1."""
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            extract_sipnet_parameter_at_coords(
+                self._table().sel(sample=3), "leaf_carbon_per_area", self._stacked_leaf_carbon(stack)
+            )
+
+    def test_a_table_for_one_sample_serves_a_stack_of_that_sample(self, stack):
+        stacked = self._stacked_leaf_carbon(stack)
+        of_sample_1 = stacked.isel(run=stacked["sample_label"].values == 1)
+        array = extract_sipnet_parameter_at_coords(
+            self._table().sel(sample=1), "leaf_carbon_per_area", of_sample_1
+        )
+        assert array.dims == ("site",) and array.values.tolist() == [30.0, 60.0]
+
+    def test_the_operators_refuse_a_one_sample_table_against_a_stack(self, stack, labels):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
+        stacked = crossed.map(lambda variable: stack_batch_dims(variable, into="run"))
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            ComputeLeafAreaIndex()(
+                stacked,
+                dated_observation([1, 2], labels),
+                sipnet_parameters=self._table().sel(sample=3),
+            )
+
+    def test_a_label_coordinate_on_the_dim_itself_is_not_a_stack(self, stack):
+        """An unrelated ``sample_label`` on ``sample`` was taken for a stack of ``sample``."""
+        named = stack["leaf_carbon"].assign_coords(sample_label=("sample", [7, 8]))
+        array = extract_sipnet_parameter_at_coords(self._table(), "leaf_carbon_per_area", named)
+        assert array.dims == ("sample", "site")
+        assert array.values.tolist() == [[20.0, 40.0], [30.0, 60.0]]
+
+
+class TestARestackedTargetIsReadAtItsLabels:
+    """A stack of a stack records only the dim it stacked, and carries the
+    first stack's ``sample_label`` on the new dim; a one-sample table was
+    applied, silently, to runs of other samples."""
+
+    def _restacked_leaf_carbon(self, stack):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        return stack_batch_dims(stack_batch_dims(crossed, into="run"), into="run2")
+
+    def _table(self):
+        return xr.Dataset(
+            {"leaf_carbon_per_area": (("sample", "site"), [[20.0, 40.0], [30.0, 60.0], [99.0, 99.0]])},
+            coords={"sample": [0, 1, 3], "site": [1, 2]},
+        )
+
+    def test_a_table_for_one_sample_is_refused_against_a_restack_of_others(self, stack):
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            extract_sipnet_parameter_at_coords(
+                self._table().sel(sample=3), "leaf_carbon_per_area", self._restacked_leaf_carbon(stack)
+            )
+
+    def test_a_table_on_a_dim_restacked_is_refused_as_a_stack(self, stack):
+        with pytest.raises(ValueError, match="'run2' is a stack of \\['sample'\\]"):
+            extract_sipnet_parameter_at_coords(
+                self._table(), "leaf_carbon_per_area", self._restacked_leaf_carbon(stack)
+            )
+
+    def test_the_operators_refuse_a_one_sample_table_against_a_restack(self, stack, labels):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
+        restacked = crossed.map(
+            lambda variable: stack_batch_dims(stack_batch_dims(variable, into="run"), into="run2")
+        )
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            ComputeLeafAreaIndex()(
+                restacked,
+                dated_observation([1, 2], labels),
+                sipnet_parameters=self._table().sel(sample=3),
+            )
+
+    def test_a_stack_whose_labels_were_dropped_is_refused_in_the_modules_words(self, stack):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        unlabeled = stack_batch_dims(crossed, into="run").drop_vars("sample_label")
+        with pytest.raises(ValueError, match="no 'sample_label'"):
+            extract_sipnet_parameter_at_coords(
+                self._table().sel(sample=3), "leaf_carbon_per_area", unlabeled
+            )

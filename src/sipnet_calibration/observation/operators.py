@@ -26,20 +26,21 @@ them). Its call is::
 
 * ``model_output`` is an ``xr.Dataset`` of pySIPNET-named variables on
   ``(time,)`` with a scalar ``site``, on ``(site, time)``, or on
-  ``(member, site, time)``, carrying pySIPNET's time coordinates and
-  attributes.
+  ``(*batch, site, time)`` with any batch dims (``sample``, a data source's
+  ``<source>_member``), carrying pySIPNET's time coordinates and attributes.
 * ``observed_values`` is the observed array of one product, ``(site[, time])``,
   read for its ``site`` and ``time`` coordinates, its time bounds where
   present, and nothing else; never for its values.
-* ``sipnet_parameters`` is the SIPNET table for these ``(member, site)``, a
+* ``sipnet_parameters`` is the SIPNET table for these ``(*batch, site)``, a
   ``(site,)`` table, or a mapping of scalars for one run.
 * The result is on ``observed_values``' ``site`` and ``time`` grid, with the
-  model output's ``member`` if any, and carries ``units`` and, where the
-  quantity has one, ``constituent`` attributes saying what it is. It need not
-  be in the observation's units.
-* The operator is **pointwise in site and member**: applied to a stack it
-  equals itself applied to each slice. That is what lets it run on the worker.
-  :func:`check_operator` tests it.
+  model output's batch dims if any and no dim that neither the model output nor
+  the observation has, and carries ``units`` and, where the quantity has one,
+  ``constituent`` attributes saying what it is. It need not be in the
+  observation's units.
+* The operator is **pointwise in site and in every batch dim**: applied to a
+  stack it equals itself applied to each slice. That is what lets it run on
+  the worker. :func:`check_operator` tests it.
 
 The library ships four operators, each a frozen dataclass named for what it
 does, and one default binding, :data:`DEFAULT_OBS_OPS`, which holds only the
@@ -80,7 +81,15 @@ from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_nam
 from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration.conventions import SITE, TIME, FrozenMapping
-from sipnet_calibration.fields import coordinate_labels, field_label, missing_labels
+from sipnet_calibration.fields import (
+    STACKED_LABEL_SUFFIX,
+    batch_dims,
+    coordinate_labels,
+    field_label,
+    missing_labels,
+    recorded_stacked_dims,
+    scalar_batch_labels,
+)
 from sipnet_calibration.observation.time_alignment import (
     check_how_is_a_window_reduction,
     check_run_spans_the_windows,
@@ -105,9 +114,6 @@ __all__ = [
     "extract_sipnet_parameter_at_coords",
     "select_observed_sites",
 ]
-
-MEMBER = "member"
-
 
 @runtime_checkable
 class ObservationOperator(Protocol):
@@ -346,8 +352,8 @@ def select_observed_sites(
         The field to restrict: typically one output variable of a model
         output, ``model_output[name]``, on ``(time,)`` with a scalar ``site``
         coordinate for one run, or on ``(site, time)`` or
-        ``(member, site, time)`` for a stack. Its ``site`` labels are the
-        1-8000 site ids.
+        ``(*batch, site, time)`` for a stack. Its ``site`` labels are the
+        site ids.
     target_field:
         The field whose sites the result is on: typically the observed values
         of one product, ``(site[, time])``.
@@ -392,7 +398,7 @@ def extract_sipnet_parameter_at_coords(
     sipnet_parameter_name: str,
     target_field: xr.DataArray,
 ) -> xr.DataArray:
-    """One SIPNET parameter's values at a field's ``(member, site)`` coordinates.
+    """One SIPNET parameter's values at a field's site and batch coordinates.
 
     An operator that reads a SIPNET parameter, as the leaf area index
     operator reads ``leaf_carbon_per_area``, calls this to get the
@@ -407,7 +413,7 @@ def extract_sipnet_parameter_at_coords(
     sipnet_parameters:
         The values the runs used, in either of two forms. A SIPNET table: an
         ``xr.Dataset`` with one variable per SIPNET parameter, under
-        pySIPNET's flat names, on ``(member, site)`` or ``(site,)``, as
+        pySIPNET's flat names, on ``(*batch, site)`` or ``(site,)``, as
         :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_table`
         returns it. Or, for one run, a mapping from SIPNET parameter name to
         a number, as :func:`~sipnet_calibration.parameter_vector.sipnet_overrides`
@@ -418,12 +424,14 @@ def extract_sipnet_parameter_at_coords(
         (``"leaf_carbon_per_area"``), an alias of it, or SIPNET's own name.
     target_field:
         The field the values will be combined with, typically an output
-        variable. Only its ``site`` and ``member`` coordinate labels are read,
-        whether they are dimensions or scalar coordinates: from a SIPNET table
-        the values are taken at those labels, in that order, a scalar label
-        selecting without keeping the dimension. A table dimension the
-        target has no coordinate for is refused, as is a scalar table label
-        the target's labels disagree with.
+        variable. Only its coordinate labels are read, for each dim of the
+        table (``site`` and every batch dim), whether they are dimensions or
+        scalar coordinates on the target: from a SIPNET table the values are
+        taken at those labels, in that order, a scalar label selecting without
+        keeping the dimension. A table dimension the target has no coordinate
+        for is refused, since using it whole would broadcast it into the run,
+        as is a scalar table label (``site`` or an integer batch label) the
+        target's labels disagree with.
 
     Returns
     -------
@@ -432,7 +440,7 @@ def extract_sipnet_parameter_at_coords(
         ``parameter_dataarray`` gives it: ``units``, ``long_name``,
         ``description``, ``sipnet_name`` and, where pySIPNET declares one,
         ``constituent``. From a SIPNET table, the parameter's variable at
-        *target_field*'s sites and members; from a mapping, a 0-d array of
+        *target_field*'s site and batch labels; from a mapping, a 0-d array of
         the run's value, which broadcasts against *target_field*.
 
     Raises
@@ -441,12 +449,15 @@ def extract_sipnet_parameter_at_coords(
         If a mapping's entry for the parameter is not a number.
     ValueError
         If *sipnet_parameters* is ``None``; if a SIPNET table has no variable
-        for the parameter, has a ``site`` or ``member`` dimension the target
-        has no coordinate for, lacks a ``site`` or ``member`` label that
-        *target_field* has, or carries a scalar label the target's disagree
-        with; if a mapping has no entry for the parameter under any of its
-        names; or if a value is not finite or lies outside the parameter's
-        pySIPNET domain.
+        for the parameter, has a dimension the target has no coordinate for,
+        lacks a label of it that *target_field* has, or carries a scalar label
+        the target's disagree with (a stacked target's ``<dim>_label``
+        coordinates included, or lost); if a batch dim of *target_field* is a
+        stack of a dim the table has
+        (:func:`~sipnet_calibration.fields.stack_batch_dims`), whose labels are
+        not the table's; if a mapping has no entry for the parameter under any
+        of its names; or if a value is not finite or lies outside the
+        parameter's pySIPNET domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
@@ -473,10 +484,10 @@ def check_operator(
     Checks that the declared names are pySIPNET registry names, not aliases,
     and that *model_output* carries the variables and *sipnet_parameters* is
     given where parameters are read; that the result is on *observed_values*'
-    grid and carries ``units``; and, when *model_output* has ``site`` or
-    ``member`` dimensions of two or more, that the operator is pointwise: its
+    grid and carries ``units``; and, when *model_output* has a ``site`` dim
+    or batch dims of two labels or more, that the operator is pointwise: its
     value on the stack equals, label by label, its value on the last slice of
-    each of ``site`` and ``member`` alone.
+    each of those dims alone.
 
     Parameters
     ----------
@@ -499,9 +510,10 @@ def check_operator(
     ValueError
         Naming the first rule broken: a declaration that names an alias; a
         variable the model output lacks, or parameters read and not given; a
-        result without ``units``, off the observation's sites, time labels or
-        member dimension; or a result that is not pointwise. The operator's
-        own refusals pass through.
+        result without ``units``, off the observation's sites or time labels,
+        or with a dim that neither the model output nor the observation has;
+        or a result that is not pointwise. The operator's own refusals pass
+        through.
     KeyError
         If a declared name is not in pySIPNET's registries.
     """
@@ -535,21 +547,56 @@ def _output_name(name: str) -> str:
 def _table_values_at(
     table: xr.Dataset, name: str, target_field: xr.DataArray
 ) -> xr.DataArray:
-    """A SIPNET table's variable *name* at *target_field*'s ``site`` and ``member`` labels."""
+    """A SIPNET table's variable *name* at *target_field*'s labels on each of its dims.
+
+    Every dim of the table's variable -- ``site`` and each batch dim, whatever
+    it is named -- is selected at the target's labels or refused, so no table
+    dim is ever broadcast into a run.
+    """
     check_table_has_the_parameter(table, name)
     values = table[name]
+    check_target_is_not_a_stack_of_table_dims(target_field, values, name)
     selectors: dict[str, Any] = {}
-    for dim in (SITE, MEMBER):
-        if dim in values.dims:
-            check_target_has_a_coordinate_for(target_field, dim, name)
-            wanted = coordinate_labels(target_field[dim])
-            check_table_has_the_labels(values, dim, wanted, name)
-            # A scalar label selects without keeping the dimension, as the
-            # target, one run, has none.
-            selectors[dim] = wanted[0] if target_field[dim].ndim == 0 else wanted
-        elif dim in values.coords:
-            check_scalar_table_label_agrees(values, target_field, dim, name)
+    for dim in map(str, values.dims):
+        check_target_has_a_coordinate_for(target_field, dim, name)
+        wanted = coordinate_labels(target_field[dim])
+        check_table_has_the_labels(values, dim, wanted, name)
+        # A scalar label selects without keeping the dimension, as the
+        # target, one run, has none.
+        selectors[dim] = wanted[0] if target_field[dim].ndim == 0 else wanted
+    scalar_site = [SITE] if SITE in values.coords and values[SITE].ndim == 0 else []
+    for dim in [*scalar_site, *scalar_batch_labels(values)]:
+        check_scalar_table_label_agrees(values, target_field, dim, name)
     return values.sel(selectors) if selectors else values
+
+
+def _is_stacked_into(target_field: xr.DataArray, dim: str, stacked_dim: str) -> bool:
+    """Whether *dim* was stacked into the target's batch dim *stacked_dim*.
+
+    The stack record on *stacked_dim*'s coordinate says so, and so does a
+    ``<dim>_label`` coordinate on *stacked_dim*, whatever the record says,
+    unless *dim* is *stacked_dim* itself.
+    """
+    # A restack records only the dim it stacked, and carries the labels of
+    # the dims stacked before it on the new dim; an operation may also drop
+    # the record. A label coordinate on a dim does not make a stack of itself.
+    record = recorded_stacked_dims(target_field[stacked_dim])
+    if record is not None and dim in record:
+        return True
+    label = f"{dim}{STACKED_LABEL_SUFFIX}"
+    return (
+        dim != stacked_dim
+        and label in target_field.coords
+        and target_field[label].dims == (stacked_dim,)
+    )
+
+
+def _labels_of(target_field: xr.DataArray, dim: str) -> xr.DataArray | None:
+    """The target's labels of *dim*: its coordinate, or the ``<dim>_label`` of a stack of it."""
+    if dim in target_field.coords:
+        return target_field[dim]
+    label = f"{dim}{STACKED_LABEL_SUFFIX}"
+    return target_field[label] if label in target_field.coords else None
 
 
 def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
@@ -574,15 +621,16 @@ def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
 def _pointwise_slices(
     model_output: xr.Dataset, observed_values: xr.DataArray
 ) -> list[tuple[str, Any, xr.DataArray]]:
-    """The ``(dim, label, observed slice)`` for the last slice of ``member`` and ``site``.
+    """The ``(dim, label, observed slice)`` for the last slice of each batch dim and ``site``.
 
     A dimension is sliced only where there are two or more labels to tell
     apart; ``site`` also needs the observation to have a ``site`` dimension
     of two or more.
     """
     slices = []
-    if MEMBER in model_output.dims and model_output.sizes[MEMBER] >= 2:
-        slices.append((MEMBER, model_output[MEMBER].values[-1], observed_values))
+    for dim in batch_dims(model_output):
+        if model_output.sizes[dim] >= 2:
+            slices.append((dim, model_output[dim].values[-1], observed_values))
     observed_sites = coordinate_labels(observed_values[SITE])
     if (
         SITE in model_output.dims
@@ -738,7 +786,7 @@ def check_result_is_on_the_observation_grid(
         The observation it was called with; its ``site`` may be a dimension
         or a scalar coordinate.
     model_output:
-        The model output it was called with, for its ``member`` dimension.
+        The model output it was called with, for its dims.
     message_name:
         What the message calls the producer of *result*: an operator's type
         name, or the product it predicts.
@@ -748,11 +796,12 @@ def check_result_is_on_the_observation_grid(
     TypeError
         If *result* is not a ``DataArray``.
     ValueError
-        If it carries no ``units`` attribute; has a ``member`` dimension the
-        model output lacks; is not on the observation's sites, in order,
-        whether ``site`` is a dimension or a scalar; or is not on the
-        observation's ``time`` labels (compared as instants, whatever their
-        datetime units), or has a ``time`` dimension for a static observation.
+        If it carries no ``units`` attribute; has a dim that neither the
+        model output nor the observation has; is not on the observation's
+        sites, in order, whether ``site`` is a dimension or a scalar; or is
+        not on the observation's ``time`` labels (compared as instants,
+        whatever their datetime units), or has a ``time`` dimension for a
+        static observation.
     """
     if not isinstance(result, xr.DataArray):
         raise TypeError(
@@ -766,10 +815,14 @@ def check_result_is_on_the_observation_grid(
             "pysipnet.arithmetic, which labels its results, or set attrs['units'] on "
             "its result."
         )
-    if MEMBER in result.dims and MEMBER not in model_output.dims:
+    added = [
+        str(d) for d in result.dims if d not in model_output.dims and d not in observed_values.dims
+    ]
+    if added:
         raise ValueError(
-            f"{message_name}: the result has a member dimension the model output lacks; "
-            "an operator keeps the model output's members and adds none."
+            f"{message_name}: the result has dim(s) {added} that neither the model output "
+            "nor the observation has; an operator keeps the model output's batch dims and "
+            "adds none."
         )
     check_result_is_at_the_observed_sites(result, observed_values, message_name)
     check_result_is_on_the_observed_time_labels(result, observed_values, message_name)
@@ -914,6 +967,23 @@ def check_table_has_the_labels(
         )
 
 
+def check_target_is_not_a_stack_of_table_dims(
+    target_field: xr.DataArray, values: xr.DataArray, name: str
+) -> None:
+    """No batch dim of the target is a stack of a dim the table has."""
+    # A stack's 0..n-1 labels are not the labels of the dims stacked into it,
+    # whatever the stacked dim is called, so the table cannot be read at them.
+    for dim in batch_dims(target_field):
+        stacked = [str(d) for d in values.dims if _is_stacked_into(target_field, str(d), dim)]
+        if stacked:
+            raise ValueError(
+                f"the model output's {dim!r} is a stack of {stacked}, which the SIPNET table's "
+                f"{name!r} is on; its labels are not the table's. Select from the table by "
+                "the original labels, or unstack the model output with "
+                "fields.unstack_batch_dims first."
+            )
+
+
 def check_target_has_a_coordinate_for(target_field: xr.DataArray, dim: str, name: str) -> None:
     if dim not in target_field.coords:
         raise ValueError(
@@ -927,16 +997,36 @@ def check_target_has_a_coordinate_for(target_field: xr.DataArray, dim: str, name
 def check_scalar_table_label_agrees(
     values: xr.DataArray, target_field: xr.DataArray, dim: str, name: str
 ) -> None:
-    if dim not in target_field.coords:
+    """A table selected to one label of *dim* is for the target's labels of *dim* alone."""
+    # A stacked target carries dim's labels as <dim>_label on the stacked dim.
+    labels = _labels_of(target_field, dim)
+    if labels is None:
+        check_a_stack_of_the_dim_carries_its_labels(target_field, dim, name)
         return
     label = values[dim].values.item()
-    target_labels = coordinate_labels(target_field[dim])
+    target_labels = coordinate_labels(labels)
     if any(t != label for t in target_labels):
         raise ValueError(
             f"the SIPNET table's {name!r} is for {dim} {label!r} alone, and the model "
             f"output is at {dim}(s) {target_labels[:10]}; pass the table for every {dim} "
             "the runs were."
         )
+
+
+def check_a_stack_of_the_dim_carries_its_labels(
+    target_field: xr.DataArray, dim: str, name: str
+) -> None:
+    """A batch dim of the target that records a stack of *dim* carries its labels."""
+    label = f"{dim}{STACKED_LABEL_SUFFIX}"
+    for stacked_dim in batch_dims(target_field):
+        record = recorded_stacked_dims(target_field[stacked_dim])
+        if record is not None and dim in record:
+            raise ValueError(
+                f"the model output's {stacked_dim!r} is a stack of {dim!r} with no "
+                f"{label!r} coordinate, so which {dim} each run was is lost, and the SIPNET "
+                f"table's {name!r} cannot be checked against it. Stack the model output "
+                "again from its unstacked form, which keeps the labels."
+            )
 
 
 def check_mapping_value_is_a_number(value: Any, name: str) -> None:

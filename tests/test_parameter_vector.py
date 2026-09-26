@@ -321,7 +321,7 @@ def test_parameter_vector_refuses_unfixed_reads_and_missing_site_labels():
     with pytest.raises(ValueError, match="one label per site"):
         build((rate(varies_by="pft"),), site_labels={"pft": ("a", "b")})
     with pytest.raises(ValueError, match="reserved"):
-        build((rate(),), site_labels={"member": PFT})
+        build((rate(),), site_labels={"sample": PFT})
 
 
 def test_calibration_parameter_refuses_unusable_priors_and_sipnet_maps():
@@ -703,7 +703,7 @@ def test_gaussian_prior_needs_a_key_for_non_analytic_moments():
 def test_sipnet_table_shape_names_and_attributes(example, theta):
     table = example.sipnet_table(theta)
     assert isinstance(table, xr.Dataset)
-    assert dict(table.sizes) == {"member": 8, "site": 3}
+    assert dict(table.sizes) == {"sample": 8, "site": 3}
     assert set(table.data_vars) == {
         "max_photosynthesis_rate", "foliar_respiration_fraction", "leaf_allocation",
         "wood_allocation", "fine_root_allocation", "base_soil_respiration_rate",
@@ -717,7 +717,7 @@ def test_sipnet_table_shape_names_and_attributes(example, theta):
     assert table["leaf_carbon_fraction"].attrs["source"] == "fixed"
     assert table.attrs == {"representation": "sipnet_parameters"}
     assert list(table["pft"].values) == list(PFT)
-    assert table["site"].dtype == np.int32 and table["member"].dtype == np.int16
+    assert table["site"].dtype == np.int32 and table["sample"].dtype == np.int64
     # Shared and per-PFT values broadcast onto sites; the two deciduous sites agree.
     a = table["leaf_allocation"]
     np.testing.assert_array_equal(a.sel(site=1), a.sel(site=4711))
@@ -729,10 +729,10 @@ def test_sipnet_table_shape_names_and_attributes(example, theta):
 def test_sipnet_table_values_come_from_the_right_parameter_and_group(example, theta):
     table = example.sipnet_table(theta)
     fields = example.fields(theta)
-    for member in (0, 5):
+    for sample in (0, 5):
         for site in SITES:
-            row = table.isel(member=member).sel(site=site)
-            cell = fields.isel(member=member).sel(site=site)
+            row = table.isel(sample=sample).sel(site=site)
+            cell = fields.isel(sample=sample).sel(site=site)
             for sipnet, variable in [
                 ("soil_carbon", "initial_soil_carbon"),
                 ("leaf_off_fall_fraction", "leaf_fall_fraction"),
@@ -783,18 +783,18 @@ def test_prior_draws_land_in_every_domain(example):
 
 def test_sipnet_overrides_gives_one_run_of_floats(example, theta):
     table = example.sipnet_table(theta)
-    kwargs = sipnet_overrides(table, member=2, site=27)
+    kwargs = sipnet_overrides(table, batch={"sample": 2}, site=27)
     assert set(kwargs) == set(table.data_vars)
     assert all(type(v) is float for v in kwargs.values())
-    assert kwargs["soil_carbon"] == float(table["soil_carbon"].isel(member=2).sel(site=27))
-    with pytest.raises(ValueError, match="pass member="):
+    assert kwargs["soil_carbon"] == float(table["soil_carbon"].isel(sample=2).sel(site=27))
+    with pytest.raises(ValueError, match=r"has the batch dims \['sample'\] and batch= names \[\]"):
         sipnet_overrides(table, site=27)
-    with pytest.raises(ValueError, match="not one of the table's member labels"):
-        sipnet_overrides(table, member=-1, site=27)
+    with pytest.raises(KeyError, match="not one of the table's sample labels"):
+        sipnet_overrides(table, batch={"sample": -1}, site=27)
     single = example.sipnet_table(theta[0])
     assert sipnet_overrides(single, site=1)["leaf_carbon_fraction"] == 0.466
-    with pytest.raises(ValueError, match="no member dim"):
-        sipnet_overrides(single, member=0, site=1)
+    with pytest.raises(ValueError, match=r"has the batch dims \[\] and batch= names \['sample'\]"):
+        sipnet_overrides(single, batch={"sample": 0}, site=1)
 
 
 def with_overrides(base: SIPNETParameters, overrides: dict[str, float]) -> SIPNETParameters:
@@ -808,12 +808,12 @@ def with_overrides(base: SIPNETParameters, overrides: dict[str, float]) -> SIPNE
 def test_sipnet_table_validates_through_sipnet_parameters(example, theta):
     base = niwot_parameters()
     table = example.sipnet_table(theta)
-    for member in range(8):
+    for sample in range(8):
         for site in SITES:
-            params = with_overrides(base, sipnet_overrides(table, member=member, site=site))
+            params = with_overrides(base, sipnet_overrides(table, batch={"sample": sample}, site=site))
             assert params.photosynthesis.max_photosynthesis_rate > 0
             assert params.initial_conditions.soil_carbon == pytest.approx(
-                float(table["soil_carbon"].isel(member=member).sel(site=site))
+                float(table["soil_carbon"].isel(sample=sample).sel(site=site))
             )
 
 
@@ -831,7 +831,7 @@ def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
     model = SIPNETModel(runner, base_params=niwot_parameters(), base_climate=climate)
 
     table = example.sipnet_table(theta)
-    result = model(**sipnet_overrides(table, member=0, site=27))
+    result = model(**sipnet_overrides(table, batch={"sample": 0}, site=27))
     assert result.provenance.success, result.provenance.stderr
     nee = result.outputs["net_ecosystem_exchange"]
     assert nee.sizes["time"] == 8 * 30 and bool(np.isfinite(nee.values).all())
@@ -848,8 +848,8 @@ def test_fields_data_model(example, theta):
         "base_soil_respiration", "leaf_fall_fraction", "initial_soil_carbon",
     ]
     for variable in natural.data_vars.values():
-        assert variable.dims == ("member", "site") and variable.dtype == np.float64
-    assert natural["site"].dtype == np.int32 and natural["member"].dtype == np.int16
+        assert variable.dims == ("sample", "site") and variable.dtype == np.float64
+    assert natural["site"].dtype == np.int32 and natural["sample"].dtype == np.int64
     assert list(natural["pft"].values) == list(PFT)
     assert "lon" not in natural.coords  # built from plain ids, so no positions
     assert natural["allocation.coarse_root_allocation"].attrs == {
@@ -866,12 +866,12 @@ def test_fields_data_model(example, theta):
     assert "allocation.alr(leaf_allocation:coarse_root_allocation)" in unconstrained
     assert unconstrained["initial_soil_carbon"].attrs["units"] == "1"
     np.testing.assert_array_equal(
-        unconstrained.filter_by_attrs(parameter="allocation").sel(site=1).to_array().transpose("member", "variable"),
+        unconstrained.filter_by_attrs(parameter="allocation").sel(site=1).to_array().transpose("sample", "variable"),
         theta[:, 5:8],  # site 1 is deciduous, the second PFT group
     )
     # One copy per class, recovered with xarray's groupby.
     per_pft = natural["allocation.leaf_allocation"].groupby("pft").first()
-    assert per_pft.dims == ("member", "pft")
+    assert per_pft.dims == ("sample", "pft")
 
 
 @pytest.mark.parametrize(
@@ -948,7 +948,7 @@ def test_flat_refuses_what_no_flat_vector_can_be(example, theta):
     with pytest.raises(ValueError, match="differ between the sites of group 'deciduous' \\(\\[1, 4711\\]\\)"):
         example.flat(disagree)
     with pytest.raises(ValueError, match="must be on"):
-        example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].isel(member=0)))
+        example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].isel(sample=0, drop=True)))
     # Extra variables and sites are ignored.
     extra = fields.assign(unrelated=fields["initial_soil_carbon"] * 2)
     np.testing.assert_allclose(example.flat(extra), theta, rtol=1e-10, atol=1e-10)
@@ -1476,8 +1476,11 @@ def test_flat_reads_sites_by_label_and_ignores_extras(example, theta):
     np.testing.assert_allclose(example.flat(xr.concat([fields, extra], dim="site")), theta, rtol=1e-10, atol=1e-10)
     with pytest.raises(ValueError, match="'site' coordinate"):
         example.flat(fields.drop_vars(["site", "pft"]))
-    with pytest.raises(ValueError, match="must be on"):
+    with pytest.raises(ValueError, match="carry no coordinate"):
         example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].expand_dims(time=2)))
+    timed = fields["initial_soil_carbon"].expand_dims(time=pd.date_range("2012-01-01", periods=2))
+    with pytest.raises(ValueError, match="must be on"):
+        example.flat(fields.assign(initial_soil_carbon=timed))
 
 
 def test_select_restricts_per_site_fixed_values_and_keeps_require_complete(example):
@@ -1554,8 +1557,8 @@ def test_construction_refusals_the_suite_did_not_reach():
             parameters=(rate(),), sites=SITES,
             fixed=(FixedParameter(name="leaf_carbon_fraction", varies_by="landcover", value={"x": 0.4}, provenance="t"),),
         )
-    with pytest.raises(ValueError, match="int16"):
-        ParameterVector(parameters=(rate(),), sites=(1,)).fields(jnp.zeros((2**15 + 1, 1)))
+    beyond_int16 = ParameterVector(parameters=(rate(),), sites=(1,)).fields(jnp.zeros((2**15 + 1, 1)))
+    assert beyond_int16.sizes["sample"] == 2**15 + 1
     with pytest.raises(ValueError, match="is reserved"):
         rate(name="site")
     for name in ("lon", "lat", "site_id", "sample", "point", "x", "y"):
@@ -1566,33 +1569,219 @@ def test_construction_refusals_the_suite_did_not_reach():
             rate(name=name)
 
 
+@pytest.mark.parametrize("name", ["initial_condition_member", "driver_member", "source_index"])
+def test_a_data_source_member_dim_name_is_reserved(name):
+    """A parameter or site-labels product would collide where the IC conversion crosses them."""
+    with pytest.raises(ValueError, match="is reserved"):
+        rate(name=name)
+    with pytest.raises(ValueError, match="reserved"):
+        ParameterVector(parameters=(rate(),), sites=SITES, site_labels={name: PFT})
+
+
 def test_repr_of_a_one_site_vector_with_nothing_fixed():
     lines = repr(ParameterVector(parameters=(rate(),), sites=(1,))).splitlines()
     assert lines[0] == "ParameterVector  D = 1  |  1 site  |  site labels: none"
     assert lines[-2] == "  fixed: none"
 
 
-# ── member identity and netCDF names ─────────────────────────────────────────
+# ── batch identity and netCDF names ──────────────────────────────────────────
 
 
-def test_a_sipnet_table_from_fields_keeps_the_members_it_was_given(example, theta):
-    subset = example.fields(theta).sel(member=[1, 3])
+def test_a_sipnet_table_from_fields_keeps_the_samples_it_was_given(example, theta):
+    subset = example.fields(theta).sel(sample=[1, 3])
     table = example.sipnet_table(subset)
-    assert table["member"].values.tolist() == [1, 3] and table["member"].dtype == np.int16
+    assert table["sample"].values.tolist() == [1, 3] and table["sample"].dtype == np.int64
     full = example.sipnet_table(theta)
-    assert sipnet_overrides(table, member=3, site=27) == pytest.approx(sipnet_overrides(full, member=3, site=27))
-    with pytest.raises(ValueError, match="member 0 is not one of the table's member labels"):
-        sipnet_overrides(table, member=0, site=27)
+    assert sipnet_overrides(table, batch={"sample": 3}, site=27) == pytest.approx(
+        sipnet_overrides(full, batch={"sample": 3}, site=27)
+    )
+    with pytest.raises(KeyError, match="sample 0 is not one of the table's sample labels"):
+        sipnet_overrides(table, batch={"sample": 0}, site=27)
     from pyens.xarray import fields_from_dataset
 
     grids = fields_from_dataset(table)
-    member_axis, site_axis = grids["soil_carbon"].axes
-    assert list(member_axis.labels) == [1, 3]
-    assert grids["soil_carbon"].value_at({member_axis: 1, site_axis: 1}) == float(
-        full["soil_carbon"].sel(member=3, site=27)
+    sample_axis, site_axis = grids["soil_carbon"].axes
+    assert list(sample_axis.labels) == [1, 3]
+    assert grids["soil_carbon"].value_at({sample_axis: 1, site_axis: 1}) == float(
+        full["soil_carbon"].sel(sample=3, site=27)
     )
     with pytest.raises(ValueError, match="distinct integers"):
-        example.sipnet_table(example.fields(theta[:2]).assign_coords(member=[0, 0]))
+        example.sipnet_table(example.fields(theta[:2]).assign_coords(sample=[0, 0]))
+
+
+def test_labels_beyond_int16_are_kept(example, theta):
+    fields = example.fields(theta[:2]).assign_coords(sample=[40000, -5])
+    table = example.sipnet_table(fields)
+    assert table["sample"].values.tolist() == [40000, -5]
+
+
+def test_a_batch_of_more_than_32768_samples_is_labeled(example):
+    theta = np.zeros((32770, example.dimension))
+    fields = example.fields(theta, space="unconstrained")
+    assert fields.sizes["sample"] == 32770
+    assert fields["sample"].values[-1] == 32769 and fields["sample"].dtype == np.int64
+
+
+def test_the_batch_dim_may_be_named(example, theta):
+    fields = example.fields(theta, batch_dim="draw")
+    assert fields["initial_soil_carbon"].dims == ("draw", "site")
+    table = example.sipnet_table(theta, batch_dim="draw")
+    assert table["soil_carbon"].dims == ("draw", "site")
+    np.testing.assert_allclose(example.flat(fields), theta, rtol=1e-10, atol=1e-10)
+    # Fields keep their own batch dim through the SIPNET table.
+    assert example.sipnet_table(fields)["soil_carbon"].dims == ("draw", "site")
+
+
+@pytest.mark.parametrize("name", ["pft", "initial_soil_carbon", "site", "time", "lat", "site_id"])
+def test_a_batch_dim_may_not_take_a_reserved_or_taken_name(example, theta, name):
+    with pytest.raises(ValueError, match="batch"):
+        example.fields(theta, batch_dim=name)
+    with pytest.raises(ValueError, match="batch"):
+        example.sipnet_table(theta, batch_dim=name)
+
+
+@pytest.mark.parametrize(
+    "name", ["time_step_start", "time_step_length", "year", "hour_of_day", "time_bounds_end"]
+)
+def test_a_batch_dim_may_not_take_a_model_output_or_window_coordinate_name(example, theta, name):
+    """Fields on ``time_step_length`` were made, and validate_field refused them."""
+    with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
+        example.fields(theta, batch_dim=name)
+    with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
+        example.sipnet_table(theta, batch_dim=name)
+
+
+@pytest.mark.parametrize("name", ["driver_member", "initial_condition_member", "shared", "source_index"])
+def test_a_batch_dim_may_not_take_a_data_source_member_or_vector_name(example, theta, name):
+    """Theta's rows named ``driver_member`` were stamped as driver members."""
+    with pytest.raises(ValueError, match="batch_dim"):
+        example.fields(theta, batch_dim=name)
+    with pytest.raises(ValueError, match="batch_dim"):
+        example.sipnet_table(theta, batch_dim=name)
+
+
+def test_the_reserved_names_are_built_from_the_shared_constants():
+    from sipnet_calibration.conventions import (
+        DATA_SOURCE_MEMBER_NAMES,
+        NON_BATCH_DIM_NAMES,
+        SAMPLE,
+        SITE_ID,
+    )
+    from sipnet_calibration.parameter_vector import (
+        RESERVED_PARAMETER_NAMES,
+        RESERVED_SITE_LABELS_NAMES,
+        SHARED,
+    )
+
+    assert RESERVED_PARAMETER_NAMES == {SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES}
+    assert RESERVED_SITE_LABELS_NAMES == RESERVED_PARAMETER_NAMES | {SHARED, SITE_ID}
+
+
+def test_the_fields_and_table_carry_the_attributes_of_their_batch_dim(example, theta):
+    from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
+
+    assert dict(example.fields(theta)["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
+    assert dict(example.sipnet_table(theta)["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
+    assert dict(example.fields(theta, batch_dim="draw")["draw"].attrs) == {}
+
+
+def test_sipnet_overrides_names_a_site_the_table_lacks(example, theta):
+    table = example.sipnet_table(theta)
+    with pytest.raises(KeyError, match="site 2 is not one of the table's site"):
+        sipnet_overrides(table, batch={"sample": 0}, site=2)
+
+
+def test_a_scalar_batch_coordinate_gives_one_vector(example, theta):
+    one = example.fields(theta).isel(sample=2)
+    assert int(one["sample"]) == 2
+    flat = example.flat(one)
+    assert flat.shape == (example.dimension,)
+    np.testing.assert_allclose(flat, theta[2], rtol=1e-10, atol=1e-10)
+
+
+def _located_example():
+    table = pd.DataFrame(
+        {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
+    )
+    return example_parameter_vector(sites=table, pft=PFT)
+
+
+def test_two_batch_dims_are_refused_until_stacked(theta):
+    from sipnet_calibration.fields import stack_batch_dims
+
+    located = _located_example()
+    fields = located.fields(theta, space="unconstrained")
+    crossed = fields.expand_dims(initial_condition_member=[0, 1]).transpose(
+        "sample", "initial_condition_member", "site"
+    )
+    with pytest.raises(ValueError, match="stack_batch_dims") as refusal:
+        located.flat(crossed)
+    # The advice for a Dataset is the call that runs.
+    assert "dataset.map(lambda field: stack_batch_dims(field, into='run'))" in str(refusal.value)
+    stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+    flat = located.flat(stacked)
+    assert flat.shape == (2 * len(theta), located.dimension)
+    np.testing.assert_allclose(flat[::2], theta, rtol=1e-10, atol=1e-10)
+
+
+def test_the_flat_round_trip_of_a_stack_unstacks(theta):
+    """Stacked Fields -> Flat -> fields(batch_dim=) -> unstacked, as documented."""
+    from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+    located = _located_example()
+    fields = located.fields(theta[:3], space="unconstrained")
+    crossed = fields.expand_dims(initial_condition_member=[4, 1]).transpose(
+        "sample", "initial_condition_member", "site"
+    )
+    stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+    made = located.fields(located.flat(stacked), space="unconstrained", batch_dim="run")
+    restored = made.map(
+        lambda array: unstack_batch_dims(array, labels_from=stacked[array.name])
+    )
+    for name in crossed.data_vars:
+        xr.testing.assert_allclose(restored[name], crossed[name])
+        assert restored[name].dims == crossed[name].dims
+
+
+@pytest.mark.parametrize(
+    "name", ["soil_carbon", "leaf_carbon_fraction", "allocation.leaf_allocation", "allocation"]
+)
+def test_a_batch_dim_may_not_take_a_sipnet_parameter_or_fields_variable_name(
+    example, theta, name
+):
+    variables = set(example.fields(theta).data_vars) | set(example.sipnet_table(theta).data_vars)
+    assert name in variables or name in example.parameter_names
+    with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+        example.fields(theta, batch_dim=name)
+    with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+        example.sipnet_table(theta, batch_dim=name)
+
+
+def test_a_dim_without_integer_labels_is_refused_in_the_fields_words(example, theta):
+    fields = example.fields(theta)
+    for broken in (fields.drop_vars("sample"), fields.assign_coords(sample=np.arange(8.0))):
+        with pytest.raises(ValueError, match="neither a batch dim|carry no coordinate"):
+            example.flat(broken)
+        with pytest.raises(ValueError, match="neither a batch dim|carry no coordinate"):
+            example.sipnet_table(broken)
+    table = example.sipnet_table(theta)
+    with pytest.raises(ValueError, match="carry no coordinate"):
+        sipnet_overrides(table.drop_vars("sample"), batch={"sample": 0}, site=27)
+
+
+def test_sipnet_overrides_takes_integer_labels_only(example, theta):
+    table = example.sipnet_table(theta)
+    for label in (1.0, True):
+        with pytest.raises(TypeError, match="integer"):
+            sipnet_overrides(table, batch={"sample": label}, site=27)
+    for site in (27.0, True):
+        with pytest.raises(TypeError, match="integer"):
+            sipnet_overrides(table, batch={"sample": 1}, site=site)
+    with pytest.raises(TypeError, match="batch must be a mapping"):
+        sipnet_overrides(table, batch=3, site=27)
+    assert sipnet_overrides(table, batch={"sample": np.int64(1)}, site=np.int32(27)) == (
+        sipnet_overrides(table, batch={"sample": 1}, site=27)
+    )
 
 
 def test_unconstrained_fields_write_to_netcdf_and_read_back(example, theta, tmp_path):
@@ -1721,3 +1910,20 @@ def test_a_per_class_fixed_parameter_compares_and_hashes_by_identity():
     second = dataclasses.replace(first)
     assert first == first and first != second
     assert len({first, second}) == 2
+
+
+@pytest.mark.parametrize("site", [27, 1])
+def test_sipnet_overrides_refuses_a_table_selected_to_one_site_in_its_words(site):
+    """A table with a scalar ``site`` raised a raw TypeError from ``in``."""
+    table = xr.Dataset(
+        {"soil_carbon": (("sample", "site"), np.ones((2, 2)))},
+        coords={"sample": [0, 1], "site": np.array([1, 27], np.int32)},
+    )
+    with pytest.raises(ValueError, match="selected to site 27 alone"):
+        sipnet_overrides(table.isel(site=1), site=site, batch={"sample": 1})
+
+
+def test_sipnet_overrides_refuses_a_table_without_sites_in_its_words():
+    table = xr.Dataset({"soil_carbon": (("sample",), np.ones(2))}, coords={"sample": [0, 1]})
+    with pytest.raises(ValueError, match="has no site dim"):
+        sipnet_overrides(table, site=1, batch={"sample": 1})

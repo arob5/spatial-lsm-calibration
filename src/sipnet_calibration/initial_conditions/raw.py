@@ -49,7 +49,7 @@ import xarray as xr
 
 from sipnet_calibration.conventions import SITE, SITE_ATTRIBUTES, SITE_DTYPE
 from sipnet_calibration.initial_conditions.names import (
-    MEMBER,
+    RAW_MEMBER,
     raw_path,
 )
 from sipnet_calibration.initial_conditions.source_files import (
@@ -151,7 +151,7 @@ def build_raw(
     dataset = xr.Dataset(
         {
             name: (
-                (SITE, MEMBER),
+                (SITE, RAW_MEMBER),
                 arrays[name],
                 {
                     "units": SOURCE.variables[name].units,
@@ -167,8 +167,8 @@ def build_raw(
         },
         coords={
             SITE: (SITE, sites.astype(SITE_DTYPE), SITE_ATTRIBUTES),
-            MEMBER: (
-                MEMBER,
+            RAW_MEMBER: (
+                RAW_MEMBER,
                 members.astype(np.int16),
                 {
                     "long_name": "Ensemble member index in the source file name",
@@ -294,7 +294,7 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
         )
     for name in SOURCE.names:
         array = dataset[name]
-        if array.dims != (SITE, MEMBER):
+        if array.dims != (SITE, RAW_MEMBER):
             raise ValueError(f"{path}: {name} has dims {array.dims}, expected ('site', 'member')")
         if array.dtype != np.float64:
             raise ValueError(f"{path}: {name} is {array.dtype}, expected float64")
@@ -308,7 +308,7 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
         values = array.values
         if np.isinf(values).any():
             raise ValueError(f"{path}: {name} holds an infinite value")
-    for coordinate, dtype in ((SITE, SITE_DTYPE), (MEMBER, np.int16)):
+    for coordinate, dtype in ((SITE, SITE_DTYPE), (RAW_MEMBER, np.int16)):
         values = dataset[coordinate].values
         if values.size == 0 or np.any(np.diff(values) <= 0):
             raise ValueError(f"{path}: {coordinate} is empty or not strictly ascending")

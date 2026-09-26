@@ -6,7 +6,7 @@ space-padded fields -- so that every check has a file that trips it and the
 expected answer can be written out by hand. Everything about one file is
 pySIPNET's, and its own tests cover its parsing and validation; the cases here
 are about what this module adds: the directory layout, the stacking into
-``(member, site, time)``, the checks pySIPNET does not make, and that the time
+``(driver_member, site, time)``, the checks pySIPNET does not make, and that the time
 axis and the variable attributes are pySIPNET's, unchanged.
 
 The cases at the end run against the local files under ``data/raw/drivers/``
@@ -38,7 +38,6 @@ from sipnet_calibration.conventions import (
 from sipnet_calibration.drivers import (
     DRIVER_PRESENT,
     DRIVER_VARIABLES,
-    MEMBER_SOURCE,
     NEGATIVE_TOLERANCE,
     UNITS_PROVENANCE,
     available_members,
@@ -264,21 +263,23 @@ class TestLoadDrivers:
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
         assert tuple(dataset.data_vars) == DRIVER_VARIABLES
         for name in DRIVER_VARIABLES:
-            assert dataset[name].dims == ("member", "site", "time")
+            assert dataset[name].dims == ("driver_member", "site", "time")
             assert dataset[name].dtype == np.float64
-        assert dataset.sizes == {"member": 2, "site": 2, "time": 2920, "bounds": 2}
+        assert dataset.sizes == {"driver_member": 2, "site": 2, "time": 2920, "bounds": 2}
         assert set(dataset.coords) == {
-            "member", "source_member_index", "site", "lon", "lat",
+            "driver_member", "source_index", "site", "lon", "lat",
             "time", "time_step_start", "time_step_length", "time_bounds",
         }
-        assert dataset["member"].dtype == np.int16
+        assert dataset["driver_member"].dtype == np.int64
+        assert dataset["source_index"].dtype == np.int64
         assert dataset["site"].dtype == np.int32
         assert dataset["lon"].dims == ("site",) and dataset["lat"].dims == ("site",)
         np.testing.assert_array_equal(dataset["lon"].values, [-97.0, -93.0])
         np.testing.assert_array_equal(dataset["lat"].values, [41.5, 43.5])
-        assert dataset["source_member_index"].dims == ("member",)
+        assert dataset["source_index"].dims == ("driver_member",)
         assert dataset["time_bounds"].dims == ("time", "bounds")
-        assert dataset.attrs["member_source"] == MEMBER_SOURCE
+        assert "member_source" not in dataset.attrs
+        assert "member_correspondence" not in dataset.attrs
         assert dataset.attrs["coverage"] == "complete"
 
     def test_values_are_the_files_values(self, root, sites_table):
@@ -286,7 +287,7 @@ class TestLoadDrivers:
         frame = read_driver_file(driver_file(root, 7, 2)).pandas
         for name in DRIVER_VARIABLES:
             np.testing.assert_array_equal(
-                dataset[name].sel(site=7, member=1).values, frame[name].to_numpy()
+                dataset[name].sel(site=7, driver_member=1).values, frame[name].to_numpy()
             )
 
     def test_the_time_axis_is_pysipnets(self, root, sites_table):
@@ -329,7 +330,7 @@ class TestLoadDrivers:
         for key, value in own.attrs.items():
             assert dataset.attrs[key] == value, key
         assert dataset.attrs["Conventions"] == "CF-1.11"
-        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
+        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_driver_members"] == 2
 
     def test_sites_come_back_in_the_order_given(self, root, sites_table):
         dataset = load_drivers([7, 3], root=root, sites_table=sites_table)
@@ -342,51 +343,69 @@ class TestLoadDrivers:
             dataset["air_temperature"].sel(site=[3, 7]), ascending["air_temperature"]
         )
 
-    def test_member_is_zero_based_and_source_member_index_is_the_file_index(self, root, sites_table):
+    def test_driver_member_is_zero_based_and_source_index_is_the_file_index(self, root, sites_table):
         write_pair(root, 3, 5)
         write_pair(root, 7, 5)
-        dataset = load_drivers([3, 7], members=[5, 1], root=root, sites_table=sites_table)
-        np.testing.assert_array_equal(dataset["member"].values, [0, 1])
-        np.testing.assert_array_equal(dataset["source_member_index"].values, [5, 1])
+        dataset = load_drivers([3, 7], source_indices=[5, 1], root=root, sites_table=sites_table)
+        np.testing.assert_array_equal(dataset["driver_member"].values, [4, 0])
+        np.testing.assert_array_equal(dataset["source_index"].values, [5, 1])
         frame = read_driver_file(driver_file(root, 3, 5)).pandas
         np.testing.assert_array_equal(
-            dataset["photosynthetically_active_radiation"].sel(site=3, member=0).values,
+            dataset["photosynthetically_active_radiation"].sel(site=3, driver_member=4).values,
             frame["photosynthetically_active_radiation"].to_numpy(),
         )
 
-    def test_members_keep_the_order_given_as_sites_do(self, root, sites_table):
+    def test_source_indices_keep_the_order_given_as_sites_do(self, root, sites_table):
         write_pair(root, 3, 5)
-        forward = load_drivers([3], members=[1, 5, 2], root=root, sites_table=sites_table)
-        backward = load_drivers([3], members=[2, 5, 1], root=root, sites_table=sites_table)
-        np.testing.assert_array_equal(forward["source_member_index"].values, [1, 5, 2])
-        np.testing.assert_array_equal(backward["source_member_index"].values, [2, 5, 1])
+        forward = load_drivers([3], source_indices=[1, 5, 2], root=root, sites_table=sites_table)
+        backward = load_drivers([3], source_indices=[2, 5, 1], root=root, sites_table=sites_table)
+        np.testing.assert_array_equal(forward["source_index"].values, [1, 5, 2])
+        np.testing.assert_array_equal(backward["source_index"].values, [2, 5, 1])
         np.testing.assert_array_equal(
             forward["air_temperature"].values[::-1], backward["air_temperature"].values
         )
 
-    def test_a_member_named_twice_is_refused(self, root, sites_table):
-        with pytest.raises(ValueError, match=r"member\(s\) \[1\] more than once"):
-            load_drivers([3], members=[1, 2, 1], root=root, sites_table=sites_table)
+    def test_a_source_index_named_twice_is_refused(self, root, sites_table):
+        with pytest.raises(ValueError, match=r"source index\(es\) \[1\] more than once"):
+            load_drivers([3], source_indices=[1, 2, 1], root=root, sites_table=sites_table)
 
-    def test_members_none_means_every_member_found(self, root, sites_table):
+    def test_source_indices_none_means_every_member_found(self, root, sites_table):
         write_pair(root, 3, 5)
         write_pair(root, 7, 5)
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
-        np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2, 5])
+        np.testing.assert_array_equal(dataset["source_index"].values, [1, 2, 5])
 
-    def test_rejects_a_non_positive_member_index(self, root, sites_table):
-        with pytest.raises(ValueError, match=r"members\[0\] must be at least 1"):
-            load_drivers([3], members=[0], root=root, sites_table=sites_table)
+    def test_rejects_a_non_positive_source_index(self, root, sites_table):
+        with pytest.raises(ValueError, match=r"source_indices\[0\] must be at least 1"):
+            load_drivers([3], source_indices=[0], root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("members", [[1.5], [2.0], "12", 2, ["1", "2"], [True], [np.inf]])
-    def test_rejects_members_that_are_not_integers(self, root, sites_table, members):
-        with pytest.raises(TypeError, match="members"):
-            load_drivers([3], members=members, root=root, sites_table=sites_table)
+    @pytest.mark.parametrize("indices", [[1.5], [2.0], "12", 2, ["1", "2"], [True], [np.inf]])
+    def test_rejects_source_indices_that_are_not_integers(self, root, sites_table, indices):
+        with pytest.raises(TypeError, match="source_indices"):
+            load_drivers([3], source_indices=indices, root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("members", [[40000], [32768], []])
-    def test_rejects_members_out_of_range_or_none(self, root, sites_table, members):
-        with pytest.raises(ValueError, match="members"):
-            load_drivers([3], members=members, root=root, sites_table=sites_table)
+    def test_a_source_index_beyond_int64_is_a_value_error(self, root, sites_table):
+        """``2**70`` raised numpy's raw OverflowError."""
+        with pytest.raises(ValueError, match=r"source_indices\[0\] must be"):
+            load_drivers([3], source_indices=[2**70], root=root, sites_table=sites_table)
+
+    def test_the_member_coordinates_carry_their_attributes(self, root, sites_table):
+        from sipnet_calibration.conventions import (
+            DATA_SOURCE_MEMBER_ATTRIBUTES,
+            SOURCE_INDEX_ATTRIBUTES,
+        )
+
+        dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
+        assert dict(dataset["driver_member"].attrs) == dict(DATA_SOURCE_MEMBER_ATTRIBUTES)
+        assert dict(dataset["source_index"].attrs) == dict(SOURCE_INDEX_ATTRIBUTES)
+
+    def test_rejects_no_source_indices(self, root, sites_table):
+        with pytest.raises(ValueError, match="no source indices requested"):
+            load_drivers([3], source_indices=[], root=root, sites_table=sites_table)
+
+    def test_a_source_index_beyond_int16_is_a_directory_like_any_other(self, root, sites_table):
+        with pytest.raises(FileNotFoundError, match="site 3 source index 40000"):
+            load_drivers([3], source_indices=[1, 40000], root=root, sites_table=sites_table)
 
     @pytest.mark.parametrize("sites", [3, ["3"], "3", [True], {3, 7}, [np.inf], [1.5], [3.0]])
     def test_rejects_sites_that_are_not_integers(self, root, sites_table, sites):
@@ -438,7 +457,7 @@ class TestLoadDrivers:
         (root / "ERA5_3_4").rename(root / "ERA5_3_04")
         assert available_members(root, 3) == (1, 2)
         dataset = load_drivers([3], root=root, sites_table=sites_table)
-        np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2])
+        np.testing.assert_array_equal(dataset["source_index"].values, [1, 2])
 
     def test_non_physical_values_are_counted_not_altered(self, tmp_path, sites_table):
         rows = synthetic_rows(seed=1)
@@ -470,18 +489,16 @@ class TestLoadDrivers:
             write_pair(tmp_path, 3, member, rows)
         write_pair(tmp_path, 7, 1)
         dataset = load_drivers(
-            [3, 7], members=[1, 2], root=tmp_path, sites_table=sites_table, allow_missing=True
+            [3, 7], source_indices=[1, 2], root=tmp_path, sites_table=sites_table, allow_missing=True
         )
         assert not dataset[DRIVER_PRESENT].values.all()
         attrs = dataset["photosynthetically_active_radiation"].attrs
         assert attrs["n_values_below_zero"] == 7
 
-    def test_a_discovered_member_out_of_range_is_refused_as_requested_ones_are(
-        self, root, sites_table
-    ):
-        (root / "ERA5_3_40000").mkdir()
-        with pytest.raises(ValueError, match="members must lie within"):
-            load_drivers([3], root=root, sites_table=sites_table)
+    def test_a_discovered_member_beyond_int16_is_read_like_any_other(self, root, sites_table):
+        write_pair(root, 3, 40000)
+        dataset = load_drivers([3], root=root, sites_table=sites_table)
+        assert dataset["source_index"].values.tolist() == [1, 2, 40000]
 
     @pytest.mark.parametrize("time_zone", ["America/Denver", "EST"])
     def test_an_invalid_clock_is_refused_before_any_file_is_read(
@@ -493,7 +510,7 @@ class TestLoadDrivers:
 
     def test_aggregation_keeps_the_declared_clock(self, root, sites_table):
         dataset = load_drivers([3], root=root, sites_table=sites_table, time_zone="UTC")
-        field = driver_fields(dataset)["air_temperature"].isel(site=0, member=0)
+        field = driver_fields(dataset)["air_temperature"].isel(site=0, driver_member=0)
         assert aggregate_time(field, "1D")["time"].attrs["time_zone"] == "UTC"
 
     # pySIPNET's Dataset declares no units encoding for time and time_bounds.
@@ -508,19 +525,49 @@ class TestLoadDrivers:
 
     def test_missing_pair_raises_by_default(self, root, sites_table):
         write_pair(root, 3, 5)
-        with pytest.raises(FileNotFoundError, match="site 7 member 5.*allow_missing=True"):
+        with pytest.raises(FileNotFoundError, match=r"\(site, source index\) pair\(s\).*site 7 source index 5.*allow_missing=True"):
             load_drivers([3, 7], root=root, sites_table=sites_table)
 
     def test_allow_missing_fills_nan_and_writes_driver_present(self, root, sites_table):
         write_pair(root, 3, 5)
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table, allow_missing=True)
         present = dataset[DRIVER_PRESENT]
-        assert present.dims == ("member", "site") and present.dtype == bool
+        assert present.dims == ("driver_member", "site") and present.dtype == bool
         np.testing.assert_array_equal(present.values, [[True, True], [True, True], [True, False]])
         par = dataset["photosynthetically_active_radiation"]
-        assert np.isnan(par.sel(site=7, member=2).values).all()
-        assert np.isfinite(par.sel(site=3, member=2).values).all()
+        assert np.isnan(par.sel(site=7, driver_member=4).values).all()
+        assert np.isfinite(par.sel(site=3, driver_member=4).values).all()
         assert dataset.attrs["coverage"] == "gaps"
+        assert present.attrs["long_name"] == (
+            "Whether a driver file existed for the driver member and site"
+        )
+
+    def test_driver_present_is_mapped(self, root, sites_table):
+        """It validated as a field and was refused by the map for want of units."""
+        import matplotlib.pyplot as plt
+
+        from sipnet_calibration.plotting import plot_map
+
+        write_pair(root, 3, 5)
+        dataset = load_drivers([3, 7], root=root, sites_table=sites_table, allow_missing=True)
+        figure, ax = plt.subplots()
+        try:
+            plot_map(dataset[DRIVER_PRESENT].sel(driver_member=4), ax=ax)
+        finally:
+            plt.close(figure)
+
+    def test_two_loads_of_different_members_align_member_for_member(self, root, sites_table):
+        """A member's label is its identity: ``source_index - 1`` in every load."""
+        write_pair(root, 3, 5)
+        both = load_drivers([3], source_indices=[1, 5], root=root, sites_table=sites_table)
+        one = load_drivers([3], source_indices=[5], root=root, sites_table=sites_table)
+        assert one["driver_member"].values.tolist() == [4]
+        difference = both["air_temperature"] - one["air_temperature"]
+        assert difference["driver_member"].values.tolist() == [4]
+        assert float(abs(difference).max()) == 0.0
+        xr.testing.assert_identical(
+            one["air_temperature"], both["air_temperature"].sel(driver_member=[4])
+        )
 
     def test_driver_present_is_all_true_when_nothing_is_missing(self, root, sites_table):
         """The variable's presence follows the flag, not the data, so a caller
@@ -534,7 +581,7 @@ class TestLoadDrivers:
         with pytest.raises(FileNotFoundError, match="no driver directories"):
             load_drivers([4], root=root, sites_table=sites_table)
         with pytest.raises(FileNotFoundError, match="no driver files"):
-            load_drivers([3], members=[9], root=root, sites_table=sites_table, allow_missing=True)
+            load_drivers([3], source_indices=[9], root=root, sites_table=sites_table, allow_missing=True)
 
     def test_rejects_a_missing_root(self, tmp_path, sites_table):
         with pytest.raises(FileNotFoundError, match="not a directory"):
@@ -571,11 +618,11 @@ class TestLoadDrivers:
         write_pair(root, 7, 3, synthetic_rows(years=(2014,)))
         write_pair(root, 3, 3, synthetic_rows(years=(2013,)))
         with pytest.raises(ValueError, match="time_step_start differs from"):
-            load_drivers([3, 7], members=[3], root=root, sites_table=sites_table)
+            load_drivers([3, 7], source_indices=[3], root=root, sites_table=sites_table)
         write_pair(root, 7, 4, synthetic_rows(years=(2013, 2014)))
         write_pair(root, 3, 4, synthetic_rows(years=(2013,)))
         with pytest.raises(ValueError, match="steps where"):
-            load_drivers([3, 7], members=[4], root=root, sites_table=sites_table)
+            load_drivers([3, 7], source_indices=[4], root=root, sites_table=sites_table)
         # One label moved by a fraction of a second, well inside what pySIPNET
         # accepts as rounding: still a different axis.
         rows = synthetic_rows(years=(2013,))
@@ -583,14 +630,14 @@ class TestLoadDrivers:
         rows.loc[100, "time"] += 5e-6
         write_pair(root, 7, 6, rows)
         with pytest.raises(ValueError, match="time_step_start differs from"):
-            load_drivers([3, 7], members=[6], root=root, sites_table=sites_table)
+            load_drivers([3, 7], source_indices=[6], root=root, sites_table=sites_table)
         # The same starts, and a last step half as long: a different axis too.
         rows = synthetic_rows(years=(2013,))
         write_pair(root, 3, 8, rows)
         rows.loc[len(rows) - 1, "length"] = 0.0625
         write_pair(root, 7, 8, rows)
         with pytest.raises(ValueError, match="time_step_length differs from"):
-            load_drivers([3, 7], members=[8], root=root, sites_table=sites_table)
+            load_drivers([3, 7], source_indices=[8], root=root, sites_table=sites_table)
 
     def test_round_trips_through_zarr(self, root, sites_table, tmp_path):
         dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
@@ -610,9 +657,9 @@ class TestDriverFields:
         assert tuple(fields) == DRIVER_VARIABLES
         for name, field in fields.items():
             assert field.name == name
-            assert field.dims == ("member", "site", "time")
+            assert field.dims == ("driver_member", "site", "time")
             assert set(field.coords) == {
-                "member", "source_member_index", "site", "lon", "lat", *TIME_COORD_NAMES
+                "driver_member", "source_index", "site", "lon", "lat", *TIME_COORD_NAMES
             }
 
     def test_nothing_points_at_a_bounds_variable_a_field_cannot_carry(self, root, sites_table):
@@ -683,14 +730,14 @@ class TestRealFiles:
         members = sorted({member for _, member in real_pairs()})
         with pytest.raises(ValueError, match="pySIPNET refused the file"):
             load_drivers(
-                sites, members=members, root=REAL_ROOT, sites_table=load_sites(),
+                sites, source_indices=members, root=REAL_ROOT, sites_table=load_sites(),
                 allow_missing=True,
             )
 
     def test_with_regular_labels_the_local_files_load(self, real_drivers):
         present = real_drivers[DRIVER_PRESENT]
         for site, member in real_pairs():
-            assert bool(present.sel(site=site, source_member_index=member).values)
+            assert bool(present.sel(site=site, source_index=member).values)
         assert int(present.sum()) == len(real_pairs())
         assert real_drivers.attrs["coverage"] == "gaps"
         assert str(real_drivers["time_step_start"].values[0]) == "2012-01-01T00:00:00.000000000"
@@ -703,6 +750,6 @@ class TestRealFiles:
 
         nee = from_sipnet_output(site_1_result, ["nee"])["net_ecosystem_exchange"]
         par = driver_fields(real_drivers)["photosynthetically_active_radiation"]
-        head = par.sel(site=1, source_member_index=1).isel(time=slice(0, nee.sizes["time"]))
+        head = par.sel(site=1, source_index=1).isel(time=slice(0, nee.sizes["time"]))
         for name in TIME_COORD_NAMES:
             np.testing.assert_array_equal(nee[name].values, head[name].values)

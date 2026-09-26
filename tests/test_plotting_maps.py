@@ -30,9 +30,9 @@ from sipnet_calibration.plotting.maps import (
     color_scale,
     coordinate_label,
     map_bounds,
-    member_summary,
     plot_map,
     quantile_label,
+    summarize_batch,
 )
 from sipnet_calibration.plotting.style import axis_label, category_colors
 from sipnet_calibration.projection import SITE_PROJECTION
@@ -50,7 +50,11 @@ def site_field(lon, lat, values, **attrs) -> xr.DataArray:
     return xr.DataArray(
         np.asarray(values),
         dims="site",
-        coords={"site": np.arange(1, lon.size + 1), "lon": ("site", lon), "lat": ("site", lat)},
+        coords={
+            "site": np.arange(1, lon.size + 1, dtype=np.int32),
+            "lon": ("site", lon),
+            "lat": ("site", lat),
+        },
         attrs={**ATTRS, **attrs},
         name="wood_carbon",
     )
@@ -66,10 +70,10 @@ def dense() -> xr.DataArray:
 @pytest.fixture
 def ensemble(dense) -> xr.DataArray:
     rng = np.random.default_rng(0)
-    members = dense.values[None, :] + rng.normal(size=(20, dense.sizes["site"]))
+    samples = dense.values[None, :] + rng.normal(size=(20, dense.sizes["site"]))
     return xr.DataArray(
-        members, dims=("member", "site"),
-        coords={"member": np.arange(20), **{k: v for k, v in dense.coords.items()}},
+        samples, dims=("sample", "site"),
+        coords={"sample": np.arange(20), **{k: v for k, v in dense.coords.items()}},
         attrs=dict(ATTRS), name="wood_carbon",
     )
 
@@ -189,19 +193,29 @@ def test_render_chooses_cells_and_a_renderer_instance_carries_its_settings(ax, d
     assert isinstance(image, AxesImage) and image.site_index.shape[1] == 300
 
 
-def test_a_member_dimension_is_refused_and_the_message_names_the_alternatives(ax, ensemble):
-    with pytest.raises(ValueError, match="plot_map_by.*plot_map_quantiles.*member_summary"):
+def test_a_batch_dim_is_refused_and_the_message_names_the_alternatives(ax, ensemble):
+    with pytest.raises(ValueError, match="'sample'.*plot_map_by.*plot_map_quantiles.*summarize_batch"):
         plot_map(ensemble, ax)
+    renamed = ensemble.rename(sample="initial_condition_member")
+    with pytest.raises(ValueError, match="batch_dim='initial_condition_member'"):
+        plot_map(renamed, ax)
+
+
+def test_a_field_is_validated_before_it_is_mapped(ax, dense):
+    with pytest.raises(ValueError, match="site ids are int32"):
+        plot_map(dense.assign_coords(site=dense["site"].astype(np.int64)), ax)
 
 
 def test_a_time_dimension_is_refused_and_the_message_names_the_alternatives(ax, dense):
-    timed = dense.expand_dims(time=np.array(["2012-01-01"], dtype="datetime64[ns]"))
+    timed = dense.expand_dims(time=np.array(["2012-01-01"], dtype="datetime64[ns]")).transpose(
+        "site", "time"
+    )
     with pytest.raises(ValueError, match="aggregate_time.*animate_map"):
         plot_map(timed, ax)
 
 
 def test_a_site_field_without_coordinates_is_refused(ax, dense):
-    with pytest.raises(ValueError, match="'lon' as a coordinate"):
+    with pytest.raises(ValueError, match="no 'lon' coordinate"):
         plot_map(dense.drop_vars(["lon", "lat"]), ax)
 
 
@@ -373,28 +387,36 @@ def test_a_raster_reaching_the_antipode_or_out_of_order_is_refused(ax):
         plot_map(raster(np.array([30.0, 32.0, 31.0]), np.arange(-100.0, -90.0)), ax)
 
 
-# ── member_summary and the labels ─────────────────────────────────────────────
+# ── summarize_batch and the labels ────────────────────────────────────────────
 
 
-def test_member_summary_keeps_units_and_says_what_it_took(ensemble):
-    summary = member_summary(ensemble, 0.05)
+def test_summarize_batch_keeps_units_and_says_what_it_took(ensemble):
+    summary = summarize_batch(ensemble, 0.05)
     assert summary.dims == ("site",) and summary.attrs["units"] == "kg m-2"
-    assert summary.attrs["long_name"] == "Wood carbon, 5th percentile over members"
+    assert summary.attrs["long_name"] == "Wood carbon, 5th percentile over sample"
     np.testing.assert_allclose(summary.values, np.quantile(ensemble.values, 0.05, axis=0))
-    assert "standard deviation" in member_summary(ensemble, "standard_deviation").attrs["long_name"]
+    assert "standard deviation" in summarize_batch(ensemble, "standard_deviation").attrs["long_name"]
+
+
+def test_summarize_batch_reduces_the_batch_dim_named(ensemble):
+    renamed = ensemble.rename(sample="initial_condition_member")
+    summary = summarize_batch(renamed, "mean", batch_dim="initial_condition_member")
+    np.testing.assert_allclose(summary.values, ensemble.mean("sample").values)
 
 
 @pytest.mark.parametrize("stat", ["sd", 1.5, 0.0])
-def test_member_summary_refuses_an_unknown_statistic(ensemble, stat):
+def test_summarize_batch_refuses_an_unknown_statistic(ensemble, stat):
     with pytest.raises(ValueError):
-        member_summary(ensemble, stat)
+        summarize_batch(ensemble, stat)
 
 
-def test_member_summary_refuses_classes_and_a_missing_dimension(categorical, dense):
+def test_summarize_batch_refuses_classes_and_a_missing_or_non_batch_dim(categorical, dense):
     with pytest.raises(ValueError, match="categorical"):
-        member_summary(categorical.expand_dims(member=2), "mean")
-    with pytest.raises(ValueError, match="'member' dimension"):
-        member_summary(dense, "mean")
+        summarize_batch(categorical.expand_dims(sample=[0, 1]), "mean")
+    with pytest.raises(ValueError, match="'sample' is not one of the field's"):
+        summarize_batch(dense, "mean")
+    with pytest.raises(ValueError, match="'site' is not one of the field's"):
+        summarize_batch(dense, "mean", batch_dim="site")
 
 
 @pytest.mark.parametrize(
@@ -406,7 +428,7 @@ def test_quantile_label(q, label):
 
 
 def test_coordinate_label():
-    assert coordinate_label("member", 3) == "member 3"
+    assert coordinate_label("sample", 3) == "sample 3"
     assert coordinate_label("time", np.datetime64("2012-07-01")) == "2012-07-01"
     assert coordinate_label("time", np.datetime64("2012-07-01T03:00")) == "2012-07-01 03:00"
 
@@ -416,7 +438,8 @@ def test_coordinate_label():
 
 def frames(dense) -> xr.DataArray:
     stack = xr.concat([dense, dense * 2.0, dense.where(dense.lon < -95)], dim="time")
-    return stack.assign_coords(time=np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]"))
+    stack = stack.assign_coords(time=np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]"))
+    return stack.transpose("site", "time")
 
 
 @pytest.mark.parametrize("render", ["points", "cells", "triangles"])
@@ -465,12 +488,12 @@ def test_an_each_grid_gives_every_panel_its_own_scale(dense):
 
 
 def test_plot_map_by_thins_to_n_max_and_titles_by_value(ensemble):
-    figure, axes = plot_map_by(ensemble, "member", n_max=4)
-    assert [ax.get_title() for ax in axes] == ["member 0", "member 6", "member 13", "member 19"]
-    figure, axes = plot_map_by(ensemble, "member", values=[2, 5])
+    figure, axes = plot_map_by(ensemble, "sample", n_max=4)
+    assert [ax.get_title() for ax in axes] == ["sample 0", "sample 6", "sample 13", "sample 19"]
+    figure, axes = plot_map_by(ensemble, "sample", values=[2, 5])
     assert len(axes) == 2
-    with pytest.raises(ValueError, match="no such member"):
-        plot_map_by(ensemble, "member", values=[99])
+    with pytest.raises(ValueError, match="no such sample"):
+        plot_map_by(ensemble, "sample", values=[99])
 
 
 def test_plot_map_quantiles_titles_and_labels_on_the_original_quantity(ensemble):
@@ -534,5 +557,202 @@ def test_initial_wood_carbon_quantiles_over_conus():
         wood = initial_condition_fields(["initial_wood_carbon"])["initial_wood_carbon"]
     except FileNotFoundError as error:
         pytest.skip(str(error))
-    figure, axes = plot_map_quantiles(wood, extent="CONUS", robust=True)
+    figure, axes = plot_map_quantiles(
+        wood, batch_dim="initial_condition_member", extent="CONUS", robust=True
+    )
     assert len(axes) == 3
+
+
+# ── one time of a field that carries interval coordinates ────────────────────
+
+
+@pytest.fixture
+def model_wood():
+    """Real Niwot wood carbon stacked over (sample, site), with its timestep coordinates."""
+    from conftest import niwot_stack_of
+
+    return niwot_stack_of(["wood_carbon"], sites=(1, 27, 865), n_samples=3)["wood_carbon"]
+
+
+def test_model_output_at_one_time_is_mapped(ax, model_wood):
+    plot_map(model_wood.isel(sample=0, time=-1), ax=ax)
+    assert data_artist(ax).get_array().size == 3
+
+
+def test_model_output_is_mapped_by_time_and_by_quantile_at_one_time(model_wood):
+    figure, axes = plot_map_by(model_wood.isel(sample=0, time=slice(0, 2)), "time")
+    assert len(axes) == 2
+    figure, axes = plot_map_quantiles(model_wood.isel(time=-1))
+    assert len(axes) == 3
+
+
+def test_model_output_is_animated_over_time(model_wood):
+    animation = animate_map(model_wood.isel(sample=0, time=slice(0, 3)))
+    (artist,) = animation._func(2)
+    assert artist.get_array().size == 3
+
+
+def test_an_annual_field_with_windows_is_animated(dense):
+    annual = frames(dense).assign_coords(
+        time_bounds_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
+        time_bounds_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
+    )
+    animation = animate_map(annual)
+    animation._func(1)
+
+
+def test_an_animation_refuses_a_batch_dim_with_advice(dense):
+    field = xr.concat([frames(dense), frames(dense)], dim="driver_member").assign_coords(
+        driver_member=[0, 1]
+    )
+    with pytest.raises(ValueError, match="driver_member.*summarize_batch"):
+        animate_map(field)
+
+
+def test_plot_map_quantiles_refuses_the_retired_dim_keyword_naming_batch_dim(ensemble):
+    """It fell through to matplotlib as an unknown artist property."""
+    with pytest.raises(TypeError, match="batch_dim='sample'"):
+        plot_map_quantiles(ensemble, dim="sample")
+
+
+# ── the entry points validate first ───────────────────────────────────────────
+
+
+def _without_units(field):
+    bare = field.copy()
+    bare.attrs = {}
+    return bare
+
+
+def test_a_table_is_refused_as_a_type_error(ax):
+    import pandas as pd
+
+    with pytest.raises(TypeError, match="expected an xarray.DataArray"):
+        plot_map(pd.DataFrame({"x": [1.0]}), ax=ax)
+
+
+def test_summarize_batch_refuses_a_field_without_units(ensemble):
+    """With its validate_field removed, a field without units was summarized."""
+    with pytest.raises(ValueError, match="attrs\\['units'\\]"):
+        summarize_batch(_without_units(ensemble), "mean")
+
+
+def test_plot_map_by_refuses_a_non_field_in_the_fields_words(ensemble):
+    import matplotlib.pyplot as plt
+
+    before = plt.get_fignums()
+    with pytest.raises(ValueError, match="attrs\\['units'\\]; set them"):
+        plot_map_by(_without_units(ensemble), "sample")
+    assert plt.get_fignums() == before
+
+
+def test_animate_map_refuses_a_non_field_in_the_fields_words(dense):
+    import matplotlib.pyplot as plt
+
+    before = plt.get_fignums()
+    with pytest.raises(ValueError, match="attrs\\['units'\\]; set them"):
+        animate_map(_without_units(frames(dense)))
+    assert plt.get_fignums() == before
+
+
+def test_plot_map_by_refuses_a_field_stored_out_of_order(ensemble):
+    """Each panel alone would be a map; the field given is not a field."""
+    with pytest.raises(ValueError, match="not in the order"):
+        plot_map_by(ensemble.transpose("site", "sample"), "sample")
+
+
+def test_animate_map_refuses_a_field_stored_out_of_order(dense):
+    with pytest.raises(ValueError, match="not in the order"):
+        animate_map(frames(dense).transpose("time", "site"))
+
+
+def test_quantile_maps_take_the_batch_dim_named(ensemble):
+    renamed = ensemble.rename(sample="initial_condition_member")
+    figure, axes = plot_map_quantiles(renamed, batch_dim="initial_condition_member")
+    assert len(np.ravel(axes)) == 3
+
+
+# ── a second batch dim is refused before a shared scale is computed ───────────
+
+
+def _two_batch_dims(ensemble):
+    return ensemble.expand_dims(driver_member=[0, 1]).transpose("sample", "driver_member", "site")
+
+
+@pytest.mark.parametrize("scale", ["shared", "each"])
+def test_plot_map_by_refuses_a_second_batch_dim_with_advice(ensemble, scale):
+    """With a shared scale it crashed with a raw IndexError."""
+    with pytest.raises(ValueError, match="'driver_member'.*plot_map_quantiles"):
+        plot_map_by(_two_batch_dims(ensemble), "sample", scale=scale)
+
+
+def test_plot_map_quantiles_refuses_a_second_batch_dim_with_advice(ensemble):
+    with pytest.raises(ValueError, match="'driver_member'.*summarize_batch"):
+        plot_map_quantiles(_two_batch_dims(ensemble))
+
+
+def test_plot_map_quantiles_names_the_batch_dim_the_field_has(ensemble):
+    """A field on driver_member alone, with the default batch_dim, was told it
+    "also has" driver_member, as if the quantiles were taken over sample."""
+    on_members = ensemble.rename(sample="driver_member")
+    with pytest.raises(ValueError, match="'sample' is not a batch dim of the field .*'driver_member'"):
+        plot_map_quantiles(on_members)
+
+
+def test_a_shared_map_grid_checks_every_panel_first(ensemble):
+    with pytest.raises(ValueError, match="'sample'.*plot_map_by"):
+        plot_map_grid({"a": ensemble, "b": ensemble}, scale="shared")
+
+
+def test_animating_a_batch_dim_of_a_field_with_time_is_refused(ensemble):
+    moving = ensemble.expand_dims(time=pd_dates(2)).transpose("sample", "site", "time")
+    with pytest.raises(ValueError, match="for 'time'"):
+        animate_map(moving, "sample")
+
+
+def test_animating_a_zero_length_dim_is_refused_in_the_modules_words(dense):
+    """It raised a raw IndexError from the first of no frames."""
+    with pytest.raises(ValueError, match="no 'time' steps to play"):
+        animate_map(frames(dense).isel(time=slice(0, 0)))
+
+
+def test_animate_map_checks_a_frame_is_a_map_before_its_scale_is_read():
+    """Without the check before the scale, a field with no spatial dim reached
+    map_bounds and failed with xarray's own error about lat and lon."""
+    from conftest import make_field
+
+    with pytest.raises(ValueError, match="a map needs a 'site' dimension"):
+        animate_map(make_field(("time",), n_time=3))
+
+
+def pd_dates(n):
+    import pandas as pd
+
+    return pd.date_range("2012-01-01", periods=n)
+
+
+# ── one definition of categorical ─────────────────────────────────────────────
+
+
+def test_a_boolean_field_is_mapped_as_classes(ax, dense):
+    """``run_succeeded`` and ``driver_present`` validate, and were refused for units."""
+    flags = (dense > dense.median()).rename("run_succeeded")
+    flags.attrs = {"long_name": "Whether the run succeeded"}
+    plot_map(flags, ax=ax)
+    assert data_artist(ax).get_array().size == dense.sizes["site"]
+
+
+def test_flag_values_alone_are_mapped_as_classes(ax, categorical):
+    codes = categorical.copy()
+    codes.attrs = {"long_name": "Class", "flag_values": np.array([0, 1, 2], dtype=np.int8)}
+    plot_map(codes, ax=ax)
+    np.testing.assert_array_equal(data_artist(ax).get_array(), [0.0, 2.0, 2.0, 1.0])
+
+
+def test_run_succeeded_is_mapped(ax):
+    from conftest import make_field
+
+    field = make_field(("sample", "site"))
+    succeeded = (field > -10).rename("run_succeeded")
+    succeeded.attrs = {"long_name": "Whether the run succeeded"}
+    plot_map(succeeded.isel(sample=0), ax=ax)

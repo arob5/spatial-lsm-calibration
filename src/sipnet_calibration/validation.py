@@ -8,9 +8,12 @@ Contents
 --------
 :func:`as_site_ids`, :func:`as_site_id`
     Site ids as plain Python integers.
-:func:`as_integer`, :func:`as_positive_integer`, :func:`as_bounded_integer`,
+:func:`as_integer`, :func:`as_positive_integer`, :func:`as_bounded_integer`
+    A count, a size or an index as a plain Python integer.
 :func:`as_positive_integers`
-    A count, a size, an index or a sequence of them as plain Python integers.
+    A sequence of positive integers, such as source indices.
+:func:`as_batch_label`
+    A batch dim's label, an integer that fits ``int64``.
 :func:`as_batched_flat`, :func:`is_one_vector`
     One vector or a batch of them, as a two-dimensional ``float64`` array;
     and whether one vector was given.
@@ -81,9 +84,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from sipnet_calibration.conventions import SITE_DTYPE, FrozenMapping
+from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, SITE_DTYPE, FrozenMapping
 
 __all__ = [
+    "as_batch_label",
     "as_batched_flat",
     "as_bbox",
     "as_bounded_integer",
@@ -231,6 +235,35 @@ def as_bounded_integer(
     integer = as_integer(value, message_name=message_name)
     check_integer_is_in_range(integer, minimum=minimum, maximum=maximum, message_name=message_name)
     return integer
+
+
+def as_batch_label(value: Any, *, message_name: str) -> int:
+    """A batch label: an integer that fits ``int64``, as a plain Python ``int``.
+
+    Parameters
+    ----------
+    value:
+        As :func:`as_integer` takes it.
+    message_name:
+        What the argument is called in an error message.
+
+    Returns
+    -------
+    int
+        The value.
+
+    Raises
+    ------
+    TypeError
+        If *value* is a boolean, a float or not an integer.
+    ValueError
+        If *value* does not fit
+        :data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`.
+    """
+    limits = np.iinfo(BATCH_LABEL_DTYPE)
+    return as_bounded_integer(
+        value, minimum=int(limits.min), maximum=int(limits.max), message_name=message_name
+    )
 
 
 def as_positive_integer(value: Any, *, message_name: str) -> int:

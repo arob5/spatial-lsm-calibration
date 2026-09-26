@@ -7,8 +7,8 @@ window. The plotting tests assert on artist data and properties --
 limits -- and never on rendered images, which are brittle across matplotlib
 versions and say nothing about why a test failed.
 
-The synthetic fixtures build fields at each subset of the
-``(member, site, time)`` dimensions, with a real ``DatetimeIndex`` on
+The synthetic fixtures build fields at each subset of the ``(sample, site,
+time)`` dimensions (and of other batch dims), with a real ``DatetimeIndex`` on
 ``time``, ``lon``/``lat`` as non-dimension coordinates on ``site``, and
 ``units``/``long_name`` in ``attrs``.
 
@@ -114,7 +114,7 @@ def make_field(
     dims: tuple[str, ...],
     *,
     n_time: int = 24,
-    n_member: int = 3,
+    n_sample: int = 3,
     seed: int = 0,
 ) -> xr.DataArray:
     """A synthetic field with exactly *dims*, in the order fields are written.
@@ -122,13 +122,16 @@ def make_field(
     Parameters
     ----------
     dims:
-        Any subset of ``("member", "site", "time")``, in any order; the result
-        is transposed into that order.
+        ``site`` and ``time``, and any batch dim names (``"sample"``,
+        ``"initial_condition_member"``, ...), in any order; the result is
+        transposed into ``(*batch, site, time)``, the batch dims in the order
+        given.
     n_time:
         Length of the ``time`` dim, 3-hourly from 2012-01-01. Ignored when
         ``time`` is not in *dims*.
-    n_member:
-        Length of the ``member`` dim. Ignored when ``member`` is not in *dims*.
+    n_sample:
+        Length of every batch dim, labeled ``0`` to ``n_sample - 1``
+        (``int64``).
     seed:
         Seed for the values, so a test can compare two calls.
 
@@ -138,20 +141,21 @@ def make_field(
         Named :data:`SYNTHETIC_NAME`, carrying :data:`SYNTHETIC_ATTRS`, with
         ``lon``/``lat`` on ``site`` whenever ``site`` is present.
     """
-    unknown = set(dims) - {"member", "site", "time"}
-    if unknown:
-        raise ValueError(f"not field dims: {sorted(unknown)}")
+    reserved = set(conventions.SPATIAL_DIM_NAMES) - {"site"}
+    if reserved & set(dims):
+        raise ValueError(f"not dims make_field builds: {sorted(reserved & set(dims))}")
 
-    sizes = {"member": n_member, "site": len(SYNTHETIC_SITES), "time": n_time}
-    order = tuple(d for d in ("member", "site", "time") if d in dims)
+    batch = tuple(d for d in dims if d not in ("site", "time"))
+    sizes = {**dict.fromkeys(batch, n_sample), "site": len(SYNTHETIC_SITES), "time": n_time}
+    order = (*batch, *(d for d in ("site", "time") if d in dims))
     shape = tuple(sizes[d] for d in order)
 
     rng = np.random.default_rng(seed)
     values = rng.normal(size=shape)
 
     coords: dict[str, object] = {}
-    if "member" in order:
-        coords["member"] = np.arange(n_member, dtype=np.int16)
+    for dim in batch:
+        coords[dim] = np.arange(n_sample, dtype=conventions.BATCH_LABEL_DTYPE)
     if "site" in order:
         coords["site"] = np.asarray(SYNTHETIC_SITES, dtype=np.int32)
         coords["lon"] = ("site", np.asarray(SYNTHETIC_LON))
@@ -178,9 +182,9 @@ def field_time() -> xr.DataArray:
 
 
 @pytest.fixture
-def field_member_time() -> xr.DataArray:
-    """``(member, time)`` -- an ensemble at one site."""
-    return make_field(("member", "time"))
+def field_sample_time() -> xr.DataArray:
+    """``(sample, time)`` -- a batch at one site."""
+    return make_field(("sample", "time"))
 
 
 @pytest.fixture
@@ -190,26 +194,26 @@ def field_site_time() -> xr.DataArray:
 
 
 @pytest.fixture
-def field_member_site_time() -> xr.DataArray:
-    """``(member, site, time)`` -- two sample dims at once."""
-    return make_field(("member", "site", "time"))
+def field_sample_site_time() -> xr.DataArray:
+    """``(sample, site, time)`` -- a batch over sites."""
+    return make_field(("sample", "site", "time"))
 
 
 @pytest.fixture
-def field_member_site() -> xr.DataArray:
-    """``(member, site)`` -- no ``time``, so no series panel can draw it."""
-    return make_field(("member", "site"))
+def field_sample_site() -> xr.DataArray:
+    """``(sample, site)`` -- no ``time``, so no series panel can draw it."""
+    return make_field(("sample", "site"))
 
 
 @pytest.fixture
 def field_with_gaps() -> xr.DataArray:
-    """``(member, time)`` with one timestep missing in every member.
+    """``(sample, time)`` with one timestep missing in every sample.
 
-    Timestep 5 is ``NaN`` for every member, so a fan's quantiles there are
-    ``NaN`` and the band gaps; timestep 9 is ``NaN`` for the first member
+    Timestep 5 is ``NaN`` for every sample, so a fan's quantiles there are
+    ``NaN`` and the band gaps; timestep 9 is ``NaN`` for the first sample
     only, so the quantiles there are finite and taken over the rest.
     """
-    field = make_field(("member", "time"))
+    field = make_field(("sample", "time"))
     values = field.values.copy()
     values[:, 5] = np.nan
     values[0, 9] = np.nan
@@ -272,7 +276,7 @@ def regular_drivers_root(tmp_path_factory) -> Path:
 
 @pytest.fixture(scope="session")
 def real_drivers(regular_drivers_root, real_site_table) -> xr.Dataset:
-    """The local drivers for sites 1 and 27 by members 1, 2 and 5.
+    """The local drivers for sites 1 and 27 by source indices 1, 2 and 5.
 
     Only three of the six pairs have a file, so the Dataset is half missing
     and ``driver_present`` says where.
@@ -285,7 +289,7 @@ def real_drivers(regular_drivers_root, real_site_table) -> xr.Dataset:
         warnings.simplefilter("ignore")
         return drivers.load_drivers(
             [1, 27],
-            members=[1, 2, 5],
+            source_indices=[1, 2, 5],
             root=regular_drivers_root,
             sites_table=real_site_table,
             allow_missing=True,
@@ -536,10 +540,10 @@ def niwot_stack_of(
     output_variable_names: Sequence[str],
     *,
     sites: Sequence[int] = (1, 2),
-    n_members: int = 2,
+    n_samples: int = 2,
     lengths: dict[int, int] | None = None,
 ) -> xr.Dataset:
-    """A stack of Niwot runs on ``(member, site, time)``, told apart by known factors.
+    """A stack of Niwot runs on ``(sample, site, time)``, told apart by known factors.
 
     Parameters
     ----------
@@ -548,8 +552,8 @@ def niwot_stack_of(
     sites:
         The site of each run; the site at position ``i`` is the Niwot output
         times ``1 + i / 2``.
-    n_members:
-        How many members; member ``j`` is the site's run times ``0.5 ** j``.
+    n_samples:
+        How many samples; sample ``j`` is the site's run times ``0.5 ** j``.
     lengths:
         The number of timesteps of a site's record, by site, where it is
         shorter than the Niwot record; the stack pads it with ``NaN``.
@@ -567,9 +571,9 @@ def niwot_stack_of(
     runs = {}
     for position, site in enumerate(sites):
         record = base.isel(time=slice(0, lengths[site])) if site in lengths else base
-        for member in range(n_members):
-            factor = (1 + position / 2) * 0.5**member
-            runs[(site, member)] = record.map(_scaled_keeping_attributes, factor=factor)
+        for sample in range(n_samples):
+            factor = (1 + position / 2) * 0.5**sample
+            runs[(sample, site)] = record.map(_scaled_keeping_attributes, factor=factor)
     return stack_model_outputs(runs, site_table=site_table_of(*sites))
 
 

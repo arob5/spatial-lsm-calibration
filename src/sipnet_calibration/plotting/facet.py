@@ -13,11 +13,11 @@ up constantly for time series and are written over it.
 Grids of maps are written over it too, and differ in sharing a frame and,
 by default, one color scale with a single colorbar:
 
-========================  ====================================================
-:func:`plot_map_grid`     one map per entry of a ``dict`` of fields
-:func:`plot_map_by`       one map per member, or per time step
-:func:`plot_map_quantiles`  one map per quantile over the members
-========================  ====================================================
+===========================  =================================================
+:func:`plot_map_grid`        one map per entry of a ``dict`` of fields
+:func:`plot_map_by`          one map per batch label, or per time label
+:func:`plot_map_quantiles`   one map per quantile over a batch dim
+===========================  =================================================
 
 This is the only part of the package that creates a figure. The plotting
 functions it calls draw onto an ``Axes`` they are given, which is what lets the
@@ -38,13 +38,14 @@ Usage
     # One panel per site, each a driver ensemble, on one y scale.
     figure, axes = plot_by_site(air_temperature, sites=six_sites, share="y")
 
-    # One map per quantile over the members, on one color scale.
-    figure, axes = plot_map_quantiles(wood, extent="CONUS", log=True)
+    # One map per quantile over the initial conditions' members, on one scale.
+    batch_dim = "initial_condition_member"
+    figure, axes = plot_map_quantiles(wood, batch_dim=batch_dim, extent="CONUS", log=True)
 
     # Mean and standard deviation, each on its own scale.
     figure, axes = plot_map_grid({
-        "mean": member_summary(wood, "mean"),
-        "standard deviation": member_summary(wood, "standard_deviation"),
+        "mean": summarize_batch(wood, "mean", batch_dim=batch_dim),
+        "standard deviation": summarize_batch(wood, "standard_deviation", batch_dim=batch_dim),
     })
 
     # The general form.
@@ -67,7 +68,8 @@ import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from sipnet_calibration.conventions import SITE
+from sipnet_calibration.conventions import SAMPLE, SITE
+from sipnet_calibration.fields import batch_dims, validate_field
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
@@ -263,14 +265,18 @@ def plot_by_site(
     Raises
     ------
     TypeError
-        If *sites* is one id, a string or a set, or holds a boolean, a float
-        or a value that is not a number.
+        If *data* is not a ``DataArray`` (a Dataset is split into fields
+        first); if *sites* is one id, a string or a set, or holds a boolean, a
+        float or a value that is not a number.
     ValueError
-        If *data* has no ``site`` dimension or coordinate, or *sites* names a
-        site twice or holds a value that is not a site id.
+        If *data* is not a field
+        (:func:`sipnet_calibration.fields.validate_field`) or has no ``site``
+        dimension, or *sites* names a site twice or holds a value that is not
+        a site id.
     KeyError
         If *sites* names a site that is not in *data*.
     """
+    validate_field(data)
     check_data_has_a_site_dimension(data)
     check_data_has_a_site_coordinate(data)
     available = data.coords[SITE].values.tolist()
@@ -376,14 +382,16 @@ def plot_map_grid(
     ------
     ValueError
         If *fields* is empty or *scale* is not in :data:`SCALE_MODES`, and
-        whatever :func:`~sipnet_calibration.plotting.maps.plot_map` raises for a
-        panel.
+        whatever :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map`
+        raises for a panel, every panel checked before any is drawn.
     """
-    if not fields:
-        raise ValueError("fields is empty; there is nothing to draw")
-    if scale not in SCALE_MODES:
-        raise ValueError(f"scale must be one of {list(SCALE_MODES)}, got {scale!r}")
+    check_map_grid_has_a_field(fields)
+    check_scale_mode_is_known(scale)
     arrays = list(fields.values())
+    # Every panel is checked before the frame and a shared scale read their
+    # values, which a panel that is not a map would break with a raw error.
+    for array in arrays:
+        maps.check_field_is_a_map(array)
     bounds = maps.map_bounds(arrays, extent)
     color = {k: map_kwargs.pop(k) for k in maps.COLOR_KEYWORDS if k in map_kwargs}
     shared = maps.color_scale(arrays, bounds=bounds, **color) if scale == "shared" else None
@@ -413,14 +421,14 @@ def plot_map_by(
     scale: str = "shared",
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One map per value of *dim*: per ensemble member, or per time step.
+    """One map per value of *dim*: per batch label, or per time label.
 
     Parameters
     ----------
     field:
         A field that is a map at each value of *dim*.
     dim:
-        The dimension to split on, such as ``"member"`` or ``"time"``.
+        The dimension to split on, such as ``"sample"`` or ``"time"``.
     values:
         The coordinate values to draw, in order. ``None`` draws them all, or
         *n_max* evenly spaced ones, first and last included, if there are more.
@@ -440,23 +448,25 @@ def plot_map_by(
     Raises
     ------
     TypeError
-        If *n_max* is a boolean or not an integer.
+        If *field* is not a ``DataArray``, or *n_max* is a boolean or not an
+        integer.
     ValueError
-        If *field* has no *dim*, *values* names one it does not hold, or
-        *n_max* is less than 1.
+        If *field* is not a field
+        (:func:`sipnet_calibration.fields.validate_field`); if it has no
+        *dim*, or a batch dim other than *dim* (with advice on each); if
+        *values* names one it does not hold, or *n_max* is less than 1; and
+        whatever :func:`plot_map_grid` raises for a panel.
     """
-    if not isinstance(field, xr.DataArray) or dim not in field.dims:
-        dims = list(getattr(field, "dims", ()))
-        raise ValueError(f"plot_map_by needs a DataArray with a {dim!r} dimension; got {dims}")
+    validate_field(field)
+    check_field_has_the_dim_to_split(field, dim)
+    check_field_has_no_other_batch_dim(field, dim, "plot_map_by draws one map per")
     n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
         chosen = available[thinned_indices(len(available), n_max)]
     else:
         chosen = np.asarray(getattr(values, "values", values))
-        missing = [v for v in chosen if v not in available]
-        if missing:
-            raise ValueError(f"no such {dim} value(s) in the field: {missing[:5]}")
+        check_values_are_on_the_dim(available, chosen, dim)
     panels = {maps.coordinate_label(dim, value): field.sel({dim: value}) for value in chosen}
     if len(panels) < len(chosen):
         panels = {f"{dim} {value}": field.sel({dim: value}) for value in chosen}
@@ -467,22 +477,22 @@ def plot_map_quantiles(
     field: xr.DataArray,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     *,
-    dim: str = "member",
+    batch_dim: str = SAMPLE,
     scale: str = "shared",
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One map per quantile of *field* over its ensemble dimension.
+    """One map per quantile of *field* over one of its batch dims.
 
     Parameters
     ----------
     field:
-        A continuous field that is a map at each value of *dim*.
+        A continuous field that is a map at each label of *batch_dim*.
     quantiles:
         The quantiles, each in ``(0, 1)``. The default is the 90% central
         interval and the median, the outer band of
         :func:`~sipnet_calibration.plotting.primitives.fan`.
-    dim:
-        The ensemble dimension.
+    batch_dim:
+        The batch dim the quantiles are taken over.
     scale:
         As :func:`plot_map_grid` takes it; shared by default, so the panels
         read against each other.
@@ -497,14 +507,24 @@ def plot_map_quantiles(
 
     Raises
     ------
+    TypeError
+        If *dim=* is passed: the batch dim is named with *batch_dim*.
     ValueError
-        If *quantiles* is empty, and whatever
-        :func:`~sipnet_calibration.plotting.maps.member_summary` raises.
+        If *quantiles* is empty; if *batch_dim* is not a batch dim of
+        *field*, or *field* has one other than *batch_dim* (with advice on
+        each); and whatever
+        :func:`~sipnet_calibration.plotting.maps.summarize_batch` raises.
     """
+    check_quantile_grid_keywords_are_not_retired(grid_kwargs)
     quantiles = [float(q) for q in quantiles]
-    if not quantiles:
-        raise ValueError("quantiles must name at least one quantile")
-    panels = {maps.quantile_label(q): maps.member_summary(field, q, dim=dim) for q in quantiles}
+    check_quantiles_are_given(quantiles)
+    validate_field(field)
+    check_quantile_batch_dim_is_the_fields(field, batch_dim)
+    check_field_has_no_other_batch_dim(field, batch_dim, "quantile maps are taken over")
+    panels = {
+        maps.quantile_label(q): maps.summarize_batch(field, q, batch_dim=batch_dim)
+        for q in quantiles
+    }
     grid_kwargs.setdefault("colorbar_label", axis_label(field))
     return plot_map_grid(panels, scale=scale, **grid_kwargs)
 
@@ -532,6 +552,77 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_map_grid_has_a_field(fields: Mapping[str, Any]) -> None:
+    """A map grid is given at least one field."""
+    if not fields:
+        raise ValueError("fields is empty; there is nothing to draw. Pass {title: field}.")
+
+
+def check_scale_mode_is_known(scale: str) -> None:
+    """The scale mode of a map grid is one of :data:`SCALE_MODES`."""
+    if scale not in SCALE_MODES:
+        raise ValueError(f"scale must be one of {list(SCALE_MODES)}, got {scale!r}")
+
+
+def check_field_has_the_dim_to_split(field: xr.DataArray, dim: str) -> None:
+    """The field to draw one map per value of *dim* has *dim*."""
+    if dim not in field.dims:
+        raise ValueError(
+            f"plot_map_by needs a DataArray with a {dim!r} dimension; got "
+            f"{list(field.dims)}. Pass one of them, such as 'time' or a batch dim."
+        )
+
+
+def check_field_has_no_other_batch_dim(field: xr.DataArray, dim: str, what: str) -> None:
+    """Every panel is one map: no batch dim beside *dim*, the one the panels are over."""
+    others = [d for d in batch_dims(field) if d != dim]
+    if others:
+        raise ValueError(
+            f"{what} {dim}, but the field also has the batch dim(s) {others}, so a panel "
+            "would not be one map; " + "; ".join(maps.batch_dim_advice(field, others))
+        )
+
+
+def check_quantile_batch_dim_is_the_fields(field: xr.DataArray, batch_dim: str) -> None:
+    """The batch dim quantile maps are taken over is one of *field*'s."""
+    have = list(batch_dims(field))
+    if batch_dim not in have:
+        advice = (
+            f"pass batch_dim= naming one of {have}"
+            if have
+            else "a field without one is one map already; draw it with maps.plot_map(field)"
+        )
+        raise ValueError(
+            f"quantile maps are taken over batch_dim={batch_dim!r}, and {batch_dim!r} is not "
+            f"a batch dim of the field (its batch dims are {have}); {advice}."
+        )
+
+
+def check_values_are_on_the_dim(available: np.ndarray, chosen: np.ndarray, dim: str) -> None:
+    """Every value asked for is one of the field's labels on *dim*."""
+    missing = [v for v in chosen if v not in available]
+    if missing:
+        raise ValueError(
+            f"no such {dim} value(s) in the field: {missing[:5]}; pass values= from the "
+            f"field's {dim} labels."
+        )
+
+
+def check_quantiles_are_given(quantiles: Sequence[float]) -> None:
+    """At least one quantile is asked for."""
+    if not quantiles:
+        raise ValueError("quantiles must name at least one quantile, such as (0.05, 0.5, 0.95).")
+
+
+def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any]) -> None:
+    """No keyword the quantile grid once took under another name is passed."""
+    if "dim" in grid_kwargs:
+        raise TypeError(
+            "plot_map_quantiles takes the batch dim as batch_dim=, not dim=; pass "
+            f"batch_dim={grid_kwargs['dim']!r}."
+        )
 
 
 def check_data_has_a_site_dimension(data: xr.DataArray) -> None:
