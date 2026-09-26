@@ -10,30 +10,21 @@ has it.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from conftest import load_script
+
+from sipnet_calibration.conventions import data_root
+
 SOURCE_HALVES = (
-    REPO_ROOT / "data" / "raw" / "site_labels" / "site_pft_16class.csv",
-    REPO_ROOT / "data" / "raw" / "covariates" / "site_covariates_pft_assignment.csv",
+    data_root() / "raw" / "site_labels" / "site_pft_16class.csv",
+    data_root() / "raw" / "covariates" / "site_covariates_pft_assignment.csv",
 )
 
 
-def _load_script():
-    path = REPO_ROOT / "scripts" / "raw_sources" / "split_site_pft_16class.py"
-    spec = importlib.util.spec_from_file_location("split_site_pft_16class", path)
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules["split_site_pft_16class"] = loaded
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
-split = _load_script()
+split = load_script("scripts/raw_sources/split_site_pft_16class.py")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────

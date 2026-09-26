@@ -21,9 +21,7 @@ are, which is what ``--no-check`` exists for.
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -31,24 +29,17 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-PHENOLOGY_DIR = REPO_ROOT / "data" / "raw" / "phenology"
-SOIL_TEXTURE_DIR = REPO_ROOT / "data" / "raw" / "soil_texture"
+from conftest import load_script
+
+from sipnet_calibration.conventions import data_root
+
+PHENOLOGY_DIR = data_root() / "raw" / "phenology"
+SOIL_TEXTURE_DIR = data_root() / "raw" / "soil_texture"
 
 
-def _load_script(name: str):
-    """Import a file in ``scripts/``, which is not a package."""
-    path = REPO_ROOT / "scripts" / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules[name] = loaded
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
-phenology = _load_script("survey_phenology")
-soil = _load_script("survey_soil_texture")
-drivers_survey = _load_script("survey_drivers")
+phenology = load_script("scripts/survey_phenology.py")
+soil = load_script("scripts/survey_soil_texture.py")
+drivers_survey = load_script("scripts/survey_drivers.py")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────

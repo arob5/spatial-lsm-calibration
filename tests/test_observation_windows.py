@@ -12,6 +12,8 @@ import pytest
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
+from conftest import site_table_of
+
 from sipnet_calibration.constraints import TIME_BOUNDS_END, TIME_BOUNDS_START
 from sipnet_calibration.conventions import TIMESTEP_LENGTH, TIMESTEP_START
 from sipnet_calibration.observation.time_alignment import (
@@ -691,7 +693,7 @@ class TestCheckRunSpansTheWindows:
         from sipnet_calibration.fields import stack_model_outputs
 
         run = niwot[["wood_carbon"]]
-        table = pd.DataFrame({"site_id": [1, 2], "lon": [0.0, 1.0], "lat": [0.0, 1.0]})
+        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
         stacked = stack_model_outputs({(1, 0): run, (2, 0): run.isel(time=slice(0, 40))}, site_table=table)
         one = stacked.sel(site=2, member=0)["wood_carbon"]
         assert np.isnat(one[TIMESTEP_START].values).any()

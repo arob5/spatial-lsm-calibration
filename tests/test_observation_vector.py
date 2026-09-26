@@ -10,6 +10,8 @@ import pytest
 import xarray as xr
 from pysipnet import niwot_reference_output
 
+from conftest import niwot_stack_of, site_table_of
+
 from sipnet_calibration.fields import label_run
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
@@ -26,23 +28,15 @@ from sipnet_calibration.observation import (
 VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon"]
 
 
-def _site_table(*sites):
-    return pd.DataFrame({"site_id": list(sites), "lon": [-105.0] * len(sites), "lat": [40.0] * len(sites)}).set_index("site_id", drop=False)
-
-
 @pytest.fixture(scope="module")
 def one_run():
-    return label_run(niwot_reference_output().select(VARIABLES), site=1, member=0, site_table=_site_table(1))
+    return label_run(niwot_reference_output().select(VARIABLES), site=1, member=0, site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True))
 
 
 @pytest.fixture(scope="module")
-def stack(one_run):
-    base = one_run.drop_vars(["site", "lon", "lat", "member"])
-    sites = xr.concat([base.assign_coords(site=1), (base * 1.5).assign_coords(site=2)], dim="site")
-    members = xr.concat([sites.assign_coords(member=0), (sites * 0.5).assign_coords(member=1)], dim="member")
-    for name in VARIABLES:
-        members[name].attrs = one_run[name].attrs
-    return members
+def stack():
+    """Two sites and two members built from the Niwot run by known factors."""
+    return niwot_stack_of(VARIABLES)
 
 
 @pytest.fixture(scope="module")

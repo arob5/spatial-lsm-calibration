@@ -27,7 +27,7 @@ import xarray as xr
 from pysipnet.climate import ClimateDrivers
 from pysipnet.variables import CLIMATE_COLUMN_NAMES
 
-from conftest import DRIVERS_ROOT, LOCAL_DRIVER_PAIRS
+from conftest import DRIVERS_ROOT, LOCAL_DRIVER_PAIRS, REPOSITORY, site_table_of
 
 from sipnet_calibration.drivers import (
     DRIVER_PRESENT,
@@ -46,7 +46,6 @@ from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES, TIME_
 from sipnet_calibration.observation.time_alignment import aggregate_time
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
 
 #: The 14 fields of a legacy-layout row, under SIPNET's own names.
 FILE_COLUMNS = (
@@ -121,10 +120,8 @@ def write_pair(root: Path, site: int, member: int, rows: pd.DataFrame | None = N
 @pytest.fixture
 def sites_table() -> pd.DataFrame:
     """A site table holding what ``load_drivers`` reads from it."""
-    ids = np.arange(1, 11, dtype=np.int32)
-    return pd.DataFrame(
-        {"site_id": ids, "lon": -100.0 + ids, "lat": 40.0 + 0.5 * ids}
-    )
+    ids = np.arange(1, 11)
+    return site_table_of(*ids, lon=-100.0 + ids, lat=40.0 + 0.5 * ids)
 
 
 @pytest.fixture
@@ -162,7 +159,7 @@ class TestPaths:
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
         assert default_drivers_root() == tmp_path / "raw" / "drivers"
         monkeypatch.delenv(DATA_ROOT_ENV_VAR)
-        assert default_drivers_root() == REPO_ROOT / "data" / "raw" / "drivers"
+        assert default_drivers_root() == REPOSITORY / "data" / "raw" / "drivers"
 
     def test_driver_file_finds_the_one_file(self, root):
         path = driver_file(root, 3, 2)

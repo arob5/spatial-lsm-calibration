@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from conftest import SITE_1_DRIVERS
+from conftest import SITE_1_DRIVERS, site_table_of
 from pysipnet.resample import resample
 from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, VariableKind
 
@@ -233,7 +233,7 @@ class TestAggregateTimeOnThreeHourlyOutput:
 
 
 class TestAggregateTimeOnEnsembles:
-    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, sites_table):
+    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, real_site_table):
         runs = {(site, member): niwot_output for site in (1, 27) for member in (0, 1)}
         stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
         daily = aggregate_time(stacked, "1D")
@@ -245,14 +245,14 @@ class TestAggregateTimeOnEnsembles:
             for member in (0, 1):
                 assert np.allclose(daily.sel(site=site, member=member).values, one.values)
 
-    def test_lon_and_lat_survive_on_site(self, niwot_output, sites_table):
+    def test_lon_and_lat_survive_on_site(self, niwot_output, real_site_table):
         runs = {(site, 0): niwot_output for site in (1, 27)}
         daily = aggregate_time(
             stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"], "1D"
         )
         assert daily["lon"].dims == ("site",)
 
-    def test_per_site_interval_coordinates_are_refused(self, niwot_output, sites_table):
+    def test_per_site_interval_coordinates_are_refused(self, niwot_output, real_site_table):
         from pysipnet.output import SIPNETOutput
 
         short = SIPNETOutput.from_dataframe(
@@ -358,7 +358,7 @@ class TestAggregatedFieldsPlot:
         assert ax.get_ylabel() == "Net ecosystem exchange (g m-2)"
         assert np.allclose(ax.lines[0].get_ydata(), daily.values)
 
-    def test_an_aggregated_ensemble_fans(self, ax, niwot_output, sites_table):
+    def test_an_aggregated_ensemble_fans(self, ax, niwot_output, real_site_table):
         plotting = pytest.importorskip("sipnet_calibration.plotting")
         runs = {(1, member): niwot_output for member in (0, 1, 2)}
         stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
@@ -412,7 +412,7 @@ class TestAggregateTimeDropsAlignmentPadding:
         ]
 
     def test_a_padded_timestamp_does_not_empty_the_cell_it_falls_in(
-        self, niwot_output, sites_table
+        self, niwot_output, real_site_table
     ):
         alone = aggregate_time(
             from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"], "1D"
@@ -422,7 +422,7 @@ class TestAggregateTimeDropsAlignmentPadding:
         assert np.allclose(together.values, alone.values)
         assert np.array_equal(together["time"].values, alone["time"].values)
 
-    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output, sites_table):
+    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output, real_site_table):
         short_side = aggregate_time(self.stacked(niwot_output).sel(site=1), "1D")
         assert not np.isnan(short_side.values).any()
         assert short_side.sizes["time"] < 30
@@ -580,7 +580,7 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
     def test_on_a_stack_only_the_gapped_site_is_missing(self, niwot_output):
         from sipnet_calibration.fields import stack_model_outputs
 
-        table = pd.DataFrame({"site_id": [1, 2], "lon": [0.0, 1.0], "lat": [0.0, 1.0]})
+        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
         run = niwot_output.select(["wood_carbon"])
         stacked = stack_model_outputs({(1, 0): run, (2, 0): run}, site_table=table)["wood_carbon"]
         values = stacked.values.copy()

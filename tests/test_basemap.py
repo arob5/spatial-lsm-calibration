@@ -7,14 +7,12 @@ a quietly wrong coastline.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from conftest import load_script
+
+from sipnet_calibration.conventions import data_root
 from sipnet_calibration.io import file_md5
 from sipnet_calibration.plotting import basemap
 from sipnet_calibration.plotting.basemap import (
@@ -30,24 +28,7 @@ from sipnet_calibration.plotting.basemap import (
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.sites import EXTENTS
 
-REPOSITORY = Path(__file__).resolve().parents[1]
-RAW_DIR = REPOSITORY / "data" / "raw" / "natural_earth"
-
-
-def load_script(relative: str):
-    path = REPOSITORY / relative
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[path.stem] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.fixture
-def ax():
-    figure, axes = plt.subplots()
-    yield axes
-    plt.close(figure)
+RAW_DIR = data_root() / "raw" / "natural_earth"
 
 
 # ── the tracked file ──────────────────────────────────────────────────────────

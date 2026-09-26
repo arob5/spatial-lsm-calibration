@@ -15,18 +15,18 @@ The real-data cases skip when the files are absent from the working copy.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import pytest
 import xarray as xr
 from pysipnet.parameters import InitialConditions
 from scipy.io import netcdf_file
 
+from conftest import load_script, write_site_table_csv
+
 from sipnet_calibration import initial_conditions as module
+from sipnet_calibration.conventions import data_root
 from sipnet_calibration.initial_conditions import (
     CF_CONVENTIONS,
     CONVERTED_SIPNET_FIELDS,
@@ -57,26 +57,15 @@ from sipnet_calibration.initial_conditions import (
 )
 import sipnet_calibration
 from sipnet_calibration import sites as sites_module
-from sipnet_calibration.sites import SITE_COLUMNS, load_sites
+from sipnet_calibration.sites import load_sites
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-LOCAL_SOURCE_ROOT = REPO_ROOT / "data" / "raw" / "initial_conditions" / "files"
-TRACKED_RAW = REPO_ROOT / "data" / "raw" / "initial_conditions" / module.RAW_FILE
-SITES_CSV = REPO_ROOT / "data" / "processed" / "sites" / "sites.csv"
-
-
-def _load_script(name: str, package: str = "scripts"):
-    """Import a script by path, since scripts are not importable modules."""
-    path = REPO_ROOT / package / f"{name}.py"
-    spec = importlib.util.spec_from_file_location(name, path)
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules[name] = loaded
-    spec.loader.exec_module(loaded)
-    return loaded
+LOCAL_SOURCE_ROOT = data_root() / "raw" / "initial_conditions" / "files"
+TRACKED_RAW = data_root() / "raw" / "initial_conditions" / module.RAW_FILE
+SITES_CSV = data_root() / "processed" / "sites" / "sites.csv"
 
 
-convert = _load_script("convert_initial_conditions", "scripts/raw_sources")
-ingest = _load_script("ingest_initial_conditions")
+convert = load_script("scripts/raw_sources/convert_initial_conditions.py")
+ingest = load_script("scripts/ingest_initial_conditions.py")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────
@@ -198,24 +187,12 @@ def _write_tree(root: Path, values=SYNTHETIC_VALUES) -> Path:
 
 def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
     """A minimal site table that ``load_sites`` accepts."""
-    frame = pd.DataFrame(
-        {
-            "site_id": np.array(site_ids, dtype=np.int32),
-            "lon": [SYNTHETIC_COORDS[site][0] for site in site_ids],
-            "lat": [SYNTHETIC_COORDS[site][1] for site in site_ids],
-            "lon_index": np.arange(len(site_ids), dtype=np.int32) + 1000,
-            "lat_index": np.arange(len(site_ids), dtype=np.int32) + 2000,
-            "site_name": [f"site {site}" for site in site_ids],
-            "site_order": np.zeros(len(site_ids), dtype=np.int32),
-            "cluster": np.ones(len(site_ids), dtype=np.int8),
-            "landcover": np.ones(len(site_ids), dtype=np.int8),
-            "ameriflux_site_id": [""] * len(site_ids),
-        }
+    return write_site_table_csv(
+        path,
+        site_ids,
+        lon=[SYNTHETIC_COORDS[site][0] for site in site_ids],
+        lat=[SYNTHETIC_COORDS[site][1] for site in site_ids],
     )
-    assert tuple(frame.columns) == SITE_COLUMNS
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(path, index=False)
-    return path
 
 
 def _records(values=SYNTHETIC_VALUES) -> list[SourceFile]:

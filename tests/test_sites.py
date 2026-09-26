@@ -152,17 +152,17 @@ class TestLonLatToIndex:
 # testable end to end here rather than only on the SCC.
 
 import hashlib
-import importlib.util
 import pathlib
 import re
-import sys
 import textwrap
-from pathlib import Path
 
 import pandas as pd
 import shapefile
 
+from conftest import REPOSITORY, load_script, site_table_of
+
 import sipnet_calibration.sites as sites_module
+from sipnet_calibration.conventions import data_root
 from sipnet_calibration.sites import (
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
@@ -171,10 +171,9 @@ from sipnet_calibration.sites import (
     select_sites,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RAW_SITES = REPO_ROOT / "data" / "raw" / "sites"
+RAW_SITES = data_root() / "raw" / "sites"
 SHAPEFILE = RAW_SITES / "pts.shp"
-SITE_ID_MAP = REPO_ROOT / "data" / "site_id_map.csv"
+SITE_ID_MAP = data_root() / "site_id_map.csv"
 
 N_SITES = 8000
 
@@ -190,17 +189,7 @@ UTF8_SITES = {
 NA_NAMED_SITES = [3392, 7484, 7542, 7589, 7595, 7607, 7616, 7617]
 
 
-def _load_ingest_module():
-    """Import ``scripts/ingest_sites.py``, which is a script, not a package."""
-    path = REPO_ROOT / "scripts" / "ingest_sites.py"
-    spec = importlib.util.spec_from_file_location("ingest_sites", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["ingest_sites"] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-ingest = _load_ingest_module()
+ingest = load_script("scripts/ingest_sites.py")
 
 
 def _shapefile_coordinates():
@@ -601,7 +590,7 @@ class TestLoadSites:
 
         monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
         assert default_sites_path() == (
-            REPO_ROOT / "data" / "processed" / "sites" / "sites.csv"
+            REPOSITORY / "data" / "processed" / "sites" / "sites.csv"
         )
 
 
@@ -1133,7 +1122,7 @@ class TestDefaultOutputAgreesWithTheLoader:
         from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
 
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
-        fresh = _load_ingest_module()
+        fresh = load_script("scripts/ingest_sites.py")
         assert fresh.DEFAULT_OUT == default_sites_path()
         assert str(tmp_path) in str(fresh.DEFAULT_OUT)
 
@@ -1282,23 +1271,13 @@ class TestDocstringExamples:
 # ── looking sites up ─────────────────────────────────────────────────────────
 
 
-def _lookup_table(*site_ids: int) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "site_id": np.asarray(site_ids, dtype=np.int32),
-            "lon": [-100.0 - s for s in site_ids],
-            "lat": [40.0 + s / 100 for s in site_ids],
-        }
-    )
-
-
 class TestSiteLookup:
     def test_keys_the_table_on_site_id_and_keeps_the_column(self):
         from sipnet_calibration.sites import site_lookup
 
-        keyed = site_lookup(_lookup_table(1, 27))
+        keyed = site_lookup(site_table_of(1, 27))
         assert keyed.index.name == "site_id" and "site_id" in keyed.columns
-        assert keyed.loc[27, "lon"] == -127.0
+        assert keyed.loc[27, "lon"] == -100.27
         assert site_lookup(keyed) is keyed
 
 
@@ -1307,10 +1286,10 @@ class TestSiteLocations:
         from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
         from sipnet_calibration.sites import site_locations
 
-        located = site_locations([27, 1], _lookup_table(1, 27))
+        located = site_locations([27, 1], site_table_of(1, 27))
         assert set(located) == {"lon", "lat"}
         assert located["lon"].dims == ("site",) and located["lon"].dtype == np.float64
-        np.testing.assert_array_equal(located["lon"].values, [-127.0, -101.0])
+        np.testing.assert_array_equal(located["lon"].values, [-100.27, -100.01])
         assert located["lon"].attrs == dict(LON_ATTRIBUTES)
         assert located["lat"].attrs == dict(LAT_ATTRIBUTES)
 
@@ -1320,29 +1299,54 @@ class TestSiteLocations:
         from sipnet_calibration.sites import site_locations
 
         field = xr.DataArray([1.0, 2.0], dims="site", coords={"site": [27, 1]})
-        located = field.assign_coords(site_locations([27, 1], _lookup_table(1, 27)))
-        assert located.sel(site=1)["lon"].item() == -101.0
+        located = field.assign_coords(site_locations([27, 1], site_table_of(1, 27)))
+        assert located.sel(site=1)["lon"].item() == -100.01
 
     def test_refuses_a_missing_site_a_repeat_and_a_string(self):
         from sipnet_calibration.sites import site_locations
 
         with pytest.raises(KeyError, match=r"\[5\] are not in the site table"):
-            site_locations([1, 5], _lookup_table(1, 27))
+            site_locations([1, 5], site_table_of(1, 27))
         with pytest.raises(ValueError, match="more than once"):
-            site_locations([1, 1], _lookup_table(1, 27))
+            site_locations([1, 1], site_table_of(1, 27))
         with pytest.raises(TypeError, match="one character per site"):
-            site_locations("127", _lookup_table(1, 27))
+            site_locations("127", site_table_of(1, 27))
 
 
 class TestCheckSiteTableLocatesTheSites:
-    def test_refuses_what_is_not_a_table_or_lacks_columns_or_repeats_a_site(self):
+    def test_a_table_that_locates_every_site_passes(self):
+        from sipnet_calibration.sites import check_site_table_locates_the_sites, site_lookup
+
+        check_site_table_locates_the_sites(site_table_of(1, 27), [27, 1])
+        check_site_table_locates_the_sites(site_lookup(site_table_of(1, 27)), [1])
+
+    def test_what_is_not_a_table_is_a_type_error(self):
         from sipnet_calibration.sites import check_site_table_locates_the_sites
 
         with pytest.raises(TypeError, match="must be a DataFrame"):
             check_site_table_locates_the_sites({"site_id": [1]}, [1])
-        with pytest.raises(ValueError, match="no 'site_id' column or index"):
-            check_site_table_locates_the_sites(_lookup_table(1).drop(columns="site_id"), [1])
+
+    def test_a_table_without_lat_is_refused(self):
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
+
         with pytest.raises(ValueError, match=r"no \['lat'\] column"):
-            check_site_table_locates_the_sites(_lookup_table(1).drop(columns="lat"), [1])
-        with pytest.raises(ValueError, match="more than once"):
-            check_site_table_locates_the_sites(_lookup_table(1, 1), [1])
+            check_site_table_locates_the_sites(site_table_of(1).drop(columns="lat"), [1])
+
+    def test_a_table_without_site_ids_is_refused(self):
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
+
+        with pytest.raises(ValueError, match="no 'site_id' column or index"):
+            check_site_table_locates_the_sites(site_table_of(1).drop(columns="site_id"), [1])
+
+    def test_a_repeated_site_is_refused_even_when_not_asked_for(self):
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
+
+        table = pd.concat([site_table_of(1, 27), site_table_of(27)])
+        with pytest.raises(ValueError, match=r"lists site\(s\) \[27\] more than once"):
+            check_site_table_locates_the_sites(table, [1])
+
+    def test_a_missing_site_is_a_key_error_naming_it(self):
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
+
+        with pytest.raises(KeyError, match=r"site\(s\) \[5\] are not in the site table"):
+            check_site_table_locates_the_sites(site_table_of(1, 27), [1, 5])

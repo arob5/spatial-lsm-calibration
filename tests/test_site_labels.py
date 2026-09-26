@@ -15,15 +15,15 @@ the working copy.
 from __future__ import annotations
 
 import dataclasses
-import importlib.util
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from sipnet_calibration.conventions import SITE_ID
+from conftest import load_script, write_site_table_csv
+
+from sipnet_calibration.conventions import SITE_ID, data_root
 from sipnet_calibration.site_labels import _check_labels_are_flag_meanings
 from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
@@ -36,30 +36,18 @@ from sipnet_calibration.site_labels import (
     default_raw_dir,
     default_site_labels_dir,
     describe,
-    label_dtype,
     load_site_labels,
     read_raw,
     resolve_site_labels,
     site_labels_field,
     site_labels_path,
 )
-from sipnet_calibration.sites import SITE_COLUMNS, default_sites_path, load_sites
+from sipnet_calibration.sites import default_sites_path, load_sites
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RAW_DIR = REPO_ROOT / "data" / "raw" / "site_labels"
-
-
-def _load_ingest_module():
-    """Import ``scripts/ingest_site_labels.py``, which is a script."""
-    path = REPO_ROOT / "scripts" / "ingest_site_labels.py"
-    spec = importlib.util.spec_from_file_location("ingest_site_labels", path)
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules["ingest_site_labels"] = loaded
-    spec.loader.exec_module(loaded)
-    return loaded
+RAW_DIR = data_root() / "raw" / "site_labels"
 
 
-ingest = _load_ingest_module()
+ingest = load_script("scripts/ingest_site_labels.py")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────
@@ -93,26 +81,13 @@ SYNTHETIC_ROWS = [
 
 def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
     """A minimal site table that ``load_sites`` accepts."""
-    frame = pd.DataFrame(
-        {
-            "site_id": np.array(site_ids, dtype=np.int32),
-            "lon": [-100.0 - site for site in site_ids],
-            "lat": [40.0 + site for site in site_ids],
-            "lon_index": np.arange(len(site_ids), dtype=np.int32) + 1000,
-            "lat_index": np.arange(len(site_ids), dtype=np.int32) + 2000,
-            "site_name": [f"site {site}" for site in site_ids],
-            "site_order": np.zeros(len(site_ids), dtype=np.int32),
-            "cluster": np.ones(len(site_ids), dtype=np.int8),
-            "landcover": np.array(
-                [SYNTHETIC_LANDCOVER.get(site, 1) for site in site_ids], dtype=np.int8
-            ),
-            "ameriflux_site_id": [""] * len(site_ids),
-        }
+    return write_site_table_csv(
+        path,
+        site_ids,
+        lon=[-100.0 - site for site in site_ids],
+        lat=[40.0 + site for site in site_ids],
+        landcover=[SYNTHETIC_LANDCOVER.get(site, 1) for site in site_ids],
     )
-    assert tuple(frame.columns) == SITE_COLUMNS
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(path, index=False)
-    return path
 
 
 def _write_raw(root: Path, spec: SiteLabelsSpec, rows: list[dict]) -> Path:

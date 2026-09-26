@@ -18,8 +18,6 @@ product are absent from the working copy.
 from __future__ import annotations
 
 import gzip
-import importlib.util
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -27,7 +25,10 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from conftest import load_script, write_site_table_csv
+
 from sipnet_calibration import constraints as module
+from sipnet_calibration.conventions import data_root
 from sipnet_calibration.constraints import (
     CF_CONVENTIONS,
     CONSTRAINT_NAMES,
@@ -46,11 +47,10 @@ from sipnet_calibration.constraints import (
     read_raw,
     resolve_constraint,
 )
-from sipnet_calibration.sites import SITE_COLUMNS, default_sites_path, load_sites
+from sipnet_calibration.sites import default_sites_path, load_sites
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-RAW_DIR = REPO_ROOT / "data" / "raw" / "constraints"
-ASSEMBLED = REPO_ROOT / "data" / "processed" / "constraints_annual.nc"
+RAW_DIR = data_root() / "raw" / "constraints"
+ASSEMBLED = data_root() / "processed" / "constraints_annual.nc"
 
 #: Old assembled name -> new constraint, for the reproduction tests.
 ASSEMBLED_NAMES = {
@@ -61,17 +61,7 @@ ASSEMBLED_NAMES = {
 }
 
 
-def _load_ingest_module():
-    """Import ``scripts/ingest_constraints.py``, which is a script."""
-    path = REPO_ROOT / "scripts" / "ingest_constraints.py"
-    spec = importlib.util.spec_from_file_location("ingest_constraints", path)
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules["ingest_constraints"] = loaded
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
-ingest = _load_ingest_module()
+ingest = load_script("scripts/ingest_constraints.py")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────
@@ -82,24 +72,12 @@ SYNTHETIC_COORDS = {1: (-100.0, 40.0), 2: (-101.0, 41.0), 3: (-102.0, 42.0), 4: 
 
 def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
     """A minimal site table that ``load_sites`` accepts."""
-    frame = pd.DataFrame(
-        {
-            "site_id": np.array(site_ids, dtype=np.int32),
-            "lon": [SYNTHETIC_COORDS[site][0] for site in site_ids],
-            "lat": [SYNTHETIC_COORDS[site][1] for site in site_ids],
-            "lon_index": np.arange(len(site_ids), dtype=np.int32) + 1000,
-            "lat_index": np.arange(len(site_ids), dtype=np.int32) + 2000,
-            "site_name": [f"site {site}" for site in site_ids],
-            "site_order": np.zeros(len(site_ids), dtype=np.int32),
-            "cluster": np.ones(len(site_ids), dtype=np.int8),
-            "landcover": np.ones(len(site_ids), dtype=np.int8),
-            "ameriflux_site_id": [""] * len(site_ids),
-        }
+    return write_site_table_csv(
+        path,
+        site_ids,
+        lon=[SYNTHETIC_COORDS[site][0] for site in site_ids],
+        lat=[SYNTHETIC_COORDS[site][1] for site in site_ids],
     )
-    assert tuple(frame.columns) == SITE_COLUMNS
-    path.parent.mkdir(parents=True, exist_ok=True)
-    frame.to_csv(path, index=False)
-    return path
 
 
 def _write_raw(root: Path, spec: ConstraintSpec, rows: list[dict]) -> Path:
