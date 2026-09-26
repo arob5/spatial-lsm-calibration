@@ -1497,6 +1497,18 @@ class TestBatchDimNames:
             "sample", ["net_ecosystem_exchange"], message_name="batch_dim"
         )
 
+    def test_an_alias_of_an_output_variable_is_refused(self):
+        """``nee`` was accepted beside ``net_ecosystem_exchange``, which it names."""
+        from sipnet_calibration.fields import check_batch_dim_name_is_not_a_model_output_name
+
+        with pytest.raises(ValueError, match="'nee' is an alias of the output variable"):
+            check_batch_dim_name_is_not_a_model_output_name(
+                "nee", ["net_ecosystem_exchange"], message_name="batch_dim"
+            )
+        check_batch_dim_name_is_not_a_model_output_name(
+            "nee", ["wood_carbon"], message_name="batch_dim"
+        )
+
 
 class TestPyEnsPairsSameNamesAndCrossesDifferentOnes:
     """The rule the field contract takes from PyEns: a name is an index."""

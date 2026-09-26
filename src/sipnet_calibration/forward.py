@@ -321,7 +321,7 @@ class ForwardModel:
         a reserved name, a data source's member name, ``shared``,
         ``site_id``, a site-labels name, a SIPNET parameter, calibration
         parameter or Fields variable name), a name the model output uses (an
-        output variable, or one of
+        output variable or a pySIPNET alias of one, or one of
         :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
         a product name or coordinate of the observation vector's
         observations. Each is refused here, before anything runs. Read-only

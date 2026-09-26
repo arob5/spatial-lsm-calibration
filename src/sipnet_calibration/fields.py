@@ -339,6 +339,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pysipnet.units import validate_units
+from pysipnet.variables import resolve_output_variable
 from pysipnet.variables import (
     resolve_output_variable_names as resolve_sipnet_output_variable_names,
 )
@@ -1301,6 +1302,14 @@ def _recorded_companions(record: Mapping[str, Any]) -> dict[str, tuple[str, ...]
     return {str(name): tuple(on) for name, on in entries.items()}
 
 
+def _output_variable_of(name: str) -> str | None:
+    """The pySIPNET output variable *name* names or aliases, or ``None``."""
+    try:
+        return resolve_output_variable(name).name
+    except KeyError:
+        return None
+
+
 def _json_or_none(text: Any) -> Any:
     """*text* decoded as JSON, or ``None`` when it is not JSON."""
     try:
@@ -2072,10 +2081,19 @@ def check_batch_dim_name_is_not_a_data_source_member(name: str, *, message_name:
 def check_batch_dim_name_is_not_a_model_output_name(
     name: str, output_variable_names: Iterable[str], *, message_name: str
 ) -> None:
-    """*name* is no output variable and none of :data:`MODEL_OUTPUT_COORDINATE_NAMES`."""
+    """*name* is no output variable, nor an alias of one, and none of
+    :data:`MODEL_OUTPUT_COORDINATE_NAMES`.
+
+    An alias is resolved through pySIPNET's registry, as the output selection
+    resolves it, and refused when it names one of *output_variable_names*.
+    """
+    names = set(output_variable_names)
+    variable = _output_variable_of(name)
     what = (
         "an output variable"
-        if name in set(output_variable_names)
+        if name in names
+        else f"an alias of the output variable {variable!r}"
+        if variable in names
         else "a coordinate or dim"
         if name in MODEL_OUTPUT_COORDINATE_NAMES
         else None

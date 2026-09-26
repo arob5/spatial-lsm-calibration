@@ -1158,6 +1158,20 @@ class TestTheBatchDimIsNamedOnce:
                 batch_dim="wood_carbon",
             )
 
+    def test_an_output_variable_alias_is_refused_up_front(self, parameter_vector, climate):
+        """``nee`` was accepted, though the output selection resolves it to
+        ``net_ecosystem_exchange``."""
+        with pytest.raises(ValueError, match="'nee' is an alias of the output variable"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("net_ecosystem_exchange",),
+                site_table=SITE_TABLE,
+                batch_dim="nee",
+            )
+
     @pytest.mark.parametrize(
         "name",
         ["time_step_length", "time_step_start", "time_bounds", "bounds", "year", "day_of_year"],

@@ -296,8 +296,9 @@ The batch-dim rules:
   `site_id`, its site-labels names, SIPNET parameter, calibration parameter
   and Fields variable names (`parameter_vector.check_batch_dim_name_is_not_taken`);
   `ForwardModel` runs that check at construction, whatever its table hook,
-  and refuses there too an output variable's name and a product name or
-  observation coordinate of its observation vector, so nothing runs first;
+  and refuses there too an output variable's name or pySIPNET alias
+  (`nee`), and a product name or observation coordinate of its observation
+  vector, so nothing runs first;
   `ObservationVector.fields` refuses a product name or a coordinate of an
   observation's values (a scalar batch label excepted: an observation's
   scalar batch labels are metadata of the input and are not carried);
