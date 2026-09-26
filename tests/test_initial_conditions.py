@@ -1273,6 +1273,13 @@ def test_conversion_table_refuses_wrong_units_dims_and_unaligned_parameters():
             **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="time")},
         )
 
+    # An unlabeled source_index raised a raw IndexError from the cell index.
+    with pytest.raises(ValueError, match=r"\[.source_index.\] is neither"):
+        to_sipnet_initial_conditions_table(
+            ensemble_state(),
+            **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="source_index")},
+        )
+
     with pytest.raises(ValueError, match="cannot align|conflicting|not equal"):
         to_sipnet_initial_conditions_table(
             ensemble_state(),

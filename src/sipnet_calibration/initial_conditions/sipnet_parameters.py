@@ -33,7 +33,7 @@ import pandas as pd
 import xarray as xr
 from pysipnet.parameters import InitialConditions
 
-from sipnet_calibration.conventions import SITE, SPATIAL_DIM_NAMES, TIME
+from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SITE, SPATIAL_DIM_NAMES
 from sipnet_calibration.fields import (
     check_labeled_dims_are_batch_spatial_or_time,
     scalar_batch_labels,
@@ -277,7 +277,9 @@ def to_sipnet_initial_conditions_table(
     ValueError
         For the refusals of :func:`to_sipnet_initial_conditions`, naming the
         offending cells; if the inputs broadcast to a dim that is neither
-        ``site``, a batch dim (integer labels) nor an unlabeled dim; if their
+        ``site``, a batch dim (integer labels) nor an unlabeled dim, or to
+        ``time``, ``source_index`` or a spatial name other than ``site``,
+        labeled or not; if their
         indexes do not match, or they were selected for different members or
         sites; or if a variable's ``units`` are not the product's.
 
@@ -675,11 +677,17 @@ def _check_root_fractions_leave_wood(
 
 
 def _check_dims_are_batch_and_site(array: xr.DataArray) -> None:
-    """The inputs broadcast to batch dims and ``site`` alone."""
-    # The field contract's rule for a labeled dim; a dim without a coordinate
-    # is allowed, and labeled by position in the table. Of the spatial dims
-    # and time, only site is a dim of the conversion.
-    extra = [str(dim) for dim in array.dims if dim in (*SPATIAL_DIM_NAMES, TIME) and dim != SITE]
+    """The inputs broadcast to ``site``, batch dims and unlabeled dims alone.
+
+    A labeled dim other than ``site`` is a batch dim (integer labels); a dim
+    without a coordinate is allowed, whatever it is called, and labeled by
+    position in the table, unless it takes one of
+    :data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES` other than
+    ``site``.
+    """
+    # The field contract's rule for a labeled dim. Of the names that are
+    # never a batch dim, only site is a dim of the conversion.
+    extra = [str(dim) for dim in array.dims if dim in NON_BATCH_DIM_NAMES and dim != SITE]
     if extra:
         raise ValueError(
             f"the inputs broadcast to dims {[str(dim) for dim in array.dims]}, but the "
