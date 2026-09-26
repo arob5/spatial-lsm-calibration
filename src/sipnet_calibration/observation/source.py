@@ -27,12 +27,9 @@ Data model
 :data:`ObservedValues` (``xr.DataArray``) is a field on ``(site,)`` (a
 static observation source) or ``(site, time)``, with no batch dim:
 
-``site``
-    ``int32`` site ids, unique, with ``float64`` ``lon``/``lat`` on ``site``
-    (the field contract's).
-``time``
-    Naive ``datetime64`` labels, strictly increasing, no ``NaT``; where the
-    values are attributed to windows, ``window_start``/``window_end`` on
+``site``, ``time``
+    As the field contract (:mod:`sipnet_calibration.fields`) has them; where
+    the values are attributed to windows, ``window_start``/``window_end`` on
     ``time``.
 values
     Numeric, finite where observed, ``NaN`` where nothing was observed.
@@ -155,13 +152,7 @@ type ObservedValues = xr.DataArray
 
 
 def validate_observed_values(observed_values: Any, *, message_name: str | None = None) -> None:
-    """Check that *observed_values* are observed values, raising on the first rule.
-
-    Runs :func:`sipnet_calibration.fields.validate_field`, then
-    :func:`check_observed_values_have_no_batch_dim`,
-    :func:`check_observed_values_are_on_site_and_time`,
-    :func:`check_observed_values_are_numeric` and
-    :func:`check_observed_values_are_finite_or_nan`, in that order.
+    """Check that *observed_values* are :data:`ObservedValues`.
 
     Parameters
     ----------
@@ -176,11 +167,8 @@ def validate_observed_values(observed_values: Any, *, message_name: str | None =
     TypeError
         If *observed_values* is not an ``xr.DataArray``.
     ValueError
-        If it is not a field (``int32`` ``site`` ids with ``lon``/``lat``,
-        a ``time`` axis of naive datetimes strictly increasing and free of
-        ``NaT``, valid ``units``, among the field contract's rules); if it
-        has a batch dim; if its dims are not ``(site,)`` or ``(site, time)``;
-        if its values are not numeric; or if one is infinite.
+        If it is not a field, has a batch dim, is not on ``(site,)`` or
+        ``(site, time)``, or holds a value that is not numeric or is infinite.
     """
     name = message_name
     if name is None:

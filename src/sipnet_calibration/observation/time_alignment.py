@@ -222,22 +222,12 @@ def aggregate_time(
     TypeError
         If *field* is not a ``DataArray``, or *freq* is not a string.
     ValueError
-        If *field* is not a field
-        (:func:`sipnet_calibration.fields.validate_field`: among its rules a
-        ``time`` axis of naive datetimes, strictly increasing and free of
-        ``NaT``, interval coordinates on ``time`` alone, which stacking runs
-        on different time axes breaks, and ``units``); if it has no ``time``
-        dim, has no steps once the padding is dropped, or has a time label
-        with a value and a ``NaT`` interval; if *freq* is not a pandas offset
-        alias, or is finer than the field's own steps, which would
-        interpolate rather than aggregate; if it declares a
-        ``kind`` that is not one of pySIPNET's, or carries pySIPNET's interval
-        coordinates but no kind to check *how* against; if *how* is not one
-        of :data:`RESAMPLING_METHODS`; if the variable's kind does not admit
-        *how*, with pySIPNET's own explanation and the methods that would
-        work; if *how* is omitted and the variable's kind cannot be
-        determined; or if a mean is asked for on unequal steps that carry no
-        declared lengths to weight by.
+        If *field* is not a field with a ``time`` dim, or has no steps once
+        its padding is dropped; if *freq* is not a positive pandas offset
+        alias, or is finer than the field's steps; or if no method follows:
+        *how* is unknown or not admitted by the variable's kind (in
+        pySIPNET's words), the kind cannot be determined, or a mean is asked
+        of unequal steps with no lengths to weight by.
 
     Notes
     -----

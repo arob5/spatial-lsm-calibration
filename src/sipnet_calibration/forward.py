@@ -41,20 +41,18 @@ produced for a batch of ``J`` rows of ``theta``:
     ``(J, D)`` float64 ``jax.Array``, coerced from what was received (any
     array-like); a ``(D,)`` input is one row.
 ``sipnet_parameter_fields``
-    The SIPNET parameter fields that were run, an ``xr.Dataset`` whose every variable is
-    on ``(sample, site)``, with ``sample`` labeled ``0`` to ``J - 1`` in the
-    order of ``theta``'s rows and ``site`` in the parameter vector's order.
-    ``sample`` is the model's ``batch_dim``, the name every output below
-    carries too.
+    The :data:`~sipnet_calibration.fields.SIPNETParameterFields` that were
+    run, every variable on ``(sample, site)``, ``sample`` labeled ``0`` to
+    ``J - 1`` in ``theta``'s row order and ``site`` in the parameter vector's
+    order, located from the model's site table. ``sample`` is the model's
+    ``batch_dim``, the name every output below carries too.
 ``model_output``
-    ``xr.Dataset`` on ``(sample, site, time)`` of the output variables, as
-    :func:`~sipnet_calibration.fields.stack_model_outputs` builds it: every
-    variable a field, so without ``time_bounds`` or SIPNET's
-    ``year``/``day_of_year``/``hour_of_day`` row labels, and ``NaN`` where a
+    The :data:`~sipnet_calibration.fields.ModelOutput` of the runs on
+    ``(sample, site, time)``, from
+    :func:`~sipnet_calibration.fields.stack_model_outputs`, ``NaN`` where a
     run failed. Its attributes are the first run's; with ``freq`` they gain
-    pySIPNET's ``resampling_frequency`` and ``time_step_length_source``, as
-    ``pysipnet.resample.resample`` sets them. ``None`` when an observation
-    vector was given.
+    pySIPNET's ``resampling_frequency`` and ``time_step_length_source``.
+    ``None`` when an observation vector was given.
 ``predictions``
     ``(J, N)`` float64 ``jax.Array`` in the observation vector's order,
     ``NaN`` in every entry of a sample with a failed run; ``None`` without an
@@ -358,17 +356,14 @@ class ForwardModel:
         The name of the batch dim of ``theta``'s rows, which the SIPNET
         parameter fields, ``model_output``, ``run_succeeded`` and the
         ``failures`` column all carry; ``sample`` by default. Whatever
-        *to_sipnet_parameter_fields* is, it may not be a name the parameter
+        *to_sipnet_parameter_fields* is, it may take no name the parameter
         vector refuses
-        (:func:`~sipnet_calibration.parameter_vector.check_batch_dim_name_is_not_taken`:
-        a reserved name, a data source's member name, ``shared``,
-        ``site_id``, a site-labels name, a SIPNET parameter, calibration
-        parameter or Fields variable name), a name the model output uses (an
-        output variable or a pySIPNET alias of one, or one of
-        :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
-        an observation source name of the observation vector or a
-        coordinate of one's observed values. Each is refused here, before
-        anything runs.
+        (:func:`~sipnet_calibration.parameter_vector.check_batch_dim_name_is_not_taken`),
+        the model output uses
+        (:func:`~sipnet_calibration.fields.check_batch_dim_name_is_not_a_model_output_name`)
+        or the observation vector's sources take
+        (:func:`~sipnet_calibration.observation.check_batch_dim_is_not_an_observation_source_name`);
+        each is refused here, before anything runs.
 
     Raises
     ------

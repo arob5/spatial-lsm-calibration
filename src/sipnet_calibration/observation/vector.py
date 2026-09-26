@@ -587,12 +587,12 @@ class ObservationVector:
             An array-like of shape ``(N,)`` or ``(J, N)``, in Flat order: a
             JAX or NumPy array, or a nested list.
         batch_dim:
-            The name of the batch dim a ``(J, N)`` batch is given. It may not
-            be a reserved name (a spatial name, ``time``, ``source_index``),
-            a data source's member name (``driver_member``,
-            ``initial_condition_member``), an observation source name, or a
-            coordinate of an observation source's observed values other than
-            a scalar batch label.
+            The name of the batch dim a ``(J, N)`` batch is given: no name
+            :func:`~sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`
+            or
+            :func:`~sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`
+            refuses, and no name of this vector's
+            (:func:`check_batch_dim_is_not_an_observation_source_name`).
 
         Returns
         -------

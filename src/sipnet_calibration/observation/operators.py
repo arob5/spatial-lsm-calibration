@@ -23,20 +23,14 @@ parameters it reads (so the forward model can supply them, from the run's own
 
     operator(model_output, observed_values, *, sipnet_parameter_fields=None) -> Field
 
-* ``model_output`` is a
-  :data:`~sipnet_calibration.fields.ModelOutput`: pySIPNET-named variables on
-  ``(time,)`` with a scalar ``site``, on ``(site, time)``, or on
-  ``(*batch, site, time)`` with any batch dims (``sample``, a data source's
-  ``<source>_member``), carrying pySIPNET's time coordinates and attributes.
-* ``observed_values`` is the
-  :data:`~sipnet_calibration.observation.source.ObservedValues` of one
-  observation source, ``(site[, time])``, read for its ``site`` and ``time``
-  coordinates, its windows where present, and nothing else; never for its
-  values.
+* ``model_output`` is a :data:`~sipnet_calibration.fields.ModelOutput`, one
+  run or a stack over any batch dims.
+* ``observed_values`` is one observation source's
+  :data:`~sipnet_calibration.observation.source.ObservedValues` (``site`` a
+  dim, or a scalar for one site), read for its coordinates and windows, never
+  its values.
 * ``sipnet_parameter_fields`` is the
-  :data:`~sipnet_calibration.fields.SIPNETParameterFields` the runs
-  used: on ``(*batch, site)`` or ``(site,)`` for a stack, or with no dim and a
-  scalar ``site`` for one run.
+  :data:`~sipnet_calibration.fields.SIPNETParameterFields` the runs used.
 * The result is on ``observed_values``' ``site`` and ``time`` grid, with the
   model output's batch dims if any and no dim that neither the model output nor
   the observed values have, and carries ``units`` and, where the quantity has
@@ -429,13 +423,8 @@ def extract_sipnet_parameter_at_coords(
     Parameters
     ----------
     sipnet_parameter_fields:
-        The values the runs used, as SIPNET parameter fields
-        (:data:`~sipnet_calibration.fields.SIPNETParameterFields`):
-        one variable per SIPNET parameter under pySIPNET's flat names, on
-        ``(*batch, site)`` or ``(site,)`` as
-        :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_parameter_fields`
-        returns them, or with no dim for one run, as the forward model's
-        worker builds them from the run's own ``SIPNETResult.parameters``.
+        The values the runs used
+        (:data:`~sipnet_calibration.fields.SIPNETParameterFields`).
     sipnet_parameter_name:
         The SIPNET parameter to select: pySIPNET's flat name
         (``"leaf_carbon_per_area"``), an alias of it, or SIPNET's own name.
@@ -466,17 +455,11 @@ def extract_sipnet_parameter_at_coords(
     TypeError
         If *sipnet_parameter_fields* is not an ``xr.Dataset``.
     ValueError
-        If *sipnet_parameter_fields* is ``None``, or are not SIPNET parameter
-        fields
-        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`);
-        if they have no variable for the parameter, have a dimension the
-        target has no coordinate for, lack a label of it that *target_field*
-        has, or carry a scalar label the target's disagree with (a stacked
-        target's ``<dim>_label`` coordinates included, or lost); if a batch
-        dim of *target_field* is a stack of a dim the SIPNET parameter fields
-        have (:func:`~sipnet_calibration.fields.stack_batch_dims`), whose
-        labels are not theirs; or if a value is not finite or lies outside
-        the parameter's pySIPNET domain.
+        If *sipnet_parameter_fields* is ``None`` or are not SIPNET parameter
+        fields; if they lack the parameter, or cannot be read at the target's
+        labels (a dim the target has no labels for, a label it lacks, a scalar
+        label that disagrees, a target batch dim stacked from one of theirs);
+        or if a value is not finite or is outside the parameter's domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
@@ -496,20 +479,17 @@ def check_operator(
 ) -> Field:
     """Check an operator against its contract on real inputs, and return its result.
 
-    Checks that the declared names are pySIPNET registry names, not aliases,
-    that *model_output* is a model output carrying the variables, and that
-    *sipnet_parameter_fields* are given where parameters are read; that the
-    result is on *observed_values*' grid and carries ``units``; and, when *model_output* has a ``site`` dim
-    or batch dims of two labels or more, that the operator is pointwise: its
-    value on the stack equals, label by label, its value on the last slice of
-    each of those dims alone.
+    The contract is this module's docstring's; the inputs are checked to be
+    what it says, the result to be on the observed values' grid, and, where
+    *model_output* has two labels or more on ``site`` or a batch dim, the
+    operator to be pointwise.
 
     Parameters
     ----------
     operator:
         The operator to check.
     model_output, observed_values, sipnet_parameter_fields:
-        What the operator is called with, as in the contract above.
+        What the operator is called with, as in the contract.
 
     Returns
     -------
@@ -519,20 +499,12 @@ def check_operator(
     Raises
     ------
     TypeError
-        If the operator is not callable or its declarations are not tuples of
-        strings, *model_output* or *sipnet_parameter_fields* is not a
-        ``Dataset``, or the result is not a ``DataArray``.
+        If the operator is not callable or declares its names other than as
+        tuples of strings, or an input or the result has the wrong type.
     ValueError
-        Naming the first rule broken: a declaration that names an alias; a
-        model output that is not one
-        (:func:`~sipnet_calibration.fields.validate_model_output`), or lacks
-        a variable read; parameters read and not given, or not SIPNET
-        parameter fields; a
-        result without ``units``, off the observed values' sites or time
-        labels, or with a dim that neither the model output nor the observed
-        values have;
-        or a result that is not pointwise. The operator's own refusals pass
-        through.
+        Naming the first rule broken, in the operator's declarations, its
+        inputs, its result or its pointwise behavior. The operator's own
+        refusals pass through.
     KeyError
         If a declared name is not in pySIPNET's registries.
     """
@@ -836,16 +808,10 @@ def check_result_is_on_the_observation_grid(
     TypeError
         If *result* is not a ``DataArray``.
     ValueError
-        If it has a dim that neither the model output nor the observed values
-        have; lacks a batch dim of the model output, or carries other labels
-        on it (a mean over ``sample``, a selection, a relabeling); is not on
-        the observed values' sites, in order, whether ``site`` is a dimension or a scalar;
-        or is not on the observed values' ``time`` labels (compared as
-        instants, whatever their datetime units), or has a ``time`` dimension
-        for static observed values; or if, laid out as a field
-        (:func:`~sipnet_calibration.fields.in_field_layout`, which leaves the
-        operator its own dim order and a scalar ``site``), it is not one
-        (:func:`~sipnet_calibration.fields.validate_field`).
+        If it is not on the observed values' grid (their sites and ``time``
+        labels, the model output's batch dims and labels, no other dim), or,
+        laid out by :func:`~sipnet_calibration.fields.in_field_layout`, is not
+        a field; the message names the rule.
     """
     check_result_is_a_dataarray(result, message_name)
     check_result_adds_no_dim(result, observed_values, model_output, message_name)

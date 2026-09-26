@@ -41,91 +41,68 @@ What it reads
 
 The field contract
 ------------------
-A **field** is an ``xarray.DataArray`` holding one variable. What
+A **field** is an ``xarray.DataArray`` holding one variable, which
 :func:`validate_field` checks:
 
-* **dims** ``(*batch, space, time)``: zero or more batch dims, then at most
-  one spatial dim, then ``time`` if present. No other dim is allowed: a
-  structural axis (variable, component, quantile, bounds, a PFT class) is
-  split into a ``dict`` or ``Dataset`` of fields instead. Every dim has an
-  index coordinate.
-* **the spatial dim** one of ``site`` (site ids of the site table in use),
-  ``point`` (arbitrary locations, integer labels) or a raster pair ``lat``,
-  ``lon`` (or projected ``y``, ``x``); these names
-  (:data:`~sipnet_calibration.conventions.SPATIAL_DIM_NAMES`) are never batch
-  dims. ``site`` and ``point`` carry ``float64`` ``lon``/``lat`` coordinates on
-  that dim, and a scalar ``site`` or ``point`` (a field of one location)
-  carries them as ``float64`` scalars; ``lon``/``lat`` are never on a batch
-  dim or ``time``.
-* **a batch dim** every other dim whose index coordinate holds integers, any
-  distinct ones, of any integer dtype: an axis of independent replicates. A
-  dim with string or float labels, or none, is refused, which is what keeps a
-  ``variable``, ``quantile``, ``pft`` or ``bounds`` dim off a field.
-* ``site`` ``int32`` site ids, unique; ``time`` naive ``datetime64`` of any
-  unit (pandas and xarray make microseconds), strictly increasing, no
-  ``NaT``, with pySIPNET's timestep coordinates and an observation's window
-  coordinates, where present, on ``time`` alone (scalars once one time is
-  selected).
-* ``units`` in ``attrs``, valid by pySIPNET's ``validate_units``, unless the
-  field is categorical (:func:`is_categorical`: CF-coded classes or a boolean
-  mask).
+* **dims** ``(*batch, space, time)``, each with an index coordinate: batch
+  dims, then at most one spatial dim, then ``time``. A structural axis
+  (variable, component, quantile, bounds, a class) is never a dim; it splits
+  into a ``dict`` or ``Dataset`` of fields.
+* **the spatial dim** is one of
+  :data:`~sipnet_calibration.conventions.SPATIAL_DIM_NAMES`: ``site`` or
+  ``point``, which carry ``float64`` ``lon``/``lat`` on that dim (scalars
+  beside a scalar ``site`` or ``point``), or a raster pair.
+* **a batch dim** is any other dim whose labels are distinct integers
+  (:func:`batch_dims`); a dim with other labels, or none, is refused, and no
+  name of :data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES` is one.
+* **labels**: ``site`` holds unique site ids of
+  :data:`~sipnet_calibration.conventions.SITE_DTYPE`; ``time`` is naive
+  ``datetime64``, strictly increasing, with the timestep and window
+  coordinates on it alone.
+* **units** in ``attrs``, valid by pySIPNET, unless the field is categorical
+  (:func:`is_categorical`).
 
-Conventions a creator follows, which :func:`validate_field` does not check:
-batch labels are created ``int64``
-(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`, which
-:func:`batch_coordinate` gives), though any integer dtype is accepted, so that
-an ``int16`` or unsigned label read from a file is still a batch label;
-``long_name`` in ``attrs``, and ``constituent`` and ``kind`` where pySIPNET's
-apply; the CF attributes of ``lon``/``lat``
-(:func:`sipnet_calibration.sites.site_locations` makes them).
+A creator also gives ``long_name``, ``constituent`` and ``kind`` where they
+apply, the CF attributes of ``lon``/``lat``
+(:func:`sipnet_calibration.sites.site_locations`) and ``int64`` batch labels
+(:func:`batch_coordinate`); :func:`validate_field` checks none of these.
 
 A **scalar** coordinate is not a dim: a field whose batch dim was selected
 away with ``.isel(sample=k)`` has no batch dim, and its scalar label is
-metadata (:func:`scalar_batch_labels` finds such labels).
+metadata (:func:`scalar_batch_labels`).
 
 **Two batch dims with the same name are the same index; different names are
-different indices.** xarray aligns two ``sample`` dims by label and PyEns
-zips them, while a ``sample`` and an ``initial_condition_member`` cross. The
-batch dim made from batched Flat is named
-:data:`~sipnet_calibration.conventions.SAMPLE` by default, with labels ``0``
-to ``n_samples - 1`` in row order; a data source's own ensemble is named for
-its source (``initial_condition_member``, ``driver_member``). Batch labels
-are created ``int64``
-(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`); any integer
-dtype is accepted.
+different indices.** xarray aligns two ``sample`` dims by label and PyEns zips
+them, while a ``sample`` and an ``initial_condition_member`` cross. The batch
+dim made from batched Flat is :data:`~sipnet_calibration.conventions.SAMPLE`
+by default, labeled ``0`` to ``n_samples - 1`` in row order; a data source's
+own ensemble is named for its source
+(:data:`~sipnet_calibration.conventions.DATA_SOURCE_MEMBER_NAMES`).
 
-Which dims are present depends on the quantity. A single deterministic run is
-``(time,)``, an initial condition ensemble is
-``(initial_condition_member, site)``, and runs over samples and sites are
-``(sample, site, time)``. Calibration parameters are ``(sample, site)`` for a
-batch and ``(site,)`` for one value:
-:meth:`sipnet_calibration.parameter_vector.ParameterVector.fields` returns
-one per scalar component. Their names are ``<parameter>`` or
-``<parameter>.<component>``, the calibration vector's own, not registry
-names.
-
-One array holds one variable. Variables that share one grid are held together
-as an ``xarray.Dataset``: one run's output from :func:`to_model_output`, a stack of
-runs from :func:`stack_model_outputs`, and the calibration parameters' fields.
-Variables that do not share one are a ``dict[str, DataArray]`` keyed by name,
-as the constraints are, being annual, dated or static by constraint. Where a
-dict of a model output's fields is wanted, ``dict(model_output.data_vars)``
-is it.
+Variables that share one grid are one ``xarray.Dataset`` (a model output, a
+parameter vector's Fields); variables that do not are a
+``dict[str, DataArray]`` (the constraints). ``dict(model_output.data_vars)``
+is a model output's dict form.
 
 The data model
 --------------
-Two aliases name the forms this module owns, each checked by one validator:
+Three aliases name the forms this module owns, each checked by one validator:
 
 :data:`Field` (``xr.DataArray``)
     One variable under the field contract above; :func:`validate_field`.
 :data:`ModelOutput` (``xr.Dataset``)
-    SIPNET's output under pySIPNET's variable names, on one shared ``time``
-    axis, every variable a field; :func:`validate_model_output`. One run's
-    carries a scalar ``site`` (with its scalar ``lon``/``lat``) and scalar
-    batch labels, a stack carries ``site`` and batch dims.
-    ``time_bounds``, its ``bounds`` dim, ``time``'s ``bounds`` attribute and
-    SIPNET's ``year``/``day_of_year``/``hour_of_day`` row labels are not
-    part of it: :func:`to_model_output` and :func:`stack_model_outputs` drop them.
+    SIPNET's output under pySIPNET's variable names, every variable a field on
+    one shared ``time`` axis; :func:`validate_model_output`. One run's
+    carries a scalar ``site`` and scalar batch labels, a stack a ``site`` dim
+    and batch dims. It carries no ``time_bounds``, ``bounds`` dim or
+    attribute, and none of SIPNET's row labels
+    (:data:`~sipnet_calibration.conventions.SIPNET_ROW_LABEL_NAMES`).
+:data:`SIPNETParameterFields` (``xr.Dataset``)
+    SIPNET parameter values, one field per parameter under pySIPNET's flat
+    name, each with a ``site`` (a dim, or a scalar for one run) and no
+    ``time``; :func:`validate_sipnet_parameter_fields`. A parameter vector's
+    are on ``(*batch, site)``; one run's, as the forward model's worker builds
+    them, are zero-dimensional with a scalar ``site``.
 
 Identifiers
 -----------
@@ -494,14 +471,7 @@ MODEL_OUTPUT_COORDINATE_NAMES: tuple[str, ...] = (
 def validate_field(field: Any, *, message_name: str | None = None) -> None:
     """Check that *field* is a field, raising on the first rule it breaks.
 
-    Runs the checks of the field contract (this module's docstring) in
-    order: :func:`check_field_is_a_dataarray`,
-    :func:`check_field_dims_are_field_dims`,
-    :func:`check_field_site_holds_site_ids`,
-    :func:`check_field_locations_are_on_the_spatial_dim`,
-    :func:`check_field_time_is_a_time_axis`,
-    :func:`check_field_interval_coordinates_are_on_time` and
-    :func:`check_field_units_are_valid`.
+    The rules are the field contract of this module's docstring.
 
     Parameters
     ----------
@@ -516,25 +486,7 @@ def validate_field(field: Any, *, message_name: str | None = None) -> None:
     TypeError
         If *field* is not an ``xr.DataArray``.
     ValueError
-        Naming the first rule broken: a dim that is neither a batch dim, a
-        spatial dim nor ``time``, or dims out of the ``(*batch, space, time)``
-        order; more than one spatial dim; a dim without an index coordinate;
-        ``point`` labels that are not integers; repeated batch labels; ``site``
-        labels that are not unique ``int32`` site ids; ``lon``/``lat``
-        missing from, or not ``float64`` on, a ``site`` or ``point`` dim,
-        not ``float64`` scalars beside a scalar ``site`` or ``point``, or on a
-        batch dim or ``time``; ``time`` labels that are not naive
-        ``datetime64`` (a time zone aware axis included), strictly increasing
-        and free of ``NaT``; a timestep or window coordinate on a dim other
-        than ``time`` (or not a scalar once ``time`` is selected away); or
-        ``units`` missing or refused by pySIPNET's ``validate_units``, the
-        message naming the field.
-
-    Notes
-    -----
-    It does not check ``long_name``, ``constituent``, ``kind`` or the CF
-    attributes of ``lon``/``lat``, which are conventions a creator follows,
-    nor that batch labels are ``int64``: any integer dtype is a batch label.
+        If it breaks a rule of the contract, naming the rule and the field.
     """
     check_field_is_a_dataarray(field, message_name)
     name = message_name if message_name is not None else _message_name(field)
@@ -547,16 +499,7 @@ def validate_field(field: Any, *, message_name: str | None = None) -> None:
 
 
 def validate_model_output(model_output: Any, *, message_name: str | None = None) -> None:
-    """Check that *model_output* is a model output, raising on the first rule it breaks.
-
-    A model output (:data:`ModelOutput`) is an ``xr.Dataset`` of at least one
-    variable, every variable a field (:func:`validate_field`) on the one
-    ``time`` axis the Dataset has, carrying none of what :func:`to_model_output`
-    drops. Runs :func:`check_model_output_is_a_dataset`,
-    :func:`check_model_output_has_a_variable`,
-    :func:`check_model_output_carries_no_bounds_or_row_labels`, then, for
-    each variable, :func:`validate_field` and
-    :func:`check_model_output_variable_is_on_time`.
+    """Check that *model_output* is a model output (:data:`ModelOutput`).
 
     Parameters
     ----------
@@ -570,11 +513,9 @@ def validate_model_output(model_output: Any, *, message_name: str | None = None)
     TypeError
         If *model_output* is not an ``xr.Dataset``.
     ValueError
-        If it holds no variable; if it carries ``time_bounds``, a ``bounds``
-        dim, a ``bounds`` attribute on ``time`` or SIPNET's
-        ``year``/``day_of_year``/``hour_of_day`` row labels; or if a variable
-        is not a field or has no ``time`` dim, naming the variable and the
-        rule broken.
+        If it is not a model output: it holds no variable, carries what a
+        model output does not, or a variable is not a field on its ``time``;
+        the message names the variable and the rule.
     """
     name = "the model output" if message_name is None else message_name
     check_model_output_is_a_dataset(model_output, name)
@@ -589,23 +530,12 @@ def validate_model_output(model_output: Any, *, message_name: str | None = None)
 def validate_sipnet_parameter_fields(
     sipnet_parameter_fields: Any, *, message_name: str | None = None
 ) -> None:
-    """Check that *sipnet_parameter_fields* are SIPNET parameter fields.
-
-    SIPNET parameter fields (:data:`SIPNETParameterFields`) are an
-    ``xr.Dataset`` whose every variable is named by pySIPNET's flat parameter
-    name and is a field (:func:`validate_field`, ``lon``/``lat`` included)
-    with a ``site``, a dim or a scalar, and no ``time`` dim. Runs
-    :func:`check_sipnet_parameter_fields_are_a_dataset`, then, for each
-    variable, :func:`check_sipnet_parameter_name_is_a_flat_name`,
-    :func:`validate_field`, :func:`check_parameter_variable_has_a_site` and
-    :func:`check_parameter_variable_is_off_time`.
+    """Check that *sipnet_parameter_fields* are :data:`SIPNETParameterFields`.
 
     Parameters
     ----------
     sipnet_parameter_fields:
-        The Dataset to check, such as
-        :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_parameter_fields`
-        returns, or one run's, with a scalar ``site``.
+        The Dataset to check.
     message_name:
         What an error message calls it; ``"the SIPNET parameter fields"`` when
         omitted.
@@ -618,17 +548,14 @@ def validate_sipnet_parameter_fields(
     KeyError
         If a variable is named by no pySIPNET parameter.
     ValueError
-        If a variable is named by an alias (``aMax``) rather than pySIPNET's
-        flat name; if a variable breaks a rule of the field contract (a dim
-        that is neither a batch dim nor ``site``, ``site`` ids that are not
-        unique ``int32``, ``lon``/``lat`` missing, ``units`` missing, and so
-        on); or if a variable has no ``site`` or has a ``time`` dim.
+        If a variable is named by an alias, is not a field, has no ``site`` or
+        is on ``time``.
 
     Notes
     -----
-    Every variable may have batch dims of its own, so SIPNET parameter fields
-    merged from a parameter vector's (``sample``) and an initial condition
-    ensemble's (``initial_condition_member``) are SIPNET parameter fields.
+    A variable may have batch dims of its own, so a parameter vector's
+    (``sample``) merged with an initial condition ensemble's
+    (``initial_condition_member``) are SIPNET parameter fields.
     """
     name = "the SIPNET parameter fields" if message_name is None else message_name
     check_sipnet_parameter_fields_are_a_dataset(sipnet_parameter_fields, name)
@@ -999,23 +926,16 @@ def to_model_output(
     Raises
     ------
     TypeError
-        If *run_output* is neither a ``SIPNETResult``, a ``SIPNETOutput`` nor
-        an ``xr.Dataset``; a ``SIPNETResult`` or ``SIPNETOutput`` is given
-        without *output_variable_names*; *output_variable_names* is one string, a set
-        or holds a name that is not a string; *site* or a batch label is a
-        boolean, a float or not an integer; *batch* is not a mapping or a dim
-        name is not a string; or *site_table* is not a ``DataFrame``.
+        If an argument has the wrong type: *run_output* none of the three
+        forms, a ``SIPNETResult`` or ``SIPNETOutput`` without
+        *output_variable_names*, a label that is not an integer.
     ValueError
-        If the run has no timesteps, which is what a failed run leaves;
-        if *output_variable_names* is empty; if *site* is out of range, or a
-        batch label does not fit ``int64``; if a batch dim name is reserved
-        or is a variable, dim or coordinate of the run's output
-        (``time_step_length``, ``time_bounds``, ``bounds``, a variable's
-        name); if the site table lists a site twice or has no ``lon`` and
-        ``lat`` columns; or if the result is not a model output.
+        If the run has no timesteps (a failed run), a name or label is out of
+        range or reserved or taken by the run's output, the site table cannot
+        locate *site*, or the result is not a model output.
     KeyError
-        If a variable is not a pySIPNET output variable, or the Dataset
-        lacks one asked for; or if *site* is not in the site table.
+        If a variable is not a pySIPNET output variable or not in the run, or
+        *site* is not in the site table.
     FileNotFoundError
         If *site* is given, *site_table* is not, and the site table is absent.
 
@@ -1092,25 +1012,15 @@ def stack_model_outputs(
     Raises
     ------
     TypeError
-        If *model_outputs* is not a mapping, or a value is neither a
-        ``SIPNETResult``, a ``SIPNETOutput`` nor an ``xr.Dataset``; if a
-        ``SIPNETResult`` or ``SIPNETOutput`` is given without
-        *output_variable_names*; if
-        *output_variable_names* or *key_dims* is not an ordered sequence of
-        names; if a key is not a tuple, or a label in one is a boolean, a
-        float or not an integer; or if *site_table* is not a ``DataFrame``.
+        If an argument has the wrong type, as :func:`to_model_output` says,
+        or a key is not a tuple of integer labels.
     ValueError
         If *model_outputs* is empty; if *key_dims* does not name ``site``
-        exactly once, repeats a name, or names a reserved name or a
-        variable, dim or coordinate of a run; if a key does not hold one
-        label per key dim, a site id is out of range or a batch label does
-        not fit ``int64``; if a run has no timesteps; if a run's own label
-        disagrees with its key, or it carries a batch label *key_dims* does
-        not name; if two runs carry different variables, or
-        describe one with different ``units``, ``constituent`` or ``kind``;
-        if the site table lists a site twice or has no ``lon`` and ``lat``
-        columns; or if the runs share one time axis and the result is not a
-        model output.
+        once, or names a batch dim no batch dim may take; if a key or a
+        run's own labels disagree with *key_dims*; if the runs carry
+        different variables or describe one differently; if the site table
+        cannot locate the sites; or if the runs share one time axis and the
+        result is not a model output.
     KeyError
         If a variable or a site identifier is unknown.
 

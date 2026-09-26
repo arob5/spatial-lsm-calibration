@@ -658,6 +658,16 @@ These apply to the library and the scripts alike.
   paper, a line of the SIPNET source, a data producer or upstream product (BETY,
   ISCN), a pySIPNET module. Design reasoning goes the other way: the vault cites
   the code.
+- **Verbosity must earn its keep.** A docstring is clear and precise, and no
+  longer: it says what a thing is, takes, returns and raises (the exception
+  types and when, in a sentence each), and does not restate what the body
+  plainly does. A validator does not list the checks it runs; it says what it
+  checks, points to where that is defined, and keeps a short Raises. A
+  definition with one home, such as a constant, a list of names or a
+  contract, is named and pointed to, never copied: the field contract lives
+  in `fields.py`'s docstring, the reserved names in `conventions`, an alias's
+  form beside the alias. (A grouped `check_*` still names the checks it runs,
+  as the checks rules below ask: that list is its table of contents.)
 - **Keep low-level design reasoning out of docstrings.** A docstring says what
   something is, what it takes and what it returns. Why a design was chosen over
   an alternative, what bug it avoids, what would break if it were done the other
@@ -677,7 +687,10 @@ because these are what someone opens it to find out:
 3. **The data model** — for an xarray data source, the dims, the data variables
    and their dtypes, the coordinates and which dims they are on, the attributes,
    and what missing means. State it plainly; do not make the reader infer it
-   from the validation code.
+   from the validation code. State it once, in its home module; another
+   module that uses the form names it and points there, and states only what
+   it adds (as `parameter_vector` does for SIPNET parameter fields, whose form
+   `fields` owns).
 4. **The functions it provides** — the public entry points and what each one
    does with that model.
 
