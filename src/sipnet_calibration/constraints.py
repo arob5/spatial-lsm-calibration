@@ -177,7 +177,7 @@ Usage
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -200,6 +200,7 @@ from sipnet_calibration.conventions import (
     TIME_BOUNDS,
     WINDOW_END,
     WINDOW_START,
+    FrozenMapping,
     data_root,
 )
 from sipnet_calibration.io import utc_timestamp
@@ -394,20 +395,22 @@ class ConstraintSpec:
 MISSING_TOKEN = "NA"
 
 #: In words, what the ``time`` label of a product with each structure marks.
-TIME_REFERENCE_FOR_STRUCTURE: dict[TimeStructure, str] = {
-    TimeStructure.STATIC: (
-        "a static map with no time dimension. The source repeated one value into "
-        "every year; the copies were checked to be identical and collapsed."
-    ),
-    TimeStructure.ANNUAL: (
-        "the value attributed to the calendar year given by time_bounds; the "
-        "January 1 label is a key, not an acquisition time."
-    ),
-    TimeStructure.DATED: (
-        "the source's own date label, carried as written. What instant or "
-        "interval it marks is stated in the comment, not encoded."
-    ),
-}
+TIME_REFERENCE_FOR_STRUCTURE: Mapping[TimeStructure, str] = FrozenMapping(
+    {
+        TimeStructure.STATIC: (
+            "a static map with no time dimension. The source repeated one value into "
+            "every year; the copies were checked to be identical and collapsed."
+        ),
+        TimeStructure.ANNUAL: (
+            "the value attributed to the calendar year given by time_bounds; the "
+            "January 1 label is a key, not an acquisition time."
+        ),
+        TimeStructure.DATED: (
+            "the source's own date label, carried as written. What instant or "
+            "interval it marks is stated in the comment, not encoded."
+        ),
+    }
+)
 
 #: The sentence every unit provenance ends with, because it is true of every one.
 PRODUCER_UNCONFIRMED = "Not confirmed by the producer; see data/README.md, open question 9."
@@ -981,10 +984,12 @@ def _time_coords(spec: ConstraintSpec, row_time: pd.DatetimeIndex) -> dict[str, 
     return coords
 
 
-_TIME_LONG_NAME = {
-    TimeStructure.ANNUAL: "Calendar year key",
-    TimeStructure.DATED: "Source date label",
-}
+_TIME_LONG_NAME = FrozenMapping(
+    {
+        TimeStructure.ANNUAL: "Calendar year key",
+        TimeStructure.DATED: "Source date label",
+    }
+)
 
 
 def _sd_attributes(spec: ConstraintSpec) -> dict[str, Any]:

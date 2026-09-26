@@ -134,7 +134,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, Colormap, ListedColormap, LogNorm, Normalize
 from matplotlib.patches import Patch
 
-from sipnet_calibration.conventions import LAT, LON, SITE, TIME
+from sipnet_calibration.conventions import LAT, LON, SITE, TIME, FrozenMapping
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
     DEFAULT_LAYERS,
@@ -294,11 +294,13 @@ class Triangles:
 
 
 #: The renderers a string ``render`` names.
-RENDERERS: Mapping[str, SiteRenderer] = {
-    "points": Points(),
-    "cells": Cells(),
-    "triangles": Triangles(),
-}
+RENDERERS: Mapping[str, SiteRenderer] = FrozenMapping(
+    {
+        "points": Points(),
+        "cells": Cells(),
+        "triangles": Triangles(),
+    }
+)
 
 
 @dataclass(frozen=True)

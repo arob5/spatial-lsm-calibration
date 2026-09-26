@@ -114,6 +114,7 @@ from sipnet_calibration.conventions import (
     TIMESTEP_START,
     WINDOW_END,
     WINDOW_START,
+    FrozenMapping,
 )
 from sipnet_calibration.fields import field_label, without_stale_time_attributes
 
@@ -152,11 +153,9 @@ SELECTED_STEP_COORD = "selected_timestep_end"
 #: per kind that leaves a variable the kind it already is, read off pySIPNET's
 #: ``RESAMPLED_KIND`` rather than written down. That exactly one method
 #: preserves each kind is checked against pySIPNET's table by the tests.
-DEFAULT_METHOD_FOR_KIND: dict[VariableKind, str] = {
-    kind: method
-    for (kind, method), resulting in RESAMPLED_KIND.items()
-    if resulting == kind
-}
+DEFAULT_METHOD_FOR_KIND: Mapping[VariableKind, str] = FrozenMapping(
+    {kind: method for (kind, method), resulting in RESAMPLED_KIND.items() if resulting == kind}
+)
 
 
 def aggregate_time(
@@ -600,19 +599,23 @@ _LEVEL_KINDS: frozenset[VariableKind] = frozenset(
 
 #: The CF ``cell_methods`` of a pool's window extreme or leading edge, which a
 #: value at a step end makes literally true.
-_CELL_METHODS_OF_A_READING: dict[str, str] = {
-    "min": "time: minimum",
-    "max": "time: maximum",
-    "first": "time: point",
-}
+_CELL_METHODS_OF_A_READING: Mapping[str, str] = FrozenMapping(
+    {
+        "min": "time: minimum",
+        "max": "time: maximum",
+        "first": "time: point",
+    }
+)
 
 #: How the steps a cell or window combines are summarized in its interval
 #: coordinates: the earliest start, the latest end and the summed length.
-_SPAN_OF_STEPS: dict[str, str] = {
-    TIMESTEP_START: "min",
-    TIME: "max",
-    TIMESTEP_LENGTH: "sum",
-}
+_SPAN_OF_STEPS: Mapping[str, str] = FrozenMapping(
+    {
+        TIMESTEP_START: "min",
+        TIME: "max",
+        TIMESTEP_LENGTH: "sum",
+    }
+)
 
 
 def _checked_steps(field: Any) -> xr.DataArray:
@@ -997,7 +1000,9 @@ def _window_interval_coords(
     spans = (
         _steps_frame(field)[inside]
         .groupby(codes[inside])
-        .agg(_SPAN_OF_STEPS)
+        # A plain dict: pandas rebuilds the mapping it is given as its own type
+        # and fills it in place, which a FrozenMapping refuses.
+        .agg(dict(_SPAN_OF_STEPS))
         .reindex(np.arange(len(windows)))
     )
     return {

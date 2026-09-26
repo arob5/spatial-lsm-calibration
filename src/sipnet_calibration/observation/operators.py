@@ -79,7 +79,7 @@ from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import SITE, TIME
+from sipnet_calibration.conventions import SITE, TIME, FrozenMapping
 from sipnet_calibration.fields import coordinate_labels, field_label, missing_labels
 from sipnet_calibration.observation.time_alignment import (
     check_how_is_a_window_reduction,
@@ -322,9 +322,9 @@ class ComputeLeafAreaIndex:
 #: index, as SIPNET's own ``plantLeafC / leafCSpWt`` (``sipnet.c``). How to
 #: read the model for the other products is a modeling decision, and an
 #: experiment binds its own in ``config.py``.
-DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = {
-    "modis_leaf_area_index": ComputeLeafAreaIndex(),
-}
+DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = FrozenMapping(
+    {"modis_leaf_area_index": ComputeLeafAreaIndex()}
+)
 
 
 def select_observed_sites(

@@ -304,9 +304,12 @@ coercion lives in `validation.py`.
   attributes of `site`/`lon`/`lat`, `SITE_DTYPE`, `NAME_PATTERN`,
   `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
   `data_root()`), and `FrozenMapping`, the one read-only mapping type: a
-  `dict` subclass whose mutators raise, so pandas and `json` read it as a
-  dict, and which pickles and hashes. Every read-only mapping in the package
-  is one, and one is handed to xarray as it is, since xarray copies attrs. A
+  `dict` subclass whose mutators (a second `__init__` included) raise, so
+  pandas and `json` read it as a dict, and which pickles and hashes. Every
+  module-level mapping constant of the package is one (the scripts' own
+  tables are not the package's), and one is handed to xarray as it is, since
+  xarray copies attrs; pandas' `agg`, which refills the mapping it is given,
+  takes a `dict(...)` copy. A
   module imports these; it never defines its own copy (except `member`, until
   PR 2) and never re-exports one.
 - **`validation.py`** holds the argument coercion two modules need, each

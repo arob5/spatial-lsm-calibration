@@ -242,6 +242,7 @@ from sipnet_calibration.conventions import (
     STALE_TIME_ATTRIBUTE_NAMES,
     TIME,
     TIME_COORD_NAMES,
+    FrozenMapping,
 )
 from sipnet_calibration.sites import (
     check_site_table_locates_the_sites,
@@ -641,10 +642,12 @@ def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-_MEMBER_ATTRS = {
-    "long_name": "Ensemble member",
-    "comment": "0-based, meaningful only within this source.",
-}
+_MEMBER_ATTRS = FrozenMapping(
+    {
+        "long_name": "Ensemble member",
+        "comment": "0-based, meaningful only within this source.",
+    }
+)
 
 #: The scalar coordinates :func:`label_run` adds.
 _IDENTITY_COORD_NAMES: tuple[str, ...] = (SITE, MEMBER_DIM, LON, LAT)

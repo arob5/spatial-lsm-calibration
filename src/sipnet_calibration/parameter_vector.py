@@ -2224,10 +2224,10 @@ def example_parameter_vector(
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-_FLAT_SPECS: dict[str, ParameterSpec] = {
-    path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()
-}
-_SPEC_ORDER: dict[str, int] = {name: i for i, name in enumerate(_FLAT_SPECS)}
+_FLAT_SPECS: Mapping[str, ParameterSpec] = FrozenMapping(
+    {path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()}
+)
+_SPEC_ORDER: Mapping[str, int] = FrozenMapping({name: i for i, name in enumerate(_FLAT_SPECS)})
 
 
 def _as_theta(theta: Any, dimension: int) -> Array:

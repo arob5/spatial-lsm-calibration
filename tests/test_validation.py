@@ -400,6 +400,40 @@ class TestFrozenMapping:
             frozen.extra = {}
         assert frozen == {"b": 1, "a": 2}
 
+    def test_calling_init_again_is_refused_and_changes_nothing(self):
+        frozen = FrozenMapping({"a": 1})
+        with pytest.raises(TypeError, match="cannot be changed"):
+            frozen.__init__({"q": 9})
+        assert frozen == {"a": 1}
+
+    def test_fromkeys_builds_a_frozen_mapping(self):
+        built = FrozenMapping.fromkeys(["a", "b"], 0)
+        assert type(built) is FrozenMapping and built == {"a": 0, "b": 0}
+        assert FrozenMapping.fromkeys(["a"]) == {"a": None}
+
+    def test_is_built_from_pairs_or_nothing(self):
+        assert FrozenMapping([("a", 1)]) == {"a": 1}
+        assert FrozenMapping() == {}
+
+    @pytest.mark.parametrize(
+        ("module", "name"),
+        [
+            ("sipnet_calibration.constraints", "TIME_REFERENCE_FOR_STRUCTURE"),
+            ("sipnet_calibration.observation.operators", "DEFAULT_OBS_OPS"),
+            ("sipnet_calibration.observation.time_alignment", "DEFAULT_METHOD_FOR_KIND"),
+            ("sipnet_calibration.plotting.maps", "RENDERERS"),
+            ("sipnet_calibration.plotting.style", "ROLES"),
+            ("sipnet_calibration.plotting.style", "RC_PARAMS"),
+        ],
+    )
+    def test_the_package_mapping_constants_are_read_only(self, module, name):
+        import importlib
+
+        constant = getattr(importlib.import_module(module), name)
+        assert isinstance(constant, FrozenMapping)
+        for value in constant.values():
+            assert not isinstance(value, dict) or isinstance(value, FrozenMapping)
+
     def test_pandas_and_json_read_it_as_a_dict(self):
         frozen = FrozenMapping({"a": (1, 2), "b": (3, 4)})
         assert pd.DataFrame(frozen).shape == (2, 2)

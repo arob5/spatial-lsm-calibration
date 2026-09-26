@@ -176,7 +176,16 @@ SITE_ID = "site_id"
 # ── attributes ────────────────────────────────────────────────────────────────
 
 
-class FrozenMapping(dict):
+class _FilledOnce(type):
+    """The type of :class:`FrozenMapping`: fills a new mapping as it is made, and only then."""
+
+    def __call__(cls, items: Mapping[Any, Any] | Iterable[tuple[Any, Any]] = (), /) -> Any:
+        mapping = cls.__new__(cls)
+        dict.update(mapping, items)
+        return mapping
+
+
+class FrozenMapping(dict, metaclass=_FilledOnce):
     """A dict that cannot be changed after it is built.
 
     Parameters
@@ -189,8 +198,9 @@ class FrozenMapping(dict):
     ------
     TypeError
         From every method that would change it (``m[key] = value``, ``del``,
-        ``update``, ``pop``, ``popitem``, ``setdefault``, ``clear``, ``|=``),
-        and from ``hash`` when a value is unhashable.
+        ``update``, ``pop``, ``popitem``, ``setdefault``, ``clear``, ``|=``,
+        and ``__init__`` called again), and from ``hash`` when a value is
+        unhashable.
 
     Notes
     -----
@@ -200,12 +210,12 @@ class FrozenMapping(dict):
     ``types.MappingProxyType``, the standard read-only view, does not: a
     frozen dataclass holding one could be neither sent to a worker nor used
     as a key. ``dict(m)`` and ``m.copy()`` give an ordinary, mutable dict.
+
+    Its items are filled in by its type as it is made rather than by
+    ``__init__``, which would otherwise refill it in place when called again.
     """
 
     __slots__ = ()
-
-    def __init__(self, items: Mapping[Any, Any] | Iterable[tuple[Any, Any]] = ()) -> None:
-        super().__init__(items)
 
     def __hash__(self) -> int:  # type: ignore[override]
         return hash(frozenset(self.items()))
@@ -220,12 +230,17 @@ class FrozenMapping(dict):
         """An ordinary, mutable ``dict`` of the same items."""
         return dict(self)
 
+    @classmethod
+    def fromkeys(cls, iterable: Iterable[Any], value: Any = None) -> FrozenMapping:  # type: ignore[override]
+        """A ``FrozenMapping`` from *iterable*'s keys, each holding *value*."""
+        return cls(dict.fromkeys(iterable, value))
+
     def _refuse(self, *args: Any, **kwargs: Any) -> NoReturn:
         raise TypeError(
             "a FrozenMapping cannot be changed; copy it with dict(...) and change the copy."
         )
 
-    __setitem__ = __delitem__ = __ior__ = _refuse
+    __init__ = __setitem__ = __delitem__ = __ior__ = _refuse
     update = pop = popitem = setdefault = clear = _refuse
 
 
