@@ -42,7 +42,7 @@ from sipnet_calibration.drivers import (
     load_drivers,
     read_driver_file,
 )
-from sipnet_calibration.conventions import TIME_COORD_NAMES
+from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES, TIME_COORD_NAMES
 from sipnet_calibration.observation.time_alignment import aggregate_time
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
 
@@ -379,16 +379,30 @@ class TestLoadDrivers:
             load_drivers(sites, root=root, sites_table=sites_table)
 
     def test_rejects_an_unusable_site_table(self, root, sites_table):
-        with pytest.raises(ValueError, match="lacks column"):
-            load_drivers([3], root=root, sites_table=sites_table.set_index("site_id"))
+        with pytest.raises(ValueError, match="no 'site_id' column or index"):
+            load_drivers([3], root=root, sites_table=sites_table.drop(columns=["site_id"]))
         for column in ("lon", "lat"):
-            with pytest.raises(ValueError, match="lacks column"):
+            with pytest.raises(ValueError, match=f"no \\['{column}'\\] column"):
                 load_drivers([3], root=root, sites_table=sites_table.drop(columns=[column]))
-        with pytest.raises(ValueError, match="must be a DataFrame"):
+        with pytest.raises(TypeError, match="must be a DataFrame"):
             load_drivers([3], root=root, sites_table=sites_table.to_dict())
         duplicated = pd.concat([sites_table, sites_table.head(3)], ignore_index=True)
-        with pytest.raises(ValueError, match="repeats site id"):
+        with pytest.raises(ValueError, match="more than once"):
             load_drivers([3], root=root, sites_table=duplicated)
+
+    def test_a_site_table_keyed_on_site_id_is_accepted(self, root, sites_table):
+        keyed = load_drivers([3], root=root, sites_table=sites_table.set_index("site_id"))
+        plain = load_drivers([3], root=root, sites_table=sites_table)
+        assert keyed.identical(plain)
+
+    def test_lon_and_lat_carry_their_cf_attributes(self, root, sites_table):
+        dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
+        assert dataset["lon"].attrs == dict(LON_ATTRIBUTES)
+        assert dataset["lat"].attrs == dict(LAT_ATTRIBUTES)
+        expected = sites_table.set_index("site_id").loc[[3, 7]]
+        np.testing.assert_array_equal(dataset["lon"].values, expected["lon"].to_numpy())
+        field = driver_fields(dataset)["air_temperature"]
+        assert field["lat"].attrs == dict(LAT_ATTRIBUTES)
 
     def test_a_directory_off_the_template_is_ignored_by_discovery(self, root, sites_table):
         """``ERA5_3_04`` names member 4 but is not the directory ``driver_file``
@@ -501,7 +515,7 @@ class TestLoadDrivers:
 
     def test_rejects_a_site_not_in_the_site_table(self, root, sites_table):
         write_pair(root, 11, 1)
-        with pytest.raises(ValueError, match="not in the site table"):
+        with pytest.raises(KeyError, match="not in the site table"):
             load_drivers([11], root=root, sites_table=sites_table)
 
     def test_rejects_a_directory_member_that_disagrees_with_the_file_name(self, root, sites_table):

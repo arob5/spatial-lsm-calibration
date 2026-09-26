@@ -377,6 +377,7 @@ from sipnet_calibration.conventions import (  # noqa: E402
     SITE_DTYPE,
     SITE_ID,
 )
+from sipnet_calibration.sites import site_lookup  # noqa: E402
 from sipnet_calibration.validation import as_batched_flat, as_site_ids  # noqa: E402
 
 tfd = tfp.distributions
@@ -2312,7 +2313,7 @@ def _normalized_site_labels(
     the declared classes, in their order)."""
     if isinstance(value, pd.DataFrame):
         check_site_labels_product_has_columns(name, value)
-        indexed = value.set_index("site_id")["label"]
+        indexed = site_lookup(value)["label"]
         check_site_labels_product_covers_sites(name, indexed, sites)
         labels = tuple(indexed.loc[list(sites)].tolist())
         check_site_labels_are_present(name, labels)

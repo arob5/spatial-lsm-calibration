@@ -35,9 +35,7 @@ import xarray as xr
 from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
     LAT,
-    LAT_ATTRIBUTES,
     LON,
-    LON_ATTRIBUTES,
     SITE,
     SITE_ATTRIBUTES,
     SITE_DTYPE,
@@ -64,6 +62,7 @@ from sipnet_calibration.initial_conditions.specs import (
     resolve_initial_condition,
 )
 from sipnet_calibration.io import utc_timestamp
+from sipnet_calibration.sites import site_locations
 from sipnet_calibration.validation import as_site_ids
 
 __all__ = [
@@ -113,7 +112,6 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
             f"raw file sites are not the site table's pool: not in the table {extra}, "
             f"not in the file {missing}"
         )
-    coordinates = sites.set_index(SITE_ID).loc[pool, [LON, LAT]]
     source_member = raw[MEMBER].values.astype(np.int16)
 
     data_vars = {
@@ -146,8 +144,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
             },
         ),
         SITE: (SITE, pool.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
-        LON: (SITE, coordinates[LON].to_numpy(np.float64), dict(LON_ATTRIBUTES)),
-        LAT: (SITE, coordinates[LAT].to_numpy(np.float64), dict(LAT_ATTRIBUTES)),
+        **site_locations(pool.tolist(), sites),
     }
     return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(raw))
 

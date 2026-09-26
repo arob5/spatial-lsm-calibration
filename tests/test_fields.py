@@ -24,9 +24,9 @@ from sipnet_calibration.conventions import TIME_COORD_NAMES
 from sipnet_calibration.fields import (
     FIELD_DIMS,
     from_sipnet_output,
-    site_lookup,
     stack_sipnet_outputs,
 )
+from sipnet_calibration.sites import site_lookup
 
 
 def rescaled(output, factor: float):
@@ -506,32 +506,32 @@ class TestStackModelOutputsRefusesRunsThatDisagree:
 
 class TestCheckSiteTableLocatesTheSites:
     def test_a_table_that_locates_every_site_passes(self):
-        from sipnet_calibration.fields import check_site_table_locates_the_sites
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
 
         check_site_table_locates_the_sites(_small_table(1, 27), [27, 1])
         check_site_table_locates_the_sites(site_lookup(_small_table(1, 27)), [1])
 
     def test_a_table_without_lat_is_refused(self):
-        from sipnet_calibration.fields import check_site_table_locates_the_sites
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
 
         with pytest.raises(ValueError, match=r"no \['lat'\] column"):
             check_site_table_locates_the_sites(_small_table(1).drop(columns="lat"), [1])
 
     def test_a_table_without_site_ids_is_refused(self):
-        from sipnet_calibration.fields import check_site_table_locates_the_sites
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
 
         with pytest.raises(ValueError, match="no 'site_id' column or index"):
             check_site_table_locates_the_sites(_small_table(1).drop(columns="site_id"), [1])
 
     def test_a_repeated_site_is_refused_even_when_not_asked_for(self):
-        from sipnet_calibration.fields import check_site_table_locates_the_sites
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
 
         table = pd.concat([_small_table(1, 27), _small_table(27)])
         with pytest.raises(ValueError, match=r"lists site\(s\) \[27\] more than once"):
             check_site_table_locates_the_sites(table, [1])
 
     def test_a_missing_site_is_a_key_error_naming_it(self):
-        from sipnet_calibration.fields import check_site_table_locates_the_sites
+        from sipnet_calibration.sites import check_site_table_locates_the_sites
 
         with pytest.raises(KeyError, match=r"site\(s\) \[5\] are not in the site table"):
             check_site_table_locates_the_sites(_small_table(1, 27), [1, 5])

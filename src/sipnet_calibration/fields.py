@@ -155,10 +155,6 @@ Functions
 :func:`without_stale_time_attributes`
     ``time`` attributes less
     :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
-:func:`site_lookup`
-    The site table keyed on ``site_id``, for a caller adapting run after run.
-:func:`check_site_table_locates_the_sites`
-    The check every ``lon``/``lat`` lookup here makes of the site table.
 ``validate_field``
     Not written yet (issue #6).
 
@@ -218,8 +214,7 @@ An ensemble over sites and members, keyed by the pair each run stands for::
 
 Adapting run after run, with the site table read once::
 
-    from sipnet_calibration.fields import site_lookup
-    from sipnet_calibration.sites import load_sites
+    from sipnet_calibration.sites import load_sites, site_lookup
 
     table = site_lookup(load_sites())
     for site, member, run in ensemble:
@@ -240,18 +235,20 @@ from pysipnet.variables import (
 
 from sipnet_calibration.conventions import (
     LAT,
-    LAT_ATTRIBUTES,
     LON,
-    LON_ATTRIBUTES,
     SITE,
     SITE_ATTRIBUTES,
     SITE_DTYPE,
-    SITE_ID,
     STALE_TIME_ATTRIBUTE_NAMES,
     TIME,
     TIME_COORD_NAMES,
 )
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.sites import (
+    check_site_table_locates_the_sites,
+    load_sites,
+    site_locations,
+    site_lookup,
+)
 from sipnet_calibration.validation import as_names, as_site_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -261,14 +258,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "FIELD_DIMS",
     "MEMBER_DIM",
-    "check_site_table_locates_the_sites",
     "coordinate_labels",
     "field_label",
     "from_sipnet_output",
     "label_run",
     "missing_labels",
     "resolve_output_variable_names",
-    "site_lookup",
     "stack_model_outputs",
     "stack_sipnet_outputs",
     "without_stale_time_attributes",
@@ -278,19 +273,6 @@ MEMBER_DIM = "member"
 
 #: The dimensions a field may have, in the order they are written.
 FIELD_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE, TIME)
-
-
-def site_lookup(sites: pd.DataFrame) -> pd.DataFrame:
-    """The site table keyed on ``site_id``, so looking a site up is not a scan.
-
-    :func:`sipnet_calibration.sites.load_sites` returns a table, not a lookup,
-    and one adapter call per run over the whole pool would otherwise search
-    8000 rows every time. Idempotent, so passing the result back in costs
-    nothing; ``site_id`` stays a column as well as the index.
-    """
-    if sites.index.name == SITE_ID:
-        return sites
-    return sites.set_index(SITE_ID, drop=False)
 
 
 def label_run(
@@ -539,14 +521,19 @@ def stack_model_outputs(
     """
     check_is_a_nonempty_mapping(model_outputs, "model_outputs")
     by_key = _checked_model_outputs(model_outputs)
-    located = _site_locations(sorted({site_id for site_id, _ in by_key}), site_table)
+    table = site_table if site_table is not None else load_sites()
+    check_site_table_locates_the_sites(table, sorted({site_id for site_id, _ in by_key}))
     by_member: dict[int, list[xr.Dataset]] = {}
     for (site_id, member_id), dataset in by_key.items():
         labeled = _labeled_for_stacking(dataset, site_id, member_id)
         by_member.setdefault(member_id, []).append(labeled)
     per_member = [_stack_along(per_site, SITE) for _, per_site in sorted(by_member.items())]
     stacked = _stack_along(per_member, MEMBER_DIM).transpose(*FIELD_DIMS, ...)
-    return stacked.assign_coords(_location_coords(located.loc[stacked[SITE].values]))
+    # lon/lat are assigned after stacking rather than left to xarray.concat,
+    # which promotes a scalar coordinate to the concatenated dimension only
+    # when the values it is given differ, so a one-site or one-member stack
+    # would otherwise keep them scalar and break the convention.
+    return stacked.assign_coords(site_locations(stacked[SITE].values, table))
 
 
 def resolve_output_variable_names(output_variable_names: str | Iterable[str]) -> list[str]:
@@ -694,11 +681,10 @@ def _identity_coords(
             attrs=dict(_MEMBER_ATTRS),
         )
     if site is not None:
-        site_id = SITE_DTYPE(as_site_id(site, message_name="site"))
-        location = _site_locations([int(site_id)], site_table).iloc[0]
-        coords[SITE] = xr.DataArray(site_id, attrs=dict(SITE_ATTRIBUTES))
-        coords[LON] = xr.DataArray(np.float64(location[LON]), attrs=dict(LON_ATTRIBUTES))
-        coords[LAT] = xr.DataArray(np.float64(location[LAT]), attrs=dict(LAT_ATTRIBUTES))
+        site_id = as_site_id(site, message_name="site")
+        located = site_locations([site_id], site_table)
+        coords[SITE] = xr.DataArray(SITE_DTYPE(site_id), attrs=dict(SITE_ATTRIBUTES))
+        coords.update({name: location.isel({SITE: 0}) for name, location in located.items()})
     return coords
 
 
@@ -718,31 +704,6 @@ def _bounded_integer(value: Any, *, name: str, dtype: type, minimum: int) -> Any
     if as_int > info.max:
         raise ValueError(f"{name} {as_int} does not fit in {dtype.__name__}.")
     return dtype(as_int)
-
-
-def _site_locations(site_ids: Sequence[int], site_table: pd.DataFrame | None) -> pd.DataFrame:
-    """The ``lon``/``lat`` rows of *site_ids*, in that order, as ``float64``.
-
-    The site table is read from disk when not supplied, and checked once for
-    the whole request.
-    """
-    table = site_lookup(site_table if site_table is not None else load_sites())
-    check_site_table_locates_the_sites(table, site_ids)
-    return table.loc[list(site_ids), [LON, LAT]].astype(np.float64)
-
-
-def _location_coords(located: pd.DataFrame) -> dict[str, xr.DataArray]:
-    """``lon``/``lat`` on the ``site`` dimension, from rows in site order.
-
-    Assigned after stacking rather than left to :func:`xarray.concat`, which
-    promotes a scalar coordinate to the concatenated dimension only when the
-    values it is given differ -- so a one-site or one-member stack would
-    otherwise keep ``lon``/``lat`` scalar and break the convention.
-    """
-    return {
-        LON: xr.DataArray(located[LON].to_numpy(), dims=SITE, attrs=dict(LON_ATTRIBUTES)),
-        LAT: xr.DataArray(located[LAT].to_numpy(), dims=SITE, attrs=dict(LAT_ATTRIBUTES)),
-    }
 
 
 def _run_key(key: Any) -> tuple[int, int]:
@@ -836,53 +797,6 @@ def _key_label(key: tuple[int, int]) -> str:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
-
-
-def check_site_table_locates_the_sites(site_table: pd.DataFrame, site_ids: Iterable[int]) -> None:
-    """The site table gives one ``lon`` and ``lat`` for each of *site_ids*.
-
-    Parameters
-    ----------
-    site_table:
-        As :func:`sipnet_calibration.sites.load_sites` returns it, or keyed by
-        :func:`site_lookup`.
-    site_ids:
-        The 1-8000 identifiers to be located.
-
-    Raises
-    ------
-    ValueError
-        If the table has no ``site_id`` column or index, or no ``lon`` and
-        ``lat`` columns, or lists a site more than once.
-    KeyError
-        If a site of *site_ids* is not in the table.
-    """
-    if site_table.index.name != SITE_ID and SITE_ID not in site_table.columns:
-        raise ValueError(
-            "the site table has no 'site_id' column or index; pass the table "
-            "load_sites() returns, or one keyed by site_lookup()."
-        )
-    table = site_lookup(site_table)
-    absent = [name for name in (LON, LAT) if name not in table.columns]
-    if absent:
-        raise ValueError(
-            f"the site table has no {absent} column(s), and needs 'lon' and 'lat' to "
-            "locate a site; pass the table load_sites() returns."
-        )
-    if table.index.has_duplicates:
-        repeated = sorted(set(table.index[table.index.duplicated()].tolist()))
-        raise ValueError(
-            f"the site table lists site(s) {repeated[:10]} more than once; a site has one "
-            "row, as load_sites() gives it. Drop the repeated rows."
-        )
-    wanted = pd.Index(list(site_ids))
-    missing = wanted[~wanted.isin(table.index)].tolist()
-    if missing:
-        raise KeyError(
-            f"site(s) {missing[:10]} are not in the site table, which holds {len(table)} "
-            "sites. Site identifiers are the handed-down 1-8000 ids and are never "
-            "renumbered; pass a table holding every site asked for."
-        )
 
 
 def check_is_a_dataset(dataset: Any) -> None:

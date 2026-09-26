@@ -93,7 +93,8 @@ Name                    Dims               Meaning
                                            name
 ``site``                ``site``           handed-down ``int32`` site id,
                                            ascending
-``lon``, ``lat``        ``site``           from the site table, ``float64``
+``lon``, ``lat``        ``site``           from the site table, ``float64``,
+                                           with CF attributes
 ``time``                ``time``           ``datetime64[ns]``, the end of each
                                            step
 ``time_step_start``     ``time``           the start of each step
@@ -221,19 +222,20 @@ from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration import conventions
 from sipnet_calibration.conventions import (
-    LAT,
-    LON,
     SITE,
     SITE_ATTRIBUTES,
     SITE_DTYPE,
-    SITE_ID,
     TIME,
     TIME_COORD_NAMES,
     TIMESTEP_LENGTH,
     TIMESTEP_START,
 )
 from sipnet_calibration.fields import without_stale_time_attributes
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.sites import (
+    check_site_table_locates_the_sites,
+    load_sites,
+    site_locations,
+)
 from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
 
 __all__ = [
@@ -469,13 +471,16 @@ def load_drivers(
     TypeError
         If *sites* or *members* is a string or not iterable, or holds a
         boolean or a value that is not an integer (a whole-number float is
-        accepted as a site id, not as a member index).
+        accepted as a site id, not as a member index); or if *sites_table* is
+        not a ``DataFrame``.
+    KeyError
+        If a site is not in the site table.
     ValueError
         If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
         or *members* is empty, or holds a value that is not a positive whole
         number in range, discovered members included; if *sites* names a site
         twice; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
-        repeats a ``site_id``; if a site is not in the site table; if a pair's
+        repeats a ``site_id``; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
         :func:`read_driver_file`, its name does not follow the template, the
         directory and file-name members disagree, or the dates in the file name
@@ -489,8 +494,7 @@ def load_drivers(
 
     site_ids = _site_ids(sites)
     table = sites_table if sites_table is not None else load_sites()
-    _check_site_table_is_usable(table)
-    _check_sites_are_in_the_site_table(site_ids, table)
+    check_site_table_locates_the_sites(table, site_ids.tolist())
 
     member_ids = _member_ids(members, root=root, sites=site_ids)
 
@@ -521,10 +525,10 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 
     Each field has dims ``(member, site, time)``, is named for its variable,
     keeps that variable's attributes, and carries pySIPNET's
-    :data:`sipnet_calibration.conventions.TIME_COORD_NAMES` with ``lon``/``lat`` and
-    ``source_member_index`` as non-dimension coordinates -- the field
-    shape, and the same time coordinates a model field has. This is the view
-    facet-by-variable consumes, matching
+    :data:`sipnet_calibration.conventions.TIME_COORD_NAMES` with
+    ``lon``/``lat`` and ``source_member_index`` as non-dimension coordinates --
+    the field shape, and the same time coordinates a model field has. This is
+    the view facet-by-variable consumes, matching
     :func:`sipnet_calibration.constraints.constraint_fields`.
 
     Parameters
@@ -705,7 +709,6 @@ def _assemble(
 ) -> xr.Dataset:
     """Put the arrays into the Dataset the module docstring describes."""
     dims = ("member", SITE, TIME)
-    coordinates = table.set_index(SITE_ID).loc[sites]
     data_vars = {}
     for name in DRIVER_VARIABLES:
         values = arrays[name]
@@ -732,8 +735,7 @@ def _assemble(
             "member": np.arange(members.size, dtype=np.int16),
             "source_member_index": ("member", members.astype(np.int16)),
             SITE: sites.astype(SITE_DTYPE),
-            LON: (SITE, coordinates[LON].to_numpy(np.float64)),
-            LAT: (SITE, coordinates[LAT].to_numpy(np.float64)),
+            **site_locations(sites.tolist(), table),
             **{name: reference[name].variable for name in _DATASET_TIME_COORDS},
         },
     )
@@ -837,33 +839,6 @@ def _check_time_axes_identical(
                 f"{first} ({b[first]!r} against {a[first]!r}); every file read "
                 "together must share one time axis"
             )
-
-
-def _check_site_table_is_usable(table: pd.DataFrame) -> None:
-    """The site table has the columns read here, and one row per site."""
-    if not isinstance(table, pd.DataFrame):
-        raise ValueError(f"sites_table must be a DataFrame, got {type(table).__name__}")
-    missing = [column for column in ("site_id", "lon", "lat") if column not in table.columns]
-    if missing:
-        raise ValueError(
-            f"the site table lacks column(s) {missing}; pass it as load_sites() "
-            "returns it, with site_id as a column rather than the index"
-        )
-    duplicated = table["site_id"][table["site_id"].duplicated()]
-    if not duplicated.empty:
-        raise ValueError(
-            f"the site table repeats site id(s) {sorted(set(duplicated.tolist()))[:5]}"
-        )
-
-
-def _check_sites_are_in_the_site_table(sites: np.ndarray, table: pd.DataFrame) -> None:
-    """Every requested site exists in the site table, so it has coordinates."""
-    unknown = sorted(set(sites.tolist()) - set(table["site_id"].tolist()))
-    if unknown:
-        raise ValueError(
-            f"{len(unknown)} requested site(s) are not in the site table, for "
-            f"example {unknown[:10]}"
-        )
 
 
 def _check_members_complete(

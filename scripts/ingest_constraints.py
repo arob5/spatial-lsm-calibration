@@ -84,9 +84,9 @@ from sipnet_calibration.constraints import (
     read_raw,
     resolve_constraint,
 )
-from sipnet_calibration.conventions import SITE_ID
+from sipnet_calibration.conventions import LAT, LON, SITE_ID
 from sipnet_calibration.io import write_checked
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import default_sites_path, load_sites, site_lookup
 
 #: How far a raw file's lat/lon may sit from the site table before the site
 #: ids are taken to mean a different pool. The real files agree to 5e-13.
@@ -266,7 +266,7 @@ def check_coordinates_match_site_table(
     """
     if not {"lat", "lon"} <= set(spec.raw_columns):
         return
-    table = sites.set_index(SITE_ID).loc[frame[SITE_ID].to_numpy(), ["lon", "lat"]]
+    table = site_lookup(sites).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
     for column in ("lon", "lat"):
         given = frame[column].to_numpy(np.float64)
         if not np.isfinite(given).all():

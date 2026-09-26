@@ -191,10 +191,6 @@ from pysipnet.units import validate_units
 from sipnet_calibration import conventions
 from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
-    LAT,
-    LAT_ATTRIBUTES,
-    LON,
-    LON_ATTRIBUTES,
     NAME_PATTERN,
     SITE,
     SITE_ATTRIBUTES,
@@ -205,6 +201,7 @@ from sipnet_calibration.conventions import (
 from sipnet_calibration.conventions import WINDOW_END as TIME_BOUNDS_END
 from sipnet_calibration.conventions import WINDOW_START as TIME_BOUNDS_START
 from sipnet_calibration.io import utc_timestamp
+from sipnet_calibration.sites import site_locations
 from sipnet_calibration.validation import as_site_ids
 
 __all__ = [
@@ -806,7 +803,6 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     """
     kept, n_dropped = _apply_quality_filter(spec, frame)
     site = np.sort(sites[SITE_ID].to_numpy(np.int64))
-    coordinates = sites.set_index(SITE_ID).loc[site, [LON, LAT]]
 
     row_site = kept[SITE_ID].to_numpy(np.int64)
     _check_sites_in_pool(row_site, site, spec)
@@ -825,8 +821,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     coords.update(
         {
             SITE: (SITE, site.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
-            LON: (SITE, coordinates[LON].to_numpy(np.float64), dict(LON_ATTRIBUTES)),
-            LAT: (SITE, coordinates[LAT].to_numpy(np.float64), dict(LAT_ATTRIBUTES)),
+            **site_locations(site.tolist(), sites),
         }
     )
     dataset = xr.Dataset(

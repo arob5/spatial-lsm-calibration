@@ -52,7 +52,7 @@ Column                           Dtype         Meaning
 ================================ ============= ==============================
 
 ``site_id`` is left as a column rather than made the index, so the frame is a
-table; callers wanting lookup call ``.set_index("site_id")``.
+table; callers wanting lookup call :func:`site_lookup`.
 
 **Missing values.** The empty string, not ``NaN``, in both text columns: the
 table is read with ``keep_default_na=False``, so a name that happens to read as
@@ -82,6 +82,14 @@ Functions
 
 :func:`default_sites_path`
     Where the table is expected to be.
+
+:func:`site_lookup`, :func:`site_locations`
+    The table keyed on ``site_id`` for repeated lookups, and the ``lon``/``lat``
+    coordinates of given sites, with their CF attributes, as a field carries
+    them.
+
+:func:`check_site_table_locates_the_sites`
+    The check every ``lon``/``lat`` lookup makes of a site table.
 
 :data:`EXTENTS`
     Named longitude/latitude boxes -- ``CONUS``, ``NORTH_AMERICA``, ``ALASKA``
@@ -164,6 +172,14 @@ Convert between coordinates and grid indices::
     lon_indices, lat_indices = SITE_GRID.lonlat_to_index(
         sites["lon"].to_numpy(), sites["lat"].to_numpy()
     )
+
+Look sites up, and give a field its coordinates::
+
+    from sipnet_calibration.sites import site_locations, site_lookup
+
+    keyed = site_lookup(sites)                     # indexed on site_id
+    keyed.loc[4102, "lon"]
+    coords = site_locations([4113, 4102], sites)   # {"lon", "lat"} on site, CF attributes
 """
 
 from __future__ import annotations
@@ -172,13 +188,23 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from sipnet_calibration import conventions
-from sipnet_calibration.conventions import LAT, LON, SITE_DTYPE, SITE_ID
-from sipnet_calibration.validation import as_bbox, as_site_ids
+from sipnet_calibration.conventions import (
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    SITE,
+    SITE_DTYPE,
+    SITE_ID,
+)
+from sipnet_calibration.validation import as_bbox, as_site_ids, truncated
 
 __all__ = [
     "DATA_ROOT_ENV_VAR",
@@ -187,9 +213,12 @@ __all__ = [
     "SITE_COLUMNS",
     "SITE_COLUMN_DTYPES",
     "SITE_GRID",
+    "check_site_table_locates_the_sites",
     "default_sites_path",
     "load_sites",
     "select_sites",
+    "site_locations",
+    "site_lookup",
 ]
 
 
@@ -455,7 +484,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
         the dtypes of :data:`SITE_COLUMN_DTYPES`, in ascending ``site_id`` order.
         ``site_id`` is left as a column rather than made the index, so that the
         frame is a table rather than a lookup; callers wanting lookup call
-        ``.set_index("site_id")``.
+        :func:`site_lookup`.
 
     Raises
     ------
@@ -634,6 +663,81 @@ def select_sites(
     return selected.reset_index(drop=True)
 
 
+# ── site lookup ───────────────────────────────────────────────────────────────
+
+
+def site_lookup(site_table: pd.DataFrame) -> pd.DataFrame:
+    """The site table keyed on ``site_id``, so looking a site up is not a scan.
+
+    Parameters
+    ----------
+    site_table:
+        A site table, as :func:`load_sites` returns it or with columns joined
+        on, or one already keyed by this function.
+
+    Returns
+    -------
+    pandas.DataFrame
+        *site_table* indexed on ``site_id``, which stays a column as well;
+        *site_table* itself when it is already indexed so, so passing the
+        result back in costs nothing.
+    """
+    if site_table.index.name == SITE_ID:
+        return site_table
+    return site_table.set_index(SITE_ID, drop=False)
+
+
+def site_locations(
+    site_ids: Iterable[int], site_table: pd.DataFrame | None = None
+) -> dict[str, xr.DataArray]:
+    """The ``lon``/``lat`` coordinates of *site_ids*, as a field carries them.
+
+    Parameters
+    ----------
+    site_ids:
+        The sites to locate, each once.
+    site_table:
+        The site table to read them from, as :func:`load_sites` returns it or
+        keyed by :func:`site_lookup`. Read from its default location when
+        omitted.
+
+    Returns
+    -------
+    dict
+        ``{"lon": ..., "lat": ...}``, each a ``float64`` ``DataArray`` on the
+        ``site`` dimension, in the order of *site_ids*, carrying the CF
+        attributes of :data:`sipnet_calibration.conventions.LON_ATTRIBUTES`
+        and :data:`~sipnet_calibration.conventions.LAT_ATTRIBUTES`. They have
+        no ``site`` coordinate of their own, so they assign by position onto
+        a ``site`` dimension in that order.
+
+    Raises
+    ------
+    TypeError
+        If *site_ids* is not a sequence of integers, or *site_table* is not a
+        ``DataFrame``.
+    ValueError
+        If a site id is not a whole number of at least 1 or is named twice,
+        or for any refusal of :func:`check_site_table_locates_the_sites`.
+    KeyError
+        If a site is not in the site table.
+    FileNotFoundError
+        If *site_table* is omitted and the site table is absent.
+    """
+    wanted = list(as_site_ids(site_ids, message_name="site_ids"))
+    table = site_table if site_table is not None else load_sites()
+    check_site_table_locates_the_sites(table, wanted)
+    located = site_lookup(table).loc[wanted, [LON, LAT]]
+    return {
+        LON: xr.DataArray(
+            located[LON].to_numpy(np.float64), dims=SITE, attrs=dict(LON_ATTRIBUTES)
+        ),
+        LAT: xr.DataArray(
+            located[LAT].to_numpy(np.float64), dims=SITE, attrs=dict(LAT_ATTRIBUTES)
+        ),
+    }
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 #
 # Private: the shape of the table and of a selection, not part of the API.
@@ -763,3 +867,59 @@ def _draw_sample(sites: pd.DataFrame, sample: int, seed: int | None) -> pd.DataF
     rng = np.random.default_rng(seed)
     positions = np.sort(rng.choice(len(sites), size=sample, replace=False))
     return sites.iloc[positions].sort_values("site_id")
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_site_table_locates_the_sites(site_table: Any, site_ids: Iterable[int]) -> None:
+    """The site table gives one ``lon`` and ``lat`` for each of *site_ids*.
+
+    Parameters
+    ----------
+    site_table:
+        As :func:`load_sites` returns it, or keyed by :func:`site_lookup`.
+    site_ids:
+        The site ids to be located.
+
+    Raises
+    ------
+    TypeError
+        If *site_table* is not a ``DataFrame``.
+    ValueError
+        If the table has no ``site_id`` column or index, or no ``lon`` and
+        ``lat`` columns, or lists a site more than once.
+    KeyError
+        If a site of *site_ids* is not in the table.
+    """
+    if not isinstance(site_table, pd.DataFrame):
+        raise TypeError(
+            f"the site table must be a DataFrame, got {type(site_table).__name__}; pass "
+            "the table load_sites() returns."
+        )
+    if site_table.index.name != SITE_ID and SITE_ID not in site_table.columns:
+        raise ValueError(
+            f"the site table has no {SITE_ID!r} column or index; pass the table "
+            "load_sites() returns, or one keyed by site_lookup()."
+        )
+    table = site_lookup(site_table)
+    absent = [name for name in (LON, LAT) if name not in table.columns]
+    if absent:
+        raise ValueError(
+            f"the site table has no {absent} column(s), and needs {LON!r} and {LAT!r} to "
+            "locate a site; pass the table load_sites() returns."
+        )
+    if table.index.has_duplicates:
+        repeated = sorted(set(table.index[table.index.duplicated()].tolist()))
+        raise ValueError(
+            f"the site table lists site(s) {truncated(repeated)} more than once; a site "
+            "has one row, as load_sites() gives it. Drop the repeated rows."
+        )
+    wanted = pd.Index(list(site_ids))
+    missing = wanted[~wanted.isin(table.index)].tolist()
+    if missing:
+        raise KeyError(
+            f"site(s) {truncated(missing)} are not in the site table, which holds "
+            f"{len(table)} sites. Site ids are never renumbered; pass a table holding "
+            "every site asked for."
+        )

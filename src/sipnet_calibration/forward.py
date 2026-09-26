@@ -183,10 +183,8 @@ from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration.conventions import LAT, LON, SITE
 from sipnet_calibration.fields import (
-    check_site_table_locates_the_sites,
     label_run,
     resolve_output_variable_names,
-    site_lookup,
     stack_model_outputs,
 )
 from sipnet_calibration.observation import (
@@ -198,7 +196,12 @@ from sipnet_calibration.observation.time_alignment import (
     check_frequency_is_an_offset_alias,
 )
 from sipnet_calibration.parameter_vector import ParameterVector
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.sites import (
+    check_site_table_locates_the_sites,
+    load_sites,
+    site_locations,
+    site_lookup,
+)
 from sipnet_calibration.validation import as_batched_flat
 
 __all__ = [
@@ -623,6 +626,7 @@ def _site_table_for(
     if chosen is None:
         own = parameter_vector.site_table
         chosen = own if {LON, LAT} <= set(own.columns) else load_sites()
+    check_site_table_locates_the_sites(chosen, sites)
     return site_lookup(chosen).loc[list(sites)]
 
 
@@ -769,11 +773,7 @@ def _stacked_model_output(
     )
     # A site at which every run failed is absent from the stack, so the reindex
     # leaves its lon/lat NaN; they are the site table's whatever the runs did.
-    located = {
-        name: full[name].copy(data=site_table.loc[list(sites), name].to_numpy(np.float64))
-        for name in (LON, LAT)
-    }
-    return full.assign_coords(located)
+    return full.assign_coords(site_locations(sites, site_table))
 
 
 def _with_evaluation(error: RuntimeError, evaluation: ForwardEvaluation) -> RuntimeError:
