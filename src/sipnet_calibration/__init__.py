@@ -34,9 +34,10 @@ The site table and the fields:
 :mod:`~sipnet_calibration.projection`
     The display projection, over PROJ.
 :mod:`~sipnet_calibration.fields`
-    The field and model-output contracts (``Field``, ``ModelOutput`` and
-    their validators, batch dims and their stacking), and labeling and
-    stacking SIPNET runs.
+    The field contract and the forms of the model's input and output
+    (``Field``, ``ModelOutput``, ``SIPNETParameterFields`` and their
+    validators), batch dims and their stacking, and labeling and stacking
+    SIPNET runs.
 
 The data sources, each a spec, a reader, a builder, a loader and a field view:
 

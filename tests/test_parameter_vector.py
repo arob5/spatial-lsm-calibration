@@ -479,9 +479,11 @@ def test_layout_index_narrows_by_group_and_element(example):
         layout.positions("allocation", element="alr(wood_allocation:coarse_root_allocation)"), [3, 6]
     )
     np.testing.assert_array_equal(layout.positions("initial_soil_carbon", group=27), [12])
-    with pytest.raises(KeyError, match="not a group"):
+    with pytest.raises(KeyError, match="not a group of 'allocation'"):
         layout.positions("allocation", group="grassland")
-    with pytest.raises(KeyError, match="no calibration parameter"):
+    with pytest.raises(KeyError, match="not an element of 'allocation'"):
+        layout.positions("allocation", element="nope")
+    with pytest.raises(KeyError, match="^\"the layout has no calibration parameter 'nope'"):
         layout.slice("nope")
 
 

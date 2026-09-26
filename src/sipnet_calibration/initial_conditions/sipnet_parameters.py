@@ -32,10 +32,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pysipnet.parameters import InitialConditions
-
-from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SITE, SPATIAL_DIM_NAMES
 from pysipnet.parameters.model import parameter_dataarray
 
+from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SITE, SPATIAL_DIM_NAMES
 from sipnet_calibration.fields import (
     SIPNETParameterFields,
     batch_coordinate,
@@ -296,10 +295,7 @@ def to_sipnet_initial_condition_fields(
         labeled or not; if their indexes do not match, or they were selected
         for different members or sites; if a variable's ``units`` are not
         the processed file's; or if the result is not SIPNET parameter fields
-        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`:
-        no ``site``, a ``site`` that is not labeled with unique ``int32`` site
-        ids or carries no ``lon``/``lat``, say, or a batch dim that repeats a
-        label).
+        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`).
 
     Notes
     -----

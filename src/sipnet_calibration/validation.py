@@ -948,7 +948,7 @@ def check_names_are_unique(names: Sequence[str], *, message_name: str) -> None:
 def check_sites_are_the_vectors(
     sites: Sequence[int], held: Sequence[int], *, message_name: str
 ) -> None:
-    """Every site asked of a vector's ``select`` or ``positions`` is one of its sites."""
+    """Every site asked of a vector's ``select`` or ``positions`` is one of its."""
     unknown = [site for site in sites if site not in set(held)]
     if unknown:
         raise KeyError(

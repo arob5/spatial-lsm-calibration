@@ -24,18 +24,12 @@ constraint; and an
 
 Data model
 ----------
-:data:`ObservedValues` (``xr.DataArray``) is a field on ``(site,)`` (a
-static observation source) or ``(site, time)``, with no batch dim:
-
-``site``, ``time``
-    As the field contract (:mod:`sipnet_calibration.fields`) has them; where
-    the values are attributed to windows, ``window_start``/``window_end`` on
-    ``time``.
-values
-    Numeric, finite where observed, ``NaN`` where nothing was observed.
-attributes
-    ``units``, valid by pySIPNET, and ``constituent`` where the quantity has
-    one; what a prediction is converted into.
+:data:`ObservedValues` (``xr.DataArray``) is a field
+(:mod:`sipnet_calibration.fields`) on ``(site,)``, for a static observation
+source, or ``(site, time)``, with no batch dim; where the values are
+attributed to windows, ``window_start``/``window_end`` are on ``time``. Its
+values are numeric, finite where observed and ``NaN`` where nothing was;
+its ``units`` and ``constituent`` are what a prediction is converted into.
 
 A scalar coordinate, such as the ``sample=0`` that ``.isel(sample=0)`` of an
 observation ensemble leaves, is metadata and is kept; a batch dim is refused,
@@ -60,11 +54,12 @@ order of the labels carries nothing; the vector's order is its own
 (site-major, sites ascending). It then keeps only the sites and time labels
 holding an observation, so an operator reads the model nowhere else.
 
-**Frozen values.** An observation source holds its own read-only copy of the
-observed values it was given, loaded into memory, and ``observed_values``
-hands out a read-only copy of that on every read, so neither a later write to
-the caller's array nor one to what it reads can change the observations after
-a vector's ``y`` and index were built from them.
+**Frozen values.** An observation source keeps its own read-only, in-memory
+copy of the observed values
+(:class:`~sipnet_calibration.conventions.ReadOnlyCopies`), so neither a
+later write to the caller's array nor one to what ``observed_values`` hands
+out can change the observations after a vector's ``y`` and index were built
+from them.
 
 Usage
 -----
@@ -137,9 +132,8 @@ RESERVED_OBSERVATION_SOURCE_NAMES: frozenset[str] = frozenset(
     }
 )
 
-#: One observation source's observed values: a field on ``(site[, time])``
-#: with no batch dim, ``NaN`` where nothing was observed; checked by
-#: :func:`validate_observed_values`.
+#: One observation source's observed values, as this module's data model has
+#: them; checked by :func:`validate_observed_values`.
 type ObservedValues = xr.DataArray
 
 
@@ -159,8 +153,7 @@ def validate_observed_values(observed_values: Any, *, message_name: str | None =
     TypeError
         If *observed_values* is not an ``xr.DataArray``.
     ValueError
-        If it is not a field, has a batch dim, is not on ``(site,)`` or
-        ``(site, time)``, or holds a value that is not numeric or is infinite.
+        If it is not observed values; the message names the rule.
     """
     name = message_name
     if name is None:
@@ -187,9 +180,8 @@ class ObservationSource:
         values are renamed to it.
     observed_values:
         The observed values (:data:`ObservedValues`, the module docstring's
-        data model). They are copied and loaded into memory, sorted by
-        ``site`` and ``time``, trimmed to the sites and time labels holding
-        at least one observation, and stored read-only.
+        data model). They are copied, sorted by ``site`` and ``time``, and
+        trimmed to the sites and time labels holding an observation.
     operator:
         The :class:`~sipnet_calibration.observation.operators.ObservationOperator`
         that predicts the observation source.
@@ -216,8 +208,6 @@ class ObservationSource:
     """
 
     observation_source_name: str
-    # Every read is a read-only copy, so neither the values, the coordinates,
-    # the attributes nor the coordinate bindings can be changed through it.
     observed_values: ObservedValues = ReadOnlyCopies()
     operator: operators.ObservationOperator
 
@@ -313,14 +303,7 @@ def _observed_labels_only(values: xr.DataArray) -> xr.DataArray:
 def check_observation_source_is_valid(
     observation_source_name: Any, observed_values: Any, operator: Any
 ) -> None:
-    """An observation source's name, observed values and operator are what it needs.
-
-    Runs :func:`check_observation_source_name_is_a_nonempty_string`,
-    :func:`check_observation_source_name_is_not_reserved`,
-    :func:`validate_observed_values` and
-    :func:`~sipnet_calibration.observation.operators.check_operator_declares_names`,
-    in that order.
-    """
+    """An observation source's name, observed values and operator are what it needs."""
     check_observation_source_name_is_a_nonempty_string(observation_source_name)
     check_observation_source_name_is_not_reserved(observation_source_name)
     validate_observed_values(observed_values, message_name=observation_source_name)

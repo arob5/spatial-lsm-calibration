@@ -91,13 +91,14 @@ and :meth:`ParameterVector.flat` refuses it.
 
 **Fields** (:data:`CalibrationFields`, checked by
 :func:`validate_calibration_fields`). An ``xarray.Dataset`` of fields (see
-:mod:`sipnet_calibration.fields`):
+:mod:`sipnet_calibration.fields`), every variable on every dim of the
+Dataset, never on ``time``:
 
 ============ ========================================================
 dims         a batch dim for a batch only, ``sample`` unless
              ``batch_dim=`` names it otherwise (``int64``: 0 to J-1
              when built from Flat); ``site`` (``int32`` site ids,
-             ascending)
+             ascending), or a scalar ``site`` for one site's
 variables    one float64 variable per scalar component in natural
              space, or per element in unconstrained space, on
              ``(sample, site)`` or ``(site,)``: ``<parameter>`` when
@@ -114,12 +115,13 @@ attributes   ``component`` (the component or element label, only when
              ``sipnet_parameters`` (what the calibration parameter
              writes, comma-separated)
 coordinates  ``site``; ``lon``/``lat`` (float64) on ``site`` when the
-             vector was built from a site table (a vector built from
-             bare site ids has none, so its Fields are not fields in
-             full: every other rule of the field contract holds, and
-             a plotter or ``stack_batch_dims`` refuses them); one
-             coordinate per site-labels name on ``site``, holding the
-             class
+             vector was built from a site table. A vector built from
+             bare site ids has none, so its Fields are not fields,
+             and :func:`validate_calibration_fields`, a plotter and
+             ``stack_batch_dims`` refuse them; only that vector's
+             own ``flat`` and ``sipnet_parameter_fields`` read
+             them. One coordinate per site-labels name on ``site``,
+             holding the class
 attributes   ``representation = "calibration_parameters"``;
              ``space = "natural"`` or ``"unconstrained"``, mandatory
 missing      impossible: a shared copy is repeated at every site and a
@@ -198,14 +200,6 @@ The representations' aliases and validators: :data:`CalibrationFields` and
 :func:`validate_calibration_fields`, :data:`SIPNETOverrides` and
 :func:`validate_sipnet_overrides`. SIPNET parameter fields' are in
 :mod:`sipnet_calibration.fields`.
-
-:class:`ParameterVector` follows the package's vector conventions: its pieces
-are its calibration parameters (``vector[name]``, ``name in vector``,
-``iter(vector)``, ``len(vector)``, ``parameter_names``); ``index`` and
-``positions`` for its entries; ``select`` and ``restrict_to_sites``;
-``flat``/``fields`` between the representations; ``describe()`` one row per
-calibration parameter, ``describe_entries()`` one per entry, ``summary()``
-the same as text, and a one-line ``repr``.
 
 Constants: :data:`REQUIRED_SIPNET_PARAMETER_NAMES`; :data:`INDEX_LEVELS`;
 :data:`NATURAL`, :data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
@@ -892,11 +886,8 @@ PHOTOSYNTHESIS = PhotosynthesisMap()
 
 # ── the representations and their validators ──────────────────────────────────
 
-#: A parameter vector's Fields: an ``xr.Dataset`` of one variable per scalar
-#: component (natural space) or element (unconstrained space), each a field
-#: with a ``site`` (a dim, or a scalar for one site's Fields), on every dim of
-#: the Dataset and never on ``time``, with ``attrs["space"]``; checked by
-#: :func:`validate_calibration_fields`.
+#: A parameter vector's Fields, as this module's data model has them; checked
+#: by :func:`validate_calibration_fields`.
 type CalibrationFields = xr.Dataset
 
 #: One run's SIPNET overrides, the keywords ``SIPNETModel`` takes: pySIPNET
@@ -922,9 +913,7 @@ def validate_calibration_fields(
     TypeError
         If *calibration_fields* is not an ``xr.Dataset``.
     ValueError
-        If ``attrs["space"]`` is not one of :data:`SPACES`, or a variable is
-        not a field with a ``site``, off ``time`` and on every dim of the
-        Dataset.
+        If it is not Fields; the message names the variable and the rule.
 
     Notes
     -----
@@ -1078,6 +1067,8 @@ class CalibrationParameter:
             object.__setattr__(self, "sipnet_map", Identity(self.sipnet_map))
         check_calibration_parameter_is_valid(self)
 
+    # ── identity ──────────────────────────────────────────────────────────────
+
     @property
     def bijector(self) -> tfb.Bijector | None:
         """``T_c``, unconstrained to natural space: the prior's own bijector
@@ -1213,6 +1204,8 @@ class FixedParameter:
             )
         check_fixed_parameter_is_valid(self)
 
+    # ── identity ──────────────────────────────────────────────────────────────
+
     def values(self) -> tuple[float, ...]:
         """Every value, in mapping order (one value when shared)."""
         if isinstance(self.value, Mapping):
@@ -1321,9 +1314,9 @@ class Layout:
         n_groups, size = len(self.groups[name]), self.sizes[name]
         idx = np.arange(self.slices[name].start, self.slices[name].stop).reshape(n_groups, size)
         if group is not None:
-            idx = idx[[_position(self.groups[name], group, f"group of {name}")]]
+            idx = idx[[_position(self.groups[name], group, f"a group of {name!r}")]]
         if element is not None:
-            idx = idx[:, [_position(self.element_labels[name], element, f"element of {name}")]]
+            idx = idx[:, [_position(self.element_labels[name], element, f"an element of {name!r}")]]
         return idx.ravel().astype(np.int64)
 
     def unpack(self, theta: Array) -> dict[str, Array]:
@@ -1359,15 +1352,15 @@ class Layout:
             return jnp.concatenate(pieces, axis=-1)
         except (TypeError, ValueError) as error:
             raise ValueError(
-                "Layout.pack: the parts' leading dimensions disagree; every part must "
-                f"share one leading shape. Got {[tuple(p.shape[:-1]) for p in pieces]}."
+                "the parts' leading dimensions disagree, got "
+                f"{[tuple(p.shape[:-1]) for p in pieces]}; give every part one leading shape."
             ) from error
 
     def _known(self, parameter: str) -> str:
         if parameter not in self.slices:
             raise KeyError(
-                f"Layout: no calibration parameter {parameter!r}; "
-                f"have {list(self.parameter_names)}."
+                f"the layout has no calibration parameter {parameter!r}; name one of "
+                f"{truncated(list(self.parameter_names))}."
             )
         return parameter
 
@@ -1399,15 +1392,8 @@ class ParameterVector:
     calibration parameters, under what prior, over which sites, with what
     held fixed.
 
-    Its values have three representations, which the module docstring
-    defines in full. *Flat* is a float64 ``(D,)`` or ``(J, D)`` array in
-    unconstrained space, what :meth:`sample` returns and :meth:`log_prior`
-    and pyEKI consume. *Fields* is an ``xarray.Dataset`` of fields
-    on ``(sample, site)``, from :meth:`fields` and back through
-    :meth:`flat`. The *SIPNET parameter fields* are an ``xarray.Dataset`` of
-    SIPNET parameters on the same dims, from :meth:`sipnet_parameter_fields`,
-    which :func:`sipnet_overrides` and ``pyens.xarray.fields_from_dataset``
-    read.
+    Its values have three representations, Flat, Fields and SIPNET
+    parameter fields, which the module docstring's data model defines.
 
     Parameters
     ----------
@@ -1472,19 +1458,11 @@ class ParameterVector:
     Raises
     ------
     TypeError
-        If neither *sites* nor *site_table* is given, or *sites* is a
-        DataFrame (a site table goes to *site_table*).
+        If an argument, a piece or a site label has the wrong type, or
+        neither *sites* nor *site_table* is given.
     ValueError
-        If *sites* and *site_table* are both given and *sites* are not the
-        table's site ids in its order.
-    ValueError, TypeError
-        From the other ``check_*`` helpers: a repeated or reserved name, two
-        writers of one SIPNET parameter, a SIPNET map reading a parameter
-        nobody fixed, site labels missing, of the wrong length, not covering
-        every site or colliding with another name, a prior whose shape does
-        not match its groups, a fixed value missing a group, a calibration
-        parameter whose transform can leave a SIPNET parameter's domain, or
-        *require_complete* set with a required parameter unset.
+        If the pieces, sites and site labels do not make one vector SIPNET
+        can run; the message names the rule.
 
     Examples
     --------
@@ -1837,7 +1815,7 @@ class ParameterVector:
     def positions(
         self, *, parameter_name: str | None = None, group: Any = None, element: str | None = None
     ) -> np.ndarray:
-        """Where in Flat a calibration parameter's, a group's or an element's entries sit.
+        """Where in Flat the entries of a calibration parameter, group or element sit.
 
         Parameters
         ----------
@@ -1913,15 +1891,10 @@ class ParameterVector:
         Returns
         -------
         CalibrationFields
-            Fields with ``attrs["space"]`` set to *space*: one variable per
-            scalar component (or element) on ``(batch_dim, site)``, or
-            ``(site,)`` for one value, shared and per-class copies repeated
-            at every site that reads them. A vector built from a site table
-            with ``lon``/``lat`` gives fields (:mod:`sipnet_calibration.fields`);
-            one built from bare site ids gives arrays without ``lon``/``lat``,
-            which are not fields: :func:`validate_calibration_fields` accepts
-            them, and :func:`~sipnet_calibration.fields.stack_batch_dims` and
-            the plotters refuse them.
+            Fields in *space* (the module's data model), on
+            ``(batch_dim, site)``, or ``(site,)`` for one value. A vector
+            built from bare site ids gives them without ``lon``/``lat``,
+            which only its own methods read.
 
         Raises
         ------
@@ -2507,9 +2480,11 @@ def sipnet_overrides(
 
     Notes
     -----
-    SIPNET parameter fields that carry neither ``lon`` nor ``lat``, as those
-    of a vector built from bare site ids do, are accepted: one run's overrides
-    need no location. Every other rule of the contract is checked.
+    This is the one public function that relaxes the strict validators: SIPNET
+    parameter fields that carry neither ``lon`` nor ``lat``, as those of a
+    vector built from bare site ids do, are accepted, since one run's
+    overrides read no location and such a vector could not run otherwise.
+    Every other rule of the contract is checked.
 
     Examples
     --------
@@ -2808,7 +2783,9 @@ def _position(labels: Sequence[Any], label: Any, what: str) -> int:
     try:
         return list(labels).index(label)
     except ValueError:
-        raise KeyError(f"{label!r} is not a {what}; have {list(labels)}.") from None
+        raise KeyError(
+            f"{label!r} is not {what}; name one of {truncated(list(labels))}."
+        ) from None
 
 
 def _unconstrained_labels(bijector: tfb.Bijector, components: tuple[str, ...]) -> tuple[str, ...]:
@@ -3126,15 +3103,7 @@ def _summary(vector: ParameterVector) -> str:
 
 
 def check_calibration_parameter_is_valid(parameter: CalibrationParameter) -> None:
-    """A calibration parameter's name, provenance, prior and SIPNET map fit together.
-
-    Runs :func:`check_parameter_name`, :func:`check_provenance_is_given`,
-    :func:`check_prior_is_a_distribution`, :func:`check_sipnet_map_is_a_sipnet_map`,
-    :func:`check_sipnet_parameters_exist` (for what the map writes and reads),
-    :func:`check_prior_is_float64`, :func:`check_prior_event_rank`,
-    :func:`check_prior_batch_rank`, :func:`check_prior_has_a_bijector` and
-    :func:`check_components_match_prior`, in that order.
-    """
+    """A calibration parameter's name, provenance, prior and SIPNET map fit together."""
     check_parameter_name(parameter.name)
     check_provenance_is_given(parameter.name, parameter.provenance)
     check_prior_is_a_distribution(parameter)
@@ -3154,13 +3123,7 @@ def check_calibration_parameter_is_valid(parameter: CalibrationParameter) -> Non
 
 
 def check_fixed_parameter_is_valid(parameter: FixedParameter) -> None:
-    """A fixed parameter names a SIPNET parameter and holds values in its domain.
-
-    Runs :func:`check_sipnet_parameters_exist`,
-    :func:`check_provenance_is_given`, :func:`check_fixed_value_shape`,
-    :func:`check_fixed_values_are_numbers` and, for each value,
-    :func:`check_fixed_value_is_in_domain`, in that order.
-    """
+    """A fixed parameter names a SIPNET parameter and holds values in its domain."""
     check_sipnet_parameters_exist((parameter.name,), f"fixed parameter {parameter.name}")
     check_provenance_is_given(parameter.name, parameter.provenance)
     check_fixed_value_shape(parameter)
@@ -3170,16 +3133,7 @@ def check_fixed_parameter_is_valid(parameter: FixedParameter) -> None:
 
 
 def check_parameter_vector_pieces_are_valid(vector: ParameterVector) -> None:
-    """A vector's sites, pieces and site labels are what it can be built from.
-
-    Runs :func:`check_vector_has_a_site`, :func:`check_sites_are_ascending`,
-    :func:`check_parameters_have_their_types`,
-    :func:`check_vector_has_a_calibration_parameter`,
-    :func:`~sipnet_calibration.validation.check_names_are_unique` on the
-    calibration parameter names and :func:`check_site_labels_cover_sites`, in
-    that order: what must hold before a prior or a fixed value is restricted to
-    the groups present.
-    """
+    """A vector's sites, pieces and site labels are what it can be built from."""
     check_vector_has_a_site(vector.sites)
     check_sites_are_ascending(vector.sites)
     check_parameters_have_their_types(vector.parameters, vector.fixed)
@@ -3191,15 +3145,7 @@ def check_parameter_vector_pieces_are_valid(vector: ParameterVector) -> None:
 
 
 def check_parameter_vector_is_valid(vector: ParameterVector) -> None:
-    """A vector, its priors restricted to its groups, is one SIPNET can run.
-
-    Runs :func:`check_each_sipnet_parameter_has_one_writer`,
-    :func:`check_reads_are_fixed`, then for each calibration parameter
-    :func:`check_prior_shape_matches_groups`, for each fixed parameter
-    :func:`check_fixed_value_covers_groups`, for each calibration parameter
-    :func:`check_sipnet_map_image_is_in_domain`, and last, when the vector
-    requires it, :func:`check_every_required_parameter_is_set`.
-    """
+    """A vector, its priors restricted to its groups, is one SIPNET can run."""
     check_each_sipnet_parameter_has_one_writer(vector.parameters, vector.fixed)
     check_reads_are_fixed(vector.parameters, vector.fixed)
     for parameter in vector.parameters:
@@ -3854,13 +3800,7 @@ def check_natural_values_are_in_the_support(
 
 
 def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
-    """*batch_dim* can name a batch dim of the Fields and SIPNET parameter fields.
-
-    Runs :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`,
-    :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`,
-    :func:`check_batch_dim_name_is_not_a_reserved_vector_name` and
-    :func:`check_batch_dim_name_is_not_a_vector_name`, in that order.
-    """
+    """*batch_dim* can name a batch dim of the Fields and SIPNET parameter fields."""
     check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
     check_batch_dim_name_is_not_a_data_source_member(batch_dim, message_name="batch_dim")
     check_batch_dim_name_is_not_a_reserved_vector_name(batch_dim)

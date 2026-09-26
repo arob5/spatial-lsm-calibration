@@ -62,19 +62,12 @@ which every observation source must agree on.
 Functions
 ---------
 :class:`ObservationVector`
-    A frozen, keyword-only dataclass. Its pieces are its observation
-    sources: ``vector[name]``, ``name in vector``, ``iter(vector)`` (the
-    names), ``len(vector)``, ``observation_source_names``,
-    ``observation_sources``. ``sites``, ``site_table``, ``dimension``,
-    ``index``, ``output_variable_names`` and ``sipnet_parameter_names_read``
-    (the unions over the operators), ``observed_values_by_source`` (Fields)
-    and ``y`` (Flat); ``select(observation_source_names=, sites=, time=)`` for
-    a sub-vector and ``restrict_to_sites(sites)``, its intersecting form;
-    ``positions(site=, observation_source_name=)`` for where a segment sits
-    in Flat; ``flat(fields)`` and ``fields(flat_values)`` between the
-    representations; ``predict(model_output, sipnet_parameter_fields=)`` for
-    every operator applied, converted and checked; ``describe()`` for one
-    row per observation source.
+    The vector, whose pieces are its observation sources: ``y``, ``index``
+    and ``positions``; ``select`` and ``restrict_to_sites``; ``flat`` and
+    ``fields`` between the representations; ``predict``, every operator
+    applied, converted and checked.
+:func:`check_batch_dim_is_not_an_observation_source_name`
+    The check a creator of a batch dim runs against the vector's names.
 
 Notes
 -----
@@ -121,12 +114,14 @@ Usage
         ObservationSource(
             observation_source_name="landtrendr_aboveground_biomass",
             observed_values=observed["landtrendr_aboveground_biomass"],
-            operator=ReduceOverWindows("wood_carbon", "mean"),  # the experiment's reading
+            operator=ReduceOverWindows("wood_carbon", "mean"),  # the experiment's
         ),
     ]).select(time=slice("2012", "2024"))
 
     vector.dimension, vector.y.shape           # N, (N,)
-    predicted_fields = vector.predict(model_output, sipnet_parameter_fields=sipnet_parameter_fields)
+    predicted_fields = vector.predict(
+        model_output, sipnet_parameter_fields=sipnet_parameter_fields
+    )
     predictions = vector.flat(predicted_fields)  # (J, N) for a (sample, site, time) output
     vector.fields(predictions)["modis_leaf_area_index"]  # back to (sample, site, time)
 """
@@ -185,6 +180,7 @@ from sipnet_calibration.validation import (
     check_sites_are_the_vectors,
     check_the_restriction_keeps_a_site,
     is_one_vector,
+    truncated,
 )
 
 __all__ = [
@@ -526,13 +522,12 @@ class ObservationVector:
         ----------
         fields:
             A mapping from every observation source name to a field
-            (:mod:`sipnet_calibration.fields`: ``int32`` ``site`` with
-            ``lon``/``lat``, ``units``) on that source's ``site`` and ``time``
-            labels, in any dim order, with a ``site`` dim or a scalar ``site``,
-            and at most one batch dim, the same in every array. An array may
-            cover more sites or times than the source observes; only the
-            vector's observations are read, by label. A scalar batch coordinate
-            is not a batch dim: such arrays give one vector.
+            (:func:`~sipnet_calibration.fields.validate_field`, in any dim
+            order and with ``site`` a dim or a scalar) on that source's
+            ``site`` and ``time`` labels, with at most one batch dim, the
+            same in every array. An array may cover more sites or times than
+            the source observes; only the vector's observations are read, by
+            label.
 
         Returns
         -------
@@ -546,13 +541,10 @@ class ObservationVector:
         TypeError
             If *fields* is not a mapping, or an entry is not a ``DataArray``.
         ValueError
-            If an observation source is missing; if an array, laid out by
-            :func:`~sipnet_calibration.fields.in_field_layout`, is not a field
-            (:func:`~sipnet_calibration.fields.validate_field`); if it lacks an
-            observed site or time label; if it has more than one batch dim
-            (stack them into a new one first,
-            :func:`~sipnet_calibration.fields.stack_batch_dims`); or if the
-            arrays disagree on their batch dim or its labels.
+            If an observation source is missing, or an array is not a field
+            at its source's observations with the one batch dim the others
+            have; stack several batch dims into a new one first
+            (:func:`~sipnet_calibration.fields.stack_batch_dims`).
         """
         check_fields_hold_the_observation_sources(fields, self.observation_source_names)
         arrays = {}
@@ -587,11 +579,9 @@ class ObservationVector:
             An array-like of shape ``(N,)`` or ``(J, N)``, in Flat order: a
             JAX or NumPy array, or a nested list.
         batch_dim:
-            The name of the batch dim a ``(J, N)`` batch is given: no name
-            :func:`~sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`
-            or
-            :func:`~sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`
-            refuses, and no name of this vector's
+            The name of the batch dim a ``(J, N)`` batch is given: a new
+            index's name (no reserved or data source member name), and no
+            name of this vector's
             (:func:`check_batch_dim_is_not_an_observation_source_name`).
 
         Returns
@@ -656,11 +646,9 @@ class ObservationVector:
             every variable in :attr:`output_variable_names` at every site the
             vector observes.
         sipnet_parameter_fields:
-            The SIPNET parameter values the runs used, for the operators that
-            read any (:attr:`sipnet_parameter_names_read`), as SIPNET
-            parameter fields
-            (:data:`~sipnet_calibration.fields.SIPNETParameterFields`):
-            on ``(*batch, site)`` or ``(site,)``, or with no dim for one run.
+            The SIPNET parameter values the runs used
+            (:data:`~sipnet_calibration.fields.SIPNETParameterFields`), for
+            the operators that read any (:attr:`sipnet_parameter_names_read`).
 
         Returns
         -------
@@ -674,18 +662,14 @@ class ObservationVector:
         Raises
         ------
         TypeError
-            If *model_output* or *sipnet_parameter_fields* is not an
-            ``xr.Dataset``, or an operator returns something other than a
-            ``DataArray``.
+            If an input is not an ``xr.Dataset``, or an operator returns
+            something other than a ``DataArray``.
         ValueError
-            If *model_output* is not a model output, or lacks a variable that
-            is read; if parameters are read and *sipnet_parameter_fields* is
-            not given or are not SIPNET parameter fields; if a prediction is
-            not a field on its observation source's grid or carries no
-            ``units``; if pySIPNET's ``convert_dataarray_units`` refuses to
-            convert a prediction into its source's units and constituent; or
-            if a prediction is ``NaN`` at an observation where the run
-            succeeded. An operator's own refusals pass through.
+            If the inputs are not what the operators read
+            (:func:`~sipnet_calibration.observation.operators.check_model_output_carries_what_is_read`),
+            or a prediction is not on its source's grid, cannot be converted
+            into its units, or is ``NaN`` where the run succeeded. An
+            operator's own refusals pass through.
         """
         check_model_output_carries_what_is_read(
             model_output,
@@ -882,14 +866,7 @@ def _predicted(
 
 
 def check_observation_vector_is_valid(observation_sources: Sequence[Any]) -> None:
-    """The observation sources can make one vector.
-
-    Runs :func:`check_there_is_an_observation_source`,
-    :func:`check_entries_are_observation_sources`,
-    :func:`~sipnet_calibration.validation.check_names_are_unique` on their names,
-    :func:`check_every_observation_source_has_an_observation` and
-    :func:`check_observation_sources_agree_on_site_locations`, in that order.
-    """
+    """The observation sources can make one vector."""
     check_there_is_an_observation_source(observation_sources)
     check_entries_are_observation_sources(observation_sources)
     check_names_are_unique(
@@ -1059,15 +1036,7 @@ def check_fields_agree_on_the_batch_dim(
 
 
 def check_field_is_on_the_grid(array: Any, source: ObservationSource) -> None:
-    """An array to flatten is a field holding every observation of its source.
-
-    Runs :func:`check_array_is_a_dataarray`, then, on the array laid out as a
-    field (:func:`sipnet_calibration.fields.in_field_layout`, so any dim order
-    and a scalar ``site`` are accepted),
-    :func:`sipnet_calibration.fields.validate_field`,
-    :func:`check_array_has_the_observed_sites` and
-    :func:`check_array_has_the_observed_time_labels`.
-    """
+    """An array to flatten is a field in any dim order, at its source's observations."""
     name = source.observation_source_name
     check_array_is_a_dataarray(array, name)
     array = in_field_layout(array)
@@ -1096,7 +1065,7 @@ def check_array_has_the_observed_sites(array: xr.DataArray, source: ObservationS
     missing_sites = missing_labels(array, SITE, source.observed_values.indexes[SITE])
     if missing_sites:
         raise ValueError(
-            f"{name}: the array lacks observed site(s) {missing_sites[:10]}; predict at "
+            f"{name}: the array lacks observed site(s) {truncated(missing_sites)}; predict at "
             "every site the observation source holds, or select the vector to the sites "
             "given."
         )

@@ -1231,13 +1231,7 @@ def check_kind_has_a_level(field: xr.DataArray, kind: VariableKind | None, how: 
 
 
 def check_field_is_on_a_time_axis(field: Any) -> None:
-    """*field* is a field with a ``time`` dim.
-
-    Runs :func:`sipnet_calibration.fields.validate_field`, which checks the
-    ``time`` axis (naive ``datetime64``, strictly increasing, no ``NaT``) and
-    that the interval coordinates are on ``time`` alone, then
-    :func:`check_field_has_a_time_dim`.
-    """
+    """*field* is a field with a ``time`` dim."""
     fields.validate_field(field)
     check_field_has_a_time_dim(field)
 

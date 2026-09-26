@@ -21,8 +21,7 @@ What map is drawn follows from the data, never from a mode keyword:
 Map                   Dimensions           Recognized by
 ====================  ===================  =====================================
 values at sites       ``(site,)``          ``site`` dim, numeric values
-classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`:
-                                           CF-coded classes or booleans
+classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`
 raster                ``(lat, lon)``       ``lat`` and ``lon`` are dimensions
 ====================  ===================  =====================================
 
@@ -33,12 +32,10 @@ one-dimensional, monotonic coordinates in degrees. Both need ``units`` and
 ``long_name`` in ``attrs`` unless they are categorical, which need only
 ``long_name``.
 
-**Categorical fields** are what :func:`~sipnet_calibration.fields.is_categorical`
-says: CF integer codes with ``flag_values`` and, naming each code's class, a
-space-separated ``flag_meanings``; or a boolean mask. A string-valued array is
-not categorical; code it the CF way. An optional
-``flag_display_names``, a tuple aligned with ``flag_meanings``, is what the
-legend shows in their place; it is this project's attribute, not CF's.
+**Categorical fields** are those :func:`~sipnet_calibration.fields.is_categorical`
+accepts. An optional ``flag_display_names``, a tuple aligned with
+``flag_meanings``, is what the legend shows in their place; it is this
+project's attribute, not CF's.
 :func:`sipnet_calibration.site_labels.site_labels_field` makes one from a
 site-labels data source. A class keeps its color in every map of the same source,
 because colors are keyed by the class's position in ``flag_meanings`` and not

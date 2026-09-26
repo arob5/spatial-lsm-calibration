@@ -31,6 +31,9 @@ parameters it reads (so the forward model can supply them, from the run's own
   its values.
 * ``sipnet_parameter_fields`` is the
   :data:`~sipnet_calibration.fields.SIPNETParameterFields` the runs used.
+  Every dim of theirs is selected at the model output's labels or refused
+  (:func:`extract_sipnet_parameter_at_coords`), so none is ever broadcast
+  into a run.
 * The result is on ``observed_values``' ``site`` and ``time`` grid, with the
   model output's batch dims if any and no dim that neither the model output nor
   the observed values have, and carries ``units`` and, where the quantity has
@@ -48,9 +51,27 @@ the experiment writes in its ``config.py``.
 
 The checks at the bottom of this module are the contract's, and
 :class:`~sipnet_calibration.observation.vector.ObservationVector` applies the
-same ones: :func:`check_operator_declares_names`,
+same ones: an observation source runs :func:`check_operator_declares_names`
+when it is built, and ``predict`` runs
 :func:`check_model_output_carries_what_is_read` and
-:func:`check_result_is_on_the_observation_grid`.
+:func:`check_result_is_on_the_observation_grid`, converts each result into
+the observed values' units through ``pysipnet.units.convert_dataarray_units``,
+and refuses a ``NaN`` where the run succeeded.
+
+Writing an operator
+-------------------
+An operator is written with verbs that carry pySIPNET's attributes, so its
+result says what it is: arithmetic through :mod:`pysipnet.arithmetic`
+(``divide_with_units``, ``step_length``, ...); a SIPNET parameter through
+:func:`extract_sipnet_parameter_at_coords`, labeled by
+``pysipnet.parameters.model.parameter_dataarray``; and time through
+:mod:`sipnet_calibration.observation.time_alignment`:
+``select_timestep_at`` (the model step whose ``(time_step_start, time]``
+contains a label), ``reduce_windows`` (a step belongs to the window its end
+falls in; means weighted by step length; a gap makes the window ``NaN``) and
+``windows_from_observed_values``. It starts from
+:func:`restrict_to_observed_sites`, so it reads the model at the observed
+sites only.
 
 Usage
 -----
@@ -60,7 +81,9 @@ Usage
     from pysipnet.units import convert_dataarray_units
 
     lai = DEFAULT_OBS_OPS["modis_leaf_area_index"]
-    predicted = lai(model_output, observed_lai, sipnet_parameter_fields=sipnet_parameter_fields)
+    predicted = lai(
+        model_output, observed_lai, sipnet_parameter_fields=sipnet_parameter_fields
+    )
     predicted = convert_dataarray_units(predicted, to_units=observed_lai.attrs["units"])
 
     wood = SelectTimestep("wood_carbon")          # the state at each observed label
@@ -103,6 +126,7 @@ from sipnet_calibration.observation.time_alignment import (
     select_timestep_at,
     windows_from_observed_values,
 )
+from sipnet_calibration.validation import truncated
 
 __all__ = [
     "DEFAULT_OBS_OPS",
@@ -380,12 +404,8 @@ def restrict_to_observed_sites(
         If *observed_values* is not a ``DataArray``.
     ValueError
         If *observed_values* are not observed values
-        (:func:`~sipnet_calibration.observation.source.validate_observed_values`:
-        unique ``int32`` sites with ``lon``/``lat``, ``units``, among the
-        rest); if *model_field* lacks an observed site; if *model_field* is
-        one run at a site other than the one observed site, or several sites
-        are observed; or if *model_field* carries no ``site`` coordinate at
-        all.
+        (:func:`~sipnet_calibration.observation.source.validate_observed_values`),
+        or *model_field* is not at the observed sites.
 
     Notes
     -----
@@ -455,12 +475,9 @@ def extract_sipnet_parameter_at_coords(
     TypeError
         If *sipnet_parameter_fields* is not an ``xr.Dataset``.
     ValueError
-        If *sipnet_parameter_fields* is ``None`` or are not SIPNET parameter
-        fields; if they lack the parameter, or cannot be read at the target's
-        labels (a dim the target has no labels for, a label it lacks, a scalar
-        label that disagrees, a target batch dim stacked from one of theirs);
-        if they locate a site elsewhere than the target does; or if a value
-        is not finite or is outside the parameter's domain.
+        If *sipnet_parameter_fields* are missing, are not SIPNET parameter
+        fields, or cannot be read for the parameter at the target's labels
+        and locations; or if a value is outside the parameter's domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
@@ -665,14 +682,7 @@ def _agree_by_label(got: xr.DataArray, expected: xr.DataArray) -> bool:
 
 
 def check_observed_values_are_valid(observed_values: Any) -> None:
-    """What an operator reads as observed values are, ``site`` a dim or a scalar.
-
-    Runs
-    :func:`~sipnet_calibration.observation.source.validate_observed_values`
-    on them laid out as a field (:func:`~sipnet_calibration.fields.in_field_layout`),
-    so one site's observed values with a scalar ``site``, which the operator
-    contract allows, are accepted.
-    """
+    """What an operator reads as observed values are, ``site`` a dim or a scalar."""
     if isinstance(observed_values, xr.DataArray):
         observed_values = fields.in_field_layout(observed_values)
     validate_observed_values(observed_values)
@@ -738,11 +748,6 @@ def check_model_output_carries_what_is_read(
 ) -> None:
     """The model output is one and carries what is read, with the parameters read.
 
-    Runs :func:`~sipnet_calibration.fields.validate_model_output`,
-    :func:`check_model_output_has_the_variables`, and, when SIPNET parameters
-    are read, :func:`check_sipnet_parameter_fields_are_given` and
-    :func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`.
-
     Parameters
     ----------
     model_output:
@@ -782,7 +787,7 @@ def check_model_output_has_the_variables(
     if missing:
         raise ValueError(
             f"the model output lacks {missing}, which {message_name} read; it has "
-            f"{list(model_output.data_vars)[:10]}. Select those variables from each run."
+            f"{truncated(list(model_output.data_vars))}. Select those variables from each run."
         )
 
 
@@ -846,9 +851,12 @@ def check_result_is_a_dataarray(result: Any, message_name: str) -> None:
 
 
 def check_result_adds_no_dim(
-    result: xr.DataArray, observed_values: xr.DataArray, model_output: xr.Dataset, message_name: str
+    result: xr.DataArray,
+    observed_values: xr.DataArray,
+    model_output: xr.Dataset,
+    message_name: str,
 ) -> None:
-    """An operator's result adds no dim to the model output's and the observed values'."""
+    """An operator's result has no dim that its inputs lack."""
     added = [
         str(d) for d in result.dims if d not in model_output.dims and d not in observed_values.dims
     ]
@@ -874,8 +882,8 @@ def check_result_keeps_the_batch_dims(
         if not np.array_equal(result[dim].values, model_output[dim].values):
             raise ValueError(
                 f"{message_name}: the result's {dim} labels "
-                f"{coordinate_labels(result[dim])[:10]} are not the model output's "
-                f"{coordinate_labels(model_output[dim])[:10]}; an operator keeps the model "
+                f"{truncated(coordinate_labels(result[dim]))} are not the model output's "
+                f"{truncated(coordinate_labels(model_output[dim]))}; an operator keeps the model "
                 "output's labels, in its order."
             )
 
@@ -896,7 +904,7 @@ def check_result_is_at_the_observed_sites(
         )
         raise ValueError(
             f"{message_name}: the result is not {where} "
-            f"({coordinate_labels(result[SITE])[:10]} for {wanted_sites[:10]}); select "
+            f"({truncated(coordinate_labels(result[SITE]))} for {truncated(wanted_sites)}); select "
             "the model output with restrict_to_observed_sites, which follows the observed values."
         )
 
@@ -975,7 +983,7 @@ def check_model_output_has_the_observed_sites(
     missing = missing_labels(model_field, SITE, wanted)
     if missing:
         raise ValueError(
-            f"the model output has no site(s) {missing[:10]} that {message_name} observes; "
+            f"the model output has no site(s) {truncated(missing)} that {message_name} observes; "
             "run the model at every observed site, or select the observed values to the "
             "sites that were run."
         )
@@ -997,7 +1005,7 @@ def check_run_is_at_the_observed_site(
     if list(wanted) != [site]:
         raise ValueError(
             f"the model output is one run at site {site}, and {message_name} observes "
-            f"site(s) {list(wanted)[:10]}; select the observed values to that one site."
+            f"site(s) {truncated(list(wanted))}; select the observed values to that one site."
         )
 
 
@@ -1007,7 +1015,7 @@ def check_sipnet_parameter_fields_hold_the_parameter(
     if name not in sipnet_parameter_fields.data_vars:
         raise ValueError(
             f"the SIPNET parameter fields have no variable {name!r}, which this operator "
-            f"reads; they have {list(sipnet_parameter_fields.data_vars)[:10]}. Build them "
+            f"reads; they have {truncated(list(sipnet_parameter_fields.data_vars))}. Build them "
             "with every parameter the operators declare."
         )
 
@@ -1018,7 +1026,7 @@ def check_sipnet_parameter_fields_have_the_labels(
     missing = missing_labels(values, dim, wanted)
     if missing:
         raise ValueError(
-            f"the SIPNET parameter fields' {name!r} has no {dim} label(s) {missing[:10]} "
+            f"the SIPNET parameter fields' {name!r} has no {dim} label(s) {truncated(missing)} "
             f"that the model output has; the SIPNET parameter fields and the runs must "
             f"cover the same {dim}s."
         )
@@ -1084,7 +1092,7 @@ def check_scalar_sipnet_parameter_fields_label_agrees(
     if any(t != label for t in target_labels):
         raise ValueError(
             f"the SIPNET parameter fields' {name!r} is for {dim} {label!r} alone, and the "
-            f"model output is at {dim}(s) {target_labels[:10]}; pass the SIPNET parameter "
+            f"model output is at {dim}(s) {truncated(target_labels)}; pass the SIPNET parameter "
             f"fields for every {dim} the runs were."
         )
 

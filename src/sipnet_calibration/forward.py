@@ -88,12 +88,8 @@ Functions
 ---------
 :class:`ForwardModel`
     ``evaluate(theta) -> ForwardEvaluation``; ``__call__(theta)`` returns
-    ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input. What it was
-    built from and derived is read-only: ``model``, ``parameter_vector``,
-    ``observation_vector``, ``backend``, ``freq``, ``climate``, ``sites``,
-    ``site_table``, ``output_variable_names``,
-    ``sipnet_parameter_names_written`` and ``batch_dim`` are properties, so
-    the run machinery built from them cannot go stale.
+    ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input. What it
+    was built from and derived are read-only properties.
 :class:`ForwardEvaluation`
     The record above.
 :data:`MODEL_FAILURES`, :class:`ModelOutputNotFiniteError`
@@ -114,11 +110,10 @@ combination and select each row's member in the hook.
 site id and the site's slice of the observation vector, all along one site
 axis) and its free inputs (the SIPNET parameter names the vector sets) hold
 for the model's lifetime, and on every call the PyEns grid of SIPNET
-parameter values is zipped with that site axis. The free names are learned by mapping one prior draw through
-``sipnet_parameter_fields`` in ``__init__``, which fails fast, before
-anything is queued, on a hook that does not return SIPNET parameter fields on
-``(sample, site)`` over the vector's sites in pySIPNET's flat parameter
-names.
+parameter values is zipped with that site axis. The free names are learned
+by mapping one prior draw through ``sipnet_parameter_fields`` in
+``__init__``, which fails fast, before anything is queued, on a hook that
+does not return SIPNET parameter fields for the batch.
 
 **Samples are labeled by row.** The SIPNET-parameter-fields hook must label
 its batch dim ``0`` to ``J - 1`` in the order of ``theta``'s rows, although a
@@ -290,9 +285,9 @@ class ForwardEvaluation:
     The fields are described in the module docstring's Data model. Nothing
     read from it changes it: ``theta``, ``predictions`` and ``valid`` are
     ``jax.Array``\\ s, which cannot be written to; ``sipnet_parameter_fields``,
-    ``model_output`` and ``run_succeeded`` are read-only copies
-    (:func:`~sipnet_calibration.conventions.read_only_copy`) and ``failures`` a copy,
-    on every read.
+    ``model_output`` and ``run_succeeded`` are read-only copies and
+    ``failures`` a copy, on every read
+    (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`).
 
     Notes
     -----
@@ -358,41 +353,21 @@ class ForwardModel:
     batch_dim:
         The name of the batch dim of ``theta``'s rows, which the SIPNET
         parameter fields, ``model_output``, ``run_succeeded`` and the
-        ``failures`` column all carry; ``sample`` by default. Whatever
-        *to_sipnet_parameter_fields* is, it may take no name the parameter
-        vector refuses
-        (:func:`~sipnet_calibration.parameter_vector.check_batch_dim_name_is_not_taken`),
-        the model output uses
-        (:func:`~sipnet_calibration.fields.check_batch_dim_name_is_not_a_model_output_name`)
-        or the observation vector's sources take
-        (:func:`~sipnet_calibration.observation.check_batch_dim_is_not_an_observation_source_name`);
-        each is refused here, before anything runs.
+        ``failures`` column all carry; ``sample`` by default. It may take no
+        name the parameter vector, the model output or the observation
+        vector's sources use, whatever *to_sipnet_parameter_fields* is.
 
     Raises
     ------
     TypeError
-        If *model* is not a ``SIPNETModel``, *backend* not a PyEns
-        ``Backend``, a site's drivers not ``ClimateDrivers``,
-        *to_sipnet_parameter_fields* returns something other than an
-        ``xr.Dataset``, or
-        *batch_dim* is not a string.
+        If an argument, or what *to_sipnet_parameter_fields* returns, has the
+        wrong type.
     ValueError
-        If *batch_dim* is a name it may not be (above); if neither
-        *output_variable_names* nor *observation_vector* is given; *freq* is
-        given with an observation vector or is not a pandas offset alias; a
-        site has no drivers, or in-memory drivers under a process backend; the
-        observation vector observes a site the parameter vector does not run;
-        the output variables do not cover the operators, or one is switched off
-        by the model's flags, or (with *freq*) has a kind no method keeps; the
-        site table lacks ``lon``/``lat`` or lists a site twice;
-        *to_sipnet_parameter_fields* does not return SIPNET parameter fields
-        for the batch, or locates a site elsewhere than the site table; or an operator reads a SIPNET parameter that neither the
-        SIPNET parameter fields write nor the model's base parameter set holds.
+        If the arguments cannot make one forward model, which is checked
+        before anything runs; the message names the rule.
     KeyError
-        If an output variable name is not a pySIPNET output variable, a site
-        of the parameter vector is not in the given site table, or
-        *to_sipnet_parameter_fields* sets a SIPNET parameter pySIPNET does not
-        have.
+        If an output variable, a site of the parameter vector in the site
+        table, or a SIPNET parameter the hook sets is unknown.
     """
 
     def __init__(
@@ -1106,7 +1081,7 @@ def check_climate_covers_the_sites(climate: Mapping[int, Any], sites: Sequence[i
     missing = [s for s in sites if s not in climate]
     if missing:
         raise ValueError(
-            f"climate has no drivers for site(s) {missing[:10]} of the parameter vector; "
+            f"climate has no drivers for site(s) {truncated(missing)} of the parameter vector; "
             "every site run needs its drivers."
         )
     for site in sites:
@@ -1125,7 +1100,7 @@ def check_climate_is_file_backed(
     in_memory = [s for s in sites if climate[s].source_path is None]
     if in_memory:
         raise ValueError(
-            f"the drivers of site(s) {in_memory[:10]} are held in memory, and under "
+            f"the drivers of site(s) {truncated(in_memory)} are held in memory, and under "
             f"{type(backend).__name__} every run would carry a copy of them. Write them "
             "with ClimateDrivers.to_file and open them with ClimateDrivers.from_path."
         )
@@ -1137,7 +1112,7 @@ def check_observation_sites_are_run(
     extra = sorted(set(observation_vector.sites) - set(sites))
     if extra:
         raise ValueError(
-            f"the observation vector observes site(s) {extra[:10]} that the parameter vector "
+            f"the observation vector observes site(s) {truncated(extra)} that the parameter vector "
             "does not run; restrict the observation vector to the parameter vector's sites "
             "first (observation_vector.restrict_to_sites(parameter_vector.sites))."
         )
@@ -1198,13 +1173,7 @@ def check_sipnet_parameter_fields_are_for_the_batch(
     n_samples: int,
     batch_dim: str = SAMPLE,
 ) -> None:
-    """*sipnet_parameter_fields* are a Dataset for a batch of *n_samples* over *sites*.
-
-    Runs :func:`~sipnet_calibration.fields.check_sipnet_parameter_fields_are_a_dataset`,
-    :func:`check_sipnet_parameter_fields_are_on_the_batch_dim_and_site`,
-    :func:`check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta` and
-    :func:`check_sipnet_parameter_fields_are_on_the_vectors_sites`, in that order.
-    """
+    """The SIPNET parameter fields are a Dataset for *n_samples* rows over *sites*."""
     check_sipnet_parameter_fields_are_a_dataset(
         sipnet_parameter_fields, "what to_sipnet_parameter_fields returns"
     )
@@ -1279,7 +1248,7 @@ def check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta(
     if dtype.kind not in "iu" or labels != list(range(n_samples)):
         raise ValueError(
             f"the SIPNET parameter fields' {batch_dim} labels must be the integers 0 to "
-            f"{n_samples - 1}, in the order of theta's {n_samples} rows, got {labels[:10]} "
+            f"{n_samples - 1}, in the order of theta's {n_samples} rows, got {truncated(labels)} "
             f"({dtype}); the forward model places each run in the row of theta its label "
             "names."
         )
