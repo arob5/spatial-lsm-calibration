@@ -225,3 +225,25 @@ def test_acceptance_faceted_driver_fan_with_shared_limits(real_driver_field):
     assert [a.get_title() for a in axes] == [
         f"site {site}" for site in real_driver_field["site"].values
     ]
+
+
+# ── maps at one time ──────────────────────────────────────────────────────────
+
+
+def test_an_annual_constraint_is_mapped_at_one_time_and_animated(ax, real_constraint_fields):
+    """The annual products carry window coordinates, scalars once a year is selected."""
+    from sipnet_calibration.plotting import plot_map
+    from sipnet_calibration.plotting.maps import animate_map
+
+    fields, _ = real_constraint_fields
+    for name in ("landtrendr_aboveground_biomass", "gedi_aboveground_biomass"):
+        field = fields[name]
+        observed = field.isel(site=np.flatnonzero(field.notnull().any("time").values)[:50])
+        plot_map(observed.isel(time=0), ax=ax)
+        animate_map(observed.isel(time=slice(0, 2)))._func(1)
+
+
+def test_one_driver_member_is_mapped_at_one_time(ax, real_driver_field):
+    from sipnet_calibration.plotting import plot_map
+
+    plot_map(real_driver_field.isel(driver_member=0, time=0), ax=ax)

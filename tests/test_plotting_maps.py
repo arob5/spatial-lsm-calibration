@@ -561,3 +561,49 @@ def test_initial_wood_carbon_quantiles_over_conus():
         wood, batch_dim="initial_condition_member", extent="CONUS", robust=True
     )
     assert len(axes) == 3
+
+
+# ── one time of a field that carries interval coordinates ────────────────────
+
+
+@pytest.fixture
+def model_wood():
+    """Real Niwot wood carbon stacked over (sample, site), with its timestep coordinates."""
+    from conftest import niwot_stack_of
+
+    return niwot_stack_of(["wood_carbon"], sites=(1, 27, 865), n_samples=3)["wood_carbon"]
+
+
+def test_model_output_at_one_time_is_mapped(ax, model_wood):
+    plot_map(model_wood.isel(sample=0, time=-1), ax=ax)
+    assert data_artist(ax).get_array().size == 3
+
+
+def test_model_output_is_mapped_by_time_and_by_quantile_at_one_time(model_wood):
+    figure, axes = plot_map_by(model_wood.isel(sample=0, time=slice(0, 2)), "time")
+    assert len(axes) == 2
+    figure, axes = plot_map_quantiles(model_wood.isel(time=-1))
+    assert len(axes) == 3
+
+
+def test_model_output_is_animated_over_time(model_wood):
+    animation = animate_map(model_wood.isel(sample=0, time=slice(0, 3)))
+    (artist,) = animation._func(2)
+    assert artist.get_array().size == 3
+
+
+def test_an_annual_field_with_windows_is_animated(dense):
+    annual = frames(dense).assign_coords(
+        time_bounds_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
+        time_bounds_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
+    )
+    animation = animate_map(annual)
+    animation._func(1)
+
+
+def test_an_animation_refuses_a_batch_dim_with_advice(dense):
+    field = xr.concat([frames(dense), frames(dense)], dim="driver_member").assign_coords(
+        driver_member=[0, 1]
+    )
+    with pytest.raises(ValueError, match="driver_member.*summarize_batch"):
+        animate_map(field)

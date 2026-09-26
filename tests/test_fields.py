@@ -546,6 +546,15 @@ class TestFieldLabel:
         assert field_label(xr.DataArray(0.0), "the observation") == "the observation"
 
 
+def stack_model_outputs_of(niwot_output, sites=(1, 27), n_samples=2):
+    """Niwot's wood carbon stacked over ``(sample, site)``, every run the same."""
+    from sipnet_calibration.fields import stack_model_outputs
+
+    run = niwot_output.select(["wood_carbon"])
+    runs = {(sample, site): run for sample in range(n_samples) for site in sites}
+    return stack_model_outputs(runs, site_table=_small_table(*sites))
+
+
 def _small_table(*sites):
     return site_table_of(*sites, lon=[-105.0 + s for s in sites], lat=40.0)
 
@@ -816,6 +825,88 @@ class TestValidateField:
 
         with pytest.raises(TypeError, match="a field is an xarray DataArray"):
             validate_field(_field(("time",)).to_dataset())
+
+    def test_the_interval_coordinates_are_scalars_at_one_time(self, niwot_output):
+        """``.isel(time=k)`` leaves the timestep coordinates scalar, as a map needs."""
+        from sipnet_calibration.fields import validate_field
+
+        field = stack_model_outputs_of(niwot_output)["wood_carbon"].isel(sample=0)
+        validate_field(field.isel(time=-1))
+        validate_field(field.sel(time=field["time"].values[3]))
+        windowed = _field(("site", "time"), n_time=3).assign_coords(
+            time_bounds_start=("time", pd.date_range("2011-01-01", periods=3, freq="D")),
+            time_bounds_end=("time", pd.date_range("2011-01-02", periods=3, freq="D")),
+        )
+        validate_field(windowed.isel(time=0))
+
+    def test_a_scalar_interval_coordinate_beside_a_time_dim_is_refused(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("site", "time"), n_time=3).assign_coords(
+            time_step_start=np.datetime64("2012-01-01")
+        )
+        with pytest.raises(ValueError, match="'time_step_start' is on \\(\\)"):
+            validate_field(field)
+
+    def test_a_time_zone_aware_time_is_refused_as_not_naive(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("time",), n_time=3)
+        aware = field.assign_coords(time=pd.date_range("2012-01-01", periods=3, tz="UTC"))
+        with pytest.raises(ValueError, match="naive datetime64"):
+            validate_field(aware)
+
+    def test_point_labels_are_integers(self):
+        from sipnet_calibration.fields import validate_field
+
+        point = xr.DataArray(
+            np.zeros(2),
+            dims="point",
+            coords={"point": ["a", "b"], "lon": ("point", [0.0, 1.0]), "lat": ("point", [0.0, 1.0])},
+            attrs={"units": "1"},
+        )
+        with pytest.raises(ValueError, match="point labels are integers"):
+            validate_field(point)
+        validate_field(point.assign_coords(point=[0, 1]))
+
+    def test_lon_and_lat_are_on_the_spatial_dim_or_scalars_beside_a_scalar_site(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("sample", "site"))
+        one_site = field.isel(site=0)
+        validate_field(one_site)
+        on_sample = one_site.assign_coords(lon=("sample", [1.0, 2.0, 3.0]))
+        with pytest.raises(ValueError, match="'lon' must be a float64 scalar"):
+            validate_field(on_sample)
+        with pytest.raises(ValueError, match="a scalar site carries a scalar 'lat'"):
+            validate_field(one_site.drop_vars("lat"))
+
+    def test_an_object_array_is_categorical_only_when_it_holds_strings(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("time",), n_time=3)
+        floats = field.copy(data=np.asarray([1.0, 2.0, 3.0], dtype=object))
+        floats.attrs = {}
+        with pytest.raises(ValueError, match="attrs\\['units'\\]"):
+            validate_field(floats)
+        strings = field.copy(data=np.asarray(["a", "b", "c"], dtype=object))
+        strings.attrs = {}
+        validate_field(strings)
+
+    def test_a_units_refusal_names_the_field(self):
+        from sipnet_calibration.fields import validate_field
+
+        field = _field(("time",))
+        field.attrs = {"units": "g C m-2"}
+        with pytest.raises(ValueError, match="^'air_temperature': "):
+            validate_field(field)
+
+    def test_batch_labels_of_any_integer_dtype_are_accepted(self):
+        from sipnet_calibration.fields import validate_field
+
+        for dtype in (np.int16, np.uint8, np.int64):
+            field = _field(("sample", "time"))
+            validate_field(field.assign_coords(sample=field["sample"].values.astype(dtype)))
 
 
 class TestStackBatchDims:

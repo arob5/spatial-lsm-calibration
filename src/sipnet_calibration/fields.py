@@ -946,6 +946,15 @@ def _is_batch_dim(field: xr.DataArray | xr.Dataset, dim: str) -> bool:
     return field.indexes[dim].dtype.kind in "iu"
 
 
+def _is_categorical(field: xr.DataArray) -> bool:
+    """Whether *field* holds classes: CF flags, strings, bytes or booleans."""
+    if {"flag_values", "flag_meanings"} & set(field.attrs) or field.dtype.kind in "USb":
+        return True
+    if field.dtype.kind == "O":
+        return all(isinstance(value, str) for value in np.asarray(field.values).ravel())
+    return False
+
+
 def _dim_rank(field: xr.DataArray, dim: str) -> int | None:
     """0 for a batch dim, 1 for a spatial dim, 2 for ``time``, ``None`` for any other."""
     if dim == TIME:
@@ -1166,6 +1175,11 @@ def check_field_dims_are_field_dims(field: xr.DataArray, message_name: str) -> N
             f"{dtypes}. A structural axis (variable, quantile, a PFT class) is never a "
             "dim of a field: select it away, or split it into a dict of fields."
         )
+    if POINT in dims and field.indexes[POINT].dtype.kind not in "iu":
+        raise ValueError(
+            f"{message_name}: point labels are integers, got {field.indexes[POINT].dtype}; "
+            "label the points 0 to n - 1 and keep any names as a coordinate on point."
+        )
     spatial = frozenset(d for d in dims if d in SPATIAL_DIM_NAMES)
     if spatial not in _SPATIAL_DIM_SETS:
         raise ValueError(
@@ -1203,22 +1217,68 @@ def check_field_site_holds_site_ids(field: xr.DataArray, message_name: str) -> N
 
 
 def check_field_locations_are_on_the_spatial_dim(field: xr.DataArray, message_name: str) -> None:
-    """A ``site`` or ``point`` dim carries ``float64`` ``lon``/``lat`` on it alone."""
+    """``lon``/``lat`` are ``float64`` on a ``site`` or ``point`` dim, or scalars beside one.
+
+    A ``site`` or ``point`` dim carries them on it alone; a scalar ``site`` or
+    ``point`` carries them as scalars; with neither, they may only be
+    scalars (or, on a projected raster, on its ``y``/``x`` dims), never on a
+    batch dim or ``time``.
+    """
     for dim in (SITE, POINT):
-        if dim not in field.dims:
-            continue
-        for name in (LON, LAT):
-            if name not in field.coords:
-                raise ValueError(
-                    f"{message_name}: the {dim} dim carries no {name!r} coordinate; locate "
-                    f"the {dim}s, with sites.site_coordinates for site ids."
-                )
+        if dim in field.dims:
+            for name in (LON, LAT):
+                check_field_location_is_on_the_dim(field, name, dim, message_name)
+            return
+    for dim in (SITE, POINT):
+        if dim in field.coords:
+            for name in (LON, LAT):
+                check_field_location_is_a_scalar(field, name, dim, message_name)
+            return
+    raster = {str(d) for d in field.dims} & {X, Y}
+    for name in (LON, LAT):
+        if name in field.coords and name not in field.dims:
             coordinate = field[name]
-            if coordinate.dims != (dim,) or coordinate.dtype != np.float64:
+            if not set(map(str, coordinate.dims)) <= raster:
                 raise ValueError(
-                    f"{message_name}: {name!r} must be float64 on ({dim},), got "
-                    f"{coordinate.dtype} on {coordinate.dims}."
+                    f"{message_name}: {name!r} is on {coordinate.dims}; a location is on the "
+                    "spatial dim, so select a batch dim away before placing it elsewhere, "
+                    "or drop the coordinate."
                 )
+
+
+def check_field_location_is_on_the_dim(
+    field: xr.DataArray, name: str, dim: str, message_name: str
+) -> None:
+    """*name* (``lon`` or ``lat``) is a ``float64`` coordinate on *dim* alone."""
+    if name not in field.coords:
+        raise ValueError(
+            f"{message_name}: the {dim} dim carries no {name!r} coordinate; locate "
+            f"the {dim}s, with sites.site_coordinates for site ids."
+        )
+    coordinate = field[name]
+    if coordinate.dims != (dim,) or coordinate.dtype != np.float64:
+        raise ValueError(
+            f"{message_name}: {name!r} must be float64 on ({dim},), got "
+            f"{coordinate.dtype} on {coordinate.dims}."
+        )
+
+
+def check_field_location_is_a_scalar(
+    field: xr.DataArray, name: str, dim: str, message_name: str
+) -> None:
+    """Beside a scalar *dim* coordinate, *name* (``lon`` or ``lat``) is a ``float64`` scalar."""
+    if name not in field.coords:
+        raise ValueError(
+            f"{message_name}: a scalar {dim} carries a scalar {name!r} coordinate, and this "
+            f"field has none; keep it when selecting one {dim} (.isel and .sel do), or "
+            "locate it with sites.site_coordinates."
+        )
+    coordinate = field[name]
+    if coordinate.dims != () or coordinate.dtype != np.float64:
+        raise ValueError(
+            f"{message_name}: {name!r} must be a float64 scalar beside the scalar {dim}, got "
+            f"{coordinate.dtype} on {coordinate.dims}."
+        )
 
 
 def check_field_time_is_a_time_axis(field: xr.DataArray, message_name: str) -> None:
@@ -1228,7 +1288,8 @@ def check_field_time_is_a_time_axis(field: xr.DataArray, message_name: str) -> N
     time = field[TIME]
     # Any datetime64 unit: pandas 3 and xarray make microseconds by default,
     # and numpy compares labels across units, so the unit carries no meaning.
-    if time.dtype.kind != "M":
+    # A time zone aware axis has a pandas dtype, not a numpy one.
+    if not isinstance(time.dtype, np.dtype) or time.dtype.kind != "M":
         raise ValueError(
             f"{message_name}: time labels must be naive datetime64, got {time.dtype}; "
             "convert them to the model's clock and drop any time zone."
@@ -1244,13 +1305,19 @@ def check_field_time_is_a_time_axis(field: xr.DataArray, message_name: str) -> N
 
 
 def check_field_interval_coordinates_are_on_time(field: xr.DataArray, message_name: str) -> None:
-    """pySIPNET's timestep coordinates and the window coordinates are on ``time`` alone."""
+    """pySIPNET's timestep coordinates and the window coordinates are on ``time`` alone.
+
+    On ``(time,)`` when ``time`` is a dim, and scalars when it is not, as
+    ``.isel(time=k)`` leaves them.
+    """
+    expected = (TIME,) if TIME in field.dims else ()
     for name in _INTERVAL_COORD_NAMES:
-        if name in field.coords and field[name].dims != (TIME,):
+        if name in field.coords and field[name].dims != expected:
             raise ValueError(
-                f"{message_name}: {name!r} is on {field[name].dims}, not on (time,) alone; "
-                "runs on different time axes give it more dims when stacked, so select "
-                "one site (or one batch label) first."
+                f"{message_name}: {name!r} is on {field[name].dims}, not on {expected} alone; "
+                "an interval belongs to one time label, and runs on different time axes "
+                "give it more dims when stacked, so select one site (or one batch label) "
+                "first."
             )
 
 
@@ -1258,9 +1325,10 @@ def check_field_units_are_valid(field: xr.DataArray, message_name: str) -> None:
     """``units`` is present and valid by pySIPNET, unless the field is categorical.
 
     A categorical field has CF ``flag_values`` or ``flag_meanings``, or values
-    that are strings or booleans; it has classes, not units.
+    that are strings (``U``, ``S``, or an object array holding only strings),
+    bytes or booleans; it has classes, not units.
     """
-    if {"flag_values", "flag_meanings"} & set(field.attrs) or field.dtype.kind in "OUSb":
+    if _is_categorical(field):
         return
     units = field.attrs.get("units")
     if not isinstance(units, str):
@@ -1268,7 +1336,10 @@ def check_field_units_are_valid(field: xr.DataArray, message_name: str) -> None:
             f"{message_name}: a field carries its units in attrs['units']; set them, "
             "'1' for a dimensionless quantity."
         )
-    validate_units(units)
+    try:
+        validate_units(units)
+    except ValueError as error:
+        raise ValueError(f"{message_name}: {error}") from error
 
 
 def check_field_has_a_batch_dim(dims: tuple[str, ...], message_name: str) -> None:

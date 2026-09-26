@@ -531,14 +531,16 @@ def animate_map(
 
     Raises
     ------
+    TypeError
+        If *field* is not a ``DataArray``.
     ValueError
-        If *field* has no *dim*, or a single step of it is not a map.
+        If *field* is not a field (:func:`sipnet_calibration.fields.validate_field`);
+        if it has no *dim*, or a batch dim other than *dim*; or if a single
+        step of it is not a map.
     """
     validate_field(field)
-    if dim not in field.dims:
-        raise ValueError(
-            f"animate_map needs a DataArray with a {dim!r} dimension; got {list(field.dims)}"
-        )
+    _check_animation_dim_is_present(field, dim)
+    _check_animation_has_no_batch_dim(field, dim)
     frames = [field.isel({dim: i}) for i in range(field.sizes[dim])]
     color, rest = _split_color_keywords(map_kwargs)
     bounds = map_bounds(frames, rest.pop("extent", None))
@@ -1018,19 +1020,41 @@ def _check_map_field(field: xr.DataArray) -> bool:
     )
 
 
+def _check_animation_dim_is_present(field: xr.DataArray, dim: str) -> None:
+    """The field to animate has the dim it is played through."""
+    if dim not in field.dims:
+        raise ValueError(
+            f"animate_map needs a DataArray with a {dim!r} dimension; got {list(field.dims)}"
+        )
+
+
+def _check_animation_has_no_batch_dim(field: xr.DataArray, dim: str) -> None:
+    """Each frame of the animation is one map: no batch dim beside the one played."""
+    batch = [d for d in batch_dims(field) if d != dim]
+    if batch:
+        raise ValueError(
+            f"an animation draws one map per {dim}, but the array also has the batch dim(s) "
+            f"{batch}; " + "; ".join(_batch_dim_advice(field, batch))
+        )
+
+
+def _batch_dim_advice(field: xr.DataArray, dims: Sequence[str]) -> list[str]:
+    """What to do with each batch dim in *dims* before mapping *field*."""
+    return [
+        f"for the batch dim {dim!r}, draw one map per label with "
+        f"facet.plot_map_by(field, {dim!r}), quantile maps with "
+        f"facet.plot_map_quantiles(field, batch_dim={dim!r}), select one with "
+        f"field.isel({dim}=0), or reduce first with "
+        f"maps.summarize_batch(field, stat, batch_dim={dim!r})"
+        for dim in dims
+    ]
+
+
 def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
     extra = [dim for dim in field.dims if dim not in allowed]
     if not extra:
         return
-    advice = []
-    for dim in (d for d in batch_dims(field) if d in extra):
-        advice.append(
-            f"for the batch dim {dim!r}, draw one map per label with "
-            f"facet.plot_map_by(field, {dim!r}), quantile maps with "
-            f"facet.plot_map_quantiles(field, batch_dim={dim!r}), select one with "
-            f"field.isel({dim}=0), or reduce first with "
-            f"maps.summarize_batch(field, stat, batch_dim={dim!r})"
-        )
+    advice = _batch_dim_advice(field, [d for d in batch_dims(field) if d in extra])
     if TIME in extra:
         advice.append(
             "for 'time', select a step with field.sel(time=...), aggregate with "
