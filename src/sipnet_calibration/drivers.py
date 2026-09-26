@@ -103,17 +103,17 @@ Name                    Dims               Meaning
                                            with CF attributes
 ``time``                ``time``           ``datetime64[ns]``, the end of each
                                            step
-``time_step_start``     ``time``           the start of each step
-``time_step_length``    ``time``           each step's declared length,
+``timestep_start``      ``time``           the start of each step
+``timestep_length``     ``time``           each step's declared length,
                                            ``timedelta64[ns]``
-``time_bounds``         ``time, bounds``   ``[time_step_start, time]``
+``time_bounds``         ``time, bounds``   ``[timestep_start, time]``
 ======================= ================== ====================================
 
 **Time.** The time coordinates are pySIPNET's, taken unchanged from
 :attr:`pysipnet.climate.ClimateDrivers.xarray`: the same axis, with the same
 attributes, that a SIPNET run on the file has for its output. Its
 ``year``/``day_of_year``/``hour_of_day`` row labels are not kept, since
-``time_step_start`` is the same instant. A row's labels are the start of its
+``timestep_start`` is the same instant. A row's labels are the start of its
 step on whatever clock the drivers use, and ``time`` is the step's end. The
 clock is ``time_zone``, on ``time`` and on the Dataset, which is
 ``"undeclared"`` unless the caller declares one.
@@ -126,7 +126,7 @@ columns are instantaneous at the label rather than means over the step.
 
 **Attributes** on the dataset: pySIPNET's -- ``Conventions``,
 ``time_convention``, ``time_zone``, ``time_axis_source`` and
-``time_step_length_source`` among them -- and ``title``, ``source_root``,
+``timestep_length_source`` among them -- and ``title``, ``source_root``,
 ``source_layout``, ``n_sites``, ``n_driver_members`` and ``coverage``
 (``"complete"`` or ``"gaps"``).
 

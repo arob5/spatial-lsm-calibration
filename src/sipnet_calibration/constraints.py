@@ -1075,7 +1075,7 @@ def _window_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     ``bounds`` dimension being none of the array's, so the pair rides along
     as :data:`~sipnet_calibration.conventions.WINDOW_START` and
     :data:`~sipnet_calibration.conventions.WINDOW_END`, the way pySIPNET's
-    model output carries ``time_step_start`` beside ``time``.
+    model output carries ``timestep_start`` beside ``time``.
     """
     bounds = dataset[TIME_BOUNDS]
     comment = "One edge of the CF time_bounds of the value at this label."

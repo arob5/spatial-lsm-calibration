@@ -51,7 +51,7 @@ produced for a batch of ``J`` rows of ``theta``:
     ``(sample, site, time)``, from
     :func:`~sipnet_calibration.fields.stack_model_outputs`, ``NaN`` where a
     run failed. Its attributes are the first run's; with ``freq`` they gain
-    pySIPNET's ``resampling_frequency`` and ``time_step_length_source``.
+    pySIPNET's ``resampling_frequency`` and ``timestep_length_source``.
     ``None`` when an observation vector was given.
 ``predictions``
     ``(J, N)`` float64 ``jax.Array`` in the observation vector's order,
@@ -816,7 +816,7 @@ def _aggregated(model_output: xr.Dataset, freq: str) -> xr.Dataset:
     Through :func:`~sipnet_calibration.observation.aggregate_time`, the
     aggregation the plotting layer and the observation operators use, one
     variable at a time. The result's attributes are the run's, with
-    pySIPNET's ``resampling_frequency`` and ``time_step_length_source`` as
+    pySIPNET's ``resampling_frequency`` and ``timestep_length_source`` as
     ``pysipnet.resample.resample`` sets them on a Dataset.
     """
     aggregated = [
@@ -829,7 +829,7 @@ def _aggregated(model_output: xr.Dataset, freq: str) -> xr.Dataset:
     merged = xr.merge(aggregated, join="exact", compat="identical", combine_attrs="drop_conflicts")
     merged.attrs = {
         **model_output.attrs,
-        "time_step_length_source": STEP_LENGTH_RESAMPLED,
+        "timestep_length_source": STEP_LENGTH_RESAMPLED,
         "resampling_frequency": freq,
     }
     return merged

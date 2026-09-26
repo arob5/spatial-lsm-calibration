@@ -66,7 +66,7 @@ result says what it is: arithmetic through :mod:`pysipnet.arithmetic`
 :func:`extract_sipnet_parameter_at_coords`, labeled by
 ``pysipnet.parameters.model.parameter_dataarray``; and time through
 :mod:`sipnet_calibration.observation.time_alignment`:
-``select_timestep_at`` (the model step whose ``(time_step_start, time]``
+``select_timestep_at`` (the model step whose ``(timestep_start, time]``
 contains a label), ``reduce_windows`` (a step belongs to the window its end
 falls in; means weighted by step length; a gap makes the window ``NaN``) and
 ``windows_from_observed_values``. It starts from
@@ -165,7 +165,7 @@ class SelectTimestep:
     """The value of one model variable at the timestep containing each observed label.
 
     For each label in ``observed_values.time`` the model timestep whose
-    interval ``(time_step_start, time]`` contains it is read: the state at
+    interval ``(timestep_start, time]`` contains it is read: the state at
     the end of that step for a pool, the mean over it for a step mean or a
     rate. The label comes only from the observed values. A per-step total is
     refused; make it a rate first.

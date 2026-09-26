@@ -168,7 +168,7 @@ and which the data-source cleanup (PR 5d) renames.
 
 | Word | Meaning | Retires |
 |---|---|---|
-| **timestep** (prose and identifiers) | one SIPNET step, `(timestep_start, time]`. pySIPNET's coordinates are `time_step_start`/`time_step_length` today; it is renaming them, and `conventions.TIMESTEP_START`/`TIMESTEP_LENGTH` then follow | "time step", `time_step` |
+| **timestep** (prose and identifiers) | one SIPNET step, `(timestep_start, time]`; pySIPNET's coordinates are `timestep_start`/`timestep_length` (`conventions.TIMESTEP_START`/`TIMESTEP_LENGTH`) | "time step", `time_step` |
 | **time label** | a value of the `time` coordinate | |
 | **window** | the interval an observation's value covers, which model timesteps are reduced over (`pd.IntervalIndex`); on an observation's `time` as the coordinates `conventions.WINDOW_START`/`WINDOW_END`, built from the CF `time_bounds` variable the processed file stores; their values are `window_start`/`window_end` | "time bounds" and `time_bounds_start`/`time_bounds_end` for these coordinates |
 | **cell** | **only the CF sense**: the interval or area one value represents (a calendar resampling cell, a grid cell, a raster cell, a map renderer's site cell) | an element of y, a `(sample, site)` pair, a CSV field, a figure slot |
@@ -592,7 +592,7 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   where present, `bounds` on `time`; `standard_name` and `units` on `lon`/`lat`;
   no `_FillValue` on any coordinate. Where a value's support is documented it is
   a CF `time_bounds(time, bounds)` coordinate, as pySIPNET writes one whose two
-  edges are `time_step_start` and `time`. Where CF has no vocabulary for what a
+  edges are `timestep_start` and `time`. Where CF has no vocabulary for what a
   label means, the meaning goes in words (`time_reference`, `comment`), never in
   a `cell_methods` that is not literally true.
 - **Ingest changes structure, never values.** No unit conversion, no temporal
@@ -982,7 +982,7 @@ plotting code. The load-bearing rules:
   SIPNET row labels; `freq=` is for that path only, and aggregates each run's
   variables one at a time with `observation.aggregate_time` by the method that
   keeps its kind, as a predictive-check figure does, the Dataset gaining
-  pySIPNET's `resampling_frequency` and `time_step_length_source`. Under any
+  pySIPNET's `resampling_frequency` and `timestep_length_source`. Under any
   backend but `SequentialBackend` the drivers must be file-backed.
   `compute.scc_backend` is the SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
@@ -1010,13 +1010,13 @@ plotting code. The load-bearing rules:
   drivers, read through `ClimateDrivers`. The registry names are already
   `lower_case_with_underscores`, so they are the processed names. Both keep
   `conventions.TIME_COORD_NAMES`, pySIPNET's axis: `time` at the step end, with
-  `time_step_start` beside it, so the interval a value covers is
-  `(time_step_start, time]`, whose two edges are the pair pySIPNET writes as
+  `timestep_start` beside it, so the interval a value covers is
+  `(timestep_start, time]`, whose two edges are the pair pySIPNET writes as
   its CF `time_bounds` variable, and a run's output and the drivers it ran on share one axis by
   construction. `time_bounds` itself cannot ride on a field, its `bounds`
   dimension being no field dimension, so it and the `time` attribute naming it
   are dropped, along with SIPNET's `year`/`day_of_year`/`hour_of_day` row
-  labels, which `time_step_start` already is.
+  labels, which `timestep_start` already is.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
   Observation sources keep their source units; the observation operator
@@ -1092,8 +1092,10 @@ plotting code. The load-bearing rules:
   (`max_photosynthesis_rate`, not `photosynthesis.max_photosynthesis_rate`)
 - `SIPNETOutput` selects with `out["nee"]` (a `DataArray`) and `out[["nee", "gpp"]]`
   (a `Dataset`); aliases resolve. `result.nee()` and `to_xarray()` are gone (pySIPNET PR #36).
-- The output `Dataset` is CF-1.11: `time` is the **end** of each step, `time_step_start` and
-  `time_step_length` are coordinates, and `time_bounds = [time_step_start, time]` (PR #38).
+- The output `Dataset` is CF-1.11: `time` is the **end** of each step, `timestep_start` and
+  `timestep_length` are coordinates, and `time_bounds = [timestep_start, time]` (PR #38;
+  PR #52 renamed them from `time_step_*`, keeping no aliases, as it did
+  `SIPNETOutput.timestep_length` and the `timestep_length_source` attribute).
   `pysipnet.resample.resample(ds, freq, how=...)` requires `how`.
 - `pysipnet.variables.OUTPUT_VARIABLES` / `CLIMATE_VARIABLES` own the names, UDUNITS `units`,
   `constituent` and `kind` of every column. `pysipnet.units.validate_units` refuses a substance
@@ -1117,7 +1119,7 @@ plotting code. The load-bearing rules:
   product or quotient has a kind, never the denominator; a `timestep_total` over a time is a
   `daily_rate` and back (`KIND_AFTER_TIME_POWER` in `pysipnet.variables`); every other change of
   time dimension is refused. Index coordinates must match exactly, and conflicting non-index
-  coordinates are refused. `step_length(data, units="d")` is the `time_step_length` coordinate
+  coordinates are refused. `step_length(data, units="d")` is the `timestep_length` coordinate
   as a float array, so `divide_with_units(nee, step_length(nee))` is `g m-2 d-1` of C.
   `parameter_dataarray(name, values, dims=, coords=)` and `SIPNETParameters.dataarray(name)`
   label a parameter's values from `ParameterSpec.xarray_attributes()` (no `kind`) and refuse
@@ -1139,7 +1141,7 @@ plotting code. The load-bearing rules:
   time_zone)` is keyword-only and `time_zone=` is required.
 - **An output's time axis is its drivers'** (PR #43): the runner passes `climate=` to
   `SIPNETOutput`, and `SIPNETOutput.from_dataframe(df, *, climate=None, flags=None,
-  run_id=None)` does the same by hand. `time_step_length=` is gone. Without drivers the axis
+  run_id=None)` does the same by hand. Without drivers the axis
   falls back to the printed labels, which SIPNET rounds to 0.01 h; the Dataset's
   `time_axis_source` says which was used.
 - **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and

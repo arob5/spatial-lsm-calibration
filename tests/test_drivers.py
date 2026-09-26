@@ -268,7 +268,7 @@ class TestLoadDrivers:
         assert dataset.sizes == {"driver_member": 2, "site": 2, "time": 2920, "bounds": 2}
         assert set(dataset.coords) == {
             "driver_member", "source_index", "site", "lon", "lat",
-            "time", "time_step_start", "time_step_length", "time_bounds",
+            "time", "timestep_start", "timestep_length", "time_bounds",
         }
         assert dataset["driver_member"].dtype == np.int64
         assert dataset["source_index"].dtype == np.int64
@@ -299,7 +299,7 @@ class TestLoadDrivers:
             np.testing.assert_array_equal(dataset[name].values, own[name].values)
             assert dataset[name].attrs == own[name].attrs, name
         starts = pd.date_range("2013-01-01", periods=2920, freq="3h").as_unit("ns")
-        np.testing.assert_array_equal(dataset["time_step_start"].values, starts.to_numpy())
+        np.testing.assert_array_equal(dataset["timestep_start"].values, starts.to_numpy())
         np.testing.assert_array_equal(
             dataset["time"].values, (starts + pd.Timedelta(hours=3)).to_numpy()
         )
@@ -617,7 +617,7 @@ class TestLoadDrivers:
     def test_rejects_two_files_on_different_time_axes(self, root, site_table):
         write_pair(root, 7, 3, synthetic_rows(years=(2014,)))
         write_pair(root, 3, 3, synthetic_rows(years=(2013,)))
-        with pytest.raises(ValueError, match="time_step_start differs from"):
+        with pytest.raises(ValueError, match="timestep_start differs from"):
             load_drivers([3, 7], source_indices=[3], root=root, site_table=site_table)
         write_pair(root, 7, 4, synthetic_rows(years=(2013, 2014)))
         write_pair(root, 3, 4, synthetic_rows(years=(2013,)))
@@ -629,14 +629,14 @@ class TestLoadDrivers:
         write_pair(root, 3, 6, rows)
         rows.loc[100, "time"] += 5e-6
         write_pair(root, 7, 6, rows)
-        with pytest.raises(ValueError, match="time_step_start differs from"):
+        with pytest.raises(ValueError, match="timestep_start differs from"):
             load_drivers([3, 7], source_indices=[6], root=root, site_table=site_table)
         # The same starts, and a last step half as long: a different axis too.
         rows = synthetic_rows(years=(2013,))
         write_pair(root, 3, 8, rows)
         rows.loc[len(rows) - 1, "length"] = 0.0625
         write_pair(root, 7, 8, rows)
-        with pytest.raises(ValueError, match="time_step_length differs from"):
+        with pytest.raises(ValueError, match="timestep_length differs from"):
             load_drivers([3, 7], source_indices=[8], root=root, site_table=site_table)
 
     def test_round_trips_through_zarr(self, root, site_table, tmp_path):
@@ -740,7 +740,7 @@ class TestRealFiles:
             assert bool(present.sel(site=site, source_index=member).values)
         assert int(present.sum()) == len(real_pairs())
         assert real_drivers.attrs["coverage"] == "gaps"
-        assert str(real_drivers["time_step_start"].values[0]) == "2012-01-01T00:00:00.000000000"
+        assert str(real_drivers["timestep_start"].values[0]) == "2012-01-01T00:00:00.000000000"
         assert str(real_drivers["time"].values[-1]) == "2025-01-01T00:00:00.000000000"
 
     def test_a_run_and_its_drivers_share_one_time_axis(self, real_drivers, site_1_result):

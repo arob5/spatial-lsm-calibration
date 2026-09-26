@@ -161,20 +161,20 @@ SPATIAL_DIM_NAMES: tuple[str, ...] = (SITE, POINT, LAT, LON, Y, X)
 
 # ── coordinates ───────────────────────────────────────────────────────────────
 
-# pySIPNET is renaming these two coordinates and will export constants for
-# them beside TIME_DIMENSION; these definitions then become imports from
-# pysipnet.dataset. Until then they carry pySIPNET's current values.
+# pySIPNET exports no constants for these two coordinates; once it does,
+# beside TIME_DIMENSION, these definitions become imports from
+# pysipnet.dataset. Until then they carry pySIPNET's names as literals.
 
 #: pySIPNET's coordinate on ``time`` for the start of the timestep a row
 #: covers; ``time`` is its end.
-TIMESTEP_START = "time_step_start"
+TIMESTEP_START = "timestep_start"
 
 #: pySIPNET's coordinate on ``time`` for the declared duration of the
 #: timestep a row covers, as ``timedelta64``.
-TIMESTEP_LENGTH = "time_step_length"
+TIMESTEP_LENGTH = "timestep_length"
 
 #: pySIPNET's time coordinates, which a model field and a driver field both
-#: keep. ``time`` is the end of the timestep and ``time_step_start`` its
+#: keep. ``time`` is the end of the timestep and ``timestep_start`` its
 #: start, so the two are the CF bounds pair.
 TIME_COORD_NAMES: tuple[str, ...] = (TIME, TIMESTEP_START, TIMESTEP_LENGTH)
 
@@ -206,7 +206,7 @@ NON_BATCH_DIM_NAMES: tuple[str, ...] = (*SPATIAL_DIM_NAMES, TIME, SOURCE_INDEX)
 
 #: SIPNET's own row labels, the start of each step, which pySIPNET's output
 #: carries as integer or float coordinates on ``time``. A field drops them,
-#: since ``time_step_start`` is the same instant; they are neither batch
+#: since ``timestep_start`` is the same instant; they are neither batch
 #: labels nor names a batch dimension may take.
 SIPNET_ROW_LABEL_NAMES: tuple[str, ...] = ("year", "day_of_year", "hour_of_day")
 
