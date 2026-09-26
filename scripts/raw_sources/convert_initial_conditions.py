@@ -277,7 +277,7 @@ def check_site_directories_are_the_pool(
         print(f"note: {sites_path} absent; the pool check is left to the ingest", flush=True)
         return
     check_sites_are_the_site_table(
-        sites, load_sites(sites_path), message_name="the site directories"
+        load_sites(sites_path), sites, message_name="the site directories"
     )
 
 

@@ -1037,7 +1037,7 @@ def check_site_table_sites_are_all_listed(
 
 
 def check_sites_are_the_site_table(
-    site_ids: Iterable[int], site_table: pd.DataFrame, *, message_name: str
+    site_table: pd.DataFrame, site_ids: Iterable[int], *, message_name: str
 ) -> None:
     """*site_ids* are exactly the sites of the site table.
 

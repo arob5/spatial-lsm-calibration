@@ -1392,11 +1392,11 @@ class TestSiteTableChecks:
 
     def test_the_sites_of_a_whole_pool_source_are_exactly_the_tables(self):
         table = site_table_of(1, 2, 3)
-        check_sites_are_the_site_table([3, 1, 2], table, message_name="raw")
+        check_sites_are_the_site_table(table, [3, 1, 2], message_name="raw")
         with pytest.raises(KeyError, match=r"\[4\]"):
-            check_sites_are_the_site_table([1, 2, 3, 4], table, message_name="raw")
+            check_sites_are_the_site_table(table, [1, 2, 3, 4], message_name="raw")
         with pytest.raises(ValueError, match=r"lack 1 site\(s\) of the site table, \[3\]"):
-            check_sites_are_the_site_table([1, 2], table, message_name="raw")
+            check_sites_are_the_site_table(table, [1, 2], message_name="raw")
 
 
 def test_n_sites_is_the_pool_the_shapefile_defines():

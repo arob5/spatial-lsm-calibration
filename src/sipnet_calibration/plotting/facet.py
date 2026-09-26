@@ -271,16 +271,8 @@ def plot_by_site(
     KeyError
         If *sites* names a site that is not in *data*.
     """
-    if SITE not in data.dims:
-        raise ValueError(
-            f"the array has dimensions {list(data.dims)} and needs {SITE!r} "
-            "to be split by site"
-        )
-    if SITE not in data.coords:
-        raise ValueError(
-            f"the array has a {SITE!r} dimension but no {SITE!r} "
-            "coordinate, so its panels cannot be named or selected"
-        )
+    check_data_has_a_site_dimension(data)
+    check_data_has_a_site_coordinate(data)
     available = data.coords[SITE].values.tolist()
     chosen = available if sites is None else list(as_site_ids(sites, message_name="sites"))
     check_data_holds_the_sites(available, chosen)
@@ -540,6 +532,24 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_data_has_a_site_dimension(data: xr.DataArray) -> None:
+    """The array has a ``site`` dimension to split by."""
+    if SITE not in data.dims:
+        raise ValueError(
+            f"the array has dimensions {list(data.dims)} and needs {SITE!r} "
+            "to be split by site"
+        )
+
+
+def check_data_has_a_site_coordinate(data: xr.DataArray) -> None:
+    """The array's ``site`` dimension has a coordinate to name and select its panels by."""
+    if SITE not in data.coords:
+        raise ValueError(
+            f"the array has a {SITE!r} dimension but no {SITE!r} "
+            "coordinate, so its panels cannot be named or selected"
+        )
 
 
 def check_data_holds_the_sites(available: list[int], chosen: list[int]) -> None:

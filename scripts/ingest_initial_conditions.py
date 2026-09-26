@@ -165,7 +165,7 @@ def check_raw(raw: xr.Dataset, sites: pd.DataFrame) -> None:
     """Every check on the raw file beyond the schema ``read_raw`` enforces."""
     check_every_source_variable_has_a_spec()
     check_sites_are_the_site_table(
-        raw[SITE].values.tolist(), sites, message_name="the raw file's sites"
+        sites, raw[SITE].values.tolist(), message_name="the raw file's sites"
     )
     check_members_are_contiguous_from_one(raw)
     check_wood_is_biomass_minus_leaf(raw)

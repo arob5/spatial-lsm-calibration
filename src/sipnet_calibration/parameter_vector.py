@@ -1338,6 +1338,7 @@ class ParameterVector:
         sites, lon_lat = _normalized_sites(self.sites)
         object.__setattr__(self, "sites", sites)
         object.__setattr__(self, "_lon_lat", lon_lat)
+        check_vector_has_a_site(self.sites)
         check_sites_are_ascending(self.sites)
         labels, declared = {}, {}
         for name, value in dict(self.site_labels).items():
@@ -2783,9 +2784,14 @@ def check_fixed_value_covers_groups(parameter: FixedParameter, groups: tuple[Any
         )
 
 
-def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
+def check_vector_has_a_site(sites: tuple[int, ...]) -> None:
+    """The vector has at least one site."""
     if not sites:
         raise ValueError("a ParameterVector needs at least one site.")
+
+
+def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
+    """The vector's sites are strictly ascending, so each is listed once."""
     if list(sites) != sorted(set(sites)):
         raise ValueError("sites must be strictly ascending with no repeats.")
 
@@ -3054,6 +3060,7 @@ def check_fixed_values_are_numbers(parameter: FixedParameter) -> None:
 
 
 def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
+    """A site table given as ``sites=`` lists its sites ascending, each once."""
     if list(ids) != sorted(set(ids)):
         raise ValueError(
             "a site table passed as sites= must be in ascending site_id order with no repeats, "
@@ -3063,6 +3070,7 @@ def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
 
 
 def check_site_table_positions_are_finite(table: pd.DataFrame) -> None:
+    """A site table given as ``sites=`` has a finite ``lon`` and ``lat`` for every site."""
     if not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
         raise ValueError(
             "a site table passed as sites= has missing or non-finite lon/lat; give every "

@@ -182,7 +182,10 @@ def ingest(spec: ConstraintSpec, raw_root: Path, sites: pd.DataFrame, out_dir: P
 
 def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
     """Every check on the raw rows, before anything is built from them."""
-    check_site_ids_are_valid(spec, frame)
+    check_site_id_column_is_integer_valued(spec, frame)
+    check_site_ids_are_in_range(
+        frame[SITE_ID].to_numpy(), message_name=f"{spec.raw_file}: {SITE_ID}"
+    )
     check_site_table_lists_the_sites(
         sites, frame[SITE_ID].unique().tolist(), message_name=f"{spec.raw_file}: site(s)"
     )
@@ -237,12 +240,10 @@ def describe_product(dataset: xr.Dataset, path: Path) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_site_ids_are_valid(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
-    """Raise unless every site id is an integer site id, which fits the stored width."""
-    site = frame[SITE_ID].to_numpy()
-    if not np.issubdtype(site.dtype, np.integer):
+def check_site_id_column_is_integer_valued(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """The raw file's ``site_id`` column is of an integer dtype."""
+    if not np.issubdtype(frame[SITE_ID].to_numpy().dtype, np.integer):
         raise IngestError(f"{spec.raw_file}: {SITE_ID} is not integer-valued")
-    check_site_ids_are_in_range(site, message_name=f"{spec.raw_file}: {SITE_ID}")
 
 
 def check_coordinates_match_site_table(
