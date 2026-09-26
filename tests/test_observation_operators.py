@@ -888,3 +888,57 @@ class TestAStackedTargetIsNotReadAtATablesLabels:
         array = extract_sipnet_parameter_at_coords(self._table(), "leaf_carbon_per_area", named)
         assert array.dims == ("sample", "site")
         assert array.values.tolist() == [[20.0, 40.0], [30.0, 60.0]]
+
+
+class TestARestackedTargetIsReadAtItsLabels:
+    """A stack of a stack records only the dim it stacked, and carries the
+    first stack's ``sample_label`` on the new dim; a one-sample table was
+    applied, silently, to runs of other samples."""
+
+    def _restacked_leaf_carbon(self, stack):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        return stack_batch_dims(stack_batch_dims(crossed, into="run"), into="run2")
+
+    def _table(self):
+        return xr.Dataset(
+            {"leaf_carbon_per_area": (("sample", "site"), [[20.0, 40.0], [30.0, 60.0], [99.0, 99.0]])},
+            coords={"sample": [0, 1, 3], "site": [1, 2]},
+        )
+
+    def test_a_table_for_one_sample_is_refused_against_a_restack_of_others(self, stack):
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            extract_sipnet_parameter_at_coords(
+                self._table().sel(sample=3), "leaf_carbon_per_area", self._restacked_leaf_carbon(stack)
+            )
+
+    def test_a_table_on_a_dim_restacked_is_refused_as_a_stack(self, stack):
+        with pytest.raises(ValueError, match="'run2' is a stack of \\['sample'\\]"):
+            extract_sipnet_parameter_at_coords(
+                self._table(), "leaf_carbon_per_area", self._restacked_leaf_carbon(stack)
+            )
+
+    def test_the_operators_refuse_a_one_sample_table_against_a_restack(self, stack, labels):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
+        restacked = crossed.map(
+            lambda variable: stack_batch_dims(stack_batch_dims(variable, into="run"), into="run2")
+        )
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            ComputeLeafAreaIndex()(
+                restacked,
+                dated_observation([1, 2], labels),
+                sipnet_parameters=self._table().sel(sample=3),
+            )
+
+    def test_a_stack_whose_labels_were_dropped_is_refused_in_the_modules_words(self, stack):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
+        unlabeled = stack_batch_dims(crossed, into="run").drop_vars("sample_label")
+        with pytest.raises(ValueError, match="no 'sample_label'"):
+            extract_sipnet_parameter_at_coords(
+                self._table().sel(sample=3), "leaf_carbon_per_area", unlabeled
+            )

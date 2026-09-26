@@ -451,8 +451,8 @@ def extract_sipnet_parameter_at_coords(
         for the parameter, has a dimension the target has no coordinate for,
         lacks a label of it that *target_field* has, or carries a scalar
         label the target's disagree with (a stacked target's ``<dim>_label``
-        coordinates included); if a batch dim of *target_field* is a stack
-        of a dim the table has (:func:`~sipnet_calibration.fields.stack_batch_dims`),
+        coordinates included, or lost); if a batch dim of *target_field* is a
+        stack of a dim the table has (:func:`~sipnet_calibration.fields.stack_batch_dims`),
         whose labels are not the table's; if a mapping has no entry for the
         parameter under any of its names; or if a value is not finite or
         lies outside the parameter's pySIPNET domain.
@@ -571,14 +571,16 @@ def _table_values_at(
 def _is_stacked_into(target_field: xr.DataArray, dim: str, stacked_dim: str) -> bool:
     """Whether *dim* was stacked into the target's batch dim *stacked_dim*.
 
-    The stack record on *stacked_dim*'s coordinate says so; without one (an
-    operation dropped it), a ``<dim>_label`` coordinate on *stacked_dim* does,
-    unless *dim* is *stacked_dim* itself, which a label coordinate on a dim
-    does not make a stack of itself.
+    The stack record on *stacked_dim*'s coordinate says so, and so does a
+    ``<dim>_label`` coordinate on *stacked_dim*, whatever the record says,
+    unless *dim* is *stacked_dim* itself.
     """
+    # A restack records only the dim it stacked, and carries the labels of
+    # the dims stacked before it on the new dim; an operation may also drop
+    # the record. A label coordinate on a dim does not make a stack of itself.
     record = recorded_stacked_dims(target_field[stacked_dim])
-    if record is not None:
-        return dim in record
+    if record is not None and dim in record:
+        return True
     label = f"{dim}{STACKED_LABEL_SUFFIX}"
     return (
         dim != stacked_dim
@@ -591,10 +593,8 @@ def _labels_of(target_field: xr.DataArray, dim: str) -> xr.DataArray | None:
     """The target's labels of *dim*: its coordinate, or the ``<dim>_label`` of a stack of it."""
     if dim in target_field.coords:
         return target_field[dim]
-    for stacked_dim in batch_dims(target_field):
-        if _is_stacked_into(target_field, dim, stacked_dim):
-            return target_field[f"{dim}{STACKED_LABEL_SUFFIX}"]
-    return None
+    label = f"{dim}{STACKED_LABEL_SUFFIX}"
+    return target_field[label] if label in target_field.coords else None
 
 
 def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
@@ -999,6 +999,7 @@ def check_scalar_table_label_agrees(
     # A stacked target carries dim's labels as <dim>_label on the stacked dim.
     labels = _labels_of(target_field, dim)
     if labels is None:
+        check_a_stack_of_the_dim_carries_its_labels(target_field, dim, name)
         return
     label = values[dim].values.item()
     target_labels = coordinate_labels(labels)
@@ -1008,6 +1009,22 @@ def check_scalar_table_label_agrees(
             f"output is at {dim}(s) {target_labels[:10]}; pass the table for every {dim} "
             "the runs were."
         )
+
+
+def check_a_stack_of_the_dim_carries_its_labels(
+    target_field: xr.DataArray, dim: str, name: str
+) -> None:
+    """A batch dim of the target that records a stack of *dim* carries its labels."""
+    label = f"{dim}{STACKED_LABEL_SUFFIX}"
+    for stacked_dim in batch_dims(target_field):
+        record = recorded_stacked_dims(target_field[stacked_dim])
+        if record is not None and dim in record:
+            raise ValueError(
+                f"the model output's {stacked_dim!r} is a stack of {dim!r} with no "
+                f"{label!r} coordinate, so which {dim} each run was is lost, and the SIPNET "
+                f"table's {name!r} cannot be checked against it. Stack the model output "
+                "again from its unstacked form, which keeps the labels."
+            )
 
 
 def check_mapping_value_is_a_number(value: Any, name: str) -> None:
