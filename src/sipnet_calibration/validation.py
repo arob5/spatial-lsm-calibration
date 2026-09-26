@@ -30,7 +30,9 @@ The checks
     The ``check_*`` functions the coercers are written with, which other
     modules call where they check the same thing of an array:
     :func:`check_site_ids_are_unique`, :func:`check_site_ids_are_in_range`,
-    :func:`check_integers_are_in_range`, :func:`check_names_are_unique`.
+    :func:`check_integers_are_in_range`, :func:`check_names_are_unique`; and
+    the vectors' site selection, :func:`check_sites_are_the_vectors` and
+    :func:`check_the_restriction_keeps_a_site`.
 
 Every coercer takes the name the value goes by in a message, *message_name*,
 as its last argument, a keyword, and raises by one rule: :class:`TypeError`
@@ -103,6 +105,7 @@ __all__ = [
     "check_names_are_unique",
     "check_site_ids_are_in_range",
     "check_site_ids_are_unique",
+    "check_sites_are_the_vectors",
     "check_the_restriction_keeps_a_site",
     "is_one_vector",
     "range_summary",
@@ -942,12 +945,25 @@ def check_names_are_unique(names: Sequence[str], *, message_name: str) -> None:
         )
 
 
-def check_the_restriction_keeps_a_site(kept: Sequence[int]) -> None:
+def check_sites_are_the_vectors(
+    sites: Sequence[int], held: Sequence[int], *, message_name: str
+) -> None:
+    """Every site asked of a vector's ``select`` or ``positions`` is one of its sites."""
+    unknown = [site for site in sites if site not in set(held)]
+    if unknown:
+        raise KeyError(
+            f"{message_name} has no site(s) {truncated(unknown)}; it has "
+            f"{truncated(list(held))}. Select from its sites, or use restrict_to_sites to "
+            "keep the ones it has."
+        )
+
+
+def check_the_restriction_keeps_a_site(kept: Sequence[int], *, message_name: str) -> None:
     """A vector's ``restrict_to_sites`` keeps at least one of its sites."""
     if not kept:
         raise ValueError(
-            "none of the vector's sites is among the sites given, so the restriction "
-            "leaves nothing; restrict to sites the vector has."
+            f"none of {message_name}'s sites is among the sites given, so the restriction "
+            "leaves nothing; restrict to sites it has."
         )
 
 

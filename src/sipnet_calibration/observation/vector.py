@@ -182,9 +182,9 @@ from sipnet_calibration.validation import (
     as_site_id,
     as_site_ids,
     check_names_are_unique,
+    check_sites_are_the_vectors,
     check_the_restriction_keeps_a_site,
     is_one_vector,
-    truncated,
 )
 
 __all__ = [
@@ -439,7 +439,7 @@ class ObservationVector:
         wanted_sites = None
         if sites is not None:
             wanted_sites = list(as_site_ids(sites, message_name="sites"))
-            check_sites_are_the_vectors(wanted_sites, self._sites)
+            check_sites_are_the_vectors(wanted_sites, self._sites, message_name="the vector")
         check_time_is_a_slice(time)
         kept = [_source_restricted_to(source, wanted_sites, time) for source in chosen]
         kept = [source for source in kept if source is not None]
@@ -471,7 +471,7 @@ class ObservationVector:
         """
         wanted = set(as_site_ids(sites, message_name="sites"))
         kept = [site for site in self._sites if site in wanted]
-        check_the_restriction_keeps_a_site(kept)
+        check_the_restriction_keeps_a_site(kept, message_name="the vector")
         return self.select(sites=kept)
 
     def positions(
@@ -507,7 +507,7 @@ class ObservationVector:
         mask = np.ones(self.dimension, dtype=bool)
         if site is not None:
             site_id = as_site_id(site, message_name="site")
-            check_sites_are_the_vectors([site_id], self._sites)
+            check_sites_are_the_vectors([site_id], self._sites, message_name="the vector")
             mask &= self._index.get_level_values(SITE).values == site_id
         if observation_source_name is not None:
             check_observation_source_names_are_held(
@@ -958,17 +958,6 @@ def check_the_selection_keeps_an_observation(kept: Sequence[ObservationSource]) 
         raise ValueError(
             "the selection leaves no observation; select sites, observation sources or a "
             "period the vector observes."
-        )
-
-
-def check_sites_are_the_vectors(sites: Sequence[int], held: Sequence[int]) -> None:
-    """Every site asked for is observed by the vector."""
-    unknown = [site for site in sites if site not in set(held)]
-    if unknown:
-        raise KeyError(
-            f"the vector observes no site(s) {truncated(unknown)}; it observes "
-            f"{truncated(list(held))}. Select from its sites, or use "
-            "restrict_to_sites to keep the ones it observes."
         )
 
 

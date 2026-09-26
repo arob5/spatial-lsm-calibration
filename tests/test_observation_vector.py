@@ -199,7 +199,7 @@ class TestSelect:
         assert "soilgrids_soil_organic_carbon" in sub.observation_source_names
 
     def test_an_unknown_site_is_refused(self, vector):
-        with pytest.raises(KeyError, match=r"observes no site\(s\) \[99\]"):
+        with pytest.raises(KeyError, match=r"has no site\(s\) \[99\]"):
             vector.select(sites=[99])
 
     def test_an_empty_selection_is_refused(self, vector, times):
@@ -1126,7 +1126,7 @@ class TestTheVectorConventions:
 
     def test_positions_of_an_unknown_site_is_a_key_error(self, vector):
         """An unknown site gave an empty array, as select would not."""
-        with pytest.raises(KeyError, match="observes no site"):
+        with pytest.raises(KeyError, match="the vector has no site"):
             vector.positions(site=999)
         with pytest.raises(KeyError, match="no observation source 'nothing'"):
             vector.positions(observation_source_name="nothing")

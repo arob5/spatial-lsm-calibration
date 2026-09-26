@@ -35,6 +35,8 @@ from sipnet_calibration.validation import (
     as_site_ids,
     check_integers_are_in_range,
     check_site_ids_are_in_range,
+    check_sites_are_the_vectors,
+    check_the_restriction_keeps_a_site,
     is_one_vector,
     range_summary,
     truncated,
@@ -553,6 +555,14 @@ class TestChecks:
         check_integers_are_in_range(np.array([1, 3]), minimum=1, maximum=3, message_name="k")
         with pytest.raises(ValueError, match="from 1 to 3"):
             check_integers_are_in_range(np.array([4]), minimum=1, maximum=3, message_name="k")
+
+    def test_the_site_selection_checks_name_their_subject(self):
+        check_sites_are_the_vectors([27], (1, 27), message_name="the vector")
+        with pytest.raises(KeyError, match=r"the vector has no site\(s\) \[2\]"):
+            check_sites_are_the_vectors([2, 27], (1, 27), message_name="the vector")
+        check_the_restriction_keeps_a_site([1], message_name="the vector")
+        with pytest.raises(ValueError, match="none of the vector's sites"):
+            check_the_restriction_keeps_a_site([], message_name="the vector")
 
 
 def test_truncated_shows_at_most_the_limit_and_counts_the_rest():

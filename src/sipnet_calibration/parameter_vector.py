@@ -454,6 +454,7 @@ from sipnet_calibration.validation import (
     as_site_id,
     as_site_ids,
     check_names_are_unique,
+    check_sites_are_the_vectors,
     check_the_restriction_keeps_a_site,
     is_one_vector,
     truncated,
@@ -1830,7 +1831,7 @@ class ParameterVector:
         """
         wanted = set(as_site_ids(sites, message_name="sites"))
         kept = [site for site in self.sites if site in wanted]
-        check_the_restriction_keeps_a_site(kept)
+        check_the_restriction_keeps_a_site(kept, message_name="the vector")
         return self.select(sites=kept)
 
     def positions(
@@ -2271,7 +2272,7 @@ class ParameterVector:
         kept = list(self.sites)
         if sites is not None:
             requested = as_site_ids(sites, message_name="sites")
-            check_sites_are_the_vectors(requested, self.sites)
+            check_sites_are_the_vectors(requested, self.sites, message_name="the vector")
             kept = [s for s in kept if s in set(requested)]
         if labels is not None:
             check_labels_are_a_mapping(labels)
@@ -3248,16 +3249,6 @@ def check_label_is_the_vectors(label: Any, labels: Sequence[Any], what: str) -> 
         raise KeyError(
             f"{label!r} is not {what} of any calibration parameter; the vector has "
             f"{truncated(list(dict.fromkeys(labels)))}."
-        )
-
-
-def check_sites_are_the_vectors(sites: Sequence[int], held: Sequence[int]) -> None:
-    """Every site asked for is one of the vector's."""
-    unknown = [site for site in sites if site not in set(held)]
-    if unknown:
-        raise KeyError(
-            f"the vector has no site(s) {truncated(unknown)}; it has {truncated(list(held))}. "
-            "Select from its sites, or use restrict_to_sites to keep the ones it has."
         )
 
 
