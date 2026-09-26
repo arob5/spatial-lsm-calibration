@@ -67,9 +67,8 @@ A **field** is an ``xarray.DataArray`` holding one variable. What
   coordinates, where present, on ``time`` alone (scalars once one time is
   selected).
 * ``units`` in ``attrs``, valid by pySIPNET's ``validate_units``, unless the
-  field is categorical (:func:`is_categorical`): CF ``flag_values`` or
-  ``flag_meanings``, or values that are strings, bytes or booleans (an object
-  array only when every element is a string or missing).
+  field is categorical (:func:`is_categorical`: CF-coded classes or a boolean
+  mask).
 
 Conventions a creator follows, which :func:`validate_field` does not check:
 batch labels are created ``int64``
@@ -742,30 +741,10 @@ def scalar_batch_labels(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:
 
 
 def is_categorical(field: xr.DataArray) -> bool:
-    """Whether *field* holds classes rather than a quantity with units.
-
-    Parameters
-    ----------
-    field:
-        The array to look at.
-
-    Returns
-    -------
-    bool
-        ``True`` when *field* carries CF ``flag_values`` or ``flag_meanings``,
-        or holds strings, bytes or booleans; an object array counts when every
-        element is a string or missing (``None`` or ``NaN``) and one at least
-        is a string. A categorical field needs no ``units``.
-    """
-    if {"flag_values", "flag_meanings"} & set(field.attrs) or field.dtype.kind in "USb":
-        return True
-    if field.dtype.kind != "O":
-        return False
-    values = np.asarray(field.values).ravel()
-    strings = [isinstance(value, str) for value in values]
-    return any(strings) and all(
-        is_string or _is_missing(value) for is_string, value in zip(strings, values)
-    )
+    """Whether *field* holds classes, not a quantity: CF-coded classes (it
+    carries ``flag_values``) or a boolean mask. A categorical field needs no
+    ``units``."""
+    return "flag_values" in field.attrs or field.dtype.kind == "b"
 
 
 def batch_coordinate(dim: str, labels: Any) -> xr.DataArray:
@@ -1410,11 +1389,6 @@ def _is_batch_dim(field: xr.DataArray | xr.Dataset, dim: str) -> bool:
     if dim in NON_BATCH_DIM_NAMES or dim not in field.indexes:
         return False
     return field.indexes[dim].dtype.kind in "iu"
-
-
-def _is_missing(value: Any) -> bool:
-    """Whether one element of an object array is a missing value, ``None`` or ``NaN``."""
-    return value is None or (isinstance(value, float) and np.isnan(value))
 
 
 def _dim_rank(field: xr.DataArray, dim: str) -> int | None:

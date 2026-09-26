@@ -254,9 +254,9 @@ What `fields.validate_field(field, *, message_name=None)` checks:
   coordinates (observations) are on `time` alone, or scalars once one time is
   selected.
 - **units**: `attrs["units"]`, validated by pySIPNET, unless the field is
-  categorical, by the one rule `fields.is_categorical` holds (and the maps
-  use): CF `flag_values` or `flag_meanings`, or string, bytes or boolean
-  values; an object array when every element is a string or missing.
+  categorical by `fields.is_categorical`, the one rule (the maps use it too):
+  CF-coded classes or a boolean mask. A string-valued array is not
+  categorical; its creator codes it CF's way, as `site_labels_field` does.
 - **Batch dims.** A batch dim is every dim other than the spatial dim and
   `time` whose index coordinate holds integers, of any integer dtype that fits
   `int64` (`fields.batch_dims` finds them), with distinct labels; a dim with
@@ -1173,9 +1173,8 @@ plotting code. The load-bearing rules:
   reducing it: use `summarize_batch`, `plot_map_by`, `plot_map_quantiles` or
   `animate_map`. A GP is not fitted in plotting; its predictions are a
   `(lat, lon)` raster or site values, mapped like any field. A field is
-  categorical by `fields.is_categorical`, the field contract's one rule (CF
-  `flag_values`/`flag_meanings`, strings, or booleans such as
-  `run_succeeded`), and is colored by class position so a class keeps its
+  categorical by `fields.is_categorical`, the field contract's one rule, and is
+  colored by class position so a class keeps its
   color across figures; an optional `flag_display_names`
   tuple (ours, not CF's) is what the legend shows, and `site_labels_field`
   sets it from the spec's `display_names`. Sites are 8000 **irregular points**

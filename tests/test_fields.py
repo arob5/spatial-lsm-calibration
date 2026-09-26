@@ -1101,17 +1101,26 @@ class TestValidateField:
         with pytest.raises(ValueError, match="a scalar site carries a scalar 'lat'"):
             validate_field(one_site.drop_vars("lat"))
 
-    def test_an_object_array_is_categorical_only_when_it_holds_strings(self):
-        from sipnet_calibration.fields import validate_field
+    @pytest.mark.parametrize(
+        "values",
+        [
+            np.asarray([1.0, 2.0, 3.0], dtype=object),
+            np.asarray(["a", "b", "c"], dtype=object),
+            np.asarray(["a", None, np.nan], dtype=object),
+            np.asarray(["a", "b", "c"]),
+            np.asarray([b"a", b"b", b"c"]),
+        ],
+        ids=["object floats", "object strings", "strings with gaps", "unicode", "bytes"],
+    )
+    def test_strings_bytes_and_objects_are_not_categorical(self, values):
+        """String, bytes and object-string fields were categorical and needed no units."""
+        from sipnet_calibration.fields import is_categorical, validate_field
 
-        field = _field(("time",), n_time=3)
-        floats = field.copy(data=np.asarray([1.0, 2.0, 3.0], dtype=object))
-        floats.attrs = {}
+        field = _field(("time",), n_time=3).copy(data=values)
+        field.attrs = {}
+        assert not is_categorical(field)
         with pytest.raises(ValueError, match="attrs\\['units'\\]"):
-            validate_field(floats)
-        strings = field.copy(data=np.asarray(["a", "b", "c"], dtype=object))
-        strings.attrs = {}
-        validate_field(strings)
+            validate_field(field)
 
     def test_a_units_refusal_names_the_field(self):
         from sipnet_calibration.fields import validate_field
@@ -1158,14 +1167,27 @@ class TestValidateField:
         with pytest.raises(ValueError, match="not strictly increasing"):
             validate_field(field)
 
-    def test_a_boolean_or_string_field_needs_no_units(self):
-        from sipnet_calibration.fields import validate_field
+    def test_a_boolean_or_cf_coded_field_needs_no_units(self):
+        from sipnet_calibration.fields import is_categorical, validate_field
 
         field = _field(("site",))
-        validate_field((field > 0).rename("mask"))
-        classes = field.copy(data=np.asarray(["a", "b"]))
-        classes.attrs = {}
-        validate_field(classes)
+        mask = (field > 0).rename("mask")
+        assert is_categorical(mask)
+        validate_field(mask)
+        codes = field.copy(data=np.asarray([0, 1], dtype=np.int8))
+        codes.attrs = {"flag_values": np.array([0, 1], dtype=np.int8), "flag_meanings": "a b"}
+        assert is_categorical(codes)
+        validate_field(codes)
+
+    def test_flag_meanings_without_flag_values_are_not_classes(self):
+        """CF pairs the two; the codes are what flag_values declares."""
+        from sipnet_calibration.fields import is_categorical, validate_field
+
+        field = _field(("site",)).copy(data=np.asarray([0, 1], dtype=np.int8))
+        field.attrs = {"flag_meanings": "a b"}
+        assert not is_categorical(field)
+        with pytest.raises(ValueError, match="attrs\\['units'\\]"):
+            validate_field(field)
 
     def test_unsigned_labels_make_a_batch_dim(self):
         from sipnet_calibration.fields import batch_dims, validate_field
@@ -1180,18 +1202,6 @@ class TestValidateField:
         labels = np.asarray([0, 1, 2**63], dtype=np.uint64)
         with pytest.raises(ValueError, match="fit int64"):
             validate_field(_field(("sample", "time")).assign_coords(sample=labels))
-
-    def test_a_string_field_with_missing_values_is_categorical(self):
-        from sipnet_calibration.fields import is_categorical, validate_field
-
-        field = _field(("time",), n_time=3)
-        gaps = field.copy(data=np.asarray(["a", None, np.nan], dtype=object))
-        gaps.attrs = {}
-        assert is_categorical(gaps)
-        validate_field(gaps)
-        nothing = field.copy(data=np.asarray([None, None, None], dtype=object))
-        nothing.attrs = {}
-        assert not is_categorical(nothing)
 
     def test_source_index_is_never_a_batch_dim(self):
         from sipnet_calibration.fields import batch_dims, validate_field
