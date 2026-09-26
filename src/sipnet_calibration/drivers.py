@@ -88,9 +88,12 @@ requested pair must exist, so the variable is not written.
 ======================= ================== ====================================
 Name                    Dims               Meaning
 ======================= ================== ====================================
-``member``              ``member``         0-based ``int16``, in ascending order
+``member``              ``member``         0-based ``int16``, ``0`` to
+                                           ``n - 1``
 ``source_member_index`` ``member``         the 1-based index in the directory
-                                           name
+                                           name, in the order the members
+                                           were asked for (ascending when
+                                           discovered)
 ``site``                ``site``           ``int32`` site id, in the order
                                            the sites were asked for
 ``lon``, ``lat``        ``site``           from the site table, ``float64``,
@@ -430,9 +433,9 @@ def load_drivers(
         in the order given. Every one must be in the site table.
     members:
         Source member indices (1-based, as in the directory names) to read,
-        a sequence of integers, sorted and de-duplicated. ``None``
-        means every member that has a directory for any of the requested
-        sites.
+        a sequence of integers, each named once, returned in the order
+        given. ``None`` means every member that has a directory for any of
+        the requested sites, in ascending order.
     root:
         The drivers root. Defaults to :func:`default_drivers_root`.
     sites_table:
@@ -474,7 +477,8 @@ def load_drivers(
         If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
         or *members* is empty or a two-dimensional array, or holds a value
         that is not positive or out of range, discovered members included; if
-        *sites* names a site twice; if the site table lacks ``site_id``,
+        *sites* names a site twice or *members* a member twice; if the site
+        table lacks ``site_id``,
         ``lon`` or ``lat`` or repeats a ``site_id``; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
         :func:`read_driver_file`, its name does not follow the template, the
@@ -483,7 +487,7 @@ def load_drivers(
         time axis, since the time coordinates are shared by every file.
     """
     root = Path(root) if root is not None else default_drivers_root()
-    _check_drivers_root_is_a_directory(root)
+    check_drivers_root_is_a_directory(root)
     time_zone = normalize_time_zone(time_zone)
 
     site_ids = _site_ids(sites)
@@ -494,7 +498,7 @@ def load_drivers(
     member_ids = _member_ids(members, root=root, sites=site_ids)
 
     paths, present = _locate_files(root, sites=site_ids, members=member_ids)
-    _check_some_pair_has_a_file(present, sites=site_ids, members=member_ids, root=root)
+    check_some_pair_has_a_file(present, sites=site_ids, members=member_ids, root=root)
     if not allow_missing:
         _check_members_complete(present, sites=site_ids, members=member_ids, root=root)
 
@@ -597,14 +601,14 @@ def _dates_from_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
 def _site_ids(sites: Iterable[int]) -> np.ndarray:
     """Requested sites as an ``int32`` array, in the order given."""
     site_ids = as_site_ids(sites, message_name="sites")
-    _check_some_are_requested(site_ids, what="sites", example="site id")
+    check_some_are_requested(site_ids, what="sites", example="site id")
     return np.asarray(site_ids, dtype=SITE_DTYPE)
 
 
 def _member_ids(
     members: Iterable[int] | None, *, root: Path, sites: np.ndarray
 ) -> np.ndarray:
-    """Requested members as a sorted ``int16`` array, discovered when ``None``."""
+    """Requested members as ``int16``, in the order given; found, ascending, for ``None``."""
     if members is None:
         found: set[int] = set()
         for site in sites:
@@ -618,16 +622,17 @@ def _member_ids(
 
 
 def _source_member_indices(members: Iterable[int]) -> np.ndarray:
-    """*members* as a sorted, de-duplicated ``int16`` array, or a clear error.
+    """*members* as an ``int16`` array, in the order given, or a clear error.
 
-    Strings, booleans, floats, non-positive values and anything that would wrap
-    when narrowed to ``int16`` are refused, since each would otherwise resolve
-    to a plausible-looking wrong directory.
+    Strings, booleans, floats, non-positive values, repeats and anything that
+    would wrap when narrowed to ``int16`` are refused, since each would
+    otherwise resolve to a plausible-looking wrong directory.
     """
     indices = as_positive_integers(members, message_name="members")
-    _check_some_are_requested(indices, what="members", example="member index")
-    _check_member_indices_fit_int16(indices)
-    return np.unique(np.asarray(indices, dtype=np.int64)).astype(np.int16)
+    check_some_are_requested(indices, what="members", example="member index")
+    check_member_indices_are_unique(indices)
+    check_member_indices_fit_int16(indices)
+    return np.asarray(indices, dtype=np.int16)
 
 
 def _locate_files(
@@ -748,7 +753,7 @@ def _assemble(
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_drivers_root_is_a_directory(root: Path) -> None:
+def check_drivers_root_is_a_directory(root: Path) -> None:
     """The drivers root is a directory."""
     if not root.is_dir():
         raise FileNotFoundError(
@@ -757,13 +762,24 @@ def _check_drivers_root_is_a_directory(root: Path) -> None:
         )
 
 
-def _check_some_are_requested(values: tuple[int, ...], *, what: str, example: str) -> None:
+def check_some_are_requested(values: tuple[int, ...], *, what: str, example: str) -> None:
     """At least one site, or one member, is asked for."""
     if not values:
         raise ValueError(f"no {what} requested; pass at least one {example}.")
 
 
-def _check_member_indices_fit_int16(indices: tuple[int, ...]) -> None:
+def check_member_indices_are_unique(indices: tuple[int, ...]) -> None:
+    """No member index is asked for twice."""
+    seen: set[int] = set()
+    repeated = sorted({index for index in indices if index in seen or seen.add(index)})
+    if repeated:
+        raise ValueError(
+            f"members names member(s) {truncated(repeated)} more than once; name each "
+            "member once."
+        )
+
+
+def check_member_indices_fit_int16(indices: tuple[int, ...]) -> None:
     """Every member index fits the ``int16`` it is stored as."""
     limit = int(np.iinfo(np.int16).max)
     beyond = sorted({index for index in indices if index > limit})
@@ -774,7 +790,7 @@ def _check_member_indices_fit_int16(indices: tuple[int, ...]) -> None:
         )
 
 
-def _check_some_pair_has_a_file(
+def check_some_pair_has_a_file(
     present: np.ndarray, *, sites: np.ndarray, members: np.ndarray, root: Path
 ) -> None:
     """At least one requested ``(site, member)`` pair has a driver file."""

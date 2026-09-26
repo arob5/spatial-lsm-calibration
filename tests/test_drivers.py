@@ -347,12 +347,26 @@ class TestLoadDrivers:
         write_pair(root, 7, 5)
         dataset = load_drivers([3, 7], members=[5, 1], root=root, sites_table=sites_table)
         np.testing.assert_array_equal(dataset["member"].values, [0, 1])
-        np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 5])
+        np.testing.assert_array_equal(dataset["source_member_index"].values, [5, 1])
         frame = read_driver_file(driver_file(root, 3, 5)).pandas
         np.testing.assert_array_equal(
-            dataset["photosynthetically_active_radiation"].sel(site=3, member=1).values,
+            dataset["photosynthetically_active_radiation"].sel(site=3, member=0).values,
             frame["photosynthetically_active_radiation"].to_numpy(),
         )
+
+    def test_members_keep_the_order_given_as_sites_do(self, root, sites_table):
+        write_pair(root, 3, 5)
+        forward = load_drivers([3], members=[1, 5, 2], root=root, sites_table=sites_table)
+        backward = load_drivers([3], members=[2, 5, 1], root=root, sites_table=sites_table)
+        np.testing.assert_array_equal(forward["source_member_index"].values, [1, 5, 2])
+        np.testing.assert_array_equal(backward["source_member_index"].values, [2, 5, 1])
+        np.testing.assert_array_equal(
+            forward["air_temperature"].values[::-1], backward["air_temperature"].values
+        )
+
+    def test_a_member_named_twice_is_refused(self, root, sites_table):
+        with pytest.raises(ValueError, match=r"member\(s\) \[1\] more than once"):
+            load_drivers([3], members=[1, 2, 1], root=root, sites_table=sites_table)
 
     def test_members_none_means_every_member_found(self, root, sites_table):
         write_pair(root, 3, 5)
