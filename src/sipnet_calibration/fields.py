@@ -149,7 +149,7 @@ so they are the processed names; aliases (``"nee"``) are accepted on the way
 in and resolved to them.
 
 Each field keeps three of pySIPNET's time coordinates, ``time``,
-``time_step_start`` and ``time_step_length``
+``timestep_start`` and ``timestep_length``
 (:data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`), the same three a
 driver field from
 :func:`sipnet_calibration.drivers.driver_fields` keeps -- a run's output and
@@ -157,21 +157,21 @@ its drivers are on one axis:
 
 ===================== ===================================================
 ``time``              end of the timestep, the CF upper bound
-``time_step_start``   start of the timestep, the CF lower bound
-``time_step_length``  its duration, as ``timedelta64``
+``timestep_start``    start of the timestep, the CF lower bound
+``timestep_length``   its duration, as ``timedelta64``
 ===================== ===================================================
 
-so the interval a value covers is ``(time_step_start, time]``. Its two edges
+so the interval a value covers is ``(timestep_start, time]``. Its two edges
 are the pair pySIPNET writes as its CF ``time_bounds`` variable, which a DataArray
 cannot carry: ``time_bounds`` is two-dimensional on ``(time, bounds)`` and
 ``bounds`` is not a field dimension. ``time``'s ``bounds`` attribute
 (:data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`) is
 dropped for the same reason, rather than left pointing at a variable that is
 not there. pySIPNET's ``year``/``day_of_year``/``hour_of_day`` row labels are
-dropped too; ``time_step_start`` is the same instant.
+dropped too; ``timestep_start`` is the same instant.
 
 :func:`sipnet_calibration.observation.time_alignment.aggregate_time` needs
-``time_step_length`` for a length-weighted mean, which is why it is kept
+``timestep_length`` for a length-weighted mean, which is why it is kept
 rather than recomputed.
 
 Functions
@@ -1033,7 +1033,7 @@ def stack_model_outputs(
     Runs whose time axes differ are aligned by an outer join, so a site
     covering a shorter record is ``NaN`` outside it. Where every run shares one
     axis -- the usual case, one driver period across the site pool --
-    ``time_step_start`` and ``time_step_length`` stay one-dimensional on
+    ``timestep_start`` and ``timestep_length`` stay one-dimensional on
     ``time`` and the result is a model output, checked with
     :func:`validate_model_output`; where they do not, xarray gives them the
     dimensions over which they differ, and the result is not one until one
@@ -1566,7 +1566,7 @@ def check_model_output_carries_no_bounds_or_row_labels(
     if carried:
         raise ValueError(
             f"{message_name} carries {carried}, which a model output does not: time_bounds "
-            "is not a field and SIPNET's row labels repeat time_step_start. Label the run "
+            "is not a field and SIPNET's row labels repeat timestep_start. Label the run "
             "with fields.to_model_output, which drops them."
         )
 

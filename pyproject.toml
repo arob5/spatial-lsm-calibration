@@ -62,6 +62,9 @@ dependencies = [
     # with a basemap vendored from Natural Earth by scripts/build_basemap.py,
     # so neither GeoAxes nor a run-time download of coastlines is needed.
     "pyproj>=3.7.1",
+    # The package's read-only mappings. A dict subclass, so pandas, json,
+    # pickle and copy treat one as a dict, and hashable by its items.
+    "frozendict>=2.4",
 ]
 
 [dependency-groups]

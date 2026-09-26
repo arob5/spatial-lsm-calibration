@@ -38,11 +38,9 @@ Settings
     declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where the
     storage-backed part of ``data/`` is.
 Read-only containers
-    :class:`FrozenMapping`, the one read-only mapping type of the package,
-    which the attribute dicts above are; :func:`read_only_copy`, a copy of a
-    ``DataArray`` or ``Dataset`` whose arrays cannot be written; and
-    :class:`ReadOnlyCopies`, a dataclass attribute that keeps and hands out
-    such copies.
+    :func:`read_only_copy`, a copy of a ``DataArray`` or ``Dataset`` whose
+    arrays cannot be written; and :class:`ReadOnlyCopies`, a dataclass
+    attribute that keeps and hands out such copies.
 
 Notes
 -----
@@ -61,13 +59,13 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pysipnet.dataset import BOUNDS_DIMENSION, TIME_DIMENSION
 
 __all__ = [
@@ -104,7 +102,6 @@ __all__ = [
     "TIME_COORD_NAMES",
     "WINDOW_END",
     "WINDOW_START",
-    "FrozenMapping",
     "ReadOnlyCopies",
     "X",
     "Y",
@@ -164,20 +161,20 @@ SPATIAL_DIM_NAMES: tuple[str, ...] = (SITE, POINT, LAT, LON, Y, X)
 
 # ── coordinates ───────────────────────────────────────────────────────────────
 
-# pySIPNET is renaming these two coordinates and will export constants for
-# them beside TIME_DIMENSION; these definitions then become imports from
-# pysipnet.dataset. Until then they carry pySIPNET's current values.
+# pySIPNET exports no constants for these two coordinates; once it does,
+# beside TIME_DIMENSION, these definitions become imports from
+# pysipnet.dataset. Until then they carry pySIPNET's names as literals.
 
 #: pySIPNET's coordinate on ``time`` for the start of the timestep a row
 #: covers; ``time`` is its end.
-TIMESTEP_START = "time_step_start"
+TIMESTEP_START = "timestep_start"
 
 #: pySIPNET's coordinate on ``time`` for the declared duration of the
 #: timestep a row covers, as ``timedelta64``.
-TIMESTEP_LENGTH = "time_step_length"
+TIMESTEP_LENGTH = "timestep_length"
 
 #: pySIPNET's time coordinates, which a model field and a driver field both
-#: keep. ``time`` is the end of the timestep and ``time_step_start`` its
+#: keep. ``time`` is the end of the timestep and ``timestep_start`` its
 #: start, so the two are the CF bounds pair.
 TIME_COORD_NAMES: tuple[str, ...] = (TIME, TIMESTEP_START, TIMESTEP_LENGTH)
 
@@ -209,7 +206,7 @@ NON_BATCH_DIM_NAMES: tuple[str, ...] = (*SPATIAL_DIM_NAMES, TIME, SOURCE_INDEX)
 
 #: SIPNET's own row labels, the start of each step, which pySIPNET's output
 #: carries as integer or float coordinates on ``time``. A field drops them,
-#: since ``time_step_start`` is the same instant; they are neither batch
+#: since ``timestep_start`` is the same instant; they are neither batch
 #: labels nor names a batch dimension may take.
 SIPNET_ROW_LABEL_NAMES: tuple[str, ...] = ("year", "day_of_year", "hour_of_day")
 
@@ -238,77 +235,9 @@ SITE_ID = "site_id"
 # ── attributes ────────────────────────────────────────────────────────────────
 
 
-class _FilledOnce(type):
-    """The type of :class:`FrozenMapping`: fills a new mapping as it is made, and only then."""
-
-    def __call__(cls, items: Mapping[Any, Any] | Iterable[tuple[Any, Any]] = (), /) -> Any:
-        mapping = cls.__new__(cls)
-        dict.update(mapping, items)
-        return mapping
-
-
-class FrozenMapping(dict, metaclass=_FilledOnce):
-    """A dict that cannot be changed after it is built.
-
-    Parameters
-    ----------
-    items:
-        A mapping, or an iterable of key-value pairs, as ``dict`` takes; it is
-        copied.
-
-    Raises
-    ------
-    TypeError
-        From every method that would change it (``m[key] = value``, ``del``,
-        ``update``, ``pop``, ``popitem``, ``setdefault``, ``clear``, ``|=``,
-        and ``__init__`` called again), and from ``hash`` when a value is
-        unhashable.
-
-    Notes
-    -----
-    It is a ``dict`` subclass, so pandas builds one column per key from it
-    and ``json`` writes it, as they would a dict; it compares equal to a dict
-    with the same items. It pickles, copies, and hashes by its items, which
-    ``types.MappingProxyType``, the standard read-only view, does not: a
-    frozen dataclass holding one could be neither sent to a worker nor used
-    as a key. ``dict(m)`` and ``m.copy()`` give an ordinary, mutable dict.
-
-    Its items are filled in by its type as it is made rather than by
-    ``__init__``, which would otherwise refill it in place when called again.
-    """
-
-    __slots__ = ()
-
-    def __hash__(self) -> int:  # type: ignore[override]
-        return hash(frozenset(self.items()))
-
-    def __repr__(self) -> str:
-        return f"FrozenMapping({dict.__repr__(self)})"
-
-    def __reduce__(self) -> tuple[type[FrozenMapping], tuple[dict[Any, Any]]]:
-        return (FrozenMapping, (dict(self),))
-
-    def copy(self) -> dict[Any, Any]:
-        """An ordinary, mutable ``dict`` of the same items."""
-        return dict(self)
-
-    @classmethod
-    def fromkeys(cls, iterable: Iterable[Any], value: Any = None) -> FrozenMapping:  # type: ignore[override]
-        """A ``FrozenMapping`` from *iterable*'s keys, each holding *value*."""
-        return cls(dict.fromkeys(iterable, value))
-
-    def _refuse(self, *args: Any, **kwargs: Any) -> NoReturn:
-        raise TypeError(
-            "a FrozenMapping cannot be changed; copy it with dict(...) and change the copy."
-        )
-
-    __init__ = __setitem__ = __delitem__ = __ior__ = _refuse
-    update = pop = popitem = setdefault = clear = _refuse
-
-
 #: The attributes of a ``site`` coordinate: read-only, so a coordinate can be
 #: given them as they are (xarray copies what it is given).
-SITE_ATTRIBUTES = FrozenMapping(
+SITE_ATTRIBUTES = frozendict(
     {
         "long_name": "Model site identifier",
         "comment": "Site identifier of the site table; never renumbered.",
@@ -317,19 +246,19 @@ SITE_ATTRIBUTES = FrozenMapping(
 
 #: The CF attributes of a ``lon`` coordinate. Read-only, as
 #: :data:`SITE_ATTRIBUTES`.
-LON_ATTRIBUTES = FrozenMapping(
+LON_ATTRIBUTES = frozendict(
     {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
 )
 
 #: The CF attributes of a ``lat`` coordinate. Read-only, as
 #: :data:`SITE_ATTRIBUTES`.
-LAT_ATTRIBUTES = FrozenMapping(
+LAT_ATTRIBUTES = frozendict(
     {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
 )
 
 #: The attributes of a ``sample`` coordinate. Read-only, as
 #: :data:`SITE_ATTRIBUTES`.
-SAMPLE_ATTRIBUTES = FrozenMapping(
+SAMPLE_ATTRIBUTES = frozendict(
     {
         "long_name": "Sample",
         "comment": "Label of the row of batched Flat the value was computed from.",
@@ -340,7 +269,7 @@ SAMPLE_ATTRIBUTES = FrozenMapping(
 #: ``initial_condition_member``, whose label is its member's identity: its
 #: :data:`SOURCE_INDEX` less one, whatever subset of the members is loaded.
 #: Read-only, as :data:`SITE_ATTRIBUTES`.
-DATA_SOURCE_MEMBER_ATTRIBUTES = FrozenMapping(
+DATA_SOURCE_MEMBER_ATTRIBUTES = frozendict(
     {
         "long_name": "Ensemble member of the data source",
         "comment": (
@@ -353,7 +282,7 @@ DATA_SOURCE_MEMBER_ATTRIBUTES = FrozenMapping(
 
 #: The attributes of a :data:`SOURCE_INDEX` coordinate. Read-only, as
 #: :data:`SITE_ATTRIBUTES`.
-SOURCE_INDEX_ATTRIBUTES = FrozenMapping(
+SOURCE_INDEX_ATTRIBUTES = frozendict(
     {
         "long_name": "Member index in the data source's file names",
         "comment": "1-based, as the data source numbers its files.",

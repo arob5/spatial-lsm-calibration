@@ -139,6 +139,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pysipnet.units import convert_dataarray_units
 
 from sipnet_calibration.conventions import (
@@ -149,7 +150,6 @@ from sipnet_calibration.conventions import (
     SITE_DTYPE,
     SITE_ID,
     TIME,
-    FrozenMapping,
 )
 from sipnet_calibration.fields import (
     Field,
@@ -243,7 +243,7 @@ class ObservationVector:
         object.__setattr__(
             self,
             "_by_name",
-            FrozenMapping({source.observation_source_name: source for source in observation_sources}),
+            frozendict({source.observation_source_name: source for source in observation_sources}),
         )
         index = _build_index(observation_sources)
         object.__setattr__(self, "_index", index)

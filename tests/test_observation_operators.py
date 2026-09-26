@@ -108,11 +108,11 @@ class TestReduceOverWindows:
         assert predicted.attrs["kind"] == "timestep_end_state"
         wood = one_run["wood_carbon"]
         ends = pd.DatetimeIndex(wood["time"].values)
-        starts = pd.DatetimeIndex(wood["time_step_start"].values)
+        starts = pd.DatetimeIndex(wood["timestep_start"].values)
         for k, (start, end) in enumerate(zip(observed[WINDOW_START].values, labels)):
             inside = (ends > start) & (ends <= end)
             assert predicted.values[k] == wood.values[inside][-1]
-            assert predicted["time_step_start"].values[k] == starts[inside].min()
+            assert predicted["timestep_start"].values[k] == starts[inside].min()
 
     @staticmethod
     def _one_window(start, end):
@@ -133,7 +133,7 @@ class TestReduceOverWindows:
 
     def test_a_window_inside_the_record_is_reduced(self, one_run):
         wood = one_run["wood_carbon"]
-        starts = pd.DatetimeIndex(wood["time_step_start"].values)
+        starts = pd.DatetimeIndex(wood["timestep_start"].values)
         ends = pd.DatetimeIndex(wood["time"].values)
         predicted = ReduceOverWindows("wood_carbon", "last")(
             one_run, self._one_window(starts[0], ends[-1])
@@ -142,7 +142,7 @@ class TestReduceOverWindows:
 
     def test_less_than_a_step_short_at_each_edge_is_allowed(self, one_run):
         wood = one_run["wood_carbon"]
-        starts = pd.DatetimeIndex(wood["time_step_start"].values)
+        starts = pd.DatetimeIndex(wood["timestep_start"].values)
         ends = pd.DatetimeIndex(wood["time"].values)
         first, last = ends[0] - starts[0], ends[-1] - starts[-1]
         observed = self._one_window(starts[0] - first / 2, ends[-1] + last / 2)
@@ -171,7 +171,7 @@ class TestReduceOverRun:
         observed = located(xr.DataArray([1.0], dims="site", coords={"site": [1]}, attrs={"units": "Mg ha-1", "constituent": "C"}, name="soilgrids_soil_organic_carbon"))
         predicted = ReduceOverRun("soil_carbon", "mean")(one_run, observed)
         assert "time" not in predicted.dims
-        np.testing.assert_allclose(float(predicted), float(one_run["soil_carbon"].weighted(one_run["time_step_length"].astype("int64")).mean()), rtol=1e-12)
+        np.testing.assert_allclose(float(predicted), float(one_run["soil_carbon"].weighted(one_run["timestep_length"].astype("int64")).mean()), rtol=1e-12)
 
     def test_refuses_dated_observed_values(self, one_run, labels):
         observed = dated_observed_values([1], labels, units="Mg ha-1", constituent="C")
@@ -515,7 +515,7 @@ class TestReduceOverWindowsValues:
         predicted = ReduceOverWindows("wood_carbon", "mean")(one_run, observed)
         wood = one_run["wood_carbon"]
         ends = pd.DatetimeIndex(wood["time"].values)
-        lengths = wood["time_step_length"].values.astype("timedelta64[ns]").astype("float64")
+        lengths = wood["timestep_length"].values.astype("timedelta64[ns]").astype("float64")
         for k, label in enumerate(labels):
             inside = (ends > label - pd.Timedelta("1D")) & (ends <= label)
             expected = np.average(wood.values[inside], weights=lengths[inside])
@@ -834,7 +834,7 @@ class TestDeclarationsAndConstruction:
 
 class TestTheOperatorsNameThemselves:
     def test_a_window_reduction_on_output_without_intervals_names_the_operator(self, one_run, labels):
-        bare = one_run.drop_vars(["time_step_start", "time_step_length", "time_bounds"], errors="ignore")
+        bare = one_run.drop_vars(["timestep_start", "timestep_length", "time_bounds"], errors="ignore")
         observed = windowed_observed_values([1], labels, units="g m-2", constituent="C", name="annual")
         with pytest.raises(ValueError, match="^ReduceOverWindows on 'annual' reads the interval"):
             ReduceOverWindows("wood_carbon", "last")(bare, observed)

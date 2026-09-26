@@ -434,7 +434,7 @@ class TestLabelClockAndFrequencyRefusals:
         array = niwot["wood_carbon"]
         coarse = array.assign_coords(
             time=array["time"].values.astype("datetime64[us]"),
-            time_step_start=("time", array[TIMESTEP_START].values.astype("datetime64[us]")),
+            timestep_start=("time", array[TIMESTEP_START].values.astype("datetime64[us]")),
         )
         end0 = pd.Timestamp(array["time"].values[0])
         picked = select_timestep_at(coarse, pd.DatetimeIndex([end0 + pd.Timedelta("500ns")]))
