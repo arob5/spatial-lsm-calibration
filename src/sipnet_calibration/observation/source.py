@@ -94,11 +94,9 @@ import xarray as xr
 
 from sipnet_calibration.conventions import (
     DATA_SOURCE_MEMBER_NAMES,
-    LAT,
-    LON,
+    NON_BATCH_DIM_NAMES,
     SAMPLE,
     SITE,
-    SOURCE_INDEX,
     TIME,
     WINDOW_END,
     WINDOW_START,
@@ -127,16 +125,11 @@ __all__ = [
 
 #: Names an observation source cannot take, because its arrays are named for
 #: it and would then share a name with a dim or coordinate of theirs or of a
-#: model output: ``sample``, ``site``, ``lon``, ``lat``, ``source_index``, the
-#: data sources' member dims, the model output's coordinates (``time`` among
-#: them) and the window edges.
+#: model output.
 RESERVED_OBSERVATION_SOURCE_NAMES: frozenset[str] = frozenset(
     {
+        *NON_BATCH_DIM_NAMES,
         SAMPLE,
-        SITE,
-        LON,
-        LAT,
-        SOURCE_INDEX,
         *DATA_SOURCE_MEMBER_NAMES,
         *MODEL_OUTPUT_COORDINATE_NAMES,
         WINDOW_START,

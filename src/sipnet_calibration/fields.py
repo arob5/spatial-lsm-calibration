@@ -325,12 +325,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.output import SIPNETOutput
 from pysipnet.parameters.model import resolve_parameter_name
+from pysipnet.result import SIPNETResult
 from pysipnet.units import validate_units
 from pysipnet.variables import resolve_output_variable
 from pysipnet.variables import (
@@ -371,10 +373,6 @@ from sipnet_calibration.sites import (
     site_locations,
 )
 from sipnet_calibration.validation import as_batch_label, as_names, as_site_id
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pysipnet.output import SIPNETOutput
-    from pysipnet.result import SIPNETResult
 
 __all__ = [
     "MODEL_OUTPUT_COORDINATE_NAMES",

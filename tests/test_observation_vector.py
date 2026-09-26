@@ -35,7 +35,7 @@ def one_run():
         niwot_reference_output().select(VARIABLES),
         site=1,
         batch={"sample": 0},
-        site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True),
+        site_table=site_table_of(1, keyed=True),
     )
 
 
@@ -85,39 +85,39 @@ class TestObservationSource:
     def test_refuses_a_batch_dimension(self, lai):
         for name in ("sample", "nee_member"):
             with pytest.raises(ValueError, match=rf"batch dim\(s\) \['{name}'\]"):
-                ObservationSource(observation_source_name="x", observed_values=lai.expand_dims({name: [0]}), operator=SelectTimestep("wood_carbon"))
+                ObservationSource(observation_source_name="observed", observed_values=lai.expand_dims({name: [0]}), operator=SelectTimestep("wood_carbon"))
 
     def test_refuses_an_array_without_units(self, lai):
         bare = lai.copy()
         bare.attrs = {}
         with pytest.raises(ValueError, match="carries its units"):
-            ObservationSource(observation_source_name="x", observed_values=bare, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=bare, operator=SelectTimestep("wood_carbon"))
 
     def test_refuses_an_operator_without_declarations(self, lai):
         with pytest.raises(TypeError, match="must declare output_variable_names"):
-            ObservationSource(observation_source_name="x", observed_values=lai, operator=lambda *a, **k: None)
+            ObservationSource(observation_source_name="observed", observed_values=lai, operator=lambda *a, **k: None)
 
     def test_orders_sites_and_times(self, lai):
         shuffled = lai.isel(site=[1, 0], time=[2, 0, 1])
-        source = ObservationSource(observation_source_name="x", observed_values=shuffled, operator=SelectTimestep("wood_carbon"))
+        source = ObservationSource(observation_source_name="observed", observed_values=shuffled, operator=SelectTimestep("wood_carbon"))
         assert source.sites == (1, 2)
         assert source.observed_values.indexes["time"].is_monotonic_increasing
 
     def test_is_built_by_keyword_only(self, lai):
         with pytest.raises(TypeError):
-            ObservationSource("x", lai, SelectTimestep("wood_carbon"))
+            ObservationSource("observed", lai, SelectTimestep("wood_carbon"))
 
     def test_refuses_observed_values_that_are_not_fields(self, lai):
         plain = lai.drop_vars(["lon", "lat"])
         with pytest.raises(ValueError, match="carries no 'lon' coordinate"):
-            ObservationSource(observation_source_name="x", observed_values=plain, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=plain, operator=SelectTimestep("wood_carbon"))
         wide = lai.assign_coords(site=lai["site"].astype(np.int64))
         with pytest.raises(ValueError, match="site ids are int32"):
-            ObservationSource(observation_source_name="x", observed_values=wide, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=wide, operator=SelectTimestep("wood_carbon"))
 
     def test_refuses_one_site_as_a_scalar(self, lai):
         with pytest.raises(ValueError, match=r"on \(site,\) or \(site, time\)"):
-            ObservationSource(observation_source_name="x", observed_values=lai.isel(site=0), operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=lai.isel(site=0), operator=SelectTimestep("wood_carbon"))
 
     def test_validate_observed_values_is_the_check_it_applies(self, lai, soil):
         from sipnet_calibration.observation import validate_observed_values
@@ -132,7 +132,7 @@ class TestObservationSource:
             validate_observed_values(lai.to_dataset())
 
     def test_observations_are_the_observed_values(self, lai):
-        observations = ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon")).observations()
+        observations = ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon")).observations()
         assert len(observations) == 4
         assert observations["site"].tolist() == [1, 1, 2, 2]
 
@@ -168,12 +168,12 @@ class TestIndex:
 
     def test_refuses_duplicate_observation_sources(self, lai):
         with pytest.raises(ValueError, match="observation_sources names .* more than once"):
-            ObservationVector(observation_sources=[ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))] * 2)
+            ObservationVector(observation_sources=[ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon"))] * 2)
 
     def test_refuses_an_observation_source_with_no_observations(self, lai):
         empty = lai.where(False)
         with pytest.raises(ValueError, match="hold no observation;"):
-            ObservationVector(observation_sources=[ObservationSource(observation_source_name="x", observed_values=empty, operator=SelectTimestep("wood_carbon"))])
+            ObservationVector(observation_sources=[ObservationSource(observation_source_name="observed", observed_values=empty, operator=SelectTimestep("wood_carbon"))])
 
     def test_describe(self, vector):
         table = vector.describe()
@@ -430,21 +430,21 @@ class TestObservationInputsAndBatchedFlatShapes:
     def test_an_infinite_observation_is_refused(self, lai):
         lai[0, 0] = np.inf
         with pytest.raises(ValueError, match="infinite"):
-            ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon"))
 
     def test_a_nat_label_is_refused(self, lai):
         broken = lai.assign_coords(time=[lai["time"].values[0], np.datetime64("NaT"), lai["time"].values[2]])
         with pytest.raises(ValueError, match="NaT"):
-            ObservationSource(observation_source_name="x", observed_values=broken, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=broken, operator=SelectTimestep("wood_carbon"))
 
     def test_float_site_labels_are_refused(self, lai):
         with pytest.raises(ValueError, match="site ids are int32"):
-            ObservationSource(observation_source_name="x", observed_values=lai.assign_coords(site=[1.0, 2.5]), operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=lai.assign_coords(site=[1.0, 2.5]), operator=SelectTimestep("wood_carbon"))
 
     def test_an_aware_time_coordinate_is_refused(self, lai):
         aware = lai.assign_coords(time=pd.DatetimeIndex(lai["time"].values).tz_localize("UTC"))
         with pytest.raises(ValueError, match="naive datetime64"):
-            ObservationSource(observation_source_name="x", observed_values=aware, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=aware, operator=SelectTimestep("wood_carbon"))
 
     def test_mixed_batch_and_no_batch_fields_are_refused(self, vector):
         fields = vector.fields(np.zeros((2, vector.dimension)))
@@ -474,8 +474,8 @@ class TestObservationInputsAndBatchedFlatShapes:
             vector.select(time="2012")
 
     def test_observed_values_are_named_for_the_observation_source(self, lai):
-        source = ObservationSource(observation_source_name="x", observed_values=lai.rename(None), operator=SelectTimestep("wood_carbon"))
-        assert source.observed_values.name == "x"
+        source = ObservationSource(observation_source_name="observed", observed_values=lai.rename(None), operator=SelectTimestep("wood_carbon"))
+        assert source.observed_values.name == "observed"
 
 
 class TestSelectKeepsOnlyObservedLabels:
@@ -503,6 +503,7 @@ class TestSelectKeepsOnlyObservedLabels:
         sub = vector.select(sites=(site for site in (1, 2)))
         assert sub.observation_source_names == vector.observation_source_names
         np.testing.assert_array_equal(sub.y, vector.y)
+        assert vector.restrict_to_sites(site for site in (2, 99, 1)).sites == vector.sites
 
     def test_selecting_thousands_of_sites_keeps_every_chosen_one(self):
         n = 8000
@@ -529,7 +530,7 @@ class TestSelectKeepsOnlyObservedLabels:
 
 class TestObservationSourceHoldsItsOwnValues:
     def test_a_write_to_the_callers_array_does_not_reach_the_observation_source(self, lai):
-        source = ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))
+        source = ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon"))
         lai[1, 0] = 5.0  # an unobserved element of the caller's array
         assert source.n_observations == 4
         assert np.isnan(source.observed_values.values[1, 0])
@@ -537,9 +538,9 @@ class TestObservationSourceHoldsItsOwnValues:
     def test_the_callers_array_stays_writeable(self, lai):
         """Reading the source froze the caller's own buffers."""
         lai = lai.assign_coords(lon=("site", lai["lon"].values.copy()))
-        source = ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))
+        source = ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon"))
         vector = ObservationVector(observation_sources=[source])
-        source.observed_values, vector.observed_values_by_source, vector["x"].observed_values
+        source.observed_values, vector.observed_values_by_source, vector["observed"].observed_values
         lai.values[0, 0] = -1.0
         lai["lon"].values[0] = 0.0
         assert source.observed_values.values[0, 0] != -1.0
@@ -573,16 +574,16 @@ class TestVectorSites:
 class TestObservationSourceRefusals:
     def test_duplicate_sites_are_refused(self, lai):
         with pytest.raises(ValueError, match="repeats a site id"):
-            ObservationSource(observation_source_name="x", observed_values=lai.assign_coords(site=np.array([1, 1], dtype=np.int32)), operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=lai.assign_coords(site=np.array([1, 1], dtype=np.int32)), operator=SelectTimestep("wood_carbon"))
 
     def test_duplicate_times_are_refused(self, lai):
         repeated = lai.assign_coords(time=[lai["time"].values[0]] * 2 + [lai["time"].values[2]])
         with pytest.raises(ValueError, match="not strictly increasing"):
-            ObservationSource(observation_source_name="x", observed_values=repeated, operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=repeated, operator=SelectTimestep("wood_carbon"))
 
     def test_an_operator_that_is_not_callable_is_refused(self, lai):
         with pytest.raises(TypeError, match="must be callable"):
-            ObservationSource(observation_source_name="x", observed_values=lai, operator="wood_carbon")
+            ObservationSource(observation_source_name="observed", observed_values=lai, operator="wood_carbon")
 
     def test_an_alias_declared_by_an_operator_is_refused(self, lai):
         @dataclass(frozen=True)
@@ -594,7 +595,7 @@ class TestObservationSourceRefusals:
                 return model_output["wood_carbon"]
 
         with pytest.raises(ValueError, match="alias"):
-            ObservationSource(observation_source_name="x", observed_values=lai, operator=Aliased())
+            ObservationSource(observation_source_name="observed", observed_values=lai, operator=Aliased())
 
     def test_declarations_as_a_list_are_refused(self, lai):
         @dataclass(frozen=True)
@@ -606,7 +607,7 @@ class TestObservationSourceRefusals:
                 return model_output["wood_carbon"]
 
         with pytest.raises(TypeError, match="tuple of names"):
-            ObservationSource(observation_source_name="x", observed_values=lai, operator=Listed())
+            ObservationSource(observation_source_name="observed", observed_values=lai, operator=Listed())
 
 
 class TestFlatRefusals:
@@ -753,7 +754,7 @@ class TestObservationSourceKeepsOnlyObservedLabels:
 class TestObservationSourceKeepsAScalarBatchLabelAsMetadata:
     def test_a_scalar_batch_coordinate_is_accepted(self, lai):
         one = lai.expand_dims(nee_member=[4]).isel(nee_member=0)
-        source = ObservationSource(observation_source_name="x", observed_values=one, operator=SelectTimestep("wood_carbon"))
+        source = ObservationSource(observation_source_name="observed", observed_values=one, operator=SelectTimestep("wood_carbon"))
         assert source.n_observations == 4
         assert int(source.observed_values["nee_member"]) == 4
 
@@ -793,8 +794,8 @@ class TestSiteIdsAreIntegers:
 
 class TestObservationSourceIdentity:
     def test_observation_sources_compare_and_hash_by_identity(self, lai):
-        first = ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))
-        second = ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))
+        first = ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon"))
+        second = ObservationSource(observation_source_name="observed", observed_values=lai, operator=SelectTimestep("wood_carbon"))
         assert first == first and first != second
         assert len({first, second, first}) == 2
 
@@ -802,7 +803,7 @@ class TestObservationSourceIdentity:
 class TestObservationSourceLoadsLazyValues:
     def test_dask_backed_values_are_loaded_and_read_only(self, lai):
         pytest.importorskip("dask")
-        source = ObservationSource(observation_source_name="x", observed_values=lai.chunk({"site": 1}), operator=SelectTimestep("wood_carbon"))
+        source = ObservationSource(observation_source_name="observed", observed_values=lai.chunk({"site": 1}), operator=SelectTimestep("wood_carbon"))
         assert isinstance(source.observed_values.variable._data, np.ndarray)
         with pytest.raises(ValueError, match="read-only"):
             source.observed_values.values[0, 0] = -1.0
@@ -812,7 +813,7 @@ class TestObservationSourceLoadsLazyValues:
         path = tmp_path / "lai.nc"
         lai.to_netcdf(path)
         with xr.open_dataarray(path) as lazy:
-            source = ObservationSource(observation_source_name="x", observed_values=lazy, operator=SelectTimestep("wood_carbon"))
+            source = ObservationSource(observation_source_name="observed", observed_values=lazy, operator=SelectTimestep("wood_carbon"))
         with pytest.raises(ValueError, match="read-only"):
             source.observed_values.values[0, 0] = -1.0
         assert source.observed_values.values[0, 0] == 3.0
@@ -915,7 +916,7 @@ class TestObservationSourceNamesAndUnits:
 
     def test_a_substance_inside_the_units_is_refused_in_pysipnets_words(self, lai):
         with pytest.raises(ValueError, match="substance token"):
-            ObservationSource(observation_source_name="x", observed_values=lai.assign_attrs(units="g C m-2"), operator=SelectTimestep("wood_carbon"))
+            ObservationSource(observation_source_name="observed", observed_values=lai.assign_attrs(units="g C m-2"), operator=SelectTimestep("wood_carbon"))
 
 
 class TestFieldsNeverLetAnObservationSourceCoordinateTakeTheBatchDim:
@@ -1144,7 +1145,10 @@ class TestTheVectorConventions:
                 ObservationSource(observation_source_name="soil", observed_values=moved, operator=ReduceOverRun("soil_carbon", "mean")),
             ])
 
-    @pytest.mark.parametrize("name", ["sample", "site", "lon", "time", "window_start", "time_step_start"])
+    @pytest.mark.parametrize(
+        "name",
+        ["sample", "site", "lon", "time", "window_start", "time_step_start", "point", "x", "y"],
+    )
     def test_a_source_named_like_a_coordinate_is_refused(self, lai, name):
         with pytest.raises(ValueError, match=f"observation_source_name '{name}' is reserved"):
             ObservationSource(observation_source_name=name, observed_values=lai, operator=SelectTimestep("leaf_carbon"))

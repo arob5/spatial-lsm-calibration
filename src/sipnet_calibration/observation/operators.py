@@ -443,12 +443,12 @@ def extract_sipnet_parameter_at_coords(
     Returns
     -------
     Field
-        Named by the parameter's flat name, with the attributes
-        ``parameter_dataarray`` gives it: ``units``, ``long_name``,
-        ``description``, ``sipnet_name`` and, where pySIPNET declares one,
-        ``constituent``; the parameter's variable at *target_field*'s site
-        and batch labels, without the SIPNET parameter fields' ``lon``/``lat``,
-        so that it combines with the target at the target's.
+        The parameter's values at *target_field*'s site and batch labels,
+        named by its flat name and labeled by ``parameter_dataarray``. Its
+        coordinates are those labels and *target_field*'s ``lon``/``lat``,
+        so it is a field when the target is located; the SIPNET parameter
+        fields' other coordinates, such as a site-labels ``pft``, are
+        dropped.
 
     Raises
     ------
@@ -459,7 +459,8 @@ def extract_sipnet_parameter_at_coords(
         fields; if they lack the parameter, or cannot be read at the target's
         labels (a dim the target has no labels for, a label it lacks, a scalar
         label that disagrees, a target batch dim stacked from one of theirs);
-        or if a value is not finite or is outside the parameter's domain.
+        if they locate a site elsewhere than the target does; or if a value
+        is not finite or is outside the parameter's domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
@@ -561,13 +562,25 @@ def _sipnet_parameter_values_at(
         # target, one run, has none.
         selectors[dim] = wanted[0] if target_field[dim].ndim == 0 else wanted
     scalar_site = [SITE] if SITE in values.coords and values[SITE].ndim == 0 else []
-    for dim in [*scalar_site, *scalar_batch_labels(values)]:
+    labels = [*scalar_site, *scalar_batch_labels(values)]
+    for dim in labels:
         check_scalar_sipnet_parameter_fields_label_agrees(values, target_field, dim, name)
     selected = values.sel(selectors) if selectors else values
-    # The target's locations are the ones the values are combined at; the
-    # SIPNET parameter fields' own, from another site table perhaps, would
-    # clash with them in pysipnet.arithmetic.
-    return selected.drop_vars([LON, LAT], errors="ignore")
+    check_sipnet_parameter_fields_are_located_as_the_target(selected, target_field, name)
+    # Only the labels the values were read at are kept: a site-labels
+    # coordinate such as the parameter vector's pft is not the target's.
+    kept = {*map(str, values.dims), *labels}
+    selected = selected.drop_vars([c for c in selected.coords if c not in kept])
+    return selected.assign_coords(_location_of(target_field, SITE in selected.dims))
+
+
+def _location_of(target_field: xr.DataArray, on_a_site_dim: bool) -> dict[str, xr.Variable]:
+    """The target's ``lon``/``lat``, for values on a ``site`` dim or at one site."""
+    return {
+        name: target_field[name].variable if on_a_site_dim else target_field[name].variable.squeeze()
+        for name in (LON, LAT)
+        if name in target_field.coords
+    }
 
 
 def _is_stacked_into(target_field: xr.DataArray, dim: str, stacked_dim: str) -> bool:
@@ -1009,6 +1022,23 @@ def check_sipnet_parameter_fields_have_the_labels(
             f"that the model output has; the SIPNET parameter fields and the runs must "
             f"cover the same {dim}s."
         )
+
+
+def check_sipnet_parameter_fields_are_located_as_the_target(
+    values: xr.DataArray, target_field: xr.DataArray, name: str
+) -> None:
+    """The SIPNET parameter fields put the target's sites where the target does."""
+    for coordinate in (LON, LAT):
+        if coordinate not in values.coords or coordinate not in target_field.coords:
+            continue
+        if not np.array_equal(
+            np.ravel(values[coordinate].values), np.ravel(target_field[coordinate].values)
+        ):
+            raise ValueError(
+                f"the SIPNET parameter fields' {name!r} put the sites at other {coordinate} "
+                "values than the model output does; a site has one location, so build the "
+                "parameter vector and label the runs from one site table."
+            )
 
 
 def check_target_is_not_a_stack_of_sipnet_parameter_fields_dims(

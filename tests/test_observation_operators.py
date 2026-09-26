@@ -46,7 +46,7 @@ def one_run():
         niwot_reference_output().select(VARIABLES),
         site=1,
         batch={"sample": 0},
-        site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True),
+        site_table=site_table_of(1, keyed=True),
     )
 
 
@@ -279,6 +279,54 @@ class TestExtractSipnetParameterAtCoords:
         target_field = xr.DataArray(np.zeros((2, 2)), dims=("sample", "site"), coords={"sample": [0, 1], "site": [3, 1]})
         array = extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", target_field)
         np.testing.assert_array_equal(array.values, [[3.0, 1.0], [6.0, 4.0]])
+
+
+class TestTheExtractedParameterIsAField:
+    """It kept the SIPNET parameter fields' string pft and dropped lon/lat."""
+
+    @staticmethod
+    def sipnet_parameter_fields(**site_table):
+        fields = as_sipnet_parameter_fields(
+            xr.Dataset(
+                {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])},
+                coords={"sample": [0, 1], "site": [1, 2]},
+            )
+        )
+        if site_table:
+            fields = fields.assign_coords(
+                {name: ("site", values) for name, values in site_table.items()}
+            )
+        return fields.assign_coords(pft=("site", ["conifer", "deciduous"]))
+
+    def test_on_a_stack_and_one_run(self, stack, one_run):
+        from sipnet_calibration.fields import in_field_layout, validate_field
+
+        fields = self.sipnet_parameter_fields()
+        for target, sipnet_parameter_fields in (
+            (stack["leaf_carbon"], fields),
+            (one_run["leaf_carbon"], fields.sel(sample=[0], site=[1])),
+        ):
+            array = extract_sipnet_parameter_at_coords(
+                sipnet_parameter_fields, "leaf_carbon_per_area", target
+            )
+            assert "pft" not in array.coords
+            validate_field(in_field_layout(array))
+            for name in ("lon", "lat"):
+                np.testing.assert_array_equal(
+                    np.ravel(array[name].values), np.ravel(target[name].values)
+                )
+
+    def test_a_site_located_elsewhere_is_refused(self, stack):
+        moved = self.sipnet_parameter_fields(lon=[0.0, 1.0], lat=[0.0, 1.0])
+        with pytest.raises(ValueError, match="other lon values than the model output"):
+            extract_sipnet_parameter_at_coords(moved, "leaf_carbon_per_area", stack["leaf_carbon"])
+
+    def test_leaf_area_index_predictions_carry_no_site_labels(self, stack, labels):
+        observed = dated_observed_values([1, 2], labels)
+        predicted = ComputeLeafAreaIndex()(
+            stack, observed, sipnet_parameter_fields=self.sipnet_parameter_fields()
+        )
+        assert "pft" not in predicted.coords
 
 
 class TestCheckOperator:

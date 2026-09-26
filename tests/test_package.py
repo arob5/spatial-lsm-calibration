@@ -49,15 +49,34 @@ def test_the_data_sources_and_observation_do_not_import_the_parameter_vector():
     assert result.stdout.strip() == "[]"
 
 
-def test_the_operators_type_hints_resolve():
-    """ObservedValues was imported for type checking only, so get_type_hints failed."""
+def test_every_public_type_hint_resolves():
+    """Names imported for type checking only made get_type_hints raise NameError.
+
+    ObservedValues in the operators, then SIPNETResult in fields.
+    """
+    import importlib
+    import inspect
+    import pkgutil
     import typing
 
-    from sipnet_calibration.observation import ObservationSource, check_operator
-    from sipnet_calibration.observation.operators import ObservationOperator
+    import sipnet_calibration
 
-    for annotated in (ObservationOperator.__call__, check_operator, ObservationSource):
-        assert typing.get_type_hints(annotated)
+    unresolved = []
+    for module_info in pkgutil.walk_packages(
+        sipnet_calibration.__path__, f"{sipnet_calibration.__name__}."
+    ):
+        module = importlib.import_module(module_info.name)
+        for name in getattr(module, "__all__", ()):
+            public = getattr(module, name)
+            annotated = [public] if inspect.isfunction(public) else []
+            if inspect.isclass(public):
+                annotated = [public, *filter(inspect.isfunction, vars(public).values())]
+            for item in annotated:
+                try:
+                    typing.get_type_hints(item)
+                except NameError as error:
+                    unresolved.append(f"{module_info.name}.{name}: {error}")
+    assert unresolved == []
 
 
 def test_every_module_compiles_without_a_warning():

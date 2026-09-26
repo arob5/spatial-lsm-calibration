@@ -1521,6 +1521,22 @@ class TestTheBatchDimIsNamedOnce:
         run_succeeded.values[0, 0] = False
         assert bool(evaluation.run_succeeded.values[0, 0])
 
+    def test_a_vector_located_by_another_site_table_is_refused(self, climate):
+        """Its SIPNET parameter fields kept its own lon/lat, beside runs labeled from another."""
+        located = example_parameter_vector(
+            site_table=SITE_TABLE, pft=("temperate.deciduous", "boreal.coniferous")
+        )
+        elsewhere = site_table_of(*SITES, lon=[-100.0, -60.0], lat=[40.0, 45.0])
+        with pytest.raises(ValueError, match="other lon values than the model's site table"):
+            ForwardModel(
+                scaled_niwot_model(), located, climate=climate, backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",), site_table=elsewhere,
+            )
+        ForwardModel(
+            scaled_niwot_model(), located, climate=climate, backend=SequentialBackend(),
+            output_variable_names=("wood_carbon",), site_table=SITE_TABLE,
+        )
+
     def test_a_crossed_batch_is_refused_with_the_advice_to_give_theta_its_rows(
         self, parameter_vector, climate, observation_vector
     ):

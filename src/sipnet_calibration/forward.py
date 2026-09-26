@@ -154,7 +154,10 @@ complete set the run used, whether the parameter vector set them or the base
 parameter set supplied them: the worker builds one run's zero-dimensional
 SIPNET parameter fields from ``SIPNETParameters.dataarray(name)`` for every
 name the operators read, and hands them to its site's slice of the
-observation vector.
+observation vector. Only a run shows whether a model's result carries
+``.parameters``, so a model whose result does not fails every run in the
+machinery, raised once the batch is collected; nothing runs at
+construction.
 
 Usage
 -----
@@ -383,7 +386,7 @@ class ForwardModel:
         by the model's flags, or (with *freq*) has a kind no method keeps; the
         site table lacks ``lon``/``lat`` or lists a site twice;
         *to_sipnet_parameter_fields* does not return SIPNET parameter fields
-        for the batch; or an operator reads a SIPNET parameter that neither the
+        for the batch, or locates a site elsewhere than the site table; or an operator reads a SIPNET parameter that neither the
         SIPNET parameter fields write nor the model's base parameter set holds.
     KeyError
         If an output variable name is not a pySIPNET output variable, a site
@@ -578,8 +581,9 @@ class ForwardModel:
             pySIPNET's flat parameter name, or other SIPNET parameters than the
             model was built for).
         RuntimeError
-            If a run failed in the machinery rather than at its parameters,
-            or, on the prior-predictive path, if every run failed at its
+            If a run failed in the machinery rather than at its parameters
+            (a model whose result carries no ``.parameters`` among them), or,
+            on the prior-predictive path, if every run failed at its
             parameters. The error's ``evaluation`` attribute is a
             :class:`ForwardEvaluation` of what was collected, with no
             predictions or model output.
@@ -679,6 +683,9 @@ class ForwardModel:
         sipnet_parameter_fields = self._to_sipnet_parameter_fields(theta)
         check_sipnet_parameter_fields_are_for_the_batch(
             sipnet_parameter_fields, self.sites, n_samples=len(theta), batch_dim=self.batch_dim
+        )
+        check_sipnet_parameter_fields_are_located_as_the_site_table(
+            sipnet_parameter_fields, self._site_locations
         )
         if LON not in sipnet_parameter_fields.coords and LAT not in sipnet_parameter_fields.coords:
             sipnet_parameter_fields = sipnet_parameter_fields.assign_coords(self._site_locations)
@@ -1218,6 +1225,22 @@ def check_sipnet_parameter_fields_are_on_the_vectors_sites(
             "order; keep their site dimension as parameter_vector.sipnet_parameter_fields "
             "gives it."
         )
+
+
+def check_sipnet_parameter_fields_are_located_as_the_site_table(
+    sipnet_parameter_fields: xr.Dataset, site_locations: Mapping[str, xr.DataArray]
+) -> None:
+    """SIPNET parameter fields that carry ``lon``/``lat`` carry the site table's."""
+    for name, location in site_locations.items():
+        if name in sipnet_parameter_fields.coords and not np.array_equal(
+            sipnet_parameter_fields[name].values, location.values
+        ):
+            raise ValueError(
+                f"the SIPNET parameter fields put the sites at other {name} values than the "
+                "model's site table does; a site has one location, so build the parameter "
+                "vector from the site table the runs are labeled from, or pass that table as "
+                "site_table=."
+            )
 
 
 def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(

@@ -2207,6 +2207,11 @@ class TestTheVectorConventions:
         small = example.select(parameter_names=["initial_soil_carbon", "allocation"])
         assert small.parameter_names == ("allocation", "initial_soil_carbon")
 
+    def test_a_generator_of_sites_is_read_once(self, example, located_example):
+        for vector in (example, located_example):
+            assert vector.select(sites=(s for s in (27, 1))).sites == (1, 27)
+            assert vector.restrict_to_sites(s for s in (27, 99, 1)).sites == (1, 27)
+
     def test_restrict_to_sites_ignores_sites_the_vector_does_not_have(self, example):
         small = example.restrict_to_sites([27, 99, 1])
         assert small.sites == (1, 27)
