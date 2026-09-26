@@ -796,3 +796,12 @@ class TestWindowEdgesAndLabels:
         overlapping = array.assign_coords({TIMESTEP_START: ("time", start)})
         with pytest.raises(ValueError, match="overlap"):
             select_timestep_at(overlapping, pd.DatetimeIndex(array["time"].values[[5]]))
+
+
+@pytest.mark.parametrize("given", [np.zeros(3), None, xr.Dataset()], ids=["numpy", "none", "dataset"])
+def test_windows_from_what_is_not_a_dataarray_is_a_type_error(given):
+    """message_name ran first and raised AttributeError."""
+    from sipnet_calibration.observation import windows_from_observed_values
+
+    with pytest.raises(TypeError, match="DataArray"):
+        windows_from_observed_values(given)

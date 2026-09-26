@@ -454,6 +454,7 @@ from sipnet_calibration.sites import (
 )
 from sipnet_calibration.validation import (
     as_batched_flat,
+    as_bounded_integer,
     as_frozen_mapping,
     as_names,
     as_sequence,
@@ -1687,6 +1688,7 @@ class ParameterVector:
             return (SHARED,)
         if varies_by == SITE:
             return self.sites
+        check_site_labels_are_held(varies_by, self)
         present = set(self.site_labels[varies_by])
         return tuple(c for c in self._declared_classes[varies_by] if c in present)
 
@@ -1973,8 +1975,8 @@ class ParameterVector:
         Raises
         ------
         TypeError
-            If *batch_dim* is not a string, or *flat_values* is not an array
-            of real numbers.
+            If *space* or *batch_dim* is not a string, or *flat_values* is not
+            an array of real numbers.
         ValueError
             If *space* is unknown; if *batch_dim* is a name it may not be; or
             if *flat_values* is not ``(D,)`` or ``(J, D)``.
@@ -2149,7 +2151,15 @@ class ParameterVector:
         One key split per calibration parameter, so, with JAX's default
         partitionable key splitting, appending one to a vector leaves the
         earlier ones' draws unchanged.
+
+        Raises
+        ------
+        TypeError
+            If *n* is a boolean, a float or not an integer.
+        ValueError
+            If *n* is negative.
         """
+        n = as_bounded_integer(n, minimum=0, message_name="n")
         parts = {}
         for parameter, subkey in zip(
             self.parameters, jax.random.split(key, len(self.parameters)), strict=True
@@ -3648,7 +3658,12 @@ def check_sipnet_map_image_is_in_domain(
             )
 
 
-def check_space_is_known(space: str) -> None:
+def check_space_is_known(space: Any) -> None:
+    """*space* is one of :data:`SPACES`."""
+    if not isinstance(space, str):
+        raise TypeError(
+            f"space must be a string, one of {SPACES}; got {type(space).__name__} {space!r}."
+        )
     if space not in SPACES:
         raise ValueError(f"space must be one of {SPACES}; got {space!r}.")
 

@@ -220,7 +220,7 @@ def aggregate_time(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray``, or *freq* is not a string.
     ValueError
         If *field* is not a field
         (:func:`sipnet_calibration.fields.validate_field`: among its rules a
@@ -264,6 +264,7 @@ def aggregate_time(
     lands mid-record.
     """
     check_field_is_on_a_time_axis(field)
+    check_frequency_is_an_offset_alias(freq)
     kind = _variable_kind(field)
     method = _method_for(field, kind, how)
     if _has_interval_coords(field):
@@ -469,8 +470,8 @@ def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIn
         instead); if a window edge is not a datetime or is ``NaT``; or if a
         window's end does not follow its start.
     """
+    fields.validate_field(observed_values)
     message_name = fields.message_name(observed_values, "the observation source")
-    fields.validate_field(observed_values, message_name=message_name)
     check_has_windows(observed_values, message_name)
     start = pd.DatetimeIndex(observed_values[WINDOW_START].values)
     end = pd.DatetimeIndex(observed_values[WINDOW_END].values)
@@ -1189,14 +1190,16 @@ def check_frequency_is_an_offset_alias(freq: Any) -> None:
 
     Raises
     ------
+    TypeError
+        If *freq* is not a string.
     ValueError
-        If *freq* is not a string pandas reads as an offset, with pandas' own
-        reason (that ``'M'`` is now ``'ME'``, say), or names a period that is
-        not positive.
+        If pandas does not read *freq* as an offset, with pandas' own reason
+        (that ``'M'`` is now ``'ME'``, say), or it names a period that is not
+        positive.
     """
     bad = f"freq must be a pandas offset alias such as '1D', 'MS' or 'YS', got {freq!r}"
     if not isinstance(freq, str):
-        raise ValueError(f"{bad}.")
+        raise TypeError(f"{bad}, a {type(freq).__name__}.")
     try:
         offset = pd.tseries.frequencies.to_offset(freq)
     except (TypeError, ValueError) as error:

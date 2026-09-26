@@ -285,8 +285,8 @@ def to_sipnet_initial_condition_fields(
     KeyError
         If *state* lacks one of the four variables.
     TypeError
-        If a value of *state* is not a ``DataArray``, or *deciduous* is not
-        boolean.
+        If *state* is neither a Dataset nor a mapping, a value of it is not a
+        ``DataArray``, or *deciduous* is not boolean.
     ValueError
         For the refusals of :func:`to_sipnet_initial_conditions`, naming the
         offending elements; if the inputs broadcast to a dim that is neither
@@ -307,6 +307,7 @@ def to_sipnet_initial_condition_fields(
     processed file passed unfiltered is refused and the members to run have to be
     chosen first. See the Notes of :func:`to_sipnet_initial_conditions`.
     """
+    _check_state_is_a_dataset_or_a_mapping(state)
     arrays = {name: _state_variable(state, name) for name in _STATE_VARIABLES}
     arrays["leaf_carbon_per_area"] = _as_data_array(leaf_carbon_per_area)
     arrays["fine_root_fraction"] = _as_data_array(fine_root_fraction)
@@ -723,6 +724,16 @@ def _check_root_fractions_leave_wood(
             "catch either, so the guard is a floor on the remainder rather than on the "
             "sum. pySIPNET validates the two fractions separately and not their sum at "
             "all (TARPS-group/pySIPNET#39)."
+        )
+
+
+def _check_state_is_a_dataset_or_a_mapping(state: Any) -> None:
+    """The state is a Dataset or a mapping of fields."""
+    if not isinstance(state, (xr.Dataset, Mapping)):
+        raise TypeError(
+            f"state must be an xarray Dataset or a mapping of DataArrays, got "
+            f"{type(state).__name__}; pass initial_condition_fields(...) or the processed "
+            "Dataset."
         )
 
 

@@ -1206,3 +1206,20 @@ class TestNothingReadFromAVectorChangesIt:
         vector.index.names = ["a", "b", "c"]
         assert list(vector.index.names) == list(INDEX_LEVELS)
         assert vector.positions(site=1).size > 0
+
+
+class TestSelectAndFlatRefuseInTheirOwnWords:
+    def test_a_time_slice_of_numbers_or_with_a_step(self, vector):
+        """pandas' TypeError surfaced, and a stepped slice kept every other label."""
+        with pytest.raises(TypeError, match="time slices by times"):
+            vector.select(time=slice(1, 2))
+        with pytest.raises(ValueError, match="without a step"):
+            vector.select(time=slice("2012", "2013", 2))
+
+    def test_jax_backed_arrays_flatten(self, vector):
+        """xarray's 'Vectorized indexing is not supported' surfaced."""
+        fields = {
+            name: array.copy(data=jnp.asarray(array.values))
+            for name, array in vector.fields(vector.y).items()
+        }
+        np.testing.assert_array_equal(vector.flat(fields), vector.y)

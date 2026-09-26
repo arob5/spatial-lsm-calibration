@@ -1703,3 +1703,9 @@ def test_round_trip_checks_notice_a_file_that_differs(
     assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 1
     assert not out.exists() and out.with_suffix(".nc.partial").exists()
     assert str(out.with_suffix(".nc.partial")) in capsys.readouterr().err
+
+
+def test_a_state_that_is_neither_a_dataset_nor_a_mapping_is_a_type_error():
+    """A list raised 'list indices must be integers or slices, not str'."""
+    with pytest.raises(TypeError, match="state must be an xarray Dataset or a mapping"):
+        to_sipnet_initial_condition_fields([1], **VALID_PARAMETERS)

@@ -2290,3 +2290,19 @@ def test_sipnet_parameter_fields_refuse_fields_whose_batch_dim_is_a_sipnet_param
     fields = example.fields(theta).rename(sample="soil_carbon")
     with pytest.raises(ValueError, match="batch_dim='soil_carbon' is a SIPNET parameter name"):
         example.sipnet_parameter_fields(fields)
+
+
+class TestWrongArgumentsInTheModulesWords:
+    def test_space_that_is_not_a_string(self, example, theta):
+        with pytest.raises(TypeError, match="space must be a string"):
+            example.fields(theta, space=3)
+
+    @pytest.mark.parametrize("n, error", [(True, TypeError), (2.0, TypeError), (-1, ValueError)])
+    def test_sample_takes_a_count(self, example, n, error):
+        """True drew one, 2.0 raised JAX's TypeError and -1 a raw ValueError."""
+        with pytest.raises(error, match="n "):
+            example.sample(jax.random.key(0), n)
+
+    def test_an_unknown_site_labels_name(self, example):
+        with pytest.raises(KeyError, match="no site labels 'nope'"):
+            example.group_labels("nope")

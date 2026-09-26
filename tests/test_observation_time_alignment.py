@@ -709,3 +709,9 @@ class TestAggregateTimeOnCalendarCells:
         assert daily.attrs["resampling"] == "mean of timestep_mean values over 1D"
         assert daily.attrs["kind"] == "timestep_mean" and "time_reference" in daily.attrs
         assert daily.attrs["units"] == "g m-2"
+
+
+def test_a_frequency_that_is_not_a_string_is_a_type_error(niwot_output):
+    field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+    with pytest.raises(TypeError, match="freq must be a pandas offset alias"):
+        aggregate_time(field, 3)

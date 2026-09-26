@@ -135,6 +135,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import chain
 from typing import Any
 
@@ -411,16 +412,17 @@ class ObservationVector:
         Raises
         ------
         TypeError
-            If *time* is not a slice; if *observation_source_names* or *sites*
+            If *time* is not a slice, or an end of it is not a time (a string
+            or a datetime); if *observation_source_names* or *sites*
             is one value, a string or a set; or if a site id is a boolean, a
             float or not a number.
         KeyError
             If an observation source name is not held, or a site is not one
             of :attr:`sites`.
         ValueError
-            If a name or a site is given twice, a site id is out of range,
-            *sites* is a two-dimensional array, or the selection leaves no
-            observation.
+            If *time* has a step; if a name or a site is given twice, a site
+            id is out of range, *sites* is a two-dimensional array, or the
+            selection leaves no observation.
 
         Notes
         -----
@@ -560,7 +562,11 @@ class ObservationVector:
         for source in self.observation_sources:
             array = fields[source.observation_source_name]
             check_field_is_on_the_grid(array, source)
-            arrays[source.observation_source_name] = in_field_layout(array)
+            laid_out = in_field_layout(array)
+            if not isinstance(laid_out.data, np.ndarray):
+                # A JAX-backed array, say: xarray indexes only NumPy by label.
+                laid_out = laid_out.copy(data=np.asarray(laid_out.data))
+            arrays[source.observation_source_name] = laid_out
         batch = _batch_dim_and_labels(arrays, self.observation_source_names)
         shape = (len(batch[1]), self.dimension) if batch is not None else (self.dimension,)
         out = np.full(shape, np.nan, dtype=np.float64)
@@ -991,9 +997,24 @@ def check_observation_source_names_are_held(names: Sequence[str], held: Sequence
 
 
 def check_time_is_a_slice(time: Any) -> None:
-    if time is not None and not isinstance(time, slice):
+    """``time=`` is ``None`` or a slice of times, with no step."""
+    if time is None:
+        return
+    if not isinstance(time, slice):
         raise TypeError(
             f"time must be a slice such as slice('2012', '2024'), got {type(time).__name__}."
+        )
+    ends = [end for end in (time.start, time.stop) if end is not None]
+    wrong = [end for end in ends if not isinstance(end, (str, np.datetime64, pd.Timestamp, datetime))]
+    if wrong:
+        raise TypeError(
+            f"time slices by times, and got {wrong!r}; pass dates as strings or datetimes, "
+            "such as slice('2012', '2024')."
+        )
+    if time.step is not None:
+        raise ValueError(
+            f"time must be a slice without a step, got step {time.step!r}; a step would keep "
+            "every n-th time label, which selects by position, not by time."
         )
 
 
