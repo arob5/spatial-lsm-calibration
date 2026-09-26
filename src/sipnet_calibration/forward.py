@@ -1,12 +1,12 @@
 """The forward model: unconstrained calibration parameters to predictions, over
-a site set, with SIPNET run once per member and site.
+a site set, with SIPNET run once per sample and site.
 
 Where this sits
 ---------------
 ::
 
-    theta (J, D)  --ParameterVector.sipnet_table-->  SIPNET table (member, site)
-                  --PyEns, one SIPNETModel run per (member, site)-->  model output
+    theta (J, D)  --ParameterVector.sipnet_table-->  SIPNET table (sample, site)
+                  --PyEns, one SIPNETModel run per (sample, site)-->  model output
                   --ObservationVector.predict and .flat on the worker-->
                     one site's block of Flat per run
                   --placed at positions(site=) by the calling process-->  (J, N)
@@ -41,10 +41,12 @@ produced for a batch of ``J`` rows of ``theta``:
     one row.
 ``sipnet_table``
     The SIPNET table that was run, an ``xr.Dataset`` whose every variable is
-    on ``(member, site)``, with ``member`` labeled ``0`` to ``J - 1`` in the
+    on ``(sample, site)``, with ``sample`` labeled ``0`` to ``J - 1`` in the
     order of ``theta``'s rows and ``site`` in the parameter vector's order.
+    ``sample`` is the model's ``batch_dim``, the name every output below
+    carries too.
 ``model_output``
-    ``xr.Dataset`` on ``(member, site, time)`` of the output variables, as
+    ``xr.Dataset`` on ``(sample, site, time)`` of the output variables, as
     :func:`~sipnet_calibration.fields.stack_model_outputs` builds it: every
     variable a field, so without ``time_bounds`` or SIPNET's
     ``year``/``day_of_year``/``hour_of_day`` row labels, and ``NaN`` where a
@@ -54,16 +56,16 @@ produced for a batch of ``J`` rows of ``theta``:
     vector was given.
 ``predictions``
     ``(J, N)`` float64 in the observation vector's order, ``NaN`` in every
-    cell of a member with a failed run; ``None`` without an observation
+    entry of a sample with a failed run; ``None`` without an observation
     vector.
 ``run_succeeded``
-    bool ``xr.DataArray`` on ``(member, site)``.
+    bool ``xr.DataArray`` on ``(sample, site)``.
 ``failures``
-    ``pd.DataFrame`` with columns ``member``, ``site``, ``error`` (the class
+    ``pd.DataFrame`` with columns ``sample``, ``site``, ``error`` (the class
     name of the exception the run raised) and ``message``, one row per run
     that failed at its parameters.
 ``valid``
-    bool ``(J,)``: every run of the member succeeded and, where there are
+    bool ``(J,)``: every run of the sample succeeded and, where there are
     predictions, they are finite.
 
 A run **fails at its parameters** when pySIPNET refuses them
@@ -71,7 +73,7 @@ A run **fails at its parameters** when pySIPNET refuses them
 (``SIPNETRunError``), the run times out (``subprocess.TimeoutExpired``), or
 the output it wrote holds a non-finite value in a variable that was read
 (:class:`ModelOutputNotFiniteError`, a blow-up SIPNET exits 0 on): the
-member's row is ``NaN``, which pyEKI repairs and a sampler rejects. Anything
+sample's row is ``NaN``, which pyEKI repairs and a sampler rejects. Anything
 else that comes back from a worker (a PyEns ``TaskFailedError``, a
 ``RemoteError`` of another type, a missing binary, an import error) is the
 **machinery** failing, says nothing about the parameters, and is raised after
@@ -99,8 +101,14 @@ axis) and its free fields (the SIPNET parameter names the vector sets) hold
 for the model's lifetime, and every call's parameter grids zip with that
 site axis. The free names are learned by mapping one prior draw through
 ``sipnet_table`` in ``__init__``, which fails fast, before anything is
-queued, on a hook that does not return a table on ``(member, site)`` over
+queued, on a hook that does not return a table on ``(sample, site)`` over
 the vector's sites in pySIPNET's flat parameter names.
+
+**Samples are labeled by row.** The table hook must label its batch dim
+``0`` to ``J - 1`` in the order of ``theta``'s rows, although a batch dim
+may in general carry any distinct integers: the model maps each run back to
+its row of the predictions and of ``valid`` by that label, and a table
+whose labels were anything else could place a run in another sample's row.
 
 **The operators run on the worker** because reading a run's output back in
 the calling process costs more than the run (pySIPNET parses the whole
@@ -120,7 +128,7 @@ positions. ``__init__`` checks this for every observed site.
 **Runs on different time axes** (sites with driver records of different
 lengths) are stacked by an outer join on the prior-predictive path, so the
 shorter records are ``NaN``-padded and the interval coordinates gain a
-``site`` or ``member`` dimension; select one site before aggregating such
+``site`` or ``sample`` dimension; select one site before aggregating such
 a stack, as :func:`~sipnet_calibration.observation.aggregate_time` asks.
 
 **Parameters an operator reads but the vector does not set** (a fixed
@@ -147,7 +155,7 @@ Usage
                          output_variable_names=("nee", "leaf_carbon"),
                          freq="1D")
     theta = parameter_vector.sample(key, 100)
-    model_output = prior.evaluate(theta).model_output  # (member, site, time)
+    model_output = prior.evaluate(theta).model_output  # (sample, site, time)
 """
 
 from __future__ import annotations
@@ -155,6 +163,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
 import jax
@@ -181,8 +190,9 @@ from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import LAT, LON, SITE
+from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE
 from sipnet_calibration.fields import (
+    check_batch_dim_name_is_free,
     label_run,
     resolve_output_variable_names,
     stack_model_outputs,
@@ -210,9 +220,6 @@ __all__ = [
     "ModelOutputNotFiniteError",
 ]
 
-MEMBER = "member"
-
-
 class ModelOutputNotFiniteError(RuntimeError):
     """A run completed but wrote a non-finite value in a variable that was read.
 
@@ -221,7 +228,7 @@ class ModelOutputNotFiniteError(RuntimeError):
     """
 
 
-#: The exceptions that mean a run failed **at its parameters**: the member's
+#: The exceptions that mean a run failed **at its parameters**: the sample's
 #: row becomes NaN. Everything else a worker returns is the machinery failing
 #: and is raised.
 MODEL_FAILURES: tuple[type[BaseException], ...] = (
@@ -285,17 +292,23 @@ class ForwardModel:
         Refused with an observation vector, whose operators decide their own
         alignment.
     to_sipnet_table:
-        ``theta (J, D) -> SIPNET table (member, site)``; defaults to
-        ``parameter_vector.sipnet_table``. The hook for an experiment that
-        maps initial-condition state into SIPNET parameters. The table must
-        be on exactly ``(member, site)``, every variable on both, with
-        ``member`` labeled ``0`` to ``J - 1``, the parameter vector's sites in
-        its order, and each variable named by pySIPNET's flat parameter name
-        (``max_photosynthesis_rate``, not the alias ``aMax``).
+        ``theta (J, D) -> SIPNET table (batch_dim, site)``; defaults to
+        ``parameter_vector.sipnet_table`` with *batch_dim*. The hook for an
+        experiment that maps initial-condition state into SIPNET parameters.
+        The table must be on exactly ``(batch_dim, site)``, every variable on
+        both, with *batch_dim* labeled ``0`` to ``J - 1`` in ``theta``'s row
+        order, the parameter vector's sites in its order, and each variable
+        named by pySIPNET's flat parameter name (``max_photosynthesis_rate``,
+        not the alias ``aMax``).
     site_table:
         The site table the runs are labeled from (``lon``/``lat``), one row
         per site; defaults to the vector's when it carries them, else
         :func:`sipnet_calibration.sites.load_sites`.
+    batch_dim:
+        The name of the batch dim of ``theta``'s rows, which the SIPNET
+        table, ``model_output``, ``run_succeeded`` and the ``failures``
+        column all carry; ``sample`` by default. It may not be a spatial name
+        or ``time``.
 
     Raises
     ------
@@ -330,7 +343,9 @@ class ForwardModel:
         freq: str | None = None,
         to_sipnet_table: Callable[[Any], xr.Dataset] | None = None,
         site_table: pd.DataFrame | None = None,
+        batch_dim: str = SAMPLE,
     ) -> None:
+        check_batch_dim_name_is_free(batch_dim, message_name="batch_dim")
         check_forward_model_arguments(
             model,
             parameter_vector,
@@ -347,6 +362,7 @@ class ForwardModel:
         self.backend = backend
         self.observation_vector = observation_vector
         self.freq = freq
+        self.batch_dim = batch_dim
         self.climate = {site: climate[site] for site in self.sites}
         self.output_variable_names = _output_variable_names(
             output_variable_names, observation_vector
@@ -357,7 +373,9 @@ class ForwardModel:
         # the lookup below relies on it.
         self._site_locations = site_locations(self.sites, chosen_site_table)
         self.site_table = site_lookup(chosen_site_table).loc[list(self.sites)]
-        self._to_sipnet_table = to_sipnet_table or parameter_vector.sipnet_table
+        self._to_sipnet_table = to_sipnet_table or partial(
+            parameter_vector.sipnet_table, batch_dim=batch_dim
+        )
         self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
         self._base_values = _base_values_for(
             model,
@@ -406,13 +424,13 @@ class ForwardModel:
     # ── evaluation ────────────────────────────────────────────────────────────
 
     def evaluate(self, theta: Any) -> ForwardEvaluation:
-        """Run SIPNET once per member and site, and collect what came back.
+        """Run SIPNET once per sample and site, and collect what came back.
 
         Parameters
         ----------
         theta:
             ``(J, D)`` unconstrained calibration parameters, one row per
-            member, or ``(D,)`` for one member.
+            sample, or ``(D,)`` for one sample.
 
         Returns
         -------
@@ -429,8 +447,8 @@ class ForwardModel:
         ValueError
             If *theta* is not ``(D,)`` or ``(J, D)`` with ``J >= 1``, or holds
             a non-finite value; or if the SIPNET table the hook returns is not
-            one for this batch (dims other than ``(member, site)``, a variable
-            not on both, members other than ``0`` to ``J - 1`` in order, sites
+            one for this batch (dims other than ``(batch_dim, site)``, a
+            variable not on both, labels other than ``0`` to ``J - 1`` in order, sites
             other than the vector's in order, a name that is not pySIPNET's
             flat parameter name, or other SIPNET parameters than the model was
             built for).
@@ -444,46 +462,50 @@ class ForwardModel:
         theta = np.asarray(as_batched_flat(theta, self.input_dimension, message_name="theta"))
         check_theta_has_a_row(theta)
         check_theta_is_finite(theta)
-        n_members = len(theta)
+        n_samples = len(theta)
         sipnet_table = self._to_sipnet_table(theta)
         check_table_is_a_sipnet_table(
             sipnet_table,
             self.sites,
-            n_members=n_members,
+            n_samples=n_samples,
+            batch_dim=self.batch_dim,
             expected_sipnet_parameter_names=self.sipnet_parameter_names,
         )
         spec = self._partial(**fields_from_dataset(sipnet_table, axes={SITE: self._site_axis}))
         ensemble_result = EnsembleRunner(self._run, self.backend).run(spec)
 
-        run_outputs_by_member_site, succeeded, failures, machinery_failures = _sort_records(
-            ensemble_result, n_members, self.sites
+        run_outputs_by_sample_site, succeeded, failures, machinery_failures = _sort_records(
+            ensemble_result, n_samples, self.sites, self.batch_dim
         )
         collected = ForwardEvaluation(
             theta=theta,
             sipnet_table=sipnet_table,
             model_output=None,
             predictions=None,
-            run_succeeded=_run_succeeded(succeeded, sipnet_table[MEMBER].values, self.sites),
+            run_succeeded=_run_succeeded(
+                succeeded, sipnet_table[self.batch_dim].values, self.sites, self.batch_dim
+            ),
             failures=failures,
-            valid=np.zeros(n_members, dtype=bool),
+            valid=np.zeros(n_samples, dtype=bool),
         )
         check_no_run_failed_in_the_machinery(machinery_failures, collected)
-        member_succeeded = succeeded.all(axis=1)
+        sample_succeeded = succeeded.all(axis=1)
         if self.observation_vector is None:
             check_some_run_succeeded(collected)
             model_output = _stacked_model_output(
-                run_outputs_by_member_site,
-                n_members,
+                run_outputs_by_sample_site,
+                n_samples,
                 self.sites,
+                batch_dim=self.batch_dim,
                 site_table=self.site_table,
                 site_locations=self._site_locations,
             )
-            return replace(collected, model_output=model_output, valid=member_succeeded)
-        predictions = self._placed_predictions(run_outputs_by_member_site, n_members)
-        # A member with any failed run is invalid as a whole: pyEKI updates
-        # per member, so a row that is partly a prediction cannot be used.
-        predictions[~member_succeeded] = np.nan
-        valid = member_succeeded & np.isfinite(predictions).all(axis=1)
+            return replace(collected, model_output=model_output, valid=sample_succeeded)
+        predictions = self._placed_predictions(run_outputs_by_sample_site, n_samples)
+        # A sample with any failed run is invalid as a whole: pyEKI updates
+        # per row, so a row that is partly a prediction cannot be used.
+        predictions[~sample_succeeded] = np.nan
+        valid = sample_succeeded & np.isfinite(predictions).all(axis=1)
         return replace(collected, predictions=predictions, valid=valid)
 
     def __call__(self, theta: Any) -> np.ndarray:
@@ -514,7 +536,9 @@ class ForwardModel:
     def _probe_sipnet_parameter_names(self) -> tuple[str, ...]:
         """The SIPNET parameter names the table hook sets, from one prior draw."""
         sipnet_table = self._to_sipnet_table(self.parameter_vector.sample(jax.random.key(0), 1))
-        check_table_is_a_sipnet_table(sipnet_table, self.sites, n_members=1)
+        check_table_is_a_sipnet_table(
+            sipnet_table, self.sites, n_samples=1, batch_dim=self.batch_dim
+        )
         return tuple(str(name) for name in sipnet_table.data_vars)
 
     def _build_partial(self) -> PartialSpec:
@@ -538,14 +562,14 @@ class ForwardModel:
         return spec.freeze(free=list(self.sipnet_parameter_names))
 
     def _placed_predictions(
-        self, run_outputs_by_member_site: Mapping[tuple[int, int], _RunOutput], n_members: int
+        self, run_outputs_by_sample_site: Mapping[tuple[int, int], _RunOutput], n_samples: int
     ) -> np.ndarray:
-        """``(J, N)``: each run's block of Flat written at its site's positions."""
+        """``(J, N)``: each run's segment of Flat written at its site's positions."""
         observation_vector = self._observation_vector_for("predictions")
-        predictions = np.full((n_members, observation_vector.dimension), np.nan)
-        for (member, site), run_output in run_outputs_by_member_site.items():
+        predictions = np.full((n_samples, observation_vector.dimension), np.nan)
+        for (sample, site), run_output in run_outputs_by_sample_site.items():
             if run_output.predictions is not None:
-                predictions[member, self._site_positions[site]] = run_output.predictions
+                predictions[sample, self._site_positions[site]] = run_output.predictions
         return predictions
 
 
@@ -690,27 +714,29 @@ def _site_blocks(
 
 
 def _sort_records(
-    ensemble_result: Any, n_members: int, sites: Sequence[int]
+    ensemble_result: Any, n_samples: int, sites: Sequence[int], batch_dim: str
 ) -> tuple[
     dict[tuple[int, int], _RunOutput], np.ndarray, pd.DataFrame, list[tuple[dict, BaseException]]
 ]:
     """Split PyEns's records into outputs, successes, model failures and machinery failures.
 
-    The outputs are keyed ``(member, site)``. Member labels are row positions,
-    which :func:`check_table_is_a_sipnet_table` guarantees.
+    Each record's coordinate is read for the *batch_dim* and ``site`` axes
+    PyEns made from the table's dims. The outputs are keyed
+    ``(sample, site)``. Batch labels are row positions, which
+    :func:`check_table_is_a_sipnet_table` guarantees.
     """
     column = {site: j for j, site in enumerate(sites)}
-    run_outputs_by_member_site: dict[tuple[int, int], _RunOutput] = {}
+    run_outputs_by_sample_site: dict[tuple[int, int], _RunOutput] = {}
     rows: list[dict[str, Any]] = []
     machinery_failures: list[tuple[dict, BaseException]] = []
     for record in ensemble_result:
-        member, site = int(record.coordinate[MEMBER]), int(record.coordinate[SITE])
+        sample, site = int(record.coordinate[batch_dim]), int(record.coordinate[SITE])
         if not record.failed:
-            run_outputs_by_member_site[(member, site)] = record.output
+            run_outputs_by_sample_site[(sample, site)] = record.output
         elif _is_model_failure(record.output):
             rows.append(
                 {
-                    MEMBER: member,
+                    batch_dim: sample,
                     SITE: site,
                     "error": _error_name(record.output),
                     "message": str(record.output)[:500],
@@ -718,21 +744,21 @@ def _sort_records(
             )
         else:
             machinery_failures.append((record.coordinate, record.output))
-    succeeded = np.zeros((n_members, len(sites)), dtype=bool)
-    for member, site in run_outputs_by_member_site:
-        succeeded[member, column[site]] = True
-    failures = pd.DataFrame(rows, columns=[MEMBER, SITE, "error", "message"])
-    return run_outputs_by_member_site, succeeded, failures, machinery_failures
+    succeeded = np.zeros((n_samples, len(sites)), dtype=bool)
+    for sample, site in run_outputs_by_sample_site:
+        succeeded[sample, column[site]] = True
+    failures = pd.DataFrame(rows, columns=[batch_dim, SITE, "error", "message"])
+    return run_outputs_by_sample_site, succeeded, failures, machinery_failures
 
 
 def _run_succeeded(
-    succeeded: np.ndarray, members: np.ndarray, sites: Sequence[int]
+    succeeded: np.ndarray, labels: np.ndarray, sites: Sequence[int], batch_dim: str
 ) -> xr.DataArray:
-    """*succeeded*, ``(J, S)``, labeled on ``(member, site)``."""
+    """*succeeded*, ``(J, S)``, labeled on ``(batch_dim, site)``."""
     return xr.DataArray(
         succeeded,
-        dims=(MEMBER, SITE),
-        coords={MEMBER: members, SITE: list(sites)},
+        dims=(batch_dim, SITE),
+        coords={batch_dim: labels, SITE: list(sites)},
         name="run_succeeded",
     )
 
@@ -761,22 +787,24 @@ def _error_name(error: BaseException) -> str:
 
 
 def _stacked_model_output(
-    run_outputs_by_member_site: Mapping[tuple[int, int], _RunOutput],
-    n_members: int,
+    run_outputs_by_sample_site: Mapping[tuple[int, int], _RunOutput],
+    n_samples: int,
     sites: Sequence[int],
     *,
+    batch_dim: str,
     site_table: pd.DataFrame,
     site_locations: dict[str, xr.DataArray],
 ) -> xr.Dataset:
-    """The runs' output on the full ``(member, site, time)`` grid, ``NaN`` where a run failed."""
-    model_outputs_by_site_member = {
-        (site, member): run_output.model_output
-        for (member, site), run_output in run_outputs_by_member_site.items()
+    """The runs' output on the full ``(batch_dim, site, time)`` grid, ``NaN`` where a run failed."""
+    model_outputs_by_sample_site = {
+        key: run_output.model_output for key, run_output in run_outputs_by_sample_site.items()
     }
-    stacked = stack_model_outputs(model_outputs_by_site_member, site_table=site_table)
+    stacked = stack_model_outputs(
+        model_outputs_by_sample_site, key_dims=(batch_dim, SITE), site_table=site_table
+    )
     full = stacked.reindex(
         {
-            MEMBER: np.arange(n_members, dtype=stacked[MEMBER].dtype),
+            batch_dim: np.arange(n_samples, dtype=BATCH_LABEL_DTYPE),
             SITE: np.asarray(sites, dtype=stacked[SITE].dtype),
         }
     )
@@ -961,16 +989,17 @@ def check_table_is_a_sipnet_table(
     sipnet_table: Any,
     sites: Sequence[int],
     *,
-    n_members: int,
+    n_samples: int,
+    batch_dim: str = SAMPLE,
     expected_sipnet_parameter_names: Sequence[str] | None = None,
 ) -> None:
-    """*sipnet_table* is a SIPNET table for a batch of *n_members* over *sites*."""
+    """*sipnet_table* is a SIPNET table for a batch of *n_samples* over *sites*."""
     if not isinstance(sipnet_table, xr.Dataset):
         raise TypeError(
             f"to_sipnet_table must return an xr.Dataset, got {type(sipnet_table).__name__}."
         )
-    check_table_is_on_member_and_site(sipnet_table)
-    check_table_members_are_the_rows_of_theta(sipnet_table, n_members)
+    check_table_is_on_the_batch_dim_and_site(sipnet_table, batch_dim)
+    check_table_batch_labels_are_the_rows_of_theta(sipnet_table, n_samples, batch_dim)
     if sipnet_table[SITE].values.tolist() != list(sites):
         raise ValueError(
             "the SIPNET table's sites are not the parameter vector's sites, in order; "
@@ -981,28 +1010,33 @@ def check_table_is_a_sipnet_table(
         check_table_sets_the_parameters_built_for(sipnet_table, expected_sipnet_parameter_names)
 
 
-def check_table_is_on_member_and_site(sipnet_table: xr.Dataset) -> None:
-    if set(sipnet_table.dims) != {MEMBER, SITE}:
+def check_table_is_on_the_batch_dim_and_site(sipnet_table: xr.Dataset, batch_dim: str) -> None:
+    """The table is on exactly ``(batch_dim, site)``, every variable on both."""
+    if set(sipnet_table.dims) != {batch_dim, SITE}:
         raise ValueError(
-            f"a SIPNET table for a batch has dims exactly (member, site), got "
-            f"{tuple(sipnet_table.dims)}; reduce or select any other dimension in the hook."
+            f"a SIPNET table for a batch has dims exactly ({batch_dim}, site), got "
+            f"{tuple(sipnet_table.dims)}; reduce or select any other dimension in the hook, "
+            f"and name the batch dim {batch_dim!r}, the model's batch_dim."
         )
     for name, variable in sipnet_table.data_vars.items():
-        if set(variable.dims) != {MEMBER, SITE}:
+        if set(variable.dims) != {batch_dim, SITE}:
             raise ValueError(
                 f"the SIPNET table's {name!r} is on {variable.dims}, but every variable of a "
-                "SIPNET table is on both member and site, one value per run; broadcast it in "
-                "the hook (sipnet_table[name].broadcast_like(sipnet_table))."
+                f"SIPNET table is on both {batch_dim} and site, one value per run; broadcast "
+                "it in the hook (sipnet_table[name].broadcast_like(sipnet_table))."
             )
 
 
-def check_table_members_are_the_rows_of_theta(sipnet_table: xr.Dataset, n_members: int) -> None:
-    members = sipnet_table[MEMBER].values.tolist()
-    if members != list(range(n_members)):
+def check_table_batch_labels_are_the_rows_of_theta(
+    sipnet_table: xr.Dataset, n_samples: int, batch_dim: str
+) -> None:
+    """The table's batch labels are ``0`` to ``J - 1``, in the order of theta's rows."""
+    labels = sipnet_table[batch_dim].values.tolist()
+    if labels != list(range(n_samples)):
         raise ValueError(
-            f"the SIPNET table's members must be 0 to {n_members - 1}, in the order of theta's "
-            f"{n_members} rows, got {members[:10]}; a member is the row of theta it was made "
-            "from."
+            f"the SIPNET table's {batch_dim} labels must be 0 to {n_samples - 1}, in the order "
+            f"of theta's {n_samples} rows, got {labels[:10]}; the forward model places each "
+            "run in the row of theta its label names."
         )
 
 
