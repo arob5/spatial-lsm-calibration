@@ -395,6 +395,7 @@ from sipnet_calibration.validation import (
     as_batched_flat,
     as_frozen_mapping,
     as_names,
+    as_sequence,
     as_site_ids,
     is_one_vector,
 )
@@ -1877,7 +1878,7 @@ class ParameterVector:
         for name, wanted in (labels or {}).items():
             if name not in self.site_labels:
                 raise KeyError(f"select: no site labels {name!r}; have {sorted(self.site_labels)}.")
-            wanted = set(as_names(wanted, message_name=f"labels[{name!r}]"))
+            wanted = set(as_sequence(wanted, message_name=f"labels[{name!r}]"))
             undeclared = sorted(map(str, wanted - set(self._declared_classes[name])))
             if undeclared:
                 raise KeyError(

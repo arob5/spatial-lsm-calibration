@@ -28,6 +28,7 @@ from sipnet_calibration.validation import (
     as_names,
     as_positive_integer,
     as_positive_integers,
+    as_sequence,
     as_site_id,
     as_site_ids,
     check_integers_are_in_range,
@@ -80,10 +81,25 @@ class TestAsSiteIds:
         with pytest.raises(TypeError, match=r"^sites\[0\] must be an integer"):
             as_site_ids([site], message_name="sites")
 
-    @pytest.mark.parametrize("site", [27.0, 1.5, np.float32(3), np.nan, np.inf])
+    @pytest.mark.parametrize("site", [27.0, 1.5, np.float32(3)])
     def test_a_float_is_a_type_error_even_a_whole_one(self, site):
         with pytest.raises(TypeError, match="cast it with int"):
             as_site_ids([site], message_name="sites")
+
+    @pytest.mark.parametrize("site", [np.nan, np.inf, -np.inf])
+    def test_a_missing_or_infinite_value_is_not_told_to_cast(self, site):
+        with pytest.raises(TypeError, match=r"^sites\[0\] must be an integer") as caught:
+            as_site_ids([site], message_name="sites")
+        assert "int()" not in str(caught.value)
+
+    def test_a_missing_value_of_a_nullable_series_is_the_one_blamed(self):
+        with pytest.raises(TypeError, match=r"^sites\[1\] must be an integer, got <NA>"):
+            as_site_ids(pd.Series([1, None], dtype="Int64"), message_name="sites")
+
+    def test_a_mapping_is_a_type_error_and_its_keys_are_not(self):
+        with pytest.raises(TypeError, match="mapping.*pass a list"):
+            as_site_ids({27: "a", 1: "b"}, message_name="sites")
+        assert as_site_ids({27: "a", 1: "b"}.keys(), message_name="sites") == (27, 1)
 
     def test_a_float_array_is_a_type_error(self):
         with pytest.raises(TypeError, match="float"):
@@ -203,6 +219,20 @@ class TestAsBatchedFlat:
         assert float(jax.jit(total)(jnp.ones(3))) == 3.0
         np.testing.assert_allclose(jax.grad(total)(jnp.ones(3)), np.ones(3))
 
+    @pytest.mark.parametrize(
+        ("values", "match"),
+        [
+            ([jnp.asarray(1.0), None], "must hold real numbers"),
+            ([jnp.asarray(1.0), "2"], "must hold real numbers"),
+            ([jnp.asarray(1.0), True], "must hold real numbers"),
+            ([jnp.zeros(2), jnp.zeros(3)], "must be a rectangular array"),
+        ],
+        ids=["none", "string", "boolean", "ragged"],
+    )
+    def test_a_list_holding_jax_arrays_gets_the_same_messages(self, values, match):
+        with pytest.raises(TypeError, match=f"^theta {match}"):
+            as_batched_flat(values, 2, message_name="theta")
+
     def test_a_list_of_tracers_is_accepted_under_jit(self):
         def total(theta):
             return as_batched_flat([theta[i] for i in range(3)], 3, message_name="theta").sum()
@@ -304,6 +334,50 @@ class TestAsNames:
         with pytest.raises(TypeError, match="names"):
             as_names(names, message_name="names")
 
+    def test_one_string_is_told_to_pass_itself_in_a_list(self):
+        with pytest.raises(TypeError, match=r"pass a sequence such as \['allocation'\]") as caught:
+            as_names("allocation", message_name="parameters")
+        assert "nee" not in str(caught.value)
+
+    def test_a_mapping_is_a_type_error_and_its_keys_are_not(self):
+        with pytest.raises(TypeError, match="mapping"):
+            as_names({"b": 1, "a": 2}, message_name="names")
+        assert as_names({"b": 1, "a": 2}.keys(), message_name="names") == ("b", "a")
+
+
+class TestAsSequence:
+    @pytest.mark.parametrize(
+        "values",
+        [[2, "b", 1], (2, "b", 1), np.array([2, "b", 1], dtype=object), {2: 0, "b": 0, 1: 0}.keys()],
+        ids=["list", "tuple", "object array", "keys"],
+    )
+    def test_keeps_any_items_in_the_order_given(self, values):
+        assert as_sequence(values, message_name="classes") == (2, "b", 1)
+
+    @pytest.mark.parametrize(
+        "values",
+        [np.array([3, 1]), jnp.array([3, 1]), pd.Categorical([3, 1]), pd.Index([3, 1])],
+        ids=["numpy", "jax", "categorical", "index"],
+    )
+    def test_reads_an_array_like_as_plain_python_items(self, values):
+        items = as_sequence(values, message_name="classes")
+        assert items == (3, 1) and all(type(item) is int for item in items)
+
+    @pytest.mark.parametrize(
+        ("values", "match"),
+        [
+            ("a", r"one string 'a'; pass a sequence such as \['a'\]"),
+            (3, r"got int 3; pass a sequence such as \[3\]"),
+            (np.array(3), r"one value 3; pass a sequence such as \[3\]"),
+            ({"a"}, "no order to keep"),
+            ({"a": 1}, "mapping"),
+        ],
+        ids=["string", "one value", "0-d array", "set", "mapping"],
+    )
+    def test_refuses_what_is_not_an_ordered_sequence(self, values, match):
+        with pytest.raises(TypeError, match=match):
+            as_sequence(values, message_name="classes")
+
 
 class TestFrozenMapping:
     def test_is_a_dict_that_cannot_change(self):
@@ -369,6 +443,15 @@ class TestChecks:
         check_site_ids_are_in_range(np.array([1, 2**31 - 1]), message_name="ids")
         with pytest.raises(ValueError, match=r"got \[0\]"):
             check_site_ids_are_in_range(np.array([0, 5]), message_name="ids")
+
+    @pytest.mark.parametrize("values", [[1.0, np.nan], [1.5], [1.0, 27.0]], ids=["nan", "fraction", "whole floats"])
+    def test_site_ids_that_are_not_integers_are_refused_by_the_module(self, values):
+        with pytest.raises(ValueError, match=r"^ids must be integer site ids from 1 to"):
+            check_site_ids_are_in_range(np.array(values), message_name="ids")
+
+    def test_integers_that_are_not_integers_are_refused_by_the_module(self):
+        with pytest.raises(ValueError, match=r"^k must be integers from 1 to 3, got \[nan\]"):
+            check_integers_are_in_range(np.array([np.nan]), minimum=1, maximum=3, message_name="k")
 
     def test_integers_in_range(self):
         check_integers_are_in_range(np.array([1, 3]), minimum=1, maximum=3, message_name="k")

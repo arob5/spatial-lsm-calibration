@@ -412,7 +412,7 @@ def test_a_site_outside_the_pool_is_refused(raw_root, sites, tmp_path):
 
 def test_a_site_id_below_one_is_refused(raw_root, sites, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=0, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "must be site ids from 1 to")
+    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "must be integer site ids from 1 to")
 
 
 def test_coordinates_disagreeing_with_the_site_table_are_refused(raw_root, sites, tmp_path):

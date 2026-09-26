@@ -99,9 +99,10 @@ def build_raw(
     Raises
     ------
     ValueError
-        If two files claim the same ``(site, member)``, if the member set
-        differs between sites, if a variable's presence differs between the
-        members of one site, or if no file was given.
+        If a site is not an integer site id or a member not an integer that
+        fits ``int16``, if two files claim the same ``(site, member)``, if the
+        member set differs between sites, if a variable's presence differs
+        between the members of one site, or if no file was given.
 
     Notes
     -----
@@ -112,6 +113,18 @@ def build_raw(
     records = list(files)
     if not records:
         raise ValueError("no source files to assemble")
+    # Checked before they are made int64, which would truncate 1.5 to 1 and
+    # refuse NaN with NumPy's message rather than the module's.
+    check_site_ids_are_in_range(
+        np.array([record.site for record in records], dtype=object),
+        message_name="the source files' sites",
+    )
+    check_integers_are_in_range(
+        np.array([record.member for record in records], dtype=object),
+        minimum=1,
+        maximum=int(np.iinfo(np.int16).max),
+        message_name="the source files' members",
+    )
     sites = np.array(sorted({record.site for record in records}), dtype=np.int64)
     members = np.array(sorted({record.member for record in records}), dtype=np.int64)
     site_index = {int(site): i for i, site in enumerate(sites)}
@@ -135,13 +148,6 @@ def build_raw(
     _check_every_site_has_every_member(seen, sites, members)
     _check_presence_is_uniform_over_members(arrays, sites)
 
-    check_site_ids_are_in_range(sites, message_name="the source files' sites")
-    check_integers_are_in_range(
-        members,
-        minimum=1,
-        maximum=int(np.iinfo(np.int16).max),
-        message_name="the source files' members",
-    )
     dataset = xr.Dataset(
         {
             name: (

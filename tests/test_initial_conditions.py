@@ -432,12 +432,23 @@ def test_product_reader_refuses_infinities_and_misplaced_coordinates(raw, sites_
             "source_member must be on member")
 
 
+@pytest.mark.parametrize("site", [1.5, float("nan")], ids=["fraction", "nan"])
+def test_build_raw_refuses_a_site_that_is_not_an_integer(site):
+    """Refused by the site-id check, not truncated to an integer or crashed on."""
+    files = [
+        SourceFile(site=site, member=1, values={"AbvGrndWood": 1.0}),
+        SourceFile(site=2, member=1, values={"AbvGrndWood": 2.0}),
+    ]
+    with pytest.raises(ValueError, match="must be integer site ids from 1 to"):
+        build_raw(files, source_root="r", conversion_script="s")
+
+
 def test_build_raw_refuses_member_ids_that_do_not_fit_int16():
     files = [
         SourceFile(site=1, member=1, values={"AbvGrndWood": 1.0}),
         SourceFile(site=1, member=40000, values={"AbvGrndWood": 2.0}),
     ]
-    with pytest.raises(ValueError, match="members must be from 1 to 32767"):
+    with pytest.raises(ValueError, match="members must be integers from 1 to 32767"):
         build_raw(files, source_root="r", conversion_script="s")
 
 

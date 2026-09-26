@@ -874,6 +874,19 @@ def test_fields_data_model(example, theta):
     assert per_pft.dims == ("member", "pft")
 
 
+@pytest.mark.parametrize(
+    "classes",
+    [[1, 2, 1], np.array([1, 2, 1]), pd.Categorical([1, 2, 1])],
+    ids=["list", "numpy", "categorical"],
+)
+def test_select_by_site_labels_takes_integer_classes(classes):
+    vector = example_parameter_vector(sites=[1, 27, 4000], pft=classes)
+    assert vector.select(labels={"pft": [1]}).sites == (1, 4000)
+    assert vector.select(labels={"pft": np.array([2])}).sites == (27,)
+    with pytest.raises(TypeError, match="one value 1"):
+        vector.select(labels={"pft": np.int64(1)})
+
+
 def test_fields_carry_lon_lat_from_a_site_table():
     table = pd.DataFrame({"site_id": [1, 27, 4711], "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]})
     vector = example_parameter_vector(sites=table, pft=PFT)

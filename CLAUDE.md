@@ -313,17 +313,19 @@ coercion lives in `validation.py`.
   `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
   `as_integer`, `as_positive_integer`, `as_bounded_integer`,
   `as_positive_integers`, `as_batched_flat` (with `is_one_vector`),
-  `as_bbox`, `as_names`, `as_frozen_mapping`; the `check_*` functions they are written with; and
-  `truncated(items)` for messages and `range_summary(values)` for reports.
-  One rule for every argument of a kind:
-  - **a sequence argument** (site ids, names, member indices) is a sequence,
-    always: one bare id or one string is a `TypeError` naming the fix
-    ("pass [27]"), a `set` is refused (no order), order is kept, and
-    `dict.keys()` and NumPy, JAX, xarray and pandas arrays are accepted.
-    Site-id arguments go through `as_site_ids` (duplicates refused), names
-    arguments through `as_names`;
-  - **an integer** (a site id, a source index, a count) refuses a boolean and
-    a float, even an integral one ("cast it with int()");
+  `as_bbox`, `as_sequence`, `as_names`, `as_frozen_mapping`; the `check_*`
+  functions they are written with; and `truncated(items)` for messages and
+  `range_summary(values)` for reports. One rule for every argument of a kind:
+  - **a sequence argument** (site ids, names, member indices, site-label
+    classes) is a sequence, always: one bare id or one string is a
+    `TypeError` naming the fix ("pass [27]"), a `set` and a mapping are
+    refused (no order; a mapping's keys are passed as `m.keys()`), order is
+    kept, and `dict.keys()` and NumPy, JAX, xarray and pandas arrays are
+    accepted. Site-id arguments go through `as_site_ids` (duplicates
+    refused), names arguments through `as_names`, and a sequence of items of
+    any type through `as_sequence`;
+  - **an integer** (a site id, a source index, a count) refuses a boolean, a
+    missing value and a float, even an integral one ("cast it with int()");
   - **a site the data lacks** is a `KeyError`.
   `as_batched_flat(values, dimension, *, message_name)` returns the 2-D
   batch alone, `float64`, JAX when given JAX; a caller that must know a

@@ -16,8 +16,8 @@ Contents
     and whether one vector was given.
 :func:`as_bbox`
     A ``(west, south, east, north)`` box as four floats.
-:func:`as_names`
-    An ordered sequence of names as a tuple of strings.
+:func:`as_sequence`, :func:`as_names`
+    An ordered sequence of any items, and of names, as a tuple.
 :func:`as_frozen_mapping`
     A mapping as a :class:`~sipnet_calibration.conventions.FrozenMapping`.
 :func:`truncated`, :func:`range_summary`
@@ -38,10 +38,12 @@ right type but a wrong value.
   sequences may be a list, a tuple, a generator (read once), an ordered view
   such as ``dict.keys()``, or an array-like (NumPy, JAX, xarray, pandas). One
   bare value or one string is refused, as is a ``set``, which has no order to
-  keep. Order is kept.
+  keep, and a mapping, whose keys are passed as ``m.keys()`` or ``list(m)``
+  when they are meant. Order is kept.
 - **An integer is an integer.** A float is refused, even a whole one, since an
   integer that arrives as a float is usually the result of a mistake; cast it
-  with ``int()`` where it is known to be whole. A boolean is refused too.
+  with ``int()`` where it is known to be whole. A boolean is refused too, and
+  so is a missing value (``NaN``, ``pd.NA``).
 - **A scalar may come wrapped.** A zero-dimensional array-like -- a NumPy
   scalar or 0-d array, a 0-d JAX array, a 0-d ``DataArray`` -- is read as the
   value it holds.
@@ -77,6 +79,7 @@ from collections.abc import Iterable, KeysView, Mapping, Sequence, Set
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from sipnet_calibration.conventions import SITE_DTYPE, FrozenMapping
 
@@ -89,6 +92,7 @@ __all__ = [
     "as_names",
     "as_positive_integer",
     "as_positive_integers",
+    "as_sequence",
     "as_site_id",
     "as_site_ids",
     "check_integers_are_in_range",
@@ -127,13 +131,13 @@ def as_site_ids(values: Any, *, message_name: str) -> tuple[int, ...]:
     Raises
     ------
     TypeError
-        If *values* is one id, one string, a set or not iterable, or an id
-        is a boolean, a float or not a number.
+        If *values* is one id, one string, a set, a mapping or not iterable,
+        or an id is a boolean, a float, missing or not a number.
     ValueError
         If *values* is an array of more than one dimension, an id is not
         from 1 to the largest ``int32``, or a site is named more than once.
     """
-    items = _sequence_items(values, message_name=message_name, what="site ids", example="[27]")
+    items = _sequence_items(values, what="site ids", example="[27]", message_name=message_name)
     site_ids = tuple(
         as_site_id(item, message_name=f"{message_name}[{i}]") for i, item in enumerate(items)
     )
@@ -166,7 +170,7 @@ def as_site_id(value: Any, *, message_name: str) -> int:
     """
     site_id = as_integer(value, message_name=message_name)
     check_integer_is_in_range(
-        site_id, minimum=1, maximum=_LARGEST_SITE_ID, message_name=message_name, what="a site id "
+        site_id, minimum=1, maximum=_LARGEST_SITE_ID, what="a site id ", message_name=message_name
     )
     return site_id
 
@@ -273,13 +277,14 @@ def as_positive_integers(values: Any, *, message_name: str) -> tuple[int, ...]:
     Raises
     ------
     TypeError
-        If *values* is one value, one string, a set or not iterable, or an
-        item is a boolean, a float or not an integer.
+        If *values* is one value, one string, a set, a mapping or not
+        iterable, or an item is a boolean, a float, missing or not an
+        integer.
     ValueError
         If *values* is an array of more than one dimension, or an item is
         less than 1.
     """
-    items = _sequence_items(values, message_name=message_name, what="integers", example="[1, 2]")
+    items = _sequence_items(values, what="integers", example="[1, 2]", message_name=message_name)
     return tuple(
         as_positive_integer(item, message_name=f"{message_name}[{i}]")
         for i, item in enumerate(items)
@@ -391,14 +396,44 @@ def as_bbox(bbox: Any, *, message_name: str) -> tuple[float, float, float, float
 # ── names and mappings ────────────────────────────────────────────────────────
 
 
+def as_sequence(values: Any, *, message_name: str) -> tuple[Any, ...]:
+    """An ordered sequence of any items, as a tuple, in the order given.
+
+    Parameters
+    ----------
+    values:
+        A sequence, as :func:`as_site_ids` takes one: a list, a tuple, a
+        generator, ``dict.keys()`` or a one-dimensional array-like. Its
+        items may be of any type.
+    message_name:
+        What the argument is called in an error message.
+
+    Returns
+    -------
+    tuple
+        The items, in the order given, an array-like's as plain Python
+        values (``numpy.int64(1)`` as ``1``, ``numpy.str_("a")`` as ``"a"``).
+
+    Raises
+    ------
+    TypeError
+        If *values* is one string, one value, a set, a mapping or not
+        iterable.
+    ValueError
+        If *values* is an array of more than one dimension.
+    """
+    example = _example_holding(values, fallback="[1, 2]", strings_only=False)
+    items = _sequence_items(values, what="values", example=example, message_name=message_name)
+    return tuple(_plain_item(item) for item in items)
+
+
 def as_names(values: Any, *, message_name: str) -> tuple[str, ...]:
     """An ordered sequence of names as a tuple of strings.
 
     Parameters
     ----------
     values:
-        A sequence of strings, as :func:`as_site_ids` takes one: a list, a
-        tuple, a generator, ``dict.keys()`` or a one-dimensional array-like.
+        A sequence of strings, as :func:`as_sequence` takes one.
     message_name:
         What the argument is called in an error message.
 
@@ -410,13 +445,14 @@ def as_names(values: Any, *, message_name: str) -> tuple[str, ...]:
     Raises
     ------
     TypeError
-        If *values* is one string, a set or not iterable, or holds an item
-        that is not a string.
+        If *values* is one string, a set, a mapping or not iterable, or
+        holds an item that is not a string.
     ValueError
         If *values* is an array of more than one dimension.
     """
-    items = _sequence_items(values, message_name=message_name, what="names", example="['nee']")
-    names = tuple(str(item) if isinstance(item, np.str_) else item for item in items)
+    example = _example_holding(values, fallback="['a', 'b']", strings_only=True)
+    items = _sequence_items(values, what="names", example=example, message_name=message_name)
+    names = tuple(_plain_item(item) for item in items)
     check_names_are_strings(names, message_name=message_name)
     return names
 
@@ -511,17 +547,62 @@ def _is_array_like(value: Any) -> bool:
     return hasattr(value, "__array__") and not isinstance(value, (str, bytes))
 
 
-def _sequence_items(values: Any, *, message_name: str, what: str, example: str) -> list[Any]:
+def _sequence_items(values: Any, *, what: str, example: str, message_name: str) -> list[Any]:
     """The items of a sequence argument, after the checks every one of them has."""
-    check_sequence_is_not_a_string(values, message_name=message_name, what=what, example=example)
+    check_sequence_is_not_a_string(values, what=what, example=example, message_name=message_name)
     check_sequence_is_not_a_set(values, message_name=message_name)
+    check_sequence_is_not_a_mapping(values, message_name=message_name)
     if _is_array_like(values):
-        array = np.asarray(values)
-        check_array_is_not_one_value(array, message_name=message_name, what=what, example=example)
+        array = _numpy_array_of(values)
+        check_array_is_not_one_value(array, what=what, example=example, message_name=message_name)
         check_array_is_one_dimensional(array, message_name=message_name)
         return list(array)
-    check_sequence_is_iterable(values, message_name=message_name, what=what, example=example)
+    check_sequence_is_iterable(values, what=what, example=example, message_name=message_name)
     return list(values)
+
+
+def _numpy_array_of(values: Any) -> np.ndarray:
+    """An array-like as NumPy; a pandas extension array's missing values kept missing.
+
+    ``np.asarray`` reads a nullable integer array holding ``pd.NA`` as floats,
+    so a message would blame every value for being a float rather than the
+    missing one for being missing; read as objects, each value is itself.
+    """
+    dtype = getattr(values, "dtype", None)
+    if dtype is not None and not isinstance(dtype, np.dtype) and hasattr(values, "to_numpy"):
+        return np.asarray(values.to_numpy(dtype=object))
+    return np.asarray(values)
+
+
+def _plain_item(item: Any) -> Any:
+    """*item* as a plain Python value: a NumPy string as ``str``, a wrapped scalar unwrapped."""
+    if isinstance(item, np.str_):
+        return str(item)
+    return _scalar_of(item)
+
+
+def _example_holding(values: Any, *, fallback: str, strings_only: bool) -> str:
+    """A message's example sequence: *values* in a list when it is one string or value."""
+    item = _scalar_of(values)
+    if isinstance(item, (str, np.str_)):
+        return repr([str(item)])
+    if not strings_only and isinstance(item, numbers.Number):
+        return repr([item])
+    return fallback
+
+
+def _values_outside(values: Any, *, minimum: int, maximum: int | None) -> list[Any]:
+    """The distinct values that are not integers from *minimum* to *maximum*, in order.
+
+    A float is not an integer, even a whole one, and neither is ``NaN``; the
+    values are listed once each, in the order they first appear.
+    """
+    wrong: dict[str, Any] = {}
+    for value in np.asarray(values).ravel().tolist():
+        is_integer = isinstance(value, numbers.Integral) and not isinstance(value, bool)
+        if not is_integer or value < minimum or (maximum is not None and value > maximum):
+            wrong.setdefault(repr(value), value)
+    return list(wrong.values())
 
 
 def _bbox_items(bbox: Any) -> list[Any]:
@@ -553,7 +634,13 @@ def _as_float64_array(values: Any, *, message_name: str) -> Any:
     """*values* as a ``float64`` array: JAX if it is or holds JAX arrays, else NumPy."""
     jax = sys.modules.get("jax")
     if jax is not None and _holds_jax_arrays(values, jax):
-        array = jax.numpy.asarray(values)
+        others = [leaf for leaf in _list_leaves(values) if not isinstance(leaf, jax.Array)]
+        if others:
+            # Read by NumPy, the values beside the JAX arrays give the dtype, and so
+            # the message, a list without JAX arrays would.
+            check_array_holds_real_numbers(np.asarray(others).dtype, message_name=message_name)
+        array = _jax_array_or_none(values, jax)
+        check_values_form_an_array(array, message_name=message_name)
         check_array_holds_real_numbers(array.dtype, message_name=message_name)
         return array.astype(jax.numpy.float64)
     array = _numpy_array_or_none(values)
@@ -562,11 +649,26 @@ def _as_float64_array(values: Any, *, message_name: str) -> Any:
     return array.astype(np.float64)
 
 
+def _list_leaves(values: Any) -> list[Any]:
+    """The items of nested lists and tuples, depth first; *values* itself if it is neither."""
+    if isinstance(values, (list, tuple)):
+        return [leaf for value in values for leaf in _list_leaves(value)]
+    return [values]
+
+
+def _jax_array_or_none(values: Any, jax: Any) -> Any:
+    """``jnp.asarray(values)``, or ``None`` when JAX cannot read it as one array."""
+    try:
+        return jax.numpy.asarray(values)
+    except (TypeError, ValueError):
+        return None
+
+
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
 def check_sequence_is_not_a_string(
-    values: Any, *, message_name: str, what: str, example: str
+    values: Any, *, what: str, example: str, message_name: str
 ) -> None:
     """A sequence argument is not one string, which would be read a character at a time."""
     if isinstance(values, (str, bytes, np.str_)):
@@ -585,7 +687,16 @@ def check_sequence_is_not_a_set(values: Any, *, message_name: str) -> None:
         )
 
 
-def check_sequence_is_iterable(values: Any, *, message_name: str, what: str, example: str) -> None:
+def check_sequence_is_not_a_mapping(values: Any, *, message_name: str) -> None:
+    """A sequence argument is not a mapping, whose keys are passed as a sequence when meant."""
+    if isinstance(values, Mapping):
+        raise TypeError(
+            f"{message_name} must be a sequence, got a {type(values).__name__}, which is a "
+            "mapping; pass a list, or list(m) or m.keys() where its keys are meant."
+        )
+
+
+def check_sequence_is_iterable(values: Any, *, what: str, example: str, message_name: str) -> None:
     """A sequence argument is iterable, not one value."""
     if not isinstance(values, Iterable):
         raise TypeError(
@@ -595,7 +706,7 @@ def check_sequence_is_iterable(values: Any, *, message_name: str, what: str, exa
 
 
 def check_array_is_not_one_value(
-    array: np.ndarray, *, message_name: str, what: str, example: str
+    array: np.ndarray, *, what: str, example: str, message_name: str
 ) -> None:
     """An array-like sequence argument is not zero-dimensional, one value on its own."""
     if array.ndim == 0:
@@ -620,10 +731,20 @@ def check_value_is_an_integer(value: Any, *, message_name: str) -> None:
         raise TypeError(
             f"{message_name} must be an integer, got the boolean {value!r}; pass an integer."
         )
+    if isinstance(value, (float, np.floating)) and not math.isfinite(value):
+        raise TypeError(
+            f"{message_name} must be an integer, got {float(value)!r}, which is missing or "
+            "infinite; drop or fill such values first."
+        )
     if isinstance(value, (float, np.floating)):
         raise TypeError(
             f"{message_name} must be an integer, got the float {value!r}; cast it with "
             "int() where it is known to be whole."
+        )
+    if value is pd.NA:
+        raise TypeError(
+            f"{message_name} must be an integer, got <NA>, a missing value; drop or fill "
+            "missing values first."
         )
     if not isinstance(value, numbers.Integral):
         raise TypeError(
@@ -633,7 +754,7 @@ def check_value_is_an_integer(value: Any, *, message_name: str) -> None:
 
 
 def check_integer_is_in_range(
-    value: int, *, minimum: int, maximum: int | None, message_name: str, what: str = ""
+    value: int, *, minimum: int, maximum: int | None, what: str = "", message_name: str
 ) -> None:
     """An integer is from *minimum* to *maximum*, inclusive."""
     if value < minimum or (maximum is not None and value > maximum):
@@ -646,29 +767,23 @@ def check_integer_is_in_range(
 def check_integers_are_in_range(
     values: np.ndarray, *, minimum: int, maximum: int | None, message_name: str
 ) -> None:
-    """Every one of some integers is from *minimum* to *maximum*, inclusive."""
-    array = np.asarray(values)
-    outside = [
-        value
-        for value in array.ravel().tolist()
-        if value < minimum or (maximum is not None and value > maximum)
-    ]
-    if outside:
+    """Every one of some values is an integer from *minimum* to *maximum*, inclusive."""
+    wrong = _values_outside(values, minimum=minimum, maximum=maximum)
+    if wrong:
         bounds = f"at least {minimum}" if maximum is None else f"from {minimum} to {maximum}"
         raise ValueError(
-            f"{message_name} must be {bounds}, got {truncated(sorted(set(outside)))}; pass "
+            f"{message_name} must be integers {bounds}, got {truncated(wrong)}; pass "
             "values in that range."
         )
 
 
 def check_site_ids_are_in_range(site_ids: np.ndarray, *, message_name: str) -> None:
-    """Every site id is from 1 to the largest ``int32``, the site id's dtype."""
-    array = np.asarray(site_ids)
-    outside = sorted({int(v) for v in array.ravel().tolist() if not 1 <= v <= _LARGEST_SITE_ID})
-    if outside:
+    """Every site id is an integer from 1 to the largest ``int32``, the site id's dtype."""
+    wrong = _values_outside(site_ids, minimum=1, maximum=_LARGEST_SITE_ID)
+    if wrong:
         raise ValueError(
-            f"{message_name} must be site ids from 1 to {_LARGEST_SITE_ID}, got "
-            f"{truncated(outside)}; pass the site table's site_id values."
+            f"{message_name} must be integer site ids from 1 to {_LARGEST_SITE_ID}, got "
+            f"{truncated(wrong)}; pass the site table's site_id values."
         )
 
 
