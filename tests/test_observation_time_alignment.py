@@ -493,12 +493,12 @@ class TestAggregateTimeRefusesUnusableTime:
 
     def test_duplicate_timestamps_are_refused_rather_than_added_together(self):
         field = self.nee([1, 1, 2, 2], ["2000-01-01T12:00"] * 2 + ["2000-01-02T12:00"] * 2)
-        with pytest.raises(ValueError, match="do not increase"):
+        with pytest.raises(ValueError, match="not strictly increasing"):
             aggregate_time(field, "1D")
 
     def test_timestamps_out_of_order_are_refused(self):
         field = self.nee([1, 2], ["2000-01-02T12:00", "2000-01-01T12:00"])
-        with pytest.raises(ValueError, match="do not increase"):
+        with pytest.raises(ValueError, match="not strictly increasing"):
             aggregate_time(field, "1D")
 
     def test_an_empty_time_dimension_is_refused(self, niwot_output):
@@ -559,11 +559,14 @@ class TestAggregateTimeKeepsTheVariablesIdentity:
         assert aggregate_time(pool, "1D").name == "soil_water"
         assert aggregate_time(pool, "1D", how="mean").name == "soil_water"
 
-    def test_a_field_stripped_of_attributes_is_recognized_by_its_name(self, niwot_output):
-        """The registry fallback, for a field whose attrs were lost in transit."""
+    def test_a_field_stripped_of_its_kind_is_recognized_by_its_name(self, niwot_output):
+        """The registry fallback, for a field whose kind was lost in transit.
+
+        Its units stay, since a field without them is not a field.
+        """
         field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         stripped = field.copy()
-        stripped.attrs = {}
+        stripped.attrs = {"units": field.attrs["units"]}
         daily = aggregate_time(stripped, "1D")
         assert daily.attrs["kind"] == "timestep_total"
         assert np.allclose(daily.values, aggregate_time(field, "1D").values)
@@ -571,7 +574,7 @@ class TestAggregateTimeKeepsTheVariablesIdentity:
     def test_a_driver_name_resolves_through_the_climate_registry(self, real_drivers):
         par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
         stripped = par.copy()
-        stripped.attrs = {}
+        stripped.attrs = {"units": par.attrs["units"]}
         assert aggregate_time(stripped, "1D").attrs["kind"] == "timestep_total"
 
 

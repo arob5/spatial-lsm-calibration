@@ -12,6 +12,7 @@ from pysipnet import niwot_reference_output
 
 from conftest import (
     dated_observed_values,
+    located,
     niwot_stack_of,
     site_table_of,
     windowed_observed_values,
@@ -113,13 +114,13 @@ class TestReduceOverWindows:
 
     @staticmethod
     def _one_window(start, end):
-        return xr.DataArray(
+        return located(xr.DataArray(
             [[5.0]], dims=("site", "time"),
             coords={"site": [1], "time": [pd.Timestamp(end)],
                     WINDOW_START: ("time", [pd.Timestamp(start)]),
                     WINDOW_END: ("time", [pd.Timestamp(end)])},
             attrs={"units": "g m-2", "constituent": "C"}, name="annual_total",
-        )
+        ))
 
     def test_a_window_the_run_covers_only_in_part_is_refused(self, one_run):
         # The Niwot record is November 1998; a calendar-1998 total is not its sum.
@@ -367,7 +368,8 @@ class TestSiteOrderAndCoverage:
             )
 
     def test_check_operator_handles_a_run_over_more_sites_than_observed(self, stack, labels):
-        wider = xr.concat([stack, (stack.isel(site=[1]) * 2).assign_coords(site=[3])], dim="site")
+        third = (stack.isel(site=[1]) * 2).assign_coords(site=np.array([3], dtype=np.int32))
+        wider = xr.concat([stack, third], dim="site")
         for name in VARIABLES:
             wider[name].attrs = stack[name].attrs
         observed = dated_observed_values(

@@ -16,8 +16,9 @@ The in-memory builders make what several test files need: a site table
 (:func:`site_table_of`, and the :func:`site_table` fixture that hands it
 out), a stack of Niwot runs (:func:`niwot_stack_of`), observed values that are
 dated, static or attributed to windows (:func:`dated_observed_values`,
-:func:`static_observed_values`, :func:`windowed_observed_values`), and a stand-in
-SIPNET model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
+:func:`static_observed_values`, :func:`windowed_observed_values`), each a
+field whose sites :func:`located` gives ``lon``/``lat``, and a stand-in SIPNET
+model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
 every figure a test makes is closed after it (:func:`close_figures`).
 
 The real-data fixtures read the driver files, the site table and the
@@ -586,6 +587,28 @@ def _scaled_keeping_attributes(variable: xr.DataArray, *, factor: float) -> xr.D
 # ── observed values ───────────────────────────────────────────────────────────
 
 
+def located(array: xr.DataArray, *, site_table: pd.DataFrame | None = None) -> xr.DataArray:
+    """*array* with the site coordinates a field carries: ``int32`` ids and ``lon``/``lat``.
+
+    Parameters
+    ----------
+    array:
+        An array with a ``site`` dim, or a scalar ``site`` coordinate, of
+        integer site ids.
+    site_table:
+        Where to look the sites up; :func:`site_table_of` of them by default,
+        which gives each site its own coordinates.
+    """
+    from sipnet_calibration.sites import site_coordinates
+
+    ids = [int(site) for site in np.atleast_1d(array[conventions.SITE].values)]
+    table = site_table if site_table is not None else site_table_of(*ids)
+    coords = site_coordinates(ids, table)
+    if conventions.SITE in array.dims:
+        return array.assign_coords(coords)
+    return array.assign_coords({name: c.isel({conventions.SITE: 0}) for name, c in coords.items()})
+
+
 def dated_observed_values(
     sites: Sequence[int],
     times: Sequence,
@@ -595,15 +618,20 @@ def dated_observed_values(
     constituent: str = "",
     name: str = "modis_leaf_area_index",
 ) -> xr.DataArray:
-    """Observed values on ``(site, time)``: ones, unless *values* are given."""
+    """Observed values on ``(site, time)``: ones, unless *values* are given.
+
+    A field, located by :func:`located`.
+    """
     times = pd.DatetimeIndex(times)
     data = np.ones((len(sites), len(times))) if values is None else np.asarray(values, float)
-    return xr.DataArray(
-        data,
-        dims=(conventions.SITE, conventions.TIME),
-        coords={conventions.SITE: list(sites), conventions.TIME: times},
-        attrs=_observed_values_attributes(units, constituent),
-        name=name,
+    return located(
+        xr.DataArray(
+            data,
+            dims=(conventions.SITE, conventions.TIME),
+            coords={conventions.SITE: list(sites), conventions.TIME: times},
+            attrs=_observed_values_attributes(units, constituent),
+            name=name,
+        )
     )
 
 
@@ -615,14 +643,19 @@ def static_observed_values(
     constituent: str = "C",
     name: str = "soilgrids_soil_organic_carbon",
 ) -> xr.DataArray:
-    """Observed values on ``(site,)``, with no time: ones, unless *values* are given."""
+    """Observed values on ``(site,)``, with no time: ones, unless *values* are given.
+
+    A field, located by :func:`located`.
+    """
     data = np.ones(len(sites)) if values is None else np.asarray(values, float)
-    return xr.DataArray(
-        data,
-        dims=conventions.SITE,
-        coords={conventions.SITE: list(sites)},
-        attrs=_observed_values_attributes(units, constituent),
-        name=name,
+    return located(
+        xr.DataArray(
+            data,
+            dims=conventions.SITE,
+            coords={conventions.SITE: list(sites)},
+            attrs=_observed_values_attributes(units, constituent),
+            name=name,
+        )
     )
 
 
