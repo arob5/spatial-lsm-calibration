@@ -1126,7 +1126,7 @@ def test_conversion_table_refuses_a_value_pysipnet_would_refuse():
 
 def test_conversion_table_rows_are_member_then_site():
     """Member ids and site ids overlap, so an index that came back (site,
-    member) would make .loc[(5, 42)] silently return a different cell."""
+    member) would make .loc[(5, 42)] silently return a different row."""
     state = ensemble_state()
     # A pool held per site only, which is what would set the broadcast order.
     state["initial_soil_organic_carbon"] = xr.DataArray(
@@ -1144,8 +1144,8 @@ def test_conversion_table_rows_are_member_then_site():
 
 
 def test_conversion_does_not_compute_the_branch_the_deciduous_rule_discards():
-    """A deciduous cell's leaf carbon is never validated, so it must never be
-    evaluated either: under np.seterr(all="raise") one such cell would abort
+    """A deciduous element's leaf carbon is never validated, so it must never be
+    evaluated either: under np.seterr(all="raise") one such element would abort
     the conversion of every other."""
     old = np.seterr(all="raise")
     try:
@@ -1180,7 +1180,7 @@ def test_conversion_table_of_scalars_is_one_unlabeled_row():
     assert InitialConditions(**table.iloc[0]) == to_sipnet_initial_conditions(
         **VALID_STATE, **VALID_PARAMETERS
     )
-    # With no cells to name, a refusal falls back to the offending value.
+    # With no elements to name, a refusal falls back to the offending value.
     with pytest.raises(ValueError, match=r"\(value -1.0\)"):
         to_sipnet_initial_conditions_table(
             {
@@ -1224,7 +1224,7 @@ def test_conversion_table_takes_a_dataset_and_one_site():
     assert one_site.loc[0].to_dict() == both.loc[(0, 1)].to_dict()
 
 
-def test_conversion_table_refuses_a_bad_state_naming_the_cells():
+def test_conversion_table_refuses_a_bad_state_naming_the_elements():
     state = ensemble_state(leaf=(0.12, np.nan))
     parameters = dict(
         leaf_carbon_per_area=32.0, fine_root_fraction=0.2, coarse_root_fraction=0.25
@@ -1239,15 +1239,15 @@ def test_conversion_table_refuses_a_bad_state_naming_the_cells():
     negative = ensemble_state()
     negative["initial_wood_carbon"][1, 0] = -0.3
     with pytest.raises(
-        ValueError, match=r"initial_wood_carbon.*1 of 4 cells.*for example \[\(1, 1\)\]\."
+        ValueError, match=r"initial_wood_carbon.*1 of 4 elements.*for example \[\(1, 1\)\]\."
     ):
         to_sipnet_initial_conditions_table(negative, deciduous=False, **parameters)
 
-    # The leaf carbon is checked over the evergreen cells only, so the count it
+    # The leaf carbon is checked over the evergreen elements only, so the count it
     # reports has to say so rather than claim to be the whole ensemble.
     half = ensemble_state(leaf=(np.nan, 0.13))
     deciduous_at_27 = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})
-    with pytest.raises(ValueError, match=r"2 of 2 cells whose PFT keeps its leaves"):
+    with pytest.raises(ValueError, match=r"2 of 2 elements whose PFT keeps its leaves"):
         to_sipnet_initial_conditions_table(half, deciduous=deciduous_at_27, **parameters)
 
     del state["initial_soil_organic_carbon"]
@@ -1273,7 +1273,7 @@ def test_conversion_table_refuses_wrong_units_dims_and_unaligned_parameters():
             **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="time")},
         )
 
-    # An unlabeled source_index raised a raw IndexError from the cell index.
+    # An unlabeled source_index raised a raw IndexError from the element index.
     with pytest.raises(ValueError, match=r"\[.source_index.\] is neither"):
         to_sipnet_initial_conditions_table(
             ensemble_state(),

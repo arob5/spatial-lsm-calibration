@@ -229,7 +229,7 @@ def initial_condition_fields(
     for name in wanted_names:
         resolve_initial_condition(name)
     # A repeated site would make the site coordinate non-unique, and a table
-    # built from it could not be addressed one cell at a time.
+    # built from it could not be addressed one row at a time.
     wanted_sites = None if sites is None else list(as_site_ids(sites, message_name="sites"))
 
     dataset = load_initial_conditions(path)

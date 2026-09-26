@@ -10,9 +10,9 @@ Planned:
   reused on parameter space instead of output space. This is the payoff of the
   hierarchical model and the reason the map layer must not assume model output.
 
-EKI hands back flat blocks that know nothing about space or time: ``(J, D)``
-parameter ensembles and ``(J, N)`` predictions. A ``(J, N)`` block is unstacked
+EKI hands back batched Flat that knows nothing about space or time: ``(J, D)``
+parameter ensembles and ``(J, N)`` predictions. A ``(J, N)`` batched Flat is unstacked
 by :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns
-the ``(site, observation_source, time)`` index it was flattened with; a ``(J, D)`` block
+the ``(site, observation_source, time)`` index it was flattened with; a ``(J, D)`` one
 by :meth:`sipnet_calibration.parameter_vector.ParameterVector.fields`.
 """

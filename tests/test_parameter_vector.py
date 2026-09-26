@@ -610,8 +610,8 @@ def test_sample_is_reproducible_and_per_parameter(example):
     np.testing.assert_array_equal(a, b)
     assert a.shape == (4, 14) and a.dtype == jnp.float64
     # Per-site draws are independent, not one value broadcast over sites.
-    site_block = a[:, example.layout.slice("initial_soil_carbon")]
-    assert not np.allclose(site_block[:, 0], site_block[:, 1])
+    site_segment = a[:, example.layout.slice("initial_soil_carbon")]
+    assert not np.allclose(site_segment[:, 0], site_segment[:, 1])
     # Calibration parameters get their own keys: standardized draws are neither
     # identical nor correlated across them.
     gaussian = example.gaussian_prior()
@@ -732,7 +732,7 @@ def test_sipnet_parameter_fields_values_come_from_the_right_parameter_and_group(
     for sample in (0, 5):
         for site in SITES:
             row = sipnet_parameter_fields.isel(sample=sample).sel(site=site)
-            cell = fields.isel(sample=sample).sel(site=site)
+            run_fields = fields.isel(sample=sample).sel(site=site)
             for sipnet, variable in [
                 ("soil_carbon", "initial_soil_carbon"),
                 ("leaf_off_fall_fraction", "leaf_fall_fraction"),
@@ -741,9 +741,9 @@ def test_sipnet_parameter_fields_values_come_from_the_right_parameter_and_group(
                 ("wood_allocation", "allocation.wood_allocation"),
                 ("fine_root_allocation", "allocation.fine_root_allocation"),
             ]:
-                assert float(row[sipnet]) == float(cell[variable]), (sipnet, site)
-            capacity = float(cell["photosynthesis.capacity"])
-            share = float(cell["photosynthesis.respiration_share"])
+                assert float(row[sipnet]) == float(run_fields[variable]), (sipnet, site)
+            capacity = float(run_fields["photosynthesis.capacity"])
+            share = float(run_fields["photosynthesis.respiration_share"])
             assert float(row["max_photosynthesis_rate"]) == pytest.approx(capacity * 0.466 * (1 - share) / 0.76)
     # A Fields input gives the same SIPNET parameter fields as the Flat one.
     xr.testing.assert_allclose(example.sipnet_parameter_fields(fields), sipnet_parameter_fields, rtol=1e-12)
@@ -1228,8 +1228,8 @@ def test_a_joint_prior_is_read_off_its_event_shape():
 def test_a_joint_prior_samples_and_scores_as_one_distribution():
     vector = joint_vector()
     theta = vector.sample(jax.random.key(0), n=40_000)
-    block = np.asarray(theta[:, vector.layout.slice("soil")])
-    np.testing.assert_allclose(np.cov(block, rowvar=False), COVARIANCE, atol=0.01)
+    segment = np.asarray(theta[:, vector.layout.slice("soil")])
+    np.testing.assert_allclose(np.cov(segment, rowvar=False), COVARIANCE, atol=0.01)
     one = theta[:4]
     natural = jnp.exp(one[:, vector.layout.slice("soil")])
     expected = joint_soil().prior.log_prob(natural) + one[:, vector.layout.slice("soil")].sum(axis=-1)

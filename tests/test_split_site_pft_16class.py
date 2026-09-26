@@ -202,7 +202,7 @@ def test_main_reports_and_exits_zero(tmp_path, capsys):
         ]
     )
     assert code == 0
-    assert "re-join to the source cell for cell" in capsys.readouterr().out
+    assert "re-join to the source value for value" in capsys.readouterr().out
 
 
 def test_main_reports_an_error_rather_than_a_traceback(tmp_path, capsys):

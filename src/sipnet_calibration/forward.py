@@ -417,7 +417,7 @@ class ForwardModel:
             self.sipnet_parameter_names,
         )
         self._site_axis = Axis(SITE, labels=list(self.sites))
-        self._site_slices, self._site_positions = _site_blocks(observation_vector)
+        self._site_slices, self._site_positions = _site_segments(observation_vector)
         self._partial = self._build_partial()
         self._run = _Run(
             model=model,
@@ -744,16 +744,16 @@ def _aggregated(model_output: xr.Dataset, freq: str) -> xr.Dataset:
     return merged
 
 
-def _site_blocks(
+def _site_segments(
     observation_vector: ObservationVector | None,
 ) -> tuple[dict[int, ObservationVector], dict[int, np.ndarray]]:
-    """Per observed site, the vector restricted to it and where its block sits in Flat."""
+    """Per observed site, the vector restricted to it and where its segment sits in Flat."""
     slices: dict[int, ObservationVector] = {}
     positions: dict[int, np.ndarray] = {}
     for site in () if observation_vector is None else observation_vector.sites:
         slices[site] = observation_vector.select(sites=[site])
         positions[site] = observation_vector.positions(site=site)
-        check_site_slice_is_the_site_block(
+        check_site_slice_is_the_site_segment(
             slices[site], observation_vector.index[positions[site]], site
         )
     return slices, positions
@@ -1034,12 +1034,12 @@ def check_output_variables_can_be_returned(
             )
 
 
-def check_site_slice_is_the_site_block(
-    site_slice: ObservationVector, site_block: pd.MultiIndex, site: int
+def check_site_slice_is_the_site_segment(
+    site_slice: ObservationVector, site_segment: pd.MultiIndex, site: int
 ) -> None:
-    if not site_slice.index.equals(site_block):
+    if not site_slice.index.equals(site_segment):
         raise ValueError(
-            f"the observation vector's selection to site {site} is not that site's block of "
+            f"the observation vector's selection to site {site} is not that site's segment of "
             "the whole vector, so its predictions cannot be placed by position. The vector "
             "must be site-major; this is a defect in ObservationVector, not in the inputs."
         )

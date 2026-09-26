@@ -193,8 +193,8 @@ class TestEvaluate:
     ):
         assert forward.sipnet_parameter_names == forward.parameter_vector.sipnet_parameter_names
         assert set(forward._base_values) == {"leaf_carbon_per_area"}
-        block = forward(theta)
-        lai = observation_vector.fields(block)["modis_leaf_area_index"]
+        predictions = forward(theta)
+        lai = observation_vector.fields(predictions)["modis_leaf_area_index"]
         leaf = select_timestep_at(REFERENCE.select(["leaf_carbon"])["leaf_carbon"], LABELS).values
         expected = leaf / forward._base_values["leaf_carbon_per_area"]
         observed = observation_vector["modis_leaf_area_index"].observed_values.sel(site=1).notnull().values
@@ -256,7 +256,7 @@ class TestEvaluate:
         assert forward.output_variable_names == ("net_ecosystem_exchange", "wood_carbon")
 
     def test_a_site_slice_is_the_site_block_of_the_whole_vector(self):
-        """A run's block is placed at positions(site=), which needs a site-major vector."""
+        """A run's segment is placed at positions(site=), which needs a site-major vector."""
         sites = [1, 27, 40]
         times = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, 30, 50]])
         wood = xr.DataArray(
@@ -293,9 +293,9 @@ class TestEvaluate:
         )
         assert observation_vector.sites == tuple(sites)
         for site in sites:
-            block = observation_vector.index[observation_vector.positions(site=site)]
-            assert block.get_level_values("site").unique().tolist() == [site]
-            assert observation_vector.select(sites=[site]).index.equals(block)
+            segment = observation_vector.index[observation_vector.positions(site=site)]
+            assert segment.get_level_values("site").unique().tolist() == [site]
+            assert observation_vector.select(sites=[site]).index.equals(segment)
 
     def test_an_observation_source_observed_beyond_a_shorter_sites_record(
         self, parameter_vector, climate, theta

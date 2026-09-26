@@ -318,7 +318,7 @@ def real_constraint_fields() -> tuple[dict, dict]:
 
     Both are keyed on constraint name. The fields have dims ``(site, time)``
     over the whole site pool and each constraint's own time labels, or
-    ``(site,)`` for the static soil carbon, and are ragged: most cells are
+    ``(site,)`` for the static soil carbon, and are ragged: most elements are
     unobserved. The variances are the squares of the reported standard
     deviations.
     """

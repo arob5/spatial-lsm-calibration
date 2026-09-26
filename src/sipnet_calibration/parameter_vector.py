@@ -203,8 +203,8 @@ the number of components its SIPNET map names. A joint prior for a
 vector-valued calibration parameter is not supported.
 
 **Parameter-major layout.** Each calibration parameter's copies form one
-contiguous block of ``theta``, which is the block a covariance operator
-wants: :meth:`ParameterVector.gaussian_prior` builds one block per
+contiguous segment of ``theta``, whose covariance is the block a covariance
+operator wants: :meth:`ParameterVector.gaussian_prior` builds one block per
 calibration parameter, and a spatial covariance over the per-site copies of
 one of them replaces that block and nothing else.
 
@@ -1749,11 +1749,11 @@ class ParameterVector:
         check_space_is_known(space)
         check_batch_dim_name_is_not_taken(self, batch_dim)
         theta = _as_theta(theta, self.dimension)
-        blocks = self._natural_blocks(theta) if space == NATURAL else self.layout.unpack(theta)
+        parts = self._natural_parts(theta) if space == NATURAL else self.layout.unpack(theta)
         dims = (batch_dim, SITE) if theta.ndim == 2 else (SITE,)
         variables = {}
         for parameter in self.parameters:
-            on_sites = np.asarray(self._group_values_onto_sites(parameter, blocks[parameter.name]))
+            on_sites = np.asarray(self._group_values_onto_sites(parameter, parts[parameter.name]))
             labels = _space_labels(parameter, space)
             for i, variable in enumerate(_fields_variable_names(parameter, space)):
                 attributes = _fields_attributes(parameter, labels, i, space)
@@ -1816,14 +1816,14 @@ class ParameterVector:
             first = np.asarray(
                 [np.flatnonzero(groups == g)[0] for g in range(self.n_groups(parameter.varies_by))]
             )
-            block = on_sites[..., first, :]
-            check_group_values_agree_across_sites(self, parameter, on_sites, block[..., groups, :])
-            block = jnp.asarray(block, dtype=jnp.float64)
+            group_values = on_sites[..., first, :]
+            check_group_values_agree_across_sites(self, parameter, on_sites, group_values[..., groups, :])
+            group_values = jnp.asarray(group_values, dtype=jnp.float64)
             if space == NATURAL:
-                unconstrained = self._to_unconstrained(parameter, block)
-                check_natural_values_are_in_the_support(parameter, block, unconstrained)
-                block = unconstrained
-            parts[parameter.name] = block
+                unconstrained = self._to_unconstrained(parameter, group_values)
+                check_natural_values_are_in_the_support(parameter, group_values, unconstrained)
+                group_values = unconstrained
+            parts[parameter.name] = group_values
         return self.layout.pack(parts)
 
     def sipnet_parameter_fields(
@@ -1878,7 +1878,7 @@ class ParameterVector:
         else:
             check_batch_dim_name_is_not_taken(self, batch_dim)
             theta = _as_theta(x, self.dimension)
-        natural = self._natural_blocks(theta)
+        natural = self._natural_parts(theta)
         lead = theta.shape[:-1]
         values_and_writers: dict[str, tuple[Array, str]] = {}
         for parameter in self.parameters:
@@ -2044,32 +2044,32 @@ class ParameterVector:
         position = {group: i for i, group in enumerate(self.group_labels(varies_by))}
         return np.asarray([position[label] for label in self.site_labels[varies_by]])
 
-    def _group_values_onto_sites(self, parameter: CalibrationParameter, block: Array) -> Array:
+    def _group_values_onto_sites(self, parameter: CalibrationParameter, values: Array) -> Array:
         """Each group's value copied to the sites that read it:
         ``(..., n_groups, k)`` to ``(..., S, k)``."""
-        return block[..., self._site_group_index(parameter.varies_by), :]
+        return values[..., self._site_group_index(parameter.varies_by), :]
 
     # -- private: spaces and moments -----------------------------------------
 
-    def _natural_blocks(self, theta: Array) -> dict[str, Array]:
+    def _natural_parts(self, theta: Array) -> dict[str, Array]:
         """Flat ``(..., D)`` to ``{calibration parameter: (..., n_groups, k)}``
         in natural space."""
         parts = self.layout.unpack(theta)
         return {p.name: self._to_natural(p, parts[p.name]) for p in self.parameters}
 
     @staticmethod
-    def _to_natural(parameter: CalibrationParameter, block: Array) -> Array:
+    def _to_natural(parameter: CalibrationParameter, values: Array) -> Array:
         # A scalar calibration parameter's bijector sees (..., n_groups), so a
         # bijector with one parameter per group lines up with its groups.
         if parameter.is_scalar:
-            return parameter.bijector.forward(block[..., 0])[..., None]
-        return parameter.bijector.forward(block)
+            return parameter.bijector.forward(values[..., 0])[..., None]
+        return parameter.bijector.forward(values)
 
     @staticmethod
-    def _to_unconstrained(parameter: CalibrationParameter, block: Array) -> Array:
+    def _to_unconstrained(parameter: CalibrationParameter, values: Array) -> Array:
         if parameter.is_scalar:
-            return parameter.bijector.inverse(block[..., 0])[..., None]
-        return parameter.bijector.inverse(block)
+            return parameter.bijector.inverse(values[..., 0])[..., None]
+        return parameter.bijector.inverse(values)
 
     def _broadcast_unconstrained(self, parameter: CalibrationParameter) -> tfd.Distribution:
         """An independent-copies unconstrained prior with batch shape
@@ -2754,11 +2754,11 @@ def _summary(vector: ParameterVector) -> str:
         )
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
     for row in rows:
-        cells = [
-            cell.rjust(width) if i in (2, 3) else cell.ljust(width)
-            for i, (cell, width) in enumerate(zip(row, widths))
+        padded = [
+            text.rjust(width) if i in (2, 3) else text.ljust(width)
+            for i, (text, width) in enumerate(zip(row, widths))
         ]
-        lines.append("  " + "  ".join(cells) + "  " + row[-1])
+        lines.append("  " + "  ".join(padded) + "  " + row[-1])
     fixed = ", ".join(f"{f.name} ({f.varies_by or SHARED})" for f in vector.fixed)
     lines.append(f"  fixed: {fixed or 'none'}")
     unset = len(vector.unset_sipnet_parameter_names)

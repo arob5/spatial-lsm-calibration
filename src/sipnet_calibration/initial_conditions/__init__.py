@@ -237,7 +237,7 @@ Usage
         coarse_root_fraction=0.2,
         deciduous=True,                                  # scalar or per site
     )
-    table.iloc[0]                                        # one cell's six fields
+    table.iloc[0]                                        # one row's six parameters
 """
 
 from __future__ import annotations

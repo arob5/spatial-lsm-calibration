@@ -83,16 +83,16 @@ def _write_raw(root: Path, spec: ConstraintSpec, rows: list[dict]) -> Path:
     """Write rows as the raw files are written: gzipped CSV, ``NA``, ``%.17g``."""
     lines = [",".join(spec.raw_columns)]
     for row in rows:
-        cells = []
+        csv_fields = []
         for column in spec.raw_columns:
-            cell = row[column]
-            if cell is None or (isinstance(cell, float) and np.isnan(cell)):
-                cells.append("NA")
-            elif isinstance(cell, float):
-                cells.append(f"{cell:.17g}")
+            value = row[column]
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                csv_fields.append("NA")
+            elif isinstance(value, float):
+                csv_fields.append(f"{value:.17g}")
             else:
-                cells.append(str(cell))
-        lines.append(",".join(cells))
+                csv_fields.append(str(value))
+        lines.append(",".join(csv_fields))
     root.mkdir(parents=True, exist_ok=True)
     path = root / spec.raw_file
     with gzip.open(path, "wt") as handle:
@@ -579,7 +579,7 @@ def _perturbations():
         pytest.param(drop_bounds, "time_bounds absent", id="missing-bounds"),
         pytest.param(reversed_site, "site is empty or not strictly ascending", id="site-order"),
         pytest.param(reversed_time, "time is empty or not strictly ascending", id="time-order"),
-        pytest.param(orphan_sd, "missing in different cells", id="nan-mismatch"),
+        pytest.param(orphan_sd, "missing at different elements", id="nan-mismatch"),
     ]
 
 
@@ -720,7 +720,7 @@ def test_the_report_counts_what_was_written(raw_root, site_table, tmp_path):
     out_dir = tmp_path / "out"
     processed = _ingest(DATED, DATED_ROWS, raw_root, site_table, out_dir)
     report = ingest.describe_processed_file(processed, constraint_path(DATED, out_dir))
-    assert "observed 3 of 12 cells" in report
+    assert "observed 3 of 12 elements" in report
     assert "dropped by quality flag 1" in report
     assert "standard deviations of zero: 1" in report
     assert "2012-07-11 .. 2013-07-16" in report
@@ -756,7 +756,7 @@ def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch
         ["--raw-root", str(raw_root), "--sites", str(sites_path), "--out-dir", str(tmp_path / "out")]
     )
     assert code == 0
-    assert "observed 4 of 8 cells" in capsys.readouterr().out
+    assert "observed 4 of 8 elements" in capsys.readouterr().out
     assert constraint_path(ANNUAL, tmp_path / "out").exists()
 
 
@@ -844,7 +844,7 @@ def assembled() -> xr.Dataset:
         return dataset.load()
 
 
-def _assembled_cells(assembled: xr.Dataset, old_name: str) -> tuple[pd.DataFrame, pd.Series]:
+def _assembled_records(assembled: xr.Dataset, old_name: str) -> tuple[pd.DataFrame, pd.Series]:
     mean = assembled["observation_mean"].sel(variable=old_name).to_series().dropna()
     variance = assembled["observation_variance"].sel(variable=old_name).to_series()
     frame = mean.rename("mean").reset_index()
@@ -871,10 +871,10 @@ def _observed_records(processed: xr.Dataset) -> pd.DataFrame:
 def test_annual_and_snapshot_constraints_reproduce_the_assembled_values(
     real_processed_constraints, assembled, old_name, scale
 ):
-    reference, variance = _assembled_cells(assembled, old_name)
+    reference, variance = _assembled_records(assembled, old_name)
     ours = _observed_records(real_processed_constraints[ASSEMBLED_NAMES[old_name]])
     merged = reference.merge(ours, on=["site", "year"], how="left", validate="one_to_one")
-    assert merged["value"].notna().all(), "an assembled cell has no counterpart"
+    assert merged["value"].notna().all(), "an assembled observation has no counterpart"
     assert len(ours) == len(reference), "the processed file carries observations the assembler did not"
     np.testing.assert_array_equal(merged["value"] * scale, merged["mean"])
     expected_sd = np.sqrt(
@@ -886,7 +886,7 @@ def test_annual_and_snapshot_constraints_reproduce_the_assembled_values(
 @pytest.mark.slow
 @needs_real_files
 def test_the_static_soil_carbon_is_the_assembled_value_times_ten(real_processed_constraints, assembled):
-    reference, variance = _assembled_cells(assembled, "total_soil_carbon")
+    reference, variance = _assembled_records(assembled, "total_soil_carbon")
     processed = real_processed_constraints["soilgrids_soil_organic_carbon"]
     per_site = reference.groupby("site")["mean"].agg(["nunique", "first"])
     assert (per_site["nunique"] == 1).all(), "the assembled values were not constant in time"
@@ -906,18 +906,18 @@ def test_the_lai_selection_rule_reproduces_the_assembled_file(real_processed_con
     the observation layer, never in the processed file.
     """
     processed = real_processed_constraints["modis_leaf_area_index"]
-    cells = _observed_records(processed)
-    cells = cells[cells["year"] >= 2012]
-    key = pd.to_datetime(cells["year"].astype(str) + "-07-15")
-    cells = cells.assign(distance=(cells["time"] - key).dt.days.abs())
-    cells = cells[cells["distance"] <= 30]
+    records = _observed_records(processed)
+    records = records[records["year"] >= 2012]
+    key = pd.to_datetime(records["year"].astype(str) + "-07-15")
+    records = records.assign(distance=(records["time"] - key).dt.days.abs())
+    records = records[records["distance"] <= 30]
     selected = (
-        cells.sort_values(["site", "year", "distance", "time"])
+        records.sort_values(["site", "year", "distance", "time"])
         .drop_duplicates(["site", "year"])
         .set_index(["site", "year"])
     )
 
-    reference, variance = _assembled_cells(assembled, "lai")
+    reference, variance = _assembled_records(assembled, "lai")
     reference = reference.set_index(["site", "year"])
     assert set(selected.index) == set(reference.index)
     aligned = selected.loc[reference.index]

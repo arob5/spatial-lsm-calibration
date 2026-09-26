@@ -48,7 +48,7 @@ spec; the dtypes are what the writer produces.
 ``STATIC``, and ``bounds`` (of length 2) when ``time_bounds`` is present.
 
 **Data variables**, both ``float64``, ``NaN`` where a site (and time) was not
-observed, ``NaN`` in the same cells of both::
+observed, ``NaN`` at the same elements of both::
 
     value(site[, time])               the observation, in the spec's units
     standard_deviation(site[, time])  its reported standard deviation, same units
@@ -814,7 +814,7 @@ def build_constraint(
     This is pure: it neither reads nor writes files, so the ingest script and
     the tests call it on the same frames. The friendlier, earlier checks live
     in the script; the guards here are the ones that would otherwise let a
-    fancy-indexed assignment silently overwrite a cell.
+    fancy-indexed assignment silently overwrite an element.
     """
     kept, n_dropped = _apply_quality_filter(spec, frame)
     site = np.sort(site_table[SITE_ID].to_numpy(np.int64))
@@ -947,7 +947,7 @@ def _dated_arrays(
 ) -> tuple[np.ndarray, np.ndarray]:
     time = pd.DatetimeIndex(sorted(row_time.unique())).as_unit("ns")
     time_index = time.get_indexer(row_time)
-    _check_no_duplicate_cells(site_index, time_index, spec)
+    _check_no_duplicate_site_time_keys(site_index, time_index, spec)
 
     value = np.full((n_sites, time.size), np.nan)
     sd = np.full((n_sites, time.size), np.nan)
@@ -1112,15 +1112,15 @@ def check_constraint_holds_the_sites(
         )
 
 
-def _check_no_duplicate_cells(
+def _check_no_duplicate_site_time_keys(
     site_index: np.ndarray, time_index: np.ndarray, spec: ConstraintSpec
 ) -> None:
-    cells = pd.MultiIndex.from_arrays([site_index, time_index])
-    if cells.has_duplicates:
-        n = int(cells.duplicated().sum())
+    keys = pd.MultiIndex.from_arrays([site_index, time_index])
+    if keys.has_duplicates:
+        n = int(keys.duplicated().sum())
         raise ValueError(
             f"{spec.name}: {n} rows share a (site, time) with another row. Two records "
-            "for one cell would silently overwrite each other."
+            "for one (site, time) key would silently overwrite each other."
         )
 
 
@@ -1183,4 +1183,6 @@ def _check_processed_file_matches_the_spec(
 
     observed = np.isfinite(dataset[VALUE].values)
     if not np.array_equal(observed, np.isfinite(dataset[STANDARD_DEVIATION].values)):
-        raise ValueError(f"{path}: value and standard_deviation are missing in different cells")
+        raise ValueError(
+            f"{path}: value and standard_deviation are missing at different elements"
+        )

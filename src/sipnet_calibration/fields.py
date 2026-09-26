@@ -839,7 +839,7 @@ def label_run(
         boolean, a float or not an integer; *batch* is not a mapping or a
         dim name is not a string; or *site_table* is not a ``DataFrame``.
     ValueError
-        If *dataset* has no ``time`` rows, which is what a failed run leaves;
+        If *dataset* has no timesteps, which is what a failed run leaves;
         if *site* is out of range, or a batch label does not fit ``int64``; if
         a batch dim name is reserved or is a variable, dim or coordinate of
         *dataset* (``time_step_length``, ``time_bounds``, ``bounds``, a
@@ -1058,7 +1058,7 @@ def stack_model_outputs(
         exactly once, repeats a name, or names a reserved name or a
         variable, dim or coordinate of a run; if a key does not hold one
         label per key dim, a site id is out of range or a batch label does
-        not fit ``int64``; if a run has no ``time`` rows; if a run's own label
+        not fit ``int64``; if a run has no timesteps; if a run's own label
         disagrees with its key, or it carries a batch label *key_dims* does
         not name; if two runs carry different variables, or
         describe one with different ``units``, ``constituent`` or ``kind``; or
@@ -1990,7 +1990,7 @@ def check_field_carries_no_stacked_dim_name(field: xr.DataArray, originals: Sequ
 
 def check_stacked_rows_are_distinct(field: xr.DataArray, label_names: Sequence[str]) -> None:
     """No two rows of the stacked dim carry the same labels."""
-    # One entry of the unstacked field cannot hold two rows' values.
+    # One element of the unstacked field cannot hold two rows' values.
     rows = pd.MultiIndex.from_arrays([field[name].values for name in label_names])
     if rows.has_duplicates:
         raise ValueError(
@@ -2157,7 +2157,7 @@ def check_is_a_dataset(dataset: Any) -> None:
 
 
 def check_run_has_rows(dataset: xr.Dataset) -> None:
-    """A run's output has at least one ``time`` row."""
+    """A run's output has at least one timestep."""
     if TIME not in dataset.coords or dataset.sizes.get(TIME, 0) == 0:
         raise ValueError(
             "this SIPNET output has no rows, so there is nothing to put on a time axis. "

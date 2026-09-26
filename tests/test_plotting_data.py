@@ -114,7 +114,7 @@ def test_a_driver_field_labels_its_members_by_source_index(ax, real_driver_field
 def test_annual_observations_draw_as_points_at_the_observed_years(
     ax, real_constraint_fields
 ):
-    """Only the observed years appear; the unobserved cells are dropped.
+    """Only the observed years appear; the unobserved ones are dropped.
 
     A site's record is ragged, so a curve would be a claim the data does not
     support.
@@ -132,7 +132,7 @@ def test_annual_observations_draw_as_points_at_the_observed_years(
 def test_the_error_bars_are_the_square_root_of_the_real_variances(
     ax, real_constraint_fields
 ):
-    """Each bar's half-length equals ``sqrt`` of that cell's variance."""
+    """Each bar's half-length equals ``sqrt`` of that observation's variance."""
     means, variances = real_constraint_fields
     name = "landtrendr_aboveground_biomass"
     site = most_observed_site(means[name])

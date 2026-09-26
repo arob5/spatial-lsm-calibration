@@ -28,7 +28,7 @@ Output data
 ``--out-dir``, default ``data/processed/constraints/``, one file per constraint::
 
     value(site[, time])               float64, NaN where unobserved
-    standard_deviation(site[, time])  float64, NaN in the same cells
+    standard_deviation(site[, time])  float64, NaN at the same elements
 
 with ``site`` the whole pool, ``time`` the constraint's own labels (absent for
 a static constraint), ``time_bounds`` for an annual one, and every attribute
@@ -219,7 +219,7 @@ def describe_processed_file(dataset: xr.Dataset, path: Path) -> str:
     sizes = " x ".join(f"{dataset.sizes[dim]} {dim}" for dim in dataset[VALUE].dims)
     lines = [
         f"{dataset.attrs['constraint']}  ->  {path} ({path.stat().st_size / 1e6:.1f} MB)",
-        f"  {sizes}; observed {int(observed.sum())} of {observed.size} cells "
+        f"  {sizes}; observed {int(observed.sum())} of {observed.size} elements "
         f"({observed.mean():.1%})",
         f"  rows read {dataset.attrs['rows_read']}, dropped by quality flag "
         f"{dataset.attrs['rows_dropped_by_quality_flag']}, collapsed as copies "

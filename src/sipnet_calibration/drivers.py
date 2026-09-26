@@ -682,7 +682,7 @@ def _read_all(
     """Read every located file into ``(driver_member, site, time)`` arrays.
 
     The first file read supplies the time axis; every later file is checked to
-    be on the same one before its values are copied in. Cells with no file stay
+    be on the same one before its values are copied in. A pair with no file stays
     ``NaN``. Returns the arrays and the first file's pySIPNET Dataset, whose
     time coordinates and attributes the result takes.
     """

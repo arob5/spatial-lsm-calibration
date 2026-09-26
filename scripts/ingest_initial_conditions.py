@@ -239,7 +239,7 @@ def check_wood_is_biomass_minus_leaf(raw: xr.Dataset) -> None:
     has_leaf = np.isfinite(leaf)
     both = np.isfinite(biomass) & np.isfinite(wood)
     if not both.all():
-        raise IngestError("AbvGrndWood and wood_carbon_content are not present at every cell")
+        raise IngestError("AbvGrndWood and wood_carbon_content are not present at every site and member")
     expected = np.where(has_leaf, biomass - leaf, biomass)
     mismatch = wood != expected
     if mismatch.any():

@@ -222,7 +222,7 @@ def aggregate_time(
         If *field* is not a ``DataArray``.
     ValueError
         If *field* has no datetime ``time`` coordinate free of ``NaT``, has no
-        steps once the padding is dropped, has a row with a value and a
+        steps once the padding is dropped, has a time label with a value and a
         ``NaT`` interval, or has timestamps that do not strictly increase; if
         *freq* is not a pandas offset alias, or is finer than the field's own
         steps, which would interpolate rather than aggregate; if its interval
@@ -640,7 +640,7 @@ def _resampled_by_pysipnet(
 ) -> xr.DataArray:
     """*field*, which carries pySIPNET's interval coordinates, through its ``resample``.
 
-    pySIPNET drops the padding itself and refuses a valued row with a ``NaT``
+    pySIPNET drops the padding itself and refuses a valued time label with a ``NaT``
     interval, so only the checks it does not make are made here first.
     """
     check_the_steps_are_aggregable(_real_rows(field))
@@ -662,7 +662,7 @@ def _steps_per_cell(field: xr.DataArray, steps: xr.DataArray, freq: str) -> xr.D
     *steps* is a boolean per step, on *field*'s coordinates. It is summed by
     pySIPNET's own ``resample`` as a per-step total, so the cells are labeled
     as the aggregate of *field* is. The padding is made missing, as pySIPNET
-    requires of a row it is to drop.
+    requires of a time label it is to drop.
     """
     padding = xr.DataArray(_rows_without_an_interval(field), dims=TIME)
     indicator = steps.astype(np.float64).where(~padding)
@@ -732,7 +732,7 @@ def _has_interval_coords(field: xr.DataArray) -> bool:
 
 
 def _rows_without_an_interval(field: xr.DataArray) -> np.ndarray:
-    """Which rows have a ``NaT`` start or length, among the interval coordinates present."""
+    """Which time labels have a ``NaT`` start or length, among the interval coordinates present."""
     mask = np.zeros(field.sizes[TIME], dtype=bool)
     for name in (TIMESTEP_START, TIMESTEP_LENGTH):
         if name in field.coords:
@@ -741,20 +741,20 @@ def _rows_without_an_interval(field: xr.DataArray) -> np.ndarray:
 
 
 def _real_rows(field: xr.DataArray) -> xr.DataArray:
-    """*field* without the rows that have no interval, valued or not."""
+    """*field* without the time labels that have no interval, valued or not."""
     no_interval = _rows_without_an_interval(field)
     return field.isel({TIME: ~no_interval}) if no_interval.any() else field
 
 
 def _without_padding(field: xr.DataArray) -> xr.DataArray:
-    """*field* without its padding: rows with a ``NaT`` interval and no value.
+    """*field* without its padding: time labels with a ``NaT`` interval and no value.
 
     Selecting one site out of a stack of runs on different time axes leaves the
-    union of those axes, so a site's shorter record carries rows whose
+    union of those axes, so a site's shorter record carries time labels whose
     interval coordinates are ``NaT``. They are not steps: leaving them in would
     turn every window that holds one into ``NaN``, and a ``NaT`` length casts
     to the ``int64`` sentinel rather than to a missing value, which is a step
-    of minus 292 years. A row with a value is not padding and is refused.
+    of minus 292 years. A time label with a value is not padding and is refused.
     """
     no_interval = _rows_without_an_interval(field)
     if not no_interval.any():
@@ -985,7 +985,7 @@ def _on_windows(reduced: xr.DataArray, dims: Any) -> xr.DataArray:
 
 
 def _empty_windows(field: xr.DataArray, n_windows: int, fill: Any, dtype: Any) -> xr.DataArray:
-    """One entry per window when no row falls in any of them."""
+    """One value per window when no timestep falls in any of them."""
     shape = [n_windows if dim == TIME else field.sizes[dim] for dim in field.dims]
     coords = {name: coord for name, coord in field.coords.items() if TIME not in coord.dims}
     return xr.DataArray(np.full(shape, fill, dtype=dtype), dims=field.dims, coords=coords)
@@ -1245,7 +1245,7 @@ def check_field_has_a_datetime_time_axis(field: Any) -> None:
     if TIME not in field.coords:
         raise ValueError(
             f"{fields.message_name(field)} has a {TIME!r} dimension but no {TIME!r} "
-            "coordinate, so there is nothing to place its rows by; assign one."
+            "coordinate, so there is nothing to place its values by; assign one."
         )
     dtype = field.coords[TIME].dtype
     if not pd.api.types.is_datetime64_any_dtype(dtype):
@@ -1256,7 +1256,7 @@ def check_field_has_a_datetime_time_axis(field: Any) -> None:
     if pd.isna(field.coords[TIME].values).any():
         raise ValueError(
             f"the {TIME!r} coordinate of {fields.message_name(field)} holds a missing timestamp "
-            "(NaT), so its rows cannot be placed. Drop those rows first."
+            "(NaT), so its values cannot be placed. Drop those time labels first."
         )
 
 
@@ -1285,22 +1285,23 @@ def check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
 def check_rows_without_an_interval_hold_no_value(
     field: xr.DataArray, no_interval: np.ndarray
 ) -> None:
-    """A row whose ``time_step_start`` or ``time_step_length`` is ``NaT`` is padding.
+    """A time label whose ``time_step_start`` or ``time_step_length`` is ``NaT`` is padding.
 
-    Padding holds no value; a row that does is a step of unknown extent, and
+    Padding holds no value; a time label that does is a step of unknown extent, and
     dropping it would lose the value silently.
     """
-    rows = field.isel({TIME: no_interval})
-    others = [dim for dim in rows.dims if dim != TIME]
-    valued = np.asarray(rows.notnull().any(others).values if others else rows.notnull().values)
+    without_interval = field.isel({TIME: no_interval})
+    others = [dim for dim in without_interval.dims if dim != TIME]
+    present = without_interval.notnull()
+    valued = np.asarray(present.any(others).values if others else present.values)
     if valued.any():
-        first = rows[TIME].values[int(np.flatnonzero(valued)[0])]
+        first = without_interval[TIME].values[int(np.flatnonzero(valued)[0])]
         raise ValueError(
-            f"{fields.message_name(field)} has values on {int(valued.sum())} row(s) whose "
+            f"{fields.message_name(field)} has values at {int(valued.sum())} time label(s) whose "
             f"{TIMESTEP_START} or {TIMESTEP_LENGTH} is NaT, the first at {first}, so "
-            "which step those values cover is unknown. Rows of pure padding (NaT "
+            "which step those values cover is unknown. Time labels of pure padding (NaT "
             "interval and every value missing) are dropped; these are not padding. "
-            "Give those rows their interval, or drop them."
+            "Give those time labels their interval, or drop them."
         )
 
 
@@ -1323,10 +1324,10 @@ def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     if (spacing <= 0).any():
         where = int(np.flatnonzero(spacing <= 0)[0]) + 1
         raise ValueError(
-            f"{fields.message_name(field)} has timestamps that do not increase: row {where} "
-            f"({times[where]}) does not follow row {where - 1} "
+            f"{fields.message_name(field)} has timestamps that do not increase: time label "
+            f"{where} ({times[where]}) does not follow time label {where - 1} "
             f"({times[where - 1]}). Sort the field on {TIME!r}, and drop or "
-            "combine the duplicates; two rows sharing a label would be added "
+            "combine the duplicates; two timesteps sharing a label would be added "
             "together as though they were consecutive steps."
         )
 
@@ -1458,7 +1459,7 @@ def check_windows_are_on_the_fields_clock(left: pd.DatetimeIndex, stamps: pd.Dat
     if left.tz != stamps.tz:
         raise ValueError(
             f"windows are in time zone {left.tz} and the field's time coordinate in "
-            f"{stamps.tz}; pandas matches no rows across that difference. Localize or "
+            f"{stamps.tz}; pandas matches no time labels across that difference. Localize or "
             "convert one of them first."
         )
 
