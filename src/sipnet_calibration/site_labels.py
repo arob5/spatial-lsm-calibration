@@ -159,17 +159,13 @@ import xarray as xr
 
 from sipnet_calibration import conventions
 from sipnet_calibration.conventions import (
-    LAT,
-    LAT_ATTRIBUTES,
-    LON,
-    LON_ATTRIBUTES,
     NAME_PATTERN,
     SITE,
     SITE_ATTRIBUTES,
     SITE_DTYPE,
     SITE_ID,
 )
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.sites import load_sites, site_locations
 from sipnet_calibration.validation import as_frozen_mapping
 
 __all__ = [
@@ -656,9 +652,10 @@ def site_labels_field(
 
     Raises
     ------
+    KeyError
+        If a labeled site is not in the site table.
     ValueError
-        If a labeled site is not in the site table, or a class name contains
-        whitespace, which a CF flag meaning cannot.
+        If a class name contains whitespace, which a CF flag meaning cannot.
     """
     spec = (
         site_labels
@@ -668,8 +665,6 @@ def site_labels_field(
     labels = load_site_labels(spec, path)
     sites = load_sites() if sites is None else sites
     _check_labels_are_flag_meanings(spec)
-    located = labels.merge(sites[[SITE_ID, LON, LAT]], on=SITE_ID, how="left")
-    _check_labeled_sites_are_in_the_site_table(located)
     attrs = {
         "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
         "flag_values": np.arange(len(spec.labels), dtype=np.int8),
@@ -680,12 +675,11 @@ def site_labels_field(
         # is space-separated.
         attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.labels)
     return xr.DataArray(
-        located[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
+        labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
         dims=SITE,
         coords={
-            SITE: (SITE, located[SITE_ID].to_numpy(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
-            LON: (SITE, located[LON].to_numpy(float), dict(LON_ATTRIBUTES)),
-            LAT: (SITE, located[LAT].to_numpy(float), dict(LAT_ATTRIBUTES)),
+            SITE: (SITE, labels[SITE_ID].to_numpy(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
+            **site_locations(labels[SITE_ID].tolist(), sites),
         },
         attrs=attrs,
         name=spec.name,
@@ -891,13 +885,4 @@ def _check_labels_are_flag_meanings(spec: SiteLabelsSpec) -> None:
         raise ValueError(
             f"class name(s) {spaced} of {spec.name!r} contain whitespace, which a CF "
             "flag_meanings entry cannot; the categorical field cannot represent them"
-        )
-
-
-def _check_labeled_sites_are_in_the_site_table(located: pd.DataFrame) -> None:
-    unlocated = located.loc[located[LON].isna(), SITE_ID].tolist()
-    if unlocated:
-        raise ValueError(
-            f"site(s) {unlocated[:10]} are labeled but not in the site table, so they "
-            "have no lon/lat; the product and the table disagree about the pool"
         )

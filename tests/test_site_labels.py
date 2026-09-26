@@ -929,7 +929,7 @@ def test_the_16class_field_labels_every_site_with_readable_names(real_16class, r
 def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):
     raw_root, sites, out_dir = synthetic
     ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
-    with pytest.raises(ValueError, match="not in the site table"):
+    with pytest.raises(KeyError, match="not in the site table"):
         site_labels_field(
             SYNTHETIC_SPEC, sites=sites.iloc[:2], path=site_labels_path(SYNTHETIC_SPEC, out_dir)
         )
