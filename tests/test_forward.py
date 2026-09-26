@@ -558,6 +558,8 @@ class TestPriorPredictive:
         evaluation = forward.evaluate(theta)
         output = evaluation.model_output
         assert output["sample"].values.tolist() == [0, 1, 2]
+        # The reindex that restores the slot keeps the labels int64.
+        assert output["sample"].dtype == np.int64
         assert bool(output["net_ecosystem_exchange"].sel(sample=1).isnull().all())
         assert (
             int(output["net_ecosystem_exchange"].sel(sample=0, site=1).notnull().sum())
@@ -1156,6 +1158,56 @@ class TestTheBatchDimIsNamedOnce:
                 batch_dim="wood_carbon",
             )
 
+    @pytest.mark.parametrize(
+        "name",
+        ["time_step_length", "time_step_start", "time_bounds", "bounds", "year", "day_of_year"],
+    )
+    @pytest.mark.parametrize("freq", [None, "1D"])
+    def test_a_name_the_model_output_uses_is_refused_up_front(
+        self, parameter_vector, climate, name, freq
+    ):
+        """It was refused only at stacking, after every run had completed."""
+        with pytest.raises(ValueError, match=f"batch dim {name!r} is a coordinate or dim"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",),
+                freq=freq,
+                site_table=SITE_TABLE,
+                batch_dim=name,
+            )
+
+    @pytest.mark.parametrize("name", ["driver_member", "initial_condition_member"])
+    def test_a_data_source_member_name_is_refused(self, parameter_vector, climate, name):
+        """Theta's rows named ``driver_member`` were stamped as driver members."""
+        with pytest.raises(ValueError, match="a data source's member dim"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",),
+                site_table=SITE_TABLE,
+                batch_dim=name,
+            )
+
+    def test_an_observation_source_name_is_refused_up_front(
+        self, parameter_vector, climate, observation_vector
+    ):
+        """It was accepted, and the vector's fields() then refused the predictions."""
+        with pytest.raises(ValueError, match="is a product name"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                batch_dim="landtrendr_aboveground_biomass",
+            )
+
     def test_the_batch_dim_is_read_only(self, forward):
         assert forward.batch_dim == "sample"
         with pytest.raises(AttributeError):
@@ -1189,3 +1241,16 @@ class TestRunSucceededIsAField:
         assert evaluation.run_succeeded["site"].dtype == np.int32
         assert evaluation.run_succeeded["lon"].values.tolist() == [-105.0, -70.0]
         assert evaluation.run_succeeded["sample"].attrs["long_name"] == "Sample"
+
+    def test_run_succeeded_is_mapped(self, forward, theta):
+        """It validated as a field and was refused by the map for want of units."""
+        import matplotlib.pyplot as plt
+
+        from sipnet_calibration.plotting import plot_map
+
+        evaluation = forward.evaluate(theta)
+        figure, ax = plt.subplots()
+        try:
+            plot_map(evaluation.run_succeeded.isel(sample=0), ax=ax)
+        finally:
+            plt.close(figure)

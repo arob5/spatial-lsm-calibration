@@ -1640,6 +1640,46 @@ def test_a_batch_dim_may_not_take_a_reserved_or_taken_name(example, theta, name)
         example.sipnet_table(theta, batch_dim=name)
 
 
+@pytest.mark.parametrize("name", ["driver_member", "initial_condition_member", "shared", "source_index"])
+def test_a_batch_dim_may_not_take_a_data_source_member_or_vector_name(example, theta, name):
+    """Theta's rows named ``driver_member`` were stamped as driver members."""
+    with pytest.raises(ValueError, match="batch_dim"):
+        example.fields(theta, batch_dim=name)
+    with pytest.raises(ValueError, match="batch_dim"):
+        example.sipnet_table(theta, batch_dim=name)
+
+
+def test_the_reserved_names_are_built_from_the_shared_constants():
+    from sipnet_calibration.conventions import (
+        DATA_SOURCE_MEMBER_NAMES,
+        NON_BATCH_DIM_NAMES,
+        SAMPLE,
+        SITE_ID,
+    )
+    from sipnet_calibration.parameter_vector import (
+        RESERVED_PARAMETER_NAMES,
+        RESERVED_SITE_LABELS_NAMES,
+        SHARED,
+    )
+
+    assert RESERVED_PARAMETER_NAMES == {SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES}
+    assert RESERVED_SITE_LABELS_NAMES == RESERVED_PARAMETER_NAMES | {SHARED, SITE_ID}
+
+
+def test_the_fields_and_table_carry_the_attributes_of_their_batch_dim(example, theta):
+    from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
+
+    assert dict(example.fields(theta)["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
+    assert dict(example.sipnet_table(theta)["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
+    assert dict(example.fields(theta, batch_dim="draw")["draw"].attrs) == {}
+
+
+def test_sipnet_overrides_names_a_site_the_table_lacks(example, theta):
+    table = example.sipnet_table(theta)
+    with pytest.raises(KeyError, match="site 2 is not one of the table's site"):
+        sipnet_overrides(table, batch={"sample": 0}, site=2)
+
+
 def test_a_scalar_batch_coordinate_gives_one_vector(example, theta):
     one = example.fields(theta).isel(sample=2)
     assert int(one["sample"]) == 2

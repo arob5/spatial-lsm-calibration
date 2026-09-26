@@ -128,7 +128,8 @@ calibration parameter.
 Fields, and one float64 variable per SIPNET parameter the vector sets,
 calibrated and fixed alike, keyed on the pySIPNET name, in
 ``PARAMETER_SPECS`` order. Built from Fields, it keeps their batch dim and
-its labels, so a subset of a batch keeps its samples' identity. Each variable carries ``units``, ``sipnet_name``,
+its labels, so a subset of a batch keeps its samples' identity. Each
+variable carries ``units``, ``sipnet_name``,
 ``constituent`` where pySIPNET declares one, and ``source``
 (``"parameter <name>"`` or ``"fixed"``); the dataset carries
 ``representation = "sipnet_parameters"``. A SIPNET parameter the vector
@@ -379,20 +380,18 @@ from sipnet_calibration.conventions import (
     LON,
     LON_ATTRIBUTES,
     NAME_PATTERN,
-    POINT,
+    NON_BATCH_DIM_NAMES,
     SAMPLE,
     SITE,
     SITE_DTYPE,
     SITE_ID,
-    SOURCE_INDEX,
     FrozenMapping,
-    X,
-    Y,
 )
 from sipnet_calibration.fields import (
     batch_coordinate,
     batch_dims,
     check_at_most_one_batch_dim,
+    check_batch_dim_name_is_not_a_data_source_member,
     check_batch_dim_name_is_not_reserved,
     check_batch_labels_are_a_mapping,
     check_dims_are_batch_spatial_or_time,
@@ -435,6 +434,7 @@ __all__ = [
     "PhotosynthesisMap",
     "SIPNETMap",
     "SimplexMap",
+    "check_batch_dim_name_is_not_taken",
     "example_parameter_vector",
     "log_normal",
     "log_normal_from_interval",
@@ -835,19 +835,19 @@ SHARED = "shared"
 """Group label, and ``varies_by`` attribute value, of a calibration parameter
 that does not vary."""
 
-RESERVED_SITE_LABELS_NAMES = frozenset(
-    {SHARED, SITE, SAMPLE, POINT, LON, LAT, X, Y, SITE_ID, SOURCE_INDEX, *DATA_SOURCE_MEMBER_NAMES}
-)
-"""Names a site-labels product cannot take in a vector, because they are
-dimension or coordinate names already, or reserved for one. It may not be
-named like a calibration parameter or a SIPNET parameter either."""
-
-RESERVED_PARAMETER_NAMES = frozenset(
-    {SITE, SAMPLE, POINT, LON, LAT, X, Y, SOURCE_INDEX, *DATA_SOURCE_MEMBER_NAMES}
-)
+RESERVED_PARAMETER_NAMES = frozenset({SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES})
 """Names a calibration parameter cannot take, because a Fields variable of
 that name would collide with a coordinate, or with a dimension name reserved
-for one."""
+for one: ``sample``, the names that are never batch dims
+(:data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES`) and the data
+sources' member dims."""
+
+RESERVED_SITE_LABELS_NAMES = frozenset({*RESERVED_PARAMETER_NAMES, SHARED, SITE_ID})
+"""Names a site-labels product cannot take in a vector, because they are
+dimension or coordinate names already, or reserved for one: those of
+:data:`RESERVED_PARAMETER_NAMES`, the group label ``shared`` and the site
+table's ``site_id``. It may not be named like a calibration parameter or a
+SIPNET parameter either."""
 
 REQUIRED_SIPNET_PARAMETERS: tuple[str, ...] = tuple(
     name
@@ -1695,9 +1695,11 @@ class ParameterVector:
         batch_dim:
             The name of the batch dim a ``(J, D)`` *theta* is given, labeled
             ``0`` to ``J - 1`` in row order. It may not be a reserved name
-            (a spatial name, ``time``, ``source_index``), a site-labels name,
-            or a name a variable takes (a SIPNET parameter, calibration
-            parameter or Fields variable name).
+            (a spatial name, ``time``, ``source_index``), a data source's
+            member name (``driver_member``, ``initial_condition_member``),
+            ``shared`` or ``site_id``, a site-labels name, or a name a
+            variable takes (a SIPNET parameter, calibration parameter or
+            Fields variable name): :func:`check_batch_dim_name_is_not_taken`.
 
         Returns
         -------
@@ -1705,7 +1707,11 @@ class ParameterVector:
             Fields with ``attrs["space"]`` set to *space*: one variable per
             scalar component (or element) on ``(batch_dim, site)``, or
             ``(site,)`` for one value, shared and per-class copies repeated
-            at every site that reads them.
+            at every site that reads them. A vector built from a site table
+            with ``lon``/``lat`` gives fields (:mod:`sipnet_calibration.fields`);
+            one built from bare site ids gives arrays without them, which
+            :func:`~sipnet_calibration.fields.stack_batch_dims` and the
+            plotters refuse.
 
         Raises
         ------
@@ -1742,7 +1748,9 @@ class ParameterVector:
         coordinate, left by ``.isel(sample=k)``, is not a batch dim: such
         Fields give one vector. Takes exactly the variables and sites this
         vector needs and ignores any others, so Fields from a larger vector
-        project onto this one.
+        project onto this one. Fields of several batch dims are stacked
+        first, which needs fields: those of a vector built from bare site
+        ids carry no ``lon``/``lat`` and are refused by the stack.
 
         Returns
         -------
@@ -1759,9 +1767,9 @@ class ParameterVector:
             with :func:`sipnet_calibration.fields.stack_batch_dims`); if a
             needed variable has a dim that is neither a batch dim (integer
             labels), ``site`` nor ``time``; if a needed variable or site is
-            absent, or a variable is not on the dataset's ``(*batch, site)``; if a value is not finite; or if a group's
-            value differs between two of its sites, which no Flat vector can
-            represent.
+            absent, or a variable is not on the dataset's ``(*batch, site)``;
+            if a value is not finite; or if a group's value differs between
+            two of its sites, which no Flat vector can represent.
         """
         space = check_fields_space_is_given(fields)
         if SITE in fields.coords and fields[SITE].ndim == 0:
@@ -2132,7 +2140,7 @@ def sipnet_overrides(
         labels), ``site`` nor ``time``; or if *batch* does not name exactly
         the table's batch dims.
     KeyError
-        If *site*, or a batch label, is not in the table.
+        If *site*, or a batch label, is not in the table, naming it.
 
     Examples
     --------
@@ -2144,6 +2152,7 @@ def sipnet_overrides(
     requested = _requested_batch_labels(batch)
     for name, variable in table.data_vars.items():
         check_dims_are_batch_spatial_or_time(variable, message_name=repr(str(name)))
+    check_batch_label_is_in_the_table(table, SITE, site_id)
     selected = table.sel({SITE: site_id})
     check_batch_labels_name_the_table_batch_dims(batch_dims(selected), requested)
     for dim, label in requested.items():
@@ -2151,16 +2160,6 @@ def sipnet_overrides(
     if requested:
         selected = selected.sel(requested)
     return {str(name): float(value) for name, value in selected.data_vars.items()}
-
-
-def _requested_batch_labels(batch: Any) -> dict[str, int]:
-    """*batch* as ``{dim: label}`` with plain-integer labels, or empty for ``None``."""
-    if batch is None:
-        return {}
-    check_batch_labels_are_a_mapping(batch)
-    return {
-        dim: as_batch_label(label, message_name=f"batch[{dim!r}]") for dim, label in batch.items()
-    }
 
 
 # ── the example ───────────────────────────────────────────────────────────────
@@ -2317,6 +2316,16 @@ _FLAT_SPECS: Mapping[str, ParameterSpec] = FrozenMapping(
     {path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()}
 )
 _SPEC_ORDER: Mapping[str, int] = FrozenMapping({name: i for i, name in enumerate(_FLAT_SPECS)})
+
+
+def _requested_batch_labels(batch: Any) -> dict[str, int]:
+    """*batch* as ``{dim: label}`` with plain-integer labels, or empty for ``None``."""
+    if batch is None:
+        return {}
+    check_batch_labels_are_a_mapping(batch)
+    return {
+        dim: as_batch_label(label, message_name=f"batch[{dim!r}]") for dim, label in batch.items()
+    }
 
 
 def _as_theta(theta: Any, dimension: int) -> Array:
@@ -3253,13 +3262,28 @@ def check_batch_labels_are_distinct_integers(values: Any) -> None:
 def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
     """*batch_dim* can name a batch dim of this vector's Fields and SIPNET table.
 
-    Not a reserved name
-    (:func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`),
-    not a site-labels name (a coordinate on ``site``), and not a name a
-    variable of either takes: a SIPNET parameter name, a Fields variable name
-    in either space, or a calibration parameter name.
+    Runs :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`,
+    :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`,
+    :func:`check_batch_dim_name_is_not_a_reserved_vector_name` and
+    :func:`check_batch_dim_name_is_not_a_vector_name`, in that order.
     """
     check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
+    check_batch_dim_name_is_not_a_data_source_member(batch_dim, message_name="batch_dim")
+    check_batch_dim_name_is_not_a_reserved_vector_name(batch_dim)
+    check_batch_dim_name_is_not_a_vector_name(vector, batch_dim)
+
+
+def check_batch_dim_name_is_not_a_reserved_vector_name(batch_dim: str) -> None:
+    """*batch_dim* is none of the names a vector reserves, ``sample`` apart."""
+    if batch_dim in RESERVED_SITE_LABELS_NAMES - {SAMPLE}:
+        raise ValueError(
+            f"batch_dim={batch_dim!r} is a reserved name of this vector; name the batch dim "
+            "otherwise, such as 'sample'."
+        )
+
+
+def check_batch_dim_name_is_not_a_vector_name(vector: ParameterVector, batch_dim: str) -> None:
+    """*batch_dim* is no site-labels, SIPNET parameter, Fields variable or parameter name."""
     taken = {**dict.fromkeys(vector.site_labels, "a site-labels name")}
     taken.update(dict.fromkeys(vector.sipnet_parameter_names, "a SIPNET parameter name"))
     for parameter in vector.parameters:
@@ -3268,11 +3292,10 @@ def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -
                 dict.fromkeys(_fields_variable_names(parameter, space), "a Fields variable name")
             )
     taken.update(dict.fromkeys(vector.parameter_names, "a calibration parameter name"))
-    if batch_dim in taken or batch_dim in (SHARED, SITE_ID):
-        what = taken.get(batch_dim, "a reserved name")
+    if batch_dim in taken:
         raise ValueError(
-            f"batch_dim={batch_dim!r} is {what} of this vector; name the batch dim otherwise, "
-            "such as 'sample'."
+            f"batch_dim={batch_dim!r} is {taken[batch_dim]} of this vector; name the batch dim "
+            "otherwise, such as 'sample'."
         )
 
 
@@ -3291,7 +3314,7 @@ def check_batch_labels_name_the_table_batch_dims(
 
 
 def check_batch_label_is_in_the_table(table: xr.Dataset, dim: str, label: Any) -> None:
-    """The label asked for is one of the table's labels on *dim*."""
+    """The label asked for, a batch label or a site id, is one of the table's on *dim*."""
     labels = np.asarray(table[dim].values).tolist()
     if label not in labels:
         raise KeyError(

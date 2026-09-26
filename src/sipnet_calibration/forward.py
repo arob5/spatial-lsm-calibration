@@ -195,6 +195,7 @@ from pysipnet.variables import resolve_output_variable
 from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE, SITE_DTYPE
 from sipnet_calibration.fields import (
     batch_coordinate,
+    check_batch_dim_name_is_not_a_model_output_name,
     check_batch_dim_name_is_not_reserved,
     label_run,
     resolve_output_variable_names,
@@ -204,6 +205,7 @@ from sipnet_calibration.observation import (
     DEFAULT_METHOD_FOR_KIND,
     ObservationVector,
     aggregate_time,
+    check_batch_dim_is_not_an_observation_name,
 )
 from sipnet_calibration.observation.time_alignment import (
     check_frequency_is_an_offset_alias,
@@ -313,23 +315,30 @@ class ForwardModel:
     batch_dim:
         The name of the batch dim of ``theta``'s rows, which the SIPNET
         table, ``model_output``, ``run_succeeded`` and the ``failures``
-        column all carry; ``sample`` by default. It may not be a reserved
-        name, a name the parameter vector refuses (a site-labels name, a
-        SIPNET parameter, calibration parameter or Fields variable name), or
-        an output variable name, whatever *to_sipnet_table* is. Read-only
+        column all carry; ``sample`` by default. Whatever *to_sipnet_table*
+        is, it may not be a name the parameter vector refuses
+        (:func:`~sipnet_calibration.parameter_vector.check_batch_dim_name_is_not_taken`:
+        a reserved name, a data source's member name, ``shared``,
+        ``site_id``, a site-labels name, a SIPNET parameter, calibration
+        parameter or Fields variable name), a name the model output uses (an
+        output variable, or one of
+        :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
+        a product name or coordinate of the observation vector's
+        observations. Each is refused here, before anything runs. Read-only
         once the model is built, since the default hook is bound to it.
 
     Raises
     ------
     TypeError
         If *model* is not a ``SIPNETModel``, *backend* not a PyEns
-        ``Backend``, a site's drivers not ``ClimateDrivers``, or
-        *to_sipnet_table* returns something other than an ``xr.Dataset``.
+        ``Backend``, a site's drivers not ``ClimateDrivers``,
+        *to_sipnet_table* returns something other than an ``xr.Dataset``, or
+        *batch_dim* is not a string.
     ValueError
-        If neither *output_variable_names* nor *observation_vector* is
-        given; *freq* is given with an observation vector or is not a pandas
-        offset alias; a site has no drivers, or in-memory drivers under a
-        process backend; the observation vector observes a site the
+        If *batch_dim* is a name it may not be (above); if neither
+        *output_variable_names* nor *observation_vector* is given; *freq* is
+        given with an observation vector or is not a pandas offset alias; a
+        site has no drivers, or in-memory drivers under a process backend; the observation vector observes a site the
         parameter vector does not run; the output variables do not cover the
         operators, or one is switched off by the model's flags, or (with
         *freq*) has a kind no method keeps; the site table lacks
@@ -378,7 +387,11 @@ class ForwardModel:
             output_variable_names, observation_vector
         )
         check_output_variables_can_be_returned(self.output_variable_names, model, freq)
-        check_batch_dim_is_not_an_output_variable(batch_dim, self.output_variable_names)
+        check_batch_dim_name_is_not_a_model_output_name(
+            batch_dim, self.output_variable_names, message_name="batch_dim"
+        )
+        if observation_vector is not None:
+            check_batch_dim_is_not_an_observation_name(observation_vector.observations, batch_dim)
         chosen_site_table = _chosen_site_table(site_table, parameter_vector)
         # site_locations checks the table locates the sites, once, before
         # the lookup below relies on it.
@@ -464,10 +477,10 @@ class ForwardModel:
             If *theta* is not ``(D,)`` or ``(J, D)`` with ``J >= 1``, or holds
             a non-finite value; or if the SIPNET table the hook returns is not
             one for this batch (dims other than ``(batch_dim, site)``, a
-            variable not on both, labels other than ``0`` to ``J - 1`` in order, sites
-            other than the vector's in order, a name that is not pySIPNET's
-            flat parameter name, or other SIPNET parameters than the model was
-            built for).
+            variable not on both, labels other than ``0`` to ``J - 1`` in
+            order, sites other than the vector's in order, a name that is not
+            pySIPNET's flat parameter name, or other SIPNET parameters than the
+            model was built for).
         RuntimeError
             If a run failed in the machinery rather than at its parameters,
             or, on the prior-predictive path, if every run failed at its
@@ -1072,17 +1085,6 @@ def check_table_batch_labels_are_the_rows_of_theta(
             f"in the order of theta's {n_samples} rows, got {labels[:10]} "
             f"({sipnet_table[batch_dim].dtype}); the forward model places each run in the row "
             "of theta its label names."
-        )
-
-
-def check_batch_dim_is_not_an_output_variable(
-    batch_dim: str, output_variable_names: Sequence[str]
-) -> None:
-    """The batch dim is named unlike every output variable a run returns."""
-    if batch_dim in output_variable_names:
-        raise ValueError(
-            f"batch_dim={batch_dim!r} is an output variable the runs return; name the batch "
-            "dim otherwise, such as 'sample'."
         )
 
 
