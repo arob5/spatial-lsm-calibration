@@ -187,6 +187,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pysipnet.dataset import BOUNDS_DIMENSION
 from pysipnet.units import validate_units
 
@@ -201,7 +202,6 @@ from sipnet_calibration.conventions import (
     TIME_BOUNDS,
     WINDOW_END,
     WINDOW_START,
-    FrozenMapping,
     data_root,
 )
 from sipnet_calibration.io import utc_timestamp
@@ -398,7 +398,7 @@ class ConstraintSpec:
 MISSING_TOKEN = "NA"
 
 #: In words, what the ``time`` label of a constraint with each structure marks.
-TIME_REFERENCE_FOR_STRUCTURE: Mapping[TimeStructure, str] = FrozenMapping(
+TIME_REFERENCE_FOR_STRUCTURE: Mapping[TimeStructure, str] = frozendict(
     {
         TimeStructure.STATIC: (
             "a static map with no time dimension. The source repeated one value into "
@@ -991,7 +991,7 @@ def _time_coords(spec: ConstraintSpec, row_time: pd.DatetimeIndex) -> dict[str, 
     return coords
 
 
-_TIME_LONG_NAME = FrozenMapping(
+_TIME_LONG_NAME = frozendict(
     {
         TimeStructure.ANNUAL: "Calendar year key",
         TimeStructure.DATED: "Source date label",

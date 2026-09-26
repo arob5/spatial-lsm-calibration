@@ -106,10 +106,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+from frozendict import frozendict
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
-from sipnet_calibration.conventions import FrozenMapping
 from sipnet_calibration.projection import SITE_PROJECTION
 
 __all__ = [
@@ -152,7 +152,7 @@ class BasemapLayer:
 
 
 #: The layers the basemap holds, in drawing order.
-BASEMAP_LAYERS: Mapping[str, BasemapLayer] = FrozenMapping(
+BASEMAP_LAYERS: Mapping[str, BasemapLayer] = frozendict(
     {
         layer.name: layer
         for layer in (

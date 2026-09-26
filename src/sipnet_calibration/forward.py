@@ -189,6 +189,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pydantic import ValidationError
 from pyens import (
     Axis,
@@ -216,7 +217,6 @@ from sipnet_calibration.conventions import (
     SAMPLE,
     SITE,
     SITE_DTYPE,
-    FrozenMapping,
     ReadOnlyCopies,
 )
 from sipnet_calibration.fields import (
@@ -403,7 +403,7 @@ class ForwardModel:
         self._freq = freq
         check_batch_dim_name_is_not_taken(parameter_vector, batch_dim)
         self._batch_dim = batch_dim
-        self._climate = FrozenMapping({site: climate[site] for site in self._sites})
+        self._climate = frozendict({site: climate[site] for site in self._sites})
         self._output_variable_names = _output_variable_names(
             output_variable_names, observation_vector
         )

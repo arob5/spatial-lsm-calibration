@@ -97,6 +97,7 @@ from typing import Any, get_args
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pysipnet.arithmetic import step_length
 from pysipnet.resample import STEP_LENGTH_RESAMPLED, check_resampling_method, resample
 from pysipnet.variables import (
@@ -116,7 +117,6 @@ from sipnet_calibration.conventions import (
     TIMESTEP_START,
     WINDOW_END,
     WINDOW_START,
-    FrozenMapping,
 )
 from sipnet_calibration import fields
 from sipnet_calibration.fields import without_stale_time_attributes
@@ -156,7 +156,7 @@ SELECTED_STEP_COORD = "selected_timestep_end"
 #: per kind that leaves a variable the kind it already is, read off pySIPNET's
 #: ``RESAMPLED_KIND`` rather than written down. That exactly one method
 #: preserves each kind is checked against pySIPNET's table by the tests.
-DEFAULT_METHOD_FOR_KIND: Mapping[VariableKind, str] = FrozenMapping(
+DEFAULT_METHOD_FOR_KIND: Mapping[VariableKind, str] = frozendict(
     {kind: method for (kind, method), resulting in RESAMPLED_KIND.items() if resulting == kind}
 )
 
@@ -598,7 +598,7 @@ _LEVEL_KINDS: frozenset[VariableKind] = frozenset(
 
 #: The CF ``cell_methods`` of a pool's window extreme or leading edge, which a
 #: value at a step end makes literally true.
-_CELL_METHODS_OF_A_READING: Mapping[str, str] = FrozenMapping(
+_CELL_METHODS_OF_A_READING: Mapping[str, str] = frozendict(
     {
         "min": "time: minimum",
         "max": "time: maximum",
@@ -608,7 +608,7 @@ _CELL_METHODS_OF_A_READING: Mapping[str, str] = FrozenMapping(
 
 #: How the steps a cell or window combines are summarized in its interval
 #: coordinates: the earliest start, the latest end and the summed length.
-_SPAN_OF_STEPS: Mapping[str, str] = FrozenMapping(
+_SPAN_OF_STEPS: Mapping[str, str] = frozendict(
     {
         TIMESTEP_START: "min",
         TIME: "max",
@@ -1004,7 +1004,7 @@ def _window_interval_coords(
         _steps_frame(field)[inside]
         .groupby(codes[inside])
         # A plain dict: pandas rebuilds the mapping it is given as its own type
-        # and fills it in place, which a FrozenMapping refuses.
+        # and fills it in place, which a frozendict refuses.
         .agg(dict(_SPAN_OF_STEPS))
         .reindex(np.arange(len(windows)))
     )

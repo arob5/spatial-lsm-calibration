@@ -208,6 +208,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 
 from sipnet_calibration.conventions import (
     LAT,
@@ -218,7 +219,6 @@ from sipnet_calibration.conventions import (
     SITE_ATTRIBUTES,
     SITE_DTYPE,
     SITE_ID,
-    FrozenMapping,
     data_root,
 )
 from sipnet_calibration.validation import (
@@ -474,7 +474,7 @@ SITE_COLUMNS = (
 #:
 #: Read-only: this is the schema, and a caller that mutated it would change what
 #: every later read of the table produces.
-SITE_COLUMN_DTYPES = FrozenMapping(
+SITE_COLUMN_DTYPES = frozendict(
     {
         SITE_ID: SITE_DTYPE,
         LON: np.float64,
@@ -593,7 +593,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #: an unhappy name in a module that has to read ``NA`` as a literal site name.
 #: Read-only, like :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
 #: silently change every later figure in the process.
-EXTENTS = FrozenMapping(
+EXTENTS = frozendict(
     {
         "CONUS": (-125.0, 24.0, -66.0, 50.0),
         "NORTH_AMERICA": (SITE_GRID.west, SITE_GRID.south, SITE_GRID.east, SITE_GRID.north),

@@ -286,7 +286,7 @@ observation vector's are its `ObservationSource`s. `CalibrationParameter`,
 
 | Aspect | Convention |
 |---|---|
-| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`, `check_calibration_parameter_is_valid`, `check_fixed_parameter_is_valid`; the parameter vector makes two grouped checks and no other, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only (`conventions.ReadOnlyCopies` for xarray data) |
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`, `check_calibration_parameter_is_valid`, `check_fixed_parameter_is_valid`; the parameter vector makes two grouped checks and no other, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`frozendict`, which pickles and hashes), arrays copied and read-only (`conventions.ReadOnlyCopies` for xarray data) |
 | Pieces | `vector[name]`, `name in vector` (`False` for anything else, an unhashable value included), `iter(vector)` and `reversed(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
 | Size | `dimension` (D or N) |
 | Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, group, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` (`Layout.positions` beneath the parameter vector's) |
@@ -300,7 +300,7 @@ observation vector's are its `ObservationSource`s. `CalibrationParameter`,
 
 `ForwardModel` is a regular class with read-only properties (its arguments
 and what it derives from them, so the run machinery cannot go stale; its
-climate a `FrozenMapping`, its site table a copy); `ForwardEvaluation` is
+climate a `frozendict`, its site table a copy); `ForwardEvaluation` is
 `frozen, eq=False` with JAX `theta`, `predictions` and `valid`. A batch crossed
 with a data source's ensemble reaches Flat through `stack_batch_dims` into a
 new batch dim (the parameter vector's `flat` takes the stacked Fields), and
@@ -320,16 +320,15 @@ their shared coercion lives in `validation.py`.
   and of a data source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`),
   `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
   `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
-  `data_root()`); `FrozenMapping`, the one read-only mapping type: a
-  `dict` subclass whose mutators (a second `__init__` included) raise, so
-  pandas and `json` read it as a dict, and which pickles and hashes; and
-  `read_only_copy` and `ReadOnlyCopies`, the read-only copies of xarray data
-  a frozen class keeps and hands out, copied on assignment so nothing a
-  caller holds is frozen. Every
-  module-level mapping constant of the package is one (the scripts' own
-  tables are not the package's), and one is handed to xarray as it is, since
-  xarray copies attrs; pandas' `agg`, which refills the mapping it is given,
-  takes a `dict(...)` copy. A module imports these; it never defines its own
+  `data_root()`); and `read_only_copy` and `ReadOnlyCopies`, the read-only
+  copies of xarray data a frozen class keeps and hands out, copied on
+  assignment so nothing a caller holds is frozen. Read-only mappings are
+  `frozendict`s (the `frozendict` package): a `dict` subclass, so pandas and
+  `json` read one as a dict, and it pickles and hashes. Every module-level
+  mapping constant of the package is one (the scripts' own tables are not
+  the package's), and one is handed to xarray as it is, since xarray copies
+  attrs; pandas' `agg`, which refills the mapping it is given, takes a
+  `dict(...)` copy. A module imports these; it never defines its own
   copy and never re-exports one. A name only one module uses lives in that
   module: `RAW_MEMBER` in `initial_conditions.names`.
 - **`validation.py`** holds the argument coercion two modules need, each
@@ -788,8 +787,8 @@ src/sipnet_calibration/
                           # WINDOW_START/END, TIME_BOUNDS, SITE_ID, SOURCE_INDEX;
                           # the attributes of site/lon/lat/sample and a source
                           # member; SITE_DTYPE, BATCH_LABEL_DTYPE, NAME_PATTERN;
-                          # CF_CONVENTIONS and data_root(); FrozenMapping,
-                          # read_only_copy(), ReadOnlyCopies
+                          # CF_CONVENTIONS and data_root(); read_only_copy(),
+                          # ReadOnlyCopies
   validation.py           # argument coercion: as_site_ids, as_site_id,
                           # as_integer, as_positive_integer, as_bounded_integer,
                           # as_positive_integers, as_batch_label,

@@ -97,12 +97,13 @@ from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import xarray as xr
+from frozendict import frozendict
 from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration import fields
-from sipnet_calibration.conventions import LAT, LON, SITE, TIME, FrozenMapping
+from sipnet_calibration.conventions import LAT, LON, SITE, TIME
 from sipnet_calibration.fields import (
     STACKED_LABEL_SUFFIX,
     Field,
@@ -362,7 +363,7 @@ class ComputeLeafAreaIndex:
 #: index, as SIPNET's own ``plantLeafC / leafCSpWt`` (``sipnet.c``). How to
 #: read the model for the other observation sources is a modeling decision,
 #: and an experiment binds its own in ``config.py``.
-DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = FrozenMapping(
+DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = frozendict(
     {"modis_leaf_area_index": ComputeLeafAreaIndex()}
 )
 

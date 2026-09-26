@@ -248,9 +248,9 @@ failure.
 
 **What crosses a process boundary.** A ``ParameterVector`` holds live TFP
 objects. Everything the vector itself holds pickles -- its mappings are
-:class:`~sipnet_calibration.conventions.FrozenMapping`\\ s and its arrays
-plain NumPy -- so a vector whose priors are ``LogNormal`` or ``LogitNormal``
-round-trips through ``pickle`` and ``copy.deepcopy``. A prior built from
+``frozendict``\\ s and its arrays plain NumPy -- so a vector whose priors
+are ``LogNormal`` or ``LogitNormal`` round-trips through ``pickle`` and
+``copy.deepcopy``. A prior built from
 ``TransformedDistribution`` or ``Blockwise`` (the simplex, the product
 prior, and so :func:`example_parameter_vector`) pickles but fails
 ``pickle.loads`` with this TFP build, and so does a vector holding one. Ship
@@ -393,6 +393,7 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pyeki.gauss import Gaussian
 from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp
 from pysipnet.parameters.base import ParameterDomain, ParameterSpec
@@ -413,7 +414,6 @@ from sipnet_calibration.conventions import (
     SITE_ATTRIBUTES,
     SITE_DTYPE,
     SITE_ID,
-    FrozenMapping,
 )
 from sipnet_calibration.fields import (
     SIPNETParameterFields,
@@ -1186,9 +1186,8 @@ class FixedParameter:
 
     Notes
     -----
-    A mapping *value* is stored as a
-    :class:`~sipnet_calibration.conventions.FrozenMapping`, so it cannot be
-    changed after the checks and the parameter pickles. Compared and hashed
+    A mapping *value* is stored as a ``frozendict``, so it cannot be changed
+    after the checks and the parameter pickles. Compared and hashed
     by identity (``eq=False``), as :class:`CalibrationParameter` is.
     """
 
@@ -1224,7 +1223,7 @@ class Layout:
     order; within a group, elements in order. Built by
     :class:`ParameterVector`; consumers call :meth:`unpack`, :meth:`pack` and
     :meth:`positions` rather than computing offsets. Its mappings are
-    read-only (:class:`~sipnet_calibration.conventions.FrozenMapping`).
+    read-only (``frozendict``).
 
     Attributes
     ----------
@@ -1264,10 +1263,10 @@ class Layout:
         # changes its dimension or its index behind the machinery built on it.
         object.__setattr__(self, "parameter_names", tuple(self.parameter_names))
         for name in ("sizes", "dims"):
-            object.__setattr__(self, name, FrozenMapping(getattr(self, name)))
+            object.__setattr__(self, name, frozendict(getattr(self, name)))
         for name in ("groups", "element_labels"):
             frozen = {key: tuple(value) for key, value in getattr(self, name).items()}
-            object.__setattr__(self, name, FrozenMapping(frozen))
+            object.__setattr__(self, name, frozendict(frozen))
 
     @cached_property
     def slices(self) -> Mapping[str, slice]:
@@ -1277,7 +1276,7 @@ class Layout:
             width = len(self.groups[name]) * self.sizes[name]
             out[name] = slice(start, start + width)
             start += width
-        return FrozenMapping(out)
+        return frozendict(out)
 
     @property
     def dimension(self) -> int:
@@ -1493,8 +1492,8 @@ class ParameterVector:
         labels, declared = {}, {}
         for name, value in dict(self.site_labels).items():
             labels[name], declared[name] = _normalized_site_labels(name, value, self.sites)
-        object.__setattr__(self, "site_labels", FrozenMapping(labels))
-        object.__setattr__(self, "_declared_classes", FrozenMapping(declared))
+        object.__setattr__(self, "site_labels", frozendict(labels))
+        object.__setattr__(self, "_declared_classes", frozendict(declared))
         object.__setattr__(self, "parameters", tuple(self.parameters))
         object.__setattr__(self, "fixed", tuple(self.fixed))
         check_parameter_vector_pieces_are_valid(self)
@@ -2679,10 +2678,10 @@ def example_parameter_vector(
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-_FLAT_SPECS: Mapping[str, ParameterSpec] = FrozenMapping(
+_FLAT_SPECS: Mapping[str, ParameterSpec] = frozendict(
     {path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()}
 )
-_SPEC_ORDER: Mapping[str, int] = FrozenMapping({name: i for i, name in enumerate(_FLAT_SPECS)})
+_SPEC_ORDER: Mapping[str, int] = frozendict({name: i for i, name in enumerate(_FLAT_SPECS)})
 
 
 def _with_placeholder_locations(dataset: xr.Dataset) -> xr.Dataset:
