@@ -15,8 +15,8 @@ by default, one color scale with a single colorbar:
 
 ========================  ====================================================
 :func:`plot_map_grid`     one map per entry of a ``dict`` of fields
-:func:`plot_map_by`       one map per member, or per time step
-:func:`plot_map_quantiles`  one map per quantile over the members
+:func:`plot_map_by`       one map per batch label, or per time step
+:func:`plot_map_quantiles`  one map per quantile over a batch dim
 ========================  ====================================================
 
 This is the only part of the package that creates a figure. The plotting
@@ -38,13 +38,14 @@ Usage
     # One panel per site, each a driver ensemble, on one y scale.
     figure, axes = plot_by_site(air_temperature, sites=six_sites, share="y")
 
-    # One map per quantile over the members, on one color scale.
-    figure, axes = plot_map_quantiles(wood, extent="CONUS", log=True)
+    # One map per quantile over the initial conditions' members, on one scale.
+    member = "initial_condition_member"
+    figure, axes = plot_map_quantiles(wood, batch_dim=member, extent="CONUS", log=True)
 
     # Mean and standard deviation, each on its own scale.
     figure, axes = plot_map_grid({
-        "mean": member_summary(wood, "mean"),
-        "standard deviation": member_summary(wood, "standard_deviation"),
+        "mean": summarize_batch(wood, "mean", batch_dim=member),
+        "standard deviation": summarize_batch(wood, "standard_deviation", batch_dim=member),
     })
 
     # The general form.
@@ -67,7 +68,8 @@ import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from sipnet_calibration.conventions import SITE
+from sipnet_calibration.conventions import SAMPLE, SITE
+from sipnet_calibration.fields import validate_field
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
@@ -271,6 +273,7 @@ def plot_by_site(
     KeyError
         If *sites* names a site that is not in *data*.
     """
+    validate_field(data)
     check_data_has_a_site_dimension(data)
     check_data_has_a_site_coordinate(data)
     available = data.coords[SITE].values.tolist()
@@ -413,14 +416,14 @@ def plot_map_by(
     scale: str = "shared",
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One map per value of *dim*: per ensemble member, or per time step.
+    """One map per value of *dim*: per batch label, or per time step.
 
     Parameters
     ----------
     field:
         A field that is a map at each value of *dim*.
     dim:
-        The dimension to split on, such as ``"member"`` or ``"time"``.
+        The dimension to split on, such as ``"sample"`` or ``"time"``.
     values:
         The coordinate values to draw, in order. ``None`` draws them all, or
         *n_max* evenly spaced ones, first and last included, if there are more.
@@ -445,9 +448,11 @@ def plot_map_by(
         If *field* has no *dim*, *values* names one it does not hold, or
         *n_max* is less than 1.
     """
-    if not isinstance(field, xr.DataArray) or dim not in field.dims:
-        dims = list(getattr(field, "dims", ()))
-        raise ValueError(f"plot_map_by needs a DataArray with a {dim!r} dimension; got {dims}")
+    validate_field(field)
+    if dim not in field.dims:
+        raise ValueError(
+            f"plot_map_by needs a DataArray with a {dim!r} dimension; got {list(field.dims)}"
+        )
     n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
@@ -467,22 +472,22 @@ def plot_map_quantiles(
     field: xr.DataArray,
     quantiles: Sequence[float] = (0.05, 0.5, 0.95),
     *,
-    dim: str = "member",
+    batch_dim: str = SAMPLE,
     scale: str = "shared",
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One map per quantile of *field* over its ensemble dimension.
+    """One map per quantile of *field* over one of its batch dims.
 
     Parameters
     ----------
     field:
-        A continuous field that is a map at each value of *dim*.
+        A continuous field that is a map at each label of *batch_dim*.
     quantiles:
         The quantiles, each in ``(0, 1)``. The default is the 90% central
         interval and the median, the outer band of
         :func:`~sipnet_calibration.plotting.primitives.fan`.
-    dim:
-        The ensemble dimension.
+    batch_dim:
+        The batch dim the quantiles are taken over.
     scale:
         As :func:`plot_map_grid` takes it; shared by default, so the panels
         read against each other.
@@ -499,12 +504,15 @@ def plot_map_quantiles(
     ------
     ValueError
         If *quantiles* is empty, and whatever
-        :func:`~sipnet_calibration.plotting.maps.member_summary` raises.
+        :func:`~sipnet_calibration.plotting.maps.summarize_batch` raises.
     """
     quantiles = [float(q) for q in quantiles]
     if not quantiles:
         raise ValueError("quantiles must name at least one quantile")
-    panels = {maps.quantile_label(q): maps.member_summary(field, q, dim=dim) for q in quantiles}
+    panels = {
+        maps.quantile_label(q): maps.summarize_batch(field, q, batch_dim=batch_dim)
+        for q in quantiles
+    }
     grid_kwargs.setdefault("colorbar_label", axis_label(field))
     return plot_map_grid(panels, scale=scale, **grid_kwargs)
 

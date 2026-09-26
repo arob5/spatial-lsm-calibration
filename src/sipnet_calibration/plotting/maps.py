@@ -8,7 +8,7 @@ longitude/latitude grid.
 
 :func:`plot_map` is the one-panel function. Like
 :func:`~sipnet_calibration.plotting.series.plot_time_series`, it draws onto an
-``Axes`` it is given and returns it. Grids of maps -- one per ensemble member,
+``Axes`` it is given and returns it. Grids of maps -- one per batch label,
 per quantile, per time step -- are built by
 :mod:`sipnet_calibration.plotting.facet`, and :func:`animate_map` plays a map
 through time.
@@ -26,7 +26,8 @@ classes at sites      ``(site,)``          a ``flag_meanings`` attribute, or
 raster                ``(lat, lon)``       ``lat`` and ``lon`` are dimensions
 ====================  ===================  =====================================
 
-A site map needs ``lon`` and ``lat`` as coordinates on ``site``, which the
+Every map is of a field (:func:`sipnet_calibration.fields.validate_field`):
+a site map needs ``lon`` and ``lat`` as coordinates on ``site``, which the
 readers in this project provide. A raster needs ``lat`` and ``lon`` as
 one-dimensional, monotonic coordinates in degrees. Both need ``units`` and
 ``long_name`` in ``attrs`` unless they are categorical, which need only
@@ -80,9 +81,9 @@ Functions
 ---------
 :func:`plot_map`
     One field, one map.
-:func:`member_summary`
-    Reduce an ensemble to one statistic per site, keeping the attributes a map
-    needs for its label.
+:func:`summarize_batch`
+    Reduce a batch dim to one statistic per site, keeping the attributes a
+    map needs for its label.
 :func:`animate_map`
     Play a field through one of its dimensions, on a fixed color scale.
 :func:`map_bounds`, :func:`color_scale`
@@ -92,7 +93,7 @@ Functions
 Notes
 -----
 There is no ``stat`` keyword reducing the ensemble inside :func:`plot_map`: a
-map of an array with a ``member`` or ``time`` dimension is refused, as
+map of an array with a batch dim or a ``time`` dimension is refused, as
 :func:`~sipnet_calibration.plotting.series.plot_time_series` refuses a
 reduction it was not asked for. Averaging an ensemble is a choice, and it
 should be visible where the map is asked for.
@@ -105,12 +106,13 @@ Usage
 -----
 ::
 
-    from sipnet_calibration.plotting import plot_map, member_summary
+    from sipnet_calibration.plotting import plot_map, summarize_batch
     from sipnet_calibration.site_labels import site_labels_field
 
     plot_map(site_labels_field("reanalysis_3pft"))              # classes
-    plot_map(wood.sel(member=0), extent="CONUS", log=True)      # one member
-    plot_map(member_summary(wood, "median"), render="cells")    # a mosaic
+    plot_map(wood.isel(initial_condition_member=0), extent="CONUS", log=True)  # one member
+    plot_map(summarize_batch(wood, "median", batch_dim="initial_condition_member"),
+             render="cells")                                    # a mosaic
     plot_map(residual, center=0.0, extent=(-90, 35, -75, 45))   # a region
 
     animation = animate_map(monthly_nee, "time", center=0.0)
@@ -134,7 +136,8 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, Colormap, ListedColormap, LogNorm, Normalize
 from matplotlib.patches import Patch
 
-from sipnet_calibration.conventions import LAT, LON, SITE, TIME, FrozenMapping
+from sipnet_calibration.conventions import LAT, LON, SAMPLE, SITE, TIME, FrozenMapping
+from sipnet_calibration.fields import batch_dims, validate_field
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
     DEFAULT_LAYERS,
@@ -159,9 +162,9 @@ __all__ = [
     "color_scale",
     "coordinate_label",
     "map_bounds",
-    "member_summary",
     "plot_map",
     "quantile_label",
+    "summarize_batch",
 ]
 
 #: The keywords of :func:`plot_map` that decide the color scale, which the
@@ -414,9 +417,9 @@ def plot_map(
     Raises
     ------
     ValueError
-        If *field* is not one of the kinds above -- in particular if it has a
-        ``member`` or ``time`` dimension, where the message names the functions
-        that draw those; if *render* is unknown, is given for a raster, or
+        If *field* is not a field or not one of the kinds above -- in
+        particular if it has a batch dim or a ``time`` dimension, where the
+        message names the functions that draw those; if *render* is unknown, is given for a raster, or
         interpolates a categorical field; if *extent* is not a known name or a
         valid box; or if *log* is asked for with a nonpositive value in the
         frame.
@@ -430,35 +433,45 @@ def plot_map(
     return ax
 
 
-def member_summary(field: xr.DataArray, stat: str | float, *, dim: str = "member") -> xr.DataArray:
-    """One statistic of *field* over its ensemble dimension, attributes kept.
+def summarize_batch(
+    field: xr.DataArray, stat: str | float, *, batch_dim: str = SAMPLE
+) -> xr.DataArray:
+    """One statistic of *field* over one of its batch dims, attributes kept.
 
     Parameters
     ----------
     field:
-        A continuous field with a *dim* dimension.
+        A continuous field with the batch dim *batch_dim*.
     stat:
         ``"mean"``, ``"median"``, ``"standard_deviation"``, or a quantile in
         ``(0, 1)``. Missing values are skipped.
-    dim:
-        The dimension to reduce.
+    batch_dim:
+        The batch dim to reduce, such as ``"sample"`` or
+        ``"initial_condition_member"``.
 
     Returns
     -------
     xarray.DataArray
-        *field* without *dim*, keeping its name and ``units``, with a
+        *field* without *batch_dim*, keeping its name and ``units``, with a
         ``long_name`` saying what was taken, for example ``"Aboveground wood
-        carbon, 5th percentile over members"``.
+        carbon, 5th percentile over initial_condition_member"``.
 
     Raises
     ------
+    TypeError
+        If *field* is not a ``DataArray``.
     ValueError
-        If *field* has no *dim*, is categorical, or *stat* is not one of the
-        above.
+        If *field* is not a field, *batch_dim* is not one of its batch dims,
+        *field* is categorical, or *stat* is not one of the above.
     """
-    if not isinstance(field, xr.DataArray) or dim not in field.dims:
-        dims = list(getattr(field, "dims", ()))
-        raise ValueError(f"member_summary needs a DataArray with a {dim!r} dimension; got {dims}")
+    validate_field(field)
+    if batch_dim not in batch_dims(field):
+        raise ValueError(
+            f"summarize_batch reduces a batch dim, and {batch_dim!r} is not one of the "
+            f"field's {list(batch_dims(field))} (its dims are {list(field.dims)}); pass "
+            "batch_dim= naming one."
+        )
+    dim = batch_dim
     if _is_categorical(field):
         raise ValueError("a categorical field has no mean, median or quantiles of its codes")
     if isinstance(stat, str):
@@ -479,14 +492,14 @@ def member_summary(field: xr.DataArray, stat: str | float, *, dim: str = "member
         summary = field.quantile(quantile, dim, keep_attrs=True).drop_vars("quantile")
         description = quantile_label(quantile)
     long_name = field.attrs.get("long_name", field.name or "value")
-    summary.attrs["long_name"] = f"{long_name}, {description} over {dim}s"
+    summary.attrs["long_name"] = f"{long_name}, {description} over {dim}"
     summary.name = field.name
     return summary
 
 
 def animate_map(
     field: xr.DataArray,
-    dim: str = "time",
+    dim: str = TIME,
     *,
     ax: Axes | None = None,
     interval_ms: int = 250,
@@ -521,9 +534,11 @@ def animate_map(
     ValueError
         If *field* has no *dim*, or a single step of it is not a map.
     """
-    if not isinstance(field, xr.DataArray) or dim not in field.dims:
-        dims = list(getattr(field, "dims", ()))
-        raise ValueError(f"animate_map needs a DataArray with a {dim!r} dimension; got {dims}")
+    validate_field(field)
+    if dim not in field.dims:
+        raise ValueError(
+            f"animate_map needs a DataArray with a {dim!r} dimension; got {list(field.dims)}"
+        )
     frames = [field.isel({dim: i}) for i in range(field.sizes[dim])]
     color, rest = _split_color_keywords(map_kwargs)
     bounds = map_bounds(frames, rest.pop("extent", None))
@@ -657,7 +672,7 @@ def quantile_label(quantile: float) -> str:
 
 
 def coordinate_label(dim: str, value: Any) -> str:
-    """A panel or frame title for one value of *dim*: a date, or ``"member 3"``."""
+    """A panel or frame title for one value of *dim*: a date, or ``"sample 3"``."""
     if np.issubdtype(np.asarray(value).dtype, np.datetime64):
         stamp = pd.Timestamp(value)
         return stamp.strftime("%Y-%m-%d") if stamp == stamp.normalize() else stamp.strftime("%Y-%m-%d %H:%M")
@@ -972,11 +987,12 @@ def _automatic_marker_area(ax, x, y, values, bounds) -> float:
 def _check_map_field(field: xr.DataArray) -> bool:
     """Raise unless *field* is a map; return whether it is a raster."""
     if not isinstance(field, xr.DataArray):
-        raise ValueError(
+        raise TypeError(
             f"expected an xarray.DataArray, got {type(field).__name__}. Tables and "
             "files are converted by an adapter, such as "
             "sipnet_calibration.site_labels.site_labels_field."
         )
+    validate_field(field)
     dims = set(field.dims)
     if SITE in dims:
         _check_only(field, {SITE})
@@ -1007,11 +1023,13 @@ def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
     if not extra:
         return
     advice = []
-    if "member" in extra:
+    for dim in (d for d in batch_dims(field) if d in extra):
         advice.append(
-            "for 'member', draw one map per member with facet.plot_map_by(field, "
-            "'member'), quantile maps with facet.plot_map_quantiles(field), or reduce "
-            "first with maps.member_summary(field, stat)"
+            f"for the batch dim {dim!r}, draw one map per label with "
+            f"facet.plot_map_by(field, {dim!r}), quantile maps with "
+            f"facet.plot_map_quantiles(field, batch_dim={dim!r}), select one with "
+            f"field.isel({dim}=0), or reduce first with "
+            f"maps.summarize_batch(field, stat, batch_dim={dim!r})"
         )
     if TIME in extra:
         advice.append(

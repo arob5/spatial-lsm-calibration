@@ -28,7 +28,7 @@ Usage
     tair = driver_fields(load_drivers([1, 27]))["air_temperature"]
 
     plot_time_series(tair.sel(site=1))                     # quantile bands
-    plot_time_series(tair.sel(site=1), show="spaghetti")   # members as curves
+    plot_time_series(tair.sel(site=1), show="spaghetti")   # driver members as curves
 
     # Observations, with their error variance, over a model panel.
     ax = plot_time_series(predicted_wood.sel(site=s))
@@ -45,19 +45,16 @@ import numpy as np
 import xarray as xr
 from matplotlib.axes import Axes
 
-from sipnet_calibration.conventions import SITE, TIME
+from sipnet_calibration.conventions import SITE, SPATIAL_DIM_NAMES, TIME
+from sipnet_calibration.fields import batch_dims, validate_field
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.style import CURVE_COLORS, axis_label, role_style
 from sipnet_calibration.validation import as_positive_integer
 
-__all__ = ["ALLOWED_DIMS", "SHOW_KINDS", "plot_time_series"]
+__all__ = ["SHOW_KINDS", "plot_time_series"]
 
 #: What ``show`` may be. ``"auto"`` is resolved from the data's dimensions.
 SHOW_KINDS: tuple[str, ...] = ("auto", "line", "spaghetti", "fan", "points")
-
-#: The dimensions an array may have. ``time`` is plotted along the x axis;
-#: everything else is a sample dimension.
-ALLOWED_DIMS: tuple[str, ...] = ("member", SITE, TIME)
 
 
 def plot_time_series(
@@ -77,37 +74,29 @@ def plot_time_series(
 ) -> Axes:
     """Plot *data* against time on one ``Axes``.
 
-    ``time`` is the x axis and every other dimension is treated as a sample
-    dimension, so the same call covers a single run and an ensemble, and an
-    ensemble over sites is drawn the way an ensemble over members is. With
-    ``show="auto"``:
+    ``time`` is the x axis and every batch dim is summarized, so the same
+    call covers a single run and an ensemble, whatever its batch dims are
+    named. With ``show="auto"``:
 
-    ========================  =============================================
-    Dimensions of *data*      what is drawn
-    ========================  =============================================
-    ``(time,)``               one curve
-    ``(member, time)``        quantile bands over the members
-    ``(site, time)``          quantile bands over the sites
-    ``(member, site, time)``  quantile bands over the member-site curves
-    ========================  =============================================
+    ===================================  ====================================
+    Dimensions of *data*                 what is drawn
+    ===================================  ====================================
+    ``(time,)``                          one curve
+    ``(sample, time)``                   quantile bands over the samples
+    ``(sample, driver_member, time)``    quantile bands over every curve of
+                                         both batch dims at once
+    ===================================  ====================================
 
-    To summarize members at one site, select the site first. To draw one panel
-    per site, use :func:`sipnet_calibration.plotting.facet.plot_by_site`.
+    A ``site`` dim is refused rather than summarized: sites are not
+    replicates of one another. Select one site first, or draw one panel per
+    site with :func:`sipnet_calibration.plotting.facet.plot_by_site`.
 
     Parameters
     ----------
     data:
-        An ``xarray.DataArray`` holding one variable, which must satisfy:
-
-        * ``time`` is one of its dimensions;
-        * its other dimension names, if any, are among ``member`` and
-          ``site``;
-        * ``attrs`` carries ``units`` and ``long_name``, which become the y
-          axis label.
-
-        The readers in this project produce arrays that satisfy this;
-        see :mod:`sipnet_calibration.fields` for the wider convention they
-        follow, of which this function uses only the three points above.
+        A field (:func:`sipnet_calibration.fields.validate_field`) with a
+        ``time`` dim and no spatial dim, whose ``units`` and ``long_name``
+        become the y axis label; a scalar ``site`` coordinate is fine.
     ax:
         The axes to draw on. If ``None``, a figure and axes are created with
         ``matplotlib.pyplot.subplots``.
@@ -129,11 +118,11 @@ def plot_time_series(
         The legend entry. ``None`` uses the value of *role*. Pass
         ``"_nolegend_"`` for no entry.
     label_by:
-        The name of a coordinate on the sample dimension, with
+        The name of a coordinate on the batch dims, with
         ``show="spaghetti"``. Each curve is then labeled with that
         coordinate's value and colored from :data:`.style.CURVE_COLORS`
-        instead of from the role, which is how a panel with one curve per site
-        is made readable. *label* is ignored when this is given.
+        instead of from the role, which is how a panel with a few labeled
+        curves is made readable. *label* is ignored when this is given.
     variance, standard_deviation:
         The observation error, as a ``DataArray`` aligned with *data*, with
         ``show="points"``. At most one of the two may be given.
@@ -153,34 +142,36 @@ def plot_time_series(
 
     Raises
     ------
+    TypeError
+        If *data* is not a ``DataArray``.
     ValueError
-        If *data* is not a ``DataArray``, has no ``time`` dimension, or has a
-        dimension other than ``member`` and ``site`` beside it; if *show* is
+        If *data* is not a field, has no ``time`` dimension, or has a spatial
+        dim (a ``site`` dim among them); if *show* is
         not in :data:`SHOW_KINDS` or does not suit the dimensions; if
         *label_by* is given without ``show="spaghetti"`` or names a coordinate
-        that is not on a sample dimension; if both *variance* and
+        that is not on a batch dim; if both *variance* and
         *standard_deviation* are given, either is given without
         ``show="points"``, either does not align with *data*, or a variance is
         negative; or if *n_sigma* is not finite and positive.
 
     Notes
     -----
-    Restricting the dimension names to ``member``, ``site`` and ``time`` is a
-    guard rather than a requirement: the sample-dimension rule would work on
-    any name. It is checked because a further dimension is usually a mistake.
-    Passing an array that stacks several variables along a ``variable``
-    dimension would otherwise draw quantile bands across variables with
-    different units -- a plausible-looking figure of nothing.
+    Only batch dims are summarized, and the field contract refuses any dim
+    that is not a batch dim, a spatial dim or ``time``: an array that stacks
+    several variables along a ``variable`` dim would otherwise draw quantile
+    bands across variables with different units -- a plausible-looking figure
+    of nothing.
 
     ``show="fan"`` also draws the median as a curve, and the legend entry goes
     on that curve rather than on a band.
 
-    Quantiles ignore missing values and are taken over all sample dimensions
-    at once, so data with both ``member`` and ``site`` is summarized over the
-    whole set of curves rather than in two stages.
+    Quantiles ignore missing values and are taken over all batch dims at once,
+    so data with two is summarized over the whole set of curves rather than in
+    two stages.
     """
+    validate_field(data)
     _check_plottable(data)
-    sample_dims = tuple(dim for dim in data.dims if dim != TIME)
+    sample_dims = batch_dims(data)
     show = _resolved_show(show, sample_dims)
     _check_label_by(label_by, show, data, sample_dims)
     yerr = _error_bar_lengths(data, variance, standard_deviation, n_sigma, show)
@@ -353,26 +344,25 @@ def _error_bar_lengths(
 
 
 def _check_plottable(data: xr.DataArray) -> None:
-    """Raise unless *data* is an array this function knows how to plot."""
-    if not isinstance(data, xr.DataArray):
-        raise ValueError(
-            f"expected an xarray.DataArray, got {type(data).__name__}. Paths, "
-            "DataFrames and SIPNET results are converted by an adapter in "
-            "sipnet_calibration.fields."
-        )
+    """Raise unless the field has ``time`` and no spatial dim, which a series needs."""
     if TIME not in data.dims:
         raise ValueError(
             f"the array has dimensions {list(data.dims)} and needs {TIME!r} "
             "to be plotted against time. Select or aggregate first, or use a "
             "spatial plot."
         )
-    unexpected = [dim for dim in data.dims if dim not in ALLOWED_DIMS]
-    if unexpected:
+    spatial = [dim for dim in data.dims if dim in SPATIAL_DIM_NAMES]
+    if spatial:
+        advice = (
+            f"select one site with .sel({SITE}=...), or draw one panel per site with "
+            "facet.plot_by_site(field)"
+            if SITE in spatial
+            else "select one location first"
+        )
         raise ValueError(
-            f"unexpected dimension(s) {unexpected}; expected only "
-            f"{list(ALLOWED_DIMS)}. Every dimension beside {TIME!r} is "
-            "summarized as if it indexed an ensemble, which is wrong for a "
-            "dimension such as 'variable' whose entries have different units."
+            f"the array has the spatial dim(s) {spatial}, which a time series does not "
+            f"summarize: sites are not replicates of one another. {advice[0].upper()}"
+            f"{advice[1:]}."
         )
 
 
@@ -399,7 +389,7 @@ def _check_label_by(
     if not dims or not set(dims) <= set(sample_dims):
         raise ValueError(
             f"label_by={label_by!r} is on {list(dims)}, which is not among the "
-            f"sample dimensions {list(sample_dims)}; it cannot name a curve"
+            f"batch dims {list(sample_dims)}; it cannot name a curve"
         )
 
 

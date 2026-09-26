@@ -51,7 +51,7 @@ def test_a_driver_ensemble_fans_at_one_site(ax, real_driver_field):
 def test_the_fan_gaps_exactly_where_no_driver_file_exists(
     ax, real_driver_field, real_driver_presence
 ):
-    """Half the member-site pairs have no file, so half the curves are missing.
+    """Half the driver member-site pairs have no file, so half the curves are missing.
 
     Where every member of a site is absent the summary is ``NaN``; where some
     are present the quantiles are taken over those. The gaps have to line up
@@ -72,16 +72,16 @@ def test_the_fan_gaps_exactly_where_no_driver_file_exists(
 def test_a_site_with_no_files_is_entirely_missing(
     ax, real_driver_field, real_driver_presence
 ):
-    """A member with no file for a site contributes nothing to that site."""
+    """A driver member with no file for a site contributes nothing to that site."""
     absent = [
         (int(member), int(site))
-        for member in real_driver_presence["member"].values
+        for member in real_driver_presence["driver_member"].values
         for site in real_driver_presence["site"].values
-        if not bool(real_driver_presence.sel(member=member, site=site))
+        if not bool(real_driver_presence.sel(driver_member=member, site=site))
     ]
     assert absent, "expected at least one missing member-site pair locally"
     member, site = absent[0]
-    one = real_driver_field.sel(member=member, site=site)
+    one = real_driver_field.sel(driver_member=member, site=site)
     plot_time_series(one, ax=ax)
     assert np.isnan(ax.lines[0].get_ydata()).all()
 
@@ -93,12 +93,18 @@ def test_the_y_label_is_the_real_variable_and_unit(ax, real_driver_field):
     assert ax.get_ylabel().endswith("(degC)")
 
 
-def test_a_driver_field_draws_one_curve_per_site(ax, real_driver_field):
-    """One member across both sites: the sample dim is ``site``."""
-    one_member = real_driver_field.sel(member=0)
-    plot_time_series(one_member, ax=ax, show="spaghetti", label_by="site")
+def test_a_driver_field_over_sites_is_refused_as_a_series(ax, real_driver_field):
+    """Sites are not replicates: one member across both sites is faceted, not fanned."""
+    with pytest.raises(ValueError, match="plot_by_site"):
+        plot_time_series(real_driver_field.sel(driver_member=0), ax=ax, show="spaghetti")
+
+
+def test_a_driver_field_labels_its_members_by_source_index(ax, real_driver_field):
+    """At one site, each driver member's curve can be named by its file index."""
+    one_site = real_driver_field.sel(site=1)
+    plot_time_series(one_site, ax=ax, show="spaghetti", label_by="source_index")
     assert ax.get_legend_handles_labels()[1] == [
-        f"site {site}" for site in real_driver_field["site"].values
+        f"source_index {index}" for index in one_site["source_index"].values
     ]
 
 
@@ -195,7 +201,7 @@ def test_acceptance_one_panel_three_aggregations(ax, real_drivers):
     from sipnet_calibration.observation.time_alignment import aggregate_time
 
     par = driver_fields(real_drivers)["photosynthetically_active_radiation"].sel(
-        site=1, source_member_index=1
+        site=1, driver_member=0
     )
     plot_time_series(par, ax=ax, role="prior", label="3-hourly")
     plot_time_series(aggregate_time(par, "1D"), ax=ax, role="posterior", label="daily")
