@@ -638,7 +638,7 @@ class TestTheGridCheck:
 
 class TestPointwiseIsComparedByLabel:
     def test_a_pointwise_operator_that_always_returns_a_site_dimension_passes(self, stack, labels):
-        """On one site's slice its result is (member, site=1, time), the stack's sliced (member, time)."""
+        """On one site's slice its result is (sample, site=1, time), the stack's sliced (sample, time)."""
 
         @dataclass(frozen=True)
         class AlwaysOnSite:
