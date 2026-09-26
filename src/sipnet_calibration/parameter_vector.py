@@ -226,10 +226,11 @@ objects, and those built from ``TransformedDistribution`` or ``Blockwise``
 TFP build. Ship the SIPNET table, or the ``Grid``\\ s of plain floats
 ``pyens.xarray.fields_from_dataset`` makes from it, never the vector.
 
-Importing this module sets ``jax_enable_x64``, as ``import pyeki`` does, so
-an MCMC baseline that never imports pyEKI still computes in float64. The
-setting is per process: workers of a process pool need ``JAX_ENABLE_X64=1``
-in their environment.
+The vector computes in float64: importing the package sets
+``jax_enable_x64``, as ``import pyeki`` does, so an MCMC baseline that never
+imports pyEKI still gets it (see :mod:`sipnet_calibration`). The setting is
+per process: workers of a process pool need ``JAX_ENABLE_X64=1`` in their
+environment.
 
 Usage
 -----
@@ -351,22 +352,19 @@ from functools import cached_property
 from typing import Any, Protocol, runtime_checkable
 
 import jax
-
-jax.config.update("jax_enable_x64", True)
-
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import xarray as xr  # noqa: E402
-from pyeki.gauss import Gaussian  # noqa: E402
-from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp  # noqa: E402
-from pysipnet.parameters.base import ParameterDomain, ParameterSpec  # noqa: E402
-from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters  # noqa: E402
-from tensorflow_probability.substrates import jax as tfp  # noqa: E402
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+import xarray as xr
+from pyeki.gauss import Gaussian
+from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp
+from pysipnet.parameters.base import ParameterDomain, ParameterSpec
+from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
+from tensorflow_probability.substrates import jax as tfp
 
 # SITE, the site dimension's name, is also the reserved ``varies_by`` value
 # meaning one copy per site. Calibration parameter names match NAME_PATTERN.
-from sipnet_calibration.conventions import (  # noqa: E402
+from sipnet_calibration.conventions import (
     LAT,
     LAT_ATTRIBUTES,
     LON,
@@ -376,8 +374,8 @@ from sipnet_calibration.conventions import (  # noqa: E402
     SITE_DTYPE,
     SITE_ID,
 )
-from sipnet_calibration.sites import site_lookup  # noqa: E402
-from sipnet_calibration.validation import (  # noqa: E402
+from sipnet_calibration.sites import site_lookup
+from sipnet_calibration.validation import (
     FrozenMapping,
     as_batched_flat,
     as_frozen_mapping,
