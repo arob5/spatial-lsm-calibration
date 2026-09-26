@@ -3289,7 +3289,7 @@ def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
 
 
 def check_site_table_positions_are_finite(table: pd.DataFrame) -> None:
-    """A site table given as ``site_table=`` has a finite ``lon`` and ``lat`` for every site."""
+    """A ``site_table=`` table has a finite ``lon`` and ``lat`` for every site."""
     if not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
         raise ValueError(
             "a site table passed as site_table= has missing or non-finite lon/lat; give every "
@@ -3386,7 +3386,7 @@ def check_batch_labels_are_distinct_integers(values: Any) -> None:
 
 
 def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
-    """*batch_dim* can name a batch dim of this vector's Fields and SIPNET parameter fields.
+    """*batch_dim* can name a batch dim of the Fields and SIPNET parameter fields.
 
     Runs :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`,
     :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`,
@@ -3440,7 +3440,7 @@ def check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
 
 
 def check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields: xr.Dataset) -> None:
-    """The SIPNET parameter fields have a ``site`` dim for :func:`sipnet_overrides` to select on."""
+    """The SIPNET parameter fields have a ``site`` dim for :func:`sipnet_overrides`."""
     if SITE in sipnet_parameter_fields.dims:
         return
     if SITE in sipnet_parameter_fields.coords and sipnet_parameter_fields[SITE].ndim == 0:

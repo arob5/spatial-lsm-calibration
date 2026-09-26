@@ -278,7 +278,7 @@ class ObservationSource:
 
 
 class ObservationVector:
-    """The observations of several observation sources in a fixed order; see the module docstring.
+    """The observations of several observation sources, in the module docstring's order.
 
     Parameters
     ----------
@@ -367,7 +367,7 @@ class ObservationVector:
         )
 
     def describe(self) -> pd.DataFrame:
-        """One row per observation source: observations, sites, time span, units, operator."""
+        """One row per observation source: counts, dates, units and operator."""
         rows = []
         for source in self._observation_sources:
             observations = source.observations()
@@ -450,7 +450,7 @@ class ObservationVector:
     def positions(
         self, *, site: int | None = None, observation_source_name: str | None = None
     ) -> np.ndarray:
-        """Where the observations of a site, an observation source, or both sit in Flat order.
+        """Where in Flat the observations of a site, an observation source, or both sit.
 
         Parameters
         ----------
@@ -787,7 +787,7 @@ def _batch_dim_and_labels(
 def _read_observations(
     array: xr.DataArray, observation_index: pd.MultiIndex, is_static: bool, batch_dim: str | None
 ) -> np.ndarray:
-    """*array*'s values at the observations *observation_index* holds, ``(J, n)`` or ``(n,)``."""
+    """*array* at the observations *observation_index* holds: ``(J, n)`` or ``(n,)``."""
     selectors: dict[str, Any] = {
         SITE: xr.DataArray(observation_index.get_level_values(SITE).values, dims=_OBSERVATION_DIM)
     }
@@ -832,7 +832,7 @@ def _predicted(
     sipnet_parameters: Any,
     failed: xr.DataArray | None,
 ) -> xr.DataArray:
-    """One observation source's operator applied, checked, converted and checked again."""
+    """A source's operator applied, checked, converted and checked again."""
     predicted = source.operator(
         model_output, source.observed_values, sipnet_parameters=sipnet_parameters
     )
@@ -1053,7 +1053,7 @@ def check_fields_hold_the_observation_sources(
 def check_batch_dim_is_not_an_observation_source_name(
     observation_sources: Sequence[ObservationSource], batch_dim: str
 ) -> None:
-    """*batch_dim* names no observation source and no coordinate its observed values carry."""
+    """*batch_dim* names no observation source nor any coordinate of its values."""
     # A scalar batch label of that name is allowed: it is metadata of the
     # observed input, which fields() drops.
     for source in observation_sources:

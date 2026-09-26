@@ -434,7 +434,7 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
 
 
 def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIndex:
-    """Observed values' windows, the intervals their values cover, for :func:`reduce_windows`.
+    """The windows of observed values, as :func:`reduce_windows` takes them.
 
     Reads :data:`~sipnet_calibration.conventions.WINDOW_START` and
     :data:`~sipnet_calibration.conventions.WINDOW_END`, the
@@ -732,7 +732,7 @@ def _has_interval_coords(field: xr.DataArray) -> bool:
 
 
 def _rows_without_an_interval(field: xr.DataArray) -> np.ndarray:
-    """Which time labels have a ``NaT`` start or length, among the interval coordinates present."""
+    """Which time labels have a ``NaT`` start or length, in the interval coordinates."""
     mask = np.zeros(field.sizes[TIME], dtype=bool)
     for name in (TIMESTEP_START, TIMESTEP_LENGTH):
         if name in field.coords:
@@ -856,7 +856,8 @@ def _aggregated_on_calendar_cells(
     """A field without pySIPNET's interval coordinates, combined on calendar cells.
 
     pySIPNET's ``resample`` needs the interval coordinates, so a field of
-    observed values is aggregated here, by the same right-closed cells and equal weights.
+    observed values is aggregated here, by the same right-closed cells and equal
+    weights.
     """
     check_frequency_is_an_offset_alias(freq)
     check_not_upsampling(field, freq)
@@ -1285,7 +1286,7 @@ def check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
 def check_rows_without_an_interval_hold_no_value(
     field: xr.DataArray, no_interval: np.ndarray
 ) -> None:
-    """A time label whose ``time_step_start`` or ``time_step_length`` is ``NaT`` is padding.
+    """A time label whose interval coordinates are ``NaT`` is padding.
 
     Padding holds no value; a time label that does is a step of unknown extent, and
     dropping it would lose the value silently.
@@ -1324,11 +1325,11 @@ def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     if (spacing <= 0).any():
         where = int(np.flatnonzero(spacing <= 0)[0]) + 1
         raise ValueError(
-            f"{fields.message_name(field)} has timestamps that do not increase: time label "
-            f"{where} ({times[where]}) does not follow time label {where - 1} "
-            f"({times[where - 1]}). Sort the field on {TIME!r}, and drop or "
-            "combine the duplicates; two timesteps sharing a label would be added "
-            "together as though they were consecutive steps."
+            f"{fields.message_name(field)} has timestamps that do not increase: the time "
+            f"label at position {where} ({times[where]}) does not follow the one at "
+            f"position {where - 1} ({times[where - 1]}). Sort the field on {TIME!r}, and "
+            "drop or combine the duplicates; two timesteps sharing a label would be "
+            "added together as though they were consecutive steps."
         )
 
 

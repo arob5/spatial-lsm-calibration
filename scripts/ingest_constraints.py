@@ -20,8 +20,8 @@ Input data
     ``data/raw/constraints/provenance.md`` for where they came from.
 
 ``--site-table``, default ``data/processed/sites/sites.csv``
-    The site table: the pool the processed files are dense over, and the ``lon``/``lat``
-    coordinates.
+    The site table: the pool the processed files are dense over, and the
+    ``lon``/``lat`` coordinates.
 
 Output data
 -----------

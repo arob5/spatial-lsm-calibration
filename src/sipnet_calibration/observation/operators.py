@@ -555,7 +555,7 @@ def _output_name(name: str) -> str:
 def _sipnet_parameter_values_at(
     sipnet_parameter_fields: xr.Dataset, name: str, target_field: xr.DataArray
 ) -> xr.DataArray:
-    """SIPNET parameter fields' variable *name* at *target_field*'s labels on each of its dims.
+    """Variable *name* of the SIPNET parameter fields at *target_field*'s labels.
 
     Every dim of the variable -- ``site`` and each batch dim, whatever it is
     named -- is selected at the target's labels or refused, so none of its
@@ -839,7 +839,7 @@ def check_result_is_on_the_observation_grid(
 def check_result_is_at_the_observed_sites(
     result: xr.DataArray, observed_values: xr.DataArray, message_name: str
 ) -> None:
-    """The result's ``site``, a dimension or a scalar, is the observed values', in order."""
+    """The result's ``site``, a dim or a scalar, is the observed values', in order."""
     wanted_sites = coordinate_labels(observed_values[SITE])
     if SITE not in result.coords:
         raise ValueError(
@@ -860,7 +860,7 @@ def check_result_is_at_the_observed_sites(
 def check_result_is_on_the_observed_time_labels(
     result: xr.DataArray, observed_values: xr.DataArray, message_name: str
 ) -> None:
-    """For dated observed values the result is on their ``time`` labels; else it has none."""
+    """The result is on dated observed values' ``time`` labels, and else on none."""
     if TIME in observed_values.dims:
         # numpy compares datetime64 across units, so a label in seconds
         # matches the same instant in nanoseconds.
@@ -980,7 +980,7 @@ def check_sipnet_parameter_fields_have_the_labels(
 def check_target_is_not_a_stack_of_sipnet_parameter_fields_dims(
     target_field: xr.DataArray, values: xr.DataArray, name: str
 ) -> None:
-    """No batch dim of the target is a stack of a dim the SIPNET parameter fields have."""
+    """No batch dim of the target stacks a dim the SIPNET parameter fields have."""
     # A stack's 0..n-1 labels are not the labels of the dims stacked into it,
     # whatever the stacked dim is called, so the SIPNET parameter fields cannot
     # be read at them.
@@ -1009,7 +1009,7 @@ def check_target_has_a_coordinate_for(target_field: xr.DataArray, dim: str, name
 def check_scalar_sipnet_parameter_fields_label_agrees(
     values: xr.DataArray, target_field: xr.DataArray, dim: str, name: str
 ) -> None:
-    """SIPNET parameter fields selected to one *dim* label are for target labels of it alone."""
+    """SIPNET parameter fields selected to one *dim* label serve only that label."""
     # A stacked target carries dim's labels as <dim>_label on the stacked dim.
     labels = _labels_of(target_field, dim)
     if labels is None:

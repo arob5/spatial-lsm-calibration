@@ -1112,7 +1112,7 @@ def test_conversion_refuses_inputs_selected_for_different_members():
 
 
 def test_conversion_table_refuses_a_value_pysipnet_would_refuse():
-    """The table never builds an InitialConditions, so it checks the processed file's
+    """The table never builds an InitialConditions, so it checks the converted values
     itself; otherwise a row could carry an inf the single-member form rejects."""
     state = ensemble_state()
     state["initial_soil_organic_carbon"][0, 0] = 1e308

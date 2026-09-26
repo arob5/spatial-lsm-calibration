@@ -136,9 +136,8 @@ step between a raw description and a processed one.
 **One processed file per constraint.** The five sources have three time
 structures and no shared grid; a single dense file would re-impose the
 assembler's alignment onto July 15 keys. Each constraint is stored at its
-source's own
-resolution, and how an observation is placed against model time is decided by
-its observation operator.
+source's own resolution, and how an observation is placed against model time is
+decided by its observation operator.
 
 **No unit conversion at ingest.** SoilGrids soil carbon is stored in the
 source's ``Mg ha-1`` rather than the ``kg m-2`` of the assembled files it was

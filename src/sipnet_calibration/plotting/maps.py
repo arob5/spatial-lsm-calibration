@@ -366,9 +366,9 @@ def plot_map(
     Parameters
     ----------
     field:
-        An ``xarray.DataArray`` of one of the maps in the module docstring:
-        values or classes on ``(site,)`` with ``lon``/``lat`` on ``site``, or a
-        raster on ``(lat, lon)``.
+        An ``xarray.DataArray`` holding the data of one of the maps in the
+        module docstring: values or classes on ``(site,)`` with ``lon``/``lat``
+        on ``site``, or a raster on ``(lat, lon)``.
     ax:
         The axes to draw on. If ``None``, a figure and axes are created.
     render:
@@ -423,12 +423,12 @@ def plot_map(
     TypeError
         If *field* is not a ``DataArray``.
     ValueError
-        If *field* is not a field or not one of the maps above -- in
-        particular if it has a batch dim or a ``time`` dimension, where the
-        message names the functions that draw those; if *render* is unknown,
-        is given for a raster, or interpolates a categorical field; if
-        *extent* is not a known name or a valid box; or if *log* is asked for
-        with a nonpositive value in the frame.
+        If *field* is not a field or holds the data of none of the maps above --
+        in particular if it has a batch dim or a ``time`` dimension, where the
+        message names the functions that draw those; if *render* is unknown, is
+        given for a raster, or interpolates a categorical field; if *extent* is
+        not a known name or a valid box; or if *log* is asked for with a
+        nonpositive value in the frame.
     """
     ax, _, _ = _draw_map(
         field, ax, render=render, extent=extent,

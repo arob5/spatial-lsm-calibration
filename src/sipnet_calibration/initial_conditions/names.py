@@ -72,5 +72,5 @@ def raw_path(directory: Path | str | None = None) -> Path:
 
 
 def default_processed_path() -> Path:
-    """Where the processed file is expected: ``data/processed/initial_conditions.nc``."""
+    """The processed file's expected path: ``data/processed/initial_conditions.nc``."""
     return conventions.data_root() / "processed" / PROCESSED_FILE

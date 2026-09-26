@@ -97,9 +97,10 @@ Notes
 **The class column is ``label``, not ``pft``.** One schema across sources, so
 that :func:`load_site_labels` returns the same frame shape whatever it is asked
 for and code that pools over classes -- a partial-pooling prior, a facet-by-class
-figure -- indexes ``label`` without knowing which source it got. Which source
-it is lives in its name, and :attr:`SiteLabelsSpec.label_kind` carries the
-domain word for prose and axis labels. A source whose classes are not plant
+figure -- indexes ``label`` without knowing which source it got. The site
+labels' name, not a column, says which source a frame came from, and
+:attr:`SiteLabelsSpec.label_kind` carries the domain word for prose and axis
+labels. A source whose classes are not plant
 functional types then costs no schema change.
 
 **Class names are the producer's, verbatim.** ``boreal.coniferous`` and
@@ -128,7 +129,7 @@ Usage
 Read site labels and join them to the site table::
 
     from sipnet_calibration.site_labels import load_site_labels
-    from sipnet_calibration.sites import load_sites, select_sites
+    from sipnet_calibration.sites import EXTENTS, load_sites, select_sites
 
     labels = load_site_labels("reanalysis_3pft")
     site_table = select_sites(load_sites(), bbox=EXTENTS["CONUS"]).merge(labels, on="site_id")
@@ -238,7 +239,7 @@ class SiteLabelsSpec:
     """
 
     description: str
-    """What the site labels are and how the producer constructed them, with the citation."""
+    """What the site labels are and how the producer made them, with the citation."""
 
     upstream_product: str
     """The producer's own product name, e.g. ``"NALCR 8000-site SDA"``."""
@@ -650,7 +651,7 @@ def site_labels_field(
         ``flag_meanings`` the spec's class names, space-separated, in the spec's
         order and all of them whether or not every class is used. There are no
         ``units``. ``long_name`` names the label kind and the site labels, and
-        the array's name is theirs. Where the spec has
+        the array is named for the site labels (``spec.name``). Where the spec has
         :attr:`~SiteLabelsSpec.display_names`, ``flag_display_names`` holds
         them as a tuple aligned with ``flag_meanings``; it is this project's
         attribute, not CF's, and is absent otherwise.

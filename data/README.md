@@ -1258,15 +1258,22 @@ itself made by a script, which is **not** a pipeline step; see
 [Making a raw input](#making-a-raw-input) below.
 
 **Re-ingest after the vocabulary rename.** Every spec's producer name is the
-field `upstream_product`, written as the `upstream_product` attribute of each
-variable and of each constraint's and the initial conditions' dataset (it was
-`product`), and each initial condition variable names its SIPNET parameter in
-`sipnet_parameter_name` (it was `sipnet_initial_condition`). A processed file
-written before the rename carries the old attribute names. The loaders do not
-read these attributes, so an old file still loads; run
-`scripts/ingest_constraints.py` and `scripts/ingest_initial_conditions.py`
-again to have the processed files carry the new names. The site-labels CSVs
-carry no attributes and are unchanged.
+field `upstream_product` (it was `product`). A constraint's processed file
+writes it as the `upstream_product` attribute of the dataset and of `value`
+(`standard_deviation` never carried it); the initial conditions' file writes it
+on the dataset and on each variable. Each initial condition variable also names
+its SIPNET parameter in `sipnet_parameter_name` (it was
+`sipnet_initial_condition`). Some prose attributes are reworded as well: the
+`description` of `value` in `gedi_aboveground_biomass` and
+`modis_leaf_area_index`, the `description` of
+`initial_aboveground_biomass_carbon`, and `modis_leaf_area_index`'s
+`units_provenance` now say "upstream product" where they said "product", and
+`modis_leaf_area_index`'s `comment` says no `time_bounds` variable is written.
+No value, dim, dtype or encoding changes. A processed file written before the
+rename carries the old names and wording; the loaders read none of these
+attributes, so it still loads. Run `scripts/ingest_constraints.py` and
+`scripts/ingest_initial_conditions.py` again to bring the processed files up to
+date. The site-labels CSVs carry no attributes and come out byte-identical.
 
 ### Surveys, which are not the pipeline either
 

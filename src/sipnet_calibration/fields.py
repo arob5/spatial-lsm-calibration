@@ -127,8 +127,8 @@ Identifiers
     Ameriflux-keyed identifier cannot address the pool: ``ameriflux_site_id``
     is a non-dimension coordinate on ``site``, missing for the rest. Plant
     functional type is not site metadata and is not carried here; which site
-    labels to use is an experimental choice, and they live in their own data source
-    under ``data/processed/site_labels/``.
+    labels to use is an experimental choice, and each site-labels data source
+    has its own processed file under ``data/processed/site_labels/``.
 a batch dim
     Integer labels, created ``int64`` (any integer dtype is accepted),
     meaningful only within the dim's own name. Whether
@@ -2241,7 +2241,7 @@ def check_run_batch_labels_are_key_dims(
 def check_model_outputs_carry_the_same_variables(
     model_outputs: Mapping[tuple[int, ...], xr.Dataset], key_dims: tuple[str, ...]
 ) -> None:
-    """Every run carries the same variables, each with the same units, constituent and kind.
+    """Every run has the same variables, with the same units, constituent and kind.
 
     A run missing a variable would be filled with ``NaN`` by the stack, and
     the stack takes the first run's attributes, so a second run's different

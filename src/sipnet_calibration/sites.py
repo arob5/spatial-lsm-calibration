@@ -67,9 +67,10 @@ rendering of it.
 
 There is deliberately **no plant functional type column**. A PFT class is not
 an intrinsic property of a site: a calibration may not use PFTs at all, and
-several site-labels data sources can be applied to the same pool. Site labels
-are their own data source, processed under ``processed/site_labels/``, keyed on ``site_id``, and a
-caller joins one on before selecting.
+several site-labels data sources can be applied to the same pool. Each site
+labels data source has its own processed file under
+``data/processed/site_labels/``, keyed on ``site_id``, and a caller joins one
+on before selecting.
 
 Constants
 ---------

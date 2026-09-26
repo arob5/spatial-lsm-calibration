@@ -3,13 +3,14 @@
 
 Overview
 --------
-For each site-labels data source in ``sipnet_calibration.site_labels.SITE_LABELS``,
-read its raw table, check it against the site pool and write the result as
+For each site-labels data source in
+``sipnet_calibration.site_labels.SITE_LABELS``, read its raw table, check it
+against the site pool and write the result as
 ``data/processed/site_labels/<name>.csv``. Every decision about what a source
 holds -- its classes, its raw columns, how many rows the file must have, how it
 relates to the site table's ``landcover`` -- is set in the source's spec in the
-library; this script is the orchestration and the checks, and its own
-round-trip check reads each file back with
+library; this script is the orchestration and the checks, and its own round-trip
+check reads each file back with
 :func:`sipnet_calibration.site_labels.load_site_labels`, the same function every
 consumer uses.
 

@@ -101,8 +101,8 @@ Notes
 **The ``PartialSpec`` is built once.** Its fixed inputs (the climate, the
 site id and the site's slice of the observation vector, all along one site
 axis) and its free inputs (the SIPNET parameter names the vector sets) hold
-for the model's lifetime, and every call's parameter PyEns grids zip with
-that site axis. The free names are learned by mapping one prior draw through
+for the model's lifetime, and on every call the PyEns grid of SIPNET
+parameter values is zipped with that site axis. The free names are learned by mapping one prior draw through
 ``sipnet_parameter_fields`` in ``__init__``, which fails fast, before
 anything is queued, on a hook that does not return SIPNET parameter fields on
 ``(sample, site)`` over the vector's sites in pySIPNET's flat parameter
@@ -579,7 +579,7 @@ class ForwardModel:
         return self.observation_vector
 
     def _probe_sipnet_parameter_names(self) -> tuple[str, ...]:
-        """The SIPNET parameter names the SIPNET-parameter-fields hook sets, from one prior draw."""
+        """The SIPNET parameter names the hook sets, learned from one prior draw."""
         draw = self.parameter_vector.sample(jax.random.key(0), 1)
         sipnet_parameter_fields = self._to_sipnet_parameter_fields(draw)
         check_sipnet_parameter_fields_are_for_the_batch(
@@ -747,7 +747,7 @@ def _aggregated(model_output: xr.Dataset, freq: str) -> xr.Dataset:
 def _site_segments(
     observation_vector: ObservationVector | None,
 ) -> tuple[dict[int, ObservationVector], dict[int, np.ndarray]]:
-    """Per observed site, the vector restricted to it and where its segment sits in Flat."""
+    """Per observed site: the vector restricted to it, and its segment in Flat."""
     slices: dict[int, ObservationVector] = {}
     positions: dict[int, np.ndarray] = {}
     for site in () if observation_vector is None else observation_vector.sites:
@@ -992,8 +992,8 @@ def check_observation_sites_are_run(
     if extra:
         raise ValueError(
             f"the observation vector observes site(s) {extra[:10]} that the parameter vector "
-            "does not run; select the observation vector to those sites first "
-            "(observation_vector.select(sites=...))."
+            "does not run; select the observation vector to the parameter vector's sites "
+            "first (observation_vector.select(sites=...))."
         )
 
 
@@ -1079,7 +1079,8 @@ def check_sipnet_parameter_fields_are_for_the_batch(
 def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(
     sipnet_parameter_fields: xr.Dataset, batch_dim: str
 ) -> None:
-    """The SIPNET parameter fields are on exactly ``(batch_dim, site)``, every variable on both."""
+    """The SIPNET parameter fields are on exactly ``(batch_dim, site)``, every
+    variable on both."""
     if set(sipnet_parameter_fields.dims) != {batch_dim, SITE}:
         raise ValueError(
             f"SIPNET parameter fields for a batch have dims exactly ({batch_dim}, site), got "

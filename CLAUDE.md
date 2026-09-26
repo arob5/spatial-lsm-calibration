@@ -1036,34 +1036,32 @@ plotting code. The load-bearing rules:
   an experiment writes in `config.py`.
 - **The forward model is one class over existing pieces.**
   `forward.ForwardModel(model, parameter_vector, climate=, backend=,
-  observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its module docstring
-  says how the pieces compose. The rules a session can get wrong: the
-  observation operators run **on the worker**, each run receiving only its
-  site's slice of the observation vector and returning that slice's Flat,
-  which the calling process writes at `positions(site=)` (right because the
-  vector is site-major, which `__init__` checks per site); a run at a site no
-  observation source observes returns nothing, so an observation source costs
-  nothing at the sites it does not observe. The SIPNET parameter fields a
-  `to_sipnet_parameter_fields` hook returns must
-  be on exactly `(batch_dim, site)` (`sample` unless the model's `batch_dim=`
-  says otherwise) with every variable on both, labels `0` to `J - 1` in
-  `theta`'s row order, sites in the parameter vector's, and each
-  variable named by pySIPNET's flat parameter name (an alias such as `aMax`
-  passes pySIPNET's lookup but `SIPNETModel` refuses it on every run). A run
-  that fails at its parameters (`SIPNETRunError`, pydantic's
-  `ValidationError`, a timeout, or a non-finite value in a read variable,
-  `ModelOutputNotFiniteError`; across a process boundary matched on PyEns's
-  fully qualified `RemoteError.type_name`) makes the **whole sample's** row
-  NaN, and anything else a worker returns is the machinery failing and is
+  observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its module docstring says
+  how the pieces compose. The rules a session can get wrong: the observation
+  operators run **on the worker**, each run receiving only its site's slice of
+  the observation vector and returning that slice's Flat, which the calling
+  process writes at `positions(site=)` (right because the vector is site-major,
+  which `__init__` checks per site); a run at a site no observation source
+  observes returns nothing, so an observation source costs nothing at the sites
+  it does not observe. The SIPNET parameter fields a
+  `to_sipnet_parameter_fields` hook returns must be on exactly `(batch_dim,
+  site)` (`sample` unless the model's `batch_dim=` says otherwise) with every
+  variable on both, labels `0` to `J - 1` in `theta`'s row order, sites in the
+  parameter vector's, and each variable named by pySIPNET's flat parameter name
+  (an alias such as `aMax` passes pySIPNET's lookup but `SIPNETModel` refuses it
+  on every run). A run that fails at its parameters (`SIPNETRunError`,
+  pydantic's `ValidationError`, a timeout, or a non-finite value in a read
+  variable, `ModelOutputNotFiniteError`; across a process boundary matched on
+  PyEns's fully qualified `RemoteError.type_name`) makes the **whole sample's**
+  row NaN, and anything else a worker returns is the machinery failing and is
   raised with the collected runs on the error's `evaluation`, as is a
-  prior-predictive batch in which every run failed. The prior-predictive
-  output is stacked by `fields.stack_model_outputs`, so it carries no
-  `time_bounds` or SIPNET row labels; `freq=` is for that path only, and
-  aggregates each run's variables one at a time with
-  `observation.aggregate_time` by the method that keeps its kind, as a
-  predictive-check figure does, the Dataset gaining pySIPNET's
-  `resampling_frequency` and `time_step_length_source`. Under any backend
-  but `SequentialBackend` the drivers must be file-backed.
+  prior-predictive batch in which every run failed. The prior-predictive output
+  is stacked by `fields.stack_model_outputs`, so it carries no `time_bounds` or
+  SIPNET row labels; `freq=` is for that path only, and aggregates each run's
+  variables one at a time with `observation.aggregate_time` by the method that
+  keeps its kind, as a predictive-check figure does, the Dataset gaining
+  pySIPNET's `resampling_frequency` and `time_step_length_source`. Under any
+  backend but `SequentialBackend` the drivers must be file-backed.
   `compute.scc_backend` is the SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
   `(site, observation_source, time)` MultiIndex over the observations (the

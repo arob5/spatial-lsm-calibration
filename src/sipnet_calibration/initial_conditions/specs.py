@@ -55,7 +55,7 @@ class InitialConditionSpec:
     """
 
     name: str
-    """Processed name: the variable's name in the processed file and the registry key."""
+    """Processed name: the name in the processed file and the registry key."""
 
     source_name: str
     """The variable's name in the source files and in the raw file."""
