@@ -72,6 +72,7 @@ from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
 from sipnet_calibration.plotting.style import axis_label
+from sipnet_calibration.validation import as_positive_integer
 
 __all__ = [
     "LEGEND_MODES",
@@ -144,8 +145,10 @@ def build_plot_grid(
 
     Raises
     ------
+    TypeError
+        If *ncol* is a boolean or not an integer.
     ValueError
-        If *items* is empty; if *ncol* is not a positive integer; if *share*
+        If *items* is empty; if *ncol* is less than 1; if *share*
         is not in :data:`SHARE_MODES`; if *legend* is not ``"dedup"``,
         ``"each"`` or ``"none"``; or if *labels* is a sequence of a different
         length from *items*.
@@ -153,8 +156,7 @@ def build_plot_grid(
     items = list(items)
     if not items:
         raise ValueError("items is empty; there is nothing to draw")
-    if not isinstance(ncol, (int, np.integer)) or int(ncol) < 1:
-        raise ValueError(f"ncol must be a positive integer, got {ncol!r}")
+    ncol = as_positive_integer(ncol, message_name="ncol")
     if share not in SHARE_MODES:
         raise ValueError(f"share must be one of {list(SHARE_MODES)}, got {share!r}")
     if legend not in LEGEND_MODES:
@@ -449,15 +451,16 @@ def plot_map_by(
 
     Raises
     ------
+    TypeError
+        If *n_max* is a boolean or not an integer.
     ValueError
         If *field* has no *dim*, *values* names one it does not hold, or
-        *n_max* is not a positive integer.
+        *n_max* is less than 1.
     """
     if not isinstance(field, xr.DataArray) or dim not in field.dims:
         dims = list(getattr(field, "dims", ()))
         raise ValueError(f"plot_map_by needs a DataArray with a {dim!r} dimension; got {dims}")
-    if not isinstance(n_max, (int, np.integer)) or int(n_max) < 1:
-        raise ValueError(f"n_max must be a positive integer, got {n_max!r}")
+    n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
         chosen = available[thinned_indices(len(available), int(n_max))]

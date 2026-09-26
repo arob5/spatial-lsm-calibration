@@ -522,21 +522,20 @@ class TestProjectedBounds:
             SITE_PROJECTION.projected_bounds((-66.0, 24.0, -125.0, 50.0))
         with pytest.raises(ValueError, match="north of north"):
             SITE_PROJECTION.projected_bounds((-125.0, 50.0, -66.0, 24.0))
-        with pytest.raises(ValueError, match="must be numbers"):
-            SITE_PROJECTION.projected_bounds({"west": -125.0, "s": 1, "e": 2, "n": 3})
         with pytest.raises(ValueError, match="must be finite"):
             SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0, np.nan))
-        with pytest.raises(ValueError, match=r"\(west, south, east, north\)"):
-            SITE_PROJECTION.projected_bounds(None)
         with pytest.raises(ValueError, match="samples_per_edge must be at least 2"):
             SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=1)
-        with pytest.raises(ValueError, match="samples_per_edge must be an integer"):
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=8.0)
 
-    def test_coerces_numeric_strings_the_way_it_documents(self):
-        assert SITE_PROJECTION.projected_bounds(("-125", "24", "-66", "50")) == pytest.approx(
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
-        )
+    def test_refuses_a_box_or_a_sample_count_of_the_wrong_type(self):
+        with pytest.raises(TypeError, match=r"\(west, south, east, north\)"):
+            SITE_PROJECTION.projected_bounds({"west": -125.0, "s": 1, "e": 2, "n": 3})
+        with pytest.raises(TypeError, match=r"\(west, south, east, north\)"):
+            SITE_PROJECTION.projected_bounds(None)
+        with pytest.raises(TypeError, match="must be numbers"):
+            SITE_PROJECTION.projected_bounds(("-125", "24", "-66", "50"))
+        with pytest.raises(TypeError, match="samples_per_edge must be an integer"):
+            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=8.0)
 
     def test_samples_per_edge_actually_controls_the_sampling(self):
         """Nothing else observes the parameter taking effect: comparing the

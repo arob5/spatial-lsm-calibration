@@ -288,7 +288,7 @@ class TestFromSipnetOutputRefusesBadInput:
             from_sipnet_output(niwot_output, "nee", site=1.5, sites=sites_table)
 
     def test_a_boolean_is_not_an_identifier(self, niwot_output, sites_table):
-        with pytest.raises(ValueError, match="boolean"):
+        with pytest.raises(TypeError, match="bool"):
             from_sipnet_output(niwot_output, "nee", site=True, sites=sites_table)
         with pytest.raises(ValueError, match="boolean"):
             from_sipnet_output(niwot_output, "nee", member=False)
@@ -298,7 +298,7 @@ class TestFromSipnetOutputRefusesBadInput:
             from_sipnet_output(niwot_output, "nee", member=float("inf"))
 
     def test_variables_given_as_none_is_refused_as_a_type_error(self, niwot_output):
-        with pytest.raises(TypeError, match="must be a name or a sequence"):
+        with pytest.raises(TypeError, match="must be a sequence of names"):
             from_sipnet_output(niwot_output, None)
 
     def test_an_unordered_container_is_refused_because_order_is_promised(self, niwot_output):
@@ -592,7 +592,7 @@ class TestResolveOutputVariableNamesDelegates:
 
         with pytest.raises(TypeError, match="no order to keep"):
             resolve_output_variable_names({"nee"})
-        with pytest.raises(TypeError, match="a name or a sequence of names"):
+        with pytest.raises(TypeError, match="a sequence of names"):
             resolve_output_variable_names(3)
         with pytest.raises(ValueError, match="no variables were asked for"):
             resolve_output_variable_names(())

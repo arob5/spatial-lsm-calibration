@@ -357,8 +357,10 @@ def test_calibration_parameter_refuses_unusable_priors_and_sipnet_maps():
 
 
 def test_parameter_vector_refuses_bad_sites_and_site_labels():
-    with pytest.raises(TypeError, match="site ids must be integers"):
+    with pytest.raises(ValueError, match="whole number"):
         build((rate(),), sites=(1.5, 27.0, 4711.0))
+    with pytest.raises(TypeError, match="must be an integer"):
+        build((rate(),), sites=("1", 27, 4711))
     assert build((rate(),), sites=np.array([1.0, 27.0, 4711.0])).sites == SITES
     with pytest.raises(TypeError, match="sequence of one label per site"):
         build((rate(varies_by="pft"),), site_labels={"pft": "abc"})
@@ -432,7 +434,7 @@ def test_in_domain_predicates_at_the_boundaries():
         assert not in_domain(domain, np.array([np.inf]))
     with pytest.raises(ValueError, match="finite and positive"):
         log_normal(median=np.inf, geometric_sd=2.0)
-    with pytest.raises(ValueError, match="ascending"):
+    with pytest.raises(ValueError, match="more than once"):
         build((rate(),), sites=(1, 1, 27), site_labels={"pft": PFT})
 
 

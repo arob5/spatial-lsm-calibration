@@ -252,6 +252,7 @@ from sipnet_calibration.conventions import (
     TIME_COORD_NAMES,
 )
 from sipnet_calibration.sites import load_sites
+from sipnet_calibration.validation import as_names, as_site_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pysipnet.output import SIPNETOutput
@@ -579,9 +580,7 @@ def resolve_output_variable_names(output_variable_names: str | Iterable[str]) ->
     if isinstance(output_variable_names, str):
         requested = [output_variable_names]
     else:
-        check_names_are_an_ordered_iterable(output_variable_names)
-        requested = list(output_variable_names)
-    check_names_are_strings(requested)
+        requested = list(as_names(output_variable_names, message_name="output_variable_names"))
     if not requested:
         raise ValueError(
             "no variables were asked for; name at least one SIPNET output "
@@ -695,7 +694,7 @@ def _identity_coords(
             attrs=dict(_MEMBER_ATTRS),
         )
     if site is not None:
-        site_id = _bounded_integer(site, name="site", dtype=np.int32, minimum=1)
+        site_id = SITE_DTYPE(as_site_id(site, message_name="site"))
         location = _site_locations([int(site_id)], site_table).iloc[0]
         coords[SITE] = xr.DataArray(site_id, attrs=dict(SITE_ATTRIBUTES))
         coords[LON] = xr.DataArray(np.float64(location[LON]), attrs=dict(LON_ATTRIBUTES))
@@ -755,7 +754,7 @@ def _run_key(key: Any) -> tuple[int, int]:
         )
     site, member = key
     return (
-        int(_bounded_integer(site, name="site", dtype=np.int32, minimum=1)),
+        as_site_id(site, message_name="site"),
         int(_bounded_integer(member, name="member", dtype=np.int16, minimum=0)),
     )
 
@@ -958,27 +957,3 @@ def check_model_outputs_carry_the_same_variables(
                     "the stack carries one set of attributes, so convert the runs to "
                     "one before stacking them."
                 )
-
-
-def check_names_are_an_ordered_iterable(output_variable_names: Any) -> None:
-    """*output_variable_names* is an iterable with an order to keep."""
-    if isinstance(output_variable_names, (set, frozenset)):
-        raise TypeError(
-            f"output_variable_names was given as a {type(output_variable_names).__name__}, "
-            "which has no order to keep. Pass a list or a tuple."
-        )
-    if not isinstance(output_variable_names, Iterable):
-        raise TypeError(
-            "output_variable_names must be a name or a sequence of names, got "
-            f"{output_variable_names!r}; pass e.g. ['nee', 'wood_carbon']."
-        )
-
-
-def check_names_are_strings(names: Sequence[Any]) -> None:
-    """Every requested variable name is a string."""
-    for item in names:
-        if not isinstance(item, str):
-            raise TypeError(
-                f"variable names must be strings, got {item!r}; pass pySIPNET's registry "
-                "names or aliases, e.g. 'nee'."
-            )

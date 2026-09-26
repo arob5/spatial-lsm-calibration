@@ -507,6 +507,24 @@ def test_constraint_fields_and_sds_select_sites_in_the_order_given(
         constraint_fields(sites=[1, 7], directory=out_dir)
 
 
+def test_constraint_fields_refuses_one_string_of_sites_rather_than_reading_its_characters(
+    raw_root, sites, tmp_path, monkeypatch
+):
+    """``sites="14"`` once read as sites 1 and 4, one character per site."""
+    out_dir = tmp_path / "out"
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
+    monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
+
+    with pytest.raises(TypeError, match="one character per site"):
+        constraint_fields(sites="14", directory=out_dir)
+    with pytest.raises(TypeError, match="one character per site"):
+        constraint_standard_deviations(sites="14", directory=out_dir)
+    with pytest.raises(ValueError, match="more than once"):
+        constraint_fields(sites=[1, 1], directory=out_dir)
+    assert constraint_fields(sites=4, directory=out_dir)[ANNUAL.name]["site"].values.tolist() == [4]
+
+
 def test_a_missing_product_names_the_command_that_builds_it(tmp_path):
     with pytest.raises(FileNotFoundError, match="ingest_constraints.py --constraint"):
         load_constraint("smap_soil_moisture", tmp_path / "absent.nc")

@@ -215,6 +215,8 @@ import pyproj
 from pyproj.crs import ProjectedCRS
 from pyproj.crs.coordinate_operation import LambertAzimuthalEqualAreaConversion
 
+from sipnet_calibration.validation import as_bbox, as_integer
+
 __all__ = [
     "DEFINITION_STEM",
     "LAEA_METHOD",
@@ -487,11 +489,13 @@ class Projection:
 
         Raises
         ------
+        TypeError
+            If *bbox* is not a sequence of numbers, or *samples_per_edge* is a
+            boolean or not an integer.
         ValueError
             If *bbox* is not four finite numbers, west is east of east, south is
-            north of north, *samples_per_edge* is not an integer of at least 2,
-            the box contains :attr:`antipode`, or any sampled point fails
-            :meth:`forward`.
+            north of north, *samples_per_edge* is less than 2, the box contains
+            :attr:`antipode`, or any sampled point fails :meth:`forward`.
 
         Notes
         -----
@@ -510,11 +514,8 @@ class Projection:
         singularity, the boundary bound is not a bound, and the returned box
         would be wrong without being obviously wrong.
         """
-        west, south, east, north = _check_bbox(bbox)
-        if not isinstance(samples_per_edge, (int, np.integer)) or isinstance(
-            samples_per_edge, bool
-        ):
-            raise ValueError(f"samples_per_edge must be an integer, got {samples_per_edge!r}")
+        west, south, east, north = as_bbox(bbox, message_name="bbox")
+        samples_per_edge = as_integer(samples_per_edge, message_name="samples_per_edge")
         if samples_per_edge < 2:
             raise ValueError(f"samples_per_edge must be at least 2, got {samples_per_edge}")
         self._check_bbox_excludes_antipode(west, south, east, north)
@@ -860,38 +861,6 @@ def _as_float_array(values):
     if np.ma.isMaskedArray(values):
         return np.ma.filled(values.astype(float), np.nan)
     return np.asarray(values, dtype=float)
-
-
-def _check_bbox(bbox):
-    """The four floats of a well-formed ``(west, south, east, north)`` box.
-
-    Everything unusable raises :class:`ValueError`, including the cases that
-    would otherwise surface as a ``TypeError`` from unpacking or as a bare numpy
-    message, so a caller has one exception type to handle and a message that
-    names the parameter.
-    """
-    try:
-        values = tuple(bbox)
-    except TypeError:
-        raise ValueError(f"bbox must be (west, south, east, north), got {bbox!r}") from None
-    if len(values) != 4:
-        raise ValueError(
-            f"bbox must be (west, south, east, north), got {len(values)} value(s): {bbox!r}"
-        )
-    try:
-        west, south, east, north = (float(value) for value in values)
-    except (TypeError, ValueError):
-        raise ValueError(f"bbox values must be numbers, got {bbox!r}") from None
-    if not all(math.isfinite(value) for value in (west, south, east, north)):
-        raise ValueError(f"bbox values must be finite, got {bbox!r}")
-    if west > east:
-        raise ValueError(
-            f"bbox west {west} is east of east {east}; this does not wrap the "
-            "antimeridian, matching sipnet_calibration.sites.select_sites"
-        )
-    if south > north:
-        raise ValueError(f"bbox south {south} is north of north {north}")
-    return west, south, east, north
 
 
 def _definition_contents(projection: Projection) -> dict[str, str]:

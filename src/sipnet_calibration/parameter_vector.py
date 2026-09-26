@@ -377,6 +377,7 @@ from sipnet_calibration.conventions import (  # noqa: E402
     SITE_DTYPE,
     SITE_ID,
 )
+from sipnet_calibration.validation import as_batched_flat, as_site_ids  # noqa: E402
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -1792,9 +1793,7 @@ class ParameterVector:
     ) -> list[int]:
         kept = list(self.sites)
         if sites is not None:
-            if np.ndim(sites) == 0:
-                sites = (sites,)
-            requested = set(_as_site_ids(sites))
+            requested = set(as_site_ids(sites, message_name="sites", allow_one_id=True))
             unknown = sorted(requested - set(self.sites))
             if unknown:
                 raise KeyError(f"select: sites {unknown} are not in this vector.")
@@ -2155,10 +2154,9 @@ _SPEC_ORDER: dict[str, int] = {name: i for i, name in enumerate(_FLAT_SPECS)}
 
 
 def _as_theta(theta: Any, dimension: int) -> Array:
-    theta = jnp.asarray(theta, dtype=jnp.float64)
-    if theta.ndim not in (1, 2) or theta.shape[-1] != dimension:
-        raise ValueError(f"theta must be (D,) or (J, D) with D = {dimension}; got shape {theta.shape}.")
-    return theta
+    """*theta* as a JAX ``float64`` array, ``(D,)`` or ``(J, D)`` as given."""
+    batched, was_one_vector = as_batched_flat(theta, dimension, message_name="theta")
+    return jnp.asarray(batched[0] if was_one_vector else batched)
 
 
 def _positive_array(what: str, value: Any) -> Array:
@@ -2207,21 +2205,6 @@ def _positive_std(values: Array, what: str) -> Array:
     if not bool(std > 0):
         raise ValueError(f"{what}: samples are all equal; no scale can be fitted.")
     return std
-
-
-def _as_site_ids(sites: Any) -> tuple[int, ...]:
-    """Site ids as Python ints; refuses anything that is not an integer."""
-    out = []
-    for site in sites:
-        array = np.asarray(site)
-        integral = array.ndim == 0 and (
-            np.issubdtype(array.dtype, np.integer)
-            or (np.issubdtype(array.dtype, np.floating) and float(array).is_integer())
-        )
-        if not integral:
-            raise TypeError(f"site ids must be integers; got {site!r}.")
-        out.append(int(array))
-    return tuple(out)
 
 
 def _as_labels(name: str, labels: Any) -> tuple[Any, ...]:
@@ -2312,9 +2295,9 @@ def _normalized_sites(sites: Any) -> tuple[tuple[int, ...], tuple[np.ndarray, np
     """Site ids, and ``lon``/``lat`` when *sites* is a site table that has
     them."""
     if not isinstance(sites, pd.DataFrame):
-        return _as_site_ids(sites), None
+        return as_site_ids(sites, message_name="sites"), None
     check_site_table_has_site_ids(sites)
-    ids = _as_site_ids(sites["site_id"].tolist())
+    ids = as_site_ids(sites[SITE_ID].tolist(), message_name="the site table's site_id")
     check_site_table_is_in_site_order(ids)
     check_site_table_positions_are_usable(sites)
     if "lon" in sites.columns:

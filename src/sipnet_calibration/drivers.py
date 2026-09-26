@@ -234,6 +234,7 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.fields import without_stale_time_attributes
 from sipnet_calibration.sites import load_sites
+from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
 
 __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
@@ -427,12 +428,12 @@ def load_drivers(
     Parameters
     ----------
     sites:
-        Site identifiers to read, any iterable of integers. Returned in
-        ascending order whatever order they are given in, duplicates dropped.
-        Every one must be in the site table.
+        Site identifiers to read, any iterable of integers, each named once.
+        Returned in ascending order whatever order they are given in. Every
+        one must be in the site table.
     members:
         Source member indices (1-based, as in the directory names) to read,
-        any iterable of integers, likewise sorted and de-duplicated. ``None``
+        any iterable of integers, sorted and de-duplicated. ``None``
         means every member that has a directory for any of the requested
         sites.
     root:
@@ -465,10 +466,15 @@ def load_drivers(
         If the root does not exist; if *members* is ``None`` and no requested
         site has a driver directory; if no requested pair has a file at all;
         or if a requested pair has no file and *allow_missing* is ``False``.
+    TypeError
+        If *sites* or *members* is a string or not iterable, or holds a
+        boolean or a value that is not an integer (a whole-number float is
+        accepted as a site id, not as a member index).
     ValueError
         If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
-        or *members* is empty, or holds anything but positive whole numbers,
-        discovered members included; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
+        or *members* is empty, or holds a value that is not a positive whole
+        number in range, discovered members included; if *sites* names a site
+        twice; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
         repeats a ``site_id``; if a site is not in the site table; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
         :func:`read_driver_file`, its name does not follow the template, the
@@ -595,8 +601,11 @@ def _dates_from_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
 
 
 def _site_ids(sites: Iterable[int]) -> np.ndarray:
-    """Requested sites as a sorted, de-duplicated ``int32`` array."""
-    return _positive_integers(sites, name="site identifiers", dtype=np.int32)
+    """Requested sites as a sorted ``int32`` array."""
+    site_ids = as_site_ids(sites, message_name="sites")
+    if not site_ids:
+        raise ValueError("no sites requested; pass at least one site id.")
+    return np.sort(np.asarray(site_ids, dtype=SITE_DTYPE))
 
 
 def _member_ids(
@@ -612,38 +621,29 @@ def _member_ids(
                 f"no driver directories under {root} for sites {sites.tolist()}"
             )
         members = sorted(found)
-    return _positive_integers(
-        members,
-        name="member indices (the source's 1-based directory indices)",
-        dtype=np.int16,
-    )
+    return _source_member_indices(members)
 
 
-def _positive_integers(values: Iterable[int], *, name: str, dtype) -> np.ndarray:
-    """*values* as a sorted, de-duplicated array of *dtype*, or a clear error.
+def _source_member_indices(members: Iterable[int]) -> np.ndarray:
+    """*members* as a sorted, de-duplicated ``int16`` array, or a clear error.
 
-    Strings, booleans, non-whole floats, non-finite values, non-positive
-    values and anything that would wrap when narrowed to *dtype* are refused,
-    since each would otherwise resolve to a plausible-looking wrong directory.
+    Strings, booleans, floats, non-positive values and anything that would wrap
+    when narrowed to ``int16`` are refused, since each would otherwise resolve
+    to a plausible-looking wrong directory.
     """
-    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
-        raise ValueError(
-            f"{name} must be an iterable of integers, got {type(values).__name__}"
+    name = "member indices (the source's 1-based directory indices)"
+    if isinstance(members, (str, bytes)) or not isinstance(members, Iterable):
+        raise TypeError(
+            f"{name} must be an iterable of integers, got {type(members).__name__}"
         )
-    array = np.asarray(list(values))
-    if array.size == 0:
+    indices = [as_positive_integer(member, message_name=f"each of the {name}") for member in members]
+    if not indices:
         raise ValueError(f"no {name} requested")
-    if array.dtype.kind == "f":
-        if np.any(~np.isfinite(array)) or np.any(array != np.floor(array)):
-            raise ValueError(f"{name} must be whole numbers, found non-integer values")
-    elif array.dtype.kind not in "iu":
-        raise ValueError(f"{name} must be integers, got {array.dtype}")
-    array = np.unique(array.astype(np.int64))
-    limit = np.iinfo(dtype).max
-    if np.any(array < 1) or np.any(array > limit):
-        bad = array[(array < 1) | (array > limit)]
-        raise ValueError(f"{name} must lie within 1..{limit}, found {bad[:5].tolist()}")
-    return array.astype(dtype)
+    limit = int(np.iinfo(np.int16).max)
+    beyond = sorted({index for index in indices if index > limit})
+    if beyond:
+        raise ValueError(f"{name} must lie within 1..{limit}, found {truncated(beyond)}")
+    return np.unique(np.asarray(indices, dtype=np.int64)).astype(np.int16)
 
 
 def _locate_files(

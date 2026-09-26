@@ -204,6 +204,7 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.conventions import WINDOW_END as TIME_BOUNDS_END
 from sipnet_calibration.conventions import WINDOW_START as TIME_BOUNDS_START
+from sipnet_calibration.validation import as_site_ids
 
 __all__ = [
     "CALENDAR",
@@ -665,7 +666,8 @@ def constraint_fields(
         Constraint names, in the order the result should carry them. Defaults
         to every constraint in :data:`CONSTRAINT_NAMES`.
     sites:
-        Site ids to keep, in the order given. Defaults to the whole pool.
+        Site ids to keep, in the order given, each once, or one id on its
+        own. Defaults to the whole pool.
     directory:
         Where the processed files are. Defaults to
         :func:`default_constraints_dir`.
@@ -683,8 +685,12 @@ def constraint_fields(
 
     Raises
     ------
+    TypeError
+        If *sites* is a string, or holds a boolean or a value that is not a
+        number.
     ValueError
-        If a requested site is not in the pool.
+        If a requested site is not a whole number of at least 1, is asked for
+        twice, or is not in the pool.
     """
     return _fields(VALUE, names, sites, directory)
 
@@ -1040,9 +1046,9 @@ def _fields(
     if isinstance(names, str):
         names = [names]
     names = list(names) if names is not None else list(CONSTRAINT_NAMES)
-    if isinstance(sites, (int, np.integer)):
-        sites = [sites]
-    wanted = None if sites is None else [int(site) for site in sites]
+    wanted = None
+    if sites is not None:
+        wanted = list(as_site_ids(sites, message_name="sites", allow_one_id=True))
     fields: dict[str, xr.DataArray] = {}
     for name in names:
         spec = resolve_constraint(name)

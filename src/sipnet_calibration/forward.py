@@ -199,6 +199,7 @@ from sipnet_calibration.observation.time_alignment import (
 )
 from sipnet_calibration.parameter_vector import ParameterVector
 from sipnet_calibration.sites import load_sites
+from sipnet_calibration.validation import as_batched_flat
 
 __all__ = [
     "MODEL_FAILURES",
@@ -427,7 +428,14 @@ class ForwardModel:
             :class:`ForwardEvaluation` of what was collected, with no
             predictions or model output.
         """
-        theta = _as_batch(theta, self.input_dimension)
+        theta, _ = as_batched_flat(
+            theta,
+            self.input_dimension,
+            message_name="theta",
+            allow_no_rows=False,
+            allow_non_finite=False,
+        )
+        theta = np.asarray(theta)
         n_members = len(theta)
         sipnet_table = self._to_sipnet_table(theta)
         check_table_is_a_sipnet_table(
@@ -592,14 +600,6 @@ class _Run:
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def _as_batch(theta: Any, input_dimension: int) -> np.ndarray:
-    """*theta* as a ``(J, D)`` float64 batch, a ``(D,)`` input as one row."""
-    array = np.asarray(theta, dtype=np.float64)
-    check_theta_has_the_batch_shape(array, input_dimension)
-    check_theta_is_finite(array)
-    return np.atleast_2d(array)
 
 
 def _output_variable_names(
@@ -1006,19 +1006,6 @@ def check_table_sets_the_parameters_built_for(
             f"for {sorted(expected_sipnet_parameter_names)}; a ForwardModel's free fields are "
             "fixed when it is built, so the hook must set the same parameters every call."
         )
-
-
-def check_theta_has_the_batch_shape(theta: np.ndarray, input_dimension: int) -> None:
-    if theta.ndim not in (1, 2) or theta.shape[-1] != input_dimension or theta.shape[0] == 0:
-        raise ValueError(
-            f"theta must be (D,) or (J, D) with J >= 1 and D = {input_dimension}, got shape "
-            f"{theta.shape}."
-        )
-
-
-def check_theta_is_finite(theta: np.ndarray) -> None:
-    if not np.isfinite(theta).all():
-        raise ValueError("theta holds a non-finite value; the parameter vector never produces one.")
 
 
 def check_output_is_finite(dataset: xr.Dataset, site: int) -> None:

@@ -178,6 +178,7 @@ import pandas as pd
 
 from sipnet_calibration import conventions
 from sipnet_calibration.conventions import LAT, LON, SITE_DTYPE, SITE_ID
+from sipnet_calibration.validation import as_bbox, as_site_ids
 
 __all__ = [
     "DATA_ROOT_ENV_VAR",
@@ -589,8 +590,12 @@ def select_sites(
     ------
     KeyError
         If *ids* names a site the table does not hold.
+    TypeError
+        If *ids* is a string or holds a value that is not a number, or *bbox*
+        is not a sequence of four numbers.
     ValueError
-        If *ids* holds duplicates, *bbox* is malformed, *where* does not return
+        If *ids* holds duplicates or values that are not site ids, *bbox* is
+        malformed, *where* does not return
         a usable mask, or *sample* is negative or exceeds the number of rows
         available.
 
@@ -677,14 +682,7 @@ def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
     this path returns would differ in shape from the one every other path
     returns, on a table with joined columns.
     """
-    wanted = []
-    for site_id in ids:
-        as_int = int(site_id)
-        if as_int != site_id:
-            raise ValueError(f"ids must be whole numbers, got {site_id!r}")
-        wanted.append(as_int)
-    if len(set(wanted)) != len(wanted):
-        raise ValueError("ids holds duplicate site ids")
+    wanted = list(as_site_ids(ids, message_name="ids"))
 
     site_ids = sites["site_id"]
     if site_ids.duplicated().any():
@@ -706,17 +704,7 @@ def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
 
 def _bbox_mask(sites: pd.DataFrame, bbox: tuple[float, float, float, float]) -> np.ndarray:
     """A boolean mask of the sites inside *bbox*, edges included."""
-    if len(bbox) != 4:
-        raise ValueError(f"bbox must be (west, south, east, north), got {bbox!r}")
-    west, south, east, north = (float(value) for value in bbox)
-    if west > east:
-        raise ValueError(
-            f"bbox west {west} is east of east {east}; the pool spans "
-            f"{SITE_GRID.west} to {SITE_GRID.east}, all negative, and this "
-            "function does not wrap the antimeridian"
-        )
-    if south > north:
-        raise ValueError(f"bbox south {south} is north of north {north}")
+    west, south, east, north = as_bbox(bbox, message_name="bbox")
     lon = sites["lon"].to_numpy()
     lat = sites["lat"].to_numpy()
     return (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)

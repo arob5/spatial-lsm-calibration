@@ -64,6 +64,7 @@ from sipnet_calibration.initial_conditions.specs import (
     INITIAL_CONDITIONS,
     resolve_initial_condition,
 )
+from sipnet_calibration.validation import as_site_ids
 
 __all__ = [
     "build_initial_conditions",
@@ -231,30 +232,22 @@ def initial_condition_fields(
     Raises
     ------
     TypeError
-        If *sites* is a string, or holds a value that is not a whole number.
+        If *sites* is a string, or holds a boolean or a value that is not a
+        number.
     ValueError
-        If a requested site is not in the pool, or is asked for twice.
+        If a requested site is not a whole number of at least 1, is not in
+        the pool, or is asked for twice.
     """
     if isinstance(names, str):
         names = [names]
     wanted_names = list(names) if names is not None else list(INITIAL_CONDITION_NAMES)
     for name in wanted_names:
         resolve_initial_condition(name)
-    if isinstance(sites, (int, np.integer)):
-        sites = [sites]
-    elif isinstance(sites, str):
-        raise TypeError(
-            f"sites={sites!r} is a string, which would be read one character per site. "
-            "Pass an integer or a sequence of integers."
-        )
-    wanted_sites = None if sites is None else [_site_id(site) for site in sites]
-    if wanted_sites is not None and len(set(wanted_sites)) != len(wanted_sites):
-        duplicates = sorted({site for site in wanted_sites if wanted_sites.count(site) > 1})
-        raise ValueError(
-            f"sites repeats {duplicates}. A repeated site makes the site coordinate "
-            "non-unique, and a table built from it cannot be addressed one cell at a "
-            "time."
-        )
+    # A repeated site would make the site coordinate non-unique, and a table
+    # built from it could not be addressed one cell at a time.
+    wanted_sites = None
+    if sites is not None:
+        wanted_sites = list(as_site_ids(sites, message_name="sites", allow_one_id=True))
 
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
@@ -264,17 +257,6 @@ def initial_condition_fields(
         dataset = dataset.sel({SITE: wanted_sites})
     return {name: dataset[name] for name in wanted_names}
 
-
-
-def _site_id(value: Any) -> int:
-    """A site identifier as an int, refusing anything that is not already whole."""
-    number = int(value)
-    if number != value:
-        raise TypeError(
-            f"site {value!r} is not a whole number; int() would silently truncate it to "
-            f"{number}, which is a different site."
-        )
-    return number
 
 
 def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:

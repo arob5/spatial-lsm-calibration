@@ -331,7 +331,7 @@ class TestLoadDrivers:
         assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
 
     def test_sites_come_back_ascending_whatever_order_is_given(self, root, sites_table):
-        dataset = load_drivers([7, 3, 7], root=root, sites_table=sites_table)
+        dataset = load_drivers([7, 3], root=root, sites_table=sites_table)
         np.testing.assert_array_equal(dataset["site"].values, [3, 7])
 
     def test_member_is_zero_based_and_source_member_index_is_the_file_index(self, root, sites_table):
@@ -353,17 +353,29 @@ class TestLoadDrivers:
         np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2, 5])
 
     def test_rejects_a_non_positive_member_index(self, root, sites_table):
-        with pytest.raises(ValueError, match="1-based.*within 1"):
+        with pytest.raises(ValueError, match="1-based.*positive integer"):
             load_drivers([3], members=[0], root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("members", [[1.5], "12", ["1", "2"], [True], [np.inf], [40000]])
-    def test_rejects_members_that_are_not_positive_integers(self, root, sites_table, members):
+    @pytest.mark.parametrize("members", [[1.5], "12", ["1", "2"], [True], [np.inf]])
+    def test_rejects_members_that_are_not_integers(self, root, sites_table, members):
+        with pytest.raises(TypeError, match="member indices"):
+            load_drivers([3], members=members, root=root, sites_table=sites_table)
+
+    @pytest.mark.parametrize("members", [[40000], []])
+    def test_rejects_members_out_of_range_or_none(self, root, sites_table, members):
         with pytest.raises(ValueError, match="member indices"):
             load_drivers([3], members=members, root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("sites", [3, [np.inf], [2**31], [1.5], ["3"], "3", []])
-    def test_rejects_sites_that_are_not_positive_integers(self, root, sites_table, sites):
-        with pytest.raises(ValueError, match="site identifiers"):
+    @pytest.mark.parametrize("sites", [3, ["3"], "3", [True]])
+    def test_rejects_sites_that_are_not_integers(self, root, sites_table, sites):
+        with pytest.raises(TypeError, match="sites"):
+            load_drivers(sites, root=root, sites_table=sites_table)
+
+    @pytest.mark.parametrize("sites", [[np.inf], [2**31], [1.5], [0], [], [3, 3]])
+    def test_rejects_sites_that_are_not_positive_whole_numbers_named_once(
+        self, root, sites_table, sites
+    ):
+        with pytest.raises(ValueError, match="site"):
             load_drivers(sites, root=root, sites_table=sites_table)
 
     def test_rejects_an_unusable_site_table(self, root, sites_table):

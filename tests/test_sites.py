@@ -618,7 +618,7 @@ class TestSelectSites:
             select_sites(ingested["table"], ids=[1, 99999])
 
     def test_a_repeated_id_raises(self, ingested):
-        with pytest.raises(ValueError, match="duplicate site ids"):
+        with pytest.raises(ValueError, match="more than once"):
             select_sites(ingested["table"], ids=[1, 1])
 
     def test_bbox_selects_the_conterminous_us(self, ingested):
@@ -992,7 +992,7 @@ class TestSelectByIdShape:
         assert list(select_sites(joined, ids=[1, 2]).columns) == list(joined.columns)
 
     def test_float_ids_are_rejected_rather_than_truncated(self, ingested):
-        with pytest.raises(ValueError, match="whole numbers"):
+        with pytest.raises(ValueError, match="whole number"):
             select_sites(ingested["table"], ids=[5.9, 1.2])
 
 
