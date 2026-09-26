@@ -140,8 +140,8 @@ written here adds it there and here first. The code is being brought into line
 with it by a series of PRs: PR 1 (the foundation: shared constants, coercion,
 file writing, site-table functions), PR 2 (batch dims), PR 3 (vocabulary
 renames), PR 4 (contracts and vectors: the aliases and their validators, the
-vector conventions), then module cleanups. Where the code
-does not follow a rule below yet, the rule says which PR changes it.
+vector conventions), then module cleanups. Where the code does not follow a
+rule below yet, the rule says which PR changes it.
 
 ### Glossary
 
@@ -197,7 +197,7 @@ and which the data-source cleanup (PR 5d) renames.
 | **Flat** | a vector's unlabeled numeric form: one vector `(D,)`/`(N,)`, or a batch `(n_samples, D)`/`(n_samples, N)`, called "batched Flat" where the shape matters | "block" |
 | **entry** | one position of a Flat vector | "column" (parameter vector), "cell" (observation vector) |
 | **segment** | the contiguous entries of one site, or one piece, in Flat | "block" in `forward.py` |
-| **SIPNET parameter fields** / `sipnet_parameter_fields` | the `xr.Dataset` of SIPNET parameter values over `(sample, site)` or `(site,)` | "SIPNET table", `table` for a Dataset |
+| **SIPNET parameter fields** / `sipnet_parameter_fields` | the `xr.Dataset` of SIPNET parameter values, one field per parameter with a `site` (`fields.SIPNETParameterFields`): on `(*batch, site)`, `(site,)`, or one run's with a scalar `site` | "SIPNET table", `table` for a Dataset |
 | **SIPNET overrides** / `sipnet_overrides` | one run's flat `dict[str, float]`, the keywords `SIPNETModel` takes | `sipnet_parameters` for this |
 | **SIPNET parameters** / `sipnet_parameters` | **only** a pySIPNET `SIPNETParameters` | the operator keyword of that name |
 | **table** | a pandas DataFrame, only | an `xr.Dataset` called a table |
@@ -293,8 +293,8 @@ The batch-dim rules:
   time coordinates, `time_bounds`, `bounds` and SIPNET's row labels; and an
   observation's window edges, `WINDOW_START` and `WINDOW_END`), since a batch
   dim of one of those names collides with that coordinate or is mistaken for it;
-  the vectors, `ForwardModel` and `stack_batch_dims(new_batch_dim=)` also refuse the data
-  source member names
+  the vectors, `ForwardModel` and `stack_batch_dims(new_batch_dim=)` also refuse
+  the data source member names
   (`fields.check_batch_dim_name_is_not_a_data_source_member`), since their
   labels are new indices; the parameter vector also refuses `shared`, `site_id`,
   its site-labels names, SIPNET parameter, calibration parameter and Fields
@@ -350,21 +350,27 @@ The batch-dim rules:
   `seed=42` must name it in `key_dims` or drop it), and `flat` gives one
   vector. An observation source refuses a batch dim, not a scalar batch label.
 
-`validate_field` is called at every public entry point that takes a field:
-every plotter first, as `stack_batch_dims` and `unstack_batch_dims` do; the
-time-alignment verbs; `ObservationSource` (through
-`validate_observed_values`); the operators' grid check and
-`ObservationVector.flat`/`predict` (on the array laid out by
+`validate_field` is called at these entry points: every plotter first, as
+`stack_batch_dims` and `unstack_batch_dims` do; the time-alignment verbs,
+`windows_from_observed_values` among them; the validators of the aliases below
+(`validate_model_output`, so `to_model_output`, `stack_model_outputs` on one
+time axis, `predict` and the operators' checks; `validate_observed_values`, so
+`ObservationSource`, `check_operator` and `restrict_to_observed_sites`;
+`validate_sipnet_parameter_fields`; `validate_calibration_fields`, so
+`ParameterVector.flat`); and the operators' grid check and
+`ObservationVector.flat`/`predict`, on the array laid out by
 `fields.in_field_layout`, which leaves an operator its own dim order and a
-scalar `site`); and the parameter vector's validators. Plotting stays strict:
+scalar `site`. `batch_dims`, `scalar_batch_labels` and the SIPNET parameter
+lookup's target field read labels only and do not validate. Plotting stays strict:
 a plotter takes only fields (`int32` `site` with `lon`/`lat`), with no
 leniency for a plot that would not need a location. **Model output**
 (`fields.ModelOutput`, checked by `fields.validate_model_output`) is an
 `xr.Dataset` of pySIPNET-named variables on one shared time axis, each
 variable a field; one run's has a scalar `site` and scalar batch labels
 (`fields.to_model_output(sipnet_output, output_variable_names=[...], site=,
-batch={"sample": 3})`, which takes a pySIPNET `SIPNETOutput` or its Dataset
-and drops `time_bounds` and SIPNET's row labels), a stack has `site` and
+batch={"sample": 3})`, which takes a pySIPNET `SIPNETResult`, `SIPNETOutput`
+or its Dataset and drops `time_bounds` and SIPNET's row labels, which
+`validate_model_output` refuses), a stack has `site` and
 batch dims (`fields.stack_model_outputs(runs, key_dims=("sample", "site"))`,
 keys in `key_dims` order, every batch label a run carries named in
 `key_dims`). `dict(model_output.data_vars)` is its dict form.
@@ -428,8 +434,8 @@ climate a `FrozenMapping`, its site table a copy); `ForwardEvaluation` is
 with a data source's ensemble reaches Flat through `stack_batch_dims` into a
 new batch dim (the parameter vector's `flat` takes the stacked Fields), and
 reaches `ForwardModel` as rows of `theta`, one per combination: it refuses
-SIPNET parameter fields on a second batch dim, with that advice. No base class is shared by the
-vectors: they share an interface, not an implementation, and their shared
+SIPNET parameter fields on a second batch dim, with that advice. No base class
+is shared by the vectors: they share an interface, not an implementation, and their shared
 coercion lives in `validation.py`.
 
 ### Where shared things live

@@ -6,7 +6,7 @@ Where this sits
 
     scripts/ingest_constraints.py                data/processed/constraints/*.nc
       -> constraints.constraint_fields()         observed values, (site[, time])
-      -> ObservationSource(...)                  this module: one source and its operator
+      -> ObservationSource(...)                  this module: a source and its operator
       -> ObservationVector(observation_sources=[...])
                                                  observation.vector: the vector
 
@@ -76,7 +76,8 @@ Usage
     from sipnet_calibration.constraints import constraint_fields
     from sipnet_calibration.observation import DEFAULT_OBS_OPS, ObservationSource
 
-    observed = constraint_fields(["modis_leaf_area_index"], sites=[1, 27])
+    # Two sites MODIS observes; sites 1 and 27 have no MODIS LAI.
+    observed = constraint_fields(["modis_leaf_area_index"], sites=[3851, 3871])
     source = ObservationSource(
         observation_source_name="modis_leaf_area_index",
         observed_values=observed["modis_leaf_area_index"],
@@ -154,7 +155,7 @@ type ObservedValues = xr.DataArray
 
 
 def validate_observed_values(observed_values: Any, *, message_name: str | None = None) -> None:
-    """Check that *observed_values* are observed values, raising on the first rule broken.
+    """Check that *observed_values* are observed values, raising on the first rule.
 
     Runs :func:`sipnet_calibration.fields.validate_field`, then
     :func:`check_observed_values_have_no_batch_dim`,
@@ -372,7 +373,7 @@ def check_observation_source_name_is_a_nonempty_string(observation_source_name: 
 
 
 def check_observation_source_name_is_not_reserved(observation_source_name: str) -> None:
-    """The observation source's name is none of :data:`RESERVED_OBSERVATION_SOURCE_NAMES`."""
+    """The source's name is none of :data:`RESERVED_OBSERVATION_SOURCE_NAMES`."""
     if observation_source_name in RESERVED_OBSERVATION_SOURCE_NAMES:
         raise ValueError(
             f"observation_source_name {observation_source_name!r} is reserved: the source's "

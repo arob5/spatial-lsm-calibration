@@ -25,7 +25,7 @@ observation source is built from arrays, and reads their attributes.
 
 What it reads
 -------------
-:class:`~sipnet_calibration.observation.source.ObservationSource`\ s, each
+:class:`~sipnet_calibration.observation.source.ObservationSource`\\ s, each
 holding one observation source's observed values
 (:data:`~sipnet_calibration.observation.source.ObservedValues`, a field on
 ``(site[, time])``) and its
@@ -44,11 +44,11 @@ observation source is built. A dict and not a Dataset, since each source is
 on its own time grid.
 
 **Flat**: ``y`` in ``R^N``, a ``float64`` ``jax.Array``, finite, one entry per
-observation; predictions are ``(N,)`` or ``(J, N)`` ``jax.Array``\ s, where a
+observation; predictions are ``(N,)`` or ``(J, N)`` ``jax.Array``\\ s, where a
 ``NaN`` marks a failed run. Every method taking Flat accepts any array-like.
 
 **The index**: a ``pandas.MultiIndex`` with levels
-``(site, observation_source, time)`` -- ``site`` ``int64``,
+``(site, observation_source, time)`` -- ``site`` ``int32`` as the ``site`` dim is,
 ``observation_source`` a string, ``time`` ``datetime64[ns]`` -- one row per
 observation, in Flat order: **site-major**, sites ascending, then observation
 sources in declaration order, then times ascending. A static source's
@@ -111,7 +111,7 @@ Usage
     )
 
     names = ["modis_leaf_area_index", "landtrendr_aboveground_biomass"]
-    observed = constraint_fields(names, sites=sites)
+    observed = constraint_fields(names, sites=[3851, 3871])  # sites both observe
     vector = ObservationVector(observation_sources=[
         ObservationSource(
             observation_source_name="modis_leaf_area_index",
@@ -270,9 +270,9 @@ class ObservationVector:
 
     @property
     def site_table(self) -> pd.DataFrame:
-        """The site table of :attr:`sites`: ``site_id`` (``int32``), ``lon`` and ``lat``.
+        """The site table of :attr:`sites`: ``site_id`` (``int32``), ``lon``, ``lat``.
 
-        A new frame on every access, read off the observed values'
+        A new table on every access, read off the observed values'
         locations.
         """
         lon, lat = self._locations
@@ -525,14 +525,14 @@ class ObservationVector:
         Parameters
         ----------
         fields:
-            A mapping from every observation source name to an array on that
-            source's ``site`` and ``time`` labels, with or without one batch
-            dim (of any name, the same in every array), in any dimension
-            order. An array may be larger than the observed values (a
-            prediction over more sites or times); only the vector's
-            observations are read, by label. A
-            scalar batch coordinate is not a batch dim: such arrays give one
-            vector.
+            A mapping from every observation source name to a field
+            (:mod:`sipnet_calibration.fields`: ``int32`` ``site`` with
+            ``lon``/``lat``, ``units``) on that source's ``site`` and ``time``
+            labels, in any dim order, with a ``site`` dim or a scalar ``site``,
+            and at most one batch dim, the same in every array. An array may
+            cover more sites or times than the source observes; only the
+            vector's observations are read, by label. A scalar batch coordinate
+            is not a batch dim: such arrays give one vector.
 
         Returns
         -------
@@ -546,17 +546,13 @@ class ObservationVector:
         TypeError
             If *fields* is not a mapping, or an entry is not a ``DataArray``.
         ValueError
-            If an observation source is missing; if an array lacks an
-            observed site or time label, or a ``site`` or ``time`` dimension
-            the source has;
-            if an array has a dim that is neither a batch dim (integer
-            labels), a spatial dim nor ``time``; if an array has more than
-            one batch dim (stack each into a new one first,
-            ``{name: stack_batch_dims(array, new_batch_dim="run") for name, array in
-            fields.items()}``, with
-            :func:`sipnet_calibration.fields.stack_batch_dims`); or if some
-            arrays carry a batch dim and others do not, they carry different
-            ones, or they disagree on its labels.
+            If an observation source is missing; if an array, laid out by
+            :func:`~sipnet_calibration.fields.in_field_layout`, is not a field
+            (:func:`~sipnet_calibration.fields.validate_field`); if it lacks an
+            observed site or time label; if it has more than one batch dim
+            (stack them into a new one first,
+            :func:`~sipnet_calibration.fields.stack_batch_dims`); or if the
+            arrays disagree on their batch dim or its labels.
         """
         check_fields_hold_the_observation_sources(fields, self.observation_source_names)
         arrays = {}
@@ -739,7 +735,7 @@ def _source_restricted_to(
 def _site_locations_of(
     observation_sources: Sequence[ObservationSource], sites: Sequence[int]
 ) -> tuple[tuple[float, ...], tuple[float, ...]]:
-    """The ``lon`` and ``lat`` of each of *sites*, as tuples, from the observed values."""
+    """The ``lon`` and ``lat`` of each of *sites*, as tuples, from the sources."""
     lon = np.full(len(sites), np.nan)
     lat = np.full(len(sites), np.nan)
     position = {site: k for k, site in enumerate(sites)}
@@ -762,7 +758,11 @@ def _build_index(observation_sources: Sequence[ObservationSource]) -> pd.MultiIn
     table = pd.concat(frames, ignore_index=True)
     table = table.sort_values([SITE, "_order", TIME], kind="stable", na_position="first")
     return pd.MultiIndex.from_arrays(
-        [table[SITE].to_numpy(), table[OBSERVATION_SOURCE].to_numpy(), table[TIME].to_numpy()],
+        [
+            table[SITE].to_numpy(SITE_DTYPE),
+            table[OBSERVATION_SOURCE].to_numpy(),
+            table[TIME].to_numpy(),
+        ],
         names=INDEX_LEVELS,
     )
 

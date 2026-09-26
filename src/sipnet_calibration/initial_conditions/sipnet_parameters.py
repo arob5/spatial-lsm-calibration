@@ -241,7 +241,8 @@ def to_sipnet_initial_condition_fields(
     into a parameter vector's once the variables both set are dropped from one
     (``xr.merge([vector.sipnet_parameter_fields(theta),
     initial_condition_fields.drop_vars(both)])``, where ``both`` is
-    ``soil_carbon`` for :func:`~sipnet_calibration.parameter_vector.example_parameter_vector`).
+    ``soil_carbon`` for
+    :func:`~sipnet_calibration.parameter_vector.example_parameter_vector`).
 
     Parameters
     ----------
@@ -515,7 +516,7 @@ def _with_every_inputs_coordinates(broadcast: list[xr.DataArray]) -> xr.DataArra
 
 
 def _with_unlabeled_batch_dims_labeled(array: xr.DataArray) -> xr.DataArray:
-    """*array* with every dim but ``site`` that carries no coordinate labeled ``0..n-1``.
+    """*array* with every unlabeled dim but ``site`` labeled ``0..n-1``.
 
     Such a dim was matched by position, and its labels say so. An unlabeled
     ``site`` is left for the result's validation to refuse, since a position

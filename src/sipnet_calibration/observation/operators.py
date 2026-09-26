@@ -36,8 +36,7 @@ parameters it reads (so the forward model can supply them, from the run's own
 * ``sipnet_parameter_fields`` is the
   :data:`~sipnet_calibration.fields.SIPNETParameterFields` the runs
   used: on ``(*batch, site)`` or ``(site,)`` for a stack, or with no dim and a
-  scalar ``site`` for one run. It is the one form SIPNET parameter values take
-  here; there is no mapping form.
+  scalar ``site`` for one run.
 * The result is on ``observed_values``' ``site`` and ``time`` grid, with the
   model output's batch dims if any and no dim that neither the model output nor
   the observed values have, and carries ``units`` and, where the quantity has
@@ -499,8 +498,8 @@ def check_operator(
 
     Checks that the declared names are pySIPNET registry names, not aliases,
     that *model_output* is a model output carrying the variables, and that
-    *sipnet_parameter_fields* are given where parameters are read; that the result is on *observed_values*'
-    grid and carries ``units``; and, when *model_output* has a ``site`` dim
+    *sipnet_parameter_fields* are given where parameters are read; that the
+    result is on *observed_values*' grid and carries ``units``; and, when *model_output* has a ``site`` dim
     or batch dims of two labels or more, that the operator is pointwise: its
     value on the stack equals, label by label, its value on the last slice of
     each of those dims alone.
@@ -752,7 +751,7 @@ def check_model_output_carries_what_is_read(
     sipnet_parameter_fields: Any,
     message_name: str = "the operators",
 ) -> None:
-    """The model output is one and carries what is read; the parameters are given if read.
+    """The model output is one and carries what is read, with the parameters read.
 
     Runs :func:`~sipnet_calibration.fields.validate_model_output`,
     :func:`check_model_output_has_the_variables`, and, when SIPNET parameters
@@ -839,8 +838,8 @@ def check_result_is_on_the_observation_grid(
     ValueError
         If it has a dim that neither the model output nor the observed values
         have; lacks a batch dim of the model output, or carries other labels
-        on it (a mean over ``sample``, a selection, a relabeling); is not on the observed
-        values' sites, in order, whether ``site`` is a dimension or a scalar;
+        on it (a mean over ``sample``, a selection, a relabeling); is not on
+        the observed values' sites, in order, whether ``site`` is a dimension or a scalar;
         or is not on the observed values' ``time`` labels (compared as
         instants, whatever their datetime units), or has a ``time`` dimension
         for static observed values; or if, laid out as a field
@@ -870,7 +869,7 @@ def check_result_is_a_dataarray(result: Any, message_name: str) -> None:
 def check_result_adds_no_dim(
     result: xr.DataArray, observed_values: xr.DataArray, model_output: xr.Dataset, message_name: str
 ) -> None:
-    """An operator's result has no dim that neither the model output nor the observed values have."""
+    """An operator's result adds no dim to the model output's and the observed values'."""
     added = [
         str(d) for d in result.dims if d not in model_output.dims and d not in observed_values.dims
     ]
@@ -885,7 +884,7 @@ def check_result_adds_no_dim(
 def check_result_keeps_the_batch_dims(
     result: xr.DataArray, model_output: xr.Dataset, message_name: str
 ) -> None:
-    """An operator's result keeps every batch dim of the model output, with its labels in order."""
+    """An operator's result keeps the model output's batch dims and their labels."""
     for dim in batch_dims(model_output):
         if dim not in result.dims:
             raise ValueError(

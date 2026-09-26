@@ -117,7 +117,7 @@ The data model
 Two aliases name the forms this module owns, each checked by one validator:
 
 :data:`Field` (``xr.DataArray``)
-    One variable under the field contract below; :func:`validate_field`.
+    One variable under the field contract above; :func:`validate_field`.
 :data:`ModelOutput` (``xr.Dataset``)
     SIPNET's output under pySIPNET's variable names, on one shared ``time``
     axis, every variable a field; :func:`validate_model_output`. One run's
@@ -807,12 +807,13 @@ def stack_batch_dims(field: xr.DataArray, *, new_batch_dim: str) -> xr.DataArray
     xarray.DataArray
         *field* on ``(new_batch_dim, space, time)``: *new_batch_dim* is
         labeled ``0`` to ``n - 1`` (``int64``) in C order over the batch dims
-        as *field* has them, the last varying fastest, and its coordinate records them in
-        :data:`STACKED_DIMS_ATTRIBUTE`. Each stacked dim's labels are kept,
+        as *field* has them, the last varying fastest, and its coordinate
+        records them in :data:`STACKED_DIMS_ATTRIBUTE`. Each stacked dim's labels are kept,
         with their attributes, as a non-dim coordinate on *new_batch_dim* named
         ``<dim>_label`` (:data:`STACKED_LABEL_SUFFIX`); a coordinate that was
         on stacked dims alone, such as ``source_index``, is on
-        *new_batch_dim* too and recorded in :data:`STACKED_COMPANIONS_ATTRIBUTE`. That is what
+        *new_batch_dim* too and recorded in
+        :data:`STACKED_COMPANIONS_ATTRIBUTE`. That is what
         :func:`unstack_batch_dims` reverses it by. The result is checked to
         be a field (:func:`validate_field`).
 
@@ -967,9 +968,9 @@ def to_model_output(
         a Dataset, from ``result.outputs.select(names)``.
     output_variable_names:
         The variables to take: pySIPNET's names or aliases (``"nee"``), in
-        the order wanted, repeats dropped. Required for a ``SIPNETOutput``,
-        which is read only for these columns; for a Dataset, every variable
-        when omitted.
+        the order wanted, repeats dropped. Required for a ``SIPNETResult`` or
+        a ``SIPNETOutput``, which is read only for these columns; for a
+        Dataset, every variable when omitted.
     site:
         The site id this run is for, or ``None`` when the run is not at a
         site of the site table.
@@ -999,8 +1000,8 @@ def to_model_output(
     ------
     TypeError
         If *run_output* is neither a ``SIPNETResult``, a ``SIPNETOutput`` nor
-        an ``xr.Dataset``; a ``SIPNETOutput`` is given without
-        *output_variable_names*; *output_variable_names* is one string, a set
+        an ``xr.Dataset``; a ``SIPNETResult`` or ``SIPNETOutput`` is given
+        without *output_variable_names*; *output_variable_names* is one string, a set
         or holds a name that is not a string; *site* or a batch label is a
         boolean, a float or not an integer; *batch* is not a mapping or a dim
         name is not a string; or *site_table* is not a ``DataFrame``.
@@ -1061,9 +1062,9 @@ def stack_model_outputs(
         form a full rectangle; a combination left out reads as ``NaN``.
     output_variable_names:
         The variables to take from each run, as :func:`to_model_output` takes
-        them: required when a run is a ``SIPNETOutput``, which is read one
-        run at a time for these columns only; every variable of each Dataset
-        when omitted.
+        them: required when a run is a ``SIPNETResult`` or ``SIPNETOutput``,
+        which is read one run at a time for these columns only; every
+        variable of each Dataset when omitted.
     key_dims:
         What each position of a key labels: ``site`` once, and a batch dim
         name for every other position, such as ``("sample", "site")`` or
@@ -1093,7 +1094,8 @@ def stack_model_outputs(
     TypeError
         If *model_outputs* is not a mapping, or a value is neither a
         ``SIPNETResult``, a ``SIPNETOutput`` nor an ``xr.Dataset``; if a
-        ``SIPNETOutput`` is given without *output_variable_names*; if
+        ``SIPNETResult`` or ``SIPNETOutput`` is given without
+        *output_variable_names*; if
         *output_variable_names* or *key_dims* is not an ordered sequence of
         names; if a key is not a tuple, or a label in one is a boolean, a
         float or not an integer; or if *site_table* is not a ``DataFrame``.
@@ -1518,7 +1520,7 @@ def _output_of(output: SIPNETResult | SIPNETOutput) -> SIPNETOutput:
 def _run_output_dataset(
     run_output: Any, output_variable_names: Sequence[str] | None
 ) -> xr.Dataset:
-    """A run's variables as a Dataset: selected from a ``SIPNETOutput``, or the Dataset given.
+    """A run's variables as a Dataset: from a ``SIPNETOutput``, or the Dataset given.
 
     A Dataset is narrowed to *output_variable_names* when they are given.
     """
@@ -1697,7 +1699,7 @@ def check_model_output_has_a_variable(model_output: xr.Dataset, message_name: st
 def check_model_output_carries_no_bounds_or_row_labels(
     model_output: xr.Dataset, message_name: str
 ) -> None:
-    """A model output carries no ``time_bounds``, ``bounds`` dim or attribute, or row labels."""
+    """A model output carries no ``time_bounds``, ``bounds`` or SIPNET row labels."""
     carried = [
         name
         for name in (TIME_BOUNDS, *SIPNET_ROW_LABEL_NAMES)

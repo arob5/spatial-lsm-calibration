@@ -174,12 +174,12 @@ SIPNET parameter      PyEns grids        ``pyens.xarray.fields_from_dataset``   
 fields
 ===================== ================== ====================================== ==========
 
-:meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
-variables and sites the vector needs (others are ignored, so a larger
-vector's Fields project onto a smaller one), finiteness, and that each
-group's value agrees across its sites, and that each natural value is in the
-image of its bijector (inside the prior's support; simplex components summing
-to 1). Nothing converts SIPNET parameter fields back.
+:meth:`~ParameterVector.flat` checks that its input is Fields
+(:func:`validate_calibration_fields`, every variable), reads the variables
+and sites the vector needs (a larger vector's Fields project onto a smaller
+one), and refuses what no Flat vector represents: a non-finite value, a
+group's value differing between its sites, a natural value outside the
+image of its bijector. Nothing converts SIPNET parameter fields back.
 
 .. [1] Up to float64 rounding, which near a logit bound grows: the inverse
    of a fraction within about ``1e-12`` of 0 or 1 loses digits, and one that
@@ -215,8 +215,8 @@ are its calibration parameters (``vector[name]``, ``name in vector``,
 calibration parameter, ``describe_entries()`` one per entry, ``summary()``
 the same as text, and a one-line ``repr``.
 
-Constants: :data:`REQUIRED_SIPNET_PARAMETER_NAMES`; :data:`INDEX_LEVELS`; :data:`NATURAL`,
-:data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
+Constants: :data:`REQUIRED_SIPNET_PARAMETER_NAMES`; :data:`INDEX_LEVELS`;
+:data:`NATURAL`, :data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
 :data:`FIELDS_REPRESENTATION` and :data:`SIPNET_PARAMETER_FIELDS_REPRESENTATION`, the
 ``representation`` attribute of each dataset.
 
@@ -1298,7 +1298,7 @@ class Layout:
 
     @cached_property
     def slices(self) -> Mapping[str, slice]:
-        """The contiguous slice of ``theta`` each calibration parameter owns, read-only."""
+        """The contiguous slice of ``theta`` each calibration parameter owns."""
         out, start = {}, 0
         for name in self.parameter_names:
             width = len(self.groups[name]) * self.sizes[name]
@@ -1575,7 +1575,7 @@ class ParameterVector:
         return len(self.parameters)
 
     def __repr__(self) -> str:
-        """One line; :meth:`summary` is the table, :meth:`describe` the frame."""
+        """One line; :meth:`summary` and :meth:`describe` are the tables."""
         return (
             f"ParameterVector(D={self.dimension}, parameters={list(self.parameter_names)}, "
             f"sites={len(self.sites)})"
@@ -1585,6 +1585,72 @@ class ParameterVector:
         """The vector as text: one line per calibration parameter, then the
         fixed and unset SIPNET parameters."""
         return _summary(self)
+
+    def describe(self) -> pd.DataFrame:
+        """One row per calibration parameter, indexed by ``parameter``.
+
+        Columns: ``varies_by``, ``groups`` (their number), ``size`` (entries
+        per group), ``entries`` (of Flat), ``distribution``,
+        ``joint_over_groups``, ``sipnet_parameter_names_written`` (comma
+        separated) and ``provenance``. :meth:`describe_entries` is one row per
+        entry, :meth:`summary` the same as text.
+        """
+        rows = [
+            {
+                "parameter": p.name,
+                "varies_by": p.varies_by or SHARED,
+                "groups": self.n_groups(p.varies_by),
+                "size": p.size,
+                "entries": self.n_groups(p.varies_by) * p.size,
+                "distribution": p.distribution_name,
+                "joint_over_groups": p.is_joint,
+                "sipnet_parameter_names_written": ", ".join(
+                    p.sipnet_map.sipnet_parameter_names_written
+                ),
+                "provenance": p.provenance,
+            }
+            for p in self.parameters
+        ]
+        return pd.DataFrame(rows).set_index("parameter")
+
+    def describe_entries(self) -> pd.DataFrame:
+        """One row per entry of ``theta``, on :attr:`index`, with the prior's moments.
+
+        Columns: ``sipnet_parameter_names_written``, ``distribution``, ``theta_mean``,
+        ``theta_sd``, ``natural_median``, ``natural_2.5``, ``natural_97.5``,
+        ``theta_moments`` (``"analytic"`` or ``"monte_carlo"``) and
+        ``provenance``. Natural quantiles are NaN for a vector-valued or
+        joint prior, where a marginal quantile would misrepresent a simplex
+        or is not available from TFP.
+        """
+        rows = []
+        for parameter in self.parameters:
+            groups = self.group_labels(parameter.varies_by)
+            moments = self._describe_moments(parameter)
+            quantiles = self._describe_quantiles(parameter)
+            for g, group in enumerate(groups):
+                for e, element in enumerate(parameter.element_labels):
+                    rows.append(
+                        {
+                            "parameter": parameter.name,
+                            "group": group,
+                            "element": element,
+                            "sipnet_parameter_names_written": ", ".join(
+                                parameter.sipnet_map.sipnet_parameter_names_written
+                            ),
+                            "distribution": parameter.distribution_name,
+                            "theta_mean": moments[0][g, e],
+                            "theta_sd": moments[1][g, e],
+                            "natural_median": quantiles[0][g],
+                            "natural_2.5": quantiles[1][g],
+                            "natural_97.5": quantiles[2][g],
+                            "theta_moments": (
+                                "analytic" if parameter.has_analytic_moments else "monte_carlo"
+                            ),
+                            "provenance": parameter.provenance,
+                        }
+                    )
+        return pd.DataFrame(rows, index=self.index).drop(columns=list(INDEX_LEVELS))
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
@@ -1791,7 +1857,7 @@ class ParameterVector:
     def positions(
         self, *, parameter_name: str | None = None, group: Any = None, element: str | None = None
     ) -> np.ndarray:
-        """Where in Flat the entries of a calibration parameter, a group or an element sit.
+        """Where in Flat a calibration parameter's, a group's or an element's entries sit.
 
         Parameters
         ----------
@@ -1841,75 +1907,6 @@ class ParameterVector:
             check_label_is_the_vectors(element, elements, "an element")
             mask &= _labels_equal(elements, element)
         return np.flatnonzero(mask).astype(np.int64)
-
-    def describe(self) -> pd.DataFrame:
-        """One row per calibration parameter, indexed by ``parameter``.
-
-        Columns: ``varies_by``, ``groups`` (their number), ``size`` (entries
-        per group), ``entries`` (of Flat), ``distribution``,
-        ``joint_over_groups``, ``sipnet_parameter_names_written`` (comma
-        separated) and ``provenance``. :meth:`describe_entries` is one row per
-        entry, :meth:`summary` the same as text.
-        """
-        rows = [
-            {
-                "parameter": p.name,
-                "varies_by": p.varies_by or SHARED,
-                "groups": self.n_groups(p.varies_by),
-                "size": p.size,
-                "entries": self.n_groups(p.varies_by) * p.size,
-                "distribution": p.distribution_name,
-                "joint_over_groups": p.is_joint,
-                "sipnet_parameter_names_written": ", ".join(
-                    p.sipnet_map.sipnet_parameter_names_written
-                ),
-                "provenance": p.provenance,
-            }
-            for p in self.parameters
-        ]
-        return pd.DataFrame(rows).set_index("parameter")
-
-    def describe_entries(self) -> pd.DataFrame:
-        """One row per entry of ``theta``, indexed by ``entry``, with the prior's moments.
-
-        Columns: ``parameter``, ``group``, ``element`` (the levels of
-        :attr:`index`), ``sipnet_parameter_names_written``, ``distribution``, ``theta_mean``,
-        ``theta_sd``, ``natural_median``, ``natural_2.5``, ``natural_97.5``,
-        ``theta_moments`` (``"analytic"`` or ``"monte_carlo"``) and
-        ``provenance``. Natural quantiles are NaN for a vector-valued or
-        joint prior, where a marginal quantile would misrepresent a simplex
-        or is not available from TFP.
-        """
-        rows = []
-        for parameter in self.parameters:
-            groups = self.group_labels(parameter.varies_by)
-            moments = self._describe_moments(parameter)
-            quantiles = self._describe_quantiles(parameter)
-            for g, group in enumerate(groups):
-                for e, element in enumerate(parameter.element_labels):
-                    rows.append(
-                        {
-                            "parameter": parameter.name,
-                            "group": group,
-                            "element": element,
-                            "sipnet_parameter_names_written": ", ".join(
-                                parameter.sipnet_map.sipnet_parameter_names_written
-                            ),
-                            "distribution": parameter.distribution_name,
-                            "theta_mean": moments[0][g, e],
-                            "theta_sd": moments[1][g, e],
-                            "natural_median": quantiles[0][g],
-                            "natural_2.5": quantiles[1][g],
-                            "natural_97.5": quantiles[2][g],
-                            "theta_moments": (
-                                "analytic" if parameter.has_analytic_moments else "monte_carlo"
-                            ),
-                            "provenance": parameter.provenance,
-                        }
-                    )
-        frame = pd.DataFrame(rows)
-        frame.index.name = "entry"
-        return frame
 
     # ── representations ───────────────────────────────────────────────────────
 
@@ -2071,8 +2068,9 @@ class ParameterVector:
             alike, on ``(batch_dim, site)`` or ``(site,)``, each carrying
             pySIPNET's ``ParameterSpec.xarray_attributes()`` (``units``,
             ``long_name``, ``description``, ``sipnet_name`` and, where
-            pySIPNET declares one, ``constituent``) and ``set_by``. :attr:`unset_sipnet_parameter_names`
-            are absent and take the base parameter set's values at the run.
+            pySIPNET declares one, ``constituent``) and ``set_by``.
+            :attr:`unset_sipnet_parameter_names` are absent and take the base
+            parameter set's values at the run.
 
         Raises
         ------
@@ -3120,7 +3118,7 @@ def _fields_attributes(
 
 
 def _summary(vector: ParameterVector) -> str:
-    """The text of ``repr(vector)``."""
+    """The text of :meth:`ParameterVector.summary`."""
     site_count = len(vector.sites)
     labels = "; ".join(
         f"{name} {{{', '.join(map(str, vector.group_labels(name)))}}}"
@@ -3274,7 +3272,7 @@ def check_group_label_is_not_a_bool_or_a_float(group: Any) -> None:
 def check_label_is_the_parameters(
     label: Any, labels: Sequence[Any], what: str, parameter_name: str
 ) -> None:
-    """A group or element label asked for, if any, is one of the calibration parameter's."""
+    """A group or element label asked for, if any, is the calibration parameter's."""
     if label is not None and not _labels_equal(list(labels), label).any():
         raise KeyError(
             f"{label!r} is not {what} of calibration parameter {parameter_name!r}; it has "

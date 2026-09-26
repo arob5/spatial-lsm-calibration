@@ -103,7 +103,7 @@ Functions
 
 Notes
 -----
-**Flat is JAX.** ``theta``, the predictions and ``valid`` are ``jax.Array``\ s,
+**Flat is JAX.** ``theta``, the predictions and ``valid`` are ``jax.Array``\\ s,
 as the parameter and observation vectors' Flat is; every method accepts any
 array-like. The runs themselves are placed in NumPy and converted on return.
 
@@ -368,8 +368,7 @@ class ForwardModel:
         :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
         an observation source name of the observation vector or a
         coordinate of one's observed values. Each is refused here, before
-        anything runs. Read-only, as every argument is
-        once the model is built, since the default hook is bound to it.
+        anything runs.
 
     Raises
     ------
@@ -518,7 +517,7 @@ class ForwardModel:
 
     @property
     def sipnet_parameter_names_written(self) -> tuple[str, ...]:
-        """The SIPNET parameters the SIPNET-parameter-fields hook writes, fixed at construction."""
+        """The SIPNET parameters the hook writes, fixed at construction."""
         return self._sipnet_parameter_names_written
 
     @property
@@ -1041,7 +1040,7 @@ def check_base_parameters_set_what_the_operators_read(
 
 
 def check_run_result_carries_its_parameters(sipnet_parameters: Any) -> None:
-    """A run's result carries the parameters it ran with, as ``SIPNETResult.parameters``."""
+    """A run's result carries the parameters it ran with, as ``.parameters``."""
     if not isinstance(sipnet_parameters, SIPNETParameters):
         raise TypeError(
             "the model's result carries no SIPNETParameters as .parameters, got "

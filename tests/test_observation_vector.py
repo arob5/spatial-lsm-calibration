@@ -1235,3 +1235,7 @@ class TestSelectAndFlatRefuseInTheirOwnWords:
             for name, array in vector.fields(vector.y).items()
         }
         np.testing.assert_array_equal(vector.flat(fields), vector.y)
+
+
+def test_the_index_site_level_is_int32_as_the_site_dim_is(vector):
+    assert vector.index.get_level_values("site").dtype == np.int32

@@ -58,3 +58,17 @@ def test_the_operators_type_hints_resolve():
 
     for annotated in (ObservationOperator.__call__, check_operator, ObservationSource):
         assert typing.get_type_hints(annotated)
+
+
+def test_every_module_compiles_without_a_warning():
+    """Four docstrings wrote an invalid escape, which Python 3.14 warns about."""
+    import warnings
+    from pathlib import Path
+
+    import sipnet_calibration
+
+    root = Path(sipnet_calibration.__file__).parent
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for path in sorted(root.rglob("*.py")):
+            compile(path.read_text(), str(path), "exec")

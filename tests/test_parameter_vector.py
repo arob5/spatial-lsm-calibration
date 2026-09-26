@@ -771,10 +771,10 @@ def test_distinct_groups_are_gathered_onto_the_right_sites():
     np.testing.assert_allclose(sipnet_parameter_fields["leaf_allocation"].values, [0.1, 0.4, 0.1], rtol=1e-12)
     np.testing.assert_allclose(sipnet_parameter_fields["fine_root_allocation"].values, [0.3, 0.2, 0.3], rtol=1e-12)
     frame = p.describe_entries()
-    soil = frame[frame["parameter"] == "soil"]
+    soil = frame.xs("soil", level="parameter")
     np.testing.assert_allclose(soil["natural_median"], [100.0, 200.0, 300.0])
     np.testing.assert_allclose(soil["theta_sd"], np.log([1.5, 2.0, 2.5]))
-    assert list(soil["group"]) == list(SITES)
+    assert list(soil.index.get_level_values("group")) == list(SITES)
 
 
 def test_prior_draws_land_in_every_domain(example):
@@ -1058,21 +1058,22 @@ def test_sites_with_and_parameter_lookup(example):
 def test_describe_has_one_row_per_column(example):
     frame = example.describe_entries()
     assert len(frame) == 14
-    assert list(frame["parameter"]) == [example.layout.entry_labels[i].split("[")[0] for i in range(14)]
+    parameters = frame.index.get_level_values("parameter")
+    assert list(parameters) == [example.layout.entry_labels[i].split("[")[0] for i in range(14)]
     assert (frame["provenance"].str.len() > 0).all()
     assert set(frame["distribution"]) == {
         "product of transformed Gaussians", "softmax-normal", "log-normal", "logit-normal",
     }
     assert (frame["theta_moments"] == "analytic").all()
-    soil = frame[frame["parameter"] == "base_soil_respiration"].iloc[0]
+    soil = frame.xs("base_soil_respiration", level="parameter").iloc[0]
     assert soil["natural_2.5"] == pytest.approx(0.004) and soil["natural_97.5"] == pytest.approx(0.020)
     ln = example["base_soil_respiration"].prior.distribution
     assert soil["theta_mean"] == pytest.approx(float(ln.loc)) and soil["theta_sd"] == pytest.approx(float(ln.scale))
     assert soil["sipnet_parameter_names_written"] == "base_soil_respiration_rate"
-    assert frame.index.name == "entry"
-    assert list(zip(frame["parameter"], frame["group"], frame["element"])) == example.index.tolist()
-    assert np.isnan(frame[frame["parameter"] == "allocation"]["natural_median"]).all()
-    assert frame[frame["parameter"] == "initial_soil_carbon"]["group"].tolist() == list(SITES)
+    assert frame.index.equals(example.index)
+    assert np.isnan(frame.xs("allocation", level="parameter")["natural_median"]).all()
+    soil_carbon = frame.xs("initial_soil_carbon", level="parameter")
+    assert soil_carbon.index.get_level_values("group").tolist() == list(SITES)
 
 
 def test_describe_has_one_row_per_calibration_parameter(example):
@@ -1307,7 +1308,7 @@ def test_a_joint_prior_is_one_dense_block_of_the_gaussian_and_converts_like_any_
     np.testing.assert_allclose(vector.flat(fields), theta, rtol=1e-10, atol=1e-10)
     np.testing.assert_allclose(vector.sipnet_parameter_fields(theta)["soil_carbon"], np.exp(theta[:, :3]), rtol=1e-12)
     frame = vector.describe_entries()
-    soil = frame[frame["parameter"] == "soil"]
+    soil = frame.xs("soil", level="parameter")
     np.testing.assert_allclose(soil["theta_sd"], np.sqrt(np.diag(COVARIANCE)))
     assert soil["natural_median"].isna().all()
 
