@@ -1,4 +1,4 @@
-"""The processed product: the ensemble in the project's own names and shape.
+"""The processed file: the ensemble in the project's own names and shape.
 
 ``data/processed/initial_conditions.nc`` is what the rest of the project
 reads. It is the raw file transposed onto ``(initial_condition_member, site)``,
@@ -12,14 +12,14 @@ coordinates, attributes and what ``NaN`` means.
 Contents
 --------
 :func:`build_initial_conditions`
-    Raw Dataset to product. Pure; ``scripts/ingest_initial_conditions.py``
+    Raw Dataset to processed Dataset. Pure; ``scripts/ingest_initial_conditions.py``
     adds the checks and the write.
 :func:`netcdf_encoding`
     How it is stored.
 :func:`load_initial_conditions`
     Read it and check it against the specs.
 :func:`initial_condition_fields`
-    The product as one field per variable.
+    The processed file as one field per variable.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from sipnet_calibration.fields import batch_coordinate
 from sipnet_calibration.initial_conditions.names import (
     RAW_FILE,
     RAW_MEMBER,
-    default_product_path,
+    default_processed_path,
 )
 from sipnet_calibration.initial_conditions.raw import (  # a shared package internal
     _check_presence_is_uniform_over_members,
@@ -76,7 +76,7 @@ __all__ = [
 
 
 def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Dataset:
-    """Turn the raw Dataset into the processed product the data model describes.
+    """Turn the raw Dataset into the processed Dataset the data model describes.
 
     Parameters
     ----------
@@ -132,11 +132,11 @@ def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Da
         SOURCE_INDEX: (INITIAL_CONDITION_MEMBER, source_index, dict(SOURCE_INDEX_ATTRIBUTES)),
         **site_coordinates(pool.tolist(), site_table),
     }
-    return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(raw))
+    return xr.Dataset(data_vars, coords=coords, attrs=_dataset_attributes(raw))
 
 
 def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
-    """The on-disk encoding of the product: compressed, ``NaN`` as the fill,
+    """The on-disk encoding of the processed file: compressed, ``NaN`` as the fill,
     no ``_FillValue`` on any coordinate, as CF requires."""
     encoding: dict[str, dict[str, Any]] = {
         name: {"zlib": True, "complevel": 4, "_FillValue": np.nan}
@@ -148,13 +148,13 @@ def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
 
 
 def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
-    """Read the processed product and check it against the specs.
+    """Read the processed file and check it against the specs.
 
     Parameters
     ----------
     path:
         The netCDF to read. Defaults to
-        :func:`sipnet_calibration.initial_conditions.names.default_product_path`.
+        :func:`sipnet_calibration.initial_conditions.names.default_processed_path`.
 
     Returns
     -------
@@ -168,7 +168,7 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     ValueError
         If the file does not match the data model.
     """
-    path = Path(path) if path is not None else default_product_path()
+    path = Path(path) if path is not None else default_processed_path()
     if not path.is_file():
         raise FileNotFoundError(
             f"{path} is not a file. Produce it with:\n  python scripts/ingest_initial_conditions.py"
@@ -178,7 +178,7 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     except OSError as error:
         raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error})") from error
     try:
-        _check_product(dataset, path)
+        _check_processed_file_matches_the_data_model(dataset, path)
     except Exception:
         dataset.close()
         raise
@@ -202,8 +202,8 @@ def initial_condition_fields(
         Site ids to keep, a sequence, in the order given, each once.
         Defaults to the whole pool.
     path:
-        The product to read. Defaults to
-        :func:`sipnet_calibration.initial_conditions.names.default_product_path`.
+        The processed file to read. Defaults to
+        :func:`sipnet_calibration.initial_conditions.names.default_processed_path`.
 
     Returns
     -------
@@ -221,7 +221,7 @@ def initial_condition_fields(
         twice, or *sites* is a two-dimensional array.
     KeyError
         If a name is not an initial condition, or a requested site is not in
-        the product.
+        the processed file.
     """
     wanted_names = (
         INITIAL_CONDITION_NAMES if names is None else as_names(names, message_name="names")
@@ -234,17 +234,17 @@ def initial_condition_fields(
 
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
-        check_product_holds_the_sites(dataset, wanted_sites)
+        check_initial_conditions_hold_the_sites(dataset, wanted_sites)
         dataset = dataset.sel({SITE: wanted_sites})
     return {name: dataset[name] for name in wanted_names}
 
 
 
-def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
+def _dataset_attributes(raw: xr.Dataset) -> dict[str, Any]:
     return {
         "Conventions": CF_CONVENTIONS,
         "title": "Initial condition ensemble for the 8000-site pool",
-        "product": (
+        "upstream_product": (
             "PEcAn pool initial conditions drawn for the North American reanalysis; one "
             "spec per variable in sipnet_calibration.initial_conditions"
         ),
@@ -273,8 +273,8 @@ def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
     }
 
 
-def _check_product(dataset: xr.Dataset, path: Path) -> None:
-    """Raise unless *dataset* is the product the data model describes."""
+def _check_processed_file_matches_the_data_model(dataset: xr.Dataset, path: Path) -> None:
+    """Raise unless *dataset* is the processed file the data model describes."""
     if set(dataset.data_vars) != set(INITIAL_CONDITION_NAMES):
         raise ValueError(
             f"{path}: variables are {sorted(dataset.data_vars)}, expected "
@@ -285,7 +285,7 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
         if array.dims != (INITIAL_CONDITION_MEMBER, SITE):
             raise ValueError(
                 f"{path}: {spec.name} has dims {array.dims}, expected "
-                f"{(INITIAL_CONDITION_MEMBER, SITE)}; a product written before the "
+                f"{(INITIAL_CONDITION_MEMBER, SITE)}; a processed file written before the "
                 "member dim was renamed is re-made by scripts/ingest_initial_conditions.py"
             )
         if array.attrs.get("units") != spec.units:
@@ -322,13 +322,13 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
     if not np.array_equal(member, source_index - 1):
         raise ValueError(
             f"{path}: {INITIAL_CONDITION_MEMBER} is not {SOURCE_INDEX} - 1, the member's "
-            "identity; re-make the product with scripts/ingest_initial_conditions.py"
+            "identity; re-make the processed file with scripts/ingest_initial_conditions.py"
         )
     if dataset.attrs.get("n_initial_condition_members") != member.size:
         raise ValueError(
             f"{path}: attribute n_initial_condition_members is "
             f"{dataset.attrs.get('n_initial_condition_members')!r}, not the {member.size} "
-            "members; a product written before the attribute was renamed from n_members "
+            "members; a processed file written before the attribute was renamed from n_members "
             "is re-made by scripts/ingest_initial_conditions.py"
         )
     site = dataset[SITE].values
@@ -349,12 +349,12 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_product_holds_the_sites(dataset: xr.Dataset, site_ids: Sequence[int]) -> None:
-    """The initial condition product holds every site asked of it."""
+def check_initial_conditions_hold_the_sites(dataset: xr.Dataset, site_ids: Sequence[int]) -> None:
+    """The initial conditions' processed file holds every site asked of it."""
     held = set(dataset[SITE].values.tolist())
     missing = [site for site in site_ids if site not in held]
     if missing:
         raise KeyError(
-            f"site(s) {truncated(missing)} are not in the initial condition product; ask "
+            f"site(s) {truncated(missing)} are not in the initial conditions' processed file; ask "
             "only for sites of the site table it was built on."
         )

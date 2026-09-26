@@ -1140,10 +1140,10 @@ def test_select_by_labels_intersects_with_sites_and_refuses_the_unknown(example)
         example.select(sites=(27,), labels={"pft": ["deciduous"]})
 
 
-# ── site-labels products ─────────────────────────────────────────────────────
+# ── site-labels tables ───────────────────────────────────────────────────────
 
 
-def _product(labels_by_site: dict[int, str], classes: tuple[str, ...]) -> pd.DataFrame:
+def _site_labels_table(labels_by_site: dict[int, str], classes: tuple[str, ...]) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "site_id": np.asarray(list(labels_by_site), dtype=np.int32),
@@ -1152,9 +1152,9 @@ def _product(labels_by_site: dict[int, str], classes: tuple[str, ...]) -> pd.Dat
     )
 
 
-def test_a_site_labels_product_gives_its_declared_classes_in_order():
+def test_a_site_labels_table_gives_its_declared_classes_in_order():
     classes = ("needleleaf", "broadleaf", "grass")
-    product = _product({1: "grass", 27: "broadleaf", 4711: "grass", 5000: "needleleaf"}, classes)
+    labels_table = _site_labels_table({1: "grass", 27: "broadleaf", 4711: "grass", 5000: "needleleaf"}, classes)
     turnover = CalibrationParameter(
         name="turnover", prior=log_normal(median=[0.01, 0.02, 0.03], geometric_sd=[1.2, 1.3, 1.4]),
         sipnet_map="wood_turnover_rate", varies_by="pft", provenance="test",
@@ -1164,7 +1164,7 @@ def test_a_site_labels_product_gives_its_declared_classes_in_order():
         value={"needleleaf": 0.50, "broadleaf": 0.46, "grass": 0.48},
     )
     vector = ParameterVector(
-        parameters=(turnover,), fixed=(fixed,), sites=(1, 27, 4711), site_labels={"pft": product}
+        parameters=(turnover,), fixed=(fixed,), sites=(1, 27, 4711), site_labels={"pft": labels_table}
     )
     # Declared order, restricted to the classes present: needleleaf is dropped.
     assert vector.group_labels("pft") == ("broadleaf", "grass")
@@ -1177,13 +1177,13 @@ def test_a_site_labels_product_gives_its_declared_classes_in_order():
         ParameterVector(
             parameters=(turnover,),
             fixed=(dataclasses.replace(fixed, value={**fixed.value, "shrub": 0.4}),),
-            sites=(1, 27, 4711), site_labels={"pft": product},
+            sites=(1, 27, 4711), site_labels={"pft": labels_table},
         )
     with pytest.raises(ValueError, match="do not label sites \\[99\\]"):
-        ParameterVector(parameters=(turnover,), sites=(1, 99), site_labels={"pft": product})
+        ParameterVector(parameters=(turnover,), sites=(1, 99), site_labels={"pft": labels_table})
     with pytest.raises(ValueError, match="needs 'site_id' and 'label' columns"):
         ParameterVector(
-            parameters=(turnover,), sites=(1,), site_labels={"pft": product.rename(columns={"label": "pft"})}
+            parameters=(turnover,), sites=(1,), site_labels={"pft": labels_table.rename(columns={"label": "pft"})}
         )
 
 
@@ -1292,13 +1292,13 @@ def test_a_per_class_simplex_prior_is_restricted_to_the_classes_present():
     )
     classes = ("a", "b", "c", "d")
     # Two of four declared classes present, not adjacent: a and c.
-    product = _product({1: "a", 27: "c", 4711: "a"}, classes)
+    labels_table = _site_labels_table({1: "a", 27: "c", 4711: "a"}, classes)
     four = CalibrationParameter(
         name="allocation",
         prior=softmax_normal(center=[*centers, [0.7, 0.1, 0.1, 0.1]], logit_sd=0.5),
         sipnet_map=ALLOCATION, varies_by="pft", provenance="test",
     )
-    vector = ParameterVector(parameters=(four,), sites=SITES, site_labels={"pft": product})
+    vector = ParameterVector(parameters=(four,), sites=SITES, site_labels={"pft": labels_table})
     assert vector.group_labels("pft") == ("a", "c")
     natural = vector.fields(vector.gaussian_prior().mean)
     np.testing.assert_allclose(natural["allocation.leaf_allocation"], [0.1, 0.25, 0.1], rtol=1e-12)
@@ -1410,11 +1410,11 @@ def test_a_sipnet_map_must_return_exactly_what_it_writes():
 
 
 def test_site_labels_with_missing_or_unorderable_classes_are_refused():
-    product = pd.DataFrame({"site_id": [1, 27, 4711], "label": ["a", None, "b"]})
+    labels_table = pd.DataFrame({"site_id": [1, 27, 4711], "label": ["a", None, "b"]})
     with pytest.raises(ValueError, match="give no class for 1"):
-        ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": product})
+        ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": labels_table})
     # A missing class at a site outside the vector does not matter.
-    vector = ParameterVector(parameters=(rate(varies_by="pft"),), sites=(1, 4711), site_labels={"pft": product})
+    vector = ParameterVector(parameters=(rate(varies_by="pft"),), sites=(1, 4711), site_labels={"pft": labels_table})
     assert vector.group_labels("pft") == ("a", "b")
     with pytest.raises(ValueError, match="cannot be ordered"):
         ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": ("a", 1, "a")})
@@ -1423,13 +1423,13 @@ def test_site_labels_with_missing_or_unorderable_classes_are_refused():
 
 
 def test_a_fixed_value_with_an_undeclared_class_names_only_that_class():
-    product = _product({1: "grass", 27: "broadleaf", 4711: "grass"}, ("needleleaf", "broadleaf", "grass"))
+    labels_table = _site_labels_table({1: "grass", 27: "broadleaf", 4711: "grass"}, ("needleleaf", "broadleaf", "grass"))
     fixed = FixedParameter(
         name="leaf_carbon_fraction", varies_by="pft", provenance="test",
         value={"needleleaf": 0.5, "broadleaf": 0.46, "grass": 0.48, "tundra": 0.4},
     )
     with pytest.raises(ValueError, match="missing \\[\\], extra \\['tundra'\\]"):
-        ParameterVector(parameters=(rate(varies_by="pft"),), fixed=(fixed,), sites=SITES, site_labels={"pft": product})
+        ParameterVector(parameters=(rate(varies_by="pft"),), fixed=(fixed,), sites=SITES, site_labels={"pft": labels_table})
 
 
 def test_fixed_parameters_hold_numbers_and_their_own_mapping():
@@ -1523,14 +1523,14 @@ def test_a_joint_prior_over_classes_is_restricted_to_its_marginal():
         name="soil", prior=tfd.TransformedDistribution(base, tfb.Exp()),
         sipnet_map="soil_carbon", varies_by="pft", provenance="t",
     )
-    product = _product({1: "a", 27: "c", 4711: "a"}, ("a", "b", "c"))
-    vector = ParameterVector(parameters=(joint,), sites=SITES, site_labels={"pft": product})
+    labels_table = _site_labels_table({1: "a", 27: "c", 4711: "a"}, ("a", "b", "c"))
+    vector = ParameterVector(parameters=(joint,), sites=SITES, site_labels={"pft": labels_table})
     np.testing.assert_allclose(vector.gaussian_prior().mean, np.asarray(MEAN)[[0, 2]], rtol=1e-12)
 
 
-def test_a_product_is_read_by_site_id_whatever_its_row_order():
-    product = _product({4711: "grass", 27: "broadleaf", 1: "needleleaf"}, ("needleleaf", "broadleaf", "grass"))
-    vector = ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": product})
+def test_a_site_labels_table_is_read_by_site_id_whatever_its_row_order():
+    labels_table = _site_labels_table({4711: "grass", 27: "broadleaf", 1: "needleleaf"}, ("needleleaf", "broadleaf", "grass"))
+    vector = ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": labels_table})
     assert vector.site_labels["pft"] == ("needleleaf", "broadleaf", "grass")
 
 
@@ -1587,7 +1587,7 @@ def test_construction_refusals_the_suite_did_not_reach():
 
 @pytest.mark.parametrize("name", ["initial_condition_member", "driver_member", "source_index"])
 def test_a_data_source_member_dim_name_is_reserved(name):
-    """A parameter or site-labels product would collide where the IC conversion crosses them."""
+    """A parameter or site-labels name would collide where the IC conversion crosses them."""
     with pytest.raises(ValueError, match="is reserved"):
         rate(name=name)
     with pytest.raises(ValueError, match="reserved"):

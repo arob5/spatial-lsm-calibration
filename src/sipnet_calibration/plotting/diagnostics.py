@@ -13,6 +13,6 @@ Planned:
 EKI hands back flat blocks that know nothing about space or time: ``(J, D)``
 parameter ensembles and ``(J, N)`` predictions. A ``(J, N)`` block is unstacked
 by :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns
-the ``(site, product, time)`` index it was flattened with; a ``(J, D)`` block
+the ``(site, observation_source, time)`` index it was flattened with; a ``(J, D)`` block
 by :meth:`sipnet_calibration.parameter_vector.ParameterVector.fields`.
 """

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the processed initial condition product from the tracked raw file.
+"""Build the processed initial condition file from the tracked raw file.
 
 Overview
 --------
@@ -8,10 +8,10 @@ it, rename the source variables to the spec names and the ``member`` dim to
 ``initial_condition_member``, renumber the members, place the sites on the site
 pool and write ``data/processed/initial_conditions.nc``. Every decision about
 what a variable is -- its unit, its provenance, the SIPNET parameter it feeds
--- is a field of its ``InitialConditionSpec`` in the library; this script is
+-- is set in its ``InitialConditionSpec`` in the library; this script is
 the orchestration and the checks, and its round-trip check reads the file back
 with ``sipnet_calibration.initial_conditions.load_initial_conditions``, the
-same function every reader of the product uses.
+same function every reader of the processed file uses.
 
 Input data
 ----------
@@ -22,7 +22,7 @@ Input data
     ``read_raw``.
 
 ``--sites``, default ``data/processed/sites/sites.csv``
-    The site table: the pool the product is on, and the ``lon``/``lat``
+    The site table: the pool the processed file is on, and the ``lon``/``lat``
     coordinates.
 
 Output data
@@ -89,7 +89,7 @@ from sipnet_calibration.initial_conditions import (
     RAW_MEMBER,
     SOURCE,
     build_initial_conditions,
-    default_product_path,
+    default_processed_path,
     describe,
     load_initial_conditions,
     netcdf_encoding,
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     raw = args.raw if args.raw is not None else raw_path()
-    out = args.out if args.out is not None else default_product_path()
+    out = args.out if args.out is not None else default_processed_path()
     sites_path = args.sites if args.sites is not None else default_sites_path()
 
     try:
@@ -127,8 +127,8 @@ def main(argv: list[str] | None = None) -> int:
         with read_raw(raw) as raw_dataset:
             check_raw(raw_dataset, site_table)
             dataset = build_initial_conditions(raw_dataset, site_table)
-        write_product(dataset, out)
-        print(describe_product(dataset, out))
+        write_processed_file(dataset, out)
+        print(describe_processed_file(dataset, out))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -177,7 +177,7 @@ def check_raw(raw: xr.Dataset, site_table: pd.DataFrame) -> None:
     check_wood_is_biomass_minus_leaf(raw)
 
 
-def write_product(dataset: xr.Dataset, out: Path) -> None:
+def write_processed_file(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     write_checked(
         out,
@@ -188,7 +188,7 @@ def write_product(dataset: xr.Dataset, out: Path) -> None:
     )
 
 
-def describe_product(dataset: xr.Dataset, out: Path) -> str:
+def describe_processed_file(dataset: xr.Dataset, out: Path) -> str:
     """A short report of what was written, for the run log."""
     lines = [
         f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB)",

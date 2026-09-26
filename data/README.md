@@ -1259,6 +1259,17 @@ variable in `sipnet_calibration.initial_conditions`, and
 itself made by a script, which is **not** a pipeline step; see
 [Making a raw input](#making-a-raw-input) below.
 
+**Re-ingest after the vocabulary rename.** Every spec's producer name is the
+field `upstream_product`, written as the `upstream_product` attribute of each
+variable and of each constraint's and the initial conditions' dataset (it was
+`product`), and each initial condition variable names its SIPNET parameter in
+`sipnet_parameter_name` (it was `sipnet_initial_condition`). A processed file
+written before the rename carries the old attribute names. The loaders do not
+read these attributes, so an old file still loads; run
+`scripts/ingest_constraints.py` and `scripts/ingest_initial_conditions.py`
+again to have the processed files carry the new names. The site-labels CSVs
+carry no attributes and are unchanged.
+
 ### Surveys, which are not the pipeline either
 
 Three scripts under [`../scripts/`](../scripts) answer a question about raw

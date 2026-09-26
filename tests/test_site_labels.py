@@ -1,8 +1,8 @@
-"""Tests for the site-labels specs, the products they describe, and the ingest.
+"""Tests for the site-labels specs, the processed files they describe, and the ingest.
 
 Three layers, as the constraint tests have. The specs are checked for internal
 consistency and against the real raw files' headers. The conversion is
-exercised on small synthetic raw tables where the expected product can be
+exercised on small synthetic raw tables where the expected processed file can be
 written out by hand and every refusal provoked -- including the one that
 matters most, a file of the right shape holding the wrong site pool. Finally
 the real file is ingested and the result checked against the site table, which
@@ -66,7 +66,7 @@ SYNTHETIC_SPEC = SiteLabelsSpec(
     label_kind="plant functional type",
     labels=("conifer", "broadleaf", "grass"),
     description="Site labels that exist only in these tests.",
-    product="test fixture",
+    upstream_product="test fixture",
     raw_file="synthetic_site_class.csv",
     raw_columns=("site", "klass"),
     site_column="site",
@@ -175,7 +175,7 @@ def test_spec_refuses_an_inconsistent_field(field, value, match):
         "label_kind": "plant functional type",
         "labels": ("a", "b"),
         "description": "Fine.",
-        "product": "test",
+        "upstream_product": "test",
         "raw_file": "f.csv",
         "raw_columns": ("site", "klass"),
         "site_column": "site",
@@ -195,7 +195,7 @@ def test_spec_refuses_a_landcover_mapping_onto_an_undeclared_class():
             label_kind="plant functional type",
             labels=("a", "b"),
             description="Fine.",
-            product="test",
+            upstream_product="test",
             raw_file="f.csv",
             raw_columns=("site", "klass"),
             site_column="site",
@@ -210,12 +210,12 @@ def test_spec_refuses_a_landcover_mapping_onto_an_undeclared_class():
 
 def test_ingest_writes_the_data_model(synthetic):
     raw_root, site_table, out_dir = synthetic
-    product = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
+    site_labels = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
 
-    assert tuple(product.columns) == SITE_LABELS_COLUMNS
-    assert product[SITE_ID].dtype == np.int32
-    assert product[SITE_ID].tolist() == SYNTHETIC_SITES
-    assert product[LABEL_COLUMN].tolist() == ["conifer", "conifer", "broadleaf", "grass"]
+    assert tuple(site_labels.columns) == SITE_LABELS_COLUMNS
+    assert site_labels[SITE_ID].dtype == np.int32
+    assert site_labels[SITE_ID].tolist() == SYNTHETIC_SITES
+    assert site_labels[LABEL_COLUMN].tolist() == ["conifer", "conifer", "broadleaf", "grass"]
     assert site_labels_path(SYNTHETIC_SPEC, out_dir).exists()
 
 
@@ -233,17 +233,17 @@ def test_label_is_a_categorical_over_the_specs_classes_in_order(synthetic):
 
 def test_the_written_file_reads_back_as_what_was_built(synthetic):
     raw_root, site_table, out_dir = synthetic
-    product = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
+    site_labels = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
     written = load_site_labels(SYNTHETIC_SPEC, site_labels_path(SYNTHETIC_SPEC, out_dir))
-    pd.testing.assert_frame_equal(written, product)
+    pd.testing.assert_frame_equal(written, site_labels)
 
 
 def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path):
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
-    product = build_site_labels(SYNTHETIC_SPEC, frame)
-    assert product[SITE_ID].tolist() == SYNTHETIC_SITES
+    site_labels = build_site_labels(SYNTHETIC_SPEC, frame)
+    assert site_labels[SITE_ID].tolist() == SYNTHETIC_SITES
 
 
 def test_a_class_literally_named_na_survives_the_read(tmp_path):
@@ -254,7 +254,7 @@ def test_a_class_literally_named_na_survives_the_read(tmp_path):
         label_kind="cover class",
         labels=("NA", "other"),
         description="Exists to prove the null handling.",
-        product="test",
+        upstream_product="test",
         raw_file="na.csv",
         raw_columns=("site", "klass"),
         site_column="site",
@@ -318,9 +318,9 @@ def test_an_unlabeled_site_is_refused_when_the_spec_covers_the_pool(tmp_path):
     raw_root = tmp_path / "raw"
     site_table = load_sites(_write_sites(tmp_path / "sites.csv", [1, 2, 3, 4, 5]))
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="unlabeled"):
-        ingest.check_pool_is_completely_labeled(SYNTHETIC_SPEC, product, site_table)
+        ingest.check_pool_is_completely_labeled(SYNTHETIC_SPEC, site_labels, site_table)
 
 
 def test_an_undeclared_class_is_refused(tmp_path):
@@ -336,9 +336,9 @@ def test_a_declared_class_no_site_uses_is_refused(tmp_path, synthetic):
     raw_root, site_table, _ = synthetic
     rows = [dict(row, klass="conifer") for row in SYNTHETIC_ROWS]
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="that no site has"):
-        ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, product)
+        ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, site_labels)
 
 
 def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, synthetic):
@@ -346,9 +346,9 @@ def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, s
     # Site 4 has landcover 5, which the mapping sends to grass.
     rows = SYNTHETIC_ROWS[:3] + [{"site": 4, "klass": "broadleaf"}]
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="landcover_mapping"):
-        ingest.check_labels_match_landcover(SYNTHETIC_SPEC, product, site_table)
+        ingest.check_labels_match_landcover(SYNTHETIC_SPEC, site_labels, site_table)
 
 
 def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
@@ -358,9 +358,9 @@ def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
     site_table = load_sites(sites_path)
     site_table.loc[site_table[SITE_ID] == 4, "landcover"] = np.int8(7)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="does not cover"):
-        ingest.check_labels_match_landcover(SYNTHETIC_SPEC, product, site_table)
+        ingest.check_labels_match_landcover(SYNTHETIC_SPEC, site_labels, site_table)
 
 
 def test_a_wrong_raw_header_is_refused(tmp_path):
@@ -376,7 +376,7 @@ def test_an_absent_raw_file_points_at_the_provenance_record(tmp_path):
         read_raw(SYNTHETIC_SPEC, tmp_path / "nothing")
 
 
-def test_an_absent_product_names_the_command_that_makes_it(tmp_path):
+def test_an_absent_processed_file_names_the_command_that_makes_it(tmp_path):
     with pytest.raises(FileNotFoundError, match="ingest_site_labels.py"):
         load_site_labels("reanalysis_3pft", tmp_path / "absent.csv")
 
@@ -410,7 +410,7 @@ def real_site_table() -> pd.DataFrame:
 
 
 @pytest.fixture(scope="session")
-def real_product(real_site_table, tmp_path_factory) -> pd.DataFrame:
+def real_site_labels(real_site_table, tmp_path_factory) -> pd.DataFrame:
     """``reanalysis_3pft`` built from the tracked raw file."""
     spec = resolve_site_labels("reanalysis_3pft")
     if not (RAW_DIR / spec.raw_file).exists():
@@ -419,24 +419,24 @@ def real_product(real_site_table, tmp_path_factory) -> pd.DataFrame:
     return ingest.ingest(spec, RAW_DIR, real_site_table, out_dir)
 
 
-def test_the_real_site_labels_cover_the_whole_pool(real_product, real_site_table):
-    assert len(real_product) == len(real_site_table)
-    assert real_product[SITE_ID].tolist() == real_site_table[SITE_ID].tolist()
+def test_the_real_site_labels_cover_the_whole_pool(real_site_labels, real_site_table):
+    assert len(real_site_labels) == len(real_site_table)
+    assert real_site_labels[SITE_ID].tolist() == real_site_table[SITE_ID].tolist()
 
 
-def test_the_real_site_labels_are_exactly_the_landcover_aggregation(real_product, real_site_table):
+def test_the_real_site_labels_are_exactly_the_landcover_aggregation(real_site_labels, real_site_table):
     """The claim data/README.md makes under Site labels, over all 8000 sites."""
     spec = resolve_site_labels("reanalysis_3pft")
-    joined = real_product.merge(real_site_table[[SITE_ID, "landcover"]], on=SITE_ID)
+    joined = real_site_labels.merge(real_site_table[[SITE_ID, "landcover"]], on=SITE_ID)
     expected = joined["landcover"].map(dict(spec.landcover_mapping))
     assert (expected == joined[LABEL_COLUMN].astype(str)).all()
     # And the relation is onto: every class is reached from some cover class.
     assert set(expected) == set(spec.labels)
 
 
-def test_every_declared_class_is_used_by_the_real_site_labels(real_product):
+def test_every_declared_class_is_used_by_the_real_site_labels(real_site_labels):
     spec = resolve_site_labels("reanalysis_3pft")
-    assert set(real_product[LABEL_COLUMN].unique()) == set(spec.labels)
+    assert set(real_site_labels[LABEL_COLUMN].unique()) == set(spec.labels)
 
 
 def test_the_real_raw_file_has_the_specs_row_count(real_site_table):
@@ -446,7 +446,7 @@ def test_the_real_raw_file_has_the_specs_row_count(real_site_table):
     assert len(read_raw(spec, RAW_DIR)) == spec.expected_rows
 
 
-# ── the 16-class product ──────────────────────────────────────────────────────
+# ── the 16-class site labels ──────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("spec", SITE_LABELS, ids=lambda spec: spec.name)
@@ -457,7 +457,7 @@ def test_display_names_cover_exactly_the_classes(spec):
 
 
 def test_the_16class_spec_declares_no_landcover_relation():
-    """It comes from a different cover product, so no exact relation holds."""
+    """It comes from a different upstream cover product, so no exact relation holds."""
     assert resolve_site_labels("pft_16class").landcover_mapping is None
 
 
@@ -468,7 +468,7 @@ def test_display_names_must_cover_every_class():
         label_kind="plant functional type",
         labels=("a", "b"),
         description="Fine.",
-        product="test",
+        upstream_product="test",
         raw_file="f.csv",
         raw_columns=("site", "klass"),
         site_column="site",
@@ -477,7 +477,7 @@ def test_display_names_must_cover_every_class():
     )
     with pytest.raises(ValueError, match="no entry for"):
         SiteLabelsSpec(**kwargs, display_names={"a": "A"})
-    with pytest.raises(ValueError, match="not classes of this product"):
+    with pytest.raises(ValueError, match="not classes of these site labels"):
         SiteLabelsSpec(**kwargs, display_names={"a": "A", "b": "B", "c": "C"})
 
 
@@ -495,13 +495,13 @@ def test_the_16class_site_labels_cover_the_pool_with_all_sixteen(real_16class, r
     assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.labels)
 
 
-def test_the_two_site_labels_products_do_not_nest(real_product, real_16class):
+def test_the_two_site_labels_sources_do_not_nest(real_site_labels, real_16class):
     """Recorded in data/README.md Note 11 and in the spec's own comment.
 
     Every 16-class class draws from at least two of the three reanalysis
     classes, so no class has a parent whose prior it could inherit.
     """
-    joined = real_16class.merge(real_product, on=SITE_ID, suffixes=("_16", "_3"))
+    joined = real_16class.merge(real_site_labels, on=SITE_ID, suffixes=("_16", "_3"))
     spread = (
         pd.crosstab(joined[f"{LABEL_COLUMN}_16"], joined[f"{LABEL_COLUMN}_3"]) > 0
     ).sum(axis=1)
@@ -512,7 +512,7 @@ def test_the_two_site_labels_products_do_not_nest(real_product, real_16class):
 # ── the orchestration ─────────────────────────────────────────────────────────
 #
 # The checks above are exercised by calling them. These exercise the wiring:
-# that ``ingest`` calls each one, that ``write_product`` will not rename over a
+# that ``ingest`` calls each one, that ``write_processed_file`` will not rename over a
 # failed round trip, and that ``main`` turns a refusal into a reported error
 # with an exit code rather than a traceback. Deleting a call site is invisible
 # to a test that calls the check directly.
@@ -523,7 +523,7 @@ RAW_CHECKS = (
     "check_no_duplicate_sites",
     "check_site_table_lists_the_sites",
 )
-PRODUCT_CHECKS = (
+SITE_LABELS_CHECKS = (
     "check_labels_are_the_declared_set",
     "check_pool_is_completely_labeled",
     "check_labels_match_landcover",
@@ -534,7 +534,7 @@ class _Sentinel(ingest.IngestError):
     """Raised by a stubbed check, so the test can tell it apart from a real one."""
 
 
-@pytest.mark.parametrize("check", RAW_CHECKS + PRODUCT_CHECKS + ("check_round_trip",))
+@pytest.mark.parametrize("check", RAW_CHECKS + SITE_LABELS_CHECKS + ("check_round_trip",))
 def test_ingest_calls_every_check(synthetic, monkeypatch, check):
     """Each check is reached on a run whose data is otherwise valid."""
     raw_root, site_table, out_dir = synthetic
@@ -564,7 +564,7 @@ def test_the_raw_checks_run_before_anything_is_built(synthetic, monkeypatch, che
 def test_the_row_count_check_runs_first(synthetic, monkeypatch):
     """On the wrong pool every check fails; the row count is the useful message."""
     raw_root, site_table, out_dir = synthetic
-    for check in RAW_CHECKS[1:] + PRODUCT_CHECKS:
+    for check in RAW_CHECKS[1:] + SITE_LABELS_CHECKS:
         monkeypatch.setattr(ingest, check, lambda *a, **k: None)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS[:3])
     with pytest.raises(ingest.IngestError, match="holds 3 rows, expected 4"):
@@ -574,7 +574,7 @@ def test_the_row_count_check_runs_first(synthetic, monkeypatch):
 # ── the .partial write protocol ───────────────────────────────────────────────
 
 
-def test_a_failed_site_labels_round_trip_keeps_the_partial_and_never_writes_the_product(
+def test_a_failed_site_labels_round_trip_keeps_the_partial_and_never_writes_the_processed_file(
     synthetic, monkeypatch
 ):
     """CLAUDE.md's rule: rename only after the checks pass."""
@@ -592,7 +592,7 @@ def test_a_failed_site_labels_round_trip_keeps_the_partial_and_never_writes_the_
     assert [path.name for path in out_dir.glob("*.partial")] == [f"{out.name}.partial"]
 
 
-def test_a_failed_round_trip_leaves_an_existing_product_intact(synthetic, monkeypatch):
+def test_a_failed_round_trip_leaves_an_existing_processed_file_intact(synthetic, monkeypatch):
     """A failed rerun must not damage the file a previous run left behind."""
     raw_root, site_table, out_dir = synthetic
     ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
@@ -611,14 +611,14 @@ def test_a_failed_round_trip_leaves_an_existing_product_intact(synthetic, monkey
 def test_the_round_trip_check_compares_against_the_library_loader(
     synthetic, monkeypatch
 ):
-    """A product that does not read back as built is refused, not renamed."""
+    """Site labels that do not read back as built are refused, not renamed."""
     raw_root, site_table, out_dir = synthetic
     out_dir.mkdir(parents=True, exist_ok=True)
     partial = site_labels_path(SYNTHETIC_SPEC, out_dir).with_suffix(".csv.partial")
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
-    product.iloc[:-1].to_csv(partial, index=False)
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    site_labels.iloc[:-1].to_csv(partial, index=False)
     with pytest.raises(ingest.IngestError, match="does not read back"):
-        ingest.check_round_trip(SYNTHETIC_SPEC, product, partial)
+        ingest.check_round_trip(SYNTHETIC_SPEC, site_labels, partial)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -636,7 +636,7 @@ def _argv(raw_root, sites_path, out_dir, *extra):
 
 @pytest.fixture
 def real_argv(tmp_path):
-    """A `main` invocation against the registry's own product and raw file."""
+    """A `main` invocation against the registry's own site labels and raw file."""
     # main reads both from its defaults, so check the paths it will read.
     for spec in SITE_LABELS:
         if not (default_raw_dir() / spec.raw_file).exists():
@@ -647,7 +647,7 @@ def real_argv(tmp_path):
 
 
 @pytest.mark.parametrize("name", SITE_LABELS_NAMES)
-def test_main_exits_zero_and_writes_the_product(real_argv, name):
+def test_main_exits_zero_and_writes_the_processed_file(real_argv, name):
     out_dir = real_argv / "out"
     code = ingest.main(["--site-labels", name, "--out-dir", str(out_dir)])
     assert code == 0
@@ -655,14 +655,14 @@ def test_main_exits_zero_and_writes_the_product(real_argv, name):
     assert len(written) == resolve_site_labels(name).expected_rows
 
 
-def test_main_with_no_arguments_builds_every_product(real_argv):
+def test_main_with_no_arguments_builds_every_site_labels_source(real_argv):
     out_dir = real_argv / "out"
     assert ingest.main(["--out-dir", str(out_dir)]) == 0
     assert sorted(path.stem for path in out_dir.glob("*.csv")) == sorted(SITE_LABELS_NAMES)
 
 
 def test_main_honors_the_site_labels_argument(real_argv):
-    """Naming one product must not build the others."""
+    """Naming one site-labels source must not build the others."""
     out_dir = real_argv / "out"
     code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
     assert code == 0
@@ -705,24 +705,24 @@ def test_main_refuses_unknown_site_labels(capsys):
     assert exit_info.value.code == 2
 
 
-def test_describe_product_reports_the_pool_the_right_way_round(synthetic):
+def test_describe_processed_file_reports_the_pool_the_right_way_round(synthetic):
     raw_root, site_table, out_dir = synthetic
-    product = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
-    text = ingest.describe_product(
-        SYNTHETIC_SPEC, product, site_table, site_labels_path(SYNTHETIC_SPEC, out_dir)
+    site_labels = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
+    text = ingest.describe_processed_file(
+        SYNTHETIC_SPEC, site_labels, site_table, site_labels_path(SYNTHETIC_SPEC, out_dir)
     )
-    assert f"{len(product)} of {len(site_table)} in the pool" in text
+    assert f"{len(site_labels)} of {len(site_table)} in the pool" in text
     for label in SYNTHETIC_SPEC.labels:
         assert label in text
 
 
-def test_describe_product_survives_a_class_no_site_uses(synthetic):
+def test_describe_processed_file_survives_a_class_no_site_uses(synthetic):
     """A zero-count class must not KeyError out of the run report."""
     raw_root, site_table, _ = synthetic
     spec = dataclasses.replace(SYNTHETIC_SPEC, landcover_mapping=None)
-    product = build_site_labels(spec, read_raw(spec, raw_root))
-    product = product[product[LABEL_COLUMN] != "grass"]
-    text = ingest.describe_product(spec, product, site_table, Path("x.csv"))
+    site_labels = build_site_labels(spec, read_raw(spec, raw_root))
+    site_labels = site_labels[site_labels[LABEL_COLUMN] != "grass"]
+    text = ingest.describe_processed_file(spec, site_labels, site_table, Path("x.csv"))
     assert "grass" in text
 
 
@@ -745,9 +745,9 @@ def test_exactly_one_unused_class_is_refused(tmp_path, synthetic):
     rows = [dict(row) for row in SYNTHETIC_ROWS]
     rows[3]["klass"] = "broadleaf"  # grass now unused, conifer and broadleaf are not
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match=r"\['grass'\]"):
-        ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, product)
+        ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, site_labels)
 
 
 def test_partial_site_labels_are_allowed_when_the_spec_says_so(tmp_path):
@@ -755,8 +755,8 @@ def test_partial_site_labels_are_allowed_when_the_spec_says_so(tmp_path):
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, spec, SYNTHETIC_ROWS[:3])
     site_table = load_sites(_write_sites(tmp_path / "sites.csv"))
-    product = build_site_labels(spec, read_raw(spec, raw_root))
-    ingest.check_pool_is_completely_labeled(spec, product, site_table)  # must not raise
+    site_labels = build_site_labels(spec, read_raw(spec, raw_root))
+    ingest.check_pool_is_completely_labeled(spec, site_labels, site_table)  # must not raise
 
 
 def test_a_reordered_header_is_refused(tmp_path):
@@ -768,7 +768,7 @@ def test_a_reordered_header_is_refused(tmp_path):
         read_raw(SYNTHETIC_SPEC, raw_root)
 
 
-def test_a_reordered_product_header_is_refused(tmp_path):
+def test_a_reordered_processed_file_header_is_refused(tmp_path):
     path = tmp_path / "bad.csv"
     path.write_text("label,site_id\nconifer,1\n")
     with pytest.raises(ValueError, match="header is"):
@@ -791,11 +791,11 @@ def test_an_identifier_too_large_for_int32_is_refused(tmp_path):
         load_site_labels(SYNTHETIC_SPEC, path)
 
 
-def test_a_class_named_na_survives_the_product_round_trip(tmp_path):
-    """`keep_default_na=False` is tested on read_raw; this is the product side."""
+def test_a_class_named_na_survives_the_processed_file_round_trip(tmp_path):
+    """`keep_default_na=False` is tested on read_raw; this is the processed side."""
     spec = dataclasses.replace(
         SYNTHETIC_SPEC,
-        name="na_product",
+        name="na_labels",
         labels=("NA", "other"),
         expected_rows=2,
         landcover_mapping=None,
@@ -805,19 +805,19 @@ def test_a_class_named_na_survives_the_product_round_trip(tmp_path):
     assert load_site_labels(spec, path)[LABEL_COLUMN].tolist() == ["NA", "other"]
 
 
-def test_an_empty_product_file_is_refused(tmp_path):
+def test_an_empty_processed_file_is_refused(tmp_path):
     path = tmp_path / "empty.csv"
     path.write_text("site_id,label\n")
     with pytest.raises(ValueError, match="holds no rows"):
         load_site_labels(SYNTHETIC_SPEC, path)
 
 
-def test_the_product_index_is_reset_after_sorting(tmp_path):
+def test_the_site_labels_index_is_reset_after_sorting(tmp_path):
     """Without `ignore_index` the frame keeps the raw file's row numbers."""
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
-    product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
-    assert product.index.tolist() == list(range(len(SYNTHETIC_ROWS)))
+    site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
+    assert site_labels.index.tolist() == list(range(len(SYNTHETIC_ROWS)))
 
 
 # ── the registry and the schema, pinned rather than restated ──────────────────
@@ -842,7 +842,7 @@ def test_the_registry_declares_what_the_readme_says_it_does():
 
 
 def test_the_schema_constants_are_read_only():
-    """A caller mutating these would change every later read of a product."""
+    """A caller mutating these would change every later read of site labels."""
     with pytest.raises(TypeError):
         SITE_LABELS_COLUMN_DTYPES["site_id"] = np.int64
     with pytest.raises(TypeError):
@@ -858,7 +858,7 @@ def test_a_spec_cannot_be_mutated_after_construction():
     ("field", "value", "match"),
     [
         ("long_label", "", "needs a description"),
-        ("product", "", "needs a description"),
+        ("upstream_product", "", "needs a description"),
         ("labels", ("a", ""), "class name is empty"),
         ("label_column", "absent", "is not in raw_columns"),
         ("site_column", "klass", "are the same"),
@@ -872,7 +872,7 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
         "label_kind": "plant functional type",
         "labels": ("a", "b"),
         "description": "Fine.",
-        "product": "test",
+        "upstream_product": "test",
         "raw_file": "f.csv",
         "raw_columns": ("site", "klass"),
         "site_column": "site",

@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""Build the processed constraint products, one netCDF per constraint.
+"""Build the constraints' processed files, one netCDF per constraint.
 
 Overview
 --------
 For each constraint in ``sipnet_calibration.constraints.CONSTRAINTS``, read its
 raw file, check it, place its records on the site pool and write the result as
 ``data/processed/constraints/<name>.nc``. Every decision about what a file
-holds -- columns, units, time structure, which rows to drop -- is a field of
-the constraint's spec in the library; this script is the orchestration and the
+holds -- columns, units, time structure, which rows to drop -- is set in the
+constraint's spec in the library; this script is the orchestration and the
 checks, and its own round-trip check reads each file back with
 :func:`sipnet_calibration.constraints.load_constraint`, the same function every
 consumer uses.
@@ -20,7 +20,7 @@ Input data
     ``data/raw/constraints/provenance.md`` for where they came from.
 
 ``--sites``, default ``data/processed/sites/sites.csv``
-    The site table: the pool the products are dense over, and the ``lon``/``lat``
+    The site table: the pool the processed files are dense over, and the ``lon``/``lat``
     coordinates.
 
 Output data
@@ -122,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         site_table = load_sites(sites_path)
         for name in names:
             dataset = ingest(resolve_constraint(name), raw_root, site_table, out_dir)
-            print(describe_product(dataset, constraint_path(name, out_dir)))
+            print(describe_processed_file(dataset, constraint_path(name, out_dir)))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -176,7 +176,7 @@ def ingest(spec: ConstraintSpec, raw_root: Path, site_table: pd.DataFrame, out_d
     check_raw_frame(spec, frame, site_table)
 
     dataset = build_constraint(spec, frame, site_table)
-    write_product(dataset, constraint_path(spec, out_dir), spec)
+    write_processed_file(dataset, constraint_path(spec, out_dir), spec)
     return dataset
 
 
@@ -201,7 +201,7 @@ def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.Da
         check_static_copies_agree(spec, frame)
 
 
-def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
+def write_processed_file(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     write_checked(
         out,
@@ -212,7 +212,7 @@ def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
     )
 
 
-def describe_product(dataset: xr.Dataset, path: Path) -> str:
+def describe_processed_file(dataset: xr.Dataset, path: Path) -> str:
     """A short report of what was written, for the run log."""
     value, sd = dataset[VALUE].values, dataset[STANDARD_DEVIATION].values
     observed = np.isfinite(value)
@@ -314,7 +314,7 @@ def check_values_are_finite(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
 def check_some_rows_are_observed(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise if no row that passes the quality flag carries a value.
 
-    A file of nothing but ``NA`` would otherwise build an all-missing product
+    A file of nothing but ``NA`` would otherwise build an all-missing processed file
     and replace the canonical file with it.
     """
     kept = frame

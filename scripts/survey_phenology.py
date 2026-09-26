@@ -17,7 +17,7 @@ down and nowhere else goes stale in silence. The numbers live here as
 re-copied or regenerated file that changed is refused rather than absorbed.
 
 This is not part of the ingest pipeline: nothing is written, nothing under
-``data/processed/`` depends on it, and no product is built from phenology yet.
+``data/processed/`` depends on it, and no processed file is built from phenology yet.
 
 Input data
 ----------
@@ -77,7 +77,7 @@ import pandas as pd
 from sipnet_calibration import conventions
 from sipnet_calibration.sites import default_sites_path, load_sites
 
-#: The file's header, in order. Any other header is a different product.
+#: The file's header, in order. Any other header is a different data source.
 COLUMNS = (
     "year",
     "site_id",

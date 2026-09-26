@@ -618,9 +618,9 @@ class TestTheGridCheck:
             )
 
     def test_the_label_prefixes_the_message(self, one_run, labels, result):
-        with pytest.raises(ValueError, match="^my_product: "):
+        with pytest.raises(ValueError, match="^my_observation_source: "):
             check_result_is_on_the_observation_grid(
-                result.assign_coords(site=2), dated_observation([1], labels), one_run, "my_product"
+                result.assign_coords(site=2), dated_observation([1], labels), one_run, "my_observation_source"
             )
 
     def test_an_operator_returning_the_wrong_site_is_refused_by_check_operator(self, one_run, labels):

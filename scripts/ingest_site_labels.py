@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""Build the processed site labels, one CSV per site-labels product.
+"""Build the processed site labels, one CSV per site-labels data source.
 
 Overview
 --------
-For each product in ``sipnet_calibration.site_labels.SITE_LABELS``, read its raw
-table, check it against the site pool and write the result as
-``data/processed/site_labels/<name>.csv``. Every decision about what a product
+For each site-labels data source in ``sipnet_calibration.site_labels.SITE_LABELS``,
+read its raw table, check it against the site pool and write the result as
+``data/processed/site_labels/<name>.csv``. Every decision about what a source
 holds -- its classes, its raw columns, how many rows the file must have, how it
-relates to the site table's ``landcover`` -- is a field of the product's spec
-in the library; this script is the orchestration and the checks, and its own
+relates to the site table's ``landcover`` -- is set in the source's spec in the
+library; this script is the orchestration and the checks, and its own
 round-trip check reads each file back with
 :func:`sipnet_calibration.site_labels.load_site_labels`, the same function every
 consumer uses.
@@ -16,17 +16,18 @@ consumer uses.
 Input data
 ----------
 ``--raw-root``, default ``data/raw/site_labels/``
-    One CSV per product, named by ``spec.raw_file``, read exactly by
+    One CSV per site-labels source, named by ``spec.raw_file``, read exactly by
     :func:`sipnet_calibration.site_labels.read_raw`. See
     ``data/raw/site_labels/provenance.md`` for where each came from.
 
 ``--sites``, default ``data/processed/sites/sites.csv``
-    The site table: the pool a product must label, and the ``landcover``
+    The site table: the pool a site-labels source must label, and the ``landcover``
     column a ``landcover_mapping`` is checked against.
 
 Output data
 -----------
-``--out-dir``, default ``data/processed/site_labels/``, one CSV per product::
+``--out-dir``, default ``data/processed/site_labels/``, one processed file per
+site-labels source::
 
     site_id,label
     1,semiarid.grassland_HPDA
@@ -60,7 +61,7 @@ Usage
 -----
 ::
 
-    python scripts/ingest_site_labels.py                       # every product
+    python scripts/ingest_site_labels.py                       # every source
     python scripts/ingest_site_labels.py --site-labels reanalysis_3pft
     python scripts/ingest_site_labels.py --describe            # the specs, no I/O
 """
@@ -97,7 +98,7 @@ from sipnet_calibration.sites import (
 
 
 class IngestError(Exception):
-    """A raw file does not satisfy an invariant the product depends on."""
+    """A raw file does not satisfy an invariant the processed file depends on."""
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -119,8 +120,9 @@ def main(argv: list[str] | None = None) -> int:
         site_table = load_sites(sites_path)
         for name in names:
             spec = resolve_site_labels(name)
-            product = ingest(spec, raw_root, site_table, out_dir)
-            print(describe_product(spec, product, site_table, site_labels_path(spec, out_dir)))
+            site_labels = ingest(spec, raw_root, site_table, out_dir)
+            path = site_labels_path(spec, out_dir)
+            print(describe_processed_file(spec, site_labels, site_table, path))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -136,12 +138,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         choices=SITE_LABELS_NAMES,
         metavar="NAME",
-        help="A product to build; repeatable. Default: all of " + ", ".join(SITE_LABELS_NAMES),
+        help="A site-labels source to build; repeatable. Default: all of "
+        + ", ".join(SITE_LABELS_NAMES),
     )
     parser.add_argument(
         "--describe",
         action="store_true",
-        help="Print each product's spec and exit without reading data.",
+        help="Print each site-labels source's spec and exit without reading data.",
     )
     parser.add_argument(
         "--raw-root",
@@ -170,14 +173,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def ingest(
     spec: SiteLabelsSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path
 ) -> pd.DataFrame:
-    """Read, check, build and write one site-labels product."""
+    """Read, check, build and write one site-labels source."""
     frame = read_raw(spec, raw_root)
     check_raw_frame(spec, frame, site_table)
 
-    product = build_site_labels(spec, frame)
-    check_product(spec, product, site_table)
-    write_product(spec, product, site_labels_path(spec, out_dir))
-    return product
+    site_labels = build_site_labels(spec, frame)
+    check_site_labels_are_valid(spec, site_labels, site_table)
+    write_processed_file(spec, site_labels, site_labels_path(spec, out_dir))
+    return site_labels
 
 
 def check_raw_frame(spec: SiteLabelsSpec, frame: pd.DataFrame, site_table: pd.DataFrame) -> None:
@@ -191,37 +194,39 @@ def check_raw_frame(spec: SiteLabelsSpec, frame: pd.DataFrame, site_table: pd.Da
     )
 
 
-def check_product(spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame) -> None:
-    """Every check on the built product, before it is written."""
-    check_labels_are_the_declared_set(spec, product)
-    check_pool_is_completely_labeled(spec, product, site_table)
-    check_labels_match_landcover(spec, product, site_table)
+def check_site_labels_are_valid(
+    spec: SiteLabelsSpec, site_labels: pd.DataFrame, site_table: pd.DataFrame
+) -> None:
+    """Every check on the built site labels, before they are written."""
+    check_labels_are_the_declared_set(spec, site_labels)
+    check_pool_is_completely_labeled(spec, site_labels, site_table)
+    check_labels_match_landcover(spec, site_labels, site_table)
 
 
-def write_product(spec: SiteLabelsSpec, product: pd.DataFrame, out: Path) -> None:
+def write_processed_file(spec: SiteLabelsSpec, site_labels: pd.DataFrame, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     write_checked(
         out,
-        write=lambda partial: product.to_csv(partial, index=False),
-        check=lambda partial: check_round_trip(spec, product, partial),
+        write=lambda partial: site_labels.to_csv(partial, index=False),
+        check=lambda partial: check_round_trip(spec, site_labels, partial),
     )
 
 
-def describe_product(
-    spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame, path: Path
+def describe_processed_file(
+    spec: SiteLabelsSpec, site_labels: pd.DataFrame, site_table: pd.DataFrame, path: Path
 ) -> str:
     """A short report of what was written, for the run log."""
-    counts = product[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
+    counts = site_labels[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
     width = max(len(label) for label in spec.labels)
     latitude = (
-        product.assign(**{LAT: site_lookup(site_table).loc[product[SITE_ID], LAT].to_numpy()})
+        site_labels.assign(**{LAT: site_lookup(site_table).loc[site_labels[SITE_ID], LAT].to_numpy()})
         .groupby(LABEL_COLUMN, observed=False)[LAT]
         .agg(["min", "median", "max"])
     )
     lines = [
         f"{path}",
         f"  site labels           : {spec.name} ({spec.label_kind})",
-        f"  sites labeled         : {len(product)} of {len(site_table)} in the pool",
+        f"  sites labeled         : {len(site_labels)} of {len(site_table)} in the pool",
         f"  classes               : {len(spec.labels)}",
     ]
     for label in spec.labels:
@@ -264,18 +269,18 @@ def check_no_duplicate_sites(spec: SiteLabelsSpec, frame: pd.DataFrame) -> None:
         raise IngestError(
             f"{spec.raw_file}: sites {duplicated[:5].tolist()}"
             f"{' and more' if duplicated.size > 5 else ''} appear more than once. "
-            "A site-labels product gives each site exactly one class."
+            "A site-labels source gives each site exactly one class."
         )
 
 
-def check_labels_are_the_declared_set(spec: SiteLabelsSpec, product: pd.DataFrame) -> None:
+def check_labels_are_the_declared_set(spec: SiteLabelsSpec, site_labels: pd.DataFrame) -> None:
     """Every class the spec declares is used, and no other class appears.
 
     ``build_site_labels`` already refuses an undeclared class. What this adds is
     the other direction: a declared class that no site has usually means the
     spec and the file have drifted apart.
     """
-    used = set(product[LABEL_COLUMN].unique())
+    used = set(site_labels[LABEL_COLUMN].unique())
     missing = [label for label in spec.labels if label not in used]
     if missing:
         raise IngestError(
@@ -286,23 +291,23 @@ def check_labels_are_the_declared_set(spec: SiteLabelsSpec, product: pd.DataFram
 
 
 def check_pool_is_completely_labeled(
-    spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame
+    spec: SiteLabelsSpec, site_labels: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """Where the spec says so, every site in the pool has a class."""
     if not spec.covers_pool:
         return
-    unlabeled = sorted(set(site_table[SITE_ID]) - set(product[SITE_ID]))
+    unlabeled = sorted(set(site_table[SITE_ID]) - set(site_labels[SITE_ID]))
     if unlabeled:
         raise IngestError(
             f"{spec.raw_file}: leaves {len(unlabeled)} of {len(site_table)} sites unlabeled, "
             f"the first being {unlabeled[:5]}. {spec.name!r} declares covers_pool; a "
-            "product that is legitimately partial should set it False, and consumers "
+            "source that is legitimately partial should set it False, and consumers "
             "then have to handle a site with no class."
         )
 
 
 def check_labels_match_landcover(
-    spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame
+    spec: SiteLabelsSpec, site_labels: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """Where the spec records one, the class is that function of ``landcover``.
 
@@ -313,8 +318,8 @@ def check_labels_match_landcover(
     if spec.landcover_mapping is None:
         return
     # Every labeled site is in the site table: check_raw_frame checked it.
-    landcover = site_lookup(site_table).loc[product[SITE_ID], "landcover"].to_numpy()
-    joined = product.assign(landcover=landcover)
+    landcover = site_lookup(site_table).loc[site_labels[SITE_ID], "landcover"].to_numpy()
+    joined = site_labels.assign(landcover=landcover)
 
     uncovered = sorted(set(joined["landcover"]) - set(spec.landcover_mapping))
     if uncovered:
@@ -336,16 +341,16 @@ def check_labels_match_landcover(
             f"{spec.raw_file}: {len(disagreeing)} of {len(joined)} sites do not follow "
             f"{spec.name!r}'s landcover_mapping ({detail}). The relation is measured, "
             "not stated by the producer, so a raw file that breaks it is either a new "
-            "version of the product or the wrong file; see data/README.md open "
+            "version of the upstream product or the wrong file; see data/README.md open "
             "question 24(k)."
         )
 
 
-def check_round_trip(spec: SiteLabelsSpec, product: pd.DataFrame, partial: Path) -> None:
+def check_round_trip(spec: SiteLabelsSpec, site_labels: pd.DataFrame, partial: Path) -> None:
     """The written file reads back through the library loader as what was built."""
     written = load_site_labels(spec, partial)
     try:
-        pd.testing.assert_frame_equal(written, product)
+        pd.testing.assert_frame_equal(written, site_labels)
     except AssertionError as error:
         raise IngestError(
             f"{partial}: the written file does not read back identical to what was "

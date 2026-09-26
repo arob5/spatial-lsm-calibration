@@ -15,7 +15,7 @@ runs one way::
       -> scripts/ingest_sites.py    processed/sites/sites.csv
       -> this module                load_sites() -> pandas.DataFrame
 
-Every other processed product joins against this table on ``site_id``, so this
+Every other processed file joins against this table on ``site_id``, so this
 is where the meaning of a site identifier is fixed. ``data/README.md`` documents
 the source data, the coordinate reference system and the open questions.
 
@@ -67,8 +67,8 @@ rendering of it.
 
 There is deliberately **no plant functional type column**. A PFT class is not
 an intrinsic property of a site: a calibration may not use PFTs at all, and
-several site-labels products can be applied to the same pool. Site labels are
-their own product under ``processed/site_labels/``, keyed on ``site_id``, and a
+several site-labels data sources can be applied to the same pool. Site labels
+are their own data source, processed under ``processed/site_labels/``, keyed on ``site_id``, and a
 caller joins one on before selecting.
 
 Constants

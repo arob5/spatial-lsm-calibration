@@ -1,6 +1,6 @@
 """Turning a member's initial state into the parameters SIPNET reads.
 
-The product stores the initial state in the source's own units because the
+The processed file stores the initial state in the source's own units because the
 SIPNET parameters it feeds depend on parameters the calibration proposes: the
 root fractions for ``plantWoodInit`` and the specific leaf weight for
 ``laiInit``. The conversion is therefore a function of a state *and* a
@@ -74,7 +74,7 @@ def to_sipnet_initial_conditions(
 ) -> InitialConditions:
     """One member's initial state as pySIPNET initial conditions.
 
-    The state comes from the product, the parameters the mapping needs from the
+    The state comes from the processed file, the parameters the mapping needs from the
     vector being proposed.
 
     The mapping is the one in the "How PEcAn used them" table of
@@ -88,15 +88,15 @@ def to_sipnet_initial_conditions(
                                 outside leaf-on
         soil_wetness_fraction = initial_soil_moisture_saturation / 100
 
-    Two of the four read a proposed parameter, which is why the product stores
+    Two of the four read a proposed parameter, which is why the processed file stores
     the state in its own units and this is applied per proposal.
 
     Parameters
     ----------
     initial_soil_organic_carbon, initial_wood_carbon, initial_leaf_carbon:
-        The member's pools in the product's units, ``kg m-2`` of carbon.
+        The member's pools in the processed file's units, ``kg m-2`` of carbon.
     initial_soil_moisture_saturation:
-        The member's surface soil moisture in the product's units, percent of
+        The member's surface soil moisture in the processed file's units, percent of
         saturation, so between 0 and 100.
     leaf_carbon_per_area:
         ``leafCSpWt``, g C m-2 of leaf, from the same parameter vector. Must be
@@ -162,7 +162,7 @@ def to_sipnet_initial_conditions(
     floored or substituted. Wood carbon is negative wherever PEcAn's leaf draw
     exceeded its biomass draw, and two variables are absent at the sites whose
     source files omit them (the specs' ``description`` fields and the ingest
-    report say where), so the product does not convert unfiltered. Which
+    report say where), so the processed file does not convert unfiltered. Which
     members to use is a question for the prior on initial conditions. PEcAn's
     own answer was to skip the pool and leave SIPNET's template default in
     place, without saying so.
@@ -188,7 +188,7 @@ def to_sipnet_initial_conditions(
     ``attenuation / leafCSpWt`` is identified. LAI observations are the only
     constraint in the planned set that breaks the degeneracy.
 
-    **Soil wetness equates two different fractions.** The product is a percent
+    **Soil wetness equates two different fractions.** The processed file holds a percent
     of *saturation* of a satellite retrieval's 2-5 cm surface layer;
     ``soilWFracInit`` is a fraction of the water holding capacity of SIPNET's
     single soil bucket. Dividing by 100 converts the units, not the definition,
@@ -240,7 +240,7 @@ def to_sipnet_initial_conditions_table(
     state:
         The initial conditions as a ``Dataset`` or as the ``dict`` of fields
         :func:`sipnet_calibration.initial_conditions.processed.initial_condition_fields`
-        returns, in the product's units. Must
+        returns, in the processed file's units. Must
         carry ``initial_soil_organic_carbon``, ``initial_wood_carbon``,
         ``initial_leaf_carbon`` and ``initial_soil_moisture_saturation``; any
         other variable is ignored. Where a variable declares ``units``, they
@@ -281,13 +281,13 @@ def to_sipnet_initial_conditions_table(
         ``time``, ``source_index`` or a spatial name other than ``site``,
         labeled or not; if their
         indexes do not match, or they were selected for different members or
-        sites; or if a variable's ``units`` are not the product's.
+        sites; or if a variable's ``units`` are not the processed file's.
 
     Notes
     -----
     The whole ensemble does not convert. ``initial_wood_carbon`` is negative
     over much of it and ``initial_leaf_carbon`` is absent at some sites, so the
-    product passed unfiltered is refused and the members to run have to be
+    processed file passed unfiltered is refused and the members to run have to be
     chosen first. See the Notes of :func:`to_sipnet_initial_conditions`.
     """
     arrays = {name: _state_variable(state, name) for name in _STATE_VARIABLES}
@@ -336,7 +336,7 @@ _MINIMUM_WOOD_FRACTION = 0.01
 #: it would be converted with one value and run with another.
 _SIPNET_TINY = 1e-6
 
-#: The four product variables the conversion reads. Its keyword arguments
+#: The four processed variables the conversion reads. Its keyword arguments
 #: carry the same names, so a caller's state maps onto them without a lookup.
 _STATE_VARIABLES: tuple[str, ...] = (
     "initial_soil_organic_carbon",
@@ -442,7 +442,7 @@ def _sipnet_fields_from_state(
 
 def _state_variable(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -> xr.DataArray:
     """The named variable of *state*, checked to be a ``DataArray`` in the
-    product's units."""
+    processed file's units."""
     try:
         array = state[name]
     except KeyError:
@@ -454,7 +454,7 @@ def _state_variable(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -
             f"{name} is a {type(array).__name__}, not a DataArray. The table form "
             "converts an ensemble; use to_sipnet_initial_conditions for one member."
         )
-    _check_units_are_the_products(array, name)
+    _check_units_are_the_processed_files(array, name)
     return array
 
 
@@ -637,7 +637,7 @@ def _check_soil_moisture_is_a_percentage(values: np.ndarray, index: pd.Index | N
     if bad.any():
         raise ValueError(
             "initial_soil_moisture_saturation is above 100"
-            f"{_offending_cells(index, bad, values)}. The product holds a percent of "
+            f"{_offending_cells(index, bad, values)}. The processed file holds a percent of "
             "saturation, whose source is documented over 0 to 100, and dividing by 100 "
             "is what makes soilWFracInit a fraction. A value above 100 is either a "
             "different quantity or a unit that is not percent.\n"
@@ -709,12 +709,12 @@ def _check_cells_are_addressable(table: pd.DataFrame) -> None:
     )
 
 
-def _check_units_are_the_products(array: xr.DataArray, name: str) -> None:
+def _check_units_are_the_processed_files(array: xr.DataArray, name: str) -> None:
     spec = resolve_initial_condition(name)
     units = array.attrs.get("units")
     if units is not None and units != spec.units:
         raise ValueError(
-            f"{name} carries units {units!r}, not the product's {spec.units!r}. The "
+            f"{name} carries units {units!r}, not the processed file's {spec.units!r}. The "
             "conversion applies the change to SIPNET's own units itself, so values "
             "converted already would be scaled twice."
         )

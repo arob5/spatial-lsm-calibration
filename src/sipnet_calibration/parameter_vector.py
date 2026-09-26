@@ -28,7 +28,7 @@ labels the caller has already loaded:
     order (``site_table=``), whose ``lon``/``lat`` are then carried onto every
     dataset the vector produces.
 ``site_labels``
-    For each site-labels name used as a ``varies_by``, a site-labels product
+    For each site-labels name used as a ``varies_by``, a site-labels table
     from :func:`sipnet_calibration.site_labels.load_site_labels`, a pandas
     categorical, or one label per site as a plain sequence.
 
@@ -37,7 +37,7 @@ The object
 A :class:`ParameterVector` is a named random vector ``theta`` in ``R^D``. It
 is built from :class:`CalibrationParameter`\\ s, each with a prior in natural
 space, a rule for how it varies over the sites (``varies_by``: shared, one
-copy per site, or one copy per class of a site-labels product) and a
+copy per site, or one copy per class of a site-labels data source) and a
 :class:`SIPNETMap` saying which SIPNET parameters it sets; and from
 :class:`FixedParameter`\\ s, SIPNET parameters held at a value. For each
 calibration parameter ``c``::
@@ -62,14 +62,14 @@ natural space, unconstrained space
     ``R^D``, where a sampler moves.
 group
     One copy of a calibration parameter: the one copy of a shared parameter,
-    one per site, or one per class of a site-labels product.
+    one per site, or one per class of a site-labels data source.
 component, element
     A component is one entry of a copy's natural-space value; an element is
     one entry of its unconstrained value. They differ only for the simplex,
     whose four components have three elements.
 site labels
-    A site-labels product assigns one class to every site. A vector names the
-    products it uses in ``site_labels={site_labels_name: ...}``, and a
+    A site-labels data source assigns one class to every site. A vector names the
+    sources it uses in ``site_labels={site_labels_name: ...}``, and a
     calibration parameter's ``varies_by`` names one of them.
 column label
     The name of one of the ``D`` columns of ``theta``, from
@@ -208,10 +208,10 @@ wants: :meth:`ParameterVector.gaussian_prior` builds one block per
 calibration parameter, and a spatial covariance over the per-site copies of
 one of them replaces that block and nothing else.
 
-**Groups of a site-labels product.** With a product from
+**Groups of a site-labels data source.** With a site-labels table from
 :func:`~sipnet_calibration.site_labels.load_site_labels`, a calibration
-parameter's groups are the product's declared classes that some site of the
-vector carries, in the product's order. A per-class prior or fixed value may
+parameter's groups are the source's declared classes that some site of the
+vector carries, in the source's order. A per-class prior or fixed value may
 be written over every declared class and is restricted to those present, so
 a vector over the whole pool and one over a handful of sites are written the
 same way. With a plain sequence the groups are its sorted distinct labels and
@@ -258,7 +258,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     from sipnet_calibration.site_labels import load_site_labels
     from sipnet_calibration.sites import load_sites, select_sites
 
-    # Build it for a site set and a site-labels product.
+    # Build it for a site set and a site-labels data source.
     site_table = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat, ...
     pft = load_site_labels("reanalysis_3pft")                  # DataFrame: site_id, label
     vector = ParameterVector(                                  # ParameterVector, D = 13
@@ -852,7 +852,7 @@ for one: ``sample``, the names that are never batch dims
 sources' member dims."""
 
 RESERVED_SITE_LABELS_NAMES = frozenset({*RESERVED_PARAMETER_NAMES, SHARED, SITE_ID})
-"""Names a site-labels product cannot take in a vector, because they are
+"""Names a site-labels data source cannot take in a vector, because they are
 dimension or coordinate names already, or reserved for one: those of
 :data:`RESERVED_PARAMETER_NAMES`, the group label ``shared`` and the site
 table's ``site_id``. It may not be named like a calibration parameter or a
@@ -1300,7 +1300,7 @@ class ParameterVector:
         :attr:`site_table` is the vector's own.
     site_labels:
         ``{site_labels_name: labels}`` for every ``varies_by`` other than
-        ``None`` and ``"site"``: a site-labels product with ``site_id`` and
+        ``None`` and ``"site"``: a site-labels table with ``site_id`` and
         ``label`` columns (:data:`~sipnet_calibration.site_labels.LABEL_COLUMN`),
         such as
         :func:`sipnet_calibration.site_labels.load_site_labels` returns, which
@@ -1466,7 +1466,7 @@ class ParameterVector:
     def group_labels(self, varies_by: str | None) -> tuple[Any, ...]:
         """The groups of a ``varies_by`` value, in the order they occupy
         ``theta``: ``("shared",)``, the sites, or the classes of a
-        site-labels product that some site here carries."""
+        site-labels data source that some site here carries."""
         if varies_by is None:
             return (SHARED,)
         if varies_by == SITE:
@@ -1480,7 +1480,7 @@ class ParameterVector:
         return len(self.group_labels(varies_by))
 
     def sites_with(self, site_labels_name: str, label: Any) -> tuple[int, ...]:
-        """The sites carrying *label* under the site-labels product
+        """The sites carrying *label* under the site-labels data source
         *site_labels_name*: ``()`` for a declared class no site here carries,
         ``KeyError`` for a label that is not a declared class."""
         if site_labels_name not in self.site_labels:
@@ -2240,7 +2240,7 @@ def example_parameter_vector(
         A site table in ascending ``site_id`` order, whose ``lon``/``lat``
         the vector carries. Give this or *sites*, not both.
     pft:
-        One PFT label per site, or a site-labels product; named ``"pft"`` in
+        One PFT label per site, or a site-labels table; named ``"pft"`` in
         the vector.
 
     Returns
@@ -2555,9 +2555,9 @@ def _normalized_site_labels(
     """One site-labels argument as (the class of each site, in site order;
     the declared classes, in their order)."""
     if isinstance(value, pd.DataFrame):
-        check_site_labels_product_has_columns(name, value)
+        check_site_labels_table_has_columns(name, value)
         indexed = site_lookup(value)[LABEL_COLUMN]
-        check_site_labels_product_covers_sites(name, indexed, sites)
+        check_site_labels_table_labels_every_site(name, indexed, sites)
         labels = tuple(indexed.loc[list(sites)].tolist())
         check_site_labels_are_present(name, labels)
         return labels, _declared_classes_of(name, value)
@@ -2573,10 +2573,10 @@ def _normalized_site_labels(
 
 
 def _declared_classes_of(name: str, value: Any) -> tuple[Any, ...]:
-    """The classes a site-labels argument declares: a product's categories,
+    """The classes a site-labels argument declares: a site-labels table's categories,
     else its sorted distinct labels."""
     if isinstance(value, pd.DataFrame):
-        check_site_labels_product_has_columns(name, value)
+        check_site_labels_table_has_columns(name, value)
         value = value[LABEL_COLUMN]
     if isinstance(value, pd.Categorical) or isinstance(
         getattr(value, "dtype", None), pd.CategoricalDtype
@@ -2593,7 +2593,7 @@ def _sorted_classes(name: str, labels: Sequence[Any]) -> tuple[Any, ...]:
     except TypeError:
         raise ValueError(
             f"site labels {name!r} mix types that cannot be ordered, so their classes have "
-            "no group order; pass a site-labels product or a pandas categorical, whose "
+            "no group order; pass a site-labels table or a pandas categorical, whose "
             "categories give the order."
         ) from None
 
@@ -2950,25 +2950,25 @@ def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
         raise ValueError("sites must be strictly ascending with no repeats.")
 
 
-def check_site_labels_product_has_columns(name: str, frame: pd.DataFrame) -> None:
+def check_site_labels_table_has_columns(name: str, frame: pd.DataFrame) -> None:
     missing = sorted({SITE_ID, LABEL_COLUMN} - set(frame.columns))
     if missing:
         raise ValueError(
-            f"site labels {name!r}: a site-labels product needs {SITE_ID!r} and "
+            f"site labels {name!r}: a site-labels table needs {SITE_ID!r} and "
             f"{LABEL_COLUMN!r} columns, as sipnet_calibration.site_labels.load_site_labels "
             f"returns; missing {missing}."
         )
 
 
-def check_site_labels_product_covers_sites(
+def check_site_labels_table_labels_every_site(
     name: str, labels: pd.Series, sites: tuple[int, ...]
 ) -> None:
     if not labels.index.is_unique:
-        raise ValueError(f"site labels {name!r}: the product repeats a site_id.")
+        raise ValueError(f"site labels {name!r}: the table repeats a site_id.")
     missing = [s for s in sites if s not in labels.index]
     if missing:
         raise ValueError(
-            f"site labels {name!r} do not label sites {missing}; a site-labels product must "
+            f"site labels {name!r} do not label sites {missing}; a site-labels table must "
             "label every site of the vector."
         )
 

@@ -194,7 +194,7 @@ def category_colors(n: int) -> list[str]:
     list of str
         :data:`CATEGORY_COLORS` for up to eight classes, ``tab20`` for up to
         twenty. Class *i* gets entry *i* whichever classes a figure shows, so a
-        class keeps its color across figures of one product.
+        class keeps its color across figures of one data source.
 
     Raises
     ------

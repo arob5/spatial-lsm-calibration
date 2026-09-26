@@ -271,13 +271,13 @@ class TestIngestScript:
 
     def test_there_is_no_pft_column(self, ingested):
         # A PFT class is an experimental choice and must not be baked into
-        # the shared key; it is its own product keyed on site_id.
+        # the shared key; it is its own data source keyed on site_id.
         assert "pft" not in ingested["table"].columns
 
 
 class TestSiteIdentifiers:
     def test_site_id_is_one_to_eight_thousand_in_record_order(self, ingested):
-        # Every other product joins on this and the identifiers are not ours to
+        # Every other data source joins on this and the identifiers are not ours to
         # renumber, so a permutation would be as much a failure as a gap.
         assert np.array_equal(
             ingested["table"]["site_id"].to_numpy(), np.arange(1, N_SITES + 1)

@@ -112,7 +112,7 @@ One array holds one variable. Variables that share one grid are held together
 as an ``xarray.Dataset``: one run's output from :func:`label_run`, a stack of
 runs from :func:`stack_model_outputs`, and the calibration parameters' fields.
 Variables that do not share one are a ``dict[str, DataArray]`` keyed by name,
-as the constraints are, being annual, dated or static by product. The field
+as the constraints are, being annual, dated or static by constraint. The field
 adapters here return such a dict too, one field per variable asked for, as the
 readers in :mod:`sipnet_calibration.drivers` and
 :mod:`sipnet_calibration.constraints` do.
@@ -127,7 +127,7 @@ Identifiers
     Ameriflux-keyed identifier cannot address the pool: ``ameriflux_site_id``
     is a non-dimension coordinate on ``site``, missing for the rest. Plant
     functional type is not site metadata and is not carried here; which site
-    labels to use is an experimental choice, and they live in their own product
+    labels to use is an experimental choice, and they live in their own data source
     under ``data/processed/site_labels/``.
 a batch dim
     Integer labels, created ``int64`` (any integer dtype is accepted),
@@ -138,7 +138,7 @@ a batch dim
     Timestamps, whose meaning is the source's and is recorded in the
     coordinate's attributes rather than assumed. Model output and the drivers
     carry pySIPNET's axis, the end of each step (see below); each constraint
-    product carries its source's own label, with CF ``time_bounds`` where the
+    carries its source's own label, with CF ``time_bounds`` where the
     support is documented.
 
 Model output
@@ -260,7 +260,7 @@ which discovers absence on disk and therefore has to report it.
 
 A ``(J, N)`` batch of predictions is unstacked by
 :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns the
-``(site, product, time)`` index the batch was flattened with, so the two
+``(site, observation_source, time)`` index the batch was flattened with, so the two
 cannot mislabel against each other. The traps of the observation and
 initial-condition sources are in ``CLAUDE.md``'s Data section, where they
 apply to the readers that already exist as well.

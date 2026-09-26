@@ -21,7 +21,7 @@ SIPNET model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
 every figure a test makes is closed after it (:func:`close_figures`).
 
 The real-data fixtures read the driver files, the site table and the
-constraint products present in this working copy, found through
+constraints' processed files present in this working copy, found through
 :func:`sipnet_calibration.conventions.data_root`, and skip when they are not
 there; a tracked input is found from :data:`REPOSITORY` instead, since it is
 always in the checkout. The local driver files carry the drifting hour column
@@ -317,7 +317,7 @@ def real_constraint_fields() -> tuple[dict, dict]:
     """The constraint observations and their error variances, as field dicts.
 
     Both are keyed on constraint name. The fields have dims ``(site, time)``
-    over the whole site pool and each product's own time labels, or
+    over the whole site pool and each constraint's own time labels, or
     ``(site,)`` for the static soil carbon, and are ragged: most cells are
     unobserved. The variances are the squares of the reported standard
     deviations.
@@ -327,7 +327,7 @@ def real_constraint_fields() -> tuple[dict, dict]:
         means = constraints.constraint_fields()
         standard_deviations = constraints.constraint_standard_deviations()
     except FileNotFoundError as error:
-        pytest.skip(f"constraint products not available in this working copy: {error}")
+        pytest.skip(f"constraints' processed files not available in this working copy: {error}")
     return means, {
         name: standard_deviation**2 for name, standard_deviation in standard_deviations.items()
     }

@@ -38,7 +38,7 @@ space-separated ``flag_meanings`` naming each code's class. An optional
 ``flag_display_names``, a tuple aligned with ``flag_meanings``, is what the
 legend shows in their place; it is this project's attribute, not CF's.
 :func:`sipnet_calibration.site_labels.site_labels_field` makes one from a
-site-labels product. A class keeps its color in every map of the same product,
+site-labels data source. A class keeps its color in every map of the same source,
 because colors are keyed by the class's position in ``flag_meanings`` and not
 by which classes a map happens to show. Without ``flag_meanings`` the classes
 are the ``flag_values`` codes, ``false`` and ``true`` for a boolean field
