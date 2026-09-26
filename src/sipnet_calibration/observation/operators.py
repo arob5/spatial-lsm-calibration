@@ -4,7 +4,7 @@ observed quantity, on that quantity's own grid.
 Where this sits
 ---------------
 An operator reads what SIPNET wrote (through
-:func:`sipnet_calibration.fields.label_run`, a labeled ``xr.Dataset``) and,
+:func:`sipnet_calibration.fields.to_model_output`, a labeled ``xr.Dataset``) and,
 where needed, the SIPNET parameter values the run used (SIPNET parameter
 fields from :class:`~sipnet_calibration.parameter_vector.ParameterVector`),
 and returns what the instrument would have read. The
@@ -398,7 +398,7 @@ def restrict_to_observed_sites(
     -----
     A model field with no ``site`` is refused rather than assumed to be at the
     observed site: an unlabeled run could be any site, and matching it by
-    position would be a guess. :func:`sipnet_calibration.fields.label_run`
+    position would be a guess. :func:`sipnet_calibration.fields.to_model_output`
     is what gives a run its site.
     """
     check_observed_values_are_valid(observed_values)
@@ -1007,7 +1007,8 @@ def check_run_is_labeled_with_a_site(model_field: xr.DataArray, message_name: st
     if SITE not in model_field.coords:
         raise ValueError(
             f"the model output carries no {SITE!r} coordinate, so it cannot be matched to "
-            f"the sites {message_name} observes; label the run with fields.label_run(site=...)."
+            f"the sites {message_name} observes; label the run with its site, "
+            "fields.to_model_output(run_output, site=...)."
         )
 
 
@@ -1070,7 +1071,7 @@ def check_target_has_a_coordinate_for(target_field: xr.DataArray, dim: str, name
             f"the SIPNET parameter fields' {name!r} is on {dim!r}, and the model output "
             f"carries no {dim} coordinate to select it at; using it whole would broadcast "
             f"every {dim} of the SIPNET parameter fields into one run. Label the run with "
-            f"fields.label_run, or select the SIPNET parameter fields to the run's {dim}."
+            f"fields.to_model_output, or select the SIPNET parameter fields to the run's {dim}."
         )
 
 

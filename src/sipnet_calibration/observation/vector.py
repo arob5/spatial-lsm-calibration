@@ -655,7 +655,7 @@ class ObservationVector:
         model_output:
             The model output the operators read
             (:data:`~sipnet_calibration.fields.ModelOutput`): one run from
-            :func:`sipnet_calibration.fields.label_run`, or a stack from
+            :func:`sipnet_calibration.fields.to_model_output`, or a stack from
             :func:`sipnet_calibration.fields.stack_model_outputs`, carrying
             every variable in :attr:`output_variable_names` at every site the
             vector observes.

@@ -1085,7 +1085,7 @@ class TestRealSipnet:
         if find_binary() is None:
             pytest.skip(missing_binary_message())
         from conftest import niwot_parameters
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
         from sipnet_calibration.parameter_vector import sipnet_overrides
 
         model = SIPNETModel(
@@ -1107,7 +1107,7 @@ class TestRealSipnet:
         sample, site = 1, 27
         overrides = sipnet_overrides(evaluation.sipnet_parameter_fields, batch={"sample": sample}, site=site)
         run = model(climate=files[site], **overrides)
-        direct = label_run(
+        direct = to_model_output(
             run.outputs.select(list(observation_vector.output_variable_names)),
             site=site,
             site_table=SITE_TABLE,

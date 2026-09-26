@@ -231,7 +231,7 @@ from sipnet_calibration.fields import (
     check_batch_dim_name_is_not_a_model_output_name,
     check_batch_dim_name_is_not_reserved,
     check_sipnet_parameter_fields_are_a_dataset,
-    label_run,
+    to_model_output,
     resolve_output_variable_names,
     stack_model_outputs,
     validate_sipnet_parameter_fields,
@@ -773,7 +773,7 @@ class _Run:
         check_output_is_finite(dataset, site)
         if not self.returns_model_output and site_observation_vector is None:
             return _RunOutput(model_output=None, predictions=None)
-        model_output = label_run(dataset, site=site, site_table=self.site_table)
+        model_output = to_model_output(dataset, site=site, site_table=self.site_table)
         if self.returns_model_output:
             if self.freq is not None:
                 model_output = _aggregated(model_output, self.freq)

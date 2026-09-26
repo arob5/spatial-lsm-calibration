@@ -24,7 +24,7 @@ import xarray as xr
 
 from conftest import site_table_of
 from sipnet_calibration.conventions import TIME_COORD_NAMES
-from sipnet_calibration.fields import label_run, stack_model_outputs
+from sipnet_calibration.fields import to_model_output, stack_model_outputs
 from sipnet_calibration.sites import site_lookup
 
 #: The dims of a stack of runs over samples and sites.
@@ -44,30 +44,30 @@ def rescaled(output, factor: float):
     return SIPNETOutput.from_dataframe(frame, climate=output.climate, run_id=f"x{factor}")
 
 
-class TestLabelRunReadsASipnetOutput:
+class TestToModelOutputReadsASipnetOutput:
     def test_returns_one_field_per_variable_under_pysipnets_names(self, niwot_output):
-        fields = label_run(niwot_output, output_variable_names=["nee", "wood_carbon"])
+        fields = to_model_output(niwot_output, output_variable_names=["nee", "wood_carbon"])
         assert list(fields) == ["net_ecosystem_exchange", "wood_carbon"]
         assert all(isinstance(field, xr.DataArray) for field in fields.values())
 
     def test_aliases_and_registry_names_are_the_same_variable(self, niwot_output):
-        by_alias = label_run(niwot_output, output_variable_names=["NEE"])["net_ecosystem_exchange"]
-        by_name = label_run(niwot_output, output_variable_names=["net_ecosystem_exchange"])[
+        by_alias = to_model_output(niwot_output, output_variable_names=["NEE"])["net_ecosystem_exchange"]
+        by_name = to_model_output(niwot_output, output_variable_names=["net_ecosystem_exchange"])[
             "net_ecosystem_exchange"
         ]
         xr.testing.assert_identical(by_alias, by_name)
 
     def test_the_requested_order_is_kept_and_repeats_dropped(self, niwot_output):
-        fields = label_run(niwot_output, output_variable_names=["wood_carbon", "nee", "NEE"])
+        fields = to_model_output(niwot_output, output_variable_names=["wood_carbon", "nee", "NEE"])
         assert list(fields) == ["wood_carbon", "net_ecosystem_exchange"]
 
     def test_an_unlabeled_run_is_a_time_series(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         assert field.dims == ("time",)
         assert "site" not in field.coords and "sample" not in field.coords
 
     def test_pysipnets_attributes_survive_unchanged(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         expected = niwot_output["nee"].attrs
         assert field.attrs == expected
         # The three the rest of the project reads off them.
@@ -76,7 +76,7 @@ class TestLabelRunReadsASipnetOutput:
         assert field.attrs["long_name"]
 
     def test_the_time_axis_is_pysipnets_step_end_with_its_bounds_pair(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         assert set(field.coords) == {"time", "time_step_start", "time_step_length"}
         assert set(field.coords) == set(TIME_COORD_NAMES)
         assert field["time"].attrs["long_name"] == "End of timestep"
@@ -87,19 +87,19 @@ class TestLabelRunReadsASipnetOutput:
         assert ((field["time"].values - starts) <= lengths + np.timedelta64(60, "s")).all()
 
     def test_the_dangling_bounds_attribute_is_dropped(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         assert "bounds" in niwot_output.xarray["time"].attrs
         assert "bounds" not in field["time"].attrs
 
     def test_sipnets_own_row_labels_are_dropped(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         for label in ("year", "day_of_year", "hour_of_day"):
             assert label not in field.coords
 
     def test_a_site_label_brings_its_coordinates_from_the_site_table(
         self, niwot_output, real_site_table
     ):
-        field = label_run(niwot_output, output_variable_names=["nee"], site=27)["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"], site=27)["net_ecosystem_exchange"]
         row = real_site_table.loc[real_site_table["site_id"] == 27].iloc[0]
         assert int(field["site"]) == 27
         assert field["site"].dtype == np.int32
@@ -108,7 +108,7 @@ class TestLabelRunReadsASipnetOutput:
         assert field["lon"].attrs["units"] == "degrees_east"
 
     def test_a_batch_label_is_a_scalar_int64_coordinate(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"], batch={"sample": 0})[
+        field = to_model_output(niwot_output, output_variable_names=["nee"], batch={"sample": 0})[
             "net_ecosystem_exchange"
         ]
         assert int(field["sample"]) == 0
@@ -116,14 +116,14 @@ class TestLabelRunReadsASipnetOutput:
         assert field["sample"].dims == ()
 
     def test_a_result_and_the_output_inside_it_give_the_same_thing(self, site_1_result):
-        from_result = label_run(site_1_result, output_variable_names=["nee"])["net_ecosystem_exchange"]
-        from_output = label_run(site_1_result.outputs, output_variable_names=["nee"])[
+        from_result = to_model_output(site_1_result, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        from_output = to_model_output(site_1_result.outputs, output_variable_names=["nee"])[
             "net_ecosystem_exchange"
         ]
         xr.testing.assert_identical(from_result, from_output)
 
     def test_the_values_are_the_column_sipnet_wrote(self, niwot_output):
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         assert np.array_equal(
             field.values, niwot_output.pandas["net_ecosystem_exchange"].to_numpy()
         )
@@ -137,24 +137,24 @@ class TestLabelRunReadsASipnetOutput:
 
         monkeypatch.setattr(SIPNETOutput, "xarray", property(refuse))
         monkeypatch.setattr(SIPNETOutput, "pandas", property(refuse))
-        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         assert field.sizes["time"] > 0
 
     def test_an_unknown_variable_names_the_nearest_matches(self, niwot_output):
         with pytest.raises(KeyError, match="not a SIPNET output variable"):
-            label_run(niwot_output, output_variable_names=["net_exchange"])
+            to_model_output(niwot_output, output_variable_names=["net_exchange"])
 
     def test_no_variables_is_refused(self, niwot_output):
         with pytest.raises(ValueError, match="no variables were asked for"):
-            label_run(niwot_output, output_variable_names=[])
+            to_model_output(niwot_output, output_variable_names=[])
 
     def test_a_site_outside_the_table_is_refused(self, niwot_output, real_site_table):
         with pytest.raises(KeyError, match="not in the site table"):
-            label_run(niwot_output, output_variable_names=["nee"], site=99999, site_table=real_site_table)
+            to_model_output(niwot_output, output_variable_names=["nee"], site=99999, site_table=real_site_table)
 
     def test_a_batch_label_may_be_any_integer(self, niwot_output):
         for label in (-1, 40000):
-            field = label_run(niwot_output, output_variable_names=["nee"], batch={"sample": label})[
+            field = to_model_output(niwot_output, output_variable_names=["nee"], batch={"sample": label})[
                 "net_ecosystem_exchange"
             ]
             assert int(field["sample"]) == label
@@ -162,11 +162,11 @@ class TestLabelRunReadsASipnetOutput:
     def test_a_reserved_name_cannot_be_a_batch_dim(self, niwot_output):
         for name in ("site", "time", "lat"):
             with pytest.raises(ValueError, match="cannot name a batch dim"):
-                label_run(niwot_output, output_variable_names=["nee"], batch={name: 0})
+                to_model_output(niwot_output, output_variable_names=["nee"], batch={name: 0})
 
     def test_something_that_is_not_a_run_is_refused(self, real_site_table):
         with pytest.raises(TypeError, match="SIPNETResult or SIPNETOutput"):
-            label_run(object(), output_variable_names=["nee"])
+            to_model_output(object(), output_variable_names=["nee"])
 
 
 @pytest.fixture(scope="session")
@@ -267,8 +267,8 @@ class TestStackModelOutputsReadsSipnetOutputs:
 
 class TestTheAdaptersTakeAKeyedSiteTable:
     def test_the_adapter_accepts_either_form(self, niwot_output, real_site_table):
-        plain = label_run(niwot_output, output_variable_names=["nee"], site=27, site_table=real_site_table)
-        keyed = label_run(
+        plain = to_model_output(niwot_output, output_variable_names=["nee"], site=27, site_table=real_site_table)
+        keyed = to_model_output(
             niwot_output, output_variable_names=["nee"], site=27, site_table=site_lookup(real_site_table)
         )
         xr.testing.assert_identical(
@@ -276,55 +276,55 @@ class TestTheAdaptersTakeAKeyedSiteTable:
         )
 
 
-class TestLabelRunRefusesBadInput:
+class TestToModelOutputRefusesBadInput:
     def test_a_run_that_wrote_no_rows_says_so(self, niwot_output):
         """The shape a failed run leaves; pySIPNET gives back an empty Dataset."""
         from pysipnet.output import SIPNETOutput
 
         empty = SIPNETOutput.from_dataframe(niwot_output.pandas.iloc[0:0].copy())
         with pytest.raises(ValueError, match="no rows"):
-            label_run(empty, output_variable_names=["nee"])
+            to_model_output(empty, output_variable_names=["nee"])
 
     def test_a_float_site_is_refused_even_a_whole_one(self, niwot_output, real_site_table):
         for site in (1.5, 27.0):
             with pytest.raises(TypeError, match="float"):
-                label_run(niwot_output, output_variable_names=["nee"], site=site, site_table=real_site_table)
+                to_model_output(niwot_output, output_variable_names=["nee"], site=site, site_table=real_site_table)
 
     def test_a_boolean_is_not_an_identifier(self, niwot_output, real_site_table):
         with pytest.raises(TypeError, match="bool"):
-            label_run(niwot_output, output_variable_names=["nee"], site=True, site_table=real_site_table)
+            to_model_output(niwot_output, output_variable_names=["nee"], site=True, site_table=real_site_table)
         with pytest.raises(TypeError, match="boolean"):
-            label_run(niwot_output, output_variable_names=["nee"], batch={"sample": False})
+            to_model_output(niwot_output, output_variable_names=["nee"], batch={"sample": False})
 
     def test_a_float_batch_label_is_refused_as_a_type_error(self, niwot_output):
         for label in (float("inf"), 2.0):
             with pytest.raises(TypeError, match="must be an integer"):
-                label_run(niwot_output, output_variable_names=["nee"], batch={"sample": label})
+                to_model_output(niwot_output, output_variable_names=["nee"], batch={"sample": label})
 
     def test_batch_labels_that_are_not_a_mapping_are_refused(self, niwot_output):
         with pytest.raises(TypeError, match="mapping from batch dim to label"):
-            label_run(niwot_output, output_variable_names=["nee"], batch=3)
+            to_model_output(niwot_output, output_variable_names=["nee"], batch=3)
 
     def test_one_bare_name_is_refused_as_a_type_error(self, niwot_output):
         with pytest.raises(TypeError, match=r"one string 'nee'; pass a sequence such as \['nee'\]"):
-            label_run(niwot_output, output_variable_names="nee")
+            to_model_output(niwot_output, output_variable_names="nee")
 
     def test_a_sipnet_output_without_names_is_refused_as_a_type_error(self, niwot_output):
         with pytest.raises(TypeError, match="pass output_variable_names="):
-            label_run(niwot_output, output_variable_names=None)
+            to_model_output(niwot_output, output_variable_names=None)
         with pytest.raises(TypeError, match="pass output_variable_names="):
-            label_run(niwot_output)
+            to_model_output(niwot_output)
 
     def test_an_unordered_container_is_refused_because_order_is_promised(self, niwot_output):
         with pytest.raises(TypeError, match="no\\s+order to keep"):
-            label_run(niwot_output, output_variable_names={"nee", "wood_carbon"})
+            to_model_output(niwot_output, output_variable_names={"nee", "wood_carbon"})
 
     def test_a_result_whose_outputs_are_not_an_output_is_refused(self, niwot_output):
         class NotAResult:
             outputs = 42
 
         with pytest.raises(TypeError, match="rather than a SIPNETOutput"):
-            label_run(NotAResult(), output_variable_names=["nee"])
+            to_model_output(NotAResult(), output_variable_names=["nee"])
 
     def test_a_repeated_variable_is_read_once(self, niwot_output, monkeypatch):
         """``select`` must not be handed the same column twice."""
@@ -338,7 +338,7 @@ class TestLabelRunRefusesBadInput:
             return original(self, variables, **kwargs)
 
         monkeypatch.setattr(SIPNETOutput, "select", record)
-        label_run(niwot_output, output_variable_names=["nee", "NEE", "net_ecosystem_exchange"])
+        to_model_output(niwot_output, output_variable_names=["nee", "NEE", "net_ecosystem_exchange"])
         assert seen == [["net_ecosystem_exchange"]]
 
     def test_a_site_lookup_without_the_column_still_explains_a_missing_site(
@@ -346,7 +346,7 @@ class TestLabelRunRefusesBadInput:
     ):
         keyed = real_site_table.set_index("site_id")
         with pytest.raises(KeyError, match="not in the site table"):
-            label_run(niwot_output, output_variable_names=["nee"], site=99999, site_table=keyed)
+            to_model_output(niwot_output, output_variable_names=["nee"], site=99999, site_table=keyed)
 
 
 class TestStackModelOutputsRefusesBadKeys:
@@ -362,33 +362,33 @@ class TestStackModelOutputsRefusesBadKeys:
                 )
 
 
-class TestLabelRun:
+class TestToModelOutput:
     def _table(self):
         return site_table_of(1, 27, lon=[-105.0, -70.0], lat=[40.0, 45.0], keyed=True)
 
     def test_keeps_a_scalar_batch_label_the_run_carries(self, niwot_output):
         dataset = niwot_output.select(["wood_carbon"]).assign_coords(sample=np.int64(3))
-        labeled = label_run(dataset, site=1, site_table=self._table())
+        labeled = to_model_output(dataset, site=1, site_table=self._table())
         assert int(labeled["sample"]) == 3
 
     def test_refuses_a_result_that_is_not_a_model_output(self, niwot_output):
         dataset = niwot_output.select(["wood_carbon"])
         dataset["wood_carbon"].attrs.pop("units")
         with pytest.raises(ValueError, match="units"):
-            label_run(dataset, site=1, site_table=self._table())
+            to_model_output(dataset, site=1, site_table=self._table())
 
     def test_leaves_the_callers_time_attributes_alone(self, niwot_output):
         dataset = niwot_output.select(["wood_carbon"])
         before = dict(dataset["time"].attrs)
-        assert "bounds" in before  # what label_run strips from its own copy
-        label_run(dataset, site=1, site_table=self._table())
+        assert "bounds" in before  # what to_model_output strips from its own copy
+        to_model_output(dataset, site=1, site_table=self._table())
         assert dict(dataset["time"].attrs) == before
 
     def test_adds_the_labels_and_drops_what_a_model_output_does_not_carry(self, niwot_output):
-        from sipnet_calibration.fields import label_run, validate_model_output
+        from sipnet_calibration.fields import to_model_output, validate_model_output
 
         dataset = niwot_output.select(["wood_carbon"])
-        labeled = label_run(dataset, site=27, batch={"sample": 3}, site_table=self._table())
+        labeled = to_model_output(dataset, site=27, batch={"sample": 3}, site_table=self._table())
         assert int(labeled["site"]) == 27 and int(labeled["sample"]) == 3
         assert float(labeled["lon"]) == -70.0 and float(labeled["lat"]) == 45.0
         assert labeled["site"].dtype == np.int32 and labeled["sample"].dtype == np.int64
@@ -400,57 +400,57 @@ class TestLabelRun:
         validate_model_output(labeled)
 
     def test_a_sipnet_output_and_its_dataset_give_the_same_model_output(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
-        from_output = label_run(niwot_output, output_variable_names=["wood_carbon"], site=27,
+        from_output = to_model_output(niwot_output, output_variable_names=["wood_carbon"], site=27,
                                 site_table=self._table())
-        from_dataset = label_run(niwot_output.select(["wood_carbon"]), site=27,
+        from_dataset = to_model_output(niwot_output.select(["wood_carbon"]), site=27,
                                  site_table=self._table())
         xr.testing.assert_identical(from_output, from_dataset)
 
     def test_a_dataset_is_narrowed_to_the_names_asked_for(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         dataset = niwot_output.select(["wood_carbon", "nee"])
-        assert list(label_run(dataset, output_variable_names=["NEE"])) == [
+        assert list(to_model_output(dataset, output_variable_names=["NEE"])) == [
             "net_ecosystem_exchange"
         ]
 
     def test_labels_every_batch_dim_given(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         dataset = niwot_output.select(["wood_carbon"])
-        labeled = label_run(dataset, batch={"sample": 3, "driver_member": 7})
+        labeled = to_model_output(dataset, batch={"sample": 3, "driver_member": 7})
         assert int(labeled["sample"]) == 3 and int(labeled["driver_member"]) == 7
 
     def test_an_empty_run_is_refused(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         with pytest.raises(ValueError, match="no rows"):
-            label_run(niwot_output.select(["wood_carbon"]).isel(time=slice(0, 0)), site=1, site_table=self._table())
+            to_model_output(niwot_output.select(["wood_carbon"]).isel(time=slice(0, 0)), site=1, site_table=self._table())
 
     def test_a_site_table_with_a_repeated_site_is_refused(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         table = pd.concat([self._table(), self._table().iloc[[0]]])
         with pytest.raises(ValueError, match="more than once"):
-            label_run(niwot_output.select(["wood_carbon"]), site=1, site_table=table)
+            to_model_output(niwot_output.select(["wood_carbon"]), site=1, site_table=table)
 
     def test_no_labels_leaves_the_values_and_attributes_unchanged(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         dataset = niwot_output.select(["wood_carbon"])
-        labeled = label_run(dataset)
+        labeled = to_model_output(dataset)
         assert "site" not in labeled.coords
-        xr.testing.assert_identical(labeled["wood_carbon"], label_run(dataset)["wood_carbon"])
+        xr.testing.assert_identical(labeled["wood_carbon"], to_model_output(dataset)["wood_carbon"])
         assert np.array_equal(labeled["wood_carbon"].values, dataset["wood_carbon"].values)
         assert labeled.attrs == dataset.attrs
 
     def test_a_dataarray_is_refused(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         with pytest.raises(TypeError, match="Dataset"):
-            label_run(niwot_output.select(["wood_carbon"])["wood_carbon"], site=1, site_table=self._table())
+            to_model_output(niwot_output.select(["wood_carbon"])["wood_carbon"], site=1, site_table=self._table())
 
 
 class TestBatchNamesAreNotTheModelOutputsOwn:
@@ -461,14 +461,14 @@ class TestBatchNamesAreNotTheModelOutputsOwn:
     NAMES = ("net_ecosystem_exchange", "time_step_length", "time_step_start", "time_bounds", "bounds")
 
     @pytest.mark.parametrize("name", NAMES)
-    def test_label_run_refuses_it_in_either_form(self, niwot_output, name):
-        from sipnet_calibration.fields import label_run
+    def test_to_model_output_refuses_it_in_either_form(self, niwot_output, name):
+        from sipnet_calibration.fields import to_model_output
 
         dataset = niwot_output.select(["nee"])
         with pytest.raises(ValueError, match=f"{name!r} (is .* of the model output|cannot name a batch dim)"):
-            label_run(dataset, batch={name: 1})
+            to_model_output(dataset, batch={name: 1})
         with pytest.raises(ValueError, match=f"{name!r} (is .* of the model output|cannot name a batch dim)"):
-            label_run(niwot_output, output_variable_names=["nee"], batch={name: 1})
+            to_model_output(niwot_output, output_variable_names=["nee"], batch={name: 1})
 
     @pytest.mark.parametrize("name", NAMES)
     def test_stack_model_outputs_refuses_it_as_a_key_dim(self, niwot_output, name):
@@ -479,18 +479,18 @@ class TestBatchNamesAreNotTheModelOutputsOwn:
             stack_model_outputs(runs, key_dims=(name, "site"), site_table=_small_table(1))
 
     def test_a_batch_label_that_does_not_fit_int64_is_a_value_error(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
 
         with pytest.raises(ValueError, match="from -9223372036854775808"):
-            label_run(niwot_output.select(["nee"]), batch={"sample": 2**70})
+            to_model_output(niwot_output.select(["nee"]), batch={"sample": 2**70})
 
 
 class TestStackersKeepEveryBatchLabelOfARun:
     def test_a_run_labeled_with_a_batch_dim_outside_key_dims_is_refused(self, niwot_output):
         """It would lose which driver member the run used."""
-        from sipnet_calibration.fields import label_run, stack_model_outputs
+        from sipnet_calibration.fields import to_model_output, stack_model_outputs
 
-        run = label_run(niwot_output.select(["nee"]), batch={"driver_member": 2})
+        run = to_model_output(niwot_output.select(["nee"]), batch={"driver_member": 2})
         with pytest.raises(ValueError, match="driver_member"):
             stack_model_outputs({(0, 1): run}, site_table=_small_table(1))
         stacked = stack_model_outputs(
@@ -596,11 +596,11 @@ class TestStackModelOutputs:
         )
         assert stacked["net_ecosystem_exchange"].dims == ("site", "time")
 
-    def test_runs_labeled_by_label_run_are_stacked_and_left_unchanged(self, niwot_output):
-        from sipnet_calibration.fields import label_run, stack_model_outputs
+    def test_runs_labeled_by_to_model_output_are_stacked_and_left_unchanged(self, niwot_output):
+        from sipnet_calibration.fields import to_model_output, stack_model_outputs
 
         labeled = {
-            (0, site): label_run(niwot_output.select(["nee"]), site=site, site_table=self._table())
+            (0, site): to_model_output(niwot_output.select(["nee"]), site=site, site_table=self._table())
             for site in (1, 27)
         }
         before = {key: dataset.copy(deep=True) for key, dataset in labeled.items()}
@@ -610,16 +610,16 @@ class TestStackModelOutputs:
             xr.testing.assert_identical(dataset, before[key])
 
     def test_a_run_labeled_with_another_site_is_refused(self, niwot_output):
-        from sipnet_calibration.fields import label_run, stack_model_outputs
+        from sipnet_calibration.fields import to_model_output, stack_model_outputs
 
-        labeled = label_run(niwot_output.select(["nee"]), site=27, site_table=self._table())
+        labeled = to_model_output(niwot_output.select(["nee"]), site=27, site_table=self._table())
         with pytest.raises(ValueError, match=r"keyed \(sample=0, site=1\) is labeled site=\[27\]"):
             stack_model_outputs({(0, 1): labeled}, site_table=self._table())
 
     def test_a_run_labeled_with_another_batch_label_is_refused(self, niwot_output):
-        from sipnet_calibration.fields import label_run, stack_model_outputs
+        from sipnet_calibration.fields import to_model_output, stack_model_outputs
 
-        labeled = label_run(niwot_output.select(["nee"]), batch={"sample": 4})
+        labeled = to_model_output(niwot_output.select(["nee"]), batch={"sample": 4})
         with pytest.raises(ValueError, match=r"keyed \(sample=0, site=1\) is labeled sample=\[4\]"):
             stack_model_outputs({(0, 1): labeled}, site_table=self._table())
 
@@ -737,12 +737,12 @@ class TestStackModelOutputsRefusesRunsThatDisagree:
             stack_model_outputs([niwot_output.select(["nee"])], site_table=_small_table(1))
 
 
-class TestLabelRunChecksTheSiteTable:
-    def test_label_run_applies_it(self, niwot_output):
-        from sipnet_calibration.fields import label_run
+class TestToModelOutputChecksTheSiteTable:
+    def test_to_model_output_applies_it(self, niwot_output):
+        from sipnet_calibration.fields import to_model_output
 
         with pytest.raises(ValueError, match="'lat'"):
-            label_run(niwot_output.select(["nee"]), site=1, site_table=_small_table(1).drop(columns="lat"))
+            to_model_output(niwot_output.select(["nee"]), site=1, site_table=_small_table(1).drop(columns="lat"))
 
 
 class TestLabelHelpers:
@@ -817,7 +817,7 @@ class TestValidateModelOutput:
         from sipnet_calibration.fields import validate_model_output
 
         validate_model_output(
-            label_run(niwot_output, output_variable_names=["nee"], site=27,
+            to_model_output(niwot_output, output_variable_names=["nee"], site=27,
                       site_table=self._table())
         )
         validate_model_output(
@@ -827,21 +827,21 @@ class TestValidateModelOutput:
     def test_a_dataarray_is_a_type_error(self, niwot_output):
         from sipnet_calibration.fields import validate_model_output
 
-        run = label_run(niwot_output, output_variable_names=["nee"])
+        run = to_model_output(niwot_output, output_variable_names=["nee"])
         with pytest.raises(TypeError, match="must be an xarray Dataset"):
             validate_model_output(run["net_ecosystem_exchange"])
 
     def test_no_variable_is_refused(self, niwot_output):
         from sipnet_calibration.fields import validate_model_output
 
-        run = label_run(niwot_output, output_variable_names=["nee"])
+        run = to_model_output(niwot_output, output_variable_names=["nee"])
         with pytest.raises(ValueError, match="holds no variable"):
             validate_model_output(run.drop_vars("net_ecosystem_exchange"))
 
     def test_a_variable_that_is_not_a_field_is_named(self, niwot_output):
         from sipnet_calibration.fields import validate_model_output
 
-        run = label_run(niwot_output, output_variable_names=["nee"])
+        run = to_model_output(niwot_output, output_variable_names=["nee"])
         run["net_ecosystem_exchange"].attrs.pop("units")
         with pytest.raises(ValueError, match="'net_ecosystem_exchange' of the model output"):
             validate_model_output(run)
@@ -849,7 +849,7 @@ class TestValidateModelOutput:
     def test_a_variable_off_the_time_axis_is_refused(self, niwot_output):
         from sipnet_calibration.fields import validate_model_output
 
-        run = label_run(niwot_output, output_variable_names=["nee", "wood_carbon"])
+        run = to_model_output(niwot_output, output_variable_names=["nee", "wood_carbon"])
         run["wood_carbon"] = run["wood_carbon"].isel(time=0, drop=True)
         with pytest.raises(ValueError, match="has no 'time' dim"):
             validate_model_output(run)
@@ -871,7 +871,7 @@ class TestValidateModelOutput:
         from sipnet_calibration.fields import validate_model_output
 
         raw = niwot_output.select(["net_ecosystem_exchange"])
-        run = label_run(raw)
+        run = to_model_output(raw)
         if carried == "time_bounds":
             run = run.assign_coords(time_bounds=raw["time_bounds"])
         elif carried == "row_labels":

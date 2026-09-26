@@ -17,7 +17,7 @@ script writes a processed file for them::
 
     SIPNETRunner / SIPNETModel  ->  SIPNETResult.outputs (SIPNETOutput)
 
-    one run    -> label_run()            -> ModelOutput on (time,), labeled
+    one run    -> to_model_output()            -> ModelOutput on (time,), labeled
     many runs  -> stack_model_outputs()  -> ModelOutput on (*batch, site, time)
 
 with ``data/processed/sites/sites.csv`` joined on for ``lon``/``lat``, read
@@ -33,7 +33,7 @@ What it reads
     frame.
 ``xarray.Dataset``
     One run's chosen variables, as ``SIPNETOutput.select(names)`` returns
-    them. :func:`label_run` labels either form and :func:`stack_model_outputs`
+    them. :func:`to_model_output` labels either form and :func:`stack_model_outputs`
     stacks either.
 :func:`sipnet_calibration.sites.load_sites`
     The site table, for the ``lon``/``lat`` of a site id. Read only when a
@@ -106,7 +106,7 @@ one per scalar component. Their names are ``<parameter>`` or
 names.
 
 One array holds one variable. Variables that share one grid are held together
-as an ``xarray.Dataset``: one run's output from :func:`label_run`, a stack of
+as an ``xarray.Dataset``: one run's output from :func:`to_model_output`, a stack of
 runs from :func:`stack_model_outputs`, and the calibration parameters' fields.
 Variables that do not share one are a ``dict[str, DataArray]`` keyed by name,
 as the constraints are, being annual, dated or static by constraint. Where a
@@ -126,7 +126,7 @@ Two aliases name the forms this module owns, each checked by one validator:
     batch labels, a stack carries ``site`` and batch dims.
     ``time_bounds``, its ``bounds`` dim, ``time``'s ``bounds`` attribute and
     SIPNET's ``year``/``day_of_year``/``hour_of_day`` row labels are not
-    part of it: :func:`label_run` and :func:`stack_model_outputs` drop them.
+    part of it: :func:`to_model_output` and :func:`stack_model_outputs` drop them.
 
 Identifiers
 -----------
@@ -154,7 +154,7 @@ a batch dim
 
 Model output
 ------------
-:func:`label_run` is a thin wrapper over ``SIPNETOutput.select``. It adds
+:func:`to_model_output` is a thin wrapper over ``SIPNETOutput.select``. It adds
 the identifiers above and nothing else: **every name, unit, kind and
 description is pySIPNET's**, carried through as attributes and never restated
 here. pySIPNET's registry names are already
@@ -206,7 +206,7 @@ Functions
     coordinates of a field that are batch labels.
 :func:`is_categorical`
     Whether a field holds classes, which need no ``units``.
-:func:`label_run`
+:func:`to_model_output`
     One run's output, a pySIPNET ``SIPNETOutput`` or its ``Dataset``,
     labeled with its site and batch labels: the model output the observation
     operators read.
@@ -280,9 +280,9 @@ Usage
 -----
 One run, no site pool involved::
 
-    from sipnet_calibration.fields import label_run
+    from sipnet_calibration.fields import to_model_output
 
-    model_output = label_run(result, output_variable_names=["nee", "wood_carbon"])
+    model_output = to_model_output(result, output_variable_names=["nee", "wood_carbon"])
     model_output["net_ecosystem_exchange"].dims          # ('time',)
     model_output["net_ecosystem_exchange"].attrs["kind"] # 'timestep_total'
     fields_by_name = dict(model_output.data_vars)        # the same, as a dict
@@ -339,7 +339,7 @@ Labeling run after run, with the site table read once::
 
     site_table = site_lookup(load_sites())
     for site, sample, run in ensemble:
-        model_output = label_run(
+        model_output = to_model_output(
             run, output_variable_names=["nee"], site=site, batch={"sample": sample},
             site_table=site_table,
         )
@@ -426,7 +426,7 @@ __all__ = [
     "coordinate_labels",
     "in_field_layout",
     "is_categorical",
-    "label_run",
+    "to_model_output",
     "message_name",
     "missing_labels",
     "read_only_copy",
@@ -552,7 +552,7 @@ def validate_model_output(model_output: Any, *, message_name: str | None = None)
 
     A model output (:data:`ModelOutput`) is an ``xr.Dataset`` of at least one
     variable, every variable a field (:func:`validate_field`) on the one
-    ``time`` axis the Dataset has, carrying none of what :func:`label_run`
+    ``time`` axis the Dataset has, carrying none of what :func:`to_model_output`
     drops. Runs :func:`check_model_output_is_a_dataset`,
     :func:`check_model_output_has_a_variable`,
     :func:`check_model_output_carries_no_bounds_or_row_labels`, then, for
@@ -965,7 +965,7 @@ def unstack_batch_dims(
 # ── labeling and stacking runs ────────────────────────────────────────────────
 
 
-def label_run(
+def to_model_output(
     run_output: SIPNETResult | SIPNETOutput | xr.Dataset,
     *,
     output_variable_names: Sequence[str] | None = None,
@@ -973,17 +973,12 @@ def label_run(
     batch: Mapping[str, int] | None = None,
     site_table: pd.DataFrame | None = None,
 ) -> ModelOutput:
-    """One run's output as a model output, labeled with the site and batch labels it was.
+    """One run's pySIPNET output as a model output, with its site and batch labels.
 
-    pySIPNET's ``SIPNETOutput.select(names)`` gives one run's variables as a
-    CF Dataset on ``(time,)``; what it cannot know is which site of the pool
-    and which sample (or member of a data source) the run was. This adds
-    those as scalar coordinates, ``site`` with its ``lon``/``lat`` from the
-    site table and one per batch label, and drops what a model output does
-    not carry (this module's data model): ``time_bounds``, ``time``'s
-    ``bounds`` attribute and SIPNET's ``year``/``day_of_year``/``hour_of_day``
-    row labels. Every variable, its values and its attributes are pySIPNET's.
-    The result is the model output the observation operators read.
+    The site (with its ``lon``/``lat`` from the site table) and each batch
+    label become scalar coordinates, and what a model output does not carry
+    (:data:`ModelOutput`) is dropped. Every variable, its values and its
+    attributes are pySIPNET's.
 
     Parameters
     ----------
@@ -1081,12 +1076,12 @@ def stack_model_outputs(
         A mapping from each run's labels, a tuple in *key_dims* order, to
         that run's output: a ``SIPNETResult`` or ``SIPNETOutput``, or its
         variables as a Dataset, from ``result.outputs.select(names)`` or
-        :func:`label_run`, every run carrying the same variables with the same
+        :func:`to_model_output`, every run carrying the same variables with the same
         ``units``, ``constituent`` and ``kind``. A run already labeled by
-        :func:`label_run` must carry the labels of its key. The keys need not
+        :func:`to_model_output` must carry the labels of its key. The keys need not
         form a full rectangle; a combination left out reads as ``NaN``.
     output_variable_names:
-        The variables to take from each run, as :func:`label_run` takes
+        The variables to take from each run, as :func:`to_model_output` takes
         them: required when a run is a ``SIPNETOutput``, which is read one
         run at a time for these columns only; every variable of each Dataset
         when omitted.
@@ -1380,7 +1375,7 @@ class ReadOnlyCopies:
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-#: The scalar location coordinates :func:`label_run` adds beside ``site``.
+#: The scalar location coordinates :func:`to_model_output` adds beside ``site``.
 _LOCATION_COORD_NAMES: tuple[str, ...] = (SITE, LON, LAT)
 
 #: The attributes that say what quantity a variable is, which every stacked
@@ -1712,7 +1707,7 @@ def check_model_output_is_a_dataset(model_output: Any, message_name: str) -> Non
     if not isinstance(model_output, xr.Dataset):
         raise TypeError(
             f"{message_name} must be an xarray Dataset of pySIPNET variables, got "
-            f"{type(model_output).__name__}; label a run with fields.label_run."
+            f"{type(model_output).__name__}; make a run's output a model output with fields.to_model_output."
         )
 
 
@@ -1721,7 +1716,7 @@ def check_model_output_has_a_variable(model_output: xr.Dataset, message_name: st
     if not model_output.data_vars:
         raise ValueError(
             f"{message_name} holds no variable; select the variables to read from the run, "
-            "with fields.label_run(output_variable_names=...)."
+            "with fields.to_model_output(output_variable_names=...)."
         )
 
 
@@ -1746,7 +1741,7 @@ def check_model_output_carries_no_bounds_or_row_labels(
         raise ValueError(
             f"{message_name} carries {carried}, which a model output does not: time_bounds "
             "is not a field and SIPNET's row labels repeat time_step_start. Label the run "
-            "with fields.label_run, which drops them."
+            "with fields.to_model_output, which drops them."
         )
 
 

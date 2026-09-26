@@ -305,7 +305,7 @@ The batch-dim rules:
   its observed values, so nothing runs first; `ObservationVector.fields` refuses
   an observation source name or a coordinate of its observed values (a scalar
   batch label excepted: an observation source's scalar batch labels are metadata
-  of the input and are not carried); `fields.label_run(batch=)` and
+  of the input and are not carried); `fields.to_model_output(batch=)` and
   `stack_model_outputs(key_dims=)` refuse a variable,
   dim or coordinate of the model output. The parameter vector reserves `sample`,
   `conventions.NON_BATCH_DIM_NAMES` and the data source member names against
@@ -362,7 +362,7 @@ leniency for a plot that would not need a location. **Model output**
 (`fields.ModelOutput`, checked by `fields.validate_model_output`) is an
 `xr.Dataset` of pySIPNET-named variables on one shared time axis, each
 variable a field; one run's has a scalar `site` and scalar batch labels
-(`fields.label_run(sipnet_output, output_variable_names=[...], site=,
+(`fields.to_model_output(sipnet_output, output_variable_names=[...], site=,
 batch={"sample": 3})`, which takes a pySIPNET `SIPNETOutput` or its Dataset
 and drops `time_bounds` and SIPNET's row labels), a stack has `site` and
 batch dims (`fields.stack_model_outputs(runs, key_dims=("sample", "site"))`,
@@ -945,7 +945,7 @@ src/sipnet_calibration/
                           # stack_batch_dims()/unstack_batch_dims(),
                           # batch_coordinate(), scalar_batch_labels(); the Field
                           # and ModelOutput aliases, validate_model_output();
-                          # label_run() (a SIPNETOutput or its Dataset with
+                          # to_model_output() (a SIPNETOutput or its Dataset with
                           # site/lon/lat and batch labels: the model output the
                           # observation operators read), stack_model_outputs()
                           # (runs to one on (*batch, site, time)),
@@ -1137,7 +1137,7 @@ plotting code. The load-bearing rules:
   `ReduceOverWindows` reads; a dated or static constraint documents no
   interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
-  unchanged.** `fields.label_run` adds `site`, batch labels and
+  unchanged.** `fields.to_model_output` adds `site`, batch labels and
   `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the
   drivers, read through `ClimateDrivers`. The registry names are already
   `lower_case_with_underscores`, so they are the processed names. Both keep

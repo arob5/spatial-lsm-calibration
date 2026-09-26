@@ -13,7 +13,7 @@ import xarray as xr
 from pysipnet import niwot_reference_output
 
 from conftest import as_sipnet_parameter_fields, located, niwot_stack_of, one_run_sipnet_parameter_fields, site_table_of
-from sipnet_calibration.fields import label_run
+from sipnet_calibration.fields import to_model_output
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
     INDEX_LEVELS,
@@ -31,7 +31,7 @@ VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon"]
 
 @pytest.fixture(scope="module")
 def one_run():
-    return label_run(
+    return to_model_output(
         niwot_reference_output().select(VARIABLES),
         site=1,
         batch={"sample": 0},

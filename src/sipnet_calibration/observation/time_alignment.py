@@ -176,7 +176,7 @@ def aggregate_time(
     field:
         A field with a ``time`` dimension; any other dimensions are
         carried through untouched. A variable of a model output from
-        :func:`sipnet_calibration.fields.label_run`, or a field from
+        :func:`sipnet_calibration.fields.to_model_output`, or a field from
         :func:`sipnet_calibration.drivers.driver_fields`, carries the ``kind``
         attribute this reads; so does any field taken from a pySIPNET Dataset.
     freq:
