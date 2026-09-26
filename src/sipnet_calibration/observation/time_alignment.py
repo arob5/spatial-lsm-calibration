@@ -1262,7 +1262,7 @@ def check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
     """The interval coordinates must describe the whole field, not one slice of it.
 
     :func:`sipnet_calibration.fields.stack_sipnet_outputs` gives them a ``site``
-    or ``member`` dimension when the runs it stacked ran over different time
+    or batch dimension when the runs it stacked ran over different time
     axes, and a coarser step then has no single span or length.
     """
     offenders = [

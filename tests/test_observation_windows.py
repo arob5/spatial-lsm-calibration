@@ -713,8 +713,8 @@ class TestCheckRunSpansTheWindows:
 
         run = niwot[["wood_carbon"]]
         table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
-        stacked = stack_model_outputs({(1, 0): run, (2, 0): run.isel(time=slice(0, 40))}, site_table=table)
-        one = stacked.sel(site=2, member=0)["wood_carbon"]
+        stacked = stack_model_outputs({(0, 1): run, (0, 2): run.isel(time=slice(0, 40))}, site_table=table)
+        one = stacked.sel(site=2, sample=0)["wood_carbon"]
         assert np.isnat(one[TIMESTEP_START].values).any()
         start, end = (
             pd.Timestamp(one[TIMESTEP_START].values[0]),

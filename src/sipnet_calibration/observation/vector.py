@@ -28,10 +28,10 @@ What it reads
     elsewhere, integer ``site`` labels, naive datetime ``time`` labels, and
     ``units`` (and ``constituent``, where the quantity has one) in its
     attributes. An annual product's array also carries its ``time_bounds``
-    as ``time_bounds_start``/``time_bounds_end``. A ``member`` dimension, or
-    a scalar ``member`` coordinate, is refused: an observation ensemble is
-    reduced to one value per cell by the experiment before it enters the
-    vector.
+    as ``time_bounds_start``/``time_bounds_end``. A batch dim is refused: an
+    observation ensemble is reduced to one value per cell by the experiment
+    before it enters the vector. A scalar coordinate, such as one left by
+    ``.isel(sample=0)``, is metadata and is kept.
 :attr:`Observation.operator`
     An :class:`~sipnet_calibration.observation.operators.ObservationOperator`.
 
@@ -39,8 +39,9 @@ Data model
 ----------
 **Fields**: ``dict[str, xr.DataArray]`` keyed by product name, each ``float64``
 on that product's own ``(site[, time])`` grid, ``NaN`` at unobserved cells; a
-``(J, N)`` block unstacks to the same with a leading ``member`` dimension, an
-``int16`` coordinate labeled ``0`` to ``J - 1``. A product's grid holds only
+``(J, N)`` batch unstacks to the same with a leading batch dim, ``sample``
+unless ``batch_dim=`` names it otherwise, an ``int64`` coordinate labeled
+``0`` to ``J - 1``. A product's grid holds only
 the sites and time labels with at least one observed cell: the rest are
 dropped when its :class:`Observation` is built.
 
@@ -82,8 +83,8 @@ and the likelihood are the inference layer's; this module gives it ``y``,
 ``index`` and ``positions``.
 
 **Failed runs.** ``predict`` passes a ``NaN`` through where the model output
-itself is ``NaN`` at that site and member (a failed run), and refuses one
-anywhere else, so a coverage gap cannot masquerade as a failed member and be
+itself is ``NaN`` at that site and batch label (a failed run), and refuses one
+anywhere else, so a coverage gap cannot masquerade as a failed run and be
 repaired away.
 
 **Only observed labels.** An observation keeps only the sites and time labels
@@ -116,8 +117,8 @@ Usage
 
     vector.dimension, vector.y.shape           # N, (N,)
     predicted_fields = vector.predict(model_output, sipnet_parameters=sipnet_table)
-    predictions = vector.flat(predicted_fields)  # (J, N) for a (member, site, time) output
-    vector.fields(predictions)["modis_leaf_area_index"]  # back to (member, site, time)
+    predictions = vector.flat(predicted_fields)  # (J, N) for a (sample, site, time) output
+    vector.fields(predictions)["modis_leaf_area_index"]  # back to (sample, site, time)
 """
 
 from __future__ import annotations
@@ -132,8 +133,8 @@ import pandas as pd
 import xarray as xr
 from pysipnet.units import convert_dataarray_units, validate_units
 
-from sipnet_calibration.conventions import SITE, TIME
-from sipnet_calibration.fields import missing_labels
+from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, SAMPLE, SAMPLE_ATTRIBUTES, SITE, TIME
+from sipnet_calibration.fields import batch_dims, check_batch_dim_name_is_free, missing_labels
 from sipnet_calibration.observation.operators import (
     ObservationOperator,
     check_model_output_carries_what_is_read,
@@ -150,11 +151,14 @@ from sipnet_calibration.validation import (
 
 __all__ = ["INDEX_LEVELS", "Observation", "ObservationVector"]
 
-MEMBER = "member"
 PRODUCT = "product"
 
 #: The levels of :attr:`ObservationVector.index`, in order.
 INDEX_LEVELS: tuple[str, ...] = (SITE, PRODUCT, TIME)
+
+#: The dim the vectorized read of the observations indexes along, one per
+#: observation; internal to ``flat`` and never on a result.
+_OBSERVATION_DIM = "__observation__"
 
 
 @dataclass(frozen=True, eq=False)
@@ -182,8 +186,8 @@ class Observation:
         or *operator* is not callable or declares its names other than as
         tuples of strings.
     ValueError
-        If *product_name* is empty; if *values* has a ``member`` dimension or
-        a scalar ``member`` coordinate, or dims other than ``(site[, time])``,
+        If *product_name* is empty; if *values* has dims other than
+        ``(site[, time])`` (a batch dim among them),
         non-integer or repeated ``site`` labels, non-numeric values, an
         infinite value, no ``units`` attribute or units pySIPNET's
         ``validate_units`` refuses (``'g C m-2'``, whose substance belongs in
@@ -445,23 +449,25 @@ class ObservationVector:
     # ── representations ───────────────────────────────────────────────────────
 
     def flat(self, fields: Mapping[str, xr.DataArray]) -> np.ndarray:
-        """Fields to Flat: ``(N,)``, or ``(J, N)`` when the fields carry ``member``.
+        """Fields to Flat: ``(N,)``, or ``(J, N)`` when the fields carry a batch dim.
 
         Parameters
         ----------
         fields:
             A mapping from every product name to an array on that product's
-            ``site`` and ``time`` labels, with or without a ``member``
-            dimension, in any dimension order. An array may be larger than the
-            observation (a prediction over more sites or times); only the
-            vector's cells are read, by label.
+            ``site`` and ``time`` labels, with or without one batch dim (of
+            any name, the same in every array), in any dimension order. An
+            array may be larger than the observation (a prediction over more
+            sites or times); only the vector's cells are read, by label. A
+            scalar batch coordinate is not a batch dim: such arrays give one
+            vector.
 
         Returns
         -------
         numpy.ndarray
-            ``float64``, ``(N,)``, or ``(J, N)`` in the fields' ``member``
-            order. Values are taken as they are: a ``NaN`` prediction stays
-            ``NaN``.
+            ``float64``, ``(N,)``, or ``(J, N)`` in the order of the fields'
+            batch labels. Values are taken as they are: a ``NaN`` prediction
+            stays ``NaN``.
 
         Raises
         ------
@@ -469,59 +475,69 @@ class ObservationVector:
             If *fields* is not a mapping, or an entry is not a ``DataArray``.
         ValueError
             If a product is missing; if an array lacks an observed site or
-            time label, or a ``site`` or ``time`` dimension the product has; or
-            if some arrays carry ``member`` and others do not, or they disagree
-            on its labels.
+            time label, or a ``site`` or ``time`` dimension the product has;
+            if an array has more than one batch dim (stack them first, with
+            :func:`sipnet_calibration.fields.stack_batch_dims`); or if some
+            arrays carry a batch dim and others do not, they carry different
+            ones, or they disagree on its labels.
         """
         check_fields_hold_the_products(fields, self.product_names)
-        members = _member_labels(fields, self.product_names)
-        shape = (len(members), self.dimension) if members is not None else (self.dimension,)
+        batch = _batch_dim_and_labels(fields, self.product_names)
+        shape = (len(batch[1]), self.dimension) if batch is not None else (self.dimension,)
         out = np.full(shape, np.nan, dtype=np.float64)
         for observation in self._observations:
             array = fields[observation.product_name]
             check_field_is_on_the_grid(array, observation)
             positions = self.positions(product_name=observation.product_name)
-            out[..., positions] = _read_cells(
-                array, self._index[positions], observation.is_static, members
+            out[..., positions] = _read_observations(
+                array,
+                self._index[positions],
+                observation.is_static,
+                None if batch is None else batch[0],
             )
         return out
 
-    def fields(self, flat_values: Any) -> dict[str, xr.DataArray]:
+    def fields(self, flat_values: Any, *, batch_dim: str = SAMPLE) -> dict[str, xr.DataArray]:
         """Flat to Fields: ``(N,)`` or ``(J, N)`` onto each product's grid.
 
         Parameters
         ----------
         flat_values:
             An array-like of shape ``(N,)`` or ``(J, N)``, in Flat order.
+        batch_dim:
+            The name of the batch dim a ``(J, N)`` batch is given. It may not
+            be a spatial name or ``time``.
 
         Returns
         -------
         dict
             Product name to a ``float64`` array on the observation's
             ``(site[, time])`` grid, with its coordinates and attributes and
-            ``NaN`` at unobserved cells. A ``(J, N)`` block gives each array a
-            leading ``int16`` ``member`` dimension labeled ``0`` to ``J - 1``.
+            ``NaN`` at unobserved cells. A ``(J, N)`` batch gives each array a
+            leading ``int64`` *batch_dim* labeled ``0`` to ``J - 1``.
 
         Raises
         ------
         TypeError
-            If *flat_values* is not a rectangular array of real numbers.
+            If *flat_values* is not a rectangular array of real numbers, or
+            *batch_dim* is not a string.
         ValueError
-            If *flat_values* is not one- or two-dimensional, does not have
-            ``N`` entries per row, or has more rows than an ``int16`` can
-            label from ``0``.
+            If *flat_values* is not one- or two-dimensional or does not have
+            ``N`` entries per row, or *batch_dim* is a reserved name.
         """
+        check_batch_dim_name_is_free(batch_dim, message_name="batch_dim")
         batched = np.asarray(
             as_batched_flat(flat_values, self.dimension, message_name="flat_values")
         )
         was_one_vector = is_one_vector(flat_values)
-        check_block_is_members_by_cells(batched)
         out: dict[str, xr.DataArray] = {}
         for observation in self._observations:
             positions = self.positions(product_name=observation.product_name)
-            array = _unstacked(observation, batched[:, positions], self._index[positions])
+            array = _unstacked(
+                observation, batched[:, positions], self._index[positions], batch_dim
+            )
             out[observation.product_name] = (
-                array.isel({MEMBER: 0}, drop=True) if was_one_vector else array
+                array.isel({batch_dim: 0}, drop=True) if was_one_vector else array
             )
         return out
 
@@ -546,16 +562,16 @@ class ObservationVector:
         sipnet_parameters:
             The SIPNET parameter values the runs used, for the operators that
             read any (:attr:`sipnet_parameter_names`): a SIPNET table on
-            ``(member, site)`` or ``(site,)``, or a mapping for one run.
+            ``(*batch, site)`` or ``(site,)``, or a mapping for one run.
 
         Returns
         -------
         dict
             Fields on each product's grid, in the observation's units, with
-            the model output's ``member`` if any; pass the result to
-            :meth:`flat` for a ``(J, N)`` block. A ``NaN`` is allowed only
+            the model output's batch dims if any, first; pass the result to
+            :meth:`flat` for a ``(J, N)`` batch. A ``NaN`` is allowed only
             where a variable the operators read is ``NaN`` at every step for
-            that site and member (a failed run).
+            that site and batch label (a failed run).
 
         Raises
         ------
@@ -654,9 +670,9 @@ def _build_index(observations: Sequence[Observation]) -> pd.MultiIndex:
 
 
 def _unstacked(
-    observation: Observation, columns: np.ndarray, cells: pd.MultiIndex
+    observation: Observation, columns: np.ndarray, cells: pd.MultiIndex, batch_dim: str
 ) -> xr.DataArray:
-    """One product's columns of a ``(J, N)`` block, on its grid with a ``member`` dim."""
+    """One product's columns of a ``(J, N)`` batch, on its grid with a leading *batch_dim*."""
     full = np.full((columns.shape[0], *observation.values.shape), np.nan, dtype=np.float64)
     rows, cols = _cell_positions(observation, cells)
     if observation.is_static:
@@ -665,9 +681,13 @@ def _unstacked(
         full[:, rows, cols] = columns
     return xr.DataArray(
         full,
-        dims=(MEMBER, *observation.values.dims),
+        dims=(batch_dim, *observation.values.dims),
         coords={
-            MEMBER: np.arange(columns.shape[0], dtype=np.int16),
+            batch_dim: (
+                batch_dim,
+                np.arange(columns.shape[0], dtype=BATCH_LABEL_DTYPE),
+                dict(SAMPLE_ATTRIBUTES) if batch_dim == SAMPLE else {},
+            ),
             **observation.values.coords,
         },
         attrs=dict(observation.values.attrs),
@@ -675,27 +695,32 @@ def _unstacked(
     )
 
 
-def _member_labels(
+def _batch_dim_and_labels(
     fields: Mapping[str, xr.DataArray], product_names: Sequence[str]
-) -> np.ndarray | None:
-    with_member = [n for n in product_names if MEMBER in fields[n].dims]
-    if not with_member:
+) -> tuple[str, np.ndarray] | None:
+    """The one batch dim the fields share and its labels, or ``None`` if they have none."""
+    by_product = {n: batch_dims(fields[n]) for n in product_names if isinstance(fields[n], xr.DataArray)}
+    check_fields_have_at_most_one_batch_dim(by_product)
+    with_batch = [n for n, dims in by_product.items() if dims]
+    if not with_batch:
         return None
-    check_fields_agree_on_members(fields, product_names, with_member)
-    return fields[with_member[0]][MEMBER].values
+    check_fields_agree_on_the_batch_dim(fields, product_names, with_batch)
+    dim = by_product[with_batch[0]][0]
+    return dim, fields[with_batch[0]][dim].values
 
 
-def _read_cells(
-    array: xr.DataArray, cells: pd.MultiIndex, is_static: bool, members: np.ndarray | None
+def _read_observations(
+    array: xr.DataArray, cells: pd.MultiIndex, is_static: bool, batch_dim: str | None
 ) -> np.ndarray:
+    """*array*'s values at the observations *cells* index, ``(J, n)`` or ``(n,)``."""
     selectors: dict[str, Any] = {
-        SITE: xr.DataArray(cells.get_level_values(SITE).values, dims="cell")
+        SITE: xr.DataArray(cells.get_level_values(SITE).values, dims=_OBSERVATION_DIM)
     }
     if not is_static:
-        selectors[TIME] = xr.DataArray(cells.get_level_values(TIME).values, dims="cell")
+        selectors[TIME] = xr.DataArray(cells.get_level_values(TIME).values, dims=_OBSERVATION_DIM)
     picked = array.sel(selectors)
-    if members is not None:
-        picked = picked.transpose(MEMBER, "cell")
+    if batch_dim is not None:
+        picked = picked.transpose(batch_dim, _OBSERVATION_DIM)
     return np.asarray(picked.values, dtype=np.float64)
 
 
@@ -746,10 +771,12 @@ def _predicted(
 
 
 def _with_site_dimension(predicted: xr.DataArray) -> xr.DataArray:
+    """*predicted* with ``site`` as a dim, on ``(*batch, site[, time])``."""
     if SITE not in predicted.dims and SITE in predicted.coords:
         predicted = predicted.expand_dims(SITE)
-    dims = [d for d in (MEMBER, SITE, TIME) if d in predicted.dims]
-    return predicted.transpose(*dims)
+    rest = [d for d in (SITE, TIME) if d in predicted.dims]
+    others = [d for d in predicted.dims if d not in rest]
+    return predicted.transpose(*others, *rest)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -774,12 +801,12 @@ def check_values_are_a_field(values: Any, message_name: str) -> None:
             f"{message_name}: values must be a DataArray, got {type(values).__name__}; "
             "pass one product's array from constraint_fields."
         )
-    if MEMBER in values.dims or MEMBER in values.coords:
-        form = "dimension" if MEMBER in values.dims else "scalar coordinate"
+    batch = batch_dims(values)
+    if batch:
         raise ValueError(
-            f"{message_name}: values carry a member {form}. An observation ensemble is "
-            "reduced to one value per cell by the experiment before it enters the "
-            "vector; reduce it, or drop the coordinate with .drop_vars('member')."
+            f"{message_name}: values carry the batch dim(s) {list(batch)}. An observation "
+            "ensemble is reduced to one value per cell by the experiment before it enters "
+            "the vector; reduce it, or select one label."
         )
     extra = [d for d in values.dims if d not in (SITE, TIME)]
     if extra or SITE not in values.dims:
@@ -914,15 +941,6 @@ def check_time_is_a_slice(time: Any) -> None:
         )
 
 
-def check_block_is_members_by_cells(block: np.ndarray) -> None:
-    largest = np.iinfo(np.int16).max
-    if block.shape[0] - 1 > largest:
-        raise ValueError(
-            f"a block of {block.shape[0]} members cannot be labeled: member is an int16 "
-            f"coordinate from 0, so at most {largest + 1} members. Unstack it in parts."
-        )
-
-
 def check_fields_hold_the_products(fields: Any, product_names: Sequence[str]) -> None:
     if not isinstance(fields, Mapping):
         raise TypeError(
@@ -937,20 +955,39 @@ def check_fields_hold_the_products(fields: Any, product_names: Sequence[str]) ->
         )
 
 
-def check_fields_agree_on_members(
-    fields: Mapping[str, xr.DataArray], product_names: Sequence[str], with_member: Sequence[str]
-) -> None:
-    if len(with_member) != len(product_names):
+def check_fields_have_at_most_one_batch_dim(by_product: Mapping[str, tuple[str, ...]]) -> None:
+    """No field to flatten has more than one batch dim, since Flat has one row axis."""
+    several = {name: list(dims) for name, dims in by_product.items() if len(dims) > 1}
+    if several:
         raise ValueError(
-            f"some fields carry a member dimension ({list(with_member)}) and others do not; "
+            f"fields {several} carry several batch dims, and Flat has one row axis; reduce "
+            "all but one, or stack them with fields.stack_batch_dims first."
+        )
+
+
+def check_fields_agree_on_the_batch_dim(
+    fields: Mapping[str, xr.DataArray], product_names: Sequence[str], with_batch: Sequence[str]
+) -> None:
+    """Every field carries the same batch dim, with the same labels in the same order."""
+    if len(with_batch) != len(product_names):
+        raise ValueError(
+            f"some fields carry a batch dim ({list(with_batch)}) and others do not; "
             "flatten predictions from one model output at a time."
         )
-    labels = fields[with_member[0]][MEMBER].values
-    for name in with_member[1:]:
-        if not np.array_equal(fields[name][MEMBER].values, labels):
+    first = with_batch[0]
+    dim = batch_dims(fields[first])[0]
+    labels = fields[first][dim].values
+    for name in with_batch[1:]:
+        other = batch_dims(fields[name])[0]
+        if other != dim:
             raise ValueError(
-                f"the fields disagree on their member labels ({with_member[0]!r} and "
-                f"{name!r}); flatten predictions from one model output at a time."
+                f"the fields carry different batch dims ({first!r} {dim!r}, {name!r} "
+                f"{other!r}); flatten predictions from one model output at a time."
+            )
+        if not np.array_equal(fields[name][dim].values, labels):
+            raise ValueError(
+                f"the fields disagree on their {dim} labels ({first!r} and {name!r}); "
+                "flatten predictions from one model output at a time."
             )
 
 
@@ -1005,5 +1042,5 @@ def check_prediction_is_finite_where_the_run_succeeded(
             f"{observation.product_name}: the prediction is NaN at an observed cell (first "
             f"at position {where.tolist()} of dims {tuple(missing.dims)}) although the run "
             "succeeded there. A label outside the run, or a gap the operator produced, "
-            "must be selected away, not passed on as a failed member."
+            "must be selected away, not passed on as a failed run."
         )
