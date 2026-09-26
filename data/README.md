@@ -105,7 +105,7 @@ data/
       sda_8k_site_rdata/obs.cov.Rdata     retained for validation
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
-    site_labels/<name>.csv      one per product, keyed on site_id
+    site_labels/<name>.csv      one per site-labels source, keyed on site_id
     constraints/<name>.nc       one per constraint, <name> the raw file's stem
     initial_conditions.nc
     nee.zarr/
@@ -215,14 +215,14 @@ nulls, so the site table is read with `keep_default_na=False`.
 with 15 decimal places, so a reader returns them as floats even though every
 value is a whole number. They are cast at ingest rather than written through.
 
-`cluster` and `landcover` together appear to define the strata the sampled points
-were drawn from. Their cross-tabulation populates 35 of 48 cells, and the empty
-cells form a staircase rather than being scattered: clusters 1 to 3 span all eight
-land cover classes, cluster 4 lacks class 5, cluster 5 holds only classes 1, 3 and
-8, and cluster 6 only class 1. Several columns hold near-equal counts across
-clusters, land cover class 3 standing at 40 or 41 in each of clusters 1 to 5,
-which is the signature of a per-stratum sampling target truncated where too few
-candidate cells were available.
+`cluster` and `landcover` together appear to define the strata the sampled
+points were drawn from. Their cross-tabulation populates 35 of 48 (cluster,
+class) pairs, and the empty pairs form a staircase rather than being scattered:
+clusters 1 to 3 span all eight land cover classes, cluster 4 lacks class 5,
+cluster 5 holds only classes 1, 3 and 8, and cluster 6 only class 1. Several
+columns hold near-equal counts across clusters, land cover class 3 standing at
+40 or 41 in each of clusters 1 to 5, which is the signature of a per-stratum
+sampling target truncated where too few candidate cells were available.
 
 `cluster` is not a geographic partition. Mean within-cluster pairwise distance
 ranges from 1636 to 3455 km against 3098 km for the pool as a whole, so cluster 4
@@ -696,8 +696,8 @@ checksum and copy date of each, and the conversion applied.
 | `smap_soil_moisture.csv.gz` | SMAP | 79,740 | `date`, `site_id`, `lat`, `lon`, `smp`, `sd` |
 | `soilgrids_soil_organic_carbon.csv.gz` | SoilGrids | 104,000 | `site_id`, `soc`, `sd`, `year` |
 
-The product attribution is the producer's own, taken from a dictionary in the
-assembly code rather than inferred.
+The upstream product attribution is the producer's own, taken from a dictionary
+in the assembly code rather than inferred.
 
 Two of the five are byte-verbatim copies of the producer's CSVs, gzipped and
 otherwise untouched. The other three were `.Rdata` objects and were serialized
@@ -738,8 +738,8 @@ file and columns -- while the state variable it feeds is named aboveground
 8000 sites x 6 years, 2019-2024; 12,596 rows carry values. Units are not
 established (Note 9).
 
-**This product is not part of the constraint set the reanalysis used**, and is
-absent from `obs.mean.Rdata`. It is kept as a candidate additional biomass
+**This constraint is not part of the constraint set the reanalysis used**, and
+is absent from `obs.mean.Rdata`. It is kept as a candidate additional biomass
 constraint: it is independent of LandTrendr, and it covers 2024, which
 LandTrendr does not.
 
@@ -756,27 +756,27 @@ composites, not a year-round record. The `date` is the composite's label as
 the extraction returned it; whether it marks the first day of the 4-day period
 is not confirmed (Note 23).
 
-`qc` is a **three-character string**, `"000"` or `"001"`, and **`qc == "001"`
-is exactly equivalent to `sd > 20`**: 221,659 rows satisfy each, and no row
+`qc` is a **three-character string**, `"000"` or `"001"`, and **`qc == "001"` is
+exactly equivalent to `sd > 20`**: 221,659 rows satisfy each, and no row
 satisfies one but not the other. Within that flagged set, **`lai == 0` is a
-no-data sentinel** -- all 60,016 such rows carry `sd` of exactly 24.8, which
-is the product's fill value for `LaiStdDev_500m` (248) times its 0.1 scale
+no-data sentinel** -- all 60,016 such rows carry `sd` of exactly 24.8, which is
+the upstream product's fill value for `LaiStdDev_500m` (248) times its 0.1 scale
 factor, and all are flagged. After dropping flagged rows the minimum `lai` is
-0.1 and no zeros remain. The ingest drops the flagged rows and records how
-many in the product's attributes.
+0.1 and no zeros remain. The ingest drops the flagged rows and records how many
+in the processed file's attributes.
 
 The assembler's selection rule is fully reproduced: keep the unflagged rows,
-keep those within **30 days** of July 15, take the nearest, and on a tie
-between an earlier and a later composite take the **earlier**. That
-reproduces the `LAI` means in `obs.mean.Rdata` exactly, at all 99,632 of them,
-and `max(sd, 0.66)` reproduces every variance. The tie-break is load-bearing:
-within the window 4,840 site-years tie, the two candidates differ in 4,003 of
-them, and the later-date rule fails on exactly those. The window excludes 398
-site-years whose nearest unflagged composite is 31-45 days out. Nearest-date selection without the flag filter
-reproduces only 85.9%. The rule is what the PEcAn prep code does
+keep those within **30 days** of July 15, take the nearest, and on a tie between
+an earlier and a later composite take the **earlier**. That reproduces the `LAI`
+means in `obs.mean.Rdata` exactly, at all 99,632 of them, and `max(sd, 0.66)`
+reproduces every variance. The tie-break is load-bearing: within the window
+4,840 site-years tie, the two candidates differ in 4,003 of them, and the
+later-date rule fails on exactly those. The window excludes 398 site-years whose
+nearest unflagged composite is 31-45 days out. Nearest-date selection without
+the flag filter reproduces only 85.9%. The rule is what the PEcAn prep code does
 (`MODIS_LAI_prep.R`: `search_window = 30`, rows with `sd >= 20` dropped,
 `which.min` taking the first minimum), and it is encoded in
-`tests/test_constraints.py`, not in any product.
+`tests/test_constraints.py`, not in any processed file.
 
 #### `smap_soil_moisture.csv.gz`
 
@@ -798,7 +798,7 @@ observations.
 8000 sites x 13 years, 2012-2024; 103,870 rows carry values. `soc` and `sd` are
 **ten times** the corresponding values in `obs.mean.Rdata`, which are declared
 `kg C m-2`; this file is therefore in `Mg C ha-1` (Note 9). The processed
-product keeps that unit; the factor is the observation operator's to apply.
+file keeps that unit; the factor is the observation operator's to apply.
 
 The values integrate **0-200 cm** (Note 21).
 
@@ -811,10 +811,10 @@ site-years as independent will weight this variable thirteen times too heavily.
 #### Retained for validation: `sda_8k_site_rdata/obs.{mean,cov}.Rdata`
 
 The nested assimilation inputs remain symlinked. No script reads them any
-longer; they are kept because they are what the reanalysis actually
-assimilated, which the per-variable files above cannot show, and because the
-questions going to their producers are still being formulated.
-`tests/test_constraints.py` checks that the new products reproduce them, via
+longer; they are kept because they are what the reanalysis actually assimilated,
+which the per-variable files above cannot show, and because the questions going
+to their producers are still being formulated. `tests/test_constraints.py`
+checks that the new processed files reproduce them, via
 `processed/constraints_annual.nc`, the last output of the retired R and Python
 pipeline (repository commit `d533dfd` and earlier). No script writes that file
 any longer; the check runs where a copy is present and skips otherwise.
@@ -857,7 +857,7 @@ values **floored at 0.66**, which affects 82.4% of observations and is not
 documented anywhere upstream (Note 22). Whoever uses these files for validation
 must account for that floor.
 
-> **Note 9.** The units of all five products are documented for the published
+> **Note 9.** The units of all five constraints are documented for the published
 > reanalysis output, or inferred from the assembled observation files, rather
 > than stated by any attribute in the raw data. None has been confirmed by the
 > producer. GEDI's are not established at all.
@@ -888,7 +888,7 @@ must account for that floor.
 > assimilation is a question for the producer.
 
 > **Note 23.** Whether the MODIS composite date labels the first day of the
-> 4-day period is not confirmed, so the processed product carries the date as
+> 4-day period is not confirmed, so the processed file carries the date as
 > written and writes no `time_bounds`.
 
 **Source.** The observation inputs assimilated by [NALCR]. The per-variable
@@ -898,10 +898,10 @@ files are the upstream sources from which those inputs were assembled.
 
 ### Site labels
 
-A **site-labels product** maps sites to classes -- every site, where its spec
-says so. Plant functional type is the only kind held so far, and it is not site
-metadata: which product a calibration uses is an experimental choice, so each is
-its own product rather than a column of the site table. See Note 11.
+A **site-labels data source** maps sites to classes -- every site, where its
+spec says so. Plant functional type is the only kind held so far, and it is not
+site metadata: which one a calibration uses is an experimental choice, so each
+is its own data source rather than a column of the site table. See Note 11.
 
 **Format.** `reanalysis_site_pft.csv`: two columns, `site` and `pft`, one row
 per site, no missing values. The header and the class names are quoted; the
@@ -917,7 +917,7 @@ rest of the project; `pft` is one of three class names.
 
 **These labels are an exact aggregation of `landcover`.** Every one of the 8000
 sites follows the rule in the third column, with no exception in either
-direction; the cross-tabulation has no off-diagonal cell. That does not settle
+direction; the cross-tabulation has no off-diagonal count. That does not settle
 Note 2, which asks what `cluster` and `landcover` mean, but it is evidence about
 `landcover`: whatever its eight classes are, the reanalysis read 1-2 as one
 group, 3-4 as a second and 5-8 as a third, which is consistent with an ordering
@@ -943,8 +943,8 @@ class alone.
 **Two upstream files are named `site_pft.csv`.** One directory above the source
 sits a sibling with the same header and the same three class names, covering the
 older 6400-site pool with identifiers 1-6400. Nothing inside either file says
-which it is, so the discriminator is the row count: the expected count is a field
-of each product's spec in `sipnet_calibration.site_labels`, and the ingest
+which it is, so the discriminator is the row count: the expected count is a
+field of each source's spec in `sipnet_calibration.site_labels`, and the ingest
 refuses a mismatch naming the other pool.
 [`raw/site_labels/provenance.md`](raw/site_labels/provenance.md) tabulates both.
 
@@ -989,7 +989,7 @@ are the join keys and are never renamed.
 sixteen draws sites from at least two of the three, and twelve from all three.
 The old `boreal.coniferous` is the clearest case: of its 2369 sites only 483
 are needleleaf forest here, and 207 are evergreen **broadleaf** forest. A prior
-cannot be carried from the coarse product to this one by inheritance, which is
+cannot be carried from the coarse source to this one by inheritance, which is
 what Note 11 records.
 
 **363 sites were assigned by proxy**, not directly: nearest median profile over
@@ -1027,7 +1027,7 @@ keyed on `index`, which is the only column it shares with the site-labels half.
 
 **No units, long names or source products are recorded** for any of them, in
 the file or anywhere else this repository has found. That is open question 25,
-and it is why there is no ingest for this file: a processed product whose units
+and it is why there is no ingest for this file: a processed file whose units
 are unknown would assert something nobody has checked.
 
 **Coverage is ragged.** `LC_Type1_name_original` is absent for 3997 sites,
@@ -1044,7 +1044,7 @@ construction rather than by coincidence.
 so neither can be checked against the upstream md5; what replaces that check is
 recorded in [`raw/covariates/provenance.md`](raw/covariates/provenance.md) and
 enforced by the script's own assertions, chief among them that re-joining the
-halves reproduces the source cell for cell.
+halves reproduces the source value for value.
 
 ---
 
@@ -1234,7 +1234,7 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | Script | Reads | Writes |
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
-| `ingest_site_labels.py` | `raw/site_labels/*.csv`, `processed/sites/sites.csv` | `processed/site_labels/<name>.csv`, one per product |
+| `ingest_site_labels.py` | `raw/site_labels/*.csv`, `processed/sites/sites.csv` | `processed/site_labels/<name>.csv`, one per site-labels source |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
 | `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -1313,15 +1313,15 @@ the result is tracked here as
 `raw/initial_conditions/provenance.md` for the run. A normal working copy never
 runs it: it needs the SCC, and it is re-run only if the source files change.
 
-`split_site_pft_16class.py` is the second. The 16-class assignment arrives as one
-60-column table holding two different things, the site labels and the covariates
-they were derived from, so the script cuts it along an explicit column partition
-and writes both halves. That forfeits the md5 check every other tracked raw input
-gets -- neither half can be compared against the upstream file -- so the script
-asserts instead that the halves partition the source, that both are keyed on
-the whole pool, and that **re-joining them reproduces the source cell for
-cell**, comparing as text so no float is reparsed. See
-[Site covariates](#site-covariates).
+`split_site_pft_16class.py` is the second. The 16-class assignment arrives as
+one 60-column table holding two different things, the site labels and the
+covariates they were derived from, so the script cuts it along an explicit
+column partition and writes both halves. That forfeits the md5 check every other
+tracked raw input gets -- neither half can be compared against the upstream file
+-- so the script asserts instead that the halves partition the source, that both
+are keyed on the whole pool, and that **re-joining them reproduces the source
+value for value**, comparing as text so no float is reparsed. See [Site
+covariates](#site-covariates).
 
 `download_natural_earth.py` is the third, and the only one that runs off the
 SCC. It fetches the four Natural Earth 1:50m archives the map basemap is drawn
@@ -1341,18 +1341,18 @@ under `processed/`.
 Conversions applied during ingest rather than downstream:
 
 - **Constraints.** None to the values: the ingest changes structure, never
-  values. Units stay the raw file's (so SoilGrids soil carbon is `Mg ha-1`,
-  not the `kg m-2` of the assembled files), no record is chosen to stand for a
-  year, and nothing is aligned in time. Two structural steps are declared by
-  the spec and counted in the product's attributes: MODIS rows failing the
+  values. Units stay the raw file's (so SoilGrids soil carbon is `Mg ha-1`, not
+  the `kg m-2` of the assembled files), no record is chosen to stand for a year,
+  and nothing is aligned in time. Two structural steps are declared by the spec
+  and counted in the processed file's attributes: MODIS rows failing the
   producer's quality flag are dropped, and SoilGrids' identical yearly copies
   are collapsed to one value per site after a check that they are identical.
-  Zero standard deviations are written through unchanged; 929 LandTrendr
-  records carry one, 925 of them where the observation is zero too, but four
-  assert a non-zero value with no uncertainty at all: sites 5664 (2014), 6558
-  (2016) and 7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a
-  modeling decision that would be hidden if an ingest script made it. See open
-  question 14.
+  Zero standard deviations are written through unchanged; 929 LandTrendr records
+  carry one, 925 of them where the observation is zero too, but four assert a
+  non-zero value with no uncertainty at all: sites 5664 (2014), 6558 (2016) and
+  7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a modeling
+  decision that would be hidden if an ingest script made it. See open question
+  14.
 - **Initial conditions.** None to the values. The conversion is a re-layout in
   the source files' names and units strings; the ingest renames the variables
   to the spec names, renames `member` to `initial_condition_member` and
@@ -1371,9 +1371,9 @@ Conversions applied during ingest rather than downstream:
   `landcover` relation is asserted, not applied: the classes come from the file,
   and a raw file departing from the relation is refused rather than corrected.
 - **Net ecosystem exchange.** None to the values, as for the constraints: the
-  product keeps the producer's umol CO2 m-2 s-1 and the observation operator
-  converts the model into it (the 2026-09-15 observation-operator design
-  decision). The redundant `ens_mean` column is dropped.
+  processed file keeps the producer's umol CO2 m-2 s-1 and the observation
+  operator converts the model into it (the 2026-09-15 observation-operator
+  design decision). The redundant `ens_mean` column is dropped.
 
 > **Note 11.** Plant functional type is not site metadata and is not a column
 > of the site table. Which site labels a calibration uses, and how many exist,
@@ -1388,19 +1388,19 @@ are written, and the driver reader in `sipnet_calibration.drivers` is
 implemented; the rest of this section records the intended output of scripts
 not yet written.
 
-The processed form is also the form used throughout the rest of the project, so it
-is chosen to load directly as such: an `xarray.DataArray` per variable -- a
+The processed form is also the form used throughout the rest of the project, so
+it is chosen to load directly as such: an `xarray.DataArray` per variable -- a
 field, as `sipnet_calibration.fields.validate_field` checks it -- with
-dimensions `(*batch, site, time)`, a product's own ensemble being a batch dim
-named for the product (`initial_condition_member`, `driver_member`,
+dimensions `(*batch, site, time)`, a data source's own ensemble being a batch
+dim named for the source (`initial_condition_member`, `driver_member`,
 `nee_member`), longitude and latitude as non-dimension coordinates on `site`,
 and units recorded in the array's attributes. Formats are chosen according to
-the shape of each product.
+the shape of each data source.
 
-| Product | Format | Dimensions | Approximate size |
+| Processed file | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
-| `site_labels/<name>.csv` | CSV, one per product | table | ~0.2 MB each |
+| `site_labels/<name>.csv` | CSV, one per site-labels source | table | ~0.2 MB each |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
 | `initial_conditions.nc` | netCDF | `(initial_condition_member, site)` | 26 MB compressed |
 | `nee.zarr` | Zarr, chunked on `site` | `(nee_member, site, time)` | 630 MB dense, about 55% missing |
@@ -1460,17 +1460,17 @@ settings to each caller.
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
 
 The **site labels** are one CSV each under `processed/site_labels/`, named by
-the product rather than by its raw file, with two columns:
+the site-labels source rather than by its raw file, with two columns:
 
 | Column | Type | Description |
 |---|---|---|
 | `site_id` | int32 | Site identifier, ascending |
 | `label` | category | The class, exactly as the producer wrote it |
 
-The column is `label` rather than `pft` so that every product has one schema:
-code that pools over classes indexes `label` without knowing which product it
-was handed, and a product whose classes are not plant functional types needs no
-schema change. Which kind of class a product holds is a field of its spec in
+The column is `label` rather than `pft` so that every site-labels source has one
+schema: code that pools over classes indexes `label` without knowing which
+source it was handed, and a source whose classes are not plant functional types
+needs no schema change. Which kind of class a source holds is set in its spec in
 `sipnet_calibration.site_labels`, which also fixes the order the classes are
 indexed in -- `load_site_labels` returns `label` as a categorical over exactly
 the spec's classes, in that order, so a class axis is stable and an undeclared
@@ -1478,14 +1478,14 @@ class is an error rather than a new category.
 
 There are no other columns: coordinates and `landcover` are site metadata, and a
 caller joins `load_sites()` on `site_id`. Nothing is missing, either -- a site a
-product does not label is absent from its file rather than carrying a null
-class, and a product whose spec says it covers the pool is refused at ingest if
+source does not label is absent from its file rather than carrying a null
+class, and a source whose spec says it covers the pool is refused at ingest if
 it leaves a site out.
 
 The **constraints** are five files under `processed/constraints/`, one per
 constraint, named by the raw file's stem. Each is an `xarray.Dataset` of two
-`float64` variables, `NaN` where a site (and time) was not observed and in the
-same cells of both:
+`float64` variables, `NaN` where a site (and time) was not observed and at the
+same elements of both:
 
 | Variable | Dims | Description |
 |---|---|---|
@@ -1493,8 +1493,8 @@ same cells of both:
 | `standard_deviation` | the same | The standard deviation the source reports beside it |
 
 `site` is the full 1-8000 pool in every file, whether or not a site was ever
-observed, so any two products align on `site` without a join; `lon` and `lat`
-are non-dimension coordinates on it. `time` is each product's own:
+observed, so any two constraints align on `site` without a join; `lon` and `lat`
+are non-dimension coordinates on it. `time` is each constraint's own:
 
 | Constraint | Time structure | `time` | `time_bounds` | Units |
 |---|---|---|---|---|
@@ -1504,15 +1504,15 @@ are non-dimension coordinates on it. `time` is each product's own:
 | `smap_soil_moisture` | dated | the July 15 keys, 2015-2024 | none | `percent` |
 | `soilgrids_soil_organic_carbon` | static | no time dimension | none | `Mg ha-1`, constituent `C` |
 
-An **annual** product labels each value with January 1 of its year -- a key,
+An **annual** constraint labels each value with January 1 of its year -- a key,
 not an acquisition time -- and states the calendar year the value is
-attributed to as CF `time_bounds`. A **dated** product carries the source's
+attributed to as CF `time_bounds`. A **dated** constraint carries the source's
 own date label exactly as written, with no bounds: what the label marks (a
 4-day composite, a snapshot key) is documented but its exact placement is not,
-and the `comment` on `value` says what is known. A **static** product has no
+and the `comment` on `value` says what is known. A **static** constraint has no
 time dimension; the raw file's yearly copies were checked to be identical and
 collapsed. Which record stands for a model time, and how, is the observation
-operator's decision, not the product's.
+operator's decision, not the processed file's.
 
 **The processed files follow the Climate and Forecast conventions, CF-1.11**,
 as pySIPNET's model output does, so the two sides read alike. The dataset
@@ -1526,13 +1526,13 @@ pySIPNET's use of a `comment` where `cell_methods` cannot speak.
 
 Every attribute on `value` comes from the constraint's `ConstraintSpec`:
 `units`, `constituent` (where the unit is of a substance), `long_name`,
-`description`, `product`, `source_file`, `source_column`, `time_reference`,
-`units_provenance` and, where set, `sign_convention` and `comment`. The dataset
-counts what the ingest did to the rows: `rows_read`,
-`rows_dropped_by_quality_flag` and `rows_collapsed_as_copies`. The units
-are the raw file's, unchanged, and every one is inferred or documented for
-something adjacent rather than confirmed by the producer; `units_provenance`
-says which, in a sentence. See open question 9.
+`description`, `upstream_product`, `source_file`, `source_column`,
+`time_reference`, `units_provenance` and, where set, `sign_convention` and
+`comment`. The dataset counts what the ingest did to the rows: `rows_read`,
+`rows_dropped_by_quality_flag` and `rows_collapsed_as_copies`. The units are the
+raw file's, unchanged, and every one is inferred or documented for something
+adjacent rather than confirmed by the producer; `units_provenance` says which,
+in a sentence. See open question 9.
 
 The **drivers** are served by `sipnet_calibration.drivers.load_drivers(sites,
 ...)`, which reads the raw `.clim` files for the named sites through pySIPNET's
@@ -1581,36 +1581,35 @@ fields by `initial_condition_fields`:
 | `initial_soil_organic_carbon` | `soil_organic_carbon_content` | `kg m-2`, constituent `C` |
 | `initial_soil_moisture_saturation` | `SoilMoistFrac` | `percent` |
 
-`site` is the whole pool with `lon`/`lat`; `initial_condition_member` is
-0-based (`int64`), `source_index - 1`, with `source_index` carrying the source
-files' 1-based index (the raw file holds members 1 to 100 contiguously, which
-the ingest checks, so the labels are 0 to 99); there is no `time`,
-and what the source's degenerate one claimed is kept in the `source_time_*`
-attributes. `NaN` has one meaning, that no source file for the site carries
-the variable, uniform over the site's members and asserted on load. Each variable
-carries its spec's fields as attributes: `units`, `long_name`, `description`,
-`product`, `source_name`, `source_units`, `source_long_name`,
-`sipnet_initial_condition` (the `pysipnet.parameters.InitialConditions` field
-PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
-`constituent` and `comment`. The dataset records the PEcAn preparation script
-and its caveat as `source_script` and `source_script_note`, the nominal date
-2011-07-15 with where it comes from. The member dim's name says which
-ensemble it is (Note 12). The dataset's member count is
-`n_initial_condition_members`. A file written before the dim was renamed from
-`member`, or the attribute from `n_members`, is refused on load and re-made
-by `scripts/ingest_initial_conditions.py`. The names carry `initial_` because
-the product is the model's starting state -- PEcAn calls the format
-`pool_initial_conditions` -- and so that no name collides with a constraint
-product's; `biomass` rather than the file's `woody` because the Spawn and
-Gibbs product is total aboveground biomass carbon.
+`site` is the whole pool with `lon`/`lat`; `initial_condition_member` is 0-based
+(`int64`), `source_index - 1`, with `source_index` carrying the source files'
+1-based index (the raw file holds members 1 to 100 contiguously, which the
+ingest checks, so the labels are 0 to 99); there is no `time`, and what the
+source's degenerate one claimed is kept in the `source_time_*` attributes. `NaN`
+has one meaning, that no source file for the site carries the variable, uniform
+over the site's members and asserted on load. Each variable carries its spec's
+fields as attributes: `units`, `long_name`, `description`, `upstream_product`,
+`source_name`, `source_units`, `source_long_name`, `sipnet_initial_condition`
+(the `pysipnet.parameters.InitialConditions` field PEcAn fed it into),
+`pecan_conversion`, `units_provenance` and, where set, `constituent` and
+`comment`. The dataset records the PEcAn preparation script and its caveat as
+`source_script` and `source_script_note`, the nominal date 2011-07-15 with where
+it comes from. The member dim's name says which ensemble it is (Note 12). The
+dataset's member count is `n_initial_condition_members`. A file written before
+the dim was renamed from `member`, or the attribute from `n_members`, is refused
+on load and re-made by `scripts/ingest_initial_conditions.py`. The names carry
+`initial_` because the data source is the model's starting state -- PEcAn calls
+the format `pool_initial_conditions` -- and so that no name collides with a
+constraint's; `biomass` rather than the file's `woody` because the Spawn and
+Gibbs upstream product is total aboveground biomass carbon.
 
-The following conventions apply to every product.
+The following conventions apply to every processed file.
 
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
   identifier is a non-dimension coordinate on `site`, absent where unknown.
-- A product's own ensemble is a batch dim named for the product
+- A data source's own ensemble is a batch dim named for the source
   (`initial_condition_member`, `driver_member`), a zero-based `int64` index
-  meaningful only within that product, with the source's 1-based file index
+  meaningful only within that source, with the source's 1-based file index
   beside it as `source_index`. The label is the member's identity,
   `source_index - 1`, whatever subset is loaded, so a member keeps its label
   in every load. The tracked raw initial condition file keeps its own
@@ -1619,19 +1618,19 @@ The following conventions apply to every product.
   pySIPNET's axis, built by pySIPNET from SIPNET's `year`, `day` and `time`
   labels and the drivers' step lengths, so a run and its drivers share one
   axis; nothing here rebuilds it.
-- Each product is stored at the temporal resolution its source arrives in.
-  Aggregation is the observation operator's business, specified per variable at
-  model-specification time, so that different constraints can be used at
+- Each processed file is stored at the temporal resolution its source arrives
+  in. Aggregation is the observation operator's business, specified per variable
+  at model-specification time, so that different constraints can be used at
   different time scales without a re-ingest.
-- Uneven coverage is preserved rather than filled. The constraint products in
+- Uneven coverage is preserved rather than filled. The constraints in
   particular are ragged over site and time, and
-  unobserved cells are `NaN` rather than zero -- a zero there would be an
+  unobserved elements are `NaN` rather than zero -- a zero there would be an
   observation of no biomass, which is a different and real statement.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
-> known to derive from a driver ensemble. So every product's ensemble dim is
-> named for the product, and no two share a name: xarray aligns two dims of one
+> known to derive from a driver ensemble. So every data source's ensemble dim is
+> named for the source, and no two share a name: xarray aligns two dims of one
 > name by label and PyEns zips them, while dims of different names cross, every
 > member of one meeting every member of the other. Pairing two ensembles, if
 > question 12 is ever answered yes, is spelled by giving their dims one name.
@@ -1765,7 +1764,7 @@ an intrinsic property of a site: some calibrations will not use PFTs at all,
 others will use a different set of classes, and which set is used is likely to
 be varied experimentally, so carrying one in the site table would bake an
 experimental choice into a key shared with collaborators. Site labels are
-therefore a separate processed product, one file per product at
+therefore a separate processed file, one per site-labels source at
 `processed/site_labels/<name>.csv` keyed on `site_id`, so several coexist and a
 calibration names the one it used.
 
@@ -1779,13 +1778,14 @@ question 24(k).
 
 *The 16-class table has since arrived* and is tracked as
 `raw/site_labels/site_pft_16class.csv`; it is the set of labels this project
-intends to calibrate under, and nothing in the design changed when it came, since
-`sipnet_calibration.site_labels` takes a second spec. What it settles is that the
-two products **do not nest**: every one of its sixteen classes draws sites from
-at least two of the three reanalysis classes, and twelve from all three. So the
-planned transfer of priors from coarse classes to fine ones has no parent class
-to inherit from and has to be reconsidered. What remains open is how, if at all,
-the reanalysis's per-PFT trait posteriors map onto the sixteen.
+intends to calibrate under, and nothing in the design changed when it came,
+since `sipnet_calibration.site_labels` takes a second spec. What it settles is
+that the two site-labels sources **do not nest**: every one of its sixteen
+classes draws sites from at least two of the three reanalysis classes, and
+twelve from all three. So the planned transfer of priors from coarse classes to
+fine ones has no parent class to inherit from and has to be reconsidered. What
+remains open is how, if at all, the reanalysis's per-PFT trait posteriors map
+onto the sixteen.
 
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial condition member *i* and the calibration ensemble were drawn jointly
@@ -1964,7 +1964,7 @@ future ingest should produce.
 value with a date on a 4-day lattice, and MCD15A3H is a 4-day composite, but
 neither the file nor the product's catalog page says whether the label is the
 first day of the compositing period. Until that is confirmed the processed
-product carries the label as written and writes no `time_bounds`.
+file carries the label as written and writes no `time_bounds`.
 
 **24. The reanalysis's inputs: how they were produced and used.** Questions for
 the producer, recorded here rather than asked yet. (a) to (i) are about the
@@ -2032,8 +2032,9 @@ every row, which suggests the covariates are meant as period averages over the
 run window, but that is an inference from two constant columns.
 
 This is why there is no ingest for the file. The project's rule is that a
-processed product carries its source units and records where they came from; a
-product built from these would have nothing to record. Four questions to the
-producer would settle it: the unit of every numeric column, the source product
-and version of each, the period each summarizes, and what the fill convention
-is for the ragged columns. Until then the file is tracked and read by nothing.
+processed file carries its source units and records where they came from; a
+processed file built from these would have nothing to record. Four questions to
+the producer would settle it: the unit of every numeric column, the source
+product and version of each, the period each summarizes, and what the fill
+convention is for the ragged columns. Until then the file is tracked and read by
+nothing.

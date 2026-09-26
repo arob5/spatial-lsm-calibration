@@ -80,9 +80,9 @@ Facts specific to this working copy, which the README deliberately does not carr
   five constraint files (tracked), the converted initial condition ensemble
   (tracked, all 8000 sites x 100 members), the assembled `.Rdata` pair retained
   for validation, the site shapefile, both leaf phenology CSVs, and the two
-  site-labels products and the covariate table (all tracked) are complete. The
-  full dataset lives on Boston University's SCC. Anything about the drivers that
-  needs to hold across all 8000 sites cannot be verified here.
+  site-labels data sources and the covariate table (all tracked) are complete.
+  The full dataset lives on Boston University's SCC. Anything about the drivers
+  that needs to hold across all 8000 sites cannot be verified here.
 - In the root checkout the storage-backed inputs are real copies, not symlinks;
   on SCC, and in a worktree that links them from the root, they are symlinks.
   The five constraint files and the site shapefile are tracked either way.
@@ -121,15 +121,15 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - The site table is `data/raw/sites/pts.*` (tracked) and, after ingest,
   `data/processed/sites/sites.csv`. There is no other site source.
 - Do not assume rectangular coverage: NEE is ~55% missing over site x time, and
-  every constraint product is ragged over site x time.
-- Constraint products keep their **source units** and their source's own time
+  every constraint is ragged over site x time.
+- Constraints keep their **source units** and their source's own time
   labels. Nothing is converted or aligned at ingest; the observation operator
   does both. See the processed-data conventions below.
-- The initial condition product is in the source files' units, negative wood and
-  leaf draws included, and applies **no state-to-parameter mapping**: three of
-  the four SIPNET initial parameters depend on calibrated parameters, so the
-  mapping is the experiment layer's, per proposed parameter vector. Each spec's
-  `pecan_conversion` says what PEcAn did.
+- The initial conditions' processed file is in the source files' units, negative
+  wood and leaf draws included, and applies **no state-to-parameter mapping**:
+  three of the four SIPNET initial parameters depend on calibrated parameters,
+  so the mapping is the experiment layer's, per proposed parameter vector. Each
+  spec's `pecan_conversion` says what PEcAn did.
 
 ## Code conventions
 
@@ -146,7 +146,8 @@ does not follow a rule below yet, the rule says which PR changes it.
 
 One concept, one word; one word, one concept. A word this glossary does not
 list is either added here or not used for a project concept. The retired words
-are still in the code until the PR that renames them (mostly PR 3).
+are gone from the code, except where a rule below names the PR that retires
+them.
 
 **Space and sites.**
 
@@ -167,7 +168,7 @@ are still in the code until the PR that renames them (mostly PR 3).
 |---|---|---|
 | **timestep** (prose and identifiers) | one SIPNET step, `(timestep_start, time]`. pySIPNET's coordinates are `time_step_start`/`time_step_length` today; it is renaming them, and `conventions.TIMESTEP_START`/`TIMESTEP_LENGTH` then follow | "time step", `time_step` |
 | **time label** | a value of the `time` coordinate | |
-| **window** | the interval an observation's value covers, which model timesteps are reduced over (`pd.IntervalIndex`); on an observation's `time` as the coordinates `conventions.WINDOW_START`/`WINDOW_END`, built from the CF `time_bounds` variable the processed file stores. Their values are still `time_bounds_start`/`time_bounds_end` until PR 3 renames them `window_start`/`window_end` | "time bounds" for these coordinates |
+| **window** | the interval an observation's value covers, which model timesteps are reduced over (`pd.IntervalIndex`); on an observation's `time` as the coordinates `conventions.WINDOW_START`/`WINDOW_END`, built from the CF `time_bounds` variable the processed file stores; their values are `window_start`/`window_end` | "time bounds" and `time_bounds_start`/`time_bounds_end` for these coordinates |
 | **cell** | **only the CF sense**: the interval or area one value represents (a calendar resampling cell, a grid cell, a raster cell, a map renderer's site cell) | an element of y, a `(sample, site)` pair, a CSV field, a figure slot |
 | **record** | a data source's full time extent (a run's record, a site's driver record); also one raw CSV row | |
 
@@ -178,7 +179,7 @@ are still in the code until the PR that renames them (mostly PR 3).
 | **data source** | a producer's dataset, raw or processed (MODIS LAI, the ERA5 drivers, PEcAn's initial conditions, the site table) | "product" for this |
 | **observation source** | a data source used as observational constraint data; one `ObservationSource` | "product" in the observation package |
 | **processed file** | the file an ingest script writes under `data/processed/` | "processed product" |
-| **upstream product** | the producer's own product name (MCD15A3H v061); the spec field and netCDF attribute `upstream_product` | the spec field and attribute `product` (renaming it needs a re-ingest) |
+| **upstream product** | the producer's own product name (MCD15A3H v061); the spec field and netCDF attribute `upstream_product` | the spec field and attribute `product` (a processed file written before the rename carries it until re-ingested) |
 | **raw** | a data source as it arrives, never edited | |
 | **constraint** | one of the five constraint data sources of `constraints.py` | |
 | **observation** | one entry of **y**: one observed value of one observation source at one site (and time) | "cell", "observed cell" |
@@ -278,35 +279,35 @@ The batch-dim rules:
   and align in xarray); different names are different indices (they cross),
   so unrelated ensembles are kept apart by distinct names, and a deliberate
   pairing is spelled by giving two dims one name.
-- **The batch dim made from batched Flat** is `sample` (`conventions.SAMPLE`)
-  by default, overridable by `batch_dim=` on every function that creates one
-  (`ParameterVector.fields` and `.sipnet_table`, `ObservationVector.fields`,
-  `ForwardModel`, whose `sipnet_table`, `model_output`, `run_succeeded` and
-  `failures` column all carry that one name), labeled `0..n_samples-1` in row
-  order. Which names each refuses: every creator of a batch dim refuses the
-  reserved names (`fields.check_batch_dim_name_is_not_reserved`:
-  `conventions.NON_BATCH_DIM_NAMES`; `fields.MODEL_OUTPUT_COORDINATE_NAMES`,
-  the time coordinates, `time_bounds`, `bounds` and SIPNET's row labels; and
-  an observation's window edges, `WINDOW_START` and `WINDOW_END`), since a
-  batch dim of one of those names collides with that coordinate or is
-  mistaken for it; the vectors, `ForwardModel` and `stack_batch_dims(into=)`
-  also refuse the data source member names
+- **The batch dim made from batched Flat** is `sample` (`conventions.SAMPLE`) by
+  default, overridable by `batch_dim=` on every function that creates one
+  (`ParameterVector.fields` and `.sipnet_parameter_fields`,
+  `ObservationVector.fields`, `ForwardModel`, whose `sipnet_parameter_fields`,
+  `model_output`, `run_succeeded` and `failures` column all carry that one
+  name), labeled `0..n_samples-1` in row order. Which names each refuses: every
+  creator of a batch dim refuses the reserved names
+  (`fields.check_batch_dim_name_is_not_reserved`:
+  `conventions.NON_BATCH_DIM_NAMES`; `fields.MODEL_OUTPUT_COORDINATE_NAMES`, the
+  time coordinates, `time_bounds`, `bounds` and SIPNET's row labels; and an
+  observation's window edges, `WINDOW_START` and `WINDOW_END`), since a batch
+  dim of one of those names collides with that coordinate or is mistaken for it;
+  the vectors, `ForwardModel` and `stack_batch_dims(into=)` also refuse the data
+  source member names
   (`fields.check_batch_dim_name_is_not_a_data_source_member`), since their
-  labels are new indices; the parameter vector also refuses `shared`,
-  `site_id`, its site-labels names, SIPNET parameter, calibration parameter
-  and Fields variable names (`parameter_vector.check_batch_dim_name_is_not_taken`);
-  `ForwardModel` runs that check at construction, whatever its table hook,
-  and refuses there too an output variable's name or pySIPNET alias
-  (`nee`), and a product name or observation coordinate of its observation
-  vector, so nothing runs first;
-  `ObservationVector.fields` refuses a product name or a coordinate of an
-  observation's values (a scalar batch label excepted: an observation's
-  scalar batch labels are metadata of the input and are not carried);
-  `fields.label_run`, `from_sipnet_output(batch=)` and the stackers'
-  `key_dims` refuse a variable, dim or coordinate of the model output. The
-  parameter vector reserves `sample`, `conventions.NON_BATCH_DIM_NAMES` and
-  the data source member names against parameter names, and `shared` and
-  `site_id` as well against site-labels names.
+  labels are new indices; the parameter vector also refuses `shared`, `site_id`,
+  its site-labels names, SIPNET parameter, calibration parameter and Fields
+  variable names (`parameter_vector.check_batch_dim_name_is_not_taken`);
+  `ForwardModel` runs that check at construction, whatever its
+  SIPNET-parameter-fields hook, and refuses there too an output variable's name
+  or pySIPNET alias (`nee`), and an observation source name or a coordinate of
+  its observed values, so nothing runs first; `ObservationVector.fields` refuses
+  an observation source name or a coordinate of its observed values (a scalar
+  batch label excepted: an observation source's scalar batch labels are metadata
+  of the input and are not carried); `fields.label_run`,
+  `from_sipnet_output(batch=)` and the stackers' `key_dims` refuse a variable,
+  dim or coordinate of the model output. The parameter vector reserves `sample`,
+  `conventions.NON_BATCH_DIM_NAMES` and the data source member names against
+  parameter names, and `shared` and `site_id` as well against site-labels names.
 - **A data source's own ensemble** is a batch dim named for the source:
   `conventions.INITIAL_CONDITION_MEMBER`, `conventions.DRIVER_MEMBER` (and
   `nee_member` when NEE is ingested), with its 1-based file index beside it as
@@ -315,38 +316,38 @@ The batch-dim rules:
   align member for member. The tracked raw initial condition file keeps its
   own `member` dim, since raw data is never edited.
 - **Labels** are any distinct integers, with no cap on their number.
-  `ForwardModel` alone requires its table's labels to be the integers
-  `0..J-1` in row order, because it places each run in the row its label
-  names.
+  `ForwardModel` alone requires its SIPNET parameter fields' labels to be the
+  integers `0..J-1` in row order, because it places each run in the row its
+  label names.
 - **Flat has at most one batch dim.** A field with several is reduced, or
-  stacked with `fields.stack_batch_dims(field, into="run")`. The stacked dim
-  is a new index, labeled `0..n-1`, so it takes a new name (`into` is
-  required, and may not be a dim stacked, a coordinate or a `<dim>_label`
-  name): stacking `(sample, driver_member)` into `sample` would align it with
-  theta's samples, which it is not, and the operators refuse a model output
-  stacked over a SIPNET table's dim. The stack keeps each original dim's
-  labels as a `<dim>_label` coordinate and records the dims, in order, on the
-  stacked coordinate (`stacked_dims`, JSON, as `stacked_companions` is);
-  `fields.unstack_batch_dims` reads only that record, restoring the dims in
-  that order, labels in first-appearance order, and a coordinate that was on
-  stacked dims alone (`source_index`), and checks that the result is a field.
-  Through Flat: a vector's `fields(y, batch_dim="run")` carries no labels, and
-  `unstack_batch_dims(array, labels_from=stacked_array)` copies them; a
-  Dataset is stacked with `dataset.map(lambda f: stack_batch_dims(f,
-  into="run"))`, a dict entry by entry. The round trip needs fields: a vector
-  built from bare site ids gives arrays without `lon`/`lat` (or with `int64`
-  sites), which are not fields yet and are refused; PR 4 closes it.
+  stacked with `fields.stack_batch_dims(field, into="run")`. The stacked dim is
+  a new index, labeled `0..n-1`, so it takes a new name (`into` is required, and
+  may not be a dim stacked, a coordinate or a `<dim>_label` name): stacking
+  `(sample, driver_member)` into `sample` would align it with theta's samples,
+  which it is not, and the operators refuse a model output stacked over a dim of
+  the SIPNET parameter fields. The stack keeps each original dim's labels as a
+  `<dim>_label` coordinate and records the dims, in order, on the stacked
+  coordinate (`stacked_dims`, JSON, as `stacked_companions` is);
+  `fields.unstack_batch_dims` reads only that record, restoring the dims in that
+  order, labels in first-appearance order, and a coordinate that was on stacked
+  dims alone (`source_index`), and checks that the result is a field. Through
+  Flat: a vector's `fields(y, batch_dim="run")` carries no labels, and
+  `unstack_batch_dims(array, labels_from=stacked_array)` copies them; a Dataset
+  is stacked with `dataset.map(lambda f: stack_batch_dims(f, into="run"))`, a
+  dict entry by entry. The round trip needs fields: a vector built from bare
+  site ids gives arrays without `lon`/`lat` (or with `int64` sites), which are
+  not fields yet and are refused; PR 4 closes it.
 - **A scalar coordinate is not a dim.** A field whose batch dim was selected
   away with `.isel(sample=k)` has no batch dim; its scalar label is metadata
   (`fields.scalar_batch_labels` finds them: any scalar integer coordinate
   but `NON_BATCH_DIM_NAMES` and SIPNET's row labels, so a run carrying
   `seed=42` must name it in `key_dims` or drop it), and `flat` gives one
-  vector. An observation refuses a batch dim, not a scalar batch label.
+  vector. An observation source refuses a batch dim, not a scalar batch label.
 
 Every plotter calls `validate_field` first, as `stack_batch_dims` and
 `unstack_batch_dims` do, and plotting stays strict: a plotter takes only
 fields (`int32` `site` with `lon`/`lat`). The time-alignment verbs, the
-observation class, the operators' grid check and the parameter vector still
+observation source, the operators' grid check and the parameter vector still
 check their own parts of the contract until PR 4 and the module cleanups
 route them through it. **Model output** is an `xr.Dataset` of pySIPNET-named
 variables on one shared time axis, each variable a field; one run's has a
@@ -433,11 +434,11 @@ coercion lives in `validation.py`.
   `utc_timestamp`.
 - **`sites.py`** holds everything that reads the site table: `load_sites`,
   `select_sites`, `site_lookup`, `site_locations`, `site_coordinates` (the
-  `site`, `lon` and `lat` coordinates a product's `site` dim carries), the
-  site-table checks (one invariant each, grouped as
+  `site`, `lon` and `lat` coordinates a processed file's `site` dim carries),
+  the site-table checks (one invariant each, grouped as
   `check_site_table_locates_the_sites` and
-  `check_site_table_is_keyed_on_site_ids`), the pool checks a raw data
-  source's sites are held to (`check_site_table_lists_the_sites`,
+  `check_site_table_is_keyed_on_site_ids`), the pool checks a raw data source's
+  sites are held to (`check_site_table_lists_the_sites`,
   `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
   hand `set_index("site_id")`; `site_lookup` is the keyed form.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
@@ -452,7 +453,7 @@ coercion lives in `validation.py`.
 Raw variable names are not ours to choose; processed ones are.
 
 - **`lower_case_with_underscores`** for every variable, coordinate and column of
-  a processed product.
+  a processed file.
 - **Avoid abbreviations** unless they are universal. So `soil_organic_carbon`,
   not `soc`; `aboveground_biomass`, not `agb`; `standard_deviation`, not `sd`.
   `lai` is fine, and so are `lon`/`lat`, which the field convention
@@ -461,12 +462,12 @@ Raw variable names are not ours to choose; processed ones are.
   in the library beside the schema, not spread across a script. See
   `ConstraintSpec` in `sipnet_calibration.constraints`, whose `raw_file`,
   `value_column` and `sd_column` name the source and whose fields are written
-  into the product as `source_file` and `source_column`, so the correspondence
-  is never guesswork.
-- A constraint product is named for its **raw file's stem**
-  (`modis_leaf_area_index`, not `lai`): the name is then the spec's key, the
-  raw file and the output file at once, it keeps two products of one quantity
-  apart, and it asserts nothing the source does not (biomass, not carbon).
+  into the processed file as `source_file` and `source_column`, so the
+  correspondence is never guesswork.
+- A constraint is named for its **raw file's stem** (`modis_leaf_area_index`,
+  not `lai`): the name is then the spec's key, the raw file and the output file
+  at once, it keeps two data sources of one quantity apart, and it asserts
+  nothing the source does not (biomass, not carbon).
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
@@ -487,12 +488,11 @@ the ones most often broken.
   `SPATIAL_DIM_NAMES`).
 - **A variable holding one representation of a concept says which**, in the
   glossary's words. The parameter vector's Flat is `theta`, its Fields is
-  `<thing>_fields`, its SIPNET parameter fields are `sipnet_parameter_fields`
-  (still `sipnet_table` in the code until PR 3); the observation vector's Flat
-  is `y`. A pySIPNET object is named for its class (`sipnet_result`,
-  `sipnet_output`, `sipnet_parameters`); the labeled xarray of a run's output
-  is `model_output`. Nobody should have to ask whether a value is a
-  `ParameterVector`, a `CalibrationParameter` or a SIPNET parameter.
+  `<thing>_fields`, its SIPNET parameter fields are `sipnet_parameter_fields`;
+  the observation vector's Flat is `y`. A pySIPNET object is named for its class
+  (`sipnet_result`, `sipnet_output`, `sipnet_parameters`); the labeled xarray of
+  a run's output is `model_output`. Nobody should have to ask whether a value is
+  a `ParameterVector`, a `CalibrationParameter` or a SIPNET parameter.
 - **`sipnet_` prefixes anything in pySIPNET's vocabulary**: names, values,
   objects. The bare word or `calibration_` is this repository's vocabulary.
   `pysipnet_` is not used: this repository reaches SIPNET only through
@@ -532,8 +532,8 @@ the ones most often broken.
 - **Units are not in names** (`radius_km`, `interval_ms` are retired):
   quantities are SI, meters and seconds, with the unit in the docstring.
 - **An argument is named for what it is for**, never for where it sits: not
-  `at`, not `data`, not `x`. A site table is `site_table=` everywhere (PR 3
-  renames the `sites=` and `sites_table=` keywords that still take one).
+  `at`, not `data`, not `x`. A site table is `site_table=` everywhere, and
+  `sites` is always a sequence of site ids.
 
 Existing code is brought into line by the PRs of the design model, with the
 tests renamed alongside; `logs/2026-09-25_Repository Design Model.md` in the
@@ -587,7 +587,7 @@ These apply to the library and the scripts alike.
 
 ### What does and does not belong in documentation
 
-- **Do not write volatile measurements into documentation.** Row counts, cell
+- **Do not write volatile measurements into documentation.** Row counts, element
   counts, file sizes, per-variable coverage, "929 of them are zero" — these
   describe one snapshot of the data and go stale silently. A numeric property
   the code depends on is **checked programmatically**: an assertion in
@@ -597,13 +597,13 @@ These apply to the library and the scripts alike.
   `data/README.md` is the exception, since recording measured characteristics of
   the raw data is its job — but even there, anything the code relies on is
   asserted in code as well, not just written down.
-- **Code does not cite the vault.** Docstrings, comments and provenance
-  strings never point at the Obsidian vault, a design log or the readiness
-  report: those live outside the repository, so a reader of the code cannot
-  follow the reference, and they move. A citation in code names a primary
-  source -- a paper, a line of the SIPNET source, a data producer or product
-  (BETY, ISCN), a pySIPNET module. Design reasoning goes the other way: the
-  vault cites the code.
+- **Code does not cite the vault.** Docstrings, comments and provenance strings
+  never point at the Obsidian vault, a design log or the readiness report: those
+  live outside the repository, so a reader of the code cannot follow the
+  reference, and they move. A citation in code names a primary source -- a
+  paper, a line of the SIPNET source, a data producer or upstream product (BETY,
+  ISCN), a pySIPNET module. Design reasoning goes the other way: the vault cites
+  the code.
 - **Keep low-level design reasoning out of docstrings.** A docstring says what
   something is, what it takes and what it returns. Why a design was chosen over
   an alternative, what bug it avoids, what would break if it were done the other
@@ -620,8 +620,8 @@ because these are what someone opens it to find out:
 1. **Where it sits in the pipeline** — which scripts produce the data it reads,
    and which way the dependency runs.
 2. **What it reads** — the inputs, named, with what each is for.
-3. **The data model** — for an xarray product, the dims, the data variables and
-   their dtypes, the coordinates and which dims they are on, the attributes,
+3. **The data model** — for an xarray data source, the dims, the data variables
+   and their dtypes, the coordinates and which dims they are on, the attributes,
    and what missing means. State it plainly; do not make the reader infer it
    from the validation code.
 4. **The functions it provides** — the public entry points and what each one
@@ -646,31 +646,30 @@ Function and module docstrings elsewhere are ordinary NumPy style.
 
 ### Processed data conventions
 
-- **Processed products follow the Climate and Forecast conventions, CF-1.11**,
-  as pySIPNET's model output does since its PR #38, so model and observation
-  read alike: `Conventions = "CF-1.11"` on the dataset; `standard_name`,
-  `axis` and, where present, `bounds` on `time`; `standard_name` and `units`
-  on `lon`/`lat`; no `_FillValue` on any coordinate. Where a value's support
-  is documented it is a CF `time_bounds(time, bounds)` coordinate, as
-  pySIPNET writes one whose two edges are `time_step_start` and `time`. Where CF has no
-  vocabulary for what a label means, the meaning goes in words
-  (`time_reference`, `comment`), never in a `cell_methods` that is not
-  literally true.
+- **Processed files follow the Climate and Forecast conventions, CF-1.11**, as
+  pySIPNET's model output does since its PR #38, so model and observation read
+  alike: `Conventions = "CF-1.11"` on the dataset; `standard_name`, `axis` and,
+  where present, `bounds` on `time`; `standard_name` and `units` on `lon`/`lat`;
+  no `_FillValue` on any coordinate. Where a value's support is documented it is
+  a CF `time_bounds(time, bounds)` coordinate, as pySIPNET writes one whose two
+  edges are `time_step_start` and `time`. Where CF has no vocabulary for what a
+  label means, the meaning goes in words (`time_reference`, `comment`), never in
+  a `cell_methods` that is not literally true.
 - **Ingest changes structure, never values.** No unit conversion, no temporal
   alignment, no choice of which record stands for a year. Units are the raw
   file's; the observation operator converts through Pint
   (`pysipnet.units.unit_registry`) and decides the alignment.
-- **One flat spec per variable, from which everything is derived**, in the
-  shape of pySIPNET's `VariableSpec`: the spec's `xarray_attributes()` is what
-  the product stores, so a netCDF describes itself and there is no separate
+- **One flat spec per variable, from which everything is derived**, in the shape
+  of pySIPNET's `VariableSpec`: the spec's `xarray_attributes()` is what the
+  processed file stores, so a netCDF describes itself and there is no separate
   processed schema to keep in step. `ConstraintSpec` is the worked example.
 - **A unit that is inferred is recorded as inferred**, in a `units_provenance`
-  sentence on the spec and the product, not as a status enum.
+  sentence on the spec and the processed file, not as a status enum.
 
-### Products and their readers
+### Processed files and their readers
 
 - **Schema constants and the reader live in the library**, not the script, so
-  the writer and the reader of a product cannot drift apart
+  the writer and the reader of a processed file cannot drift apart
   (`SITE_COLUMNS` in `sites.py`, `CONSTRAINTS` in `constraints.py`).
   A script's own round-trip check calls the library loader, never a parallel
   reader.
@@ -832,7 +831,7 @@ src/sipnet_calibration/
   __init__.py             # the module map and the dependency direction; no
                           # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
-                          # select_sites(ids=, bbox=, where=, sample=, seed=),
+                          # select_sites(ids=, bbox=, where=, n_random=, seed=),
                           # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
                           # site_locations(), site_coordinates(), the site-table
                           # and pool checks
@@ -841,7 +840,7 @@ src/sipnet_calibration/
   projections/            # the stored definition, generated from the dataclass
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
                           # read_raw(), build_constraint(), load_constraint(),
-                          # constraint_fields() -> one field per product
+                          # constraint_fields() -> one field per constraint
   conventions.py          # every shared name constant: SITE, TIME, SAMPLE,
                           # INITIAL_CONDITION_MEMBER, DRIVER_MEMBER,
                           # the reserved spatial names, TIMESTEP_START/LENGTH,
@@ -858,7 +857,7 @@ src/sipnet_calibration/
   io.py                   # write_checked() and write_checked_together() (the
                           # .partial protocol), file_md5(), utc_timestamp()
   initial_conditions/     # one module per artifact; __init__ re-exports them all
-    __init__.py           # curated exports + the product's data model
+    __init__.py           # curated exports + the processed file's data model
     names.py              # RAW_MEMBER, the two file
                           # names, the path helpers
     source_files.py       # SOURCE (the PEcAn file format), read_source_file()
@@ -871,8 +870,9 @@ src/sipnet_calibration/
                           # ClimateDrivers, stacked into (driver_member, site, time) on
                           # pySIPNET's axis; no processed file exists
   site_labels.py          # SiteLabelsSpec + SITE_LABELS, one per raw file; a
-                          # site-labels product is site_id -> class, one product
-                          # per source; read_raw(), build_site_labels(),
+                          # site-labels data source is site_id -> class, one
+                          # processed file per source; read_raw(),
+                          # build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
   parameter_vector.py     # ParameterVector: a named random vector over sites, built
                           # from CalibrationParameters (TFP prior in natural space,
@@ -881,7 +881,8 @@ src/sipnet_calibration/
                           # value representations with named conversions:
                           # fields() <-> flat() (Fields: Dataset of
                           # fields on (sample, site), attrs["space"]), and
-                          # sipnet_table() -> sipnet_overrides(), and PyEns grids
+                          # sipnet_parameter_fields() -> sipnet_overrides(), and
+                          # PyEns grids
                           # through pyens.xarray.fields_from_dataset;
                           # example_parameter_vector()
   forward.py              # ForwardModel: theta (J, D) -> predictions (J, N),
@@ -897,19 +898,20 @@ src/sipnet_calibration/
                           # from_sipnet_output(), stack_sipnet_outputs() over
                           # SIPNETOutput.select, stack_model_outputs() (runs'
                           # Datasets to one on (*batch, site, time)),
-                          # resolve_output_variable_names(), field_label()
+                          # resolve_output_variable_names(), message_name()
   observation/            # the observation side of the inverse problem
     __init__.py           # curated exports
     time_alignment.py     # aggregate_time, reduce_windows, select_timestep_at,
-                          # windows_from_time_bounds, run_window, the counts;
+                          # windows_from_observed_values, run_window, the counts;
                           # the verb a caller applies before plotting
     operators.py          # ObservationOperator protocol; SelectTimestep,
-                          # ReduceOverTimeBounds, ReduceOverRun,
+                          # ReduceOverWindows, ReduceOverRun,
                           # ComputeLeafAreaIndex; DEFAULT_OBS_OPS;
                           # check_operator and the contract's checks the
                           # vector shares
-    vector.py             # Observation, ObservationVector: index (site,
-                          # product, time), y, flat()/fields(), positions(),
+    vector.py             # ObservationSource, ObservationVector: index (site,
+                          # observation_source, time), y, flat()/fields(),
+                          # positions(),
                           # predict()
   plotting/
     __init__.py           # curated exports
@@ -1004,33 +1006,33 @@ plotting code. The load-bearing rules:
 - **An observation operator is a callable checked at the boundary, not a
   grammar.** `observation.ObservationOperator` is a protocol:
   `operator(model_output: xr.Dataset, observed_values: xr.DataArray, *,
-  sipnet_parameters=None) -> xr.DataArray` on the observation's own
-  `(site[, time])` grid, declaring `output_variable_names` and
-  `sipnet_parameter_names`, and pointwise in `site` and in every batch dim so
-  it can run on a worker (`check_operator` slices each to test that). A
-  SIPNET table's every dim is selected at the model output's labels or
-  refused, so a table dim is never broadcast into a run. It returns whatever units
-  it produces, with `units`/`constituent` attrs; `ObservationVector.predict`
-  converts through `pysipnet.units.convert_dataarray_units` and refuses a
-  wrong dimension, grid or site set through the checks `check_operator` also
-  applies (`check_model_output_carries_what_is_read`,
-  `check_result_is_on_the_observation_grid`; `Observation` applies
+  sipnet_parameters=None) -> xr.DataArray` on the observed values' own `(site[,
+  time])` grid, declaring `output_variable_names` and `sipnet_parameter_names`,
+  and pointwise in `site` and in every batch dim so it can run on a worker
+  (`check_operator` slices each to test that). Every dim of the SIPNET parameter
+  fields is selected at the model output's labels or refused, so none of their
+  dims is ever broadcast into a run. It returns whatever units it produces, with
+  `units`/`constituent` attrs; `ObservationVector.predict` converts through
+  `pysipnet.units.convert_dataarray_units` and refuses a wrong dimension, grid
+  or site set through the checks `check_operator` also applies
+  (`check_model_output_carries_what_is_read`,
+  `check_result_is_on_the_observation_grid`; `ObservationSource` applies
   `check_operator_declares_names` on construction), and a NaN where the run
   succeeded. The verbs it is written with carry pySIPNET's attributes: its
-  arithmetic is `pysipnet.arithmetic` (`divide_with_units`, `step_length`,
-  ...), a SIPNET
-  parameter is labeled by `pysipnet.parameters.model.parameter_dataarray`,
-  and the time-alignment verbs are `select_timestep_at` (the model step
-  whose `(time_step_start, time]` contains the label), `reduce_windows` (a
-  step belongs to the window its end falls in; means weighted by step
-  length; a gap makes the window NaN) and `windows_from_time_bounds`
-  (`observation.time_alignment`). `ReduceOverTimeBounds` refuses a window
-  reaching a step or more beyond the model record, so a partial year never
-  passes for a year (`check_run_spans_the_windows`). The library binds a
-  default operator only where the construction is established from a primary
-  source (`DEFAULT_OBS_OPS`, today MODIS LAI as SIPNET's own
-  `plantLeafC / leafCSpWt`, `sipnet.c`); which operator reads a product is a
-  modeling decision an experiment writes in `config.py`.
+  arithmetic is `pysipnet.arithmetic` (`divide_with_units`, `step_length`, ...),
+  a SIPNET parameter is labeled by
+  `pysipnet.parameters.model.parameter_dataarray`, and the time-alignment verbs
+  are `select_timestep_at` (the model step whose `(time_step_start, time]`
+  contains the label), `reduce_windows` (a step belongs to the window its end
+  falls in; means weighted by step length; a gap makes the window NaN) and
+  `windows_from_observed_values` (`observation.time_alignment`).
+  `ReduceOverWindows` refuses a window reaching a step or more beyond the model
+  record, so a partial year never passes for a year
+  (`check_run_spans_the_windows`). The library binds a default operator only
+  where the construction is established from a primary source
+  (`DEFAULT_OBS_OPS`, today MODIS LAI as SIPNET's own `plantLeafC / leafCSpWt`,
+  `sipnet.c`); which operator reads an observation source is a modeling decision
+  an experiment writes in `config.py`.
 - **The forward model is one class over existing pieces.**
   `forward.ForwardModel(model, parameter_vector, climate=, backend=,
   observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its module docstring
@@ -1039,8 +1041,9 @@ plotting code. The load-bearing rules:
   site's slice of the observation vector and returning that slice's Flat,
   which the calling process writes at `positions(site=)` (right because the
   vector is site-major, which `__init__` checks per site); a run at a site no
-  product observes returns nothing, so a product costs nothing at the sites
-  it does not observe. The SIPNET table a `to_sipnet_table` hook returns must
+  observation source observes returns nothing, so an observation source costs
+  nothing at the sites it does not observe. The SIPNET parameter fields a
+  `to_sipnet_parameter_fields` hook returns must
   be on exactly `(batch_dim, site)` (`sample` unless the model's `batch_dim=`
   says otherwise) with every variable on both, labels `0` to `J - 1` in
   `theta`'s row order, sites in the parameter vector's, and each
@@ -1062,22 +1065,23 @@ plotting code. The load-bearing rules:
   but `SequentialBackend` the drivers must be file-backed.
   `compute.scc_backend` is the SCC preset.
 - **The observation vector is site-major.** `ObservationVector.index` is a
-  `(site, product, time)` MultiIndex over the observed (not-NaN) cells,
-  sites ascending, then products in declaration order, then times, with
-  `NaT` for a static product; `y` is Flat in that order, `flat()`/`fields()`
-  convert, and `positions()` finds a site's or a product's block. No
-  standard deviation, covariance or likelihood lives in the package; the
-  inference layer builds those from `y`, `index` and `positions`. A batch
-  dim on an observation is refused: the experiment reduces an observation
-  ensemble before it enters; a scalar batch label is metadata and is kept. An
-  `Observation` keeps only the sites and time labels it observes, so its
-  operator never reads the model elsewhere, and a `select(sites=...)` slice's
-  operators read the model only inside the kept sites' records.
-- **An annual constraint's array carries its `time_bounds`** as the 1-D
-  coordinates `time_bounds_start`/`time_bounds_end` on `time`
-  (`constraint_fields` adds them; the names are `conventions.WINDOW_START`
-  and `WINDOW_END`, whose values PR 3 renames `window_*`), which is what
-  `ReduceOverTimeBounds` reads; a dated or static product documents no
+  `(site, observation_source, time)` MultiIndex over the observations (the
+  observed, not-NaN values), sites ascending, then observation sources in
+  declaration order, then times, with `NaT` for a static source; `y` is Flat in
+  that order, `flat()`/`fields()` convert, and `positions()` finds a site's or
+  an observation source's segment. No standard deviation, covariance or
+  likelihood lives in the package; the inference layer builds those from `y`,
+  `index` and `positions`. A batch dim on an observation source's values is
+  refused: the experiment reduces an observation ensemble before it enters; a
+  scalar batch label is metadata and is kept. An `ObservationSource` keeps only
+  the sites and time labels it observes, so its operator never reads the model
+  elsewhere, and a `select(sites=...)` slice's operators read the model only
+  inside the kept sites' records.
+- **An annual constraint's field carries its windows**, read from the
+  processed file's CF `time_bounds`, as the 1-D coordinates
+  `window_start`/`window_end` on `time` (`constraint_fields` adds them;
+  `conventions.WINDOW_START` and `WINDOW_END`), which is what
+  `ReduceOverWindows` reads; a dated or static constraint documents no
   interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
   unchanged.** `fields.from_sipnet_output` adds `site`, batch labels and
@@ -1094,8 +1098,8 @@ plotting code. The load-bearing rules:
   labels, which `time_step_start` already is.
 - **Model and observed NEE are not in the same units.** Observed NEE is
   `umol CO2 m-2 s-1` (a rate); SIPNET's is `g C m-2` per timestep (a total).
-  Observation products keep their source units; the observation operator
-  converts the model into the observation's units, through Pint, before a
+  Observation sources keep their source units; the observation operator
+  converts the model into the observed values' units, through Pint, before a
   residual or an overlay is formed. Plotting the two on one axis without
   converting fails silently, by orders of magnitude.
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
@@ -1149,15 +1153,14 @@ plotting code. The load-bearing rules:
   `set_extent`, which gives a badly wrong frame on this projection. The
   basemap is Natural Earth 1:50m, clipped to 100 degrees of arc around the
   center (`Projection.angular_distance`) so nothing nears the antipode.
-- `site` is the integer site id of the site table in use (`int32`; the
-  shared pool's ids are never renumbered); `ameriflux_site_id` is a non-dimension coord on
-  `site`. PFT is **not** site metadata and is not a column of the site table:
+- `site` is the integer site id of the site table in use (`int32`; the shared
+  pool's ids are never renumbered); `ameriflux_site_id` is a non-dimension coord
+  on `site`. PFT is **not** site metadata and is not a column of the site table:
   which site labels to use is an experimental choice, so site labels are their
-  own product at `data/processed/site_labels/<name>.csv`, keyed on `site_id`,
-  and a caller joins one on before selecting. A batch label is an integer,
-  created `int64` (any integer dtype is accepted), meaningful only within its
-  dim's name. See the Data section above for the
-  rules these imply.
+  own data source at `data/processed/site_labels/<name>.csv`, keyed on
+  `site_id`, and a caller joins one on before selecting. A batch label is an
+  integer, created `int64` (any integer dtype is accepted), meaningful only
+  within its dim's name. See the Data section above for the rules these imply.
 
 ## Key API facts (hard-won from source reading)
 
@@ -1259,10 +1262,11 @@ plotting code. The load-bearing rules:
   `TransformedDistribution` subclasses over an internal reparameterization; their `.bijector` is
   not a map from unconstrained space. `parameter_vector` reads `.distribution`/`.bijector` only
   off an exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
-- With the pinned build, a distribution built from `TransformedDistribution` or `Blockwise`
-  (the simplex and product priors) pickles but fails `pickle.loads`; `LogNormal` and `LogitNormal`
-  round-trip. Send PyEns workers plain data (a SIPNET table through
-  `pyens.xarray.fields_from_dataset`), never a `ParameterVector`.
+- With the pinned build, a distribution built from `TransformedDistribution` or
+  `Blockwise` (the simplex and product priors) pickles but fails `pickle.loads`;
+  `LogNormal` and `LogitNormal` round-trip. Send PyEns workers plain data
+  (SIPNET parameter fields through `pyens.xarray.fields_from_dataset`), never a
+  `ParameterVector`.
 - Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
   raises `NotImplementedError`. Take them from `.distribution`.
 - `SoftmaxCentered`'s density on the simplex is against the embedded volume element,
@@ -1281,17 +1285,18 @@ plotting code. The load-bearing rules:
   `dataset_as_field(dataset, *, along, axes=None)`. A dim with a coordinate
   becomes `Axis(dim, labels=[...])`, one without becomes `Axis(dim, size=n)`;
   datetime labels become ISO strings; a 0-d variable becomes `Fixed`. On a
-  SIPNET table from `example_parameter_vector` the int32 `site` and int64
-  `sample` coordinates become plain `int` labels, a non-dimension coordinate
-  such as `pft` is ignored, and a hand-built label-keyed `Grid({site_id:
-  drivers}, along=Axis("site", labels=[...]))` zips with the result.
+  SIPNET parameter fields from `example_parameter_vector` the int32 `site` and
+  int64 `sample` coordinates become plain `int` labels, a non-dimension
+  coordinate such as `pft` is ignored, and a hand-built label-keyed
+  `Grid({site_id: drivers}, along=Axis("site", labels=[...]))` zips with the
+  result.
 - **The pairing rule is the dim name.** PyEns makes one axis per dim, named for
   it: two batch dims of **one name zip** (paired label by label) and two of
   **different names cross** (every combination, multiplying the runs). So the
-  SIPNET table's `sample`, the drivers' `driver_member` and the initial
-  conditions' `initial_condition_member` cross, and pairing two ensembles
-  deliberately is spelled by giving their dims one name. Same-named axes must
-  be equal or PyEns raises: `Axis("sample", size=J)` is not equal to
+  SIPNET parameter fields' `sample`, the drivers' `driver_member` and the
+  initial conditions' `initial_condition_member` cross, and pairing two
+  ensembles deliberately is spelled by giving their dims one name. Same-named
+  axes must be equal or PyEns raises: `Axis("sample", size=J)` is not equal to
   `Axis("sample", labels=[0, ..., J-1])` ("two axes named 'sample' have
   different structures"). `fields_from_dataset` makes the labeled form from a
   coordinate, so a `Grid` built by hand beside it must use an equal `Axis`;
