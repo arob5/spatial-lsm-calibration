@@ -53,6 +53,8 @@ project's to choose, and the row order, which becomes ascending by ``site_id``.
 Output is written to a ``.partial`` path and renamed only once it reads back
 identically through the library loader, so a failed check cannot leave a
 corrupt file where the canonical one belongs.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -85,6 +87,7 @@ from sipnet_calibration.site_labels import (
     site_labels_path,
 )
 from sipnet_calibration.conventions import SITE_ID
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import default_sites_path, load_sites
 
 
@@ -190,11 +193,11 @@ def check_product(spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFra
 
 def write_product(spec: SiteLabelsSpec, product: pd.DataFrame, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    product.to_csv(partial, index=False)
-    check_round_trip(spec, product, partial)
-    partial.replace(out)
+    write_checked(
+        out,
+        write=lambda partial: product.to_csv(partial, index=False),
+        check=lambda partial: check_round_trip(spec, product, partial),
+    )
 
 
 def describe_product(
@@ -351,7 +354,7 @@ def check_round_trip(spec: SiteLabelsSpec, product: pd.DataFrame, partial: Path)
     except AssertionError as error:
         raise IngestError(
             f"{partial}: the written file does not read back identical to what was "
-            f"built: {error}. The partial file is left in place for inspection."
+            f"built: {error}."
         ) from error
 
 

@@ -48,9 +48,9 @@ import numpy as np
 import xarray as xr
 
 from sipnet_calibration.conventions import SITE, SITE_ATTRIBUTES, SITE_DTYPE
+from sipnet_calibration.io import utc_timestamp
 from sipnet_calibration.initial_conditions.names import (
     MEMBER,
-    _utc_timestamp,
     raw_path,
 )
 from sipnet_calibration.initial_conditions.source_files import (
@@ -179,7 +179,7 @@ def build_raw(
                 "root, checked each against the source template, and laid the values on "
                 "(site, member) unchanged, in the source files' names and units strings"
             ),
-            "converted": _utc_timestamp(),
+            "converted": utc_timestamp(),
         },
     )
     return dataset
@@ -255,8 +255,7 @@ def _check_presence_is_uniform_over_members(
 ) -> None:
     """Raise unless each variable is present for every member of a site or none.
 
-    Private to the package but shared across it, like ``_utc_timestamp`` in
-    :mod:`sipnet_calibration.initial_conditions.names`:
+    Private to the package but shared across it:
     :mod:`sipnet_calibration.initial_conditions.processed` asserts the same
     invariant on the product, and it has to be the same rule, since it is what
     gives ``NaN`` its one meaning.

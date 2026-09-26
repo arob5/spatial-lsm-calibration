@@ -30,6 +30,7 @@ import dataclasses
 import json
 import math
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pyproj
@@ -723,28 +724,50 @@ class TestInterchangeFiles:
         assert all(path.is_file() for path in paths.values())
 
     def test_a_failed_write_leaves_the_previous_pair_intact(self, tmp_path, monkeypatch):
-        """What the staging is for. With the second move failing, neither file
-        may be half-updated and no partial may be left behind — otherwise a
-        colleague pastes a definition that describes neither projection."""
+        """What the staging is for. With the first file failing its check,
+        neither file may be moved into place -- otherwise a colleague pastes a
+        definition that describes neither projection -- and the failed file is
+        kept as its partial, for inspection."""
+        write_definitions(tmp_path)
+        before = {path.name: path.read_text() for path in tmp_path.iterdir()}
+        moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
+
+        real_read_text = Path.read_text
+
+        def misread(path, *args, **kwargs):
+            text = real_read_text(path, *args, **kwargs)
+            return text + "garbled" if path.name.endswith(".projjson.partial") else text
+
+        monkeypatch.setattr(Path, "read_text", misread)
+        with pytest.raises(ValueError, match="does not read back"):
+            write_definitions(tmp_path, projection=moved)
+        monkeypatch.undo()
+
+        assert {path.name: path.read_text() for path in tmp_path.glob("*.proj*") if not path.name.endswith(".partial")} == before
+        assert [path.name for path in tmp_path.glob("*.partial")] == [f"{DEFINITION_STEM}.projjson.partial"]
+        check_definitions(tmp_path)
+
+    def test_a_failed_second_move_leaves_a_pair_the_check_refuses(self, tmp_path, monkeypatch):
+        """Past the checks only the moves remain; one failing still cannot
+        pass silently, since check_definitions compares the pair."""
         write_definitions(tmp_path)
         moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
 
-        import sipnet_calibration.projection as module
-
-        real_replace = module.os.replace
+        real_replace = Path.replace
         calls = {"n": 0}
 
-        def failing_replace(src, dst):
+        def failing_replace(self, target):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise OSError("disk full")
-            return real_replace(src, dst)
+            return real_replace(self, target)
 
-        monkeypatch.setattr(module.os, "replace", failing_replace)
+        monkeypatch.setattr(Path, "replace", failing_replace)
         with pytest.raises(OSError, match="disk full"):
             write_definitions(tmp_path, projection=moved)
+        monkeypatch.undo()
 
-        assert list(tmp_path.glob("*.partial")) == []
+        assert [path.name for path in tmp_path.glob("*.partial")] == [f"{DEFINITION_STEM}.projjson.partial"]
         # The first file did move, so the pair is inconsistent -- which is
         # exactly what check_definitions is for, and it must say so.
         with pytest.raises(ValueError, match="regenerate"):

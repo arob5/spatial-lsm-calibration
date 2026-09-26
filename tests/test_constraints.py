@@ -607,8 +607,8 @@ def test_a_dated_product_with_bounds_is_refused(raw_root, sites, tmp_path):
         load_constraint(DATED, path)
 
 
-def test_a_failed_round_trip_leaves_the_partial_and_never_the_product(
-    raw_root, sites, tmp_path, monkeypatch
+def test_a_failed_constraint_round_trip_keeps_the_partial_and_never_writes_the_product(
+    raw_root, sites, tmp_path, monkeypatch, capsys
 ):
     """The .partial design: a check that fails after the write must not rename."""
     out_dir = tmp_path / "out"
@@ -623,6 +623,7 @@ def test_a_failed_round_trip_leaves_the_partial_and_never_the_product(
         _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
     assert not constraint_path(ANNUAL, out_dir).exists()
     assert (out_dir / f"{ANNUAL.name}.nc.partial").exists()
+    assert f"{ANNUAL.name}.nc.partial" in capsys.readouterr().err
 
 
 def test_a_time_label_that_is_not_a_whole_day_is_refused(raw_root, sites, tmp_path, monkeypatch):

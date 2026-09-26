@@ -26,7 +26,8 @@ Output data
     One ``.zip`` per layer, byte for byte as served. Each is written to a
     ``.partial`` path and renamed only once its md5 has been checked, so a
     failed or interrupted download cannot leave a corrupt archive where a
-    tracked one belongs.
+    tracked one belongs; the ``.partial`` file is kept for inspection and its
+    path printed.
 
 Notes
 -----
@@ -55,11 +56,12 @@ Usage
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from sipnet_calibration.io import file_md5, write_checked
 
 #: Natural Earth's CDN, which the download links on naturalearthdata.com
 #: resolve to.
@@ -130,20 +132,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def download(source: Source, out_dir: Path, *, check: bool) -> str:
     """Fetch one archive into *out_dir*, returning its md5."""
-    target = out_dir / source.file_name
-    partial = target.with_name(target.name + ".partial")
     request = urllib.request.Request(source.url, headers={"User-Agent": "sipnet-calibration"})
-    try:
+
+    def fetch(partial: Path) -> None:
         with urllib.request.urlopen(request, timeout=60) as response:
             partial.write_bytes(response.read())
-        digest = md5_of(partial)
+
+    def check_digest(partial: Path) -> None:
         if check:
-            check_md5_matches(source, digest)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
-    partial.replace(target)
-    return digest
+            check_md5_matches(source, file_md5(partial))
+
+    return file_md5(write_checked(out_dir / source.file_name, write=fetch, check=check_digest))
 
 
 # ── supporting types and helpers ──────────────────────────────────────────────
@@ -151,10 +150,6 @@ def download(source: Source, out_dir: Path, *, check: bool) -> str:
 
 class DownloadError(RuntimeError):
     """An archive was not what :data:`SOURCES` records."""
-
-
-def md5_of(path: Path) -> str:
-    return hashlib.md5(path.read_bytes()).hexdigest()
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

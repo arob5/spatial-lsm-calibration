@@ -45,6 +45,8 @@ identical yearly copies are collapsed to one.
 Output is written to a ``.partial`` path and renamed only once it reads back
 identically through the library loader, so a failed check cannot leave a
 corrupt file where the canonical one belongs.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -83,6 +85,7 @@ from sipnet_calibration.constraints import (
     resolve_constraint,
 )
 from sipnet_calibration.conventions import SITE_ID
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import default_sites_path, load_sites
 
 #: How far a raw file's lat/lon may sit from the site table before the site
@@ -189,11 +192,13 @@ def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFra
 
 def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
-    check_round_trip(dataset, partial, spec)
-    partial.replace(out)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial, spec),
+    )
 
 
 def describe_product(dataset: xr.Dataset, path: Path) -> str:
@@ -405,14 +410,13 @@ def check_round_trip(dataset: xr.Dataset, partial: Path, spec: ConstraintSpec) -
         written = written.load()
     if not written.identical(dataset):
         raise IngestError(
-            f"{partial}: the written file does not read back identical to what was built. "
-            "The partial file is left in place for inspection."
+            f"{partial}: the written file does not read back identical to what was built."
         )
     if "time" in written.coords and written["time"].encoding.get("units") != TIME_UNITS:
         # xarray silently changes the units when a label is not a whole day.
         raise IngestError(
             f"{partial}: time was encoded as {written['time'].encoding.get('units')!r}, not "
-            f"{TIME_UNITS!r}; a label is not a whole day. The partial file is left in place."
+            f"{TIME_UNITS!r}; a label is not a whole day."
         )
 
 

@@ -55,6 +55,8 @@ how PEcAn built the wood pool, and a break means the source changed.
 
 Output is written to a ``.partial`` path and renamed only once it reads back
 bit-identical through the library loader.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -87,6 +89,7 @@ from sipnet_calibration.initial_conditions import (
     raw_path,
     read_raw,
 )
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import default_sites_path, load_sites
 
 
@@ -162,14 +165,13 @@ def check_raw(raw: xr.Dataset, sites: pd.DataFrame) -> None:
 
 def write_product(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    try:
-        dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
-        check_round_trip(dataset, partial)
-        partial.replace(out)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial),
+    )
 
 
 def describe_product(dataset: xr.Dataset, out: Path) -> str:

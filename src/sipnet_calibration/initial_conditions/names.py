@@ -1,9 +1,8 @@
-"""Dimension names, file locations, and the few helpers every module shares.
+"""Dimension names and file locations the package's modules share.
 
 The names of the dimensions and coordinates the two netCDFs use beyond the
 shared ones of :mod:`sipnet_calibration.conventions`, where the source tree
-and each netCDF are expected on disk, and a timestamp that more than one of
-the package's modules needs. Nothing here reads or writes anything.
+and each netCDF are expected on disk. Nothing here reads or writes anything.
 
 Contents
 --------
@@ -21,8 +20,6 @@ The four path functions
 from __future__ import annotations
 
 from pathlib import Path
-
-import pandas as pd
 
 from sipnet_calibration import conventions
 
@@ -74,8 +71,3 @@ def raw_path(directory: Path | str | None = None) -> Path:
 def default_product_path() -> Path:
     """Where the processed product is expected: ``data/processed/initial_conditions.nc``."""
     return conventions.data_root() / "processed" / PRODUCT_FILE
-
-
-def _utc_timestamp() -> str:
-    """Now, as the ISO 8601 string the file attributes carry."""
-    return pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")

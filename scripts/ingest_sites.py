@@ -102,6 +102,7 @@ import numpy as np
 import pandas as pd
 import shapefile
 
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import (
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
@@ -769,14 +770,11 @@ def write_checked_site_table(table: pd.DataFrame, out_path: Path) -> None:
     the script exits non-zero. The rename is atomic on a POSIX filesystem, so
     *out_path* is either the previous table or a fully checked new one.
     """
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    partial = out_path.with_name(out_path.name + ".partial")
-    try:
-        write_site_table(table, partial)
-        check_csv_round_trip(table, partial)
-        partial.replace(out_path)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out_path,
+        write=lambda partial: write_site_table(table, partial),
+        check=lambda partial: check_csv_round_trip(table, partial),
+    )
 
 
 def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> None:

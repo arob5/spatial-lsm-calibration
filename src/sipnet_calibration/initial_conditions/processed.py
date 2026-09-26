@@ -47,7 +47,6 @@ from sipnet_calibration.initial_conditions.names import (
     MEMBER,
     RAW_FILE,
     SOURCE_MEMBER,
-    _utc_timestamp,
     default_product_path,
 )
 from sipnet_calibration.initial_conditions.raw import (  # a shared package internal
@@ -64,6 +63,7 @@ from sipnet_calibration.initial_conditions.specs import (
     INITIAL_CONDITIONS,
     resolve_initial_condition,
 )
+from sipnet_calibration.io import utc_timestamp
 from sipnet_calibration.validation import as_site_ids
 
 __all__ = [
@@ -294,7 +294,7 @@ def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
             "table's pool with lon/lat, and wrote the spec fields as attributes; values "
             "unchanged"
         ),
-        "created": _utc_timestamp(),
+        "created": utc_timestamp(),
     }
 
 

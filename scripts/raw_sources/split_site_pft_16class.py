@@ -41,6 +41,8 @@ Output data
 Both are written to a ``.partial`` path and renamed only once the round trip
 has been checked, so a failed run cannot leave a corrupt file where a tracked
 one belongs.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Notes
 -----
@@ -68,11 +70,12 @@ Usage
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 
 import pandas as pd
+
+from sipnet_calibration.io import file_md5, write_checked
 
 #: Where the producer's table lives on the SCC.
 DEFAULT_SOURCE = Path(
@@ -236,13 +239,11 @@ def write_halves(
         (site_labels, site_labels_dir, SITE_LABELS_FILE),
         (covariates, covariates_dir, COVARIATES_FILE),
     ):
-        directory.mkdir(parents=True, exist_ok=True)
-        out = directory / name
-        partial = out.with_suffix(out.suffix + ".partial")
-        frame.to_csv(partial, index=False)
-        check_the_written_file_reads_back(frame, partial)
-        partial.replace(out)
-        written[name] = out
+        written[name] = write_checked(
+            directory / name,
+            write=lambda partial, frame=frame: frame.to_csv(partial, index=False),
+            check=lambda partial, frame=frame: check_the_written_file_reads_back(frame, partial),
+        )
     return written
 
 
@@ -257,7 +258,7 @@ def report(
     lines = [
         f"source : {source_path}",
         f"         {len(source)} rows x {len(source.columns)} columns, "
-        f"md5 {md5(source_path)}",
+        f"md5 {file_md5(source_path)}",
         "",
     ]
     for name, path in written.items():
@@ -265,7 +266,7 @@ def report(
         lines.append(
             f"wrote  : {path}\n"
             f"         {len(frame)} rows x {len(frame.columns)} columns, "
-            f"{path.stat().st_size:,} bytes, md5 {md5(path)}"
+            f"{path.stat().st_size:,} bytes, md5 {file_md5(path)}"
         )
     lines += [
         "",
@@ -286,15 +287,6 @@ def describe() -> str:
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def md5(path: Path) -> str:
-    """The md5 of a file, for the provenance record."""
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -386,8 +378,7 @@ def check_the_written_file_reads_back(frame: pd.DataFrame, partial: Path) -> Non
         pd.testing.assert_frame_equal(written, frame.reset_index(drop=True))
     except AssertionError as error:
         raise SplitError(
-            f"{partial}: does not read back as what was written: {error}. "
-            "The partial file is left in place for inspection."
+            f"{partial}: does not read back as what was written: {error}."
         ) from error
 
 

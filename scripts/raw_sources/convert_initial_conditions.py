@@ -53,6 +53,8 @@ the per-file checks in the library.
 Output is written to a ``.partial`` path and renamed only once it reads back
 bit-identical through ``read_raw``, so a failed run cannot leave a corrupt
 file where the tracked one belongs.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -74,7 +76,6 @@ at the rectangle check without a site table, by design)::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -94,6 +95,7 @@ from sipnet_calibration.initial_conditions import (
     read_raw,
     read_source_directory,
 )
+from sipnet_calibration.io import file_md5, write_checked
 from sipnet_calibration.sites import default_sites_path, load_sites
 
 SCRIPT = "scripts/raw_sources/convert_initial_conditions.py"
@@ -135,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         dataset = build_raw(files, source_root=str(root), conversion_script=SCRIPT)
         report = describe_raw(dataset, files)
         write_raw(dataset, out)
-        print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {_md5(out)})")
+        print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {file_md5(out)})")
         print(report)
     except (ConversionError, OSError, ValueError, BrokenProcessPool) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -225,14 +227,13 @@ def read_all_files(root: Path, sites: list[int], *, jobs: int) -> list[SourceFil
 
 def write_raw(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    try:
-        dataset.to_netcdf(partial, engine="h5netcdf", encoding=raw_encoding(dataset))
-        check_round_trip(dataset, partial)
-        partial.replace(out)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=raw_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial),
+    )
 
 
 def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
@@ -264,14 +265,6 @@ def _range(finite: np.ndarray) -> str:
         f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
         f"{int((finite < 0).sum())}"
     )
-
-
-def _md5(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

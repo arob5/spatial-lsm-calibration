@@ -204,6 +204,7 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.conventions import WINDOW_END as TIME_BOUNDS_END
 from sipnet_calibration.conventions import WINDOW_START as TIME_BOUNDS_START
+from sipnet_calibration.io import utc_timestamp
 from sipnet_calibration.validation import as_site_ids
 
 __all__ = [
@@ -1033,7 +1034,7 @@ def _dataset_attributes(
             )
             + ", placed the records on the site pool"
         ),
-        "created": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created": utc_timestamp(),
     }
 
 

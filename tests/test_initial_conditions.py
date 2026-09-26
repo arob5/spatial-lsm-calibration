@@ -1502,7 +1502,9 @@ def test_conversion_refuses_a_named_site_table_that_is_absent(tree, tmp_path, ca
     assert "does not exist" in capsys.readouterr().err
 
 
-def test_round_trip_checks_notice_a_file_that_differs(raw, sites_csv, tmp_path, monkeypatch):
+def test_round_trip_checks_notice_a_file_that_differs(
+    raw, sites_csv, tmp_path, monkeypatch, capsys
+):
     sites = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
         dataset = raw_dataset.load().copy(deep=True)
@@ -1516,8 +1518,10 @@ def test_round_trip_checks_notice_a_file_that_differs(raw, sites_csv, tmp_path, 
     changed.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(changed))
     with pytest.raises(ingest.IngestError, match="round-trip"):
         ingest.check_round_trip(product, path)
-    # a failing round trip leaves no .partial behind
+    # a failing round trip keeps the .partial for inspection and says where it is
     monkeypatch.setattr(ingest, "check_round_trip", lambda d, p: (_ for _ in ()).throw(ingest.IngestError("boom")))
     out = tmp_path / "never.nc"
+    capsys.readouterr()
     assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 1
-    assert not out.exists() and not out.with_suffix(".nc.partial").exists()
+    assert not out.exists() and out.with_suffix(".nc.partial").exists()
+    assert str(out.with_suffix(".nc.partial")) in capsys.readouterr().err

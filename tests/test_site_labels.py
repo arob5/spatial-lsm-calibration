@@ -594,7 +594,7 @@ def test_the_row_count_check_runs_first(synthetic, monkeypatch):
 # ── the .partial write protocol ───────────────────────────────────────────────
 
 
-def test_a_failed_round_trip_leaves_the_partial_and_never_the_product(
+def test_a_failed_site_labels_round_trip_keeps_the_partial_and_never_writes_the_product(
     synthetic, monkeypatch
 ):
     """CLAUDE.md's rule: rename only after the checks pass."""

@@ -205,7 +205,6 @@ import argparse
 import functools
 import json
 import math
-import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -215,6 +214,7 @@ import pyproj
 from pyproj.crs import ProjectedCRS
 from pyproj.crs.coordinate_operation import LambertAzimuthalEqualAreaConversion
 
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.validation import as_bbox, as_integer
 
 __all__ = [
@@ -670,25 +670,15 @@ def write_definitions(
     this is the only thing that should ever write them.
     :func:`check_definitions` makes a hand-edit a test failure.
 
-    Both files are staged beside their destinations and moved into place only
-    once every one of them is on disk, so an interrupted or failed run cannot
-    leave one file describing this projection and the other describing the last
-    one.
+    Both files are written through :func:`sipnet_calibration.io.write_checked`,
+    and each file's check writes the next one, so no file is moved into place
+    until every one of them is on disk and reads back as written: a failed run
+    cannot leave one file describing this projection and the other describing
+    the last one. A failed file is kept as its ``.partial`` for inspection.
     """
     paths = definition_paths(directory, stem=stem)
     contents = _definition_contents(projection)
-    staged: dict[Path, Path] = {}
-    try:
-        for key, path in paths.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            partial = path.with_suffix(path.suffix + ".partial")
-            partial.write_text(contents[key], encoding="utf-8")
-            staged[path] = partial
-        for path, partial in staged.items():
-            os.replace(partial, path)
-    finally:
-        for partial in staged.values():
-            partial.unlink(missing_ok=True)
+    _write_definition_files(list(paths.items()), contents)
     return paths
 
 
@@ -861,6 +851,30 @@ def _as_float_array(values):
     if np.ma.isMaskedArray(values):
         return np.ma.filled(values.astype(float), np.nan)
     return np.asarray(values, dtype=float)
+
+
+def _write_definition_files(
+    remaining: list[tuple[str, Path]], contents: dict[str, str]
+) -> None:
+    """Write the first of *remaining*, checking it by writing the rest first."""
+    (key, path), rest = remaining[0], remaining[1:]
+
+    def check(partial: Path) -> None:
+        _check_definition_file_reads_back(partial, contents[key])
+        if rest:
+            _write_definition_files(rest, contents)
+
+    write_checked(
+        path,
+        write=lambda partial: partial.write_text(contents[key], encoding="utf-8"),
+        check=check,
+    )
+
+
+def _check_definition_file_reads_back(partial: Path, expected: str) -> None:
+    """The written file holds exactly the text it was given."""
+    if partial.read_text(encoding="utf-8") != expected:
+        raise ValueError(f"{partial} does not read back as the definition written to it")
 
 
 def _definition_contents(projection: Projection) -> dict[str, str]:

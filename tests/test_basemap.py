@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from sipnet_calibration.io import file_md5
 from sipnet_calibration.plotting import basemap
 from sipnet_calibration.plotting.basemap import (
     BASEMAP_LAYERS,
@@ -88,7 +89,7 @@ def test_the_archives_are_the_ones_the_download_script_records():
         path = RAW_DIR / file_name
         if not path.is_file():
             pytest.skip(f"{path} is not in this working copy")
-        assert download.md5_of(path) == md5
+        assert file_md5(path) == md5
 
 
 def test_the_download_refuses_an_archive_with_the_wrong_md5():

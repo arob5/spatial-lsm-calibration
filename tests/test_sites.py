@@ -998,7 +998,7 @@ class TestSelectByIdShape:
 
 class TestIngestPublishesAtomically:
     def test_a_failed_check_leaves_the_previous_table_in_place(
-        self, ingested, tmp_path, monkeypatch
+        self, ingested, tmp_path, monkeypatch, capsys
     ):
         # Make the write lossy, so the round-trip check fails on a real file.
         def lossy(table, path):
@@ -1009,9 +1009,11 @@ class TestIngestPublishesAtomically:
         out.write_text("previous contents\n")
         with pytest.raises(ingest.IngestError, match="did not survive"):
             ingest.write_checked_site_table(ingested["table"].head(5), out)
-        # The canonical path still holds what it held before.
+        # The canonical path still holds what it held before, and the file
+        # that failed the check is kept beside it, for inspection.
         assert out.read_text() == "previous contents\n"
-        assert not list(tmp_path.glob("*.partial"))
+        assert [path.name for path in tmp_path.glob("*.partial")] == ["sites.csv.partial"]
+        assert "sites.csv.partial" in capsys.readouterr().err
 
     def test_a_good_run_replaces_the_file_and_leaves_no_partial(
         self, ingested, tmp_path
