@@ -8,8 +8,9 @@ Two abstractions and a handful of functions:
   :data:`DEFAULT_OBS_OPS` binding an observation source to its default
   operator where the construction is established from a primary source. An
   operator is written with :func:`restrict_to_observed_sites`, which restricts
-  the model output to the observed sites, and :func:`extract_sipnet_parameter_at_coords`, which lines
-  a SIPNET parameter's values up with it; :func:`check_operator` checks one
+  the model output to the observed sites, and
+  :func:`extract_sipnet_parameter_at_coords`, which lines a SIPNET parameter's
+  values up with it; :func:`check_operator` checks one
   against the contract, through the same checks the vector applies
   (:func:`check_operator_declares_names`,
   :func:`check_model_output_carries_what_is_read`,

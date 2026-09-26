@@ -203,7 +203,7 @@ def aggregate_time(
         is the latest step end, its start the earliest step start, and its
         length the sum of the declared lengths, so a cell the record only
         partly fills can be told from a full one by comparing the two. One
-        without them -- an observation, say -- is labeled at the calendar
+        without them -- observed values, say -- is labeled at the calendar
         cell's right edge and **carries nothing about cell coverage**, so the
         first and last cells of such a record may be partial with nothing to
         say so. For an extensive variable that is a fraction of a period
@@ -307,7 +307,7 @@ def reduce_windows(
     labels:
         The ``time`` coordinate of the result, one label per window, strictly
         increasing. Defaults to each window's right edge. An observation
-        operator passes the observation's own ``time`` coordinate, whose
+        operator passes the observed values' own ``time`` coordinate, whose
         attributes are kept.
 
     Returns
@@ -373,7 +373,7 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
         A model field carrying pySIPNET's interval coordinates; any other
         dimensions are carried through.
     times:
-        The labels to read at: a ``DataArray`` (an observation's ``time``
+        The labels to read at: a ``DataArray`` (observed values' ``time``
         coordinate, whose attributes are kept) or any datetime array-like,
         strictly increasing.
 
@@ -855,8 +855,8 @@ def _aggregated_on_calendar_cells(
 ) -> xr.DataArray:
     """A field without pySIPNET's interval coordinates, combined on calendar cells.
 
-    pySIPNET's ``resample`` needs the interval coordinates, so an observation
-    field is aggregated here, by the same right-closed cells and equal weights.
+    pySIPNET's ``resample`` needs the interval coordinates, so a field of
+    observed values is aggregated here, by the same right-closed cells and equal weights.
     """
     check_frequency_is_an_offset_alias(freq)
     check_not_upsampling(field, freq)
@@ -891,7 +891,7 @@ def _window_attrs(
         if kind is VariableKind.TIMESTEP_END_STATE:
             out["cell_methods"] = _CELL_METHODS_OF_A_READING[how]
         else:
-            # The extreme of step means is no CF cell method: the source's
+            # The extreme of step means is no CF cell method: the input's
             # "time: mean" would be false of it, and time_reference says it.
             out.pop("cell_methods", None)
     weighting = f", weighted by {TIMESTEP_LENGTH}" if weighted else ""

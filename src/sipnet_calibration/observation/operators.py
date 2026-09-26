@@ -174,7 +174,9 @@ class SelectTimestep:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         check_observed_values_are_dated(observed_values, type(self).__name__)
-        variable = restrict_to_observed_sites(model_output[self.output_variable_name], observed_values)
+        variable = restrict_to_observed_sites(
+            model_output[self.output_variable_name], observed_values
+        )
         return select_timestep_at(variable, observed_values[TIME])
 
 
@@ -226,7 +228,9 @@ class ReduceOverWindows:
         return ()
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
-        variable = restrict_to_observed_sites(model_output[self.output_variable_name], observed_values)
+        variable = restrict_to_observed_sites(
+            model_output[self.output_variable_name], observed_values
+        )
         windows = windows_from_observed_values(observed_values)
         observed = fields.message_name(observed_values, "the observation source")
         check_run_spans_the_windows(variable, windows, f"{type(self).__name__} on {observed}")
@@ -279,7 +283,9 @@ class ReduceOverRun:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         check_observed_values_are_static(observed_values, type(self).__name__)
-        variable = restrict_to_observed_sites(model_output[self.output_variable_name], observed_values)
+        variable = restrict_to_observed_sites(
+            model_output[self.output_variable_name], observed_values
+        )
         reduced = reduce_windows(variable, run_window(variable), self.how)
         return reduced.isel({TIME: 0}, drop=True)
 

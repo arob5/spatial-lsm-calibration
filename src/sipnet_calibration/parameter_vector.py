@@ -259,7 +259,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     from sipnet_calibration.sites import load_sites, select_sites
 
     # Build it for a site set and a site-labels data source.
-    site_table = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat, ...
+    site_table = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat
     pft = load_site_labels("reanalysis_3pft")                  # DataFrame: site_id, label
     vector = ParameterVector(                                  # ParameterVector, D = 13
         parameters=(
@@ -341,8 +341,8 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     soil.quantile([0.05, 0.5, 0.95], dim="sample")     # DataArray (quantile, site)
 
     # Convert to SIPNET parameters, for one run and for a PyEns spec.
-    sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # Dataset (sample, site), fixed included
-    kwargs = sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=865)  # model(**kwargs)
+    sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # Dataset (sample, site)
+    kwargs = sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=865)
     grids = fields_from_dataset(sipnet_parameter_fields)  # dict[str, Grid] along [sample, site]
     spec = EnsembleSpec(inputs=grids)                  # 150 runs; add a climate Grid on the site axis
 
@@ -1240,7 +1240,8 @@ class Layout:
     def _known(self, parameter: str) -> str:
         if parameter not in self.slices:
             raise KeyError(
-                f"Layout: no calibration parameter {parameter!r}; have {list(self.parameter_names)}."
+                f"Layout: no calibration parameter {parameter!r}; "
+                f"have {list(self.parameter_names)}."
             )
         return parameter
 
@@ -1817,7 +1818,9 @@ class ParameterVector:
                 [np.flatnonzero(groups == g)[0] for g in range(self.n_groups(parameter.varies_by))]
             )
             group_values = on_sites[..., first, :]
-            check_group_values_agree_across_sites(self, parameter, on_sites, group_values[..., groups, :])
+            check_group_values_agree_across_sites(
+                self, parameter, on_sites, group_values[..., groups, :]
+            )
             group_values = jnp.asarray(group_values, dtype=jnp.float64)
             if space == NATURAL:
                 unconstrained = self._to_unconstrained(parameter, group_values)
@@ -3394,7 +3397,7 @@ def check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
 
 
 def check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields: xr.Dataset) -> None:
-    """The SIPNET parameter fields have a ``site`` dim, which :func:`sipnet_overrides` selects on."""
+    """The SIPNET parameter fields have a ``site`` dim for :func:`sipnet_overrides` to select on."""
     if SITE in sipnet_parameter_fields.dims:
         return
     if SITE in sipnet_parameter_fields.coords and sipnet_parameter_fields[SITE].ndim == 0:

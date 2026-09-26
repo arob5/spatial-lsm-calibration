@@ -219,7 +219,9 @@ def describe_processed_file(
     counts = site_labels[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
     width = max(len(label) for label in spec.labels)
     latitude = (
-        site_labels.assign(**{LAT: site_lookup(site_table).loc[site_labels[SITE_ID], LAT].to_numpy()})
+        site_labels.assign(
+            **{LAT: site_lookup(site_table).loc[site_labels[SITE_ID], LAT].to_numpy()}
+        )
         .groupby(LABEL_COLUMN, observed=False)[LAT]
         .agg(["min", "median", "max"])
     )

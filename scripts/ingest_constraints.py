@@ -170,7 +170,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the ingest steps, in the order main calls them ────────────────────────────
 
 
-def ingest(spec: ConstraintSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path) -> xr.Dataset:
+def ingest(
+    spec: ConstraintSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path
+) -> xr.Dataset:
     """Read, check, build and write one constraint."""
     frame = read_raw(spec, raw_root)
     check_raw_frame(spec, frame, site_table)

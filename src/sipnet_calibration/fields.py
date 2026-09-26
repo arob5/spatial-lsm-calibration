@@ -927,9 +927,11 @@ def from_sipnet_output(
     Only the columns named are read from a file-backed output; see this
     module's Notes for why ``.xarray`` and ``.pandas`` are never touched.
     """
-    source = _output_of(output)
+    sipnet_output = _output_of(output)
     names = resolve_output_variable_names(output_variable_names)
-    dataset = label_run(source.select(names), site=site, batch=batch, site_table=site_table)
+    dataset = label_run(
+        sipnet_output.select(names), site=site, batch=batch, site_table=site_table
+    )
     dataset = _with_field_coords(dataset, tuple(batch or ()))
     return {name: dataset[name] for name in names}
 
