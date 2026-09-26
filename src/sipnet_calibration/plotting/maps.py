@@ -134,6 +134,7 @@ from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, Colormap, ListedColormap, LogNorm, Normalize
 from matplotlib.patches import Patch
 
+from sipnet_calibration.conventions import LAT, LON, SITE, TIME
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
     DEFAULT_LAYERS,
@@ -152,7 +153,6 @@ __all__ = [
     "Points",
     "ProjectedBounds",
     "RENDERERS",
-    "SITE_DIM",
     "SiteRenderer",
     "Triangles",
     "animate_map",
@@ -163,9 +163,6 @@ __all__ = [
     "plot_map",
     "quantile_label",
 ]
-
-#: The dimension a site map is drawn over.
-SITE_DIM = "site"
 
 #: The keywords of :func:`plot_map` that decide the color scale, which the
 #: grids and :func:`animate_map` resolve once for every panel or frame.
@@ -805,28 +802,28 @@ def _present_classes(geometries: Sequence[_Geometry], bounds: ProjectedBounds) -
 
 def _geometry(field: xr.DataArray, scale: ColorScale | None = None) -> _Geometry:
     """*field* projected, with values as the scale colors them."""
-    if SITE_DIM in field.dims:
-        x, y = SITE_PROJECTION.forward(field["lon"].values, field["lat"].values)
+    if SITE in field.dims:
+        x, y = SITE_PROJECTION.forward(field[LON].values, field[LAT].values)
         return _Geometry(np.atleast_1d(x), np.atleast_1d(y), _plotted_values(field, scale))
     return _raster_geometry(field, _plotted_values(field, scale))
 
 
 def _plotted_values(field: xr.DataArray, scale: ColorScale | None) -> np.ndarray:
     """The numbers a map colors: the values, or each class's position."""
-    if SITE_DIM not in field.dims:
-        field = field.transpose("lat", "lon")
+    if SITE not in field.dims:
+        field = field.transpose(LAT, LON)
     if not _is_categorical(field):
         values = np.asarray(field.values, dtype=float)
     else:
         categories = scale.categories if scale is not None and scale.categories else _categories(field)
         values = _class_positions(field, categories)
-    if SITE_DIM not in field.dims:
+    if SITE not in field.dims:
         values = np.where(_raster_drawable(field), values, np.nan)
     return values
 
 
 def _raster_geometry(field: xr.DataArray, values: np.ndarray) -> _Geometry:
-    lat, lon = field["lat"].values.astype(float), field["lon"].values.astype(float)
+    lat, lon = field[LAT].values.astype(float), field[LON].values.astype(float)
     lon_corners, lat_corners = np.meshgrid(_cell_edges(lon), np.clip(_cell_edges(lat), -90, 90))
     _check_raster_avoids_antipode(lon_corners, lat_corners)
     x_corners, y_corners = SITE_PROJECTION.forward(lon_corners, lat_corners)
@@ -837,7 +834,7 @@ def _raster_geometry(field: xr.DataArray, values: np.ndarray) -> _Geometry:
 
 def _raster_drawable(field: xr.DataArray) -> np.ndarray:
     """Which cells of a ``(lat, lon)`` raster are near enough the center to draw."""
-    lon_centers, lat_centers = np.meshgrid(field["lon"].values, field["lat"].values)
+    lon_centers, lat_centers = np.meshgrid(field[LON].values, field[LAT].values)
     return SITE_PROJECTION.angular_distance(lon_centers, lat_centers) <= MAX_ANGULAR_DISTANCE
 
 
@@ -979,19 +976,19 @@ def _check_map_field(field: xr.DataArray) -> bool:
             "sipnet_calibration.site_labels.site_labels_field."
         )
     dims = set(field.dims)
-    if SITE_DIM in dims:
-        _check_only(field, {SITE_DIM})
-        for name in ("lon", "lat"):
-            if name not in field.coords or field.coords[name].dims != (SITE_DIM,):
+    if SITE in dims:
+        _check_only(field, {SITE})
+        for name in (LON, LAT):
+            if name not in field.coords or field.coords[name].dims != (SITE,):
                 raise ValueError(
                     f"a site map needs {name!r} as a coordinate on 'site'. The readers in "
                     "sipnet_calibration add it; for an array built by hand, join it from "
                     "sipnet_calibration.sites.load_sites()."
                 )
         return False
-    if {"lat", "lon"} <= dims:
-        _check_only(field, {"lat", "lon"})
-        for name in ("lat", "lon"):
+    if {LAT, LON} <= dims:
+        _check_only(field, {LAT, LON})
+        for name in (LAT, LON):
             values = np.asarray(field[name].values, dtype=float)
             steps = np.diff(values)
             if values.ndim != 1 or not (np.all(steps > 0) or np.all(steps < 0)):
@@ -1014,7 +1011,7 @@ def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
             "'member'), quantile maps with facet.plot_map_quantiles(field), or reduce "
             "first with maps.member_summary(field, stat)"
         )
-    if "time" in extra:
+    if TIME in extra:
         advice.append(
             "for 'time', select a step with field.sel(time=...), aggregate with "
             "observation.time_alignment.aggregate_time, draw panels with facet.plot_map_by(field, 'time'), "

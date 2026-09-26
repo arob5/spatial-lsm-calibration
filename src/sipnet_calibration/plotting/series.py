@@ -45,20 +45,18 @@ import numpy as np
 import xarray as xr
 from matplotlib.axes import Axes
 
+from sipnet_calibration.conventions import SITE, TIME
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.style import CURVE_COLORS, axis_label, role_style
 
-__all__ = ["ALLOWED_DIMS", "SHOW_KINDS", "TIME_DIM", "plot_time_series"]
+__all__ = ["ALLOWED_DIMS", "SHOW_KINDS", "plot_time_series"]
 
 #: What ``show`` may be. ``"auto"`` is resolved from the data's dimensions.
 SHOW_KINDS: tuple[str, ...] = ("auto", "line", "spaghetti", "fan", "points")
 
-#: The dimension plotted along the x axis.
-TIME_DIM = "time"
-
-#: The dimensions an array may have. Everything but :data:`TIME_DIM` is a
-#: sample dimension.
-ALLOWED_DIMS: tuple[str, ...] = ("member", "site", TIME_DIM)
+#: The dimensions an array may have. ``time`` is plotted along the x axis;
+#: everything else is a sample dimension.
+ALLOWED_DIMS: tuple[str, ...] = ("member", SITE, TIME)
 
 
 def plot_time_series(
@@ -181,7 +179,7 @@ def plot_time_series(
     whole set of curves rather than in two stages.
     """
     _check_plottable(data)
-    sample_dims = tuple(dim for dim in data.dims if dim != TIME_DIM)
+    sample_dims = tuple(dim for dim in data.dims if dim != TIME)
     show = _resolved_show(show, sample_dims)
     _check_label_by(label_by, show, data, sample_dims)
     yerr = _error_bar_lengths(data, variance, standard_deviation, n_sigma, show)
@@ -191,9 +189,9 @@ def plot_time_series(
     if label is None:
         label = role
     x = (
-        data.coords[TIME_DIM].values
-        if TIME_DIM in data.coords
-        else np.arange(data.sizes[TIME_DIM])
+        data.coords[TIME].values
+        if TIME in data.coords
+        else np.arange(data.sizes[TIME])
     )
 
     if show == "line":
@@ -252,7 +250,7 @@ def _resolved_show(show: str, sample_dims: tuple[str, ...]) -> str:
     if show in ("fan", "spaghetti") and not sample_dims:
         raise ValueError(
             f"show={show!r} summarizes several curves, but the data has only "
-            f"{TIME_DIM!r}. Use show='line' or show='points'."
+            f"{TIME!r}. Use show='line' or show='points'."
         )
     if show in ("line", "points") and sample_dims:
         raise ValueError(
@@ -267,8 +265,8 @@ def _stacked_samples(
     data: xr.DataArray, sample_dims: tuple[str, ...]
 ) -> np.ndarray:
     """*data* as ``(n_curves, n_time)``, the sample dims flattened together."""
-    ordered = data.transpose(*sample_dims, TIME_DIM)
-    return ordered.values.reshape(-1, ordered.sizes[TIME_DIM])
+    ordered = data.transpose(*sample_dims, TIME)
+    return ordered.values.reshape(-1, ordered.sizes[TIME])
 
 
 def _curve_labels(
@@ -359,9 +357,9 @@ def _check_plottable(data: xr.DataArray) -> None:
             "DataFrames and SIPNET results are converted by an adapter in "
             "sipnet_calibration.fields."
         )
-    if TIME_DIM not in data.dims:
+    if TIME not in data.dims:
         raise ValueError(
-            f"the array has dimensions {list(data.dims)} and needs {TIME_DIM!r} "
+            f"the array has dimensions {list(data.dims)} and needs {TIME!r} "
             "to be plotted against time. Select or aggregate first, or use a "
             "spatial plot."
         )
@@ -369,7 +367,7 @@ def _check_plottable(data: xr.DataArray) -> None:
     if unexpected:
         raise ValueError(
             f"unexpected dimension(s) {unexpected}; expected only "
-            f"{list(ALLOWED_DIMS)}. Every dimension beside {TIME_DIM!r} is "
+            f"{list(ALLOWED_DIMS)}. Every dimension beside {TIME!r} is "
             "summarized as if it indexed an ensemble, which is wrong for a "
             "dimension such as 'variable' whose entries have different units."
         )

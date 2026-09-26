@@ -75,6 +75,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from sipnet_calibration.conventions import TIMESTEP_LENGTH, TIMESTEP_START
 from sipnet_calibration.drivers import (
     DRIVER_FILE_GLOB,
     DRIVER_VARIABLES,
@@ -185,13 +186,13 @@ def survey_one_file(directory: Path) -> FileFacts:
         return facts
 
     facts.n_rows = len(frame)
-    starts = pd.DatetimeIndex(axis["time_step_start"].values)
+    starts = pd.DatetimeIndex(axis[TIMESTEP_START].values)
     facts.data_dates = (str(starts[0].date()), str(starts[-1].date()))
     if facts.name_dates is not None and facts.name_dates != facts.data_dates:
         facts.name_problems.append("file name dates differ from the data")
     facts.grid_hash = hashlib.sha1(
-        np.ascontiguousarray(axis["time_step_start"].values.astype("int64")).tobytes()
-        + np.ascontiguousarray(axis["time_step_length"].values.astype("int64")).tobytes()
+        np.ascontiguousarray(axis[TIMESTEP_START].values.astype("int64")).tobytes()
+        + np.ascontiguousarray(axis[TIMESTEP_LENGTH].values.astype("int64")).tobytes()
     ).hexdigest()
     for name in DRIVER_VARIABLES:
         values = frame[name].to_numpy()

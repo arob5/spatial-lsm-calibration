@@ -345,7 +345,6 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -365,6 +364,19 @@ from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp  # noqa: 
 from pysipnet.parameters.base import ParameterDomain, ParameterSpec  # noqa: E402
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters  # noqa: E402
 from tensorflow_probability.substrates import jax as tfp  # noqa: E402
+
+# SITE, the site dimension's name, is also the reserved ``varies_by`` value
+# meaning one copy per site. Calibration parameter names match NAME_PATTERN.
+from sipnet_calibration.conventions import (  # noqa: E402
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    NAME_PATTERN,
+    SITE,
+    SITE_DTYPE,
+    SITE_ID,
+)
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -750,25 +762,19 @@ PHOTOSYNTHESIS = PhotosynthesisMap()
 
 # ── the specs ─────────────────────────────────────────────────────────────────
 
-NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
-"""Calibration parameter names: ``lower_case_with_underscores``."""
-
 SHARED = "shared"
 """Group label, and ``varies_by`` attribute value, of a calibration parameter
 that does not vary."""
 
-SITE = "site"
-"""The reserved ``varies_by`` value meaning one copy per site."""
-
 MEMBER = "member"
 """The ensemble dimension of Fields and of the SIPNET table."""
 
-RESERVED_SITE_LABELS_NAMES = frozenset({SHARED, SITE, MEMBER, "lon", "lat", "site_id"})
+RESERVED_SITE_LABELS_NAMES = frozenset({SHARED, SITE, MEMBER, LON, LAT, SITE_ID})
 """Names a site-labels product cannot take in a vector, because they are
 dimension or coordinate names already. It may not be named like a
 calibration parameter or a SIPNET parameter either."""
 
-RESERVED_PARAMETER_NAMES = frozenset({SITE, MEMBER, "lon", "lat"})
+RESERVED_PARAMETER_NAMES = frozenset({SITE, MEMBER, LON, LAT})
 """Names a calibration parameter cannot take, because a Fields variable of
 that name would collide with a coordinate."""
 
@@ -1345,9 +1351,9 @@ class ParameterVector:
     def site_table(self) -> pd.DataFrame:
         """``site_id`` (``int32``), ``lon``/``lat`` when known, and one
         categorical column per site-labels name, one row per site."""
-        frame = pd.DataFrame({"site_id": np.asarray(self.sites, dtype=np.int32)})
+        frame = pd.DataFrame({SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE)})
         if self._lon_lat is not None:
-            frame["lon"], frame["lat"] = self._lon_lat
+            frame[LON], frame[LAT] = self._lon_lat
         for name, labels in self.site_labels.items():
             frame[name] = pd.Categorical(labels, categories=self.group_labels(name))
         return frame
@@ -1816,16 +1822,16 @@ class ParameterVector:
         if self._lon_lat is None:
             return tuple(ids)
         lon, lat = self._lon_lat
-        return pd.DataFrame({"site_id": ids, "lon": lon[positions], "lat": lat[positions]})
+        return pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
 
     def _coordinates(self, theta: Array, members: np.ndarray | None = None) -> dict[str, Any]:
         """The coordinates Fields and the SIPNET table share; *members*
         labels the ensemble, 0 to J-1 when ``None``."""
-        coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=np.int32)}
+        coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=SITE_DTYPE)}
         if self._lon_lat is not None:
             lon, lat = self._lon_lat
-            coords["lon"] = (SITE, lon, {"standard_name": "longitude", "units": "degrees_east"})
-            coords["lat"] = (SITE, lat, {"standard_name": "latitude", "units": "degrees_north"})
+            coords[LON] = (SITE, lon, dict(LON_ATTRIBUTES))
+            coords[LAT] = (SITE, lat, dict(LAT_ATTRIBUTES))
         for name, labels in self.site_labels.items():
             coords[name] = (SITE, list(labels))
         if theta.ndim == 2:
@@ -2716,7 +2722,7 @@ def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
 
 
 def check_site_table_has_site_ids(table: pd.DataFrame) -> None:
-    if "site_id" not in table.columns:
+    if SITE_ID not in table.columns:
         raise ValueError(
             "a site table passed as sites= needs a 'site_id' column, as "
             f"sipnet_calibration.sites.select_sites returns; got columns {list(table.columns)}."
@@ -2996,10 +3002,10 @@ def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
 
 
 def check_site_table_positions_are_usable(table: pd.DataFrame) -> None:
-    present = {"lon", "lat"} & set(table.columns)
+    present = {LON, LAT} & set(table.columns)
     if len(present) == 1:
         raise ValueError(f"a site table passed as sites= has {sorted(present)} but not both.")
-    if present and not np.isfinite(table[["lon", "lat"]].to_numpy(np.float64)).all():
+    if present and not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
         raise ValueError("a site table passed as sites= has missing or non-finite lon/lat.")
 
 

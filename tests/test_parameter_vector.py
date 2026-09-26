@@ -35,6 +35,7 @@ from tensorflow_probability.substrates import jax as tfp
 from conftest import niwot_parameters
 
 from sipnet_calibration import parameter_vector as module
+from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
 from sipnet_calibration.parameter_vector import (
     ALLOCATION,
     DOMAIN_CHECK_CORNERS,
@@ -857,8 +858,8 @@ def test_fields_carry_lon_lat_from_a_site_table():
     vector = example_parameter_vector(sites=table, pft=PFT)
     fields = vector.fields(vector.sample(jax.random.key(0), n=2))
     np.testing.assert_allclose(fields["lon"], [-24.6, -78.6, -107.3])
-    assert fields["lat"].attrs == {"standard_name": "latitude", "units": "degrees_north"}
-    assert fields["lon"].attrs == {"standard_name": "longitude", "units": "degrees_east"}
+    assert fields["lat"].attrs == dict(LAT_ATTRIBUTES)
+    assert fields["lon"].attrs == dict(LON_ATTRIBUTES)
     assert list(vector.site_table.columns) == ["site_id", "lon", "lat", "pft"]
     assert list(vector.site_table["pft"].cat.categories) == ["conifer", "deciduous"]
     np.testing.assert_allclose(vector.sipnet_table(vector.sample(jax.random.key(1), n=2))["lat"], [82.5, 80.6, 44.0])

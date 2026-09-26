@@ -23,9 +23,8 @@ from pysipnet.resample import resample
 from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, VariableKind
 
 from sipnet_calibration.drivers import driver_fields, read_driver_file
+from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES, TIMESTEP_LENGTH
 from sipnet_calibration.fields import (
-    STALE_TIME_ATTRIBUTE_NAMES,
-    TIME_STEP_LENGTH,
     from_sipnet_output,
     stack_sipnet_outputs,
 )
@@ -287,7 +286,7 @@ class TestAggregateTimeOnDrivers:
 
     def test_a_driver_mean_is_weighted_by_its_declared_step_lengths(self, real_drivers):
         tair = site_1_member_1(real_drivers, "air_temperature")
-        assert TIME_STEP_LENGTH in tair.coords
+        assert TIMESTEP_LENGTH in tair.coords
         daily = aggregate_time(tair, "1D")
         assert "weighted by" in daily.attrs["resampling"]
         raw = pd.Series(tair.values, index=pd.DatetimeIndex(tair["time"].values))
@@ -312,7 +311,7 @@ class TestAggregateTimeOnDrivers:
 
     def test_unequal_steps_without_declared_lengths_refuse_a_mean(self, niwot_output):
         field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
-        bare = field.drop_vars([TIME_STEP_LENGTH])
+        bare = field.drop_vars([TIMESTEP_LENGTH])
         with pytest.raises(ValueError, match="not all the same length"):
             aggregate_time(bare, "1D", how="mean")
 

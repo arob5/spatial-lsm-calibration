@@ -67,6 +67,7 @@ import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from sipnet_calibration.conventions import SITE
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
@@ -76,7 +77,6 @@ __all__ = [
     "LEGEND_MODES",
     "SCALE_MODES",
     "SHARE_MODES",
-    "SITE_DIM",
     "build_plot_grid",
     "plot_by_site",
     "plot_by_variable",
@@ -90,9 +90,6 @@ SHARE_MODES: tuple[str, ...] = ("none", "x", "y", "both")
 
 #: What ``legend`` may be.
 LEGEND_MODES: tuple[str, ...] = ("dedup", "each", "none")
-
-#: The dimension :func:`plot_by_site` splits on.
-SITE_DIM = "site"
 
 #: What ``scale`` may be for a grid of maps: one color scale for every panel,
 #: or one per panel.
@@ -266,17 +263,17 @@ def plot_by_site(
         If *data* has no ``site`` dimension, or *sites* names an id that is
         not in it.
     """
-    if SITE_DIM not in data.dims:
+    if SITE not in data.dims:
         raise ValueError(
-            f"the array has dimensions {list(data.dims)} and needs {SITE_DIM!r} "
+            f"the array has dimensions {list(data.dims)} and needs {SITE!r} "
             "to be split by site"
         )
-    if SITE_DIM not in data.coords:
+    if SITE not in data.coords:
         raise ValueError(
-            f"the array has a {SITE_DIM!r} dimension but no {SITE_DIM!r} "
+            f"the array has a {SITE!r} dimension but no {SITE!r} "
             "coordinate, so its panels cannot be named or selected"
         )
-    available = list(data.coords[SITE_DIM].values)
+    available = list(data.coords[SITE].values)
     if sites is None:
         chosen = available
     else:
@@ -294,7 +291,7 @@ def plot_by_site(
     grid_kwargs.setdefault("labels", lambda site: f"site {site}")
     return build_plot_grid(
         chosen,
-        lambda ax, site: panel_fn(data.sel({SITE_DIM: site}), ax=ax),
+        lambda ax, site: panel_fn(data.sel({SITE: site}), ax=ax),
         **grid_kwargs,
     )
 

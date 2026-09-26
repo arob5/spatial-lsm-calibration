@@ -32,13 +32,21 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.conventions import CF_CONVENTIONS
+from sipnet_calibration.conventions import (
+    CF_CONVENTIONS,
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    SITE,
+    SITE_ATTRIBUTES,
+    SITE_DTYPE,
+    SITE_ID,
+)
 from sipnet_calibration.initial_conditions.names import (
     MEMBER,
     RAW_FILE,
-    SITE,
     SOURCE_MEMBER,
-    _SITE_ATTRS,
     _utc_timestamp,
     default_product_path,
 )
@@ -95,7 +103,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
     project's 0-based one, and the source index is kept as a coordinate so a
     source file name can always be recovered.
     """
-    pool = np.sort(sites["site_id"].to_numpy(np.int64))
+    pool = np.sort(sites[SITE_ID].to_numpy(np.int64))
     raw_sites = raw[SITE].values.astype(np.int64)
     if not np.array_equal(raw_sites, pool):
         extra = sorted(set(raw_sites.tolist()) - set(pool.tolist()))[:10]
@@ -104,7 +112,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
             f"raw file sites are not the site table's pool: not in the table {extra}, "
             f"not in the file {missing}"
         )
-    coordinates = sites.set_index("site_id").loc[pool, ["lon", "lat"]]
+    coordinates = sites.set_index(SITE_ID).loc[pool, [LON, LAT]]
     source_member = raw[MEMBER].values.astype(np.int16)
 
     data_vars = {
@@ -136,9 +144,9 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
                 "comment": "The 1-based <member> of the source file name.",
             },
         ),
-        SITE: (SITE, pool.astype(np.int32), _SITE_ATTRS),
-        "lon": (SITE, coordinates["lon"].to_numpy(np.float64), _LON_ATTRS),
-        "lat": (SITE, coordinates["lat"].to_numpy(np.float64), _LAT_ATTRS),
+        SITE: (SITE, pool.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
+        LON: (SITE, coordinates[LON].to_numpy(np.float64), dict(LON_ATTRIBUTES)),
+        LAT: (SITE, coordinates[LAT].to_numpy(np.float64), dict(LAT_ATTRIBUTES)),
     }
     return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(raw))
 
@@ -257,10 +265,6 @@ def initial_condition_fields(
     return {name: dataset[name] for name in wanted_names}
 
 
-_LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
-
-_LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
-
 
 def _site_id(value: Any) -> int:
     """A site identifier as an int, refusing anything that is not already whole."""
@@ -337,10 +341,10 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
             raise ValueError(f"{path}: {spec.name} lacks the spec's long_name")
         if np.isinf(array.values).any():
             raise ValueError(f"{path}: {spec.name} holds an infinite value")
-    for coordinate in (MEMBER, SOURCE_MEMBER, SITE, "lon", "lat"):
+    for coordinate in (MEMBER, SOURCE_MEMBER, SITE, LON, LAT):
         if coordinate not in dataset.coords:
             raise ValueError(f"{path}: missing the {coordinate!r} coordinate")
-    for coordinate in ("lon", "lat"):
+    for coordinate in (LON, LAT):
         if dataset[coordinate].dims != (SITE,):
             raise ValueError(f"{path}: {coordinate} must be on site, has dims {dataset[coordinate].dims}")
     if dataset[SOURCE_MEMBER].dims != (MEMBER,):
@@ -357,7 +361,7 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
     site = dataset[SITE].values
     if site.size == 0 or np.any(np.diff(site) <= 0):
         raise ValueError(f"{path}: site is empty or not strictly ascending")
-    lon, lat = dataset["lon"].values, dataset["lat"].values
+    lon, lat = dataset[LON].values, dataset[LAT].values
     if not (np.isfinite(lon).all() and np.isfinite(lat).all()):
         raise ValueError(f"{path}: lon or lat holds a non-finite value")
     if np.abs(lon).max() > 180 or np.abs(lat).max() > 90:

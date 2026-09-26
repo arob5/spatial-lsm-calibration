@@ -42,7 +42,7 @@ from sipnet_calibration.drivers import (
     load_drivers,
     read_driver_file,
 )
-from sipnet_calibration.fields import TIME_COORDS
+from sipnet_calibration.conventions import TIME_COORD_NAMES
 from sipnet_calibration.observation.time_alignment import aggregate_time
 from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
 
@@ -293,7 +293,7 @@ class TestLoadDrivers:
         own Dataset for the file holds: ``time`` at the step end."""
         dataset = load_drivers([3], root=root, sites_table=sites_table)
         own = read_driver_file(driver_file(root, 3, 1)).xarray
-        for name in (*TIME_COORDS, "time_bounds"):
+        for name in (*TIME_COORD_NAMES, "time_bounds"):
             np.testing.assert_array_equal(dataset[name].values, own[name].values)
             assert dataset[name].attrs == own[name].attrs, name
         starts = pd.date_range("2013-01-01", periods=2920, freq="3h").as_unit("ns")
@@ -559,7 +559,7 @@ class TestDriverFields:
             assert field.name == name
             assert field.dims == ("member", "site", "time")
             assert set(field.coords) == {
-                "member", "source_member_index", "site", "lon", "lat", *TIME_COORDS
+                "member", "source_member_index", "site", "lon", "lat", *TIME_COORD_NAMES
             }
 
     def test_nothing_points_at_a_bounds_variable_a_field_cannot_carry(self, root, sites_table):
@@ -651,5 +651,5 @@ class TestRealFiles:
         nee = from_sipnet_output(site_1_result, "nee")["net_ecosystem_exchange"]
         par = driver_fields(real_drivers)["photosynthetically_active_radiation"]
         head = par.sel(site=1, source_member_index=1).isel(time=slice(0, nee.sizes["time"]))
-        for name in TIME_COORDS:
+        for name in TIME_COORD_NAMES:
             np.testing.assert_array_equal(nee[name].values, head[name].values)

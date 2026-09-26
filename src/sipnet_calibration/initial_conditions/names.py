@@ -1,15 +1,15 @@
 """Dimension names, file locations, and the few helpers every module shares.
 
-The names of the dimensions and coordinates the two netCDFs use, where the
-source tree and each netCDF are expected on disk, and the small pieces --
-the data root, a timestamp,
-the site coordinate's attributes -- that more than one of the package's
-modules needs. Nothing here reads or writes anything.
+The names of the dimensions and coordinates the two netCDFs use beyond the
+shared ones of :mod:`sipnet_calibration.conventions`, where the source tree
+and each netCDF are expected on disk, and a timestamp that more than one of
+the package's modules needs. Nothing here reads or writes anything.
 
 Contents
 --------
-:data:`SITE`, :data:`MEMBER`, :data:`SOURCE_MEMBER`
-    The dimension and coordinate names, spelled once.
+:data:`MEMBER`, :data:`SOURCE_MEMBER`
+    The member dimension and coordinate names, spelled once. The site
+    dimension is :data:`sipnet_calibration.conventions.SITE`.
 :data:`RAW_FILE`, :data:`PRODUCT_FILE`
     The two file names, without their directories.
 The four path functions
@@ -30,7 +30,6 @@ __all__ = [
     "MEMBER",
     "PRODUCT_FILE",
     "RAW_FILE",
-    "SITE",
     "SOURCE_MEMBER",
     "default_product_path",
     "default_raw_dir",
@@ -38,9 +37,6 @@ __all__ = [
     "raw_path",
 ]
 
-
-#: The site dimension, carrying the 1-8000 identifier.
-SITE = "site"
 
 #: The ensemble member dimension, 0-based in the product.
 MEMBER = "member"
@@ -78,14 +74,6 @@ def raw_path(directory: Path | str | None = None) -> Path:
 def default_product_path() -> Path:
     """Where the processed product is expected: ``data/processed/initial_conditions.nc``."""
     return conventions.data_root() / "processed" / PRODUCT_FILE
-
-
-#: CF attributes for the ``site`` coordinate, written by both build_raw and
-#: build_initial_conditions.
-_SITE_ATTRS = {
-    "long_name": "Model site identifier",
-    "comment": "The handed-down 1-8000 identifier of the site table; never renumbered.",
-}
 
 
 def _utc_timestamp() -> str:

@@ -133,6 +133,7 @@ import pandas as pd
 import xarray as xr
 from pysipnet.units import convert_dataarray_units, validate_units
 
+from sipnet_calibration.conventions import SITE, TIME
 from sipnet_calibration.fields import missing_labels
 from sipnet_calibration.observation.operators import (
     ObservationOperator,
@@ -143,9 +144,7 @@ from sipnet_calibration.observation.operators import (
 
 __all__ = ["INDEX_LEVELS", "Observation", "ObservationVector"]
 
-SITE = "site"
 MEMBER = "member"
-TIME = "time"
 PRODUCT = "product"
 
 #: The levels of :attr:`ObservationVector.index`, in order.

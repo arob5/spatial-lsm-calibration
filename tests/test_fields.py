@@ -20,9 +20,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from sipnet_calibration.conventions import TIME_COORD_NAMES
 from sipnet_calibration.fields import (
     FIELD_DIMS,
-    TIME_COORDS,
     from_sipnet_output,
     site_lookup,
     stack_sipnet_outputs,
@@ -76,7 +76,7 @@ class TestFromSipnetOutput:
     def test_the_time_axis_is_pysipnets_step_end_with_its_bounds_pair(self, niwot_output):
         field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
         assert set(field.coords) == {"time", "time_step_start", "time_step_length"}
-        assert set(field.coords) == set(TIME_COORDS)
+        assert set(field.coords) == set(TIME_COORD_NAMES)
         assert field["time"].attrs["long_name"] == "End of timestep"
         starts = field["time_step_start"].values
         lengths = field["time_step_length"].values
@@ -396,7 +396,7 @@ class TestStackModelOutputs:
         for name, field in fields.items():
             xr.testing.assert_identical(stacked[name], field)
         assert stacked["lon"].attrs["units"] == "degrees_east"
-        assert set(stacked.coords) == {"member", "site", "lon", "lat", *TIME_COORDS}
+        assert set(stacked.coords) == {"member", "site", "lon", "lat", *TIME_COORD_NAMES}
         assert "bounds" not in stacked["time"].attrs
 
     def test_runs_labeled_by_label_run_are_stacked_and_left_unchanged(self, niwot_output):
@@ -565,23 +565,17 @@ class TestLabelHelpers:
         assert field_label(xr.DataArray(0.0), "the observation", quoted=False) == "the observation"
 
     def test_without_stale_time_attributes(self):
-        from sipnet_calibration.fields import (
-            STALE_TIME_ATTRIBUTE_NAMES,
-            without_stale_time_attributes,
-        )
+        from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES
+        from sipnet_calibration.fields import without_stale_time_attributes
 
         assert STALE_TIME_ATTRIBUTE_NAMES == ("bounds",)
         assert without_stale_time_attributes({"bounds": "time_bounds", "axis": "T"}) == {"axis": "T"}
 
     def test_the_time_coordinates_are_the_named_constants(self):
-        from sipnet_calibration.fields import (
-            TIME_DIM,
-            TIME_STEP_LENGTH,
-            TIME_STEP_START,
-        )
+        from sipnet_calibration.conventions import TIME, TIMESTEP_LENGTH, TIMESTEP_START
 
-        assert TIME_COORDS == (TIME_DIM, TIME_STEP_START, TIME_STEP_LENGTH)
-        assert (TIME_STEP_START, TIME_STEP_LENGTH) == ("time_step_start", "time_step_length")
+        assert TIME_COORD_NAMES == (TIME, TIMESTEP_START, TIMESTEP_LENGTH)
+        assert (TIMESTEP_START, TIMESTEP_LENGTH) == ("time_step_start", "time_step_length")
 
 
 class TestResolveOutputVariableNamesDelegates:

@@ -80,6 +80,7 @@ from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
+from sipnet_calibration.conventions import SITE, TIME
 from sipnet_calibration.fields import coordinate_labels, field_label, missing_labels
 from sipnet_calibration.observation.time_alignment import (
     check_how_is_a_window_reduction,
@@ -105,9 +106,7 @@ __all__ = [
     "select_observed_sites",
 ]
 
-SITE = "site"
 MEMBER = "member"
-TIME = "time"
 
 
 @runtime_checkable

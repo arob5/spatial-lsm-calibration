@@ -220,7 +220,19 @@ from pysipnet.dataset import unfilled_coordinates
 from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration import conventions
-from sipnet_calibration.fields import TIME_COORDS, without_stale_time_attributes
+from sipnet_calibration.conventions import (
+    LAT,
+    LON,
+    SITE,
+    SITE_ATTRIBUTES,
+    SITE_DTYPE,
+    SITE_ID,
+    TIME,
+    TIME_COORD_NAMES,
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+)
+from sipnet_calibration.fields import without_stale_time_attributes
 from sipnet_calibration.sites import load_sites
 
 __all__ = [
@@ -503,7 +515,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 
     Each field has dims ``(member, site, time)``, is named for its variable,
     keeps that variable's attributes, and carries pySIPNET's
-    :data:`sipnet_calibration.fields.TIME_COORDS` with ``lon``/``lat`` and
+    :data:`sipnet_calibration.conventions.TIME_COORD_NAMES` with ``lon``/``lat`` and
     ``source_member_index`` as non-dimension coordinates -- the field
     shape, and the same time coordinates a model field has. This is the view
     facet-by-variable consumes, matching
@@ -541,7 +553,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     fields = {}
     for name in DRIVER_VARIABLES:
         field = dataset[name].copy(deep=False)
-        field["time"].attrs = without_stale_time_attributes(field["time"].attrs)
+        field[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
         fields[name] = field
     return fields
 
@@ -558,7 +570,7 @@ _COUNT_NOT_POSITIVE = ("vapor_pressure_deficit", "soil_vapor_pressure_deficit", 
 
 #: The time coordinates the Dataset takes from pySIPNET: the ones a field
 #: keeps, and the CF bounds pair that only a Dataset can carry.
-_DATASET_TIME_COORDS = (*TIME_COORDS, "time_bounds")
+_DATASET_TIME_COORDS = (*TIME_COORD_NAMES, "time_bounds")
 
 
 def _site_member_from_directory(name: str) -> tuple[int, int] | None:
@@ -670,7 +682,7 @@ def _read_all(
         _check_file_name_matches_contents(path, dataset, member=member)
         if reference is None:
             reference, reference_path = dataset, path
-            shape = present.shape + (dataset.sizes["time"],)
+            shape = present.shape + (dataset.sizes[TIME],)
             arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLES}
         else:
             _check_time_axes_identical(reference, dataset, reference_path=reference_path, path=path)
@@ -692,8 +704,8 @@ def _assemble(
     allow_missing: bool,
 ) -> xr.Dataset:
     """Put the arrays into the Dataset the module docstring describes."""
-    dims = ("member", "site", "time")
-    coordinates = table.set_index("site_id").loc[sites]
+    dims = ("member", SITE, TIME)
+    coordinates = table.set_index(SITE_ID).loc[sites]
     data_vars = {}
     for name in DRIVER_VARIABLES:
         values = arrays[name]
@@ -707,7 +719,7 @@ def _assemble(
     if allow_missing:
         data_vars[DRIVER_PRESENT] = xr.DataArray(
             present,
-            dims=("member", "site"),
+            dims=("member", SITE),
             attrs={
                 "long_name": "Whether a driver file existed for the member and site",
                 "comment": "The eight driver variables are NaN where this is False.",
@@ -719,9 +731,9 @@ def _assemble(
         coords={
             "member": np.arange(members.size, dtype=np.int16),
             "source_member_index": ("member", members.astype(np.int16)),
-            "site": sites.astype(np.int32),
-            "lon": ("site", coordinates["lon"].to_numpy(np.float64)),
-            "lat": ("site", coordinates["lat"].to_numpy(np.float64)),
+            SITE: sites.astype(SITE_DTYPE),
+            LON: (SITE, coordinates[LON].to_numpy(np.float64)),
+            LAT: (SITE, coordinates[LAT].to_numpy(np.float64)),
             **{name: reference[name].variable for name in _DATASET_TIME_COORDS},
         },
     )
@@ -735,10 +747,7 @@ def _assemble(
     dataset["source_member_index"].attrs = {
         "long_name": "Member index in the source directory name (1-based)"
     }
-    dataset["site"].attrs = {
-        "long_name": "Model site identifier",
-        "comment": "The handed-down 1-8000 identifier; never renumbered.",
-    }
+    dataset[SITE].attrs = dict(SITE_ATTRIBUTES)
     dataset.attrs = {
         **reference.attrs,
         "title": "ERA5 meteorological drivers in SIPNET climate-file form",
@@ -795,7 +804,7 @@ def _check_file_name_matches_contents(path: Path, dataset: xr.Dataset, *, member
             f"directory says member {member}"
         )
     start, end = _dates_from_file_name(path)
-    starts = pd.DatetimeIndex(dataset["time_step_start"].values)
+    starts = pd.DatetimeIndex(dataset[TIMESTEP_START].values)
     first, last = starts[0].normalize(), starts[-1].normalize()
     if (start, end) != (first, last):
         raise ValueError(
@@ -812,13 +821,13 @@ def _check_time_axes_identical(
     The time coordinates are taken from the first file read and applied to
     all of them, which is sound only if every file's axis is the same.
     """
-    if dataset.sizes["time"] != reference.sizes["time"]:
+    if dataset.sizes[TIME] != reference.sizes[TIME]:
         raise ValueError(
-            f"{path} has {dataset.sizes['time']} steps where {reference_path} has "
-            f"{reference.sizes['time']}; every file read together must share one "
+            f"{path} has {dataset.sizes[TIME]} steps where {reference_path} has "
+            f"{reference.sizes[TIME]}; every file read together must share one "
             "time axis"
         )
-    for name in ("time_step_start", "time_step_length"):
+    for name in (TIMESTEP_START, TIMESTEP_LENGTH):
         a = reference[name].to_numpy()
         b = dataset[name].to_numpy()
         if not np.array_equal(a, b):

@@ -23,10 +23,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from sipnet_calibration.conventions import SITE_ID
 from sipnet_calibration.site_labels import _check_labels_are_flag_meanings
 from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
-    SITE_COLUMN,
     SITE_LABELS,
     SITE_LABELS_COLUMN_DTYPES,
     SITE_LABELS_COLUMNS,
@@ -233,8 +233,8 @@ def test_ingest_writes_the_data_model(synthetic):
     product = ingest.ingest(SYNTHETIC_SPEC, raw_root, sites, out_dir)
 
     assert tuple(product.columns) == SITE_LABELS_COLUMNS
-    assert product[SITE_COLUMN].dtype == np.int32
-    assert product[SITE_COLUMN].tolist() == SYNTHETIC_SITES
+    assert product[SITE_ID].dtype == np.int32
+    assert product[SITE_ID].tolist() == SYNTHETIC_SITES
     assert product[LABEL_COLUMN].tolist() == ["conifer", "conifer", "broadleaf", "grass"]
     assert site_labels_path(SYNTHETIC_SPEC, out_dir).exists()
 
@@ -263,7 +263,7 @@ def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path):
     _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     product = build_site_labels(SYNTHETIC_SPEC, frame)
-    assert product[SITE_COLUMN].tolist() == SYNTHETIC_SITES
+    assert product[SITE_ID].tolist() == SYNTHETIC_SITES
 
 
 def test_a_class_literally_named_na_survives_the_read(tmp_path):
@@ -376,7 +376,7 @@ def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
     sites_path = tmp_path / "sites.csv"
     _write_sites(sites_path)
     sites = load_sites(sites_path)
-    sites.loc[sites[SITE_COLUMN] == 4, "landcover"] = np.int8(7)
+    sites.loc[sites[SITE_ID] == 4, "landcover"] = np.int8(7)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
     product = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="does not cover"):
@@ -441,13 +441,13 @@ def real_product(real_sites, tmp_path_factory) -> pd.DataFrame:
 
 def test_the_real_site_labels_cover_the_whole_pool(real_product, real_sites):
     assert len(real_product) == len(real_sites)
-    assert real_product[SITE_COLUMN].tolist() == real_sites[SITE_COLUMN].tolist()
+    assert real_product[SITE_ID].tolist() == real_sites[SITE_ID].tolist()
 
 
 def test_the_real_site_labels_are_exactly_the_landcover_aggregation(real_product, real_sites):
     """The claim data/README.md makes under Site labels, over all 8000 sites."""
     spec = resolve_site_labels("reanalysis_3pft")
-    joined = real_product.merge(real_sites[[SITE_COLUMN, "landcover"]], on=SITE_COLUMN)
+    joined = real_product.merge(real_sites[[SITE_ID, "landcover"]], on=SITE_ID)
     expected = joined["landcover"].map(dict(spec.landcover_mapping))
     assert (expected == joined[LABEL_COLUMN].astype(str)).all()
     # And the relation is onto: every class is reached from some cover class.
@@ -521,7 +521,7 @@ def test_the_two_site_labels_products_do_not_nest(real_product, real_16class):
     Every 16-class class draws from at least two of the three reanalysis
     classes, so no class has a parent whose prior it could inherit.
     """
-    joined = real_16class.merge(real_product, on=SITE_COLUMN, suffixes=("_16", "_3"))
+    joined = real_16class.merge(real_product, on=SITE_ID, suffixes=("_16", "_3"))
     spread = (
         pd.crosstab(joined[f"{LABEL_COLUMN}_16"], joined[f"{LABEL_COLUMN}_3"]) > 0
     ).sum(axis=1)

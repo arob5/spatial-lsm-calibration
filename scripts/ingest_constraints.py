@@ -67,7 +67,6 @@ import xarray as xr
 
 from sipnet_calibration.constraints import (
     CONSTRAINT_NAMES,
-    SITE_COLUMN,
     STANDARD_DEVIATION,
     TIME_UNITS,
     VALUE,
@@ -83,6 +82,7 @@ from sipnet_calibration.constraints import (
     read_raw,
     resolve_constraint,
 )
+from sipnet_calibration.conventions import SITE_ID
 from sipnet_calibration.sites import default_sites_path, load_sites
 
 #: How far a raw file's lat/lon may sit from the site table before the site
@@ -226,9 +226,9 @@ def describe_product(dataset: xr.Dataset, path: Path) -> str:
 
 def check_site_ids_are_valid(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise unless every site id is a positive integer that fits the stored width."""
-    site = frame[SITE_COLUMN].to_numpy()
+    site = frame[SITE_ID].to_numpy()
     if not np.issubdtype(site.dtype, np.integer):
-        raise IngestError(f"{spec.raw_file}: {SITE_COLUMN} is not integer-valued")
+        raise IngestError(f"{spec.raw_file}: {SITE_ID} is not integer-valued")
     info = np.iinfo(np.int32)
     bad = (site < 1) | (site > info.max)
     if bad.any():
@@ -242,7 +242,7 @@ def check_sites_are_in_the_site_table(
     spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
     """Raise if a row names a site the site table does not have."""
-    unknown = sorted(set(frame[SITE_COLUMN]) - set(sites[SITE_COLUMN]))
+    unknown = sorted(set(frame[SITE_ID]) - set(sites[SITE_ID]))
     if unknown:
         raise IngestError(
             f"{spec.raw_file}: {len(unknown)} site ids are not in the site table, e.g. "
@@ -261,7 +261,7 @@ def check_coordinates_match_site_table(
     """
     if not {"lat", "lon"} <= set(spec.raw_columns):
         return
-    table = sites.set_index(SITE_COLUMN).loc[frame[SITE_COLUMN].to_numpy(), ["lon", "lat"]]
+    table = sites.set_index(SITE_ID).loc[frame[SITE_ID].to_numpy(), ["lon", "lat"]]
     for column in ("lon", "lat"):
         given = frame[column].to_numpy(np.float64)
         if not np.isfinite(given).all():
@@ -274,14 +274,14 @@ def check_coordinates_match_site_table(
             worst = int(np.argmax(difference))
             raise IngestError(
                 f"{spec.raw_file}: {column} disagrees with the site table by up to "
-                f"{difference[worst]:.3g} degrees (site {frame[SITE_COLUMN].iloc[worst]}). "
+                f"{difference[worst]:.3g} degrees (site {frame[SITE_ID].iloc[worst]}). "
                 "The site ids do not mean what the site table means."
             )
 
 
 def check_key_is_unique(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise if two rows share a site (and time)."""
-    key = [SITE_COLUMN] + ([spec.time_column] if spec.time_column else [])
+    key = [SITE_ID] + ([spec.time_column] if spec.time_column else [])
     duplicated = frame.duplicated(key)
     if duplicated.any():
         example = frame.loc[duplicated, key].iloc[0].tolist()
@@ -387,7 +387,7 @@ def check_static_copies_agree(spec: ConstraintSpec, frame: pd.DataFrame) -> None
     """Raise unless a static constraint carries one value per site across the file."""
     if spec.time_column is None:
         return
-    distinct = frame.groupby(SITE_COLUMN)[[spec.value_column, spec.sd_column]].nunique(
+    distinct = frame.groupby(SITE_ID)[[spec.value_column, spec.sd_column]].nunique(
         dropna=False
     )
     varying = distinct[(distinct > 1).any(axis=1)]

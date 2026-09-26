@@ -97,7 +97,6 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pysipnet.arithmetic import step_length
-from pysipnet.dataset import TIME_DIMENSION
 from pysipnet.resample import STEP_LENGTH_RESAMPLED, check_resampling_method, resample
 from pysipnet.variables import (
     CELL_METHODS_FOR_KIND,
@@ -109,19 +108,19 @@ from pysipnet.variables import (
     resolve_output_variable,
 )
 
-from sipnet_calibration.conventions import TIME_BOUNDS_END, TIME_BOUNDS_START
-from sipnet_calibration.fields import (
-    TIME_STEP_LENGTH,
-    TIME_STEP_START,
-    field_label,
-    without_stale_time_attributes,
+from sipnet_calibration.conventions import (
+    TIME,
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+    WINDOW_END,
+    WINDOW_START,
 )
+from sipnet_calibration.fields import field_label, without_stale_time_attributes
 
 __all__ = [
     "DEFAULT_METHOD_FOR_KIND",
     "RESAMPLING_METHODS",
     "SELECTED_STEP_COORD",
-    "TIME_DIM",
     "WINDOW_REDUCTIONS",
     "aggregate_time",
     "aggregation_counts",
@@ -134,9 +133,6 @@ __all__ = [
     "window_counts",
     "windows_from_time_bounds",
 ]
-
-#: The dimension timesteps are combined along, pySIPNET's.
-TIME_DIM = TIME_DIMENSION
 
 #: The three ways pySIPNET's tables combine consecutive steps, under
 #: pySIPNET's names; what :func:`aggregate_time` admits.
@@ -200,8 +196,8 @@ def aggregate_time(
         ``NaN`` is ``NaN``.
 
         How a cell is labeled depends on the field. One carrying
-        :data:`~sipnet_calibration.fields.TIME_STEP_START` and
-        :data:`~sipnet_calibration.fields.TIME_STEP_LENGTH` is labeled as
+        :data:`~sipnet_calibration.conventions.TIMESTEP_START` and
+        :data:`~sipnet_calibration.conventions.TIMESTEP_LENGTH` is labeled as
         pySIPNET labels it, by the steps the cell actually holds: its ``time``
         is the latest step end, its start the earliest step start, and its
         length the sum of the declared lengths, so a cell the record only
@@ -216,7 +212,7 @@ def aggregate_time(
         how many values a full cell holds.
 
         ``time`` keeps the attributes that are still true of it and loses
-        :data:`~sipnet_calibration.fields.STALE_TIME_ATTRIBUTE_NAMES`, which
+        :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`, which
         describe the step it had before.
 
     Raises
@@ -271,7 +267,7 @@ def aggregate_time(
         result = _resampled_by_pysipnet(field, freq, kind, method)
     else:
         result = _aggregated_on_calendar_cells(_checked_steps(field), freq, kind, method)
-    result[TIME_DIM].attrs = without_stale_time_attributes(result[TIME_DIM].attrs)
+    result[TIME].attrs = without_stale_time_attributes(result[TIME].attrs)
     return result
 
 
@@ -352,11 +348,11 @@ def reduce_windows(
 
     weights = _step_weights(field) if how == "mean" else None
     reduced = _reduce_by_window(_without_interval_coords(field), windows, how, weights)
-    reduced = reduced.assign_coords({TIME_DIM: labels})
-    reduced[TIME_DIM].attrs = label_attrs
+    reduced = reduced.assign_coords({TIME: labels})
+    reduced[TIME].attrs = label_attrs
     reduced = reduced.assign_coords(_window_interval_coords(field, windows))
     reduced.name = field.name
-    weighted = how == "mean" and TIME_STEP_LENGTH in field.coords
+    weighted = how == "mean" and TIMESTEP_LENGTH in field.coords
     reduced.attrs = _window_attrs(field.attrs, kind, how, weighted=weighted)
     return reduced
 
@@ -416,13 +412,13 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
     position = steps.get_indexer(labels.as_unit("ns"))
     check_every_label_is_in_a_step(field, labels, position, steps)
 
-    selected = _without_interval_coords(field.isel({TIME_DIM: position}))
+    selected = _without_interval_coords(field.isel({TIME: position}))
     selected = selected.assign_coords(
         {
-            TIME_DIM: xr.DataArray(labels, dims=TIME_DIM, attrs=label_attrs),
+            TIME: xr.DataArray(labels, dims=TIME, attrs=label_attrs),
             SELECTED_STEP_COORD: xr.DataArray(
                 ends.values[position],
-                dims=TIME_DIM,
+                dims=TIME,
                 attrs={
                     "long_name": "End of the model timestep that was read",
                     "comment": (
@@ -439,8 +435,8 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
 def windows_from_time_bounds(observed_values: xr.DataArray) -> pd.IntervalIndex:
     """An observation field's attribution intervals, as windows for :func:`reduce_windows`.
 
-    Reads :data:`~sipnet_calibration.conventions.TIME_BOUNDS_START` and
-    :data:`~sipnet_calibration.conventions.TIME_BOUNDS_END`, the
+    Reads :data:`~sipnet_calibration.conventions.WINDOW_START` and
+    :data:`~sipnet_calibration.conventions.WINDOW_END`, the
     one-dimensional form of CF ``time_bounds`` that
     :func:`sipnet_calibration.constraints.constraint_fields` puts on an annual
     product's ``time``. The windows are right-closed, so a model step ending
@@ -468,8 +464,8 @@ def windows_from_time_bounds(observed_values: xr.DataArray) -> pd.IntervalIndex:
     """
     message_name = field_label(observed_values, "the observation")
     check_has_time_bounds(observed_values, message_name)
-    start = pd.DatetimeIndex(observed_values[TIME_BOUNDS_START].values)
-    end = pd.DatetimeIndex(observed_values[TIME_BOUNDS_END].values)
+    start = pd.DatetimeIndex(observed_values[WINDOW_START].values)
+    end = pd.DatetimeIndex(observed_values[WINDOW_END].values)
     check_time_bounds_are_complete_and_ordered(start, end, message_name)
     return pd.IntervalIndex.from_arrays(start, end, closed="right")
 
@@ -549,9 +545,9 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
         check_frequency_is_an_offset_alias(freq)
         check_not_upsampling(field, freq)
         counts = _grouped(field.notnull(), freq).sum()
-        counts = counts.isel({TIME_DIM: _nonempty_cells(field, freq)})
+        counts = counts.isel({TIME: _nonempty_cells(field, freq)})
     counts = counts.fillna(0).astype(np.int64)
-    counts[TIME_DIM].attrs = without_stale_time_attributes(counts[TIME_DIM].attrs)
+    counts[TIME].attrs = without_stale_time_attributes(counts[TIME].attrs)
     counts.name = None
     counts.attrs = {}
     return counts
@@ -588,8 +584,8 @@ def window_counts(
     windows = _checked_windows(windows, _time_index(field))
     labels, label_attrs = _checked_labels(labels, windows)
     counts = _count_by_window(_without_interval_coords(field), windows)
-    counts = counts.assign_coords({TIME_DIM: labels})
-    counts[TIME_DIM].attrs = label_attrs
+    counts = counts.assign_coords({TIME: labels})
+    counts[TIME].attrs = label_attrs
     return counts
 
 
@@ -613,9 +609,9 @@ _CELL_METHODS_OF_A_READING: dict[str, str] = {
 #: How the steps a cell or window combines are summarized in its interval
 #: coordinates: the earliest start, the latest end and the summed length.
 _SPAN_OF_STEPS: dict[str, str] = {
-    TIME_STEP_START: "min",
-    TIME_DIM: "max",
-    TIME_STEP_LENGTH: "sum",
+    TIMESTEP_START: "min",
+    TIME: "max",
+    TIMESTEP_LENGTH: "sum",
 }
 
 
@@ -663,7 +659,7 @@ def _steps_per_cell(field: xr.DataArray, steps: xr.DataArray, freq: str) -> xr.D
     as the aggregate of *field* is. The padding is made missing, as pySIPNET
     requires of a row it is to drop.
     """
-    padding = xr.DataArray(_rows_without_an_interval(field), dims=TIME_DIM)
+    padding = xr.DataArray(_rows_without_an_interval(field), dims=TIME)
     indicator = steps.astype(np.float64).where(~padding)
     indicator.attrs = {"kind": VariableKind.TIMESTEP_TOTAL.value}
     return resample(indicator.rename("steps"), freq, how="sum")
@@ -727,13 +723,13 @@ def _window_method_for(field: xr.DataArray, kind: VariableKind | None, how: Any)
 
 def _has_interval_coords(field: xr.DataArray) -> bool:
     """Whether *field* carries both of pySIPNET's interval coordinates."""
-    return TIME_STEP_START in field.coords and TIME_STEP_LENGTH in field.coords
+    return TIMESTEP_START in field.coords and TIMESTEP_LENGTH in field.coords
 
 
 def _rows_without_an_interval(field: xr.DataArray) -> np.ndarray:
     """Which rows have a ``NaT`` start or length, among the interval coordinates present."""
-    mask = np.zeros(field.sizes[TIME_DIM], dtype=bool)
-    for name in (TIME_STEP_START, TIME_STEP_LENGTH):
+    mask = np.zeros(field.sizes[TIME], dtype=bool)
+    for name in (TIMESTEP_START, TIMESTEP_LENGTH):
         if name in field.coords:
             mask |= np.isnat(field[name].values)
     return mask
@@ -742,7 +738,7 @@ def _rows_without_an_interval(field: xr.DataArray) -> np.ndarray:
 def _real_rows(field: xr.DataArray) -> xr.DataArray:
     """*field* without the rows that have no interval, valued or not."""
     no_interval = _rows_without_an_interval(field)
-    return field.isel({TIME_DIM: ~no_interval}) if no_interval.any() else field
+    return field.isel({TIME: ~no_interval}) if no_interval.any() else field
 
 
 def _without_padding(field: xr.DataArray) -> xr.DataArray:
@@ -759,24 +755,24 @@ def _without_padding(field: xr.DataArray) -> xr.DataArray:
     if not no_interval.any():
         return field
     check_rows_without_an_interval_hold_no_value(field, no_interval)
-    return field.isel({TIME_DIM: ~no_interval})
+    return field.isel({TIME: ~no_interval})
 
 
 def _without_interval_coords(field: xr.DataArray) -> xr.DataArray:
     """*field* without the coordinates on ``time`` other than ``time`` itself."""
     return field.drop_vars(
-        [str(name) for name in field.coords if name != TIME_DIM and TIME_DIM in field[name].dims]
+        [str(name) for name in field.coords if name != TIME and TIME in field[name].dims]
     )
 
 
 def _time_index(field: xr.DataArray) -> pd.DatetimeIndex:
     """The field's ``time`` coordinate as a pandas index."""
-    return pd.DatetimeIndex(field.coords[TIME_DIM].to_index())
+    return pd.DatetimeIndex(field.coords[TIME].to_index())
 
 
 def _start_index(field: xr.DataArray) -> pd.DatetimeIndex:
     """The field's ``time_step_start`` coordinate as a pandas index."""
-    return pd.DatetimeIndex(field[TIME_STEP_START].to_index())
+    return pd.DatetimeIndex(field[TIMESTEP_START].to_index())
 
 
 def _step_spacing_ns(field: xr.DataArray) -> np.ndarray:
@@ -793,24 +789,24 @@ def _step_intervals(field: xr.DataArray) -> pd.IntervalIndex:
 
 def _on_time(field: xr.DataArray, values: np.ndarray) -> xr.DataArray:
     """*values*, one per timestep, as a resamplable field on the field's ``time``."""
-    return xr.DataArray(values, dims=TIME_DIM, coords={TIME_DIM: field[TIME_DIM]})
+    return xr.DataArray(values, dims=TIME, coords={TIME: field[TIME]})
 
 
 def _step_weights(field: xr.DataArray) -> xr.DataArray:
     """Step lengths in days, for a length-weighted mean; equal weights without them."""
-    if TIME_STEP_LENGTH in field.coords:
+    if TIMESTEP_LENGTH in field.coords:
         return _on_time(field, step_length(field, "d").values)
     check_steps_are_equally_spaced(field)
-    return _on_time(field, np.ones(field.sizes[TIME_DIM]))
+    return _on_time(field, np.ones(field.sizes[TIME]))
 
 
 def _steps_frame(field: xr.DataArray) -> pd.DataFrame:
     """Each step's start, end and length, in nanoseconds, indexed by its end."""
     return pd.DataFrame(
         {
-            TIME_STEP_START: field[TIME_STEP_START].values.astype("datetime64[ns]"),
-            TIME_DIM: field[TIME_DIM].values.astype("datetime64[ns]"),
-            TIME_STEP_LENGTH: field[TIME_STEP_LENGTH].values.astype("timedelta64[ns]"),
+            TIMESTEP_START: field[TIMESTEP_START].values.astype("datetime64[ns]"),
+            TIME: field[TIME].values.astype("datetime64[ns]"),
+            TIMESTEP_LENGTH: field[TIMESTEP_LENGTH].values.astype("timedelta64[ns]"),
         },
         index=_time_index(field),
     )
@@ -818,7 +814,7 @@ def _steps_frame(field: xr.DataArray) -> pd.DataFrame:
 
 def _grouped(obj: xr.DataArray, freq: str) -> Any:
     """Cells of *freq*, right-closed and right-labeled because ``time`` is a step end."""
-    return obj.resample({TIME_DIM: freq}, closed="right", label="right")
+    return obj.resample({TIME: freq}, closed="right", label="right")
 
 
 def _combine(
@@ -845,7 +841,7 @@ def _nonempty_cells(field: xr.DataArray, freq: str) -> np.ndarray:
     ones no step lands in; an empty cell sums to zero, which is not a
     measurement.
     """
-    ones = _on_time(field, np.ones(field.sizes[TIME_DIM]))
+    ones = _on_time(field, np.ones(field.sizes[TIME]))
     return np.asarray(_grouped(ones, freq).sum().values > 0)
 
 
@@ -861,7 +857,7 @@ def _aggregated_on_calendar_cells(
     check_not_upsampling(field, freq)
     weights = _step_weights(field) if method == "mean" else None
     values = _combine(field, freq, method, weights)
-    values = values.isel({TIME_DIM: _nonempty_cells(field, freq)})
+    values = values.isel({TIME: _nonempty_cells(field, freq)})
     result = values.rename(field.name) if field.name is not None else values
     result.attrs = _aggregated_attrs(field.attrs, kind, method, freq)
     return result
@@ -893,7 +889,7 @@ def _window_attrs(
             # The extreme of step means is no CF cell method: the source's
             # "time: mean" would be false of it, and time_reference says it.
             out.pop("cell_methods", None)
-    weighting = f", weighted by {TIME_STEP_LENGTH}" if weighted else ""
+    weighting = f", weighted by {TIMESTEP_LENGTH}" if weighted else ""
     out["reduction"] = f"{how} over the window the label names{weighting}"
     return out
 
@@ -950,7 +946,7 @@ def _reduce_by_window(
         return _empty_windows(bare, len(windows), np.nan, float)
 
     def by_window(obj: xr.DataArray) -> Any:
-        return obj.groupby_bins(TIME_DIM, windows)
+        return obj.groupby_bins(TIME, windows)
 
     if how == "mean":
         assert weights is not None
@@ -970,7 +966,7 @@ def _count_by_window(bare: xr.DataArray, windows: pd.IntervalIndex) -> xr.DataAr
     """Values that are not missing, per window, as ``int64``."""
     if not (_window_codes(bare, windows) >= 0).any():
         return _empty_windows(bare, len(windows), 0, np.int64)
-    counts = bare.notnull().groupby_bins(TIME_DIM, windows).sum()
+    counts = bare.notnull().groupby_bins(TIME, windows).sum()
     counts = _on_windows(counts, bare.dims).fillna(0).astype(np.int64)
     counts.name = None
     counts.attrs = {}
@@ -979,14 +975,14 @@ def _count_by_window(bare: xr.DataArray, windows: pd.IntervalIndex) -> xr.DataAr
 
 def _on_windows(reduced: xr.DataArray, dims: Any) -> xr.DataArray:
     """A ``groupby_bins`` result on ``time``, one entry per window, without labels."""
-    bins = f"{TIME_DIM}_bins"
-    return reduced.rename({bins: TIME_DIM}).drop_vars(TIME_DIM).transpose(*dims)
+    bins = f"{TIME}_bins"
+    return reduced.rename({bins: TIME}).drop_vars(TIME).transpose(*dims)
 
 
 def _empty_windows(field: xr.DataArray, n_windows: int, fill: Any, dtype: Any) -> xr.DataArray:
     """One entry per window when no row falls in any of them."""
-    shape = [n_windows if dim == TIME_DIM else field.sizes[dim] for dim in field.dims]
-    coords = {name: coord for name, coord in field.coords.items() if TIME_DIM not in coord.dims}
+    shape = [n_windows if dim == TIME else field.sizes[dim] for dim in field.dims]
+    coords = {name: coord for name, coord in field.coords.items() if TIME not in coord.dims}
     return xr.DataArray(np.full(shape, fill, dtype=dtype), dims=field.dims, coords=coords)
 
 
@@ -1005,22 +1001,22 @@ def _window_interval_coords(
         .reindex(np.arange(len(windows)))
     )
     return {
-        TIME_STEP_START: xr.DataArray(
-            spans[TIME_STEP_START].to_numpy("datetime64[ns]"),
-            dims=TIME_DIM,
-            attrs=without_stale_time_attributes(field[TIME_STEP_START].attrs),
+        TIMESTEP_START: xr.DataArray(
+            spans[TIMESTEP_START].to_numpy("datetime64[ns]"),
+            dims=TIME,
+            attrs=without_stale_time_attributes(field[TIMESTEP_START].attrs),
         ),
-        TIME_STEP_LENGTH: xr.DataArray(
-            spans[TIME_STEP_LENGTH].to_numpy("timedelta64[ns]"),
-            dims=TIME_DIM,
+        TIMESTEP_LENGTH: xr.DataArray(
+            spans[TIMESTEP_LENGTH].to_numpy("timedelta64[ns]"),
+            dims=TIME,
             attrs={
-                **without_stale_time_attributes(field[TIME_STEP_LENGTH].attrs),
+                **without_stale_time_attributes(field[TIMESTEP_LENGTH].attrs),
                 "source": STEP_LENGTH_RESAMPLED,
             },
         ),
         SELECTED_STEP_COORD: xr.DataArray(
-            spans[TIME_DIM].to_numpy("datetime64[ns]"),
-            dims=TIME_DIM,
+            spans[TIME].to_numpy("datetime64[ns]"),
+            dims=TIME,
             attrs={"long_name": "End of the last model timestep combined into the window"},
         ),
     }
@@ -1233,26 +1229,26 @@ def check_field_has_a_datetime_time_axis(field: Any) -> None:
             else ""
         )
         raise TypeError(f"expected an xarray.DataArray, got {type(field).__name__}.{advice}")
-    if TIME_DIM not in field.dims:
+    if TIME not in field.dims:
         raise ValueError(
-            f"aligning in time needs a {TIME_DIM!r} dimension; {field_label(field)} has "
+            f"aligning in time needs a {TIME!r} dimension; {field_label(field)} has "
             f"dims {tuple(str(d) for d in field.dims)}. A static field has nothing to "
             "align."
         )
-    if TIME_DIM not in field.coords:
+    if TIME not in field.coords:
         raise ValueError(
-            f"{field_label(field)} has a {TIME_DIM!r} dimension but no {TIME_DIM!r} "
+            f"{field_label(field)} has a {TIME!r} dimension but no {TIME!r} "
             "coordinate, so there is nothing to place its rows by; assign one."
         )
-    dtype = field.coords[TIME_DIM].dtype
+    dtype = field.coords[TIME].dtype
     if not pd.api.types.is_datetime64_any_dtype(dtype):
         raise ValueError(
-            f"the {TIME_DIM!r} coordinate of {field_label(field)} has dtype {dtype}, and "
+            f"the {TIME!r} coordinate of {field_label(field)} has dtype {dtype}, and "
             "alignment needs datetimes; convert it with pandas.to_datetime."
         )
-    if pd.isna(field.coords[TIME_DIM].values).any():
+    if pd.isna(field.coords[TIME].values).any():
         raise ValueError(
-            f"the {TIME_DIM!r} coordinate of {field_label(field)} holds a missing timestamp "
+            f"the {TIME!r} coordinate of {field_label(field)} holds a missing timestamp "
             "(NaT), so its rows cannot be placed. Drop those rows first."
         )
 
@@ -1266,14 +1262,14 @@ def check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
     """
     offenders = [
         name
-        for name in (TIME_STEP_START, TIME_STEP_LENGTH)
-        if name in field.coords and field[name].dims != (TIME_DIM,)
+        for name in (TIMESTEP_START, TIMESTEP_LENGTH)
+        if name in field.coords and field[name].dims != (TIME,)
     ]
     if offenders:
         raise ValueError(
             f"{field_label(field)} has {offenders} on dims "
             f"{[tuple(str(d) for d in field[n].dims) for n in offenders]} rather "
-            f"than on {TIME_DIM!r} alone, which happens when runs on different "
+            f"than on {TIME!r} alone, which happens when runs on different "
             "time axes are stacked together. Select one site, or drop those "
             "coordinates to aggregate on calendar cells with equal weights."
         )
@@ -1287,14 +1283,14 @@ def check_rows_without_an_interval_hold_no_value(
     Padding holds no value; a row that does is a step of unknown extent, and
     dropping it would lose the value silently.
     """
-    rows = field.isel({TIME_DIM: no_interval})
-    others = [dim for dim in rows.dims if dim != TIME_DIM]
+    rows = field.isel({TIME: no_interval})
+    others = [dim for dim in rows.dims if dim != TIME]
     valued = np.asarray(rows.notnull().any(others).values if others else rows.notnull().values)
     if valued.any():
-        first = rows[TIME_DIM].values[int(np.flatnonzero(valued)[0])]
+        first = rows[TIME].values[int(np.flatnonzero(valued)[0])]
         raise ValueError(
             f"{field_label(field)} has values on {int(valued.sum())} row(s) whose "
-            f"{TIME_STEP_START} or {TIME_STEP_LENGTH} is NaT, the first at {first}, so "
+            f"{TIMESTEP_START} or {TIMESTEP_LENGTH} is NaT, the first at {first}, so "
             "which step those values cover is unknown. Rows of pure padding (NaT "
             "interval and every value missing) are dropped; these are not padding. "
             "Give those rows their interval, or drop them."
@@ -1308,11 +1304,11 @@ def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     steps, which is how one record counted twice comes back looking like a
     larger flux.
     """
-    times = field[TIME_DIM].values
+    times = field[TIME].values
     if times.size == 0:
         raise ValueError(
             f"{field_label(field)} has no timesteps left to aggregate. An empty "
-            f"{TIME_DIM!r} comes from a selection that matched nothing, or from "
+            f"{TIME!r} comes from a selection that matched nothing, or from "
             "a site of a stacked ensemble with no record of its own; select a "
             "period or a site the record covers."
         )
@@ -1322,7 +1318,7 @@ def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
         raise ValueError(
             f"{field_label(field)} has timestamps that do not increase: row {where} "
             f"({times[where]}) does not follow row {where - 1} "
-            f"({times[where - 1]}). Sort the field on {TIME_DIM!r}, and drop or "
+            f"({times[where - 1]}). Sort the field on {TIME!r}, and drop or "
             "combine the duplicates; two rows sharing a label would be added "
             "together as though they were consecutive steps."
         )
@@ -1337,10 +1333,10 @@ def check_not_upsampling(field: xr.DataArray, freq: str) -> None:
     passes, and calendar periods of varying length are measured rather than
     assumed.
     """
-    if field.sizes[TIME_DIM] < 2:
+    if field.sizes[TIME] < 2:
         return
-    ones = _on_time(field, np.ones(field.sizes[TIME_DIM]))
-    labels = pd.DatetimeIndex(_grouped(ones, freq).sum().coords[TIME_DIM].to_index())
+    ones = _on_time(field, np.ones(field.sizes[TIME]))
+    labels = pd.DatetimeIndex(_grouped(ones, freq).sum().coords[TIME].to_index())
     offset = pd.tseries.frequencies.to_offset(freq)
     edges = labels.append(pd.DatetimeIndex([labels[-1] + offset]))
     spacing = int(_step_spacing_ns(field).min())
@@ -1359,7 +1355,7 @@ def check_steps_are_equally_spaced(field: xr.DataArray) -> None:
     spacing = _step_spacing_ns(field)
     if spacing.size and (spacing != spacing[0]).any():
         raise ValueError(
-            f"{field_label(field)} has no {TIME_STEP_LENGTH!r} coordinate and its steps "
+            f"{field_label(field)} has no {TIMESTEP_LENGTH!r} coordinate and its steps "
             "are not all the same length, so a mean over them has no defined "
             "weighting. Attach the step lengths, or aggregate a field that "
             "carries them."
@@ -1368,7 +1364,7 @@ def check_steps_are_equally_spaced(field: xr.DataArray) -> None:
 
 def check_has_interval_coords(field: xr.DataArray, message_name: str) -> None:
     """*field* carries pySIPNET's step start and length."""
-    missing = [c for c in (TIME_STEP_START, TIME_STEP_LENGTH) if c not in field.coords]
+    missing = [c for c in (TIMESTEP_START, TIMESTEP_LENGTH) if c not in field.coords]
     if missing:
         raise ValueError(
             f"{message_name} reads the interval each step covers, and {field_label(field)} "
@@ -1379,7 +1375,7 @@ def check_has_interval_coords(field: xr.DataArray, message_name: str) -> None:
 
 def check_has_time_bounds(observed_values: xr.DataArray, message_name: str) -> None:
     """*observed_values* carries both time-bounds coordinates, as datetimes."""
-    missing = [c for c in (TIME_BOUNDS_START, TIME_BOUNDS_END) if c not in observed_values.coords]
+    missing = [c for c in (WINDOW_START, WINDOW_END) if c not in observed_values.coords]
     if missing:
         raise ValueError(
             f"{message_name} carries no {missing} coordinate, so it documents no interval "
@@ -1387,7 +1383,7 @@ def check_has_time_bounds(observed_values: xr.DataArray, message_name: str) -> N
             "dated or static one read an instant with select_timestep_at, or the "
             "whole run with run_window."
         )
-    for name in (TIME_BOUNDS_START, TIME_BOUNDS_END):
+    for name in (WINDOW_START, WINDOW_END):
         dtype = observed_values[name].dtype
         if not pd.api.types.is_datetime64_any_dtype(dtype):
             raise ValueError(

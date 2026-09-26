@@ -104,9 +104,10 @@ here. pySIPNET's registry names are already
 so they are the processed names; aliases (``"nee"``) are accepted on the way
 in and resolved to them.
 
-Each field keeps three of pySIPNET's time coordinates, :data:`TIME_COORDS`
-(:data:`TIME_DIM`, :data:`TIME_STEP_START`, :data:`TIME_STEP_LENGTH`), the
-same three a driver field from
+Each field keeps three of pySIPNET's time coordinates, ``time``,
+``time_step_start`` and ``time_step_length``
+(:data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`), the same three a
+driver field from
 :func:`sipnet_calibration.drivers.driver_fields` keeps -- a run's output and
 its drivers are on one axis:
 
@@ -120,10 +121,10 @@ so the interval a value covers is ``[time_step_start, time]``. That is the
 pair pySIPNET writes as its CF ``time_bounds`` variable, which a DataArray
 cannot carry: ``time_bounds`` is two-dimensional on ``(time, bounds)`` and
 ``bounds`` is not a field dimension. ``time``'s ``bounds`` attribute
-(:data:`STALE_TIME_ATTRIBUTE_NAMES`) is dropped for the same reason, rather
-than left pointing at a variable that is not there. pySIPNET's
-``year``/``day_of_year``/``hour_of_day`` row labels are dropped too;
-``time_step_start`` is the same instant.
+(:data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`) is
+dropped for the same reason, rather than left pointing at a variable that is
+not there. pySIPNET's ``year``/``day_of_year``/``hour_of_day`` row labels are
+dropped too; ``time_step_start`` is the same instant.
 
 :func:`sipnet_calibration.observation.time_alignment.aggregate_time` needs
 ``time_step_length`` for a length-weighted mean, which is why it is kept
@@ -152,7 +153,8 @@ Functions
     A coordinate's labels as a list, and the labels a field's coordinate
     lacks, in the order asked for.
 :func:`without_stale_time_attributes`
-    ``time`` attributes less :data:`STALE_TIME_ATTRIBUTE_NAMES`.
+    ``time`` attributes less
+    :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
 :func:`site_lookup`
     The site table keyed on ``site_id``, for a caller adapting run after run.
 :func:`check_site_table_locates_the_sites`
@@ -232,11 +234,23 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 import xarray as xr
-from pysipnet.dataset import TIME_DIMENSION
 from pysipnet.variables import (
     resolve_output_variable_names as resolve_sipnet_output_variable_names,
 )
 
+from sipnet_calibration.conventions import (
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    SITE,
+    SITE_ATTRIBUTES,
+    SITE_DTYPE,
+    SITE_ID,
+    STALE_TIME_ATTRIBUTE_NAMES,
+    TIME,
+    TIME_COORD_NAMES,
+)
 from sipnet_calibration.sites import load_sites
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -246,12 +260,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "FIELD_DIMS",
     "MEMBER_DIM",
-    "SITE_DIM",
-    "STALE_TIME_ATTRIBUTE_NAMES",
-    "TIME_COORDS",
-    "TIME_DIM",
-    "TIME_STEP_LENGTH",
-    "TIME_STEP_START",
     "check_site_table_locates_the_sites",
     "coordinate_labels",
     "field_label",
@@ -266,29 +274,9 @@ __all__ = [
 ]
 
 MEMBER_DIM = "member"
-SITE_DIM = "site"
-TIME_DIM = TIME_DIMENSION
-
-#: pySIPNET's coordinate for the start of the step a row covers; ``time`` is
-#: its end.
-TIME_STEP_START = "time_step_start"
-
-#: pySIPNET's coordinate for the declared duration of the step a row covers,
-#: as ``timedelta64``.
-TIME_STEP_LENGTH = "time_step_length"
 
 #: The dimensions a field may have, in the order they are written.
-FIELD_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE_DIM, TIME_DIM)
-
-#: pySIPNET's time coordinates, which a model field and a driver field both
-#: keep. ``time`` is the end of the step and ``time_step_start`` its start, so
-#: the two are the CF bounds pair.
-TIME_COORDS: tuple[str, ...] = (TIME_DIM, TIME_STEP_START, TIME_STEP_LENGTH)
-
-#: ``time`` attributes a field does not keep. ``bounds`` names pySIPNET's
-#: two-dimensional ``time_bounds`` variable, which a field cannot carry and
-#: which describes the source's steps, not a coarser one's.
-STALE_TIME_ATTRIBUTE_NAMES: tuple[str, ...] = ("bounds",)
+FIELD_DIMS: tuple[str, ...] = (MEMBER_DIM, SITE, TIME)
 
 
 def site_lookup(sites: pd.DataFrame) -> pd.DataFrame:
@@ -299,9 +287,9 @@ def site_lookup(sites: pd.DataFrame) -> pd.DataFrame:
     8000 rows every time. Idempotent, so passing the result back in costs
     nothing; ``site_id`` stays a column as well as the index.
     """
-    if sites.index.name == "site_id":
+    if sites.index.name == SITE_ID:
         return sites
-    return sites.set_index("site_id", drop=False)
+    return sites.set_index(SITE_ID, drop=False)
 
 
 def label_run(
@@ -397,8 +385,8 @@ def from_sipnet_output(
     dict
         Keyed by pySIPNET registry name, in the order requested. Each value is
         a ``DataArray`` with dimension ``time``, the ``time`` coordinates of
-        :data:`TIME_COORDS`, scalar ``site``/``lon``/``lat`` and
-        ``member`` coordinates for the labels that were given, and pySIPNET's
+        :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`, scalar
+        ``site``/``lon``/``lat`` and ``member`` coordinates for the labels that were given, and pySIPNET's
         variable attributes unchanged.
 
     Raises
@@ -456,7 +444,8 @@ def stack_sipnet_outputs(
         Keyed by pySIPNET registry name, in the order requested. Each value is
         a ``DataArray`` with dims ``(member, site, time)``, ascending in
         ``member`` and ``site``, with ``lon``/``lat`` on ``site`` and the
-        ``time`` coordinates of :data:`TIME_COORDS`.
+        ``time`` coordinates of
+        :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`.
 
     Raises
     ------
@@ -517,8 +506,8 @@ def stack_model_outputs(
         The runs' variables on ``(member, site, time)``, ascending in
         ``member`` (``int16``) and ``site`` (``int32``), with ``lon``/``lat``
         (``float64``, CF attributes) on ``site`` and the ``time`` coordinates
-        of :data:`TIME_COORDS`. The variables' and the first run's dataset
-        attributes are pySIPNET's. Every other coordinate -- ``time_bounds``,
+        of :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`. The
+        variables' and the first run's dataset attributes are pySIPNET's. Every other coordinate -- ``time_bounds``,
         which a field cannot carry, and SIPNET's
         ``year``/``day_of_year``/``hour_of_day`` row labels -- is dropped, as
         is the ``bounds`` attribute of ``time``, so each variable of the
@@ -554,9 +543,9 @@ def stack_model_outputs(
     for (site_id, member_id), dataset in by_key.items():
         labeled = _labeled_for_stacking(dataset, site_id, member_id)
         by_member.setdefault(member_id, []).append(labeled)
-    per_member = [_stack_along(per_site, SITE_DIM) for _, per_site in sorted(by_member.items())]
+    per_member = [_stack_along(per_site, SITE) for _, per_site in sorted(by_member.items())]
     stacked = _stack_along(per_member, MEMBER_DIM).transpose(*FIELD_DIMS, ...)
-    return stacked.assign_coords(_location_coords(located.loc[stacked[SITE_DIM].values]))
+    return stacked.assign_coords(_location_coords(located.loc[stacked[SITE].values]))
 
 
 def resolve_output_variable_names(output_variable_names: str | Iterable[str]) -> list[str]:
@@ -655,25 +644,22 @@ def missing_labels(field: xr.DataArray | xr.Dataset, dim: str, labels: Iterable[
 
 
 def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
-    """*attrs* of a ``time`` coordinate less :data:`STALE_TIME_ATTRIBUTE_NAMES`."""
+    """*attrs* of a ``time`` coordinate less its stale attributes.
+
+    Those are :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
+    """
     return {key: value for key, value in attrs.items() if key not in STALE_TIME_ATTRIBUTE_NAMES}
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-_LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
-_LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
-_SITE_ATTRS = {
-    "long_name": "Model site identifier",
-    "comment": "The handed-down 1-8000 identifier; never renumbered.",
-}
 _MEMBER_ATTRS = {
     "long_name": "Ensemble member",
     "comment": "0-based, meaningful only within this source.",
 }
 
 #: The scalar coordinates :func:`label_run` adds.
-_IDENTITY_COORD_NAMES: tuple[str, ...] = (SITE_DIM, MEMBER_DIM, "lon", "lat")
+_IDENTITY_COORD_NAMES: tuple[str, ...] = (SITE, MEMBER_DIM, LON, LAT)
 
 #: The attributes that say what a variable is, which every stacked run must
 #: agree on.
@@ -711,9 +697,9 @@ def _identity_coords(
     if site is not None:
         site_id = _bounded_integer(site, name="site", dtype=np.int32, minimum=1)
         location = _site_locations([int(site_id)], site_table).iloc[0]
-        coords[SITE_DIM] = xr.DataArray(site_id, attrs=dict(_SITE_ATTRS))
-        coords["lon"] = xr.DataArray(np.float64(location["lon"]), attrs=dict(_LON_ATTRS))
-        coords["lat"] = xr.DataArray(np.float64(location["lat"]), attrs=dict(_LAT_ATTRS))
+        coords[SITE] = xr.DataArray(site_id, attrs=dict(SITE_ATTRIBUTES))
+        coords[LON] = xr.DataArray(np.float64(location[LON]), attrs=dict(LON_ATTRIBUTES))
+        coords[LAT] = xr.DataArray(np.float64(location[LAT]), attrs=dict(LAT_ATTRIBUTES))
     return coords
 
 
@@ -743,7 +729,7 @@ def _site_locations(site_ids: Sequence[int], site_table: pd.DataFrame | None) ->
     """
     table = site_lookup(site_table if site_table is not None else load_sites())
     check_site_table_locates_the_sites(table, site_ids)
-    return table.loc[list(site_ids), ["lon", "lat"]].astype(np.float64)
+    return table.loc[list(site_ids), [LON, LAT]].astype(np.float64)
 
 
 def _location_coords(located: pd.DataFrame) -> dict[str, xr.DataArray]:
@@ -755,8 +741,8 @@ def _location_coords(located: pd.DataFrame) -> dict[str, xr.DataArray]:
     otherwise keep ``lon``/``lat`` scalar and break the convention.
     """
     return {
-        "lon": xr.DataArray(located["lon"].to_numpy(), dims=SITE_DIM, attrs=dict(_LON_ATTRS)),
-        "lat": xr.DataArray(located["lat"].to_numpy(), dims=SITE_DIM, attrs=dict(_LAT_ATTRS)),
+        LON: xr.DataArray(located[LON].to_numpy(), dims=SITE, attrs=dict(LON_ATTRIBUTES)),
+        LAT: xr.DataArray(located[LAT].to_numpy(), dims=SITE, attrs=dict(LAT_ATTRIBUTES)),
     }
 
 
@@ -795,7 +781,7 @@ def _labeled_for_stacking(dataset: xr.Dataset, site_id: int, member_id: int) -> 
     labeled = _with_field_coords(dataset.drop_vars(_IDENTITY_COORD_NAMES, errors="ignore"))
     return labeled.assign_coords(
         {
-            SITE_DIM: xr.DataArray(np.int32(site_id), attrs=dict(_SITE_ATTRS)),
+            SITE: xr.DataArray(SITE_DTYPE(site_id), attrs=dict(SITE_ATTRIBUTES)),
             MEMBER_DIM: xr.DataArray(np.int16(member_id), attrs=dict(_MEMBER_ATTRS)),
         }
     )
@@ -804,15 +790,15 @@ def _labeled_for_stacking(dataset: xr.Dataset, site_id: int, member_id: int) -> 
 def _with_field_coords(dataset: xr.Dataset) -> xr.Dataset:
     """*dataset* with only the coordinates a field keeps.
 
-    Those are :data:`TIME_COORDS` and the identity coordinates. ``time``'s
-    ``bounds`` attribute goes too, since the ``time_bounds`` variable it names
+    Those are :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES` and
+    the identity coordinates. ``time``'s ``bounds`` attribute goes too, since the ``time_bounds`` variable it names
     is one of the coordinates dropped.
     """
-    keep = {*TIME_COORDS, *_IDENTITY_COORD_NAMES}
+    keep = {*TIME_COORD_NAMES, *_IDENTITY_COORD_NAMES}
     # The copy gives this dataset its own variables, so rewriting an attribute
     # below leaves the caller's dataset untouched.
     dataset = dataset.drop_vars([str(c) for c in dataset.coords if str(c) not in keep]).copy()
-    dataset[TIME_DIM].attrs = without_stale_time_attributes(dataset[TIME_DIM].attrs)
+    dataset[TIME].attrs = without_stale_time_attributes(dataset[TIME].attrs)
     return dataset
 
 
@@ -872,13 +858,13 @@ def check_site_table_locates_the_sites(site_table: pd.DataFrame, site_ids: Itera
     KeyError
         If a site of *site_ids* is not in the table.
     """
-    if site_table.index.name != "site_id" and "site_id" not in site_table.columns:
+    if site_table.index.name != SITE_ID and SITE_ID not in site_table.columns:
         raise ValueError(
             "the site table has no 'site_id' column or index; pass the table "
             "load_sites() returns, or one keyed by site_lookup()."
         )
     table = site_lookup(site_table)
-    absent = [name for name in ("lon", "lat") if name not in table.columns]
+    absent = [name for name in (LON, LAT) if name not in table.columns]
     if absent:
         raise ValueError(
             f"the site table has no {absent} column(s), and needs 'lon' and 'lat' to "
@@ -911,7 +897,7 @@ def check_is_a_dataset(dataset: Any) -> None:
 
 def check_run_has_rows(dataset: xr.Dataset) -> None:
     """A run's output has at least one ``time`` row."""
-    if TIME_DIM not in dataset.coords or dataset.sizes.get(TIME_DIM, 0) == 0:
+    if TIME not in dataset.coords or dataset.sizes.get(TIME, 0) == 0:
         raise ValueError(
             "this SIPNET output has no rows, so there is nothing to put on a time axis. "
             "That usually means the run failed; check result.provenance.success and its "
@@ -932,7 +918,7 @@ def check_is_a_nonempty_mapping(value: Any, message_name: str) -> None:
 
 def check_run_labels_match_the_key(dataset: xr.Dataset, site: int, member: int) -> None:
     """A run's own ``site`` and ``member`` labels, where it has them, are its key's."""
-    for name, expected in ((SITE_DIM, site), (MEMBER_DIM, member)):
+    for name, expected in ((SITE, site), (MEMBER_DIM, member)):
         if name not in dataset.coords:
             continue
         labels = coordinate_labels(dataset[name])

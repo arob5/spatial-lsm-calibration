@@ -32,7 +32,7 @@ Input data
     The product, read by :func:`load_site_labels`, whose layout is the
     `Data model`_ below. :func:`site_labels_path` says where it is expected to
     be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
-    :data:`~sipnet_calibration.sites.DATA_ROOT_ENV_VAR`.
+    :data:`~sipnet_calibration.conventions.DATA_ROOT_ENV_VAR`.
 
 Data model
 ----------
@@ -158,11 +158,21 @@ import pandas as pd
 import xarray as xr
 
 from sipnet_calibration import conventions
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, load_sites
+from sipnet_calibration.conventions import (
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    NAME_PATTERN,
+    SITE,
+    SITE_ATTRIBUTES,
+    SITE_DTYPE,
+    SITE_ID,
+)
+from sipnet_calibration.sites import load_sites
 
 __all__ = [
     "LABEL_COLUMN",
-    "SITE_COLUMN",
     "SITE_LABELS",
     "SITE_LABELS_COLUMNS",
     "SITE_LABELS_COLUMN_DTYPES",
@@ -180,25 +190,18 @@ __all__ = [
     "site_labels_path",
 ]
 
-#: Column holding the site identifier, in both the product and the site table.
-SITE_COLUMN = "site_id"
-
 #: Column holding the class. Generic on purpose; see the module Notes.
 LABEL_COLUMN = "label"
 
 #: The product's columns, in order.
-SITE_LABELS_COLUMNS = (SITE_COLUMN, LABEL_COLUMN)
+SITE_LABELS_COLUMNS = (SITE_ID, LABEL_COLUMN)
 
 #: Dtype per column. ``label`` is not here because its categorical dtype
 #: depends on the spec; :func:`label_dtype` builds it.
 #:
 #: Read-only: this is the schema, and a caller that mutated it would change what
 #: every later read of a site-labels product produces.
-SITE_LABELS_COLUMN_DTYPES = MappingProxyType({SITE_COLUMN: np.int32})
-
-#: Pattern a site-labels name must match: ``lower_case_with_underscores``, with
-#: digits allowed inside a word so that ``reanalysis_3pft`` is legal.
-_NAME_PATTERN = r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$"
+SITE_LABELS_COLUMN_DTYPES = MappingProxyType({SITE_ID: SITE_DTYPE})
 
 
 @dataclass(frozen=True)
@@ -273,7 +276,7 @@ class SiteLabelsSpec:
     """Further caveats, one per string, for :func:`describe`."""
 
     def __post_init__(self) -> None:
-        if not re.match(_NAME_PATTERN, self.name):
+        if not NAME_PATTERN.match(self.name):
             raise ValueError(f"Site-labels name {self.name!r} is not lower_case_with_underscores.")
         if not self.description or not self.long_label or not self.product:
             raise ValueError(
@@ -582,7 +585,7 @@ def load_site_labels(
                 path,
                 # site_id is read wide and narrowed after checking, as
                 # load_sites does: reading straight into int32 wraps silently.
-                dtype={SITE_COLUMN: np.int64, LABEL_COLUMN: str},
+                dtype={SITE_ID: np.int64, LABEL_COLUMN: str},
                 keep_default_na=False,
                 index_col=False,
             )
@@ -595,12 +598,12 @@ def load_site_labels(
         )
     if frame.empty:
         raise ValueError(f"{path}: holds no rows")
-    _check_site_ids(frame[SITE_COLUMN], path)
+    _check_site_ids(frame[SITE_ID], path)
     _check_labels_are_declared(frame[LABEL_COLUMN], spec, path)
 
     return pd.DataFrame(
         {
-            SITE_COLUMN: frame[SITE_COLUMN].astype(SITE_LABELS_COLUMN_DTYPES[SITE_COLUMN]),
+            SITE_ID: frame[SITE_ID].astype(SITE_LABELS_COLUMN_DTYPES[SITE_ID]),
             LABEL_COLUMN: frame[LABEL_COLUMN].astype(label_dtype(spec)),
         }
     )
@@ -652,7 +655,7 @@ def site_labels_field(
     labels = load_site_labels(spec, path)
     sites = load_sites() if sites is None else sites
     _check_labels_are_flag_meanings(spec)
-    located = labels.merge(sites[["site_id", "lon", "lat"]], on=SITE_COLUMN, how="left")
+    located = labels.merge(sites[[SITE_ID, LON, LAT]], on=SITE_ID, how="left")
     _check_labeled_sites_are_in_the_site_table(located)
     attrs = {
         "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
@@ -665,11 +668,11 @@ def site_labels_field(
         attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.labels)
     return xr.DataArray(
         located[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
-        dims="site",
+        dims=SITE,
         coords={
-            "site": ("site", located[SITE_COLUMN].to_numpy(np.int32), {"long_name": "Site identifier"}),
-            "lon": ("site", located["lon"].to_numpy(float), dict(_LON_ATTRS)),
-            "lat": ("site", located["lat"].to_numpy(float), dict(_LAT_ATTRS)),
+            SITE: (SITE, located[SITE_ID].to_numpy(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
+            LON: (SITE, located[LON].to_numpy(float), dict(LON_ATTRIBUTES)),
+            LAT: (SITE, located[LAT].to_numpy(float), dict(LAT_ATTRIBUTES)),
         },
         attrs=attrs,
         name=spec.name,
@@ -774,11 +777,11 @@ def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame
     _check_labels_are_declared(label, spec, spec.raw_file)
     built = pd.DataFrame(
         {
-            SITE_COLUMN: site.to_numpy(dtype=SITE_LABELS_COLUMN_DTYPES[SITE_COLUMN]),
+            SITE_ID: site.to_numpy(dtype=SITE_LABELS_COLUMN_DTYPES[SITE_ID]),
             LABEL_COLUMN: pd.Categorical(label, dtype=label_dtype(spec)),
         }
     )
-    return built.sort_values(SITE_COLUMN, ignore_index=True)
+    return built.sort_values(SITE_ID, ignore_index=True)
 
 
 def describe(spec: SiteLabelsSpec) -> str:
@@ -812,10 +815,6 @@ def describe(spec: SiteLabelsSpec) -> str:
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
-_LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
-_LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
-
-
 def _data_root() -> Path:
     return conventions.data_root()
 
@@ -839,22 +838,22 @@ def _compact(values: list[int]) -> str:
 def _check_site_ids(site: pd.Series, source: object, *, sorted_required: bool = True) -> None:
     """Identifiers are positive, fit ``int32``, are unique, and are ascending."""
     if site.isna().any():
-        raise ValueError(f"{source}: {SITE_COLUMN} has a missing value.")
-    high = np.iinfo(SITE_LABELS_COLUMN_DTYPES[SITE_COLUMN]).max
+        raise ValueError(f"{source}: {SITE_ID} has a missing value.")
+    high = np.iinfo(SITE_LABELS_COLUMN_DTYPES[SITE_ID]).max
     if site.min() < 1 or site.max() > high:
         raise ValueError(
-            f"{source}: {SITE_COLUMN} runs {site.min()}-{site.max()}, which is not a "
+            f"{source}: {SITE_ID} runs {site.min()}-{site.max()}, which is not a "
             f"positive int32. Site identifiers are the 1-8000 of the site table."
         )
     duplicated = site[site.duplicated()].unique()
     if duplicated.size:
         raise ValueError(
-            f"{source}: {SITE_COLUMN} repeats {duplicated[:5].tolist()}"
+            f"{source}: {SITE_ID} repeats {duplicated[:5].tolist()}"
             f"{' and more' if duplicated.size > 5 else ''}. "
             "A site-labels product gives each site exactly one class."
         )
     if sorted_required and not site.is_monotonic_increasing:
-        raise ValueError(f"{source}: {SITE_COLUMN} is not in ascending order.")
+        raise ValueError(f"{source}: {SITE_ID} is not in ascending order.")
 
 
 def _check_labels_are_declared(label: pd.Series, spec: SiteLabelsSpec, source: object) -> None:
@@ -883,7 +882,7 @@ def _check_labels_are_flag_meanings(spec: SiteLabelsSpec) -> None:
 
 
 def _check_labeled_sites_are_in_the_site_table(located: pd.DataFrame) -> None:
-    unlocated = located.loc[located["lon"].isna(), SITE_COLUMN].tolist()
+    unlocated = located.loc[located[LON].isna(), SITE_ID].tolist()
     if unlocated:
         raise ValueError(
             f"site(s) {unlocated[:10]} are labeled but not in the site table, so they "

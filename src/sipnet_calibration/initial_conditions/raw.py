@@ -47,10 +47,9 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from sipnet_calibration.conventions import SITE, SITE_ATTRIBUTES, SITE_DTYPE
 from sipnet_calibration.initial_conditions.names import (
     MEMBER,
-    SITE,
-    _SITE_ATTRS,
     _utc_timestamp,
     raw_path,
 )
@@ -152,7 +151,7 @@ def build_raw(
             for name in SOURCE.names
         },
         coords={
-            SITE: (SITE, sites.astype(np.int32), _SITE_ATTRS),
+            SITE: (SITE, sites.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
             MEMBER: (
                 MEMBER,
                 members.astype(np.int16),
@@ -256,8 +255,8 @@ def _check_presence_is_uniform_over_members(
 ) -> None:
     """Raise unless each variable is present for every member of a site or none.
 
-    Private to the package but shared across it, like ``_SITE_ATTRS`` and
-    ``_utc_timestamp`` in :mod:`sipnet_calibration.initial_conditions.names`:
+    Private to the package but shared across it, like ``_utc_timestamp`` in
+    :mod:`sipnet_calibration.initial_conditions.names`:
     :mod:`sipnet_calibration.initial_conditions.processed` asserts the same
     invariant on the product, and it has to be the same rule, since it is what
     gives ``NaN`` its one meaning.

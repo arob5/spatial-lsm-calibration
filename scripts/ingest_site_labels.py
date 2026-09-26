@@ -73,7 +73,6 @@ import pandas as pd
 
 from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
-    SITE_COLUMN,
     SITE_LABELS_NAMES,
     SiteLabelsSpec,
     build_site_labels,
@@ -85,6 +84,7 @@ from sipnet_calibration.site_labels import (
     resolve_site_labels,
     site_labels_path,
 )
+from sipnet_calibration.conventions import SITE_ID
 from sipnet_calibration.sites import default_sites_path, load_sites
 
 
@@ -204,7 +204,7 @@ def describe_product(
     counts = product[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
     width = max(len(label) for label in spec.labels)
     latitude = (
-        product.merge(sites[[SITE_COLUMN, "lat"]], on=SITE_COLUMN)
+        product.merge(sites[[SITE_ID, "lat"]], on=SITE_ID)
         .groupby(LABEL_COLUMN, observed=False)["lat"]
         .agg(["min", "median", "max"])
     )
@@ -262,7 +262,7 @@ def check_sites_are_in_the_site_table(
     spec: SiteLabelsSpec, frame: pd.DataFrame, sites: pd.DataFrame
 ) -> None:
     """Every identifier the raw file labels is a site in the pool."""
-    unknown = sorted(set(frame[spec.site_column]) - set(sites[SITE_COLUMN]))
+    unknown = sorted(set(frame[spec.site_column]) - set(sites[SITE_ID]))
     if unknown:
         raise IngestError(
             f"{spec.raw_file}: labels {len(unknown)} identifiers that are not sites, "
@@ -295,7 +295,7 @@ def check_pool_is_completely_labeled(
     """Where the spec says so, every site in the pool has a class."""
     if not spec.covers_pool:
         return
-    unlabeled = sorted(set(sites[SITE_COLUMN]) - set(product[SITE_COLUMN]))
+    unlabeled = sorted(set(sites[SITE_ID]) - set(product[SITE_ID]))
     if unlabeled:
         raise IngestError(
             f"{spec.raw_file}: leaves {len(unlabeled)} of {len(sites)} sites unlabeled, "
@@ -316,7 +316,7 @@ def check_labels_match_landcover(
     """
     if spec.landcover_mapping is None:
         return
-    joined = product.merge(sites[[SITE_COLUMN, "landcover"]], on=SITE_COLUMN, how="left")
+    joined = product.merge(sites[[SITE_ID, "landcover"]], on=SITE_ID, how="left")
 
     uncovered = sorted(set(joined["landcover"]) - set(spec.landcover_mapping))
     if uncovered:
@@ -331,7 +331,7 @@ def check_labels_match_landcover(
     if not disagreeing.empty:
         first = disagreeing.head(5)
         detail = ", ".join(
-            f"site {row[SITE_COLUMN]} landcover {row['landcover']} -> {row[LABEL_COLUMN]}"
+            f"site {row[SITE_ID]} landcover {row['landcover']} -> {row[LABEL_COLUMN]}"
             for _, row in first.iterrows()
         )
         raise IngestError(

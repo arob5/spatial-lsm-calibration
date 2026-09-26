@@ -31,7 +31,8 @@ import pandas as pd
 import xarray as xr
 from pysipnet.parameters import InitialConditions
 
-from sipnet_calibration.initial_conditions.names import MEMBER, SITE
+from sipnet_calibration.conventions import SITE
+from sipnet_calibration.initial_conditions.names import MEMBER
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [

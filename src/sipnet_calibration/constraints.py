@@ -176,7 +176,6 @@ Usage
 
 from __future__ import annotations
 
-import re
 import warnings
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -192,9 +191,19 @@ from pysipnet.units import validate_units
 from sipnet_calibration import conventions
 from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
-    TIME_BOUNDS_END,
-    TIME_BOUNDS_START,
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    NAME_PATTERN,
+    SITE,
+    SITE_ATTRIBUTES,
+    SITE_DTYPE,
+    SITE_ID,
+    TIME,
 )
+from sipnet_calibration.conventions import WINDOW_END as TIME_BOUNDS_END
+from sipnet_calibration.conventions import WINDOW_START as TIME_BOUNDS_START
 
 __all__ = [
     "CALENDAR",
@@ -202,9 +211,7 @@ __all__ = [
     "CONSTRAINTS",
     "CONSTRAINT_NAMES",
     "MISSING_TOKEN",
-    "NAME_PATTERN",
     "PRODUCER_UNCONFIRMED",
-    "SITE_COLUMN",
     "STANDARD_DEVIATION",
     "TIME_BOUNDS_END",
     "TIME_BOUNDS_START",
@@ -318,8 +325,8 @@ class ConstraintSpec:
             raise ValueError(f"Constraint {self.name!r} needs a description, long_label and product.")
         if len(set(self.raw_columns)) != len(self.raw_columns):
             raise ValueError(f"Constraint {self.name!r}: raw_columns repeats a column.")
-        if SITE_COLUMN not in self.raw_columns:
-            raise ValueError(f"Constraint {self.name!r}: raw_columns lacks {SITE_COLUMN!r}.")
+        if SITE_ID not in self.raw_columns:
+            raise ValueError(f"Constraint {self.name!r}: raw_columns lacks {SITE_ID!r}.")
         for role, column in self._named_columns().items():
             if column not in self.raw_columns:
                 raise ValueError(
@@ -349,8 +356,8 @@ class ConstraintSpec:
     def dims(self) -> tuple[str, ...]:
         """The dims of the processed data variables."""
         if self.time_structure is TimeStructure.STATIC:
-            return ("site",)
-        return ("site", "time")
+            return (SITE,)
+        return (SITE, TIME)
 
     def xarray_attributes(self) -> dict[str, Any]:
         """Attributes for the ``value`` array of the processed product.
@@ -385,14 +392,8 @@ class ConstraintSpec:
         return columns
 
 
-#: The column every raw file addresses its records by: the 1-8000 site identifier.
-SITE_COLUMN = "site_id"
-
 #: How a raw file writes a missing value.
 MISSING_TOKEN = "NA"
-
-#: What a constraint name must look like: lower case words joined by underscores.
-NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
 #: In words, what the ``time`` label of a product with each structure marks.
 TIME_REFERENCE_FOR_STRUCTURE: dict[TimeStructure, str] = {
@@ -677,8 +678,8 @@ def constraint_fields(
         An annual product's array also carries its CF ``time_bounds`` as the
         one-dimensional coordinates ``time_bounds_start`` and
         ``time_bounds_end`` on ``time``
-        (:data:`~sipnet_calibration.conventions.TIME_BOUNDS_START`,
-        :data:`~sipnet_calibration.conventions.TIME_BOUNDS_END`).
+        (:data:`~sipnet_calibration.conventions.WINDOW_START`,
+        :data:`~sipnet_calibration.conventions.WINDOW_END`).
 
     Raises
     ------
@@ -797,10 +798,10 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     fancy-indexed assignment silently overwrite a cell.
     """
     kept, n_dropped = _apply_quality_filter(spec, frame)
-    site = np.sort(sites[SITE_COLUMN].to_numpy(np.int64))
-    coordinates = sites.set_index(SITE_COLUMN).loc[site, ["lon", "lat"]]
+    site = np.sort(sites[SITE_ID].to_numpy(np.int64))
+    coordinates = sites.set_index(SITE_ID).loc[site, [LON, LAT]]
 
-    row_site = kept[SITE_COLUMN].to_numpy(np.int64)
+    row_site = kept[SITE_ID].to_numpy(np.int64)
     _check_sites_in_pool(row_site, site, spec)
     site_index = np.searchsorted(site, row_site)
 
@@ -816,9 +817,9 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
 
     coords.update(
         {
-            "site": ("site", site.astype(np.int32), _SITE_ATTRS),
-            "lon": ("site", coordinates["lon"].to_numpy(np.float64), _LON_ATTRS),
-            "lat": ("site", coordinates["lat"].to_numpy(np.float64), _LAT_ATTRS),
+            SITE: (SITE, site.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
+            LON: (SITE, coordinates[LON].to_numpy(np.float64), dict(LON_ATTRIBUTES)),
+            LAT: (SITE, coordinates[LAT].to_numpy(np.float64), dict(LAT_ATTRIBUTES)),
         }
     )
     dataset = xr.Dataset(
@@ -880,14 +881,6 @@ def describe(spec: ConstraintSpec) -> str:
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-_SITE_ATTRS = {
-    "long_name": "Model site identifier",
-    "comment": "The handed-down 1-8000 identifier of the site table; never renumbered.",
-}
-_LON_ATTRS = {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
-_LAT_ATTRS = {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
-
-
 def _data_root() -> Path:
     return conventions.data_root()
 
@@ -899,7 +892,7 @@ def _raw_dtypes(spec: ConstraintSpec) -> dict[str, Any]:
     # float64 because pandas infers int64 for an all-integer column and
     # float_precision then does not apply.
     dtypes: dict[str, Any] = {
-        SITE_COLUMN: np.int64,
+        SITE_ID: np.int64,
         spec.value_column: np.float64,
         spec.sd_column: np.float64,
     }
@@ -1115,7 +1108,7 @@ def _check_no_duplicate_cells(
 
 def _check_static_copies_agree(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise unless every site carries one value across the raw time column."""
-    distinct = frame.groupby(SITE_COLUMN)[[spec.value_column, spec.sd_column]].nunique(
+    distinct = frame.groupby(SITE_ID)[[spec.value_column, spec.sd_column]].nunique(
         dropna=False
     )
     varying = distinct[(distinct > 1).any(axis=1)]

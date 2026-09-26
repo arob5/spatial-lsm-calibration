@@ -25,27 +25,24 @@ Contents
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
 from pysipnet.parameters import InitialConditions
 from pysipnet.units import validate_units
 
+from sipnet_calibration.conventions import NAME_PATTERN
 from sipnet_calibration.initial_conditions.source_files import SOURCE
 
 __all__ = [
     "INITIAL_CONDITIONS",
     "INITIAL_CONDITION_NAMES",
     "InitialConditionSpec",
-    "NAME_PATTERN",
     "describe",
     "resolve_initial_condition",
 ]
 
 
-#: What a processed name must look like: lower case words joined by underscores.
-NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
 
 
 @dataclass(frozen=True)

@@ -177,6 +177,7 @@ import numpy as np
 import pandas as pd
 
 from sipnet_calibration import conventions
+from sipnet_calibration.conventions import LAT, LON, SITE_DTYPE, SITE_ID
 
 __all__ = [
     "DATA_ROOT_ENV_VAR",
@@ -381,9 +382,9 @@ SITE_GRID = Grid(west=-179.0, south=7.0, n_lon=19080, n_lat=9360, cells_per_degr
 #: indices rather than the other way round. ``ameriflux_site_id`` is the empty
 #: string for the sites with no Ameriflux counterpart, which is most of them.
 SITE_COLUMNS = (
-    "site_id",
-    "lon",
-    "lat",
+    SITE_ID,
+    LON,
+    LAT,
     "lon_index",
     "lat_index",
     "site_name",
@@ -406,9 +407,9 @@ SITE_COLUMNS = (
 #: every later read of the table produces.
 SITE_COLUMN_DTYPES = MappingProxyType(
     {
-        "site_id": np.int32,
-        "lon": np.float64,
-        "lat": np.float64,
+        SITE_ID: SITE_DTYPE,
+        LON: np.float64,
+        LAT: np.float64,
         "lon_index": np.int32,
         "lat_index": np.int32,
         "site_name": str,

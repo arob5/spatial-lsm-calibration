@@ -181,6 +181,7 @@ from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
+from sipnet_calibration.conventions import LAT, LON, SITE
 from sipnet_calibration.fields import (
     check_site_table_locates_the_sites,
     label_run,
@@ -206,7 +207,6 @@ __all__ = [
     "ModelOutputNotFiniteError",
 ]
 
-SITE = "site"
 MEMBER = "member"
 
 
@@ -622,7 +622,7 @@ def _site_table_for(
     chosen = site_table
     if chosen is None:
         own = parameter_vector.site_table
-        chosen = own if {"lon", "lat"} <= set(own.columns) else load_sites()
+        chosen = own if {LON, LAT} <= set(own.columns) else load_sites()
     return site_lookup(chosen).loc[list(sites)]
 
 
@@ -771,7 +771,7 @@ def _stacked_model_output(
     # leaves its lon/lat NaN; they are the site table's whatever the runs did.
     located = {
         name: full[name].copy(data=site_table.loc[list(sites), name].to_numpy(np.float64))
-        for name in ("lon", "lat")
+        for name in (LON, LAT)
     }
     return full.assign_coords(located)
 
