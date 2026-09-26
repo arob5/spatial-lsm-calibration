@@ -46,7 +46,7 @@ from sipnet_calibration.site_labels import (
     site_labels_field,
     site_labels_path,
 )
-from sipnet_calibration.sites import N_SITES, default_sites_path, load_sites
+from sipnet_calibration.sites import default_sites_path, load_sites
 
 #: The tracked raw files, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "site_labels"
@@ -837,8 +837,6 @@ def test_the_registry_class_orders_are_what_was_run_against():
 
 
 def test_the_registry_declares_what_the_readme_says_it_does():
-    assert resolve_site_labels("reanalysis_3pft").expected_rows == N_SITES
-    assert resolve_site_labels("pft_16class").expected_rows == N_SITES
     assert resolve_site_labels("reanalysis_3pft").covers_pool is True
     assert resolve_site_labels("pft_16class").covers_pool is True
 

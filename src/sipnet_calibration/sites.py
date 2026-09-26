@@ -71,12 +71,16 @@ several site-labels products can be applied to the same pool. Site labels are
 their own product under ``processed/site_labels/``, keyed on ``site_id``, and a
 caller joins one on before selecting.
 
-Functions
+Constants
 ---------
 :data:`N_SITES`
-    The size of the site pool the raw inputs define, which the ingest scripts
-    and the raw-data specs check their inputs against.
+    The size of the site pool the raw inputs define, which raw-data code
+    checks its inputs against: the ingest scripts, the raw-data specs
+    (``expected_rows`` of :mod:`sipnet_calibration.site_labels`), the survey
+    scripts and ``scripts/raw_sources/split_site_pft_16class.py``.
 
+Functions
+---------
 :func:`load_sites`
     Read the site table and check it against the data model above.
 
@@ -429,10 +433,11 @@ SITE_GRID = Grid(west=-179.0, south=7.0, n_lon=19080, n_lat=9360, cells_per_degr
 # ── the site table ────────────────────────────────────────────────────────────
 
 #: The size of the site pool the raw inputs define: the records of
-#: ``raw/sites/pts.*`` and the rows of each whole-pool raw data source. The
-#: ingest scripts and the raw-data specs (``expected_rows``) check their inputs
-#: against it; library code never reads it, and counts the sites of the table
-#: in hand instead.
+#: ``raw/sites/pts.*`` and the rows of each whole-pool raw data source. Only
+#: raw-data code reads it -- the ingest scripts, the raw-data specs
+#: (``expected_rows``), the survey scripts and the split script -- to check
+#: its inputs have that size; code working on a site table counts the sites
+#: of the table in hand instead.
 N_SITES = 8000
 
 #: Columns of ``processed/sites/sites.csv``, in order. The ingest script writes

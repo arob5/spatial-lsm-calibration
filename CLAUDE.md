@@ -154,7 +154,7 @@ are still in the code until the PR that renames them (mostly PR 3).
 | **site id** | the integer (`int32`) label of a site, unique within its site table; `site_id` is the site table's column. Ids of a pool shared with collaborators are never renumbered | |
 | **site ids** / `sites` | a sequence of site ids, **always** | `sites` for a DataFrame |
 | **site table** / `site_table` | the pandas site table (`sites.load_sites`), keyed or indexed on `site_id`, with `lon`/`lat` | `sites=`, `sites_table=` for a table |
-| **site pool** (prose) | the sites of the site table in use. Library code counts them from the table in hand (`n_sites`). `sites.N_SITES` is defined once, as the size of the pool the raw inputs define, and is read only by the ingest scripts and the raw-data specs (`expected_rows`) that check their inputs have that size | `POOL`, `POOL_SIZE`, literal 8000s |
+| **site pool** (prose) | the sites of the site table in use. Code working on a site table counts them from the table in hand (`n_sites`). `sites.N_SITES` is defined once, as the size of the pool the raw inputs define, and is read only by raw-data code that checks its inputs have that size: the ingest scripts, the raw-data specs (`site_labels`' `expected_rows`), the survey scripts and the split script | `POOL`, `POOL_SIZE`, literal 8000s |
 | **site labels** | the site-labels data source: a class per site, such as PFT | "label" alone for it |
 | **grid cell** | a cell of `sites.SITE_GRID` | |
 | **point** | a location that is not a site, such as a spatial prediction target; the `point` dim carries integer labels with no meaning beyond the field, and `lon`/`lat` coordinates | a site (a point has no site id) |
