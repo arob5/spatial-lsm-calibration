@@ -138,6 +138,7 @@ from sipnet_calibration.fields import (
     batch_coordinate,
     batch_dims,
     check_at_most_one_batch_dim,
+    check_batch_dim_name_is_not_a_data_source_member,
     check_batch_dim_name_is_not_reserved,
     check_dims_are_batch_spatial_or_time,
     missing_labels,
@@ -157,7 +158,12 @@ from sipnet_calibration.validation import (
     is_one_vector,
 )
 
-__all__ = ["INDEX_LEVELS", "Observation", "ObservationVector"]
+__all__ = [
+    "INDEX_LEVELS",
+    "Observation",
+    "ObservationVector",
+    "check_batch_dim_is_not_an_observation_name",
+]
 
 PRODUCT = "product"
 
@@ -519,17 +525,18 @@ class ObservationVector:
         batch_dim:
             The name of the batch dim a ``(J, N)`` batch is given. It may not
             be a reserved name (a spatial name, ``time``, ``source_index``),
-            a product name, or a coordinate of an observation's values other
-            than a scalar batch label, which the batch dim replaces.
+            a data source's member name (``driver_member``,
+            ``initial_condition_member``), a product name, or a coordinate
+            of an observation's values other than a scalar batch label.
 
         Returns
         -------
         dict
             Product name to a ``float64`` array on the observation's
             ``(site[, time])`` grid, with its coordinates and attributes and
-            ``NaN`` at unobserved cells. A ``(J, N)`` batch gives each array a
-            leading ``int64`` *batch_dim* labeled ``0`` to ``J - 1``; an
-            observation's scalar label of that name is not carried.
+            ``NaN`` where nothing is observed. A ``(J, N)`` batch gives each
+            array a leading ``int64`` *batch_dim* labeled ``0`` to ``J - 1``.
+            An observation's scalar batch labels are not carried.
 
         Raises
         ------
@@ -539,8 +546,17 @@ class ObservationVector:
         ValueError
             If *flat_values* is not one- or two-dimensional or does not have
             ``N`` entries per row, or *batch_dim* is a name it may not be.
+
+        Notes
+        -----
+        An observation's scalar batch labels
+        (:func:`~sipnet_calibration.fields.scalar_batch_labels`, such as a
+        ``sample=4`` left by selecting one sample of an ensemble) describe the
+        observed input, not the batch: carried onto the arrays, they would
+        say every row is sample 4, which the rows are not. They are dropped.
         """
         check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
+        check_batch_dim_name_is_not_a_data_source_member(batch_dim, message_name="batch_dim")
         check_batch_dim_is_not_an_observation_name(self._observations, batch_dim)
         batched = np.asarray(
             as_batched_flat(flat_values, self.dimension, message_name="flat_values")
@@ -695,9 +711,11 @@ def _unstacked(
         full[:, rows] = columns
     else:
         full[:, rows, cols] = columns
-    # An observation's scalar label of the batch dim's name is metadata of the
-    # input, and never overwrites the batch coordinate made here.
-    kept = {name: c for name, c in observation.values.coords.items() if name != batch_dim}
+    # An observation's scalar batch labels are metadata of the input: they
+    # would contradict the rows, and one of the batch dim's name would
+    # overwrite the batch coordinate made here.
+    labels = {*scalar_batch_labels(observation.values), batch_dim}
+    kept = {name: c for name, c in observation.values.coords.items() if name not in labels}
     return xr.DataArray(
         full,
         dims=(batch_dim, *observation.values.dims),
@@ -714,14 +732,14 @@ def _batch_dim_and_labels(
     arrays = {n: fields[n] for n in product_names if isinstance(fields[n], xr.DataArray)}
     for name, array in arrays.items():
         check_dims_are_batch_spatial_or_time(array, message_name=repr(name))
-    by_product = {name: batch_dims(array) for name, array in arrays.items()}
-    for name, dims in by_product.items():
+    by_source = {name: batch_dims(array) for name, array in arrays.items()}
+    for name, dims in by_source.items():
         check_at_most_one_batch_dim(dims, message_name=f"the field {name!r}")
-    with_batch = [n for n, dims in by_product.items() if dims]
+    with_batch = [n for n, dims in by_source.items() if dims]
     if not with_batch:
         return None
     check_fields_agree_on_the_batch_dim(fields, product_names, with_batch)
-    dim = by_product[with_batch[0]][0]
+    dim = by_source[with_batch[0]][0]
     return dim, fields[with_batch[0]][dim].values
 
 
@@ -974,11 +992,9 @@ def check_fields_hold_the_products(fields: Any, product_names: Sequence[str]) ->
 def check_batch_dim_is_not_an_observation_name(
     observations: Sequence[Observation], batch_dim: str
 ) -> None:
-    """*batch_dim* names no product and no coordinate an observation's values carry.
-
-    An observation's scalar batch label of that name is allowed: it is
-    metadata, and the batch dim replaces it.
-    """
+    """*batch_dim* names no product and no coordinate an observation's values carry."""
+    # A scalar batch label of that name is allowed: it is metadata of the
+    # observed input, which fields() drops.
     for observation in observations:
         values = observation.values
         taken = set(map(str, values.coords)) - set(scalar_batch_labels(values))

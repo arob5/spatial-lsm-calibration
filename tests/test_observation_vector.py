@@ -629,7 +629,7 @@ class TestPredictSharesTheOperatorChecks:
                 return out
 
         vector = ObservationVector([Observation("modis_leaf_area_index", lai, Spurious())]).select(sites=[1])
-        with pytest.raises(ValueError, match=r"dim\(s\) \['sample'\] that the model output lacks"):
+        with pytest.raises(ValueError, match=r"dim\(s\) \['sample'\] that neither the model output"):
             vector.predict(one_run)
 
     def test_a_result_that_is_not_an_array_is_a_type_error(self, lai, stack):
@@ -884,6 +884,61 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
         with pytest.raises(ValueError, match="cannot name a batch dim"):
             vector.fields(np.zeros((2, vector.dimension)), batch_dim="source_index")
 
+    @pytest.mark.parametrize("name", ["driver_member", "initial_condition_member"])
+    def test_a_data_source_member_name_is_refused(self, vector, name):
+        """Theta's rows named ``driver_member`` were stamped as driver members."""
+        with pytest.raises(ValueError, match="a data source's member dim"):
+            vector.fields(np.zeros((2, vector.dimension)), batch_dim=name)
+
+    def test_an_observations_scalar_batch_labels_are_not_carried(self, soil, lai):
+        """An observation's ``sample=4`` rode along and contradicted the rows."""
+        from sipnet_calibration.fields import scalar_batch_labels
+
+        labeled = soil.assign_coords(sample=np.int64(4), driver_member=np.int64(2))
+        vector = ObservationVector([
+            Observation("soilgrids_soil_organic_carbon", labeled, ReduceOverRun("soil_carbon", "mean")),
+            Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+        ])
+        block = np.zeros((3, vector.dimension))
+        for batch_dim in ("run", "sample"):
+            made = vector.fields(block, batch_dim=batch_dim)["soilgrids_soil_organic_carbon"]
+            assert scalar_batch_labels(made) == ()
+            assert "driver_member" not in made.coords
+        one = vector.fields(block[0])["soilgrids_soil_organic_carbon"]
+        assert scalar_batch_labels(one) == ()
+
+    def test_the_labels_from_recipe_runs_with_an_observations_scalar_label(self, stack, times):
+        """The documented recipe crashed on an observation carrying ``sample=4``."""
+        from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+        locations = {"lon": ("site", stack["lon"].values), "lat": ("site", stack["lat"].values)}
+        wood = xr.DataArray(
+            [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
+            dims=("site", "time"),
+            coords={"site": np.asarray([1, 2], np.int32), "time": times, **locations},
+            attrs={"units": "g m-2", "constituent": "C"},
+            name="wood",
+        ).assign_coords(sample=np.int64(4))
+        vector = ObservationVector([Observation("wood", wood, SelectTimestep("wood_carbon"))])
+        crossed = stack.expand_dims(driver_member=[0, 3], axis=1)
+        predicted = vector.predict(crossed)
+        stacked = {name: stack_batch_dims(field, into="run") for name, field in predicted.items()}
+        made = vector.fields(vector.flat(stacked), batch_dim="run")
+        restored = unstack_batch_dims(made["wood"], labels_from=stacked["wood"])
+        assert restored.dims == ("sample", "driver_member", "site", "time")
+        observed = wood.notnull()
+        np.testing.assert_allclose(
+            restored.where(observed).values, predicted["wood"].where(observed).values
+        )
+
+    def test_the_fields_carry_the_attributes_of_their_batch_dim(self, vector):
+        from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
+
+        for field in vector.fields(np.zeros((2, vector.dimension))).values():
+            assert dict(field["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
+        for field in vector.fields(np.zeros((2, vector.dimension)), batch_dim="draw").values():
+            assert dict(field["draw"].attrs) == {}
+
 
 class TestFlatRefusesADimThatIsNotABatchDim:
     def test_a_dropped_or_float_batch_coordinate_is_refused_in_the_fields_words(self, vector):
@@ -904,3 +959,24 @@ class TestFlatRefusesADimThatIsNotABatchDim:
         }
         with pytest.raises(ValueError, match="for a\\s+dict, one call per entry"):
             vector.flat(crossed)
+
+    def test_the_advice_names_the_field_in_the_singular(self, vector):
+        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        crossed = {
+            name: field.expand_dims(driver_member=[0, 1])
+            for name, field in vector.fields(block).items()
+        }
+        with pytest.raises(ValueError, match="'modis_leaf_area_index' carries the batch dims"):
+            vector.flat(crossed)
+
+
+class TestPredictChecksAOneSampleTableAgainstAStack:
+    def test_a_table_for_one_sample_is_refused_against_a_stack(self, vector, stack, table):
+        """Sample 3's parameter was applied, silently, to the stacked runs of others."""
+        from sipnet_calibration.fields import stack_batch_dims
+
+        crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
+        stacked = crossed.map(lambda variable: stack_batch_dims(variable, into="run"))
+        three = xr.concat([table, table.isel(sample=[0]).assign_coords(sample=[3])], "sample")
+        with pytest.raises(ValueError, match="for sample 3 alone"):
+            vector.predict(stacked, sipnet_parameters=three.sel(sample=3))
