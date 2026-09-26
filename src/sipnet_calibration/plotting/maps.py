@@ -21,8 +21,7 @@ What map is drawn follows from the data, never from a mode keyword:
 Map                   Dimensions           Recognized by
 ====================  ===================  =====================================
 values at sites       ``(site,)``          ``site`` dim, numeric values
-classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`:
-                                           CF flags, strings or booleans
+classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`
 raster                ``(lat, lon)``       ``lat`` and ``lon`` are dimensions
 ====================  ===================  =====================================
 
@@ -33,16 +32,16 @@ one-dimensional, monotonic coordinates in degrees. Both need ``units`` and
 ``long_name`` in ``attrs`` unless they are categorical, which need only
 ``long_name``.
 
-**Categorical fields** follow CF: integer codes, with ``flag_values`` and a
-space-separated ``flag_meanings`` naming each code's class. An optional
-``flag_display_names``, a tuple aligned with ``flag_meanings``, is what the
-legend shows in their place; it is this project's attribute, not CF's.
+**Categorical fields** are those :func:`~sipnet_calibration.fields.is_categorical`
+accepts. An optional ``flag_display_names``, a tuple aligned with
+``flag_meanings``, is what the legend shows in their place; it is this
+project's attribute, not CF's.
 :func:`sipnet_calibration.site_labels.site_labels_field` makes one from a
 site-labels data source. A class keeps its color in every map of the same source,
 because colors are keyed by the class's position in ``flag_meanings`` and not
 by which classes a map happens to show. Without ``flag_meanings`` the classes
-are the ``flag_values`` codes, ``false`` and ``true`` for a boolean field
-(``run_succeeded``, ``driver_present``), or the strings present, sorted.
+are the ``flag_values`` codes, and ``false`` and ``true`` for a boolean field
+(``run_succeeded``, ``driver_present``).
 
 **Missing values.** A site that is in the field with a missing value is drawn
 as missing: no marker, or a transparent cell. A site that is not in the field
@@ -915,17 +914,7 @@ def _categories(field: xr.DataArray) -> tuple[str, ...]:
         return tuple(str(field.attrs["flag_meanings"]).split())
     if "flag_values" in field.attrs:
         return tuple(str(code) for code in np.asarray(field.attrs["flag_values"]).ravel())
-    if field.dtype.kind == "b":
-        return _BOOLEAN_CLASSES
-    present = {name for name in map(_class_name, np.asarray(field.values).ravel()) if name}
-    return tuple(sorted(present))
-
-
-def _class_name(value: Any) -> str | None:
-    """The class a string or bytes value names, or ``None`` for a missing one."""
-    if isinstance(value, bytes):
-        value = value.decode()
-    return value if isinstance(value, str) and value != "" else None
+    return _BOOLEAN_CLASSES
 
 
 def _display_names(field: xr.DataArray, categories: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -939,13 +928,9 @@ def _display_names(field: xr.DataArray, categories: tuple[str, ...]) -> tuple[st
 def _class_positions(field: xr.DataArray, categories: tuple[str, ...]) -> np.ndarray:
     """Each value's position in *categories*, as floats, ``NaN`` where missing."""
     values = np.asarray(field.values)
-    if field.dtype.kind == "b" and not {"flag_values", "flag_meanings"} & set(field.attrs):
-        return values.astype(float)
-    if not {"flag_values", "flag_meanings"} & set(field.attrs):
-        lookup = {name: position for position, name in enumerate(categories)}
-        flat = [lookup.get(_class_name(v), np.nan) for v in values.ravel()]
-        return np.asarray(flat, dtype=float).reshape(values.shape)
-    codes = np.asarray(field.attrs.get("flag_values", np.arange(len(categories))), dtype=float).ravel()
+    if "flag_values" not in field.attrs:
+        return values.astype(float)  # a boolean mask: false 0, true 1
+    codes = np.asarray(field.attrs["flag_values"], dtype=float).ravel()
     _check_flags_match(codes, categories)
     numeric = values.astype(float)
     positions = np.full(numeric.shape, np.nan)
@@ -1068,20 +1053,17 @@ def check_field_is_a_dataarray_to_map(field: Any) -> None:
 
 
 def check_site_map_is_on_site_alone(field: xr.DataArray) -> None:
-    """A site map has no dim but ``site``, and ``lon``/``lat`` on it."""
-    _check_only(field, {SITE})
-    for name in (LON, LAT):
-        if name not in field.coords or field.coords[name].dims != (SITE,):
-            raise ValueError(
-                f"a site map needs {name!r} as a coordinate on 'site'. The readers in "
-                "sipnet_calibration add it; for an array built by hand, join it from "
-                "sipnet_calibration.sites.load_sites()."
-            )
+    """A site map has no dim but ``site``.
+
+    Its ``lon``/``lat`` on ``site`` are the field contract's, which
+    :func:`~sipnet_calibration.fields.validate_field` checks first.
+    """
+    check_map_has_only_its_spatial_dims(field, {SITE})
 
 
 def check_raster_is_on_lat_and_lon_alone(field: xr.DataArray) -> None:
     """A raster has no dims but ``lat`` and ``lon``, each one-dimensional and monotonic."""
-    _check_only(field, {LAT, LON})
+    check_map_has_only_its_spatial_dims(field, {LAT, LON})
     for name in (LAT, LON):
         values = np.asarray(field[name].values, dtype=float)
         steps = np.diff(values)
@@ -1129,7 +1111,8 @@ def check_animation_has_no_batch_dim(field: xr.DataArray, dim: str) -> None:
         )
 
 
-def _check_only(field: xr.DataArray, allowed: set[str]) -> None:
+def check_map_has_only_its_spatial_dims(field: xr.DataArray, allowed: set[str]) -> None:
+    """A map has no dim beyond its spatial ones, with advice for each extra dim."""
     extra = [dim for dim in field.dims if dim not in allowed]
     if not extra:
         return

@@ -13,9 +13,10 @@ Foundations, which everything else may import:
     timestep coordinates, the window edges, ``site_id``, ``source_index``,
     the attributes of ``site``/``lon``/``lat``/``sample`` and of a data
     source's member dim, the batch-label dtype, where ``data/`` is
-    (:func:`~sipnet_calibration.conventions.data_root`), and
+    (:func:`~sipnet_calibration.conventions.data_root`),
     :class:`~sipnet_calibration.conventions.FrozenMapping`, the one read-only
-    mapping type.
+    mapping type, and the read-only copies of xarray data a frozen class
+    keeps (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`).
 :mod:`~sipnet_calibration.validation`
     Argument coercion, ``as_<thing>(value, *, message_name)``: site ids,
     integers, Flat vectors and batches, boxes, names, frozen mappings; and the
@@ -33,8 +34,10 @@ The site table and the fields:
 :mod:`~sipnet_calibration.projection`
     The display projection, over PROJ.
 :mod:`~sipnet_calibration.fields`
-    The field contract (``validate_field``, batch dims and their stacking),
-    and labeling and stacking SIPNET runs.
+    The field contract and the forms of the model's input and output
+    (``Field``, ``ModelOutput``, ``SIPNETParameterFields`` and their
+    validators), batch dims and their stacking, and labeling and stacking
+    SIPNET runs.
 
 The data sources, each a spec, a reader, a builder, a loader and a field view:
 
@@ -70,15 +73,18 @@ The dependency runs one way, from the foundations up::
 
     conventions  <-  validation  <-  sites
         <-  fields, constraints, site_labels
-        <-  initial_conditions, drivers, parameter_vector, observation
+        <-  drivers, initial_conditions, parameter_vector
+        <-  observation
         <-  forward  <-  experiments
 
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
 and :mod:`~sipnet_calibration.projection` write through it;
 ``parameter_vector`` reads ``site_labels``' column name. ``drivers``,
 ``initial_conditions``, ``parameter_vector`` and ``observation`` depend on
-``fields`` (the field contract and its batch dims), and ``forward`` on
-``fields``, ``observation`` and ``parameter_vector``.
+``fields`` (the field contract, its batch dims, and the SIPNET parameter
+fields alias and validator, which is why neither ``initial_conditions`` nor
+``observation`` imports ``parameter_vector``); and ``forward`` on ``fields``,
+``observation`` and ``parameter_vector``.
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside

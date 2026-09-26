@@ -110,6 +110,7 @@ from pysipnet.variables import (
 )
 
 from sipnet_calibration.conventions import (
+    SIPNET_ROW_LABEL_NAMES,
     TIME,
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -174,9 +175,9 @@ def aggregate_time(
     ----------
     field:
         A field with a ``time`` dimension; any other dimensions are
-        carried through untouched. A field produced by
-        :func:`sipnet_calibration.fields.from_sipnet_output` or by
-        :func:`sipnet_calibration.drivers.driver_fields` carries the ``kind``
+        carried through untouched. A variable of a model output from
+        :func:`sipnet_calibration.fields.to_model_output`, or a field from
+        :func:`sipnet_calibration.drivers.driver_fields`, carries the ``kind``
         attribute this reads; so does any field taken from a pySIPNET Dataset.
     freq:
         A pandas offset alias for the coarser step: ``"1D"``, ``"7D"``,
@@ -219,22 +220,14 @@ def aggregate_time(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray``, or *freq* is not a string.
     ValueError
-        If *field* has no datetime ``time`` coordinate free of ``NaT``, has no
-        steps once the padding is dropped, has a time label with a value and a
-        ``NaT`` interval, or has timestamps that do not strictly increase; if
-        *freq* is not a pandas offset alias, or is finer than the field's own
-        steps, which would interpolate rather than aggregate; if its interval
-        coordinates are not one-dimensional on ``time``, which is what
-        stacking runs on different time axes leaves; if it declares a
-        ``kind`` that is not one of pySIPNET's, or carries pySIPNET's interval
-        coordinates but no kind to check *how* against; if *how* is not one
-        of :data:`RESAMPLING_METHODS`; if the variable's kind does not admit
-        *how*, with pySIPNET's own explanation and the methods that would
-        work; if *how* is omitted and the variable's kind cannot be
-        determined; or if a mean is asked for on unequal steps that carry no
-        declared lengths to weight by.
+        If *field* is not a field with a ``time`` dim, or has no steps once
+        its padding is dropped; if *freq* is not a positive pandas offset
+        alias, or is finer than the field's steps; or if no method follows:
+        *how* is unknown or not admitted by the variable's kind (in
+        pySIPNET's words), the kind cannot be determined, or a mean is asked
+        of unequal steps with no lengths to weight by.
 
     Notes
     -----
@@ -260,8 +253,8 @@ def aggregate_time(
     a truncated run's last end is its declared length, so the odd timestamp
     lands mid-record.
     """
-    check_field_has_a_datetime_time_axis(field)
-    check_interval_coords_are_one_dimensional(field)
+    check_field_is_on_a_time_axis(field)
+    check_frequency_is_an_offset_alias(freq)
     kind = _variable_kind(field)
     method = _method_for(field, kind, how)
     if _has_interval_coords(field):
@@ -456,13 +449,18 @@ def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIn
 
     Raises
     ------
+    TypeError
+        If *observed_values* is not a ``DataArray``.
     ValueError
-        If the field carries no windows (a dated or static constraint
+        If *observed_values* is not a field
+        (:func:`sipnet_calibration.fields.validate_field`); if it carries no
+        windows (a dated or static constraint
         documents no interval, and an operator over it reads an instant with
         :func:`select_timestep_at` or the run with :func:`run_window`
         instead); if a window edge is not a datetime or is ``NaT``; or if a
         window's end does not follow its start.
     """
+    fields.validate_field(observed_values)
     message_name = fields.message_name(observed_values, "the observation source")
     check_has_windows(observed_values, message_name)
     start = pd.DatetimeIndex(observed_values[WINDOW_START].values)
@@ -533,8 +531,7 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
         If the field fails the checks of :func:`aggregate_time`, or *freq* is
         not a pandas offset alias or is finer than the field's steps.
     """
-    check_field_has_a_datetime_time_axis(field)
-    check_interval_coords_are_one_dimensional(field)
+    check_field_is_on_a_time_axis(field)
     if _has_interval_coords(field):
         # What resample would refuse of the field is refused here, where only
         # its mask is resampled.
@@ -624,12 +621,11 @@ def _checked_steps(field: Any) -> xr.DataArray:
     """*field*, checked to be a field of steps, without the padding that is not.
 
     What every public function here that combines a field itself starts with.
-    The order matters: the time axis must be readable before the padding can
-    be found, and only once the padding is gone can the remaining labels be
-    checked to increase.
+    The order matters: the field, and so its time axis, must be checked
+    before the padding can be found, and only once the padding is gone can
+    the remaining timesteps be counted.
     """
-    check_field_has_a_datetime_time_axis(field)
-    check_interval_coords_are_one_dimensional(field)
+    check_field_is_on_a_time_axis(field)
     field = _without_padding(field)
     check_the_steps_are_aggregable(field)
     return field
@@ -650,6 +646,10 @@ def _resampled_by_pysipnet(
         # not resolve.
         field = field.assign_attrs(kind=kind.value)
     result = resample(field, freq, how=method)
+    # pySIPNET's resample writes SIPNET's row labels onto its result; a field
+    # that did not carry them does not gain them (fields' model output).
+    added = [n for n in SIPNET_ROW_LABEL_NAMES if n in result.coords and n not in field.coords]
+    result = result.drop_vars(added)
     if method == "last":
         gaps = _steps_per_cell(field, field.isnull(), freq)
         result = result.where(xr.DataArray(gaps.values == 0, dims=gaps.dims))
@@ -1180,14 +1180,16 @@ def check_frequency_is_an_offset_alias(freq: Any) -> None:
 
     Raises
     ------
+    TypeError
+        If *freq* is not a string.
     ValueError
-        If *freq* is not a string pandas reads as an offset, with pandas' own
-        reason (that ``'M'`` is now ``'ME'``, say), or names a period that is
-        not positive.
+        If pandas does not read *freq* as an offset, with pandas' own reason
+        (that ``'M'`` is now ``'ME'``, say), or it names a period that is not
+        positive.
     """
     bad = f"freq must be a pandas offset alias such as '1D', 'MS' or 'YS', got {freq!r}"
     if not isinstance(freq, str):
-        raise ValueError(f"{bad}.")
+        raise TypeError(f"{bad}, a {type(freq).__name__}.")
     try:
         offset = pd.tseries.frequencies.to_offset(freq)
     except (TypeError, ValueError) as error:
@@ -1228,58 +1230,19 @@ def check_kind_has_a_level(field: xr.DataArray, kind: VariableKind | None, how: 
         )
 
 
-def check_field_has_a_datetime_time_axis(field: Any) -> None:
-    """*field* is a DataArray with a datetime ``time`` coordinate and no NaT."""
-    if not isinstance(field, xr.DataArray):
-        advice = (
-            " A Dataset holds several variables, whose kinds differ; align one at a time."
-            if isinstance(field, xr.Dataset)
-            else ""
-        )
-        raise TypeError(f"expected an xarray.DataArray, got {type(field).__name__}.{advice}")
+def check_field_is_on_a_time_axis(field: Any) -> None:
+    """*field* is a field with a ``time`` dim."""
+    fields.validate_field(field)
+    check_field_has_a_time_dim(field)
+
+
+def check_field_has_a_time_dim(field: xr.DataArray) -> None:
+    """A field aligned in time has a ``time`` dim."""
     if TIME not in field.dims:
         raise ValueError(
             f"aligning in time needs a {TIME!r} dimension; {fields.message_name(field)} has "
             f"dims {tuple(str(d) for d in field.dims)}. A static field has nothing to "
             "align."
-        )
-    if TIME not in field.coords:
-        raise ValueError(
-            f"{fields.message_name(field)} has a {TIME!r} dimension but no {TIME!r} "
-            "coordinate, so there is nothing to place its values by; assign one."
-        )
-    dtype = field.coords[TIME].dtype
-    if not pd.api.types.is_datetime64_any_dtype(dtype):
-        raise ValueError(
-            f"the {TIME!r} coordinate of {fields.message_name(field)} has dtype {dtype}, and "
-            "alignment needs datetimes; convert it with pandas.to_datetime."
-        )
-    if pd.isna(field.coords[TIME].values).any():
-        raise ValueError(
-            f"the {TIME!r} coordinate of {fields.message_name(field)} holds a missing timestamp "
-            "(NaT), so its values cannot be placed. Drop those time labels first."
-        )
-
-
-def check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
-    """The interval coordinates must describe the whole field, not one slice of it.
-
-    :func:`sipnet_calibration.fields.stack_sipnet_outputs` gives them a ``site``
-    or batch dimension when the runs it stacked ran over different time
-    axes, and a coarser step then has no single span or length.
-    """
-    offenders = [
-        name
-        for name in (TIMESTEP_START, TIMESTEP_LENGTH)
-        if name in field.coords and field[name].dims != (TIME,)
-    ]
-    if offenders:
-        raise ValueError(
-            f"{fields.message_name(field)} has {offenders} on dims "
-            f"{[tuple(str(d) for d in field[n].dims) for n in offenders]} rather "
-            f"than on {TIME!r} alone, which happens when runs on different "
-            "time axes are stacked together. Select one site, or drop those "
-            "coordinates to aggregate on calendar cells with equal weights."
         )
 
 
@@ -1307,29 +1270,18 @@ def check_rows_without_an_interval_hold_no_value(
 
 
 def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
-    """There is at least one step, and no two of them share or reverse a label.
+    """There is at least one step left once the padding is dropped.
 
-    Duplicate labels would be summed together as though they were consecutive
-    steps, which is how one record counted twice comes back looking like a
-    larger flux.
+    That the time labels strictly increase, so no two steps share a label and
+    are summed as though they were consecutive, is the field contract's,
+    which :func:`check_field_is_on_a_time_axis` checks first.
     """
-    times = field[TIME].values
-    if times.size == 0:
+    if field[TIME].values.size == 0:
         raise ValueError(
             f"{fields.message_name(field)} has no timesteps left to aggregate. An empty "
             f"{TIME!r} comes from a selection that matched nothing, or from "
             "a site of a stacked ensemble with no record of its own; select a "
             "period or a site the record covers."
-        )
-    spacing = _step_spacing_ns(field)
-    if (spacing <= 0).any():
-        where = int(np.flatnonzero(spacing <= 0)[0]) + 1
-        raise ValueError(
-            f"{fields.message_name(field)} has timestamps that do not increase: the time "
-            f"label at position {where} ({times[where]}) does not follow the one at "
-            f"position {where - 1} ({times[where - 1]}). Sort the field on {TIME!r}, and "
-            "drop or combine the duplicates; two timesteps sharing a label would be "
-            "added together as though they were consecutive steps."
         )
 
 

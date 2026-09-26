@@ -15,9 +15,11 @@ Two abstractions and a handful of functions:
   (:func:`check_operator_declares_names`,
   :func:`check_model_output_carries_what_is_read`,
   :func:`check_result_is_on_the_observation_grid`).
-* :class:`ObservationSource` and :class:`ObservationVector`: the
-  observations of an experiment in a fixed order, with Fields and Flat
-  representations,
+* :class:`ObservationSource` (in
+  :mod:`~sipnet_calibration.observation.source`, with the
+  :data:`ObservedValues` it holds and :func:`validate_observed_values`) and
+  :class:`ObservationVector`: the observations of an experiment in a fixed
+  order, with Fields and Flat representations,
   ``y``, ``index`` (levels :data:`INDEX_LEVELS`), ``positions`` and
   ``predict``.
 
@@ -62,9 +64,13 @@ from sipnet_calibration.observation.time_alignment import (
     window_counts,
     windows_from_observed_values,
 )
+from sipnet_calibration.observation.source import (
+    ObservationSource,
+    ObservedValues,
+    validate_observed_values,
+)
 from sipnet_calibration.observation.vector import (
     INDEX_LEVELS,
-    ObservationSource,
     ObservationVector,
     check_batch_dim_is_not_an_observation_source_name,
 )
@@ -79,6 +85,7 @@ __all__ = [
     "ObservationOperator",
     "ObservationSource",
     "ObservationVector",
+    "ObservedValues",
     "ReduceOverRun",
     "ReduceOverWindows",
     "SelectTimestep",
@@ -94,6 +101,7 @@ __all__ = [
     "restrict_to_observed_sites",
     "run_window",
     "select_timestep_at",
+    "validate_observed_values",
     "window_counts",
     "windows_from_observed_values",
 ]

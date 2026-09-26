@@ -580,7 +580,7 @@ none of them (see [Processed format](#processed-format)). A third,
 holding capacity the calibration also proposes, so its meaning moves as well.
 `sipnet_calibration.initial_conditions.to_sipnet_initial_conditions` applies
 the mapping to one member at one site for one proposed parameter vector, and
-`to_sipnet_initial_conditions_table` does it over a whole
+`to_sipnet_initial_condition_fields` does it over a whole
 `(initial_condition_member, site)` ensemble, crossed with any other batch dim
 a parameter carries (a `sample` drawn by the calibration). Both write the leaf
 row with SIPNET's own `leafCSpWt` rather than PEcAn's SLA draw, and both guard

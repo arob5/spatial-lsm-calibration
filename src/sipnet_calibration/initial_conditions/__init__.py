@@ -142,9 +142,9 @@ and :func:`initial_condition_fields` returns it as one field per
 variable, optionally for a subset of sites.
 
 **The conversion.** :func:`to_sipnet_initial_conditions` converts one
-member; :func:`to_sipnet_initial_conditions_table` converts a whole
-``(initial_condition_member, site)`` ensemble to a table of SIPNET parameter
-values.
+member; :func:`to_sipnet_initial_condition_fields` converts a whole
+``(initial_condition_member, site)`` ensemble to SIPNET parameter fields,
+which merge into a parameter vector's.
 
 **Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
 :func:`raw_path` and :func:`default_processed_path` say where each file is
@@ -209,7 +209,7 @@ Usage
     print(describe(resolve_initial_condition("initial_soil_moisture_saturation")))
 
     from sipnet_calibration.initial_conditions import (
-        to_sipnet_initial_conditions, to_sipnet_initial_conditions_table,
+        to_sipnet_initial_condition_fields, to_sipnet_initial_conditions,
     )
 
     conditions = to_sipnet_initial_conditions(           # one member, one site
@@ -230,14 +230,14 @@ Usage
     # time, since a DataArray cannot be ragged.
     site = {name: field.sel(site=4102) for name, field in fields.items()}
     usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
-    table = to_sipnet_initial_conditions_table(          # one row per member
+    converted = to_sipnet_initial_condition_fields(      # (initial_condition_member,)
         {name: field.isel(initial_condition_member=usable) for name, field in site.items()},
         leaf_carbon_per_area=32.0,                       # scalar or per member
         fine_root_fraction=0.2,
         coarse_root_fraction=0.2,
         deciduous=True,                                  # scalar or per site
     )
-    table.iloc[0]                                        # one row's six parameters
+    converted["soil_carbon"]                             # one of the six, per member
 """
 
 from __future__ import annotations
@@ -260,8 +260,8 @@ from sipnet_calibration.initial_conditions.processed import (
 from sipnet_calibration.initial_conditions.raw import build_raw, raw_encoding, read_raw
 from sipnet_calibration.initial_conditions.sipnet_parameters import (
     CONVERTED_SIPNET_PARAMETER_NAMES,
+    to_sipnet_initial_condition_fields,
     to_sipnet_initial_conditions,
-    to_sipnet_initial_conditions_table,
 )
 from sipnet_calibration.initial_conditions.source_files import (
     NOMINAL_DATE,
@@ -320,6 +320,6 @@ __all__ = [
     "read_raw",
     # The conversion to SIPNET parameters.
     "CONVERTED_SIPNET_PARAMETER_NAMES",
+    "to_sipnet_initial_condition_fields",
     "to_sipnet_initial_conditions",
-    "to_sipnet_initial_conditions_table",
 ]

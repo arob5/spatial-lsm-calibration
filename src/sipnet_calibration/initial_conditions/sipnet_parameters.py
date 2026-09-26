@@ -11,10 +11,10 @@ Contents
 --------
 :func:`to_sipnet_initial_conditions`
     One member at one site to a ``pysipnet.parameters.InitialConditions``.
-:func:`to_sipnet_initial_conditions_table`
+:func:`to_sipnet_initial_condition_fields`
     A whole ensemble, over ``(initial_condition_member, site)`` and any other
-    batch dim the parameters bring, to a table of the same SIPNET parameter
-    values, one row per element of the broadcast inputs.
+    batch dim the parameters bring, to SIPNET parameter fields of the same
+    values, which merge into a parameter vector's.
 :data:`CONVERTED_SIPNET_PARAMETER_NAMES`
     The SIPNET parameters both of them set.
 
@@ -32,18 +32,22 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from pysipnet.parameters import InitialConditions
+from pysipnet.parameters.model import parameter_dataarray
 
 from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SITE, SPATIAL_DIM_NAMES
 from sipnet_calibration.fields import (
+    SIPNETParameterFields,
+    batch_coordinate,
     check_labeled_dims_are_batch_spatial_or_time,
     scalar_batch_labels,
+    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [
     "CONVERTED_SIPNET_PARAMETER_NAMES",
+    "to_sipnet_initial_condition_fields",
     "to_sipnet_initial_conditions",
-    "to_sipnet_initial_conditions_table",
 ]
 
 
@@ -220,20 +224,24 @@ def to_sipnet_initial_conditions(
     return InitialConditions(**{name: float(values[0]) for name, values in converted.items()})
 
 
-def to_sipnet_initial_conditions_table(
+def to_sipnet_initial_condition_fields(
     state: xr.Dataset | Mapping[str, xr.DataArray],
     *,
     leaf_carbon_per_area: float | xr.DataArray,
     fine_root_fraction: float | xr.DataArray,
     coarse_root_fraction: float | xr.DataArray,
     deciduous: bool | xr.DataArray,
-) -> pd.DataFrame:
-    """The conversion over a whole ``(initial_condition_member, site)`` ensemble, as a table.
+) -> SIPNETParameterFields:
+    """The conversion over a whole ``(initial_condition_member, site)`` ensemble.
 
     :func:`to_sipnet_initial_conditions` element by element: the same formulas
-    and the same refusals, one row per element. The prior predictive needs a parameter
-    set for every member of every site it runs, and a table is what the
-    ensemble layer feeds them from.
+    and the same refusals, one value per element, as SIPNET parameter fields
+    (:data:`~sipnet_calibration.fields.SIPNETParameterFields`), which merge
+    into a parameter vector's once the variables both set are dropped from one
+    (``xr.merge([vector.sipnet_parameter_fields(theta),
+    initial_condition_fields.drop_vars(both)])``, where ``both`` is
+    ``soil_carbon`` for
+    :func:`~sipnet_calibration.parameter_vector.example_parameter_vector`).
 
     Parameters
     ----------
@@ -258,30 +266,36 @@ def to_sipnet_initial_conditions_table(
 
     Returns
     -------
-    pandas.DataFrame
-        One row per element, indexed by the dims the inputs broadcast to and
-        always ordered with the batch dims first, in the order the inputs
-        bring them, then ``site``, with
-        :data:`CONVERTED_SIPNET_PARAMETER_NAMES` as columns. For any row label,
-        ``InitialConditions(**table.loc[label])`` equals what
-        :func:`to_sipnet_initial_conditions` returns for it, so every row
-        here also passes pySIPNET's own validation.
+    SIPNETParameterFields
+        One ``float64`` variable per name of
+        :data:`CONVERTED_SIPNET_PARAMETER_NAMES`, each on the dims the inputs
+        broadcast to, the batch dims first, in the order the inputs bring
+        them, then ``site``, with the attributes pySIPNET's
+        ``ParameterSpec.xarray_attributes()`` gives it; the inputs' ``site``
+        coordinates (``lon``/``lat`` among them) and batch labels are kept,
+        and a batch dim that carried no coordinate is labeled ``0`` to
+        ``n - 1``. For any element,
+        ``InitialConditions(**{name: float(v) for name, v in fields.sel(...).items()})``
+        equals what :func:`to_sipnet_initial_conditions` returns for it, so
+        every element here also passes pySIPNET's own validation. At one
+        site, a scalar ``site`` coordinate, each variable is zero-dimensional.
 
     Raises
     ------
     KeyError
         If *state* lacks one of the four variables.
     TypeError
-        If a value of *state* is not a ``DataArray``, or *deciduous* is not
-        boolean.
+        If *state* is neither a Dataset nor a mapping, a value of it is not a
+        ``DataArray``, or *deciduous* is not boolean.
     ValueError
         For the refusals of :func:`to_sipnet_initial_conditions`, naming the
         offending elements; if the inputs broadcast to a dim that is neither
         ``site``, a batch dim (integer labels) nor an unlabeled dim, or to
         ``time``, ``source_index`` or a spatial name other than ``site``,
-        labeled or not; if their
-        indexes do not match, or they were selected for different members or
-        sites; or if a variable's ``units`` are not the processed file's.
+        labeled or not; if their indexes do not match, or they were selected
+        for different members or sites; if a variable's ``units`` are not
+        the processed file's; or if the result is not SIPNET parameter fields
+        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`).
 
     Notes
     -----
@@ -290,6 +304,7 @@ def to_sipnet_initial_conditions_table(
     processed file passed unfiltered is refused and the members to run have to be
     chosen first. See the Notes of :func:`to_sipnet_initial_conditions`.
     """
+    _check_state_is_a_dataset_or_a_mapping(state)
     arrays = {name: _state_variable(state, name) for name in _STATE_VARIABLES}
     arrays["leaf_carbon_per_area"] = _as_data_array(leaf_carbon_per_area)
     arrays["fine_root_fraction"] = _as_data_array(fine_root_fraction)
@@ -302,19 +317,24 @@ def to_sipnet_initial_conditions_table(
     order = [str(dim) for dim in broadcast[0].dims if dim != SITE]
     order += [SITE] if SITE in broadcast[0].dims else []
     broadcast = [array.transpose(*order) for array in broadcast]
-    template = broadcast[0]
+    template = _with_unlabeled_batch_dims_labeled(_with_every_inputs_coordinates(broadcast))
     index = _element_index(template)
 
     converted = _sipnet_parameter_values_from_state(
         index=index,
         **{name: array.values.ravel() for name, array in zip(arrays, broadcast)},
     )
-    table = pd.DataFrame(
-        {name: converted[name] for name in CONVERTED_SIPNET_PARAMETER_NAMES},
-        index=index if index is not None else pd.RangeIndex(1),
+    template = template.drop_attrs().rename(None)
+    sipnet_parameter_fields = xr.Dataset(
+        {
+            name: parameter_dataarray(
+                name, template.copy(data=converted[name].reshape(template.shape))
+            )
+            for name in CONVERTED_SIPNET_PARAMETER_NAMES
+        }
     )
-    _check_rows_are_addressable(table)
-    return table
+    validate_sipnet_parameter_fields(sipnet_parameter_fields)
+    return sipnet_parameter_fields
 
 
 #: Grams in a kilogram: the ensemble's carbon pools are kg m-2 and SIPNET's g m-2.
@@ -363,7 +383,7 @@ def _sipnet_parameter_values_from_state(
     Every input array holds one value per element and they are all the same
     length; every returned array is that length, in that order. This is where
     the formulas and the refusals live, and both public functions call it: the
-    single-member form passes arrays of length one, the table form passes the
+    single-member form passes arrays of length one, the ensemble form passes the
     broadcast ensemble.
 
     Parameters
@@ -451,7 +471,7 @@ def _state_variable(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -
         ) from None
     if not isinstance(array, xr.DataArray):
         raise TypeError(
-            f"{name} is a {type(array).__name__}, not a DataArray. The table form "
+            f"{name} is a {type(array).__name__}, not a DataArray. The ensemble form "
             "converts an ensemble; use to_sipnet_initial_conditions for one member."
         )
     _check_units_match_the_spec(array, name)
@@ -476,8 +496,36 @@ def _label_coordinate_names(arrays: Mapping[str, xr.DataArray]) -> list[str]:
     return [name for name in names if name not in SPATIAL_DIM_NAMES or name == SITE]
 
 
+def _with_every_inputs_coordinates(broadcast: list[xr.DataArray]) -> xr.DataArray:
+    """The first broadcast input, with the coordinates the others carry and it lacks.
+
+    ``xr.broadcast`` gives each input the index coordinates of every dim, but
+    not the others' ``lon``/``lat`` or scalar labels, which the result keeps.
+    """
+    first = broadcast[0]
+    extra: dict[str, xr.DataArray] = {}
+    for array in broadcast[1:]:
+        for name, coordinate in array.coords.items():
+            if name not in first.coords and name not in extra:
+                extra[str(name)] = coordinate
+    return first.assign_coords(extra)
+
+
+def _with_unlabeled_batch_dims_labeled(array: xr.DataArray) -> xr.DataArray:
+    """*array* with every unlabeled dim but ``site`` labeled ``0..n-1``.
+
+    Such a dim was matched by position, and its labels say so. An unlabeled
+    ``site`` is left for the result's validation to refuse, since a position
+    is not a site id.
+    """
+    unlabeled = [str(d) for d in array.dims if d not in array.indexes and d != SITE]
+    return array.assign_coords(
+        {dim: batch_coordinate(dim, np.arange(array.sizes[dim])) for dim in unlabeled}
+    )
+
+
 def _element_index(array: xr.DataArray) -> pd.Index | None:
-    """The table's row index, in the order ``array.values.ravel()`` produces.
+    """The elements' labels, in the order ``array.values.ravel()`` produces.
 
     ``None`` when the inputs broadcast to no dimensions at all, which is one
     element with nothing to label it by.
@@ -532,7 +580,7 @@ def _check_arguments_are_scalar(**arguments: Any) -> None:
         if np.ndim(value) != 0:
             raise TypeError(
                 f"{name} has {np.ndim(value)} dimensions; this form converts one "
-                "member at one site. Use to_sipnet_initial_conditions_table for "
+                "member at one site. Use to_sipnet_initial_condition_fields for "
                 "an ensemble."
             )
 
@@ -545,7 +593,7 @@ def _check_scalar_coordinates_agree(arrays: Mapping[str, xr.DataArray]) -> None:
     a scalar coordinate on no dimension, which alignment therefore ignores.
     ``site`` is checked, and so is every batch label: a name that is a dim of
     some input, or a scalar batch label of one. Two things have to be refused
-    here, and broadcasting turns both into a full, plausible table:
+    here, and broadcasting turns both into full, plausible fields:
 
     * two inputs selected to *different* single labels, which would be
       converted against each other;
@@ -676,12 +724,22 @@ def _check_root_fractions_leave_wood(
         )
 
 
+def _check_state_is_a_dataset_or_a_mapping(state: Any) -> None:
+    """The state is a Dataset or a mapping of fields."""
+    if not isinstance(state, (xr.Dataset, Mapping)):
+        raise TypeError(
+            f"state must be an xarray Dataset or a mapping of DataArrays, got "
+            f"{type(state).__name__}; pass initial_condition_fields(...) or the processed "
+            "Dataset."
+        )
+
+
 def _check_dims_are_batch_and_site(array: xr.DataArray) -> None:
     """The inputs broadcast to ``site``, batch dims and unlabeled dims alone.
 
     A labeled dim other than ``site`` is a batch dim (integer labels); a dim
     without a coordinate is allowed, whatever it is called, and labeled by
-    position in the table, unless it takes one of
+    position, unless it takes one of
     :data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES` other than
     ``site``.
     """
@@ -695,18 +753,6 @@ def _check_dims_are_batch_and_site(array: xr.DataArray) -> None:
             "neither. A parameter varying over anything else has to be selected down first."
         )
     check_labeled_dims_are_batch_spatial_or_time(array, message_name="the inputs")
-
-
-def _check_rows_are_addressable(table: pd.DataFrame) -> None:
-    if table.index.is_unique:
-        return
-    repeated = table.index[table.index.duplicated()].unique().tolist()
-    raise ValueError(
-        f"the inputs repeat {_abbreviate(repeated)}, so the table's rows cannot be "
-        "addressed one row at a time: `table.loc[label]` would return several rows and "
-        "the documented InitialConditions(**table.loc[label]) would fail. Select each "
-        "member and site once."
-    )
 
 
 def _check_units_match_the_spec(array: xr.DataArray, name: str) -> None:
@@ -735,6 +781,6 @@ def _check_converted_values_are_finite(
             "catches only what overflows to infinity: a root-fraction sum just below 1 "
             "yields a finite but absurd wood pool, which passes here and which only a "
             "prior on the fractions can exclude. pySIPNET would refuse a non-finite "
-            "value, and a table may not carry a row the single-member form would not "
+            "value, and the fields may not carry an element the single-member form would not "
             "return."
         )

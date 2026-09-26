@@ -327,14 +327,21 @@ def test_display_names_that_do_not_pair_with_the_classes_are_refused(ax, categor
         plot_map(categorical.assign_attrs(flag_display_names=("A", "B")), ax)
 
 
-def test_string_valued_classes_and_color_overrides(ax):
-    field = site_field([-100.0, -99.0], [40.0, 40.0], np.array(["b", "a"], dtype=object))
-    plot_map(field, ax, colors={"b": "#123456"})
+def test_color_overrides_name_classes(ax, categorical):
+    plot_map(categorical, ax, colors={"conifer": "#123456"})
     artist = data_artist(ax)
     colors = [to_hex(c) for c in artist.to_rgba(artist.get_array())]
     assert colors[0] == "#123456"
     with pytest.raises(ValueError, match="not a class"):
-        plot_map(field, ax, colors={"c": "red"})
+        plot_map(categorical, ax, colors={"shrub": "red"})
+
+
+def test_string_values_are_not_classes(ax):
+    """String classes were mapped; they are coded the CF way instead."""
+    field = site_field([-100.0, -99.0], [40.0, 40.0], np.array(["b", "a"], dtype=object))
+    field.attrs = {"long_name": "Class"}
+    with pytest.raises(ValueError, match="carries its units"):
+        plot_map(field, ax)
 
 
 def test_an_undeclared_code_is_refused(ax, categorical):
@@ -756,3 +763,23 @@ def test_run_succeeded_is_mapped(ax):
     succeeded = (field > -10).rename("run_succeeded")
     succeeded.attrs = {"long_name": "Whether the run succeeded"}
     plot_map(succeeded.isel(sample=0), ax=ax)
+
+
+def test_a_raster_with_a_time_dim_is_refused_with_the_maps_advice():
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    from sipnet_calibration.plotting.maps import plot_map
+
+    lat, lon = np.arange(30.0, 35.0), np.arange(-110.0, -104.0)
+    field = xr.DataArray(
+        np.zeros((5, 6, 2)), dims=("lat", "lon", "time"),
+        coords={"lat": lat, "lon": lon, "time": pd.date_range("2012", periods=2)},
+        attrs={"units": "m2 m-2", "long_name": "Leaf area index"},
+    )
+    figure, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="a map draws one value per"):
+            plot_map(field, ax)
+    finally:
+        plt.close(figure)
