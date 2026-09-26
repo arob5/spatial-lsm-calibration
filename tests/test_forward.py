@@ -1333,6 +1333,29 @@ class TestTheBatchDimIsNamedOnce:
             assert isinstance(array, jax.Array)
         assert isinstance(forward(jax.numpy.asarray(theta[0])), jax.Array)
 
+    def test_nothing_read_from_an_evaluation_changes_it(
+        self, parameter_vector, climate, theta
+    ):
+        """run_succeeded's and model_output's values could be written, failures edited."""
+        prior = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate,
+            backend=SequentialBackend(), output_variable_names=("wood_carbon",),
+            site_table=SITE_TABLE,
+        )
+        evaluation = prior.evaluate(theta)
+        with pytest.raises(ValueError, match="read-only"):
+            evaluation.run_succeeded.values[0, 0] = False
+        with pytest.raises(ValueError, match="read-only"):
+            evaluation.model_output["wood_carbon"].values[0, 0, 0] = 0.0
+        with pytest.raises(ValueError, match="read-only"):
+            evaluation.sipnet_parameter_fields["soil_carbon"].values[0, 0] = 0.0
+        evaluation.failures.loc[0] = [0, 1, "x", "y"]
+        assert evaluation.failures.empty
+        evaluation.run_succeeded.attrs["long_name"] = "x"
+        assert evaluation.run_succeeded.attrs["long_name"] == "Whether the run succeeded"
+        with pytest.raises(TypeError):
+            ForwardEvaluation(*[None] * 7)
+
     def test_a_crossed_batch_is_refused_with_the_advice_to_give_theta_its_rows(
         self, parameter_vector, climate, observation_vector
     ):

@@ -1268,7 +1268,8 @@ class Layout:
     Calibration parameters in declaration order; within one, groups in group
     order; within a group, elements in order. Built by
     :class:`ParameterVector`; consumers call :meth:`unpack`, :meth:`pack` and
-    :meth:`positions` rather than computing offsets.
+    :meth:`positions` rather than computing offsets. Its mappings are
+    read-only (:class:`~sipnet_calibration.conventions.FrozenMapping`).
 
     Attributes
     ----------
@@ -1303,15 +1304,25 @@ class Layout:
     dims: Mapping[str, str]
     element_labels: Mapping[str, tuple[str, ...]]
 
+    def __post_init__(self) -> None:
+        # Read-only, so that no write to what a vector's layout hands out
+        # changes its dimension or its index behind the machinery built on it.
+        object.__setattr__(self, "parameter_names", tuple(self.parameter_names))
+        for name in ("sizes", "dims"):
+            object.__setattr__(self, name, FrozenMapping(getattr(self, name)))
+        for name in ("groups", "element_labels"):
+            frozen = {key: tuple(value) for key, value in getattr(self, name).items()}
+            object.__setattr__(self, name, FrozenMapping(frozen))
+
     @cached_property
-    def slices(self) -> dict[str, slice]:
-        """The contiguous slice of ``theta`` each calibration parameter owns."""
+    def slices(self) -> Mapping[str, slice]:
+        """The contiguous slice of ``theta`` each calibration parameter owns, read-only."""
         out, start = {}, 0
         for name in self.parameter_names:
             width = len(self.groups[name]) * self.sizes[name]
             out[name] = slice(start, start + width)
             start += width
-        return out
+        return FrozenMapping(out)
 
     @property
     def dimension(self) -> int:
@@ -1641,10 +1652,15 @@ class ParameterVector:
             element_labels={p.name: p.element_labels for p in self.parameters},
         )
 
-    @cached_property
+    @property
     def index(self) -> pd.MultiIndex:
         """One row per entry of Flat: levels :data:`INDEX_LEVELS`,
-        ``(parameter, group, element)``, in layout order."""
+        ``(parameter, group, element)``, in layout order; a copy, so setting
+        its names changes nothing of the vector."""
+        return self._index.copy()
+
+    @cached_property
+    def _index(self) -> pd.MultiIndex:
         rows = [
             (name, group, element)
             for name in self.layout.parameter_names
@@ -1837,11 +1853,11 @@ class ParameterVector:
             return self.layout.positions(parameter_name, group=group, element=element)
         mask = np.ones(self.dimension, dtype=bool)
         if group is not None:
-            groups = self.index.get_level_values("group")
+            groups = self._index.get_level_values("group")
             check_label_is_the_vectors(group, groups, "a group")
             mask &= _labels_equal(groups, group)
         if element is not None:
-            elements = self.index.get_level_values("element")
+            elements = self._index.get_level_values("element")
             check_label_is_the_vectors(element, elements, "an element")
             mask &= _labels_equal(elements, element)
         return np.flatnonzero(mask).astype(np.int64)

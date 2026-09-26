@@ -1169,3 +1169,40 @@ class TestPredictRefusesAResultOffTheBatch:
         ])
         with pytest.raises(ValueError, match="'sample'|sample labels"):
             vector.predict(stack)
+
+
+class TestNothingReadFromAVectorChangesIt:
+    """The stored values were handed out: attrs, coordinates and bindings could change."""
+
+    def test_attributes_written_through_a_read_are_not_the_vectors(self, vector, stack, sipnet_parameter_fields):
+        before = vector.flat(vector.predict(stack, sipnet_parameter_fields=sipnet_parameter_fields))
+        vector.observed_values_by_source["soilgrids_soil_organic_carbon"].attrs["units"] = "kg m-2"
+        vector["soilgrids_soil_organic_carbon"].observed_values.attrs["units"] = "kg m-2"
+        assert vector["soilgrids_soil_organic_carbon"].observed_values.attrs["units"] == "Mg ha-1"
+        after = vector.flat(vector.predict(stack, sipnet_parameter_fields=sipnet_parameter_fields))
+        np.testing.assert_array_equal(after, before)
+
+    def test_coordinates_cannot_be_written_or_rebound(self, vector):
+        values = vector["modis_leaf_area_index"].observed_values
+        with pytest.raises(ValueError, match="read-only"):
+            values["lon"].values[:] = 0.0
+        with pytest.raises(ValueError, match="read-only"):
+            values.values[:] = 0.0
+        values.coords["site"] = np.array([7, 8], dtype=np.int32)
+        assert vector["modis_leaf_area_index"].sites == (1, 2)
+        np.testing.assert_array_equal(vector.flat(vector.observed_values_by_source), vector.y)
+
+    def test_a_deep_copy_is_read_only_too(self, vector):
+        import copy
+
+        source = copy.deepcopy(vector["modis_leaf_area_index"])
+        with pytest.raises(ValueError, match="read-only"):
+            source.observed_values.values[:] = 0.0
+        again = copy.deepcopy(vector)
+        with pytest.raises(ValueError, match="read-only"):
+            again.observed_values_by_source["modis_leaf_area_index"]["lon"].values[:] = 0.0
+
+    def test_the_index_is_a_copy(self, vector):
+        vector.index.names = ["a", "b", "c"]
+        assert list(vector.index.names) == list(INDEX_LEVELS)
+        assert vector.positions(site=1).size > 0

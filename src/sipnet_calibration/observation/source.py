@@ -64,9 +64,10 @@ order of the labels carries nothing; the vector's order is its own
 holding an observation, so an operator reads the model nowhere else.
 
 **Frozen values.** An observation source holds its own read-only copy of the
-observed values it was given, loaded into memory, so a later write to the
-caller's array cannot change the observations after a vector's ``y`` and
-index were built from them.
+observed values it was given, loaded into memory, and ``observed_values``
+hands out a read-only copy of that on every read, so neither a later write to
+the caller's array nor one to what it reads can change the observations after
+a vector's ``y`` and index were built from them.
 
 Usage
 -----
@@ -106,8 +107,10 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.fields import (
     MODEL_OUTPUT_COORDINATE_NAMES,
+    ReadOnlyCopies,
     batch_dims,
     message_name,
+    read_only_copy,
     validate_field,
 )
 
@@ -232,11 +235,15 @@ class ObservationSource:
     """
 
     observation_source_name: str
-    observed_values: ObservedValues
+    # Every read is a read-only copy, so neither the values, the coordinates,
+    # the attributes nor the coordinate bindings can be changed through it.
+    observed_values: ObservedValues = ReadOnlyCopies()
     operator: operators.ObservationOperator
 
     def __post_init__(self) -> None:
-        values = _sort_by_site_and_time(self.observed_values)
+        # The caller's array as given: a read through the field would make
+        # the caller's own buffers read-only.
+        values = _sort_by_site_and_time(vars(self)["_observed_values"])
         check_observation_source_is_valid(self.observation_source_name, values, self.operator)
         stored = _read_only_copy(_observed_labels_only(values), self.observation_source_name)
         object.__setattr__(self, "observed_values", stored)
@@ -326,9 +333,7 @@ def _read_only_copy(values: xr.DataArray, observation_source_name: str) -> xr.Da
     # load() computes a dask or lazily indexed copy in place, so the buffer made
     # read-only is the one the observation source keeps rather than a fresh one
     # per read.
-    frozen = values.rename(observation_source_name).copy(deep=True).load()
-    frozen.values.setflags(write=False)
-    return frozen
+    return read_only_copy(values.rename(observation_source_name).copy(deep=True).load())
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

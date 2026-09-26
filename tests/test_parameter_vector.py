@@ -2234,3 +2234,36 @@ class TestTheVectorConventions:
     def test_the_sipnet_parameter_names_written_are_named_for_their_direction(self, example):
         assert not hasattr(example, "sipnet_parameter_names")
         assert "soil_carbon" in example.sipnet_parameter_names_written
+
+
+class TestNothingReadFromAVectorChangesIt:
+    """Layout's dicts and the index were handed out and could be changed in place."""
+
+    def test_the_layout_is_read_only(self, example):
+        layout, dimension = example.layout, example.dimension
+        for mapping in (layout.sizes, layout.groups, layout.dims, layout.element_labels, layout.slices):
+            with pytest.raises(TypeError):
+                mapping[next(iter(mapping))] = 99
+        assert example.dimension == dimension
+
+    def test_the_index_is_a_copy(self, example):
+        example.index.names = ["a", "b", "c"]
+        assert list(example.index.names) == ["parameter", "group", "element"]
+        assert example.positions(group="deciduous").size > 0
+
+    def test_through_a_forward_model(self, example):
+        from conftest import scaled_niwot_model
+        from pyens import SequentialBackend
+        from pysipnet import niwot_reference_output
+
+        from sipnet_calibration.forward import ForwardModel
+
+        climate = {site: niwot_reference_output().climate for site in SITES}
+        forward = ForwardModel(
+            scaled_niwot_model(), example, climate=climate, backend=SequentialBackend(),
+            output_variable_names=("wood_carbon",), site_table=site_table_of(*SITES),
+        )
+        dimension = forward.input_dimension
+        with pytest.raises(TypeError):
+            forward.parameter_vector.layout.sizes["photosynthesis"] = 5
+        assert forward.input_dimension == dimension

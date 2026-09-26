@@ -233,7 +233,7 @@ class ObservationVector:
     _by_name: Mapping[str, ObservationSource] = field(init=False, repr=False)
     _index: pd.MultiIndex = field(init=False, repr=False)
     _sites: tuple[int, ...] = field(init=False, repr=False)
-    _locations: tuple[np.ndarray, np.ndarray] = field(init=False, repr=False)
+    _locations: tuple[tuple[float, ...], tuple[float, ...]] = field(init=False, repr=False)
     _y: jax.Array = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -275,7 +275,11 @@ class ObservationVector:
         """
         lon, lat = self._locations
         return pd.DataFrame(
-            {SITE_ID: np.asarray(self._sites, dtype=SITE_DTYPE), LON: lon.copy(), LAT: lat.copy()}
+            {
+                SITE_ID: np.asarray(self._sites, dtype=SITE_DTYPE),
+                LON: np.asarray(lon, dtype=np.float64),
+                LAT: np.asarray(lat, dtype=np.float64),
+            }
         )
 
     @property
@@ -285,8 +289,9 @@ class ObservationVector:
 
     @property
     def index(self) -> pd.MultiIndex:
-        """One row per entry of Flat: levels :data:`INDEX_LEVELS`."""
-        return self._index
+        """One row per entry of Flat: levels :data:`INDEX_LEVELS`; a copy, so
+        setting its names changes nothing of the vector."""
+        return self._index.copy()
 
     @property
     def output_variable_names(self) -> tuple[str, ...]:
@@ -304,7 +309,8 @@ class ObservationVector:
 
     @property
     def observed_values_by_source(self) -> dict[str, Field]:
-        """Fields: each observation source's read-only observed values, by name."""
+        """Fields: each observation source's observed values, by name, each a
+        read-only copy (:attr:`ObservationSource.observed_values`)."""
         return {
             source.observation_source_name: source.observed_values
             for source in self.observation_sources
@@ -725,8 +731,8 @@ def _source_restricted_to(
 
 def _site_locations_of(
     observation_sources: Sequence[ObservationSource], sites: Sequence[int]
-) -> tuple[np.ndarray, np.ndarray]:
-    """The ``lon`` and ``lat`` of each of *sites*, read-only, from the observed values."""
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """The ``lon`` and ``lat`` of each of *sites*, as tuples, from the observed values."""
     lon = np.full(len(sites), np.nan)
     lat = np.full(len(sites), np.nan)
     position = {site: k for k, site in enumerate(sites)}
@@ -736,9 +742,7 @@ def _site_locations_of(
             k = position.get(int(site))
             if k is not None:
                 lon[k], lat[k] = x, y
-    lon.flags.writeable = False
-    lat.flags.writeable = False
-    return lon, lat
+    return tuple(lon.tolist()), tuple(lat.tolist())
 
 
 def _build_index(observation_sources: Sequence[ObservationSource]) -> pd.MultiIndex:

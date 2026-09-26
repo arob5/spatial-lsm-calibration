@@ -225,6 +225,7 @@ from sipnet_calibration.conventions import (
 from sipnet_calibration.fields import (
     Field,
     ModelOutput,
+    ReadOnlyCopies,
     SIPNETParameterFields,
     batch_coordinate,
     check_batch_dim_name_is_not_a_model_output_name,
@@ -281,13 +282,16 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
 )
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, eq=False, kw_only=True)
 class ForwardEvaluation:
     """What one evaluation of a :class:`ForwardModel` produced.
 
-    The fields are described in the module docstring's Data model: ``theta``,
-    ``predictions`` and ``valid`` are ``jax.Array``\ s, which cannot be
-    written to.
+    The fields are described in the module docstring's Data model. Nothing
+    read from it changes it: ``theta``, ``predictions`` and ``valid`` are
+    ``jax.Array``\\ s, which cannot be written to; ``sipnet_parameter_fields``,
+    ``model_output`` and ``run_succeeded`` are read-only copies
+    (:func:`~sipnet_calibration.fields.read_only_copy`) and ``failures`` a copy,
+    on every read.
 
     Notes
     -----
@@ -297,11 +301,11 @@ class ForwardEvaluation:
     """
 
     theta: jax.Array
-    sipnet_parameter_fields: SIPNETParameterFields
-    model_output: ModelOutput | None
+    sipnet_parameter_fields: SIPNETParameterFields = ReadOnlyCopies()
+    model_output: ModelOutput | None = ReadOnlyCopies()
     predictions: jax.Array | None
-    run_succeeded: Field
-    failures: pd.DataFrame
+    run_succeeded: Field = ReadOnlyCopies()
+    failures: pd.DataFrame = ReadOnlyCopies()
     valid: jax.Array
 
 
