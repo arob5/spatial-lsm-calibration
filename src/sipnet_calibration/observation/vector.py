@@ -129,14 +129,13 @@ Usage
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from itertools import chain
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
-from pysipnet.units import convert_dataarray_units, validate_units
+from pysipnet.units import convert_dataarray_units
 
 from sipnet_calibration.conventions import SAMPLE, SITE, TIME
 from sipnet_calibration.fields import (
@@ -150,11 +149,10 @@ from sipnet_calibration.fields import (
     scalar_batch_labels,
 )
 from sipnet_calibration.observation.operators import (
-    ObservationOperator,
     check_model_output_carries_what_is_read,
-    check_operator_declares_names,
     check_result_is_on_the_observation_grid,
 )
+from sipnet_calibration.observation.source import ObservationSource
 from sipnet_calibration.validation import (
     as_batched_flat,
     as_names,
@@ -165,7 +163,6 @@ from sipnet_calibration.validation import (
 
 __all__ = [
     "INDEX_LEVELS",
-    "ObservationSource",
     "ObservationVector",
     "check_batch_dim_is_not_an_observation_source_name",
 ]
@@ -178,103 +175,6 @@ INDEX_LEVELS: tuple[str, ...] = (SITE, OBSERVATION_SOURCE, TIME)
 #: The dim the vectorized read of the observations indexes along, one per
 #: observation; internal to ``flat`` and never on a result.
 _OBSERVATION_DIM = "__observation__"
-
-
-@dataclass(frozen=True, eq=False)
-class ObservationSource:
-    """One observation source, with the rule that predicts it.
-
-    Parameters
-    ----------
-    observation_source_name:
-        The observation source's name, a non-empty string; the observed
-        values are renamed to it.
-    observed_values:
-        The observed field, ``(site,)`` or ``(site, time)``, as described in
-        the module docstring. It is copied and loaded into memory, ordered by
-        ascending ``site`` and ``time``, trimmed to the sites and time labels
-        holding at least one observation, and stored read-only.
-    operator:
-        The :class:`~sipnet_calibration.observation.operators.ObservationOperator`
-        that predicts the observation source.
-
-    Raises
-    ------
-    TypeError
-        If *observation_source_name* is not a string, *observed_values* is
-        not a ``DataArray``, or *operator* is not callable or declares its
-        names other than as tuples of strings.
-    ValueError
-        If *observation_source_name* is empty; if *observed_values* has dims
-        other than
-        ``(site[, time])`` (a batch dim among them),
-        non-integer or repeated ``site`` labels, non-numeric values, an
-        infinite value, no ``units`` attribute or units pySIPNET's
-        ``validate_units`` refuses (``'g C m-2'``, whose substance belongs in
-        ``constituent``), or ``time`` labels that are not naive datetimes,
-        repeat or hold ``NaT``; or if the operator declares an alias.
-    KeyError
-        If the operator declares a name pySIPNET does not know.
-
-    Notes
-    -----
-    Observation sources compare and hash by identity: two built from equal
-    arrays are two observation sources, since an array has no single truth
-    value to compare by.
-    """
-
-    observation_source_name: str
-    observed_values: xr.DataArray
-    operator: ObservationOperator
-
-    def __post_init__(self) -> None:
-        check_observation_source_name_is_a_nonempty_string(self.observation_source_name)
-        check_observed_values_are_a_field(self.observed_values, self.observation_source_name)
-        check_observed_values_are_finite_or_nan(self.observed_values, self.observation_source_name)
-        check_observed_values_have_units(self.observed_values, self.observation_source_name)
-        check_operator_declares_names(self.operator, self.observation_source_name)
-        values = _observed_labels_only(_ordered(self.observed_values))
-        frozen = _frozen(values, self.observation_source_name)
-        object.__setattr__(self, "observed_values", frozen)
-
-    @property
-    def sites(self) -> tuple[int, ...]:
-        return tuple(int(s) for s in self.observed_values[SITE].values)
-
-    @property
-    def is_static(self) -> bool:
-        return TIME not in self.observed_values.dims
-
-    @property
-    def n_observations(self) -> int:
-        return int(self.observed_values.notnull().sum())
-
-    def __repr__(self) -> str:
-        return (
-            f"ObservationSource({self.observation_source_name!r}, "
-            f"{self.n_observations} observations, {self.operator!r})"
-        )
-
-    def observations(self) -> pd.DataFrame:
-        """The observations as a table with ``site``, ``time`` and ``value`` columns."""
-        values = self.observed_values
-        mask = values.notnull()
-        site_ids = values[SITE].values
-        if not self.is_static:
-            site_ids = site_ids[:, None]
-        sites = np.broadcast_to(site_ids, values.shape)
-        if self.is_static:
-            times = np.full(values.shape, np.datetime64("NaT", "ns"))
-        else:
-            times = np.broadcast_to(values[TIME].values[None, :], values.shape)
-        chosen = mask.values
-        return pd.DataFrame(
-            {
-                SITE: sites[chosen].astype(np.int64),
-                TIME: times[chosen].astype("datetime64[ns]"),
-                "value": values.values[chosen].astype(np.float64),
-            }
-        )
 
 
 class ObservationVector:
@@ -668,36 +568,6 @@ class ObservationVector:
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
-def _ordered(values: xr.DataArray) -> xr.DataArray:
-    dims = [d for d in (SITE, TIME) if d in values.dims]
-    values = values.transpose(*dims)
-    if not values.indexes[SITE].is_monotonic_increasing:
-        values = values.sortby(SITE)
-    if TIME in values.dims and not values.indexes[TIME].is_monotonic_increasing:
-        values = values.sortby(TIME)
-    return values
-
-
-def _observed_labels_only(values: xr.DataArray) -> xr.DataArray:
-    """*values* without the sites and time labels that hold no observation."""
-    observed = values.notnull()
-    if TIME in values.dims:
-        values = values.isel({SITE: np.flatnonzero(observed.any(TIME).values)})
-        values = values.isel({TIME: np.flatnonzero(observed.any(SITE).values)})
-        return values
-    return values.isel({SITE: np.flatnonzero(observed.values)})
-
-
-def _frozen(values: xr.DataArray, observation_source_name: str) -> xr.DataArray:
-    """A read-only, in-memory copy of *values*, named *observation_source_name*."""
-    # load() computes a dask or lazily indexed copy in place, so the buffer made
-    # read-only is the one the observation source keeps rather than a fresh one
-    # per read.
-    frozen = values.rename(observation_source_name).copy(deep=True).load()
-    frozen.values.setflags(write=False)
-    return frozen
-
-
 def _union(groups: Iterable[Sequence[str]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(chain.from_iterable(groups)))
 
@@ -718,7 +588,11 @@ def _selected(
         values = values.sel({TIME: time})
     if int(values.notnull().sum()) == 0:
         return None
-    return ObservationSource(source.observation_source_name, values, source.operator)
+    return ObservationSource(
+        observation_source_name=source.observation_source_name,
+        observed_values=values,
+        operator=source.operator,
+    )
 
 
 def _build_index(observation_sources: Sequence[ObservationSource]) -> pd.MultiIndex:
@@ -862,108 +736,6 @@ def _with_site_dimension(predicted: xr.DataArray) -> xr.DataArray:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_observation_source_name_is_a_nonempty_string(observation_source_name: Any) -> None:
-    if not isinstance(observation_source_name, str):
-        raise TypeError(
-            "observation_source_name must be a string, got "
-            f"{type(observation_source_name).__name__}; name the observation source as its "
-            "constraint file is named, e.g. 'modis_leaf_area_index'."
-        )
-    if not observation_source_name:
-        raise ValueError(
-            "observation_source_name is empty; name the observation source as its "
-            "constraint file is named, e.g. 'modis_leaf_area_index'."
-        )
-
-
-def check_observed_values_are_a_field(values: Any, message_name: str) -> None:
-    if not isinstance(values, xr.DataArray):
-        raise TypeError(
-            f"{message_name}: observed_values must be a DataArray, got "
-            f"{type(values).__name__}; pass one constraint's field from constraint_fields."
-        )
-    batch = batch_dims(values)
-    if batch:
-        raise ValueError(
-            f"{message_name}: observed_values carry the batch dim(s) {list(batch)}. An "
-            "observation ensemble is reduced to one value per (site[, time]) by the "
-            "experiment before it enters the vector; reduce it, or select one label."
-        )
-    extra = [d for d in values.dims if d not in (SITE, TIME)]
-    if extra or SITE not in values.dims:
-        raise ValueError(
-            f"{message_name}: observed_values must be on (site,) or (site, time), got dims "
-            f"{tuple(values.dims)}; select or reduce the other dimensions first."
-        )
-    if SITE not in values.coords:
-        raise ValueError(
-            f"{message_name}: observed_values carry no site coordinate; label the site dim "
-            "with the site ids of the site table."
-        )
-    if values[SITE].dtype.kind not in "iu":
-        raise ValueError(
-            f"{message_name}: site labels must be integers (the site ids), got dtype "
-            f"{values[SITE].dtype}; cast them with .astype(int) if they are whole numbers."
-        )
-    if values.indexes[SITE].has_duplicates:
-        raise ValueError(
-            f"{message_name}: the site coordinate has duplicates; an observation source "
-            "names each site once, so combine the repeated sites."
-        )
-    if values.dtype.kind not in "iuf":
-        raise ValueError(
-            f"{message_name}: observed_values must be numeric, got dtype {values.dtype}; "
-            "convert them "
-            "to float, with NaN where nothing was observed."
-        )
-    if TIME in values.dims:
-        check_time_labels_are_naive_and_distinct(values, message_name)
-
-
-def check_time_labels_are_naive_and_distinct(values: xr.DataArray, message_name: str) -> None:
-    if TIME not in values.coords:
-        raise ValueError(
-            f"{message_name}: observed_values have a time dimension but no time coordinate; "
-            "label the time dim with its timestamps."
-        )
-    if not pd.api.types.is_datetime64_dtype(values[TIME].dtype):
-        raise ValueError(
-            f"{message_name}: time labels must be naive datetime64, got dtype "
-            f"{values[TIME].dtype}; a time-zone-aware or object coordinate is not "
-            "one the model axis can be matched against. Convert it to the model's clock "
-            "and drop the time zone."
-        )
-    if np.isnat(values[TIME].values).any():
-        raise ValueError(
-            f"{message_name}: the time coordinate holds NaT, which the index reserves for a "
-            "static observation source; drop those labels."
-        )
-    if values.indexes[TIME].has_duplicates:
-        raise ValueError(
-            f"{message_name}: the time coordinate has duplicates; combine the repeated "
-            "time labels into one per label."
-        )
-
-
-def check_observed_values_are_finite_or_nan(values: xr.DataArray, message_name: str) -> None:
-    if np.isinf(values.values.astype(np.float64)).any():
-        raise ValueError(
-            f"{message_name}: an observed value is infinite; an observation is finite or "
-            "NaN, so replace it with NaN or drop it."
-        )
-
-
-def check_observed_values_have_units(values: xr.DataArray, message_name: str) -> None:
-    units = values.attrs.get("units")
-    if not isinstance(units, str):
-        raise ValueError(
-            f"{message_name}: observed_values carry no 'units' attribute, so a prediction "
-            "cannot be "
-            "converted to compare with them; set attrs['units'] to the source's units."
-        )
-    validate_units(units)
-
-
 def check_there_is_an_observation_source(observation_sources: Sequence[Any]) -> None:
     if not observation_sources:
         raise ValueError(
@@ -981,8 +753,8 @@ def check_entries_are_observation_sources(observation_sources: Sequence[Any]) ->
     if bad:
         raise TypeError(
             f"every entry must be an ObservationSource, got {bad}; wrap each source's "
-            "observed values as ObservationSource(observation_source_name, observed_values, "
-            "operator)."
+            "observed values as ObservationSource(observation_source_name=..., "
+            "observed_values=..., operator=...)."
         )
 
 

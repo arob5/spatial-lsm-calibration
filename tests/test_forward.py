@@ -21,6 +21,7 @@ from pysipnet.runner import SIPNETRunner
 
 from conftest import (
     BLOW_UP,
+    located,
     INVALID,
     NAN_BAND,
     SOIL_REFERENCE,
@@ -102,24 +103,24 @@ def files(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def observation_vector():
-    wood = xr.DataArray(
+    wood = located(xr.DataArray(
         [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
         dims=("site", "time"),
         coords={"site": list(SITES), "time": LABELS},
         attrs={"units": "Mg ha-1", "constituent": "C"},
         name="landtrendr_aboveground_biomass",
-    )
-    lai = xr.DataArray(
+    ), site_table=SITE_TABLE)
+    lai = located(xr.DataArray(
         [[3.0, 2.0, np.nan], [np.nan, 1.0, 1.5]],
         dims=("site", "time"),
         coords={"site": list(SITES), "time": LABELS},
         attrs={"units": "m2 m-2"},
         name="modis_leaf_area_index",
-    )
+    ), site_table=SITE_TABLE)
     return ObservationVector(
         [
-            ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-            ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+            ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon")),
+            ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ]
     )
 
@@ -226,7 +227,7 @@ class TestEvaluate:
         wood = observation_vector["landtrendr_aboveground_biomass"].observed_values.copy()
         wood.loc[{"site": 27}] = np.nan
         sparse = ObservationVector(
-            [ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
+            [ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
         assert sparse.positions(site=27).size == 0 and sparse.sites == (1,)
         forward = ForwardModel(
@@ -259,7 +260,7 @@ class TestEvaluate:
         """A run's segment is placed at positions(site=), which needs a site-major vector."""
         sites = [1, 27, 40]
         times = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, 30, 50]])
-        wood = xr.DataArray(
+        wood = located(xr.DataArray(
             [
                 [100.0, np.nan, 120.0, 130.0],
                 [np.nan, 115.0, np.nan, np.nan],
@@ -269,26 +270,26 @@ class TestEvaluate:
             coords={"site": sites, "time": times},
             attrs={"units": "Mg ha-1", "constituent": "C"},
             name="landtrendr_aboveground_biomass",
-        )
-        lai = xr.DataArray(
+        ))
+        lai = located(xr.DataArray(
             [[np.nan, 2.0, 2.5, np.nan], [1.0, np.nan, 1.5, 1.2], [np.nan] * 4],
             dims=("site", "time"),
             coords={"site": sites, "time": times},
             attrs={"units": "m2 m-2"},
             name="modis_leaf_area_index",
-        )
-        soil = xr.DataArray(
+        ))
+        soil = located(xr.DataArray(
             [np.nan, 5000.0, 4000.0],
             dims="site",
             coords={"site": sites},
             attrs={"units": "g m-2", "constituent": "C"},
             name="soil",
-        )
+        ))
         observation_vector = ObservationVector(
             [
-                ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-                ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-                ObservationSource("soil", soil, ReduceOverRun("soil_carbon", "mean")),
+                ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon")),
+                ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+                ObservationSource(observation_source_name="soil", observed_values=soil, operator=ReduceOverRun("soil_carbon", "mean")),
             ]
         )
         assert observation_vector.sites == tuple(sites)
@@ -303,15 +304,15 @@ class TestEvaluate:
         """Site 27's drivers end before a label only site 1 is observed at."""
         late = SHORT_STEPS + 10
         labels = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, late]])
-        wood = xr.DataArray(
+        wood = located(xr.DataArray(
             [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
             dims=("site", "time"),
             coords={"site": list(SITES), "time": labels},
             attrs={"units": "Mg ha-1", "constituent": "C"},
             name="landtrendr_aboveground_biomass",
-        )
+        ), site_table=SITE_TABLE)
         observed = ObservationVector(
-            [ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
+            [ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -433,15 +434,15 @@ class TestFailures:
                 out.attrs = {"units": "g m-2", "constituent": "C"}
                 return out
 
-        wood = xr.DataArray(
+        wood = located(xr.DataArray(
             [[100.0, 110.0, 120.0]],
             dims=("site", "time"),
             coords={"site": [1], "time": LABELS},
             attrs={"units": "Mg ha-1", "constituent": "C"},
             name="landtrendr_aboveground_biomass",
-        )
+        ), site_table=SITE_TABLE)
         infinite = ObservationVector(
-            [ObservationSource("landtrendr_aboveground_biomass", wood, Infinite())]
+            [ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=Infinite())]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
