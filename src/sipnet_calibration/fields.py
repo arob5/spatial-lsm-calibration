@@ -117,8 +117,8 @@ its drivers are on one axis:
 ``time_step_length``  its duration, as ``timedelta64``
 ===================== ===================================================
 
-so the interval a value covers is ``[time_step_start, time]``. That is the
-pair pySIPNET writes as its CF ``time_bounds`` variable, which a DataArray
+so the interval a value covers is ``(time_step_start, time]``. Its two edges
+are the pair pySIPNET writes as its CF ``time_bounds`` variable, which a DataArray
 cannot carry: ``time_bounds`` is two-dimensional on ``(time, bounds)`` and
 ``bounds`` is not a field dimension. ``time``'s ``bounds`` attribute
 (:data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`) is

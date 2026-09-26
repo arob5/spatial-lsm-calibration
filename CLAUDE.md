@@ -86,6 +86,13 @@ Facts specific to this working copy, which the README deliberately does not carr
 - In the root checkout the storage-backed inputs are real copies, not symlinks;
   on SCC, and in a worktree that links them from the root, they are symlinks.
   The five constraint files and the site shapefile are tracked either way.
+- **A tracked raw input is found from the repository, not from
+  `conventions.data_root()`.** `data_root()` (and `$SIPNET_CALIBRATION_DATA`)
+  says where the storage-backed part of `data/` is, which on the SCC or with
+  the variable set is another tree; a tracked file is always in the checkout.
+  The tests (`conftest.REPOSITORY`) and the Natural Earth scripts follow this;
+  the library's own `default_raw_dir()` resolvers for tracked directories
+  still go through `data_root()` until the data-source cleanup (PR 5d).
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
@@ -147,7 +154,7 @@ are still in the code until the PR that renames them (mostly PR 3).
 | **site id** | the integer (`int32`) label of a site, unique within its site table; `site_id` is the site table's column. Ids of a pool shared with collaborators are never renumbered | |
 | **site ids** / `sites` | a sequence of site ids, **always** | `sites` for a DataFrame |
 | **site table** / `site_table` | the pandas site table (`sites.load_sites`), keyed or indexed on `site_id`, with `lon`/`lat` | `sites=`, `sites_table=` for a table |
-| **site pool** (prose) | the sites of the site table in use. Library code counts them from the table in hand (`n_sites`); `N_SITES` exists only where an ingest script checks its raw inputs have the size it expects | `POOL`, `POOL_SIZE`, literal 8000s |
+| **site pool** (prose) | the sites of the site table in use. Library code counts them from the table in hand (`n_sites`). `sites.N_SITES` is defined once, as the size of the pool the raw inputs define, and is read only by the ingest scripts and the raw-data specs (`expected_rows`) that check their inputs have that size | `POOL`, `POOL_SIZE`, literal 8000s |
 | **site labels** | the site-labels data source: a class per site, such as PFT | "label" alone for it |
 | **grid cell** | a cell of `sites.SITE_GRID` | |
 | **point** | a location that is not a site, such as a spatial prediction target; the `point` dim carries integer labels with no meaning beyond the field, and `lon`/`lat` coordinates | a site (a point has no site id) |
@@ -272,7 +279,7 @@ convention (approved; **being implemented in PR 4**, except where noted):
 
 | Aspect | Convention |
 |---|---|
-| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check; nothing mutable reachable: mappings frozen (`validation.FrozenMapping`, which pickles), arrays copied and read-only. `FixedParameter`, `ParameterVector.site_labels` and its lon/lat already follow this (PR 1) |
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check; nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only. `FixedParameter`'s value, `ParameterVector.site_labels` and its lon/lat are frozen already (PR 1); one grouped check in `__post_init__` is PR 4's |
 | Pieces | `vector[name]`, `name in vector`, `iter(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
 | Size | `dimension` (D or N) |
 | Entries | `index`: a `pd.MultiIndex` over the entries; `positions(**selectors) -> int64 array` on both |
@@ -284,30 +291,59 @@ convention (approved; **being implemented in PR 4**, except where noted):
 | Directions | where a vector and its pieces list SIPNET parameter names, the name says which way: `sipnet_parameter_names_written`, `sipnet_parameter_names_read` |
 | Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──`, `# ── evaluation ──` |
 
-`ForwardModel` is a regular class with read-only properties;
-`ForwardEvaluation` is `frozen, eq=False` (PR 1). No base class is shared by
+`ForwardModel` is a regular class with read-only properties (PR 4; its
+attributes are still plain and reassignable); `ForwardEvaluation` is
+`frozen, eq=False` (PR 1). No base class is shared by
 the vectors: they share an interface, not an implementation, and their shared
 coercion lives in `validation.py`.
 
 ### Where shared things live
 
 - **`conventions.py`** holds every name constant two modules share (dims,
-  coordinates, the `site_id` column, the CF attributes of `site`/`lon`/`lat`,
-  `SITE_DTYPE`, `NAME_PATTERN`, `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`,
-  `data_root()`). A module imports them; it never defines its own copy.
+  coordinates, the `site_id` column, the `time_bounds` variable, the CF
+  attributes of `site`/`lon`/`lat`, `SITE_DTYPE`, `NAME_PATTERN`,
+  `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
+  `data_root()`), and `FrozenMapping`, the one read-only mapping type: a
+  `dict` subclass whose mutators raise, so pandas and `json` read it as a
+  dict, and which pickles and hashes. Every read-only mapping in the package
+  is one, and one is handed to xarray as it is, since xarray copies attrs. A
+  module imports these; it never defines its own copy (except `member`, until
+  PR 2) and never re-exports one.
 - **`validation.py`** holds the argument coercion two modules need, each
   `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
-  `as_integer`, `as_positive_integer`, `as_batched_flat`, `as_bbox`,
-  `as_names`, `as_frozen_mapping`, and `truncated(items)` for messages.
-  Site-id arguments always go through `as_site_ids`: order kept, duplicates
-  refused, one string refused (`allow_one_id=True` accepts one bare id).
-- **`io.py`** holds writing a file safely (`write_checked`), `file_md5` and
+  `as_integer`, `as_positive_integer`, `as_bounded_integer`,
+  `as_positive_integers`, `as_batched_flat`, `as_bbox`, `as_names`,
+  `as_frozen_mapping`; the `check_*` functions they are written with; and
+  `truncated(items)` for messages and `range_summary(values)` for reports.
+  One rule for every argument of a kind:
+  - **a sequence argument** (site ids, names, member indices) is a sequence,
+    always: one bare id or one string is a `TypeError` naming the fix
+    ("pass [27]"), a `set` is refused (no order), order is kept, and
+    `dict.keys()` and NumPy, JAX, xarray and pandas arrays are accepted.
+    Site-id arguments go through `as_site_ids` (duplicates refused), names
+    arguments through `as_names`;
+  - **an integer** (a site id, a source index, a count) refuses a boolean and
+    a float, even an integral one ("cast it with int()");
+  - **a site the data lacks** is a `KeyError`.
+  `as_batched_flat(values, dimension, *, message_name)` returns the 2-D
+  batch alone, `float64`, JAX when given JAX; a caller that must know a
+  one-vector input was given reads `np.ndim(values) == 1`, and a caller's
+  further rules (at least one row, finite) are its own checks.
+- **`io.py`** holds writing a file safely (`write_checked`, and
+  `write_checked_together` for files that belong together), `file_md5` and
   `utc_timestamp`.
 - **`sites.py`** holds everything that reads the site table: `load_sites`,
-  `select_sites`, `site_lookup`, `site_locations`,
-  `check_site_table_locates_the_sites`. Nothing joins on `site_id` by hand.
+  `select_sites`, `site_lookup`, `site_locations`, `site_coordinates` (the
+  `site`, `lon` and `lat` coordinates a product's `site` dim carries), the
+  site-table checks (one invariant each, grouped as
+  `check_site_table_locates_the_sites` and
+  `check_site_table_is_keyed_on_site_ids`), the pool checks a raw data
+  source's sites are held to (`check_site_table_lists_the_sites`,
+  `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
+  hand `set_index("site_id")`; `site_lookup` is the keyed form.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
-  file uses.
+  file uses (some Niwot stacks and observation builders are still per file,
+  until the module cleanups, PR 5).
 - The package's `__init__.py` documents every module and the direction the
   dependencies run, re-exports nothing, and turns on 64-bit JAX, its one
   import-time side effect.
@@ -380,11 +416,14 @@ the ones most often broken.
   phrase (`_sort_by_site_and_time`, `_drop_padding_rows`) or a noun phrase
   (`_read_only_copy`, `_observation_restricted_to`). Never a bare participle
   (`_selected`, `_frozen`, `_aggregated`) and never a name that hides a side
-  effect (a `_with_...` that drops, a `_sort_...` that partitions).
+  effect (a `_with_...` that drops, a `_sort_...` that partitions). The
+  retired names still in the code are renamed by the module cleanups (PR 5).
 - **A function that validates and converts is `as_<thing>`**; a check never
   returns a value (below).
 - **Constants are documented with `#:` comments** above them, and **every
-  module has `__all__`** listing its public API.
+  module has `__all__`** listing its public API (the package's own is empty;
+  the docstring-only `plotting/registry.py` and `plotting/diagnostics.py`
+  stubs are the exceptions, until PR 5e).
 - **No abbreviations** beyond the universal ones, as above:
   `constraint_standard_deviations`, not `constraint_sds`. Names that are
   pandas', xarray's or pySIPNET's own (`how`, `freq`, `coords`, `dims`) stay,
@@ -420,11 +459,13 @@ These apply to the library and the scripts alike.
 
 - **A check is a public-named `check_<subject>_<predicate>` function** with a
   one-line docstring, saying what it checks: `check_covariances_were_diagonal`,
-  `check_site_table_locates_the_sites`. Not `validate`, not an inline `assert`
-  buried in a transformation. It checks one invariant, and raises or returns
-  `None`; it never returns a value. A group of checks always called together
-  from one place becomes one `check_<thing>_is_valid` that calls them in
-  order. Checks used from another module are in `__all__`.
+  `check_site_table_lists_each_site_once`. Not `validate`, not an inline
+  `assert` buried in a transformation. It checks one invariant, and raises or
+  returns `None`; it never returns a value. A group of checks always called
+  together becomes one check that calls them in order, whose docstring's
+  first line says what the group checks and whose rest names the checks it
+  runs (`check_site_table_locates_the_sites`). Checks used from another
+  module are in `__all__`.
 - The `check_*` functions live together in the **`# ── checks ──` section at
   the bottom** of the file.
 - **Error types**: `TypeError` for a wrong type, including a boolean where a
@@ -437,10 +478,13 @@ These apply to the library and the scripts alike.
 - **Messages** start lowercase, name the invariant that broke, then `;` and
   what to do about it; name the subject through a `message_name` argument,
   passed last; and truncate a list to ten items with one helper,
-  `validation.truncated(items)`.
+  `validation.truncated(items)`. `validation.py` follows this throughout;
+  elsewhere the older messages are brought into line by the module cleanups
+  (PR 5).
 - No inline `assert` in library code, and no inline `raise` in a function
-  that also has `check_*` calls. A script's `main` turns its checks' errors
-  into a reported error rather than a traceback.
+  that also has `check_*` calls (`validation.py`, `load_drivers` and the
+  functions PR 1 rewrote follow this; the rest is PR 5's). A script's `main`
+  turns its checks' errors into a reported error rather than a traceback.
 
 ### What does and does not belong in documentation
 
@@ -509,7 +553,7 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   `axis` and, where present, `bounds` on `time`; `standard_name` and `units`
   on `lon`/`lat`; no `_FillValue` on any coordinate. Where a value's support
   is documented it is a CF `time_bounds(time, bounds)` coordinate, as
-  pySIPNET writes `time_bounds = [time_step_start, time]`. Where CF has no
+  pySIPNET writes one whose two edges are `time_step_start` and `time`. Where CF has no
   vocabulary for what a label means, the meaning goes in words
   (`time_reference`, `comment`), never in a `cell_methods` that is not
   literally true.
@@ -536,8 +580,12 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   pass, so a failed run cannot leave a corrupt file at the canonical path.
   On a failure the `.partial` file is **kept for inspection and its path
   printed**; it cannot be mistaken for the processed file, and a rerun
-  overwrites it. Every script that writes a file does this, with no protocol
-  of its own.
+  overwrites it (a stale `.partial` is removed before a run writes). Every
+  script that writes a processed file, a tracked raw input or a generated
+  definition does this, with no protocol of its own; files that belong
+  together go through `io.write_checked_together`, which moves none of them
+  unless all were written and checked. A survey script's `--out` report is
+  not such a file.
 
 ## Writing conventions
 
@@ -682,8 +730,9 @@ src/sipnet_calibration/
                           # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
                           # select_sites(ids=, bbox=, where=, sample=, seed=),
-                          # EXTENTS (named lon/lat boxes); site_lookup(),
-                          # site_locations(), check_site_table_locates_the_sites()
+                          # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
+                          # site_locations(), site_coordinates(), the site-table
+                          # and pool checks
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
@@ -692,15 +741,16 @@ src/sipnet_calibration/
                           # constraint_fields() -> one field per product
   conventions.py          # every shared name constant: SITE, TIME, SAMPLE,
                           # the reserved spatial names, TIMESTEP_START/LENGTH,
-                          # WINDOW_START/END, SITE_ID; the CF attributes of
-                          # site/lon/lat; SITE_DTYPE, NAME_PATTERN;
-                          # CF_CONVENTIONS and data_root()
+                          # WINDOW_START/END, TIME_BOUNDS, SITE_ID; the CF
+                          # attributes of site/lon/lat; SITE_DTYPE, NAME_PATTERN;
+                          # CF_CONVENTIONS and data_root(); FrozenMapping
   validation.py           # argument coercion: as_site_ids, as_site_id,
-                          # as_integer, as_positive_integer, as_batched_flat,
-                          # as_bbox, as_names, as_frozen_mapping/FrozenMapping,
-                          # truncated()
-  io.py                   # write_checked() (the .partial protocol), file_md5(),
-                          # utc_timestamp()
+                          # as_integer, as_positive_integer, as_bounded_integer,
+                          # as_positive_integers, as_batched_flat, as_bbox,
+                          # as_names, as_frozen_mapping; its checks; truncated(),
+                          # range_summary()
+  io.py                   # write_checked() and write_checked_together() (the
+                          # .partial protocol), file_md5(), utc_timestamp()
   initial_conditions/     # one module per artifact; __init__ re-exports them all
     __init__.py           # curated exports + the product's data model
     names.py              # MEMBER/SOURCE_MEMBER, the two file names, the path
@@ -783,7 +833,9 @@ data/raw/                 # never edited; raw/sites/, raw/constraints/,
 data/processed/           # ingest output == the plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
 tests/                    # conftest.py: every fixture or builder two files use;
-                          # data found through conventions.data_root()
+                          # storage-backed data found through
+                          # conventions.data_root(), tracked inputs through
+                          # conftest.REPOSITORY
 ```
 
 Conventions:
@@ -809,7 +861,8 @@ plotting code. The load-bearing rules:
 - Plotters branch on **presence of a batch dim**, never on a mode keyword;
   today that dim is `member`, and PR 2 makes it any batch dim, found with
   `fields.batch_dims`. No plotter types a dim name: `SITE`, `TIME`, `LON`,
-  `LAT` come from `conventions`.
+  `LAT` come from `conventions` (the `dim="member"` and
+  `animate_map(dim="time")` defaults go with PR 2's batch dims).
 - **Temporal aggregation lives in `observation/time_alignment.py`**: the
   observation operators are written with it, and it is the verb a caller
   applies before plotting, so a predictive-check figure cannot disagree with
@@ -907,8 +960,7 @@ plotting code. The load-bearing rules:
 - **An annual constraint's array carries its `time_bounds`** as the 1-D
   coordinates `time_bounds_start`/`time_bounds_end` on `time`
   (`constraint_fields` adds them; the names are `conventions.WINDOW_START`
-  and `WINDOW_END`, re-exported by `constraints` as `TIME_BOUNDS_START` and
-  `TIME_BOUNDS_END`, and renamed `window_*` in PR 3), which is what
+  and `WINDOW_END`, whose values PR 3 renames `window_*`), which is what
   `ReduceOverTimeBounds` reads; a dated or static product documents no
   interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
@@ -918,8 +970,8 @@ plotting code. The load-bearing rules:
   `lower_case_with_underscores`, so they are the processed names. Both keep
   `conventions.TIME_COORD_NAMES`, pySIPNET's axis: `time` at the step end, with
   `time_step_start` beside it, so the interval a value covers is
-  `[time_step_start, time]` — the pair pySIPNET writes as its CF `time_bounds`
-  variable — and a run's output and the drivers it ran on share one axis by
+  `(time_step_start, time]`, whose two edges are the pair pySIPNET writes as
+  its CF `time_bounds` variable, and a run's output and the drivers it ran on share one axis by
   construction. `time_bounds` itself cannot ride on a field, its `bounds`
   dimension being no field dimension, so it and the `time` attribute naming it
   are dropped, along with SIPNET's `year`/`day_of_year`/`hour_of_day` row
@@ -979,7 +1031,8 @@ plotting code. The load-bearing rules:
   `set_extent`, which gives a badly wrong frame on this projection. The
   basemap is Natural Earth 1:50m, clipped to 100 degrees of arc around the
   center (`Projection.angular_distance`) so nothing nears the antipode.
-- `site` is the integer 1-8000; `ameriflux_site_id` is a non-dimension coord on
+- `site` is the integer site id of the site table in use (`int32`; the
+  shared pool's ids are never renumbered); `ameriflux_site_id` is a non-dimension coord on
   `site`. PFT is **not** site metadata and is not a column of the site table:
   which site labels to use is an experimental choice, so site labels are their
   own product at `data/processed/site_labels/<name>.csv`, keyed on `site_id`,
