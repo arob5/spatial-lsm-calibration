@@ -1078,3 +1078,21 @@ class TestSccBackend:
         assert (
             Path(scc_backend(walltime="00:10:00", work_dir=tmp_path, n_jobs=2).work_dir) == tmp_path
         )
+
+
+def test_an_evaluation_compares_and_hashes_by_identity():
+    """A generated ``==`` would compare arrays and raise; identity cannot."""
+    import dataclasses
+
+    evaluation = ForwardEvaluation(
+        theta=np.zeros((2, 3)),
+        sipnet_table=xr.Dataset(),
+        model_output=None,
+        predictions=np.zeros((2, 4)),
+        run_succeeded=xr.DataArray(np.ones((2, 1), dtype=bool), dims=("member", "site")),
+        failures=pd.DataFrame(),
+        valid=np.ones(2, dtype=bool),
+    )
+    copy = dataclasses.replace(evaluation)
+    assert evaluation == evaluation and evaluation != copy
+    assert len({evaluation, copy}) == 2

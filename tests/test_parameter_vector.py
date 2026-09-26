@@ -1572,3 +1572,55 @@ def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels()
     wetland = vector.select(labels={"pft": "Permanent_Wetlands"})
     assert wetland.dimension == 1
     assert set(wetland.sites) == set(by_site.index[by_site == "Permanent_Wetlands"])
+
+
+# ── the vector cannot change after its checks, and pickles ───────────────────
+
+
+def _frozen_candidate(sites=SITES) -> ParameterVector:
+    """A vector whose priors all round-trip through pickle, with a per-class
+    fixed value, the mapping that once made the vector unpicklable."""
+    return ParameterVector(
+        parameters=(rate(varies_by="pft"),),
+        fixed=(FixedParameter(
+            name="leaf_carbon_fraction", value={"conifer": 0.4, "deciduous": 0.5},
+            varies_by="pft", provenance="test",
+        ),),
+        sites=sites, site_labels={"pft": PFT},
+    )
+
+
+def test_a_vector_with_a_per_class_fixed_value_pickles_and_round_trips():
+    import pickle
+
+    vector = _frozen_candidate()
+    restored = pickle.loads(pickle.dumps(vector))
+    theta = vector.sample(jax.random.key(0), n=3)
+    assert restored.fields(theta).identical(vector.fields(theta))
+    assert restored.sipnet_table(theta).identical(vector.sipnet_table(theta))
+    assert dict(restored.fixed[0].value) == {"conifer": 0.4, "deciduous": 0.5}
+
+
+def test_site_labels_and_a_fixed_mapping_cannot_be_changed():
+    vector = _frozen_candidate()
+    with pytest.raises(TypeError):
+        vector.site_labels["pft"] = ("conifer",) * 3
+    with pytest.raises(TypeError):
+        vector.fixed[0].value["conifer"] = 0.9
+    assert vector.site_labels["pft"] == PFT
+
+
+def test_the_vector_keeps_its_own_copy_of_the_site_tables_lon_lat():
+    table = pd.DataFrame({"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]})
+    vector = _frozen_candidate(sites=table)
+    table.loc[0, "lon"] = 0.0
+    table["lat"] = np.zeros(3)
+    np.testing.assert_array_equal(vector.site_table["lon"], [-24.6, -78.6, -107.3])
+    np.testing.assert_array_equal(vector.site_table["lat"], [82.5, 80.6, 44.0])
+
+
+def test_a_per_class_fixed_parameter_compares_and_hashes_by_identity():
+    first = _frozen_candidate().fixed[0]
+    second = dataclasses.replace(first)
+    assert first == first and first != second
+    assert len({first, second}) == 2

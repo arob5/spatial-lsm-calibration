@@ -348,7 +348,6 @@ import itertools
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import jax
@@ -378,7 +377,12 @@ from sipnet_calibration.conventions import (  # noqa: E402
     SITE_ID,
 )
 from sipnet_calibration.sites import site_lookup  # noqa: E402
-from sipnet_calibration.validation import as_batched_flat, as_site_ids  # noqa: E402
+from sipnet_calibration.validation import (  # noqa: E402
+    FrozenMapping,
+    as_batched_flat,
+    as_frozen_mapping,
+    as_site_ids,
+)
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -967,7 +971,7 @@ class CalibrationParameter:
         return True
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True, eq=False, kw_only=True)
 class FixedParameter:
     """A SIPNET parameter held at a value.
 
@@ -993,6 +997,13 @@ class FixedParameter:
     ...     provenance="Braswell et al. (2005) fix the exponent at 2.",
     ... ).value
     2.0
+
+    Notes
+    -----
+    A mapping *value* is stored as a
+    :class:`~sipnet_calibration.validation.FrozenMapping`, so it cannot be
+    changed after the checks and the parameter pickles. Compared and hashed
+    by identity (``eq=False``), as :class:`CalibrationParameter` is.
     """
 
     name: str
@@ -1005,7 +1016,9 @@ class FixedParameter:
         check_provenance_is_given(self.name, self.provenance)
         check_fixed_value_shape(self)
         if isinstance(self.value, Mapping):
-            object.__setattr__(self, "value", MappingProxyType(dict(self.value)))
+            object.__setattr__(
+                self, "value", as_frozen_mapping(self.value, message_name="value")
+            )
         check_fixed_values_are_numbers(self)
         for value in self.values():
             check_fixed_value_is_in_domain(self.name, value)
@@ -1274,8 +1287,8 @@ class ParameterVector:
         labels, declared = {}, {}
         for name, value in dict(self.site_labels).items():
             labels[name], declared[name] = _normalized_site_labels(name, value, self.sites)
-        object.__setattr__(self, "site_labels", labels)
-        object.__setattr__(self, "_declared_classes", declared)
+        object.__setattr__(self, "site_labels", FrozenMapping(labels))
+        object.__setattr__(self, "_declared_classes", FrozenMapping(declared))
         object.__setattr__(self, "parameters", tuple(self.parameters))
         object.__setattr__(self, "fixed", tuple(self.fixed))
         check_parameters_have_their_types(self.parameters, self.fixed)
@@ -2301,9 +2314,16 @@ def _normalized_sites(sites: Any) -> tuple[tuple[int, ...], tuple[np.ndarray, np
     ids = as_site_ids(sites[SITE_ID].tolist(), message_name="the site table's site_id")
     check_site_table_is_in_site_order(ids)
     check_site_table_positions_are_usable(sites)
-    if "lon" in sites.columns:
-        return ids, (sites["lon"].to_numpy(np.float64), sites["lat"].to_numpy(np.float64))
+    if LON in sites.columns:
+        return ids, (_read_only_copy(sites[LON]), _read_only_copy(sites[LAT]))
     return ids, None
+
+
+def _read_only_copy(column: pd.Series) -> np.ndarray:
+    """*column* as a ``float64`` array of its own, which cannot be written."""
+    array = column.to_numpy(np.float64, copy=True)
+    array.flags.writeable = False
+    return array
 
 
 def _normalized_site_labels(

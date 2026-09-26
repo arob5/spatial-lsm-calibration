@@ -8,8 +8,10 @@ import numpy as np
 import pytest
 
 from sipnet_calibration.validation import (
+    FrozenMapping,
     as_batched_flat,
     as_bbox,
+    as_frozen_mapping,
     as_integer,
     as_names,
     as_positive_integer,
@@ -163,6 +165,35 @@ class TestAsNames:
     def test_one_string_a_set_or_a_non_string_is_a_type_error(self, names):
         with pytest.raises(TypeError, match="names"):
             as_names(names, message_name="names")
+
+
+class TestFrozenMapping:
+    def test_is_a_mapping_that_cannot_change(self):
+        frozen = as_frozen_mapping({"b": 1, "a": 2}, message_name="value")
+        assert list(frozen) == ["b", "a"] and frozen["a"] == 2 and len(frozen) == 2
+        assert frozen == {"b": 1, "a": 2}
+        with pytest.raises(TypeError):
+            frozen["a"] = 3
+        with pytest.raises(AttributeError):
+            frozen._items = {}
+
+    def test_pickles_and_hashes(self):
+        import pickle
+
+        frozen = FrozenMapping({1: "conifer", 2: "grass"})
+        assert pickle.loads(pickle.dumps(frozen)) == frozen
+        assert hash(frozen) == hash(FrozenMapping({2: "grass", 1: "conifer"}))
+
+    def test_copies_what_it_is_given(self):
+        source = {"a": 1}
+        frozen = as_frozen_mapping(source, message_name="value")
+        source["a"] = 2
+        assert frozen["a"] == 1
+        assert as_frozen_mapping(frozen, message_name="value") is frozen
+
+    def test_refuses_what_is_not_a_mapping(self):
+        with pytest.raises(TypeError, match="value must be a mapping"):
+            as_frozen_mapping([("a", 1)], message_name="value")
 
 
 def test_truncated_shows_at_most_the_limit_and_counts_the_rest():

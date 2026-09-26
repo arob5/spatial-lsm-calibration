@@ -170,6 +170,7 @@ from sipnet_calibration.conventions import (
     SITE_ID,
 )
 from sipnet_calibration.sites import load_sites
+from sipnet_calibration.validation import as_frozen_mapping
 
 __all__ = [
     "LABEL_COLUMN",
@@ -210,6 +211,13 @@ class SiteLabelsSpec:
 
     One instance per raw file. The fields describe the classes, the raw file
     that carries them, and the invariants the ingest enforces.
+
+    Notes
+    -----
+    The two mappings are stored as
+    :class:`~sipnet_calibration.validation.FrozenMapping` copies, so a spec
+    cannot change after its checks, and hashes and pickles like the other
+    specs.
     """
 
     name: str
@@ -276,6 +284,11 @@ class SiteLabelsSpec:
     """Further caveats, one per string, for :func:`describe`."""
 
     def __post_init__(self) -> None:
+        # frozen=True freezes the field, not the dict behind it.
+        for name in ("landcover_mapping", "display_names"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, as_frozen_mapping(value, message_name=name))
         if not NAME_PATTERN.match(self.name):
             raise ValueError(f"Site-labels name {self.name!r} is not lower_case_with_underscores.")
         if not self.description or not self.long_label or not self.product:

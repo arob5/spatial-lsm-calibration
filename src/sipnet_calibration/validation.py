@@ -16,6 +16,9 @@ Contents
     A ``(west, south, east, north)`` box as four floats.
 :func:`as_names`
     An ordered sequence of names as a tuple of strings.
+:class:`FrozenMapping`, :func:`as_frozen_mapping`
+    A mapping that cannot be changed, and pickles and hashes where a
+    ``types.MappingProxyType`` cannot.
 :func:`truncated`
     A list shortened for an error message.
 
@@ -59,8 +62,10 @@ import numpy as np
 from sipnet_calibration.conventions import SITE_DTYPE
 
 __all__ = [
+    "FrozenMapping",
     "as_batched_flat",
     "as_bbox",
+    "as_frozen_mapping",
     "as_integer",
     "as_names",
     "as_positive_integer",
@@ -391,6 +396,80 @@ def as_names(values: Any, *, message_name: str) -> tuple[str, ...]:
     if wrong:
         raise TypeError(f"{message_name} must be strings, got {truncated(wrong)}.")
     return names
+
+
+def as_frozen_mapping(value: Any, *, message_name: str) -> FrozenMapping:
+    """A mapping as a :class:`FrozenMapping`, a copy of it that cannot change.
+
+    Parameters
+    ----------
+    value:
+        Any mapping.
+    message_name:
+        What the argument is called in an error message.
+
+    Returns
+    -------
+    FrozenMapping
+        The same keys and values, in the same order.
+
+    Raises
+    ------
+    TypeError
+        If *value* is not a mapping.
+    """
+    if isinstance(value, FrozenMapping):
+        return value
+    if not isinstance(value, Mapping):
+        raise TypeError(
+            f"{message_name} must be a mapping, got {type(value).__name__} {value!r}."
+        )
+    return FrozenMapping(value)
+
+
+class FrozenMapping(Mapping):
+    """A read-only copy of a mapping, which pickles and, where its values do,
+    hashes.
+
+    Parameters
+    ----------
+    items:
+        A mapping, or an iterable of key-value pairs, as ``dict`` takes.
+
+    Notes
+    -----
+    This is what a frozen dataclass holds in place of a mapping it was given:
+    ``frozen=True`` freezes the field, not the dict behind it, and
+    ``types.MappingProxyType``, the standard read-only view, neither pickles
+    nor hashes, so a class holding one can be neither sent to a worker nor
+    used as a key. Equality is a mapping's, by keys and values.
+    """
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Mapping[Any, Any] | Iterable[tuple[Any, Any]] = ()) -> None:
+        object.__setattr__(self, "_items", dict(items))
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._items[key]
+
+    def __iter__(self):
+        return iter(self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __hash__(self) -> int:
+        return hash(frozenset(self._items.items()))
+
+    def __repr__(self) -> str:
+        return f"FrozenMapping({self._items!r})"
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        raise AttributeError("a FrozenMapping cannot be changed")
+
+    def __reduce__(self):
+        return (FrozenMapping, (self._items,))
 
 
 def truncated(items: Iterable[Any], limit: int = 10) -> str:

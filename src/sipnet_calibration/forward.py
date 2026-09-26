@@ -233,11 +233,17 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ForwardEvaluation:
     """What one evaluation of a :class:`ForwardModel` produced.
 
     The fields are described in the module docstring's Data model.
+
+    Notes
+    -----
+    Compared and hashed by identity (``eq=False``), as the package's other
+    records of arrays are: a generated ``==`` would compare arrays, whose
+    truth value is ambiguous, and a generated hash would fail on them.
     """
 
     theta: np.ndarray

@@ -983,3 +983,26 @@ def test_site_labels_path_is_the_name_with_a_csv_suffix(tmp_path):
     assert three == tmp_path / "reanalysis_3pft.csv"
     sixteen = site_labels_path(resolve_site_labels("pft_16class"), tmp_path)
     assert sixteen.name == "pft_16class.csv"
+
+
+# ── the spec cannot change, and hashes ───────────────────────────────────────
+
+
+@pytest.mark.parametrize("spec", SITE_LABELS, ids=lambda spec: spec.name)
+def test_a_registered_spec_hashes_pickles_and_cannot_change(spec):
+    import pickle
+
+    assert {spec: spec.name}[spec] == spec.name
+    assert pickle.loads(pickle.dumps(spec)) == spec
+    for mapping in (spec.landcover_mapping, spec.display_names):
+        if mapping is not None:
+            with pytest.raises(TypeError):
+                mapping[next(iter(mapping))] = "changed"
+
+
+def test_a_spec_keeps_its_own_copy_of_the_mappings_it_was_given():
+    display_names = {label: label.title() for label in SYNTHETIC_SPEC.labels}
+    spec = dataclasses.replace(SYNTHETIC_SPEC, display_names=display_names)
+    display_names[SYNTHETIC_SPEC.labels[0]] = "changed"
+    assert spec.display_names[SYNTHETIC_SPEC.labels[0]] == SYNTHETIC_SPEC.labels[0].title()
+    assert hash(spec) == hash(dataclasses.replace(spec))
