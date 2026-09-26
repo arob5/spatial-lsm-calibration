@@ -17,7 +17,7 @@ from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
     INDEX_LEVELS,
     ComputeLeafAreaIndex,
-    Observation,
+    ObservationSource,
     ObservationVector,
     ReduceOverRun,
     SelectTimestep,
@@ -74,42 +74,42 @@ def table():
 @pytest.fixture
 def vector(lai, wood, soil):
     return ObservationVector([
-        Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-        Observation("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-        Observation("soilgrids_soil_organic_carbon", soil, ReduceOverRun("soil_carbon", "mean")),
+        ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+        ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
+        ObservationSource("soilgrids_soil_organic_carbon", soil, ReduceOverRun("soil_carbon", "mean")),
     ])
 
 
-class TestObservation:
+class TestObservationSource:
     def test_refuses_a_batch_dimension(self, lai):
         for name in ("sample", "nee_member"):
             with pytest.raises(ValueError, match=rf"batch dim\(s\) \['{name}'\]"):
-                Observation("x", lai.expand_dims({name: [0]}), SelectTimestep("wood_carbon"))
+                ObservationSource("x", lai.expand_dims({name: [0]}), SelectTimestep("wood_carbon"))
 
     def test_refuses_an_array_without_units(self, lai):
         bare = lai.copy()
         bare.attrs = {}
         with pytest.raises(ValueError, match="no 'units'"):
-            Observation("x", bare, SelectTimestep("wood_carbon"))
+            ObservationSource("x", bare, SelectTimestep("wood_carbon"))
 
     def test_refuses_an_operator_without_declarations(self, lai):
         with pytest.raises(TypeError, match="must declare output_variable_names"):
-            Observation("x", lai, lambda *a, **k: None)
+            ObservationSource("x", lai, lambda *a, **k: None)
 
     def test_orders_sites_and_times(self, lai):
         shuffled = lai.isel(site=[1, 0], time=[2, 0, 1])
-        observation = Observation("x", shuffled, SelectTimestep("wood_carbon"))
-        assert observation.sites == (1, 2)
-        assert observation.values.indexes["time"].is_monotonic_increasing
+        source = ObservationSource("x", shuffled, SelectTimestep("wood_carbon"))
+        assert source.sites == (1, 2)
+        assert source.observed_values.indexes["time"].is_monotonic_increasing
 
-    def test_cells_are_the_observed_ones(self, lai):
-        cells = Observation("x", lai, SelectTimestep("wood_carbon")).cells()
-        assert len(cells) == 4
-        assert cells["site"].tolist() == [1, 1, 2, 2]
+    def test_observations_are_the_observed_values(self, lai):
+        observations = ObservationSource("x", lai, SelectTimestep("wood_carbon")).observations()
+        assert len(observations) == 4
+        assert observations["site"].tolist() == [1, 1, 2, 2]
 
 
 class TestIndex:
-    def test_is_site_major_then_product_then_time(self, vector, times):
+    def test_is_site_major_then_observation_source_then_time(self, vector, times):
         rows = vector.index.tolist()
         assert vector.index.names == list(INDEX_LEVELS)
         assert [r[0] for r in rows] == [1, 1, 1, 1, 1, 2, 2, 2]
@@ -123,8 +123,8 @@ class TestIndex:
 
     def test_positions(self, vector):
         assert vector.positions(site=2).tolist() == [5, 6, 7]
-        assert vector.positions(product_name="soilgrids_soil_organic_carbon").tolist() == [4]
-        assert vector.positions(site=1, product_name="landtrendr_aboveground_biomass").tolist() == [2, 3]
+        assert vector.positions(observation_source_name="soilgrids_soil_organic_carbon").tolist() == [4]
+        assert vector.positions(site=1, observation_source_name="landtrendr_aboveground_biomass").tolist() == [2, 3]
 
     def test_declared_reads_are_the_union(self, vector):
         assert vector.output_variable_names == ("leaf_carbon", "wood_carbon", "soil_carbon")
@@ -135,18 +135,18 @@ class TestIndex:
         y[0] = -1.0
         assert vector.y[0] == 3.0
 
-    def test_refuses_duplicate_products(self, lai):
+    def test_refuses_duplicate_observation_sources(self, lai):
         with pytest.raises(ValueError, match="unique"):
-            ObservationVector([Observation("x", lai, SelectTimestep("wood_carbon"))] * 2)
+            ObservationVector([ObservationSource("x", lai, SelectTimestep("wood_carbon"))] * 2)
 
-    def test_refuses_a_product_with_no_cells(self, lai):
+    def test_refuses_an_observation_source_with_no_observations(self, lai):
         empty = lai.where(False)
-        with pytest.raises(ValueError, match="no observed cell"):
-            ObservationVector([Observation("x", empty, SelectTimestep("wood_carbon"))])
+        with pytest.raises(ValueError, match="no observation"):
+            ObservationVector([ObservationSource("x", empty, SelectTimestep("wood_carbon"))])
 
     def test_describe(self, vector):
         table = vector.describe()
-        assert table.loc["modis_leaf_area_index", "cells"] == 4
+        assert table.loc["modis_leaf_area_index", "observations"] == 4
         assert pd.isna(table.loc["soilgrids_soil_organic_carbon", "first_time"])
 
 
@@ -154,21 +154,21 @@ class TestSelect:
     def test_by_sites(self, vector):
         sub = vector.select(sites=[2])
         assert sub.sites == (2,)
-        assert sub.product_names == ("modis_leaf_area_index", "landtrendr_aboveground_biomass")  # soil has no cell at site 2
+        assert sub.observation_source_names == ("modis_leaf_area_index", "landtrendr_aboveground_biomass")  # soil has no observation at site 2
         assert sub.y.tolist() == [1.0, 2.0, 120.0]
 
-    def test_by_products(self, vector):
-        sub = vector.select(product_names=["landtrendr_aboveground_biomass"])
-        assert sub.product_names == ("landtrendr_aboveground_biomass",)
+    def test_by_observation_sources(self, vector):
+        sub = vector.select(observation_source_names=["landtrendr_aboveground_biomass"])
+        assert sub.observation_source_names == ("landtrendr_aboveground_biomass",)
         assert sub.dimension == 3
 
     def test_by_time(self, vector, times):
         sub = vector.select(time=slice(times[0], times[1]))
         assert sub.dimension == 2 + 2 + 1  # lai at t0 (site 1) and t1 (site 2); wood at t0, t1; soil static
-        assert "soilgrids_soil_organic_carbon" in sub.product_names
+        assert "soilgrids_soil_organic_carbon" in sub.observation_source_names
 
     def test_an_empty_selection_is_refused(self, vector):
-        with pytest.raises(ValueError, match="no observed cell"):
+        with pytest.raises(ValueError, match="no observation"):
             vector.select(sites=[99])
 
 
@@ -186,23 +186,23 @@ class TestRepresentations:
         np.testing.assert_array_equal(vector.flat(vector.fields(vector.y)), vector.y)
 
     def test_a_batch_round_trips_with_a_sample_dimension(self, vector):
-        block = np.arange(3 * vector.dimension, dtype=float).reshape(3, -1)
-        fields = vector.fields(block)
+        batched_flat = np.arange(3 * vector.dimension, dtype=float).reshape(3, -1)
+        fields = vector.fields(batched_flat)
         assert fields["modis_leaf_area_index"].dims == ("sample", "site", "time")
-        np.testing.assert_array_equal(vector.flat(fields), block)
+        np.testing.assert_array_equal(vector.flat(fields), batched_flat)
 
     def test_the_batch_dim_may_be_named(self, vector):
-        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
-        fields = vector.fields(block, batch_dim="draw")
+        batched_flat = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        fields = vector.fields(batched_flat, batch_dim="draw")
         assert fields["modis_leaf_area_index"].dims == ("draw", "site", "time")
-        np.testing.assert_array_equal(vector.flat(fields), block)
+        np.testing.assert_array_equal(vector.flat(fields), batched_flat)
         with pytest.raises(ValueError, match="cannot name a batch dim"):
-            vector.fields(block, batch_dim="site")
+            vector.fields(batched_flat, batch_dim="site")
 
     def test_a_scalar_batch_coordinate_gives_one_vector(self, vector):
-        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
-        one = {name: field.isel(sample=1) for name, field in vector.fields(block).items()}
-        np.testing.assert_array_equal(vector.flat(one), block[1])
+        batched_flat = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        one = {name: field.isel(sample=1) for name, field in vector.fields(batched_flat).items()}
+        np.testing.assert_array_equal(vector.flat(one), batched_flat[1])
 
     def test_flat_accepts_a_larger_array(self, vector, lai):
         bigger = xr.full_like(lai.reindex(site=[1, 2, 3]), 7.0)
@@ -210,9 +210,9 @@ class TestRepresentations:
         fields = vector.fields(vector.y)
         fields["modis_leaf_area_index"] = bigger
         flat = vector.flat(fields)
-        assert flat[vector.positions(product_name="modis_leaf_area_index")].tolist() == [7.0] * 4
+        assert flat[vector.positions(observation_source_name="modis_leaf_area_index")].tolist() == [7.0] * 4
 
-    def test_flat_refuses_a_missing_cell(self, vector, lai):
+    def test_flat_refuses_a_missing_observation(self, vector, lai):
         fields = vector.fields(vector.y)
         fields["modis_leaf_area_index"] = lai.isel(time=[0, 1])
         with pytest.raises(ValueError, match="lacks .* time label"):
@@ -229,24 +229,24 @@ class TestRepresentations:
 
 
 class TestPredict:
-    def test_a_stack_predicts_every_product_in_the_observations_units(self, vector, stack, table, times):
+    def test_a_stack_predicts_every_observation_source_in_its_units(self, vector, stack, table, times):
         predicted = vector.predict(stack, sipnet_parameters=table)
-        assert set(predicted) == set(vector.product_names)
+        assert set(predicted) == set(vector.observation_source_names)
         assert predicted["landtrendr_aboveground_biomass"].attrs["units"] == "Mg ha-1"
         wood_g = select_timestep_at(stack["wood_carbon"], times)
         np.testing.assert_allclose(predicted["landtrendr_aboveground_biomass"].values, wood_g.values * 0.01)
         assert predicted["soilgrids_soil_organic_carbon"].dims == ("sample", "site")
 
     def test_flat_of_the_predictions_is_sample_by_observation(self, vector, stack, table):
-        block = vector.flat(vector.predict(stack, sipnet_parameters=table))
-        assert block.shape == (2, vector.dimension)
-        assert np.isfinite(block).all()
+        batched_flat = vector.flat(vector.predict(stack, sipnet_parameters=table))
+        assert batched_flat.shape == (2, vector.dimension)
+        assert np.isfinite(batched_flat).all()
         # the second sample's pools are half the first's, and its leaf carbon per
         # area double
-        wood = np.concatenate([vector.positions(product_name=n) for n in ("landtrendr_aboveground_biomass", "soilgrids_soil_organic_carbon")])
-        np.testing.assert_allclose(block[1, wood], 0.5 * block[0, wood])
-        lai = vector.positions(product_name="modis_leaf_area_index")
-        np.testing.assert_allclose(block[1, lai], 0.25 * block[0, lai])
+        wood = np.concatenate([vector.positions(observation_source_name=n) for n in ("landtrendr_aboveground_biomass", "soilgrids_soil_organic_carbon")])
+        np.testing.assert_allclose(batched_flat[1, wood], 0.5 * batched_flat[0, wood])
+        lai = vector.positions(observation_source_name="modis_leaf_area_index")
+        np.testing.assert_allclose(batched_flat[1, lai], 0.25 * batched_flat[0, lai])
 
     def test_one_run_predicts_a_one_site_vector(self, vector, one_run):
         sub = vector.select(sites=[1])
@@ -258,10 +258,10 @@ class TestPredict:
         failed = stack.copy(deep=True)
         for name in VARIABLES:
             failed[name].loc[{"sample": 1, "site": 2}] = np.nan
-        block = vector.flat(vector.predict(failed, sipnet_parameters=table))
-        assert np.isnan(block[1, vector.positions(site=2)]).all()
-        assert np.isfinite(block[0]).all()
-        assert np.isfinite(block[1, vector.positions(site=1)]).all()
+        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=table))
+        assert np.isnan(batched_flat[1, vector.positions(site=2)]).all()
+        assert np.isfinite(batched_flat[0]).all()
+        assert np.isfinite(batched_flat[1, vector.positions(site=1)]).all()
 
     def test_a_gap_the_operator_produced_is_refused(self, lai, stack, table):
         @dataclass(frozen=True)
@@ -275,12 +275,12 @@ class TestPredict:
                 out.attrs = {"units": "1"}
                 return out
 
-        vector = ObservationVector([Observation("modis_leaf_area_index", lai, Gappy())])
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", lai, Gappy())])
         with pytest.raises(ValueError, match="although the run succeeded"):
             vector.predict(stack)
 
     def test_a_wrong_dimension_is_refused_naming_both_units(self, lai, stack):
-        vector = ObservationVector([Observation("modis_leaf_area_index", lai, SelectTimestep("leaf_carbon"))])
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", lai, SelectTimestep("leaf_carbon"))])
         with pytest.raises(ValueError, match="m2 m-2"):
             vector.predict(stack)
 
@@ -299,7 +299,7 @@ class TestPredict:
 
 @pytest.fixture(scope="module")
 def observed():
-    """Three real constraint products at three sites, where the processed files exist."""
+    """Three real constraints at three sites, where the processed files exist."""
     constraints = pytest.importorskip("sipnet_calibration.constraints")
     names = ["modis_leaf_area_index", "landtrendr_aboveground_biomass", "soilgrids_soil_organic_carbon"]
     try:
@@ -308,12 +308,12 @@ def observed():
         pytest.skip(str(error))
 
 
-class TestRealProducts:
-    def test_the_vector_round_trips_the_ragged_products(self, observed):
+class TestRealConstraints:
+    def test_the_vector_round_trips_the_ragged_constraints(self, observed):
         vector = ObservationVector([
-            Observation("modis_leaf_area_index", observed["modis_leaf_area_index"], DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-            Observation("landtrendr_aboveground_biomass", observed["landtrendr_aboveground_biomass"], SelectTimestep("wood_carbon")),
-            Observation("soilgrids_soil_organic_carbon", observed["soilgrids_soil_organic_carbon"], ReduceOverRun("soil_carbon", "mean")),
+            ObservationSource("modis_leaf_area_index", observed["modis_leaf_area_index"], DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+            ObservationSource("landtrendr_aboveground_biomass", observed["landtrendr_aboveground_biomass"], SelectTimestep("wood_carbon")),
+            ObservationSource("soilgrids_soil_organic_carbon", observed["soilgrids_soil_organic_carbon"], ReduceOverRun("soil_carbon", "mean")),
         ])
         assert vector.dimension == sum(int(a.notnull().sum()) for a in observed.values())
         assert np.isfinite(vector.y).all()
@@ -341,7 +341,7 @@ class TestTwinObservations:
             dims=("site", "time"), coords={"site": [1], "time": times},
             attrs={"units": "Mg ha-1", "constituent": "C"}, name="landtrendr_aboveground_biomass",
         )
-        vector = ObservationVector([Observation("landtrendr_aboveground_biomass", observed, SelectTimestep("wood_carbon"))])
+        vector = ObservationVector([ObservationSource("landtrendr_aboveground_biomass", observed, SelectTimestep("wood_carbon"))])
         predicted = vector.flat(vector.predict(one_run))
         np.testing.assert_allclose(predicted, vector.y, rtol=1e-12)
 
@@ -352,14 +352,14 @@ class TestTwinObservations:
             (leaf.values[at] / 270.0)[None, :], dims=("site", "time"), coords={"site": [1], "time": times},
             attrs={"units": "m2 m-2"}, name="modis_leaf_area_index",
         )
-        vector = ObservationVector([Observation("modis_leaf_area_index", observed, DEFAULT_OBS_OPS["modis_leaf_area_index"])])
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", observed, DEFAULT_OBS_OPS["modis_leaf_area_index"])])
         predicted = vector.flat(vector.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 270.0}))
         np.testing.assert_allclose(predicted, vector.y, rtol=1e-12)
         wrong = vector.flat(vector.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 135.0}))
         np.testing.assert_allclose(wrong, 2 * vector.y, rtol=1e-12)
 
 
-class TestObservationInputsAndBlockShapes:
+class TestObservationInputsAndBatchedFlatShapes:
     def test_an_operator_on_the_wrong_time_labels_is_refused_by_predict(self, lai, stack, table):
         @dataclass(frozen=True)
         class OffGrid:
@@ -372,28 +372,28 @@ class TestObservationInputsAndBlockShapes:
                 out.attrs = {"units": "1"}
                 return out
 
-        vector = ObservationVector([Observation("modis_leaf_area_index", lai, OffGrid())])
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", lai, OffGrid())])
         with pytest.raises(ValueError, match="time labels"):
             vector.predict(stack)
 
     def test_an_infinite_observation_is_refused(self, lai):
         lai[0, 0] = np.inf
         with pytest.raises(ValueError, match="infinite"):
-            Observation("x", lai, SelectTimestep("wood_carbon"))
+            ObservationSource("x", lai, SelectTimestep("wood_carbon"))
 
     def test_a_nat_label_is_refused(self, lai):
         broken = lai.assign_coords(time=[lai["time"].values[0], np.datetime64("NaT"), lai["time"].values[2]])
         with pytest.raises(ValueError, match="NaT"):
-            Observation("x", broken, SelectTimestep("wood_carbon"))
+            ObservationSource("x", broken, SelectTimestep("wood_carbon"))
 
     def test_float_site_labels_are_refused(self, lai):
         with pytest.raises(ValueError, match="site labels must be integers"):
-            Observation("x", lai.assign_coords(site=[1.0, 2.5]), SelectTimestep("wood_carbon"))
+            ObservationSource("x", lai.assign_coords(site=[1.0, 2.5]), SelectTimestep("wood_carbon"))
 
     def test_an_aware_time_coordinate_is_refused(self, lai):
         aware = lai.assign_coords(time=pd.DatetimeIndex(lai["time"].values).tz_localize("UTC"))
         with pytest.raises(ValueError, match="naive datetime64"):
-            Observation("x", aware, SelectTimestep("wood_carbon"))
+            ObservationSource("x", aware, SelectTimestep("wood_carbon"))
 
     def test_mixed_batch_and_no_batch_fields_are_refused(self, vector):
         fields = vector.fields(np.zeros((2, vector.dimension)))
@@ -413,17 +413,18 @@ class TestObservationInputsAndBlockShapes:
         assert fields["modis_leaf_area_index"]["sample"].dtype == np.int64
 
     def test_select_takes_sequences_and_refuses_one_name_or_one_site(self, vector):
-        assert vector.select(product_names=["landtrendr_aboveground_biomass"]).dimension == 3
+        assert vector.select(observation_source_names=["landtrendr_aboveground_biomass"]).dimension == 3
         assert vector.select(sites=[2]).sites == (2,)
         with pytest.raises(TypeError, match="one string"):
-            vector.select(product_names="landtrendr_aboveground_biomass")
+            vector.select(observation_source_names="landtrendr_aboveground_biomass")
         with pytest.raises(TypeError, match="sequence of site ids"):
             vector.select(sites=2)
         with pytest.raises(TypeError, match="slice"):
             vector.select(time="2012")
 
-    def test_observation_values_are_named_for_the_product(self, lai):
-        assert Observation("x", lai.rename(None), SelectTimestep("wood_carbon")).values.name == "x"
+    def test_observed_values_are_named_for_the_observation_source(self, lai):
+        source = ObservationSource("x", lai.rename(None), SelectTimestep("wood_carbon"))
+        assert source.observed_values.name == "x"
 
 
 class TestSelectKeepsOnlyObservedLabels:
@@ -432,7 +433,7 @@ class TestSelectKeepsOnlyObservedLabels:
     def test_a_one_site_selection_drops_the_other_sites_labels(self, vector, lai, times):
         sub = vector.select(sites=[1])
         # lai is observed at site 1 on the first and last label only
-        kept = sub["modis_leaf_area_index"].values
+        kept = sub["modis_leaf_area_index"].observed_values
         assert kept["time"].values.tolist() == [times[0].value, times[2].value]
         np.testing.assert_array_equal(sub.y, vector.y[vector.positions(site=1)])
         assert sub.index.equals(vector.index[vector.positions(site=1)])
@@ -442,14 +443,14 @@ class TestSelectKeepsOnlyObservedLabels:
             [[100.0, np.nan, np.nan], [np.nan, np.nan, 120.0]], dims=("site", "time"),
             coords={"site": [1, 2], "time": times}, attrs={"units": "Mg ha-1", "constituent": "C"},
         )
-        vector = ObservationVector([Observation("wood", wood, SelectTimestep("wood_carbon"))])
+        vector = ObservationVector([ObservationSource("wood", wood, SelectTimestep("wood_carbon"))])
         short = one_run.isel(time=slice(0, 30))  # ends before the label only site 2 is observed at
         predicted = vector.select(sites=[1]).predict(short)
         assert predicted["wood"].sizes["time"] == 1
 
-    def test_a_generator_of_sites_is_read_once_for_every_product(self, vector):
+    def test_a_generator_of_sites_is_read_once_for_every_observation_source(self, vector):
         sub = vector.select(sites=(site for site in (1, 2)))
-        assert sub.product_names == vector.product_names
+        assert sub.observation_source_names == vector.observation_source_names
         np.testing.assert_array_equal(sub.y, vector.y)
 
     def test_selecting_thousands_of_sites_keeps_every_chosen_one(self):
@@ -459,47 +460,47 @@ class TestSelectKeepsOnlyObservedLabels:
             coords={"site": np.arange(1, n + 1), "time": pd.date_range("2000-01-01", periods=2)},
             attrs={"units": "Mg ha-1", "constituent": "C"},
         )
-        vector = ObservationVector([Observation("wood", values, SelectTimestep("wood_carbon"))])
+        vector = ObservationVector([ObservationSource("wood", values, SelectTimestep("wood_carbon"))])
         sub = vector.select(sites=range(1, n + 1, 2))
         assert sub.sites == tuple(range(1, n + 1, 2))
 
-    def test_an_unknown_product_is_refused(self, vector):
-        with pytest.raises(KeyError, match="no observation of 'nothing'"):
-            vector.select(product_names=["nothing"])
+    def test_an_unknown_observation_source_is_refused(self, vector):
+        with pytest.raises(KeyError, match="no observation source 'nothing'"):
+            vector.select(observation_source_names=["nothing"])
 
-    def test_products_come_in_the_requested_order(self, vector):
+    def test_observation_sources_come_in_the_requested_order(self, vector):
         names = ("soilgrids_soil_organic_carbon", "modis_leaf_area_index")
-        assert vector.select(product_names=list(names)).product_names == names
+        assert vector.select(observation_source_names=list(names)).observation_source_names == names
 
 
 class TestObservationHoldsItsOwnValues:
-    def test_a_write_to_the_callers_array_does_not_reach_the_observation(self, lai):
-        observation = Observation("x", lai, SelectTimestep("wood_carbon"))
-        lai[1, 0] = 5.0  # an unobserved cell of the caller's array
-        assert observation.n_cells == 4
-        assert np.isnan(observation.values.values[1, 0])
+    def test_a_write_to_the_callers_array_does_not_reach_the_observation_source(self, lai):
+        source = ObservationSource("x", lai, SelectTimestep("wood_carbon"))
+        lai[1, 0] = 5.0  # an unobserved element of the caller's array
+        assert source.n_observations == 4
+        assert np.isnan(source.observed_values.values[1, 0])
 
     def test_the_stored_values_are_read_only(self, vector):
         dimension = vector.dimension
         with pytest.raises(ValueError, match="read-only"):
-            vector.observed_values["modis_leaf_area_index"][0, 1] = 1.0
+            vector.observed_values_by_source["modis_leaf_area_index"][0, 1] = 1.0
         with pytest.raises(ValueError, match="read-only"):
-            vector["modis_leaf_area_index"].values.values[0, 1] = 1.0
-        assert vector["modis_leaf_area_index"].n_cells == 4 and vector.dimension == dimension
+            vector["modis_leaf_area_index"].observed_values.values[0, 1] = 1.0
+        assert vector["modis_leaf_area_index"].n_observations == 4 and vector.dimension == dimension
 
 
 class TestVectorSites:
     def test_a_site_observed_nowhere_is_not_a_site_of_the_vector(self, soil):
-        vector = ObservationVector([Observation("soil", soil, ReduceOverRun("soil_carbon", "mean"))])
+        vector = ObservationVector([ObservationSource("soil", soil, ReduceOverRun("soil_carbon", "mean"))])
         assert soil["site"].values.tolist() == [1, 2]
         assert vector.sites == (1,)
 
-    def test_sites_are_ascending_across_products(self, times):
+    def test_sites_are_ascending_across_observation_sources(self, times):
         first = xr.DataArray([[1.0], [2.0]], dims=("site", "time"), coords={"site": [27, 3], "time": times[:1]}, attrs={"units": "m2 m-2"})
         second = xr.DataArray([4.0, 5.0], dims="site", coords={"site": [8, 1]}, attrs={"units": "Mg ha-1", "constituent": "C"})
         vector = ObservationVector([
-            Observation("a", first, SelectTimestep("leaf_carbon")),
-            Observation("b", second, ReduceOverRun("soil_carbon", "mean")),
+            ObservationSource("a", first, SelectTimestep("leaf_carbon")),
+            ObservationSource("b", second, ReduceOverRun("soil_carbon", "mean")),
         ])
         assert vector.sites == (1, 3, 8, 27)
 
@@ -507,16 +508,16 @@ class TestVectorSites:
 class TestObservationRefusals:
     def test_duplicate_sites_are_refused(self, lai):
         with pytest.raises(ValueError, match="site coordinate has duplicates"):
-            Observation("x", lai.assign_coords(site=[1, 1]), SelectTimestep("wood_carbon"))
+            ObservationSource("x", lai.assign_coords(site=[1, 1]), SelectTimestep("wood_carbon"))
 
     def test_duplicate_times_are_refused(self, lai):
         repeated = lai.assign_coords(time=[lai["time"].values[0]] * 2 + [lai["time"].values[2]])
         with pytest.raises(ValueError, match="time coordinate has duplicates"):
-            Observation("x", repeated, SelectTimestep("wood_carbon"))
+            ObservationSource("x", repeated, SelectTimestep("wood_carbon"))
 
     def test_an_operator_that_is_not_callable_is_refused(self, lai):
         with pytest.raises(TypeError, match="must be callable"):
-            Observation("x", lai, "wood_carbon")
+            ObservationSource("x", lai, "wood_carbon")
 
     def test_an_alias_declared_by_an_operator_is_refused(self, lai):
         @dataclass(frozen=True)
@@ -528,7 +529,7 @@ class TestObservationRefusals:
                 return model_output["wood_carbon"]
 
         with pytest.raises(ValueError, match="alias"):
-            Observation("x", lai, Aliased())
+            ObservationSource("x", lai, Aliased())
 
     def test_declarations_as_a_list_are_refused(self, lai):
         @dataclass(frozen=True)
@@ -540,7 +541,7 @@ class TestObservationRefusals:
                 return model_output["wood_carbon"]
 
         with pytest.raises(TypeError, match="tuple of names"):
-            Observation("x", lai, Listed())
+            ObservationSource("x", lai, Listed())
 
 
 class TestFlatRefusals:
@@ -550,10 +551,10 @@ class TestFlatRefusals:
         with pytest.raises(ValueError, match=r"lacks observed site\(s\) \[2\]"):
             vector.flat(fields)
 
-    def test_a_missing_product_is_refused(self, vector):
+    def test_a_missing_observation_source_is_refused(self, vector):
         fields = vector.fields(vector.y)
         del fields["soilgrids_soil_organic_carbon"]
-        with pytest.raises(ValueError, match="lack the product"):
+        with pytest.raises(ValueError, match="lack the observation source"):
             vector.flat(fields)
 
     def test_batch_labels_that_disagree_are_refused(self, vector):
@@ -563,15 +564,15 @@ class TestFlatRefusals:
             vector.flat(fields)
 
     def test_the_batch_dim_need_not_be_the_leading_dimension(self, vector):
-        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
-        fields = vector.fields(block)
+        batched_flat = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        fields = vector.fields(batched_flat)
         fields["modis_leaf_area_index"] = fields["modis_leaf_area_index"].transpose("site", "time", "sample")
-        np.testing.assert_array_equal(vector.flat(fields), block)
+        np.testing.assert_array_equal(vector.flat(fields), batched_flat)
 
     def test_labels_in_seconds_are_read_by_instant(self, lai, one_run):
         coarse = lai.assign_coords(time=lai["time"].values.astype("datetime64[s]"))
-        vector = ObservationVector([Observation("modis_leaf_area_index", coarse, SelectTimestep("leaf_carbon"))])
-        assert vector["modis_leaf_area_index"].values["time"].dtype == np.dtype("datetime64[s]")
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", coarse, SelectTimestep("leaf_carbon"))])
+        assert vector["modis_leaf_area_index"].observed_values["time"].dtype == np.dtype("datetime64[s]")
         np.testing.assert_array_equal(vector.flat(vector.fields(vector.y)), vector.y)
         wide = xr.full_like(lai, 7.0)  # nanosecond labels, as a prediction carries them
         fields = {"modis_leaf_area_index": wide}
@@ -597,23 +598,23 @@ class TestFailedRuns:
                 return out
 
         with pytest.raises(ValueError, match="although the run succeeded"):
-            ObservationVector([Observation("modis_leaf_area_index", lai, Gappy())]).predict(padded)
+            ObservationVector([ObservationSource("modis_leaf_area_index", lai, Gappy())]).predict(padded)
 
     def test_one_read_variable_missing_throughout_is_a_failed_run(self, vector, stack, table):
         failed = stack.copy(deep=True)
         failed["wood_carbon"].loc[{"sample": 1, "site": 2}] = np.nan  # leaf and soil carbon finite
-        block = vector.flat(vector.predict(failed, sipnet_parameters=table))
-        wood = vector.positions(site=2, product_name="landtrendr_aboveground_biomass")
-        assert np.isnan(block[1, wood]).all()
-        assert np.isfinite(block[0]).all()
+        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=table))
+        wood = vector.positions(site=2, observation_source_name="landtrendr_aboveground_biomass")
+        assert np.isnan(batched_flat[1, wood]).all()
+        assert np.isfinite(batched_flat[0]).all()
 
     def test_the_failure_mask_is_matched_by_site_label(self, lai, stack, table):
         reordered = stack.isel(site=[1, 0]).copy(deep=True)
         reordered["leaf_carbon"].loc[{"sample": 1, "site": 2}] = np.nan
-        vector = ObservationVector([Observation("modis_leaf_area_index", lai, ComputeLeafAreaIndex())])
-        block = vector.flat(vector.predict(reordered, sipnet_parameters=table))
-        assert np.isnan(block[1, vector.positions(site=2)]).all()
-        assert np.isfinite(block[1, vector.positions(site=1)]).all()
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", lai, ComputeLeafAreaIndex())])
+        batched_flat = vector.flat(vector.predict(reordered, sipnet_parameters=table))
+        assert np.isnan(batched_flat[1, vector.positions(site=2)]).all()
+        assert np.isfinite(batched_flat[1, vector.positions(site=1)]).all()
 
 
 class TestPredictSharesTheOperatorChecks:
@@ -629,7 +630,7 @@ class TestPredictSharesTheOperatorChecks:
                 out.attrs = {"units": "1"}
                 return out
 
-        vector = ObservationVector([Observation("modis_leaf_area_index", lai, Spurious())]).select(sites=[1])
+        vector = ObservationVector([ObservationSource("modis_leaf_area_index", lai, Spurious())]).select(sites=[1])
         with pytest.raises(ValueError, match=r"dim\(s\) \['sample'\] that neither the model output"):
             vector.predict(one_run)
 
@@ -643,7 +644,7 @@ class TestPredictSharesTheOperatorChecks:
                 return np.zeros(3)
 
         with pytest.raises(TypeError, match="not a DataArray"):
-            ObservationVector([Observation("modis_leaf_area_index", lai, Numpy())]).predict(stack)
+            ObservationVector([ObservationSource("modis_leaf_area_index", lai, Numpy())]).predict(stack)
 
 
 class TestObservationKeepsOnlyObservedLabels:
@@ -653,43 +654,43 @@ class TestObservationKeepsOnlyObservedLabels:
             dims=("site", "time"), coords={"site": [1, 5, 9], "time": times},
             attrs={"units": "Mg ha-1", "constituent": "C"},
         )
-        observation = Observation("wood", values, SelectTimestep("wood_carbon"))
-        assert observation.sites == (1, 9)
-        assert observation.values["time"].values.tolist() == [times[0].value, times[2].value]
-        assert observation.n_cells == 2
+        source = ObservationSource("wood", values, SelectTimestep("wood_carbon"))
+        assert source.sites == (1, 9)
+        assert source.observed_values["time"].values.tolist() == [times[0].value, times[2].value]
+        assert source.n_observations == 2
 
-    def test_a_static_products_unobserved_sites_are_dropped(self, soil):
-        assert Observation("soil", soil, ReduceOverRun("soil_carbon", "mean")).sites == (1,)
+    def test_a_static_sources_unobserved_sites_are_dropped(self, soil):
+        assert ObservationSource("soil", soil, ReduceOverRun("soil_carbon", "mean")).sites == (1,)
 
     def test_predict_needs_no_model_output_at_an_unobserved_site(self, one_run, times):
         values = xr.DataArray(
             [[100.0, np.nan, 110.0], [np.nan, np.nan, np.nan]], dims=("site", "time"),
             coords={"site": [1, 5], "time": times}, attrs={"units": "Mg ha-1", "constituent": "C"},
         )
-        vector = ObservationVector([Observation("wood", values, SelectTimestep("wood_carbon"))])
+        vector = ObservationVector([ObservationSource("wood", values, SelectTimestep("wood_carbon"))])
         predicted = vector.predict(one_run)  # one run at site 1; site 5 is observed nowhere
         assert predicted["wood"]["site"].values.tolist() == [1]
         assert predicted["wood"]["time"].values.tolist() == [times[0].value, times[2].value]
 
-    def test_a_real_product_at_unobserved_sites_predicts_from_the_observed_ones(self):
+    def test_a_real_constraint_at_unobserved_sites_predicts_from_the_observed_ones(self):
         constraints = pytest.importorskip("sipnet_calibration.constraints")
         try:
             wood = constraints.constraint_fields(["landtrendr_aboveground_biomass"], sites=[1, 27, 3851])
         except FileNotFoundError as error:
             pytest.skip(str(error))
         array = wood["landtrendr_aboveground_biomass"]
-        observation = Observation("wood", array, SelectTimestep("wood_carbon"))
+        source = ObservationSource("wood", array, SelectTimestep("wood_carbon"))
         observed_sites = [int(s) for s in array["site"].values if bool(array.sel(site=s).notnull().any())]
-        assert list(observation.sites) == observed_sites
-        assert bool(observation.values.notnull().any("site").all())
+        assert list(source.sites) == observed_sites
+        assert bool(source.observed_values.notnull().any("site").all())
 
 
 class TestObservationKeepsAScalarBatchLabelAsMetadata:
     def test_a_scalar_batch_coordinate_is_accepted(self, lai):
         one = lai.expand_dims(nee_member=[4]).isel(nee_member=0)
-        observation = Observation("x", one, SelectTimestep("wood_carbon"))
-        assert observation.n_cells == 4
-        assert int(observation.values["nee_member"]) == 4
+        source = ObservationSource("x", one, SelectTimestep("wood_carbon"))
+        assert source.n_observations == 4
+        assert int(source.observed_values["nee_member"]) == 4
 
 
 class TestSiteIdsAreIntegers:
@@ -727,8 +728,8 @@ class TestSiteIdsAreIntegers:
 
 class TestObservationIdentity:
     def test_observations_compare_and_hash_by_identity(self, lai):
-        first = Observation("x", lai, SelectTimestep("wood_carbon"))
-        second = Observation("x", lai, SelectTimestep("wood_carbon"))
+        first = ObservationSource("x", lai, SelectTimestep("wood_carbon"))
+        second = ObservationSource("x", lai, SelectTimestep("wood_carbon"))
         assert first == first and first != second
         assert len({first, second, first}) == 2
 
@@ -736,20 +737,20 @@ class TestObservationIdentity:
 class TestObservationLoadsLazyValues:
     def test_dask_backed_values_are_loaded_and_read_only(self, lai):
         pytest.importorskip("dask")
-        observation = Observation("x", lai.chunk({"site": 1}), SelectTimestep("wood_carbon"))
-        assert isinstance(observation.values.variable._data, np.ndarray)
+        source = ObservationSource("x", lai.chunk({"site": 1}), SelectTimestep("wood_carbon"))
+        assert isinstance(source.observed_values.variable._data, np.ndarray)
         with pytest.raises(ValueError, match="read-only"):
-            observation.values.values[0, 0] = -1.0
-        assert observation.values.values[0, 0] == 3.0
+            source.observed_values.values[0, 0] = -1.0
+        assert source.observed_values.values[0, 0] == 3.0
 
     def test_file_backed_values_are_loaded_and_read_only(self, lai, tmp_path):
         path = tmp_path / "lai.nc"
         lai.to_netcdf(path)
         with xr.open_dataarray(path) as lazy:
-            observation = Observation("x", lazy, SelectTimestep("wood_carbon"))
+            source = ObservationSource("x", lazy, SelectTimestep("wood_carbon"))
         with pytest.raises(ValueError, match="read-only"):
-            observation.values.values[0, 0] = -1.0
-        assert observation.values.values[0, 0] == 3.0
+            source.observed_values.values[0, 0] = -1.0
+        assert source.observed_values.values[0, 0] == 3.0
 
 
 class TestBatchSizes:
@@ -768,9 +769,9 @@ class TestPredictOverAnyBatchDim:
         renamed = stack.rename(sample="driver_member")
         predicted = vector.predict(renamed, sipnet_parameters=table.rename(sample="driver_member"))
         assert predicted["modis_leaf_area_index"].dims == ("driver_member", "site", "time")
-        block = vector.flat(predicted)
+        batched_flat = vector.flat(predicted)
         expected = vector.flat(vector.predict(stack, sipnet_parameters=table))
-        np.testing.assert_allclose(block, expected)
+        np.testing.assert_allclose(batched_flat, expected)
 
     def test_two_batch_dims_predict_and_flatten_once_stacked(self, vector, stack, table):
         from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
@@ -786,7 +787,7 @@ class TestPredictOverAnyBatchDim:
             )
 
         vector = ObservationVector([
-            Observation(o.product_name, located(o.values), o.operator) for o in vector.observations
+            ObservationSource(o.observation_source_name, located(o.observed_values), o.operator) for o in vector.observation_sources
         ])
 
         crossed = xr.concat(
@@ -802,13 +803,13 @@ class TestPredictOverAnyBatchDim:
         with pytest.raises(ValueError, match="stack_batch_dims"):
             vector.flat(predicted)
         stacked = {name: stack_batch_dims(field, into="run") for name, field in predicted.items()}
-        block = vector.flat(stacked)
-        assert block.shape == (4, vector.dimension)
-        back = vector.fields(block, batch_dim="run")
+        batched_flat = vector.flat(stacked)
+        assert batched_flat.shape == (4, vector.dimension)
+        back = vector.fields(batched_flat, batch_dim="run")
         restored = unstack_batch_dims(
             back["modis_leaf_area_index"], labels_from=stacked["modis_leaf_area_index"]
         )
-        observed = vector["modis_leaf_area_index"].values.notnull()
+        observed = vector["modis_leaf_area_index"].observed_values.notnull()
         assert restored.dims == predicted["modis_leaf_area_index"].dims
         np.testing.assert_allclose(
             restored.where(observed).values,
@@ -835,38 +836,38 @@ class TestFailureMaskIsMatchedByLabel:
                 return out
 
         with pytest.raises(ValueError, match="although the run succeeded"):
-            ObservationVector([Observation("wood", values, Gappy())]).predict(stack)
+            ObservationVector([ObservationSource("wood", values, Gappy())]).predict(stack)
 
 
 class TestObservationNamesAndUnits:
-    def test_a_product_name_that_is_not_a_string_is_a_type_error(self, lai):
-        with pytest.raises(TypeError, match="product_name must be a string"):
-            Observation(3, lai, SelectTimestep("wood_carbon"))
+    def test_an_observation_source_name_that_is_not_a_string_is_a_type_error(self, lai):
+        with pytest.raises(TypeError, match="observation_source_name must be a string"):
+            ObservationSource(3, lai, SelectTimestep("wood_carbon"))
 
-    def test_an_empty_product_name_is_a_value_error(self, lai):
-        with pytest.raises(ValueError, match="product_name is empty"):
-            Observation("", lai, SelectTimestep("wood_carbon"))
+    def test_an_empty_observation_source_name_is_a_value_error(self, lai):
+        with pytest.raises(ValueError, match="observation_source_name is empty"):
+            ObservationSource("", lai, SelectTimestep("wood_carbon"))
 
     def test_a_substance_inside_the_units_is_refused_in_pysipnets_words(self, lai):
         with pytest.raises(ValueError, match="substance token"):
-            Observation("x", lai.assign_attrs(units="g C m-2"), SelectTimestep("wood_carbon"))
+            ObservationSource("x", lai.assign_attrs(units="g C m-2"), SelectTimestep("wood_carbon"))
 
 
 class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
     def test_a_scalar_batch_label_on_an_observation_gives_way_to_the_batch_dim(self, soil, lai):
-        """Before, the observation's scalar ``sample=4`` overwrote the created batch
+        """Before, the observation source's scalar ``sample=4`` overwrote the created batch
         coordinate, and flat then failed with a raw xarray error."""
         labeled = soil.assign_coords(sample=np.int64(4))
         vector = ObservationVector([
-            Observation("soilgrids_soil_organic_carbon", labeled, ReduceOverRun("soil_carbon", "mean")),
-            Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+            ObservationSource("soilgrids_soil_organic_carbon", labeled, ReduceOverRun("soil_carbon", "mean")),
+            ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ])
-        block = np.arange(3 * vector.dimension, dtype=float).reshape(3, -1)
-        fields = vector.fields(block)
+        batched_flat = np.arange(3 * vector.dimension, dtype=float).reshape(3, -1)
+        fields = vector.fields(batched_flat)
         soil_field = fields["soilgrids_soil_organic_carbon"]
         assert soil_field.dims == ("sample", "site")
         assert soil_field["sample"].values.tolist() == [0, 1, 2]
-        np.testing.assert_array_equal(vector.flat(fields), block)
+        np.testing.assert_array_equal(vector.flat(fields), batched_flat)
 
     @pytest.mark.parametrize("name", ["ameriflux_site_id", "modis_leaf_area_index"])
     def test_a_batch_dim_named_like_an_observation_coordinate_is_refused(self, lai, times, name):
@@ -875,11 +876,11 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
             ameriflux_site_id=("site", ["US-A", "US-B"]),
         )
         vector = ObservationVector([
-            Observation("modis_leaf_area_index", windowed, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+            ObservationSource("modis_leaf_area_index", windowed, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ])
-        block = np.zeros((2, vector.dimension))
+        batched_flat = np.zeros((2, vector.dimension))
         with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
-            vector.fields(block, batch_dim=name)
+            vector.fields(batched_flat, batch_dim=name)
 
     def test_a_reserved_name_is_refused(self, vector):
         with pytest.raises(ValueError, match="cannot name a batch dim"):
@@ -900,24 +901,24 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
             vector.fields(np.zeros((2, vector.dimension)), batch_dim=name)
 
     def test_an_observations_scalar_batch_labels_are_not_carried(self, soil, lai):
-        """An observation's ``sample=4`` rode along and contradicted the rows."""
+        """An observation source's ``sample=4`` rode along and contradicted the rows."""
         from sipnet_calibration.fields import scalar_batch_labels
 
         labeled = soil.assign_coords(sample=np.int64(4), driver_member=np.int64(2))
         vector = ObservationVector([
-            Observation("soilgrids_soil_organic_carbon", labeled, ReduceOverRun("soil_carbon", "mean")),
-            Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+            ObservationSource("soilgrids_soil_organic_carbon", labeled, ReduceOverRun("soil_carbon", "mean")),
+            ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ])
-        block = np.zeros((3, vector.dimension))
+        batched_flat = np.zeros((3, vector.dimension))
         for batch_dim in ("run", "sample"):
-            made = vector.fields(block, batch_dim=batch_dim)["soilgrids_soil_organic_carbon"]
+            made = vector.fields(batched_flat, batch_dim=batch_dim)["soilgrids_soil_organic_carbon"]
             assert scalar_batch_labels(made) == ()
             assert "driver_member" not in made.coords
-        one = vector.fields(block[0])["soilgrids_soil_organic_carbon"]
+        one = vector.fields(batched_flat[0])["soilgrids_soil_organic_carbon"]
         assert scalar_batch_labels(one) == ()
 
     def test_the_labels_from_recipe_runs_with_an_observations_scalar_label(self, stack, times):
-        """The documented recipe crashed on an observation carrying ``sample=4``."""
+        """The documented recipe crashed on an observation source carrying ``sample=4``."""
         from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
         locations = {"lon": ("site", stack["lon"].values), "lat": ("site", stack["lat"].values)}
@@ -928,7 +929,7 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
             attrs={"units": "g m-2", "constituent": "C"},
             name="wood",
         ).assign_coords(sample=np.int64(4))
-        vector = ObservationVector([Observation("wood", wood, SelectTimestep("wood_carbon"))])
+        vector = ObservationVector([ObservationSource("wood", wood, SelectTimestep("wood_carbon"))])
         crossed = stack.expand_dims(driver_member=[0, 3], axis=1)
         predicted = vector.predict(crossed)
         stacked = {name: stack_batch_dims(field, into="run") for name, field in predicted.items()}
@@ -951,8 +952,8 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
 
 class TestFlatRefusesADimThatIsNotABatchDim:
     def test_a_dropped_or_float_batch_coordinate_is_refused_in_the_fields_words(self, vector):
-        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
-        fields = vector.fields(block)
+        batched_flat = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        fields = vector.fields(batched_flat)
         dropped = {name: field.drop_vars("sample") for name, field in fields.items()}
         with pytest.raises(ValueError, match="carry no coordinate"):
             vector.flat(dropped)
@@ -961,19 +962,19 @@ class TestFlatRefusesADimThatIsNotABatchDim:
             vector.flat(floats)
 
     def test_several_batch_dims_are_refused_with_advice_for_a_dict(self, vector):
-        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        batched_flat = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
         crossed = {
             name: field.expand_dims(driver_member=[0, 1])
-            for name, field in vector.fields(block).items()
+            for name, field in vector.fields(batched_flat).items()
         }
         with pytest.raises(ValueError, match="for a\\s+dict, one call per entry"):
             vector.flat(crossed)
 
     def test_the_advice_names_the_field_in_the_singular(self, vector):
-        block = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
+        batched_flat = np.arange(2 * vector.dimension, dtype=float).reshape(2, -1)
         crossed = {
             name: field.expand_dims(driver_member=[0, 1])
-            for name, field in vector.fields(block).items()
+            for name, field in vector.fields(batched_flat).items()
         }
         with pytest.raises(ValueError, match="'modis_leaf_area_index' carries the batch dims"):
             vector.flat(crossed)

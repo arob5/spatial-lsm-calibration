@@ -33,7 +33,7 @@ from sipnet_calibration.compute import scc_backend
 from sipnet_calibration.forward import ForwardEvaluation, ForwardModel
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
-    Observation,
+    ObservationSource,
     ObservationVector,
     ReduceOverRun,
     SelectTimestep,
@@ -118,8 +118,8 @@ def observation_vector():
     )
     return ObservationVector(
         [
-            Observation("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-            Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+            ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
+            ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ]
     )
 
@@ -168,7 +168,7 @@ class TestEvaluate:
             for site in SITES:
                 observed = (
                     observation_vector["landtrendr_aboveground_biomass"]
-                    .values.sel(site=site)
+                    .observed_values.sel(site=site)
                     .notnull()
                     .values
                 )
@@ -197,7 +197,7 @@ class TestEvaluate:
         lai = observation_vector.fields(block)["modis_leaf_area_index"]
         leaf = select_timestep_at(REFERENCE.select(["leaf_carbon"])["leaf_carbon"], LABELS).values
         expected = leaf / forward._base_values["leaf_carbon_per_area"]
-        observed = observation_vector["modis_leaf_area_index"].values.sel(site=1).notnull().values
+        observed = observation_vector["modis_leaf_area_index"].observed_values.sel(site=1).notnull().values
         np.testing.assert_allclose(
             lai.sel(sample=0, site=1).values[observed], expected[observed], rtol=1e-12
         )
@@ -219,14 +219,14 @@ class TestEvaluate:
         assert evaluation.run_succeeded.shape == (3, 2) and bool(evaluation.run_succeeded.all())
         assert np.isfinite(evaluation.predictions).all()
 
-    def test_a_product_array_with_a_site_it_never_observes(
+    def test_an_observation_source_with_a_site_it_never_observes(
         self, parameter_vector, climate, observation_vector, theta
     ):
-        """The Observation drops the site, so its run is made and reduced to nothing."""
-        wood = observation_vector["landtrendr_aboveground_biomass"].values.copy()
+        """The ObservationSource drops the site, so its run is made and reduced to nothing."""
+        wood = observation_vector["landtrendr_aboveground_biomass"].observed_values.copy()
         wood.loc[{"site": 27}] = np.nan
         sparse = ObservationVector(
-            [Observation("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
+            [ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
         )
         assert sparse.positions(site=27).size == 0 and sparse.sites == (1,)
         forward = ForwardModel(
@@ -286,9 +286,9 @@ class TestEvaluate:
         )
         observation_vector = ObservationVector(
             [
-                Observation("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-                Observation("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-                Observation("soil", soil, ReduceOverRun("soil_carbon", "mean")),
+                ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
+                ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+                ObservationSource("soil", soil, ReduceOverRun("soil_carbon", "mean")),
             ]
         )
         assert observation_vector.sites == tuple(sites)
@@ -297,7 +297,7 @@ class TestEvaluate:
             assert block.get_level_values("site").unique().tolist() == [site]
             assert observation_vector.select(sites=[site]).index.equals(block)
 
-    def test_a_product_observed_beyond_a_shorter_sites_record(
+    def test_an_observation_source_observed_beyond_a_shorter_sites_record(
         self, parameter_vector, climate, theta
     ):
         """Site 27's drivers end before a label only site 1 is observed at."""
@@ -311,7 +311,7 @@ class TestEvaluate:
             name="landtrendr_aboveground_biomass",
         )
         observed = ObservationVector(
-            [Observation("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
+            [ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -331,7 +331,7 @@ class TestEvaluate:
             evaluation.predictions[:, observed.positions(site=1)[-1]], expected, rtol=1e-12
         )
 
-    def test_a_run_at_a_site_no_product_observes_returns_nothing(
+    def test_a_run_at_a_site_no_observation_source_observes_returns_nothing(
         self, parameter_vector, climate, observation_vector, theta
     ):
         from sipnet_calibration.parameter_vector import sipnet_overrides
@@ -441,7 +441,7 @@ class TestFailures:
             name="landtrendr_aboveground_biomass",
         )
         infinite = ObservationVector(
-            [Observation("landtrendr_aboveground_biomass", wood, Infinite())]
+            [ObservationSource("landtrendr_aboveground_biomass", wood, Infinite())]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -932,7 +932,7 @@ class TestRealSipnet:
         assert evaluation.predictions.shape == (2, observation_vector.dimension)
         assert np.isfinite(evaluation.predictions).all() and evaluation.valid.all()
 
-        # One cell, recomputed by hand: the same run and the same operators, on the driver.
+        # One run's predictions, recomputed by hand: the same run and the same operators, on the driver.
         sample, site = 1, 27
         overrides = sipnet_overrides(evaluation.sipnet_table, batch={"sample": sample}, site=site)
         direct = label_run(
@@ -1211,7 +1211,7 @@ class TestTheBatchDimIsNamedOnce:
         self, parameter_vector, climate, observation_vector
     ):
         """It was accepted, and the vector's fields() then refused the predictions."""
-        with pytest.raises(ValueError, match="is a product name"):
+        with pytest.raises(ValueError, match="is an observation source name"):
             ForwardModel(
                 scaled_niwot_model(),
                 parameter_vector,

@@ -205,7 +205,7 @@ from sipnet_calibration.observation import (
     DEFAULT_METHOD_FOR_KIND,
     ObservationVector,
     aggregate_time,
-    check_batch_dim_is_not_an_observation_name,
+    check_batch_dim_is_not_an_observation_source_name,
 )
 from sipnet_calibration.observation.time_alignment import (
     check_frequency_is_an_offset_alias,
@@ -323,8 +323,9 @@ class ForwardModel:
         parameter or Fields variable name), a name the model output uses (an
         output variable or a pySIPNET alias of one, or one of
         :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
-        a product name or coordinate of the observation vector's
-        observations. Each is refused here, before anything runs. Read-only
+        an observation source name of the observation vector or a
+        coordinate of one's observed values. Each is refused here, before
+        anything runs. Read-only
         once the model is built, since the default hook is bound to it.
 
     Raises
@@ -391,7 +392,9 @@ class ForwardModel:
             batch_dim, self.output_variable_names, message_name="batch_dim"
         )
         if observation_vector is not None:
-            check_batch_dim_is_not_an_observation_name(observation_vector.observations, batch_dim)
+            check_batch_dim_is_not_an_observation_source_name(
+                observation_vector.observation_sources, batch_dim
+            )
         chosen_site_table = _chosen_site_table(site_table, parameter_vector)
         # site_locations checks the table locates the sites, once, before
         # the lookup below relies on it.
@@ -979,7 +982,7 @@ def check_observation_sites_are_run(
     if extra:
         raise ValueError(
             f"the observation vector observes site(s) {extra[:10]} that the parameter vector "
-            "does not run; select the observations to the vector's sites first "
+            "does not run; select the observation vector to those sites first "
             "(observation_vector.select(sites=...))."
         )
 

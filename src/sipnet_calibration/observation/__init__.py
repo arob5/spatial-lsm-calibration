@@ -14,8 +14,9 @@ Two abstractions and a handful of functions:
   (:func:`check_operator_declares_names`,
   :func:`check_model_output_carries_what_is_read`,
   :func:`check_result_is_on_the_observation_grid`).
-* :class:`Observation` and :class:`ObservationVector`: the observed cells of
-  an experiment in a fixed order, with Fields and Flat representations,
+* :class:`ObservationSource` and :class:`ObservationVector`: the
+  observations of an experiment in a fixed order, with Fields and Flat
+  representations,
   ``y``, ``index`` (levels :data:`INDEX_LEVELS`), ``positions`` and
   ``predict``.
 
@@ -62,9 +63,9 @@ from sipnet_calibration.observation.time_alignment import (
 )
 from sipnet_calibration.observation.vector import (
     INDEX_LEVELS,
-    Observation,
+    ObservationSource,
     ObservationVector,
-    check_batch_dim_is_not_an_observation_name,
+    check_batch_dim_is_not_an_observation_source_name,
 )
 
 __all__ = [
@@ -74,15 +75,15 @@ __all__ = [
     "RESAMPLING_METHODS",
     "WINDOW_REDUCTIONS",
     "ComputeLeafAreaIndex",
-    "Observation",
     "ObservationOperator",
+    "ObservationSource",
     "ObservationVector",
     "ReduceOverRun",
     "ReduceOverTimeBounds",
     "SelectTimestep",
     "aggregate_time",
     "aggregation_counts",
-    "check_batch_dim_is_not_an_observation_name",
+    "check_batch_dim_is_not_an_observation_source_name",
     "check_model_output_carries_what_is_read",
     "check_operator",
     "check_operator_declares_names",
