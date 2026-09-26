@@ -1508,6 +1508,28 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
     refused(lambda d: _without_attr(d, "n_initial_condition_members"), "renamed from n_members")
 
 
+def test_the_member_coordinates_carry_their_attributes(raw, sites_csv):
+    from sipnet_calibration.conventions import (
+        DATA_SOURCE_MEMBER_ATTRIBUTES,
+        SOURCE_INDEX_ATTRIBUTES,
+    )
+
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, load_sites(sites_csv))
+    assert dict(product[INITIAL_CONDITION_MEMBER].attrs) == dict(DATA_SOURCE_MEMBER_ATTRIBUTES)
+    assert dict(product[SOURCE_INDEX].attrs) == dict(SOURCE_INDEX_ATTRIBUTES)
+
+
+def test_a_product_without_source_index_is_refused_by_name(raw, sites_csv, tmp_path):
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, load_sites(sites_csv))
+    variant = product.drop_vars(SOURCE_INDEX)
+    path = tmp_path / "p.nc"
+    variant.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(variant))
+    with pytest.raises(ValueError, match="missing the 'source_index' coordinate"):
+        load_initial_conditions(path)
+
+
 def test_a_member_label_is_its_source_index_less_one(raw, sites_csv):
     sites = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:

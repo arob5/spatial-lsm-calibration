@@ -58,9 +58,9 @@ Data model
 ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 ``time_bounds``.
 
-**Data variables**, all ``float64`` on ``(driver_member, site, time)``: the eight
-value columns of the climate file, under pySIPNET's registry names, listed in
-:data:`DRIVER_VARIABLES` -- ``air_temperature``, ``soil_temperature``,
+**Data variables**, all ``float64`` on ``(driver_member, site, time)``: the
+eight value columns of the climate file, under pySIPNET's registry names,
+listed in :data:`DRIVER_VARIABLES` -- ``air_temperature``, ``soil_temperature``,
 ``photosynthetically_active_radiation``, ``precipitation``,
 ``vapor_pressure_deficit``, ``soil_vapor_pressure_deficit``,
 ``vapor_pressure`` and ``wind_speed``. Each carries the attributes pySIPNET
@@ -245,7 +245,12 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.fields import batch_coordinate, without_stale_time_attributes
 from sipnet_calibration.sites import load_sites, site_coordinates
-from sipnet_calibration.validation import as_positive_integers, as_site_ids, truncated
+from sipnet_calibration.validation import (
+    as_bounded_integer,
+    as_positive_integers,
+    as_site_ids,
+    truncated,
+)
 
 __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
@@ -449,11 +454,12 @@ def load_drivers(
         it. Loaded from its default location when ``None``. Only ``site_id``,
         ``lon`` and ``lat`` are read, and ``site_id`` must be unique.
     allow_missing:
-        What to do about a ``(site, source index)`` pair with no file. ``False``, the
-        default, raises, because a missing driver member that became ``NaN``
-        would propagate silently through any statistic over members. ``True``
-        fills the pair with ``NaN`` and adds :data:`DRIVER_PRESENT`. At least
-        one requested pair must have a file either way.
+        What to do about a ``(site, source index)`` pair with no file.
+        ``False``, the default, raises, because a missing driver member that
+        became ``NaN`` would propagate silently through any statistic over
+        members. ``True`` fills the pair with ``NaN`` and adds
+        :data:`DRIVER_PRESENT`. At least one requested pair must have a file
+        either way.
     time_zone:
         The clock the files' labels are on, declared to pySIPNET for every
         file; see :func:`read_driver_file`. ``None`` leaves it undeclared.
@@ -469,9 +475,10 @@ def load_drivers(
     Raises
     ------
     FileNotFoundError
-        If the root does not exist; if *source_indices* is ``None`` and no requested
-        site has a driver directory; if no requested pair has a file at all;
-        or if a requested pair has no file and *allow_missing* is ``False``.
+        If the root does not exist; if *source_indices* is ``None`` and no
+        requested site has a driver directory; if no requested pair has a
+        file at all; or if a requested pair has no file and *allow_missing*
+        is ``False``.
     TypeError
         If *sites* or *source_indices* is one value, a string, a set or not
         iterable, or holds a boolean, a float or a value that is not an
@@ -482,7 +489,8 @@ def load_drivers(
     ValueError
         If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
         or *source_indices* is empty or a two-dimensional array, or holds a
-        value that is not positive, discovered ones included; if *sites*
+        value that is not positive, discovered ones included, or a source
+        index beyond the ``int64`` range; if *sites*
         names a site twice or *source_indices* a source index twice; if the
         site table lacks ``site_id``,
         ``lon`` or ``lat`` or repeats a ``site_id``; if a pair's
@@ -506,7 +514,7 @@ def load_drivers(
     paths, present = _locate_files(root, sites=site_ids, source_indices=indices)
     check_some_pair_has_a_file(present, sites=site_ids, source_indices=indices, root=root)
     if not allow_missing:
-        _check_every_requested_pair_has_a_file(
+        check_every_requested_pair_has_a_file(
             present, sites=site_ids, source_indices=indices, root=root
         )
 
@@ -632,13 +640,24 @@ def _source_indices(
 def _as_source_indices(source_indices: Iterable[int]) -> np.ndarray:
     """*source_indices* as an ``int64`` array, in the order given, or a clear error.
 
-    Strings, booleans, floats, non-positive values and repeats are refused,
-    since each would otherwise resolve to a plausible-looking wrong directory.
+    Strings, booleans, floats, non-positive values, values beyond ``int64``
+    and repeats are refused, since each would otherwise resolve to a
+    plausible-looking wrong directory or overflow.
     """
-    indices = as_positive_integers(source_indices, message_name="source_indices")
+    positive = as_positive_integers(source_indices, message_name="source_indices")
+    # Each index, and its driver_member label one below it, fits int64.
+    indices = tuple(
+        as_bounded_integer(
+            index,
+            minimum=1,
+            maximum=int(np.iinfo(BATCH_LABEL_DTYPE).max),
+            message_name=f"source_indices[{position}]",
+        )
+        for position, index in enumerate(positive)
+    )
     check_some_are_requested(indices, what="source indices", example="source index")
     check_source_indices_are_unique(indices)
-    return np.asarray(indices, dtype=np.int64)
+    return np.asarray(indices, dtype=BATCH_LABEL_DTYPE)
 
 
 def _locate_files(
@@ -855,14 +874,12 @@ def _check_time_axes_identical(
             )
 
 
-def _check_every_requested_pair_has_a_file(
+def check_every_requested_pair_has_a_file(
     present: np.ndarray, *, sites: np.ndarray, source_indices: np.ndarray, root: Path
 ) -> None:
-    """Every requested ``(site, source index)`` pair has a file, unless gaps are allowed.
-
-    The message lists the missing pairs, and says that ``allow_missing=True``
-    reads the rest with ``NaN`` in their place.
-    """
+    """Every requested ``(site, source index)`` pair has a driver file."""
+    # Called unless gaps are allowed; the message lists the missing pairs and
+    # says that allow_missing=True reads the rest with NaN in their place.
     if present.all():
         return
     missing = [

@@ -5,9 +5,8 @@ Overview
 --------
 Read ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``, check
 it, rename the source variables to the spec names and the ``member`` dim to
-``initial_condition_member``, renumber the members,
-place the sites on the site pool and write
-``data/processed/initial_conditions.nc``. Every decision about what a variable
+``initial_condition_member``, renumber the members, place the sites on the
+site pool and write ``data/processed/initial_conditions.nc``. Every decision about what a variable
 is -- its unit, its provenance, the SIPNET parameter it feeds -- is a field of
 its ``InitialConditionSpec`` in the library; this script is the orchestration
 and the checks, and its round-trip check reads the file back with

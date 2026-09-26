@@ -384,6 +384,21 @@ class TestLoadDrivers:
         with pytest.raises(TypeError, match="source_indices"):
             load_drivers([3], source_indices=indices, root=root, sites_table=sites_table)
 
+    def test_a_source_index_beyond_int64_is_a_value_error(self, root, sites_table):
+        """``2**70`` raised numpy's raw OverflowError."""
+        with pytest.raises(ValueError, match=r"source_indices\[0\] must be"):
+            load_drivers([3], source_indices=[2**70], root=root, sites_table=sites_table)
+
+    def test_the_member_coordinates_carry_their_attributes(self, root, sites_table):
+        from sipnet_calibration.conventions import (
+            DATA_SOURCE_MEMBER_ATTRIBUTES,
+            SOURCE_INDEX_ATTRIBUTES,
+        )
+
+        dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
+        assert dict(dataset["driver_member"].attrs) == dict(DATA_SOURCE_MEMBER_ATTRIBUTES)
+        assert dict(dataset["source_index"].attrs) == dict(SOURCE_INDEX_ATTRIBUTES)
+
     def test_rejects_no_source_indices(self, root, sites_table):
         with pytest.raises(ValueError, match="no source indices requested"):
             load_drivers([3], source_indices=[], root=root, sites_table=sites_table)
@@ -526,6 +541,20 @@ class TestLoadDrivers:
         assert present.attrs["long_name"] == (
             "Whether a driver file existed for the driver member and site"
         )
+
+    def test_driver_present_is_mapped(self, root, sites_table):
+        """It validated as a field and was refused by the map for want of units."""
+        import matplotlib.pyplot as plt
+
+        from sipnet_calibration.plotting import plot_map
+
+        write_pair(root, 3, 5)
+        dataset = load_drivers([3, 7], root=root, sites_table=sites_table, allow_missing=True)
+        figure, ax = plt.subplots()
+        try:
+            plot_map(dataset[DRIVER_PRESENT].sel(driver_member=4), ax=ax)
+        finally:
+            plt.close(figure)
 
     def test_two_loads_of_different_members_align_member_for_member(self, root, sites_table):
         """A member's label is its identity: ``source_index - 1`` in every load."""

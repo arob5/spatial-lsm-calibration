@@ -34,7 +34,10 @@ import xarray as xr
 from pysipnet.parameters import InitialConditions
 
 from sipnet_calibration.conventions import SITE, SPATIAL_DIM_NAMES, TIME
-from sipnet_calibration.fields import batch_dims, scalar_batch_labels
+from sipnet_calibration.fields import (
+    check_labeled_dims_are_batch_spatial_or_time,
+    scalar_batch_labels,
+)
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [
@@ -461,8 +464,8 @@ def _as_data_array(value: Any) -> xr.DataArray:
 def _label_coordinate_names(arrays: Mapping[str, xr.DataArray]) -> list[str]:
     """``site``, then every dim of an input and every scalar batch label, once each.
 
-    A scalar batch label is as :func:`sipnet_calibration.fields.scalar_batch_labels`
-    defines it.
+    A scalar batch label is as
+    :func:`sipnet_calibration.fields.scalar_batch_labels` defines it.
     """
     names: dict[str, None] = {SITE: None}
     for array in arrays.values():
@@ -672,21 +675,18 @@ def _check_root_fractions_leave_wood(
 
 
 def _check_dims_are_batch_and_site(array: xr.DataArray) -> None:
-    batch = set(batch_dims(array))
-    extra = [
-        str(dim)
-        for dim in array.dims
-        if dim != SITE
-        and dim not in batch
-        and (dim in array.indexes or dim in SPATIAL_DIM_NAMES or dim == TIME)
-    ]
+    """The inputs broadcast to batch dims and ``site`` alone."""
+    # The field contract's rule for a labeled dim; a dim without a coordinate
+    # is allowed, and labeled by position in the table. Of the spatial dims
+    # and time, only site is a dim of the conversion.
+    extra = [str(dim) for dim in array.dims if dim in (*SPATIAL_DIM_NAMES, TIME) and dim != SITE]
     if extra:
         raise ValueError(
             f"the inputs broadcast to dims {[str(dim) for dim in array.dims]}, but the "
-            f"conversion is over cells of site and batch dims (integer labels), and {extra} "
-            "is neither. A parameter varying over anything else has to be selected down "
-            "first."
+            f"conversion is over site and batch dims (integer labels), and {extra} is "
+            "neither. A parameter varying over anything else has to be selected down first."
         )
+    check_labeled_dims_are_batch_spatial_or_time(array, message_name="the inputs")
 
 
 def _check_cells_are_addressable(table: pd.DataFrame) -> None:
