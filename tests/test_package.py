@@ -33,3 +33,28 @@ def test_the_package_declares_its_empty_public_api():
     import sipnet_calibration
 
     assert sipnet_calibration.__all__ == []
+
+
+def test_the_data_sources_and_observation_do_not_import_the_parameter_vector():
+    """initial_conditions and observation imported parameter_vector, and with it TFP and pyEKI."""
+    code = (
+        "import sys; import sipnet_calibration.initial_conditions, "
+        "sipnet_calibration.observation; "
+        "print(sorted(m for m in ('sipnet_calibration.parameter_vector', "
+        "'tensorflow_probability', 'pyeki') if m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "[]"
+
+
+def test_the_operators_type_hints_resolve():
+    """ObservedValues was imported for type checking only, so get_type_hints failed."""
+    import typing
+
+    from sipnet_calibration.observation import ObservationSource, check_operator
+    from sipnet_calibration.observation.operators import ObservationOperator
+
+    for annotated in (ObservationOperator.__call__, check_operator, ObservationSource):
+        assert typing.get_type_hints(annotated)

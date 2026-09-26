@@ -225,12 +225,15 @@ from sipnet_calibration.conventions import (
 from sipnet_calibration.fields import (
     Field,
     ModelOutput,
+    SIPNETParameterFields,
     batch_coordinate,
     check_batch_dim_name_is_not_a_model_output_name,
     check_batch_dim_name_is_not_reserved,
+    check_sipnet_parameter_fields_are_a_dataset,
     label_run,
     resolve_output_variable_names,
     stack_model_outputs,
+    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.observation import (
     DEFAULT_METHOD_FOR_KIND,
@@ -243,9 +246,7 @@ from sipnet_calibration.observation.time_alignment import (
 )
 from sipnet_calibration.parameter_vector import (
     ParameterVector,
-    SIPNETParameterFields,
     check_batch_dim_name_is_not_taken,
-    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.sites import (
     load_sites,
@@ -386,8 +387,10 @@ class ForwardModel:
         *to_sipnet_parameter_fields* does not return SIPNET parameter fields
         for the batch.
     KeyError
-        If an output variable name is not a pySIPNET output variable, or a
-        site of the parameter vector is not in the given site table.
+        If an output variable name is not a pySIPNET output variable, a site
+        of the parameter vector is not in the given site table, or
+        *to_sipnet_parameter_fields* sets a SIPNET parameter pySIPNET does not
+        have.
     """
 
     def __init__(
@@ -580,13 +583,9 @@ class ForwardModel:
         check_theta_has_a_row(theta)
         check_theta_is_finite(theta)
         n_samples = len(theta)
-        sipnet_parameter_fields = self._to_sipnet_parameter_fields(theta)
-        check_sipnet_parameter_fields_are_for_the_batch(
-            sipnet_parameter_fields,
-            self.sites,
-            n_samples=n_samples,
-            batch_dim=self.batch_dim,
-            expected_sipnet_parameter_names=self.sipnet_parameter_names_written,
+        sipnet_parameter_fields = self._sipnet_parameter_fields_for(theta)
+        check_sipnet_parameter_fields_set_the_parameters_built_for(
+            sipnet_parameter_fields, self.sipnet_parameter_names_written
         )
         grids = fields_from_dataset(sipnet_parameter_fields, axes={SITE: self._site_axis})
         spec = self._partial(**grids)
@@ -662,11 +661,26 @@ class ForwardModel:
     def _probe_sipnet_parameter_names(self) -> tuple[str, ...]:
         """The SIPNET parameter names the hook sets, learned from one prior draw."""
         draw = self.parameter_vector.sample(jax.random.key(0), 1)
-        sipnet_parameter_fields = self._to_sipnet_parameter_fields(draw)
-        check_sipnet_parameter_fields_are_for_the_batch(
-            sipnet_parameter_fields, self.sites, n_samples=1, batch_dim=self.batch_dim
-        )
+        sipnet_parameter_fields = self._sipnet_parameter_fields_for(np.asarray(draw))
         return tuple(str(name) for name in sipnet_parameter_fields.data_vars)
+
+    def _sipnet_parameter_fields_for(self, theta: np.ndarray) -> xr.Dataset:
+        """The hook's SIPNET parameter fields for *theta*, checked for the batch.
+
+        SIPNET parameter fields that carry neither ``lon`` nor ``lat``, as a
+        parameter vector built from bare site ids gives them, are located from
+        this model's site table before they are validated.
+        """
+        sipnet_parameter_fields = self._to_sipnet_parameter_fields(theta)
+        check_sipnet_parameter_fields_are_for_the_batch(
+            sipnet_parameter_fields, self.sites, n_samples=len(theta), batch_dim=self.batch_dim
+        )
+        if LON not in sipnet_parameter_fields.coords and LAT not in sipnet_parameter_fields.coords:
+            sipnet_parameter_fields = sipnet_parameter_fields.assign_coords(self._site_locations)
+        validate_sipnet_parameter_fields(
+            sipnet_parameter_fields, message_name="what to_sipnet_parameter_fields returns"
+        )
+        return sipnet_parameter_fields
 
     def _build_partial(self) -> PartialSpec:
         climate = Grid({s: self.climate[s] for s in self.sites}, along=self._site_axis)
@@ -1140,28 +1154,33 @@ def check_sipnet_parameter_fields_are_for_the_batch(
     *,
     n_samples: int,
     batch_dim: str = SAMPLE,
-    expected_sipnet_parameter_names: Sequence[str] | None = None,
 ) -> None:
-    """*sipnet_parameter_fields* are for a batch of *n_samples* over *sites*."""
-    if not isinstance(sipnet_parameter_fields, xr.Dataset):
-        raise TypeError(
-            "to_sipnet_parameter_fields must return an xr.Dataset, got "
-            f"{type(sipnet_parameter_fields).__name__}."
-        )
+    """*sipnet_parameter_fields* are a Dataset for a batch of *n_samples* over *sites*.
+
+    Runs :func:`~sipnet_calibration.fields.check_sipnet_parameter_fields_are_a_dataset`,
+    :func:`check_sipnet_parameter_fields_are_on_the_batch_dim_and_site`,
+    :func:`check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta` and
+    :func:`check_sipnet_parameter_fields_are_on_the_vectors_sites`, in that order.
+    """
+    check_sipnet_parameter_fields_are_a_dataset(
+        sipnet_parameter_fields, "what to_sipnet_parameter_fields returns"
+    )
     check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(sipnet_parameter_fields, batch_dim)
     check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta(
         sipnet_parameter_fields, n_samples, batch_dim
     )
+    check_sipnet_parameter_fields_are_on_the_vectors_sites(sipnet_parameter_fields, sites)
+
+
+def check_sipnet_parameter_fields_are_on_the_vectors_sites(
+    sipnet_parameter_fields: xr.Dataset, sites: Sequence[int]
+) -> None:
+    """The SIPNET parameter fields' sites are the parameter vector's, in its order."""
     if sipnet_parameter_fields[SITE].values.tolist() != list(sites):
         raise ValueError(
             "the SIPNET parameter fields' sites are not the parameter vector's sites, in "
             "order; keep their site dimension as parameter_vector.sipnet_parameter_fields "
             "gives it."
-        )
-    validate_sipnet_parameter_fields(sipnet_parameter_fields)
-    if expected_sipnet_parameter_names is not None:
-        check_sipnet_parameter_fields_set_the_parameters_built_for(
-            sipnet_parameter_fields, expected_sipnet_parameter_names
         )
 
 

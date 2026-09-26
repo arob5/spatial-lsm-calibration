@@ -683,33 +683,55 @@ def windowed_observed_values(
     )
 
 
-def one_run_sipnet_parameter_fields(**values: float) -> xr.Dataset:
+def one_run_sipnet_parameter_fields(*, site: int = 1, **values: float) -> xr.Dataset:
     """One run's zero-dimensional SIPNET parameter fields, labeled by pySIPNET.
 
     Each keyword is a SIPNET parameter's flat name; each variable is
-    :func:`pysipnet.parameters.model.parameter_dataarray` of its value, as the
-    forward model's worker builds them from ``SIPNETParameters.dataarray``.
+    :func:`pysipnet.parameters.model.parameter_dataarray` of its value, with
+    the run's scalar *site* and its ``lon``/``lat`` (:func:`site_table_of`),
+    as the forward model's worker builds them from
+    ``SIPNETParameters.dataarray``.
     """
     from pysipnet.parameters.model import parameter_dataarray
 
-    return xr.Dataset({name: parameter_dataarray(name, value) for name, value in values.items()})
+    dataset = xr.Dataset(
+        {name: parameter_dataarray(name, value) for name, value in values.items()},
+        coords={conventions.SITE: conventions.SITE_DTYPE(site)},
+    )
+    return _located_dataset(dataset)
 
 
 def as_sipnet_parameter_fields(dataset: xr.Dataset) -> xr.Dataset:
-    """*dataset* as SIPNET parameter fields: pySIPNET's attributes, ``int32`` sites.
+    """*dataset* as SIPNET parameter fields: pySIPNET's attributes, located ``int32`` sites.
 
     Each variable is relabeled by
     :func:`pysipnet.parameters.model.parameter_dataarray`, and a ``site``
-    coordinate is cast to the site ids' dtype.
+    coordinate is cast to the site ids' dtype and given ``lon``/``lat``
+    (:func:`site_table_of`) when it carries neither.
     """
     from pysipnet.parameters.model import parameter_dataarray
 
     if conventions.SITE in dataset.coords:
         sites = dataset[conventions.SITE].astype(conventions.SITE_DTYPE)
-        dataset = dataset.assign_coords({conventions.SITE: sites})
+        dataset = _located_dataset(dataset.assign_coords({conventions.SITE: sites}))
     return xr.Dataset(
         {str(name): parameter_dataarray(str(name), variable) for name, variable in dataset.data_vars.items()},
         attrs=dataset.attrs,
+    )
+
+
+def _located_dataset(dataset: xr.Dataset) -> xr.Dataset:
+    """*dataset* with ``lon``/``lat`` on its ``site``, a dim or a scalar, when it has neither."""
+    if conventions.LON in dataset.coords or conventions.LAT in dataset.coords:
+        return dataset
+    from sipnet_calibration.sites import site_coordinates
+
+    ids = [int(site) for site in np.atleast_1d(dataset[conventions.SITE].values)]
+    coords = site_coordinates(ids, site_table_of(*ids))
+    if conventions.SITE in dataset.dims:
+        return dataset.assign_coords({name: c for name, c in coords.items() if name != conventions.SITE})
+    return dataset.assign_coords(
+        {name: c.isel({conventions.SITE: 0}) for name, c in coords.items() if name != conventions.SITE}
     )
 
 

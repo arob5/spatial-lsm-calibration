@@ -168,7 +168,7 @@ class TestReduceOverWindows:
 
 class TestReduceOverRun:
     def test_reduces_over_the_whole_record_for_static_observed_values(self, one_run):
-        observed = xr.DataArray([1.0], dims="site", coords={"site": [1]}, attrs={"units": "Mg ha-1", "constituent": "C"}, name="soilgrids_soil_organic_carbon")
+        observed = located(xr.DataArray([1.0], dims="site", coords={"site": [1]}, attrs={"units": "Mg ha-1", "constituent": "C"}, name="soilgrids_soil_organic_carbon"))
         predicted = ReduceOverRun("soil_carbon", "mean")(one_run, observed)
         assert "time" not in predicted.dims
         np.testing.assert_allclose(float(predicted), float(one_run["soil_carbon"].weighted(one_run["time_step_length"].astype("int64")).mean()), rtol=1e-12)
@@ -179,7 +179,7 @@ class TestReduceOverRun:
             ReduceOverRun("soil_carbon", "mean")(one_run, observed)
 
     def test_pointwise_over_a_stack(self, stack):
-        observed = xr.DataArray([1.0, 1.0], dims="site", coords={"site": [1, 2]}, attrs={"units": "Mg ha-1", "constituent": "C"}, name="soilgrids_soil_organic_carbon")
+        observed = located(xr.DataArray([1.0, 1.0], dims="site", coords={"site": [1, 2]}, attrs={"units": "Mg ha-1", "constituent": "C"}, name="soilgrids_soil_organic_carbon"))
         predicted = check_operator(ReduceOverRun("soil_carbon", "last"), stack, observed)
         assert predicted.dims == ("sample", "site")
 
@@ -262,7 +262,10 @@ class TestExtractSipnetParameterAtCoords:
     def test_a_value_outside_the_domain_is_refused(self):
         with pytest.raises(ValueError, match="domain"):
             extract_sipnet_parameter_at_coords(
-                xr.Dataset({"leaf_carbon_per_area": xr.DataArray(-1.0, attrs={"units": "g m-2"})}),
+                xr.Dataset(
+                    {"leaf_carbon_per_area": xr.DataArray(-1.0, attrs={"units": "g m-2"})},
+                    coords={"site": np.int32(1), "lon": -105.0, "lat": 40.0},
+                ),
                 "leaf_carbon_per_area",
                 xr.DataArray(0.0),
             )
@@ -279,6 +282,28 @@ class TestExtractSipnetParameterAtCoords:
 
 
 class TestCheckOperator:
+    def test_the_observed_values_are_validated(self, one_run, labels):
+        """check_operator took observed values with int64 sites and no locations."""
+        observed = dated_observed_values([1], labels, units="Mg ha-1", constituent="C")
+        unlocated = observed.drop_vars(["lon", "lat"])
+        with pytest.raises(ValueError, match="carries no 'lon'"):
+            check_operator(SelectTimestep("wood_carbon"), one_run, unlocated)
+        wide = observed.assign_coords(site=observed["site"].astype(np.int64))
+        with pytest.raises(ValueError, match="site ids are int32"):
+            check_operator(SelectTimestep("wood_carbon"), one_run, wide)
+        with pytest.raises(ValueError, match="batch dim"):
+            check_operator(
+                SelectTimestep("wood_carbon"), one_run,
+                observed.expand_dims(sample=[0]),
+            )
+
+    def test_restrict_to_observed_sites_validates_the_observed_values(self, one_run, labels):
+        observed = dated_observed_values([1], labels)
+        with pytest.raises(ValueError, match="carries no 'lon'"):
+            restrict_to_observed_sites(one_run["wood_carbon"], observed.drop_vars(["lon", "lat"]))
+        with pytest.raises(TypeError, match="DataArray"):
+            restrict_to_observed_sites(one_run["wood_carbon"], np.zeros(3))
+
     def test_an_alias_in_the_declaration_is_refused(self, one_run, labels):
         @dataclass(frozen=True)
         class Aliased:
@@ -300,7 +325,7 @@ class TestCheckOperator:
             def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 return model_output["leaf_carbon"]
 
-        with pytest.raises(ValueError, match="flat name 'leaf_carbon_per_area'"):
+        with pytest.raises(ValueError, match="an alias of pySIPNET's 'leaf_carbon_per_area'"):
             check_operator_declares_names(AliasedParameter())
 
     def test_a_result_off_the_grid_is_refused(self, one_run, labels):

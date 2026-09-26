@@ -281,6 +281,22 @@ class TestEvaluate:
         assert evaluation.run_succeeded.shape == (3, 2) and bool(evaluation.run_succeeded.all())
         assert np.isfinite(evaluation.predictions).all()
 
+    def test_a_bare_site_id_vectors_sipnet_parameter_fields_are_located_from_the_site_table(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """The strict validator refuses them unlocated; the model has the locations."""
+        from sipnet_calibration.fields import validate_sipnet_parameter_fields
+
+        assert "lon" not in parameter_vector.sipnet_parameter_fields(theta).coords
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate,
+            backend=SequentialBackend(), observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        fields = forward.evaluate(theta).sipnet_parameter_fields
+        validate_sipnet_parameter_fields(fields)
+        np.testing.assert_array_equal(fields["lon"].values, SITE_TABLE["lon"].values)
+
     def test_an_observation_source_with_a_site_it_never_observes(
         self, parameter_vector, climate, observation_vector, theta
     ):
@@ -885,7 +901,7 @@ class TestRefusals:
     def test_sipnet_parameter_fields_hook_that_sets_an_unknown_parameter(
         self, parameter_vector, climate, observation_vector
     ):
-        with pytest.raises(ValueError, match="not a pySIPNET parameter"):
+        with pytest.raises(KeyError, match="not a pySIPNET parameter"):
             self._build(
                 parameter_vector,
                 climate,
@@ -1007,7 +1023,8 @@ class TestRealSipnet:
         )
         one_site = observation_vector.select(sites=[site])
         run_parameters = xr.Dataset(
-            {name: run.parameters.dataarray(name) for name in one_site.sipnet_parameter_names_read}
+            {name: run.parameters.dataarray(name) for name in one_site.sipnet_parameter_names_read},
+            coords={name: direct[name] for name in ("site", "lon", "lat")},
         )
         expected = one_site.flat(one_site.predict(direct, sipnet_parameter_fields=run_parameters))
         np.testing.assert_allclose(

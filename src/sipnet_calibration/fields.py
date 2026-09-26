@@ -354,6 +354,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.parameters.model import resolve_parameter_name
 from pysipnet.units import validate_units
 from pysipnet.variables import resolve_output_variable
 from pysipnet.variables import (
@@ -403,6 +404,7 @@ __all__ = [
     "MODEL_OUTPUT_COORDINATE_NAMES",
     "Field",
     "ModelOutput",
+    "SIPNETParameterFields",
     "STACKED_COMPANIONS_ATTRIBUTE",
     "STACKED_DIMS_ATTRIBUTE",
     "STACKED_LABEL_SUFFIX",
@@ -416,6 +418,10 @@ __all__ = [
     "check_dims_are_batch_spatial_or_time",
     "check_labeled_dims_are_batch_spatial_or_time",
     "check_model_output_is_a_dataset",
+    "check_parameter_variable_has_a_site",
+    "check_parameter_variable_is_off_time",
+    "check_sipnet_parameter_fields_are_a_dataset",
+    "check_sipnet_parameter_name_is_a_flat_name",
     "coordinate_labels",
     "in_field_layout",
     "is_categorical",
@@ -430,6 +436,7 @@ __all__ = [
     "unstack_batch_dims",
     "validate_field",
     "validate_model_output",
+    "validate_sipnet_parameter_fields",
     "without_stale_time_attributes",
 ]
 
@@ -441,6 +448,13 @@ type Field = xr.DataArray
 #: shared ``time`` axis, every one a field, checked by
 #: :func:`validate_model_output`.
 type ModelOutput = xr.Dataset
+
+#: SIPNET parameter values, the model's input beside its output: an
+#: ``xr.Dataset`` of one variable per SIPNET parameter under pySIPNET's flat
+#: name, each a field on ``(*batch, site)``, ``(site,)``, or with a scalar
+#: ``site`` for one run, and never on ``time``; checked by
+#: :func:`validate_sipnet_parameter_fields`.
+type SIPNETParameterFields = xr.Dataset
 
 #: The suffix of the coordinates :func:`stack_batch_dims` keeps each stacked
 #: dim's labels in: stacking ``initial_condition_member`` keeps its labels as
@@ -536,10 +550,12 @@ def validate_model_output(model_output: Any, *, message_name: str | None = None)
 
     A model output (:data:`ModelOutput`) is an ``xr.Dataset`` of at least one
     variable, every variable a field (:func:`validate_field`) on the one
-    ``time`` axis the Dataset has. Runs
-    :func:`check_model_output_is_a_dataset`,
-    :func:`check_model_output_has_a_variable`, then, for each variable,
-    :func:`validate_field` and :func:`check_model_output_variable_is_on_time`.
+    ``time`` axis the Dataset has, carrying none of what :func:`label_run`
+    drops. Runs :func:`check_model_output_is_a_dataset`,
+    :func:`check_model_output_has_a_variable`,
+    :func:`check_model_output_carries_no_bounds_or_row_labels`, then, for
+    each variable, :func:`validate_field` and
+    :func:`check_model_output_variable_is_on_time`.
 
     Parameters
     ----------
@@ -553,16 +569,74 @@ def validate_model_output(model_output: Any, *, message_name: str | None = None)
     TypeError
         If *model_output* is not an ``xr.Dataset``.
     ValueError
-        If it holds no variable, or a variable is not a field or has no
-        ``time`` dim, naming the variable and the rule broken.
+        If it holds no variable; if it carries ``time_bounds``, a ``bounds``
+        dim, a ``bounds`` attribute on ``time`` or SIPNET's
+        ``year``/``day_of_year``/``hour_of_day`` row labels; or if a variable
+        is not a field or has no ``time`` dim, naming the variable and the
+        rule broken.
     """
     name = "the model output" if message_name is None else message_name
     check_model_output_is_a_dataset(model_output, name)
     check_model_output_has_a_variable(model_output, name)
+    check_model_output_carries_no_bounds_or_row_labels(model_output, name)
     for variable_name, variable in model_output.data_vars.items():
         variable_message_name = f"{variable_name!r} of {name}"
         validate_field(variable, message_name=variable_message_name)
         check_model_output_variable_is_on_time(variable, variable_message_name)
+
+
+def validate_sipnet_parameter_fields(
+    sipnet_parameter_fields: Any, *, message_name: str | None = None
+) -> None:
+    """Check that *sipnet_parameter_fields* are SIPNET parameter fields.
+
+    SIPNET parameter fields (:data:`SIPNETParameterFields`) are an
+    ``xr.Dataset`` whose every variable is named by pySIPNET's flat parameter
+    name and is a field (:func:`validate_field`, ``lon``/``lat`` included)
+    with a ``site``, a dim or a scalar, and no ``time`` dim. Runs
+    :func:`check_sipnet_parameter_fields_are_a_dataset`, then, for each
+    variable, :func:`check_sipnet_parameter_name_is_a_flat_name`,
+    :func:`validate_field`, :func:`check_parameter_variable_has_a_site` and
+    :func:`check_parameter_variable_is_off_time`.
+
+    Parameters
+    ----------
+    sipnet_parameter_fields:
+        The Dataset to check, such as
+        :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_parameter_fields`
+        returns, or one run's, with a scalar ``site``.
+    message_name:
+        What an error message calls it; ``"the SIPNET parameter fields"`` when
+        omitted.
+
+    Raises
+    ------
+    TypeError
+        If *sipnet_parameter_fields* is not an ``xr.Dataset``, or a variable's
+        name is not a string.
+    KeyError
+        If a variable is named by no pySIPNET parameter.
+    ValueError
+        If a variable is named by an alias (``aMax``) rather than pySIPNET's
+        flat name; if a variable breaks a rule of the field contract (a dim
+        that is neither a batch dim nor ``site``, ``site`` ids that are not
+        unique ``int32``, ``lon``/``lat`` missing, ``units`` missing, and so
+        on); or if a variable has no ``site`` or has a ``time`` dim.
+
+    Notes
+    -----
+    Every variable may have batch dims of its own, so SIPNET parameter fields
+    merged from a parameter vector's (``sample``) and an initial condition
+    ensemble's (``initial_condition_member``) are SIPNET parameter fields.
+    """
+    name = "the SIPNET parameter fields" if message_name is None else message_name
+    check_sipnet_parameter_fields_are_a_dataset(sipnet_parameter_fields, name)
+    for variable_name, variable in sipnet_parameter_fields.data_vars.items():
+        check_sipnet_parameter_name_is_a_flat_name(variable_name, name)
+        variable_message_name = f"{str(variable_name)!r} of {name}"
+        validate_field(variable, message_name=variable_message_name)
+        check_parameter_variable_has_a_site(variable, variable_message_name)
+        check_parameter_variable_is_off_time(variable, variable_message_name)
 
 
 def in_field_layout(array: xr.DataArray) -> xr.DataArray:
@@ -1580,6 +1654,31 @@ def check_model_output_has_a_variable(model_output: xr.Dataset, message_name: st
         )
 
 
+def check_model_output_carries_no_bounds_or_row_labels(
+    model_output: xr.Dataset, message_name: str
+) -> None:
+    """A model output carries no ``time_bounds``, ``bounds`` dim or attribute, or row labels."""
+    carried = [
+        name
+        for name in (TIME_BOUNDS, *SIPNET_ROW_LABEL_NAMES)
+        if name in model_output.variables
+    ]
+    if BOUNDS in model_output.dims:
+        carried.append(f"the {BOUNDS!r} dim")
+    if TIME in model_output.coords:
+        carried += [
+            f"time's {name!r} attribute"
+            for name in STALE_TIME_ATTRIBUTE_NAMES
+            if name in model_output[TIME].attrs
+        ]
+    if carried:
+        raise ValueError(
+            f"{message_name} carries {carried}, which a model output does not: time_bounds "
+            "is not a field and SIPNET's row labels repeat time_step_start. Label the run "
+            "with fields.label_run, which drops them."
+        )
+
+
 def check_model_output_variable_is_on_time(variable: xr.DataArray, message_name: str) -> None:
     """A model output's variable is on its ``time`` axis."""
     if TIME not in variable.dims:
@@ -1587,6 +1686,61 @@ def check_model_output_variable_is_on_time(variable: xr.DataArray, message_name:
             f"{message_name} has no {TIME!r} dim; a model output's variables share its time "
             "axis, so keep the variable on it (aggregate it with aggregate_time rather than "
             "reducing time away)."
+        )
+
+
+def check_sipnet_parameter_fields_are_a_dataset(
+    sipnet_parameter_fields: Any, message_name: str
+) -> None:
+    """SIPNET parameter fields are an ``xr.Dataset``."""
+    if not isinstance(sipnet_parameter_fields, xr.Dataset):
+        raise TypeError(
+            f"{message_name} must be an xarray Dataset of SIPNET parameters, got "
+            f"{type(sipnet_parameter_fields).__name__}; build them with "
+            "ParameterVector.sipnet_parameter_fields, or, for one run, a Dataset of "
+            "pysipnet's SIPNETParameters.dataarray(name) with the run's scalar site."
+        )
+
+
+def check_sipnet_parameter_name_is_a_flat_name(name: Any, message_name: str) -> None:
+    """*name* is pySIPNET's flat name of a SIPNET parameter, not an alias."""
+    if not isinstance(name, str):
+        raise TypeError(
+            f"{message_name} name a SIPNET parameter by {name!r}, which is not a string; "
+            "name it by pySIPNET's flat parameter name, such as 'leaf_carbon_per_area'."
+        )
+    try:
+        flat_name = resolve_parameter_name(name)
+    except KeyError as error:
+        raise KeyError(
+            f"{message_name} name {name!r}, which is not a pySIPNET parameter ({error}); "
+            "use a flat name of pysipnet.parameters.model.PARAMETER_SPECS, such as "
+            "'max_photosynthesis_rate'."
+        ) from None
+    if flat_name != name:
+        raise ValueError(
+            f"{message_name} name {name!r}, an alias of pySIPNET's {flat_name!r}; "
+            "SIPNETModel, the model output and SIPNET parameter fields carry only the flat "
+            f"names, so rename it to {flat_name!r}."
+        )
+
+
+def check_parameter_variable_has_a_site(variable: xr.DataArray, message_name: str) -> None:
+    """A parameter's variable says which site it is for: a ``site`` dim or scalar."""
+    if SITE not in variable.coords:
+        raise ValueError(
+            f"{message_name} has no {SITE!r}, as a dim or a scalar coordinate; a parameter "
+            "value is for a site, so keep the site dim, or select one site with "
+            ".sel(site=...), which keeps it as a scalar."
+        )
+
+
+def check_parameter_variable_is_off_time(variable: xr.DataArray, message_name: str) -> None:
+    """A parameter's variable has no ``time`` dim: a parameter holds over the run."""
+    if TIME in variable.dims:
+        raise ValueError(
+            f"{message_name} has a {TIME!r} dim; a parameter holds for the whole run, so "
+            "select one time, or keep a time-varying input among the drivers."
         )
 
 

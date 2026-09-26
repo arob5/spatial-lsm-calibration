@@ -129,9 +129,12 @@ missing      impossible: a shared copy is repeated at every site and a
 ``fields.filter_by_attrs(parameter="allocation")`` selects a whole
 calibration parameter.
 
-**SIPNET parameter fields** (:data:`SIPNETParameterFields`, checked by
-:func:`validate_sipnet_parameter_fields`). An ``xarray.Dataset`` with the same
-dims and coordinates as Fields, and one float64 variable per SIPNET parameter
+**SIPNET parameter fields**
+(:data:`~sipnet_calibration.fields.SIPNETParameterFields`, checked by
+:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`; both live
+in :mod:`sipnet_calibration.fields`, beside the model output, so that the
+modules reading them need not import this one). An ``xarray.Dataset`` with the
+same dims and coordinates as Fields, and one float64 variable per SIPNET parameter
 the vector writes, calibrated and fixed alike, keyed on the pySIPNET flat name,
 in ``PARAMETER_SPECS`` order. Built from Fields, it keeps their batch dim and
 its labels, so a subset of a batch keeps its samples' identity. Each variable
@@ -200,9 +203,9 @@ SIPNET maps: the :class:`SIPNETMap` protocol, :class:`Identity`,
 :func:`example_parameter_vector`, the worked example and test fixture.
 
 The representations' aliases and validators: :data:`CalibrationFields` and
-:func:`validate_calibration_fields`, :data:`SIPNETParameterFields` and
-:func:`validate_sipnet_parameter_fields`, :data:`SIPNETOverrides` and
-:func:`validate_sipnet_overrides`.
+:func:`validate_calibration_fields`, :data:`SIPNETOverrides` and
+:func:`validate_sipnet_overrides`. SIPNET parameter fields' are in
+:mod:`sipnet_calibration.fields`.
 
 :class:`ParameterVector` follows the package's vector conventions: its pieces
 are its calibration parameters (``vector[name]``, ``name in vector``,
@@ -407,11 +410,7 @@ import xarray as xr
 from pyeki.gauss import Gaussian
 from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp
 from pysipnet.parameters.base import ParameterDomain, ParameterSpec
-from pysipnet.parameters.model import (
-    PARAMETER_SPECS,
-    SIPNETParameters,
-    resolve_parameter_name,
-)
+from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
 
 # SITE, the site dimension's name, is also the reserved ``varies_by`` value
@@ -429,17 +428,23 @@ from sipnet_calibration.conventions import (
     SITE,
     SITE_DTYPE,
     SITE_ID,
-    TIME,
     FrozenMapping,
 )
 from sipnet_calibration.fields import (
+    SIPNETParameterFields,
     batch_coordinate,
     batch_dims,
     check_at_most_one_batch_dim,
     check_batch_dim_name_is_not_a_data_source_member,
     check_batch_dim_name_is_not_reserved,
     check_batch_labels_are_a_mapping,
+    check_parameter_variable_has_a_site,
+    check_parameter_variable_is_off_time,
+    check_sipnet_parameter_fields_are_a_dataset,
+    check_sipnet_parameter_name_is_a_flat_name,
+    in_field_layout,
     validate_field,
+    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.site_labels import LABEL_COLUMN
 from sipnet_calibration.sites import (
@@ -482,7 +487,6 @@ __all__ = [
     "PhotosynthesisMap",
     "SIPNETMap",
     "SIPNETOverrides",
-    "SIPNETParameterFields",
     "SimplexMap",
     "check_batch_dim_name_is_not_taken",
     "check_parameter_vector_is_valid",
@@ -499,7 +503,6 @@ __all__ = [
     "softmax_normal",
     "validate_calibration_fields",
     "validate_sipnet_overrides",
-    "validate_sipnet_parameter_fields",
 ]
 
 tfd = tfp.distributions
@@ -894,16 +897,11 @@ PHOTOSYNTHESIS = PhotosynthesisMap()
 # ── the representations and their validators ──────────────────────────────────
 
 #: A parameter vector's Fields: an ``xr.Dataset`` of one variable per scalar
-#: component (natural space) or element (unconstrained space), every one on
-#: the Dataset's ``(*batch, site)`` or ``(site,)``, with ``attrs["space"]``;
-#: checked by :func:`validate_calibration_fields`.
+#: component (natural space) or element (unconstrained space), each a field
+#: with a ``site`` (a dim, or a scalar for one site's Fields), on every dim of
+#: the Dataset and never on ``time``, with ``attrs["space"]``; checked by
+#: :func:`validate_calibration_fields`.
 type CalibrationFields = xr.Dataset
-
-#: SIPNET parameter values over an ensemble: an ``xr.Dataset`` of one variable
-#: per SIPNET parameter under pySIPNET's flat name, each on ``(*batch, site)``,
-#: ``(site,)`` or no dim (one run, with a scalar ``site``); checked by
-#: :func:`validate_sipnet_parameter_fields`.
-type SIPNETParameterFields = xr.Dataset
 
 #: One run's SIPNET overrides, the keywords ``SIPNETModel`` takes: pySIPNET
 #: flat parameter names to numbers; checked by
@@ -918,9 +916,10 @@ def validate_calibration_fields(
 
     Runs :func:`check_calibration_fields_are_a_dataset`,
     :func:`check_calibration_fields_space_is_given`, then, for each variable,
-    :func:`sipnet_calibration.fields.validate_field` and
-    :func:`check_parameter_variable_is_off_time`, and last
-    :func:`check_calibration_fields_variables_share_the_dims`.
+    :func:`sipnet_calibration.fields.validate_field`,
+    :func:`~sipnet_calibration.fields.check_parameter_variable_has_a_site` and
+    :func:`~sipnet_calibration.fields.check_parameter_variable_is_off_time`,
+    and last :func:`check_calibration_fields_variables_share_the_dims`.
 
     Parameters
     ----------
@@ -936,70 +935,27 @@ def validate_calibration_fields(
     ValueError
         If ``attrs["space"]`` is missing or not one of :data:`SPACES`; if a
         variable breaks a rule of the field contract (a dim that is neither a
-        batch dim, ``site`` nor ``time``, ``site`` ids that are not unique
-        ``int32``, ``units`` missing, and so on) or has a ``time`` dim; or if
-        a variable is not on every dim of the Dataset.
+        batch dim, ``site`` nor ``time``, dims out of order, ``site`` ids that
+        are not unique ``int32``, ``lon``/``lat`` missing, ``units`` missing,
+        and so on), has no ``site`` or has a ``time`` dim; or if a variable is
+        not on every dim of the Dataset.
 
     Notes
     -----
     Fields of a vector built from bare site ids carry no ``lon``/``lat``, so
-    they are not fields in the full sense: a plotter and
-    :func:`~sipnet_calibration.fields.stack_batch_dims` refuse them. A Dataset
-    with no ``lon`` and no ``lat`` coordinate at all is checked against every
-    other rule of the field contract; one that carries them is checked against
-    all of it.
+    this refuses them. The vector's own :meth:`ParameterVector.flat` and
+    :meth:`ParameterVector.sipnet_parameter_fields` accept them from such a
+    vector, which has no locations to check them against.
     """
     name = "Fields" if message_name is None else message_name
     check_calibration_fields_are_a_dataset(calibration_fields, name)
     check_calibration_fields_space_is_given(calibration_fields, name)
     for variable_name, variable in calibration_fields.data_vars.items():
-        _validate_parameter_field(variable, f"{name} variable {str(variable_name)!r}")
+        variable_message_name = f"{name} variable {str(variable_name)!r}"
+        validate_field(variable, message_name=variable_message_name)
+        check_parameter_variable_has_a_site(variable, variable_message_name)
+        check_parameter_variable_is_off_time(variable, variable_message_name)
     check_calibration_fields_variables_share_the_dims(calibration_fields, name)
-
-
-def validate_sipnet_parameter_fields(
-    sipnet_parameter_fields: Any, *, message_name: str | None = None
-) -> None:
-    """Check that *sipnet_parameter_fields* are SIPNET parameter fields.
-
-    Runs :func:`check_sipnet_parameter_fields_are_a_dataset`, then, for each
-    variable, :func:`check_sipnet_parameter_name_is_a_flat_name`,
-    :func:`sipnet_calibration.fields.validate_field` and
-    :func:`check_parameter_variable_is_off_time`.
-
-    Parameters
-    ----------
-    sipnet_parameter_fields:
-        The Dataset to check, such as :meth:`ParameterVector.sipnet_parameter_fields`
-        returns, or one run's zero-dimensional form.
-    message_name:
-        What an error message calls it; ``"the SIPNET parameter fields"`` when
-        omitted.
-
-    Raises
-    ------
-    TypeError
-        If *sipnet_parameter_fields* is not an ``xr.Dataset``.
-    ValueError
-        If a variable is not named by pySIPNET's flat parameter name (an alias
-        such as ``aMax``, or no parameter at all); if a variable breaks a rule
-        of the field contract, such as a dim that is neither a batch dim nor
-        ``site``, ``site`` ids that are not unique ``int32``, or ``units``
-        missing; or if a variable has a ``time`` dim.
-
-    Notes
-    -----
-    Every variable may have batch dims of its own, so SIPNET parameter fields
-    merged from a vector's (``sample``) and an initial condition ensemble's
-    (``initial_condition_member``) are SIPNET parameter fields. The location
-    rule is relaxed as :func:`validate_calibration_fields` relaxes it, for the
-    same reason.
-    """
-    name = "the SIPNET parameter fields" if message_name is None else message_name
-    check_sipnet_parameter_fields_are_a_dataset(sipnet_parameter_fields, name)
-    for variable_name, variable in sipnet_parameter_fields.data_vars.items():
-        check_sipnet_parameter_name_is_a_flat_name(str(variable_name), name)
-        _validate_parameter_field(variable, f"{str(variable_name)!r} of {name}")
 
 
 def validate_sipnet_overrides(sipnet_overrides: Any, *, message_name: str | None = None) -> None:
@@ -2036,10 +1992,8 @@ class ParameterVector:
             if a value is not finite; or if a group's value differs between
             two of its sites, which no Flat vector can represent.
         """
-        validate_calibration_fields(fields)
+        fields = self._checked_fields(fields)
         space = fields.attrs["space"]
-        if SITE in fields.coords and fields[SITE].ndim == 0:
-            fields = fields.expand_dims(SITE)
         check_fields_hold_the_sites(fields, self.sites)
         fields = fields.sel({SITE: list(self.sites)})
         batch = batch_dims(fields)
@@ -2120,6 +2074,7 @@ class ParameterVector:
             batch = batch_dims(flat_values_or_fields)
             if batch:
                 batch_dim, labels = batch[0], flat_values_or_fields[batch[0]].values
+                check_batch_dim_name_is_not_taken(self, batch_dim)
         else:
             check_batch_dim_name_is_not_taken(self, batch_dim)
             theta = _as_theta(flat_values_or_fields, self.dimension)
@@ -2240,6 +2195,26 @@ class ParameterVector:
         return Gaussian(mean=jnp.concatenate(means), cov=PSDBlockDiag(tuple(blocks)))
 
     # ── supporting methods: groups and sites ──────────────────────────────────
+
+    def _checked_fields(self, calibration_fields: Any) -> xr.Dataset:
+        """*calibration_fields* laid out as fields and checked to be Fields.
+
+        Each variable is put in the field layout
+        (:func:`~sipnet_calibration.fields.in_field_layout`: any dim order, a
+        scalar ``site`` made a dim) before :func:`validate_calibration_fields`
+        checks it. A vector built from bare site ids has no locations, so its
+        own Fields carry none, and they are checked with placeholder
+        ``lon``/``lat`` standing in when they carry neither.
+        """
+        check_calibration_fields_are_a_dataset(calibration_fields, "Fields")
+        laid_out = xr.Dataset(
+            {name: in_field_layout(variable) for name, variable in calibration_fields.data_vars.items()},
+            attrs=calibration_fields.attrs,
+        )
+        if self._lon_lat is None:
+            laid_out = _with_placeholder_locations(laid_out)
+        validate_calibration_fields(laid_out)
+        return laid_out
 
     def _prior_restricted_to_groups(self, parameter: CalibrationParameter) -> CalibrationParameter:
         """A per-class prior written over every declared class, sliced to the
@@ -2528,13 +2503,19 @@ def sipnet_overrides(
         a mapping.
     ValueError
         If *sipnet_parameter_fields* are not SIPNET parameter fields
-        (:func:`validate_sipnet_parameter_fields`); if there is no ``site``
-        dim, the SIPNET parameter fields having been selected to one site or
-        never having had one; or if *batch* does not name exactly their batch
-        dims.
+        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`,
+        its location rule apart: see Notes); if there is no ``site`` dim, the
+        SIPNET parameter fields having been selected to one site; or if
+        *batch* does not name exactly their batch dims.
     KeyError
         If *site*, or a batch label, is not in the SIPNET parameter fields,
-        naming it.
+        naming it, or a variable is named by no pySIPNET parameter.
+
+    Notes
+    -----
+    SIPNET parameter fields that carry neither ``lon`` nor ``lat``, as those
+    of a vector built from bare site ids do, are accepted: one run's overrides
+    need no location. Every other rule of the contract is checked.
 
     Examples
     --------
@@ -2544,7 +2525,12 @@ def sipnet_overrides(
     """
     site_id = as_site_id(site, message_name="site")
     requested = _requested_batch_labels(batch)
-    validate_sipnet_parameter_fields(sipnet_parameter_fields)
+    check_sipnet_parameter_fields_are_a_dataset(
+        sipnet_parameter_fields, "the SIPNET parameter fields"
+    )
+    # One run's overrides read no location, so SIPNET parameter fields of a
+    # vector built from bare site ids, which carry none, are run too.
+    validate_sipnet_parameter_fields(_with_placeholder_locations(sipnet_parameter_fields))
     check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields)
     check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, SITE, site_id)
     selected = sipnet_parameter_fields.sel({SITE: site_id})
@@ -2730,24 +2716,17 @@ _FLAT_SPECS: Mapping[str, ParameterSpec] = FrozenMapping(
 _SPEC_ORDER: Mapping[str, int] = FrozenMapping({name: i for i, name in enumerate(_FLAT_SPECS)})
 
 
-def _validate_parameter_field(variable: xr.DataArray, message_name: str) -> None:
-    """*variable* is a field, off ``time``; located only if its Dataset is.
+def _with_placeholder_locations(dataset: xr.Dataset) -> xr.Dataset:
+    """*dataset* with ``NaN`` ``lon``/``lat`` on its ``site`` when it carries neither.
 
-    A variable on sites with neither ``lon`` nor ``lat`` is checked with
-    placeholder locations, which the location rule is then met by, so that
-    every other rule of the field contract still applies to it.
+    For a vector with no locations, whose own datasets carry none: every other
+    rule of the field contract is then checked on them.
     """
-    if SITE in variable.coords and LON not in variable.coords and LAT not in variable.coords:
-        variable = _with_placeholder_locations(variable)
-    validate_field(variable, message_name=message_name)
-    check_parameter_variable_is_off_time(variable, message_name)
-
-
-def _with_placeholder_locations(variable: xr.DataArray) -> xr.DataArray:
-    """*variable* with ``NaN`` ``lon``/``lat`` on its ``site``, a dim or a scalar."""
-    site = variable[SITE]
+    if SITE not in dataset.coords or LON in dataset.coords or LAT in dataset.coords:
+        return dataset
+    site = dataset[SITE]
     placeholder = xr.DataArray(np.full(site.shape, np.nan), dims=site.dims)
-    return variable.assign_coords({LON: placeholder, LAT: placeholder})
+    return dataset.assign_coords({LON: placeholder, LAT: placeholder})
 
 
 def _labels_equal(labels: pd.Index, label: Any) -> np.ndarray:
@@ -3878,49 +3857,6 @@ def check_calibration_fields_variables_share_the_dims(
                 f"of Fields is on the Dataset's dims {tuple(calibration_fields.dims)}, so "
                 "broadcast it, or build the Fields with ParameterVector.fields."
             )
-
-
-def check_parameter_variable_is_off_time(variable: xr.DataArray, message_name: str) -> None:
-    """A parameter's variable has no ``time`` dim: a parameter holds over the run."""
-    if TIME in variable.dims:
-        raise ValueError(
-            f"{message_name} has a {TIME!r} dim; a parameter holds for the whole run, so "
-            "select one time, or keep a time-varying input among the drivers."
-        )
-
-
-def check_sipnet_parameter_fields_are_a_dataset(
-    sipnet_parameter_fields: Any, message_name: str
-) -> None:
-    """SIPNET parameter fields are an ``xr.Dataset``."""
-    if not isinstance(sipnet_parameter_fields, xr.Dataset):
-        raise TypeError(
-            f"{message_name} must be an xarray Dataset of SIPNET parameters, got "
-            f"{type(sipnet_parameter_fields).__name__}; build them with "
-            "ParameterVector.sipnet_parameter_fields, or, for one run, a Dataset of "
-            "pysipnet's SIPNETParameters.dataarray(name)."
-        )
-
-
-def check_sipnet_parameter_name_is_a_flat_name(name: Any, message_name: str) -> None:
-    """*name* is pySIPNET's flat name of a SIPNET parameter, not an alias."""
-    if not isinstance(name, str):
-        raise ValueError(
-            f"{message_name} name a parameter {name!r}, which is not a string; name it by "
-            "pySIPNET's flat parameter name."
-        )
-    try:
-        flat_name = resolve_parameter_name(name)
-    except KeyError as error:
-        raise ValueError(
-            f"{message_name} set {name!r}, which is not a pySIPNET parameter: {error}"
-        ) from None
-    if flat_name != name:
-        raise ValueError(
-            f"{message_name} set {name!r}, an alias of pySIPNET's {flat_name!r}; "
-            "SIPNETModel takes only the flat names, so every run would fail. Rename it "
-            f"to {flat_name!r}."
-        )
 
 
 def check_sipnet_overrides_are_a_mapping(sipnet_overrides: Any, message_name: str) -> None:

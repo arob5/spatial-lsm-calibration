@@ -71,17 +71,17 @@ The dependency runs one way, from the foundations up::
 
     conventions  <-  validation  <-  sites
         <-  fields, constraints, site_labels
-        <-  drivers, parameter_vector
-        <-  initial_conditions, observation
+        <-  drivers, initial_conditions, parameter_vector
+        <-  observation
         <-  forward  <-  experiments
 
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
 and :mod:`~sipnet_calibration.projection` write through it;
 ``parameter_vector`` reads ``site_labels``' column name. ``drivers``,
 ``initial_conditions``, ``parameter_vector`` and ``observation`` depend on
-``fields`` (the field contract and its batch dims); ``initial_conditions``
-and ``observation`` depend on ``parameter_vector`` too, for the SIPNET
-parameter fields alias and its validator; and ``forward`` on ``fields``,
+``fields`` (the field contract, its batch dims, and the SIPNET parameter
+fields alias and validator, which is why neither ``initial_conditions`` nor
+``observation`` imports ``parameter_vector``); and ``forward`` on ``fields``,
 ``observation`` and ``parameter_vector``.
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,

@@ -376,9 +376,18 @@ one type with one validator beside it (PEP 695 `type` statements):
 | `Field` | `xr.DataArray` | `fields` | `validate_field` |
 | `ModelOutput` | `xr.Dataset` | `fields` | `validate_model_output` |
 | `ObservedValues` | `xr.DataArray`, a field on `(site[, time])`, no batch dim, `NaN` unobserved | `observation.source` | `validate_observed_values` |
-| `SIPNETParameterFields` | `xr.Dataset`, one variable per pySIPNET flat parameter name on `(*batch, site)`, `(site,)` or none, pySIPNET's `xarray_attributes()` | `parameter_vector` | `validate_sipnet_parameter_fields` |
+| `SIPNETParameterFields` | `xr.Dataset`, one field per pySIPNET flat parameter name, with a `site` (dim or scalar) and no `time` | `fields` | `validate_sipnet_parameter_fields` |
 | `SIPNETOverrides` | `Mapping[str, float]` | `parameter_vector` | `validate_sipnet_overrides` |
-| `CalibrationFields` | `xr.Dataset`, a parameter vector's Fields | `parameter_vector` | `validate_calibration_fields` |
+| `CalibrationFields` | `xr.Dataset`, a parameter vector's Fields: fields with a `site`, on the Dataset's dims, and `attrs["space"]` | `parameter_vector` | `validate_calibration_fields` |
+
+The validators are strict: each requires everything `validate_field` does,
+`lon`/`lat` included. Only a parameter vector built from bare site ids, which
+has no locations, reads its own Fields without them (`flat`,
+`sipnet_parameter_fields`), and `sipnet_overrides`, which reads no location,
+takes such a vector's SIPNET parameter fields; `ForwardModel` locates them
+from its site table. `SIPNETParameterFields` lives in `fields` beside
+`ModelOutput`, the model's input beside its output, so `initial_conditions`
+and `observation` never import `parameter_vector` (and with it TFP and pyEKI).
 
 The operators, `check_operator` and `ObservationVector.predict` take SIPNET
 parameter values in one form, `sipnet_parameter_fields=`; the forward model's

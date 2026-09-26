@@ -158,6 +158,7 @@ from sipnet_calibration.conventions import (
 from sipnet_calibration.fields import (
     Field,
     ModelOutput,
+    SIPNETParameterFields,
     batch_coordinate,
     in_field_layout,
     batch_dims,
@@ -173,7 +174,6 @@ from sipnet_calibration.observation.operators import (
     check_result_is_on_the_observation_grid,
 )
 from sipnet_calibration.observation.source import ObservationSource
-from sipnet_calibration.parameter_vector import SIPNETParameterFields
 from sipnet_calibration.validation import (
     as_batched_flat,
     as_names,
@@ -643,7 +643,7 @@ class ObservationVector:
             The SIPNET parameter values the runs used, for the operators that
             read any (:attr:`sipnet_parameter_names_read`), as SIPNET
             parameter fields
-            (:data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields`):
+            (:data:`~sipnet_calibration.fields.SIPNETParameterFields`):
             on ``(*batch, site)`` or ``(site,)``, or with no dim for one run.
 
         Returns

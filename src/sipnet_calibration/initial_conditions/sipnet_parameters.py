@@ -37,15 +37,13 @@ from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SITE, SPATIAL_DI
 from pysipnet.parameters.model import parameter_dataarray
 
 from sipnet_calibration.fields import (
+    SIPNETParameterFields,
     batch_coordinate,
     check_labeled_dims_are_batch_spatial_or_time,
     scalar_batch_labels,
-)
-from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
-from sipnet_calibration.parameter_vector import (
-    SIPNETParameterFields,
     validate_sipnet_parameter_fields,
 )
+from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [
     "CONVERTED_SIPNET_PARAMETER_NAMES",
@@ -239,9 +237,11 @@ def to_sipnet_initial_condition_fields(
 
     :func:`to_sipnet_initial_conditions` element by element: the same formulas
     and the same refusals, one value per element, as SIPNET parameter fields
-    (:data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields`), so
-    that they merge straight into a parameter vector's
-    (``xr.merge([vector.sipnet_parameter_fields(theta), initial_condition_fields])``).
+    (:data:`~sipnet_calibration.fields.SIPNETParameterFields`), which merge
+    into a parameter vector's once the variables both set are dropped from one
+    (``xr.merge([vector.sipnet_parameter_fields(theta),
+    initial_condition_fields.drop_vars(both)])``, where ``both`` is
+    ``soil_carbon`` for :func:`~sipnet_calibration.parameter_vector.example_parameter_vector`).
 
     Parameters
     ----------
@@ -277,8 +277,8 @@ def to_sipnet_initial_condition_fields(
         ``n - 1``. For any element,
         ``InitialConditions(**{name: float(v) for name, v in fields.sel(...).items()})``
         equals what :func:`to_sipnet_initial_conditions` returns for it, so
-        every element here also passes pySIPNET's own validation. With no dims
-        at all, each variable is zero-dimensional.
+        every element here also passes pySIPNET's own validation. At one
+        site, a scalar ``site`` coordinate, each variable is zero-dimensional.
 
     Raises
     ------
@@ -295,9 +295,10 @@ def to_sipnet_initial_condition_fields(
         labeled or not; if their indexes do not match, or they were selected
         for different members or sites; if a variable's ``units`` are not
         the processed file's; or if the result is not SIPNET parameter fields
-        (:func:`~sipnet_calibration.parameter_vector.validate_sipnet_parameter_fields`:
-        a ``site`` that is not labeled with unique ``int32`` site ids, say,
-        or a batch dim that repeats a label).
+        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`:
+        no ``site``, a ``site`` that is not labeled with unique ``int32`` site
+        ids or carries no ``lon``/``lat``, say, or a batch dim that repeats a
+        label).
 
     Notes
     -----

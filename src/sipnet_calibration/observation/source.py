@@ -95,10 +95,12 @@ import xarray as xr
 
 from sipnet_calibration.conventions import SITE, TIME
 from sipnet_calibration.fields import batch_dims, message_name, validate_field
-from sipnet_calibration.observation.operators import (
-    ObservationOperator,
-    check_operator_declares_names,
-)
+
+# The module, not its names: the operators read ObservedValues and
+# validate_observed_values from here, and the package imports the operators
+# first, so this module runs while they are still being defined and reads
+# them only when a source is built.
+from sipnet_calibration.observation import operators
 
 __all__ = [
     "ObservationSource",
@@ -195,7 +197,7 @@ class ObservationSource:
 
     observation_source_name: str
     observed_values: ObservedValues
-    operator: ObservationOperator
+    operator: operators.ObservationOperator
 
     def __post_init__(self) -> None:
         values = _sort_by_site_and_time(self.observed_values)
@@ -308,7 +310,7 @@ def check_observation_source_is_valid(
     """
     check_observation_source_name_is_a_nonempty_string(observation_source_name)
     validate_observed_values(observed_values, message_name=observation_source_name)
-    check_operator_declares_names(operator, observation_source_name)
+    operators.check_operator_declares_names(operator, observation_source_name)
 
 
 def check_observation_source_name_is_a_nonempty_string(observation_source_name: Any) -> None:

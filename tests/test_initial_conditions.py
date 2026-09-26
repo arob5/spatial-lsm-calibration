@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import xarray as xr
 from pysipnet.parameters import InitialConditions
@@ -58,7 +59,7 @@ from sipnet_calibration.initial_conditions import (
     to_sipnet_initial_conditions,
     to_sipnet_initial_condition_fields,
 )
-from sipnet_calibration.parameter_vector import validate_sipnet_parameter_fields
+from sipnet_calibration.fields import validate_sipnet_parameter_fields
 from sipnet_calibration.sites import N_SITES, load_sites
 
 LOCAL_SOURCE_ROOT = data_root() / "raw" / "initial_conditions" / "files"
@@ -1184,16 +1185,24 @@ def test_conversion_refuses_arguments_of_the_wrong_shape_or_kind():
         )
 
 
-def test_conversion_table_of_scalars_is_one_unlabeled_row():
+def test_conversion_of_one_sites_scalars_is_zero_dimensional():
+    at_site = {"site": np.int32(1), "lon": -100.0, "lat": 40.0}
     table = to_sipnet_initial_condition_fields(
-        {name: xr.DataArray(value) for name, value in VALID_STATE.items()}, **VALID_PARAMETERS
+        {name: xr.DataArray(value, coords=at_site) for name, value in VALID_STATE.items()},
+        **VALID_PARAMETERS,
     )
     assert table.sizes == {}
+    assert int(table["site"]) == 1
     assert list(table.data_vars) == list(CONVERTED_SIPNET_PARAMETER_NAMES)
     row = {name: float(value) for name, value in table.data_vars.items()}
     assert InitialConditions(**row) == to_sipnet_initial_conditions(
         **VALID_STATE, **VALID_PARAMETERS
     )
+    # Values at no site are no SIPNET parameter fields.
+    with pytest.raises(ValueError, match="has no 'site'"):
+        to_sipnet_initial_condition_fields(
+            {name: xr.DataArray(value) for name, value in VALID_STATE.items()}, **VALID_PARAMETERS
+        )
     # With no elements to name, a refusal falls back to the offending value.
     with pytest.raises(ValueError, match=r"\(value -1.0\)"):
         to_sipnet_initial_condition_fields(
@@ -1240,12 +1249,18 @@ def test_conversion_fields_merge_into_a_parameter_vectors():
 
     from sipnet_calibration.parameter_vector import example_parameter_vector
 
-    vector = example_parameter_vector(sites=[1, 27], pft=("a", "b"))
     initial = to_sipnet_initial_condition_fields(
         ensemble_state(), leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
         coarse_root_fraction=0.25, deciduous=False,
-    ).drop_vars(["soil_carbon", "lon", "lat"])
-    merged = xr.merge([vector.sipnet_parameter_fields(vector.sample(jax.random.key(0), 3)), initial])
+    )
+    site_table = pd.DataFrame(
+        {"site_id": initial[SITE].values, "lon": initial["lon"].values, "lat": initial["lat"].values}
+    )
+    vector = example_parameter_vector(site_table=site_table, pft=("a", "b"))
+    theta = vector.sample(jax.random.key(0), 3)
+    # The vector calibrates soil_carbon, which the conversion sets too: drop it
+    # from one of the two, as the conversion's docstring says.
+    merged = xr.merge([vector.sipnet_parameter_fields(theta), initial.drop_vars("soil_carbon")])
     validate_sipnet_parameter_fields(merged)
     assert merged["total_wood_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
     assert merged["max_photosynthesis_rate"].dims == ("sample", SITE)

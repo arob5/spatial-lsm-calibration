@@ -837,6 +837,49 @@ class TestValidateModelOutput:
             validate_model_output(run)
 
 
+    @pytest.mark.parametrize("carried", ["time_bounds", "row_labels", "bounds_attribute"])
+    def test_what_labeling_drops_is_refused(self, niwot_output, carried):
+        """time_bounds, the bounds attribute and SIPNET's row labels passed as a model output."""
+        from sipnet_calibration.fields import validate_model_output
+
+        raw = niwot_output.select(["net_ecosystem_exchange"])
+        run = label_run(raw)
+        if carried == "time_bounds":
+            run = run.assign_coords(time_bounds=raw["time_bounds"])
+        elif carried == "row_labels":
+            run = run.assign_coords(year=raw["year"])
+        else:
+            run["time"].attrs["bounds"] = "time_bounds"
+        with pytest.raises(ValueError, match="which a model output does not"):
+            validate_model_output(run)
+        with pytest.raises(ValueError, match="which a model output does not"):
+            validate_model_output(raw)
+
+
+class TestValidateSIPNETParameterFields:
+    def _one_run(self, **coords):
+        from pysipnet.parameters.model import parameter_dataarray
+
+        return xr.Dataset(
+            {"soil_carbon": parameter_dataarray("soil_carbon", 1.0)}, coords=coords
+        )
+
+    def test_one_run_at_a_located_site_passes(self):
+        from sipnet_calibration.fields import validate_sipnet_parameter_fields
+
+        validate_sipnet_parameter_fields(
+            self._one_run(site=np.int32(1), lon=-105.0, lat=40.0)
+        )
+
+    def test_values_at_no_site_or_without_a_location_are_refused(self):
+        from sipnet_calibration.fields import validate_sipnet_parameter_fields
+
+        with pytest.raises(ValueError, match="has no 'site'"):
+            validate_sipnet_parameter_fields(self._one_run())
+        with pytest.raises(ValueError, match="lon"):
+            validate_sipnet_parameter_fields(self._one_run(site=np.int32(1)))
+
+
 class TestValidateField:
     def test_the_synthetic_fields_are_fields(self):
         from sipnet_calibration.fields import validate_field

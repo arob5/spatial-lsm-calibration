@@ -34,7 +34,7 @@ parameters it reads (so the forward model can supply them, from the run's own
   coordinates, its windows where present, and nothing else; never for its
   values.
 * ``sipnet_parameter_fields`` is the
-  :data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields` the runs
+  :data:`~sipnet_calibration.fields.SIPNETParameterFields` the runs
   used: on ``(*batch, site)`` or ``(site,)`` for a stack, or with no dim and a
   scalar ``site`` for one run. It is the one form SIPNET parameter values take
   here; there is no mapping form.
@@ -77,7 +77,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 import xarray as xr
@@ -86,22 +86,22 @@ from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_nam
 from pysipnet.variables import resolve_output_variable
 
 from sipnet_calibration import fields
-from sipnet_calibration.conventions import SITE, TIME, FrozenMapping
+from sipnet_calibration.conventions import LAT, LON, SITE, TIME, FrozenMapping
 from sipnet_calibration.fields import (
     STACKED_LABEL_SUFFIX,
     Field,
     ModelOutput,
+    SIPNETParameterFields,
     batch_dims,
+    check_sipnet_parameter_name_is_a_flat_name,
     coordinate_labels,
     missing_labels,
     recorded_stacked_dims,
     scalar_batch_labels,
     validate_model_output,
-)
-from sipnet_calibration.parameter_vector import (
-    SIPNETParameterFields,
     validate_sipnet_parameter_fields,
 )
+from sipnet_calibration.observation.source import ObservedValues, validate_observed_values
 from sipnet_calibration.observation.time_alignment import (
     check_how_is_a_window_reduction,
     check_run_spans_the_windows,
@@ -110,10 +110,6 @@ from sipnet_calibration.observation.time_alignment import (
     select_timestep_at,
     windows_from_observed_values,
 )
-from sipnet_calibration.validation import check_site_ids_are_unique
-
-if TYPE_CHECKING:  # pragma: no cover - typing only; source imports this module
-    from sipnet_calibration.observation.source import ObservedValues
 
 __all__ = [
     "DEFAULT_OBS_OPS",
@@ -387,11 +383,16 @@ def restrict_to_observed_sites(
 
     Raises
     ------
+    TypeError
+        If *observed_values* is not a ``DataArray``.
     ValueError
-        If *observed_values* lists a site twice; if *model_field* lacks an
-        observed site; if *model_field* is one run at a site other than the
-        one observed site, or several sites are observed; or if
-        *model_field* carries no ``site`` coordinate at all.
+        If *observed_values* are not observed values
+        (:func:`~sipnet_calibration.observation.source.validate_observed_values`:
+        unique ``int32`` sites with ``lon``/``lat``, ``units``, among the
+        rest); if *model_field* lacks an observed site; if *model_field* is
+        one run at a site other than the one observed site, or several sites
+        are observed; or if *model_field* carries no ``site`` coordinate at
+        all.
 
     Notes
     -----
@@ -400,9 +401,9 @@ def restrict_to_observed_sites(
     position would be a guess. :func:`sipnet_calibration.fields.label_run`
     is what gives a run its site.
     """
+    check_observed_values_are_valid(observed_values)
     wanted = coordinate_labels(observed_values[SITE])
     message_name = fields.message_name(observed_values, "the observation source")
-    check_site_ids_are_unique(wanted, message_name=message_name)
     if SITE in model_field.dims:
         check_model_output_has_the_observed_sites(model_field, wanted, message_name)
         return model_field.sel({SITE: wanted})
@@ -430,7 +431,7 @@ def extract_sipnet_parameter_at_coords(
     ----------
     sipnet_parameter_fields:
         The values the runs used, as SIPNET parameter fields
-        (:data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields`):
+        (:data:`~sipnet_calibration.fields.SIPNETParameterFields`):
         one variable per SIPNET parameter under pySIPNET's flat names, on
         ``(*batch, site)`` or ``(site,)`` as
         :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_parameter_fields`
@@ -458,7 +459,8 @@ def extract_sipnet_parameter_at_coords(
         ``parameter_dataarray`` gives it: ``units``, ``long_name``,
         ``description``, ``sipnet_name`` and, where pySIPNET declares one,
         ``constituent``; the parameter's variable at *target_field*'s site
-        and batch labels.
+        and batch labels, without the SIPNET parameter fields' ``lon``/``lat``,
+        so that it combines with the target at the target's.
 
     Raises
     ------
@@ -467,7 +469,7 @@ def extract_sipnet_parameter_at_coords(
     ValueError
         If *sipnet_parameter_fields* is ``None``, or are not SIPNET parameter
         fields
-        (:func:`~sipnet_calibration.parameter_vector.validate_sipnet_parameter_fields`);
+        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`);
         if they have no variable for the parameter, have a dimension the
         target has no coordinate for, lack a label of it that *target_field*
         has, or carry a scalar label the target's disagree with (a stacked
@@ -537,6 +539,7 @@ def check_operator(
     """
     message_name = type(operator).__name__
     check_operator_declares_names(operator)
+    check_observed_values_are_valid(observed_values)
     check_model_output_carries_what_is_read(
         model_output,
         output_variable_names=operator.output_variable_names,
@@ -589,7 +592,11 @@ def _sipnet_parameter_values_at(
     scalar_site = [SITE] if SITE in values.coords and values[SITE].ndim == 0 else []
     for dim in [*scalar_site, *scalar_batch_labels(values)]:
         check_scalar_sipnet_parameter_fields_label_agrees(values, target_field, dim, name)
-    return values.sel(selectors) if selectors else values
+    selected = values.sel(selectors) if selectors else values
+    # The target's locations are the ones the values are combined at; the
+    # SIPNET parameter fields' own, from another site table perhaps, would
+    # clash with them in pysipnet.arithmetic.
+    return selected.drop_vars([LON, LAT], errors="ignore")
 
 
 def _is_stacked_into(target_field: xr.DataArray, dim: str, stacked_dim: str) -> bool:
@@ -673,6 +680,20 @@ def _agree_by_label(got: xr.DataArray, expected: xr.DataArray) -> bool:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
+def check_observed_values_are_valid(observed_values: Any) -> None:
+    """What an operator reads as observed values are, ``site`` a dim or a scalar.
+
+    Runs
+    :func:`~sipnet_calibration.observation.source.validate_observed_values`
+    on them laid out as a field (:func:`~sipnet_calibration.fields.in_field_layout`),
+    so one site's observed values with a scalar ``site``, which the operator
+    contract allows, are accepted.
+    """
+    if isinstance(observed_values, xr.DataArray):
+        observed_values = fields.in_field_layout(observed_values)
+    validate_observed_values(observed_values)
+
+
 def check_operator_declares_names(operator: Any, message_name: str | None = None) -> None:
     """The operator is callable and declares pySIPNET names for what it reads.
 
@@ -720,12 +741,7 @@ def check_operator_declares_names(operator: Any, message_name: str | None = None
                 f"{registry_name!r}, which is what the model output carries."
             )
     for name in operator.sipnet_parameter_names_read:
-        flat_name = resolve_parameter_name(name)
-        if flat_name != name:
-            raise ValueError(
-                f"{who} declares {name!r}, which is an alias; declare pySIPNET's flat "
-                f"name {flat_name!r}, which is what SIPNET parameter fields carry."
-            )
+        check_sipnet_parameter_name_is_a_flat_name(name, f"{who}'s sipnet_parameter_names_read")
 
 
 def check_model_output_carries_what_is_read(
@@ -741,7 +757,7 @@ def check_model_output_carries_what_is_read(
     Runs :func:`~sipnet_calibration.fields.validate_model_output`,
     :func:`check_model_output_has_the_variables`, and, when SIPNET parameters
     are read, :func:`check_sipnet_parameter_fields_are_given` and
-    :func:`~sipnet_calibration.parameter_vector.validate_sipnet_parameter_fields`.
+    :func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`.
 
     Parameters
     ----------

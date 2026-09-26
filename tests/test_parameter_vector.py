@@ -35,6 +35,7 @@ from tensorflow_probability.substrates import jax as tfp
 from conftest import as_sipnet_parameter_fields, niwot_parameters, site_table_of
 from sipnet_calibration import parameter_vector as module
 from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
+from sipnet_calibration.fields import validate_sipnet_parameter_fields
 from sipnet_calibration.parameter_vector import (
     ALLOCATION,
     DOMAIN_CHECK_CORNERS,
@@ -54,6 +55,7 @@ from sipnet_calibration.parameter_vector import (
     logit_normal_from_samples,
     product_transformed_gaussian_prior,
     sipnet_overrides,
+    validate_calibration_fields,
     softmax_normal,
 )
 
@@ -1549,10 +1551,25 @@ def test_flat_reads_sites_by_label_and_ignores_extras(example, theta):
     with pytest.raises(ValueError, match="carry no coordinate"):
         example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].expand_dims(time=2)))
     timed = fields["initial_soil_carbon"].expand_dims(time=pd.date_range("2012-01-01", periods=2))
-    with pytest.raises(ValueError, match="not in the order"):
-        example.flat(fields.assign(initial_soil_carbon=timed))
-    with pytest.raises(ValueError, match="has a 'time' dim"):
-        example.flat(fields.assign(initial_soil_carbon=timed.transpose(..., "time")))
+    for order in (timed, timed.transpose(..., "time")):
+        with pytest.raises(ValueError, match="has a 'time' dim"):
+            example.flat(fields.assign(initial_soil_carbon=order))
+
+
+@pytest.mark.parametrize("located", [False, True])
+def test_flat_and_sipnet_parameter_fields_take_fields_in_any_dim_order(located, theta):
+    """Transposed Fields were refused by the field contract's dim order."""
+    vector = (
+        example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
+        if located
+        else example_parameter_vector(sites=SITES, pft=PFT)
+    )
+    fields = vector.fields(theta)
+    transposed = fields.transpose("site", "sample")
+    np.testing.assert_allclose(vector.flat(transposed), theta, rtol=1e-10, atol=1e-10)
+    xr.testing.assert_identical(
+        vector.sipnet_parameter_fields(transposed), vector.sipnet_parameter_fields(fields)
+    )
 
 
 def test_select_restricts_per_site_fixed_values_and_keeps_require_complete(example):
@@ -2001,63 +2018,105 @@ def test_sipnet_overrides_refuses_sipnet_parameter_fields_without_sites_in_its_w
     sipnet_parameter_fields = as_sipnet_parameter_fields(
         xr.Dataset({"soil_carbon": (("sample",), np.ones(2))}, coords={"sample": [0, 1]})
     )
-    with pytest.raises(ValueError, match="have no site dim"):
+    with pytest.raises(ValueError, match="has no 'site'"):
         sipnet_overrides(sipnet_parameter_fields, site=1, batch={"sample": 1})
 
 
 # ── the representations' validators ──────────────────────────────────────────
 
 
+@pytest.fixture(scope="module")
+def located_example() -> ParameterVector:
+    return example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
+
+
 class TestTheRepresentationsValidators:
-    def test_a_vectors_own_outputs_pass_located_or_not(self, example, theta):
-        located = example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
-        for vector in (example, located):
-            module.validate_calibration_fields(vector.fields(theta))
-            module.validate_calibration_fields(vector.fields(theta[0], space="unconstrained"))
-            module.validate_sipnet_parameter_fields(vector.sipnet_parameter_fields(theta))
-            module.validate_sipnet_overrides(
-                module.sipnet_overrides(
-                    vector.sipnet_parameter_fields(theta), batch={"sample": 0}, site=SITES[0]
-                )
+    def test_a_located_vectors_outputs_pass(self, located_example, theta):
+        vector = located_example
+        validate_calibration_fields(vector.fields(theta))
+        validate_calibration_fields(vector.fields(theta[0], space="unconstrained"))
+        validate_sipnet_parameter_fields(vector.sipnet_parameter_fields(theta))
+        validate_sipnet_parameter_fields(vector.sipnet_parameter_fields(theta).isel(site=0))
+        module.validate_sipnet_overrides(
+            module.sipnet_overrides(
+                vector.sipnet_parameter_fields(theta), batch={"sample": 0}, site=SITES[0]
+            )
+        )
+
+    def test_the_validators_refuse_what_has_no_locations(self, example, theta):
+        """A Dataset with neither lon nor lat passed both validators, as a placeholder."""
+        with pytest.raises(ValueError, match="carries no 'lon'"):
+            validate_calibration_fields(example.fields(theta))
+        with pytest.raises(ValueError, match="carries no 'lon'"):
+            validate_sipnet_parameter_fields(example.sipnet_parameter_fields(theta))
+
+    def test_a_bare_site_id_vector_still_reads_and_runs_its_own(self, example, theta):
+        """Only the vector's own methods, and one run's overrides, need no locations."""
+        fields = example.fields(theta)
+        np.testing.assert_allclose(example.flat(fields), theta, rtol=1e-10, atol=1e-10)
+        example.sipnet_parameter_fields(fields)
+        module.sipnet_overrides(
+            example.sipnet_parameter_fields(theta), batch={"sample": 0}, site=SITES[0]
+        )
+
+    def test_a_located_vector_refuses_fields_without_locations(self, located_example, theta):
+        fields = located_example.fields(theta).drop_vars(["lon", "lat"])
+        with pytest.raises(ValueError, match="carries no 'lon'"):
+            located_example.flat(fields)
+
+    def test_the_validators_refuse_a_variable_without_a_site(self, located_example, theta):
+        fields = located_example.fields(theta)
+        with pytest.raises(ValueError, match="has no 'site'"):
+            validate_calibration_fields(fields.isel(site=0, drop=True))
+        sipnet_parameter_fields = located_example.sipnet_parameter_fields(theta)
+        with pytest.raises(ValueError, match="has no 'site'"):
+            validate_sipnet_parameter_fields(sipnet_parameter_fields.isel(site=0, drop=True))
+        with pytest.raises(ValueError, match="has no 'site'"):
+            validate_sipnet_parameter_fields(
+                sipnet_parameter_fields.isel(site=0, sample=0, drop=True)
             )
 
-    def test_calibration_fields_need_a_dataset_and_a_space(self, example, theta):
-        fields = example.fields(theta)
+    def test_calibration_fields_need_a_dataset_and_a_space(self, located_example, theta):
+        fields = located_example.fields(theta)
         with pytest.raises(TypeError, match="must be an xarray Dataset"):
-            module.validate_calibration_fields(dict(fields.data_vars))
+            validate_calibration_fields(dict(fields.data_vars))
         with pytest.raises(ValueError, match=r"attrs\['space'\]"):
-            module.validate_calibration_fields(fields.drop_attrs())
+            validate_calibration_fields(fields.drop_attrs())
 
-    def test_calibration_fields_are_fields(self, example, theta):
-        fields = example.fields(theta)
+    def test_calibration_fields_are_fields(self, located_example, theta):
+        fields = located_example.fields(theta)
         wide = fields.assign_coords(site=fields["site"].astype(np.int64))
         with pytest.raises(ValueError, match="site ids are int32"):
-            module.validate_calibration_fields(wide)
+            validate_calibration_fields(wide)
         unitless = fields.copy()
         unitless["initial_soil_carbon"].attrs.pop("units")
         with pytest.raises(ValueError, match="'initial_soil_carbon'.*units"):
-            module.validate_calibration_fields(unitless)
+            validate_calibration_fields(unitless)
         with pytest.raises(ValueError, match="on the Dataset's dims"):
-            module.validate_calibration_fields(
+            validate_calibration_fields(
                 fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].isel(sample=0, drop=True))
             )
 
-    def test_sipnet_parameter_fields_are_named_by_flat_names_and_are_fields(self, example, theta):
-        sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
+    def test_sipnet_parameter_fields_are_named_by_flat_names_and_are_fields(
+        self, located_example, theta
+    ):
+        sipnet_parameter_fields = located_example.sipnet_parameter_fields(theta)
         with pytest.raises(ValueError, match="an alias of pySIPNET's 'max_photosynthesis_rate'"):
-            module.validate_sipnet_parameter_fields(
+            validate_sipnet_parameter_fields(
                 sipnet_parameter_fields.rename(max_photosynthesis_rate="aMax")
             )
-        with pytest.raises(ValueError, match="not a pySIPNET parameter"):
-            module.validate_sipnet_parameter_fields(
+        with pytest.raises(KeyError, match="not a pySIPNET parameter"):
+            validate_sipnet_parameter_fields(
                 sipnet_parameter_fields.rename(soil_carbon="not_a_parameter")
             )
+        with pytest.raises(TypeError, match="not a string"):
+            validate_sipnet_parameter_fields(sipnet_parameter_fields.rename(soil_carbon=3))
         with pytest.raises(ValueError, match="has a 'time' dim"):
-            module.validate_sipnet_parameter_fields(
+            validate_sipnet_parameter_fields(
                 sipnet_parameter_fields.expand_dims(time=pd.date_range("2000-01-01", periods=2)).transpose(..., "time")
             )
         with pytest.raises(TypeError, match="must be an xarray Dataset"):
-            module.validate_sipnet_parameter_fields({"soil_carbon": 1.0})
+            validate_sipnet_parameter_fields({"soil_carbon": 1.0})
 
     def test_sipnet_overrides_are_numbers_under_flat_names(self):
         module.validate_sipnet_overrides({"soil_carbon": 1.0, "max_photosynthesis_rate": 3})
@@ -2065,6 +2124,10 @@ class TestTheRepresentationsValidators:
             module.validate_sipnet_overrides({"soil_carbon": True})
         with pytest.raises(ValueError, match="an alias"):
             module.validate_sipnet_overrides({"aMax": 1.0})
+        with pytest.raises(KeyError, match="not a pySIPNET parameter"):
+            module.validate_sipnet_overrides({"not_a_parameter": 1.0})
+        with pytest.raises(TypeError, match="not a string"):
+            module.validate_sipnet_overrides({3: 1.0})
         with pytest.raises(TypeError, match="mapping"):
             module.validate_sipnet_overrides([("soil_carbon", 1.0)])
 
