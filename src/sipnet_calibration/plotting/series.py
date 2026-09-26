@@ -171,9 +171,9 @@ def plot_time_series(
     """
     validate_field(data)
     _check_plottable(data)
-    sample_dims = batch_dims(data)
-    show = _resolved_show(show, sample_dims)
-    _check_label_by(label_by, show, data, sample_dims)
+    batch = batch_dims(data)
+    show = _resolved_show(show, batch)
+    _check_label_by(label_by, show, data, batch)
     yerr = _error_bar_lengths(data, variance, standard_deviation, n_sigma, show)
 
     if ax is None:
@@ -200,28 +200,28 @@ def plot_time_series(
             **role_style(role, "points", **style),
         )
     else:
-        samples = _stacked_samples(data, sample_dims)
+        curves = _curves_over_the_batch(data, batch)
         if show == "spaghetti" and label_by is not None:
             _draw_labeled_curves(
-                ax, x, samples, data, sample_dims, label_by, n_max, style
+                ax, x, curves, data, batch, label_by, n_max, style
             )
         elif show == "spaghetti":
             primitives.spaghetti(
                 ax,
                 x,
-                samples,
+                curves,
                 n_max=n_max,
                 label=label,
                 **role_style(role, "line", **style),
             )
         else:
             primitives.fan(
-                ax, x, samples, levels=levels, **role_style(role, "band", **style)
+                ax, x, curves, levels=levels, **role_style(role, "band", **style)
             )
             primitives.line(
                 ax,
                 x,
-                primitives.nanquantile(samples, 0.5),
+                primitives.nanquantile(curves, 0.5),
                 label=label,
                 **role_style(role, "line", **style),
             )
@@ -233,49 +233,49 @@ def plot_time_series(
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
-def _resolved_show(show: str, sample_dims: tuple[str, ...]) -> str:
+def _resolved_show(show: str, batch: tuple[str, ...]) -> str:
     """*show* with ``"auto"`` resolved, raising if it does not suit the data."""
     if show not in SHOW_KINDS:
         raise ValueError(f"show must be one of {list(SHOW_KINDS)}, got {show!r}")
     if show == "auto":
-        return "fan" if sample_dims else "line"
-    if show in ("fan", "spaghetti") and not sample_dims:
+        return "fan" if batch else "line"
+    if show in ("fan", "spaghetti") and not batch:
         raise ValueError(
             f"show={show!r} summarizes several curves, but the data has only "
             f"{TIME!r}. Use show='line' or show='points'."
         )
-    if show in ("line", "points") and sample_dims:
+    if show in ("line", "points") and batch:
         raise ValueError(
             f"show={show!r} draws one curve, but the data also has "
-            f"{list(sample_dims)}. Select or reduce first, or use show='fan' "
+            f"{list(batch)}. Select or reduce first, or use show='fan' "
             "or show='spaghetti'."
         )
     return show
 
 
-def _stacked_samples(
-    data: xr.DataArray, sample_dims: tuple[str, ...]
+def _curves_over_the_batch(
+    data: xr.DataArray, batch: tuple[str, ...]
 ) -> np.ndarray:
-    """*data* as ``(n_curves, n_time)``, the sample dims flattened together."""
-    ordered = data.transpose(*sample_dims, TIME)
+    """*data* as ``(n_curves, n_time)``, the batch dims flattened together."""
+    ordered = data.transpose(*batch, TIME)
     return ordered.values.reshape(-1, ordered.sizes[TIME])
 
 
 def _curve_labels(
-    data: xr.DataArray, sample_dims: tuple[str, ...], label_by: str
+    data: xr.DataArray, batch: tuple[str, ...], label_by: str
 ) -> list[str]:
     """One label per stacked curve, from the *label_by* coordinate's values.
 
-    The order matches :func:`_stacked_samples`, which flattens the sample dims
+    The order matches :func:`_curves_over_the_batch`, which flattens the batch dims
     in the order they are given.
     """
     coordinate = data.coords[label_by]
-    sizes = tuple(data.sizes[dim] for dim in sample_dims)
+    sizes = tuple(data.sizes[dim] for dim in batch)
     labels = []
     for position in np.ndindex(*sizes):
         chosen = {
             dim: index
-            for dim, index in zip(sample_dims, position)
+            for dim, index in zip(batch, position)
             if dim in coordinate.dims
         }
         labels.append(f"{label_by} {coordinate.isel(chosen).values}")
@@ -283,19 +283,19 @@ def _curve_labels(
 
 
 def _draw_labeled_curves(
-    ax, x, samples, data, sample_dims, label_by, n_max, style
+    ax, x, curves, data, batch, label_by, n_max, style
 ):
     """Draw each curve in its own color, labeled by a coordinate's value."""
-    labels = _curve_labels(data, sample_dims, label_by)
+    labels = _curve_labels(data, batch, label_by)
     chosen = primitives.thinned_indices(
-        len(samples), as_positive_integer(n_max, message_name="n_max")
+        len(curves), as_positive_integer(n_max, message_name="n_max")
     )
     for position, index in enumerate(chosen):
         keywords = {
             "color": CURVE_COLORS[position % len(CURVE_COLORS)],
             **style,
         }
-        primitives.line(ax, x, samples[index], label=labels[index], **keywords)
+        primitives.line(ax, x, curves[index], label=labels[index], **keywords)
 
 
 def _error_bar_lengths(
@@ -370,7 +370,7 @@ def _check_label_by(
     label_by: str | None,
     show: str,
     data: xr.DataArray,
-    sample_dims: tuple[str, ...],
+    batch: tuple[str, ...],
 ) -> None:
     """Raise unless *label_by* names a coordinate that can label the curves."""
     if label_by is None:
@@ -386,10 +386,10 @@ def _check_label_by(
             f"{sorted(data.coords)}"
         )
     dims = data.coords[label_by].dims
-    if not dims or not set(dims) <= set(sample_dims):
+    if not dims or not set(dims) <= set(batch):
         raise ValueError(
             f"label_by={label_by!r} is on {list(dims)}, which is not among the "
-            f"batch dims {list(sample_dims)}; it cannot name a curve"
+            f"batch dims {list(batch)}; it cannot name a curve"
         )
 
 

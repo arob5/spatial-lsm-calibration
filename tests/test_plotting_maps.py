@@ -607,3 +607,9 @@ def test_an_animation_refuses_a_batch_dim_with_advice(dense):
     )
     with pytest.raises(ValueError, match="driver_member.*summarize_batch"):
         animate_map(field)
+
+
+def test_plot_map_quantiles_refuses_the_retired_dim_keyword_naming_batch_dim(ensemble):
+    """It fell through to matplotlib as an unknown artist property."""
+    with pytest.raises(TypeError, match="batch_dim='sample'"):
+        plot_map_quantiles(ensemble, dim="sample")

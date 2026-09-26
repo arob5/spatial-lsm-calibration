@@ -13,11 +13,11 @@ up constantly for time series and are written over it.
 Grids of maps are written over it too, and differ in sharing a frame and,
 by default, one color scale with a single colorbar:
 
-========================  ====================================================
-:func:`plot_map_grid`     one map per entry of a ``dict`` of fields
-:func:`plot_map_by`       one map per batch label, or per time step
-:func:`plot_map_quantiles`  one map per quantile over a batch dim
-========================  ====================================================
+===========================  =================================================
+:func:`plot_map_grid`        one map per entry of a ``dict`` of fields
+:func:`plot_map_by`          one map per batch label, or per time step
+:func:`plot_map_quantiles`   one map per quantile over a batch dim
+===========================  =================================================
 
 This is the only part of the package that creates a figure. The plotting
 functions it calls draw onto an ``Axes`` they are given, which is what lets the
@@ -265,11 +265,14 @@ def plot_by_site(
     Raises
     ------
     TypeError
-        If *sites* is one id, a string or a set, or holds a boolean, a float
-        or a value that is not a number.
+        If *data* is not a ``DataArray`` (a Dataset is split into fields
+        first); if *sites* is one id, a string or a set, or holds a boolean, a
+        float or a value that is not a number.
     ValueError
-        If *data* has no ``site`` dimension or coordinate, or *sites* names a
-        site twice or holds a value that is not a site id.
+        If *data* is not a field
+        (:func:`sipnet_calibration.fields.validate_field`) or has no ``site``
+        dimension, or *sites* names a site twice or holds a value that is not
+        a site id.
     KeyError
         If *sites* names a site that is not in *data*.
     """
@@ -443,10 +446,12 @@ def plot_map_by(
     Raises
     ------
     TypeError
-        If *n_max* is a boolean or not an integer.
+        If *field* is not a ``DataArray``, or *n_max* is a boolean or not an
+        integer.
     ValueError
-        If *field* has no *dim*, *values* names one it does not hold, or
-        *n_max* is less than 1.
+        If *field* is not a field
+        (:func:`sipnet_calibration.fields.validate_field`); if it has no
+        *dim*, *values* names one it does not hold, or *n_max* is less than 1.
     """
     validate_field(field)
     if dim not in field.dims:
@@ -502,10 +507,13 @@ def plot_map_quantiles(
 
     Raises
     ------
+    TypeError
+        If *dim=* is passed: the batch dim is named with *batch_dim*.
     ValueError
         If *quantiles* is empty, and whatever
         :func:`~sipnet_calibration.plotting.maps.summarize_batch` raises.
     """
+    check_quantile_grid_keywords_are_not_retired(grid_kwargs)
     quantiles = [float(q) for q in quantiles]
     if not quantiles:
         raise ValueError("quantiles must name at least one quantile")
@@ -540,6 +548,15 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any]) -> None:
+    """No keyword the quantile grid once took under another name is passed."""
+    if "dim" in grid_kwargs:
+        raise TypeError(
+            "plot_map_quantiles takes the batch dim as batch_dim=, not dim=; pass "
+            f"batch_dim={grid_kwargs['dim']!r}."
+        )
 
 
 def check_data_has_a_site_dimension(data: xr.DataArray) -> None:

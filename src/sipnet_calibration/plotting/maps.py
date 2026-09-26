@@ -416,13 +416,15 @@ def plot_map(
 
     Raises
     ------
+    TypeError
+        If *field* is not a ``DataArray``.
     ValueError
         If *field* is not a field or not one of the kinds above -- in
         particular if it has a batch dim or a ``time`` dimension, where the
-        message names the functions that draw those; if *render* is unknown, is given for a raster, or
-        interpolates a categorical field; if *extent* is not a known name or a
-        valid box; or if *log* is asked for with a nonpositive value in the
-        frame.
+        message names the functions that draw those; if *render* is unknown,
+        is given for a raster, or interpolates a categorical field; if
+        *extent* is not a known name or a valid box; or if *log* is asked for
+        with a nonpositive value in the frame.
     """
     ax, _, _ = _draw_map(
         field, ax, render=render, extent=extent,
