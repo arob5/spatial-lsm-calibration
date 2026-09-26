@@ -396,6 +396,7 @@ from sipnet_calibration.validation import (
     as_frozen_mapping,
     as_names,
     as_site_ids,
+    is_one_vector,
 )
 
 __all__ = [
@@ -2231,7 +2232,7 @@ _SPEC_ORDER: dict[str, int] = {name: i for i, name in enumerate(_FLAT_SPECS)}
 def _as_theta(theta: Any, dimension: int) -> Array:
     """*theta* as a JAX ``float64`` array, ``(D,)`` or ``(J, D)`` as given."""
     batched = as_batched_flat(theta, dimension, message_name="theta")
-    return jnp.asarray(batched[0] if np.ndim(theta) == 1 else batched)
+    return jnp.asarray(batched[0] if is_one_vector(theta) else batched)
 
 
 def _positive_array(what: str, value: Any) -> Array:

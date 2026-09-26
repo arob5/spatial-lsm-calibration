@@ -11,8 +11,9 @@ Contents
 :func:`as_integer`, :func:`as_positive_integer`, :func:`as_bounded_integer`,
 :func:`as_positive_integers`
     A count, a size, an index or a sequence of them as plain Python integers.
-:func:`as_batched_flat`
-    One vector or a batch of them, as a two-dimensional ``float64`` array.
+:func:`as_batched_flat`, :func:`is_one_vector`
+    One vector or a batch of them, as a two-dimensional ``float64`` array;
+    and whether one vector was given.
 :func:`as_bbox`
     A ``(west, south, east, north)`` box as four floats.
 :func:`as_names`
@@ -93,6 +94,7 @@ __all__ = [
     "check_integers_are_in_range",
     "check_site_ids_are_in_range",
     "check_site_ids_are_unique",
+    "is_one_vector",
     "range_summary",
     "truncated",
 ]
@@ -307,7 +309,7 @@ def as_batched_flat(values: Any, dimension: int, *, message_name: str) -> Any:
         The values as ``float64``, shape ``(n, dimension)``, one vector its
         one row: a JAX array when *values* is or holds JAX arrays, else a
         NumPy array. A caller that needs to know whether one vector was
-        given reads ``np.ndim(values) == 1``.
+        given asks :func:`is_one_vector`.
 
     Raises
     ------
@@ -322,6 +324,31 @@ def as_batched_flat(values: Any, dimension: int, *, message_name: str) -> Any:
     array = _as_float64_array(values, message_name=message_name)
     check_flat_has_the_dimension(array.shape, dimension, message_name=message_name)
     return array[None, :] if array.ndim == 1 else array
+
+
+def is_one_vector(values: Any) -> bool:
+    """Whether Flat *values* is one vector, ``(D,)``, rather than a batch.
+
+    Parameters
+    ----------
+    values:
+        Flat as :func:`as_batched_flat` takes it, and has accepted.
+
+    Returns
+    -------
+    bool
+        ``True`` when *values* is one-dimensional.
+
+    Notes
+    -----
+    ``np.ndim`` would read a list of JAX arrays by converting it to NumPy,
+    which a list of tracers refuses under ``jax.jit``; such a list is read
+    by JAX instead.
+    """
+    jax = sys.modules.get("jax")
+    if jax is not None and _holds_jax_arrays(values, jax):
+        return jax.numpy.asarray(values).ndim == 1
+    return np.ndim(values) == 1
 
 
 def as_bbox(bbox: Any, *, message_name: str) -> tuple[float, float, float, float]:

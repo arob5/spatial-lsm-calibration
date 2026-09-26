@@ -202,7 +202,7 @@ from sipnet_calibration.sites import (
     site_locations,
     site_lookup,
 )
-from sipnet_calibration.validation import as_batched_flat, truncated
+from sipnet_calibration.validation import as_batched_flat, is_one_vector, truncated
 
 __all__ = [
     "MODEL_FAILURES",
@@ -496,7 +496,7 @@ class ForwardModel:
         """
         self._observation_vector_for("__call__")
         predictions = self.evaluate(theta).predictions
-        return predictions[0] if np.ndim(theta) == 1 else predictions
+        return predictions[0] if is_one_vector(theta) else predictions
 
     # ── supporting methods ────────────────────────────────────────────────────
 

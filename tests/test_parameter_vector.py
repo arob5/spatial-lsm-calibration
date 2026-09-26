@@ -570,6 +570,22 @@ def test_log_prior_includes_the_jacobian_parameter_by_parameter(example, theta):
             )
 
 
+def test_log_prior_and_unpack_take_a_list_of_tracers_under_jit(example, theta):
+    """One vector given as a list of JAX scalars is read as one vector under jit."""
+    one = theta[0]
+    as_list = lambda a: [a[i] for i in range(example.dimension)]  # noqa: E731
+    expected = example.log_prior(one)
+    np.testing.assert_allclose(jax.jit(lambda a: example.log_prior(as_list(a)))(one), expected)
+    assert jax.jit(lambda a: example.log_prior(as_list(a)))(one).shape == ()
+    unpacked = jax.jit(lambda a: example.layout.unpack(as_list(a)))(one)
+    assert all(part.ndim == 2 for part in unpacked.values())
+
+
+def test_fields_take_a_list_of_jax_scalars_as_one_vector(example, theta):
+    fields = example.fields([theta[0, i] for i in range(example.dimension)])
+    assert "member" not in fields.dims
+
+
 def test_log_prior_is_the_sum_over_parameters_and_jit_compiles(example, theta):
     parts = example.layout.unpack(theta)
     expected = np.zeros(8)

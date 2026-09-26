@@ -312,8 +312,8 @@ coercion lives in `validation.py`.
 - **`validation.py`** holds the argument coercion two modules need, each
   `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
   `as_integer`, `as_positive_integer`, `as_bounded_integer`,
-  `as_positive_integers`, `as_batched_flat`, `as_bbox`, `as_names`,
-  `as_frozen_mapping`; the `check_*` functions they are written with; and
+  `as_positive_integers`, `as_batched_flat` (with `is_one_vector`),
+  `as_bbox`, `as_names`, `as_frozen_mapping`; the `check_*` functions they are written with; and
   `truncated(items)` for messages and `range_summary(values)` for reports.
   One rule for every argument of a kind:
   - **a sequence argument** (site ids, names, member indices) is a sequence,
@@ -327,8 +327,9 @@ coercion lives in `validation.py`.
   - **a site the data lacks** is a `KeyError`.
   `as_batched_flat(values, dimension, *, message_name)` returns the 2-D
   batch alone, `float64`, JAX when given JAX; a caller that must know a
-  one-vector input was given reads `np.ndim(values) == 1`, and a caller's
-  further rules (at least one row, finite) are its own checks.
+  one-vector input was given asks `is_one_vector(values)` (not
+  `np.ndim`, which a list of JAX tracers refuses under `jax.jit`), and a
+  caller's further rules (at least one row, finite) are its own checks.
 - **`io.py`** holds writing a file safely (`write_checked`, and
   `write_checked_together` for files that belong together), `file_md5` and
   `utc_timestamp`.

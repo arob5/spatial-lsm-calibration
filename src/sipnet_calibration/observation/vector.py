@@ -145,6 +145,7 @@ from sipnet_calibration.validation import (
     as_names,
     as_site_id,
     as_site_ids,
+    is_one_vector,
 )
 
 __all__ = ["INDEX_LEVELS", "Observation", "ObservationVector"]
@@ -513,7 +514,7 @@ class ObservationVector:
         batched = np.asarray(
             as_batched_flat(flat_values, self.dimension, message_name="flat_values")
         )
-        was_one_vector = np.ndim(flat_values) == 1
+        was_one_vector = is_one_vector(flat_values)
         check_block_is_members_by_cells(batched)
         out: dict[str, xr.DataArray] = {}
         for observation in self._observations:

@@ -32,6 +32,7 @@ from sipnet_calibration.validation import (
     as_site_ids,
     check_integers_are_in_range,
     check_site_ids_are_in_range,
+    is_one_vector,
     range_summary,
     truncated,
 )
@@ -207,6 +208,30 @@ class TestAsBatchedFlat:
             return as_batched_flat([theta[i] for i in range(3)], 3, message_name="theta").sum()
 
         assert float(jax.jit(total)(jnp.arange(3.0))) == 3.0
+
+
+class TestIsOneVector:
+    @pytest.mark.parametrize(
+        ("values", "expected"),
+        [
+            ([1.0, 2.0], True),
+            ([[1.0, 2.0]], False),
+            (np.zeros(3), True),
+            (np.zeros((2, 3)), False),
+            (jnp.zeros(3), True),
+            ([jnp.asarray(1.0), jnp.asarray(2.0)], True),
+            ([jnp.zeros(2), jnp.zeros(2)], False),
+        ],
+        ids=["list", "nested list", "numpy", "numpy batch", "jax", "jax scalars", "jax rows"],
+    )
+    def test_reads_the_rank(self, values, expected):
+        assert is_one_vector(values) is expected
+
+    def test_reads_a_list_of_tracers_under_jit(self):
+        def rank_one(theta):
+            return jnp.where(is_one_vector([theta[i] for i in range(3)]), 1.0, 0.0)
+
+        assert float(jax.jit(rank_one)(jnp.arange(3.0))) == 1.0
 
 
 class TestAsBbox:
