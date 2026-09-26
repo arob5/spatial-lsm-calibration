@@ -585,9 +585,9 @@ class TestStackModelOutputsRefusesRunsThatDisagree:
         run = niwot_output.select(["wood_carbon"])
         table = _small_table(1, 27, 500)
         for keys in (
-            [(500, 0), (27, 1), (1, 1)],
-            [(27, 1), (1, 0), (500, 2)],
-            [(500, 0), (1, 1)],
+            [(0, 500), (1, 27), (1, 1)],
+            [(1, 27), (0, 1), (2, 500)],
+            [(0, 500), (1, 1)],
         ):
             stacked = stack_model_outputs({key: run for key in keys}, site_table=table)
             expected = site_lookup(table).loc[stacked["site"].values, "lon"].to_numpy()
