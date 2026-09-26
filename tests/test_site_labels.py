@@ -495,7 +495,7 @@ def test_the_16class_site_labels_cover_the_pool_with_all_sixteen(real_16class, r
     assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.labels)
 
 
-def test_the_two_site_labels_sources_do_not_nest(real_site_labels, real_16class):
+def test_the_two_site_labels_data_sources_do_not_nest(real_site_labels, real_16class):
     """Recorded in data/README.md Note 11 and in the spec's own comment.
 
     Every 16-class class draws from at least two of the three reanalysis
@@ -655,14 +655,14 @@ def test_main_exits_zero_and_writes_the_processed_file(real_argv, name):
     assert len(written) == resolve_site_labels(name).expected_rows
 
 
-def test_main_with_no_arguments_builds_every_site_labels_source(real_argv):
+def test_main_with_no_arguments_builds_every_site_labels_data_source(real_argv):
     out_dir = real_argv / "out"
     assert ingest.main(["--out-dir", str(out_dir)]) == 0
     assert sorted(path.stem for path in out_dir.glob("*.csv")) == sorted(SITE_LABELS_NAMES)
 
 
 def test_main_honors_the_site_labels_argument(real_argv):
-    """Naming one site-labels source must not build the others."""
+    """Naming one site-labels data source must not build the others."""
     out_dir = real_argv / "out"
     code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
     assert code == 0

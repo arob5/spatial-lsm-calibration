@@ -742,9 +742,10 @@ def _unstacked(
     observation_index: pd.MultiIndex,
     batch_dim: str,
 ) -> xr.DataArray:
-    """One observation source's entries of a ``(J, N)`` batch, on its grid, *batch_dim* first."""
+    """One observation source's entries of a ``(J, N)`` batch, shaped as its
+    observed values with *batch_dim* first."""
     full = np.full((entries.shape[0], *source.observed_values.shape), np.nan, dtype=np.float64)
-    site_positions, time_positions = _observation_grid_positions(source, observation_index)
+    site_positions, time_positions = _positions_in_observed_values(source, observation_index)
     if source.is_static:
         full[:, site_positions] = entries
     else:
@@ -800,10 +801,11 @@ def _read_observations(
     return np.asarray(picked.values, dtype=np.float64)
 
 
-def _observation_grid_positions(
+def _positions_in_observed_values(
     source: ObservationSource, observation_index: pd.MultiIndex
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Where on *source*'s grid the observations *observation_index* holds sit (site, time)."""
+    """The (site, time) positions in *source*'s observed values of the observations
+    *observation_index* holds."""
     indexes = source.observed_values.indexes
     site_positions = indexes[SITE].get_indexer(observation_index.get_level_values(SITE))
     if source.is_static:

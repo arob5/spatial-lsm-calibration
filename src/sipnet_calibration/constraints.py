@@ -1,4 +1,4 @@
-"""The constraint observations: what each is, how its raw file is read, and the
+"""The constraint data sources: what each is, how its raw file is read, and the
 processed file it becomes.
 
 Overview
@@ -257,7 +257,7 @@ class TimeStructure(StrEnum):
 
 @dataclass(frozen=True)
 class ConstraintSpec:
-    """Everything a consumer needs to know about one constraint observation.
+    """Everything a consumer needs to know about one constraint.
 
     One instance per raw file. The fields describe the quantity, the raw file
     that carries it and how it sits in time; :meth:`xarray_attributes` is what
@@ -459,11 +459,10 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         units="Mg ha-1",
         constituent="",
         description=(
-            "An annual GEDI aboveground biomass value at the site, 2019-2024. The upstream "
-            "product, "
-            "its version, and how footprint retrievals were aggregated to the 1 km site "
-            "are not documented. Independent of LandTrendr and not part of the set the "
-            "reanalysis assimilated."
+            "An annual GEDI aboveground biomass value at the site, 2019-2024. The "
+            "upstream product, its version, and how footprint retrievals were "
+            "aggregated to the 1 km site are not documented. Independent of LandTrendr "
+            "and not part of the set the reanalysis assimilated."
         ),
         upstream_product="GEDI",
         time_structure=TimeStructure.ANNUAL,
@@ -581,7 +580,7 @@ def resolve_constraint(name: str) -> ConstraintSpec:
 
 # ── the processed file ────────────────────────────────────────────────────────
 
-#: Name of the observation array in the processed file.
+#: Name of the observed-values array in the processed file.
 VALUE = "value"
 
 #: Name of the standard-deviation array in the processed file.

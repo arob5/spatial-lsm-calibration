@@ -386,7 +386,7 @@ def plot_map_grid(
         raises for a panel, every panel checked before any is drawn.
     """
     check_map_grid_has_a_field(fields)
-    check_scale_mode_is_known(scale)
+    check_scale_option_is_known(scale)
     arrays = list(fields.values())
     # Every panel is checked before the frame and a shared scale read their
     # values, which a panel that is not a map would break with a raw error.
@@ -560,8 +560,8 @@ def check_map_grid_has_a_field(fields: Mapping[str, Any]) -> None:
         raise ValueError("fields is empty; there is nothing to draw. Pass {title: field}.")
 
 
-def check_scale_mode_is_known(scale: str) -> None:
-    """The scale mode of a map grid is one of :data:`SCALE_OPTIONS`."""
+def check_scale_option_is_known(scale: str) -> None:
+    """The scale option of a grid of maps is one of :data:`SCALE_OPTIONS`."""
     if scale not in SCALE_OPTIONS:
         raise ValueError(f"scale must be one of {list(SCALE_OPTIONS)}, got {scale!r}")
 

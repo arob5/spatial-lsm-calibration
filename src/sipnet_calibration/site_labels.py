@@ -41,7 +41,7 @@ site, in ascending ``site_id`` order, holding the columns of
 :data:`SITE_LABELS_COLUMNS`. ``site_id`` takes its dtype from
 :data:`SITE_LABELS_COLUMN_DTYPES`, which both the read and the build impose;
 ``label`` is a categorical the spec builds, since its categories depend on
-which site-labels source it is.
+which site-labels data source it is.
 
 ============= ================== ==============================================
 Column        Dtype              Meaning
@@ -55,10 +55,10 @@ order and always all of them**, whether or not every class is used. A class the
 spec does not declare is an error on read, never a silently admitted new
 category.
 
-**Missing values.** None. A site that a site-labels source does not label is absent from
-its file; there is no unlabeled class and no ``NaN``. Where
-:attr:`SiteLabelsSpec.covers_pool` is set, every site in the pool is present, and
-the ingest refuses a file where one is not.
+**Missing values.** None. A site that a site-labels data source does not label
+is absent from its file; there is no unlabeled class and no ``NaN``. Where
+:attr:`SiteLabelsSpec.covers_pool` is set, every site in the pool is present,
+and the ingest refuses a file where one is not.
 
 **No other columns.** Not ``lon``/``lat``, not ``landcover``. Those are site
 metadata, and duplicating them here is how a join key drifts from its table.
@@ -74,7 +74,8 @@ Functions
     ``lat``, the form the map plotting layer draws.
 
 :func:`read_raw`
-    Parse a site-labels source's raw file exactly, in its source column names.
+    Parse a site-labels data source's raw file exactly, in its source column
+    names.
 
 :func:`build_site_labels`
     Turn a raw frame into the site labels the data model describes.
@@ -535,7 +536,7 @@ def default_site_labels_dir() -> Path:
 def site_labels_path(
     site_labels: str | SiteLabelsSpec, directory: Path | str | None = None
 ) -> Path:
-    """The processed file of a site-labels source: ``<directory>/<name>.csv``."""
+    """The processed file of site labels: ``<directory>/<name>.csv``."""
     name = site_labels if isinstance(site_labels, str) else site_labels.name
     base = Path(directory) if directory is not None else default_site_labels_dir()
     return base / f"{name}.csv"
@@ -688,12 +689,12 @@ def site_labels_field(
 
 
 def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFrame:
-    """Parse a site-labels source's raw file exactly, in its source column names.
+    """Parse the raw file of site labels exactly, in its source column names.
 
     Parameters
     ----------
     spec:
-        Which site-labels source.
+        Which site-labels data source.
     root:
         The directory holding the raw files. Defaults to :func:`default_raw_dir`.
 
@@ -714,10 +715,9 @@ def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFra
     -----
     ``keep_default_na=False`` is what keeps a class literally named ``NA`` a
     string, as it does for the eight sites named ``NA`` in the site table. A
-    site-labels source has no missing values, so nothing should become ``NaN``
-    here and
-    an empty field is caught downstream as an undeclared class rather than
-    silently read as missing.
+    site-labels data source has no missing values, so nothing should become
+    ``NaN`` here and an empty field is caught downstream as an undeclared class
+    rather than silently read as missing.
 
     The row count is **not** checked here. It is an invariant of the file
     rather than of parsing it, and the ingest script raises on it with a message
@@ -754,7 +754,7 @@ def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame
     Parameters
     ----------
     spec:
-        Which site-labels source.
+        Which site-labels data source.
     frame:
         The raw frame, as :func:`read_raw` returns it.
 
@@ -854,7 +854,7 @@ def _check_site_ids(site: pd.Series, source: object, *, sorted_required: bool = 
         raise ValueError(
             f"{source}: {SITE_ID} repeats {duplicated[:5].tolist()}"
             f"{' and more' if duplicated.size > 5 else ''}. "
-            "A site-labels source gives each site exactly one class."
+            "A site-labels data source gives each site exactly one class."
         )
     if sorted_required and not site.is_monotonic_increasing:
         raise ValueError(f"{source}: {SITE_ID} is not in ascending order.")
@@ -864,9 +864,9 @@ def _check_labels_are_declared(label: pd.Series, spec: SiteLabelsSpec, source: o
     """Every class is one the spec declares."""
     if label.isna().any():
         raise ValueError(
-            f"{source}: {LABEL_COLUMN} has a missing value. A site-labels source has no "
-            "unlabeled "
-            "class; a site it does not label is absent from its file."
+            f"{source}: {LABEL_COLUMN} has a missing value. A site-labels data "
+            "source has no unlabeled class; a site it does not label is absent from "
+            "its file."
         )
     unknown = sorted(set(label.unique()) - set(spec.labels))
     if unknown:

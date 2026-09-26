@@ -454,7 +454,7 @@ def _state_variable(state: xr.Dataset | Mapping[str, xr.DataArray], name: str) -
             f"{name} is a {type(array).__name__}, not a DataArray. The table form "
             "converts an ensemble; use to_sipnet_initial_conditions for one member."
         )
-    _check_units_are_the_specs(array, name)
+    _check_units_match_the_spec(array, name)
     return array
 
 
@@ -709,7 +709,7 @@ def _check_rows_are_addressable(table: pd.DataFrame) -> None:
     )
 
 
-def _check_units_are_the_specs(array: xr.DataArray, name: str) -> None:
+def _check_units_match_the_spec(array: xr.DataArray, name: str) -> None:
     spec = resolve_initial_condition(name)
     units = array.attrs.get("units")
     if units is not None and units != spec.units:

@@ -105,7 +105,7 @@ data/
       sda_8k_site_rdata/obs.cov.Rdata     retained for validation
   processed/                    ingest output, created by the ingest scripts
     sites/sites.csv
-    site_labels/<name>.csv      one per site-labels source, keyed on site_id
+    site_labels/<name>.csv      one per site-labels data source, on site_id
     constraints/<name>.nc       one per constraint, <name> the raw file's stem
     initial_conditions.nc
     nee.zarr/
@@ -124,26 +124,24 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
 directory is tracked in version control, with five exceptions: three small
-primary sources and two derived inputs, none of them a pipeline output and
-all of them inputs the repository cannot do without. `raw/sites/` holds the site shapefile, without which the
-repository carries no site information at all; `site_id_map.csv` is tracked for
-the same reason. `raw/constraints/` holds the five per-variable observation
-files, which are tracked because the upstream copies are edited and moved in
-place, so a symlink is not a stable input; see
-[Constraint observations](#constraint-observations). `raw/initial_conditions/`
-holds the initial condition ensemble converted from PEcAn's 800,000
-per-member source files into one 26 MB array, which is the only form in which it
-exists off the SCC; see [Initial conditions](#initial-conditions).
-`raw/site_labels/` and `raw/covariates/` hold the site labels and the per-site
-predictors, a few megabytes in all and, like the initial conditions, held
-nowhere else off the SCC; see [Site labels](#site-labels) and
-[Site covariates](#site-covariates). `raw/natural_earth/` holds the Natural
-Earth archives the map basemap is built from; they are not project data, but
-tracking them makes the basemap rebuildable offline, and
-`raw/natural_earth/provenance.md` records where they came from. Everything else
-under `raw/`, including the
-much larger drivers, eddy-covariance files, phenology and soil texture files,
-lives on storage and is symlinked.
+primary sources and two derived inputs, none of them a pipeline output and all
+of them inputs the repository cannot do without. `raw/sites/` holds the site
+shapefile, without which the repository carries no site information at all;
+`site_id_map.csv` is tracked for the same reason. `raw/constraints/` holds the
+five per-variable constraint files, which are tracked because the upstream
+copies are edited and moved in place, so a symlink is not a stable input; see
+[Constraints](#constraints). `raw/initial_conditions/` holds the initial
+condition ensemble converted from PEcAn's 800,000 per-member source files into
+one 26 MB array, which is the only form in which it exists off the SCC; see
+[Initial conditions](#initial-conditions). `raw/site_labels/` and
+`raw/covariates/` hold the site labels and the per-site predictors, a few
+megabytes in all and, like the initial conditions, held nowhere else off the
+SCC; see [Site labels](#site-labels) and [Site covariates](#site-covariates).
+`raw/natural_earth/` holds the Natural Earth archives the map basemap is built
+from; they are not project data, but tracking them makes the basemap rebuildable
+offline, and `raw/natural_earth/provenance.md` records where they came from.
+Everything else under `raw/`, including the much larger drivers, eddy-covariance
+files, phenology and soil texture files, lives on storage and is symlinked.
 
 ---
 
@@ -678,7 +676,7 @@ and any per-site statistic must account for very unequal sample sizes.
 
 **Source.** [GAPFILL].
 
-### Constraint observations
+### Constraints
 
 **Format.** Five gzipped CSV files under `raw/constraints/`, one per source
 product. Each is a flat table addressed by `site_id`, and `site_id` is the
@@ -1234,7 +1232,7 @@ Ingest scripts live in [`../scripts/`](../scripts). Each reads from `raw/`
 | Script | Reads | Writes |
 |---|---|---|
 | `ingest_sites.py` | `raw/sites/pts.*`, `site_id_map.csv` | `processed/sites/sites.csv` |
-| `ingest_site_labels.py` | `raw/site_labels/*.csv`, `processed/sites/sites.csv` | `processed/site_labels/<name>.csv`, one per site-labels source |
+| `ingest_site_labels.py` | `raw/site_labels/*.csv`, `processed/sites/sites.csv` | `processed/site_labels/<name>.csv`, one per site-labels data source |
 | `ingest_constraints.py` | `raw/constraints/*.csv.gz`, `processed/sites/sites.csv` | `processed/constraints/<name>.nc`, one per constraint |
 | `ingest_initial_conditions.py` | `raw/initial_conditions/pecan_pool_initial_conditions.nc`, `processed/sites/sites.csv` | `processed/initial_conditions.nc` |
 | `ingest_nee.py` | `raw/constraints/nee/ens_ec_3h.csv` | `processed/nee.zarr` |
@@ -1400,7 +1398,7 @@ the shape of each data source.
 | Processed file | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
-| `site_labels/<name>.csv` | CSV, one per site-labels source | table | ~0.2 MB each |
+| `site_labels/<name>.csv` | CSV, one per site-labels data source | table | ~0.2 MB each |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
 | `initial_conditions.nc` | netCDF | `(initial_condition_member, site)` | 26 MB compressed |
 | `nee.zarr` | Zarr, chunked on `site` | `(nee_member, site, time)` | 630 MB dense, about 55% missing |
@@ -1460,21 +1458,21 @@ settings to each caller.
   unmapped `ameriflux_site_id` is an empty string rather than a missing value.
 
 The **site labels** are one CSV each under `processed/site_labels/`, named by
-the site-labels source rather than by its raw file, with two columns:
+the site-labels data source rather than by its raw file, with two columns:
 
 | Column | Type | Description |
 |---|---|---|
 | `site_id` | int32 | Site identifier, ascending |
 | `label` | category | The class, exactly as the producer wrote it |
 
-The column is `label` rather than `pft` so that every site-labels source has one
-schema: code that pools over classes indexes `label` without knowing which
-source it was handed, and a source whose classes are not plant functional types
-needs no schema change. Which kind of class a source holds is set in its spec in
-`sipnet_calibration.site_labels`, which also fixes the order the classes are
-indexed in -- `load_site_labels` returns `label` as a categorical over exactly
-the spec's classes, in that order, so a class axis is stable and an undeclared
-class is an error rather than a new category.
+The column is `label` rather than `pft` so that every site-labels data source
+has one schema: code that pools over classes indexes `label` without knowing
+which source it was handed, and a source whose classes are not plant functional
+types needs no schema change. Which kind of class a source holds is set in its
+spec in `sipnet_calibration.site_labels`, which also fixes the order the classes
+are indexed in -- `load_site_labels` returns `label` as a categorical over
+exactly the spec's classes, in that order, so a class axis is stable and an
+undeclared class is an error rather than a new category.
 
 There are no other columns: coordinates and `landcover` are site metadata, and a
 caller joins `load_sites()` on `site_id`. Nothing is missing, either -- a site a
@@ -1738,7 +1736,7 @@ matters for the observation error model, since measured and imputed values shoul
 not carry equal weight. The producer has not confirmed this reading, and it does
 not carry over to the updated release, which has no ensemble.
 
-**9. Units of the constraint observations.** No unit is stated by any attribute
+**9. Units of the constraints.** No unit is stated by any attribute
 in any of the five raw files. `Mg C ha-1` for LandTrendr biomass and `m2 m-2`
 for MODIS leaf area index are documented for the published reanalysis output
 rather than for these inputs; `Mg C ha-1` for SoilGrids soil carbon is inferred
@@ -1764,7 +1762,7 @@ an intrinsic property of a site: some calibrations will not use PFTs at all,
 others will use a different set of classes, and which set is used is likely to
 be varied experimentally, so carrying one in the site table would bake an
 experimental choice into a key shared with collaborators. Site labels are
-therefore a separate processed file, one per site-labels source at
+therefore a separate processed file, one per site-labels data source at
 `processed/site_labels/<name>.csv` keyed on `site_id`, so several coexist and a
 calibration names the one it used.
 
@@ -1780,7 +1778,7 @@ question 24(k).
 `raw/site_labels/site_pft_16class.csv`; it is the set of labels this project
 intends to calibrate under, and nothing in the design changed when it came,
 since `sipnet_calibration.site_labels` takes a second spec. What it settles is
-that the two site-labels sources **do not nest**: every one of its sixteen
+that the two site-labels data sources **do not nest**: every one of its sixteen
 classes draws sites from at least two of the three reanalysis classes, and
 twelve from all three. So the planned transfer of priors from coarse classes to
 fine ones has no parent class to inherit from and has to be reconsidered. What

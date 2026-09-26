@@ -16,18 +16,18 @@ consumer uses.
 Input data
 ----------
 ``--raw-root``, default ``data/raw/site_labels/``
-    One CSV per site-labels source, named by ``spec.raw_file``, read exactly by
-    :func:`sipnet_calibration.site_labels.read_raw`. See
+    One CSV per site-labels data source, named by ``spec.raw_file``, read
+    exactly by :func:`sipnet_calibration.site_labels.read_raw`. See
     ``data/raw/site_labels/provenance.md`` for where each came from.
 
 ``--site-table``, default ``data/processed/sites/sites.csv``
-    The site table: the pool a site-labels source must label, and the ``landcover``
-    column a ``landcover_mapping`` is checked against.
+    The site table: the pool a site-labels data source must label, and the
+    ``landcover`` column a ``landcover_mapping`` is checked against.
 
 Output data
 -----------
 ``--out-dir``, default ``data/processed/site_labels/``, one processed file per
-site-labels source::
+site-labels data source::
 
     site_id,label
     1,semiarid.grassland_HPDA
@@ -138,13 +138,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="append",
         choices=SITE_LABELS_NAMES,
         metavar="NAME",
-        help="A site-labels source to build; repeatable. Default: all of "
+        help="A site-labels data source to build; repeatable. Default: all of "
         + ", ".join(SITE_LABELS_NAMES),
     )
     parser.add_argument(
         "--describe",
         action="store_true",
-        help="Print each site-labels source's spec and exit without reading data.",
+        help="Print each site-labels data source's spec and exit without reading "
+        "data.",
     )
     parser.add_argument(
         "--raw-root",
@@ -173,7 +174,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def ingest(
     spec: SiteLabelsSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path
 ) -> pd.DataFrame:
-    """Read, check, build and write one site-labels source."""
+    """Read, check, build and write one site-labels data source."""
     frame = read_raw(spec, raw_root)
     check_raw_frame(spec, frame, site_table)
 
@@ -271,7 +272,7 @@ def check_no_duplicate_sites(spec: SiteLabelsSpec, frame: pd.DataFrame) -> None:
         raise IngestError(
             f"{spec.raw_file}: sites {duplicated[:5].tolist()}"
             f"{' and more' if duplicated.size > 5 else ''} appear more than once. "
-            "A site-labels source gives each site exactly one class."
+            "A site-labels data source gives each site exactly one class."
         )
 
 

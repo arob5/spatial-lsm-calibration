@@ -993,7 +993,7 @@ plotting code. The load-bearing rules:
   rate). `observation.time_alignment.aggregate_time(field, freq, how=None)`
   is that operation for a field: a field carrying pySIPNET's interval
   coordinates goes through `resample` itself, which keeps batch and `site`
-  dims (pySIPNET PR #49), and one without them, such as an observation, is
+  dims (pySIPNET PR #49), and one without them, such as observed values, is
   combined on the same calendar cells here. It adds one thing: with no
   `how` it takes **the method that leaves the variable the kind it already
   is**, read off pySIPNET's `RESAMPLED_KIND` rather than written down. A
@@ -1073,11 +1073,11 @@ plotting code. The load-bearing rules:
   an observation source's segment. No standard deviation, covariance or
   likelihood lives in the package; the inference layer builds those from `y`,
   `index` and `positions`. A batch dim on an observation source's values is
-  refused: the experiment reduces an observation ensemble before it enters; a
-  scalar batch label is metadata and is kept. An `ObservationSource` keeps only
-  the sites and time labels it observes, so its operator never reads the model
-  elsewhere, and a `select(sites=...)` slice's operators read the model only
-  inside the kept sites' records.
+  refused: the experiment reduces an ensemble of observed values before it
+  enters; a scalar batch label is metadata and is kept. An `ObservationSource`
+  keeps only the sites and time labels it observes, so its operator never reads
+  the model elsewhere, and a `select(sites=...)` slice's operators read the
+  model only inside the kept sites' records.
 - **An annual constraint's field carries its windows**, read from the
   processed file's CF `time_bounds`, as the 1-D coordinates
   `window_start`/`window_end` on `time` (`constraint_fields` adds them;
