@@ -1342,6 +1342,16 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     product = build_initial_conditions(tracked_raw, sites)
     assert product["initial_soil_organic_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
     assert product[SOURCE_INDEX].values[0] == 1 and product[INITIAL_CONDITION_MEMBER].values[0] == 0
+    np.testing.assert_array_equal(
+        product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
+    )
+    # The real ensemble crossed with samples survives the Flat round trip.
+    from sipnet_calibration.fields import batch_coordinate, stack_batch_dims, unstack_batch_dims
+
+    field = product["initial_soil_organic_carbon"].isel(site=[0, 26, 864])
+    crossed = field.expand_dims(sample=2).assign_coords(sample=batch_coordinate("sample", [0, 1]))
+    restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
+    xr.testing.assert_identical(restored, crossed)
 
 
 # ── the gaps mutation testing found ───────────────────────────────────────────
