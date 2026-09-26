@@ -141,7 +141,7 @@ class TestIndex:
 
     def test_refuses_an_observation_source_with_no_observations(self, lai):
         empty = lai.where(False)
-        with pytest.raises(ValueError, match="no observation"):
+        with pytest.raises(ValueError, match="hold no observation;"):
             ObservationVector([ObservationSource("x", empty, SelectTimestep("wood_carbon"))])
 
     def test_describe(self, vector):
@@ -168,7 +168,7 @@ class TestSelect:
         assert "soilgrids_soil_organic_carbon" in sub.observation_source_names
 
     def test_an_empty_selection_is_refused(self, vector):
-        with pytest.raises(ValueError, match="no observation"):
+        with pytest.raises(ValueError, match="leaves no observation;"):
             vector.select(sites=[99])
 
 

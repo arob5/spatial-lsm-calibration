@@ -1016,8 +1016,7 @@ def check_the_selection_keeps_an_observation(kept: Sequence[ObservationSource]) 
     if not kept:
         raise ValueError(
             "the selection leaves no observation; select sites, observation sources or a "
-            "period "
-            "the vector observes."
+            "period the vector observes."
         )
 
 
