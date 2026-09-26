@@ -75,14 +75,14 @@ __all__ = [
 ]
 
 
-def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset:
+def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Dataset:
     """Turn the raw Dataset into the processed product the data model describes.
 
     Parameters
     ----------
     raw:
         As :func:`sipnet_calibration.initial_conditions.raw.read_raw` returns it.
-    sites:
+    site_table:
         The site table from :func:`sipnet_calibration.sites.load_sites`; its
         ``site_id`` is the pool and its ``lon``/``lat`` the coordinates.
 
@@ -106,7 +106,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
     0-based ``initial_condition_member``, and the source index is kept as
     ``source_index`` so a source file name can always be recovered.
     """
-    pool = np.sort(sites[SITE_ID].to_numpy(np.int64))
+    pool = np.sort(site_table[SITE_ID].to_numpy(np.int64))
     raw_sites = raw[SITE].values.astype(np.int64)
     if not np.array_equal(raw_sites, pool):
         extra = sorted(set(raw_sites.tolist()) - set(pool.tolist()))[:10]
@@ -130,7 +130,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
         # is; the ingest checks the source indices run 1..n, so it is 0..n-1.
         INITIAL_CONDITION_MEMBER: batch_coordinate(INITIAL_CONDITION_MEMBER, source_index - 1),
         SOURCE_INDEX: (INITIAL_CONDITION_MEMBER, source_index, dict(SOURCE_INDEX_ATTRIBUTES)),
-        **site_coordinates(pool.tolist(), sites),
+        **site_coordinates(pool.tolist(), site_table),
     }
     return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(raw))
 

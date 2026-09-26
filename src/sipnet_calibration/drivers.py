@@ -193,8 +193,8 @@ Name the sites, get the canonical form::
     from sipnet_calibration.drivers import driver_fields, load_drivers
     from sipnet_calibration.sites import load_sites, select_sites
 
-    sites = select_sites(load_sites(), bbox=(-125, 24, -66, 50), sample=20, seed=0)
-    drivers = load_drivers(sites["site_id"])          # every member present
+    site_table = select_sites(load_sites(), bbox=(-125, 24, -66, 50), n_random=20, seed=0)
+    drivers = load_drivers(site_table["site_id"])     # every member present
 
     drivers["air_temperature"].dims   # ('driver_member', 'site', 'time')
     drivers["precipitation"].attrs["kind"]            # 'timestep_total'
@@ -430,7 +430,7 @@ def load_drivers(
     *,
     source_indices: Iterable[int] | None = None,
     root: Path | str | None = None,
-    sites_table: pd.DataFrame | None = None,
+    site_table: pd.DataFrame | None = None,
     allow_missing: bool = False,
     time_zone: str | None = None,
 ) -> xr.Dataset:
@@ -449,7 +449,7 @@ def load_drivers(
         sites, in ascending order.
     root:
         The drivers root. Defaults to :func:`default_drivers_root`.
-    sites_table:
+    site_table:
         The site table, as :func:`sipnet_calibration.sites.load_sites` returns
         it. Loaded from its default location when ``None``. Only ``site_id``,
         ``lon`` and ``lat`` are read, and ``site_id`` must be unique.
@@ -482,7 +482,7 @@ def load_drivers(
     TypeError
         If *sites* or *source_indices* is one value, a string, a set or not
         iterable, or holds a boolean, a float or a value that is not an
-        integer; or if *sites_table* is not a ``DataFrame`` or its
+        integer; or if *site_table* is not a ``DataFrame`` or its
         ``site_id`` is not integers.
     KeyError
         If a site is not in the site table.
@@ -505,7 +505,7 @@ def load_drivers(
     time_zone = normalize_time_zone(time_zone)
 
     site_ids = _site_ids(sites)
-    table = sites_table if sites_table is not None else load_sites()
+    table = site_table if site_table is not None else load_sites()
     # Located before any file is read, so a site the table lacks fails fast.
     coordinates = site_coordinates(site_ids.tolist(), table)
 

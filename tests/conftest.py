@@ -291,7 +291,7 @@ def real_drivers(regular_drivers_root, real_site_table) -> xr.Dataset:
             [1, 27],
             source_indices=[1, 2, 5],
             root=regular_drivers_root,
-            sites_table=real_site_table,
+            site_table=real_site_table,
             allow_missing=True,
         )
 

@@ -721,9 +721,9 @@ def test_read_raw_refuses_a_file_off_the_schema(raw, tmp_path):
 
 
 def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        product = build_initial_conditions(raw_dataset, site_table)
     assert set(product.data_vars) == set(INITIAL_CONDITION_NAMES)
     for name in INITIAL_CONDITION_NAMES:
         assert product[name].dims == (INITIAL_CONDITION_MEMBER, SITE)
@@ -745,9 +745,9 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
-    sites = load_sites(_write_sites(tmp_path / "s.csv", site_ids=[1, 2]))
+    site_table = load_sites(_write_sites(tmp_path / "s.csv", site_ids=[1, 2]))
     with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="pool"):
-        build_initial_conditions(raw_dataset, sites)
+        build_initial_conditions(raw_dataset, site_table)
 
 
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
@@ -787,10 +787,10 @@ def test_initial_condition_fields_coerces_sites_and_names_by_the_shared_rules(
 
 
 def test_ingest_checks_refuse_a_broken_wood_identity_or_member_gap(raw, sites_csv):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
         dataset = raw_dataset.load().copy()
-    ingest.check_raw(dataset, sites)
+    ingest.check_raw(dataset, site_table)
     broken = dataset.copy(deep=True)
     broken["wood_carbon_content"].values[0, 0] += 1e-12
     with pytest.raises(ingest.IngestError, match="identity"):
@@ -801,9 +801,9 @@ def test_ingest_checks_refuse_a_broken_wood_identity_or_member_gap(raw, sites_cs
 
 
 def test_load_refuses_a_product_off_the_data_model(raw, sites_csv, tmp_path):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        product = build_initial_conditions(raw_dataset, site_table)
     path = tmp_path / "p.nc"
     product.drop_vars("initial_leaf_carbon").to_netcdf(path, engine="h5netcdf")
     with pytest.raises(ValueError, match="variables"):
@@ -1344,9 +1344,9 @@ def test_tracked_raw_file_holds_the_pecan_identities(tracked_raw):
 def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     if not SITES_CSV.exists():
         pytest.skip("the site table is not in this working copy")
-    sites = load_sites(SITES_CSV)
-    ingest.check_raw(tracked_raw, sites)
-    product = build_initial_conditions(tracked_raw, sites)
+    site_table = load_sites(SITES_CSV)
+    ingest.check_raw(tracked_raw, site_table)
+    product = build_initial_conditions(tracked_raw, site_table)
     assert product["initial_soil_organic_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
     assert product[SOURCE_INDEX].values[0] == 1 and product[INITIAL_CONDITION_MEMBER].values[0] == 0
     np.testing.assert_array_equal(
@@ -1485,9 +1485,9 @@ def _without_attr(dataset, key):
 
 
 def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        product = build_initial_conditions(raw_dataset, site_table)
     path = tmp_path / "p.nc"
 
     def refused(mutate, message, encode=True):
@@ -1538,9 +1538,9 @@ def test_a_product_without_source_index_is_refused_by_name(raw, sites_csv, tmp_p
 
 
 def test_a_member_label_is_its_source_index_less_one(raw, sites_csv):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        product = build_initial_conditions(raw_dataset, site_table)
     np.testing.assert_array_equal(
         product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
     )
@@ -1573,9 +1573,9 @@ def _rename_attr(dataset, variable, key, value):
 def test_coordinates_carry_no_fill_value_on_disk(raw, sites_csv, tmp_path):
     import h5netcdf
 
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        product = build_initial_conditions(raw_dataset, site_table)
     path = tmp_path / "p.nc"
     product.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(product))
     for written in (path, raw):
@@ -1620,10 +1620,10 @@ def test_conversion_refuses_a_named_site_table_that_is_absent(tree, tmp_path, ca
 def test_round_trip_checks_notice_a_file_that_differs(
     raw, sites_csv, tmp_path, monkeypatch, capsys
 ):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
         dataset = raw_dataset.load().copy(deep=True)
-        product = build_initial_conditions(raw_dataset, sites)
+        product = build_initial_conditions(raw_dataset, site_table)
     other = _write_raw_variant(raw, tmp_path, lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"] + 1))
     with pytest.raises(convert.ConversionError, match="round-trip"):
         convert.check_round_trip(dataset, other)

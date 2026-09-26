@@ -257,9 +257,9 @@ def test_fixed_parameter_checks_domain_and_shape():
         FixedParameter(name="cFracLeaf", value=0.4, provenance="x")
 
 
-def build(parameters, fixed=(), sites=SITES, site_labels=None):
+def build(parameters, fixed=(), sites=SITES, site_labels=None, site_table=None):
     return ParameterVector(
-        parameters=parameters, fixed=fixed, sites=sites,
+        parameters=parameters, fixed=fixed, sites=sites, site_table=site_table,
         site_labels={"pft": PFT} if site_labels is None else site_labels,
     )
 
@@ -893,12 +893,12 @@ def test_a_site_table_whose_site_id_is_not_a_site_id_is_refused(site_id):
     # Kept ascending, so the refusal is of the id itself, not of the order.
     table["site_id"] = np.array([site_id, 27] if site_id < 1 else [1, site_id], dtype=np.int64)
     with pytest.raises(ValueError, match=r"site_id\[\d\] must be a site id from 1 to 2147483647"):
-        example_parameter_vector(sites=table, pft=PFT[:2])
+        example_parameter_vector(site_table=table, pft=PFT[:2])
 
 
 def test_fields_carry_lon_lat_from_a_site_table():
     table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
-    vector = example_parameter_vector(sites=table, pft=PFT)
+    vector = example_parameter_vector(site_table=table, pft=PFT)
     fields = vector.fields(vector.sample(jax.random.key(0), n=2))
     np.testing.assert_allclose(fields["lon"], [-24.6, -78.6, -107.3])
     assert fields["lat"].attrs == dict(LAT_ATTRIBUTES)
@@ -911,21 +911,37 @@ def test_fields_carry_lon_lat_from_a_site_table():
     np.testing.assert_allclose(small.site_table["lat"], [80.6, 44.0])
     # A table out of site order would misalign positional inputs, so it is refused.
     with pytest.raises(ValueError, match="ascending site_id order"):
-        example_parameter_vector(sites=table.iloc[[2, 0, 1]], pft=PFT)
+        example_parameter_vector(site_table=table.iloc[[2, 0, 1]], pft=PFT)
     with pytest.raises(ValueError, match=r"no \['lat'\] column"):
-        example_parameter_vector(sites=table.drop(columns="lat"), pft=PFT)
+        example_parameter_vector(site_table=table.drop(columns="lat"), pft=PFT)
     with pytest.raises(ValueError, match="non-finite lon/lat"):
-        example_parameter_vector(sites=table.assign(lon=[np.nan, 0.0, 0.0]), pft=PFT)
+        example_parameter_vector(site_table=table.assign(lon=[np.nan, 0.0, 0.0]), pft=PFT)
     with pytest.raises(ValueError, match="no 'site_id' column or index"):
-        example_parameter_vector(sites=table.drop(columns="site_id"), pft=PFT)
+        example_parameter_vector(site_table=table.drop(columns="site_id"), pft=PFT)
     with pytest.raises(TypeError, match="site_id must hold integers"):
-        example_parameter_vector(sites=table.astype({"site_id": float}), pft=PFT)
+        example_parameter_vector(site_table=table.astype({"site_id": float}), pft=PFT)
     with pytest.raises(ValueError, match="more than once"):
-        example_parameter_vector(sites=table.iloc[[0, 0, 1]], pft=PFT)
-    keyed = example_parameter_vector(sites=table.set_index("site_id"), pft=PFT)
+        example_parameter_vector(site_table=table.iloc[[0, 0, 1]], pft=PFT)
+    keyed = example_parameter_vector(site_table=table.set_index("site_id"), pft=PFT)
     assert keyed.sites == SITES
-    only_ids = example_parameter_vector(sites=table[["site_id"]], pft=PFT)
+    only_ids = example_parameter_vector(site_table=table[["site_id"]], pft=PFT)
     assert "lon" not in only_ids.site_table.columns
+
+
+def test_sites_and_site_table_are_two_keywords_of_which_exactly_one_is_given():
+    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
+    with pytest.raises(TypeError, match="exactly one; got both"):
+        build((rate(),), sites=SITES, site_table=table)
+    with pytest.raises(TypeError, match="exactly one; got neither"):
+        ParameterVector(parameters=(rate(),))
+    with pytest.raises(TypeError, match="pass a site table as site_table="):
+        build((rate(),), sites=table)
+    with pytest.raises(TypeError, match="exactly one; got neither"):
+        example_parameter_vector(pft=PFT)
+    by_ids, by_table = build((rate(),)), build((rate(),), sites=None, site_table=table)
+    assert by_ids.sites == by_table.sites == SITES
+    assert "lon" not in by_ids.site_table.columns
+    np.testing.assert_allclose(by_table.site_table["lon"], [-24.6, -78.6, -107.3])
 
 
 def test_flat_refuses_what_no_flat_vector_can_be(example, theta):
@@ -1703,7 +1719,7 @@ def _located_example():
     table = pd.DataFrame(
         {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
     )
-    return example_parameter_vector(sites=table, pft=PFT)
+    return example_parameter_vector(site_table=table, pft=PFT)
 
 
 def test_two_batch_dims_are_refused_until_stacked(theta):
@@ -1801,7 +1817,7 @@ def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels()
     from sipnet_calibration.sites import load_sites
 
     try:
-        sites, labels = load_sites(), load_site_labels("pft_16class")
+        site_table, labels = load_sites(), load_site_labels("pft_16class")
     except FileNotFoundError as error:
         pytest.skip(f"processed site table or site labels not available in this working copy: {error}")
     classes = resolve_site_labels("pft_16class").labels
@@ -1811,7 +1827,7 @@ def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels()
             name="leaf_carbon_fraction", value={c: 0.4 + 0.01 * i for i, c in enumerate(classes)},
             varies_by="pft", provenance="test",
         ),),
-        sites=sites, site_labels={"pft": labels},
+        site_table=site_table, site_labels={"pft": labels},
     )
     assert vector.group_labels("pft") == classes
     assert vector.dimension == len(classes)
@@ -1832,7 +1848,7 @@ def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels()
 # ── the vector cannot change after its checks, and pickles ───────────────────
 
 
-def _frozen_candidate(sites=SITES) -> ParameterVector:
+def _frozen_candidate(sites=None, *, site_table=None) -> ParameterVector:
     """A vector whose priors all round-trip through pickle, with a per-class
     fixed value, the mapping that once made the vector unpicklable."""
     return ParameterVector(
@@ -1841,7 +1857,9 @@ def _frozen_candidate(sites=SITES) -> ParameterVector:
             name="leaf_carbon_fraction", value={"conifer": 0.4, "deciduous": 0.5},
             varies_by="pft", provenance="test",
         ),),
-        sites=sites, site_labels={"pft": PFT},
+        sites=SITES if sites is None and site_table is None else sites,
+        site_table=site_table,
+        site_labels={"pft": PFT},
     )
 
 
@@ -1879,7 +1897,7 @@ def test_the_vector_keeps_its_own_copy_of_the_site_tables_lon_lat():
     table = pd.DataFrame(
         {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
     )
-    vector = _frozen_candidate(sites=table)
+    vector = _frozen_candidate(site_table=table)
     table.loc[0, "lon"] = 0.0
     table["lat"] = np.zeros(3)
     np.testing.assert_array_equal(vector.site_table["lon"], [-24.6, -78.6, -107.3])
@@ -1890,7 +1908,7 @@ def test_the_kept_lon_lat_are_read_only_and_what_fields_hands_out_is_writable():
     table = pd.DataFrame(
         {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
     )
-    vector = _frozen_candidate(sites=table)
+    vector = _frozen_candidate(site_table=table)
     lon, lat = vector._lon_lat
     assert not lon.flags.writeable and not lat.flags.writeable
     with pytest.raises(ValueError):

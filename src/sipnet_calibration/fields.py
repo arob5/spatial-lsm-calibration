@@ -322,10 +322,10 @@ Adapting run after run, with the site table read once::
 
     from sipnet_calibration.sites import load_sites, site_lookup
 
-    table = site_lookup(load_sites())
+    site_table = site_lookup(load_sites())
     for site, sample, run in ensemble:
         fields = from_sipnet_output(
-            run, ["nee"], site=site, batch={"sample": sample}, sites=table
+            run, ["nee"], site=site, batch={"sample": sample}, site_table=site_table
         )
 """
 
@@ -866,7 +866,7 @@ def from_sipnet_output(
     *,
     site: int | None = None,
     batch: Mapping[str, int] | None = None,
-    sites: pd.DataFrame | None = None,
+    site_table: pd.DataFrame | None = None,
 ) -> dict[str, xr.DataArray]:
     """The named variables of one SIPNET run, as fields.
 
@@ -887,7 +887,7 @@ def from_sipnet_output(
     batch:
         ``{batch dim: label}`` for the run, as :func:`label_run` takes it; each
         becomes a scalar coordinate.
-    sites:
+    site_table:
         The site table to look ``site`` up in, as
         :func:`sipnet_calibration.sites.load_sites` returns it. Read from disk
         when omitted and a *site* is given; pass it when adapting many runs so
@@ -919,7 +919,7 @@ def from_sipnet_output(
         holds a name that is not a string; or if *site* or a batch label is a
         boolean, a float or not an integer.
     FileNotFoundError
-        If *site* is given, *sites* is not, and the site table is absent.
+        If *site* is given, *site_table* is not, and the site table is absent.
 
     Notes
     -----
@@ -928,7 +928,7 @@ def from_sipnet_output(
     """
     source = _output_of(output)
     names = resolve_output_variable_names(output_variable_names)
-    dataset = label_run(source.select(names), site=site, batch=batch, site_table=sites)
+    dataset = label_run(source.select(names), site=site, batch=batch, site_table=site_table)
     dataset = _with_field_coords(dataset, tuple(batch or ()))
     return {name: dataset[name] for name in names}
 
@@ -938,7 +938,7 @@ def stack_sipnet_outputs(
     output_variable_names: Sequence[str],
     *,
     key_dims: Sequence[str] = (SAMPLE, SITE),
-    sites: pd.DataFrame | None = None,
+    site_table: pd.DataFrame | None = None,
 ) -> dict[str, xr.DataArray]:
     """Many SIPNET runs, keyed by their labels, as ``(*batch, site, time)`` fields.
 
@@ -953,7 +953,7 @@ def stack_sipnet_outputs(
     key_dims:
         What each position of a key labels, as for
         :func:`stack_model_outputs`.
-    sites:
+    site_table:
         The site table. Read once from disk when omitted.
 
     Returns
@@ -971,7 +971,7 @@ def stack_sipnet_outputs(
         If *runs* is not a mapping; if a value is neither a ``SIPNETResult``
         nor a ``SIPNETOutput``; if *output_variable_names* or *key_dims* is not
         an ordered sequence of names; if a key is not a tuple, or a label in
-        one is a boolean, a float or not an integer; or if *sites* is not a
+        one is a boolean, a float or not an integer; or if *site_table* is not a
         ``DataFrame``.
     ValueError
         If *runs* is empty, or a key does not hold one label per key dim; and
@@ -996,7 +996,7 @@ def stack_sipnet_outputs(
     check_is_a_nonempty_mapping(runs, "runs")
     names = resolve_output_variable_names(output_variable_names)
     dims = _as_key_dims(key_dims)
-    table = site_lookup(sites if sites is not None else load_sites())
+    table = site_lookup(site_table if site_table is not None else load_sites())
     model_outputs = {
         _run_key(key, dims): _output_of(run).select(names) for key, run in runs.items()
     }

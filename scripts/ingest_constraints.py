@@ -119,9 +119,9 @@ def main(argv: list[str] | None = None) -> int:
     sites_path = args.sites if args.sites is not None else default_sites_path()
 
     try:
-        sites = load_sites(sites_path)
+        site_table = load_sites(sites_path)
         for name in names:
-            dataset = ingest(resolve_constraint(name), raw_root, sites, out_dir)
+            dataset = ingest(resolve_constraint(name), raw_root, site_table, out_dir)
             print(describe_product(dataset, constraint_path(name, out_dir)))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -170,26 +170,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the ingest steps, in the order main calls them ────────────────────────────
 
 
-def ingest(spec: ConstraintSpec, raw_root: Path, sites: pd.DataFrame, out_dir: Path) -> xr.Dataset:
+def ingest(spec: ConstraintSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path) -> xr.Dataset:
     """Read, check, build and write one constraint."""
     frame = read_raw(spec, raw_root)
-    check_raw_frame(spec, frame, sites)
+    check_raw_frame(spec, frame, site_table)
 
-    dataset = build_constraint(spec, frame, sites)
+    dataset = build_constraint(spec, frame, site_table)
     write_product(dataset, constraint_path(spec, out_dir), spec)
     return dataset
 
 
-def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
+def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame) -> None:
     """Every check on the raw rows, before anything is built from them."""
     check_site_id_column_is_integer_valued(spec, frame)
     check_site_ids_are_in_range(
         frame[SITE_ID].to_numpy(), message_name=f"{spec.raw_file}: {SITE_ID}"
     )
     check_site_table_lists_the_sites(
-        sites, frame[SITE_ID].unique().tolist(), message_name=f"{spec.raw_file}: site(s)"
+        site_table, frame[SITE_ID].unique().tolist(), message_name=f"{spec.raw_file}: site(s)"
     )
-    check_coordinates_match_site_table(spec, frame, sites)
+    check_coordinates_match_site_table(spec, frame, site_table)
     check_key_is_unique(spec, frame)
     check_value_and_sd_missing_together(spec, frame)
     check_values_are_finite(spec, frame)
@@ -247,7 +247,7 @@ def check_site_id_column_is_integer_valued(spec: ConstraintSpec, frame: pd.DataF
 
 
 def check_coordinates_match_site_table(
-    spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame
+    spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """Raise if a file's own lat/lon disagree with the site table for its site ids.
 
@@ -258,7 +258,7 @@ def check_coordinates_match_site_table(
     # The raw files that carry coordinates name them as the site table does.
     if not {LAT, LON} <= set(spec.raw_columns):
         return
-    table = site_lookup(sites).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
+    table = site_lookup(site_table).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
     for column in (LON, LAT):
         given = frame[column].to_numpy(np.float64)
         if not np.isfinite(given).all():

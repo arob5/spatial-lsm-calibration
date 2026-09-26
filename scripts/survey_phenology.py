@@ -157,8 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     path = args.path or default_data_root() / "raw" / "phenology" / "leaf_phenology_8k.csv"
     try:
         frame = read_phenology(path)
-        sites = None if args.no_sites else load_sites(args.sites or default_sites_path())
-        report = build_report(frame, path, sites)
+        site_table = None if args.no_sites else load_sites(args.sites or default_sites_path())
+        report = build_report(frame, path, site_table)
     except (OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -251,7 +251,7 @@ def _read_checked(path: Path) -> pd.DataFrame:
 
 
 def build_report(
-    frame: pd.DataFrame, path: Path, sites: pd.DataFrame | None
+    frame: pd.DataFrame, path: Path, site_table: pd.DataFrame | None
 ) -> dict[str, Any]:
     """Every measurement, in one dictionary."""
     report: dict[str, Any] = {
@@ -268,7 +268,7 @@ def build_report(
     report.update(survey_quality(frame))
     report.update(survey_days(frame))
     report.update(survey_inversions(frame))
-    table = survey_against_site_table(frame, sites)
+    table = survey_against_site_table(frame, site_table)
     report["site_table"] = table
     # Lifted to the top level because compare_with_recorded only reaches that
     # far, and these are the properties --sites exists to establish.
@@ -335,15 +335,15 @@ def survey_inversions(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def survey_against_site_table(
-    frame: pd.DataFrame, sites: pd.DataFrame | None
+    frame: pd.DataFrame, site_table: pd.DataFrame | None
 ) -> dict[str, Any]:
     """Whether the file's identifiers are the project's sites, and agree on position."""
-    if sites is None:
+    if site_table is None:
         return {"checked": False}
-    known = set(sites["site_id"])
+    known = set(site_table["site_id"])
     unknown = sorted(set(frame["site_id"]) - known)
     joined = frame.merge(
-        sites[["site_id", "lon", "lat"]], on="site_id", how="inner", suffixes=("", "_table")
+        site_table[["site_id", "lon", "lat"]], on="site_id", how="inner", suffixes=("", "_table")
     )
     return {
         "checked": True,

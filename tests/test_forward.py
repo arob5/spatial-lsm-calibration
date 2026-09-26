@@ -665,7 +665,7 @@ class TestPriorPredictive:
     def test_the_vectors_own_locations_are_the_default_site_table(self, climate, theta):
         located = SITE_TABLE.assign(lon=[-1.0, -2.0], lat=[10.0, 20.0])
         parameter_vector = example_parameter_vector(
-            sites=located, pft=("temperate.deciduous", "boreal.coniferous")
+            site_table=located, pft=("temperate.deciduous", "boreal.coniferous")
         )
         forward = ForwardModel(
             scaled_niwot_model(),

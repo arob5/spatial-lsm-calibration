@@ -116,11 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     sites_path = args.sites if args.sites is not None else default_sites_path()
 
     try:
-        sites = load_sites(sites_path)
+        site_table = load_sites(sites_path)
         for name in names:
             spec = resolve_site_labels(name)
-            product = ingest(spec, raw_root, sites, out_dir)
-            print(describe_product(spec, product, sites, site_labels_path(spec, out_dir)))
+            product = ingest(spec, raw_root, site_table, out_dir)
+            print(describe_product(spec, product, site_table, site_labels_path(spec, out_dir)))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -168,34 +168,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def ingest(
-    spec: SiteLabelsSpec, raw_root: Path, sites: pd.DataFrame, out_dir: Path
+    spec: SiteLabelsSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path
 ) -> pd.DataFrame:
     """Read, check, build and write one site-labels product."""
     frame = read_raw(spec, raw_root)
-    check_raw_frame(spec, frame, sites)
+    check_raw_frame(spec, frame, site_table)
 
     product = build_site_labels(spec, frame)
-    check_product(spec, product, sites)
+    check_product(spec, product, site_table)
     write_product(spec, product, site_labels_path(spec, out_dir))
     return product
 
 
-def check_raw_frame(spec: SiteLabelsSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
+def check_raw_frame(spec: SiteLabelsSpec, frame: pd.DataFrame, site_table: pd.DataFrame) -> None:
     """Every check on the raw rows, before anything is built from them."""
     # First, because on the wrong file every later check also fails and says
     # something less useful about why.
     check_row_count_is_the_expected_pool(spec, frame)
     check_no_duplicate_sites(spec, frame)
     check_site_table_lists_the_sites(
-        sites, frame[spec.site_column].tolist(), message_name=f"{spec.raw_file}: site(s)"
+        site_table, frame[spec.site_column].tolist(), message_name=f"{spec.raw_file}: site(s)"
     )
 
 
-def check_product(spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame) -> None:
+def check_product(spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame) -> None:
     """Every check on the built product, before it is written."""
     check_labels_are_the_declared_set(spec, product)
-    check_pool_is_completely_labeled(spec, product, sites)
-    check_labels_match_landcover(spec, product, sites)
+    check_pool_is_completely_labeled(spec, product, site_table)
+    check_labels_match_landcover(spec, product, site_table)
 
 
 def write_product(spec: SiteLabelsSpec, product: pd.DataFrame, out: Path) -> None:
@@ -208,20 +208,20 @@ def write_product(spec: SiteLabelsSpec, product: pd.DataFrame, out: Path) -> Non
 
 
 def describe_product(
-    spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame, path: Path
+    spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame, path: Path
 ) -> str:
     """A short report of what was written, for the run log."""
     counts = product[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
     width = max(len(label) for label in spec.labels)
     latitude = (
-        product.assign(**{LAT: site_lookup(sites).loc[product[SITE_ID], LAT].to_numpy()})
+        product.assign(**{LAT: site_lookup(site_table).loc[product[SITE_ID], LAT].to_numpy()})
         .groupby(LABEL_COLUMN, observed=False)[LAT]
         .agg(["min", "median", "max"])
     )
     lines = [
         f"{path}",
         f"  site labels           : {spec.name} ({spec.label_kind})",
-        f"  sites labeled         : {len(product)} of {len(sites)} in the pool",
+        f"  sites labeled         : {len(product)} of {len(site_table)} in the pool",
         f"  classes               : {len(spec.labels)}",
     ]
     for label in spec.labels:
@@ -286,15 +286,15 @@ def check_labels_are_the_declared_set(spec: SiteLabelsSpec, product: pd.DataFram
 
 
 def check_pool_is_completely_labeled(
-    spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame
+    spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """Where the spec says so, every site in the pool has a class."""
     if not spec.covers_pool:
         return
-    unlabeled = sorted(set(sites[SITE_ID]) - set(product[SITE_ID]))
+    unlabeled = sorted(set(site_table[SITE_ID]) - set(product[SITE_ID]))
     if unlabeled:
         raise IngestError(
-            f"{spec.raw_file}: leaves {len(unlabeled)} of {len(sites)} sites unlabeled, "
+            f"{spec.raw_file}: leaves {len(unlabeled)} of {len(site_table)} sites unlabeled, "
             f"the first being {unlabeled[:5]}. {spec.name!r} declares covers_pool; a "
             "product that is legitimately partial should set it False, and consumers "
             "then have to handle a site with no class."
@@ -302,7 +302,7 @@ def check_pool_is_completely_labeled(
 
 
 def check_labels_match_landcover(
-    spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame
+    spec: SiteLabelsSpec, product: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """Where the spec records one, the class is that function of ``landcover``.
 
@@ -313,7 +313,7 @@ def check_labels_match_landcover(
     if spec.landcover_mapping is None:
         return
     # Every labeled site is in the site table: check_raw_frame checked it.
-    landcover = site_lookup(sites).loc[product[SITE_ID], "landcover"].to_numpy()
+    landcover = site_lookup(site_table).loc[product[SITE_ID], "landcover"].to_numpy()
     joined = product.assign(landcover=landcover)
 
     uncovered = sorted(set(joined["landcover"]) - set(spec.landcover_mapping))

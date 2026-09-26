@@ -153,7 +153,7 @@ class TestFromSipnetOutput:
 
     def test_a_site_outside_the_table_is_refused(self, niwot_output, real_site_table):
         with pytest.raises(KeyError, match="not in the site table"):
-            from_sipnet_output(niwot_output, ["nee"], site=99999, sites=real_site_table)
+            from_sipnet_output(niwot_output, ["nee"], site=99999, site_table=real_site_table)
 
     def test_a_batch_label_may_be_any_integer(self, niwot_output):
         for label in (-1, 40000):
@@ -184,7 +184,7 @@ def runs(niwot_output):
 
 class TestStackSipnetOutputs:
     def test_the_dims_are_the_field_order_and_ascending(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.dims == FIELD_DIMS
@@ -193,7 +193,7 @@ class TestStackSipnetOutputs:
         assert field["sample"].dtype == np.int64
 
     def test_lon_and_lat_are_on_site(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field["lon"].dims == ("site",)
@@ -202,7 +202,7 @@ class TestStackSipnetOutputs:
         assert field["lon"].values == pytest.approx(expected["lon"].to_numpy())
 
     def test_each_cell_holds_the_run_it_was_labeled_with(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         for (sample, site), run in runs.items():
@@ -212,7 +212,7 @@ class TestStackSipnetOutputs:
             )
 
     def test_one_run_still_has_both_sample_dims(self, niwot_output, real_site_table):
-        field = stack_sipnet_outputs({(0, 1): niwot_output}, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs({(0, 1): niwot_output}, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.dims == FIELD_DIMS
@@ -221,7 +221,7 @@ class TestStackSipnetOutputs:
 
     def test_a_pair_that_was_not_supplied_is_missing(self, niwot_output, real_site_table):
         runs = {(0, 1): niwot_output, (1, 27): niwot_output}
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.sizes["sample"] == 2 and field.sizes["site"] == 2
@@ -229,7 +229,7 @@ class TestStackSipnetOutputs:
         assert np.isfinite(field.sel(site=27, sample=1).values).all()
 
     def test_the_attributes_are_still_pysipnets(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.attrs == runs[(0, 1)]["nee"].attrs
@@ -241,7 +241,7 @@ class TestStackSipnetOutputs:
             niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
         field = stack_sipnet_outputs(
-            {(0, 1): niwot_output, (0, 27): short}, ["nee"], sites=real_site_table
+            {(0, 1): niwot_output, (0, 27): short}, ["nee"], site_table=real_site_table
         )["net_ecosystem_exchange"]
         # The axes are unioned, so each site is finite over its own record and
         # missing outside it. They are not nested: a truncated run's last step
@@ -265,14 +265,14 @@ class TestStackSipnetOutputs:
 
     def test_a_key_that_is_not_a_tuple_is_refused(self, niwot_output, real_site_table):
         with pytest.raises(TypeError, match=r"tuple of labels in key_dims order"):
-            stack_sipnet_outputs({1: niwot_output}, ["nee"], sites=real_site_table)
+            stack_sipnet_outputs({1: niwot_output}, ["nee"], site_table=real_site_table)
 
 
 class TestTheAdaptersTakeAKeyedSiteTable:
     def test_the_adapter_accepts_either_form(self, niwot_output, real_site_table):
-        plain = from_sipnet_output(niwot_output, ["nee"], site=27, sites=real_site_table)
+        plain = from_sipnet_output(niwot_output, ["nee"], site=27, site_table=real_site_table)
         keyed = from_sipnet_output(
-            niwot_output, ["nee"], site=27, sites=site_lookup(real_site_table)
+            niwot_output, ["nee"], site=27, site_table=site_lookup(real_site_table)
         )
         xr.testing.assert_identical(
             plain["net_ecosystem_exchange"], keyed["net_ecosystem_exchange"]
@@ -291,11 +291,11 @@ class TestFromSipnetOutputRefusesBadInput:
     def test_a_float_site_is_refused_even_a_whole_one(self, niwot_output, real_site_table):
         for site in (1.5, 27.0):
             with pytest.raises(TypeError, match="float"):
-                from_sipnet_output(niwot_output, ["nee"], site=site, sites=real_site_table)
+                from_sipnet_output(niwot_output, ["nee"], site=site, site_table=real_site_table)
 
     def test_a_boolean_is_not_an_identifier(self, niwot_output, real_site_table):
         with pytest.raises(TypeError, match="bool"):
-            from_sipnet_output(niwot_output, ["nee"], site=True, sites=real_site_table)
+            from_sipnet_output(niwot_output, ["nee"], site=True, site_table=real_site_table)
         with pytest.raises(TypeError, match="boolean"):
             from_sipnet_output(niwot_output, ["nee"], batch={"sample": False})
 
@@ -347,19 +347,19 @@ class TestFromSipnetOutputRefusesBadInput:
     ):
         keyed = real_site_table.set_index("site_id")
         with pytest.raises(KeyError, match="not in the site table"):
-            from_sipnet_output(niwot_output, ["nee"], site=99999, sites=keyed)
+            from_sipnet_output(niwot_output, ["nee"], site=99999, site_table=keyed)
 
 
 class TestStackSipnetOutputsRefusesBadKeys:
     def test_a_key_of_the_wrong_arity_names_the_contract(self, niwot_output, real_site_table):
         with pytest.raises(ValueError, match=r"key_dims order \('sample', 'site'\)"):
-            stack_sipnet_outputs({(1, 0, 7): niwot_output}, ["nee"], sites=real_site_table)
+            stack_sipnet_outputs({(1, 0, 7): niwot_output}, ["nee"], site_table=real_site_table)
 
     def test_key_dims_must_name_the_site_once(self, niwot_output, real_site_table):
         for key_dims in (("sample",), ("site", "site"), ("sample", "sample", "site")):
             with pytest.raises(ValueError, match="must name 'site' once"):
                 stack_sipnet_outputs(
-                    {(0,): niwot_output}, ["nee"], key_dims=key_dims, sites=real_site_table
+                    {(0,): niwot_output}, ["nee"], key_dims=key_dims, site_table=real_site_table
                 )
 
 
@@ -489,7 +489,7 @@ class TestStackModelOutputs:
 
         datasets = {key: run.select(["nee", "wood_carbon"]) for key, run in runs.items()}
         stacked = stack_model_outputs(datasets, site_table=self._table())
-        fields = stack_sipnet_outputs(runs, ["nee", "wood_carbon"], sites=self._table())
+        fields = stack_sipnet_outputs(runs, ["nee", "wood_carbon"], site_table=self._table())
         assert isinstance(stacked, xr.Dataset)
         assert stacked["net_ecosystem_exchange"].dims == FIELD_DIMS
         for name, field in fields.items():

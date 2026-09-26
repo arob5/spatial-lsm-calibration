@@ -123,10 +123,10 @@ def main(argv: list[str] | None = None) -> int:
     sites_path = args.sites if args.sites is not None else default_sites_path()
 
     try:
-        sites = load_sites(sites_path)
+        site_table = load_sites(sites_path)
         with read_raw(raw) as raw_dataset:
-            check_raw(raw_dataset, sites)
-            dataset = build_initial_conditions(raw_dataset, sites)
+            check_raw(raw_dataset, site_table)
+            dataset = build_initial_conditions(raw_dataset, site_table)
         write_product(dataset, out)
         print(describe_product(dataset, out))
     except (IngestError, OSError, ValueError, KeyError) as error:
@@ -167,11 +167,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the ingest steps, in the order main calls them ────────────────────────────
 
 
-def check_raw(raw: xr.Dataset, sites: pd.DataFrame) -> None:
+def check_raw(raw: xr.Dataset, site_table: pd.DataFrame) -> None:
     """Every check on the raw file beyond the schema ``read_raw`` enforces."""
     check_every_source_variable_has_a_spec()
     check_sites_are_the_site_table(
-        sites, raw[SITE].values.tolist(), message_name="the raw file's sites"
+        site_table, raw[SITE].values.tolist(), message_name="the raw file's sites"
     )
     check_members_are_contiguous_from_one(raw)
     check_wood_is_biomass_minus_leaf(raw)

@@ -775,7 +775,7 @@ def read_raw(spec: ConstraintSpec, root: Path | str | None = None) -> pd.DataFra
     return frame
 
 
-def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> xr.Dataset:
+def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame) -> xr.Dataset:
     """Turn a raw frame into the processed Dataset the data model describes.
 
     Parameters
@@ -784,7 +784,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
         Which constraint.
     frame:
         As :func:`read_raw` returns it.
-    sites:
+    site_table:
         The site table from :func:`sipnet_calibration.sites.load_sites`; its
         ``site_id`` is the pool and its ``lon``/``lat`` the coordinates.
 
@@ -810,11 +810,11 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     fancy-indexed assignment silently overwrite a cell.
     """
     kept, n_dropped = _apply_quality_filter(spec, frame)
-    site = np.sort(sites[SITE_ID].to_numpy(np.int64))
+    site = np.sort(site_table[SITE_ID].to_numpy(np.int64))
 
     row_site = kept[SITE_ID].to_numpy(np.int64)
     check_site_table_lists_the_sites(
-        sites, np.unique(row_site).tolist(), message_name=f"{spec.name}: site(s)"
+        site_table, np.unique(row_site).tolist(), message_name=f"{spec.name}: site(s)"
     )
     site_index = np.searchsorted(site, row_site)
 
@@ -828,7 +828,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
         arrays = _dated_arrays(spec, kept, site_index, time, site.size)
         coords = _time_coords(spec, time)
 
-    coords.update(site_coordinates(site.tolist(), sites))
+    coords.update(site_coordinates(site.tolist(), site_table))
     dataset = xr.Dataset(
         {
             VALUE: (spec.dims, arrays[0], spec.xarray_attributes()),

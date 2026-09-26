@@ -130,8 +130,8 @@ Read a site-labels product and join it to the site table::
     from sipnet_calibration.sites import load_sites, select_sites
 
     labels = load_site_labels("reanalysis_3pft")
-    sites = select_sites(load_sites(), bbox=EXTENTS["CONUS"]).merge(labels, on="site_id")
-    for name, group in sites.groupby("label", observed=False):
+    site_table = select_sites(load_sites(), bbox=EXTENTS["CONUS"]).merge(labels, on="site_id")
+    for name, group in site_table.groupby("label", observed=False):
         ...
 
 List what exists, and what one is::
@@ -625,7 +625,7 @@ def load_site_labels(
 def site_labels_field(
     site_labels: str | SiteLabelsSpec,
     *,
-    sites: pd.DataFrame | None = None,
+    site_table: pd.DataFrame | None = None,
     path: Path | str | None = None,
 ) -> xr.DataArray:
     """A site-labels product as a categorical field on ``site``.
@@ -634,7 +634,7 @@ def site_labels_field(
     ----------
     site_labels:
         A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
-    sites:
+    site_table:
         The site table, for ``lon``/``lat``. Defaults to
         :func:`sipnet_calibration.sites.load_sites`.
     path:
@@ -667,7 +667,7 @@ def site_labels_field(
         else resolve_site_labels(site_labels)
     )
     labels = load_site_labels(spec, path)
-    sites = load_sites() if sites is None else sites
+    site_table = load_sites() if site_table is None else site_table
     _check_labels_are_flag_meanings(spec)
     attrs = {
         "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
@@ -681,7 +681,7 @@ def site_labels_field(
     return xr.DataArray(
         labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
         dims=SITE,
-        coords=site_coordinates(labels[SITE_ID].tolist(), sites),
+        coords=site_coordinates(labels[SITE_ID].tolist(), site_table),
         attrs=attrs,
         name=spec.name,
     )

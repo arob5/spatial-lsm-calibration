@@ -22,11 +22,11 @@ What it reads
 Nothing from disk. A :class:`ParameterVector` is built over sites and site
 labels the caller has already loaded:
 
-``sites``
-    Plain site ids, or a site table from
+``sites`` or ``site_table``
+    Plain site ids (``sites=``), or a site table from
     :func:`sipnet_calibration.sites.select_sites` in ascending ``site_id``
-    order, whose ``lon``/``lat`` are then carried onto every dataset the
-    vector produces.
+    order (``site_table=``), whose ``lon``/``lat`` are then carried onto every
+    dataset the vector produces.
 ``site_labels``
     For each site-labels name used as a ``varies_by``, a site-labels product
     from :func:`sipnet_calibration.site_labels.load_site_labels`, a pandas
@@ -259,7 +259,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     from sipnet_calibration.sites import load_sites, select_sites
 
     # Build it for a site set and a site-labels product.
-    sites = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat, ...
+    site_table = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat, ...
     pft = load_site_labels("reanalysis_3pft")                  # DataFrame: site_id, label
     vector = ParameterVector(                                  # ParameterVector, D = 13
         parameters=(
@@ -303,7 +303,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
                 provenance="...",
             ),
         ),
-        sites=sites,
+        site_table=site_table,
         site_labels={"pft": pft},
     )
 
@@ -357,7 +357,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from functools import cached_property
 from typing import Any, Protocol, runtime_checkable
 
@@ -1278,13 +1278,16 @@ class ParameterVector:
         The SIPNET parameters held at a value. Every SIPNET parameter any
         SIPNET map ``reads`` must appear here.
     sites:
-        The sites the vector is defined over: site ids, ascending, or a site
-        table with a ``site_id`` column in ascending order, such as
+        The sites the vector is defined over, as site ids, ascending. Give
+        this or *site_table*, not both. The ids are the site table's; ids of
+        a shared pool are never renumbered.
+    site_table:
+        The sites the vector is defined over, as a site table with a
+        ``site_id`` column in ascending order, such as
         :func:`sipnet_calibration.sites.select_sites` returns, whose
         ``lon``/``lat`` are then carried onto Fields and the SIPNET parameter
-        fields.
-        The ids are the site table's; ids of a shared pool are never
-        renumbered.
+        fields. Give this or *sites*, not both. The table is read, not kept:
+        :attr:`site_table` is the vector's own.
     site_labels:
         ``{site_labels_name: labels}`` for every ``varies_by`` other than
         ``None`` and ``"site"``: a site-labels product with ``site_id`` and
@@ -1344,14 +1347,18 @@ class ParameterVector:
 
     parameters: tuple[CalibrationParameter, ...]
     fixed: tuple[FixedParameter, ...] = ()
-    sites: Sequence[int] | pd.DataFrame
+    sites: Sequence[int] | None = None
+    # A keyword only: the attribute of the same name is the property attached
+    # below the class, so the dataclass reads None, not it, as the default.
+    site_table: InitVar[pd.DataFrame | None] = None
     site_labels: Mapping[str, Any] = field(default_factory=dict)
     require_complete: bool = False
     _declared_classes: Mapping[str, tuple[Any, ...]] = field(init=False, default=None)
     _lon_lat: tuple[np.ndarray, np.ndarray] | None = field(init=False, default=None)
 
-    def __post_init__(self) -> None:
-        sites, lon_lat = _normalized_sites(self.sites)
+    def __post_init__(self, site_table: pd.DataFrame | None) -> None:
+        check_sites_or_site_table_is_given(self.sites, site_table)
+        sites, lon_lat = _normalized_sites(self.sites, site_table)
         object.__setattr__(self, "sites", sites)
         object.__setattr__(self, "_lon_lat", lon_lat)
         check_vector_has_a_site(self.sites)
@@ -1434,8 +1441,7 @@ class ParameterVector:
             element_labels={p.name: p.element_labels for p in self.parameters},
         )
 
-    @property
-    def site_table(self) -> pd.DataFrame:
+    def _site_table(self) -> pd.DataFrame:
         """``site_id`` (``int32``), ``lon``/``lat`` when known, and one
         categorical column per site-labels name, one row per site."""
         frame = pd.DataFrame({SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE)})
@@ -1540,7 +1546,7 @@ class ParameterVector:
         return ParameterVector(
             parameters=tuple(self._prior_restricted_to_sites(self[n], positions) for n in names),
             fixed=tuple(self._fixed_restricted_to_sites(f, kept) for f in self.fixed),
-            sites=self._sites_argument(positions),
+            **self._site_keywords(positions),
             site_labels=site_labels,
             require_complete=self.require_complete,
         )
@@ -1967,12 +1973,15 @@ class ParameterVector:
             raise ValueError("select: no site of this vector satisfies every condition given.")
         return kept
 
-    def _sites_argument(self, positions: np.ndarray) -> Sequence[int] | pd.DataFrame:
+    def _site_keywords(self, positions: np.ndarray) -> dict[str, Any]:
+        """``sites=`` or ``site_table=`` for a vector over the sites at *positions*."""
         ids = [self.sites[i] for i in positions]
         if self._lon_lat is None:
-            return tuple(ids)
+            return {"sites": tuple(ids)}
         lon, lat = self._lon_lat
-        return pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
+        return {
+            "site_table": pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
+        }
 
     def _coordinates(
         self, theta: Array, batch_dim: str, batch_labels: np.ndarray | None = None
@@ -2114,6 +2123,15 @@ class ParameterVector:
             return blank, blank, blank
 
 
+# ``site_table`` is both a keyword of the constructor (an ``InitVar``) and
+# this read-only attribute. The property is attached after the dataclass is
+# made so that the dataclass takes ``None``, not the property, as the
+# keyword's default.
+ParameterVector.site_table = property(
+    ParameterVector._site_table, doc=ParameterVector._site_table.__doc__
+)
+
+
 def sipnet_overrides(
     sipnet_parameter_fields: xr.Dataset, *, site: int, batch: Mapping[str, int] | None = None
 ) -> dict[str, float]:
@@ -2182,7 +2200,10 @@ def sipnet_overrides(
 
 
 def example_parameter_vector(
-    sites: Sequence[int] | pd.DataFrame, *, pft: Sequence[str] | pd.DataFrame
+    sites: Sequence[int] | None = None,
+    *,
+    site_table: pd.DataFrame | None = None,
+    pft: Sequence[str] | pd.DataFrame,
 ) -> ParameterVector:
     """A small example vector with a shared, a per-class and a per-site
     calibration parameter of each kind of prior. **Not the calibration
@@ -2198,7 +2219,10 @@ def example_parameter_vector(
     Parameters
     ----------
     sites:
-        Site ids, ascending, or a site table in ascending ``site_id`` order.
+        Site ids, ascending. Give this or *site_table*, not both.
+    site_table:
+        A site table in ascending ``site_id`` order, whose ``lon``/``lat``
+        the vector carries. Give this or *sites*, not both.
     pft:
         One PFT label per site, or a site-labels product; named ``"pft"`` in
         the vector.
@@ -2215,7 +2239,8 @@ def example_parameter_vector(
         ``leaf_carbon_fraction`` (by ``"pft"``) and
         ``vapor_pressure_deficit_exponent`` (shared).
     """
-    n_sites = len(sites)
+    check_sites_or_site_table_is_given(sites, site_table)
+    n_sites = len(sites) if site_table is None else len(site_table)
     labels = _declared_classes_of("pft", pft)
     fixture = "Example fixture, not a reviewed prior. "
 
@@ -2321,6 +2346,7 @@ def example_parameter_vector(
         ),
         fixed=fixed,
         sites=sites,
+        site_table=site_table,
         site_labels={"pft": pft},
     )
 
@@ -2482,13 +2508,15 @@ def _in_domain(domain: ParameterDomain, values: Array) -> bool:
     return bool(finite & inside)
 
 
-def _normalized_sites(sites: Any) -> tuple[tuple[int, ...], tuple[np.ndarray, np.ndarray] | None]:
-    """Site ids, and ``lon``/``lat`` when *sites* is a site table that has
-    them."""
-    if not isinstance(sites, pd.DataFrame):
+def _normalized_sites(
+    sites: Any, site_table: Any
+) -> tuple[tuple[int, ...], tuple[np.ndarray, np.ndarray] | None]:
+    """Site ids, and ``lon``/``lat`` when a site table that has them is given."""
+    if site_table is None:
+        check_sites_are_not_a_site_table(sites)
         return as_site_ids(sites, message_name="sites"), None
-    check_site_table_is_keyed_on_site_ids(sites)
-    table = site_lookup(sites)
+    check_site_table_is_keyed_on_site_ids(site_table)
+    table = site_lookup(site_table)
     ids = as_site_ids(table.index, message_name="the site table's site_id")
     check_site_table_is_in_site_order(ids)
     if {LON, LAT} & set(table.columns):
@@ -3168,21 +3196,39 @@ def check_fixed_values_are_numbers(parameter: FixedParameter) -> None:
         raise TypeError(f"fixed parameter {parameter.name!r}: values must be numbers; got {wrong}.")
 
 
+def check_sites_or_site_table_is_given(sites: Any, site_table: Any) -> None:
+    """Exactly one of ``sites=`` and ``site_table=`` is given."""
+    if (sites is None) == (site_table is None):
+        raise TypeError(
+            "give the vector's sites as sites= (site ids) or site_table= (a site table), "
+            f"exactly one; got {'both' if sites is not None else 'neither'}."
+        )
+
+
+def check_sites_are_not_a_site_table(sites: Any) -> None:
+    """``sites=`` holds site ids, not a site table."""
+    if isinstance(sites, pd.DataFrame):
+        raise TypeError(
+            "sites= takes site ids, and got a DataFrame; pass a site table as "
+            "site_table=, which also carries its lon/lat onto the vector's fields."
+        )
+
+
 def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
-    """A site table given as ``sites=`` lists its sites ascending, each once."""
+    """A site table given as ``site_table=`` lists its sites ascending, each once."""
     if list(ids) != sorted(set(ids)):
         raise ValueError(
-            "a site table passed as sites= must be in ascending site_id order with no repeats, "
-            "because a per-site prior and site labels given as a plain sequence are read in "
-            "site order; sort it with .sort_values('site_id')."
+            "a site table passed as site_table= must be in ascending site_id order with no "
+            "repeats, because a per-site prior and site labels given as a plain sequence are "
+            "read in site order; sort it with .sort_values('site_id')."
         )
 
 
 def check_site_table_positions_are_finite(table: pd.DataFrame) -> None:
-    """A site table given as ``sites=`` has a finite ``lon`` and ``lat`` for every site."""
+    """A site table given as ``site_table=`` has a finite ``lon`` and ``lat`` for every site."""
     if not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
         raise ValueError(
-            "a site table passed as sites= has missing or non-finite lon/lat; give every "
+            "a site table passed as site_table= has missing or non-finite lon/lat; give every "
             "site its coordinates, or pass a table without lon and lat."
         )
 

@@ -527,7 +527,7 @@ def test_the_site_pool_maps_by_class(real_site_table):
     from sipnet_calibration.site_labels import site_labels_field
 
     try:
-        field = site_labels_field("reanalysis_3pft", sites=real_site_table)
+        field = site_labels_field("reanalysis_3pft", site_table=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
     ax = plot_map(field)
@@ -539,7 +539,7 @@ def test_the_site_pool_maps_by_sixteen_classes_with_display_names(real_site_tabl
     from sipnet_calibration.site_labels import resolve_site_labels, site_labels_field
 
     try:
-        field = site_labels_field("pft_16class", sites=real_site_table)
+        field = site_labels_field("pft_16class", site_table=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
     spec = resolve_site_labels("pft_16class")

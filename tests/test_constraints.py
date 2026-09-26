@@ -167,7 +167,7 @@ STATIC_ROWS = [
 
 
 @pytest.fixture
-def sites(tmp_path) -> pd.DataFrame:
+def site_table(tmp_path) -> pd.DataFrame:
     return load_sites(_write_sites(tmp_path / "sites" / "sites.csv"))
 
 
@@ -176,9 +176,9 @@ def raw_root(tmp_path) -> Path:
     return tmp_path / "raw"
 
 
-def _ingest(spec, rows, raw_root, sites, out_dir) -> xr.Dataset:
+def _ingest(spec, rows, raw_root, site_table, out_dir) -> xr.Dataset:
     _write_raw(raw_root, spec, rows)
-    return ingest.ingest(spec, raw_root, sites, out_dir)
+    return ingest.ingest(spec, raw_root, site_table, out_dir)
 
 
 def _dates(*days: str) -> np.ndarray:
@@ -237,9 +237,9 @@ def test_xarray_attributes_carry_the_spec():
     assert "constituent" not in resolve_constraint("modis_leaf_area_index").xarray_attributes()
 
 
-def test_the_product_carries_exactly_the_documented_attributes(raw_root, sites, tmp_path):
+def test_the_product_carries_exactly_the_documented_attributes(raw_root, site_table, tmp_path):
     """The data model's attribute lists, as written, with no extras and none missing."""
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out")
+    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out")
     assert set(product[VALUE].attrs) == {
         "units", "constituent", "long_name", "description", "product", "source_file",
         "source_column", "time_reference", "units_provenance",
@@ -263,7 +263,7 @@ def test_the_product_carries_exactly_the_documented_attributes(raw_root, sites, 
     assert product[VALUE].attrs["product"] == "test"
     assert "calendar year" in product[VALUE].attrs["time_reference"]
 
-    dated = _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out")
+    dated = _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out")
     assert "constituent" not in dated[VALUE].attrs
     assert dated.attrs["time_structure"] == "dated"
 
@@ -279,9 +279,9 @@ def test_describe_names_the_file_the_columns_and_the_filter():
 
 
 def test_an_annual_table_becomes_a_dense_product_with_calendar_year_bounds(
-    raw_root, sites, tmp_path
+    raw_root, site_table, tmp_path
 ):
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out")
+    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out")
 
     assert product[VALUE].dims == ("site", "time")
     assert product["site"].values.tolist() == SYNTHETIC_SITES
@@ -307,8 +307,8 @@ def test_an_annual_table_becomes_a_dense_product_with_calendar_year_bounds(
     assert product[VALUE].attrs["units"] == "Mg ha-1"
 
 
-def test_a_dated_table_drops_the_flagged_rows_and_counts_them(raw_root, sites, tmp_path):
-    product = _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out")
+def test_a_dated_table_drops_the_flagged_rows_and_counts_them(raw_root, site_table, tmp_path):
+    product = _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out")
 
     assert product[VALUE].dims == ("site", "time")
     assert "time_bounds" not in product.coords
@@ -323,8 +323,8 @@ def test_a_dated_table_drops_the_flagged_rows_and_counts_them(raw_root, sites, t
     assert product.attrs["rows_read"] == 4
 
 
-def test_a_static_table_collapses_to_one_value_per_site(raw_root, sites, tmp_path):
-    product = _ingest(STATIC, STATIC_ROWS, raw_root, sites, tmp_path / "out")
+def test_a_static_table_collapses_to_one_value_per_site(raw_root, site_table, tmp_path):
+    product = _ingest(STATIC, STATIC_ROWS, raw_root, site_table, tmp_path / "out")
 
     assert product[VALUE].dims == ("site",)
     assert "time" not in product.coords
@@ -336,18 +336,18 @@ def test_a_static_table_collapses_to_one_value_per_site(raw_root, sites, tmp_pat
 
 
 def test_the_written_file_reads_back_through_the_loader_identically(
-    raw_root, sites, tmp_path
+    raw_root, site_table, tmp_path
 ):
     out_dir = tmp_path / "out"
-    built = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    built = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     with load_constraint(ANNUAL, constraint_path(ANNUAL, out_dir)) as read:
         read = read.load()
     assert read.identical(built)
     assert not (out_dir / f"{ANNUAL.name}.nc.partial").exists()
 
 
-def test_no_coordinate_is_encoded_with_a_fill_value(raw_root, sites, tmp_path):
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out")
+def test_no_coordinate_is_encoded_with_a_fill_value(raw_root, site_table, tmp_path):
+    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out")
     encoding = netcdf_encoding(product)
     for coordinate in product.coords:
         assert encoding[str(coordinate)]["_FillValue"] is None
@@ -395,76 +395,76 @@ def test_read_raw_names_the_missing_file(raw_root):
 # ── the refusals ──────────────────────────────────────────────────────────────
 
 
-def _refused(spec, rows, raw_root, sites, tmp_path, message):
+def _refused(spec, rows, raw_root, site_table, tmp_path, message):
     with pytest.raises((ingest.IngestError, ValueError, KeyError), match=message):
-        _ingest(spec, rows, raw_root, sites, tmp_path / "out")
+        _ingest(spec, rows, raw_root, site_table, tmp_path / "out")
 
 
-def test_a_duplicate_key_is_refused(raw_root, sites, tmp_path):
+def test_a_duplicate_key_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "repeat")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "repeat")
 
 
-def test_a_site_outside_the_pool_is_refused(raw_root, sites, tmp_path):
+def test_a_site_outside_the_pool_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=9, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, r"site\(s\) \[9\] are not in the site table")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, r"site\(s\) \[9\] are not in the site table")
 
 
-def test_a_site_id_below_one_is_refused(raw_root, sites, tmp_path):
+def test_a_site_id_below_one_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=0, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "must be integer site ids from 1 to")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "must be integer site ids from 1 to")
 
 
-def test_coordinates_disagreeing_with_the_site_table_are_refused(raw_root, sites, tmp_path):
+def test_coordinates_disagreeing_with_the_site_table_are_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["lat"] = 82.5  # site 1 of the other pool
-    _refused(DATED, rows, raw_root, sites, tmp_path, "disagrees with the site table")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "disagrees with the site table")
 
 
-def test_a_value_without_a_standard_deviation_is_refused(raw_root, sites, tmp_path):
+def test_a_value_without_a_standard_deviation_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=2012, mean=5.0, sd=np.nan)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "missing in different places")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "missing in different places")
 
 
-def test_a_negative_standard_deviation_is_refused(raw_root, sites, tmp_path):
+def test_a_negative_standard_deviation_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=2012, mean=5.0, sd=-1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "negative")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "negative")
 
 
-def test_a_static_table_whose_copies_differ_is_refused(raw_root, sites, tmp_path):
+def test_a_static_table_whose_copies_differ_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in STATIC_ROWS]
     rows[1]["soc"] = 743.0
-    _refused(STATIC, rows, raw_root, sites, tmp_path, "Either the source changed")
+    _refused(STATIC, rows, raw_root, site_table, tmp_path, "Either the source changed")
     frame = read_raw(STATIC, raw_root)
     with pytest.raises(ValueError, match="static"):
-        build_constraint(STATIC, frame, sites)
+        build_constraint(STATIC, frame, site_table)
 
 
-def test_a_quality_column_where_nothing_passes_is_refused(raw_root, sites, tmp_path):
+def test_a_quality_column_where_nothing_passes_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row, qc="001") for row in DATED_ROWS]
-    _refused(DATED, rows, raw_root, sites, tmp_path, "no row has")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "no row has")
 
 
-def test_a_malformed_date_is_refused(raw_root, sites, tmp_path):
+def test_a_malformed_date_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["date"] = "2012-13-01"
-    _refused(DATED, rows, raw_root, sites, tmp_path, "ISO date")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "ISO date")
 
 
-def test_build_constraint_refuses_a_duplicate_cell_itself(sites):
+def test_build_constraint_refuses_a_duplicate_cell_itself(site_table):
     frame = pd.DataFrame(ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)])
     with pytest.raises(ValueError, match="share a"):
-        build_constraint(ANNUAL, frame, sites)
+        build_constraint(ANNUAL, frame, site_table)
 
 
 # ── the readers ───────────────────────────────────────────────────────────────
 
 
 def test_constraint_fields_and_sds_select_sites_in_the_order_given(
-    raw_root, sites, tmp_path, monkeypatch
+    raw_root, site_table, tmp_path, monkeypatch
 ):
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     # The registry does not know the synthetic spec, so resolve it for the test.
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
@@ -485,11 +485,11 @@ def test_constraint_fields_and_sds_select_sites_in_the_order_given(
 
 
 def test_constraint_fields_refuses_one_string_of_sites_rather_than_reading_its_characters(
-    raw_root, sites, tmp_path, monkeypatch
+    raw_root, site_table, tmp_path, monkeypatch
 ):
     """``sites="14"`` once read as sites 1 and 4, one character per site."""
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
 
@@ -507,12 +507,12 @@ def test_constraint_fields_refuses_one_string_of_sites_rather_than_reading_its_c
         constraint_fields(ANNUAL.name, directory=out_dir)
 
 
-def test_constraint_fields_takes_sites_as_any_array_like(raw_root, sites, tmp_path, monkeypatch):
+def test_constraint_fields_takes_sites_as_any_array_like(raw_root, site_table, tmp_path, monkeypatch):
     """A field's own site coordinate, or a JAX array, is a sequence of site ids."""
     import jax.numpy as jnp
 
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
 
@@ -527,9 +527,9 @@ def test_a_missing_product_names_the_command_that_builds_it(tmp_path):
         load_constraint("smap_soil_moisture", tmp_path / "absent.nc")
 
 
-def test_the_loader_refuses_a_file_written_for_another_constraint(raw_root, sites, tmp_path):
+def test_the_loader_refuses_a_file_written_for_another_constraint(raw_root, site_table, tmp_path):
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     other = _spec(name="test_other", raw_file="test_other.csv.gz")
     with pytest.raises(ValueError, match="written for constraint"):
         load_constraint(other, constraint_path(ANNUAL, out_dir))
@@ -585,9 +585,9 @@ def _perturbations():
 
 @pytest.mark.parametrize("perturb, message", _perturbations())
 def test_the_loader_refuses_a_product_that_departs_from_the_data_model(
-    raw_root, sites, tmp_path, perturb, message
+    raw_root, site_table, tmp_path, perturb, message
 ):
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out").load()
+    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out").load()
     broken = perturb(product.copy(deep=True))
     path = tmp_path / "broken.nc"
     broken.to_netcdf(path, engine="h5netcdf", encoding={"time": {"units": module.TIME_UNITS}})
@@ -595,8 +595,8 @@ def test_the_loader_refuses_a_product_that_departs_from_the_data_model(
         load_constraint(ANNUAL, path)
 
 
-def test_a_dated_product_with_bounds_is_refused(raw_root, sites, tmp_path):
-    product = _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out").load()
+def test_a_dated_product_with_bounds_is_refused(raw_root, site_table, tmp_path):
+    product = _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out").load()
     bounds = np.stack([product["time"].values, product["time"].values], axis=1)
     path = tmp_path / "broken.nc"
     product.assign_coords(time_bounds=(("time", "bounds"), bounds)).to_netcdf(path)
@@ -605,7 +605,7 @@ def test_a_dated_product_with_bounds_is_refused(raw_root, sites, tmp_path):
 
 
 def test_a_failed_constraint_round_trip_keeps_the_partial_and_never_writes_the_product(
-    raw_root, sites, tmp_path, monkeypatch, capsys
+    raw_root, site_table, tmp_path, monkeypatch, capsys
 ):
     """The .partial design: a check that fails after the write must not rename."""
     out_dir = tmp_path / "out"
@@ -617,24 +617,24 @@ def test_a_failed_constraint_round_trip_keeps_the_partial_and_never_writes_the_p
 
     monkeypatch.setattr(ingest, "load_constraint", read_back_differently)
     with pytest.raises(ingest.IngestError, match="does not read back identical"):
-        _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+        _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     assert not constraint_path(ANNUAL, out_dir).exists()
     assert (out_dir / f"{ANNUAL.name}.nc.partial").exists()
     assert f"{ANNUAL.name}.nc.partial" in capsys.readouterr().err
 
 
-def test_a_time_label_that_is_not_a_whole_day_is_refused(raw_root, sites, tmp_path, monkeypatch):
+def test_a_time_label_that_is_not_a_whole_day_is_refused(raw_root, site_table, tmp_path, monkeypatch):
     """xarray would silently switch the on-disk units to hours."""
     original = module.build_constraint
 
-    def shift_labels(spec, frame, sites):
-        product = original(spec, frame, sites)
+    def shift_labels(spec, frame, site_table):
+        product = original(spec, frame, site_table)
         return product.assign_coords(time=product["time"] + np.timedelta64(12, "h"))
 
     monkeypatch.setattr(ingest, "build_constraint", shift_labels)
     with pytest.warns(UserWarning, match="hours since"):
         with pytest.raises(ingest.IngestError, match="not a whole day"):
-            _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out")
+            _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out")
 
 
 # ── the parser's guards ───────────────────────────────────────────────────────
@@ -676,49 +676,49 @@ def test_a_missing_year_names_the_file(raw_root):
 # ── the remaining refusals ────────────────────────────────────────────────────
 
 
-def test_an_empty_date_is_refused(raw_root, sites, tmp_path):
+def test_an_empty_date_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["date"] = ""
-    _refused(DATED, rows, raw_root, sites, tmp_path, "not dates")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "not dates")
 
 
-def test_a_year_outside_the_plausible_range_is_refused(raw_root, sites, tmp_path):
+def test_a_year_outside_the_plausible_range_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=20120, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "does not hold years")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "does not hold years")
 
 
-def test_an_infinite_value_is_refused(raw_root, sites, tmp_path):
+def test_an_infinite_value_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=2012, mean=float("inf"), sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "infinite")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "infinite")
 
 
-def test_a_missing_coordinate_is_refused(raw_root, sites, tmp_path):
+def test_a_missing_coordinate_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["lat"] = np.nan
-    _refused(DATED, rows, raw_root, sites, tmp_path, "missing or not finite")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "missing or not finite")
 
 
-def test_a_quality_column_of_nothing_but_na_is_refused_cleanly(raw_root, sites, tmp_path):
+def test_a_quality_column_of_nothing_but_na_is_refused_cleanly(raw_root, site_table, tmp_path):
     rows = [dict(row, qc=None) for row in DATED_ROWS]
-    _refused(DATED, rows, raw_root, sites, tmp_path, "no row has")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "no row has")
 
 
 def test_a_file_with_no_observed_rows_leaves_the_existing_product_alone(
-    raw_root, sites, tmp_path
+    raw_root, site_table, tmp_path
 ):
     out_dir = tmp_path / "out"
-    good = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    good = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     before = constraint_path(ANNUAL, out_dir).stat().st_mtime_ns
     rows = [dict(site_id=1, year=2012, mean=np.nan, sd=np.nan)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "no row carries an observed value")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "no row carries an observed value")
     assert constraint_path(ANNUAL, out_dir).stat().st_mtime_ns == before
     with load_constraint(ANNUAL, constraint_path(ANNUAL, out_dir)) as kept:
         assert kept.load().identical(good)
 
 
-def test_the_report_counts_what_was_written(raw_root, sites, tmp_path):
+def test_the_report_counts_what_was_written(raw_root, site_table, tmp_path):
     out_dir = tmp_path / "out"
-    product = _ingest(DATED, DATED_ROWS, raw_root, sites, out_dir)
+    product = _ingest(DATED, DATED_ROWS, raw_root, site_table, out_dir)
     report = ingest.describe_product(product, constraint_path(DATED, out_dir))
     assert "observed 3 of 12 cells" in report
     assert "dropped by quality flag 1" in report
@@ -761,12 +761,12 @@ def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch
 
 
 def test_constraint_fields_keeps_the_order_of_names_given(
-    raw_root, sites, tmp_path, monkeypatch
+    raw_root, site_table, tmp_path, monkeypatch
 ):
     out_dir = tmp_path / "out"
     other = _spec(name="test_other", raw_file="test_other.csv.gz")
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
-    _ingest(other, ANNUAL_ROWS[:2], raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
+    _ingest(other, ANNUAL_ROWS[:2], raw_root, site_table, out_dir)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL, other))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name, other.name))
 
@@ -805,9 +805,9 @@ def real_products(tmp_path_factory) -> dict[str, xr.Dataset]:
     if not _real_files_present():
         pytest.skip("raw constraint files or site table absent")
     out_dir = tmp_path_factory.mktemp("constraints")
-    sites = load_sites()
+    site_table = load_sites()
     return {
-        spec.name: ingest.ingest(spec, RAW_DIR, sites, out_dir).load() for spec in CONSTRAINTS
+        spec.name: ingest.ingest(spec, RAW_DIR, site_table, out_dir).load() for spec in CONSTRAINTS
     }
 
 
