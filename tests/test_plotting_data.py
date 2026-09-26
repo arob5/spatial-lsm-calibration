@@ -25,20 +25,6 @@ from sipnet_calibration.plotting import (
 )
 
 
-@pytest.fixture
-def closing():
-    """Close every figure a test made, however it ends."""
-    made = []
-
-    def keep(result):
-        made.append(result[0])
-        return result
-
-    yield keep
-    for figure in made:
-        plt.close(figure)
-
-
 def most_observed_site(field):
     """The site id with the most observed values, for a ragged field."""
     counts = field.notnull().sum("time")
@@ -168,7 +154,7 @@ def test_an_observation_overlay_keeps_the_model_panel(
     assert ax.get_legend_handles_labels()[1] == ["posterior", "obs"]
 
 
-def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fields):
+def test_plot_by_variable_over_the_constraint_fields(real_constraint_fields):
     """Every time-varying constraint, one panel each, no shared y.
 
     The static soil carbon has no time axis and is left out; the two biomass
@@ -179,7 +165,7 @@ def test_plot_by_variable_over_the_constraint_fields(closing, real_constraint_fi
     one_site = {
         name: field.sel(site=site) for name, field in means.items() if "time" in field.dims
     }
-    _, axes = closing(
+    _, axes = (
         plot_by_variable(
             one_site,
             lambda data, ax: plot_time_series(data, ax=ax, role="obs", show="points"),
@@ -221,13 +207,13 @@ def test_acceptance_one_panel_three_aggregations(ax, real_drivers):
     assert ax.lines[1].get_ydata().sum() == pytest.approx(par.values.sum())
 
 
-def test_acceptance_faceted_driver_fan_with_shared_limits(closing, real_driver_field):
+def test_acceptance_faceted_driver_fan_with_shared_limits(real_driver_field):
     """A driver ensemble per site, faceted, with one y scale, in one line.
 
     Criterion 2 of the design spec, at the two sites available here rather
     than at six.
     """
-    _, axes = closing(plot_by_site(real_driver_field, share="y", ncol=3))
+    _, axes = plot_by_site(real_driver_field, share="y", ncol=3)
     assert len(axes) == real_driver_field.sizes["site"]
     assert axes[0].get_ylim() == axes[1].get_ylim()
     assert [a.get_title() for a in axes] == [

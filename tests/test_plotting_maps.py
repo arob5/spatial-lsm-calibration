@@ -8,7 +8,6 @@ do. Assertions are on artist data, never on rendered images.
 
 from __future__ import annotations
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 import xarray as xr
@@ -18,10 +17,13 @@ from matplotlib.image import AxesImage
 
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import BASEMAP_ZORDER, MAX_ANGULAR_DISTANCE
-from sipnet_calibration.plotting.facet import plot_map_by, plot_map_grid, plot_map_quantiles
+from sipnet_calibration.plotting.facet import (
+    plot_map_by,
+    plot_map_grid,
+    plot_map_quantiles,
+)
 from sipnet_calibration.plotting.maps import (
     Cells,
-    Points,
     ProjectedBounds,
     Triangles,
     animate_map,
@@ -82,12 +84,6 @@ def categorical() -> xr.DataArray:
         "flag_meanings": "conifer deciduous grass",
     }
     return field
-
-
-@pytest.fixture(autouse=True)
-def close_figures():
-    yield
-    plt.close("all")
 
 
 def data_artist(ax):
@@ -504,11 +500,11 @@ def test_a_shared_scale_refuses_categorical_beside_continuous(categorical, dense
 # ── real data ─────────────────────────────────────────────────────────────────
 
 
-def test_the_site_pool_maps_by_class(sites_table):
+def test_the_site_pool_maps_by_class(real_site_table):
     from sipnet_calibration.site_labels import site_labels_field
 
     try:
-        field = site_labels_field("reanalysis_3pft", sites=sites_table)
+        field = site_labels_field("reanalysis_3pft", sites=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
     ax = plot_map(field)
@@ -516,11 +512,11 @@ def test_the_site_pool_maps_by_class(sites_table):
     assert len(ax.get_legend().get_texts()) == 3
 
 
-def test_the_site_pool_maps_by_sixteen_classes_with_display_names(sites_table):
+def test_the_site_pool_maps_by_sixteen_classes_with_display_names(real_site_table):
     from sipnet_calibration.site_labels import resolve_site_labels, site_labels_field
 
     try:
-        field = site_labels_field("pft_16class", sites=sites_table)
+        field = site_labels_field("pft_16class", sites=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
     spec = resolve_site_labels("pft_16class")
@@ -535,7 +531,7 @@ def test_initial_wood_carbon_quantiles_over_conus():
     from sipnet_calibration.initial_conditions import initial_condition_fields
 
     try:
-        wood = initial_condition_fields("initial_wood_carbon")["initial_wood_carbon"]
+        wood = initial_condition_fields(["initial_wood_carbon"])["initial_wood_carbon"]
     except FileNotFoundError as error:
         pytest.skip(str(error))
     figure, axes = plot_map_quantiles(wood, extent="CONUS", robust=True)

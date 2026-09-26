@@ -12,8 +12,13 @@ import pytest
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
-from sipnet_calibration.constraints import TIME_BOUNDS_END, TIME_BOUNDS_START
-from sipnet_calibration.fields import TIME_STEP_LENGTH, TIME_STEP_START
+from conftest import site_table_of
+from sipnet_calibration.conventions import (
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+    WINDOW_END,
+    WINDOW_START,
+)
 from sipnet_calibration.observation.time_alignment import (
     SELECTED_STEP_COORD,
     WINDOW_REDUCTIONS,
@@ -38,7 +43,7 @@ def niwot(niwot_output):
 
 def _daily_windows(array):
     """Right-closed calendar days covering the array's record."""
-    start = pd.Timestamp(array[TIME_STEP_START].values.min()).floor("D")
+    start = pd.Timestamp(array[TIMESTEP_START].values.min()).floor("D")
     end = pd.Timestamp(array["time"].values.max()).ceil("D")
     edges = pd.date_range(start, end, freq="1D")
     return pd.IntervalIndex.from_arrays(edges[:-1], edges[1:], closed="right")
@@ -132,7 +137,7 @@ class TestReduceWindowsSemantics:
         windows = pd.IntervalIndex.from_arrays([far], [far + pd.Timedelta("1D")], closed="right")
         reduced = reduce_windows(array, windows, "last")
         assert reduced.shape == (1,) and np.isnan(reduced.values[0])
-        assert np.isnat(reduced[TIME_STEP_START].values[0])
+        assert np.isnat(reduced[TIMESTEP_START].values[0])
 
     def test_a_step_belongs_to_the_window_its_end_falls_in(self, niwot):
         array = niwot["wood_carbon"]
@@ -148,7 +153,7 @@ class TestReduceWindowsSemantics:
         windows = _daily_windows(array)
         reduced = reduce_windows(array, windows, "last")
         full = reduced.isel(time=5)
-        assert full[TIME_STEP_LENGTH].values == np.timedelta64(24, "h")
+        assert full[TIMESTEP_LENGTH].values == np.timedelta64(24, "h")
         last_end = pd.Timestamp(full[SELECTED_STEP_COORD].values)
         assert windows[5].left < last_end <= windows[5].right
         assert last_end == pd.Timestamp(array["time"].values[windows.get_indexer(pd.DatetimeIndex(array["time"].values)) == 5][-1])
@@ -180,7 +185,7 @@ class TestSelectTimestepAt:
 
     def test_a_label_inside_a_step_reads_the_step_containing_it(self, niwot):
         array = niwot["wood_carbon"]
-        starts = pd.DatetimeIndex(array[TIME_STEP_START].values)
+        starts = pd.DatetimeIndex(array[TIMESTEP_START].values)
         inside = starts[[3, 10]] + pd.Timedelta("1s")
         picked = select_timestep_at(array, inside)
         np.testing.assert_array_equal(picked.values, array.values[[3, 10]])
@@ -188,7 +193,7 @@ class TestSelectTimestepAt:
 
     def test_a_label_at_a_step_start_reads_the_previous_step(self, niwot):
         array = niwot["wood_carbon"]
-        starts = pd.DatetimeIndex(array[TIME_STEP_START].values)
+        starts = pd.DatetimeIndex(array[TIMESTEP_START].values)
         picked = select_timestep_at(array, starts[[5]])
         assert picked.values[0] == array.values[4]
 
@@ -211,7 +216,7 @@ class TestSelectTimestepAt:
     def test_a_total_over_its_step_length_has_a_value_at_an_instant(self, niwot):
         nee = niwot["net_ecosystem_exchange"]
         rate = divide_with_units(nee, step_length(nee))
-        starts = pd.DatetimeIndex(rate[TIME_STEP_START].values)
+        starts = pd.DatetimeIndex(rate[TIMESTEP_START].values)
         picked = select_timestep_at(rate, starts[[5]] + pd.Timedelta("30min"))
         assert picked.attrs["kind"] == "daily_rate" and picked.attrs["units"] == "g m-2 d-1"
         assert picked.values[0] == pytest.approx(float(rate.values[5]), rel=1e-12)
@@ -222,7 +227,7 @@ class TestSelectTimestepAt:
 
     def test_a_step_mean_reads_the_containing_step(self, niwot):
         array = niwot["soil_wetness_fraction"]
-        starts = pd.DatetimeIndex(array[TIME_STEP_START].values)
+        starts = pd.DatetimeIndex(array[TIMESTEP_START].values)
         picked = select_timestep_at(array, starts[[7]] + pd.Timedelta("30min"))
         assert picked.values[0] == array.values[7]
         assert "contains the label" in picked.attrs["time_reference"]
@@ -261,8 +266,8 @@ class TestWindowBuilders:
             coords={
                 "site": [1],
                 "time": pd.DatetimeIndex(["2012-01-01", "2013-01-01"]),
-                TIME_BOUNDS_START: ("time", pd.DatetimeIndex(["2012-01-01", "2013-01-01"])),
-                TIME_BOUNDS_END: ("time", pd.DatetimeIndex(["2013-01-01", "2014-01-01"])),
+                WINDOW_START: ("time", pd.DatetimeIndex(["2012-01-01", "2013-01-01"])),
+                WINDOW_END: ("time", pd.DatetimeIndex(["2013-01-01", "2014-01-01"])),
             },
         )
         windows = windows_from_time_bounds(observed)
@@ -278,7 +283,9 @@ class TestWindowBuilders:
     def test_the_real_annual_product_carries_bounds(self):
         constraints = pytest.importorskip("sipnet_calibration.constraints")
         try:
-            wood = constraints.constraint_fields("landtrendr_aboveground_biomass", sites=[3851])["landtrendr_aboveground_biomass"]
+            wood = constraints.constraint_fields(["landtrendr_aboveground_biomass"], sites=[3851])[
+                "landtrendr_aboveground_biomass"
+            ]
         except FileNotFoundError as error:
             pytest.skip(str(error))
         windows = windows_from_time_bounds(wood)
@@ -289,7 +296,7 @@ class TestWindowBuilders:
         array = niwot["wood_carbon"]
         window = run_window(array)
         assert len(window) == 1
-        assert window[0].left == pd.Timestamp(array[TIME_STEP_START].values[0])
+        assert window[0].left == pd.Timestamp(array[TIMESTEP_START].values[0])
         assert window[0].right == pd.Timestamp(array["time"].values[-1])
         reduced = reduce_windows(array, window, "mean")
         assert reduced.shape == (1,) and np.isfinite(reduced.values[0])
@@ -355,10 +362,10 @@ class TestWindowReductionValues:
     def test_the_window_start_is_the_earliest_step_start(self, membership):
         array, windows, member = membership
         reduced = reduce_windows(array, windows, "last")
-        starts = array[TIME_STEP_START].values
+        starts = array[TIMESTEP_START].values
         for k in range(len(windows)):
             if (member == k).any():
-                assert reduced[TIME_STEP_START].values[k] == starts[member == k].min()
+                assert reduced[TIMESTEP_START].values[k] == starts[member == k].min()
 
     def test_window_counts_do_not_count_a_gap(self, niwot):
         array = niwot["wood_carbon"].copy()
@@ -395,7 +402,7 @@ class TestLabelClockAndFrequencyRefusals:
     def test_a_label_at_the_start_of_a_step_after_a_gap_is_outside(self, niwot):
         array = niwot["wood_carbon"]
         gapped = array.isel(time=[i for i in range(array.sizes["time"]) if i != 10])
-        starts = pd.DatetimeIndex(array[TIME_STEP_START].values)
+        starts = pd.DatetimeIndex(array[TIMESTEP_START].values)
         ends = pd.DatetimeIndex(array["time"].values)
         # the label equals step 11's start and step 10's end; step 10 is gone, so nothing contains it
         with pytest.raises(ValueError, match="fall in no timestep"):
@@ -422,7 +429,7 @@ class TestLabelClockAndFrequencyRefusals:
         array = niwot["wood_carbon"]
         coarse = array.assign_coords(
             time=array["time"].values.astype("datetime64[us]"),
-            time_step_start=("time", array[TIME_STEP_START].values.astype("datetime64[us]")),
+            time_step_start=("time", array[TIMESTEP_START].values.astype("datetime64[us]")),
         )
         end0 = pd.Timestamp(array["time"].values[0])
         picked = select_timestep_at(coarse, pd.DatetimeIndex([end0 + pd.Timedelta("500ns")]))
@@ -442,7 +449,7 @@ class TestPaddedStacks:
     def test_reduce_windows_ignores_the_padding_of_a_selected_site(self, padded, niwot):
         array = niwot["wood_carbon"]
         short = padded.sel(site=2)
-        assert np.isnat(short[TIME_STEP_START].values).any()
+        assert np.isnat(short[TIMESTEP_START].values).any()
         windows = _daily_windows(array)
         reduced = reduce_windows(short, windows, "last")
         expected = reduce_windows(array.isel(time=slice(0, 40)), windows, "last")
@@ -459,14 +466,16 @@ class TestPaddedStacks:
 
 class TestBoundsOrientation:
     def test_the_bounds_coordinates_are_start_then_end(self):
-        from sipnet_calibration.constraints import _time_bounds_coords
+        from sipnet_calibration.constraints import _window_coords
 
         times = pd.DatetimeIndex(["2012-01-01", "2013-01-01"])
         bounds = np.array([[t, t + pd.Timedelta("366D")] for t in times]).astype("datetime64[ns]")
         dataset = xr.Dataset(coords={"time": times, "time_bounds": (("time", "bounds"), bounds)})
-        coords = _time_bounds_coords(dataset)
-        np.testing.assert_array_equal(coords[TIME_BOUNDS_START].values, times.values.astype("datetime64[ns]"))
-        assert (coords[TIME_BOUNDS_END].values > coords[TIME_BOUNDS_START].values).all()
+        coords = _window_coords(dataset)
+        np.testing.assert_array_equal(
+            coords[WINDOW_START].values, times.values.astype("datetime64[ns]")
+        )
+        assert (coords[WINDOW_END].values > coords[WINDOW_START].values).all()
 
     def test_reversed_bounds_are_refused(self):
         observed = xr.DataArray(
@@ -475,8 +484,8 @@ class TestBoundsOrientation:
             coords={
                 "site": [1],
                 "time": pd.DatetimeIndex(["2012-01-01"]),
-                TIME_BOUNDS_START: ("time", pd.DatetimeIndex(["2013-01-01"])),
-                TIME_BOUNDS_END: ("time", pd.DatetimeIndex(["2012-01-01"])),
+                WINDOW_START: ("time", pd.DatetimeIndex(["2013-01-01"])),
+                WINDOW_END: ("time", pd.DatetimeIndex(["2012-01-01"])),
             },
         )
         with pytest.raises(ValueError, match="must follow its start"):
@@ -491,7 +500,7 @@ class TestEveryFunctionChecksTheStack:
         full = niwot["wood_carbon"].assign_coords(site=1)
         short = niwot["wood_carbon"].isel(time=slice(0, 40)).assign_coords(site=2)
         stacked = xr.concat([full, short], dim="site", join="outer", coords="different", compat="equals", combine_attrs="override")
-        assert stacked[TIME_STEP_START].dims == ("site", "time")
+        assert stacked[TIMESTEP_START].dims == ("site", "time")
         return stacked
 
     def test_run_window_refuses_it(self, per_site):
@@ -520,27 +529,39 @@ class TestCombinedLengthsAreExact:
         ends = pd.date_range("2001-01-01T01:00", periods=n, freq="1h").as_unit("ns")
         length = np.full(n, 3_600 * 10**9 + 1, dtype="int64").view("timedelta64[ns]")  # 1 h + 1 ns
         return xr.DataArray(
-            np.ones(n), dims="time",
-            coords={"time": ends, TIME_STEP_START: ("time", (ends - pd.Timedelta("1h")).values), TIME_STEP_LENGTH: ("time", length)},
-            attrs={"kind": "timestep_total", "units": "g m-2"}, name="x",
+            np.ones(n),
+            dims="time",
+            coords={
+                "time": ends,
+                TIMESTEP_START: ("time", (ends - pd.Timedelta("1h")).values),
+                TIMESTEP_LENGTH: ("time", length),
+            },
+            attrs={"kind": "timestep_total", "units": "g m-2"},
+            name="x",
         ), int(length.astype("int64").sum())
 
     def test_a_yearly_cell(self, year):
         field, exact = year
-        assert int(aggregate_time(field, "YS")[TIME_STEP_LENGTH].values.astype("int64")[0]) == exact
+        assert int(aggregate_time(field, "YS")[TIMESTEP_LENGTH].values.astype("int64")[0]) == exact
 
     def test_a_run_window(self, year):
         field, exact = year
         reduced = reduce_windows(field, run_window(field), "sum")
-        assert int(reduced[TIME_STEP_LENGTH].values.astype("int64")[0]) == exact
+        assert int(reduced[TIMESTEP_LENGTH].values.astype("int64")[0]) == exact
 
 
 class TestWindowAndLabelRefusals:
     @staticmethod
     def bounded(start, end):
         return xr.DataArray(
-            [[1.0]], dims=("site", "time"),
-            coords={"site": [1], "time": pd.DatetimeIndex(["2012-01-01"]), TIME_BOUNDS_START: ("time", start), TIME_BOUNDS_END: ("time", end)},
+            [[1.0]],
+            dims=("site", "time"),
+            coords={
+                "site": [1],
+                "time": pd.DatetimeIndex(["2012-01-01"]),
+                WINDOW_START: ("time", start),
+                WINDOW_END: ("time", end),
+            },
             name="annual",
         )
 
@@ -650,7 +671,7 @@ class TestWindowAttributesAreLiterallyTrue:
     def test_a_weighted_window_mean_says_so(self, niwot):
         array = niwot["soil_wetness_fraction"]
         reduced = reduce_windows(array, _daily_windows(array), "mean")
-        assert reduced.attrs["reduction"].endswith(f"weighted by {TIME_STEP_LENGTH}")
+        assert reduced.attrs["reduction"].endswith(f"weighted by {TIMESTEP_LENGTH}")
 
 
 class TestValuedRowsWithoutAnIntervalAreRefused:
@@ -659,9 +680,9 @@ class TestValuedRowsWithoutAnIntervalAreRefused:
     @pytest.fixture
     def valued(self, niwot):
         array = niwot["wood_carbon"]
-        start = array[TIME_STEP_START].values.copy()
+        start = array[TIMESTEP_START].values.copy()
         start[5] = np.datetime64("NaT")
-        return array.assign_coords({TIME_STEP_START: ("time", start, array[TIME_STEP_START].attrs)})
+        return array.assign_coords({TIMESTEP_START: ("time", start, array[TIMESTEP_START].attrs)})
 
     def test_every_reader_refuses_it(self, valued, niwot):
         windows = _daily_windows(niwot["wood_carbon"])
@@ -691,18 +712,21 @@ class TestCheckRunSpansTheWindows:
         from sipnet_calibration.fields import stack_model_outputs
 
         run = niwot[["wood_carbon"]]
-        table = pd.DataFrame({"site_id": [1, 2], "lon": [0.0, 1.0], "lat": [0.0, 1.0]})
+        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
         stacked = stack_model_outputs({(1, 0): run, (2, 0): run.isel(time=slice(0, 40))}, site_table=table)
         one = stacked.sel(site=2, member=0)["wood_carbon"]
-        assert np.isnat(one[TIME_STEP_START].values).any()
-        start, end = pd.Timestamp(one[TIME_STEP_START].values[0]), pd.Timestamp(niwot["time"].values[50])
+        assert np.isnat(one[TIMESTEP_START].values).any()
+        start, end = (
+            pd.Timestamp(one[TIMESTEP_START].values[0]),
+            pd.Timestamp(niwot["time"].values[50]),
+        )
         windows = pd.IntervalIndex.from_arrays([start], [end], closed="right")
         with pytest.raises(ValueError, match="reaches beyond the model record"):
             check_run_spans_the_windows(one, windows, "x")
         check_run_spans_the_windows(one, pd.IntervalIndex.from_arrays([start], [pd.Timestamp(niwot["time"].values[39])], closed="right"), "x")
 
     def test_a_field_without_interval_coordinates_is_refused_naming_the_reader(self, niwot):
-        bare = niwot["wood_carbon"].drop_vars([TIME_STEP_START, TIME_STEP_LENGTH])
+        bare = niwot["wood_carbon"].drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
         windows = pd.IntervalIndex.from_arrays([bare["time"].values[0]], [bare["time"].values[5]], closed="right")
         with pytest.raises(ValueError, match="^ReduceOverTimeBounds on 'w' reads the interval"):
             check_run_spans_the_windows(bare, windows, "ReduceOverTimeBounds on 'w'")
@@ -760,8 +784,8 @@ class TestWindowEdgesAndLabels:
 
     def test_overlapping_steps_are_refused_by_select_timestep_at(self, niwot):
         array = niwot["wood_carbon"]
-        start = array[TIME_STEP_START].values.copy()
+        start = array[TIMESTEP_START].values.copy()
         start[5] = start[4]  # step 5 now also covers step 4's interval
-        overlapping = array.assign_coords({TIME_STEP_START: ("time", start)})
+        overlapping = array.assign_coords({TIMESTEP_START: ("time", start)})
         with pytest.raises(ValueError, match="overlap"):
             select_timestep_at(overlapping, pd.DatetimeIndex(array["time"].values[[5]]))

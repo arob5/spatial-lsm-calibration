@@ -53,6 +53,8 @@ the per-file checks in the library.
 Output is written to a ``.partial`` path and renamed only once it reads back
 bit-identical through ``read_raw``, so a failed run cannot leave a corrupt
 file where the tracked one belongs.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -74,7 +76,6 @@ at the rectangle check without a site table, by design)::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from collections import Counter
 from concurrent.futures import ProcessPoolExecutor
@@ -84,6 +85,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from sipnet_calibration.conventions import SITE
 from sipnet_calibration.initial_conditions import (
     SOURCE,
     SourceFile,
@@ -94,7 +96,13 @@ from sipnet_calibration.initial_conditions import (
     read_raw,
     read_source_directory,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.io import file_md5, write_checked
+from sipnet_calibration.sites import (
+    check_sites_are_the_site_table,
+    default_sites_path,
+    load_sites,
+)
+from sipnet_calibration.validation import range_summary
 
 SCRIPT = "scripts/raw_sources/convert_initial_conditions.py"
 
@@ -135,9 +143,9 @@ def main(argv: list[str] | None = None) -> int:
         dataset = build_raw(files, source_root=str(root), conversion_script=SCRIPT)
         report = describe_raw(dataset, files)
         write_raw(dataset, out)
-        print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {_md5(out)})")
+        print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {file_md5(out)})")
         print(report)
-    except (ConversionError, OSError, ValueError, BrokenProcessPool) as error:
+    except (ConversionError, OSError, ValueError, KeyError, BrokenProcessPool) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
@@ -225,53 +233,31 @@ def read_all_files(root: Path, sites: list[int], *, jobs: int) -> list[SourceFil
 
 def write_raw(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    try:
-        dataset.to_netcdf(partial, engine="h5netcdf", encoding=raw_encoding(dataset))
-        check_round_trip(dataset, partial)
-        partial.replace(out)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=raw_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial),
+    )
 
 
 def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
     """The run report: what provenance.md records."""
     lines = [
-        f"sites {dataset.sizes['site']}  members {dataset.sizes['member']}  files {len(files)}",
+        f"sites {dataset.sizes[SITE]}  members {dataset.sizes['member']}  files {len(files)}",
         "variable                       sites   min          median       max          negative",
     ]
     for name in SOURCE.names:
         values = dataset[name].values
         present = np.isfinite(values)
         finite = values[present]
-        lines.append(f"{name:30s} {int(present.any(axis=1).sum()):5d}   {_range(finite)}")
+        lines.append(f"{name:30s} {int(present.any(axis=1).sum()):5d}   {range_summary(finite)}")
     signatures = Counter(tuple(sorted(record.values)) for record in files)
     lines.append("variable sets:")
     for signature, count in signatures.most_common():
         lines.append(f"  {count:7d} files: {list(signature)}")
     return "\n".join(lines)
-
-
-# ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def _range(finite: np.ndarray) -> str:
-    """min, median, max and the negative count, or dashes for a variable absent everywhere."""
-    if finite.size == 0:
-        return f"{'-':<12s} {'-':<12s} {'-':<12s} -"
-    return (
-        f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
-        f"{int((finite < 0).sum())}"
-    )
-
-
-def _md5(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -287,21 +273,21 @@ def check_site_directories_are_the_pool(
     the command line has to exist.
     """
     if not sites_path.exists():
-        if explicit:
-            raise ConversionError(f"site table {sites_path} does not exist")
+        check_a_named_site_table_exists(sites_path, explicit=explicit)
         print(f"note: {sites_path} absent; the pool check is left to the ingest", flush=True)
         return
-    pool = load_sites(sites_path)["site_id"].to_numpy(np.int64)
-    found = np.asarray(sites, dtype=np.int64)
-    if np.array_equal(found, np.sort(pool)):
-        return
-    missing = sorted(set(pool.tolist()) - set(sites))[:10]
-    extra = sorted(set(sites) - set(pool.tolist()))[:10]
-    raise ConversionError(
-        f"site directories are not the site table's pool: {len(set(pool.tolist()) - set(sites))} "
-        f"pool sites have no directory (first {missing}); {len(set(sites) - set(pool.tolist()))} "
-        f"directories are not in the pool (first {extra})"
+    check_sites_are_the_site_table(
+        load_sites(sites_path), sites, message_name="the site directories"
     )
+
+
+def check_a_named_site_table_exists(sites_path: Path, *, explicit: bool) -> None:
+    """A site table named on the command line exists."""
+    if explicit and not sites_path.exists():
+        raise ConversionError(
+            f"site table {sites_path} does not exist; build it with scripts/ingest_sites.py "
+            "or name another with --sites."
+        )
 
 
 def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:

@@ -32,9 +32,9 @@ from pysipnet.parameters.base import ParameterDomain
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import niwot_parameters
-
+from conftest import niwot_parameters, site_table_of
 from sipnet_calibration import parameter_vector as module
+from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
 from sipnet_calibration.parameter_vector import (
     ALLOCATION,
     DOMAIN_CHECK_CORNERS,
@@ -212,7 +212,7 @@ def test_simplex_map_writes_all_but_the_residual():
 
 def test_identity_map_shorthand():
     parameter = CalibrationParameter(
-        name="x", prior=log_normal(median=1.0, geometric_sd=2.0),
+        name="w", prior=log_normal(median=1.0, geometric_sd=2.0),
         sipnet_map="wood_turnover_rate", provenance="test",
     )
     assert isinstance(parameter.sipnet_map, Identity)
@@ -356,9 +356,15 @@ def test_calibration_parameter_refuses_unusable_priors_and_sipnet_maps():
 
 
 def test_parameter_vector_refuses_bad_sites_and_site_labels():
-    with pytest.raises(TypeError, match="site ids must be integers"):
+    with pytest.raises(TypeError, match="float"):
         build((rate(),), sites=(1.5, 27.0, 4711.0))
-    assert build((rate(),), sites=np.array([1.0, 27.0, 4711.0])).sites == SITES
+    with pytest.raises(TypeError, match="float"):
+        build((rate(),), sites=np.array([1.0, 27.0, 4711.0]))
+    with pytest.raises(TypeError, match="must be an integer"):
+        build((rate(),), sites=("1", 27, 4711))
+    assert build((rate(),), sites=np.array([1, 27, 4711])).sites == SITES
+    assert build((rate(),), sites=jnp.array([1, 27, 4711])).sites == SITES
+    assert build((rate(),), sites=xr.DataArray([1, 27, 4711], dims="site")).sites == SITES
     with pytest.raises(TypeError, match="sequence of one label per site"):
         build((rate(varies_by="pft"),), site_labels={"pft": "abc"})
     assert build((rate(varies_by="pft"),), site_labels={"pft": np.array(PFT)}).group_labels("pft") == ("conifer", "deciduous")
@@ -431,7 +437,7 @@ def test_in_domain_predicates_at_the_boundaries():
         assert not in_domain(domain, np.array([np.inf]))
     with pytest.raises(ValueError, match="finite and positive"):
         log_normal(median=np.inf, geometric_sd=2.0)
-    with pytest.raises(ValueError, match="ascending"):
+    with pytest.raises(ValueError, match="more than once"):
         build((rate(),), sites=(1, 1, 27), site_labels={"pft": PFT})
 
 
@@ -562,6 +568,22 @@ def test_log_prior_includes_the_jacobian_parameter_by_parameter(example, theta):
             assert unconstrained_lp == pytest.approx(natural_lp + log_det, rel=1e-6, abs=1e-6), (
                 parameter.name
             )
+
+
+def test_log_prior_and_unpack_take_a_list_of_tracers_under_jit(example, theta):
+    """One vector given as a list of JAX scalars is read as one vector under jit."""
+    one = theta[0]
+    as_list = lambda a: [a[i] for i in range(example.dimension)]  # noqa: E731
+    expected = example.log_prior(one)
+    np.testing.assert_allclose(jax.jit(lambda a: example.log_prior(as_list(a)))(one), expected)
+    assert jax.jit(lambda a: example.log_prior(as_list(a)))(one).shape == ()
+    unpacked = jax.jit(lambda a: example.layout.unpack(as_list(a)))(one)
+    assert all(part.ndim == 2 for part in unpacked.values())
+
+
+def test_fields_take_a_list_of_jax_scalars_as_one_vector(example, theta):
+    fields = example.fields([theta[0, i] for i in range(example.dimension)])
+    assert "member" not in fields.dims
 
 
 def test_log_prior_is_the_sum_over_parameters_and_jit_compiles(example, theta):
@@ -852,13 +874,35 @@ def test_fields_data_model(example, theta):
     assert per_pft.dims == ("member", "pft")
 
 
+@pytest.mark.parametrize(
+    "classes",
+    [[1, 2, 1], np.array([1, 2, 1]), pd.Categorical([1, 2, 1])],
+    ids=["list", "numpy", "categorical"],
+)
+def test_select_by_site_labels_takes_integer_classes(classes):
+    vector = example_parameter_vector(sites=[1, 27, 4000], pft=classes)
+    assert vector.select(labels={"pft": [1]}).sites == (1, 4000)
+    assert vector.select(labels={"pft": np.array([2])}).sites == (27,)
+    with pytest.raises(TypeError, match="one value 1"):
+        vector.select(labels={"pft": np.int64(1)})
+
+
+@pytest.mark.parametrize("site_id", [0, -3, 2**31], ids=["zero", "negative", "past int32"])
+def test_a_site_table_whose_site_id_is_not_a_site_id_is_refused(site_id):
+    table = site_table_of(1, 27)
+    # Kept ascending, so the refusal is of the id itself, not of the order.
+    table["site_id"] = np.array([site_id, 27] if site_id < 1 else [1, site_id], dtype=np.int64)
+    with pytest.raises(ValueError, match=r"site_id\[\d\] must be a site id from 1 to 2147483647"):
+        example_parameter_vector(sites=table, pft=PFT[:2])
+
+
 def test_fields_carry_lon_lat_from_a_site_table():
-    table = pd.DataFrame({"site_id": [1, 27, 4711], "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]})
+    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
     vector = example_parameter_vector(sites=table, pft=PFT)
     fields = vector.fields(vector.sample(jax.random.key(0), n=2))
     np.testing.assert_allclose(fields["lon"], [-24.6, -78.6, -107.3])
-    assert fields["lat"].attrs == {"standard_name": "latitude", "units": "degrees_north"}
-    assert fields["lon"].attrs == {"standard_name": "longitude", "units": "degrees_east"}
+    assert fields["lat"].attrs == dict(LAT_ATTRIBUTES)
+    assert fields["lon"].attrs == dict(LON_ATTRIBUTES)
     assert list(vector.site_table.columns) == ["site_id", "lon", "lat", "pft"]
     assert list(vector.site_table["pft"].cat.categories) == ["conifer", "deciduous"]
     np.testing.assert_allclose(vector.sipnet_table(vector.sample(jax.random.key(1), n=2))["lat"], [82.5, 80.6, 44.0])
@@ -868,12 +912,20 @@ def test_fields_carry_lon_lat_from_a_site_table():
     # A table out of site order would misalign positional inputs, so it is refused.
     with pytest.raises(ValueError, match="ascending site_id order"):
         example_parameter_vector(sites=table.iloc[[2, 0, 1]], pft=PFT)
-    with pytest.raises(ValueError, match="but not both"):
+    with pytest.raises(ValueError, match=r"no \['lat'\] column"):
         example_parameter_vector(sites=table.drop(columns="lat"), pft=PFT)
     with pytest.raises(ValueError, match="non-finite lon/lat"):
         example_parameter_vector(sites=table.assign(lon=[np.nan, 0.0, 0.0]), pft=PFT)
-    with pytest.raises(ValueError, match="needs a 'site_id' column"):
+    with pytest.raises(ValueError, match="no 'site_id' column or index"):
         example_parameter_vector(sites=table.drop(columns="site_id"), pft=PFT)
+    with pytest.raises(TypeError, match="site_id must hold integers"):
+        example_parameter_vector(sites=table.astype({"site_id": float}), pft=PFT)
+    with pytest.raises(ValueError, match="more than once"):
+        example_parameter_vector(sites=table.iloc[[0, 0, 1]], pft=PFT)
+    keyed = example_parameter_vector(sites=table.set_index("site_id"), pft=PFT)
+    assert keyed.sites == SITES
+    only_ids = example_parameter_vector(sites=table[["site_id"]], pft=PFT)
+    assert "lon" not in only_ids.site_table.columns
 
 
 def test_flat_refuses_what_no_flat_vector_can_be(example, theta):
@@ -1028,7 +1080,9 @@ def test_select_by_parameters_keeps_layout_order_and_the_fixed(example):
     assert small.parameter_names == ("allocation", "initial_soil_carbon")
     assert small.dimension == 3 * 2 + 3
     assert [f.name for f in small.fixed] == [f.name for f in example.fixed]
-    assert small.select(parameters="allocation").parameter_names == ("allocation",)
+    assert small.select(parameters=["allocation"]).parameter_names == ("allocation",)
+    with pytest.raises(TypeError, match="one string 'allocation'"):
+        small.select(parameters="allocation")
     with pytest.raises(KeyError, match="no calibration parameters \\['nope'\\]"):
         example.select(parameters=("nope",))
 
@@ -1053,19 +1107,21 @@ def test_select_by_sites_slices_per_site_priors_and_moves_draws_across():
 
 
 def test_select_by_labels_intersects_with_sites_and_refuses_the_unknown(example):
-    deciduous = example.select(labels={"pft": "deciduous"})
+    deciduous = example.select(labels={"pft": ["deciduous"]})
     assert deciduous.sites == (1, 4711)
     assert deciduous.group_labels("pft") == ("deciduous",)
     assert example.select(labels={"pft": ["conifer", "deciduous"]}).sites == example.sites
-    assert example.select(sites=(1, 27), labels={"pft": "deciduous"}).sites == (1,)
+    assert example.select(sites=(1, 27), labels={"pft": ["deciduous"]}).sites == (1,)
+    with pytest.raises(TypeError, match="one string 'deciduous'"):
+        example.select(labels={"pft": "deciduous"})
     with pytest.raises(KeyError, match="not classes of site labels 'pft'"):
-        example.select(labels={"pft": "grassland"})
+        example.select(labels={"pft": ["grassland"]})
     with pytest.raises(KeyError, match="no site labels 'landcover'"):
-        example.select(labels={"landcover": 1})
+        example.select(labels={"landcover": [1]})
     with pytest.raises(KeyError, match="sites \\[99\\] are not in this vector"):
         example.select(sites=(1, 99))
     with pytest.raises(ValueError, match="no site of this vector"):
-        example.select(sites=(27,), labels={"pft": "deciduous"})
+        example.select(sites=(27,), labels={"pft": ["deciduous"]})
 
 
 # ── site-labels products ─────────────────────────────────────────────────────
@@ -1375,11 +1431,21 @@ def test_fixed_parameters_hold_numbers_and_their_own_mapping():
         ParameterVector(parameters=(rate(),), fixed=(rate(name="q"),), sites=(1,))
 
 
-def test_select_takes_one_site_and_array_like_classes(example):
-    assert example.select(sites=27).sites == (27,)
-    assert example.select(sites=np.int64(27)).sites == (27,)
+def test_select_takes_array_like_sites_and_classes(example):
+    assert example.select(sites=np.array([27])).sites == (27,)
+    assert example.select(sites=jnp.array([4711, 1])).sites == (1, 4711)
+    theta = example.sample(jax.random.key(0), n=2)
+    assert example.select(sites=example.fields(theta)["site"][:2]).sites == (1, 27)
     assert example.select(labels={"pft": np.array(["deciduous"])}).sites == (1, 4711)
     assert example.select(labels={"pft": pd.Index(["conifer", "deciduous"])}).sites == SITES
+
+
+def test_select_refuses_what_is_not_a_sequence_of_distinct_site_ids(example):
+    with pytest.raises(ValueError, match="more than once"):
+        example.select(sites=(1, 1))
+    for sites in (27, np.int64(27), (27.5,), (27.0,), (True,), {1, 27}, "27"):
+        with pytest.raises(TypeError, match="sites"):
+            example.select(sites=sites)
 
 
 # ── coverage the mutation tests asked for ────────────────────────────────────
@@ -1492,9 +1558,12 @@ def test_construction_refusals_the_suite_did_not_reach():
         ParameterVector(parameters=(rate(),), sites=(1,)).fields(jnp.zeros((2**15 + 1, 1)))
     with pytest.raises(ValueError, match="is reserved"):
         rate(name="site")
-    for name in ("lon", "lat", "site_id"):
+    for name in ("lon", "lat", "site_id", "sample", "point", "x", "y"):
         with pytest.raises(ValueError, match="reserved"):
             ParameterVector(parameters=(rate(),), sites=SITES, site_labels={name: PFT})
+    for name in ("sample", "point", "x", "y", "lon", "lat"):
+        with pytest.raises(ValueError, match="is reserved"):
+            rate(name=name)
 
 
 def test_repr_of_a_one_site_vector_with_nothing_fixed():
@@ -1566,6 +1635,89 @@ def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels()
     grouped = turnover.groupby("pft")
     assert (grouped.max("site") == grouped.min("site")).all()
 
-    wetland = vector.select(labels={"pft": "Permanent_Wetlands"})
+    wetland = vector.select(labels={"pft": ["Permanent_Wetlands"]})
     assert wetland.dimension == 1
     assert set(wetland.sites) == set(by_site.index[by_site == "Permanent_Wetlands"])
+
+
+# ── the vector cannot change after its checks, and pickles ───────────────────
+
+
+def _frozen_candidate(sites=SITES) -> ParameterVector:
+    """A vector whose priors all round-trip through pickle, with a per-class
+    fixed value, the mapping that once made the vector unpicklable."""
+    return ParameterVector(
+        parameters=(rate(varies_by="pft"),),
+        fixed=(FixedParameter(
+            name="leaf_carbon_fraction", value={"conifer": 0.4, "deciduous": 0.5},
+            varies_by="pft", provenance="test",
+        ),),
+        sites=sites, site_labels={"pft": PFT},
+    )
+
+
+def test_a_vector_with_a_per_class_fixed_value_pickles_and_round_trips():
+    import copy
+    import pickle
+
+    vector = _frozen_candidate()
+    theta = vector.sample(jax.random.key(0), n=3)
+    for restored in (pickle.loads(pickle.dumps(vector)), copy.deepcopy(vector)):
+        assert restored.fields(theta).identical(vector.fields(theta))
+        assert restored.sipnet_table(theta).identical(vector.sipnet_table(theta))
+        assert dict(restored.fixed[0].value) == {"conifer": 0.4, "deciduous": 0.5}
+
+
+def test_a_vector_with_a_transformed_distribution_prior_does_not_unpickle():
+    """What the module Notes say: the limit is TFP's, not the vector's."""
+    import pickle
+
+    vector = example_parameter_vector(SITES, pft=PFT)
+    with pytest.raises(TypeError):
+        pickle.loads(pickle.dumps(vector))
+
+
+def test_site_labels_and_a_fixed_mapping_cannot_be_changed():
+    vector = _frozen_candidate()
+    with pytest.raises(TypeError):
+        vector.site_labels["pft"] = ("conifer",) * 3
+    with pytest.raises(TypeError):
+        vector.fixed[0].value["conifer"] = 0.9
+    assert vector.site_labels["pft"] == PFT
+
+
+def test_the_vector_keeps_its_own_copy_of_the_site_tables_lon_lat():
+    table = pd.DataFrame(
+        {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
+    )
+    vector = _frozen_candidate(sites=table)
+    table.loc[0, "lon"] = 0.0
+    table["lat"] = np.zeros(3)
+    np.testing.assert_array_equal(vector.site_table["lon"], [-24.6, -78.6, -107.3])
+    np.testing.assert_array_equal(vector.site_table["lat"], [82.5, 80.6, 44.0])
+
+
+def test_the_kept_lon_lat_are_read_only_and_what_fields_hands_out_is_writable():
+    table = pd.DataFrame(
+        {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
+    )
+    vector = _frozen_candidate(sites=table)
+    lon, lat = vector._lon_lat
+    assert not lon.flags.writeable and not lat.flags.writeable
+    with pytest.raises(ValueError):
+        lon[0] = 0.0
+    fields = vector.fields(vector.sample(jax.random.key(0), n=2))
+    fields["lon"].values[0] = 5.0
+    np.testing.assert_array_equal(vector.site_table["lon"], [-24.6, -78.6, -107.3])
+
+
+def test_site_labels_is_a_dict_to_pandas():
+    vector = _frozen_candidate()
+    assert pd.DataFrame(vector.site_labels).shape == (len(SITES), 1)
+
+
+def test_a_per_class_fixed_parameter_compares_and_hashes_by_identity():
+    first = _frozen_candidate().fixed[0]
+    second = dataclasses.replace(first)
+    assert first == first and first != second
+    assert len({first, second}) == 2

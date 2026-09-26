@@ -11,7 +11,7 @@ to be drawn, and writes them into the package as the file
 
 Input data
 ----------
-``--raw-dir``, default ``data/raw/natural_earth/``
+``--raw-dir``, default the repository's ``data/raw/natural_earth/``
     The zipped Natural Earth 1:50m shapefiles that
     ``scripts/raw_sources/download_natural_earth.py`` downloads, read in place
     with ``pyshp``. Polyline layers are read as lines and the lakes' polygons as
@@ -22,7 +22,8 @@ Output data
 ``--out``, default :func:`~sipnet_calibration.plotting.basemap.basemap_path`
     The basemap, in the layout of :mod:`sipnet_calibration.plotting.basemap`'s
     data model, tracked in git. Written to a ``.partial`` path, read back
-    through the library loader, and renamed only if that round trip matches.
+    through the library loader, and renamed only if that round trip matches;
+    a failed check keeps the ``.partial`` file and prints its path.
 
 Notes
 -----
@@ -41,13 +42,13 @@ Usage
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 
 import numpy as np
 import shapefile
 
+from sipnet_calibration.io import file_md5, write_checked
 from sipnet_calibration.plotting.basemap import (
     BASEMAP_LAYERS,
     basemap_path,
@@ -56,7 +57,10 @@ from sipnet_calibration.plotting.basemap import (
     write_basemap,
 )
 
-DEFAULT_RAW_DIR = Path("data/raw/natural_earth")
+#: Where the tracked Natural Earth archives are: in this repository, whatever
+#: ``$SIPNET_CALIBRATION_DATA`` says, since a tracked input is found from the
+#: checkout rather than from the storage-backed data root.
+DEFAULT_RAW_DIR = Path(__file__).resolve().parents[1] / "data" / "raw" / "natural_earth"
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -104,7 +108,7 @@ def build(raw_dir: Path) -> tuple[dict[str, list[np.ndarray]], dict[str, str]]:
         archive = raw_dir / layer.source_file
         check_archive_exists(archive)
         parts[name] = read_layer(archive)
-        source_md5[name] = hashlib.md5(archive.read_bytes()).hexdigest()
+        source_md5[name] = file_md5(archive)
     return parts, source_md5
 
 
@@ -124,15 +128,11 @@ def read_layer(archive: Path) -> list[np.ndarray]:
 
 def write(parts: dict[str, list[np.ndarray]], source_md5: dict[str, str], out: Path) -> None:
     """Write through a partial path, and rename only once the file reads back."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_name(out.name + ".partial")
-    try:
-        write_basemap(parts, source_md5, partial)
-        check_round_trip(parts, partial)
-    except BaseException:
-        partial.unlink(missing_ok=True)
-        raise
-    partial.replace(out)
+    write_checked(
+        out,
+        write=lambda partial: write_basemap(parts, source_md5, partial),
+        check=lambda partial: check_round_trip(parts, partial),
+    )
 
 
 def report(parts: dict[str, list[np.ndarray]], out: Path) -> str:

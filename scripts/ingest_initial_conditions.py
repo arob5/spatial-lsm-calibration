@@ -55,6 +55,8 @@ how PEcAn built the wood pool, and a break means the source changed.
 
 Output is written to a ``.partial`` path and renamed only once it reads back
 bit-identical through the library loader.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -74,11 +76,12 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from sipnet_calibration.conventions import LAT, LON, SITE
 from sipnet_calibration.initial_conditions import (
     INITIAL_CONDITIONS,
     MEMBER,
-    SITE,
     SOURCE,
+    SOURCE_MEMBER,
     build_initial_conditions,
     default_product_path,
     describe,
@@ -87,7 +90,13 @@ from sipnet_calibration.initial_conditions import (
     raw_path,
     read_raw,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.io import write_checked
+from sipnet_calibration.sites import (
+    check_sites_are_the_site_table,
+    default_sites_path,
+    load_sites,
+)
+from sipnet_calibration.validation import range_summary
 
 
 class IngestError(Exception):
@@ -155,21 +164,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def check_raw(raw: xr.Dataset, sites: pd.DataFrame) -> None:
     """Every check on the raw file beyond the schema ``read_raw`` enforces."""
     check_every_source_variable_has_a_spec()
-    check_sites_are_the_site_table_pool(raw, sites)
+    check_sites_are_the_site_table(
+        sites, raw[SITE].values.tolist(), message_name="the raw file's sites"
+    )
     check_members_are_contiguous_from_one(raw)
     check_wood_is_biomass_minus_leaf(raw)
 
 
 def write_product(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    try:
-        dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
-        check_round_trip(dataset, partial)
-        partial.replace(out)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial),
+    )
 
 
 def describe_product(dataset: xr.Dataset, out: Path) -> str:
@@ -186,19 +196,9 @@ def describe_product(dataset: xr.Dataset, out: Path) -> str:
         finite = values[present]
         lines.append(
             f"{spec.name:35s} {spec.units:9s} {int(present.any(axis=0).sum()):5d}   "
-            + _range(finite)
+            + range_summary(finite)
         )
     return "\n".join(lines)
-
-
-def _range(finite: np.ndarray) -> str:
-    """min, median, max and the negative count, or dashes for a variable absent everywhere."""
-    if finite.size == 0:
-        return f"{'-':<12s} {'-':<12s} {'-':<12s} -"
-    return (
-        f"{finite.min():<12.6g} {np.median(finite):<12.6g} {finite.max():<12.6g} "
-        f"{int((finite < 0).sum())}"
-    )
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -212,20 +212,6 @@ def check_every_source_variable_has_a_spec() -> None:
             f"specs cover {sorted(specified)} but the source variables are "
             f"{sorted(SOURCE.names)}; a variable without a spec would be dropped silently"
         )
-
-
-def check_sites_are_the_site_table_pool(raw: xr.Dataset, sites: pd.DataFrame) -> None:
-    """Raise unless the raw file's sites are exactly the site table's pool."""
-    pool = np.sort(sites["site_id"].to_numpy(np.int64))
-    found = raw[SITE].values.astype(np.int64)
-    if np.array_equal(found, pool):
-        return
-    missing = sorted(set(pool.tolist()) - set(found.tolist()))
-    extra = sorted(set(found.tolist()) - set(pool.tolist()))
-    raise IngestError(
-        f"raw file sites are not the site table's pool: {len(missing)} pool sites absent "
-        f"(first {missing[:10]}), {len(extra)} sites not in the pool (first {extra[:10]})"
-    )
 
 
 def check_members_are_contiguous_from_one(raw: xr.Dataset) -> None:
@@ -267,7 +253,7 @@ def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
                 raise IngestError(f"{spec.name} did not round-trip bit for bit through {partial}")
             if dict(read_back[spec.name].attrs) != dict(dataset[spec.name].attrs):
                 raise IngestError(f"{spec.name}'s attributes changed on the way to disk")
-        for coordinate in (MEMBER, "source_member", SITE, "lon", "lat"):
+        for coordinate in (MEMBER, SOURCE_MEMBER, SITE, LON, LAT):
             if not np.array_equal(dataset[coordinate].values, read_back[coordinate].values):
                 raise IngestError(f"{coordinate} did not round-trip through {partial}")
 

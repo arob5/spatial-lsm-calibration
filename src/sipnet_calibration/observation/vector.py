@@ -122,7 +122,6 @@ Usage
 
 from __future__ import annotations
 
-import numbers
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import chain
@@ -133,6 +132,7 @@ import pandas as pd
 import xarray as xr
 from pysipnet.units import convert_dataarray_units, validate_units
 
+from sipnet_calibration.conventions import SITE, TIME
 from sipnet_calibration.fields import missing_labels
 from sipnet_calibration.observation.operators import (
     ObservationOperator,
@@ -140,12 +140,17 @@ from sipnet_calibration.observation.operators import (
     check_operator_declares_names,
     check_result_is_on_the_observation_grid,
 )
+from sipnet_calibration.validation import (
+    as_batched_flat,
+    as_names,
+    as_site_id,
+    as_site_ids,
+    is_one_vector,
+)
 
 __all__ = ["INDEX_LEVELS", "Observation", "ObservationVector"]
 
-SITE = "site"
 MEMBER = "member"
-TIME = "time"
 PRODUCT = "product"
 
 #: The levels of :attr:`ObservationVector.index`, in order.
@@ -351,7 +356,7 @@ class ObservationVector:
         self,
         *,
         product_names: Sequence[str] | None = None,
-        sites: Iterable[int] | int | None = None,
+        sites: Iterable[int] | None = None,
         time: slice | None = None,
     ) -> ObservationVector:
         """A sub-vector over some products, sites and a time slice.
@@ -359,12 +364,12 @@ class ObservationVector:
         Parameters
         ----------
         product_names:
-            The products to keep, in the order the sub-vector takes them; one
-            name is accepted for a list of one. Defaults to every product.
+            The products to keep, a sequence, in the order the sub-vector
+            takes them. Defaults to every product.
         sites:
-            The sites to keep, as integer site ids; one id is accepted, and
-            any iterable, which is read once. Sites the vector does not
-            observe are ignored. Defaults to every site.
+            The sites to keep, a sequence of site ids, which is read once.
+            Sites the vector does not observe are ignored. Defaults to every
+            site.
         time:
             A slice of ``time`` labels, such as ``slice("2012", "2024")``. It
             does not apply to a static product.
@@ -380,17 +385,18 @@ class ObservationVector:
         Raises
         ------
         TypeError
-            If *time* is not a slice, or a site id is a boolean, a string or
+            If *time* is not a slice; if *product_names* or *sites* is one
+            value, a string or a set; or if a site id is a boolean, a float or
             not a number.
         KeyError
             If a product name is not held.
         ValueError
-            If a site id is not a whole number, or the selection leaves no
-            observed cell.
+            If a site id is out of range, a site is named twice, *sites* is a
+            two-dimensional array, or the selection leaves no observed cell.
         """
-        if isinstance(product_names, str):
-            product_names = [product_names]
-        wanted_sites = None if sites is None else _site_ids(sites)
+        if product_names is not None:
+            product_names = as_names(product_names, message_name="product_names")
+        wanted_sites = None if sites is None else list(as_site_ids(sites, message_name="sites"))
         check_time_is_a_slice(time)
         chosen = self._observations
         if product_names is not None:
@@ -420,15 +426,17 @@ class ObservationVector:
         Raises
         ------
         TypeError
-            If *site* is a boolean, a string or not a number.
+            If *site* is a boolean, a float, a string or not a number.
         ValueError
-            If *site* is not a whole number.
+            If *site* is not a site id, from 1 to the largest ``int32``.
         KeyError
             If *product_name* is not held.
         """
         mask = np.ones(self.dimension, dtype=bool)
         if site is not None:
-            mask &= self._index.get_level_values(SITE).values == _site_id(site)
+            mask &= self._index.get_level_values(SITE).values == as_site_id(
+                site, message_name="site"
+            )
         if product_name is not None:
             check_product_names_are_held([product_name], self.product_names)
             mask &= self._index.get_level_values(PRODUCT).values == product_name
@@ -496,17 +504,25 @@ class ObservationVector:
 
         Raises
         ------
+        TypeError
+            If *flat_values* is not a rectangular array of real numbers.
         ValueError
             If *flat_values* is not one- or two-dimensional, does not have
             ``N`` entries per row, or has more rows than an ``int16`` can
             label from ``0``.
         """
-        block, squeeze = _as_block(flat_values, self.dimension)
+        batched = np.asarray(
+            as_batched_flat(flat_values, self.dimension, message_name="flat_values")
+        )
+        was_one_vector = is_one_vector(flat_values)
+        check_block_is_members_by_cells(batched)
         out: dict[str, xr.DataArray] = {}
         for observation in self._observations:
             positions = self.positions(product_name=observation.product_name)
-            array = _unstacked(observation, block[:, positions], self._index[positions])
-            out[observation.product_name] = array.isel({MEMBER: 0}, drop=True) if squeeze else array
+            array = _unstacked(observation, batched[:, positions], self._index[positions])
+            out[observation.product_name] = (
+                array.isel({MEMBER: 0}, drop=True) if was_one_vector else array
+            )
         return out
 
     # ── prediction ────────────────────────────────────────────────────────────
@@ -604,23 +620,6 @@ def _union(groups: Iterable[Sequence[str]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(chain.from_iterable(groups)))
 
 
-def _site_ids(sites: Any) -> list[int]:
-    """*sites*, one site id or an iterable of them, as plain integers."""
-    if isinstance(sites, np.ndarray):
-        items = list(sites.ravel())
-    elif isinstance(sites, (str, bytes)) or not isinstance(sites, Iterable):
-        items = [sites]
-    else:
-        items = list(sites)
-    return [_site_id(site) for site in items]
-
-
-def _site_id(site: Any) -> int:
-    """One site id as a plain integer."""
-    check_site_id_is_an_integer(site)
-    return int(site)
-
-
 def _selected(
     observation: Observation, sites: list[int] | None, time: slice | None
 ) -> Observation | None:
@@ -652,16 +651,6 @@ def _build_index(observations: Sequence[Observation]) -> pd.MultiIndex:
         [table[SITE].to_numpy(), table[PRODUCT].to_numpy(), table[TIME].to_numpy()],
         names=INDEX_LEVELS,
     )
-
-
-def _as_block(flat_values: Any, dimension: int) -> tuple[np.ndarray, bool]:
-    """*flat_values* as a ``(J, N)`` block, and whether it was ``(N,)``."""
-    block = np.asarray(flat_values, dtype=np.float64)
-    squeeze = block.ndim == 1
-    if squeeze:
-        block = block[None, :]
-    check_block_is_members_by_cells(block, dimension)
-    return block, squeeze
 
 
 def _unstacked(
@@ -801,11 +790,11 @@ def check_values_are_a_field(values: Any, message_name: str) -> None:
     if SITE not in values.coords:
         raise ValueError(
             f"{message_name}: values carry no site coordinate; label the rows with the "
-            "1-8000 site ids."
+            "site ids of the site table."
         )
     if values[SITE].dtype.kind not in "iu":
         raise ValueError(
-            f"{message_name}: site labels must be integers (the 1-8000 site ids), got dtype "
+            f"{message_name}: site labels must be integers (the site ids), got dtype "
             f"{values[SITE].dtype}; cast them with .astype(int) if they are whole numbers."
         )
     if values.indexes[SITE].has_duplicates:
@@ -925,30 +914,7 @@ def check_time_is_a_slice(time: Any) -> None:
         )
 
 
-def check_site_id_is_an_integer(site: Any) -> None:
-    if isinstance(site, (bool, np.bool_)) or not isinstance(site, numbers.Real):
-        raise TypeError(
-            f"a site id must be an integer (the 1-8000 site ids), got {site!r} of type "
-            f"{type(site).__name__}; pass e.g. 27 or [1, 27]."
-        )
-    if not np.isfinite(site) or int(site) != site:
-        raise ValueError(
-            f"a site id must be a whole number (the 1-8000 site ids), got {site!r}; pass "
-            "the integer id."
-        )
-
-
-def check_block_is_members_by_cells(block: np.ndarray, dimension: int) -> None:
-    if block.ndim != 2:
-        raise ValueError(
-            f"flat_values must be (N,) or (J, N), got shape {block.shape}; flatten each "
-            "member's predictions with ObservationVector.flat."
-        )
-    if block.shape[1] != dimension:
-        raise ValueError(
-            f"flat_values has {block.shape[1]} entries per row and the vector {dimension}; "
-            "flatten with this vector, or select the vector the block was made with."
-        )
+def check_block_is_members_by_cells(block: np.ndarray) -> None:
     largest = np.iinfo(np.int16).max
     if block.shape[0] - 1 > largest:
         raise ValueError(

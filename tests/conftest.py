@@ -12,20 +12,37 @@ The synthetic fixtures build fields at each subset of the
 ``time``, ``lon``/``lat`` as non-dimension coordinates on ``site``, and
 ``units``/``long_name`` in ``attrs``.
 
-The real-data fixtures read the driver files and the constraint products
-present in this working copy, and skip when they are not there. The local
-driver files carry the drifting hour column of ``data/README.md`` Note 15,
-which pySIPNET refuses, so the driver fixtures read them with that one column
-rewritten to regular 3-hourly labels; every value is the file's own. The SIPNET
-output fixtures read the Niwot reference data pySIPNET ships inside the
-package, so they need neither a pySIPNET checkout nor a binary; the one that
-runs the model skips without a binary, which ``pysipnet install-sipnet``
-provides.
+The in-memory builders make what several test files need: a site table
+(:func:`site_table_of`, and the :func:`site_table` fixture that hands it
+out), a stack of Niwot runs (:func:`niwot_stack_of`), observed values that are
+dated, static or attributed to windows (:func:`dated_observation`,
+:func:`static_observation`, :func:`windowed_observation`), and a stand-in
+SIPNET model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
+every figure a test makes is closed after it (:func:`close_figures`).
+
+The real-data fixtures read the driver files, the site table and the
+constraint products present in this working copy, found through
+:func:`sipnet_calibration.conventions.data_root`, and skip when they are not
+there; a tracked input is found from :data:`REPOSITORY` instead, since it is
+always in the checkout. The local driver files carry the drifting hour column
+of ``data/README.md`` Note 15, which pySIPNET refuses, so the driver fixtures
+read them with that one column rewritten to regular 3-hourly labels; every
+value is the file's own. The SIPNET output fixtures read the Niwot reference
+data pySIPNET ships inside the package, so they need neither a pySIPNET
+checkout nor a binary; the one that runs the model skips without a binary,
+which ``pysipnet install-sipnet`` provides.
 """
 
 from __future__ import annotations
 
+import functools
+import importlib.util
+import subprocess
+import sys
 import warnings
+from collections.abc import Sequence
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import matplotlib
 
@@ -36,10 +53,46 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 import xarray as xr  # noqa: E402
-
-from pathlib import Path  # noqa: E402
+from pydantic import BaseModel, Field  # noqa: E402
+from pysipnet.model import SIPNETModel  # noqa: E402
+from pysipnet.runner import SIPNETRunError  # noqa: E402
 
 from sipnet_calibration import conventions  # noqa: E402
+
+#: The repository root, which the scripts are found under, since they are not
+#: importable modules. Data is never found from here; it is under
+#: :func:`sipnet_calibration.conventions.data_root`.
+REPOSITORY = Path(__file__).resolve().parents[1]
+
+
+def load_script(path: str) -> ModuleType:
+    """Import a script by its path from the repository root.
+
+    Parameters
+    ----------
+    path:
+        Such as ``"scripts/ingest_sites.py"``.
+
+    Returns
+    -------
+    types.ModuleType
+        The script as a module, registered in ``sys.modules`` under its file
+        stem, so a dataclass or a pickle can find its classes.
+    """
+    location = REPOSITORY / path
+    spec = importlib.util.spec_from_file_location(location.stem, location)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[location.stem] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(autouse=True)
+def close_figures():
+    """Close every figure a test made, however it ends."""
+    yield
+    plt.close("all")
+
 
 #: The variable the synthetic fields stand in for, with the units and long
 #: name a real driver field carries from pySIPNET's climate registry.
@@ -113,10 +166,9 @@ def make_field(
 
 @pytest.fixture
 def ax():
-    """A fresh ``Axes``, with its figure closed afterwards."""
-    figure, axes = plt.subplots()
-    yield axes
-    plt.close(figure)
+    """A fresh ``Axes``; :func:`close_figures` closes its figure afterwards."""
+    _, axes = plt.subplots()
+    return axes
 
 
 @pytest.fixture
@@ -219,19 +271,14 @@ def regular_drivers_root(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="session")
-def real_drivers(regular_drivers_root) -> xr.Dataset:
+def real_drivers(regular_drivers_root, real_site_table) -> xr.Dataset:
     """The local drivers for sites 1 and 27 by members 1, 2 and 5.
 
     Only three of the six pairs have a file, so the Dataset is half missing
     and ``driver_present`` says where.
     """
     from sipnet_calibration import drivers
-    from sipnet_calibration.sites import load_sites
 
-    try:
-        sites = load_sites()
-    except FileNotFoundError as error:
-        pytest.skip(f"site table not available in this working copy: {error}")
     with warnings.catch_warnings():
         # The files hold exact zeros of vpd where SIPNET clamps, which pySIPNET
         # warns about on read; a property of the files, not of any test.
@@ -240,7 +287,7 @@ def real_drivers(regular_drivers_root) -> xr.Dataset:
             [1, 27],
             members=[1, 2, 5],
             root=regular_drivers_root,
-            sites_table=sites,
+            sites_table=real_site_table,
             allow_missing=True,
         )
 
@@ -294,7 +341,7 @@ SITE_1_DAYS = 8
 
 
 @pytest.fixture(scope="session")
-def sites_table():
+def real_site_table():
     """The real site table, or a skip when the ingest has not been run here.
 
     Anything that labels a field with a ``site`` reaches for this, directly or
@@ -391,4 +438,287 @@ def niwot_parameters():
             name: SIPNETParameters.model_fields[name].annotation(**values)
             for name, values in groups.items()
         }
+    )
+
+
+# ── in-memory site tables ─────────────────────────────────────────────────────
+
+
+def site_table_of(
+    *site_ids: int,
+    lon: float | Sequence[float] | None = None,
+    lat: float | Sequence[float] | None = None,
+    keyed: bool = False,
+) -> pd.DataFrame:
+    """A site table holding only what a lookup reads: ``site_id``, ``lon``, ``lat``.
+
+    Parameters
+    ----------
+    site_ids:
+        The sites, in the table's row order.
+    lon, lat:
+        One value for every site, or one per site. By default each site gets
+        its own, ``-100 - site / 100`` and ``40 + site / 100``, so two sites
+        can be told apart by their coordinates.
+    keyed:
+        Whether to key the table on ``site_id``, as
+        :func:`sipnet_calibration.sites.site_lookup` does.
+    """
+    ids = np.asarray(site_ids, dtype=conventions.SITE_DTYPE)
+    lon = -100.0 - ids / 100 if lon is None else np.broadcast_to(np.asarray(lon, float), ids.shape)
+    lat = 40.0 + ids / 100 if lat is None else np.broadcast_to(np.asarray(lat, float), ids.shape)
+    table = pd.DataFrame({conventions.SITE_ID: ids, conventions.LON: lon, conventions.LAT: lat})
+    return table.set_index(conventions.SITE_ID, drop=False) if keyed else table
+
+
+def write_site_table_csv(
+    path: Path,
+    site_ids: Sequence[int],
+    *,
+    lon: Sequence[float],
+    lat: Sequence[float],
+    landcover: Sequence[int] | None = None,
+) -> Path:
+    """Write a site table with every column of the schema, as the ingest does.
+
+    Parameters
+    ----------
+    path:
+        Where to write it; its directory is created.
+    site_ids, lon, lat:
+        The sites and their coordinates.
+    landcover:
+        The landcover class of each site; class 1 for every site by default.
+
+    Returns
+    -------
+    pathlib.Path
+        *path*, holding a table :func:`sipnet_calibration.sites.load_sites`
+        accepts.
+    """
+    from sipnet_calibration.sites import SITE_COLUMNS
+
+    n = len(site_ids)
+    frame = pd.DataFrame(
+        {
+            conventions.SITE_ID: np.array(site_ids, dtype=conventions.SITE_DTYPE),
+            conventions.LON: list(lon),
+            conventions.LAT: list(lat),
+            "lon_index": np.arange(n, dtype=np.int32) + 1000,
+            "lat_index": np.arange(n, dtype=np.int32) + 2000,
+            "site_name": [f"site {site}" for site in site_ids],
+            "site_order": np.zeros(n, dtype=np.int32),
+            "cluster": np.ones(n, dtype=np.int8),
+            "landcover": np.ones(n, dtype=np.int8)
+            if landcover is None
+            else np.array(landcover, dtype=np.int8),
+            "ameriflux_site_id": [""] * n,
+        }
+    )
+    assert tuple(frame.columns) == SITE_COLUMNS
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+    return path
+
+
+# ── Niwot runs ────────────────────────────────────────────────────────────────
+
+
+@functools.cache
+def niwot_reference():
+    """pySIPNET's Niwot reference output, read once."""
+    from pysipnet import niwot_reference_output
+
+    return niwot_reference_output()
+
+
+def niwot_stack_of(
+    output_variable_names: Sequence[str],
+    *,
+    sites: Sequence[int] = (1, 2),
+    n_members: int = 2,
+    lengths: dict[int, int] | None = None,
+) -> xr.Dataset:
+    """A stack of Niwot runs on ``(member, site, time)``, told apart by known factors.
+
+    Parameters
+    ----------
+    output_variable_names:
+        The variables each run carries.
+    sites:
+        The site of each run; the site at position ``i`` is the Niwot output
+        times ``1 + i / 2``.
+    n_members:
+        How many members; member ``j`` is the site's run times ``0.5 ** j``.
+    lengths:
+        The number of timesteps of a site's record, by site, where it is
+        shorter than the Niwot record; the stack pads it with ``NaN``.
+
+    Returns
+    -------
+    xarray.Dataset
+        What :func:`sipnet_calibration.fields.stack_model_outputs` makes of
+        the runs, with ``lon``/``lat`` from :func:`site_table_of`.
+    """
+    from sipnet_calibration.fields import stack_model_outputs
+
+    base = niwot_reference().select(list(output_variable_names))
+    lengths = lengths or {}
+    runs = {}
+    for position, site in enumerate(sites):
+        record = base.isel(time=slice(0, lengths[site])) if site in lengths else base
+        for member in range(n_members):
+            factor = (1 + position / 2) * 0.5**member
+            runs[(site, member)] = record.map(_scaled_keeping_attributes, factor=factor)
+    return stack_model_outputs(runs, site_table=site_table_of(*sites))
+
+
+def _scaled_keeping_attributes(variable: xr.DataArray, *, factor: float) -> xr.DataArray:
+    scaled = variable * factor
+    scaled.attrs = dict(variable.attrs)
+    return scaled
+
+
+# ── observed values ───────────────────────────────────────────────────────────
+
+
+def dated_observation(
+    sites: Sequence[int],
+    times: Sequence,
+    *,
+    values: np.ndarray | None = None,
+    units: str = "m2 m-2",
+    constituent: str = "",
+    name: str = "modis_leaf_area_index",
+) -> xr.DataArray:
+    """Observed values on ``(site, time)``: ones, unless *values* are given."""
+    times = pd.DatetimeIndex(times)
+    data = np.ones((len(sites), len(times))) if values is None else np.asarray(values, float)
+    return xr.DataArray(
+        data,
+        dims=(conventions.SITE, conventions.TIME),
+        coords={conventions.SITE: list(sites), conventions.TIME: times},
+        attrs=_observation_attributes(units, constituent),
+        name=name,
+    )
+
+
+def static_observation(
+    sites: Sequence[int],
+    *,
+    values: np.ndarray | None = None,
+    units: str = "Mg ha-1",
+    constituent: str = "C",
+    name: str = "soilgrids_soil_organic_carbon",
+) -> xr.DataArray:
+    """Observed values on ``(site,)``, with no time: ones, unless *values* are given."""
+    data = np.ones(len(sites)) if values is None else np.asarray(values, float)
+    return xr.DataArray(
+        data,
+        dims=conventions.SITE,
+        coords={conventions.SITE: list(sites)},
+        attrs=_observation_attributes(units, constituent),
+        name=name,
+    )
+
+
+def windowed_observation(
+    sites: Sequence[int],
+    times: Sequence,
+    *,
+    window_length: str = "1D",
+    **keywords,
+) -> xr.DataArray:
+    """:func:`dated_observation`, each value attributed to the window ending at its label.
+
+    The window edges are the coordinates
+    :data:`sipnet_calibration.conventions.WINDOW_START` and
+    :data:`~sipnet_calibration.conventions.WINDOW_END` on ``time``, as the
+    constraints' reader writes them; each window is *window_length* long.
+    """
+    observed = dated_observation(sites, times, **keywords)
+    ends = pd.DatetimeIndex(observed[conventions.TIME].values)
+    return observed.assign_coords(
+        {
+            conventions.WINDOW_START: (conventions.TIME, ends - pd.Timedelta(window_length)),
+            conventions.WINDOW_END: (conventions.TIME, ends),
+        }
+    )
+
+
+def _observation_attributes(units: str, constituent: str) -> dict[str, str]:
+    attrs = {"units": units}
+    if constituent:
+        attrs["constituent"] = constituent
+    return attrs
+
+
+# ── a stand-in SIPNET model ───────────────────────────────────────────────────
+
+#: The ``soil_carbon`` at which :class:`ScaledNiwot` leaves wood carbon as the
+#: Niwot output has it.
+SOIL_REFERENCE = 1.0e4
+
+#: :class:`ScaledNiwot` "fails at its parameters" past this rate, writes NaN
+#: in a band above it, times out in a band above that, has its parameters
+#: refused by pydantic at or below :data:`INVALID`, and "fails in the
+#: machinery" between :data:`INVALID` and zero.
+BLOW_UP = 1e6
+NAN_BAND = 2e6
+TIMEOUT_BAND = 3e6
+INVALID = -BLOW_UP
+
+
+class _PositiveRate(BaseModel):
+    """Stands in for pySIPNET's validation of a parameter's domain."""
+
+    rate: float = Field(gt=0)
+
+
+class ScaledNiwot(SIPNETModel):
+    """A SIPNETModel whose run is the Niwot output scaled by two parameters.
+
+    ``wood_carbon`` is multiplied by ``max_photosynthesis_rate / 10`` (which
+    the example vector shares across sites) and by ``soil_carbon /
+    SOIL_REFERENCE`` (which it varies by site), so which parameter values
+    reached which run can be read off the result, site by site. The run is as
+    long as its drivers, so which drivers reached which run shows too. The
+    rate also selects a failure, by the bands of :data:`BLOW_UP`. Defined at
+    module level so PyEns can pickle it.
+    """
+
+    def __call__(self, *, climate=None, events=None, **overrides):
+        from pysipnet.output import SIPNETOutput
+
+        rate = float(overrides["max_photosynthesis_rate"])
+        if rate <= INVALID:
+            _PositiveRate(rate=rate)
+        if rate < 0:
+            raise RuntimeError("the node died")
+        if rate > TIMEOUT_BAND:
+            raise subprocess.TimeoutExpired(cmd="sipnet", timeout=0.001)
+        if rate > BLOW_UP and rate <= NAN_BAND:
+            raise SIPNETRunError(
+                "SIPNET blew up", returncode=1, stdout="", stderr="", workdir=Path("/tmp")
+            )
+        n = climate.n_timesteps
+        frame = niwot_reference().pandas.iloc[:n].copy()
+        frame["wood_carbon"] = (
+            frame["wood_carbon"]
+            * (rate / 10.0)
+            * (float(overrides["soil_carbon"]) / SOIL_REFERENCE)
+        )
+        if rate > NAN_BAND:
+            frame.loc[frame.index[-5:], "wood_carbon"] = np.nan
+        return SimpleNamespace(outputs=SIPNETOutput.from_dataframe(frame, climate=climate))
+
+
+def scaled_niwot_model(model_class: type[ScaledNiwot] = ScaledNiwot) -> ScaledNiwot:
+    """*model_class* over the Niwot parameters, on a runner that needs no binary."""
+    from pysipnet.parameters.model import ModelFlags
+    from pysipnet.runner import SIPNETRunner
+
+    return model_class(
+        SIPNETRunner(flags=ModelFlags.standard(), verify_binary=False),
+        base_params=niwot_parameters(),
     )

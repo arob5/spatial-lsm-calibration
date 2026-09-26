@@ -228,12 +228,10 @@ Usage
 
 from __future__ import annotations
 
-from sipnet_calibration.conventions import CF_CONVENTIONS
 from sipnet_calibration.initial_conditions.names import (
     MEMBER,
     PRODUCT_FILE,
     RAW_FILE,
-    SITE,
     SOURCE_MEMBER,
     default_product_path,
     default_raw_dir,
@@ -268,18 +266,15 @@ from sipnet_calibration.initial_conditions.specs import (
     INITIAL_CONDITION_NAMES,
     INITIAL_CONDITIONS,
     InitialConditionSpec,
-    NAME_PATTERN,
     describe,
     resolve_initial_condition,
 )
 
 __all__ = [
-    # Names, paths and the shared metadata convention.
-    "CF_CONVENTIONS",
+    # Names and paths.
     "MEMBER",
     "PRODUCT_FILE",
     "RAW_FILE",
-    "SITE",
     "SOURCE_MEMBER",
     "default_product_path",
     "default_raw_dir",
@@ -296,7 +291,6 @@ __all__ = [
     "INITIAL_CONDITIONS",
     "INITIAL_CONDITION_NAMES",
     "InitialConditionSpec",
-    "NAME_PATTERN",
     "describe",
     "resolve_initial_condition",
     # Reading the source files.

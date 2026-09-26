@@ -18,14 +18,13 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from conftest import SITE_1_DRIVERS
 from pysipnet.resample import resample
 from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, VariableKind
 
+from conftest import SITE_1_DRIVERS, site_table_of
+from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES, TIMESTEP_LENGTH
 from sipnet_calibration.drivers import driver_fields, read_driver_file
 from sipnet_calibration.fields import (
-    STALE_TIME_ATTRIBUTE_NAMES,
-    TIME_STEP_LENGTH,
     from_sipnet_output,
     stack_sipnet_outputs,
 )
@@ -72,7 +71,7 @@ class TestAggregateTimeAgainstPysipnet:
     """The one implementation must not disagree with pySIPNET's own ``resample``."""
 
     def test_a_sum_matches_values_time_and_attributes(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         reference = resample(niwot_output.select(["nee"]), "1D", how="sum")[
             "net_ecosystem_exchange"
@@ -88,7 +87,7 @@ class TestAggregateTimeAgainstPysipnet:
         assert daily.attrs == reference.attrs
 
     def test_a_pool_taken_last_matches(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "wood_carbon")["wood_carbon"]
+        field = from_sipnet_output(niwot_output, ["wood_carbon"])["wood_carbon"]
         reference = resample(niwot_output.select(["wood_carbon"]), "1D", how="last")[
             "wood_carbon"
         ]
@@ -97,7 +96,7 @@ class TestAggregateTimeAgainstPysipnet:
         assert daily.attrs == reference.attrs
 
     def test_a_weighted_mean_matches(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
+        field = from_sipnet_output(niwot_output, ["soil_water"])["soil_water"]
         reference = resample(niwot_output.select(["soil_water"]), "1D", how="mean")[
             "soil_water"
         ]
@@ -106,7 +105,7 @@ class TestAggregateTimeAgainstPysipnet:
         assert daily.attrs == reference.attrs
 
     def test_a_refusal_is_pysipnets_own_words(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         with pytest.raises(ValueError) as ours:
             aggregate_time(field, "1D", how="mean")
         with pytest.raises(ValueError) as theirs:
@@ -117,14 +116,14 @@ class TestAggregateTimeAgainstPysipnet:
 
 class TestAggregateTimeChoosesTheMethod:
     def test_a_per_timestep_total_sums(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         assert daily.attrs["resampling"] == "sum of timestep_total values over 1D"
         assert daily.attrs["kind"] == "timestep_total"
         assert daily.attrs["cell_methods"] == "time: sum"
 
     def test_an_end_of_step_state_takes_its_last_value(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "wood_carbon")["wood_carbon"]
+        field = from_sipnet_output(niwot_output, ["wood_carbon"])["wood_carbon"]
         daily = aggregate_time(field, "1D")
         assert daily.attrs["resampling"] == "last of timestep_end_state values over 1D"
         assert daily.attrs["kind"] == "timestep_end_state"
@@ -134,11 +133,11 @@ class TestAggregateTimeChoosesTheMethod:
 
     def test_a_running_total_takes_its_last_value(self, niwot_output):
         name = "cumulative_net_ecosystem_exchange"
-        field = from_sipnet_output(niwot_output, name)[name]
+        field = from_sipnet_output(niwot_output, [name])[name]
         assert aggregate_time(field, "1D").attrs["kind"] == "cumulative"
 
     def test_the_mean_of_a_pool_is_asked_for_and_is_no_longer_a_pool(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
+        field = from_sipnet_output(niwot_output, ["soil_water"])["soil_water"]
         averaged = aggregate_time(field, "1D", how="mean")
         assert averaged.attrs["kind"] == "timestep_mean"
         assert averaged.attrs["cell_methods"] == "time: mean"
@@ -146,7 +145,7 @@ class TestAggregateTimeChoosesTheMethod:
 
     def test_a_mean_is_weighted_by_the_step_length(self, niwot_output):
         """Niwot's steps alternate day and night, so the weighting is visible."""
-        field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
+        field = from_sipnet_output(niwot_output, ["soil_water"])["soil_water"]
         days = field["time_step_length"].values.astype("timedelta64[s]").astype(float) / 86400
         assert days.min() < days.max()
 
@@ -166,12 +165,12 @@ class TestAggregateTimeChoosesTheMethod:
         assert not np.allclose(ours.values, unweighted.to_numpy())
 
     def test_an_unknown_method_is_refused(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         with pytest.raises(ValueError, match="(?i)unknown resampling method"):
             aggregate_time(field, "1D", how="median")
 
     def test_a_field_with_no_kind_must_be_told_how(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         anonymous = field.rename("observed_thing")
         anonymous.attrs = {"units": "g m-2", "long_name": "Something observed"}
         with pytest.raises(ValueError, match="carries no 'kind' attribute"):
@@ -184,7 +183,7 @@ class TestAggregateTimeChoosesTheMethod:
         assert aggregate_time(observed, "1D", how="sum").sizes["time"] > 0
 
     def test_a_nonsense_kind_is_refused(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         field.attrs["kind"] = "something_else"
         with pytest.raises(ValueError, match="which is not one of"):
             aggregate_time(field, "1D")
@@ -198,7 +197,7 @@ class TestAggregateTimeOnThreeHourlyOutput:
     """The eight-steps-a-day case, on this copy's real site-1 drivers."""
 
     def test_a_daily_total_is_the_sum_of_the_eight_three_hourly_values(self, site_1_result):
-        field = from_sipnet_output(site_1_result, "nee", site=1)["net_ecosystem_exchange"]
+        field = from_sipnet_output(site_1_result, ["nee"], site=1)["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
 
         raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
@@ -213,13 +212,13 @@ class TestAggregateTimeOnThreeHourlyOutput:
         assert (counts == 8).all()
 
     def test_a_daily_pool_is_its_value_at_the_last_of_the_eight_steps(self, site_1_result):
-        field = from_sipnet_output(site_1_result, "soil_water", site=1)["soil_water"]
+        field = from_sipnet_output(site_1_result, ["soil_water"], site=1)["soil_water"]
         daily = aggregate_time(field, "1D")
         raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
         assert np.allclose(daily.values, raw.groupby(raw.index.ceil("D")).last().to_numpy())
 
     def test_a_day_of_steps_covers_twenty_four_hours(self, site_1_result):
-        field = from_sipnet_output(site_1_result, "nee", site=1)["net_ecosystem_exchange"]
+        field = from_sipnet_output(site_1_result, ["nee"], site=1)["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         lengths = daily["time_step_length"].values
         assert (lengths == np.timedelta64(24, "h")).all()
@@ -227,39 +226,39 @@ class TestAggregateTimeOnThreeHourlyOutput:
         assert (spans == np.timedelta64(24, "h")).all()
 
     def test_the_site_label_and_its_coordinates_survive(self, site_1_result):
-        field = from_sipnet_output(site_1_result, "nee", site=1)["net_ecosystem_exchange"]
+        field = from_sipnet_output(site_1_result, ["nee"], site=1)["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         assert int(daily["site"]) == 1
         assert float(daily["lon"]) == pytest.approx(float(field["lon"]))
 
 
 class TestAggregateTimeOnEnsembles:
-    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, sites_table):
+    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, real_site_table):
         runs = {(site, member): niwot_output for site in (1, 27) for member in (0, 1)}
-        stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
+        stacked = stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(stacked, "1D")
         assert daily.dims == ("member", "site", "time")
         one = aggregate_time(
-            from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"], "1D"
+            from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"], "1D"
         )
         for site in (1, 27):
             for member in (0, 1):
                 assert np.allclose(daily.sel(site=site, member=member).values, one.values)
 
-    def test_lon_and_lat_survive_on_site(self, niwot_output, sites_table):
+    def test_lon_and_lat_survive_on_site(self, niwot_output, real_site_table):
         runs = {(site, 0): niwot_output for site in (1, 27)}
         daily = aggregate_time(
-            stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"], "1D"
+            stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"], "1D"
         )
         assert daily["lon"].dims == ("site",)
 
-    def test_per_site_interval_coordinates_are_refused(self, niwot_output, sites_table):
+    def test_per_site_interval_coordinates_are_refused(self, niwot_output, real_site_table):
         from pysipnet.output import SIPNETOutput
 
         short = SIPNETOutput.from_dataframe(
             niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
-        stacked = stack_sipnet_outputs({(1, 0): niwot_output, (27, 0): short}, "nee")[
+        stacked = stack_sipnet_outputs({(1, 0): niwot_output, (27, 0): short}, ["nee"])[
             "net_ecosystem_exchange"
         ]
         with pytest.raises(ValueError, match="different\ntime axes|different time axes"):
@@ -287,7 +286,7 @@ class TestAggregateTimeOnDrivers:
 
     def test_a_driver_mean_is_weighted_by_its_declared_step_lengths(self, real_drivers):
         tair = site_1_member_1(real_drivers, "air_temperature")
-        assert TIME_STEP_LENGTH in tair.coords
+        assert TIMESTEP_LENGTH in tair.coords
         daily = aggregate_time(tair, "1D")
         assert "weighted by" in daily.attrs["resampling"]
         raw = pd.Series(tair.values, index=pd.DatetimeIndex(tair["time"].values))
@@ -311,15 +310,15 @@ class TestAggregateTimeOnDrivers:
         assert daily.attrs["cell_methods"] == expected.attrs["cell_methods"]
 
     def test_unequal_steps_without_declared_lengths_refuse_a_mean(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
-        bare = field.drop_vars([TIME_STEP_LENGTH])
+        field = from_sipnet_output(niwot_output, ["soil_water"])["soil_water"]
+        bare = field.drop_vars([TIMESTEP_LENGTH])
         with pytest.raises(ValueError, match="not all the same length"):
             aggregate_time(bare, "1D", how="mean")
 
 
 class TestAggregateTimeKeepsGapsAndCells:
     def test_a_cell_holding_a_gap_is_missing(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         values = field.values.copy()
         values[3] = np.nan
         gappy = field.copy(data=values)
@@ -327,7 +326,7 @@ class TestAggregateTimeKeepsGapsAndCells:
         assert int(np.isnan(daily.values).sum()) == 1
 
     def test_cells_no_step_falls_in_are_dropped(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         ends = xr.concat(
             [field.isel(time=slice(0, 4)), field.isel(time=slice(-4, None))], "time"
         )
@@ -338,7 +337,7 @@ class TestAggregateTimeKeepsGapsAndCells:
         assert np.isfinite(daily.values).all()
 
     def test_a_daily_record_resampled_to_days_is_itself(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         again = aggregate_time(daily, "1D")
         assert np.allclose(again.values, daily.values)
@@ -348,7 +347,7 @@ class TestAggregateTimeKeepsGapsAndCells:
 class TestAggregatedFieldsPlot:
     def test_plot_time_series_accepts_the_result_unchanged(self, ax, niwot_output):
         plotting = pytest.importorskip("sipnet_calibration.plotting")
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         returned = plotting.plot_time_series(daily, ax=ax)
         assert returned is ax
@@ -359,24 +358,24 @@ class TestAggregatedFieldsPlot:
         assert ax.get_ylabel() == "Net ecosystem exchange (g m-2)"
         assert np.allclose(ax.lines[0].get_ydata(), daily.values)
 
-    def test_an_aggregated_ensemble_fans(self, ax, niwot_output, sites_table):
+    def test_an_aggregated_ensemble_fans(self, ax, niwot_output, real_site_table):
         plotting = pytest.importorskip("sipnet_calibration.plotting")
         runs = {(1, member): niwot_output for member in (0, 1, 2)}
-        stacked = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
+        stacked = stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"]
         plotting.plot_time_series(aggregate_time(stacked, "1D").sel(site=1), ax=ax)
         assert len(ax.collections) == 2
 
 
 class TestAggregatedTimeCoordinateDescribesItself:
     def test_the_model_axis_is_rebuilt_in_pysipnets_words(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         assert daily["time"].attrs["long_name"] == "End of timestep"
         assert daily["time"].attrs["standard_name"] == "time"
         assert daily["time_step_length"].attrs["source"].startswith("sum of the declared")
 
     def test_nothing_points_at_a_bounds_variable_that_cannot_be_carried(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         assert "bounds" in niwot_output.xarray["time"].attrs
         assert "bounds" not in aggregate_time(field, "1D")["time"].attrs
 
@@ -408,22 +407,22 @@ class TestAggregateTimeDropsAlignmentPadding:
         short = SIPNETOutput.from_dataframe(
             niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
-        return stack_sipnet_outputs({(1, 0): short, (27, 0): niwot_output}, "nee")[
+        return stack_sipnet_outputs({(1, 0): short, (27, 0): niwot_output}, ["nee"])[
             "net_ecosystem_exchange"
         ]
 
     def test_a_padded_timestamp_does_not_empty_the_cell_it_falls_in(
-        self, niwot_output, sites_table
+        self, niwot_output, real_site_table
     ):
         alone = aggregate_time(
-            from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"], "1D"
+            from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"], "1D"
         )
         together = aggregate_time(self.stacked(niwot_output).sel(site=27), "1D")
         assert not np.isnan(together.values).any()
         assert np.allclose(together.values, alone.values)
         assert np.array_equal(together["time"].values, alone["time"].values)
 
-    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output, sites_table):
+    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output, real_site_table):
         short_side = aggregate_time(self.stacked(niwot_output).sel(site=1), "1D")
         assert not np.isnan(short_side.values).any()
         assert short_side.sizes["time"] < 30
@@ -484,7 +483,7 @@ class TestAggregateTimeRefusesUnusableTime:
             aggregate_time(field, "1D")
 
     def test_an_empty_time_dimension_is_refused(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         with pytest.raises(ValueError, match="no timesteps left to aggregate"):
             aggregate_time(field.isel(time=slice(0, 0)), "1D")
 
@@ -502,7 +501,7 @@ class TestAggregateTimeLabelsCells:
         )
 
     def test_a_model_cell_is_labeled_at_the_last_step_end_it_holds(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         raw = pd.Series(field.values, index=pd.DatetimeIndex(field["time"].values))
         expected = raw.groupby(raw.index.ceil("D")).apply(lambda cell: cell.index.max())
@@ -514,7 +513,7 @@ class TestAggregateTimeKeepsEveryMethodNaNAware:
 
     @staticmethod
     def with_a_gap(niwot_output, name):
-        field = from_sipnet_output(niwot_output, name)[name]
+        field = from_sipnet_output(niwot_output, [name])[name]
         values = field.values.copy()
         values[3] = np.nan
         return field.copy(data=values)
@@ -535,15 +534,15 @@ class TestAggregateTimeKeepsEveryMethodNaNAware:
 class TestAggregateTimeKeepsTheVariablesIdentity:
     def test_the_name_survives_every_method(self, niwot_output):
         """A mean divides two arrays, which is where xarray drops the name."""
-        total = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        total = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         assert aggregate_time(total, "1D").name == "net_ecosystem_exchange"
-        pool = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
+        pool = from_sipnet_output(niwot_output, ["soil_water"])["soil_water"]
         assert aggregate_time(pool, "1D").name == "soil_water"
         assert aggregate_time(pool, "1D", how="mean").name == "soil_water"
 
     def test_a_field_stripped_of_attributes_is_recognized_by_its_name(self, niwot_output):
         """The registry fallback, for a field whose attrs were lost in transit."""
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         stripped = field.copy()
         stripped.attrs = {}
         daily = aggregate_time(stripped, "1D")
@@ -569,7 +568,7 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
         return steps
 
     def test_a_gap_before_the_last_step_makes_the_cell_missing(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "wood_carbon")["wood_carbon"]
+        field = from_sipnet_output(niwot_output, ["wood_carbon"])["wood_carbon"]
         clean = aggregate_time(field, "1D")
         gappy = field.copy(data=field.values.copy())
         gappy[self.second_day(field)[0]] = np.nan
@@ -581,7 +580,7 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
     def test_on_a_stack_only_the_gapped_site_is_missing(self, niwot_output):
         from sipnet_calibration.fields import stack_model_outputs
 
-        table = pd.DataFrame({"site_id": [1, 2], "lon": [0.0, 1.0], "lat": [0.0, 1.0]})
+        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
         run = niwot_output.select(["wood_carbon"])
         stacked = stack_model_outputs({(1, 0): run, (2, 0): run}, site_table=table)["wood_carbon"]
         values = stacked.values.copy()
@@ -592,7 +591,7 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
 
     def test_the_stated_default_is_what_is_masked(self, niwot_output):
         """A pool's default is last, so omitting how is the case that matters."""
-        field = from_sipnet_output(niwot_output, "soil_water")["soil_water"]
+        field = from_sipnet_output(niwot_output, ["soil_water"])["soil_water"]
         gappy = field.copy(data=field.values.copy())
         gappy[self.second_day(field)[0]] = np.nan
         assert np.isnan(aggregate_time(gappy, "1D").values[1])
@@ -600,7 +599,7 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
 
 class TestAggregationCountsLabelCellsAsTheAggregateDoes:
     def test_masking_the_aggregate_by_its_counts_keeps_every_cell(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
         counts = aggregation_counts(field, "1D")
         np.testing.assert_array_equal(counts["time"].values, daily["time"].values)
@@ -609,7 +608,7 @@ class TestAggregationCountsLabelCellsAsTheAggregateDoes:
         np.testing.assert_array_equal(kept.values, daily.values)
 
     def test_counts_are_how_many_steps_each_cell_holds(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         day = pd.Series(1, index=pd.DatetimeIndex(field["time"].values).ceil("D"))
         counts = aggregation_counts(field, "1D")
         np.testing.assert_array_equal(counts.values, day.groupby(level=0).size().to_numpy())
@@ -629,7 +628,7 @@ class TestAggregationCountsLabelCellsAsTheAggregateDoes:
 
 class TestAggregateTimeReadsAnAliasedName:
     def test_a_field_named_by_an_alias_and_without_a_kind_is_aggregated(self, niwot_output):
-        field = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        field = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         aliased = field.rename("nee")
         aliased.attrs = {key: value for key, value in field.attrs.items() if key != "kind"}
         daily = aggregate_time(aliased, "1D")
@@ -639,7 +638,7 @@ class TestAggregateTimeReadsAnAliasedName:
     def test_a_refusal_names_an_unnamed_fields_derivation(self, niwot_output):
         from pysipnet.arithmetic import divide_with_units, step_length
 
-        nee = from_sipnet_output(niwot_output, "nee")["net_ecosystem_exchange"]
+        nee = from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"]
         rate = divide_with_units(nee, step_length(nee, "d"))
         assert rate.name is None and rate.attrs.get("derivation")
         with pytest.raises(ValueError) as raised:

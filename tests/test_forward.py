@@ -2,27 +2,33 @@
 
 from __future__ import annotations
 
-import subprocess
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
 
 import jax
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from pydantic import BaseModel, Field
 from pyens import LocalBackend, SequentialBackend
 from pysipnet import niwot_reference_output
 from pysipnet.climate import ClimateDrivers
 from pysipnet.model import SIPNETModel
-from pysipnet.output import SIPNETOutput
 from pysipnet.parameters.model import ModelFlags
 from pysipnet.resample import STEP_LENGTH_RESAMPLED
-from pysipnet.runner import SIPNETRunError, SIPNETRunner
+from pysipnet.runner import SIPNETRunner
 
+from conftest import (
+    BLOW_UP,
+    INVALID,
+    NAN_BAND,
+    SOIL_REFERENCE,
+    TIMEOUT_BAND,
+    ScaledNiwot,
+    scaled_niwot_model,
+    site_table_of,
+)
 from sipnet_calibration.compute import scc_backend
 from sipnet_calibration.forward import ForwardEvaluation, ForwardModel
 from sipnet_calibration.observation import (
@@ -41,22 +47,7 @@ REFERENCE = niwot_reference_output()
 REFERENCE_WOOD = REFERENCE.select(["wood_carbon"])["wood_carbon"]
 SHORT_STEPS = 40  # site 27's drivers are cut to this many steps
 LABELS = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, 30]])
-SITE_TABLE = pd.DataFrame({"site_id": list(SITES), "lon": [-105.0, -70.0], "lat": [40.0, 45.0]})
-SOIL_REFERENCE = 1.0e4
-
-#: A run "fails at its parameters" past this rate, writes NaN in a band above it,
-#: times out in a band above that, has its parameters refused by pydantic at or
-#: below INVALID, and "fails in the machinery" between INVALID and zero.
-BLOW_UP = 1e6
-NAN_BAND = 2e6
-TIMEOUT_BAND = 3e6
-INVALID = -BLOW_UP
-
-
-class _PositiveRate(BaseModel):
-    """Stands in for pySIPNET's validation of a parameter's domain."""
-
-    rate: float = Field(gt=0)
+SITE_TABLE = site_table_of(*SITES, lon=[-105.0, -70.0], lat=[40.0, 45.0])
 
 
 class Foreign:
@@ -69,41 +60,6 @@ class Foreign:
             super().__init__(detail)
 
 
-class ScaledNiwot(SIPNETModel):
-    """A SIPNETModel whose run is the Niwot output scaled by two parameters.
-
-    ``wood_carbon`` is multiplied by ``max_photosynthesis_rate / 10`` (which
-    the example vector shares across sites) and by ``soil_carbon /
-    SOIL_REFERENCE`` (which it varies by site), so which parameter values
-    reached which run can be read off the result, site by site. The run is as
-    long as its drivers, so which drivers reached which run shows too.
-    Defined at module level so PyEns can pickle it.
-    """
-
-    def __call__(self, *, climate=None, events=None, **overrides):
-        rate = float(overrides["max_photosynthesis_rate"])
-        if rate <= INVALID:
-            _PositiveRate(rate=rate)
-        if rate < 0:
-            raise RuntimeError("the node died")
-        if rate > TIMEOUT_BAND:
-            raise subprocess.TimeoutExpired(cmd="sipnet", timeout=0.001)
-        if rate > BLOW_UP and rate <= NAN_BAND:
-            raise SIPNETRunError(
-                "SIPNET blew up", returncode=1, stdout="", stderr="", workdir=Path("/tmp")
-            )
-        n = climate.n_timesteps
-        frame = REFERENCE.pandas.iloc[:n].copy()
-        frame["wood_carbon"] = (
-            frame["wood_carbon"]
-            * (rate / 10.0)
-            * (float(overrides["soil_carbon"]) / SOIL_REFERENCE)
-        )
-        if rate > NAN_BAND:
-            frame.loc[frame.index[-5:], "wood_carbon"] = np.nan
-        return SimpleNamespace(outputs=SIPNETOutput.from_dataframe(frame, climate=climate))
-
-
 class ForeignNiwot(ScaledNiwot):
     """The stand-in, with the machinery failure raised as :class:`Foreign.TimeoutExpired`."""
 
@@ -111,15 +67,6 @@ class ForeignNiwot(ScaledNiwot):
         if INVALID < float(overrides["max_photosynthesis_rate"]) < 0:
             raise Foreign.TimeoutExpired(detail="the node died")
         return super().__call__(climate=climate, events=events, **overrides)
-
-
-def _stand_in(model_class=ScaledNiwot):
-    from conftest import niwot_parameters
-
-    return model_class(
-        SIPNETRunner(flags=ModelFlags.standard(), verify_binary=False),
-        base_params=niwot_parameters(),
-    )
 
 
 def _expected_wood(table, member, site, n_steps=None):
@@ -180,7 +127,7 @@ def observation_vector():
 @pytest.fixture
 def forward(parameter_vector, climate, observation_vector):
     return ForwardModel(
-        _stand_in(),
+        scaled_niwot_model(),
         parameter_vector,
         climate=climate,
         backend=SequentialBackend(),
@@ -260,7 +207,7 @@ class TestEvaluate:
     ):
         one_site = observation_vector.select(sites=[1])
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -283,7 +230,7 @@ class TestEvaluate:
         )
         assert sparse.positions(site=27).size == 0 and sparse.sites == (1,)
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -299,7 +246,7 @@ class TestEvaluate:
 
     def test_output_variable_aliases_become_registry_names(self, parameter_vector, climate):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -367,7 +314,7 @@ class TestEvaluate:
             [Observation("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
         )
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -390,7 +337,7 @@ class TestEvaluate:
         from sipnet_calibration.parameter_vector import sipnet_overrides
 
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -408,7 +355,7 @@ class TestEvaluate:
 class TestFailures:
     def _forward_with(self, parameter_vector, climate, observation_vector, rates, backend=None):
         return ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=backend or SequentialBackend(),
@@ -497,7 +444,7 @@ class TestFailures:
             [Observation("landtrendr_aboveground_biomass", wood, Infinite())]
         )
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -535,7 +482,7 @@ class TestFailures:
     ):
         """PyEns names it in full, which is not subprocess.TimeoutExpired."""
         forward = ForwardModel(
-            _stand_in(ForeignNiwot),
+            scaled_niwot_model(ForeignNiwot),
             parameter_vector,
             climate=files,
             backend=LocalBackend(n_workers=1),
@@ -551,7 +498,7 @@ class TestFailures:
 class TestPriorPredictive:
     def test_model_output_is_stacked_over_member_and_site(self, parameter_vector, climate, theta):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -580,7 +527,7 @@ class TestPriorPredictive:
         self, parameter_vector, climate, theta
     ):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -598,7 +545,7 @@ class TestPriorPredictive:
 
     def test_a_member_failing_at_every_site_keeps_its_slot(self, parameter_vector, climate, theta):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -621,7 +568,7 @@ class TestPriorPredictive:
 
     def test_call_needs_an_observation_vector(self, parameter_vector, climate, theta):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -633,7 +580,7 @@ class TestPriorPredictive:
 
     def test_freq_keeps_the_interval_coordinates(self, parameter_vector, climate, theta):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -659,7 +606,7 @@ class TestPriorPredictive:
     ):
         rates = {(member, position): 1.5 * BLOW_UP for member in range(3) for position in range(2)}
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -678,7 +625,7 @@ class TestPriorPredictive:
         self, parameter_vector, climate, theta
     ):
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -700,7 +647,7 @@ class TestPriorPredictive:
     ):
         rates = {(member, 1): 1.5 * BLOW_UP for member in range(3)}
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -719,7 +666,7 @@ class TestPriorPredictive:
             sites=located, pft=("temperate.deciduous", "boreal.coniferous")
         )
         forward = ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             backend=SequentialBackend(),
@@ -735,7 +682,7 @@ class TestRefusals:
         kwargs.setdefault("backend", SequentialBackend())
         kwargs.setdefault("site_table", SITE_TABLE)
         return ForwardModel(
-            _stand_in(),
+            scaled_niwot_model(),
             parameter_vector,
             climate=climate,
             observation_vector=observation_vector,
@@ -911,7 +858,7 @@ class TestRefusals:
             )
         with pytest.raises(TypeError, match="Backend"):
             ForwardModel(
-                _stand_in(),
+                scaled_niwot_model(),
                 parameter_vector,
                 climate=climate,
                 backend="local",
@@ -965,7 +912,6 @@ class TestRealSipnet:
         if find_binary() is None:
             pytest.skip(missing_binary_message())
         from conftest import niwot_parameters
-
         from sipnet_calibration.fields import label_run
         from sipnet_calibration.parameter_vector import sipnet_overrides
 
@@ -1078,3 +1024,21 @@ class TestSccBackend:
         assert (
             Path(scc_backend(walltime="00:10:00", work_dir=tmp_path, n_jobs=2).work_dir) == tmp_path
         )
+
+
+def test_an_evaluation_compares_and_hashes_by_identity():
+    """A generated ``==`` would compare arrays and raise; identity cannot."""
+    import dataclasses
+
+    evaluation = ForwardEvaluation(
+        theta=np.zeros((2, 3)),
+        sipnet_table=xr.Dataset(),
+        model_output=None,
+        predictions=np.zeros((2, 4)),
+        run_succeeded=xr.DataArray(np.ones((2, 1), dtype=bool), dims=("member", "site")),
+        failures=pd.DataFrame(),
+        valid=np.ones(2, dtype=bool),
+    )
+    copy = dataclasses.replace(evaluation)
+    assert evaluation == evaluation and evaluation != copy
+    assert len({evaluation, copy}) == 2

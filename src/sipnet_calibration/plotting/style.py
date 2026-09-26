@@ -47,6 +47,8 @@ from typing import Any
 import matplotlib
 import xarray as xr
 
+from sipnet_calibration.conventions import FrozenMapping
+
 __all__ = [
     "BAND_ALPHAS",
     "CATEGORY_COLORS",
@@ -63,17 +65,21 @@ __all__ = [
 #: asked for; :func:`role_style` selects from a value the part that applies to
 #: a given kind of element. No two roles share a line style and marker, so
 #: they stay apart in grayscale as well as in color.
-ROLES: dict[str, dict[str, Any]] = {
-    "prior": {"color": "#999999", "linestyle": "--", "linewidth": 1.0},
-    "posterior": {"color": "#0072B2", "linestyle": "-", "linewidth": 1.2},
-    "obs": {
-        "color": "#000000",
-        "linestyle": "none",
-        "marker": "o",
-        "markersize": 3.5,
-    },
-    "truth": {"color": "#D55E00", "linestyle": "-.", "linewidth": 1.4},
-}
+ROLES: FrozenMapping = FrozenMapping(
+    {
+        "prior": FrozenMapping({"color": "#999999", "linestyle": "--", "linewidth": 1.0}),
+        "posterior": FrozenMapping({"color": "#0072B2", "linestyle": "-", "linewidth": 1.2}),
+        "obs": FrozenMapping(
+            {
+                "color": "#000000",
+                "linestyle": "none",
+                "marker": "o",
+                "markersize": 3.5,
+            }
+        ),
+        "truth": FrozenMapping({"color": "#D55E00", "linestyle": "-.", "linewidth": 1.4}),
+    }
+)
 
 #: Colors for curves that have to be told apart from one another, such as one
 #: curve per site in a single panel. Cycled if there are more curves than
@@ -100,22 +106,25 @@ CATEGORY_COLORS: tuple[str, ...] = CURVE_COLORS + ("#000000",)
 BAND_ALPHAS: tuple[float, float] = (0.12, 0.35)
 
 #: The project's matplotlib settings, applied by :func:`use_project_style`.
-RC_PARAMS: dict[str, Any] = {
-    "figure.constrained_layout.use": True,
-    "figure.dpi": 110,
-    "savefig.dpi": 200,
-    "savefig.bbox": "tight",
-    "font.size": 9,
-    "axes.titlesize": 9,
-    "axes.labelsize": 9,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.prop_cycle": matplotlib.cycler(color=CURVE_COLORS),
-    "legend.frameon": False,
-    "legend.fontsize": 8,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-}
+RC_PARAMS: FrozenMapping = FrozenMapping(
+    {
+        "figure.constrained_layout.use": True,
+        "figure.dpi": 110,
+        "savefig.dpi": 200,
+        "savefig.bbox": "tight",
+        "font.size": 9,
+        "axes.titlesize": 9,
+        "axes.labelsize": 9,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.prop_cycle": matplotlib.cycler(color=CURVE_COLORS),
+        "legend.frameon": False,
+        "legend.fontsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+    }
+)
+
 
 
 def role_style(role: str, kind: str = "line", **overrides: Any) -> dict[str, Any]:
@@ -252,8 +261,10 @@ def axis_label(field: xr.DataArray) -> str:
 
 #: Which of a role's keywords apply to each kind of element. ``points`` also
 #: has ``linestyle`` forced to ``"none"``, which is not taken from the role.
-_KIND_KEYWORDS = {
-    "line": ("color", "linestyle", "linewidth"),
-    "band": ("color",),
-    "points": ("color", "marker", "markersize"),
-}
+_KIND_KEYWORDS = FrozenMapping(
+    {
+        "line": ("color", "linestyle", "linewidth"),
+        "band": ("color",),
+        "points": ("color", "marker", "markersize"),
+    }
+)

@@ -88,12 +88,16 @@ requested pair must exist, so the variable is not written.
 ======================= ================== ====================================
 Name                    Dims               Meaning
 ======================= ================== ====================================
-``member``              ``member``         0-based ``int16``, in ascending order
+``member``              ``member``         0-based ``int16``, ``0`` to
+                                           ``n - 1``
 ``source_member_index`` ``member``         the 1-based index in the directory
-                                           name
-``site``                ``site``           handed-down ``int32`` site id,
-                                           ascending
-``lon``, ``lat``        ``site``           from the site table, ``float64``
+                                           name, in the order the members
+                                           were asked for (ascending when
+                                           discovered)
+``site``                ``site``           ``int32`` site id, in the order
+                                           the sites were asked for
+``lon``, ``lat``        ``site``           from the site table, ``float64``,
+                                           with CF attributes
 ``time``                ``time``           ``datetime64[ns]``, the end of each
                                            step
 ``time_step_start``     ``time``           the start of each step
@@ -219,9 +223,19 @@ from pysipnet.climate import ClimateDrivers, normalize_time_zone
 from pysipnet.dataset import unfilled_coordinates
 from pysipnet.variables import CLIMATE_VARIABLES
 
-from sipnet_calibration import conventions
-from sipnet_calibration.fields import TIME_COORDS, without_stale_time_attributes
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.conventions import (
+    SITE,
+    SITE_DTYPE,
+    TIME,
+    TIME_BOUNDS,
+    TIME_COORD_NAMES,
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+    data_root,
+)
+from sipnet_calibration.fields import without_stale_time_attributes
+from sipnet_calibration.sites import load_sites, site_coordinates
+from sipnet_calibration.validation import as_positive_integers, as_site_ids, truncated
 
 __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
@@ -285,7 +299,7 @@ def default_drivers_root() -> Path:
     otherwise ``data/raw/drivers`` under this checkout. Experiments name their
     paths in ``config.py``.
     """
-    return conventions.data_root() / "raw" / "drivers"
+    return data_root() / "raw" / "drivers"
 
 
 def driver_file(root: Path | str, site: int, member: int) -> Path:
@@ -415,14 +429,13 @@ def load_drivers(
     Parameters
     ----------
     sites:
-        Site identifiers to read, any iterable of integers. Returned in
-        ascending order whatever order they are given in, duplicates dropped.
-        Every one must be in the site table.
+        Site ids to read, a sequence of integers, each named once, returned
+        in the order given. Every one must be in the site table.
     members:
         Source member indices (1-based, as in the directory names) to read,
-        any iterable of integers, likewise sorted and de-duplicated. ``None``
-        means every member that has a directory for any of the requested
-        sites.
+        a sequence of integers, each named once, returned in the order
+        given. ``None`` means every member that has a directory for any of
+        the requested sites, in ascending order.
     root:
         The drivers root. Defaults to :func:`default_drivers_root`.
     sites_table:
@@ -453,11 +466,20 @@ def load_drivers(
         If the root does not exist; if *members* is ``None`` and no requested
         site has a driver directory; if no requested pair has a file at all;
         or if a requested pair has no file and *allow_missing* is ``False``.
+    TypeError
+        If *sites* or *members* is one value, a string, a set or not
+        iterable, or holds a boolean, a float or a value that is not an
+        integer; or if *sites_table* is not a ``DataFrame`` or its
+        ``site_id`` is not integers.
+    KeyError
+        If a site is not in the site table.
     ValueError
         If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
-        or *members* is empty, or holds anything but positive whole numbers,
-        discovered members included; if the site table lacks ``site_id``, ``lon`` or ``lat`` or
-        repeats a ``site_id``; if a site is not in the site table; if a pair's
+        or *members* is empty or a two-dimensional array, or holds a value
+        that is not positive or out of range, discovered members included; if
+        *sites* names a site twice or *members* a member twice; if the site
+        table lacks ``site_id``,
+        ``lon`` or ``lat`` or repeats a ``site_id``; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
         :func:`read_driver_file`, its name does not follow the template, the
         directory and file-name members disagree, or the dates in the file name
@@ -465,23 +487,18 @@ def load_drivers(
         time axis, since the time coordinates are shared by every file.
     """
     root = Path(root) if root is not None else default_drivers_root()
-    if not root.is_dir():
-        raise FileNotFoundError(f"drivers root {root} is not a directory")
+    check_drivers_root_is_a_directory(root)
     time_zone = normalize_time_zone(time_zone)
 
     site_ids = _site_ids(sites)
     table = sites_table if sites_table is not None else load_sites()
-    _check_site_table_is_usable(table)
-    _check_sites_are_in_the_site_table(site_ids, table)
+    # Located before any file is read, so a site the table lacks fails fast.
+    coordinates = site_coordinates(site_ids.tolist(), table)
 
     member_ids = _member_ids(members, root=root, sites=site_ids)
 
     paths, present = _locate_files(root, sites=site_ids, members=member_ids)
-    if not present.any():
-        raise FileNotFoundError(
-            f"no driver files under {root} for sites {site_ids.tolist()} and "
-            f"members {member_ids.tolist()}"
-        )
+    check_some_pair_has_a_file(present, sites=site_ids, members=member_ids, root=root)
     if not allow_missing:
         _check_members_complete(present, sites=site_ids, members=member_ids, root=root)
 
@@ -490,9 +507,8 @@ def load_drivers(
         arrays,
         present=present,
         reference=reference,
-        sites=site_ids,
+        coordinates=coordinates,
         members=member_ids,
-        table=table,
         root=root,
         allow_missing=allow_missing,
     )
@@ -503,10 +519,10 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 
     Each field has dims ``(member, site, time)``, is named for its variable,
     keeps that variable's attributes, and carries pySIPNET's
-    :data:`sipnet_calibration.fields.TIME_COORDS` with ``lon``/``lat`` and
-    ``source_member_index`` as non-dimension coordinates -- the field
-    shape, and the same time coordinates a model field has. This is the view
-    facet-by-variable consumes, matching
+    :data:`sipnet_calibration.conventions.TIME_COORD_NAMES` with
+    ``lon``/``lat`` and ``source_member_index`` as non-dimension coordinates --
+    the field shape, and the same time coordinates a model field has. This is
+    the view facet-by-variable consumes, matching
     :func:`sipnet_calibration.constraints.constraint_fields`.
 
     Parameters
@@ -541,7 +557,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     fields = {}
     for name in DRIVER_VARIABLES:
         field = dataset[name].copy(deep=False)
-        field["time"].attrs = without_stale_time_attributes(field["time"].attrs)
+        field[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
         fields[name] = field
     return fields
 
@@ -558,7 +574,7 @@ _COUNT_NOT_POSITIVE = ("vapor_pressure_deficit", "soil_vapor_pressure_deficit", 
 
 #: The time coordinates the Dataset takes from pySIPNET: the ones a field
 #: keeps, and the CF bounds pair that only a Dataset can carry.
-_DATASET_TIME_COORDS = (*TIME_COORDS, "time_bounds")
+_DATASET_TIME_COORDS = (*TIME_COORD_NAMES, TIME_BOUNDS)
 
 
 def _site_member_from_directory(name: str) -> tuple[int, int] | None:
@@ -583,14 +599,16 @@ def _dates_from_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
 
 
 def _site_ids(sites: Iterable[int]) -> np.ndarray:
-    """Requested sites as a sorted, de-duplicated ``int32`` array."""
-    return _positive_integers(sites, name="site identifiers", dtype=np.int32)
+    """Requested sites as an ``int32`` array, in the order given."""
+    site_ids = as_site_ids(sites, message_name="sites")
+    check_some_are_requested(site_ids, what="sites", example="site id")
+    return np.asarray(site_ids, dtype=SITE_DTYPE)
 
 
 def _member_ids(
     members: Iterable[int] | None, *, root: Path, sites: np.ndarray
 ) -> np.ndarray:
-    """Requested members as a sorted ``int16`` array, discovered when ``None``."""
+    """Requested members as ``int16``, in the order given; found, ascending, for ``None``."""
     if members is None:
         found: set[int] = set()
         for site in sites:
@@ -600,38 +618,21 @@ def _member_ids(
                 f"no driver directories under {root} for sites {sites.tolist()}"
             )
         members = sorted(found)
-    return _positive_integers(
-        members,
-        name="member indices (the source's 1-based directory indices)",
-        dtype=np.int16,
-    )
+    return _source_member_indices(members)
 
 
-def _positive_integers(values: Iterable[int], *, name: str, dtype) -> np.ndarray:
-    """*values* as a sorted, de-duplicated array of *dtype*, or a clear error.
+def _source_member_indices(members: Iterable[int]) -> np.ndarray:
+    """*members* as an ``int16`` array, in the order given, or a clear error.
 
-    Strings, booleans, non-whole floats, non-finite values, non-positive
-    values and anything that would wrap when narrowed to *dtype* are refused,
-    since each would otherwise resolve to a plausible-looking wrong directory.
+    Strings, booleans, floats, non-positive values, repeats and anything that
+    would wrap when narrowed to ``int16`` are refused, since each would
+    otherwise resolve to a plausible-looking wrong directory.
     """
-    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
-        raise ValueError(
-            f"{name} must be an iterable of integers, got {type(values).__name__}"
-        )
-    array = np.asarray(list(values))
-    if array.size == 0:
-        raise ValueError(f"no {name} requested")
-    if array.dtype.kind == "f":
-        if np.any(~np.isfinite(array)) or np.any(array != np.floor(array)):
-            raise ValueError(f"{name} must be whole numbers, found non-integer values")
-    elif array.dtype.kind not in "iu":
-        raise ValueError(f"{name} must be integers, got {array.dtype}")
-    array = np.unique(array.astype(np.int64))
-    limit = np.iinfo(dtype).max
-    if np.any(array < 1) or np.any(array > limit):
-        bad = array[(array < 1) | (array > limit)]
-        raise ValueError(f"{name} must lie within 1..{limit}, found {bad[:5].tolist()}")
-    return array.astype(dtype)
+    indices = as_positive_integers(members, message_name="members")
+    check_some_are_requested(indices, what="members", example="member index")
+    check_member_indices_are_unique(indices)
+    check_member_indices_fit_int16(indices)
+    return np.asarray(indices, dtype=np.int16)
 
 
 def _locate_files(
@@ -670,7 +671,7 @@ def _read_all(
         _check_file_name_matches_contents(path, dataset, member=member)
         if reference is None:
             reference, reference_path = dataset, path
-            shape = present.shape + (dataset.sizes["time"],)
+            shape = present.shape + (dataset.sizes[TIME],)
             arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLES}
         else:
             _check_time_axes_identical(reference, dataset, reference_path=reference_path, path=path)
@@ -685,15 +686,13 @@ def _assemble(
     *,
     present: np.ndarray,
     reference: xr.Dataset,
-    sites: np.ndarray,
+    coordinates: dict[str, xr.DataArray],
     members: np.ndarray,
-    table: pd.DataFrame,
     root: Path,
     allow_missing: bool,
 ) -> xr.Dataset:
     """Put the arrays into the Dataset the module docstring describes."""
-    dims = ("member", "site", "time")
-    coordinates = table.set_index("site_id").loc[sites]
+    dims = ("member", SITE, TIME)
     data_vars = {}
     for name in DRIVER_VARIABLES:
         values = arrays[name]
@@ -707,7 +706,7 @@ def _assemble(
     if allow_missing:
         data_vars[DRIVER_PRESENT] = xr.DataArray(
             present,
-            dims=("member", "site"),
+            dims=("member", SITE),
             attrs={
                 "long_name": "Whether a driver file existed for the member and site",
                 "comment": "The eight driver variables are NaN where this is False.",
@@ -719,9 +718,7 @@ def _assemble(
         coords={
             "member": np.arange(members.size, dtype=np.int16),
             "source_member_index": ("member", members.astype(np.int16)),
-            "site": sites.astype(np.int32),
-            "lon": ("site", coordinates["lon"].to_numpy(np.float64)),
-            "lat": ("site", coordinates["lat"].to_numpy(np.float64)),
+            **coordinates,
             **{name: reference[name].variable for name in _DATASET_TIME_COORDS},
         },
     )
@@ -735,10 +732,6 @@ def _assemble(
     dataset["source_member_index"].attrs = {
         "long_name": "Member index in the source directory name (1-based)"
     }
-    dataset["site"].attrs = {
-        "long_name": "Model site identifier",
-        "comment": "The handed-down 1-8000 identifier; never renumbered.",
-    }
     dataset.attrs = {
         **reference.attrs,
         "title": "ERA5 meteorological drivers in SIPNET climate-file form",
@@ -750,7 +743,7 @@ def _assemble(
             "initial-condition or NEE member i is open question 12 in "
             "data/README.md; nothing here assumes it does."
         ),
-        "n_sites": int(sites.size),
+        "n_sites": int(dataset.sizes[SITE]),
         "n_members": int(members.size),
         "coverage": "complete" if present.all() else "gaps",
     }
@@ -758,6 +751,54 @@ def _assemble(
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_drivers_root_is_a_directory(root: Path) -> None:
+    """The drivers root is a directory."""
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"drivers root {root} is not a directory; pass root=, or link the drivers "
+            "under data/raw/drivers."
+        )
+
+
+def check_some_are_requested(values: tuple[int, ...], *, what: str, example: str) -> None:
+    """At least one site, or one member, is asked for."""
+    if not values:
+        raise ValueError(f"no {what} requested; pass at least one {example}.")
+
+
+def check_member_indices_are_unique(indices: tuple[int, ...]) -> None:
+    """No member index is asked for twice."""
+    seen: set[int] = set()
+    repeated = sorted({index for index in indices if index in seen or seen.add(index)})
+    if repeated:
+        raise ValueError(
+            f"members names member(s) {truncated(repeated)} more than once; name each "
+            "member once."
+        )
+
+
+def check_member_indices_fit_int16(indices: tuple[int, ...]) -> None:
+    """Every member index fits the ``int16`` it is stored as."""
+    limit = int(np.iinfo(np.int16).max)
+    beyond = sorted({index for index in indices if index > limit})
+    if beyond:
+        raise ValueError(
+            f"members must lie within 1..{limit}, found {truncated(beyond)}; a member "
+            "index is the 1-based index of a driver directory."
+        )
+
+
+def check_some_pair_has_a_file(
+    present: np.ndarray, *, sites: np.ndarray, members: np.ndarray, root: Path
+) -> None:
+    """At least one requested ``(site, member)`` pair has a driver file."""
+    if not present.any():
+        raise FileNotFoundError(
+            f"no driver files under {root} for sites {sites.tolist()} and "
+            f"members {members.tolist()}; check the root and the site ids."
+        )
 
 
 def _check_negative_excursions_bounded(frame: pd.DataFrame, path: Path) -> None:
@@ -795,7 +836,7 @@ def _check_file_name_matches_contents(path: Path, dataset: xr.Dataset, *, member
             f"directory says member {member}"
         )
     start, end = _dates_from_file_name(path)
-    starts = pd.DatetimeIndex(dataset["time_step_start"].values)
+    starts = pd.DatetimeIndex(dataset[TIMESTEP_START].values)
     first, last = starts[0].normalize(), starts[-1].normalize()
     if (start, end) != (first, last):
         raise ValueError(
@@ -812,13 +853,13 @@ def _check_time_axes_identical(
     The time coordinates are taken from the first file read and applied to
     all of them, which is sound only if every file's axis is the same.
     """
-    if dataset.sizes["time"] != reference.sizes["time"]:
+    if dataset.sizes[TIME] != reference.sizes[TIME]:
         raise ValueError(
-            f"{path} has {dataset.sizes['time']} steps where {reference_path} has "
-            f"{reference.sizes['time']}; every file read together must share one "
+            f"{path} has {dataset.sizes[TIME]} steps where {reference_path} has "
+            f"{reference.sizes[TIME]}; every file read together must share one "
             "time axis"
         )
-    for name in ("time_step_start", "time_step_length"):
+    for name in (TIMESTEP_START, TIMESTEP_LENGTH):
         a = reference[name].to_numpy()
         b = dataset[name].to_numpy()
         if not np.array_equal(a, b):
@@ -828,33 +869,6 @@ def _check_time_axes_identical(
                 f"{first} ({b[first]!r} against {a[first]!r}); every file read "
                 "together must share one time axis"
             )
-
-
-def _check_site_table_is_usable(table: pd.DataFrame) -> None:
-    """The site table has the columns read here, and one row per site."""
-    if not isinstance(table, pd.DataFrame):
-        raise ValueError(f"sites_table must be a DataFrame, got {type(table).__name__}")
-    missing = [column for column in ("site_id", "lon", "lat") if column not in table.columns]
-    if missing:
-        raise ValueError(
-            f"the site table lacks column(s) {missing}; pass it as load_sites() "
-            "returns it, with site_id as a column rather than the index"
-        )
-    duplicated = table["site_id"][table["site_id"].duplicated()]
-    if not duplicated.empty:
-        raise ValueError(
-            f"the site table repeats site id(s) {sorted(set(duplicated.tolist()))[:5]}"
-        )
-
-
-def _check_sites_are_in_the_site_table(sites: np.ndarray, table: pd.DataFrame) -> None:
-    """Every requested site exists in the site table, so it has coordinates."""
-    unknown = sorted(set(sites.tolist()) - set(table["site_id"].tolist()))
-    if unknown:
-        raise ValueError(
-            f"{len(unknown)} requested site(s) are not in the site table, for "
-            f"example {unknown[:10]}"
-        )
 
 
 def _check_members_complete(

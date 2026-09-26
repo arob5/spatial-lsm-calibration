@@ -45,6 +45,8 @@ identical yearly copies are collapsed to one.
 Output is written to a ``.partial`` path and renamed only once it reads back
 identically through the library loader, so a failed check cannot leave a
 corrupt file where the canonical one belongs.
+A failed check keeps the ``.partial`` file for inspection and prints its
+path (:func:`sipnet_calibration.io.write_checked`).
 
 Usage
 -----
@@ -67,7 +69,6 @@ import xarray as xr
 
 from sipnet_calibration.constraints import (
     CONSTRAINT_NAMES,
-    SITE_COLUMN,
     STANDARD_DEVIATION,
     TIME_UNITS,
     VALUE,
@@ -83,7 +84,15 @@ from sipnet_calibration.constraints import (
     read_raw,
     resolve_constraint,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.conventions import LAT, LON, SITE_ID, TIME
+from sipnet_calibration.io import write_checked
+from sipnet_calibration.sites import (
+    check_site_table_lists_the_sites,
+    default_sites_path,
+    load_sites,
+    site_lookup,
+)
+from sipnet_calibration.validation import check_site_ids_are_in_range
 
 #: How far a raw file's lat/lon may sit from the site table before the site
 #: ids are taken to mean a different pool. The real files agree to 5e-13.
@@ -173,8 +182,13 @@ def ingest(spec: ConstraintSpec, raw_root: Path, sites: pd.DataFrame, out_dir: P
 
 def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
     """Every check on the raw rows, before anything is built from them."""
-    check_site_ids_are_valid(spec, frame)
-    check_sites_are_in_the_site_table(spec, frame, sites)
+    check_site_id_column_is_integer_valued(spec, frame)
+    check_site_ids_are_in_range(
+        frame[SITE_ID].to_numpy(), message_name=f"{spec.raw_file}: {SITE_ID}"
+    )
+    check_site_table_lists_the_sites(
+        sites, frame[SITE_ID].unique().tolist(), message_name=f"{spec.raw_file}: site(s)"
+    )
     check_coordinates_match_site_table(spec, frame, sites)
     check_key_is_unique(spec, frame)
     check_value_and_sd_missing_together(spec, frame)
@@ -189,11 +203,13 @@ def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFra
 
 def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    dataset.to_netcdf(partial, engine="h5netcdf", encoding=netcdf_encoding(dataset))
-    check_round_trip(dataset, partial, spec)
-    partial.replace(out)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial, spec),
+    )
 
 
 def describe_product(dataset: xr.Dataset, path: Path) -> str:
@@ -215,8 +231,8 @@ def describe_product(dataset: xr.Dataset, path: Path) -> str:
             f"{dataset[VALUE].attrs['units']}; standard deviations of zero: "
             f"{int((sd[observed] == 0).sum())}"
         )
-    if "time" in dataset.dims:
-        first, last = dataset["time"].values[[0, -1]]
+    if TIME in dataset.dims:
+        first, last = dataset[TIME].values[[0, -1]]
         lines.append(f"  time {str(first)[:10]} .. {str(last)[:10]}")
     return "\n".join(lines)
 
@@ -224,30 +240,10 @@ def describe_product(dataset: xr.Dataset, path: Path) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_site_ids_are_valid(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
-    """Raise unless every site id is a positive integer that fits the stored width."""
-    site = frame[SITE_COLUMN].to_numpy()
-    if not np.issubdtype(site.dtype, np.integer):
-        raise IngestError(f"{spec.raw_file}: {SITE_COLUMN} is not integer-valued")
-    info = np.iinfo(np.int32)
-    bad = (site < 1) | (site > info.max)
-    if bad.any():
-        raise IngestError(
-            f"{spec.raw_file}: site ids outside 1..{info.max}: "
-            f"{sorted(set(site[bad].tolist()))[:10]}"
-        )
-
-
-def check_sites_are_in_the_site_table(
-    spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame
-) -> None:
-    """Raise if a row names a site the site table does not have."""
-    unknown = sorted(set(frame[SITE_COLUMN]) - set(sites[SITE_COLUMN]))
-    if unknown:
-        raise IngestError(
-            f"{spec.raw_file}: {len(unknown)} site ids are not in the site table, e.g. "
-            f"{unknown[:10]}. The file may belong to a different site pool."
-        )
+def check_site_id_column_is_integer_valued(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """The raw file's ``site_id`` column is of an integer dtype."""
+    if not np.issubdtype(frame[SITE_ID].to_numpy().dtype, np.integer):
+        raise IngestError(f"{spec.raw_file}: {SITE_ID} is not integer-valued")
 
 
 def check_coordinates_match_site_table(
@@ -259,10 +255,11 @@ def check_coordinates_match_site_table(
     redundant with the site table and are kept in the raw files exactly for
     this: a second, 6400-site pool exists upstream whose site 1 is elsewhere.
     """
-    if not {"lat", "lon"} <= set(spec.raw_columns):
+    # The raw files that carry coordinates name them as the site table does.
+    if not {LAT, LON} <= set(spec.raw_columns):
         return
-    table = sites.set_index(SITE_COLUMN).loc[frame[SITE_COLUMN].to_numpy(), ["lon", "lat"]]
-    for column in ("lon", "lat"):
+    table = site_lookup(sites).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
+    for column in (LON, LAT):
         given = frame[column].to_numpy(np.float64)
         if not np.isfinite(given).all():
             raise IngestError(
@@ -274,14 +271,14 @@ def check_coordinates_match_site_table(
             worst = int(np.argmax(difference))
             raise IngestError(
                 f"{spec.raw_file}: {column} disagrees with the site table by up to "
-                f"{difference[worst]:.3g} degrees (site {frame[SITE_COLUMN].iloc[worst]}). "
+                f"{difference[worst]:.3g} degrees (site {frame[SITE_ID].iloc[worst]}). "
                 "The site ids do not mean what the site table means."
             )
 
 
 def check_key_is_unique(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise if two rows share a site (and time)."""
-    key = [SITE_COLUMN] + ([spec.time_column] if spec.time_column else [])
+    key = [SITE_ID] + ([spec.time_column] if spec.time_column else [])
     duplicated = frame.duplicated(key)
     if duplicated.any():
         example = frame.loc[duplicated, key].iloc[0].tolist()
@@ -387,7 +384,7 @@ def check_static_copies_agree(spec: ConstraintSpec, frame: pd.DataFrame) -> None
     """Raise unless a static constraint carries one value per site across the file."""
     if spec.time_column is None:
         return
-    distinct = frame.groupby(SITE_COLUMN)[[spec.value_column, spec.sd_column]].nunique(
+    distinct = frame.groupby(SITE_ID)[[spec.value_column, spec.sd_column]].nunique(
         dropna=False
     )
     varying = distinct[(distinct > 1).any(axis=1)]
@@ -405,14 +402,13 @@ def check_round_trip(dataset: xr.Dataset, partial: Path, spec: ConstraintSpec) -
         written = written.load()
     if not written.identical(dataset):
         raise IngestError(
-            f"{partial}: the written file does not read back identical to what was built. "
-            "The partial file is left in place for inspection."
+            f"{partial}: the written file does not read back identical to what was built."
         )
-    if "time" in written.coords and written["time"].encoding.get("units") != TIME_UNITS:
+    if TIME in written.coords and written[TIME].encoding.get("units") != TIME_UNITS:
         # xarray silently changes the units when a label is not a whole day.
         raise IngestError(
-            f"{partial}: time was encoded as {written['time'].encoding.get('units')!r}, not "
-            f"{TIME_UNITS!r}; a label is not a whole day. The partial file is left in place."
+            f"{partial}: time was encoded as {written[TIME].encoding.get('units')!r}, not "
+            f"{TIME_UNITS!r}; a label is not a whole day."
         )
 
 
