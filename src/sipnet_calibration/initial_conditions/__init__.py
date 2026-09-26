@@ -7,7 +7,7 @@ Every member of the 8000-site ensemble starts SIPNET from a drawn initial
 state -- soil organic carbon, wood carbon, leaf carbon and surface soil
 moisture, one value per site and member. This package owns that data from
 PEcAn's files through to the parameters SIPNET reads. Three of the modules own
-a stored artifact -- the source tree, the raw netCDF, the product -- and each
+a stored artifact -- the source tree, the raw netCDF, the processed file -- and each
 holds everything about its own: the schema, how it is written, how it is read
 back, and the checks both sides are held to. The other three hold what those
 share: the names, the variable specs, and the conversion to SIPNET.
@@ -17,7 +17,7 @@ share: the names, the variable specs, and the conversion to SIPNET.
 ``source_files``          PEcAn's source netCDFs: the format, and the parser
 ``specs``                 what each variable is; the registry
 ``raw``                   the tracked raw netCDF: build, encode, read
-``processed``             the product: build, encode, read, fields
+``processed``             the processed file: build, encode, read, fields
 ``sipnet_parameters``     the conversion to SIPNET's initial parameters
 ========================  ==================================================
 
@@ -99,12 +99,13 @@ Name                         Dims                         Meaning
 The tracked raw file keeps its own ``member`` dim, the source index, since raw
 data is never edited; :func:`build_initial_conditions` renames it.
 
-**Attributes** follow CF-1.11 as the constraint products do. Each variable
-carries the spec's ``units``, ``long_name``, ``description``, ``product``,
-``source_name``, ``source_units``, ``source_long_name``,
-``sipnet_initial_condition``, ``pecan_conversion``, ``units_provenance`` and,
+**Attributes** follow CF-1.11 as the constraints' processed files do. Each
+variable carries the spec's ``units``, ``long_name``, ``description``,
+``upstream_product``, ``source_name``, ``source_units``, ``source_long_name``,
+``sipnet_parameter_name``, ``pecan_conversion``, ``units_provenance`` and,
 when set, ``constituent`` and ``comment``. The dataset carries
-``Conventions``, ``title``, ``product``, ``source_file``, ``source_root``,
+``Conventions``, ``title``, ``upstream_product``, ``source_file``,
+``source_root``,
 ``source_script``, ``source_script_note``, ``nominal_date``,
 ``nominal_date_provenance``,
 ``source_time_units``, ``source_time_long_name``, ``source_time_value``,
@@ -134,18 +135,19 @@ directory; :func:`site_member_from_file_name` decodes a file name.
 **The raw file.** :func:`build_raw` assembles parsed files into the Dataset
 the conversion writes, and :func:`read_raw` reads it back and checks it.
 
-**The processed product.** :func:`build_initial_conditions` turns the raw
-Dataset into the product, :func:`load_initial_conditions` reads and checks it,
+**The processed file.** :func:`build_initial_conditions` turns the raw
+Dataset into the processed Dataset, :func:`load_initial_conditions` reads and
+checks it,
 and :func:`initial_condition_fields` returns it as one field per
 variable, optionally for a subset of sites.
 
 **The conversion.** :func:`to_sipnet_initial_conditions` converts one
 member; :func:`to_sipnet_initial_conditions_table` converts a whole
-``(initial_condition_member, site)`` ensemble to a table of SIPNET field
+``(initial_condition_member, site)`` ensemble to a table of SIPNET parameter
 values.
 
 **Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
-:func:`raw_path` and :func:`default_product_path` say where each file is
+:func:`raw_path` and :func:`default_processed_path` say where each file is
 expected, all honoring ``$SIPNET_CALIBRATION_DATA``; :func:`raw_encoding` and
 :func:`netcdf_encoding` give the two files' on-disk encodings.
 
@@ -153,29 +155,29 @@ Notes
 -----
 **One spec, no separate schema.** As ``ConstraintSpec`` does for the
 observations, the spec plays the role pySIPNET's ``VariableSpec`` plays for
-model output: one flat record per variable from which the product's attributes
-are derived. ``sipnet_initial_condition`` names a field of
+model output: one flat record per variable from which the processed file's
+attributes are derived. ``sipnet_parameter_name`` names a parameter of
 ``pysipnet.parameters.InitialConditions`` and is checked against it at
-import, so a spec cannot name a field that does not exist.
+import, so a spec cannot name a parameter that does not exist.
 
 **Why the files are converted and the conversion tracked.** SIPNET never
 reads these files; they are a PEcAn intermediate, one small file per
-``(site, member)`` cell, whose inode count on the SCC dwarfs the size of the
+``(site, member)`` pair, whose inode count on the SCC dwarfs the size of the
 values in it. The conversion changes structure only -- bit-exact values, the source
 names and attribute strings, the source member index -- and the result is
 small enough to live in version control, which is the only form in which the
 ensemble exists off the SCC.
 
-**Why ``initial_`` names.** The product is the model's starting state --
+**Why ``initial_`` names.** The data source is the model's starting state --
 PEcAn calls the format ``pool_initial_conditions`` -- and the prefix keeps
-every name distinct from the constraint products' without inventing a product
+every name distinct from the constraints' without inventing a data-source
 prefix. ``biomass`` rather than the file's ``woody`` for the first variable
-because the Spawn and Gibbs product is total aboveground biomass carbon.
+because the Spawn and Gibbs upstream product is total aboveground biomass carbon.
 
-**Why the product stores state and not parameters.** Two of the four
+**Why the processed file stores state and not parameters.** Two of the four
 conversions read a parameter the calibration proposes -- the root fractions for
 ``plantWoodInit``, the specific leaf weight for ``laiInit`` -- so the ingest
-applies none of them and the product holds the state in its own units. (A
+applies none of them and the processed file holds the state in its own units. (A
 third, ``soilWFracInit``, takes no proposed parameter but is a fraction of a
 water holding capacity the calibration also proposes, so what it *means*
 moves too.) The conversion is a function of a state and a parameter vector,
@@ -184,7 +186,7 @@ records the formula PEcAn applied, in ``pecan_conversion``.
 
 **Why the conversion refuses rather than repairs.** Wood carbon is negative
 over much of the ensemble and two variables are absent at some sites, so the
-product does not convert unfiltered. Choosing what to do about that is the
+processed file does not convert unfiltered. Choosing what to do about that is the
 job of the prior on initial conditions, not of a unit conversion; see the
 Notes of :func:`to_sipnet_initial_conditions`.
 
@@ -235,16 +237,16 @@ Usage
         coarse_root_fraction=0.2,
         deciduous=True,                                  # scalar or per site
     )
-    table.iloc[0]                                        # one cell's six fields
+    table.iloc[0]                                        # one row's six parameters
 """
 
 from __future__ import annotations
 
 from sipnet_calibration.initial_conditions.names import (
-    PRODUCT_FILE,
+    PROCESSED_FILE,
     RAW_FILE,
     RAW_MEMBER,
-    default_product_path,
+    default_processed_path,
     default_raw_dir,
     default_source_root,
     raw_path,
@@ -257,7 +259,7 @@ from sipnet_calibration.initial_conditions.processed import (
 )
 from sipnet_calibration.initial_conditions.raw import build_raw, raw_encoding, read_raw
 from sipnet_calibration.initial_conditions.sipnet_parameters import (
-    CONVERTED_SIPNET_FIELDS,
+    CONVERTED_SIPNET_PARAMETER_NAMES,
     to_sipnet_initial_conditions,
     to_sipnet_initial_conditions_table,
 )
@@ -283,10 +285,10 @@ from sipnet_calibration.initial_conditions.specs import (
 
 __all__ = [
     # Names and paths.
-    "PRODUCT_FILE",
+    "PROCESSED_FILE",
     "RAW_FILE",
     "RAW_MEMBER",
-    "default_product_path",
+    "default_processed_path",
     "default_raw_dir",
     "default_source_root",
     "raw_path",
@@ -308,7 +310,7 @@ __all__ = [
     "read_source_directory",
     "read_source_file",
     "site_member_from_file_name",
-    # The raw file and the processed product.
+    # The raw file and the processed file.
     "build_initial_conditions",
     "build_raw",
     "initial_condition_fields",
@@ -317,7 +319,7 @@ __all__ = [
     "raw_encoding",
     "read_raw",
     # The conversion to SIPNET parameters.
-    "CONVERTED_SIPNET_FIELDS",
+    "CONVERTED_SIPNET_PARAMETER_NAMES",
     "to_sipnet_initial_conditions",
     "to_sipnet_initial_conditions_table",
 ]

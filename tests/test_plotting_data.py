@@ -1,4 +1,4 @@
-"""The plotting layer against the real driver and constraint products.
+"""The plotting layer against the real drivers and constraints.
 
 The synthetic fixtures exercise the branches; these exercise the seams. They
 are the tests that would catch an adapter and a plotting function agreeing
@@ -114,7 +114,7 @@ def test_a_driver_field_labels_its_members_by_source_index(ax, real_driver_field
 def test_annual_observations_draw_as_points_at_the_observed_years(
     ax, real_constraint_fields
 ):
-    """Only the observed years appear; the unobserved cells are dropped.
+    """Only the observed years appear; the unobserved ones are dropped.
 
     A site's record is ragged, so a curve would be a claim the data does not
     support.
@@ -122,7 +122,7 @@ def test_annual_observations_draw_as_points_at_the_observed_years(
     means, _ = real_constraint_fields
     field = means["landtrendr_aboveground_biomass"]
     one = field.sel(site=a_ragged_site(field))
-    plot_time_series(one, ax=ax, role="obs", show="points")
+    plot_time_series(one, ax=ax, role="observation", show="points")
     drawn = ax.containers[0][0].get_ydata()
     assert len(drawn) == int(one.notnull().sum())
     assert len(drawn) < one.sizes["time"]
@@ -132,12 +132,12 @@ def test_annual_observations_draw_as_points_at_the_observed_years(
 def test_the_error_bars_are_the_square_root_of_the_real_variances(
     ax, real_constraint_fields
 ):
-    """Each bar's half-length equals ``sqrt`` of that cell's variance."""
+    """Each bar's half-length equals ``sqrt`` of that observation's variance."""
     means, variances = real_constraint_fields
     name = "landtrendr_aboveground_biomass"
     site = most_observed_site(means[name])
     mean, variance = means[name].sel(site=site), variances[name].sel(site=site)
-    plot_time_series(mean, ax=ax, role="obs", show="points", variance=variance)
+    plot_time_series(mean, ax=ax, role="observation", show="points", variance=variance)
     segments = ax.containers[0].lines[2][0].get_segments()
     half = np.array([(s[-1][1] - s[0][1]) / 2 for s in segments])
     observed = np.isfinite(mean.values)
@@ -153,18 +153,18 @@ def test_an_observation_overlay_keeps_the_model_panel(
     plot_time_series(real_driver_field.sel(site=1), ax=ax, role="posterior")
     bands_before = len(ax.collections)
     plot_time_series(
-        field.sel(site=most_observed_site(field)), ax=ax, role="obs", show="points"
+        field.sel(site=most_observed_site(field)), ax=ax, role="observation", show="points"
     )
     assert len(ax.collections) == bands_before
     assert len(ax.containers) == 1
-    assert ax.get_legend_handles_labels()[1] == ["posterior", "obs"]
+    assert ax.get_legend_handles_labels()[1] == ["posterior", "observation"]
 
 
 def test_plot_by_variable_over_the_constraint_fields(real_constraint_fields):
     """Every time-varying constraint, one panel each, no shared y.
 
     The static soil carbon has no time axis and is left out; the two biomass
-    products share a unit, so the panel count, not the unit count, is the check.
+    constraints share a unit, so the panel count, not the unit count, is the check.
     """
     means, _ = real_constraint_fields
     site = most_observed_site(means["landtrendr_aboveground_biomass"])
@@ -174,7 +174,7 @@ def test_plot_by_variable_over_the_constraint_fields(real_constraint_fields):
     _, axes = (
         plot_by_variable(
             one_site,
-            lambda data, ax: plot_time_series(data, ax=ax, role="obs", show="points"),
+            lambda data, ax: plot_time_series(data, ax=ax, role="observation", show="points"),
             ncol=2,
         )
     )
@@ -190,7 +190,7 @@ def test_acceptance_one_panel_three_aggregations(ax, real_drivers):
     """Raw, daily and monthly PAR at one site, overlaid, in three lines.
 
     Criterion 1 of the design spec, on PAR rather than NEE, which has no
-    processed product yet. Like NEE, PAR is a per-timestep total, so its
+    processed file yet. Like NEE, PAR is a per-timestep total, so its
     daily value is a sum.
 
     The aggregation is written at the call site, as the design spec requires,
@@ -231,7 +231,7 @@ def test_acceptance_faceted_driver_fan_with_shared_limits(real_driver_field):
 
 
 def test_an_annual_constraint_is_mapped_at_one_time_and_animated(ax, real_constraint_fields):
-    """The annual products carry window coordinates, scalars once a year is selected."""
+    """The annual constraints carry window coordinates, scalars once a year is selected."""
     from sipnet_calibration.plotting import plot_map
     from sipnet_calibration.plotting.maps import animate_map
 

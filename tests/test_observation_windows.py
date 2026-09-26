@@ -29,7 +29,7 @@ from sipnet_calibration.observation.time_alignment import (
     run_window,
     select_timestep_at,
     window_counts,
-    windows_from_time_bounds,
+    windows_from_observed_values,
 )
 
 
@@ -158,7 +158,7 @@ class TestReduceWindowsSemantics:
         assert windows[5].left < last_end <= windows[5].right
         assert last_end == pd.Timestamp(array["time"].values[windows.get_indexer(pd.DatetimeIndex(array["time"].values)) == 5][-1])
 
-    def test_the_observations_labels_and_attributes_are_kept(self, niwot):
+    def test_the_observed_values_labels_and_attributes_are_kept(self, niwot):
         array = niwot["wood_carbon"]
         windows = _daily_windows(array)
         labels = xr.DataArray(windows.left, dims="time", attrs={"time_reference": "the key"})
@@ -259,7 +259,7 @@ class TestSelectTimestepAt:
 
 
 class TestWindowBuilders:
-    def test_windows_from_time_bounds(self):
+    def test_windows_from_observed_values(self):
         observed = xr.DataArray(
             [[1.0, 2.0]],
             dims=("site", "time"),
@@ -270,17 +270,17 @@ class TestWindowBuilders:
                 WINDOW_END: ("time", pd.DatetimeIndex(["2013-01-01", "2014-01-01"])),
             },
         )
-        windows = windows_from_time_bounds(observed)
+        windows = windows_from_observed_values(observed)
         assert windows.closed == "right"
         assert list(windows.left) == list(pd.DatetimeIndex(["2012-01-01", "2013-01-01"]))
         assert list(windows.right) == list(pd.DatetimeIndex(["2013-01-01", "2014-01-01"]))
 
-    def test_an_array_without_bounds_is_refused(self):
+    def test_an_array_without_windows_is_refused(self):
         observed = xr.DataArray([[1.0]], dims=("site", "time"), coords={"site": [1], "time": pd.DatetimeIndex(["2012-07-15"])})
         with pytest.raises(ValueError, match="documents no interval"):
-            windows_from_time_bounds(observed)
+            windows_from_observed_values(observed)
 
-    def test_the_real_annual_product_carries_bounds(self):
+    def test_the_real_annual_constraint_carries_windows(self):
         constraints = pytest.importorskip("sipnet_calibration.constraints")
         try:
             wood = constraints.constraint_fields(["landtrendr_aboveground_biomass"], sites=[3851])[
@@ -288,7 +288,7 @@ class TestWindowBuilders:
             ]
         except FileNotFoundError as error:
             pytest.skip(str(error))
-        windows = windows_from_time_bounds(wood)
+        windows = windows_from_observed_values(wood)
         assert len(windows) == wood.sizes["time"]
         assert all(w.right - w.left >= pd.Timedelta("365D") for w in windows)
 
@@ -464,8 +464,8 @@ class TestPaddedStacks:
             select_timestep_at(short, pd.DatetimeIndex(array["time"].values[[50]]))
 
 
-class TestBoundsOrientation:
-    def test_the_bounds_coordinates_are_start_then_end(self):
+class TestWindowOrientation:
+    def test_the_window_coordinates_are_start_then_end(self):
         from sipnet_calibration.constraints import _window_coords
 
         times = pd.DatetimeIndex(["2012-01-01", "2013-01-01"])
@@ -477,7 +477,7 @@ class TestBoundsOrientation:
         )
         assert (coords[WINDOW_END].values > coords[WINDOW_START].values).all()
 
-    def test_reversed_bounds_are_refused(self):
+    def test_reversed_windows_are_refused(self):
         observed = xr.DataArray(
             [[1.0]],
             dims=("site", "time"),
@@ -488,8 +488,8 @@ class TestBoundsOrientation:
                 WINDOW_END: ("time", pd.DatetimeIndex(["2012-01-01"])),
             },
         )
-        with pytest.raises(ValueError, match="must follow its start"):
-            windows_from_time_bounds(observed)
+        with pytest.raises(ValueError, match="must follow its window_start"):
+            windows_from_observed_values(observed)
 
 
 class TestEveryFunctionChecksTheStack:
@@ -565,13 +565,13 @@ class TestWindowAndLabelRefusals:
             name="annual",
         )
 
-    def test_a_missing_bound_is_refused(self):
-        with pytest.raises(ValueError, match="'annual': a time bound is missing"):
-            windows_from_time_bounds(self.bounded(pd.DatetimeIndex([pd.NaT]), pd.DatetimeIndex(["2013-01-01"])))
+    def test_a_missing_window_edge_is_refused(self):
+        with pytest.raises(ValueError, match="'annual': a window edge is missing"):
+            windows_from_observed_values(self.bounded(pd.DatetimeIndex([pd.NaT]), pd.DatetimeIndex(["2013-01-01"])))
 
-    def test_bounds_that_are_not_datetimes_are_refused(self):
+    def test_window_edges_that_are_not_datetimes_are_refused(self):
         with pytest.raises(ValueError, match="must hold datetimes"):
-            windows_from_time_bounds(self.bounded([2012], pd.DatetimeIndex(["2013-01-01"])))
+            windows_from_observed_values(self.bounded([2012], pd.DatetimeIndex(["2013-01-01"])))
 
     def test_decreasing_windows_are_refused(self, niwot):
         windows = _daily_windows(niwot["wood_carbon"])[::-1]
@@ -674,8 +674,8 @@ class TestWindowAttributesAreLiterallyTrue:
         assert reduced.attrs["reduction"].endswith(f"weighted by {TIMESTEP_LENGTH}")
 
 
-class TestValuedRowsWithoutAnIntervalAreRefused:
-    """Padding holds no value; a row with a value and a NaT interval is not padding."""
+class TestValuedTimeLabelsWithoutAnIntervalAreRefused:
+    """Padding holds no value; a time label with a value and a NaT interval is not padding."""
 
     @pytest.fixture
     def valued(self, niwot):
@@ -728,8 +728,8 @@ class TestCheckRunSpansTheWindows:
     def test_a_field_without_interval_coordinates_is_refused_naming_the_reader(self, niwot):
         bare = niwot["wood_carbon"].drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
         windows = pd.IntervalIndex.from_arrays([bare["time"].values[0]], [bare["time"].values[5]], closed="right")
-        with pytest.raises(ValueError, match="^ReduceOverTimeBounds on 'w' reads the interval"):
-            check_run_spans_the_windows(bare, windows, "ReduceOverTimeBounds on 'w'")
+        with pytest.raises(ValueError, match="^ReduceOverWindows on 'w' reads the interval"):
+            check_run_spans_the_windows(bare, windows, "ReduceOverWindows on 'w'")
 
     def test_the_message_names_the_first_window_beyond_the_record(self, niwot):
         wood = niwot["wood_carbon"]

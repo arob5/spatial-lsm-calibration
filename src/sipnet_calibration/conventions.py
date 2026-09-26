@@ -174,21 +174,18 @@ TIMESTEP_LENGTH = "time_step_length"
 #: start, so the two are the CF bounds pair.
 TIME_COORD_NAMES: tuple[str, ...] = (TIME, TIMESTEP_START, TIMESTEP_LENGTH)
 
-# These are to be renamed "window_start" and "window_end"; they keep the
-# values the processed files' readers write today until that rename.
-
-#: The coordinate on an observation's ``time`` for the start of the window its
-#: value covers: the first edge of the CF ``time_bounds`` variable the
+#: The coordinate on an observation source's ``time`` for the start of the
+#: window each value covers: the first edge of the CF ``time_bounds`` variable the
 #: processed file stores, one-dimensional since a ``DataArray`` cannot carry
 #: the two-dimensional ``(time, bounds)`` variable.
 #: :func:`sipnet_calibration.constraints.constraint_fields` adds it and
-#: :func:`sipnet_calibration.observation.time_alignment.windows_from_time_bounds`
+#: :func:`sipnet_calibration.observation.time_alignment.windows_from_observed_values`
 #: reads it.
-WINDOW_START = "time_bounds_start"
+WINDOW_START = "window_start"
 
-#: The coordinate on an observation's ``time`` for the end of the window its
-#: value covers; see :data:`WINDOW_START`.
-WINDOW_END = "time_bounds_end"
+#: The coordinate on an observation source's ``time`` for the end of the
+#: window each value covers; see :data:`WINDOW_START`.
+WINDOW_END = "window_end"
 
 
 #: The coordinate beside a data source's own ensemble dim (such as

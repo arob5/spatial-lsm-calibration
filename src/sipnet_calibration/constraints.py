@@ -1,13 +1,13 @@
-"""The constraint observations: what each is, how its raw file is read, and the
-processed product it becomes.
+"""The constraint data sources: what each is, how its raw file is read, and the
+processed file it becomes.
 
 Overview
 --------
-Five observation products constrain the calibration: LandTrendr and GEDI
+Five observation sources constrain the calibration: LandTrendr and GEDI
 aboveground biomass, MODIS leaf area index, SMAP soil moisture and SoilGrids
 soil organic carbon. Each arrives as one gzipped CSV under
 ``data/raw/constraints/`` whose columns carry no units, no time semantics and
-no provenance. This module holds one :class:`ConstraintSpec` per product -- the
+no provenance. This module holds one :class:`ConstraintSpec` per constraint -- the
 single description of what the quantity is, in what units, on what time
 structure, and which columns of the raw file carry it -- and the functions that
 turn the raw file into a processed netCDF and read it back. The spec's fields
@@ -48,7 +48,7 @@ spec; the dtypes are what the writer produces.
 ``STATIC``, and ``bounds`` (of length 2) when ``time_bounds`` is present.
 
 **Data variables**, both ``float64``, ``NaN`` where a site (and time) was not
-observed, ``NaN`` in the same cells of both::
+observed, ``NaN`` at the same elements of both::
 
     value(site[, time])               the observation, in the spec's units
     standard_deviation(site[, time])  its reported standard deviation, same units
@@ -82,12 +82,12 @@ pySIPNET's model output does, so the two sides read alike. ``time`` carries
 ``standard_name``, ``axis`` and, when present, ``bounds``; ``lon`` and ``lat``
 carry ``standard_name`` and ``units``; no coordinate is encoded with a
 ``_FillValue``. ``value`` carries the spec's ``units``, ``long_name``,
-``description``, ``product``, ``source_file``, ``source_column``,
+``description``, ``upstream_product``, ``source_file``, ``source_column``,
 ``time_reference``, ``units_provenance`` and, when set, ``constituent``,
-``sign_convention`` and ``comment``. No observation carries ``cell_methods``:
+``sign_convention`` and ``comment``. No constraint carries ``cell_methods``:
 CF has no vocabulary for "the nearest composite" or "an annual map", and the
 words are in ``time_reference`` and ``comment`` instead. The dataset carries
-``Conventions``, ``title``, ``constraint``, ``product``, ``source_file``,
+``Conventions``, ``title``, ``constraint``, ``upstream_product``, ``source_file``,
 ``time_structure``, ``rows_read``, ``rows_dropped_by_quality_flag``,
 ``rows_collapsed_as_copies``, ``history`` and ``created``.
 
@@ -103,13 +103,14 @@ Functions
     The spec for a constraint name, raising if there is none.
 
 :func:`load_constraint`
-    Read one processed product and check it against its spec.
+    Read one constraint's processed file and check it against its spec.
 
 :func:`constraint_fields`, :func:`constraint_standard_deviations`
-    The ``value`` or ``standard_deviation`` arrays of several products, one
+    The ``value`` or ``standard_deviation`` arrays of several constraints, one
     field per constraint, optionally for a subset of sites. An annual
-    product's array carries its ``time_bounds`` as the one-dimensional
-    coordinates ``time_bounds_start`` and ``time_bounds_end`` on ``time``.
+    constraint's field carries its windows, read from ``time_bounds``, as the
+    one-dimensional coordinates ``window_start`` and ``window_end`` on
+    ``time``.
 
 :func:`read_raw`
     Parse a raw file exactly, in its source column names.
@@ -132,11 +133,11 @@ variable from which everything else is derived. Its ``xarray_attributes()``
 is what makes the netCDF self-describing, so there is nothing to keep in
 step between a raw description and a processed one.
 
-**One product per constraint.** The five sources have three time structures
-and no shared grid; a single dense file would re-impose the assembler's
-alignment onto July 15 keys. Each product is stored at its source's own
-resolution, and how an observation is placed against model time is decided by
-its observation operator.
+**One processed file per constraint.** The five sources have three time
+structures and no shared grid; a single dense file would re-impose the
+assembler's alignment onto July 15 keys. Each constraint is stored at its
+source's own resolution, and how an observation is placed against model time is
+decided by its observation operator.
 
 **No unit conversion at ingest.** SoilGrids soil carbon is stored in the
 source's ``Mg ha-1`` rather than the ``kg m-2`` of the assembled files it was
@@ -144,7 +145,7 @@ once compared against; the factor is Pint's to supply where it is needed.
 
 **Dropping quality-flagged rows.** MODIS rows with ``qc == "001"`` fail the
 producer's quality test and are equivalent to ``sd > 20``; their ``lai == 0``
-values carry the product's fill standard deviation (248 x 0.1 = 24.8). They
+values carry the upstream product's fill standard deviation (248 x 0.1 = 24.8). They
 are dropped and counted at ingest rather than carried as observations. The
 raw file keeps them.
 
@@ -255,7 +256,7 @@ class TimeStructure(StrEnum):
 
 @dataclass(frozen=True)
 class ConstraintSpec:
-    """Everything a consumer needs to know about one constraint observation.
+    """Everything a consumer needs to know about one constraint.
 
     One instance per raw file. The fields describe the quantity, the raw file
     that carries it and how it sits in time; :meth:`xarray_attributes` is what
@@ -277,8 +278,8 @@ class ConstraintSpec:
     description: str
     """What the quantity is and how the producer constructed it, with the citation."""
 
-    product: str
-    """The source product, e.g. ``"MODIS MCD15A3H v061"``."""
+    upstream_product: str
+    """The producer's own product name, e.g. ``"MODIS MCD15A3H v061"``."""
 
     time_structure: TimeStructure
     """How the records sit in time; see :class:`TimeStructure`."""
@@ -320,8 +321,10 @@ class ConstraintSpec:
                 f"Constraint name {self.name!r} is not lower_case_with_underscores."
             )
         validate_units(self.units)
-        if not self.description or not self.long_label or not self.product:
-            raise ValueError(f"Constraint {self.name!r} needs a description, long_label and product.")
+        if not self.description or not self.long_label or not self.upstream_product:
+            raise ValueError(
+                f"Constraint {self.name!r} needs a description, long_label and upstream_product."
+            )
         if len(set(self.raw_columns)) != len(self.raw_columns):
             raise ValueError(f"Constraint {self.name!r}: raw_columns repeats a column.")
         if SITE_ID not in self.raw_columns:
@@ -343,12 +346,12 @@ class ConstraintSpec:
 
     @property
     def time_reference(self) -> str:
-        """In words, what the ``time`` label of the processed product marks."""
+        """In words, what the ``time`` label of the processed file marks."""
         return TIME_REFERENCE_FOR_STRUCTURE[self.time_structure]
 
     @property
     def has_time_bounds(self) -> bool:
-        """Whether the processed product carries ``time_bounds``."""
+        """Whether the processed file carries ``time_bounds``."""
         return self.time_structure is TimeStructure.ANNUAL
 
     @property
@@ -359,7 +362,7 @@ class ConstraintSpec:
         return (SITE, TIME)
 
     def xarray_attributes(self) -> dict[str, Any]:
-        """Attributes for the ``value`` array of the processed product.
+        """Attributes for the ``value`` array of the processed file.
 
         Keys follow the Climate and Forecast conventions where one exists
         (``units``, ``long_name``, ``comment``); the rest are spelled out.
@@ -368,7 +371,7 @@ class ConstraintSpec:
             "units": self.units,
             "long_name": self.long_label,
             "description": self.description,
-            "product": self.product,
+            "upstream_product": self.upstream_product,
             "source_file": self.raw_file,
             "source_column": self.value_column,
             "time_reference": self.time_reference,
@@ -394,7 +397,7 @@ class ConstraintSpec:
 #: How a raw file writes a missing value.
 MISSING_TOKEN = "NA"
 
-#: In words, what the ``time`` label of a product with each structure marks.
+#: In words, what the ``time`` label of a constraint with each structure marks.
 TIME_REFERENCE_FOR_STRUCTURE: Mapping[TimeStructure, str] = FrozenMapping(
     {
         TimeStructure.STATIC: (
@@ -432,7 +435,7 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
             "model and appear to be predicted. Coverage is US land only. The season "
             "within the year that an annual value represents is not documented."
         ),
-        product="LandTrendr annual Landsat biomass",
+        upstream_product="LandTrendr annual Landsat biomass",
         time_structure=TimeStructure.ANNUAL,
         raw_file="landtrendr_aboveground_biomass.csv.gz",
         raw_columns=("site_id", "year", "agb_mean", "agb_sd"),
@@ -455,12 +458,12 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         units="Mg ha-1",
         constituent="",
         description=(
-            "An annual GEDI aboveground biomass value at the site, 2019-2024. The product, "
-            "its version, and how footprint retrievals were aggregated to the 1 km site "
-            "are not documented. Independent of LandTrendr and not part of the set the "
-            "reanalysis assimilated."
+            "An annual GEDI aboveground biomass value at the site, 2019-2024. The "
+            "upstream product, its version, and how footprint retrievals were "
+            "aggregated to the 1 km site are not documented. Independent of LandTrendr "
+            "and not part of the set the reanalysis assimilated."
         ),
-        product="GEDI",
+        upstream_product="GEDI",
         time_structure=TimeStructure.ANNUAL,
         raw_file="gedi_aboveground_biomass.csv.gz",
         raw_columns=("year", "site_id", "agb", "sd"),
@@ -482,11 +485,11 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
             "Lai_500m and LaiStdDev_500m of each 4-day MODIS composite at the site, June "
             "through August of 2011-2024, as extracted by PEcAn MODIS_LAI_prep.R. Rows "
             "flagged qc '001' fail the producer's quality test, are equivalent to sd > 20, "
-            "and are dropped at ingest; their sd of 24.8 is the product fill value 248 x "
-            "0.1. LAI is one-sided green leaf area per unit ground area in broadleaf "
+            "and are dropped at ingest; their sd of 24.8 is the upstream product's fill "
+            "value 248 x 0.1. LAI is one-sided green leaf area per unit ground area in broadleaf "
             "canopies and half the total needle area in conifers."
         ),
-        product="MODIS MCD15A3H v061",
+        upstream_product="MODIS MCD15A3H v061",
         time_structure=TimeStructure.DATED,
         raw_file="modis_leaf_area_index.csv.gz",
         raw_columns=("date", "site_id", "lat", "lon", "lai", "sd", "qc"),
@@ -496,13 +499,15 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         quality_column="qc",
         quality_pass="000",
         units_provenance=(
-            "The product's documented unit and 0.1 scale factor. " + PRODUCER_UNCONFIRMED
+            "The upstream product's documented unit and 0.1 scale factor. "
+            + PRODUCER_UNCONFIRMED
         ),
         comment=(
             "The date is the composite's label as the extraction returned it. The "
             "compositing period is 4 days; whether the label marks its first day is not "
-            "confirmed, so no time bounds are written. Many unflagged records carry a "
-            "standard deviation of exactly zero; they are written through unchanged."
+            "confirmed, so no time_bounds variable is written. Many unflagged records "
+            "carry a standard deviation of exactly zero; they are written through "
+            "unchanged."
         ),
     ),
     ConstraintSpec(
@@ -517,7 +522,7 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
             "deviation x 100; which produced this file is not documented. The source "
             "grid is coarser than the site grid, so neighboring sites can share a value."
         ),
-        product="SMAP Level 4 soil moisture",
+        upstream_product="SMAP Level 4 soil moisture",
         time_structure=TimeStructure.DATED,
         raw_file="smap_soil_moisture.csv.gz",
         raw_columns=("date", "site_id", "lat", "lon", "smp", "sd"),
@@ -546,7 +551,7 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
             "Soilgrids_SoilC_prep.R. A static map: the assembler wrote the same value "
             "into every year 2012-2024."
         ),
-        product="SoilGrids250m v2.0",
+        upstream_product="SoilGrids250m v2.0",
         time_structure=TimeStructure.STATIC,
         raw_file="soilgrids_soil_organic_carbon.csv.gz",
         raw_columns=("site_id", "soc", "sd", "year"),
@@ -572,9 +577,9 @@ def resolve_constraint(name: str) -> ConstraintSpec:
     raise KeyError(f"No constraint named {name!r}. Known: {list(CONSTRAINT_NAMES)}")
 
 
-# ── the product ───────────────────────────────────────────────────────────────
+# ── the processed file ────────────────────────────────────────────────────────
 
-#: Name of the observation array in the processed file.
+#: Name of the observed-values array in the processed file.
 VALUE = "value"
 
 #: Name of the standard-deviation array in the processed file.
@@ -595,7 +600,7 @@ def default_raw_dir() -> Path:
 
 
 def default_constraints_dir() -> Path:
-    """Where the processed products are expected: ``data/processed/constraints/``.
+    """Where the processed files are expected: ``data/processed/constraints/``.
 
     ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
     """
@@ -645,7 +650,7 @@ def load_constraint(
         )
     dataset = xr.open_dataset(path, engine="h5netcdf")
     try:
-        _check_product(dataset, spec, path)
+        _check_processed_file_matches_the_spec(dataset, spec, path)
     except Exception:
         dataset.close()
         raise
@@ -677,9 +682,9 @@ def constraint_fields(
     dict
         Constraint name to its ``value`` array, renamed to the constraint,
         with dims ``(site, time)`` or ``(site,)`` and the array's attributes.
-        An annual product's array also carries its CF ``time_bounds`` as the
-        one-dimensional coordinates ``time_bounds_start`` and
-        ``time_bounds_end`` on ``time``
+        An annual constraint's field also carries its windows, read from the
+        CF ``time_bounds``, as the one-dimensional coordinates
+        ``window_start`` and ``window_end`` on ``time``
         (:data:`~sipnet_calibration.conventions.WINDOW_START`,
         :data:`~sipnet_calibration.conventions.WINDOW_END`).
 
@@ -693,7 +698,7 @@ def constraint_fields(
         twice, or *sites* is a two-dimensional array.
     KeyError
         If a name is not a constraint, or a requested site is not in the
-        product.
+        processed file.
     """
     return _fields(VALUE, names, sites, directory)
 
@@ -774,7 +779,9 @@ def read_raw(spec: ConstraintSpec, root: Path | str | None = None) -> pd.DataFra
     return frame
 
 
-def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> xr.Dataset:
+def build_constraint(
+    spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame
+) -> xr.Dataset:
     """Turn a raw frame into the processed Dataset the data model describes.
 
     Parameters
@@ -783,7 +790,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
         Which constraint.
     frame:
         As :func:`read_raw` returns it.
-    sites:
+    site_table:
         The site table from :func:`sipnet_calibration.sites.load_sites`; its
         ``site_id`` is the pool and its ``lon``/``lat`` the coordinates.
 
@@ -806,14 +813,14 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     This is pure: it neither reads nor writes files, so the ingest script and
     the tests call it on the same frames. The friendlier, earlier checks live
     in the script; the guards here are the ones that would otherwise let a
-    fancy-indexed assignment silently overwrite a cell.
+    fancy-indexed assignment silently overwrite an element.
     """
     kept, n_dropped = _apply_quality_filter(spec, frame)
-    site = np.sort(sites[SITE_ID].to_numpy(np.int64))
+    site = np.sort(site_table[SITE_ID].to_numpy(np.int64))
 
     row_site = kept[SITE_ID].to_numpy(np.int64)
     check_site_table_lists_the_sites(
-        sites, np.unique(row_site).tolist(), message_name=f"{spec.name}: site(s)"
+        site_table, np.unique(row_site).tolist(), message_name=f"{spec.name}: site(s)"
     )
     site_index = np.searchsorted(site, row_site)
 
@@ -827,7 +834,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
         arrays = _dated_arrays(spec, kept, site_index, time, site.size)
         coords = _time_coords(spec, time)
 
-    coords.update(site_coordinates(site.tolist(), sites))
+    coords.update(site_coordinates(site.tolist(), site_table))
     dataset = xr.Dataset(
         {
             VALUE: (spec.dims, arrays[0], spec.xarray_attributes()),
@@ -842,7 +849,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
 
 
 def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
-    """The on-disk encoding for a product built by :func:`build_constraint`.
+    """The on-disk encoding for a constraint built by :func:`build_constraint`.
 
     Both data arrays are compressed with ``NaN`` as the fill value; ``time``
     and ``time_bounds`` are integer days on :data:`TIME_UNITS`; and no
@@ -867,7 +874,7 @@ def describe(spec: ConstraintSpec) -> str:
     """A constraint spec as a paragraph, for ``--describe`` and the run log."""
     units = f"{spec.units} {spec.constituent}".strip()
     lines = [
-        f"{spec.name}: {spec.long_label} ({units}), from {spec.product}.",
+        f"{spec.name}: {spec.long_label} ({units}), from {spec.upstream_product}.",
         f"  raw file   {spec.raw_file}",
         f"  columns    value {spec.value_column!r}, sd {spec.sd_column!r}"
         + (f", time {spec.time_column!r}" if spec.time_column else "")
@@ -939,7 +946,7 @@ def _dated_arrays(
 ) -> tuple[np.ndarray, np.ndarray]:
     time = pd.DatetimeIndex(sorted(row_time.unique())).as_unit("ns")
     time_index = time.get_indexer(row_time)
-    _check_no_duplicate_cells(site_index, time_index, spec)
+    _check_no_duplicate_site_time_keys(site_index, time_index, spec)
 
     value = np.full((n_sites, time.size), np.nan)
     sd = np.full((n_sites, time.size), np.nan)
@@ -1013,9 +1020,9 @@ def _dataset_attributes(
 ) -> dict[str, Any]:
     return {
         "Conventions": CF_CONVENTIONS,
-        "title": f"{spec.long_label} constraint from {spec.product}",
+        "title": f"{spec.long_label} constraint from {spec.upstream_product}",
         "constraint": spec.name,
-        "product": spec.product,
+        "upstream_product": spec.upstream_product,
         "source_file": spec.raw_file,
         "time_structure": spec.time_structure.value,
         "rows_read": n_read,
@@ -1055,14 +1062,14 @@ def _fields(
         if TIME_BOUNDS in dataset.coords:
             field = field.assign_coords(_window_coords(dataset))
         if wanted is not None:
-            check_product_holds_the_sites(dataset, wanted, name=name)
+            check_constraint_holds_the_sites(dataset, wanted, name=name)
             field = field.sel({SITE: wanted})
         fields[name] = field
     return fields
 
 
 def _window_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
-    """CF ``time_bounds`` as two one-dimensional coordinates on ``time``.
+    """CF ``time_bounds`` as the two one-dimensional window coordinates on ``time``.
 
     A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
     ``bounds`` dimension being none of the array's, so the pair rides along
@@ -1091,28 +1098,28 @@ def _window_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_product_holds_the_sites(
+def check_constraint_holds_the_sites(
     dataset: xr.Dataset, site_ids: Sequence[int], *, name: str
 ) -> None:
-    """A constraint product holds every site asked of it."""
+    """A constraint's processed file holds every site asked of it."""
     held = set(dataset[SITE].values.tolist())
     missing = [site for site in site_ids if site not in held]
     if missing:
         raise KeyError(
-            f"{name}: site(s) {truncated(missing)} are not in the product; ask only for "
+            f"{name}: site(s) {truncated(missing)} are not in the processed file; ask only for "
             "sites of the site table it was built on."
         )
 
 
-def _check_no_duplicate_cells(
+def _check_no_duplicate_site_time_keys(
     site_index: np.ndarray, time_index: np.ndarray, spec: ConstraintSpec
 ) -> None:
-    cells = pd.MultiIndex.from_arrays([site_index, time_index])
-    if cells.has_duplicates:
-        n = int(cells.duplicated().sum())
+    keys = pd.MultiIndex.from_arrays([site_index, time_index])
+    if keys.has_duplicates:
+        n = int(keys.duplicated().sum())
         raise ValueError(
             f"{spec.name}: {n} rows share a (site, time) with another row. Two records "
-            "for one cell would silently overwrite each other."
+            "for one (site, time) key would silently overwrite each other."
         )
 
 
@@ -1130,8 +1137,10 @@ def _check_static_copies_agree(spec: ConstraintSpec, frame: pd.DataFrame) -> Non
         )
 
 
-def _check_product(dataset: xr.Dataset, spec: ConstraintSpec, path: Path) -> None:
-    """Raise unless *dataset* is the product the spec describes."""
+def _check_processed_file_matches_the_spec(
+    dataset: xr.Dataset, spec: ConstraintSpec, path: Path
+) -> None:
+    """Raise unless *dataset* is the processed file the spec describes."""
     missing = {VALUE, STANDARD_DEVIATION} - set(dataset.data_vars)
     if missing:
         raise ValueError(f"{path}: missing data variables {sorted(missing)}")
@@ -1173,4 +1182,6 @@ def _check_product(dataset: xr.Dataset, spec: ConstraintSpec, path: Path) -> Non
 
     observed = np.isfinite(dataset[VALUE].values)
     if not np.array_equal(observed, np.isfinite(dataset[STANDARD_DEVIATION].values)):
-        raise ValueError(f"{path}: value and standard_deviation are missing in different cells")
+        raise ValueError(
+            f"{path}: value and standard_deviation are missing at different elements"
+        )

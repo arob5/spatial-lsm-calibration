@@ -173,8 +173,8 @@ Project site coordinates::
     from sipnet_calibration.projection import SITE_PROJECTION
     from sipnet_calibration.sites import EXTENTS, load_sites
 
-    sites = load_sites()
-    x, y = SITE_PROJECTION.forward(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+    site_table = load_sites()
+    x, y = SITE_PROJECTION.forward(site_table["lon"].to_numpy(), site_table["lat"].to_numpy())
 
 Axes limits for a named region, in the same projected meters. Set the aspect
 ratio to equal, or the equal-area property does not survive to the page::

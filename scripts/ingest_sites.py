@@ -7,7 +7,7 @@ Read the point shapefile that defines the site pool and write it as a CSV,
 carrying every field of the shapefile plus the grid indices and the Ameriflux
 identifier. The shapefile is the only input under ``data/raw/`` that is tracked
 in version control, so this is the one ingest script that runs end to end on a
-laptop, and every other product joins against its output on ``site_id``.
+laptop, and every other data source joins against its output on ``site_id``.
 
 Input data
 ----------
@@ -595,7 +595,7 @@ def check_fields_are_present(contents: ShapefileContents, *, required: tuple[str
 def check_site_ids_are_the_full_range(site_ids: np.ndarray) -> None:
     """Fail unless ``site_id`` is exactly ``1..N_SITES`` in record order.
 
-    Record *N* is site *N*: every other product joins on this, and the
+    Record *N* is site *N*: every other data source joins on this, and the
     identifiers are not ours to renumber, so a permutation is as much a failure
     as a gap.
     """
@@ -771,7 +771,7 @@ def write_checked_site_table(table: pd.DataFrame, out_path: Path) -> None:
     ``.partial`` path beside *out_path* and renamed over it once it passes
     (:func:`sipnet_calibration.io.write_checked`). Writing to *out_path*
     directly would mean that a failed check leaves a corrupt table at the
-    canonical path -- the one every other product joins against -- while the
+    canonical path -- the one every other data source joins against -- while the
     script exits non-zero. A failed check keeps the ``.partial`` file for
     inspection and prints its path. The rename is atomic on a POSIX
     filesystem, so *out_path* is either the previous table or a fully checked

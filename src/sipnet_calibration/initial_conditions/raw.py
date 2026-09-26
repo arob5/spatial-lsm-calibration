@@ -13,7 +13,7 @@ and :func:`read_raw` reads it back and checks it against the same rules.
 Data model
 ----------
 **Dimensions**: ``site``, ``member`` -- in that order, the transpose of the
-product's.
+processed file's.
 
 **Data variables**: one per :data:`SOURCE` variable, under the *source* names,
 all ``float64`` on ``(site, member)``, ``NaN`` where none of a site's files
@@ -22,7 +22,7 @@ carries the variable. Each carries the source file's own ``units`` and
 
 **Coordinates**: ``site`` ``int32`` ascending, the identifiers the source
 directories are named for; ``member`` ``int16`` ascending, the source files'
-**1-based** index, which the product renumbers.
+**1-based** index, which the processed file renumbers.
 
 **Attributes**: ``title``, ``source_root``, ``source_layout``,
 ``source_format``, ``source_fill_value``, the ``source_time_*`` triple,
@@ -272,7 +272,7 @@ def _check_presence_is_uniform_over_members(
 
     Private to the package but shared across it:
     :mod:`sipnet_calibration.initial_conditions.processed` asserts the same
-    invariant on the product, and it has to be the same rule, since it is what
+    invariant on the processed file, and it has to be the same rule, since it is what
     gives ``NaN`` its one meaning.
     """
     for name, array in arrays.items():
@@ -314,7 +314,7 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
             raise ValueError(f"{path}: {coordinate} is empty or not strictly ascending")
         if not np.issubdtype(values.dtype, np.integer):
             raise ValueError(f"{path}: {coordinate} is {values.dtype}, expected an integer type")
-        # The product narrows these with astype, which wraps silently.
+        # The processed file narrows these with astype, which wraps silently.
         check_integers_are_in_range(
             values.astype(np.int64),
             minimum=1,

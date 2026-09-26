@@ -60,7 +60,7 @@ ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 
 **Data variables**, all ``float64`` on ``(driver_member, site, time)``: the
 eight value columns of the climate file, under pySIPNET's registry names,
-listed in :data:`DRIVER_VARIABLES` -- ``air_temperature``, ``soil_temperature``,
+listed in :data:`DRIVER_VARIABLE_NAMES` -- ``air_temperature``, ``soil_temperature``,
 ``photosynthetically_active_radiation``, ``precipitation``,
 ``vapor_pressure_deficit``, ``soil_vapor_pressure_deficit``,
 ``vapor_pressure`` and ``wind_speed``. Each carries the attributes pySIPNET
@@ -193,8 +193,8 @@ Name the sites, get the canonical form::
     from sipnet_calibration.drivers import driver_fields, load_drivers
     from sipnet_calibration.sites import load_sites, select_sites
 
-    sites = select_sites(load_sites(), bbox=(-125, 24, -66, 50), sample=20, seed=0)
-    drivers = load_drivers(sites["site_id"])          # every member present
+    site_table = select_sites(load_sites(), bbox=(-125, 24, -66, 50), n_random=20, seed=0)
+    drivers = load_drivers(site_table["site_id"])     # every member present
 
     drivers["air_temperature"].dims   # ('driver_member', 'site', 'time')
     drivers["precipitation"].attrs["kind"]            # 'timestep_total'
@@ -256,7 +256,7 @@ __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
     "DRIVER_FILE_GLOB",
     "DRIVER_PRESENT",
-    "DRIVER_VARIABLES",
+    "DRIVER_VARIABLE_NAMES",
     "NEGATIVE_TOLERANCE",
     "UNITS_PROVENANCE",
     "available_members",
@@ -270,7 +270,7 @@ __all__ = [
 #: The driver variables, under pySIPNET's names, in climate-file column order:
 #: every column of pySIPNET's climate registry outside its ``time`` group, which
 #: becomes the time axis.
-DRIVER_VARIABLES: tuple[str, ...] = tuple(
+DRIVER_VARIABLE_NAMES: tuple[str, ...] = tuple(
     spec.name for spec in CLIMATE_VARIABLES if spec.group != "time"
 )
 
@@ -430,7 +430,7 @@ def load_drivers(
     *,
     source_indices: Iterable[int] | None = None,
     root: Path | str | None = None,
-    sites_table: pd.DataFrame | None = None,
+    site_table: pd.DataFrame | None = None,
     allow_missing: bool = False,
     time_zone: str | None = None,
 ) -> xr.Dataset:
@@ -449,7 +449,7 @@ def load_drivers(
         sites, in ascending order.
     root:
         The drivers root. Defaults to :func:`default_drivers_root`.
-    sites_table:
+    site_table:
         The site table, as :func:`sipnet_calibration.sites.load_sites` returns
         it. Loaded from its default location when ``None``. Only ``site_id``,
         ``lon`` and ``lat`` are read, and ``site_id`` must be unique.
@@ -468,7 +468,7 @@ def load_drivers(
     -------
     xarray.Dataset
         The Data model described in the module docstring: the eight
-        :data:`DRIVER_VARIABLES` on ``(driver_member, site, time)``,
+        :data:`DRIVER_VARIABLE_NAMES` on ``(driver_member, site, time)``,
         ``float64``, with pySIPNET's time coordinates, ``lon``/``lat`` on
         ``site`` and ``source_index`` on ``driver_member``.
 
@@ -482,7 +482,7 @@ def load_drivers(
     TypeError
         If *sites* or *source_indices* is one value, a string, a set or not
         iterable, or holds a boolean, a float or a value that is not an
-        integer; or if *sites_table* is not a ``DataFrame`` or its
+        integer; or if *site_table* is not a ``DataFrame`` or its
         ``site_id`` is not integers.
     KeyError
         If a site is not in the site table.
@@ -505,7 +505,7 @@ def load_drivers(
     time_zone = normalize_time_zone(time_zone)
 
     site_ids = _site_ids(sites)
-    table = sites_table if sites_table is not None else load_sites()
+    table = site_table if site_table is not None else load_sites()
     # Located before any file is read, so a site the table lacks fails fast.
     coordinates = site_coordinates(site_ids.tolist(), table)
 
@@ -531,7 +531,7 @@ def load_drivers(
 
 
 def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
-    """One ``DataArray`` per driver variable, in :data:`DRIVER_VARIABLES` order.
+    """One ``DataArray`` per driver variable, in :data:`DRIVER_VARIABLE_NAMES` order.
 
     Each field has dims ``(driver_member, site, time)``, is named for its
     variable, keeps that variable's attributes, and carries pySIPNET's
@@ -555,7 +555,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     Raises
     ------
     ValueError
-        If any of :data:`DRIVER_VARIABLES` is absent from *dataset*.
+        If any of :data:`DRIVER_VARIABLE_NAMES` is absent from *dataset*.
 
     Notes
     -----
@@ -564,14 +564,14 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     :func:`sipnet_calibration.fields.from_sipnet_output` does for a model
     field.
     """
-    missing = [name for name in DRIVER_VARIABLES if name not in dataset.data_vars]
+    missing = [name for name in DRIVER_VARIABLE_NAMES if name not in dataset.data_vars]
     if missing:
         raise ValueError(
             f"dataset is missing driver variables {missing}; found "
             f"{sorted(dataset.data_vars)}"
         )
     fields = {}
-    for name in DRIVER_VARIABLES:
+    for name in DRIVER_VARIABLE_NAMES:
         field = dataset[name].copy(deep=False)
         field[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
         fields[name] = field
@@ -682,9 +682,10 @@ def _read_all(
     """Read every located file into ``(driver_member, site, time)`` arrays.
 
     The first file read supplies the time axis; every later file is checked to
-    be on the same one before its values are copied in. Cells with no file stay
-    ``NaN``. Returns the arrays and the first file's pySIPNET Dataset, whose
-    time coordinates and attributes the result takes.
+    be on the same one before its values are copied in. A ``(driver_member,
+    site)`` pair with no file stays ``NaN``. Returns the arrays and the first
+    file's pySIPNET Dataset, whose time coordinates and attributes the result
+    takes.
     """
     reference: xr.Dataset | None = None
     reference_path: Path | None = None
@@ -697,10 +698,10 @@ def _read_all(
         if reference is None:
             reference, reference_path = dataset, path
             shape = present.shape + (dataset.sizes[TIME],)
-            arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLES}
+            arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLE_NAMES}
         else:
             _check_time_axes_identical(reference, dataset, reference_path=reference_path, path=path)
-        for name in DRIVER_VARIABLES:
+        for name in DRIVER_VARIABLE_NAMES:
             arrays[name][i, j, :] = dataset[name].to_numpy()
     assert reference is not None
     return arrays, reference
@@ -719,7 +720,7 @@ def _assemble(
     """Put the arrays into the Dataset the module docstring describes."""
     dims = (DRIVER_MEMBER, SITE, TIME)
     data_vars = {}
-    for name in DRIVER_VARIABLES:
+    for name in DRIVER_VARIABLE_NAMES:
         values = arrays[name]
         attrs = {**reference[name].attrs, "units_provenance": UNITS_PROVENANCE}
         observed = values[present]

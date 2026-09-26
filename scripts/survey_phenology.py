@@ -17,7 +17,7 @@ down and nowhere else goes stale in silence. The numbers live here as
 re-copied or regenerated file that changed is refused rather than absorbed.
 
 This is not part of the ingest pipeline: nothing is written, nothing under
-``data/processed/`` depends on it, and no product is built from phenology yet.
+``data/processed/`` depends on it, and no processed file is built from phenology yet.
 
 Input data
 ----------
@@ -26,11 +26,11 @@ Input data
     and ``leafoffday`` are day-of-year or the literal ``NA``; the two ``_qa``
     columns are integers 0-3.
 
-``--sites``, default ``data/processed/sites/sites.csv``
+``--site-table``, default ``data/processed/sites/sites.csv``
     The site table, used only to check that the file's identifiers are the
     project's site pool and that its coordinates agree with it. Skipped with
-    ``--no-sites``, which is what the NEON companion file needs: it is keyed on
-    BETY identifiers and joins to nothing here.
+    ``--no-site-table``, which is what the NEON companion file needs: it is
+    keyed on BETY identifiers and joins to nothing here.
 
 Output data
 -----------
@@ -59,7 +59,7 @@ Usage
 
     python scripts/survey_phenology.py
     python scripts/survey_phenology.py --path data/raw/phenology/leaf_phenology_neon.csv \\
-        --no-sites --no-check
+        --no-site-table --no-check
     python scripts/survey_phenology.py --out phenology_survey.json
 """
 
@@ -77,7 +77,7 @@ import pandas as pd
 from sipnet_calibration import conventions
 from sipnet_calibration.sites import default_sites_path, load_sites
 
-#: The file's header, in order. Any other header is a different product.
+#: The file's header, in order. Any other header is a different data source.
 COLUMNS = (
     "year",
     "site_id",
@@ -116,7 +116,7 @@ RECORDED: dict[str, dict[str, Any]] = {
         "inverted_rows": 731,
         "inverted_sites": 308,
         "inverted_leafoffday_median": 42.0,
-        # Only reachable with --sites, which the NEON file cannot use.
+        # Only reachable with --site-table, which the NEON file cannot use.
         "identifiers_not_in_the_site_table": 0,
         "sites_of_the_pool_absent": 0,
     },
@@ -157,8 +157,10 @@ def main(argv: list[str] | None = None) -> int:
     path = args.path or default_data_root() / "raw" / "phenology" / "leaf_phenology_8k.csv"
     try:
         frame = read_phenology(path)
-        sites = None if args.no_sites else load_sites(args.sites or default_sites_path())
-        report = build_report(frame, path, sites)
+        site_table = (
+            None if args.no_site_table else load_sites(args.site_table or default_sites_path())
+        )
+        report = build_report(frame, path, site_table)
     except (OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
@@ -191,13 +193,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="The CSV to survey. Default: data/raw/phenology/leaf_phenology_8k.csv.",
     )
     parser.add_argument(
-        "--sites",
+        "--site-table",
         type=Path,
         default=None,
         help="The site table. Default: data/processed/sites/sites.csv.",
     )
     parser.add_argument(
-        "--no-sites",
+        "--no-site-table",
         action="store_true",
         help="Skip the site-table checks. Needed for the NEON file, which is keyed on "
         "BETY identifiers.",
@@ -251,7 +253,7 @@ def _read_checked(path: Path) -> pd.DataFrame:
 
 
 def build_report(
-    frame: pd.DataFrame, path: Path, sites: pd.DataFrame | None
+    frame: pd.DataFrame, path: Path, site_table: pd.DataFrame | None
 ) -> dict[str, Any]:
     """Every measurement, in one dictionary."""
     report: dict[str, Any] = {
@@ -268,10 +270,10 @@ def build_report(
     report.update(survey_quality(frame))
     report.update(survey_days(frame))
     report.update(survey_inversions(frame))
-    table = survey_against_site_table(frame, sites)
+    table = survey_against_site_table(frame, site_table)
     report["site_table"] = table
     # Lifted to the top level because compare_with_recorded only reaches that
-    # far, and these are the properties --sites exists to establish.
+    # far, and these are the properties --site-table exists to establish.
     if table["checked"]:
         report["identifiers_not_in_the_site_table"] = table[
             "identifiers_not_in_the_site_table"
@@ -335,15 +337,15 @@ def survey_inversions(frame: pd.DataFrame) -> dict[str, Any]:
 
 
 def survey_against_site_table(
-    frame: pd.DataFrame, sites: pd.DataFrame | None
+    frame: pd.DataFrame, site_table: pd.DataFrame | None
 ) -> dict[str, Any]:
     """Whether the file's identifiers are the project's sites, and agree on position."""
-    if sites is None:
+    if site_table is None:
         return {"checked": False}
-    known = set(sites["site_id"])
+    known = set(site_table["site_id"])
     unknown = sorted(set(frame["site_id"]) - known)
     joined = frame.merge(
-        sites[["site_id", "lon", "lat"]], on="site_id", how="inner", suffixes=("", "_table")
+        site_table[["site_id", "lon", "lat"]], on="site_id", how="inner", suffixes=("", "_table")
     )
     return {
         "checked": True,
@@ -412,7 +414,7 @@ def format_report(report: dict[str, Any]) -> str:
             f"{table['max_coordinate_difference_degrees']} degrees",
         ]
     else:
-        lines += ["", "  site table                   : not checked (--no-sites)"]
+        lines += ["", "  site table                   : not checked (--no-site-table)"]
     return "\n".join(lines)
 
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env python
-"""Build the processed constraint products, one netCDF per constraint.
+"""Build the constraints' processed files, one netCDF per constraint.
 
 Overview
 --------
 For each constraint in ``sipnet_calibration.constraints.CONSTRAINTS``, read its
 raw file, check it, place its records on the site pool and write the result as
 ``data/processed/constraints/<name>.nc``. Every decision about what a file
-holds -- columns, units, time structure, which rows to drop -- is a field of
-the constraint's spec in the library; this script is the orchestration and the
+holds -- columns, units, time structure, which rows to drop -- is set in the
+constraint's spec in the library; this script is the orchestration and the
 checks, and its own round-trip check reads each file back with
 :func:`sipnet_calibration.constraints.load_constraint`, the same function every
 consumer uses.
@@ -19,16 +19,16 @@ Input data
     by :func:`sipnet_calibration.constraints.read_raw`. See
     ``data/raw/constraints/provenance.md`` for where they came from.
 
-``--sites``, default ``data/processed/sites/sites.csv``
-    The site table: the pool the products are dense over, and the ``lon``/``lat``
-    coordinates.
+``--site-table``, default ``data/processed/sites/sites.csv``
+    The site table: the pool the processed files are dense over, and the
+    ``lon``/``lat`` coordinates.
 
 Output data
 -----------
 ``--out-dir``, default ``data/processed/constraints/``, one file per constraint::
 
     value(site[, time])               float64, NaN where unobserved
-    standard_deviation(site[, time])  float64, NaN in the same cells
+    standard_deviation(site[, time])  float64, NaN at the same elements
 
 with ``site`` the whole pool, ``time`` the constraint's own labels (absent for
 a static constraint), ``time_bounds`` for an annual one, and every attribute
@@ -116,13 +116,13 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
     out_dir = args.out_dir if args.out_dir is not None else default_constraints_dir()
-    sites_path = args.sites if args.sites is not None else default_sites_path()
+    site_table_path = args.site_table or default_sites_path()
 
     try:
-        sites = load_sites(sites_path)
+        site_table = load_sites(site_table_path)
         for name in names:
-            dataset = ingest(resolve_constraint(name), raw_root, sites, out_dir)
-            print(describe_product(dataset, constraint_path(name, out_dir)))
+            dataset = ingest(resolve_constraint(name), raw_root, site_table, out_dir)
+            print(describe_processed_file(dataset, constraint_path(name, out_dir)))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -153,7 +153,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory of the raw files. Default: data/raw/constraints.",
     )
     parser.add_argument(
-        "--sites",
+        "--site-table",
         type=Path,
         default=None,
         help="The site table. Default: data/processed/sites/sites.csv.",
@@ -170,26 +170,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the ingest steps, in the order main calls them ────────────────────────────
 
 
-def ingest(spec: ConstraintSpec, raw_root: Path, sites: pd.DataFrame, out_dir: Path) -> xr.Dataset:
+def ingest(
+    spec: ConstraintSpec, raw_root: Path, site_table: pd.DataFrame, out_dir: Path
+) -> xr.Dataset:
     """Read, check, build and write one constraint."""
     frame = read_raw(spec, raw_root)
-    check_raw_frame(spec, frame, sites)
+    check_raw_frame(spec, frame, site_table)
 
-    dataset = build_constraint(spec, frame, sites)
-    write_product(dataset, constraint_path(spec, out_dir), spec)
+    dataset = build_constraint(spec, frame, site_table)
+    write_processed_file(dataset, constraint_path(spec, out_dir), spec)
     return dataset
 
 
-def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame) -> None:
+def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame) -> None:
     """Every check on the raw rows, before anything is built from them."""
     check_site_id_column_is_integer_valued(spec, frame)
     check_site_ids_are_in_range(
         frame[SITE_ID].to_numpy(), message_name=f"{spec.raw_file}: {SITE_ID}"
     )
     check_site_table_lists_the_sites(
-        sites, frame[SITE_ID].unique().tolist(), message_name=f"{spec.raw_file}: site(s)"
+        site_table, frame[SITE_ID].unique().tolist(), message_name=f"{spec.raw_file}: site(s)"
     )
-    check_coordinates_match_site_table(spec, frame, sites)
+    check_coordinates_match_site_table(spec, frame, site_table)
     check_key_is_unique(spec, frame)
     check_value_and_sd_missing_together(spec, frame)
     check_values_are_finite(spec, frame)
@@ -201,7 +203,7 @@ def check_raw_frame(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFra
         check_static_copies_agree(spec, frame)
 
 
-def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
+def write_processed_file(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     write_checked(
         out,
@@ -212,14 +214,14 @@ def write_product(dataset: xr.Dataset, out: Path, spec: ConstraintSpec) -> None:
     )
 
 
-def describe_product(dataset: xr.Dataset, path: Path) -> str:
+def describe_processed_file(dataset: xr.Dataset, path: Path) -> str:
     """A short report of what was written, for the run log."""
     value, sd = dataset[VALUE].values, dataset[STANDARD_DEVIATION].values
     observed = np.isfinite(value)
     sizes = " x ".join(f"{dataset.sizes[dim]} {dim}" for dim in dataset[VALUE].dims)
     lines = [
         f"{dataset.attrs['constraint']}  ->  {path} ({path.stat().st_size / 1e6:.1f} MB)",
-        f"  {sizes}; observed {int(observed.sum())} of {observed.size} cells "
+        f"  {sizes}; observed {int(observed.sum())} of {observed.size} elements "
         f"({observed.mean():.1%})",
         f"  rows read {dataset.attrs['rows_read']}, dropped by quality flag "
         f"{dataset.attrs['rows_dropped_by_quality_flag']}, collapsed as copies "
@@ -247,7 +249,7 @@ def check_site_id_column_is_integer_valued(spec: ConstraintSpec, frame: pd.DataF
 
 
 def check_coordinates_match_site_table(
-    spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFrame
+    spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """Raise if a file's own lat/lon disagree with the site table for its site ids.
 
@@ -258,7 +260,7 @@ def check_coordinates_match_site_table(
     # The raw files that carry coordinates name them as the site table does.
     if not {LAT, LON} <= set(spec.raw_columns):
         return
-    table = site_lookup(sites).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
+    table = site_lookup(site_table).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
     for column in (LON, LAT):
         given = frame[column].to_numpy(np.float64)
         if not np.isfinite(given).all():
@@ -314,7 +316,7 @@ def check_values_are_finite(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
 def check_some_rows_are_observed(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
     """Raise if no row that passes the quality flag carries a value.
 
-    A file of nothing but ``NA`` would otherwise build an all-missing product
+    A file of nothing but ``NA`` would otherwise build an all-missing processed file
     and replace the canonical file with it.
     """
     kept = frame

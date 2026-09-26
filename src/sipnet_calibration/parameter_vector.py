@@ -7,7 +7,7 @@ pySIPNET owns the physical SIPNET parameters, their units and their domains.
 pyEKI takes a Gaussian prior on unconstrained ``R^D``, an initial ``(J, D)``
 ensemble drawn from it, and a callable forward model, and leaves transforms,
 constraints and priors to the caller. PyEns runs an ensemble declared as
-``Grid``\\ s over ``Axis``\\ es, built from a SIPNET table by
+``Grid``\\ s over ``Axis``\\ es, built from SIPNET parameter fields by
 ``pyens.xarray.fields_from_dataset``. This module is what sits between
 them, and the dependency runs one way::
 
@@ -22,13 +22,13 @@ What it reads
 Nothing from disk. A :class:`ParameterVector` is built over sites and site
 labels the caller has already loaded:
 
-``sites``
-    Plain site ids, or a site table from
+``sites`` or ``site_table``
+    Plain site ids (``sites=``), or a site table from
     :func:`sipnet_calibration.sites.select_sites` in ascending ``site_id``
-    order, whose ``lon``/``lat`` are then carried onto every dataset the
-    vector produces.
+    order (``site_table=``), whose ``lon``/``lat`` are then carried onto every
+    dataset the vector produces.
 ``site_labels``
-    For each site-labels name used as a ``varies_by``, a site-labels product
+    For each site-labels name used as a ``varies_by``, a site-labels table
     from :func:`sipnet_calibration.site_labels.load_site_labels`, a pandas
     categorical, or one label per site as a plain sequence.
 
@@ -37,7 +37,7 @@ The object
 A :class:`ParameterVector` is a named random vector ``theta`` in ``R^D``. It
 is built from :class:`CalibrationParameter`\\ s, each with a prior in natural
 space, a rule for how it varies over the sites (``varies_by``: shared, one
-copy per site, or one copy per class of a site-labels product) and a
+copy per site, or one copy per class of a site-labels data source) and a
 :class:`SIPNETMap` saying which SIPNET parameters it sets; and from
 :class:`FixedParameter`\\ s, SIPNET parameters held at a value. For each
 calibration parameter ``c``::
@@ -62,18 +62,18 @@ natural space, unconstrained space
     ``R^D``, where a sampler moves.
 group
     One copy of a calibration parameter: the one copy of a shared parameter,
-    one per site, or one per class of a site-labels product.
+    one per site, or one per class of a site-labels data source.
 component, element
     A component is one entry of a copy's natural-space value; an element is
     one entry of its unconstrained value. They differ only for the simplex,
     whose four components have three elements.
 site labels
-    A site-labels product assigns one class to every site. A vector names the
-    products it uses in ``site_labels={site_labels_name: ...}``, and a
+    A site-labels data source assigns one class to every site. A vector names the
+    sources it uses in ``site_labels={site_labels_name: ...}``, and a
     calibration parameter's ``varies_by`` names one of them.
-column label
-    The name of one of the ``D`` columns of ``theta``, from
-    :attr:`Layout.column_labels`.
+entry label
+    The name of one of the ``D`` entries of ``theta``, from
+    :attr:`Layout.entry_labels`.
 
 Data model
 ----------
@@ -83,7 +83,7 @@ representations. Every public function says which one it takes and returns.
 **Flat.** A float64 ``jax.Array``, ``(D,)`` for one value and ``(J, D)`` for
 an ensemble, always in unconstrained space: a natural-space flat vector is
 not defined, since the simplex has one more component than it has elements.
-Columns follow :class:`Layout`: calibration parameters in declaration order;
+Entries follow :class:`Layout`: calibration parameters in declaration order;
 within one, groups in group order; within a group, elements in order. Flat is
 what :meth:`ParameterVector.sample` returns and what
 :meth:`ParameterVector.log_prior` and pyEKI consume. NaN is never produced
@@ -124,14 +124,14 @@ missing      impossible: a shared copy is repeated at every site and a
 ``fields.filter_by_attrs(parameter="allocation")`` selects a whole
 calibration parameter.
 
-**SIPNET table.** An ``xarray.Dataset`` with the same dims and coordinates as
+**SIPNET parameter fields.** An ``xarray.Dataset`` with the same dims and coordinates as
 Fields, and one float64 variable per SIPNET parameter the vector sets,
 calibrated and fixed alike, keyed on the pySIPNET name, in ``PARAMETER_SPECS``
 order. Built from Fields, it keeps their batch dim and its labels, so a subset
 of a batch keeps its samples' identity. Each variable carries ``units``,
-``sipnet_name``, ``constituent`` where pySIPNET declares one, and ``source``
+``sipnet_name``, ``constituent`` where pySIPNET declares one, and ``set_by``
 (``"parameter <name>"`` or ``"fixed"``); the dataset carries
-``representation = "sipnet_parameters"``. A SIPNET parameter the vector
+``representation = "sipnet_parameter_fields"``. A SIPNET parameter the vector
 neither calibrates nor fixes is absent, never NaN:
 :attr:`ParameterVector.unset_sipnet_parameter_names` lists them, and the run's
 base parameter set supplies them.
@@ -143,9 +143,12 @@ from                  to                 call                                   
 ===================== ================== ====================================== ==========
 Flat                  Fields             ``vector.fields(theta, space=)``       yes
 Fields (either space) Flat               ``vector.flat(fields)``                yes [1]_
-Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``             no
-SIPNET table          one run's kwargs   :func:`sipnet_overrides`               selection
-SIPNET table          PyEns grids        ``pyens.xarray.fields_from_dataset``   values
+Flat or Fields        SIPNET parameter   ``vector.sipnet_parameter_fields(x)``  no
+                      fields
+SIPNET parameter      SIPNET overrides   :func:`sipnet_overrides`               selection
+fields                (one run's kwargs)
+SIPNET parameter      PyEns grids        ``pyens.xarray.fields_from_dataset``   values
+fields
 ===================== ================== ====================================== ==========
 
 :meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
@@ -153,7 +156,7 @@ variables and sites the vector needs (others are ignored, so a larger
 vector's Fields project onto a smaller one), finiteness, and that each
 group's value agrees across its sites, and that each natural value is in the
 image of its bijector (inside the prior's support; simplex components summing
-to 1). Nothing converts a SIPNET table back.
+to 1). Nothing converts SIPNET parameter fields back.
 
 .. [1] Up to float64 rounding, which near a logit bound grows: the inverse
    of a fraction within about ``1e-12`` of 0 or 1 loses digits, and one that
@@ -176,9 +179,9 @@ SIPNET maps: the :class:`SIPNETMap` protocol, :class:`Identity`,
 :class:`ParameterVector`; :func:`sipnet_overrides`;
 :func:`example_parameter_vector`, the worked example and test fixture.
 
-Constants: :data:`REQUIRED_SIPNET_PARAMETERS`; :data:`NATURAL`,
+Constants: :data:`REQUIRED_SIPNET_PARAMETER_NAMES`; :data:`NATURAL`,
 :data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
-:data:`FIELDS_REPRESENTATION` and :data:`SIPNET_TABLE_REPRESENTATION`, the
+:data:`FIELDS_REPRESENTATION` and :data:`SIPNET_PARAMETER_FIELDS_REPRESENTATION`, the
 ``representation`` attribute of each dataset.
 
 Notes
@@ -200,21 +203,21 @@ the number of components its SIPNET map names. A joint prior for a
 vector-valued calibration parameter is not supported.
 
 **Parameter-major layout.** Each calibration parameter's copies form one
-contiguous block of ``theta``, which is the block a covariance operator
-wants: :meth:`ParameterVector.gaussian_prior` builds one block per
+contiguous segment of ``theta``, whose covariance is the block a covariance
+operator wants: :meth:`ParameterVector.gaussian_prior` builds one block per
 calibration parameter, and a spatial covariance over the per-site copies of
 one of them replaces that block and nothing else.
 
-**Groups of a site-labels product.** With a product from
+**Groups of a site-labels data source.** With a site-labels table from
 :func:`~sipnet_calibration.site_labels.load_site_labels`, a calibration
-parameter's groups are the product's declared classes that some site of the
-vector carries, in the product's order. A per-class prior or fixed value may
+parameter's groups are the source's declared classes that some site of the
+vector carries, in the source's order. A per-class prior or fixed value may
 be written over every declared class and is restricted to those present, so
 a vector over the whole pool and one over a handful of sites are written the
 same way. With a plain sequence the groups are its sorted distinct labels and
 coverage must be exact.
 
-**The SIPNET table holds arrays, not ``SIPNETParameters``.** Building
+**SIPNET parameter fields hold arrays, not ``SIPNETParameters``.** Building
 ``J x S`` validated Pydantic models would dominate a run that is otherwise a
 subprocess. ``SIPNETModel`` validates each run before invoking the binary,
 and the checks a vector runs when it is built (the ``check_*`` helpers at
@@ -229,8 +232,8 @@ round-trips through ``pickle`` and ``copy.deepcopy``. A prior built from
 ``TransformedDistribution`` or ``Blockwise`` (the simplex, the product
 prior, and so :func:`example_parameter_vector`) pickles but fails
 ``pickle.loads`` with this TFP build, and so does a vector holding one. Ship
-the SIPNET table, or the ``Grid``\\ s of plain floats
-``pyens.xarray.fields_from_dataset`` makes from it, never the vector.
+the SIPNET parameter fields, or the ``Grid``\\ s of plain floats
+``pyens.xarray.fields_from_dataset`` makes from them, never the vector.
 
 The vector computes in float64: importing the package sets
 ``jax_enable_x64``, as ``import pyeki`` does, so an MCMC baseline that never
@@ -255,8 +258,8 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     from sipnet_calibration.site_labels import load_site_labels
     from sipnet_calibration.sites import load_sites, select_sites
 
-    # Build it for a site set and a site-labels product.
-    sites = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat, ...
+    # Build it for a site set and a site-labels data source.
+    site_table = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat
     pft = load_site_labels("reanalysis_3pft")                  # DataFrame: site_id, label
     vector = ParameterVector(                                  # ParameterVector, D = 13
         parameters=(
@@ -300,7 +303,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
                 provenance="...",
             ),
         ),
-        sites=sites,
+        site_table=site_table,
         site_labels={"pft": pft},
     )
 
@@ -315,14 +318,14 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     #   fixed: daily_mean_photosynthesis_fraction (shared), leaf_carbon_fraction (pft)
     #   unset: 39 required SIPNET parameters, taken from the run's base parameter set
     vector.dimension                                   # int: 13
-    vector.layout.column_labels[:2]                    # ('photosynthesis[log(capacity)]', ...)
-    vector["allocation"].components                    # ('leaf_allocation', ..., 'coarse_root_allocation')
-    vector.describe()                                  # DataFrame: one row per column of theta
+    vector.layout.entry_labels[:2]                     # ('photosynthesis[log(capacity)]', ...)
+    vector["allocation"].component_names               # ('leaf_allocation', ..., 'coarse_root_allocation')
+    vector.describe()                                  # DataFrame: one row per entry of theta
     vector.site_table                                  # DataFrame: site_id, lon, lat, pft
 
     # Subset it.
     conifer = vector.select(labels={"pft": ["boreal.coniferous"]})         # ParameterVector, D = 8
-    two = vector.select(parameters=("allocation", "initial_soil_carbon"))  # ParameterVector, D = 9
+    two = vector.select(parameter_names=("allocation", "initial_soil_carbon"))  # D = 9
 
     # Sample it and evaluate its density.
     theta = vector.sample(jax.random.key(0), n=50)     # Flat: jax.Array (50, 13), unconstrained
@@ -338,9 +341,9 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     soil.quantile([0.05, 0.5, 0.95], dim="sample")     # DataArray (quantile, site)
 
     # Convert to SIPNET parameters, for one run and for a PyEns spec.
-    table = vector.sipnet_table(theta)                 # SIPNET table: Dataset (sample, site), fixed included
-    kwargs = sipnet_overrides(table, batch={"sample": 3}, site=865)  # dict[str, float]: model(**kwargs)
-    grids = fields_from_dataset(table)                 # dict[str, Grid] along [sample, site]
+    sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # Dataset (sample, site)
+    kwargs = sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=865)
+    grids = fields_from_dataset(sipnet_parameter_fields)  # dict[str, Grid] along [sample, site]
     spec = EnsembleSpec(inputs=grids)                  # 150 runs; add a climate Grid on the site axis
 
     # Back from a pyEKI result, and across vectors.
@@ -354,7 +357,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from functools import cached_property
 from typing import Any, Protocol, runtime_checkable
 
@@ -418,11 +421,11 @@ __all__ = [
     "FIELDS_REPRESENTATION",
     "NATURAL",
     "PHOTOSYNTHESIS",
-    "REQUIRED_SIPNET_PARAMETERS",
+    "REQUIRED_SIPNET_PARAMETER_NAMES",
     "RESERVED_PARAMETER_NAMES",
     "RESERVED_SITE_LABELS_NAMES",
     "SHARED",
-    "SIPNET_TABLE_REPRESENTATION",
+    "SIPNET_PARAMETER_FIELDS_REPRESENTATION",
     "SPACES",
     "UNCONSTRAINED",
     "CalibrationParameter",
@@ -612,7 +615,7 @@ def product_transformed_gaussian_prior(
     moments. A component with any other base, a vector event, or a batch
     shape is refused.
 
-    Keyword order is component order; it must match the ``components`` of
+    Keyword order is component order; it must match the ``component_names`` of
     the calibration parameter's :class:`SIPNETMap`.
 
     Examples
@@ -660,19 +663,19 @@ class SIPNETMap(Protocol):
 
     Attributes
     ----------
-    writes:
+    sipnet_parameter_names_written:
         SIPNET parameters this SIPNET map sets.
-    reads:
+    sipnet_parameter_names_read:
         Fixed SIPNET parameters it needs; ``()`` for most.
-    components:
+    component_names:
         Names of the ``k`` components of the natural-space value, in order.
     component_units:
         UDUNITS units of each component, in the same order.
     """
 
-    writes: tuple[str, ...]
-    reads: tuple[str, ...]
-    components: tuple[str, ...]
+    sipnet_parameter_names_written: tuple[str, ...]
+    sipnet_parameter_names_read: tuple[str, ...]
+    component_names: tuple[str, ...]
     component_units: tuple[str, ...]
 
     def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
@@ -688,15 +691,15 @@ class Identity:
     parameter: str
 
     @property
-    def writes(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
         return (self.parameter,)
 
     @property
-    def reads(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
     @property
-    def components(self) -> tuple[str, ...]:
+    def component_names(self) -> tuple[str, ...]:
         return (self.parameter,)
 
     @property
@@ -717,30 +720,31 @@ class SimplexMap:
 
     Parameters
     ----------
-    writes:
+    sipnet_parameter_names_written:
         SIPNET parameters for the first ``k - 1`` components, in order.
     residual:
         Name of the last component; it names a Fields variable and is
         written to no SIPNET parameter.
     """
 
-    writes: tuple[str, ...]
+    sipnet_parameter_names_written: tuple[str, ...]
     residual: str
 
     @property
-    def reads(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
     @property
-    def components(self) -> tuple[str, ...]:
-        return (*self.writes, self.residual)
+    def component_names(self) -> tuple[str, ...]:
+        return (*self.sipnet_parameter_names_written, self.residual)
 
     @property
     def component_units(self) -> tuple[str, ...]:
-        return ("1",) * len(self.components)
+        return ("1",) * len(self.component_names)
 
     def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
-        return {name: natural[..., i] for i, name in enumerate(self.writes)}
+        names = self.sipnet_parameter_names_written
+        return {name: natural[..., i] for i, name in enumerate(names)}
 
 
 @dataclass(frozen=True)
@@ -769,7 +773,7 @@ class PhotosynthesisMap:
         \\qquad
         \\texttt{aMax} = \\frac{P\\,\\texttt{cFracLeaf}\\,(1 - \\rho)}{\\texttt{aMaxFrac}}.
 
-    ``components = ("capacity", "respiration_share")``, in that order.
+    ``component_names = ("capacity", "respiration_share")``, in that order.
     ``capacity`` is nmol CO2 per gram of leaf carbon per second: its unit
     string is ``max_photosynthesis_rate``'s, whose gram is of leaf dry
     mass, since ``cFracLeaf`` converts one to the other and has unit
@@ -787,9 +791,15 @@ class PhotosynthesisMap:
     hence ``rho`` for the share.
     """
 
-    writes: tuple[str, ...] = ("max_photosynthesis_rate", "foliar_respiration_fraction")
-    reads: tuple[str, ...] = ("daily_mean_photosynthesis_fraction", "leaf_carbon_fraction")
-    components: tuple[str, ...] = ("capacity", "respiration_share")
+    sipnet_parameter_names_written: tuple[str, ...] = (
+        "max_photosynthesis_rate",
+        "foliar_respiration_fraction",
+    )
+    sipnet_parameter_names_read: tuple[str, ...] = (
+        "daily_mean_photosynthesis_fraction",
+        "leaf_carbon_fraction",
+    )
+    component_names: tuple[str, ...] = ("capacity", "respiration_share")
 
     @property
     def component_units(self) -> tuple[str, ...]:
@@ -806,7 +816,7 @@ class PhotosynthesisMap:
 
 
 ALLOCATION = SimplexMap(
-    writes=("leaf_allocation", "wood_allocation", "fine_root_allocation"),
+    sipnet_parameter_names_written=("leaf_allocation", "wood_allocation", "fine_root_allocation"),
     residual="coarse_root_allocation",
 )
 """The allocation simplex: the 4-vector (leaf, wood, fine root, coarse root)
@@ -842,13 +852,13 @@ for one: ``sample``, the names that are never batch dims
 sources' member dims."""
 
 RESERVED_SITE_LABELS_NAMES = frozenset({*RESERVED_PARAMETER_NAMES, SHARED, SITE_ID})
-"""Names a site-labels product cannot take in a vector, because they are
+"""Names a site-labels data source cannot take in a vector, because they are
 dimension or coordinate names already, or reserved for one: those of
 :data:`RESERVED_PARAMETER_NAMES`, the group label ``shared`` and the site
 table's ``site_id``. It may not be named like a calibration parameter or a
 SIPNET parameter either."""
 
-REQUIRED_SIPNET_PARAMETERS: tuple[str, ...] = tuple(
+REQUIRED_SIPNET_PARAMETER_NAMES: tuple[str, ...] = tuple(
     name
     for group in SIPNETParameters.model_fields.values()
     for name, field_info in group.annotation.model_fields.items()
@@ -909,7 +919,7 @@ class CalibrationParameter:
         For a malformed or reserved name, an empty provenance, SIPNET
         parameters that do not exist, a prior that is not ``float64``, of the
         wrong batch or event rank, or without a default event-space bijector,
-        or a SIPNET map whose ``components`` do not match the prior's event.
+        or a SIPNET map whose ``component_names`` do not match the prior's event.
 
     Examples
     --------
@@ -938,7 +948,10 @@ class CalibrationParameter:
         check_prior_is_a_distribution(self)
         check_sipnet_map_is_a_sipnet_map(self)
         check_sipnet_parameters_exist(
-            (*self.sipnet_map.writes, *self.sipnet_map.reads),
+            (
+                *self.sipnet_map.sipnet_parameter_names_written,
+                *self.sipnet_map.sipnet_parameter_names_read,
+            ),
             f"calibration parameter {self.name}",
         )
         check_prior_is_float64(self)
@@ -970,9 +983,9 @@ class CalibrationParameter:
         return tfd.TransformedDistribution(self.prior, tfb.Invert(self.bijector))
 
     @property
-    def components(self) -> tuple[str, ...]:
+    def component_names(self) -> tuple[str, ...]:
         """Natural-space component names, from the SIPNET map."""
-        return tuple(self.sipnet_map.components)
+        return tuple(self.sipnet_map.component_names)
 
     @property
     def component_units(self) -> tuple[str, ...]:
@@ -982,7 +995,7 @@ class CalibrationParameter:
     @property
     def natural_size(self) -> int:
         """``k``, the number of natural-space components of one copy."""
-        return len(self.components)
+        return len(self.component_names)
 
     @property
     def is_scalar(self) -> bool:
@@ -1001,7 +1014,7 @@ class CalibrationParameter:
 
     @property
     def size(self) -> int:
-        """The number of columns of ``theta`` per group."""
+        """The number of entries of ``theta`` per group."""
         if self.is_scalar:
             return 1
         shape = self.bijector.inverse_event_shape(self.prior.event_shape)
@@ -1013,7 +1026,7 @@ class CalibrationParameter:
         ``alr(a:residual)``, ``logit(x in (low, high))``, derived from the
         bijector. None contains ``/``, so every Fields variable name is a
         legal netCDF name."""
-        return _unconstrained_labels(self.bijector, self.components)
+        return _unconstrained_labels(self.bijector, self.component_names)
 
     @property
     def distribution_name(self) -> str:
@@ -1108,10 +1121,10 @@ class Layout:
 
     Attributes
     ----------
-    parameters:
+    parameter_names:
         Calibration parameter names in layout order.
     sizes:
-        Columns per group, per calibration parameter.
+        Entries per group, per calibration parameter.
     groups:
         Group labels per calibration parameter, in the order they occupy
         ``theta``.
@@ -1133,7 +1146,7 @@ class Layout:
         layout.index("allocation", group="conifer")        # array([2, 3, 4])
     """
 
-    parameters: tuple[str, ...]
+    parameter_names: tuple[str, ...]
     sizes: Mapping[str, int]
     groups: Mapping[str, tuple[Any, ...]]
     dims: Mapping[str, str]
@@ -1143,7 +1156,7 @@ class Layout:
     def slices(self) -> dict[str, slice]:
         """The contiguous slice of ``theta`` each calibration parameter owns."""
         out, start = {}, 0
-        for name in self.parameters:
+        for name in self.parameter_names:
             width = len(self.groups[name]) * self.sizes[name]
             out[name] = slice(start, start + width)
             start += width
@@ -1152,14 +1165,14 @@ class Layout:
     @property
     def dimension(self) -> int:
         """``D``."""
-        return sum(len(self.groups[n]) * self.sizes[n] for n in self.parameters)
+        return sum(len(self.groups[n]) * self.sizes[n] for n in self.parameter_names)
 
     @cached_property
-    def column_labels(self) -> tuple[str, ...]:
+    def entry_labels(self) -> tuple[str, ...]:
         """``D`` strings: ``"c"``, ``"c[group]"``, ``"c[element]"`` or
         ``"c[group][element]"`` as the calibration parameter needs."""
         out = []
-        for name in self.parameters:
+        for name in self.parameter_names:
             groups, elements = self.groups[name], self.element_labels[name]
             for group in groups:
                 for element in elements:
@@ -1172,11 +1185,11 @@ class Layout:
         return tuple(out)
 
     def slice(self, parameter: str) -> slice:
-        """The columns of ``theta`` a calibration parameter owns."""
+        """The entries of ``theta`` a calibration parameter owns."""
         return self.slices[self._known(parameter)]
 
     def index(self, parameter: str, group: Any = None, element: str | None = None) -> np.ndarray:
-        """Column indices of a calibration parameter, narrowed by group and
+        """Entry positions of a calibration parameter, narrowed by group and
         element label."""
         name = self._known(parameter)
         n_groups, size = len(self.groups[name]), self.sizes[name]
@@ -1195,19 +1208,19 @@ class Layout:
             name: theta[..., self.slices[name]].reshape(
                 (*lead, len(self.groups[name]), self.sizes[name])
             )
-            for name in self.parameters
+            for name in self.parameter_names
         }
 
     def pack(self, parts: Mapping[str, Array]) -> Array:
         """Inverse of :meth:`unpack`; refuses a missing or extra calibration
         parameter."""
-        if set(parts) != set(self.parameters):
+        if set(parts) != set(self.parameter_names):
             raise ValueError(
                 "Layout.pack: expected exactly the calibration parameters "
-                f"{list(self.parameters)}, got {sorted(parts)}."
+                f"{list(self.parameter_names)}, got {sorted(parts)}."
             )
         pieces = []
-        for name in self.parameters:
+        for name in self.parameter_names:
             part = jnp.asarray(parts[name], dtype=jnp.float64)
             expected = (len(self.groups[name]), self.sizes[name])
             if part.shape[-2:] != expected:
@@ -1227,7 +1240,8 @@ class Layout:
     def _known(self, parameter: str) -> str:
         if parameter not in self.slices:
             raise KeyError(
-                f"Layout: no calibration parameter {parameter!r}; have {list(self.parameters)}."
+                f"Layout: no calibration parameter {parameter!r}; "
+                f"have {list(self.parameter_names)}."
             )
         return parameter
 
@@ -1246,8 +1260,8 @@ SPACES = (NATURAL, UNCONSTRAINED)
 FIELDS_REPRESENTATION = "calibration_parameters"
 """The ``representation`` attribute of a Fields dataset."""
 
-SIPNET_TABLE_REPRESENTATION = "sipnet_parameters"
-"""The ``representation`` attribute of a SIPNET table."""
+SIPNET_PARAMETER_FIELDS_REPRESENTATION = "sipnet_parameter_fields"
+"""The ``representation`` attribute of SIPNET parameter fields."""
 
 
 @dataclass(frozen=True, eq=False, kw_only=True, repr=False)
@@ -1261,9 +1275,10 @@ class ParameterVector:
     unconstrained space, what :meth:`sample` returns and :meth:`log_prior`
     and pyEKI consume. *Fields* is an ``xarray.Dataset`` of fields
     on ``(sample, site)``, from :meth:`fields` and back through
-    :meth:`flat`. The *SIPNET table* is an ``xarray.Dataset`` of SIPNET
-    parameters on the same dims, from :meth:`sipnet_table`, which
-    :func:`sipnet_overrides` and ``pyens.xarray.fields_from_dataset`` read.
+    :meth:`flat`. The *SIPNET parameter fields* are an ``xarray.Dataset`` of
+    SIPNET parameters on the same dims, from :meth:`sipnet_parameter_fields`,
+    which :func:`sipnet_overrides` and ``pyens.xarray.fields_from_dataset``
+    read.
 
     Parameters
     ----------
@@ -1272,17 +1287,25 @@ class ParameterVector:
         ``theta``.
     fixed:
         The SIPNET parameters held at a value. Every SIPNET parameter any
-        SIPNET map ``reads`` must appear here.
+        SIPNET map reads (``sipnet_parameter_names_read``) must appear here.
     sites:
-        The sites the vector is defined over: site ids, ascending, or a site
-        table with a ``site_id`` column in ascending order, such as
+        The sites the vector is defined over, as site ids, ascending. The ids
+        are the site table's; ids of a shared pool are never renumbered.
+    site_table:
+        The sites the vector is defined over, as a site table with a
+        ``site_id`` column in ascending order, such as
         :func:`sipnet_calibration.sites.select_sites` returns, whose
-        ``lon``/``lat`` are then carried onto Fields and the SIPNET table.
-        The ids are the site table's; ids of a shared pool are never
-        renumbered.
+        ``lon``/``lat`` are then carried onto Fields and the SIPNET parameter
+        fields. The table is read, not kept: :attr:`site_table` is the
+        vector's own.
+
+        Give *sites* or *site_table*; giving neither is refused. Both may be
+        given only when *sites* are the table's site ids in its order, and the
+        table is then what is read, so ``dataclasses.replace(vector)``, which
+        passes both, keeps the vector's ``lon``/``lat``.
     site_labels:
         ``{site_labels_name: labels}`` for every ``varies_by`` other than
-        ``None`` and ``"site"``: a site-labels product with ``site_id`` and
+        ``None`` and ``"site"``: a site-labels table with ``site_id`` and
         ``label`` columns (:data:`~sipnet_calibration.site_labels.LABEL_COLUMN`),
         such as
         :func:`sipnet_calibration.site_labels.load_site_labels` returns, which
@@ -1290,7 +1313,7 @@ class ParameterVector:
         site, in site order.
         The module Notes say how each decides the groups.
     require_complete:
-        Refuse a vector that leaves any :data:`REQUIRED_SIPNET_PARAMETERS`
+        Refuse a vector that leaves any :data:`REQUIRED_SIPNET_PARAMETER_NAMES`
         neither calibrated nor fixed. Off by default, so a partial vector can
         run on top of a base parameter set.
 
@@ -1299,7 +1322,7 @@ class ParameterVector:
     dimension : int
         ``D``.
     layout : Layout
-        Which columns of ``theta`` belong to which calibration parameter,
+        Which entries of ``theta`` belong to which calibration parameter,
         group and element.
     parameter_names : tuple[str, ...]
         Calibration parameter names in layout order.
@@ -1317,8 +1340,14 @@ class ParameterVector:
 
     Raises
     ------
+    TypeError
+        If neither *sites* nor *site_table* is given, or *sites* is a
+        DataFrame (a site table goes to *site_table*).
+    ValueError
+        If *sites* and *site_table* are both given and *sites* are not the
+        table's site ids in its order.
     ValueError, TypeError
-        From the ``check_*`` helpers: a repeated or reserved name, two
+        From the other ``check_*`` helpers: a repeated or reserved name, two
         writers of one SIPNET parameter, a SIPNET map reading a parameter
         nobody fixed, site labels missing, of the wrong length, not covering
         every site or colliding with another name, a prior whose shape does
@@ -1332,21 +1361,25 @@ class ParameterVector:
     >>> vector.dimension
     13
     >>> theta = vector.sample(jax.random.key(0), n=4)
-    >>> table = vector.sipnet_table(theta)                  # (sample, site)
-    >>> sorted(sipnet_overrides(table, batch={"sample": 0}, site=27))[:2]
+    >>> sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # (sample, site)
+    >>> sorted(sipnet_overrides(sipnet_parameter_fields, batch={"sample": 0}, site=27))[:2]
     ['base_soil_respiration_rate', 'daily_mean_photosynthesis_fraction']
     """
 
     parameters: tuple[CalibrationParameter, ...]
     fixed: tuple[FixedParameter, ...] = ()
-    sites: Sequence[int] | pd.DataFrame
+    sites: Sequence[int] | None = None
+    # A keyword only: the attribute of the same name is the property attached
+    # below the class, so the dataclass reads None, not it, as the default.
+    site_table: InitVar[pd.DataFrame | None] = None
     site_labels: Mapping[str, Any] = field(default_factory=dict)
     require_complete: bool = False
     _declared_classes: Mapping[str, tuple[Any, ...]] = field(init=False, default=None)
     _lon_lat: tuple[np.ndarray, np.ndarray] | None = field(init=False, default=None)
 
-    def __post_init__(self) -> None:
-        sites, lon_lat = _normalized_sites(self.sites)
+    def __post_init__(self, site_table: pd.DataFrame | None) -> None:
+        check_sites_or_site_table_is_given(self.sites, site_table)
+        sites, lon_lat = _normalized_sites(self.sites, site_table)
         object.__setattr__(self, "sites", sites)
         object.__setattr__(self, "_lon_lat", lon_lat)
         check_vector_has_a_site(self.sites)
@@ -1401,16 +1434,18 @@ class ParameterVector:
     def sipnet_parameter_names(self) -> tuple[str, ...]:
         """Every SIPNET parameter this vector sets, calibrated and fixed, in
         pySIPNET's declaration order."""
-        written = {n for p in self.parameters for n in p.sipnet_map.writes}
+        written = {
+            n for p in self.parameters for n in p.sipnet_map.sipnet_parameter_names_written
+        }
         written |= {f.name for f in self.fixed}
         return tuple(n for n in _FLAT_SPECS if n in written)
 
     @property
     def unset_sipnet_parameter_names(self) -> tuple[str, ...]:
-        """The :data:`REQUIRED_SIPNET_PARAMETERS` this vector leaves to the
+        """The :data:`REQUIRED_SIPNET_PARAMETER_NAMES` this vector leaves to the
         base parameter set."""
         written = set(self.sipnet_parameter_names)
-        return tuple(n for n in REQUIRED_SIPNET_PARAMETERS if n not in written)
+        return tuple(n for n in REQUIRED_SIPNET_PARAMETER_NAMES if n not in written)
 
     @property
     def dimension(self) -> int:
@@ -1422,15 +1457,14 @@ class ParameterVector:
         """Where each calibration parameter lives in ``theta``; see
         :class:`Layout`."""
         return Layout(
-            parameters=self.parameter_names,
+            parameter_names=self.parameter_names,
             sizes={p.name: p.size for p in self.parameters},
             groups={p.name: self.group_labels(p.varies_by) for p in self.parameters},
             dims={p.name: p.varies_by or SHARED for p in self.parameters},
             element_labels={p.name: p.element_labels for p in self.parameters},
         )
 
-    @property
-    def site_table(self) -> pd.DataFrame:
+    def _site_table(self) -> pd.DataFrame:
         """``site_id`` (``int32``), ``lon``/``lat`` when known, and one
         categorical column per site-labels name, one row per site."""
         frame = pd.DataFrame({SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE)})
@@ -1443,7 +1477,7 @@ class ParameterVector:
     def group_labels(self, varies_by: str | None) -> tuple[Any, ...]:
         """The groups of a ``varies_by`` value, in the order they occupy
         ``theta``: ``("shared",)``, the sites, or the classes of a
-        site-labels product that some site here carries."""
+        site-labels data source that some site here carries."""
         if varies_by is None:
             return (SHARED,)
         if varies_by == SITE:
@@ -1457,7 +1491,7 @@ class ParameterVector:
         return len(self.group_labels(varies_by))
 
     def sites_with(self, site_labels_name: str, label: Any) -> tuple[int, ...]:
-        """The sites carrying *label* under the site-labels product
+        """The sites carrying *label* under the site-labels data source
         *site_labels_name*: ``()`` for a declared class no site here carries,
         ``KeyError`` for a label that is not a declared class."""
         if site_labels_name not in self.site_labels:
@@ -1475,7 +1509,7 @@ class ParameterVector:
     def select(
         self,
         *,
-        parameters: Sequence[str] | None = None,
+        parameter_names: Sequence[str] | None = None,
         sites: Sequence[int] | None = None,
         labels: Mapping[str, Any] | None = None,
     ) -> ParameterVector:
@@ -1484,7 +1518,7 @@ class ParameterVector:
 
         Parameters
         ----------
-        parameters:
+        parameter_names:
             Calibration parameter names to keep, a sequence; ``None`` keeps
             all. They keep this vector's layout order. Fixed parameters are
             always kept.
@@ -1509,7 +1543,7 @@ class ParameterVector:
         Raises
         ------
         TypeError
-            If *parameters*, *sites* or a *labels* value is one value, a
+            If *parameter_names*, *sites* or a *labels* value is one value, a
             string or a set; if a name or class is not a string; or if a site
             id is a boolean, a float or not a number.
         KeyError
@@ -1525,7 +1559,7 @@ class ParameterVector:
         ensemble across, go through Fields, where the correspondence is by
         site and by variable: ``small.flat(big.fields(theta))``.
         """
-        names = self._selected_parameter_names(parameters)
+        names = self._selected_parameter_names(parameter_names)
         kept = self._selected_sites(sites, labels)
         positions = np.asarray([self.sites.index(s) for s in kept])
         site_labels = {
@@ -1535,13 +1569,13 @@ class ParameterVector:
         return ParameterVector(
             parameters=tuple(self._prior_restricted_to_sites(self[n], positions) for n in names),
             fixed=tuple(self._fixed_restricted_to_sites(f, kept) for f in self.fixed),
-            sites=self._sites_argument(positions),
+            **self._site_keywords(positions),
             site_labels=site_labels,
             require_complete=self.require_complete,
         )
 
     def describe(self) -> pd.DataFrame:
-        """One row per column of ``theta``.
+        """One row per entry of ``theta``, indexed by ``entry``.
 
         Columns: ``parameter``, ``group``, ``element``,
         ``sipnet_parameters``, ``distribution``, ``theta_mean``,
@@ -1563,7 +1597,9 @@ class ParameterVector:
                             "parameter": parameter.name,
                             "group": group,
                             "element": element,
-                            "sipnet_parameters": ", ".join(parameter.sipnet_map.writes),
+                            "sipnet_parameters": ", ".join(
+                                parameter.sipnet_map.sipnet_parameter_names_written
+                            ),
                             "distribution": parameter.distribution_name,
                             "theta_mean": moments[0][g, e],
                             "theta_sd": moments[1][g, e],
@@ -1577,7 +1613,7 @@ class ParameterVector:
                         }
                     )
         frame = pd.DataFrame(rows)
-        frame.index.name = "column"
+        frame.index.name = "entry"
         return frame
 
     # -- the prior, on Flat --------------------------------------------------
@@ -1724,11 +1760,11 @@ class ParameterVector:
         check_space_is_known(space)
         check_batch_dim_name_is_not_taken(self, batch_dim)
         theta = _as_theta(theta, self.dimension)
-        blocks = self._natural_blocks(theta) if space == NATURAL else self.layout.unpack(theta)
+        parts = self._natural_parts(theta) if space == NATURAL else self.layout.unpack(theta)
         dims = (batch_dim, SITE) if theta.ndim == 2 else (SITE,)
         variables = {}
         for parameter in self.parameters:
-            on_sites = np.asarray(self._group_values_onto_sites(parameter, blocks[parameter.name]))
+            on_sites = np.asarray(self._group_values_onto_sites(parameter, parts[parameter.name]))
             labels = _space_labels(parameter, space)
             for i, variable in enumerate(_fields_variable_names(parameter, space)):
                 attributes = _fields_attributes(parameter, labels, i, space)
@@ -1743,7 +1779,7 @@ class ParameterVector:
         Reads ``fields.attrs["space"]`` and applies the inverse bijector when
         it is natural. Rows follow the order of the dataset's batch dim,
         whatever it is named; Flat has no batch labels, and
-        :meth:`sipnet_table` is where Fields' labels are kept. A scalar batch
+        :meth:`sipnet_parameter_fields` is where Fields' labels are kept. A scalar batch
         coordinate, left by ``.isel(sample=k)``, is not a batch dim: such
         Fields give one vector. Takes exactly the variables and sites this
         vector needs and ignores any others, so Fields from a larger vector
@@ -1791,18 +1827,22 @@ class ParameterVector:
             first = np.asarray(
                 [np.flatnonzero(groups == g)[0] for g in range(self.n_groups(parameter.varies_by))]
             )
-            block = on_sites[..., first, :]
-            check_group_values_agree_across_sites(self, parameter, on_sites, block[..., groups, :])
-            block = jnp.asarray(block, dtype=jnp.float64)
+            group_values = on_sites[..., first, :]
+            check_group_values_agree_across_sites(
+                self, parameter, on_sites, group_values[..., groups, :]
+            )
+            group_values = jnp.asarray(group_values, dtype=jnp.float64)
             if space == NATURAL:
-                unconstrained = self._to_unconstrained(parameter, block)
-                check_natural_values_are_in_the_support(parameter, block, unconstrained)
-                block = unconstrained
-            parts[parameter.name] = block
+                unconstrained = self._to_unconstrained(parameter, group_values)
+                check_natural_values_are_in_the_support(parameter, group_values, unconstrained)
+                group_values = unconstrained
+            parts[parameter.name] = group_values
         return self.layout.pack(parts)
 
-    def sipnet_table(self, x: Array | xr.Dataset, *, batch_dim: str = SAMPLE) -> xr.Dataset:
-        """Flat or Fields to the SIPNET table.
+    def sipnet_parameter_fields(
+        self, x: Array | xr.Dataset, *, batch_dim: str = SAMPLE
+    ) -> xr.Dataset:
+        """Flat or Fields to SIPNET parameter fields.
 
         Parameters
         ----------
@@ -1818,10 +1858,11 @@ class ParameterVector:
         Returns
         -------
         xarray.Dataset
-            The SIPNET table: one float64 variable per SIPNET parameter this
-            vector sets (:attr:`sipnet_parameter_names`), calibrated and
-            fixed alike, on ``(batch_dim, site)`` or ``(site,)``, each carrying
-            ``units``, ``sipnet_name``, ``source`` and, where pySIPNET
+            The SIPNET parameter fields: one float64 variable per SIPNET
+            parameter this vector sets (:attr:`sipnet_parameter_names`),
+            calibrated and fixed alike, on ``(batch_dim, site)`` or
+            ``(site,)``, each carrying ``units``, ``sipnet_name``, ``set_by``
+            and, where pySIPNET
             declares one, ``constituent``. :attr:`unset_sipnet_parameter_names`
             are absent and take the base parameter set's values at the run.
 
@@ -1850,22 +1891,24 @@ class ParameterVector:
         else:
             check_batch_dim_name_is_not_taken(self, batch_dim)
             theta = _as_theta(x, self.dimension)
-        natural = self._natural_blocks(theta)
+        natural = self._natural_parts(theta)
         lead = theta.shape[:-1]
-        columns: dict[str, tuple[Array, str]] = {}
+        values_and_writers: dict[str, tuple[Array, str]] = {}
         for parameter in self.parameters:
             on_sites = self._group_values_onto_sites(parameter, natural[parameter.name])
             for name, values in parameter.sipnet_map(on_sites, self._fixed_table).items():
-                columns[name] = (values, f"parameter {parameter.name}")
+                values_and_writers[name] = (values, f"parameter {parameter.name}")
         for parameter in self.fixed:
             values = jnp.broadcast_to(self._fixed_table[parameter.name], (*lead, len(self.sites)))
-            columns[parameter.name] = (values, "fixed")
+            values_and_writers[parameter.name] = (values, "fixed")
         dims = (batch_dim, SITE) if theta.ndim == 2 else (SITE,)
         variables = {
-            name: (dims, np.asarray(values, dtype=np.float64), _sipnet_attributes(name, source))
-            for name, (values, source) in sorted(columns.items(), key=lambda kv: _SPEC_ORDER[kv[0]])
+            name: (dims, np.asarray(values, dtype=np.float64), _sipnet_attributes(name, set_by))
+            for name, (values, set_by) in sorted(
+                values_and_writers.items(), key=lambda kv: _SPEC_ORDER[kv[0]]
+            )
         }
-        attributes = {"representation": SIPNET_TABLE_REPRESENTATION}
+        attributes = {"representation": SIPNET_PARAMETER_FIELDS_REPRESENTATION}
         coords = self._coordinates(theta, batch_dim, batch_labels=labels)
         return xr.Dataset(variables, coords=coords, attrs=attributes)
 
@@ -1920,10 +1963,12 @@ class ParameterVector:
             return parameter
         return dataclasses.replace(parameter, value={s: parameter.value[s] for s in kept})
 
-    def _selected_parameter_names(self, parameters: Sequence[str] | None) -> tuple[str, ...]:
-        if parameters is None:
+    def _selected_parameter_names(
+        self, parameter_names: Sequence[str] | None
+    ) -> tuple[str, ...]:
+        if parameter_names is None:
             return self.parameter_names
-        wanted = as_names(parameters, message_name="parameters")
+        wanted = as_names(parameter_names, message_name="parameter_names")
         unknown = [n for n in wanted if n not in self.parameter_names]
         if unknown:
             raise KeyError(
@@ -1957,17 +2002,20 @@ class ParameterVector:
             raise ValueError("select: no site of this vector satisfies every condition given.")
         return kept
 
-    def _sites_argument(self, positions: np.ndarray) -> Sequence[int] | pd.DataFrame:
+    def _site_keywords(self, positions: np.ndarray) -> dict[str, Any]:
+        """``sites=`` or ``site_table=`` for a vector over the sites at *positions*."""
         ids = [self.sites[i] for i in positions]
         if self._lon_lat is None:
-            return tuple(ids)
+            return {"sites": tuple(ids)}
         lon, lat = self._lon_lat
-        return pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
+        return {
+            "site_table": pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
+        }
 
     def _coordinates(
         self, theta: Array, batch_dim: str, batch_labels: np.ndarray | None = None
     ) -> dict[str, Any]:
-        """The coordinates Fields and the SIPNET table share; *batch_labels*
+        """The coordinates Fields and the SIPNET parameter fields share; *batch_labels*
         labels the batch dim, 0 to J-1 when ``None``."""
         coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=SITE_DTYPE)}
         if self._lon_lat is not None:
@@ -2009,32 +2057,32 @@ class ParameterVector:
         position = {group: i for i, group in enumerate(self.group_labels(varies_by))}
         return np.asarray([position[label] for label in self.site_labels[varies_by]])
 
-    def _group_values_onto_sites(self, parameter: CalibrationParameter, block: Array) -> Array:
+    def _group_values_onto_sites(self, parameter: CalibrationParameter, values: Array) -> Array:
         """Each group's value copied to the sites that read it:
         ``(..., n_groups, k)`` to ``(..., S, k)``."""
-        return block[..., self._site_group_index(parameter.varies_by), :]
+        return values[..., self._site_group_index(parameter.varies_by), :]
 
     # -- private: spaces and moments -----------------------------------------
 
-    def _natural_blocks(self, theta: Array) -> dict[str, Array]:
+    def _natural_parts(self, theta: Array) -> dict[str, Array]:
         """Flat ``(..., D)`` to ``{calibration parameter: (..., n_groups, k)}``
         in natural space."""
         parts = self.layout.unpack(theta)
         return {p.name: self._to_natural(p, parts[p.name]) for p in self.parameters}
 
     @staticmethod
-    def _to_natural(parameter: CalibrationParameter, block: Array) -> Array:
+    def _to_natural(parameter: CalibrationParameter, values: Array) -> Array:
         # A scalar calibration parameter's bijector sees (..., n_groups), so a
         # bijector with one parameter per group lines up with its groups.
         if parameter.is_scalar:
-            return parameter.bijector.forward(block[..., 0])[..., None]
-        return parameter.bijector.forward(block)
+            return parameter.bijector.forward(values[..., 0])[..., None]
+        return parameter.bijector.forward(values)
 
     @staticmethod
-    def _to_unconstrained(parameter: CalibrationParameter, block: Array) -> Array:
+    def _to_unconstrained(parameter: CalibrationParameter, values: Array) -> Array:
         if parameter.is_scalar:
-            return parameter.bijector.inverse(block[..., 0])[..., None]
-        return parameter.bijector.inverse(block)
+            return parameter.bijector.inverse(values[..., 0])[..., None]
+        return parameter.bijector.inverse(values)
 
     def _broadcast_unconstrained(self, parameter: CalibrationParameter) -> tfd.Distribution:
         """An independent-copies unconstrained prior with batch shape
@@ -2104,25 +2152,36 @@ class ParameterVector:
             return blank, blank, blank
 
 
-def sipnet_overrides(
-    table: xr.Dataset, *, site: int, batch: Mapping[str, int] | None = None
-) -> dict[str, float]:
-    """One run's keyword arguments for ``SIPNETModel``, from a SIPNET table.
+# ``site_table`` is both a keyword of the constructor (an ``InitVar``) and
+# this read-only attribute. The property is attached after the dataclass is
+# made so that the dataclass takes ``None``, not the property, as the
+# keyword's default.
+ParameterVector.site_table = property(
+    ParameterVector._site_table, doc=ParameterVector._site_table.__doc__
+)
 
-    Only the SIPNET parameters the table holds are returned; the model's base
-    parameter set supplies the rest.
+
+def sipnet_overrides(
+    sipnet_parameter_fields: xr.Dataset, *, site: int, batch: Mapping[str, int] | None = None
+) -> dict[str, float]:
+    """One run's SIPNET overrides, the keyword arguments for ``SIPNETModel``.
+
+    Only the SIPNET parameters *sipnet_parameter_fields* hold are returned;
+    the model's base parameter set supplies the rest.
 
     Parameters
     ----------
-    table:
-        A SIPNET table, from :meth:`ParameterVector.sipnet_table`.
+    sipnet_parameter_fields:
+        SIPNET parameter fields, from
+        :meth:`ParameterVector.sipnet_parameter_fields`.
     site:
         The site id.
     batch:
-        ``{batch dim: label}`` for every batch dim of the table, such as
-        ``{"sample": 3}``: ``0`` to ``J - 1`` for a table built from Flat, or
-        the Fields' own labels for one built from Fields. Required when the
-        table has a batch dim, and a dim the table lacks is refused.
+        ``{batch dim: label}`` for every batch dim of the SIPNET parameter
+        fields, such as ``{"sample": 3}``: ``0`` to ``J - 1`` for ones built
+        from Flat, or the Fields' own labels for ones built from Fields.
+        Required when they have a batch dim, and a dim they lack is
+        refused.
 
     Returns
     -------
@@ -2135,29 +2194,32 @@ def sipnet_overrides(
         If *site* or a batch label is a boolean, a float or not an integer,
         or *batch* is not a mapping.
     ValueError
-        If a table variable has a dim that is neither a batch dim (integer
-        labels), ``site`` nor ``time``; if the table has no ``site`` dim,
-        having been selected to one site or never having had one; or if
-        *batch* does not name exactly the table's batch dims.
+        If a variable has a dim that is neither a batch dim (integer labels),
+        ``site`` nor ``time``; if there is no ``site`` dim, the SIPNET
+        parameter fields having been selected to one site or never having
+        had one; or if *batch* does not name exactly their batch dims.
     KeyError
-        If *site*, or a batch label, is not in the table, naming it.
+        If *site*, or a batch label, is not in the SIPNET parameter fields,
+        naming it.
 
     Examples
     --------
-    With ``model`` a ``SIPNETModel`` and ``table`` a SIPNET table::
+    With ``model`` a ``SIPNETModel``::
 
-        model(**sipnet_overrides(table, batch={"sample": 3}, site=27))
+        model(**sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=27))
     """
     site_id = as_site_id(site, message_name="site")
     requested = _requested_batch_labels(batch)
-    for name, variable in table.data_vars.items():
+    for name, variable in sipnet_parameter_fields.data_vars.items():
         check_dims_are_batch_spatial_or_time(variable, message_name=repr(str(name)))
-    check_table_is_on_sites(table)
-    check_batch_label_is_in_the_table(table, SITE, site_id)
-    selected = table.sel({SITE: site_id})
-    check_batch_labels_name_the_table_batch_dims(batch_dims(selected), requested)
+    check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields)
+    check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, SITE, site_id)
+    selected = sipnet_parameter_fields.sel({SITE: site_id})
+    check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
+        batch_dims(selected), requested
+    )
     for dim, label in requested.items():
-        check_batch_label_is_in_the_table(table, dim, label)
+        check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, dim, label)
     if requested:
         selected = selected.sel(requested)
     return {str(name): float(value) for name, value in selected.data_vars.items()}
@@ -2167,7 +2229,10 @@ def sipnet_overrides(
 
 
 def example_parameter_vector(
-    sites: Sequence[int] | pd.DataFrame, *, pft: Sequence[str] | pd.DataFrame
+    sites: Sequence[int] | None = None,
+    *,
+    site_table: pd.DataFrame | None = None,
+    pft: Sequence[str] | pd.DataFrame,
 ) -> ParameterVector:
     """A small example vector with a shared, a per-class and a per-site
     calibration parameter of each kind of prior. **Not the calibration
@@ -2183,9 +2248,13 @@ def example_parameter_vector(
     Parameters
     ----------
     sites:
-        Site ids, ascending, or a site table in ascending ``site_id`` order.
+        Site ids, ascending.
+    site_table:
+        A site table in ascending ``site_id`` order, whose ``lon``/``lat``
+        the vector carries. Give this or *sites*; both only when *sites* are
+        its site ids in its order, as :class:`ParameterVector` takes them.
     pft:
-        One PFT label per site, or a site-labels product; named ``"pft"`` in
+        One PFT label per site, or a site-labels table; named ``"pft"`` in
         the vector.
 
     Returns
@@ -2199,8 +2268,14 @@ def example_parameter_vector(
         site); fixed ``daily_mean_photosynthesis_fraction`` (shared),
         ``leaf_carbon_fraction`` (by ``"pft"``) and
         ``vapor_pressure_deficit_exponent`` (shared).
+
+    Raises
+    ------
+    TypeError, ValueError
+        As :class:`ParameterVector` does, for *sites* and *site_table*.
     """
-    n_sites = len(sites)
+    check_sites_or_site_table_is_given(sites, site_table)
+    n_sites = len(sites) if site_table is None else len(site_table)
     labels = _declared_classes_of("pft", pft)
     fixture = "Example fixture, not a reviewed prior. "
 
@@ -2306,6 +2381,7 @@ def example_parameter_vector(
         ),
         fixed=fixed,
         sites=sites,
+        site_table=site_table,
         site_labels={"pft": pft},
     )
 
@@ -2441,9 +2517,9 @@ def _distribution_name(prior: tfd.Distribution) -> str:
     return type(prior).__name__
 
 
-def _sipnet_attributes(name: str, source: str) -> dict[str, str]:
+def _sipnet_attributes(name: str, set_by: str) -> dict[str, str]:
     spec = _FLAT_SPECS[name]
-    attrs = {"units": spec.units, "sipnet_name": spec.sipnet_name, "source": source}
+    attrs = {"units": spec.units, "sipnet_name": spec.sipnet_name, "set_by": set_by}
     if spec.constituent:
         attrs["constituent"] = spec.constituent
     return attrs
@@ -2467,15 +2543,24 @@ def _in_domain(domain: ParameterDomain, values: Array) -> bool:
     return bool(finite & inside)
 
 
-def _normalized_sites(sites: Any) -> tuple[tuple[int, ...], tuple[np.ndarray, np.ndarray] | None]:
-    """Site ids, and ``lon``/``lat`` when *sites* is a site table that has
-    them."""
-    if not isinstance(sites, pd.DataFrame):
+def _normalized_sites(
+    sites: Any, site_table: Any
+) -> tuple[tuple[int, ...], tuple[np.ndarray, np.ndarray] | None]:
+    """Site ids, and ``lon``/``lat`` when a site table that has them is given.
+
+    With both, the ids must be the table's, in its order, and the table is
+    what is read.
+    """
+    if sites is not None:
+        check_sites_are_not_a_site_table(sites)
+    if site_table is None:
         return as_site_ids(sites, message_name="sites"), None
-    check_site_table_is_keyed_on_site_ids(sites)
-    table = site_lookup(sites)
+    check_site_table_is_keyed_on_site_ids(site_table)
+    table = site_lookup(site_table)
     ids = as_site_ids(table.index, message_name="the site table's site_id")
     check_site_table_is_in_site_order(ids)
+    if sites is not None:
+        check_sites_are_the_site_tables(as_site_ids(sites, message_name="sites"), ids)
     if {LON, LAT} & set(table.columns):
         check_site_table_has_locations(table)
         check_site_table_positions_are_finite(table)
@@ -2496,9 +2581,9 @@ def _normalized_site_labels(
     """One site-labels argument as (the class of each site, in site order;
     the declared classes, in their order)."""
     if isinstance(value, pd.DataFrame):
-        check_site_labels_product_has_columns(name, value)
+        check_site_labels_table_has_columns(name, value)
         indexed = site_lookup(value)[LABEL_COLUMN]
-        check_site_labels_product_covers_sites(name, indexed, sites)
+        check_site_labels_table_labels_every_site(name, indexed, sites)
         labels = tuple(indexed.loc[list(sites)].tolist())
         check_site_labels_are_present(name, labels)
         return labels, _declared_classes_of(name, value)
@@ -2514,10 +2599,10 @@ def _normalized_site_labels(
 
 
 def _declared_classes_of(name: str, value: Any) -> tuple[Any, ...]:
-    """The classes a site-labels argument declares: a product's categories,
+    """The classes a site-labels argument declares: a site-labels table's categories,
     else its sorted distinct labels."""
     if isinstance(value, pd.DataFrame):
-        check_site_labels_product_has_columns(name, value)
+        check_site_labels_table_has_columns(name, value)
         value = value[LABEL_COLUMN]
     if isinstance(value, pd.Categorical) or isinstance(
         getattr(value, "dtype", None), pd.CategoricalDtype
@@ -2534,7 +2619,7 @@ def _sorted_classes(name: str, labels: Sequence[Any]) -> tuple[Any, ...]:
     except TypeError:
         raise ValueError(
             f"site labels {name!r} mix types that cannot be ordered, so their classes have "
-            "no group order; pass a site-labels product or a pandas categorical, whose "
+            "no group order; pass a site-labels table or a pandas categorical, whose "
             "categories give the order."
         ) from None
 
@@ -2636,7 +2721,7 @@ def _as_batch_labels(values: Any) -> np.ndarray:
 
 def _space_labels(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
     """Component names in natural space, element labels in unconstrained."""
-    return parameter.components if space == NATURAL else parameter.element_labels
+    return parameter.component_names if space == NATURAL else parameter.element_labels
 
 
 def _fields_variable_names(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
@@ -2659,7 +2744,7 @@ def _fields_attributes(
         space=space,
         long_name=f"{parameter.name}: {label}",
         units=parameter.component_units[index] if space == NATURAL else "1",
-        sipnet_parameters=", ".join(parameter.sipnet_map.writes),
+        sipnet_parameters=", ".join(parameter.sipnet_map.sipnet_parameter_names_written),
     )
     return attributes
 
@@ -2690,16 +2775,16 @@ def _summary(vector: ParameterVector) -> str:
                 str(vector.n_groups(p.varies_by)),
                 str(p.size),
                 prior,
-                ", ".join(p.sipnet_map.writes),
+                ", ".join(p.sipnet_map.sipnet_parameter_names_written),
             )
         )
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
     for row in rows:
-        cells = [
-            cell.rjust(width) if i in (2, 3) else cell.ljust(width)
-            for i, (cell, width) in enumerate(zip(row, widths))
+        padded = [
+            text.rjust(width) if i in (2, 3) else text.ljust(width)
+            for i, (text, width) in enumerate(zip(row, widths))
         ]
-        lines.append("  " + "  ".join(cells) + "  " + row[-1])
+        lines.append("  " + "  ".join(padded) + "  " + row[-1])
     fixed = ", ".join(f"{f.name} ({f.varies_by or SHARED})" for f in vector.fixed)
     lines.append(f"  fixed: {fixed or 'none'}")
     unset = len(vector.unset_sipnet_parameter_names)
@@ -2758,7 +2843,8 @@ def check_sipnet_map_is_a_sipnet_map(parameter: CalibrationParameter) -> None:
     if not isinstance(parameter.sipnet_map, SIPNETMap):
         raise TypeError(
             f"calibration parameter {parameter.name!r}: sipnet_map must be a SIPNETMap "
-            "(with writes, reads, components, component_units and __call__) or a SIPNET "
+            "(with sipnet_parameter_names_written, sipnet_parameter_names_read, "
+            "component_names, component_units and __call__) or a SIPNET "
             f"parameter name; got {type(parameter.sipnet_map).__name__}."
         )
 
@@ -2838,9 +2924,10 @@ def check_components_match_prior(parameter: CalibrationParameter) -> None:
     if natural != parameter.natural_size:
         raise ValueError(
             f"calibration parameter {parameter.name!r}: the SIPNET map names "
-            f"{parameter.natural_size} components {parameter.components} but the prior's "
-            f"natural value has {natural}. Match the prior (product_transformed_gaussian_prior "
-            "keyword order, softmax_normal center length) to the SIPNET map."
+            f"{parameter.natural_size} components {parameter.component_names} but the "
+            f"prior's natural value has {natural}. Match the prior "
+            "(product_transformed_gaussian_prior keyword order, softmax_normal center "
+            "length) to the SIPNET map."
         )
 
 
@@ -2890,25 +2977,25 @@ def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
         raise ValueError("sites must be strictly ascending with no repeats.")
 
 
-def check_site_labels_product_has_columns(name: str, frame: pd.DataFrame) -> None:
+def check_site_labels_table_has_columns(name: str, frame: pd.DataFrame) -> None:
     missing = sorted({SITE_ID, LABEL_COLUMN} - set(frame.columns))
     if missing:
         raise ValueError(
-            f"site labels {name!r}: a site-labels product needs {SITE_ID!r} and "
+            f"site labels {name!r}: a site-labels table needs {SITE_ID!r} and "
             f"{LABEL_COLUMN!r} columns, as sipnet_calibration.site_labels.load_site_labels "
             f"returns; missing {missing}."
         )
 
 
-def check_site_labels_product_covers_sites(
+def check_site_labels_table_labels_every_site(
     name: str, labels: pd.Series, sites: tuple[int, ...]
 ) -> None:
     if not labels.index.is_unique:
-        raise ValueError(f"site labels {name!r}: the product repeats a site_id.")
+        raise ValueError(f"site labels {name!r}: the table repeats a site_id.")
     missing = [s for s in sites if s not in labels.index]
     if missing:
         raise ValueError(
-            f"site labels {name!r} do not label sites {missing}; a site-labels product must "
+            f"site labels {name!r} do not label sites {missing}; a site-labels table must "
             "label every site of the vector."
         )
 
@@ -2967,7 +3054,7 @@ def check_each_sipnet_parameter_has_one_writer(
 ) -> None:
     writers: dict[str, list[str]] = {}
     for parameter in parameters:
-        for name in parameter.sipnet_map.writes:
+        for name in parameter.sipnet_map.sipnet_parameter_names_written:
             writers.setdefault(name, []).append(f"calibration parameter {parameter.name}")
     for parameter in fixed:
         writers.setdefault(parameter.name, []).append("fixed")
@@ -2984,7 +3071,8 @@ def check_reads_are_fixed(
 ) -> None:
     fixed_names = {f.name for f in fixed}
     for parameter in parameters:
-        missing = [n for n in parameter.sipnet_map.reads if n not in fixed_names]
+        read = parameter.sipnet_map.sipnet_parameter_names_read
+        missing = [n for n in read if n not in fixed_names]
         if missing:
             raise ValueError(
                 f"calibration parameter {parameter.name!r} reads {missing}, which are not "
@@ -3153,21 +3241,58 @@ def check_fixed_values_are_numbers(parameter: FixedParameter) -> None:
         raise TypeError(f"fixed parameter {parameter.name!r}: values must be numbers; got {wrong}.")
 
 
+def check_sites_or_site_table_is_given(sites: Any, site_table: Any) -> None:
+    """At least one of ``sites=`` and ``site_table=`` is given."""
+    if sites is None and site_table is None:
+        raise TypeError(
+            "give the vector's sites as sites= (site ids) or site_table= (a site "
+            "table); got neither."
+        )
+
+
+def check_sites_are_the_site_tables(
+    sites: tuple[int, ...], table_ids: tuple[int, ...]
+) -> None:
+    """``sites=`` given beside ``site_table=`` are the table's site ids, in order."""
+    if tuple(sites) == tuple(table_ids):
+        return
+    pairs = zip(sites, table_ids)
+    where = next((k for k, (a, b) in enumerate(pairs) if a != b), None)
+    detail = (
+        f"{len(sites)} site ids against the table's {len(table_ids)}"
+        if where is None
+        else f"at position {where}, {sites[where]} against {table_ids[where]}"
+    )
+    raise ValueError(
+        f"sites= and the site table's site_id disagree ({detail}); give only one of "
+        "sites= and site_table=, or the table's own ids in its order."
+    )
+
+
+def check_sites_are_not_a_site_table(sites: Any) -> None:
+    """``sites=`` holds site ids, not a site table."""
+    if isinstance(sites, pd.DataFrame):
+        raise TypeError(
+            "sites= takes site ids, and got a DataFrame; pass a site table as "
+            "site_table=, which also carries its lon/lat onto the vector's fields."
+        )
+
+
 def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
-    """A site table given as ``sites=`` lists its sites ascending, each once."""
+    """A site table given as ``site_table=`` lists its sites ascending, each once."""
     if list(ids) != sorted(set(ids)):
         raise ValueError(
-            "a site table passed as sites= must be in ascending site_id order with no repeats, "
-            "because a per-site prior and site labels given as a plain sequence are read in "
-            "site order; sort it with .sort_values('site_id')."
+            "a site table passed as site_table= must be in ascending site_id order with no "
+            "repeats, because a per-site prior and site labels given as a plain sequence are "
+            "read in site order; sort it with .sort_values('site_id')."
         )
 
 
 def check_site_table_positions_are_finite(table: pd.DataFrame) -> None:
-    """A site table given as ``sites=`` has a finite ``lon`` and ``lat`` for every site."""
+    """A ``site_table=`` table has a finite ``lon`` and ``lat`` for every site."""
     if not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
         raise ValueError(
-            "a site table passed as sites= has missing or non-finite lon/lat; give every "
+            "a site table passed as site_table= has missing or non-finite lon/lat; give every "
             "site its coordinates, or pass a table without lon and lat."
         )
 
@@ -3184,10 +3309,10 @@ def check_site_labels_are_present(name: str, labels: Sequence[Any]) -> None:
 def check_sipnet_map_returns_what_it_writes(
     parameter: CalibrationParameter, written: Mapping[str, Any]
 ) -> None:
-    declared = set(parameter.sipnet_map.writes)
+    declared = set(parameter.sipnet_map.sipnet_parameter_names_written)
     if set(written) != declared:
         raise ValueError(
-            f"calibration parameter {parameter.name!r}: its SIPNET map declares writes "
+            f"calibration parameter {parameter.name!r}: its SIPNET map declares it writes "
             f"{sorted(declared)} but returns {sorted(written)}; they must be the same."
         )
 
@@ -3261,7 +3386,7 @@ def check_batch_labels_are_distinct_integers(values: Any) -> None:
 
 
 def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
-    """*batch_dim* can name a batch dim of this vector's Fields and SIPNET table.
+    """*batch_dim* can name a batch dim of the Fields and SIPNET parameter fields.
 
     Runs :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`,
     :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`,
@@ -3300,41 +3425,44 @@ def check_batch_dim_name_is_not_a_vector_name(vector: ParameterVector, batch_dim
         )
 
 
-def check_batch_labels_name_the_table_batch_dims(
-    table_batch_dims: tuple[str, ...], requested: Mapping[str, Any]
+def check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
+    batch_dim_names: tuple[str, ...], requested: Mapping[str, Any]
 ) -> None:
-    """*batch* names exactly the table's batch dims."""
-    missing = [d for d in table_batch_dims if d not in requested]
-    extra = [d for d in requested if d not in table_batch_dims]
+    """*batch* names exactly the SIPNET parameter fields' batch dims."""
+    missing = [d for d in batch_dim_names if d not in requested]
+    extra = [d for d in requested if d not in batch_dim_names]
     if missing or extra:
         raise ValueError(
-            f"the table has the batch dims {list(table_batch_dims)} and batch= names "
-            f"{list(requested)}; pass batch={{dim: label}} for each of the table's batch "
-            "dims and no other."
+            f"the SIPNET parameter fields have the batch dims {list(batch_dim_names)} and "
+            f"batch= names {list(requested)}; pass batch={{dim: label}} for each of their "
+            "batch dims and no other."
         )
 
 
-def check_table_is_on_sites(table: xr.Dataset) -> None:
-    """The SIPNET table has a ``site`` dim, which :func:`sipnet_overrides` selects on."""
-    if SITE in table.dims:
+def check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields: xr.Dataset) -> None:
+    """The SIPNET parameter fields have a ``site`` dim for :func:`sipnet_overrides`."""
+    if SITE in sipnet_parameter_fields.dims:
         return
-    if SITE in table.coords and table[SITE].ndim == 0:
+    if SITE in sipnet_parameter_fields.coords and sipnet_parameter_fields[SITE].ndim == 0:
+        site = sipnet_parameter_fields[SITE].values.item()
         raise ValueError(
-            f"the SIPNET table was selected to site {table[SITE].values.item()!r} alone; "
-            "sipnet_overrides selects the site itself, so pass the table on its site dim, "
-            "as ParameterVector.sipnet_table returns it."
+            f"the SIPNET parameter fields were selected to site {site!r} "
+            "alone; sipnet_overrides selects the site itself, so pass them on their site "
+            "dim, as ParameterVector.sipnet_parameter_fields returns them."
         )
     raise ValueError(
-        "the SIPNET table has no site dim; pass a table on its site dim, as "
-        "ParameterVector.sipnet_table returns it."
+        "the SIPNET parameter fields have no site dim; pass them on their site dim, as "
+        "ParameterVector.sipnet_parameter_fields returns them."
     )
 
 
-def check_batch_label_is_in_the_table(table: xr.Dataset, dim: str, label: Any) -> None:
-    """The label asked for, a batch label or a site id, is one of the table's on *dim*."""
-    labels = np.asarray(table[dim].values).tolist()
+def check_batch_label_is_in_the_sipnet_parameter_fields(
+    sipnet_parameter_fields: xr.Dataset, dim: str, label: Any
+) -> None:
+    """The label asked for, a batch label or a site id, is one of theirs on *dim*."""
+    labels = np.asarray(sipnet_parameter_fields[dim].values).tolist()
     if label not in labels:
         raise KeyError(
-            f"{dim} {label!r} is not one of the table's {dim} labels "
+            f"{dim} {label!r} is not one of the SIPNET parameter fields' {dim} labels "
             f"({labels[:5]}{', ...' if len(labels) > 5 else ''})."
         )

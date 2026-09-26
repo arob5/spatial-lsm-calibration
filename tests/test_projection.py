@@ -352,9 +352,9 @@ class TestFactors:
         """The figure that justifies refusing a north arrow, pinned so the prose
         cannot drift from it again: it was wrong in sign, in magnitude and in
         location before this test existed."""
-        sites = load_sites()
+        site_table = load_sites()
         convergence = SITE_PROJECTION.factors(
-            sites["lon"].to_numpy(), sites["lat"].to_numpy()
+            site_table["lon"].to_numpy(), site_table["lat"].to_numpy()
         ).meridian_convergence
         assert convergence.min() == pytest.approx(-70.6, abs=0.2)
         assert convergence.max() == pytest.approx(75.1, abs=0.2)
@@ -437,12 +437,12 @@ class TestSiteDomainDistortion:
 
     @staticmethod
     def _factors():
-        sites = load_sites()
-        return SITE_PROJECTION.factors(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+        site_table = load_sites()
+        return SITE_PROJECTION.factors(site_table["lon"].to_numpy(), site_table["lat"].to_numpy())
 
     def test_every_site_projects_to_a_finite_coordinate(self):
-        sites = load_sites()
-        x, y = SITE_PROJECTION.forward(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+        site_table = load_sites()
+        x, y = SITE_PROJECTION.forward(site_table["lon"].to_numpy(), site_table["lat"].to_numpy())
         assert np.isfinite(x).all()
         assert np.isfinite(y).all()
 
@@ -466,9 +466,9 @@ class TestSiteDomainDistortion:
         """Distortion grows with angular distance from the center, so the
         extremes of the pool are where the ceilings are tested and a change of
         center moves both together."""
-        sites = load_sites()
-        lon = sites["lon"].to_numpy()
-        lat = sites["lat"].to_numpy()
+        site_table = load_sites()
+        lon = site_table["lon"].to_numpy()
+        lat = site_table["lat"].to_numpy()
         center = math.radians(SITE_PROJECTION.lat_0)
         distance = np.arccos(
             np.clip(
@@ -514,8 +514,8 @@ class TestProjectedBounds:
     def test_contains_every_site_inside_the_box(self):
         """Whatever ``select_sites(bbox=...)`` returns must project inside the
         limits the same box gives, or a figure clips its own data."""
-        sites = select_sites(load_sites(), bbox=EXTENTS["CONUS"])
-        x, y = SITE_PROJECTION.forward(sites["lon"].to_numpy(), sites["lat"].to_numpy())
+        site_table = select_sites(load_sites(), bbox=EXTENTS["CONUS"])
+        x, y = SITE_PROJECTION.forward(site_table["lon"].to_numpy(), site_table["lat"].to_numpy())
         x_min, y_min, x_max, y_max = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
         assert x.min() >= x_min and x.max() <= x_max
         assert y.min() >= y_min and y.max() <= y_max
@@ -902,7 +902,7 @@ class TestExtents:
 
     @needs_site_table
     def test_the_extents_select_the_documented_subsets(self):
-        sites = load_sites()
-        assert len(select_sites(sites, bbox=EXTENTS["NORTH_AMERICA"])) == len(sites)
-        assert len(select_sites(sites, bbox=EXTENTS["CONUS"])) == 3640
-        assert 0 < len(select_sites(sites, bbox=EXTENTS["ALASKA"])) < len(sites)
+        site_table = load_sites()
+        assert len(select_sites(site_table, bbox=EXTENTS["NORTH_AMERICA"])) == len(site_table)
+        assert len(select_sites(site_table, bbox=EXTENTS["CONUS"])) == 3640
+        assert 0 < len(select_sites(site_table, bbox=EXTENTS["ALASKA"])) < len(site_table)

@@ -176,7 +176,7 @@ def test_raster_refuses_corners_that_do_not_bound_the_values(ax):
         primitives.raster(ax, np.zeros((3, 3)), np.zeros((3, 3)), np.zeros((3, 3)))
 
 
-# ── plot_map: kinds, renderers, refusals ──────────────────────────────────────
+# ── plot_map: maps, renderers, refusals ───────────────────────────────────────
 
 
 def test_points_are_the_default_and_draw_every_site_with_a_value(ax, dense):
@@ -527,7 +527,7 @@ def test_the_site_pool_maps_by_class(real_site_table):
     from sipnet_calibration.site_labels import site_labels_field
 
     try:
-        field = site_labels_field("reanalysis_3pft", sites=real_site_table)
+        field = site_labels_field("reanalysis_3pft", site_table=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
     ax = plot_map(field)
@@ -539,7 +539,7 @@ def test_the_site_pool_maps_by_sixteen_classes_with_display_names(real_site_tabl
     from sipnet_calibration.site_labels import resolve_site_labels, site_labels_field
 
     try:
-        field = site_labels_field("pft_16class", sites=real_site_table)
+        field = site_labels_field("pft_16class", site_table=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
     spec = resolve_site_labels("pft_16class")
@@ -594,8 +594,8 @@ def test_model_output_is_animated_over_time(model_wood):
 
 def test_an_annual_field_with_windows_is_animated(dense):
     annual = frames(dense).assign_coords(
-        time_bounds_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
-        time_bounds_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
+        window_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
+        window_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
     )
     animation = animate_map(annual)
     animation._func(1)

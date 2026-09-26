@@ -16,7 +16,7 @@ down and nowhere else goes stale in silence. The numbers live here as
 :data:`RECORDED`, the README says what the property is and points here, and a
 regenerated ensemble that changed is refused rather than absorbed.
 
-This is not part of the ingest pipeline: nothing is written, and no product is
+This is not part of the ingest pipeline: nothing is written, and no processed file is
 built from soil texture yet.
 
 Input data
@@ -50,7 +50,7 @@ the recorded one. ``--no-check`` is how to run it there without the comparison
 failing for that reason.
 
 **The ``soilWHC`` computed here is PEcAn's, reproduced to show the magnitude,
-not a product.** ``write.configs.SIPNET.R`` takes layer thickness as
+not a processed file.** ``write.configs.SIPNET.R`` takes layer thickness as
 ``c(depth[1], diff(depth))``, converts to centimeters and sums
 ``volume_fraction_of_water_in_soil_at_saturation`` times thickness over the
 profile. It is reported because the value it gives is six to eight times
@@ -87,7 +87,7 @@ from sipnet_calibration.sites import N_SITES
 FILE_PATTERN = re.compile(r"^Soil_params_0-(\d+)_(\d+)\.nc$")
 
 #: Layer bottoms in meters. A file on another set of depths is a different
-#: product, and ``soilWHC`` would integrate over a different profile.
+#: data source, and ``soilWHC`` would integrate over a different profile.
 DEPTHS_METERS = (0.05, 0.15, 0.3, 0.6, 1.0, 2.0)
 
 #: The variable PEcAn integrates to get ``soilWHC``.

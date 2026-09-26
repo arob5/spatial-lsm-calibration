@@ -15,7 +15,7 @@ runs one way::
       -> scripts/ingest_sites.py    processed/sites/sites.csv
       -> this module                load_sites() -> pandas.DataFrame
 
-Every other processed product joins against this table on ``site_id``, so this
+Every other processed file joins against this table on ``site_id``, so this
 is where the meaning of a site identifier is fixed. ``data/README.md`` documents
 the source data, the coordinate reference system and the open questions.
 
@@ -67,9 +67,10 @@ rendering of it.
 
 There is deliberately **no plant functional type column**. A PFT class is not
 an intrinsic property of a site: a calibration may not use PFTs at all, and
-several site-labels products can be applied to the same pool. Site labels are
-their own product under ``processed/site_labels/``, keyed on ``site_id``, and a
-caller joins one on before selecting.
+several site-labels data sources can be applied to the same pool. Each site
+labels data source has its own processed file under
+``data/processed/site_labels/``, keyed on ``site_id``, and a caller joins one
+on before selecting.
 
 Constants
 ---------
@@ -86,7 +87,7 @@ Functions
 
 :func:`select_sites`
     A subset of a site table, by identifier, bounding box, arbitrary predicate,
-    or random sample. The filters compose.
+    or a number of sites drawn at random. The filters compose.
 
 :func:`default_sites_path`
     Where the table is expected to be.
@@ -140,24 +141,24 @@ Read the table and select from it::
         select_sites,
     )
 
-    sites = load_sites()                    # or load_sites(path)
+    site_table = load_sites()               # or load_sites(path)
 
     # Named sites, by identifier, in the order given.
-    named = select_sites(sites, ids=[4102, 4113, 5584])
+    named = select_sites(site_table, ids=[4102, 4113, 5584])
 
     # A bounding box, as (west, south, east, north), edges included. Every
     # longitude in the pool is negative.
-    conus = select_sites(sites, bbox=(-125, 24, -66, 50))
+    conus = select_sites(site_table, bbox=(-125, 24, -66, 50))
 
     # Any predicate over the table's columns.
-    flux_towers = select_sites(sites, where=lambda s: s["ameriflux_site_id"] != "")
+    flux_towers = select_sites(site_table, where=lambda s: s["ameriflux_site_id"] != "")
 
-    # The filters compose, and sample is always of whatever survived.
+    # The filters compose, and n_random always draws from whatever survived.
     subset = select_sites(
-        sites,
+        site_table,
         bbox=(-125, 24, -66, 50),
         where=lambda s: s["ameriflux_site_id"] != "",
-        sample=20,
+        n_random=20,
         seed=0,
     )
 
@@ -165,16 +166,16 @@ Select on site labels by joining them on first, since PFT is not a column here::
 
     import pandas as pd
 
-    # Real site labels are their own product under processed/site_labels/, keyed
-    # on site_id. The join is the same whatever the product is called.
+    # Real site labels are their own data source under processed/site_labels/,
+    # keyed on site_id. The join is the same whatever the source is called.
     site_labels = pd.DataFrame({"site_id": [4102, 4113], "pft": ["DBF", "ENF"]})
     deciduous = select_sites(
-        sites.merge(site_labels, on="site_id"), where=lambda s: s["pft"] == "DBF"
+        site_table.merge(site_labels, on="site_id"), where=lambda s: s["pft"] == "DBF"
     )
 
 Convert between coordinates and grid indices::
 
-    row = sites.iloc[0]
+    row = site_table.iloc[0]
 
     # A stored coordinate back to its exact position on the lattice.
     lon_index, lat_index = SITE_GRID.lonlat_to_index(row["lon"], row["lat"])
@@ -184,17 +185,17 @@ Convert between coordinates and grid indices::
 
     # Both are vectorized, so a whole column converts at once.
     lon_indices, lat_indices = SITE_GRID.lonlat_to_index(
-        sites["lon"].to_numpy(), sites["lat"].to_numpy()
+        site_table["lon"].to_numpy(), site_table["lat"].to_numpy()
     )
 
 Look sites up, and give a field its coordinates::
 
     from sipnet_calibration.sites import site_coordinates, site_locations, site_lookup
 
-    keyed = site_lookup(sites)                     # indexed on site_id
+    keyed = site_lookup(site_table)                     # indexed on site_id
     keyed.loc[4102, "lon"]
-    coords = site_locations([4113, 4102], sites)   # {"lon", "lat"} on site, CF attributes
-    coords = site_coordinates([4113, 4102], sites) # {"site", "lon", "lat"}
+    coords = site_locations([4113, 4102], site_table)   # {"lon", "lat"} on site, CF attributes
+    coords = site_coordinates([4113, 4102], site_table)  # {"site", "lon", "lat"}
 """
 
 from __future__ import annotations
@@ -602,27 +603,27 @@ EXTENTS = FrozenMapping(
 
 
 def select_sites(
-    sites: pd.DataFrame,
+    site_table: pd.DataFrame,
     *,
     ids: Iterable[int] | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     where: Callable[[pd.DataFrame], object] | None = None,
-    sample: int | None = None,
+    n_random: int | None = None,
     seed: int | None = None,
 ) -> pd.DataFrame:
     """A subset of the site table.
 
-    The filters compose, and are applied in the order below so that *sample* is
-    always a sample of what survived the rest.
+    The filters compose, and are applied in the order below so that
+    *n_random* always draws from what survived the rest.
 
     Parameters
     ----------
-    sites:
+    site_table:
         A site table, from :func:`load_sites`, or one with extra columns joined
         on. Never modified.
     ids:
         Site ids to keep, a sequence of them; every one must exist. The result
-        is in the order given, unless *sample* is also passed, which re-sorts
+        is in the order given, unless *n_random* is also passed, which re-sorts
         by ``site_id``.
     bbox:
         ``(west, south, east, north)`` in degrees, edges included. Longitudes are
@@ -634,11 +635,11 @@ def select_sites(
         A callable taking the table and returning a boolean mask over its rows —
         anything ``.loc`` accepts. This is the general filter: it covers the
         columns of the table and any joined on beside them.
-    sample:
-        Keep this many rows, drawn without replacement, in ascending ``site_id``
-        order. Fewer rows available is an error.
+    n_random:
+        Keep this many rows, drawn at random without replacement, in ascending
+        ``site_id`` order. Fewer rows available is an error.
     seed:
-        Seed for *sample*. Passing one makes the draw reproducible; leaving it
+        Seed for *n_random*. Passing one makes the draw reproducible; leaving it
         out does not.
 
     Returns
@@ -653,12 +654,12 @@ def select_sites(
     TypeError
         If *ids* is one id, a string, a set or a mapping, or holds a
         boolean, a float or a value that is not a number; if *bbox* is not a
-        sequence of four numbers; or if *sample* is a boolean or not an
+        sequence of four numbers; or if *n_random* is a boolean or not an
         integer.
     ValueError
         If *ids* holds duplicates or values that are not site ids, is a
         two-dimensional array, or the table lists a site twice; if *bbox* is
-        malformed; if *where* does not return a usable mask; or if *sample*
+        malformed; if *where* does not return a usable mask; or if *n_random*
         is negative or exceeds the number of rows available.
 
     Notes
@@ -667,7 +668,7 @@ def select_sites(
     module docstring). PFT selection can be done by joining site labels on and
     passing ``where``::
 
-        labeled = sites.merge(pd.read_csv(site_labels), on="site_id")
+        labeled = site_table.merge(pd.read_csv(site_labels), on="site_id")
         select_sites(labeled, where=lambda t: t["pft"] == "DBF")
 
     Examples
@@ -678,11 +679,11 @@ def select_sites(
             load_sites(),
             bbox=(-125, 24, -66, 50),
             where=lambda s: s["ameriflux_site_id"] != "",
-            sample=20,
+            n_random=20,
             seed=0,
         )
     """
-    selected = sites
+    selected = site_table
 
     if ids is not None:
         selected = _select_by_id(selected, ids)
@@ -690,8 +691,8 @@ def select_sites(
         selected = selected.loc[_bbox_mask(selected, bbox)]
     if where is not None:
         selected = selected.loc[_predicate_mask(selected, where)]
-    if sample is not None:
-        selected = _draw_sample(selected, sample, seed)
+    if n_random is not None:
+        selected = _draw_n_random(selected, n_random, seed)
 
     return selected.reset_index(drop=True)
 
@@ -852,7 +853,7 @@ def _check_site_table(table: pd.DataFrame, *, source: Path) -> None:
             )
 
 
-def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
+def _select_by_id(site_table: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
     """Rows for *ids*, in the order given. Raises on an unknown identifier.
 
     Selection is positional rather than ``set_index(...).loc[...]``, which would
@@ -862,10 +863,10 @@ def _select_by_id(sites: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
     """
     wanted = list(as_site_ids(ids, message_name="ids"))
     # A repeated site would make ids= return more rows than it was asked for.
-    check_site_table_lists_each_site_once(sites)
-    check_site_table_lists_the_sites(sites, wanted)
-    position = pd.Series(np.arange(len(sites)), index=sites[SITE_ID].to_numpy())
-    return sites.iloc[position.loc[wanted].to_numpy()]
+    check_site_table_lists_each_site_once(site_table)
+    check_site_table_lists_the_sites(site_table, wanted)
+    position = pd.Series(np.arange(len(site_table)), index=site_table[SITE_ID].to_numpy())
+    return site_table.iloc[position.loc[wanted].to_numpy()]
 
 
 def _site_ids_of(site_table: pd.DataFrame) -> pd.Index:
@@ -875,15 +876,17 @@ def _site_ids_of(site_table: pd.DataFrame) -> pd.Index:
     return pd.Index(site_table[SITE_ID])
 
 
-def _bbox_mask(sites: pd.DataFrame, bbox: tuple[float, float, float, float]) -> np.ndarray:
+def _bbox_mask(site_table: pd.DataFrame, bbox: tuple[float, float, float, float]) -> np.ndarray:
     """A boolean mask of the sites inside *bbox*, edges included."""
     west, south, east, north = as_bbox(bbox, message_name="bbox")
-    lon = sites[LON].to_numpy()
-    lat = sites[LAT].to_numpy()
+    lon = site_table[LON].to_numpy()
+    lat = site_table[LAT].to_numpy()
     return (lon >= west) & (lon <= east) & (lat >= south) & (lat <= north)
 
 
-def _predicate_mask(sites: pd.DataFrame, where: Callable[[pd.DataFrame], object]) -> np.ndarray:
+def _predicate_mask(
+    site_table: pd.DataFrame, where: Callable[[pd.DataFrame], object]
+) -> np.ndarray:
     """The mask *where* returns, aligned and checked before it is used.
 
     A ``Series`` is aligned on its index, the way ``.loc`` would, rather than
@@ -891,17 +894,17 @@ def _predicate_mask(sites: pd.DataFrame, where: Callable[[pd.DataFrame], object]
     reordered mask of the right length then selects the wrong rows and every
     shape and dtype check still passes.
     """
-    result = where(sites)
+    result = where(site_table)
 
     if isinstance(result, pd.Series):
-        if not result.index.equals(sites.index):
-            if len(result) != len(sites) or set(result.index) != set(sites.index):
+        if not result.index.equals(site_table.index):
+            if len(result) != len(site_table) or set(result.index) != set(site_table.index):
                 raise ValueError(
                     "where returned a Series whose index does not match the "
                     "table's, so it cannot be aligned; return a mask over the "
                     "frame that was passed in"
                 )
-            result = result.reindex(sites.index)
+            result = result.reindex(site_table.index)
         if isinstance(result.dtype, pd.BooleanDtype):
             if result.isna().any():
                 raise ValueError(
@@ -917,20 +920,24 @@ def _predicate_mask(sites: pd.DataFrame, where: Callable[[pd.DataFrame], object]
         raise ValueError(
             f"where must return a boolean mask, got dtype {mask.dtype}"
         )
-    if mask.shape != (len(sites),):
+    if mask.shape != (len(site_table),):
         raise ValueError(
             f"where returned a mask of shape {mask.shape}, expected "
-            f"{(len(sites),)}"
+            f"{(len(site_table),)}"
         )
     return mask
 
 
-def _draw_sample(sites: pd.DataFrame, sample: int, seed: int | None) -> pd.DataFrame:
-    """*sample* rows drawn without replacement, in ascending ``site_id`` order."""
-    sample = as_bounded_integer(sample, minimum=0, maximum=len(sites), message_name="sample")
+def _draw_n_random(
+    site_table: pd.DataFrame, n_random: int, seed: int | None
+) -> pd.DataFrame:
+    """*n_random* rows drawn without replacement, in ascending ``site_id`` order."""
+    n_random = as_bounded_integer(
+        n_random, minimum=0, maximum=len(site_table), message_name="n_random"
+    )
     rng = np.random.default_rng(seed)
-    positions = np.sort(rng.choice(len(sites), size=sample, replace=False))
-    return sites.iloc[positions].sort_values(SITE_ID)
+    positions = np.sort(rng.choice(len(site_table), size=n_random, replace=False))
+    return site_table.iloc[positions].sort_values(SITE_ID)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

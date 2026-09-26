@@ -1,26 +1,26 @@
-"""The data model for site labels: a class per site, one product per source.
+"""The data model for site labels: a class per site, one processed file per data source.
 
 Overview
 --------
-A *site-labels product* maps every site to a class. This module defines how one
+A *site-labels data source* maps every site to a class. This module defines how one
 is represented -- its columns, dtypes and the class names it may hold -- and
 provides the functions for reading one and for parsing the raw file it is built
 from. It is the single description of that layout: the ingest script that
-writes a site-labels product gets its schema and its checks from here rather
+writes a site-labels processed file gets its schema and its checks from here rather
 than declaring its own.
 
-It sits downstream of the one script that builds the products, and the
+It sits downstream of the one script that builds the processed files, and the
 dependency runs one way::
 
     raw/site_labels/<raw_file>
       -> scripts/ingest_site_labels.py   processed/site_labels/<name>.csv
       -> this module                     load_site_labels(name) -> pandas.DataFrame
 
-Site labels are **not** site metadata. Which site-labels product to use is an
+Site labels are **not** site metadata. Which site-labels data source to use is an
 experimental choice, so it is not a column of the site table:
 :mod:`sipnet_calibration.sites` deliberately carries no plant functional type,
-and a caller joins a site-labels product on before selecting. Several products
-coexist, one file each, and a calibration names the one it used.
+and a caller joins site labels on before selecting. Several site-labels
+sources coexist, one file each, and a calibration names the one it used.
 
 Input data
 ----------
@@ -29,7 +29,7 @@ Input data
     ``data/raw/site_labels/provenance.md`` records where each came from.
 
 ``data/processed/site_labels/<name>.csv``
-    The product, read by :func:`load_site_labels`, whose layout is the
+    The processed file, read by :func:`load_site_labels`, whose layout is the
     `Data model`_ below. :func:`site_labels_path` says where it is expected to
     be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
     :data:`~sipnet_calibration.conventions.DATA_ROOT_ENV_VAR`.
@@ -41,7 +41,7 @@ site, in ascending ``site_id`` order, holding the columns of
 :data:`SITE_LABELS_COLUMNS`. ``site_id`` takes its dtype from
 :data:`SITE_LABELS_COLUMN_DTYPES`, which both the read and the build impose;
 ``label`` is a categorical the spec builds, since its categories depend on
-which product it is.
+which site-labels data source it is.
 
 ============= ================== ==============================================
 Column        Dtype              Meaning
@@ -55,10 +55,10 @@ order and always all of them**, whether or not every class is used. A class the
 spec does not declare is an error on read, never a silently admitted new
 category.
 
-**Missing values.** None. A site that a product does not label is absent from
-its file; there is no unlabeled class and no ``NaN``. Where
-:attr:`SiteLabelsSpec.covers_pool` is set, every site in the pool is present, and
-the ingest refuses a file where one is not.
+**Missing values.** None. A site that a site-labels data source does not label
+is absent from its file; there is no unlabeled class and no ``NaN``. Where
+:attr:`SiteLabelsSpec.covers_pool` is set, every site in the pool is present,
+and the ingest refuses a file where one is not.
 
 **No other columns.** Not ``lon``/``lat``, not ``landcover``. Those are site
 metadata, and duplicating them here is how a join key drifts from its table.
@@ -67,17 +67,18 @@ Join :func:`sipnet_calibration.sites.load_sites` on ``site_id``.
 Functions
 ---------
 :func:`load_site_labels`
-    Read one processed site-labels product and check it against its spec.
+    Read one site-labels processed file and check it against its spec.
 
 :func:`site_labels_field`
-    The same product as a ``(site,)`` array of CF flag codes with ``lon`` and
+    The same site labels as a ``(site,)`` array of CF flag codes with ``lon`` and
     ``lat``, the form the map plotting layer draws.
 
 :func:`read_raw`
-    Parse a product's raw file exactly, in its source column names.
+    Parse a site-labels data source's raw file exactly, in its source column
+    names.
 
 :func:`build_site_labels`
-    Turn a raw frame into the product the data model describes.
+    Turn a raw frame into the site labels the data model describes.
 
 :func:`resolve_site_labels`
     The spec of a name, or a ``KeyError`` listing the names that exist.
@@ -93,12 +94,13 @@ Functions
 
 Notes
 -----
-**The class column is ``label``, not ``pft``.** One schema across products, so
+**The class column is ``label``, not ``pft``.** One schema across sources, so
 that :func:`load_site_labels` returns the same frame shape whatever it is asked
 for and code that pools over classes -- a partial-pooling prior, a facet-by-class
-figure -- indexes ``label`` without knowing which product it got. The product's
-identity lives in its name, and :attr:`SiteLabelsSpec.label_kind` carries the
-domain word for prose and axis labels. A product whose classes are not plant
+figure -- indexes ``label`` without knowing which source it got. The site
+labels' name, not a column, says which source a frame came from, and
+:attr:`SiteLabelsSpec.label_kind` carries the domain word for prose and axis
+labels. A source whose classes are not plant
 functional types then costs no schema change.
 
 **Class names are the producer's, verbatim.** ``boreal.coniferous`` and
@@ -106,8 +108,8 @@ functional types then costs no schema change.
 ``lower_case_with_underscores`` nor free of abbreviations, and are kept anyway:
 they are the join key to the reanalysis's per-PFT trait sample tables, so
 renaming them would be renaming a shared key. The project's naming convention
-governs the names this project chooses -- the column, the product, the registry
-key -- and the class values inside a product are data.
+governs the names this project chooses -- the column, the processed file, the
+registry key -- and the class values inside a processed file are data.
 
 **The expected row count is a constant, not a measurement to look up.** Two
 files named ``site_pft.csv`` sit one directory apart upstream, with the same
@@ -117,21 +119,21 @@ the older 6400-site pool. Nothing inside either announces which it is, so
 refuses a mismatch by name. See ``data/raw/site_labels/provenance.md``.
 
 **A ``landcover_mapping`` is a discovered relation, not a definition.** Where
-a product's classes turn out to be an exact function of the site table's
+a source's classes turn out to be an exact function of the site table's
 ``landcover``, recording it means a regenerated raw file that broke the relation
-is refused rather than ingested. It is optional: ``None`` for a product with no
+is refused rather than ingested. It is optional: ``None`` for a source with no
 such relation, and the check is then skipped.
 
 Usage
 -----
-Read a site-labels product and join it to the site table::
+Read site labels and join them to the site table::
 
     from sipnet_calibration.site_labels import load_site_labels
-    from sipnet_calibration.sites import load_sites, select_sites
+    from sipnet_calibration.sites import EXTENTS, load_sites, select_sites
 
     labels = load_site_labels("reanalysis_3pft")
-    sites = select_sites(load_sites(), bbox=EXTENTS["CONUS"]).merge(labels, on="site_id")
-    for name, group in sites.groupby("label", observed=False):
+    site_table = select_sites(load_sites(), bbox=EXTENTS["CONUS"]).merge(labels, on="site_id")
+    for name, group in site_table.groupby("label", observed=False):
         ...
 
 List what exists, and what one is::
@@ -193,20 +195,20 @@ __all__ = [
 #: Column holding the class. Generic on purpose; see the module Notes.
 LABEL_COLUMN = "label"
 
-#: The product's columns, in order.
+#: The processed file's columns, in order.
 SITE_LABELS_COLUMNS = (SITE_ID, LABEL_COLUMN)
 
 #: Dtype per column. ``label`` is not here because its categorical dtype
 #: depends on the spec; :func:`label_dtype` builds it.
 #:
 #: Read-only: this is the schema, and a caller that mutated it would change what
-#: every later read of a site-labels product produces.
+#: every later read of site labels produces.
 SITE_LABELS_COLUMN_DTYPES = FrozenMapping({SITE_ID: SITE_DTYPE})
 
 
 @dataclass(frozen=True)
 class SiteLabelsSpec:
-    """Everything a consumer needs to know about one site-labels product.
+    """Everything a consumer needs to know about one site-labels data source.
 
     One instance per raw file. The fields describe the classes, the raw file
     that carries them, and the invariants the ingest enforces.
@@ -231,16 +233,16 @@ class SiteLabelsSpec:
     labels: tuple[str, ...]
     """The classes, verbatim from the producer, in the order they are indexed in.
 
-    The order is the product's categorical order, so it is what a hierarchical
+    The order is the source's categorical order, so it is what a hierarchical
     prior's class axis is laid out in. Choose it for meaning rather than for
     frequency, and never reorder it once anything has been run against it.
     """
 
     description: str
-    """What the product is and how the producer constructed it, with the citation."""
+    """What the site labels are and how the producer made them, with the citation."""
 
-    product: str
-    """The source the product came from, e.g. ``"NALCR 8000-site SDA"``."""
+    upstream_product: str
+    """The producer's own product name, e.g. ``"NALCR 8000-site SDA"``."""
 
     raw_file: str
     """File name under ``data/raw/site_labels/``."""
@@ -290,14 +292,14 @@ class SiteLabelsSpec:
                 object.__setattr__(self, name, as_frozen_mapping(value, message_name=name))
         if not NAME_PATTERN.match(self.name):
             raise ValueError(f"Site-labels name {self.name!r} is not lower_case_with_underscores.")
-        if not self.description or not self.long_label or not self.product:
+        if not self.description or not self.long_label or not self.upstream_product:
             raise ValueError(
-                f"Site labels {self.name!r} needs a description, long_label and product."
+                f"Site labels {self.name!r} needs a description, long_label and upstream_product."
             )
         if not self.label_kind:
             raise ValueError(f"Site labels {self.name!r} needs a label_kind.")
         if len(self.labels) < 2:
-            raise ValueError(f"Site labels {self.name!r}: a product needs at least two classes.")
+            raise ValueError(f"Site labels {self.name!r}: a source needs at least two classes.")
         if len(set(self.labels)) != len(self.labels):
             raise ValueError(f"Site labels {self.name!r}: labels repeats a class.")
         if any(not label for label in self.labels):
@@ -322,7 +324,7 @@ class SiteLabelsSpec:
             if unknown:
                 raise ValueError(
                     f"Site labels {self.name!r}: display_names names {unknown}, which are "
-                    f"not classes of this product."
+                    f"not classes of these site labels."
                 )
             absent = [label for label in self.labels if label not in self.display_names]
             if absent:
@@ -341,7 +343,7 @@ class SiteLabelsSpec:
 
 # ── the registry ──────────────────────────────────────────────────────────────
 
-#: Every site-labels product, in registry order. One entry per raw file.
+#: Every site-labels data source, in registry order. One entry per raw file.
 SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
     SiteLabelsSpec(
         name="reanalysis_3pft",
@@ -361,7 +363,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
             "classes are an exact aggregation of the site shapefile's eight landcover "
             "classes. Zhang et al. (2026), doi:10.3334/ORNLDAAC/2507."
         ),
-        product="NALCR 8000-site SDA",
+        upstream_product="NALCR 8000-site SDA",
         raw_file="reanalysis_site_pft.csv",
         raw_columns=("site", "pft"),
         site_column="site",
@@ -392,7 +394,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         notes=(
             "The landcover relation is measured over all 8000 rows, not stated by the "
             "producer; see data/README.md open question 24(k).",
-            "A finer 16-class product over the same pool is tracked as "
+            "A finer 16-class data source over the same pool is tracked as "
             "raw/site_labels/site_pft_16class.csv and is the one this project intends "
             "to calibrate under. The two do not nest: every one of its classes draws "
             "sites from at least two of these three. See data/README.md open "
@@ -431,7 +433,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
             "on climate, vegetation structure, soil and biogeography. 7637 sites were "
             "assigned directly and 363 by nearest median ecological profile."
         ),
-        product="Dietze lab PFT assignment",
+        upstream_product="Dietze lab PFT assignment",
         raw_file="site_pft_16class.csv",
         raw_columns=(
             "index",
@@ -484,7 +486,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         comment=(
             "Does not nest inside reanalysis_3pft: every one of these classes draws "
             "sites from at least two of those three, and twelve from all three, so a "
-            "prior cannot be transferred from the coarse product to this one by "
+            "prior cannot be transferred from the coarse source to this one by "
             "inheritance."
         ),
         notes=(
@@ -513,7 +515,7 @@ def resolve_site_labels(name: str) -> SiteLabelsSpec:
     raise KeyError(f"No site labels named {name!r}. Known: {list(SITE_LABELS_NAMES)}")
 
 
-# ── the product ───────────────────────────────────────────────────────────────
+# ── the processed file ────────────────────────────────────────────────────────
 
 
 def default_raw_dir() -> Path:
@@ -525,7 +527,7 @@ def default_raw_dir() -> Path:
 
 
 def default_site_labels_dir() -> Path:
-    """Where the processed products are expected: ``data/processed/site_labels/``.
+    """Where the processed files are expected: ``data/processed/site_labels/``.
 
     ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
     """
@@ -535,7 +537,7 @@ def default_site_labels_dir() -> Path:
 def site_labels_path(
     site_labels: str | SiteLabelsSpec, directory: Path | str | None = None
 ) -> Path:
-    """The processed file of a site-labels product: ``<directory>/<name>.csv``."""
+    """The processed file of site labels: ``<directory>/<name>.csv``."""
     name = site_labels if isinstance(site_labels, str) else site_labels.name
     base = Path(directory) if directory is not None else default_site_labels_dir()
     return base / f"{name}.csv"
@@ -553,7 +555,7 @@ def label_dtype(spec: SiteLabelsSpec) -> pd.CategoricalDtype:
 def load_site_labels(
     site_labels: str | SiteLabelsSpec, path: Path | str | None = None
 ) -> pd.DataFrame:
-    """Read one processed site-labels product and check it against its spec.
+    """Read one site-labels processed file and check it against its spec.
 
     Parameters
     ----------
@@ -625,20 +627,20 @@ def load_site_labels(
 def site_labels_field(
     site_labels: str | SiteLabelsSpec,
     *,
-    sites: pd.DataFrame | None = None,
+    site_table: pd.DataFrame | None = None,
     path: Path | str | None = None,
 ) -> xr.DataArray:
-    """A site-labels product as a categorical field on ``site``.
+    """Site labels as a categorical field on ``site``.
 
     Parameters
     ----------
     site_labels:
         A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
-    sites:
+    site_table:
         The site table, for ``lon``/``lat``. Defaults to
         :func:`sipnet_calibration.sites.load_sites`.
     path:
-        The product to read. Defaults to :func:`site_labels_path`.
+        The processed file to read. Defaults to :func:`site_labels_path`.
 
     Returns
     -------
@@ -648,8 +650,8 @@ def site_labels_field(
         convention for coded classes: ``flag_values`` is ``0 .. k-1`` and
         ``flag_meanings`` the spec's class names, space-separated, in the spec's
         order and all of them whether or not every class is used. There are no
-        ``units``. ``long_name`` names the label kind and the product, and the
-        array's name is the product's. Where the spec has
+        ``units``. ``long_name`` names the label kind and the site labels, and
+        the array is named for the site labels (``spec.name``). Where the spec has
         :attr:`~SiteLabelsSpec.display_names`, ``flag_display_names`` holds
         them as a tuple aligned with ``flag_meanings``; it is this project's
         attribute, not CF's, and is absent otherwise.
@@ -667,7 +669,7 @@ def site_labels_field(
         else resolve_site_labels(site_labels)
     )
     labels = load_site_labels(spec, path)
-    sites = load_sites() if sites is None else sites
+    site_table = load_sites() if site_table is None else site_table
     _check_labels_are_flag_meanings(spec)
     attrs = {
         "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
@@ -681,19 +683,19 @@ def site_labels_field(
     return xr.DataArray(
         labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
         dims=SITE,
-        coords=site_coordinates(labels[SITE_ID].tolist(), sites),
+        coords=site_coordinates(labels[SITE_ID].tolist(), site_table),
         attrs=attrs,
         name=spec.name,
     )
 
 
 def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFrame:
-    """Parse a product's raw file exactly, in its source column names.
+    """Parse the raw file of site labels exactly, in its source column names.
 
     Parameters
     ----------
     spec:
-        Which site-labels product.
+        Which site-labels data source.
     root:
         The directory holding the raw files. Defaults to :func:`default_raw_dir`.
 
@@ -714,10 +716,9 @@ def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFra
     -----
     ``keep_default_na=False`` is what keeps a class literally named ``NA`` a
     string, as it does for the eight sites named ``NA`` in the site table. A
-    site-labels product has no missing values, so nothing should become ``NaN``
-    here and
-    an empty field is caught downstream as an undeclared class rather than
-    silently read as missing.
+    site-labels data source has no missing values, so nothing should become
+    ``NaN`` here and an empty field is caught downstream as an undeclared class
+    rather than silently read as missing.
 
     The row count is **not** checked here. It is an invariant of the file
     rather than of parsing it, and the ingest script raises on it with a message
@@ -749,12 +750,12 @@ def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFra
 
 
 def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame:
-    """Turn a raw frame into the product the data model describes.
+    """Turn a raw frame into the site labels the data model describes.
 
     Parameters
     ----------
     spec:
-        Which site-labels product.
+        Which site-labels data source.
     frame:
         The raw frame, as :func:`read_raw` returns it.
 
@@ -797,7 +798,8 @@ def describe(spec: SiteLabelsSpec) -> str:
     lines = [
         f"{spec.name}: {spec.long_label}",
         f"  {spec.label_kind}, {len(spec.labels)} classes: {', '.join(spec.labels)}",
-        f"  source: {spec.product}, raw/site_labels/{spec.raw_file}, {spec.expected_rows} rows",
+        f"  upstream product: {spec.upstream_product}, raw/site_labels/{spec.raw_file}, "
+        f"{spec.expected_rows} rows",
         f"  {spec.description}",
     ]
     if spec.display_names is not None:
@@ -853,7 +855,7 @@ def _check_site_ids(site: pd.Series, source: object, *, sorted_required: bool = 
         raise ValueError(
             f"{source}: {SITE_ID} repeats {duplicated[:5].tolist()}"
             f"{' and more' if duplicated.size > 5 else ''}. "
-            "A site-labels product gives each site exactly one class."
+            "A site-labels data source gives each site exactly one class."
         )
     if sorted_required and not site.is_monotonic_increasing:
         raise ValueError(f"{source}: {SITE_ID} is not in ascending order.")
@@ -863,9 +865,9 @@ def _check_labels_are_declared(label: pd.Series, spec: SiteLabelsSpec, source: o
     """Every class is one the spec declares."""
     if label.isna().any():
         raise ValueError(
-            f"{source}: {LABEL_COLUMN} has a missing value. A site-labels product has no "
-            "unlabeled "
-            "class; a site it does not label is absent from its file."
+            f"{source}: {LABEL_COLUMN} has a missing value. A site-labels data "
+            "source has no unlabeled class; a site it does not label is absent from "
+            "its file."
         )
     unknown = sorted(set(label.unique()) - set(spec.labels))
     if unknown:

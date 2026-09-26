@@ -60,10 +60,10 @@ python scripts/ingest_constraints.py                                            
 python scripts/ingest_initial_conditions.py                                          # -> data/processed/initial_conditions.nc
 ```
 
-[`data/README.md`](data/README.md) is the authority on the per-product detail:
-the expected layout, provenance, units, and what each script reads and writes.
-Every script takes `--help`, which documents its inputs, its outputs and the
-flags for pointing it at data that is not where it expects.
+[`data/README.md`](data/README.md) is the authority on the per-data-source
+detail: the expected layout, provenance, units, and what each script reads and
+writes. Every script takes `--help`, which documents its inputs, its outputs and
+the flags for pointing it at data that is not where it expects.
 
 ## Advanced setup
 
@@ -147,7 +147,7 @@ Once the work is pushed to `main`, upgrade as above and drop the overlay.
 
 A diagnostic that answers a question about the raw data which can only be
 answered where the files are. It is **optional**, it runs **before**
-processing, and it writes a JSON summary rather than any processed product. It
+processing, and it writes a JSON summary rather than any processed file. It
 is not part of the ingest pipeline.
 
 ```bash
@@ -216,7 +216,7 @@ src/sipnet_calibration/
   initial_conditions/     # the PEcAn IC ensemble, one module per artifact
   drivers.py              # load_drivers(): the raw .clim files, read by pySIPNET
   parameter_vector.py     # ParameterVector: the calibration vector, its prior, and
-                          # Flat / Fields / SIPNET table conversions
+                          # Flat / Fields / SIPNET parameter fields conversions
   fields.py               # field convention; SIPNET output adapters
   observation/            # operators, the observation vector, and the
                           # time-alignment verbs
