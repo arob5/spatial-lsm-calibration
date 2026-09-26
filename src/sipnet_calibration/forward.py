@@ -38,8 +38,8 @@ Data model
 produced for a batch of ``J`` rows of ``theta``:
 
 ``theta``
-    ``(J, D)`` float64, coerced from what was received; a ``(D,)`` input is
-    one row.
+    ``(J, D)`` float64 ``jax.Array``, coerced from what was received (any
+    array-like); a ``(D,)`` input is one row.
 ``sipnet_parameter_fields``
     The SIPNET parameter fields that were run, an ``xr.Dataset`` whose every variable is
     on ``(sample, site)``, with ``sample`` labeled ``0`` to ``J - 1`` in the
@@ -56,9 +56,9 @@ produced for a batch of ``J`` rows of ``theta``:
     ``pysipnet.resample.resample`` sets them. ``None`` when an observation
     vector was given.
 ``predictions``
-    ``(J, N)`` float64 in the observation vector's order, ``NaN`` in every
-    entry of a sample with a failed run; ``None`` without an observation
-    vector.
+    ``(J, N)`` float64 ``jax.Array`` in the observation vector's order,
+    ``NaN`` in every entry of a sample with a failed run; ``None`` without an
+    observation vector.
 ``run_succeeded``
     bool ``xr.DataArray`` on ``(sample, site)``, a field: ``int64``
     ``sample`` with its attributes, ``int32`` ``site`` with its ``lon``/``lat``,
@@ -68,8 +68,8 @@ produced for a batch of ``J`` rows of ``theta``:
     name of the exception the run raised) and ``message``, one row per run
     that failed at its parameters.
 ``valid``
-    bool ``(J,)``: every run of the sample succeeded and, where there are
-    predictions, they are finite.
+    bool ``(J,)`` ``jax.Array``: every run of the sample succeeded and, where
+    there are predictions, they are finite.
 
 A run **fails at its parameters** when pySIPNET refuses them
 (``pydantic.ValidationError``), SIPNET exits non-zero or writes nothing
@@ -90,7 +90,12 @@ Functions
 ---------
 :class:`ForwardModel`
     ``evaluate(theta) -> ForwardEvaluation``; ``__call__(theta)`` returns
-    ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input.
+    ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input. What it was
+    built from and derived is read-only: ``model``, ``parameter_vector``,
+    ``observation_vector``, ``backend``, ``freq``, ``climate``, ``sites``,
+    ``site_table``, ``output_variable_names``,
+    ``sipnet_parameter_names_written`` and ``batch_dim`` are properties, so
+    the run machinery built from them cannot go stale.
 :class:`ForwardEvaluation`
     The record above.
 :data:`MODEL_FAILURES`, :class:`ModelOutputNotFiniteError`
@@ -98,6 +103,15 @@ Functions
 
 Notes
 -----
+**Flat is JAX.** ``theta``, the predictions and ``valid`` are ``jax.Array``\ s,
+as the parameter and observation vectors' Flat is; every method accepts any
+array-like. The runs themselves are placed in NumPy and converted on return.
+
+**One batch dim.** A run is one row of ``theta``: SIPNET parameter fields on
+another batch dim beside the model's (an ``initial_condition_member`` crossed
+with ``sample``) are refused, with the advice to give ``theta`` one row per
+combination and select each row's member in the hook.
+
 **The ``PartialSpec`` is built once.** Its fixed inputs (the climate, the
 site id and the site's slice of the observation vector, all along one site
 axis) and its free inputs (the SIPNET parameter names the vector sets) hold
@@ -175,6 +189,7 @@ from functools import partial
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -198,8 +213,18 @@ from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE, SITE_DTYPE
+from sipnet_calibration.conventions import (
+    BATCH_LABEL_DTYPE,
+    LAT,
+    LON,
+    SAMPLE,
+    SITE,
+    SITE_DTYPE,
+    FrozenMapping,
+)
 from sipnet_calibration.fields import (
+    Field,
+    ModelOutput,
     batch_coordinate,
     check_batch_dim_name_is_not_a_model_output_name,
     check_batch_dim_name_is_not_reserved,
@@ -218,6 +243,7 @@ from sipnet_calibration.observation.time_alignment import (
 )
 from sipnet_calibration.parameter_vector import (
     ParameterVector,
+    SIPNETParameterFields,
     check_batch_dim_name_is_not_taken,
     validate_sipnet_parameter_fields,
 )
@@ -258,7 +284,9 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
 class ForwardEvaluation:
     """What one evaluation of a :class:`ForwardModel` produced.
 
-    The fields are described in the module docstring's Data model.
+    The fields are described in the module docstring's Data model: ``theta``,
+    ``predictions`` and ``valid`` are ``jax.Array``\ s, which cannot be
+    written to.
 
     Notes
     -----
@@ -267,13 +295,13 @@ class ForwardEvaluation:
     truth value is ambiguous, and a generated hash would fail on them.
     """
 
-    theta: np.ndarray
-    sipnet_parameter_fields: xr.Dataset
-    model_output: xr.Dataset | None
-    predictions: np.ndarray | None
-    run_succeeded: xr.DataArray
+    theta: jax.Array
+    sipnet_parameter_fields: SIPNETParameterFields
+    model_output: ModelOutput | None
+    predictions: jax.Array | None
+    run_succeeded: Field
     failures: pd.DataFrame
-    valid: np.ndarray
+    valid: jax.Array
 
 
 class ForwardModel:
@@ -335,7 +363,7 @@ class ForwardModel:
         :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
         an observation source name of the observation vector or a
         coordinate of one's observed values. Each is refused here, before
-        anything runs. Read-only
+        anything runs. Read-only, as every argument is
         once the model is built, since the default hook is bound to it.
 
     Raises
@@ -387,21 +415,21 @@ class ForwardModel:
             freq=freq,
             site_table=site_table,
         )
-        self.model = model
-        self.parameter_vector = parameter_vector
-        self.sites: tuple[int, ...] = parameter_vector.sites
-        self.backend = backend
-        self.observation_vector = observation_vector
-        self.freq = freq
+        self._model = model
+        self._parameter_vector = parameter_vector
+        self._sites: tuple[int, ...] = parameter_vector.sites
+        self._backend = backend
+        self._observation_vector = observation_vector
+        self._freq = freq
         check_batch_dim_name_is_not_taken(parameter_vector, batch_dim)
         self._batch_dim = batch_dim
-        self.climate = {site: climate[site] for site in self.sites}
-        self.output_variable_names = _output_variable_names(
+        self._climate = FrozenMapping({site: climate[site] for site in self._sites})
+        self._output_variable_names = _output_variable_names(
             output_variable_names, observation_vector
         )
-        check_output_variables_can_be_returned(self.output_variable_names, model, freq)
+        check_output_variables_can_be_returned(self._output_variable_names, model, freq)
         check_batch_dim_name_is_not_a_model_output_name(
-            batch_dim, self.output_variable_names, message_name="batch_dim"
+            batch_dim, self._output_variable_names, message_name="batch_dim"
         )
         if observation_vector is not None:
             check_batch_dim_is_not_an_observation_source_name(
@@ -410,24 +438,74 @@ class ForwardModel:
         chosen_site_table = _chosen_site_table(site_table, parameter_vector)
         # site_locations checks the table locates the sites, once, before
         # the lookup below relies on it.
-        self._site_locations = site_locations(self.sites, chosen_site_table)
-        self.site_table = site_lookup(chosen_site_table).loc[list(self.sites)]
+        self._site_locations = site_locations(self._sites, chosen_site_table)
+        self._site_table = site_lookup(chosen_site_table).loc[list(self._sites)]
         self._to_sipnet_parameter_fields = to_sipnet_parameter_fields or partial(
             parameter_vector.sipnet_parameter_fields, batch_dim=batch_dim
         )
-        self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
-        self._site_axis = Axis(SITE, labels=list(self.sites))
+        self._sipnet_parameter_names_written = self._probe_sipnet_parameter_names()
+        self._site_axis = Axis(SITE, labels=list(self._sites))
         self._site_slices, self._site_positions = _site_segments(observation_vector)
         self._partial = self._build_partial()
         self._run = _Run(
             model=model,
-            output_variable_names=self.output_variable_names,
+            output_variable_names=self._output_variable_names,
             returns_model_output=observation_vector is None,
             freq=freq,
-            site_table=self.site_table,
+            site_table=self._site_table,
         )
 
     # ── identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def model(self) -> SIPNETModel:
+        """The ``SIPNETModel`` every run goes through."""
+        return self._model
+
+    @property
+    def parameter_vector(self) -> ParameterVector:
+        """The calibration vector; its sites are the sites run."""
+        return self._parameter_vector
+
+    @property
+    def observation_vector(self) -> ObservationVector | None:
+        """The observation vector the predictions follow, or ``None``."""
+        return self._observation_vector
+
+    @property
+    def backend(self) -> Backend:
+        """The PyEns backend the runs execute on."""
+        return self._backend
+
+    @property
+    def freq(self) -> str | None:
+        """The prior-predictive aggregation frequency, or ``None``."""
+        return self._freq
+
+    @property
+    def climate(self) -> Mapping[int, ClimateDrivers]:
+        """``{site id: ClimateDrivers}`` for the sites run, read-only."""
+        return self._climate
+
+    @property
+    def sites(self) -> tuple[int, ...]:
+        """The sites run: the parameter vector's, in its order."""
+        return self._sites
+
+    @property
+    def site_table(self) -> pd.DataFrame:
+        """The site table the runs are labeled from, one row per site run; a copy."""
+        return self._site_table.copy()
+
+    @property
+    def output_variable_names(self) -> tuple[str, ...]:
+        """The pySIPNET output variables each run returns."""
+        return self._output_variable_names
+
+    @property
+    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
+        """The SIPNET parameters the SIPNET-parameter-fields hook writes, fixed at construction."""
+        return self._sipnet_parameter_names_written
 
     @property
     def batch_dim(self) -> str:
@@ -508,7 +586,7 @@ class ForwardModel:
             self.sites,
             n_samples=n_samples,
             batch_dim=self.batch_dim,
-            expected_sipnet_parameter_names=self.sipnet_parameter_names,
+            expected_sipnet_parameter_names=self.sipnet_parameter_names_written,
         )
         grids = fields_from_dataset(sipnet_parameter_fields, axes={SITE: self._site_axis})
         spec = self._partial(**grids)
@@ -518,7 +596,7 @@ class ForwardModel:
             ensemble_result, n_samples, self.sites, self.batch_dim
         )
         collected = ForwardEvaluation(
-            theta=theta,
+            theta=jnp.asarray(theta),
             sipnet_parameter_fields=sipnet_parameter_fields,
             model_output=None,
             predictions=None,
@@ -530,7 +608,7 @@ class ForwardModel:
                 site_locations=self._site_locations,
             ),
             failures=failures,
-            valid=np.zeros(n_samples, dtype=bool),
+            valid=jnp.zeros(n_samples, dtype=bool),
         )
         check_no_run_failed_in_the_machinery(machinery_failures, collected)
         sample_succeeded = succeeded.all(axis=1)
@@ -541,18 +619,22 @@ class ForwardModel:
                 n_samples,
                 self.sites,
                 batch_dim=self.batch_dim,
-                site_table=self.site_table,
+                site_table=self._site_table,
                 site_locations=self._site_locations,
             )
-            return replace(collected, model_output=model_output, valid=sample_succeeded)
+            return replace(
+                collected, model_output=model_output, valid=jnp.asarray(sample_succeeded)
+            )
         predictions = self._placed_predictions(run_outputs_by_sample_site, n_samples)
         # A sample with any failed run is invalid as a whole: pyEKI updates
         # per row, so a row that is partly a prediction cannot be used.
         predictions[~sample_succeeded] = np.nan
         valid = sample_succeeded & np.isfinite(predictions).all(axis=1)
-        return replace(collected, predictions=predictions, valid=valid)
+        return replace(
+            collected, predictions=jnp.asarray(predictions), valid=jnp.asarray(valid)
+        )
 
-    def __call__(self, theta: Any) -> np.ndarray:
+    def __call__(self, theta: Any) -> jax.Array:
         """``evaluate(theta).predictions``: ``(J, N)``, or ``(N,)`` for a ``(D,)`` theta.
 
         Raises
@@ -594,7 +676,7 @@ class ForwardModel:
         )
         placeholders = {
             name: Grid([0.0] * len(self.sites), along=self._site_axis)
-            for name in self.sipnet_parameter_names
+            for name in self.sipnet_parameter_names_written
         }
         spec = EnsembleSpec(
             inputs={
@@ -604,7 +686,7 @@ class ForwardModel:
                 **placeholders,
             }
         )
-        return spec.freeze(free=list(self.sipnet_parameter_names))
+        return spec.freeze(free=list(self.sipnet_parameter_names_written))
 
     def _placed_predictions(
         self, run_outputs_by_sample_site: Mapping[tuple[int, int], _RunOutput], n_samples: int
@@ -1092,7 +1174,11 @@ def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(
         raise ValueError(
             f"SIPNET parameter fields for a batch have dims exactly ({batch_dim}, site), got "
             f"{tuple(sipnet_parameter_fields.dims)}; reduce or select any other dimension in "
-            f"the hook, and name the batch dim {batch_dim!r}, the model's batch_dim."
+            f"the hook, and name the batch dim {batch_dim!r}, the model's batch_dim. One run "
+            f"is one row of theta, so a batch crossed with a data source's ensemble (a "
+            "sample and an initial_condition_member, say) is run by giving theta one row "
+            "per combination, each sample's row repeated once per member, and selecting "
+            "each row's member in the hook."
         )
     for name, variable in sipnet_parameter_fields.data_vars.items():
         if set(variable.dims) != {batch_dim, SITE}:

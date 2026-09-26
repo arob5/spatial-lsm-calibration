@@ -252,8 +252,8 @@ class TestEvaluate:
         self, forward, observation_vector, theta
     ):
         """The vector leaves it to the base parameter set, which the run used."""
-        assert forward.sipnet_parameter_names == forward.parameter_vector.sipnet_parameter_names_written
-        assert "leaf_carbon_per_area" not in forward.sipnet_parameter_names
+        assert forward.sipnet_parameter_names_written == forward.parameter_vector.sipnet_parameter_names_written
+        assert "leaf_carbon_per_area" not in forward.sipnet_parameter_names_written
         predictions = forward(theta)
         lai = observation_vector.fields(predictions)["modis_leaf_area_index"]
         leaf = select_timestep_at(REFERENCE.select(["leaf_carbon"])["leaf_carbon"], LABELS).values
@@ -435,7 +435,7 @@ class TestFailures:
         evaluation = forward.evaluate(theta)
         assert evaluation.valid.tolist() == [True, False, True]
         assert np.isnan(evaluation.predictions[1]).all()
-        assert np.isfinite(evaluation.predictions[[0, 2]]).all()
+        assert np.isfinite(np.asarray(evaluation.predictions)[[0, 2]]).all()
         assert not bool(evaluation.run_succeeded.sel(sample=1, site=1))
         assert bool(evaluation.run_succeeded.sel(sample=1, site=27))
         assert evaluation.failures["error"].tolist() == ["SIPNETRunError"]
@@ -899,7 +899,7 @@ class TestRefusals:
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._build(parameter_vector, climate, observation_vector)
-        names = list(forward.sipnet_parameter_names)
+        names = list(forward.sipnet_parameter_names_written)
         forward._to_sipnet_parameter_fields = lambda t: parameter_vector.sipnet_parameter_fields(t)[names[::-1]]
         assert forward(theta[:1]).shape == (1, observation_vector.dimension)
 
@@ -1291,6 +1291,50 @@ class TestTheBatchDimIsNamedOnce:
         assert forward.batch_dim == "sample"
         with pytest.raises(AttributeError):
             forward.batch_dim = "draw"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "model", "parameter_vector", "observation_vector", "backend", "freq", "climate",
+            "sites", "site_table", "output_variable_names", "sipnet_parameter_names_written",
+        ],
+    )
+    def test_what_it_was_built_from_is_read_only(self, forward, name):
+        with pytest.raises(AttributeError):
+            setattr(forward, name, getattr(forward, name))
+
+    def test_the_climate_and_site_table_it_hands_out_cannot_change_it(self, forward):
+        with pytest.raises(TypeError):
+            forward.climate[1] = None
+        table = forward.site_table
+        table.loc[table.index[0], "lon"] = 0.0
+        assert forward.site_table["lon"].iloc[0] != 0.0
+
+    def test_flat_is_jax(self, forward, theta):
+        evaluation = forward.evaluate(theta.tolist())
+        for array in (evaluation.theta, evaluation.predictions, evaluation.valid):
+            assert isinstance(array, jax.Array)
+        assert isinstance(forward(jax.numpy.asarray(theta[0])), jax.Array)
+
+    def test_a_crossed_batch_is_refused_with_the_advice_to_give_theta_its_rows(
+        self, parameter_vector, climate, observation_vector
+    ):
+        def crossed(theta):
+            fields = parameter_vector.sipnet_parameter_fields(theta)
+            return fields.expand_dims(initial_condition_member=np.arange(2)).transpose(
+                "sample", "initial_condition_member", "site"
+            )
+
+        with pytest.raises(ValueError, match="one row per combination"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                to_sipnet_parameter_fields=crossed,
+            )
 
     def test_a_hook_labeling_rows_with_floats_is_refused(
         self, parameter_vector, climate, observation_vector
