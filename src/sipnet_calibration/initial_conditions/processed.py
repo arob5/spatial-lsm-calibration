@@ -1,10 +1,10 @@
 """The processed product: the ensemble in the project's own names and shape.
 
 ``data/processed/initial_conditions.nc`` is what the rest of the project
-reads. It is the raw file transposed onto ``(member, site)``, renamed to the
-specs' processed names, placed on the site table's pool with ``lon``/``lat``,
-and given the specs' fields as attributes. The values are the source files',
-unchanged.
+reads. It is the raw file transposed onto ``(initial_condition_member, site)``,
+its member dim and variables renamed to the processed names, placed on the
+site table's pool with ``lon``/``lat``, and given the specs' fields as
+attributes. The values are the source files', unchanged.
 
 The package docstring gives the data model in full -- dimensions, variables,
 coordinates, attributes and what ``NaN`` means.
@@ -33,16 +33,20 @@ import pandas as pd
 import xarray as xr
 
 from sipnet_calibration.conventions import (
+    BATCH_LABEL_DTYPE,
     CF_CONVENTIONS,
     LAT,
     LON,
     SITE,
     SITE_ID,
+    SOURCE_INDEX,
+    SOURCE_INDEX_ATTRIBUTES,
+    SOURCE_MEMBER_ATTRIBUTES,
 )
 from sipnet_calibration.initial_conditions.names import (
-    MEMBER,
+    INITIAL_CONDITION_MEMBER,
     RAW_FILE,
-    SOURCE_MEMBER,
+    RAW_MEMBER,
     default_product_path,
 )
 from sipnet_calibration.initial_conditions.raw import (  # a shared package internal
@@ -85,9 +89,10 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
     Returns
     -------
     xarray.Dataset
-        The five specs' variables on ``(member, site)`` with their attributes,
-        ``member`` 0-based with ``source_member`` beside it, ``site`` the pool
-        with ``lon``/``lat``, and the dataset attributes of the data model.
+        The five specs' variables on ``(initial_condition_member, site)`` with
+        their attributes, ``initial_condition_member`` 0-based with
+        ``source_index`` beside it, ``site`` the pool with ``lon``/``lat``, and
+        the dataset attributes of the data model.
 
     Raises
     ------
@@ -97,9 +102,9 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
     Notes
     -----
     Pure, and structural only: the values are the raw file's, transposed. The
-    member axis is renumbered from the source files' 1-based index to the
-    project's 0-based one, and the source index is kept as a coordinate so a
-    source file name can always be recovered.
+    raw file's ``member`` axis, the source files' 1-based index, becomes the
+    0-based ``initial_condition_member``, and the source index is kept as
+    ``source_index`` so a source file name can always be recovered.
     """
     pool = np.sort(sites[SITE_ID].to_numpy(np.int64))
     raw_sites = raw[SITE].values.astype(np.int64)
@@ -110,37 +115,23 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
             f"raw file sites are not the site table's pool: not in the table {extra}, "
             f"not in the file {missing}"
         )
-    source_member = raw[MEMBER].values.astype(np.int16)
+    source_index = raw[RAW_MEMBER].values.astype(BATCH_LABEL_DTYPE)
 
     data_vars = {
         spec.name: (
-            (MEMBER, SITE),
+            (INITIAL_CONDITION_MEMBER, SITE),
             np.ascontiguousarray(raw[spec.source_name].values.T),
             spec.xarray_attributes(),
         )
         for spec in INITIAL_CONDITIONS
     }
     coords = {
-        MEMBER: (
-            MEMBER,
-            np.arange(source_member.size, dtype=np.int16),
-            {
-                "long_name": "Ensemble member",
-                "comment": (
-                    "0-based, meaningful only within this product; whether member i "
-                    "corresponds to member i of another source is not established "
-                    "(member_correspondence)."
-                ),
-            },
+        INITIAL_CONDITION_MEMBER: (
+            INITIAL_CONDITION_MEMBER,
+            np.arange(source_index.size, dtype=BATCH_LABEL_DTYPE),
+            dict(SOURCE_MEMBER_ATTRIBUTES),
         ),
-        SOURCE_MEMBER: (
-            MEMBER,
-            source_member,
-            {
-                "long_name": "Ensemble member index in the source file name",
-                "comment": "The 1-based <member> of the source file name.",
-            },
-        ),
+        SOURCE_INDEX: (INITIAL_CONDITION_MEMBER, source_index, dict(SOURCE_INDEX_ATTRIBUTES)),
         **site_coordinates(pool.tolist(), sites),
     }
     return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(raw))
@@ -219,8 +210,8 @@ def initial_condition_fields(
     Returns
     -------
     dict
-        Name to its ``(member, site)`` array, with the variable's attributes
-        and ``lon``/``lat`` on ``site``.
+        Name to its ``(initial_condition_member, site)`` array, with the
+        variable's attributes and ``lon``/``lat`` on ``site``.
 
     Raises
     ------
@@ -271,20 +262,14 @@ def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
         "source_time_units": SOURCE.time_units,
         "source_time_long_name": SOURCE.time_long_name,
         "source_time_value": SOURCE.time_value,
-        "member_source": "ic",
-        "member_correspondence": (
-            "Not established: whether member i here corresponds to member i of the "
-            "drivers or of any other ensemble is unknown, and xarray aligns integer "
-            "member labels silently."
-        ),
         "n_sites": int(raw.sizes[SITE]),
-        "n_members": int(raw.sizes[MEMBER]),
+        "n_members": int(raw.sizes[RAW_MEMBER]),
         "history": (
             f"scripts/ingest_initial_conditions.py: read {RAW_FILE}, renamed the source "
-            "variables to the spec names, renumbered member from 1-based to 0-based "
-            "keeping the source index as source_member, placed the sites on the site "
-            "table's pool with lon/lat, and wrote the spec fields as attributes; values "
-            "unchanged"
+            "variables to the spec names, renamed member to initial_condition_member and "
+            "renumbered it from 1-based to 0-based, keeping the source index as "
+            "source_index, placed the sites on the site table's pool with lon/lat, and "
+            "wrote the spec fields as attributes; values unchanged"
         ),
         "created": utc_timestamp(),
     }
@@ -299,8 +284,12 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
         )
     for spec in INITIAL_CONDITIONS:
         array = dataset[spec.name]
-        if array.dims != (MEMBER, SITE):
-            raise ValueError(f"{path}: {spec.name} has dims {array.dims}, expected ('member', 'site')")
+        if array.dims != (INITIAL_CONDITION_MEMBER, SITE):
+            raise ValueError(
+                f"{path}: {spec.name} has dims {array.dims}, expected "
+                f"{(INITIAL_CONDITION_MEMBER, SITE)}; a product written before the "
+                "member dim was renamed is re-made by scripts/ingest_initial_conditions.py"
+            )
         if array.attrs.get("units") != spec.units:
             raise ValueError(
                 f"{path}: {spec.name} has units {array.attrs.get('units')!r}, the spec says "
@@ -315,21 +304,21 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
             raise ValueError(f"{path}: {spec.name} lacks the spec's long_name")
         if np.isinf(array.values).any():
             raise ValueError(f"{path}: {spec.name} holds an infinite value")
-    for coordinate in (MEMBER, SOURCE_MEMBER, SITE, LON, LAT):
+    for coordinate in (INITIAL_CONDITION_MEMBER, SOURCE_INDEX, SITE, LON, LAT):
         if coordinate not in dataset.coords:
             raise ValueError(f"{path}: missing the {coordinate!r} coordinate")
     for coordinate in (LON, LAT):
         if dataset[coordinate].dims != (SITE,):
             raise ValueError(f"{path}: {coordinate} must be on site, has dims {dataset[coordinate].dims}")
-    if dataset[SOURCE_MEMBER].dims != (MEMBER,):
-        raise ValueError(f"{path}: source_member must be on member")
-    member = dataset[MEMBER].values
+    if dataset[SOURCE_INDEX].dims != (INITIAL_CONDITION_MEMBER,):
+        raise ValueError(f"{path}: {SOURCE_INDEX} must be on {INITIAL_CONDITION_MEMBER}")
+    member = dataset[INITIAL_CONDITION_MEMBER].values
     if member.size == 0 or not np.array_equal(member, np.arange(member.size)):
-        raise ValueError(f"{path}: member is not 0..n-1")
-    source_member = dataset[SOURCE_MEMBER].values
-    if source_member.min() < 1 or np.any(np.diff(source_member) <= 0):
+        raise ValueError(f"{path}: {INITIAL_CONDITION_MEMBER} is not 0..n-1")
+    source_index = dataset[SOURCE_INDEX].values
+    if source_index.min() < 1 or np.any(np.diff(source_index) <= 0):
         raise ValueError(
-            f"{path}: source_member is not strictly ascending from 1 or more; a source "
+            f"{path}: {SOURCE_INDEX} is not strictly ascending from 1 or more; a source "
             "file name could not be recovered from it"
         )
     site = dataset[SITE].values

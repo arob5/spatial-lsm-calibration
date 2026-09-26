@@ -4,7 +4,8 @@
 Overview
 --------
 Read ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``, check
-it, rename the source variables to the spec names, renumber the members,
+it, rename the source variables to the spec names and the ``member`` dim to
+``initial_condition_member``, renumber the members,
 place the sites on the site pool and write
 ``data/processed/initial_conditions.nc``. Every decision about what a variable
 is -- its unit, its provenance, the SIPNET parameter it feeds -- is a field of
@@ -29,15 +30,15 @@ Output data
 -----------
 ``--out``, default ``data/processed/initial_conditions.nc``::
 
-    initial_aboveground_biomass_carbon(member, site)   float64, kg C m-2
-    initial_wood_carbon(member, site)                  float64, kg C m-2
-    initial_leaf_carbon(member, site)                  float64, kg C m-2
-    initial_soil_organic_carbon(member, site)          float64, kg C m-2
-    initial_soil_moisture_saturation(member, site)     float64, percent
+    initial_aboveground_biomass_carbon(initial_condition_member, site)  float64, kg C m-2
+    initial_wood_carbon(initial_condition_member, site)                 float64, kg C m-2
+    initial_leaf_carbon(initial_condition_member, site)                 float64, kg C m-2
+    initial_soil_organic_carbon(initial_condition_member, site)         float64, kg C m-2
+    initial_soil_moisture_saturation(initial_condition_member, site)    float64, percent
 
-``NaN`` where no source file for the site carried the variable; ``member``
-0-based with ``source_member`` carrying the source files' 1-based index; ``site``
-the whole pool. ``sipnet_calibration.initial_conditions`` documents the data
+``NaN`` where no source file for the site carried the variable;
+``initial_condition_member`` 0-based with ``source_index`` carrying the source
+files' 1-based index; ``site`` the whole pool. ``sipnet_calibration.initial_conditions`` documents the data
 model.
 
 Notes
@@ -76,12 +77,12 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.conventions import LAT, LON, SITE
+from sipnet_calibration.conventions import LAT, LON, SITE, SOURCE_INDEX
 from sipnet_calibration.initial_conditions import (
+    INITIAL_CONDITION_MEMBER,
     INITIAL_CONDITIONS,
-    MEMBER,
+    RAW_MEMBER,
     SOURCE,
-    SOURCE_MEMBER,
     build_initial_conditions,
     default_product_path,
     describe,
@@ -186,7 +187,7 @@ def describe_product(dataset: xr.Dataset, out: Path) -> str:
     """A short report of what was written, for the run log."""
     lines = [
         f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB)",
-        f"members {dataset.sizes[MEMBER]}  sites {dataset.sizes[SITE]}  nominal date "
+        f"members {dataset.sizes[INITIAL_CONDITION_MEMBER]}  sites {dataset.sizes[SITE]}  nominal date "
         f"{dataset.attrs['nominal_date']}",
         "variable                            units     sites   min          median       max          negative",
     ]
@@ -216,7 +217,7 @@ def check_every_source_variable_has_a_spec() -> None:
 
 def check_members_are_contiguous_from_one(raw: xr.Dataset) -> None:
     """Raise unless the source files' member index runs 1..n with no gap."""
-    members = raw[MEMBER].values.astype(np.int64)
+    members = raw[RAW_MEMBER].values.astype(np.int64)
     expected = np.arange(1, members.size + 1)
     if not np.array_equal(members, expected):
         raise IngestError(
@@ -253,7 +254,7 @@ def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
                 raise IngestError(f"{spec.name} did not round-trip bit for bit through {partial}")
             if dict(read_back[spec.name].attrs) != dict(dataset[spec.name].attrs):
                 raise IngestError(f"{spec.name}'s attributes changed on the way to disk")
-        for coordinate in (MEMBER, SOURCE_MEMBER, SITE, LON, LAT):
+        for coordinate in (INITIAL_CONDITION_MEMBER, SOURCE_INDEX, SITE, LON, LAT):
             if not np.array_equal(dataset[coordinate].values, read_back[coordinate].values):
                 raise IngestError(f"{coordinate} did not round-trip through {partial}")
 

@@ -10,9 +10,11 @@ lives here.
 Contents
 --------
 :func:`to_sipnet_initial_conditions`
-    One ``(member, site)`` cell to a ``pysipnet.parameters.InitialConditions``.
+    One member at one site to a ``pysipnet.parameters.InitialConditions``.
 :func:`to_sipnet_initial_conditions_table`
-    A whole ensemble to a table of the same field values, one row per cell.
+    A whole ensemble, over ``(initial_condition_member, site)`` and any other
+    batch dim the parameters bring, to a table of the same field values, one
+    row per cell.
 :data:`CONVERTED_SIPNET_FIELDS`
     The fields both of them set.
 
@@ -31,8 +33,8 @@ import pandas as pd
 import xarray as xr
 from pysipnet.parameters import InitialConditions
 
-from sipnet_calibration.conventions import SITE
-from sipnet_calibration.initial_conditions.names import MEMBER
+from sipnet_calibration.conventions import LAT, LON, SITE, SPATIAL_DIM_NAMES, TIME
+from sipnet_calibration.fields import batch_dims
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [
@@ -223,7 +225,7 @@ def to_sipnet_initial_conditions_table(
     coarse_root_fraction: float | xr.DataArray,
     deciduous: bool | xr.DataArray,
 ) -> pd.DataFrame:
-    """The conversion over a whole ``(member, site)`` ensemble, as a table.
+    """The conversion over a whole ``(initial_condition_member, site)`` ensemble, as a table.
 
     :func:`to_sipnet_initial_conditions` cell by cell: the same formulas and
     the same refusals, one row per cell. The prior predictive needs a parameter
@@ -242,18 +244,21 @@ def to_sipnet_initial_conditions_table(
         are checked against the spec.
     leaf_carbon_per_area, fine_root_fraction, coarse_root_fraction, deciduous:
         As in :func:`to_sipnet_initial_conditions`, each either a scalar or a
-        ``DataArray`` over any subset of the dims of *state*, so that a
-        parameter drawn per member and a PFT property held per site both
-        broadcast. Where both sides label a dim, the labels must match exactly;
-        nothing is filled or dropped. A dim carrying no coordinate is matched
-        by position, as everywhere else in xarray, so label a parameter whose
-        order you are not certain of.
+        ``DataArray`` over any subset of the dims of *state*, or over a batch
+        dim of its own, so that a parameter drawn per initial-condition member,
+        a PFT property held per site, and a parameter drawn per ``sample``
+        (which crosses the initial conditions' members) all broadcast. Where
+        both sides label a dim, the labels must match exactly; nothing is
+        filled or dropped. A dim carrying no coordinate is matched by position,
+        as everywhere else in xarray, so label a parameter whose order you are
+        not certain of.
 
     Returns
     -------
     pandas.DataFrame
         One row per cell, indexed by the dims the inputs broadcast to and
-        always ordered ``(member, site)``, with
+        always ordered with the batch dims first, in the order the inputs
+        bring them, then ``site``, with
         :data:`CONVERTED_SIPNET_FIELDS` as columns. For any cell,
         ``InitialConditions(**table.loc[cell])`` equals what
         :func:`to_sipnet_initial_conditions` returns for it, so every row
@@ -268,10 +273,10 @@ def to_sipnet_initial_conditions_table(
         boolean.
     ValueError
         For the refusals of :func:`to_sipnet_initial_conditions`, naming the
-        offending cells; if the inputs broadcast to dims other than ``member``
-        and ``site``; if their indexes do not match, or they were selected for
-        different members or sites; or if a variable's ``units`` are not the
-        product's.
+        offending cells; if the inputs broadcast to a dim that is neither
+        ``site``, a batch dim (integer labels) nor an unlabeled dim; if their
+        indexes do not match, or they were selected for different members or
+        sites; or if a variable's ``units`` are not the product's.
 
     Notes
     -----
@@ -288,8 +293,9 @@ def to_sipnet_initial_conditions_table(
 
     _check_scalar_coordinates_agree(arrays)
     broadcast = xr.broadcast(*xr.align(*arrays.values(), join="exact"))
-    _check_cells_are_member_and_site(broadcast[0])
-    order = [dim for dim in (MEMBER, SITE) if dim in broadcast[0].dims]
+    _check_cells_are_batch_and_site(broadcast[0])
+    order = [str(dim) for dim in broadcast[0].dims if dim != SITE]
+    order += [SITE] if SITE in broadcast[0].dims else []
     broadcast = [array.transpose(*order) for array in broadcast]
     template = broadcast[0]
     index = _cell_index(template)
@@ -452,6 +458,23 @@ def _as_data_array(value: Any) -> xr.DataArray:
     return value if isinstance(value, xr.DataArray) else xr.DataArray(value)
 
 
+def _label_coordinate_names(arrays: Mapping[str, xr.DataArray]) -> list[str]:
+    """``site``, then every dim of an input and every integer scalar coordinate, once each."""
+    names: dict[str, None] = {SITE: None}
+    for array in arrays.values():
+        names.update(dict.fromkeys(str(dim) for dim in array.dims))
+        names.update(
+            dict.fromkeys(
+                str(name)
+                for name, coordinate in array.coords.items()
+                if coordinate.ndim == 0
+                and coordinate.dtype.kind in "iu"
+                and name not in (LON, LAT)
+            )
+        )
+    return [name for name in names if name not in SPATIAL_DIM_NAMES or name == SITE]
+
+
 def _cell_index(array: xr.DataArray) -> pd.Index | None:
     """The table's row index, in the order ``array.values.ravel()`` produces.
 
@@ -516,9 +539,11 @@ def _check_arguments_are_scalar(**arguments: Any) -> None:
 def _check_scalar_coordinates_agree(arrays: Mapping[str, xr.DataArray]) -> None:
     """Refuse inputs that were selected down to different members or sites.
 
-    ``xr.align`` compares the indexes of dimensions, and ``.sel(member=0)``
-    leaves ``member`` as a scalar coordinate on no dimension, which alignment
-    therefore ignores. Two things have to be refused here, and broadcasting
+    ``xr.align`` compares the indexes of dimensions, and
+    ``.sel(initial_condition_member=0)`` leaves ``initial_condition_member`` as
+    a scalar coordinate on no dimension, which alignment therefore ignores.
+    ``site`` is checked, and so is every batch label: a name that is a dim of
+    some input, or an integer scalar coordinate of one. Two things have to be refused here, and broadcasting
     turns both into a full, plausible table:
 
     * two inputs selected to *different* single labels, which would be
@@ -530,7 +555,7 @@ def _check_scalar_coordinates_agree(arrays: Mapping[str, xr.DataArray]) -> None:
     scalars: dict[str, tuple[str, Any]] = {}
     dimensioned: dict[str, tuple[str, list[Any]]] = {}
     for name, array in arrays.items():
-        for coordinate in (MEMBER, SITE):
+        for coordinate in _label_coordinate_names(arrays):
             if coordinate in array.dims:
                 labels = (
                     array.coords[coordinate].values.tolist()
@@ -650,13 +675,21 @@ def _check_root_fractions_leave_wood(
         )
 
 
-def _check_cells_are_member_and_site(array: xr.DataArray) -> None:
-    extra = [str(dim) for dim in array.dims if dim not in (MEMBER, SITE)]
+def _check_cells_are_batch_and_site(array: xr.DataArray) -> None:
+    batch = set(batch_dims(array))
+    extra = [
+        str(dim)
+        for dim in array.dims
+        if dim != SITE
+        and dim not in batch
+        and (dim in array.indexes or dim in SPATIAL_DIM_NAMES or dim == TIME)
+    ]
     if extra:
         raise ValueError(
             f"the inputs broadcast to dims {[str(dim) for dim in array.dims]}, but the "
-            f"conversion is over (member, site) cells and {extra} is not among them. A "
-            "parameter varying over anything else has to be selected down first."
+            f"conversion is over cells of site and batch dims (integer labels), and {extra} "
+            "is neither. A parameter varying over anything else has to be selected down "
+            "first."
         )
 
 

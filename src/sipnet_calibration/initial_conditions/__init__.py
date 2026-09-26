@@ -60,11 +60,16 @@ Data model
 follows. Variables, dims, coordinates and units are checked on load against
 the specs; the dtypes are what the writer produces.
 
-**Dimensions**: ``member``, ``site``. There is no ``time``: the source's is a
+**Dimensions**: ``initial_condition_member``
+(:data:`~sipnet_calibration.initial_conditions.names.INITIAL_CONDITION_MEMBER`,
+the ensemble's own members, a batch dim named for its source so that it
+crosses rather than pairs with the samples or the drivers), ``site``. There
+is no ``time``: the source's is a
 length-1 record dimension whose units attribute is an unsubstituted template,
 and what it claimed is kept verbatim in the dataset attributes.
 
-**Data variables**, one per spec, all ``float64`` on ``(member, site)``,
+**Data variables**, one per spec, all ``float64`` on
+``(initial_condition_member, site)``,
 ``NaN`` where no source file for the site carries the variable. Units follow
 pySIPNET's convention of a physical ``units`` string plus a ``constituent``
 attribute, so ``attrs["units"]`` is ``"kg m-2"`` and ``attrs["constituent"]``
@@ -78,14 +83,19 @@ is ``"C"``, never ``"kg C m-2"``::
 
 **Coordinates**
 
-=================== ============ ===================================================
-Name                Dims         Meaning
-=================== ============ ===================================================
-``member``          ``member``   ``int16``, 0-based, ascending; the project convention
-``source_member``   ``member``   ``int16``, the 1-based index in the source file name
-``site``            ``site``     ``int32``, the whole 1-8000 pool, ascending
-``lon``, ``lat``    ``site``     ``float64``, from the site table
-=================== ============ ===================================================
+============================ ============================ ===============================
+Name                         Dims                         Meaning
+============================ ============================ ===============================
+``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based, ascending
+``source_index``             ``initial_condition_member`` ``int64``, the 1-based index in
+                                                          the source file name
+``site``                     ``site``                     ``int32``, the whole pool,
+                                                          ascending
+``lon``, ``lat``             ``site``                     ``float64``, from the site table
+============================ ============================ ===============================
+
+The tracked raw file keeps its own ``member`` dim, the source index, since raw
+data is never edited; :func:`build_initial_conditions` renames it.
 
 **Attributes** follow CF-1.11 as the constraint products do. Each variable
 carries the spec's ``units``, ``long_name``, ``description``, ``product``,
@@ -96,8 +106,7 @@ when set, ``constituent`` and ``comment``. The dataset carries
 ``source_script``, ``source_script_note``, ``nominal_date``,
 ``nominal_date_provenance``,
 ``source_time_units``, ``source_time_long_name``, ``source_time_value``,
-``member_source``, ``member_correspondence``, ``n_sites``, ``n_members``,
-``history`` and ``created``.
+``n_sites``, ``n_members``, ``history`` and ``created``.
 
 **Values are the source files', unchanged.** No unit conversion, no masking:
 negative wood and leaf carbon are written through and counted in the ingest
@@ -130,7 +139,8 @@ variable, optionally for a subset of sites.
 
 **The conversion.** :func:`to_sipnet_initial_conditions` converts one
 member; :func:`to_sipnet_initial_conditions_table` converts a whole
-``(member, site)`` ensemble to a table of SIPNET field values.
+``(initial_condition_member, site)`` ensemble to a table of SIPNET field
+values.
 
 **Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
 :func:`raw_path` and :func:`default_product_path` say where each file is
@@ -185,12 +195,12 @@ Usage
         resolve_initial_condition,
     )
 
-    ic = load_initial_conditions()                       # Dataset, (member, site)
+    ic = load_initial_conditions()          # Dataset, (initial_condition_member, site)
     ic["initial_soil_organic_carbon"].sel(site=4102)     # one site's 100 members
-    ic["initial_wood_carbon"].mean("member")             # a map
+    ic["initial_wood_carbon"].mean("initial_condition_member")  # a map
 
     fields = initial_condition_fields(sites=[4102, 4113])
-    fields["initial_leaf_carbon"].dims                   # ('member', 'site')
+    fields["initial_leaf_carbon"].dims      # ('initial_condition_member', 'site')
 
     print(describe(resolve_initial_condition("initial_soil_moisture_saturation")))
 
@@ -212,12 +222,12 @@ Usage
 
     # Which members to run is the prior's decision, not this module's, and the
     # conversion refuses a negative pool rather than choosing for you. Pick the
-    # members first -- a whole (member, site) rectangle at a time, since a
-    # DataArray cannot be ragged.
+    # members first -- a whole (initial_condition_member, site) rectangle at a
+    # time, since a DataArray cannot be ragged.
     site = {name: field.sel(site=4102) for name, field in fields.items()}
     usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
     table = to_sipnet_initial_conditions_table(          # one row per member
-        {name: field.isel(member=usable) for name, field in site.items()},
+        {name: field.isel(initial_condition_member=usable) for name, field in site.items()},
         leaf_carbon_per_area=32.0,                       # scalar or per member
         fine_root_fraction=0.2,
         coarse_root_fraction=0.2,
@@ -229,10 +239,10 @@ Usage
 from __future__ import annotations
 
 from sipnet_calibration.initial_conditions.names import (
-    MEMBER,
+    INITIAL_CONDITION_MEMBER,
     PRODUCT_FILE,
     RAW_FILE,
-    SOURCE_MEMBER,
+    RAW_MEMBER,
     default_product_path,
     default_raw_dir,
     default_source_root,
@@ -272,10 +282,10 @@ from sipnet_calibration.initial_conditions.specs import (
 
 __all__ = [
     # Names and paths.
-    "MEMBER",
+    "INITIAL_CONDITION_MEMBER",
     "PRODUCT_FILE",
     "RAW_FILE",
-    "SOURCE_MEMBER",
+    "RAW_MEMBER",
     "default_product_path",
     "default_raw_dir",
     "default_source_root",

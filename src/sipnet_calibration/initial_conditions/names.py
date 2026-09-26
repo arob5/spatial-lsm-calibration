@@ -1,14 +1,17 @@
 """Dimension names and file locations the package's modules share.
 
-The names of the dimensions and coordinates the two netCDFs use beyond the
-shared ones of :mod:`sipnet_calibration.conventions`, where the source tree
-and each netCDF are expected on disk. Nothing here reads or writes anything.
+The names of the dimensions the two netCDFs use beyond the shared ones of
+:mod:`sipnet_calibration.conventions`, where the source tree and each netCDF
+are expected on disk. Nothing here reads or writes anything.
 
 Contents
 --------
-:data:`MEMBER`, :data:`SOURCE_MEMBER`
-    The member dimension and coordinate names, spelled once. The site
-    dimension is :data:`sipnet_calibration.conventions.SITE`.
+:data:`INITIAL_CONDITION_MEMBER`, :data:`RAW_MEMBER`
+    The member dimension of the processed product, and of the raw file,
+    spelled once. The site dimension is
+    :data:`sipnet_calibration.conventions.SITE`, and the 1-based source index
+    beside the processed member is
+    :data:`sipnet_calibration.conventions.SOURCE_INDEX`.
 :data:`RAW_FILE`, :data:`PRODUCT_FILE`
     The two file names, without their directories.
 The four path functions
@@ -24,10 +27,10 @@ from pathlib import Path
 from sipnet_calibration import conventions
 
 __all__ = [
-    "MEMBER",
+    "INITIAL_CONDITION_MEMBER",
     "PRODUCT_FILE",
     "RAW_FILE",
-    "SOURCE_MEMBER",
+    "RAW_MEMBER",
     "default_product_path",
     "default_raw_dir",
     "default_source_root",
@@ -35,11 +38,16 @@ __all__ = [
 ]
 
 
-#: The ensemble member dimension, 0-based in the product.
-MEMBER = "member"
+#: The product's ensemble dim: the initial conditions' own members, a batch
+#: dim named for its source, ``0`` to ``n - 1``, so that it crosses rather
+#: than pairs with any other ensemble (the samples, the drivers).
+INITIAL_CONDITION_MEMBER = "initial_condition_member"
 
-#: The coordinate on ``member`` holding the source files' 1-based index.
-SOURCE_MEMBER = "source_member"
+#: The raw file's ensemble dim, holding the source files' 1-based index. The
+#: raw file is never edited, so it keeps this name;
+#: :func:`~sipnet_calibration.initial_conditions.processed.build_initial_conditions`
+#: renames it on the way in.
+RAW_MEMBER = "member"
 
 #: The converted raw file, under ``data/raw/initial_conditions/``.
 RAW_FILE = "pecan_pool_initial_conditions.nc"

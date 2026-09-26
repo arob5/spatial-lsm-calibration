@@ -9,7 +9,7 @@ to pySIPNET, which owns the SIPNET climate format:
 :class:`pysipnet.climate.ClimateDrivers` parses it, validates it, names its
 columns and builds its time axis. What this module adds is the ensemble: the
 ``ERA5_<site>_<member>`` directory layout, the stacking of many files into
-``(member, site, time)``, the site coordinates, and a few checks on the source
+``(driver_member, site, time)``, the site coordinates, and a few checks on the source
 that pySIPNET has no reason to make.
 
 Unlike the site table and the constraints, the drivers have **no
@@ -53,10 +53,11 @@ Data model
 ----------
 :func:`load_drivers` returns an ``xarray.Dataset`` shaped as follows.
 
-**Dimensions**: ``member``, ``site``, ``time``, and ``bounds`` for
+**Dimensions**: ``driver_member`` (:data:`DRIVER_MEMBER`, the drivers' own
+ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 ``time_bounds``.
 
-**Data variables**, all ``float64`` on ``(member, site, time)``: the eight
+**Data variables**, all ``float64`` on ``(driver_member, site, time)``: the eight
 value columns of the climate file, under pySIPNET's registry names, listed in
 :data:`DRIVER_VARIABLES` -- ``air_temperature``, ``soil_temperature``,
 ``photosynthetically_active_radiation``, ``precipitation``,
@@ -76,9 +77,9 @@ deficit and wind speed; they are read through unchanged and counted, so that
 nobody has to rediscover that radiation above zero is not a daylight test.
 
 With ``allow_missing=True`` there is one more variable, ``bool`` on
-``(member, site)``::
+``(driver_member, site)``::
 
-    driver_present(member, site)    whether a file existed for the pair
+    driver_present(driver_member, site)    whether a file existed for the pair
 
 and the eight drivers are ``NaN`` where it is ``False``. Without the flag every
 requested pair must exist, so the variable is not written.
@@ -88,12 +89,12 @@ requested pair must exist, so the variable is not written.
 ======================= ================== ====================================
 Name                    Dims               Meaning
 ======================= ================== ====================================
-``member``              ``member``         0-based ``int16``, ``0`` to
+``driver_member``       ``driver_member``  0-based ``int64``, ``0`` to
                                            ``n - 1``
-``source_member_index`` ``member``         the 1-based index in the directory
-                                           name, in the order the members
-                                           were asked for (ascending when
-                                           discovered)
+``source_index``        ``driver_member``  ``int64``, the 1-based index in the
+                                           directory name, in the order the
+                                           members were asked for (ascending
+                                           when discovered)
 ``site``                ``site``           ``int32`` site id, in the order
                                            the sites were asked for
 ``lon``, ``lat``        ``site``           from the site table, ``float64``,
@@ -124,11 +125,11 @@ columns are instantaneous at the label rather than means over the step.
 **Attributes** on the dataset: pySIPNET's -- ``Conventions``,
 ``time_convention``, ``time_zone``, ``time_axis_source`` and
 ``time_step_length_source`` among them -- and ``title``, ``source_root``,
-``source_layout``, ``member_source = "met"``, ``member_correspondence``,
-``n_sites``, ``n_members`` and ``coverage`` (``"complete"`` or ``"gaps"``).
+``source_layout``, ``n_sites``, ``n_members`` and ``coverage``
+(``"complete"`` or ``"gaps"``).
 
 **Missing values.** There are none in the source. A ``NaN`` appears only under
-``allow_missing=True``, for a whole ``(member, site)`` pair whose file is
+``allow_missing=True``, for a whole ``(driver_member, site)`` pair whose file is
 absent, and ``driver_present`` says which.
 
 Functions
@@ -139,7 +140,7 @@ Functions
 
 :func:`driver_fields`
     Split the Dataset into fields -- one ``DataArray`` per variable
-    with dims ``(member, site, time)`` and its own units. This is the view the
+    with dims ``(driver_member, site, time)`` and its own units. This is the view the
     plotting layer wants.
 
 :func:`read_driver_file`
@@ -148,7 +149,7 @@ Functions
     so that tests and one-off surveys read a file exactly as the loader does.
 
 :func:`available_members`
-    Which member indices have a directory for a given site.
+    Which source indices have a directory for a given site.
 
 :func:`driver_file`
     The path of the one ``.clim`` file for a site and member.
@@ -174,11 +175,12 @@ are site-major only: a site's whole record is one file, but one timestep across
 the pool means reading every file. Calibration and the per-site figures need
 the former.
 
-**Member indices.** ``member`` is 0-based to match every other product;
-``source_member_index`` keeps the 1-based file index beside it so the mapping
-to a directory is never guesswork. Whether driver member *i* corresponds to
-initial-condition member *i* is not established (open question 12 in
-``data/README.md``), and ``member_correspondence`` says so.
+**Member indices.** ``driver_member`` is 0-based, as every batch dim made
+here is; ``source_index`` keeps the 1-based file index beside it so the
+mapping to a directory is never guesswork. Whether driver member *i*
+corresponds to initial-condition member *i* is not established (open question
+12 in ``data/README.md``), which is why the two ensembles carry different dim
+names: xarray and PyEns cross them rather than pair them by label.
 
 Usage
 -----
@@ -190,12 +192,12 @@ Name the sites, get the canonical form::
     sites = select_sites(load_sites(), bbox=(-125, 24, -66, 50), sample=20, seed=0)
     drivers = load_drivers(sites["site_id"])          # every member present
 
-    drivers["air_temperature"].dims                   # ('member', 'site', 'time')
+    drivers["air_temperature"].dims                   # ('driver_member', 'site', 'time')
     drivers["precipitation"].attrs["kind"]            # 'timestep_total'
     drivers["time"].attrs["time_zone"]                # 'undeclared'
 
     # Two members only, and tolerate sites that lack a file for one of them.
-    partial = load_drivers([1, 27], members=[1, 2], allow_missing=True)
+    partial = load_drivers([1, 27], source_indices=[1, 2], allow_missing=True)
     partial["driver_present"].values
 
 For plotting, take the per-variable view::
@@ -224,8 +226,12 @@ from pysipnet.dataset import unfilled_coordinates
 from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration.conventions import (
+    BATCH_LABEL_DTYPE,
     SITE,
     SITE_DTYPE,
+    SOURCE_INDEX,
+    SOURCE_INDEX_ATTRIBUTES,
+    SOURCE_MEMBER_ATTRIBUTES,
     TIME,
     TIME_BOUNDS,
     TIME_COORD_NAMES,
@@ -240,9 +246,9 @@ from sipnet_calibration.validation import as_positive_integers, as_site_ids, tru
 __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
     "DRIVER_FILE_GLOB",
+    "DRIVER_MEMBER",
     "DRIVER_PRESENT",
     "DRIVER_VARIABLES",
-    "MEMBER_SOURCE",
     "NEGATIVE_TOLERANCE",
     "UNITS_PROVENANCE",
     "available_members",
@@ -270,9 +276,10 @@ UNITS_PROVENANCE = (
     "consistent with them, which is evidence and not confirmation."
 )
 
-#: Which ensemble the ``member`` coordinate indexes. Member indices are
-#: meaningful only within one source.
-MEMBER_SOURCE = "met"
+#: The drivers' own ensemble dim, a batch dim named for its source so that it
+#: crosses rather than pairs with any other ensemble (the samples, the initial
+#: conditions).
+DRIVER_MEMBER = "driver_member"
 
 #: Name of the presence variable written under ``allow_missing=True``.
 DRIVER_PRESENT = "driver_present"
@@ -418,7 +425,7 @@ def read_driver_file(path: Path | str, *, time_zone: str | None = None) -> Clima
 def load_drivers(
     sites: Iterable[int],
     *,
-    members: Iterable[int] | None = None,
+    source_indices: Iterable[int] | None = None,
     root: Path | str | None = None,
     sites_table: pd.DataFrame | None = None,
     allow_missing: bool = False,
@@ -431,11 +438,12 @@ def load_drivers(
     sites:
         Site ids to read, a sequence of integers, each named once, returned
         in the order given. Every one must be in the site table.
-    members:
-        Source member indices (1-based, as in the directory names) to read,
-        a sequence of integers, each named once, returned in the order
-        given. ``None`` means every member that has a directory for any of
-        the requested sites, in ascending order.
+    source_indices:
+        The members to read, by their 1-based index in the directory names
+        (the ``source_index`` coordinate of the result), a sequence of
+        integers, each named once, returned in the order given. ``None``
+        means every member that has a directory for any of the requested
+        sites, in ascending order.
     root:
         The drivers root. Defaults to :func:`default_drivers_root`.
     sites_table:
@@ -456,18 +464,18 @@ def load_drivers(
     -------
     xarray.Dataset
         The `Data model`_ described in the module docstring: the eight
-        :data:`DRIVER_VARIABLES` on ``(member, site, time)``, ``float64``, with
-        pySIPNET's time coordinates, ``lon``/``lat`` on ``site`` and
-        ``source_member_index`` on ``member``.
+        :data:`DRIVER_VARIABLES` on ``(driver_member, site, time)``,
+        ``float64``, with pySIPNET's time coordinates, ``lon``/``lat`` on
+        ``site`` and ``source_index`` on ``driver_member``.
 
     Raises
     ------
     FileNotFoundError
-        If the root does not exist; if *members* is ``None`` and no requested
+        If the root does not exist; if *source_indices* is ``None`` and no requested
         site has a driver directory; if no requested pair has a file at all;
         or if a requested pair has no file and *allow_missing* is ``False``.
     TypeError
-        If *sites* or *members* is one value, a string, a set or not
+        If *sites* or *source_indices* is one value, a string, a set or not
         iterable, or holds a boolean, a float or a value that is not an
         integer; or if *sites_table* is not a ``DataFrame`` or its
         ``site_id`` is not integers.
@@ -475,10 +483,10 @@ def load_drivers(
         If a site is not in the site table.
     ValueError
         If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
-        or *members* is empty or a two-dimensional array, or holds a value
-        that is not positive or out of range, discovered members included; if
-        *sites* names a site twice or *members* a member twice; if the site
-        table lacks ``site_id``,
+        or *source_indices* is empty or a two-dimensional array, or holds a
+        value that is not positive, discovered ones included; if *sites*
+        names a site twice or *source_indices* a source index twice; if the
+        site table lacks ``site_id``,
         ``lon`` or ``lat`` or repeats a ``site_id``; if a pair's
         directory holds more than one ``.clim`` file; if a file fails
         :func:`read_driver_file`, its name does not follow the template, the
@@ -495,7 +503,7 @@ def load_drivers(
     # Located before any file is read, so a site the table lacks fails fast.
     coordinates = site_coordinates(site_ids.tolist(), table)
 
-    member_ids = _member_ids(members, root=root, sites=site_ids)
+    member_ids = _member_ids(source_indices, root=root, sites=site_ids)
 
     paths, present = _locate_files(root, sites=site_ids, members=member_ids)
     check_some_pair_has_a_file(present, sites=site_ids, members=member_ids, root=root)
@@ -517,10 +525,10 @@ def load_drivers(
 def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     """One ``DataArray`` per driver variable, in :data:`DRIVER_VARIABLES` order.
 
-    Each field has dims ``(member, site, time)``, is named for its variable,
-    keeps that variable's attributes, and carries pySIPNET's
+    Each field has dims ``(driver_member, site, time)``, is named for its
+    variable, keeps that variable's attributes, and carries pySIPNET's
     :data:`sipnet_calibration.conventions.TIME_COORD_NAMES` with
-    ``lon``/``lat`` and ``source_member_index`` as non-dimension coordinates --
+    ``lon``/``lat`` and ``source_index`` as non-dimension coordinates --
     the field shape, and the same time coordinates a model field has. This is
     the view facet-by-variable consumes, matching
     :func:`sipnet_calibration.constraints.constraint_fields`.
@@ -608,7 +616,7 @@ def _site_ids(sites: Iterable[int]) -> np.ndarray:
 def _member_ids(
     members: Iterable[int] | None, *, root: Path, sites: np.ndarray
 ) -> np.ndarray:
-    """Requested members as ``int16``, in the order given; found, ascending, for ``None``."""
+    """Requested source indices as ``int64``, in the order given; found, ascending, for ``None``."""
     if members is None:
         found: set[int] = set()
         for site in sites:
@@ -622,23 +630,21 @@ def _member_ids(
 
 
 def _source_member_indices(members: Iterable[int]) -> np.ndarray:
-    """*members* as an ``int16`` array, in the order given, or a clear error.
+    """*members* as an ``int64`` array, in the order given, or a clear error.
 
-    Strings, booleans, floats, non-positive values, repeats and anything that
-    would wrap when narrowed to ``int16`` are refused, since each would
-    otherwise resolve to a plausible-looking wrong directory.
+    Strings, booleans, floats, non-positive values and repeats are refused,
+    since each would otherwise resolve to a plausible-looking wrong directory.
     """
-    indices = as_positive_integers(members, message_name="members")
-    check_some_are_requested(indices, what="members", example="member index")
-    check_member_indices_are_unique(indices)
-    check_member_indices_fit_int16(indices)
-    return np.asarray(indices, dtype=np.int16)
+    indices = as_positive_integers(members, message_name="source_indices")
+    check_some_are_requested(indices, what="source indices", example="source index")
+    check_source_indices_are_unique(indices)
+    return np.asarray(indices, dtype=np.int64)
 
 
 def _locate_files(
     root: Path, *, sites: np.ndarray, members: np.ndarray
 ) -> tuple[dict[tuple[int, int], Path], np.ndarray]:
-    """Paths for every ``(member, site)`` pair that has one, and a presence mask."""
+    """Paths for every ``(driver_member, site)`` pair that has one, and a presence mask."""
     present = np.zeros((members.size, sites.size), dtype=bool)
     paths: dict[tuple[int, int], Path] = {}
     for j, site in enumerate(sites):
@@ -654,7 +660,7 @@ def _locate_files(
 def _read_all(
     paths: dict[tuple[int, int], Path], present: np.ndarray, *, time_zone: str | None
 ) -> tuple[dict[str, np.ndarray], xr.Dataset]:
-    """Read every located file into ``(member, site, time)`` arrays.
+    """Read every located file into ``(driver_member, site, time)`` arrays.
 
     The first file read supplies the time axis; every later file is checked to
     be on the same one before its values are copied in. Cells with no file stay
@@ -692,7 +698,7 @@ def _assemble(
     allow_missing: bool,
 ) -> xr.Dataset:
     """Put the arrays into the Dataset the module docstring describes."""
-    dims = ("member", SITE, TIME)
+    dims = (DRIVER_MEMBER, SITE, TIME)
     data_vars = {}
     for name in DRIVER_VARIABLES:
         values = arrays[name]
@@ -706,7 +712,7 @@ def _assemble(
     if allow_missing:
         data_vars[DRIVER_PRESENT] = xr.DataArray(
             present,
-            dims=("member", SITE),
+            dims=(DRIVER_MEMBER, SITE),
             attrs={
                 "long_name": "Whether a driver file existed for the member and site",
                 "comment": "The eight driver variables are NaN where this is False.",
@@ -716,33 +722,25 @@ def _assemble(
     dataset = xr.Dataset(
         data_vars,
         coords={
-            "member": np.arange(members.size, dtype=np.int16),
-            "source_member_index": ("member", members.astype(np.int16)),
+            DRIVER_MEMBER: (
+                DRIVER_MEMBER,
+                np.arange(members.size, dtype=BATCH_LABEL_DTYPE),
+                dict(SOURCE_MEMBER_ATTRIBUTES),
+            ),
+            SOURCE_INDEX: (
+                DRIVER_MEMBER,
+                members.astype(BATCH_LABEL_DTYPE),
+                dict(SOURCE_INDEX_ATTRIBUTES),
+            ),
             **coordinates,
             **{name: reference[name].variable for name in _DATASET_TIME_COORDS},
         },
     )
-    dataset["member"].attrs = {
-        "long_name": "Ensemble member",
-        "comment": (
-            "0-based, meaningful only within this source; source_member_index "
-            "is the 1-based index in the directory name."
-        ),
-    }
-    dataset["source_member_index"].attrs = {
-        "long_name": "Member index in the source directory name (1-based)"
-    }
     dataset.attrs = {
         **reference.attrs,
         "title": "ERA5 meteorological drivers in SIPNET climate-file form",
         "source_root": str(root),
         "source_layout": f"{DRIVER_DIRECTORY_TEMPLATE}/{DRIVER_FILE_GLOB}",
-        "member_source": MEMBER_SOURCE,
-        "member_correspondence": (
-            "Not established. Whether driver member i corresponds to "
-            "initial-condition or NEE member i is open question 12 in "
-            "data/README.md; nothing here assumes it does."
-        ),
         "n_sites": int(dataset.sizes[SITE]),
         "n_members": int(members.size),
         "coverage": "complete" if present.all() else "gaps",
@@ -763,30 +761,19 @@ def check_drivers_root_is_a_directory(root: Path) -> None:
 
 
 def check_some_are_requested(values: tuple[int, ...], *, what: str, example: str) -> None:
-    """At least one site, or one member, is asked for."""
+    """At least one site, or one source index, is asked for."""
     if not values:
         raise ValueError(f"no {what} requested; pass at least one {example}.")
 
 
-def check_member_indices_are_unique(indices: tuple[int, ...]) -> None:
-    """No member index is asked for twice."""
+def check_source_indices_are_unique(indices: tuple[int, ...]) -> None:
+    """No source index is asked for twice."""
     seen: set[int] = set()
     repeated = sorted({index for index in indices if index in seen or seen.add(index)})
     if repeated:
         raise ValueError(
-            f"members names member(s) {truncated(repeated)} more than once; name each "
-            "member once."
-        )
-
-
-def check_member_indices_fit_int16(indices: tuple[int, ...]) -> None:
-    """Every member index fits the ``int16`` it is stored as."""
-    limit = int(np.iinfo(np.int16).max)
-    beyond = sorted({index for index in indices if index > limit})
-    if beyond:
-        raise ValueError(
-            f"members must lie within 1..{limit}, found {truncated(beyond)}; a member "
-            "index is the 1-based index of a driver directory."
+            f"source_indices names source index(es) {truncated(repeated)} more than once; "
+            "name each source index once."
         )
 
 
@@ -797,7 +784,7 @@ def check_some_pair_has_a_file(
     if not present.any():
         raise FileNotFoundError(
             f"no driver files under {root} for sites {sites.tolist()} and "
-            f"members {members.tolist()}; check the root and the site ids."
+            f"source indices {members.tolist()}; check the root and the site ids."
         )
 
 
