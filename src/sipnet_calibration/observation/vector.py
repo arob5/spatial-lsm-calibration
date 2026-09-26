@@ -139,7 +139,10 @@ from pysipnet.units import convert_dataarray_units
 
 from sipnet_calibration.conventions import SAMPLE, SITE, TIME
 from sipnet_calibration.fields import (
+    Field,
+    ModelOutput,
     batch_coordinate,
+    in_field_layout,
     batch_dims,
     check_at_most_one_batch_dim,
     check_batch_dim_name_is_not_a_data_source_member,
@@ -153,6 +156,7 @@ from sipnet_calibration.observation.operators import (
     check_result_is_on_the_observation_grid,
 )
 from sipnet_calibration.observation.source import ObservationSource
+from sipnet_calibration.parameter_vector import SIPNETParameterFields
 from sipnet_calibration.validation import (
     as_batched_flat,
     as_names,
@@ -237,9 +241,10 @@ class ObservationVector:
         )
 
     @property
-    def sipnet_parameter_names(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
+        """The SIPNET parameters the operators read, in declaration order."""
         return _union(
-            source.operator.sipnet_parameter_names for source in self._observation_sources
+            source.operator.sipnet_parameter_names_read for source in self._observation_sources
         )
 
     @property
@@ -506,25 +511,27 @@ class ObservationVector:
 
     def predict(
         self,
-        model_output: xr.Dataset,
+        model_output: ModelOutput,
         *,
-        sipnet_parameters: xr.Dataset | Mapping[str, Any] | None = None,
-    ) -> dict[str, xr.DataArray]:
+        sipnet_parameter_fields: SIPNETParameterFields | None = None,
+    ) -> dict[str, Field]:
         """Every observation source's operator applied, converted and checked.
 
         Parameters
         ----------
         model_output:
-            The labeled model output the operators read: one run from
+            The model output the operators read
+            (:data:`~sipnet_calibration.fields.ModelOutput`): one run from
             :func:`sipnet_calibration.fields.label_run`, or a stack from
             :func:`sipnet_calibration.fields.stack_model_outputs`, carrying
             every variable in :attr:`output_variable_names` at every site the
             vector observes.
-        sipnet_parameters:
+        sipnet_parameter_fields:
             The SIPNET parameter values the runs used, for the operators that
-            read any (:attr:`sipnet_parameter_names`): SIPNET parameter
-            fields on ``(*batch, site)`` or ``(site,)``, or a mapping for one
-            run.
+            read any (:attr:`sipnet_parameter_names_read`), as SIPNET
+            parameter fields
+            (:data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields`):
+            on ``(*batch, site)`` or ``(site,)``, or with no dim for one run.
 
         Returns
         -------
@@ -538,28 +545,29 @@ class ObservationVector:
         Raises
         ------
         TypeError
-            If *model_output* is not an ``xr.Dataset``, or an operator returns
-            something other than a ``DataArray``.
+            If *model_output* or *sipnet_parameter_fields* is not an
+            ``xr.Dataset``, or an operator returns something other than a
+            ``DataArray``.
         ValueError
-            If *model_output* lacks a variable that is read, or parameters are
-            read and *sipnet_parameters* is not given; if a prediction is not
-            on its observation source's grid or carries no ``units``; if
-            pySIPNET's ``convert_dataarray_units`` refuses to convert a
-            prediction into its source's units and constituent; or if a
-            prediction is ``NaN`` at an observation where the run succeeded.
-            An operator's
-            own refusals pass through.
+            If *model_output* is not a model output, or lacks a variable that
+            is read; if parameters are read and *sipnet_parameter_fields* is
+            not given or are not SIPNET parameter fields; if a prediction is
+            not a field on its observation source's grid or carries no
+            ``units``; if pySIPNET's ``convert_dataarray_units`` refuses to
+            convert a prediction into its source's units and constituent; or
+            if a prediction is ``NaN`` at an observation where the run
+            succeeded. An operator's own refusals pass through.
         """
         check_model_output_carries_what_is_read(
             model_output,
             output_variable_names=self.output_variable_names,
-            sipnet_parameter_names=self.sipnet_parameter_names,
-            sipnet_parameters=sipnet_parameters,
+            sipnet_parameter_names_read=self.sipnet_parameter_names_read,
+            sipnet_parameter_fields=sipnet_parameter_fields,
         )
         failed = _failed_runs(model_output, self.output_variable_names)
         return {
             source.observation_source_name: _predicted(
-                source, model_output, sipnet_parameters, failed
+                source, model_output, sipnet_parameter_fields, failed
             )
             for source in self._observation_sources
         }
@@ -703,12 +711,12 @@ def _failed_runs(
 def _predicted(
     source: ObservationSource,
     model_output: xr.Dataset,
-    sipnet_parameters: Any,
+    sipnet_parameter_fields: Any,
     failed: xr.DataArray | None,
 ) -> xr.DataArray:
     """A source's operator applied, checked, converted and checked again."""
     predicted = source.operator(
-        model_output, source.observed_values, sipnet_parameters=sipnet_parameters
+        model_output, source.observed_values, sipnet_parameter_fields=sipnet_parameter_fields
     )
     check_result_is_on_the_observation_grid(
         predicted, source.observed_values, model_output, source.observation_source_name
@@ -718,19 +726,10 @@ def _predicted(
         to_units=source.observed_values.attrs["units"],
         to_constituent=source.observed_values.attrs.get("constituent", "") or "",
     )
-    predicted = _with_site_dimension(predicted)
+    predicted = in_field_layout(predicted)
     check_prediction_is_finite_where_the_run_succeeded(predicted, source, failed)
     predicted.name = source.observation_source_name
     return predicted
-
-
-def _with_site_dimension(predicted: xr.DataArray) -> xr.DataArray:
-    """*predicted* with ``site`` as a dim, on ``(*batch, site[, time])``."""
-    if SITE not in predicted.dims and SITE in predicted.coords:
-        predicted = predicted.expand_dims(SITE)
-    rest = [d for d in (SITE, TIME) if d in predicted.dims]
-    others = [d for d in predicted.dims if d not in rest]
-    return predicted.transpose(*others, *rest)
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

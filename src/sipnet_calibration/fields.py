@@ -195,6 +195,9 @@ Functions
     the first rule it breaks.
 :func:`batch_dims`
     A field's batch dims, in its dim order.
+:func:`in_field_layout`
+    An array's values in the field layout: dims ``(*batch, space, time)``,
+    a scalar ``site`` made a dim.
 :func:`stack_batch_dims`, :func:`unstack_batch_dims`
     Several batch dims stacked into one new batch dim, labeled ``0`` to
     ``n - 1`` with the original labels kept beside it, and back.
@@ -413,6 +416,7 @@ __all__ = [
     "check_labeled_dims_are_batch_spatial_or_time",
     "check_model_output_is_a_dataset",
     "coordinate_labels",
+    "in_field_layout",
     "is_categorical",
     "label_run",
     "message_name",
@@ -558,6 +562,47 @@ def validate_model_output(model_output: Any, *, message_name: str | None = None)
         variable_message_name = f"{variable_name!r} of {name}"
         validate_field(variable, message_name=variable_message_name)
         check_model_output_variable_is_on_time(variable, variable_message_name)
+
+
+def in_field_layout(array: xr.DataArray) -> xr.DataArray:
+    """*array* laid out as a field: ``(*batch, space, time)``, a scalar ``site`` a dim.
+
+    What an observation operator returns may be in any dim order, and one
+    run's may carry ``site`` as a scalar; this is the same values in the
+    layout the field contract fixes, so that :func:`validate_field` can check
+    it. Nothing else changes.
+
+    Parameters
+    ----------
+    array:
+        An array whose dims are batch dims, a spatial dim and ``time``, in
+        any order; ``site`` a dim or a scalar coordinate.
+
+    Returns
+    -------
+    xarray.DataArray
+        The batch dims first, in *array*'s order, then the spatial dim, then
+        ``time``. A scalar ``site`` becomes a dim of length one, first after
+        the batch dims, with its scalar ``lon``/``lat`` moved onto it.
+    """
+    if SITE not in array.dims and SITE in array.coords and array[SITE].ndim == 0:
+        array = array.expand_dims(SITE)
+    if SITE in array.dims:
+        # A scalar location beside a site dim of one, as expand_dims leaves it.
+        scalar = {
+            name: array[name]
+            for name in (LON, LAT)
+            if name in array.coords and array[name].ndim == 0 and array.sizes[SITE] == 1
+        }
+        array = array.assign_coords(
+            {
+                name: (SITE, np.atleast_1d(coordinate.values), coordinate.attrs)
+                for name, coordinate in scalar.items()
+            }
+        )
+    rest = [d for d in (*SPATIAL_DIM_NAMES, TIME) if d in array.dims]
+    others = [d for d in array.dims if d not in rest]
+    return array.transpose(*others, *rest)
 
 
 def batch_dims(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:

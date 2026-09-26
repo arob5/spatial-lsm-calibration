@@ -683,6 +683,36 @@ def windowed_observed_values(
     )
 
 
+def one_run_sipnet_parameter_fields(**values: float) -> xr.Dataset:
+    """One run's zero-dimensional SIPNET parameter fields, labeled by pySIPNET.
+
+    Each keyword is a SIPNET parameter's flat name; each variable is
+    :func:`pysipnet.parameters.model.parameter_dataarray` of its value, as the
+    forward model's worker builds them from ``SIPNETParameters.dataarray``.
+    """
+    from pysipnet.parameters.model import parameter_dataarray
+
+    return xr.Dataset({name: parameter_dataarray(name, value) for name, value in values.items()})
+
+
+def as_sipnet_parameter_fields(dataset: xr.Dataset) -> xr.Dataset:
+    """*dataset* as SIPNET parameter fields: pySIPNET's attributes, ``int32`` sites.
+
+    Each variable is relabeled by
+    :func:`pysipnet.parameters.model.parameter_dataarray`, and a ``site``
+    coordinate is cast to the site ids' dtype.
+    """
+    from pysipnet.parameters.model import parameter_dataarray
+
+    if conventions.SITE in dataset.coords:
+        sites = dataset[conventions.SITE].astype(conventions.SITE_DTYPE)
+        dataset = dataset.assign_coords({conventions.SITE: sites})
+    return xr.Dataset(
+        {str(name): parameter_dataarray(str(name), variable) for name, variable in dataset.data_vars.items()},
+        attrs=dataset.attrs,
+    )
+
+
 def _observed_values_attributes(units: str, constituent: str) -> dict[str, str]:
     attrs = {"units": units}
     if constituent:
@@ -747,7 +777,22 @@ class ScaledNiwot(SIPNETModel):
         )
         if rate > NAN_BAND:
             frame.loc[frame.index[-5:], "wood_carbon"] = np.nan
-        return SimpleNamespace(outputs=SIPNETOutput.from_dataframe(frame, climate=climate))
+        return SimpleNamespace(
+            outputs=SIPNETOutput.from_dataframe(frame, climate=climate),
+            parameters=_parameters_with(self.base_params, overrides),
+        )
+
+
+def _parameters_with(base_params, overrides):
+    """The run's complete ``SIPNETParameters``: *base_params* with *overrides* applied.
+
+    What ``SIPNETModel`` itself runs with, built by pySIPNET's own (private)
+    ``_apply_overrides``, so the stand-in's result carries ``parameters`` as a
+    real ``SIPNETResult`` does.
+    """
+    from pysipnet.model import _apply_overrides
+
+    return _apply_overrides(base_params, dict(overrides))
 
 
 def scaled_niwot_model(model_class: type[ScaledNiwot] = ScaledNiwot) -> ScaledNiwot:

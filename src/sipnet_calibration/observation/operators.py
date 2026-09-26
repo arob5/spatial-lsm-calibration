@@ -17,23 +17,27 @@ The contract
 ------------
 :class:`ObservationOperator` is a protocol. An operator declares
 ``output_variable_names``, the pySIPNET output variables it reads (so a worker
-reads only those columns), and ``sipnet_parameter_names``, the SIPNET
-parameters it reads (so the forward model can supply them: from the run's
-values, or from the base parameter set where the parameter vector does not set
-them). Its call is::
+reads only those columns), and ``sipnet_parameter_names_read``, the SIPNET
+parameters it reads (so the forward model can supply them, from the run's own
+``SIPNETResult.parameters``). Its call is::
 
-    operator(model_output, observed_values, *, sipnet_parameters=None) -> DataArray
+    operator(model_output, observed_values, *, sipnet_parameter_fields=None) -> Field
 
-* ``model_output`` is an ``xr.Dataset`` of pySIPNET-named variables on
+* ``model_output`` is a
+  :data:`~sipnet_calibration.fields.ModelOutput`: pySIPNET-named variables on
   ``(time,)`` with a scalar ``site``, on ``(site, time)``, or on
   ``(*batch, site, time)`` with any batch dims (``sample``, a data source's
   ``<source>_member``), carrying pySIPNET's time coordinates and attributes.
-* ``observed_values`` is the observed values of one observation source,
-  ``(site[, time])``, read for its ``site`` and ``time`` coordinates, its
-  windows where present, and nothing else; never for its values.
-* ``sipnet_parameters`` is the SIPNET parameter fields for these
-  ``(*batch, site)``, SIPNET parameter fields on ``(site,)``, or a mapping of
-  scalars for one run.
+* ``observed_values`` is the
+  :data:`~sipnet_calibration.observation.source.ObservedValues` of one
+  observation source, ``(site[, time])``, read for its ``site`` and ``time``
+  coordinates, its windows where present, and nothing else; never for its
+  values.
+* ``sipnet_parameter_fields`` is the
+  :data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields` the runs
+  used: on ``(*batch, site)`` or ``(site,)`` for a stack, or with no dim and a
+  scalar ``site`` for one run. It is the one form SIPNET parameter values take
+  here; there is no mapping form.
 * The result is on ``observed_values``' ``site`` and ``time`` grid, with the
   model output's batch dims if any and no dim that neither the model output nor
   the observed values have, and carries ``units`` and, where the quantity has
@@ -63,7 +67,7 @@ Usage
     from pysipnet.units import convert_dataarray_units
 
     lai = DEFAULT_OBS_OPS["modis_leaf_area_index"]
-    predicted = lai(model_output, observed_lai, sipnet_parameters=sipnet_parameter_fields)
+    predicted = lai(model_output, observed_lai, sipnet_parameter_fields=sipnet_parameter_fields)
     predicted = convert_dataarray_units(predicted, to_units=observed_lai.attrs["units"])
 
     wood = SelectTimestep("wood_carbon")          # the state at each observed label
@@ -73,7 +77,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 import xarray as xr
@@ -85,11 +89,18 @@ from sipnet_calibration import fields
 from sipnet_calibration.conventions import SITE, TIME, FrozenMapping
 from sipnet_calibration.fields import (
     STACKED_LABEL_SUFFIX,
+    Field,
+    ModelOutput,
     batch_dims,
     coordinate_labels,
     missing_labels,
     recorded_stacked_dims,
     scalar_batch_labels,
+    validate_model_output,
+)
+from sipnet_calibration.parameter_vector import (
+    SIPNETParameterFields,
+    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.observation.time_alignment import (
     check_how_is_a_window_reduction,
@@ -100,6 +111,9 @@ from sipnet_calibration.observation.time_alignment import (
     windows_from_observed_values,
 )
 from sipnet_calibration.validation import check_site_ids_are_unique
+
+if TYPE_CHECKING:  # pragma: no cover - typing only; source imports this module
+    from sipnet_calibration.observation.source import ObservedValues
 
 __all__ = [
     "DEFAULT_OBS_OPS",
@@ -121,15 +135,15 @@ class ObservationOperator(Protocol):
     """Model output to a prediction of one observed quantity, on that quantity's grid."""
 
     output_variable_names: tuple[str, ...]
-    sipnet_parameter_names: tuple[str, ...]
+    sipnet_parameter_names_read: tuple[str, ...]
 
     def __call__(
         self,
-        model_output: xr.Dataset,
-        observed_values: xr.DataArray,
+        model_output: ModelOutput,
+        observed_values: ObservedValues,
         *,
-        sipnet_parameters: xr.Dataset | Mapping[str, Any] | None = None,
-    ) -> xr.DataArray: ...
+        sipnet_parameter_fields: SIPNETParameterFields | None = None,
+    ) -> Field: ...
 
 
 @dataclass(frozen=True)
@@ -169,10 +183,10 @@ class SelectTimestep:
         return (self.output_variable_name,)
 
     @property
-    def sipnet_parameter_names(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
-    def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
+    def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None) -> Field:
         check_observed_values_are_dated(observed_values, type(self).__name__)
         variable = restrict_to_observed_sites(
             model_output[self.output_variable_name], observed_values
@@ -224,10 +238,10 @@ class ReduceOverWindows:
         return (self.output_variable_name,)
 
     @property
-    def sipnet_parameter_names(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
-    def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
+    def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None) -> Field:
         variable = restrict_to_observed_sites(
             model_output[self.output_variable_name], observed_values
         )
@@ -278,10 +292,10 @@ class ReduceOverRun:
         return (self.output_variable_name,)
 
     @property
-    def sipnet_parameter_names(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
-    def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
+    def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None) -> Field:
         check_observed_values_are_static(observed_values, type(self).__name__)
         variable = restrict_to_observed_sites(
             model_output[self.output_variable_name], observed_values
@@ -303,8 +317,7 @@ class ComputeLeafAreaIndex:
     Raises
     ------
     TypeError
-        On a call, if a mapping of SIPNET parameters holds a value that is
-        not a number.
+        On a call, if the SIPNET parameter fields are not a Dataset.
     ValueError
         On a call, if the observed values have no ``time`` dimension, or for any
         refusal of :func:`restrict_to_observed_sites`,
@@ -317,14 +330,14 @@ class ComputeLeafAreaIndex:
         return ("leaf_carbon",)
 
     @property
-    def sipnet_parameter_names(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ("leaf_carbon_per_area",)
 
-    def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
+    def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None) -> Field:
         check_observed_values_are_dated(observed_values, type(self).__name__)
         leaf_carbon = restrict_to_observed_sites(model_output["leaf_carbon"], observed_values)
         per_area = extract_sipnet_parameter_at_coords(
-            sipnet_parameters, "leaf_carbon_per_area", leaf_carbon
+            sipnet_parameter_fields, "leaf_carbon_per_area", leaf_carbon
         )
         lai = divide_with_units(leaf_carbon, per_area)
         lai.name = "leaf_area_index"
@@ -399,10 +412,10 @@ def restrict_to_observed_sites(
 
 
 def extract_sipnet_parameter_at_coords(
-    sipnet_parameters: xr.Dataset | Mapping[str, Any] | None,
+    sipnet_parameter_fields: SIPNETParameterFields | None,
     sipnet_parameter_name: str,
-    target_field: xr.DataArray,
-) -> xr.DataArray:
+    target_field: Field,
+) -> Field:
     """One SIPNET parameter's values at a field's site and batch coordinates.
 
     An operator that reads a SIPNET parameter, as the leaf area index
@@ -415,15 +428,14 @@ def extract_sipnet_parameter_at_coords(
 
     Parameters
     ----------
-    sipnet_parameters:
-        The values the runs used, in either of two forms. SIPNET parameter
-        fields: an ``xr.Dataset`` with one variable per SIPNET parameter,
-        under pySIPNET's flat names, on ``(*batch, site)`` or ``(site,)``, as
+    sipnet_parameter_fields:
+        The values the runs used, as SIPNET parameter fields
+        (:data:`~sipnet_calibration.parameter_vector.SIPNETParameterFields`):
+        one variable per SIPNET parameter under pySIPNET's flat names, on
+        ``(*batch, site)`` or ``(site,)`` as
         :meth:`~sipnet_calibration.parameter_vector.ParameterVector.sipnet_parameter_fields`
-        returns them. Or, for one run, a mapping from SIPNET parameter name to
-        a number, as :func:`~sipnet_calibration.parameter_vector.sipnet_overrides`
-        returns it; a key may be the flat name, an alias, or SIPNET's own
-        name.
+        returns them, or with no dim for one run, as the forward model's
+        worker builds them from the run's own ``SIPNETResult.parameters``.
     sipnet_parameter_name:
         The SIPNET parameter to select: pySIPNET's flat name
         (``"leaf_carbon_per_area"``), an alias of it, or SIPNET's own name.
@@ -431,66 +443,61 @@ def extract_sipnet_parameter_at_coords(
         The field the values will be combined with, typically an output
         variable. Only its coordinate labels are read, for each dim of the
         SIPNET parameter fields (``site`` and every batch dim), whether they
-        are dimensions or scalar coordinates on the target: from SIPNET
-        parameter fields the values are taken at those labels, in that order,
-        a scalar label selecting without keeping the dimension. A dimension of
-        the SIPNET parameter fields the target has no coordinate for is
-        refused, since using it whole would broadcast it into the run, as is a
-        scalar label of theirs (``site`` or an integer batch label) the
-        target's labels disagree with.
+        are dimensions or scalar coordinates on the target: the values are
+        taken at those labels, in that order, a scalar label selecting
+        without keeping the dimension. A dimension of the SIPNET parameter
+        fields the target has no coordinate for is refused, since using it
+        whole would broadcast it into the run, as is a scalar label of theirs
+        (``site`` or an integer batch label) the target's labels disagree
+        with.
 
     Returns
     -------
-    xarray.DataArray
+    Field
         Named by the parameter's flat name, with the attributes
         ``parameter_dataarray`` gives it: ``units``, ``long_name``,
         ``description``, ``sipnet_name`` and, where pySIPNET declares one,
-        ``constituent``. From SIPNET parameter fields, the parameter's variable at
-        *target_field*'s site and batch labels; from a mapping, a 0-d array of
-        the run's value, which broadcasts against *target_field*.
+        ``constituent``; the parameter's variable at *target_field*'s site
+        and batch labels.
 
     Raises
     ------
     TypeError
-        If a mapping's entry for the parameter is not a number.
+        If *sipnet_parameter_fields* is not an ``xr.Dataset``.
     ValueError
-        If *sipnet_parameters* is ``None``; if SIPNET parameter fields have no
-        variable for the parameter, have a dimension the target has no
-        coordinate for, lack a label of it that *target_field* has, or carry a
-        scalar label the target's disagree with (a stacked target's
-        ``<dim>_label`` coordinates included, or lost); if a batch dim of
-        *target_field* is a stack of a dim the SIPNET parameter fields have
-        (:func:`~sipnet_calibration.fields.stack_batch_dims`), whose labels are
-        not theirs; if a mapping has no entry for the parameter under any
-        of its names; or if a value is not finite or lies outside the
-        parameter's pySIPNET domain.
+        If *sipnet_parameter_fields* is ``None``, or are not SIPNET parameter
+        fields
+        (:func:`~sipnet_calibration.parameter_vector.validate_sipnet_parameter_fields`);
+        if they have no variable for the parameter, have a dimension the
+        target has no coordinate for, lack a label of it that *target_field*
+        has, or carry a scalar label the target's disagree with (a stacked
+        target's ``<dim>_label`` coordinates included, or lost); if a batch
+        dim of *target_field* is a stack of a dim the SIPNET parameter fields
+        have (:func:`~sipnet_calibration.fields.stack_batch_dims`), whose
+        labels are not theirs; or if a value is not finite or lies outside
+        the parameter's pySIPNET domain.
     KeyError
         If *sipnet_parameter_name* is not a pySIPNET parameter name or alias.
     """
     name = resolve_parameter_name(sipnet_parameter_name)
-    if sipnet_parameters is None:
-        raise ValueError(
-            f"this operator reads the SIPNET parameter {name!r}; pass sipnet_parameters= "
-            "(SIPNET parameter fields or a mapping of the run's values)."
-        )
-    if isinstance(sipnet_parameters, xr.Dataset):
-        values = _sipnet_parameter_values_at(sipnet_parameters, name, target_field)
-        return parameter_dataarray(name, values)
-    return parameter_dataarray(name, _mapping_value(sipnet_parameters, name))
+    check_sipnet_parameter_fields_are_given(sipnet_parameter_fields, name)
+    validate_sipnet_parameter_fields(sipnet_parameter_fields)
+    values = _sipnet_parameter_values_at(sipnet_parameter_fields, name, target_field)
+    return parameter_dataarray(name, values)
 
 
 def check_operator(
     operator: ObservationOperator,
-    model_output: xr.Dataset,
-    observed_values: xr.DataArray,
+    model_output: ModelOutput,
+    observed_values: ObservedValues,
     *,
-    sipnet_parameters: xr.Dataset | Mapping[str, Any] | None = None,
-) -> xr.DataArray:
+    sipnet_parameter_fields: SIPNETParameterFields | None = None,
+) -> Field:
     """Check an operator against its contract on real inputs, and return its result.
 
     Checks that the declared names are pySIPNET registry names, not aliases,
-    and that *model_output* carries the variables and *sipnet_parameters* is
-    given where parameters are read; that the result is on *observed_values*'
+    that *model_output* is a model output carrying the variables, and that
+    *sipnet_parameter_fields* are given where parameters are read; that the result is on *observed_values*'
     grid and carries ``units``; and, when *model_output* has a ``site`` dim
     or batch dims of two labels or more, that the operator is pointwise: its
     value on the stack equals, label by label, its value on the last slice of
@@ -500,7 +507,7 @@ def check_operator(
     ----------
     operator:
         The operator to check.
-    model_output, observed_values, sipnet_parameters:
+    model_output, observed_values, sipnet_parameter_fields:
         What the operator is called with, as in the contract above.
 
     Returns
@@ -512,11 +519,14 @@ def check_operator(
     ------
     TypeError
         If the operator is not callable or its declarations are not tuples of
-        strings, *model_output* is not a ``Dataset``, or the result is not a
-        ``DataArray``.
+        strings, *model_output* or *sipnet_parameter_fields* is not a
+        ``Dataset``, or the result is not a ``DataArray``.
     ValueError
         Naming the first rule broken: a declaration that names an alias; a
-        variable the model output lacks, or parameters read and not given; a
+        model output that is not one
+        (:func:`~sipnet_calibration.fields.validate_model_output`), or lacks
+        a variable read; parameters read and not given, or not SIPNET
+        parameter fields; a
         result without ``units``, off the observed values' sites or time
         labels, or with a dim that neither the model output nor the observed
         values have;
@@ -530,13 +540,17 @@ def check_operator(
     check_model_output_carries_what_is_read(
         model_output,
         output_variable_names=operator.output_variable_names,
-        sipnet_parameter_names=operator.sipnet_parameter_names,
-        sipnet_parameters=sipnet_parameters,
+        sipnet_parameter_names_read=operator.sipnet_parameter_names_read,
+        sipnet_parameter_fields=sipnet_parameter_fields,
         message_name=message_name,
     )
-    result = operator(model_output, observed_values, sipnet_parameters=sipnet_parameters)
+    result = operator(
+        model_output, observed_values, sipnet_parameter_fields=sipnet_parameter_fields
+    )
     check_result_is_on_the_observation_grid(result, observed_values, model_output, message_name)
-    check_operator_is_pointwise(operator, model_output, observed_values, sipnet_parameters, result)
+    check_operator_is_pointwise(
+        operator, model_output, observed_values, sipnet_parameter_fields, result
+    )
     return result
 
 
@@ -607,25 +621,6 @@ def _labels_of(target_field: xr.DataArray, dim: str) -> xr.DataArray | None:
     return target_field[label] if label in target_field.coords else None
 
 
-def _mapping_value(sipnet_parameters: Mapping[str, Any], name: str) -> float:
-    """One run's value of *name* from a mapping keyed by any of its names."""
-    value = None
-    for key, candidate in sipnet_parameters.items():
-        try:
-            if resolve_parameter_name(str(key)) == name:
-                value = candidate
-                break
-        except KeyError:
-            continue
-    if value is None:
-        raise ValueError(
-            f"sipnet_parameters has no entry {name!r}, which this operator reads; add it "
-            "under its flat name, an alias or SIPNET's own name."
-        )
-    check_mapping_value_is_a_number(value, name)
-    return float(value)
-
-
 def _pointwise_slices(
     model_output: xr.Dataset, observed_values: xr.DataArray
 ) -> list[tuple[str, Any, xr.DataArray]]:
@@ -681,7 +676,7 @@ def _agree_by_label(got: xr.DataArray, expected: xr.DataArray) -> bool:
 def check_operator_declares_names(operator: Any, message_name: str | None = None) -> None:
     """The operator is callable and declares pySIPNET names for what it reads.
 
-    ``output_variable_names`` and ``sipnet_parameter_names`` must each be a
+    ``output_variable_names`` and ``sipnet_parameter_names_read`` must each be a
     tuple of strings; every output variable name must be a pySIPNET registry
     name and every SIPNET parameter name pySIPNET's flat name, not an alias,
     since those are what the model output and SIPNET parameter fields carry.
@@ -710,7 +705,7 @@ def check_operator_declares_names(operator: Any, message_name: str | None = None
             f"{who} must be callable, got {type(operator).__name__}; pass an "
             "ObservationOperator such as SelectTimestep('wood_carbon')."
         )
-    for attribute in ("output_variable_names", "sipnet_parameter_names"):
+    for attribute in ("output_variable_names", "sipnet_parameter_names_read"):
         names = getattr(operator, attribute, None)
         if not isinstance(names, tuple) or not all(isinstance(n, str) for n in names):
             raise TypeError(
@@ -724,7 +719,7 @@ def check_operator_declares_names(operator: Any, message_name: str | None = None
                 f"{who} declares {name!r}, which is an alias; declare the registry name "
                 f"{registry_name!r}, which is what the model output carries."
             )
-    for name in operator.sipnet_parameter_names:
+    for name in operator.sipnet_parameter_names_read:
         flat_name = resolve_parameter_name(name)
         if flat_name != name:
             raise ValueError(
@@ -737,20 +732,25 @@ def check_model_output_carries_what_is_read(
     model_output: Any,
     *,
     output_variable_names: Sequence[str],
-    sipnet_parameter_names: Sequence[str],
-    sipnet_parameters: Any,
+    sipnet_parameter_names_read: Sequence[str],
+    sipnet_parameter_fields: Any,
     message_name: str = "the operators",
 ) -> None:
-    """The model output carries what is read, and the parameters are given if read.
+    """The model output is one and carries what is read; the parameters are given if read.
+
+    Runs :func:`~sipnet_calibration.fields.validate_model_output`,
+    :func:`check_model_output_has_the_variables`, and, when SIPNET parameters
+    are read, :func:`check_sipnet_parameter_fields_are_given` and
+    :func:`~sipnet_calibration.parameter_vector.validate_sipnet_parameter_fields`.
 
     Parameters
     ----------
     model_output:
         What the operators will be called with.
-    output_variable_names, sipnet_parameter_names:
+    output_variable_names, sipnet_parameter_names_read:
         What they read: one operator's declarations, or the union over a
         vector's.
-    sipnet_parameters:
+    sipnet_parameter_fields:
         What they will be given.
     message_name:
         What the message calls the reader.
@@ -758,33 +758,50 @@ def check_model_output_carries_what_is_read(
     Raises
     ------
     TypeError
-        If *model_output* is not an ``xr.Dataset``.
+        If *model_output* is not an ``xr.Dataset``, or SIPNET parameters are
+        read and *sipnet_parameter_fields* is not one.
     ValueError
-        If it lacks a variable that is read, or SIPNET parameters are read and
-        *sipnet_parameters* is ``None``.
+        If *model_output* is not a model output or lacks a variable that is
+        read; or if SIPNET parameters are read and *sipnet_parameter_fields*
+        is ``None`` or are not SIPNET parameter fields.
     """
-    if not isinstance(model_output, xr.Dataset):
-        raise TypeError(
-            f"model_output must be an xarray Dataset of pySIPNET variables, got "
-            f"{type(model_output).__name__}; label a run with fields.label_run."
+    validate_model_output(model_output)
+    check_model_output_has_the_variables(model_output, output_variable_names, message_name)
+    if sipnet_parameter_names_read:
+        check_sipnet_parameter_fields_are_given(
+            sipnet_parameter_fields, list(sipnet_parameter_names_read), message_name
         )
+        validate_sipnet_parameter_fields(sipnet_parameter_fields)
+
+
+def check_model_output_has_the_variables(
+    model_output: xr.Dataset, output_variable_names: Sequence[str], message_name: str
+) -> None:
+    """The model output carries every output variable that is read."""
     missing = [n for n in output_variable_names if n not in model_output.data_vars]
     if missing:
         raise ValueError(
             f"the model output lacks {missing}, which {message_name} read; it has "
             f"{list(model_output.data_vars)[:10]}. Select those variables from each run."
         )
-    if sipnet_parameter_names and sipnet_parameters is None:
+
+
+def check_sipnet_parameter_fields_are_given(
+    sipnet_parameter_fields: Any, sipnet_parameter_names: Any, message_name: str = "this operator"
+) -> None:
+    """SIPNET parameter fields are given where SIPNET parameters are read."""
+    if sipnet_parameter_fields is None:
         raise ValueError(
-            f"{message_name} read SIPNET parameters {list(sipnet_parameter_names)}; pass "
-            "sipnet_parameters=."
+            f"{message_name} read the SIPNET parameters {sipnet_parameter_names!r}; pass "
+            "sipnet_parameter_fields= (ParameterVector.sipnet_parameter_fields, or one run's "
+            "values from its SIPNETResult.parameters)."
         )
 
 
 def check_result_is_on_the_observation_grid(
     result: Any, observed_values: xr.DataArray, model_output: xr.Dataset, message_name: str
 ) -> None:
-    """An operator's result is a labeled array on the observed values' grid.
+    """An operator's result is a field on the observed values' grid.
 
     Parameters
     ----------
@@ -809,7 +826,10 @@ def check_result_is_on_the_observation_grid(
         values' sites, in order, whether ``site`` is a dimension or a scalar;
         or is not on the observed values' ``time`` labels (compared as
         instants, whatever their datetime units), or has a ``time`` dimension
-        for static observed values.
+        for static observed values; or if, laid out as a field
+        (:func:`~sipnet_calibration.fields.in_field_layout`, which leaves the
+        operator its own dim order and a scalar ``site``), it is not one
+        (:func:`~sipnet_calibration.fields.validate_field`).
     """
     if not isinstance(result, xr.DataArray):
         raise TypeError(
@@ -834,6 +854,9 @@ def check_result_is_on_the_observation_grid(
         )
     check_result_is_at_the_observed_sites(result, observed_values, message_name)
     check_result_is_on_the_observed_time_labels(result, observed_values, message_name)
+    fields.validate_field(
+        fields.in_field_layout(result), message_name=f"{message_name}: the operator's result"
+    )
 
 
 def check_result_is_at_the_observed_sites(
@@ -883,16 +906,18 @@ def check_operator_is_pointwise(
     operator: Any,
     model_output: xr.Dataset,
     observed_values: xr.DataArray,
-    sipnet_parameters: Any,
+    sipnet_parameter_fields: Any,
     result: xr.DataArray,
 ) -> None:
     """The operator on the stack equals, by label, the operator on the last slice of each dim."""
     for dim, label, slice_observed in _pointwise_slices(model_output, observed_values):
         slice_output = model_output.sel({dim: label})
-        slice_parameters = sipnet_parameters
-        if isinstance(sipnet_parameters, xr.Dataset) and dim in sipnet_parameters.dims:
-            slice_parameters = sipnet_parameters.sel({dim: label})
-        expected = operator(slice_output, slice_observed, sipnet_parameters=slice_parameters)
+        slice_parameters = sipnet_parameter_fields
+        if isinstance(sipnet_parameter_fields, xr.Dataset) and dim in sipnet_parameter_fields.dims:
+            slice_parameters = sipnet_parameter_fields.sel({dim: label})
+        expected = operator(
+            slice_output, slice_observed, sipnet_parameter_fields=slice_parameters
+        )
         # A result without the dim reduced over it, which the comparison shows.
         got = result.sel({dim: [label]}) if dim in result.dims else result
         got, expected = _on_a_dimension(got, dim, label), _on_a_dimension(expected, dim, label)
@@ -1039,11 +1064,3 @@ def check_a_stack_of_the_dim_carries_its_labels(
                 f"parameter fields' {name!r} cannot be checked against it. Stack the model output "
                 "again from its unstacked form, which keeps the labels."
             )
-
-
-def check_mapping_value_is_a_number(value: Any, name: str) -> None:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
-        raise TypeError(
-            f"sipnet_parameters[{name!r}] must be a number for one run, got "
-            f"{type(value).__name__}; pass SIPNET parameter fields for several runs."
-        )

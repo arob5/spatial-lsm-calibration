@@ -136,10 +136,13 @@ shorter records are ``NaN``-padded and the interval coordinates gain a
 ``site`` or ``sample`` dimension; select one site before aggregating such
 a stack, as :func:`~sipnet_calibration.observation.aggregate_time` asks.
 
-**Parameters an operator reads but the vector does not set** (a fixed
-SIPNET parameter, say ``leaf_carbon_per_area`` for the LAI operator) are
-taken from the model's base parameter set once, in ``__init__``, and handed
-to every run's operators beside the run's own overrides.
+**The SIPNET parameters an operator reads** (``leaf_carbon_per_area`` for
+the LAI operator) are read off the run's own ``SIPNETResult.parameters``, the
+complete set the run used, whether the parameter vector set them or the base
+parameter set supplied them: the worker builds one run's zero-dimensional
+SIPNET parameter fields from ``SIPNETParameters.dataarray(name)`` for every
+name the operators read, and hands them to its site's slice of the
+observation vector.
 
 Usage
 -----
@@ -190,7 +193,7 @@ from pyens.backends import Backend
 from pyens.xarray import fields_from_dataset
 from pysipnet.climate import ClimateDrivers
 from pysipnet.model import SIPNETModel
-from pysipnet.parameters.model import resolve_parameter_name
+from pysipnet.parameters.model import SIPNETParameters
 from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
@@ -216,6 +219,7 @@ from sipnet_calibration.observation.time_alignment import (
 from sipnet_calibration.parameter_vector import (
     ParameterVector,
     check_batch_dim_name_is_not_taken,
+    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.sites import (
     load_sites,
@@ -411,11 +415,6 @@ class ForwardModel:
             parameter_vector.sipnet_parameter_fields, batch_dim=batch_dim
         )
         self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
-        self._base_values = _base_values_for(
-            model,
-            () if observation_vector is None else observation_vector.sipnet_parameter_names,
-            self.sipnet_parameter_names,
-        )
         self._site_axis = Axis(SITE, labels=list(self.sites))
         self._site_slices, self._site_positions = _site_segments(observation_vector)
         self._partial = self._build_partial()
@@ -424,7 +423,6 @@ class ForwardModel:
             output_variable_names=self.output_variable_names,
             returns_model_output=observation_vector is None,
             freq=freq,
-            base_values=self._base_values,
             site_table=self.site_table,
         )
 
@@ -642,14 +640,15 @@ class _Run:
     run sends back its (aggregated, with ``freq``) output. Otherwise it sends
     back its site's predictions when it receives the site's slice of the
     observation vector as ``site_observation_vector``, and nothing when it
-    receives ``None``, at a site no observation source observes.
+    receives ``None``, at a site no observation source observes. The SIPNET
+    parameters the operators read are taken from the run's own
+    ``SIPNETResult.parameters``, the complete set it ran with.
     """
 
     model: SIPNETModel
     output_variable_names: tuple[str, ...]
     returns_model_output: bool
     freq: str | None
-    base_values: dict[str, float]
     site_table: pd.DataFrame
 
     def __call__(
@@ -658,10 +657,10 @@ class _Run:
         climate: ClimateDrivers,
         site: int,
         site_observation_vector: ObservationVector | None = None,
-        **sipnet_parameters: Any,
+        **sipnet_overrides: Any,
     ) -> _RunOutput:
         site = int(site)
-        sipnet_result = self.model(climate=climate, **sipnet_parameters)
+        sipnet_result = self.model(climate=climate, **sipnet_overrides)
         dataset = sipnet_result.outputs.select(list(self.output_variable_names))
         check_output_is_finite(dataset, site)
         if not self.returns_model_output and site_observation_vector is None:
@@ -671,14 +670,16 @@ class _Run:
             if self.freq is not None:
                 model_output = _aggregated(model_output, self.freq)
             return _RunOutput(model_output=model_output, predictions=None)
-        sipnet_parameter_values = {
-            **self.base_values,
-            **{name: float(value) for name, value in sipnet_parameters.items()},
-        }
-        predicted = site_observation_vector.predict(
-            model_output, sipnet_parameters=sipnet_parameter_values
+        sipnet_parameter_fields = _run_sipnet_parameter_fields(
+            sipnet_result.parameters,
+            site_observation_vector.sipnet_parameter_names_read,
+            model_output,
         )
-        return _RunOutput(model_output=None, predictions=site_observation_vector.flat(predicted))
+        predicted = site_observation_vector.predict(
+            model_output, sipnet_parameter_fields=sipnet_parameter_fields
+        )
+        predictions = np.asarray(site_observation_vector.flat(predicted), dtype=np.float64)
+        return _RunOutput(model_output=None, predictions=predictions)
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
@@ -707,16 +708,21 @@ def _chosen_site_table(
     return own if {LON, LAT} <= set(own.columns) else load_sites()
 
 
-def _base_values_for(
-    model: SIPNETModel, read: Sequence[str], set_by_vector: Sequence[str]
-) -> dict[str, float]:
-    """The base value of each SIPNET parameter an operator reads and the vector does not set."""
-    values: dict[str, float] = {}
-    for name in read:
-        sipnet_name = resolve_parameter_name(name)
-        if sipnet_name not in set_by_vector:
-            values[sipnet_name] = float(model.base_params.dataarray(sipnet_name))
-    return values
+def _run_sipnet_parameter_fields(
+    sipnet_parameters: SIPNETParameters, names: Sequence[str], model_output: xr.Dataset
+) -> xr.Dataset | None:
+    """One run's SIPNET parameter fields: *names* from its own parameters, 0-d.
+
+    Each variable is pySIPNET's ``SIPNETParameters.dataarray(name)``, labeled
+    with the run's scalar ``site`` and its ``lon``/``lat`` from
+    *model_output*; ``None`` when no parameter is read.
+    """
+    if not names:
+        return None
+    location = {name: model_output[name] for name in (SITE, LON, LAT) if name in model_output.coords}
+    return xr.Dataset(
+        {name: sipnet_parameters.dataarray(name) for name in names}, coords=location
+    )
 
 
 def _aggregated(model_output: xr.Dataset, freq: str) -> xr.Dataset:
@@ -1069,7 +1075,7 @@ def check_sipnet_parameter_fields_are_for_the_batch(
             "order; keep their site dimension as parameter_vector.sipnet_parameter_fields "
             "gives it."
         )
-    check_sipnet_parameter_fields_use_flat_names(sipnet_parameter_fields)
+    validate_sipnet_parameter_fields(sipnet_parameter_fields)
     if expected_sipnet_parameter_names is not None:
         check_sipnet_parameter_fields_set_the_parameters_built_for(
             sipnet_parameter_fields, expected_sipnet_parameter_names
@@ -1110,24 +1116,6 @@ def check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta(
             f"({dtype}); the forward model places each run in the row of theta its label "
             "names."
         )
-
-
-def check_sipnet_parameter_fields_use_flat_names(sipnet_parameter_fields: xr.Dataset) -> None:
-    for name in map(str, sipnet_parameter_fields.data_vars):
-        try:
-            sipnet_name = resolve_parameter_name(name)
-        except KeyError as error:
-            raise ValueError(
-                f"the SIPNET parameter fields set {name!r}, which is not a pySIPNET "
-                f"parameter: {error}"
-            ) from None
-        if sipnet_name != name:
-            raise ValueError(
-                f"the SIPNET parameter fields set {name!r}, an alias of pySIPNET's "
-                f"{sipnet_name!r}; "
-                "SIPNETModel takes only the flat names, so every run would fail. Rename it "
-                f"to {sipnet_name!r} in the hook."
-            )
 
 
 def check_sipnet_parameter_fields_set_the_parameters_built_for(

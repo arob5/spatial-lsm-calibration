@@ -11,7 +11,7 @@ import pytest
 import xarray as xr
 from pysipnet import niwot_reference_output
 
-from conftest import located, niwot_stack_of, site_table_of
+from conftest import as_sipnet_parameter_fields, located, niwot_stack_of, one_run_sipnet_parameter_fields, site_table_of
 from sipnet_calibration.fields import label_run
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
@@ -68,7 +68,7 @@ def soil():
 
 @pytest.fixture
 def sipnet_parameter_fields():
-    return xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"sample": [0, 1], "site": [1, 2]})
+    return as_sipnet_parameter_fields(xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"sample": [0, 1], "site": [1, 2]}))
 
 
 @pytest.fixture
@@ -156,7 +156,7 @@ class TestIndex:
 
     def test_declared_reads_are_the_union(self, vector):
         assert vector.output_variable_names == ("leaf_carbon", "wood_carbon", "soil_carbon")
-        assert vector.sipnet_parameter_names == ("leaf_carbon_per_area",)
+        assert vector.sipnet_parameter_names_read == ("leaf_carbon_per_area",)
 
     def test_y_is_a_copy(self, vector):
         y = vector.y
@@ -258,7 +258,7 @@ class TestRepresentations:
 
 class TestPredict:
     def test_a_stack_predicts_every_observation_source_in_its_units(self, vector, stack, sipnet_parameter_fields, times):
-        predicted = vector.predict(stack, sipnet_parameters=sipnet_parameter_fields)
+        predicted = vector.predict(stack, sipnet_parameter_fields=sipnet_parameter_fields)
         assert set(predicted) == set(vector.observation_source_names)
         assert predicted["landtrendr_aboveground_biomass"].attrs["units"] == "Mg ha-1"
         wood_g = select_timestep_at(stack["wood_carbon"], times)
@@ -266,7 +266,7 @@ class TestPredict:
         assert predicted["soilgrids_soil_organic_carbon"].dims == ("sample", "site")
 
     def test_flat_of_the_predictions_is_sample_by_observation(self, vector, stack, sipnet_parameter_fields):
-        batched_flat = vector.flat(vector.predict(stack, sipnet_parameters=sipnet_parameter_fields))
+        batched_flat = vector.flat(vector.predict(stack, sipnet_parameter_fields=sipnet_parameter_fields))
         assert batched_flat.shape == (2, vector.dimension)
         assert np.isfinite(batched_flat).all()
         # the second sample's pools are half the first's, and its leaf carbon per
@@ -278,7 +278,7 @@ class TestPredict:
 
     def test_one_run_predicts_a_one_site_vector(self, vector, one_run):
         sub = vector.select(sites=[1])
-        predicted = sub.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 270.0})
+        predicted = sub.predict(one_run, sipnet_parameter_fields=one_run_sipnet_parameter_fields(leaf_carbon_per_area=270.0))
         flat = sub.flat(predicted)
         assert flat.shape == (sub.dimension,)
 
@@ -286,7 +286,7 @@ class TestPredict:
         failed = stack.copy(deep=True)
         for name in VARIABLES:
             failed[name].loc[{"sample": 1, "site": 2}] = np.nan
-        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=sipnet_parameter_fields))
+        batched_flat = vector.flat(vector.predict(failed, sipnet_parameter_fields=sipnet_parameter_fields))
         assert np.isnan(batched_flat[1, vector.positions(site=2)]).all()
         assert np.isfinite(batched_flat[0]).all()
         assert np.isfinite(batched_flat[1, vector.positions(site=1)]).all()
@@ -295,9 +295,9 @@ class TestPredict:
         @dataclass(frozen=True)
         class Gappy:
             output_variable_names = ("leaf_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 out = select_timestep_at(model_output["leaf_carbon"].sel(site=observed_values["site"].values), observed_values["time"])
                 out[..., 0] = np.nan
                 out.attrs = {"units": "1"}
@@ -313,12 +313,12 @@ class TestPredict:
             vector.predict(stack)
 
     def test_a_missing_parameter_is_refused(self, vector, stack):
-        with pytest.raises(ValueError, match="pass sipnet_parameters"):
+        with pytest.raises(ValueError, match="pass sipnet_parameter_fields"):
             vector.predict(stack)
 
     def test_a_model_output_lacking_a_variable_is_refused(self, vector, stack, sipnet_parameter_fields):
         with pytest.raises(ValueError, match="lacks"):
-            vector.predict(stack.drop_vars("soil_carbon"), sipnet_parameters=sipnet_parameter_fields)
+            vector.predict(stack.drop_vars("soil_carbon"), sipnet_parameter_fields=sipnet_parameter_fields)
 
     def test_a_mapping_is_refused(self, vector, stack):
         with pytest.raises(TypeError, match="Dataset"):
@@ -381,9 +381,9 @@ class TestTwinObservations:
             attrs={"units": "m2 m-2"}, name="modis_leaf_area_index",
         ))
         vector = ObservationVector([ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=observed, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"])])
-        predicted = vector.flat(vector.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 270.0}))
+        predicted = vector.flat(vector.predict(one_run, sipnet_parameter_fields=one_run_sipnet_parameter_fields(leaf_carbon_per_area=270.0)))
         np.testing.assert_allclose(predicted, vector.y, rtol=1e-12)
-        wrong = vector.flat(vector.predict(one_run, sipnet_parameters={"leaf_carbon_per_area": 135.0}))
+        wrong = vector.flat(vector.predict(one_run, sipnet_parameter_fields=one_run_sipnet_parameter_fields(leaf_carbon_per_area=135.0)))
         np.testing.assert_allclose(wrong, 2 * vector.y, rtol=1e-12)
 
 
@@ -392,9 +392,9 @@ class TestObservationInputsAndBatchedFlatShapes:
         @dataclass(frozen=True)
         class OffGrid:
             output_variable_names = ("leaf_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 out = select_timestep_at(model_output["leaf_carbon"].sel(site=observed_values["site"].values), observed_values["time"])
                 out = out.assign_coords(time=out["time"].values + np.timedelta64(1, "h"))
                 out.attrs = {"units": "1"}
@@ -551,9 +551,9 @@ class TestObservationSourceRefusals:
         @dataclass(frozen=True)
         class Aliased:
             output_variable_names = ("plantWoodC",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 return model_output["wood_carbon"]
 
         with pytest.raises(ValueError, match="alias"):
@@ -563,9 +563,9 @@ class TestObservationSourceRefusals:
         @dataclass(frozen=True)
         class Listed:
             output_variable_names = ["wood_carbon"]
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 return model_output["wood_carbon"]
 
         with pytest.raises(TypeError, match="tuple of names"):
@@ -616,9 +616,9 @@ class TestFailedRuns:
         @dataclass(frozen=True)
         class Gappy:
             output_variable_names = ("leaf_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 leaf = restrict_to_observed_sites(model_output["leaf_carbon"], observed_values)
                 out = select_timestep_at(leaf, observed_values["time"])
                 out.loc[{"sample": 1, "site": 2, "time": out["time"].values[-1]}] = np.nan
@@ -631,7 +631,7 @@ class TestFailedRuns:
     def test_one_read_variable_missing_throughout_is_a_failed_run(self, vector, stack, sipnet_parameter_fields):
         failed = stack.copy(deep=True)
         failed["wood_carbon"].loc[{"sample": 1, "site": 2}] = np.nan  # leaf and soil carbon finite
-        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=sipnet_parameter_fields))
+        batched_flat = vector.flat(vector.predict(failed, sipnet_parameter_fields=sipnet_parameter_fields))
         wood = vector.positions(site=2, observation_source_name="landtrendr_aboveground_biomass")
         assert np.isnan(batched_flat[1, wood]).all()
         assert np.isfinite(batched_flat[0]).all()
@@ -640,7 +640,7 @@ class TestFailedRuns:
         reordered = stack.isel(site=[1, 0]).copy(deep=True)
         reordered["leaf_carbon"].loc[{"sample": 1, "site": 2}] = np.nan
         vector = ObservationVector([ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=ComputeLeafAreaIndex())])
-        batched_flat = vector.flat(vector.predict(reordered, sipnet_parameters=sipnet_parameter_fields))
+        batched_flat = vector.flat(vector.predict(reordered, sipnet_parameter_fields=sipnet_parameter_fields))
         assert np.isnan(batched_flat[1, vector.positions(site=2)]).all()
         assert np.isfinite(batched_flat[1, vector.positions(site=1)]).all()
 
@@ -650,9 +650,9 @@ class TestPredictSharesTheOperatorChecks:
         @dataclass(frozen=True)
         class Spurious:
             output_variable_names = ("leaf_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 out = select_timestep_at(model_output["leaf_carbon"], observed_values["time"])
                 out = out.drop_vars("sample").expand_dims(sample=[0, 1])
                 out.attrs = {"units": "1"}
@@ -666,9 +666,9 @@ class TestPredictSharesTheOperatorChecks:
         @dataclass(frozen=True)
         class Numpy:
             output_variable_names = ("leaf_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 return np.zeros(3)
 
         with pytest.raises(TypeError, match="not a DataArray"):
@@ -795,10 +795,10 @@ class TestPredictOverAnyBatchDim:
         """Before PR 2 a batch dim not named ``member`` crashed in predict with a
         raw xarray transpose error; it is now carried through like any other."""
         renamed = stack.rename(sample="driver_member")
-        predicted = vector.predict(renamed, sipnet_parameters=sipnet_parameter_fields.rename(sample="driver_member"))
+        predicted = vector.predict(renamed, sipnet_parameter_fields=sipnet_parameter_fields.rename(sample="driver_member"))
         assert predicted["modis_leaf_area_index"].dims == ("driver_member", "site", "time")
         batched_flat = vector.flat(predicted)
-        expected = vector.flat(vector.predict(stack, sipnet_parameters=sipnet_parameter_fields))
+        expected = vector.flat(vector.predict(stack, sipnet_parameter_fields=sipnet_parameter_fields))
         np.testing.assert_allclose(batched_flat, expected)
 
     def test_two_batch_dims_predict_and_flatten_once_stacked(self, vector, stack, sipnet_parameter_fields):
@@ -824,7 +824,7 @@ class TestPredictOverAnyBatchDim:
         for name in crossed.data_vars:
             crossed[name].attrs = stack[name].attrs
         crossed = crossed.transpose("sample", "initial_condition_member", "site", "time")
-        predicted = vector.predict(crossed, sipnet_parameters=sipnet_parameter_fields)
+        predicted = vector.predict(crossed, sipnet_parameter_fields=sipnet_parameter_fields)
         assert predicted["modis_leaf_area_index"].dims == (
             "sample", "initial_condition_member", "site", "time"
         )
@@ -855,9 +855,9 @@ class TestFailureMaskIsMatchedByLabel:
         @dataclass(frozen=True)
         class Gappy:
             output_variable_names = ("wood_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 picked = restrict_to_observed_sites(model_output["wood_carbon"], observed_values)
                 out = select_timestep_at(picked, observed_values["time"])
                 out[..., -1] = np.nan
@@ -1017,4 +1017,4 @@ class TestPredictChecksAOneSampleSIPNETParameterFieldsAgainstAStack:
         stacked = crossed.map(lambda variable: stack_batch_dims(variable, into="run"))
         three = xr.concat([sipnet_parameter_fields, sipnet_parameter_fields.isel(sample=[0]).assign_coords(sample=[3])], "sample")
         with pytest.raises(ValueError, match="for sample 3 alone"):
-            vector.predict(stacked, sipnet_parameters=three.sel(sample=3))
+            vector.predict(stacked, sipnet_parameter_fields=three.sel(sample=3))
