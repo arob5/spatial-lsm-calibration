@@ -1589,8 +1589,8 @@ source's degenerate one claimed is kept in the `source_time_*` attributes. `NaN`
 has one meaning, that no source file for the site carries the variable, uniform
 over the site's members and asserted on load. Each variable carries its spec's
 fields as attributes: `units`, `long_name`, `description`, `upstream_product`,
-`source_name`, `source_units`, `source_long_name`, `sipnet_initial_condition`
-(the `pysipnet.parameters.InitialConditions` field PEcAn fed it into),
+`source_name`, `source_units`, `source_long_name`, `sipnet_parameter_name`
+(the `pysipnet.parameters.InitialConditions` parameter PEcAn fed it into),
 `pecan_conversion`, `units_provenance` and, where set, `constituent` and
 `comment`. The dataset records the PEcAn preparation script and its caveat as
 `source_script` and `source_script_note`, the nominal date 2011-07-15 with where

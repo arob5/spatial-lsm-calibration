@@ -507,8 +507,9 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         comment=(
             "The date is the composite's label as the extraction returned it. The "
             "compositing period is 4 days; whether the label marks its first day is not "
-            "confirmed, so no time bounds are written. Many unflagged records carry a "
-            "standard deviation of exactly zero; they are written through unchanged."
+            "confirmed, so no time_bounds variable is written. Many unflagged records "
+            "carry a standard deviation of exactly zero; they are written through "
+            "unchanged."
         ),
     ),
     ConstraintSpec(

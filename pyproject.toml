@@ -20,7 +20,7 @@ dependencies = [
     # parse. The IC adapter must use decode_times=False.
     "cftime>=1.6",
     "h5netcdf>=1.3",
-    # Processed store for the (member, site, time) blocks; open_zarr().sel(site=...)
+    # Processed store for the (*batch, site, time) arrays; open_zarr().sel(site=...)
     # is the adapter, with no reshape step. dask is not optional here: chunked
     # (i.e. lazy per-site) reads are the entire reason for choosing zarr.
     "zarr>=2.17",
