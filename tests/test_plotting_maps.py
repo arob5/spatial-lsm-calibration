@@ -691,6 +691,14 @@ def test_plot_map_quantiles_refuses_a_second_batch_dim_with_advice(ensemble):
         plot_map_quantiles(_two_batch_dims(ensemble))
 
 
+def test_plot_map_quantiles_names_the_batch_dim_the_field_has(ensemble):
+    """A field on driver_member alone, with the default batch_dim, was told it
+    "also has" driver_member, as if the quantiles were taken over sample."""
+    on_members = ensemble.rename(sample="driver_member")
+    with pytest.raises(ValueError, match="'sample' is not a batch dim of the field .*'driver_member'"):
+        plot_map_quantiles(on_members)
+
+
 def test_a_shared_map_grid_checks_every_panel_first(ensemble):
     with pytest.raises(ValueError, match="'sample'.*plot_map_by"):
         plot_map_grid({"a": ensemble, "b": ensemble}, scale="shared")

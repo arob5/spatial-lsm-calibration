@@ -510,14 +510,16 @@ def plot_map_quantiles(
     TypeError
         If *dim=* is passed: the batch dim is named with *batch_dim*.
     ValueError
-        If *quantiles* is empty; if *field* has a batch dim other than
-        *batch_dim* (with advice on each); and whatever
+        If *quantiles* is empty; if *batch_dim* is not a batch dim of
+        *field*, or *field* has one other than *batch_dim* (with advice on
+        each); and whatever
         :func:`~sipnet_calibration.plotting.maps.summarize_batch` raises.
     """
     check_quantile_grid_keywords_are_not_retired(grid_kwargs)
     quantiles = [float(q) for q in quantiles]
     check_quantiles_are_given(quantiles)
     validate_field(field)
+    check_quantile_batch_dim_is_the_fields(field, batch_dim)
     check_field_has_no_other_batch_dim(field, batch_dim, "quantile maps are taken over")
     panels = {
         maps.quantile_label(q): maps.summarize_batch(field, q, batch_dim=batch_dim)
@@ -580,6 +582,21 @@ def check_field_has_no_other_batch_dim(field: xr.DataArray, dim: str, what: str)
         raise ValueError(
             f"{what} {dim}, but the field also has the batch dim(s) {others}, so a panel "
             "would not be one map; " + "; ".join(maps.batch_dim_advice(field, others))
+        )
+
+
+def check_quantile_batch_dim_is_the_fields(field: xr.DataArray, batch_dim: str) -> None:
+    """The batch dim quantile maps are taken over is one of *field*'s."""
+    have = list(batch_dims(field))
+    if batch_dim not in have:
+        advice = (
+            f"pass batch_dim= naming one of {have}"
+            if have
+            else "a field without one is one map already; draw it with maps.plot_map(field)"
+        )
+        raise ValueError(
+            f"quantile maps are taken over batch_dim={batch_dim!r}, and {batch_dim!r} is not "
+            f"a batch dim of the field (its batch dims are {have}); {advice}."
         )
 
 
