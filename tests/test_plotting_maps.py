@@ -710,6 +710,21 @@ def test_animating_a_batch_dim_of_a_field_with_time_is_refused(ensemble):
         animate_map(moving, "sample")
 
 
+def test_animating_a_zero_length_dim_is_refused_in_the_modules_words(dense):
+    """It raised a raw IndexError from the first of no frames."""
+    with pytest.raises(ValueError, match="no 'time' steps to play"):
+        animate_map(frames(dense).isel(time=slice(0, 0)))
+
+
+def test_animate_map_checks_a_frame_is_a_map_before_its_scale_is_read():
+    """Without the check before the scale, a field with no spatial dim reached
+    map_bounds and failed with xarray's own error about lat and lon."""
+    from conftest import make_field
+
+    with pytest.raises(ValueError, match="a map needs a 'site' dimension"):
+        animate_map(make_field(("time",), n_time=3))
+
+
 def pd_dates(n):
     import pandas as pd
 

@@ -542,16 +542,18 @@ def animate_map(
     ValueError
         If *field* is not a field
         (:func:`sipnet_calibration.fields.validate_field`); if it has no
-        *dim*, or a batch dim other than *dim*; or if a single step of it is
-        not a map (:func:`check_field_is_a_map`), checked before any frame is
-        drawn.
+        *dim*, a *dim* of length zero, or a batch dim other than *dim*; or
+        if a single step of it is not a map (:func:`check_field_is_a_map`),
+        checked before any frame is drawn.
     """
     validate_field(field)
     check_animation_dim_is_present(field, dim)
+    check_animation_has_frames(field, dim)
     check_animation_has_no_batch_dim(field, dim)
     frames = [field.isel({dim: i}) for i in range(field.sizes[dim])]
-    # Every frame has the first's dims, so checking it checks them all, before
-    # the shared scale reads their values.
+    # Every frame has the first's dims, so checking it checks them all. It has
+    # to come before the shared scale and frame read their values, which
+    # fail in xarray's words on a frame that is not a map.
     check_field_is_a_map(frames[0])
     color, rest = _split_color_keywords(map_kwargs)
     bounds = map_bounds(frames, rest.pop("extent", None))
@@ -1105,6 +1107,15 @@ def check_animation_dim_is_present(field: xr.DataArray, dim: str) -> None:
         raise ValueError(
             f"animate_map needs a DataArray with a {dim!r} dimension; got "
             f"{list(field.dims)}. Pass dim= naming one of them, such as 'time'."
+        )
+
+
+def check_animation_has_frames(field: xr.DataArray, dim: str) -> None:
+    """The dim the animation is played through has at least one step."""
+    if field.sizes[dim] == 0:
+        raise ValueError(
+            f"animate_map has no {dim!r} steps to play: the field's {dim!r} has length 0. "
+            "Select a non-empty range of it."
         )
 
 
