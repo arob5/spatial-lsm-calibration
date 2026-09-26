@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import numpy as np
@@ -21,14 +22,16 @@ from pysipnet.runner import SIPNETRunner
 
 from conftest import (
     BLOW_UP,
-    located,
+    DIES_BAND,
     INVALID,
     NAN_BAND,
     SOIL_REFERENCE,
     TIMEOUT_BAND,
-    ScaledNiwot,
+    ScaledNiwotRunner,
+    located,
     scaled_niwot_model,
     site_table_of,
+    with_parameter_value,
 )
 from sipnet_calibration.compute import scc_backend
 from sipnet_calibration.forward import ForwardEvaluation, ForwardModel
@@ -63,13 +66,43 @@ class Foreign:
             super().__init__(detail)
 
 
-class ForeignNiwot(ScaledNiwot):
+class ForeignNiwotRunner(ScaledNiwotRunner):
     """The stand-in, with the machinery failure raised as :class:`Foreign.TimeoutExpired`."""
 
-    def __call__(self, *, climate=None, events=None, **overrides):
-        if INVALID < float(overrides["max_photosynthesis_rate"]) < 0:
+    def run(self, parameters, climate, *, events=None, **keywords):
+        if float(parameters.dataarray("max_photosynthesis_rate")) > DIES_BAND:
             raise Foreign.TimeoutExpired(detail="the node died")
-        return super().__call__(climate=climate, events=events, **overrides)
+        return super().run(parameters, climate, events=events, **keywords)
+
+
+#: What :class:`OwnLeafCarbonRunner` multiplies the run's leaf_carbon_per_area by.
+OWN_LEAF_CARBON_FACTOR = 2.0
+
+
+class OwnLeafCarbonRunner(ScaledNiwotRunner):
+    """The stand-in, whose run used another leaf_carbon_per_area than it was given.
+
+    So the run's own ``SIPNETResult.parameters`` differ from the base set with
+    the overrides applied, and an operator reading the base set would be
+    caught.
+    """
+
+    def run(self, parameters, climate, *, events=None, **keywords):
+        result = super().run(parameters, climate, events=events, **keywords)
+        leaf = float(parameters.dataarray("leaf_carbon_per_area"))
+        return SimpleNamespace(
+            outputs=result.outputs,
+            parameters=with_parameter_value(
+                parameters, "leaf_carbon_per_area", OWN_LEAF_CARBON_FACTOR * leaf
+            ),
+        )
+
+
+class NoParametersRunner(ScaledNiwotRunner):
+    """The stand-in, whose result carries no parameters."""
+
+    def run(self, parameters, climate, *, events=None, **keywords):
+        return SimpleNamespace(outputs=super().run(parameters, climate).outputs)
 
 
 @dataclass(frozen=True)
@@ -263,6 +296,64 @@ class TestEvaluate:
         np.testing.assert_allclose(
             lai.sel(sample=0, site=1).values[observed], expected[observed], rtol=1e-12
         )
+
+    def test_the_operators_read_the_runs_own_parameters_not_the_base_set(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """A stand-in whose run used another leaf_carbon_per_area than base plus overrides."""
+        forward = ForwardModel(
+            scaled_niwot_model(OwnLeafCarbonRunner), parameter_vector, climate=climate,
+            backend=SequentialBackend(), observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        lai = observation_vector.fields(forward(theta))["modis_leaf_area_index"]
+        leaf = select_timestep_at(REFERENCE.select(["leaf_carbon"])["leaf_carbon"], LABELS).values
+        base = float(forward.model.base_params.dataarray("leaf_carbon_per_area"))
+        expected = leaf / (OWN_LEAF_CARBON_FACTOR * base)
+        observed = observation_vector["modis_leaf_area_index"].observed_values.sel(site=1).notnull().values
+        np.testing.assert_allclose(
+            lai.sel(sample=0, site=1).values[observed], expected[observed], rtol=1e-12
+        )
+
+    def test_a_read_parameter_the_base_set_leaves_unset_is_refused_when_built(
+        self, parameter_vector, climate
+    ):
+        """It was refused only after every run of the batch had run."""
+
+        @dataclass(frozen=True)
+        class ReadsLeafWater:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names_read = ("leaf_water_pool_depth",)
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
+                return select_timestep_at(
+                    restrict_to_observed_sites(model_output["wood_carbon"], observed_values),
+                    observed_values["time"],
+                )
+
+        wood = located(xr.DataArray(
+            [[100.0, 110.0, 120.0]], dims=("site", "time"),
+            coords={"site": [1], "time": LABELS}, attrs={"units": "g m-2", "constituent": "C"},
+        ), site_table=SITE_TABLE)
+        vector = ObservationVector(observation_sources=[
+            ObservationSource(observation_source_name="wood", observed_values=wood, operator=ReadsLeafWater())
+        ])
+        with pytest.raises(ValueError, match="'leaf_water_pool_depth'.*leaves unset"):
+            ForwardModel(
+                scaled_niwot_model(), parameter_vector, climate=climate,
+                backend=SequentialBackend(), observation_vector=vector, site_table=SITE_TABLE,
+            )
+
+    def test_a_result_without_parameters_is_named_at_the_first_run(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        forward = ForwardModel(
+            scaled_niwot_model(NoParametersRunner), parameter_vector, climate=climate,
+            backend=SequentialBackend(), observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        with pytest.raises(RuntimeError, match="carries no SIPNETParameters as .parameters"):
+            forward.evaluate(theta[:1])
 
     def test_an_observation_vector_over_fewer_sites_than_are_run(
         self, parameter_vector, climate, observation_vector, theta
@@ -472,7 +563,7 @@ class TestFailures:
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._forward_with(
-            parameter_vector, climate, observation_vector, {(2, 1): -1.0, (0, 0): 1.5 * BLOW_UP}
+            parameter_vector, climate, observation_vector, {(2, 1): 1.5 * DIES_BAND, (0, 0): 1.5 * BLOW_UP}
         )
         with pytest.raises(RuntimeError, match="machinery") as raised:
             forward.evaluate(theta)
@@ -549,7 +640,7 @@ class TestFailures:
             parameter_vector,
             files,
             observation_vector,
-            {(0, 1): -1.0},
+            {(0, 1): 1.5 * DIES_BAND},
             backend=LocalBackend(n_workers=1),
         )
         with pytest.raises(RuntimeError, match="machinery"):
@@ -560,13 +651,13 @@ class TestFailures:
     ):
         """PyEns names it in full, which is not subprocess.TimeoutExpired."""
         forward = ForwardModel(
-            scaled_niwot_model(ForeignNiwot),
+            scaled_niwot_model(ForeignNiwotRunner),
             parameter_vector,
             climate=files,
             backend=LocalBackend(n_workers=1),
             observation_vector=observation_vector,
             site_table=SITE_TABLE,
-            to_sipnet_parameter_fields=_hooked(parameter_vector, {(0, 1): -1.0}),
+            to_sipnet_parameter_fields=_hooked(parameter_vector, {(0, 1): 1.5 * DIES_BAND}),
         )
         with pytest.raises(RuntimeError, match="machinery") as raised:
             forward.evaluate(theta[:1])
@@ -1365,7 +1456,7 @@ class TestTheBatchDimIsNamedOnce:
                 "sample", "initial_condition_member", "site"
             )
 
-        with pytest.raises(ValueError, match="one row per combination"):
+        with pytest.raises(ValueError, match=r"one row per combination.*stack_batch_dims"):
             ForwardModel(
                 scaled_niwot_model(),
                 parameter_vector,

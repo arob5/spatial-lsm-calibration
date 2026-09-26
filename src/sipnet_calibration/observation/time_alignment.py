@@ -110,6 +110,7 @@ from pysipnet.variables import (
 )
 
 from sipnet_calibration.conventions import (
+    SIPNET_ROW_LABEL_NAMES,
     TIME,
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -654,6 +655,10 @@ def _resampled_by_pysipnet(
         # not resolve.
         field = field.assign_attrs(kind=kind.value)
     result = resample(field, freq, how=method)
+    # pySIPNET's resample writes SIPNET's row labels onto its result; a field
+    # that did not carry them does not gain them (fields' model output).
+    added = [n for n in SIPNET_ROW_LABEL_NAMES if n in result.coords and n not in field.coords]
+    result = result.drop_vars(added)
     if method == "last":
         gaps = _steps_per_cell(field, field.isnull(), freq)
         result = result.where(xr.DataArray(gaps.values == 0, dims=gaps.dims))

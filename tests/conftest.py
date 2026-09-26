@@ -18,7 +18,7 @@ out), a stack of Niwot runs (:func:`niwot_stack_of`), observed values that are
 dated, static or attributed to windows (:func:`dated_observed_values`,
 :func:`static_observed_values`, :func:`windowed_observed_values`), each a
 field whose sites :func:`located` gives ``lon``/``lat``, and a stand-in SIPNET
-model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
+model (:func:`scaled_niwot_model`, a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script` imports a script, and
 every figure a test makes is closed after it (:func:`close_figures`).
 
 The real-data fixtures read the driver files, the site table and the
@@ -54,9 +54,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 import xarray as xr  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
 from pysipnet.model import SIPNETModel  # noqa: E402
-from pysipnet.runner import SIPNETRunError  # noqa: E402
+from pysipnet.runner import SIPNETRunError, SIPNETRunner  # noqa: E402
 
 from sipnet_calibration import conventions  # noqa: E402
 
@@ -744,45 +743,41 @@ def _observed_values_attributes(units: str, constituent: str) -> dict[str, str]:
 
 # ── a stand-in SIPNET model ───────────────────────────────────────────────────
 
-#: The ``soil_carbon`` at which :class:`ScaledNiwot` leaves wood carbon as the
-#: Niwot output has it.
+#: The ``soil_carbon`` at which :class:`ScaledNiwotRunner` leaves wood carbon
+#: as the Niwot output has it.
 SOIL_REFERENCE = 1.0e4
 
-#: :class:`ScaledNiwot` "fails at its parameters" past this rate, writes NaN
-#: in a band above it, times out in a band above that, has its parameters
-#: refused by pydantic at or below :data:`INVALID`, and "fails in the
-#: machinery" between :data:`INVALID` and zero.
+#: :class:`ScaledNiwotRunner` "fails at its parameters" past this rate, writes
+#: NaN in a band above it, times out in a band above that, and "fails in the
+#: machinery" above :data:`DIES_BAND`. A rate at or below zero, such as
+#: :data:`INVALID`, is refused by pySIPNET's own validation before the run.
 BLOW_UP = 1e6
 NAN_BAND = 2e6
 TIMEOUT_BAND = 3e6
+DIES_BAND = 1e7
 INVALID = -BLOW_UP
 
 
-class _PositiveRate(BaseModel):
-    """Stands in for pySIPNET's validation of a parameter's domain."""
-
-    rate: float = Field(gt=0)
-
-
-class ScaledNiwot(SIPNETModel):
-    """A SIPNETModel whose run is the Niwot output scaled by two parameters.
+class ScaledNiwotRunner(SIPNETRunner):
+    """A SIPNET runner whose run is the Niwot output scaled by two parameters.
 
     ``wood_carbon`` is multiplied by ``max_photosynthesis_rate / 10`` (which
     the example vector shares across sites) and by ``soil_carbon /
     SOIL_REFERENCE`` (which it varies by site), so which parameter values
     reached which run can be read off the result, site by site. The run is as
     long as its drivers, so which drivers reached which run shows too. The
-    rate also selects a failure, by the bands of :data:`BLOW_UP`. Defined at
-    module level so PyEns can pickle it.
+    rate also selects a failure, by the bands of :data:`BLOW_UP`. It runs
+    under a real ``SIPNETModel``, which applies and validates the overrides
+    and hands the complete parameter set to :meth:`run`, whose result carries
+    it as ``parameters``, as a real ``SIPNETResult`` does. Defined at module
+    level so PyEns can pickle it.
     """
 
-    def __call__(self, *, climate=None, events=None, **overrides):
+    def run(self, parameters, climate, *, events=None, **keywords):
         from pysipnet.output import SIPNETOutput
 
-        rate = float(overrides["max_photosynthesis_rate"])
-        if rate <= INVALID:
-            _PositiveRate(rate=rate)
-        if rate < 0:
+        rate = float(parameters.dataarray("max_photosynthesis_rate"))
+        if rate > DIES_BAND:
             raise RuntimeError("the node died")
         if rate > TIMEOUT_BAND:
             raise subprocess.TimeoutExpired(cmd="sipnet", timeout=0.001)
@@ -792,37 +787,35 @@ class ScaledNiwot(SIPNETModel):
             )
         n = climate.n_timesteps
         frame = niwot_reference().pandas.iloc[:n].copy()
-        frame["wood_carbon"] = (
-            frame["wood_carbon"]
-            * (rate / 10.0)
-            * (float(overrides["soil_carbon"]) / SOIL_REFERENCE)
-        )
+        soil = float(parameters.dataarray("soil_carbon"))
+        frame["wood_carbon"] = frame["wood_carbon"] * (rate / 10.0) * (soil / SOIL_REFERENCE)
         if rate > NAN_BAND:
             frame.loc[frame.index[-5:], "wood_carbon"] = np.nan
         return SimpleNamespace(
             outputs=SIPNETOutput.from_dataframe(frame, climate=climate),
-            parameters=_parameters_with(self.base_params, overrides),
+            parameters=parameters,
         )
 
 
-def _parameters_with(base_params, overrides):
-    """The run's complete ``SIPNETParameters``: *base_params* with *overrides* applied.
-
-    What ``SIPNETModel`` itself runs with, built by pySIPNET's own (private)
-    ``_apply_overrides``, so the stand-in's result carries ``parameters`` as a
-    real ``SIPNETResult`` does.
-    """
-    from pysipnet.model import _apply_overrides
-
-    return _apply_overrides(base_params, dict(overrides))
-
-
-def scaled_niwot_model(model_class: type[ScaledNiwot] = ScaledNiwot) -> ScaledNiwot:
-    """*model_class* over the Niwot parameters, on a runner that needs no binary."""
+def scaled_niwot_model(runner_class: type[SIPNETRunner] = ScaledNiwotRunner) -> SIPNETModel:
+    """A real ``SIPNETModel`` over the Niwot parameters, on a *runner_class* that needs no binary."""
     from pysipnet.parameters.model import ModelFlags
-    from pysipnet.runner import SIPNETRunner
 
-    return model_class(
-        SIPNETRunner(flags=ModelFlags.standard(), verify_binary=False),
+    return SIPNETModel(
+        runner_class(flags=ModelFlags.standard(), verify_binary=False),
         base_params=niwot_parameters(),
     )
+
+
+def with_parameter_value(sipnet_parameters, name: str, value: float):
+    """*sipnet_parameters* with SIPNET parameter *name* set to *value*, validated again.
+
+    Through pydantic's public ``model_dump`` and ``model_validate``, with the
+    parameter's group read off ``PARAMETER_SPECS``.
+    """
+    from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
+
+    group = next(path.split(".", 1)[0] for path in PARAMETER_SPECS if path.split(".", 1)[1] == name)
+    values = sipnet_parameters.model_dump()
+    values[group][name] = value
+    return SIPNETParameters.model_validate(values)

@@ -2267,3 +2267,26 @@ class TestNothingReadFromAVectorChangesIt:
         with pytest.raises(TypeError):
             forward.parameter_vector.layout.sizes["photosynthesis"] = 5
         assert forward.input_dimension == dimension
+
+
+@pytest.mark.parametrize("located", [False, True])
+def test_an_empty_batch_is_the_same_on_every_path(located):
+    """Only sipnet_parameter_fields(Fields) refused J = 0, through a partial label check."""
+    vector = (
+        example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
+        if located
+        else example_parameter_vector(sites=SITES, pft=PFT)
+    )
+    empty = np.zeros((0, vector.dimension))
+    assert dict(vector.sipnet_parameter_fields(empty).sizes) == {"sample": 0, "site": 3}
+    assert vector.flat(vector.fields(empty)).shape == (0, vector.dimension)
+    assert dict(vector.sipnet_parameter_fields(vector.fields(empty)).sizes) == {
+        "sample": 0, "site": 3,
+    }
+
+
+def test_sipnet_parameter_fields_refuse_fields_whose_batch_dim_is_a_sipnet_parameter(example, theta):
+    """xarray's 'found in both data_vars and coords' surfaced instead."""
+    fields = example.fields(theta).rename(sample="soil_carbon")
+    with pytest.raises(ValueError, match="batch_dim='soil_carbon' is a SIPNET parameter name"):
+        example.sipnet_parameter_fields(fields)

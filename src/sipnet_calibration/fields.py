@@ -1071,8 +1071,9 @@ def stack_model_outputs(
     output_variable_names: Sequence[str] | None = None,
     key_dims: Sequence[str] = (SAMPLE, SITE),
     site_table: pd.DataFrame | None = None,
-) -> ModelOutput:
-    """Many runs' outputs, keyed by their labels, as one model output.
+) -> xr.Dataset:
+    """Many runs' outputs, keyed by their labels, as one Dataset: a model output
+    when the runs share one time axis.
 
     Parameters
     ----------
@@ -1099,7 +1100,7 @@ def stack_model_outputs(
 
     Returns
     -------
-    ModelOutput
+    xarray.Dataset
         The runs' variables on ``(*batch, site, time)``, the batch dims in
         *key_dims* order, ascending in each batch dim (``int64``, with the
         attributes :func:`batch_coordinate` gives its name) and in
@@ -1130,9 +1131,10 @@ def stack_model_outputs(
         not fit ``int64``; if a run has no timesteps; if a run's own label
         disagrees with its key, or it carries a batch label *key_dims* does
         not name; if two runs carry different variables, or
-        describe one with different ``units``, ``constituent`` or ``kind``; or
+        describe one with different ``units``, ``constituent`` or ``kind``;
         if the site table lists a site twice or has no ``lon`` and ``lat``
-        columns.
+        columns; or if the runs share one time axis and the result is not a
+        model output.
     KeyError
         If a variable or a site identifier is unknown.
 
@@ -1142,10 +1144,10 @@ def stack_model_outputs(
     covering a shorter record is ``NaN`` outside it. Where every run shares one
     axis -- the usual case, one driver period across the site pool --
     ``time_step_start`` and ``time_step_length`` stay one-dimensional on
-    ``time`` and the result is a model output; where they do not, xarray
-    gives them the dimensions over which they differ, and the result is not
-    one until one site is selected. The result is therefore not checked with
-    :func:`validate_model_output` here.
+    ``time`` and the result is a model output, checked with
+    :func:`validate_model_output`; where they do not, xarray gives them the
+    dimensions over which they differ, and the result is not one until one
+    site is selected.
 
     Each run is read and reduced to the variables asked for before the next is
     touched, so what is held is one column per run and variable, never a run's
@@ -1178,7 +1180,10 @@ def stack_model_outputs(
     # would otherwise keep them scalar and break the convention. They are
     # looked up for the stack's own sites, in its order, since they assign
     # by position.
-    return stacked.assign_coords(site_locations(stacked[SITE].values.tolist(), table))
+    stacked = stacked.assign_coords(site_locations(stacked[SITE].values.tolist(), table))
+    if all(stacked[name].dims == (TIME,) for name in _INTERVAL_COORD_NAMES if name in stacked.coords):
+        validate_model_output(stacked)
+    return stacked
 
 
 def resolve_output_variable_names(output_variable_names: Iterable[str]) -> list[str]:

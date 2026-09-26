@@ -2102,8 +2102,8 @@ class ParameterVector:
         ValueError
             If Flat is given and *batch_dim* is a name :meth:`fields`
             refuses; if Flat is not ``(D,)`` or ``(J, D)``; and for Fields,
-            whatever :meth:`flat` refuses, and batch labels that are not
-            distinct integers.
+            whatever :meth:`flat` refuses, and a batch dim named as
+            :meth:`fields` refuses a *batch_dim*.
 
         Notes
         -----
@@ -3084,8 +3084,8 @@ def _batch_labels(n_samples: int) -> np.ndarray:
 
 
 def _as_batch_labels(values: Any) -> np.ndarray:
-    """Batch labels carried from Fields, as ``int64``."""
-    check_batch_labels_are_distinct_integers(values)
+    """Batch labels carried from Fields, which their validation found distinct
+    integers, as ``int64``."""
     return np.asarray(values).astype(BATCH_LABEL_DTYPE)
 
 
@@ -3851,17 +3851,6 @@ def check_natural_values_are_in_the_support(
             "of its bijector: a value outside its prior's support (a negative rate, a "
             "fraction at or beyond 0 or 1) or simplex components that do not sum to 1. No "
             "Flat vector maps to them."
-        )
-
-
-def check_batch_labels_are_distinct_integers(values: Any) -> None:
-    """Fields' batch labels are distinct integers."""
-    labels = np.asarray(values)
-    integral = labels.ndim == 1 and np.issubdtype(labels.dtype, np.integer)
-    if not (integral and labels.size > 0 and len(set(labels.tolist())) == labels.size):
-        raise ValueError(
-            "Fields batch labels must be distinct integers; got "
-            f"{labels.tolist()[:10]} ({labels.dtype})."
         )
 
 

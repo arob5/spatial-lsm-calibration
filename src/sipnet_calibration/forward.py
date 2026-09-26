@@ -387,9 +387,10 @@ class ForwardModel:
         observation vector observes a site the parameter vector does not run;
         the output variables do not cover the operators, or one is switched off
         by the model's flags, or (with *freq*) has a kind no method keeps; the
-        site table lacks ``lon``/``lat`` or lists a site twice; or
+        site table lacks ``lon``/``lat`` or lists a site twice;
         *to_sipnet_parameter_fields* does not return SIPNET parameter fields
-        for the batch.
+        for the batch; or an operator reads a SIPNET parameter that neither the
+        SIPNET parameter fields write nor the model's base parameter set holds.
     KeyError
         If an output variable name is not a pySIPNET output variable, a site
         of the parameter vector is not in the given site table, or
@@ -451,6 +452,12 @@ class ForwardModel:
             parameter_vector.sipnet_parameter_fields, batch_dim=batch_dim
         )
         self._sipnet_parameter_names_written = self._probe_sipnet_parameter_names()
+        if observation_vector is not None:
+            check_base_parameters_set_what_the_operators_read(
+                model,
+                observation_vector.sipnet_parameter_names_read,
+                self._sipnet_parameter_names_written,
+            )
         self._site_axis = Axis(SITE, labels=list(self._sites))
         self._site_slices, self._site_positions = _site_segments(observation_vector)
         self._partial = self._build_partial()
@@ -772,7 +779,7 @@ class _Run:
                 model_output = _aggregated(model_output, self.freq)
             return _RunOutput(model_output=model_output, predictions=None)
         sipnet_parameter_fields = _run_sipnet_parameter_fields(
-            sipnet_result.parameters,
+            getattr(sipnet_result, "parameters", None),
             site_observation_vector.sipnet_parameter_names_read,
             model_output,
         )
@@ -820,6 +827,7 @@ def _run_sipnet_parameter_fields(
     """
     if not names:
         return None
+    check_run_result_carries_its_parameters(sipnet_parameters)
     location = {name: model_output[name] for name in (SITE, LON, LAT) if name in model_output.coords}
     return xr.Dataset(
         {name: sipnet_parameters.dataarray(name) for name in names}, coords=location
@@ -1013,6 +1021,36 @@ def check_forward_model_arguments(
         check_observation_sites_are_run(observation_vector, sites)
 
 
+def check_base_parameters_set_what_the_operators_read(
+    model: SIPNETModel, read: Sequence[str], written: Sequence[str]
+) -> None:
+    """The base parameter set holds a value for every SIPNET parameter the
+    operators read and the SIPNET parameter fields do not write."""
+    for name in read:
+        if name in written:
+            continue
+        try:
+            model.base_params.dataarray(name)
+        except ValueError as error:
+            raise ValueError(
+                f"the observation operators read {name!r}, which the parameter vector does "
+                f"not write and the model's base parameter set leaves unset ({error}); every "
+                "run would fail after SIPNET ran. Set it in the base parameter set, or have "
+                "the parameter vector fix or calibrate it."
+            ) from None
+
+
+def check_run_result_carries_its_parameters(sipnet_parameters: Any) -> None:
+    """A run's result carries the parameters it ran with, as ``SIPNETResult.parameters``."""
+    if not isinstance(sipnet_parameters, SIPNETParameters):
+        raise TypeError(
+            "the model's result carries no SIPNETParameters as .parameters, got "
+            f"{type(sipnet_parameters).__name__}; the operators read SIPNET parameters "
+            "from the run's own result, so use a SIPNETModel whose runner returns a "
+            "SIPNETResult."
+        )
+
+
 def check_theta_has_a_row(theta: np.ndarray) -> None:
     """``theta`` holds at least one row, since an evaluation of none runs nothing."""
     if theta.shape[0] == 0:
@@ -1201,7 +1239,9 @@ def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(
             f"is one row of theta, so a batch crossed with a data source's ensemble (a "
             "sample and an initial_condition_member, say) is run by giving theta one row "
             "per combination, each sample's row repeated once per member, and selecting "
-            "each row's member in the hook."
+            "each row's member in the hook. (fields.stack_batch_dims(field, into='run') is "
+            "how such crossed fields reach a vector's Flat; a run still needs one row of "
+            "theta, which the hook maps to its own SIPNET parameters.)"
         )
     for name, variable in sipnet_parameter_fields.data_vars.items():
         if set(variable.dims) != {batch_dim, SITE}:

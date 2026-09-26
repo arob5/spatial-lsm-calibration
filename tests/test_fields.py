@@ -837,6 +837,16 @@ class TestValidateModelOutput:
             validate_model_output(run)
 
 
+    def test_a_stack_on_one_time_axis_is_checked_as_a_model_output(self, niwot_output, runs):
+        """stack_model_outputs returned a stack without checking it."""
+        unitless = {}
+        for key, run in runs.items():
+            dataset = run.select(["net_ecosystem_exchange"])
+            del dataset["net_ecosystem_exchange"].attrs["units"]
+            unitless[key] = dataset
+        with pytest.raises(ValueError, match="of the model output"):
+            stack_model_outputs(unitless, site_table=self._table())
+
     @pytest.mark.parametrize("carried", ["time_bounds", "row_labels", "bounds_attribute"])
     def test_what_labeling_drops_is_refused(self, niwot_output, carried):
         """time_bounds, the bounds attribute and SIPNET's row labels passed as a model output."""

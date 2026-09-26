@@ -405,6 +405,13 @@ class TestAggregatedTimeCoordinateDescribesItself:
         assert daily["time"].attrs["time_zone"] == tair["time"].attrs["time_zone"]
         assert "bounds" not in daily["time"].attrs
 
+    def test_aggregated_model_output_gains_no_row_labels(self, niwot_output):
+        """pySIPNET's resample wrote year/day_of_year/hour_of_day back, without attributes."""
+        field = label_run(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        assert not {"year", "day_of_year", "hour_of_day"} & set(field.coords)
+        daily = aggregate_time(field, "1D")
+        assert not {"year", "day_of_year", "hour_of_day"} & set(daily.coords)
+
     def test_the_dropped_set_is_the_documented_one(self):
         """A change detector: it is checked against a real source above."""
         assert set(STALE_TIME_ATTRIBUTE_NAMES) == {"bounds"}
