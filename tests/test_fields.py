@@ -500,6 +500,20 @@ class TestStackModelOutputsRefusesRunsThatDisagree:
         assert stacked["lon"].values.tolist() == [-104.0, -78.0]
         np.testing.assert_allclose(stacked["wood_carbon"].sel(member=0, site=27).values, 2 * run["wood_carbon"].values)
 
+    def test_each_site_carries_its_own_location_whatever_the_pairs(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs
+
+        run = niwot_output.select(["wood_carbon"])
+        table = _small_table(1, 27, 500)
+        for keys in (
+            [(500, 0), (27, 1), (1, 1)],
+            [(27, 1), (1, 0), (500, 2)],
+            [(500, 0), (1, 1)],
+        ):
+            stacked = stack_model_outputs({key: run for key in keys}, site_table=table)
+            expected = site_lookup(table).loc[stacked["site"].values, "lon"].to_numpy()
+            np.testing.assert_array_equal(stacked["lon"].values, expected)
+
     def test_a_run_labeled_with_several_sites_is_refused(self, niwot_output):
         from sipnet_calibration.fields import stack_model_outputs
 

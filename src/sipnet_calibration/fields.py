@@ -244,6 +244,7 @@ from sipnet_calibration.conventions import (
     TIME_COORD_NAMES,
 )
 from sipnet_calibration.sites import (
+    check_site_table_locates_the_sites,
     load_sites,
     site_coordinates,
     site_locations,
@@ -528,9 +529,8 @@ def stack_model_outputs(
     check_is_a_nonempty_mapping(model_outputs, "model_outputs")
     by_key = _checked_model_outputs(model_outputs)
     table = site_table if site_table is not None else load_sites()
-    # Located before stacking, so a site the table lacks fails before the work;
-    # the stack's sites are ascending, as these are.
-    locations = site_locations(sorted({site_id for site_id, _ in by_key}), table)
+    # Checked before stacking, so a site the table lacks fails before the work.
+    check_site_table_locates_the_sites(table, sorted({site_id for site_id, _ in by_key}))
     by_member: dict[int, list[xr.Dataset]] = {}
     for (site_id, member_id), dataset in by_key.items():
         labeled = _labeled_for_stacking(dataset, site_id, member_id)
@@ -540,8 +540,10 @@ def stack_model_outputs(
     # lon/lat are assigned after stacking rather than left to xarray.concat,
     # which promotes a scalar coordinate to the concatenated dimension only
     # when the values it is given differ, so a one-site or one-member stack
-    # would otherwise keep them scalar and break the convention.
-    return stacked.assign_coords(locations)
+    # would otherwise keep them scalar and break the convention. They are
+    # looked up for the stack's own sites, in its order, since they assign
+    # by position.
+    return stacked.assign_coords(site_locations(stacked[SITE].values.tolist(), table))
 
 
 def resolve_output_variable_names(output_variable_names: Iterable[str]) -> list[str]:
