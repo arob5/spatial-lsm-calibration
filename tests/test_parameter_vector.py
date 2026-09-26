@@ -300,7 +300,7 @@ def rate(name="r", parameter="wood_turnover_rate", **kwargs):
 
 
 def test_parameter_vector_refuses_duplicate_names_and_writers():
-    with pytest.raises(ValueError, match="names repeat"):
+    with pytest.raises(ValueError, match="parameters names .* more than once"):
         build((rate(), rate()))
     with pytest.raises(ValueError, match="set more than once"):
         build((rate("a"), rate("b")))
@@ -2306,3 +2306,13 @@ class TestWrongArgumentsInTheModulesWords:
     def test_an_unknown_site_labels_name(self, example):
         with pytest.raises(KeyError, match="no site labels 'nope'"):
             example.group_labels("nope")
+
+
+def test_the_site_coordinate_carries_the_site_attributes(example, theta):
+    """PV built its site coordinate by hand, without SITE_ATTRIBUTES, unlike OV."""
+    from sipnet_calibration.conventions import SITE_ATTRIBUTES
+
+    located = example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
+    for vector in (example, located):
+        assert vector.fields(theta)["site"].attrs == dict(SITE_ATTRIBUTES)
+        assert vector.sipnet_parameter_fields(theta)["site"].attrs == dict(SITE_ATTRIBUTES)

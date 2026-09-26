@@ -167,7 +167,7 @@ class TestIndex:
         assert vector.y[0] == 3.0
 
     def test_refuses_duplicate_observation_sources(self, lai):
-        with pytest.raises(ValueError, match="unique"):
+        with pytest.raises(ValueError, match="observation_sources names .* more than once"):
             ObservationVector(observation_sources=[ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))] * 2)
 
     def test_refuses_an_observation_source_with_no_observations(self, lai):

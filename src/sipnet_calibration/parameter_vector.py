@@ -419,13 +419,12 @@ from sipnet_calibration.conventions import (
     BATCH_LABEL_DTYPE,
     DATA_SOURCE_MEMBER_NAMES,
     LAT,
-    LAT_ATTRIBUTES,
     LON,
-    LON_ATTRIBUTES,
     NAME_PATTERN,
     NON_BATCH_DIM_NAMES,
     SAMPLE,
     SITE,
+    SITE_ATTRIBUTES,
     SITE_DTYPE,
     SITE_ID,
     FrozenMapping,
@@ -450,6 +449,7 @@ from sipnet_calibration.site_labels import LABEL_COLUMN
 from sipnet_calibration.sites import (
     check_site_table_has_locations,
     check_site_table_is_keyed_on_site_ids,
+    site_coordinates,
     site_lookup,
 )
 from sipnet_calibration.validation import (
@@ -462,6 +462,7 @@ from sipnet_calibration.validation import (
     as_site_id,
     as_site_ids,
     check_names_are_unique,
+    check_the_restriction_keeps_a_site,
     is_one_vector,
     truncated,
 )
@@ -1095,22 +1096,7 @@ class CalibrationParameter:
     def __post_init__(self) -> None:
         if isinstance(self.sipnet_map, str):
             object.__setattr__(self, "sipnet_map", Identity(self.sipnet_map))
-        check_parameter_name(self.name)
-        check_provenance_is_given(self.name, self.provenance)
-        check_prior_is_a_distribution(self)
-        check_sipnet_map_is_a_sipnet_map(self)
-        check_sipnet_parameters_exist(
-            (
-                *self.sipnet_map.sipnet_parameter_names_written,
-                *self.sipnet_map.sipnet_parameter_names_read,
-            ),
-            f"calibration parameter {self.name}",
-        )
-        check_prior_is_float64(self)
-        check_prior_event_rank(self)
-        check_prior_batch_rank(self)
-        check_prior_has_a_bijector(self)
-        check_components_match_prior(self)
+        check_calibration_parameter_is_valid(self)
 
     @property
     def bijector(self) -> tfb.Bijector | None:
@@ -1241,16 +1227,11 @@ class FixedParameter:
     provenance: str
 
     def __post_init__(self) -> None:
-        check_sipnet_parameters_exist((self.name,), f"fixed parameter {self.name}")
-        check_provenance_is_given(self.name, self.provenance)
-        check_fixed_value_shape(self)
         if isinstance(self.value, Mapping):
             object.__setattr__(
                 self, "value", as_frozen_mapping(self.value, message_name="value")
             )
-        check_fixed_values_are_numbers(self)
-        for value in self.values():
-            check_fixed_value_is_in_domain(self.name, value)
+        check_fixed_parameter_is_valid(self)
 
     def values(self) -> tuple[float, ...]:
         """Every value, in mapping order (one value when shared)."""
@@ -1548,12 +1529,9 @@ class ParameterVector:
     _lon_lat: tuple[np.ndarray, np.ndarray] | None = field(init=False, default=None)
 
     def __post_init__(self, site_table: pd.DataFrame | None) -> None:
-        check_sites_or_site_table_is_given(self.sites, site_table)
         sites, lon_lat = _normalized_sites(self.sites, site_table)
         object.__setattr__(self, "sites", sites)
         object.__setattr__(self, "_lon_lat", lon_lat)
-        check_vector_has_a_site(self.sites)
-        check_sites_are_ascending(self.sites)
         labels, declared = {}, {}
         for name, value in dict(self.site_labels).items():
             labels[name], declared[name] = _normalized_site_labels(name, value, self.sites)
@@ -2364,13 +2342,17 @@ class ParameterVector:
     ) -> dict[str, Any]:
         """The coordinates Fields and the SIPNET parameter fields share; *batch_labels*
         labels the batch dim, 0 to J-1 when ``None``."""
-        coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=SITE_DTYPE)}
-        if self._lon_lat is not None:
-            # Copies, so the Dataset handed out is writable and a write to it
-            # never reaches the vector's own read-only arrays.
-            lon, lat = self._lon_lat
-            coords[LON] = (SITE, lon.copy(), LON_ATTRIBUTES)
-            coords[LAT] = (SITE, lat.copy(), LAT_ATTRIBUTES)
+        if self._lon_lat is None:
+            coords: dict[str, Any] = {
+                SITE: xr.DataArray(
+                    np.asarray(self.sites, dtype=SITE_DTYPE), dims=SITE, attrs=SITE_ATTRIBUTES
+                )
+            }
+        else:
+            # New arrays, so the Dataset handed out is writable and a write
+            # to it never reaches the vector's own read-only ones.
+            located = site_coordinates(self.sites, self._located_site_table())
+            coords = {name: coordinate.copy(deep=True) for name, coordinate in located.items()}
         for name, labels in self.site_labels.items():
             coords[name] = (SITE, list(labels))
         if theta.ndim == 2:
@@ -2381,6 +2363,13 @@ class ParameterVector:
             )
             coords[batch_dim] = batch_coordinate(batch_dim, values)
         return coords
+
+    def _located_site_table(self) -> pd.DataFrame:
+        """``site_id``, ``lon`` and ``lat`` of a vector with locations."""
+        lon, lat = self._lon_lat
+        return pd.DataFrame(
+            {SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE), LON: lon.copy(), LAT: lat.copy()}
+        )
 
     @cached_property
     def _fixed_table(self) -> dict[str, Array]:
@@ -2931,6 +2920,7 @@ def _normalized_sites(
     With both, the ids must be the table's, in its order, and the table is
     what is read.
     """
+    check_sites_or_site_table_is_given(sites, site_table)
     if sites is not None:
         check_sites_are_not_a_site_table(sites)
     if site_table is None:
@@ -3174,16 +3164,68 @@ def _summary(vector: ParameterVector) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_parameter_vector_pieces_are_valid(vector: ParameterVector) -> None:
-    """A vector's pieces and site labels are what it can be built from.
+def check_calibration_parameter_is_valid(parameter: CalibrationParameter) -> None:
+    """A calibration parameter's name, provenance, prior and SIPNET map fit together.
 
-    Runs :func:`check_parameters_have_their_types`,
-    :func:`check_parameter_names_are_unique` and
-    :func:`check_site_labels_cover_sites`, in that order: what must hold
-    before a prior or a fixed value is restricted to the groups present.
+    Runs :func:`check_parameter_name`, :func:`check_provenance_is_given`,
+    :func:`check_prior_is_a_distribution`, :func:`check_sipnet_map_is_a_sipnet_map`,
+    :func:`check_sipnet_parameters_exist` (for what the map writes and reads),
+    :func:`check_prior_is_float64`, :func:`check_prior_event_rank`,
+    :func:`check_prior_batch_rank`, :func:`check_prior_has_a_bijector` and
+    :func:`check_components_match_prior`, in that order.
     """
+    check_parameter_name(parameter.name)
+    check_provenance_is_given(parameter.name, parameter.provenance)
+    check_prior_is_a_distribution(parameter)
+    check_sipnet_map_is_a_sipnet_map(parameter)
+    check_sipnet_parameters_exist(
+        (
+            *parameter.sipnet_map.sipnet_parameter_names_written,
+            *parameter.sipnet_map.sipnet_parameter_names_read,
+        ),
+        f"calibration parameter {parameter.name}",
+    )
+    check_prior_is_float64(parameter)
+    check_prior_event_rank(parameter)
+    check_prior_batch_rank(parameter)
+    check_prior_has_a_bijector(parameter)
+    check_components_match_prior(parameter)
+
+
+def check_fixed_parameter_is_valid(parameter: FixedParameter) -> None:
+    """A fixed parameter names a SIPNET parameter and holds values in its domain.
+
+    Runs :func:`check_sipnet_parameters_exist`,
+    :func:`check_provenance_is_given`, :func:`check_fixed_value_shape`,
+    :func:`check_fixed_values_are_numbers` and, for each value,
+    :func:`check_fixed_value_is_in_domain`, in that order.
+    """
+    check_sipnet_parameters_exist((parameter.name,), f"fixed parameter {parameter.name}")
+    check_provenance_is_given(parameter.name, parameter.provenance)
+    check_fixed_value_shape(parameter)
+    check_fixed_values_are_numbers(parameter)
+    for value in parameter.values():
+        check_fixed_value_is_in_domain(parameter.name, value)
+
+
+def check_parameter_vector_pieces_are_valid(vector: ParameterVector) -> None:
+    """A vector's sites, pieces and site labels are what it can be built from.
+
+    Runs :func:`check_vector_has_a_site`, :func:`check_sites_are_ascending`,
+    :func:`check_parameters_have_their_types`,
+    :func:`check_vector_has_a_calibration_parameter`,
+    :func:`~sipnet_calibration.validation.check_names_are_unique` on the
+    calibration parameter names and :func:`check_site_labels_cover_sites`, in
+    that order: what must hold before a prior or a fixed value is restricted to
+    the groups present.
+    """
+    check_vector_has_a_site(vector.sites)
+    check_sites_are_ascending(vector.sites)
     check_parameters_have_their_types(vector.parameters, vector.fixed)
-    check_parameter_names_are_unique(vector.parameters)
+    check_vector_has_a_calibration_parameter(vector.parameters)
+    check_names_are_unique(
+        [p.name for p in vector.parameters], message_name="parameters"
+    )
     check_site_labels_cover_sites(vector)
 
 
@@ -3295,15 +3337,6 @@ def check_the_selection_keeps_a_site(kept: Sequence[int]) -> None:
         raise ValueError(
             "no site of this vector satisfies every condition given; select sites or "
             "classes the vector has."
-        )
-
-
-def check_the_restriction_keeps_a_site(kept: Sequence[int]) -> None:
-    """At least one of the vector's sites is among the sites restricted to."""
-    if not kept:
-        raise ValueError(
-            "none of the vector's sites is among the sites given; restrict to sites the "
-            "vector has."
         )
 
 
@@ -3516,13 +3549,13 @@ def check_site_labels_are_declared(name: str, labels: pd.Categorical) -> None:
         )
 
 
-def check_parameter_names_are_unique(parameters: tuple[CalibrationParameter, ...]) -> None:
-    names = [p.name for p in parameters]
-    repeated = sorted({n for n in names if names.count(n) > 1})
-    if repeated:
-        raise ValueError(f"calibration parameter names repeat: {repeated}.")
-    if not names:
-        raise ValueError("a ParameterVector needs at least one calibration parameter.")
+def check_vector_has_a_calibration_parameter(parameters: tuple[CalibrationParameter, ...]) -> None:
+    """A vector has at least one calibration parameter."""
+    if not parameters:
+        raise ValueError(
+            "a ParameterVector needs at least one calibration parameter; pass "
+            "parameters=(CalibrationParameter(...), ...)."
+        )
 
 
 def check_site_labels_cover_sites(vector: ParameterVector) -> None:

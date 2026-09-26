@@ -408,7 +408,7 @@ observation vector's are its `ObservationSource`s. `CalibrationParameter`,
 
 | Aspect | Convention |
 |---|---|
-| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`; the parameter vector's two, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, sit either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only |
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`, `check_calibration_parameter_is_valid`, `check_fixed_parameter_is_valid`; the parameter vector makes two grouped checks and no other, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only |
 | Pieces | `vector[name]`, `name in vector` (`False` for anything else, an unhashable value included), `iter(vector)` and `reversed(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
 | Size | `dimension` (D or N) |
 | Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, group, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` (`Layout.positions` beneath the parameter vector's) |

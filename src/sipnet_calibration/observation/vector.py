@@ -182,6 +182,7 @@ from sipnet_calibration.validation import (
     as_site_id,
     as_site_ids,
     check_names_are_unique,
+    check_the_restriction_keeps_a_site,
     is_one_vector,
     truncated,
 )
@@ -885,13 +886,16 @@ def check_observation_vector_is_valid(observation_sources: Sequence[Any]) -> Non
 
     Runs :func:`check_there_is_an_observation_source`,
     :func:`check_entries_are_observation_sources`,
-    :func:`check_observation_source_names_are_unique`,
+    :func:`~sipnet_calibration.validation.check_names_are_unique` on their names,
     :func:`check_every_observation_source_has_an_observation` and
     :func:`check_observation_sources_agree_on_site_locations`, in that order.
     """
     check_there_is_an_observation_source(observation_sources)
     check_entries_are_observation_sources(observation_sources)
-    check_observation_source_names_are_unique(observation_sources)
+    check_names_are_unique(
+        [source.observation_source_name for source in observation_sources],
+        message_name="observation_sources",
+    )
     check_every_observation_source_has_an_observation(observation_sources)
     check_observation_sources_agree_on_site_locations(observation_sources)
 
@@ -935,18 +939,6 @@ def check_entries_are_observation_sources(observation_sources: Sequence[Any]) ->
         )
 
 
-def check_observation_source_names_are_unique(
-    observation_sources: Sequence[ObservationSource],
-) -> None:
-    names = [source.observation_source_name for source in observation_sources]
-    repeated = sorted({n for n in names if names.count(n) > 1})
-    if repeated:
-        raise ValueError(
-            f"observation source names must be unique; {repeated} repeat. Give each "
-            "observation source of the same quantity a name of its own."
-        )
-
-
 def check_every_observation_source_has_an_observation(
     observation_sources: Sequence[ObservationSource],
 ) -> None:
@@ -977,15 +969,6 @@ def check_sites_are_the_vectors(sites: Sequence[int], held: Sequence[int]) -> No
             f"the vector observes no site(s) {truncated(unknown)}; it observes "
             f"{truncated(list(held))}. Select from its sites, or use "
             "restrict_to_sites to keep the ones it observes."
-        )
-
-
-def check_the_restriction_keeps_a_site(kept: Sequence[int]) -> None:
-    """At least one of the vector's sites is among the sites restricted to."""
-    if not kept:
-        raise ValueError(
-            "none of the vector's sites is among the sites given, so the restriction leaves "
-            "no observation; restrict to sites the vector observes."
         )
 
 

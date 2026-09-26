@@ -103,6 +103,7 @@ __all__ = [
     "check_names_are_unique",
     "check_site_ids_are_in_range",
     "check_site_ids_are_unique",
+    "check_the_restriction_keeps_a_site",
     "is_one_vector",
     "range_summary",
     "truncated",
@@ -938,6 +939,15 @@ def check_names_are_unique(names: Sequence[str], *, message_name: str) -> None:
     if repeated:
         raise ValueError(
             f"{message_name} names {truncated(repeated)} more than once; name each once."
+        )
+
+
+def check_the_restriction_keeps_a_site(kept: Sequence[int]) -> None:
+    """A vector's ``restrict_to_sites`` keeps at least one of its sites."""
+    if not kept:
+        raise ValueError(
+            "none of the vector's sites is among the sites given, so the restriction "
+            "leaves nothing; restrict to sites the vector has."
         )
 
 
