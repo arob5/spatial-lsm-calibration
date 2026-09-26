@@ -675,7 +675,7 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
     Stacking into one of the stacked dims' names would reuse that name for a
     different index, and xarray and the operators align on names: a stack of
     ``(sample, driver_member)`` labeled ``sample`` ``0..n-1`` would then be
-    read at the wrong rows of a SIPNET table on theta's ``sample``.
+    read at the wrong rows of SIPNET parameter fields on theta's ``sample``.
     """
     validate_field(field)
     dims = batch_dims(field)

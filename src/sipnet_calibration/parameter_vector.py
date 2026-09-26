@@ -7,7 +7,7 @@ pySIPNET owns the physical SIPNET parameters, their units and their domains.
 pyEKI takes a Gaussian prior on unconstrained ``R^D``, an initial ``(J, D)``
 ensemble drawn from it, and a callable forward model, and leaves transforms,
 constraints and priors to the caller. PyEns runs an ensemble declared as
-``Grid``\\ s over ``Axis``\\ es, built from a SIPNET table by
+``Grid``\\ s over ``Axis``\\ es, built from SIPNET parameter fields by
 ``pyens.xarray.fields_from_dataset``. This module is what sits between
 them, and the dependency runs one way::
 
@@ -124,14 +124,14 @@ missing      impossible: a shared copy is repeated at every site and a
 ``fields.filter_by_attrs(parameter="allocation")`` selects a whole
 calibration parameter.
 
-**SIPNET table.** An ``xarray.Dataset`` with the same dims and coordinates as
+**SIPNET parameter fields.** An ``xarray.Dataset`` with the same dims and coordinates as
 Fields, and one float64 variable per SIPNET parameter the vector sets,
 calibrated and fixed alike, keyed on the pySIPNET name, in ``PARAMETER_SPECS``
 order. Built from Fields, it keeps their batch dim and its labels, so a subset
 of a batch keeps its samples' identity. Each variable carries ``units``,
-``sipnet_name``, ``constituent`` where pySIPNET declares one, and ``source``
+``sipnet_name``, ``constituent`` where pySIPNET declares one, and ``set_by``
 (``"parameter <name>"`` or ``"fixed"``); the dataset carries
-``representation = "sipnet_parameters"``. A SIPNET parameter the vector
+``representation = "sipnet_parameter_fields"``. A SIPNET parameter the vector
 neither calibrates nor fixes is absent, never NaN:
 :attr:`ParameterVector.unset_sipnet_parameter_names` lists them, and the run's
 base parameter set supplies them.
@@ -143,9 +143,12 @@ from                  to                 call                                   
 ===================== ================== ====================================== ==========
 Flat                  Fields             ``vector.fields(theta, space=)``       yes
 Fields (either space) Flat               ``vector.flat(fields)``                yes [1]_
-Flat or Fields        SIPNET table       ``vector.sipnet_table(x)``             no
-SIPNET table          one run's kwargs   :func:`sipnet_overrides`               selection
-SIPNET table          PyEns grids        ``pyens.xarray.fields_from_dataset``   values
+Flat or Fields        SIPNET parameter   ``vector.sipnet_parameter_fields(x)``  no
+                      fields
+SIPNET parameter      SIPNET overrides   :func:`sipnet_overrides`               selection
+fields                (one run's kwargs)
+SIPNET parameter      PyEns grids        ``pyens.xarray.fields_from_dataset``   values
+fields
 ===================== ================== ====================================== ==========
 
 :meth:`~ParameterVector.flat` validates: the ``space`` attribute, the
@@ -153,7 +156,7 @@ variables and sites the vector needs (others are ignored, so a larger
 vector's Fields project onto a smaller one), finiteness, and that each
 group's value agrees across its sites, and that each natural value is in the
 image of its bijector (inside the prior's support; simplex components summing
-to 1). Nothing converts a SIPNET table back.
+to 1). Nothing converts SIPNET parameter fields back.
 
 .. [1] Up to float64 rounding, which near a logit bound grows: the inverse
    of a fraction within about ``1e-12`` of 0 or 1 loses digits, and one that
@@ -178,7 +181,7 @@ SIPNET maps: the :class:`SIPNETMap` protocol, :class:`Identity`,
 
 Constants: :data:`REQUIRED_SIPNET_PARAMETERS`; :data:`NATURAL`,
 :data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
-:data:`FIELDS_REPRESENTATION` and :data:`SIPNET_TABLE_REPRESENTATION`, the
+:data:`FIELDS_REPRESENTATION` and :data:`SIPNET_PARAMETER_FIELDS_REPRESENTATION`, the
 ``representation`` attribute of each dataset.
 
 Notes
@@ -214,7 +217,7 @@ a vector over the whole pool and one over a handful of sites are written the
 same way. With a plain sequence the groups are its sorted distinct labels and
 coverage must be exact.
 
-**The SIPNET table holds arrays, not ``SIPNETParameters``.** Building
+**SIPNET parameter fields hold arrays, not ``SIPNETParameters``.** Building
 ``J x S`` validated Pydantic models would dominate a run that is otherwise a
 subprocess. ``SIPNETModel`` validates each run before invoking the binary,
 and the checks a vector runs when it is built (the ``check_*`` helpers at
@@ -229,8 +232,8 @@ round-trips through ``pickle`` and ``copy.deepcopy``. A prior built from
 ``TransformedDistribution`` or ``Blockwise`` (the simplex, the product
 prior, and so :func:`example_parameter_vector`) pickles but fails
 ``pickle.loads`` with this TFP build, and so does a vector holding one. Ship
-the SIPNET table, or the ``Grid``\\ s of plain floats
-``pyens.xarray.fields_from_dataset`` makes from it, never the vector.
+the SIPNET parameter fields, or the ``Grid``\\ s of plain floats
+``pyens.xarray.fields_from_dataset`` makes from them, never the vector.
 
 The vector computes in float64: importing the package sets
 ``jax_enable_x64``, as ``import pyeki`` does, so an MCMC baseline that never
@@ -338,9 +341,9 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     soil.quantile([0.05, 0.5, 0.95], dim="sample")     # DataArray (quantile, site)
 
     # Convert to SIPNET parameters, for one run and for a PyEns spec.
-    table = vector.sipnet_table(theta)                 # SIPNET table: Dataset (sample, site), fixed included
-    kwargs = sipnet_overrides(table, batch={"sample": 3}, site=865)  # dict[str, float]: model(**kwargs)
-    grids = fields_from_dataset(table)                 # dict[str, Grid] along [sample, site]
+    sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # Dataset (sample, site), fixed included
+    kwargs = sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=865)  # model(**kwargs)
+    grids = fields_from_dataset(sipnet_parameter_fields)  # dict[str, Grid] along [sample, site]
     spec = EnsembleSpec(inputs=grids)                  # 150 runs; add a climate Grid on the site axis
 
     # Back from a pyEKI result, and across vectors.
@@ -422,7 +425,7 @@ __all__ = [
     "RESERVED_PARAMETER_NAMES",
     "RESERVED_SITE_LABELS_NAMES",
     "SHARED",
-    "SIPNET_TABLE_REPRESENTATION",
+    "SIPNET_PARAMETER_FIELDS_REPRESENTATION",
     "SPACES",
     "UNCONSTRAINED",
     "CalibrationParameter",
@@ -1246,8 +1249,8 @@ SPACES = (NATURAL, UNCONSTRAINED)
 FIELDS_REPRESENTATION = "calibration_parameters"
 """The ``representation`` attribute of a Fields dataset."""
 
-SIPNET_TABLE_REPRESENTATION = "sipnet_parameters"
-"""The ``representation`` attribute of a SIPNET table."""
+SIPNET_PARAMETER_FIELDS_REPRESENTATION = "sipnet_parameter_fields"
+"""The ``representation`` attribute of SIPNET parameter fields."""
 
 
 @dataclass(frozen=True, eq=False, kw_only=True, repr=False)
@@ -1261,9 +1264,10 @@ class ParameterVector:
     unconstrained space, what :meth:`sample` returns and :meth:`log_prior`
     and pyEKI consume. *Fields* is an ``xarray.Dataset`` of fields
     on ``(sample, site)``, from :meth:`fields` and back through
-    :meth:`flat`. The *SIPNET table* is an ``xarray.Dataset`` of SIPNET
-    parameters on the same dims, from :meth:`sipnet_table`, which
-    :func:`sipnet_overrides` and ``pyens.xarray.fields_from_dataset`` read.
+    :meth:`flat`. The *SIPNET parameter fields* are an ``xarray.Dataset`` of
+    SIPNET parameters on the same dims, from :meth:`sipnet_parameter_fields`,
+    which :func:`sipnet_overrides` and ``pyens.xarray.fields_from_dataset``
+    read.
 
     Parameters
     ----------
@@ -1277,7 +1281,8 @@ class ParameterVector:
         The sites the vector is defined over: site ids, ascending, or a site
         table with a ``site_id`` column in ascending order, such as
         :func:`sipnet_calibration.sites.select_sites` returns, whose
-        ``lon``/``lat`` are then carried onto Fields and the SIPNET table.
+        ``lon``/``lat`` are then carried onto Fields and the SIPNET parameter
+        fields.
         The ids are the site table's; ids of a shared pool are never
         renumbered.
     site_labels:
@@ -1332,8 +1337,8 @@ class ParameterVector:
     >>> vector.dimension
     13
     >>> theta = vector.sample(jax.random.key(0), n=4)
-    >>> table = vector.sipnet_table(theta)                  # (sample, site)
-    >>> sorted(sipnet_overrides(table, batch={"sample": 0}, site=27))[:2]
+    >>> sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # (sample, site)
+    >>> sorted(sipnet_overrides(sipnet_parameter_fields, batch={"sample": 0}, site=27))[:2]
     ['base_soil_respiration_rate', 'daily_mean_photosynthesis_fraction']
     """
 
@@ -1743,7 +1748,7 @@ class ParameterVector:
         Reads ``fields.attrs["space"]`` and applies the inverse bijector when
         it is natural. Rows follow the order of the dataset's batch dim,
         whatever it is named; Flat has no batch labels, and
-        :meth:`sipnet_table` is where Fields' labels are kept. A scalar batch
+        :meth:`sipnet_parameter_fields` is where Fields' labels are kept. A scalar batch
         coordinate, left by ``.isel(sample=k)``, is not a batch dim: such
         Fields give one vector. Takes exactly the variables and sites this
         vector needs and ignores any others, so Fields from a larger vector
@@ -1801,8 +1806,10 @@ class ParameterVector:
             parts[parameter.name] = block
         return self.layout.pack(parts)
 
-    def sipnet_table(self, x: Array | xr.Dataset, *, batch_dim: str = SAMPLE) -> xr.Dataset:
-        """Flat or Fields to the SIPNET table.
+    def sipnet_parameter_fields(
+        self, x: Array | xr.Dataset, *, batch_dim: str = SAMPLE
+    ) -> xr.Dataset:
+        """Flat or Fields to SIPNET parameter fields.
 
         Parameters
         ----------
@@ -1818,10 +1825,11 @@ class ParameterVector:
         Returns
         -------
         xarray.Dataset
-            The SIPNET table: one float64 variable per SIPNET parameter this
-            vector sets (:attr:`sipnet_parameter_names`), calibrated and
-            fixed alike, on ``(batch_dim, site)`` or ``(site,)``, each carrying
-            ``units``, ``sipnet_name``, ``source`` and, where pySIPNET
+            The SIPNET parameter fields: one float64 variable per SIPNET
+            parameter this vector sets (:attr:`sipnet_parameter_names`),
+            calibrated and fixed alike, on ``(batch_dim, site)`` or
+            ``(site,)``, each carrying ``units``, ``sipnet_name``, ``set_by``
+            and, where pySIPNET
             declares one, ``constituent``. :attr:`unset_sipnet_parameter_names`
             are absent and take the base parameter set's values at the run.
 
@@ -1852,20 +1860,22 @@ class ParameterVector:
             theta = _as_theta(x, self.dimension)
         natural = self._natural_blocks(theta)
         lead = theta.shape[:-1]
-        columns: dict[str, tuple[Array, str]] = {}
+        values_and_writers: dict[str, tuple[Array, str]] = {}
         for parameter in self.parameters:
             on_sites = self._group_values_onto_sites(parameter, natural[parameter.name])
             for name, values in parameter.sipnet_map(on_sites, self._fixed_table).items():
-                columns[name] = (values, f"parameter {parameter.name}")
+                values_and_writers[name] = (values, f"parameter {parameter.name}")
         for parameter in self.fixed:
             values = jnp.broadcast_to(self._fixed_table[parameter.name], (*lead, len(self.sites)))
-            columns[parameter.name] = (values, "fixed")
+            values_and_writers[parameter.name] = (values, "fixed")
         dims = (batch_dim, SITE) if theta.ndim == 2 else (SITE,)
         variables = {
-            name: (dims, np.asarray(values, dtype=np.float64), _sipnet_attributes(name, source))
-            for name, (values, source) in sorted(columns.items(), key=lambda kv: _SPEC_ORDER[kv[0]])
+            name: (dims, np.asarray(values, dtype=np.float64), _sipnet_attributes(name, set_by))
+            for name, (values, set_by) in sorted(
+                values_and_writers.items(), key=lambda kv: _SPEC_ORDER[kv[0]]
+            )
         }
-        attributes = {"representation": SIPNET_TABLE_REPRESENTATION}
+        attributes = {"representation": SIPNET_PARAMETER_FIELDS_REPRESENTATION}
         coords = self._coordinates(theta, batch_dim, batch_labels=labels)
         return xr.Dataset(variables, coords=coords, attrs=attributes)
 
@@ -1967,7 +1977,7 @@ class ParameterVector:
     def _coordinates(
         self, theta: Array, batch_dim: str, batch_labels: np.ndarray | None = None
     ) -> dict[str, Any]:
-        """The coordinates Fields and the SIPNET table share; *batch_labels*
+        """The coordinates Fields and the SIPNET parameter fields share; *batch_labels*
         labels the batch dim, 0 to J-1 when ``None``."""
         coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=SITE_DTYPE)}
         if self._lon_lat is not None:
@@ -2105,24 +2115,26 @@ class ParameterVector:
 
 
 def sipnet_overrides(
-    table: xr.Dataset, *, site: int, batch: Mapping[str, int] | None = None
+    sipnet_parameter_fields: xr.Dataset, *, site: int, batch: Mapping[str, int] | None = None
 ) -> dict[str, float]:
-    """One run's keyword arguments for ``SIPNETModel``, from a SIPNET table.
+    """One run's SIPNET overrides, the keyword arguments for ``SIPNETModel``.
 
-    Only the SIPNET parameters the table holds are returned; the model's base
-    parameter set supplies the rest.
+    Only the SIPNET parameters *sipnet_parameter_fields* hold are returned;
+    the model's base parameter set supplies the rest.
 
     Parameters
     ----------
-    table:
-        A SIPNET table, from :meth:`ParameterVector.sipnet_table`.
+    sipnet_parameter_fields:
+        SIPNET parameter fields, from
+        :meth:`ParameterVector.sipnet_parameter_fields`.
     site:
         The site id.
     batch:
-        ``{batch dim: label}`` for every batch dim of the table, such as
-        ``{"sample": 3}``: ``0`` to ``J - 1`` for a table built from Flat, or
-        the Fields' own labels for one built from Fields. Required when the
-        table has a batch dim, and a dim the table lacks is refused.
+        ``{batch dim: label}`` for every batch dim of the SIPNET parameter
+        fields, such as ``{"sample": 3}``: ``0`` to ``J - 1`` for ones built
+        from Flat, or the Fields' own labels for ones built from Fields.
+        Required when they have a batch dim, and a dim they lack is
+        refused.
 
     Returns
     -------
@@ -2135,29 +2147,32 @@ def sipnet_overrides(
         If *site* or a batch label is a boolean, a float or not an integer,
         or *batch* is not a mapping.
     ValueError
-        If a table variable has a dim that is neither a batch dim (integer
-        labels), ``site`` nor ``time``; if the table has no ``site`` dim,
-        having been selected to one site or never having had one; or if
-        *batch* does not name exactly the table's batch dims.
+        If a variable has a dim that is neither a batch dim (integer labels),
+        ``site`` nor ``time``; if there is no ``site`` dim, the SIPNET
+        parameter fields having been selected to one site or never having
+        had one; or if *batch* does not name exactly their batch dims.
     KeyError
-        If *site*, or a batch label, is not in the table, naming it.
+        If *site*, or a batch label, is not in the SIPNET parameter fields,
+        naming it.
 
     Examples
     --------
-    With ``model`` a ``SIPNETModel`` and ``table`` a SIPNET table::
+    With ``model`` a ``SIPNETModel``::
 
-        model(**sipnet_overrides(table, batch={"sample": 3}, site=27))
+        model(**sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=27))
     """
     site_id = as_site_id(site, message_name="site")
     requested = _requested_batch_labels(batch)
-    for name, variable in table.data_vars.items():
+    for name, variable in sipnet_parameter_fields.data_vars.items():
         check_dims_are_batch_spatial_or_time(variable, message_name=repr(str(name)))
-    check_table_is_on_sites(table)
-    check_batch_label_is_in_the_table(table, SITE, site_id)
-    selected = table.sel({SITE: site_id})
-    check_batch_labels_name_the_table_batch_dims(batch_dims(selected), requested)
+    check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields)
+    check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, SITE, site_id)
+    selected = sipnet_parameter_fields.sel({SITE: site_id})
+    check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
+        batch_dims(selected), requested
+    )
     for dim, label in requested.items():
-        check_batch_label_is_in_the_table(table, dim, label)
+        check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, dim, label)
     if requested:
         selected = selected.sel(requested)
     return {str(name): float(value) for name, value in selected.data_vars.items()}
@@ -2441,9 +2456,9 @@ def _distribution_name(prior: tfd.Distribution) -> str:
     return type(prior).__name__
 
 
-def _sipnet_attributes(name: str, source: str) -> dict[str, str]:
+def _sipnet_attributes(name: str, set_by: str) -> dict[str, str]:
     spec = _FLAT_SPECS[name]
-    attrs = {"units": spec.units, "sipnet_name": spec.sipnet_name, "source": source}
+    attrs = {"units": spec.units, "sipnet_name": spec.sipnet_name, "set_by": set_by}
     if spec.constituent:
         attrs["constituent"] = spec.constituent
     return attrs
@@ -3261,7 +3276,7 @@ def check_batch_labels_are_distinct_integers(values: Any) -> None:
 
 
 def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
-    """*batch_dim* can name a batch dim of this vector's Fields and SIPNET table.
+    """*batch_dim* can name a batch dim of this vector's Fields and SIPNET parameter fields.
 
     Runs :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_reserved`,
     :func:`sipnet_calibration.fields.check_batch_dim_name_is_not_a_data_source_member`,
@@ -3300,41 +3315,44 @@ def check_batch_dim_name_is_not_a_vector_name(vector: ParameterVector, batch_dim
         )
 
 
-def check_batch_labels_name_the_table_batch_dims(
-    table_batch_dims: tuple[str, ...], requested: Mapping[str, Any]
+def check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
+    batch_dim_names: tuple[str, ...], requested: Mapping[str, Any]
 ) -> None:
-    """*batch* names exactly the table's batch dims."""
-    missing = [d for d in table_batch_dims if d not in requested]
-    extra = [d for d in requested if d not in table_batch_dims]
+    """*batch* names exactly the SIPNET parameter fields' batch dims."""
+    missing = [d for d in batch_dim_names if d not in requested]
+    extra = [d for d in requested if d not in batch_dim_names]
     if missing or extra:
         raise ValueError(
-            f"the table has the batch dims {list(table_batch_dims)} and batch= names "
-            f"{list(requested)}; pass batch={{dim: label}} for each of the table's batch "
-            "dims and no other."
+            f"the SIPNET parameter fields have the batch dims {list(batch_dim_names)} and "
+            f"batch= names {list(requested)}; pass batch={{dim: label}} for each of their "
+            "batch dims and no other."
         )
 
 
-def check_table_is_on_sites(table: xr.Dataset) -> None:
-    """The SIPNET table has a ``site`` dim, which :func:`sipnet_overrides` selects on."""
-    if SITE in table.dims:
+def check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields: xr.Dataset) -> None:
+    """The SIPNET parameter fields have a ``site`` dim, which :func:`sipnet_overrides` selects on."""
+    if SITE in sipnet_parameter_fields.dims:
         return
-    if SITE in table.coords and table[SITE].ndim == 0:
+    if SITE in sipnet_parameter_fields.coords and sipnet_parameter_fields[SITE].ndim == 0:
+        site = sipnet_parameter_fields[SITE].values.item()
         raise ValueError(
-            f"the SIPNET table was selected to site {table[SITE].values.item()!r} alone; "
-            "sipnet_overrides selects the site itself, so pass the table on its site dim, "
-            "as ParameterVector.sipnet_table returns it."
+            f"the SIPNET parameter fields were selected to site {site!r} "
+            "alone; sipnet_overrides selects the site itself, so pass them on their site "
+            "dim, as ParameterVector.sipnet_parameter_fields returns them."
         )
     raise ValueError(
-        "the SIPNET table has no site dim; pass a table on its site dim, as "
-        "ParameterVector.sipnet_table returns it."
+        "the SIPNET parameter fields have no site dim; pass them on their site dim, as "
+        "ParameterVector.sipnet_parameter_fields returns them."
     )
 
 
-def check_batch_label_is_in_the_table(table: xr.Dataset, dim: str, label: Any) -> None:
-    """The label asked for, a batch label or a site id, is one of the table's on *dim*."""
-    labels = np.asarray(table[dim].values).tolist()
+def check_batch_label_is_in_the_sipnet_parameter_fields(
+    sipnet_parameter_fields: xr.Dataset, dim: str, label: Any
+) -> None:
+    """The label asked for, a batch label or a site id, is one of theirs on *dim*."""
+    labels = np.asarray(sipnet_parameter_fields[dim].values).tolist()
     if label not in labels:
         raise KeyError(
-            f"{dim} {label!r} is not one of the table's {dim} labels "
+            f"{dim} {label!r} is not one of the SIPNET parameter fields' {dim} labels "
             f"({labels[:5]}{', ...' if len(labels) > 5 else ''})."
         )

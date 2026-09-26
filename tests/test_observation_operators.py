@@ -201,8 +201,8 @@ class TestComputeLeafAreaIndex:
 
     def test_the_parameter_varies_by_member_and_site(self, stack, labels):
         observed = dated_observation([1, 2], labels)
-        table = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"sample": [0, 1], "site": [1, 2]})
-        predicted = check_operator(ComputeLeafAreaIndex(), stack, observed, sipnet_parameters=table)
+        sipnet_parameter_fields = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"sample": [0, 1], "site": [1, 2]})
+        predicted = check_operator(ComputeLeafAreaIndex(), stack, observed, sipnet_parameters=sipnet_parameter_fields)
         leaf = select_timestep_at(stack["leaf_carbon"], labels)
         np.testing.assert_allclose(predicted.sel(sample=1, site=2).values, leaf.sel(sample=1, site=2).values / 270.0)
         np.testing.assert_allclose(predicted.sel(sample=0, site=2).values, leaf.sel(sample=0, site=2).values / 135.0)
@@ -211,10 +211,10 @@ class TestComputeLeafAreaIndex:
         with pytest.raises(ValueError, match="pass sipnet_parameters"):
             ComputeLeafAreaIndex()(one_run, dated_observation([1], labels))
 
-    def test_a_table_lacking_the_parameter_is_refused(self, one_run, labels):
-        table = xr.Dataset({"max_photosynthesis_rate": (("site",), [10.0])}, coords={"site": [1]})
+    def test_sipnet_parameter_fields_lacking_the_parameter_is_refused(self, one_run, labels):
+        sipnet_parameter_fields = xr.Dataset({"max_photosynthesis_rate": (("site",), [10.0])}, coords={"site": [1]})
         with pytest.raises(ValueError, match="no variable 'leaf_carbon_per_area'"):
-            ComputeLeafAreaIndex()(one_run, dated_observation([1], labels), sipnet_parameters=table)
+            ComputeLeafAreaIndex()(one_run, dated_observation([1], labels), sipnet_parameters=sipnet_parameter_fields)
 
 
 class TestSelectObservedSites:
@@ -252,8 +252,8 @@ class TestExtractSipnetParameterAtCoords:
         assert float(array) == 270.0
 
     def test_the_parameter_may_be_asked_for_by_an_alias(self):
-        table = xr.Dataset({"leaf_carbon_per_area": (("site",), [1.0, 2.0])}, coords={"site": [1, 2]})
-        array = extract_sipnet_parameter_at_coords(table, "leafCSpWt", xr.DataArray([0.0], dims="site", coords={"site": [2]}))
+        sipnet_parameter_fields = xr.Dataset({"leaf_carbon_per_area": (("site",), [1.0, 2.0])}, coords={"site": [1, 2]})
+        array = extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leafCSpWt", xr.DataArray([0.0], dims="site", coords={"site": [2]}))
         assert array.name == "leaf_carbon_per_area" and array.values.tolist() == [2.0]
 
     def test_a_value_outside_the_domain_is_refused(self):
@@ -265,9 +265,9 @@ class TestExtractSipnetParameterAtCoords:
             extract_sipnet_parameter_at_coords({"soil_carbon": 1.0}, "leaf_carbon_per_area", xr.DataArray(0.0))
 
     def test_selects_the_arrays_sites_and_samples_from_a_table(self):
-        table = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}, coords={"sample": [0, 1], "site": [1, 2, 3]})
+        sipnet_parameter_fields = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])}, coords={"sample": [0, 1], "site": [1, 2, 3]})
         target_field = xr.DataArray(np.zeros((2, 2)), dims=("sample", "site"), coords={"sample": [0, 1], "site": [3, 1]})
-        array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", target_field)
+        array = extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", target_field)
         np.testing.assert_array_equal(array.values, [[3.0, 1.0], [6.0, 4.0]])
 
 
@@ -413,11 +413,11 @@ class TestReduceOverWindowsValues:
 
 
 class TestParameterLookups:
-    def test_a_table_missing_the_runs_members_is_named(self, stack, labels):
-        table = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0]])}, coords={"sample": [0], "site": [1, 2]})
+    def test_sipnet_parameter_fields_missing_the_runs_members_is_named(self, stack, labels):
+        sipnet_parameter_fields = xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0]])}, coords={"sample": [0], "site": [1, 2]})
         with pytest.raises(ValueError, match=r"no sample label\(s\) \[1\]"):
             ComputeLeafAreaIndex()(
-                stack, dated_observation([1, 2], labels), sipnet_parameters=table
+                stack, dated_observation([1, 2], labels), sipnet_parameters=sipnet_parameter_fields
             )
 
     def test_a_non_numeric_mapping_value_is_refused(self, one_run, labels):
@@ -437,35 +437,35 @@ class TestParameterLookupsAtScalarCoordinates:
     """A one-run model output carries site and its batch labels as scalars."""
 
     @pytest.fixture
-    def table(self):
+    def sipnet_parameter_fields(self):
         return xr.Dataset(
             {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 90.0]])},
             coords={"sample": [0, 1], "site": [1, 2]},
         )
 
-    def test_a_scalar_site_and_sample_select_one_value(self, one_run, table):
-        array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", one_run["leaf_carbon"])
+    def test_a_scalar_site_and_sample_select_one_value(self, one_run, sipnet_parameter_fields):
+        array = extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", one_run["leaf_carbon"])
         assert array.dims == () and float(array) == 270.0
 
-    def test_one_run_is_predicted_on_its_own_grid_from_a_table(self, one_run, labels, table):
+    def test_one_run_is_predicted_on_its_own_grid_from_a_table(self, one_run, labels, sipnet_parameter_fields):
         predicted = check_operator(
-            ComputeLeafAreaIndex(), one_run, dated_observation([1], labels), sipnet_parameters=table
+            ComputeLeafAreaIndex(), one_run, dated_observation([1], labels), sipnet_parameters=sipnet_parameter_fields
         )
         assert predicted.dims == ("time",)
         expected = select_timestep_at(one_run["leaf_carbon"], labels).values / 270.0
         np.testing.assert_allclose(predicted.values, expected)
 
-    def test_a_table_dimension_the_target_has_no_coordinate_for_is_refused(self, stack, table):
+    def test_sipnet_parameter_fields_dimension_the_target_has_no_coordinate_for_is_refused(self, stack, sipnet_parameter_fields):
         unlabeled = stack["leaf_carbon"].isel(sample=0, drop=True)  # site, but no sample
         with pytest.raises(ValueError, match="carries no sample coordinate"):
-            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", unlabeled)
+            extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", unlabeled)
 
-    def test_a_scalar_table_site_is_not_used_at_every_site(self, stack, table):
+    def test_scalar_sipnet_parameter_fields_site_is_not_used_at_every_site(self, stack, sipnet_parameter_fields):
         with pytest.raises(ValueError, match="for site 1 alone"):
-            extract_sipnet_parameter_at_coords(table.sel(site=1), "leaf_carbon_per_area", stack["leaf_carbon"])
+            extract_sipnet_parameter_at_coords(sipnet_parameter_fields.sel(site=1), "leaf_carbon_per_area", stack["leaf_carbon"])
 
-    def test_a_scalar_table_site_at_its_own_site_is_used(self, one_run, table):
-        array = extract_sipnet_parameter_at_coords(table.sel(site=1), "leaf_carbon_per_area", one_run["leaf_carbon"])
+    def test_scalar_sipnet_parameter_fields_site_at_its_own_site_is_used(self, one_run, sipnet_parameter_fields):
+        array = extract_sipnet_parameter_at_coords(sipnet_parameter_fields.sel(site=1), "leaf_carbon_per_area", one_run["leaf_carbon"])
         assert array.dims == () and float(array) == 270.0
 
     def test_a_boolean_mapping_value_is_refused(self):
@@ -592,7 +592,7 @@ class TestTheGridCheck:
             )
 
     def test_a_scalar_site_result_at_the_wrong_site_is_refused(self, one_run, labels, result):
-        with pytest.raises(ValueError, match="not at the observation's site"):
+        with pytest.raises(ValueError, match="not at the observed values' site"):
             check_result_is_on_the_observation_grid(
                 result.assign_coords(site=2), dated_observation([1], labels), one_run, "x"
             )
@@ -606,9 +606,9 @@ class TestTheGridCheck:
                 "x",
             )
 
-    def test_a_time_dimension_for_a_static_observation_is_refused(self, one_run, result):
+    def test_a_time_dimension_for_static_observed_values_is_refused(self, one_run, result):
         static = xr.DataArray([1.0], dims="site", coords={"site": [1]}, attrs={"units": "Mg ha-1"})
-        with pytest.raises(ValueError, match="time dimension for a static observation"):
+        with pytest.raises(ValueError, match="time dimension for static observed values"):
             check_result_is_on_the_observation_grid(result, static, one_run, "x")
 
     def test_a_result_without_time_for_a_dated_observation_is_refused(self, one_run, labels, result):
@@ -632,7 +632,7 @@ class TestTheGridCheck:
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
                 return select_timestep_at(model_output["wood_carbon"], observed_values["time"]).assign_coords(site=2)
 
-        with pytest.raises(ValueError, match="not at the observation's site"):
+        with pytest.raises(ValueError, match="not at the observed values' site"):
             check_operator(WrongSite(), one_run, dated_observation([1], labels).isel(site=0))
 
 
@@ -735,46 +735,46 @@ class TestTheOperatorsNameThemselves:
             ReduceOverWindows("net_ecosystem_exchange", "sum")(one_run, observed)
 
 
-class TestScalarTableLabels:
-    def test_a_scalar_table_member_serves_a_run_without_a_member(self, one_run):
+class TestScalarSIPNETParameterFieldsLabels:
+    def test_scalar_sipnet_parameter_fields_member_serves_a_run_without_a_member(self, one_run):
         run = one_run.drop_vars("sample")
-        table = xr.Dataset(
+        sipnet_parameter_fields = xr.Dataset(
             {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0]])}, coords={"sample": [0], "site": [1, 2]}
         ).isel(sample=0)
-        assert float(extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", run["leaf_carbon"])) == 270.0
+        assert float(extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", run["leaf_carbon"])) == 270.0
 
 
-class TestEveryBatchDimOfATableIsSelectedOrRefused:
-    """Regression for a table whose batch dim was not named ``member``: it
+class TestEveryBatchDimOfSIPNETParameterFieldsIsSelectedOrRefused:
+    """Regression for SIPNET parameter fields whose batch dim was not named ``member``: it
     used to be broadcast whole into one run, silently, and its labels were
     never selected."""
 
     @pytest.fixture
-    def table(self):
+    def sipnet_parameter_fields(self):
         return xr.Dataset(
             {"leaf_carbon_per_area": (("driver_member", "site"), [[270.0, 135.0], [540.0, 90.0]])},
             coords={"driver_member": [5, 6], "site": [1, 2]},
         )
 
-    def test_a_table_batch_dim_of_any_name_is_refused_against_a_run_without_it(self, one_run, table):
+    def test_sipnet_parameter_fields_batch_dim_of_any_name_is_refused_against_a_run_without_it(self, one_run, sipnet_parameter_fields):
         with pytest.raises(ValueError, match="'driver_member'.*would broadcast"):
-            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", one_run["leaf_carbon"])
+            extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", one_run["leaf_carbon"])
 
-    def test_a_table_batch_dim_of_any_name_is_selected_at_the_runs_labels(self, one_run, table):
+    def test_sipnet_parameter_fields_batch_dim_of_any_name_is_selected_at_the_runs_labels(self, one_run, sipnet_parameter_fields):
         run = one_run["leaf_carbon"].assign_coords(driver_member=6)
-        array = extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", run)
+        array = extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", run)
         assert array.dims == () and float(array) == 540.0
 
-    def test_labels_the_table_lacks_are_refused_rather_than_joined_away(self, stack, table):
+    def test_labels_the_sipnet_parameter_fields_lack_are_refused_rather_than_joined_away(self, stack, sipnet_parameter_fields):
         target = stack["leaf_carbon"].rename(sample="driver_member")  # labels 0 and 1
         with pytest.raises(ValueError, match=r"no driver_member label\(s\) \[0, 1\]"):
-            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", target)
+            extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", target)
 
-    def test_a_scalar_batch_label_of_any_name_must_agree(self, stack, table):
+    def test_a_scalar_batch_label_of_any_name_must_agree(self, stack, sipnet_parameter_fields):
         target = stack["leaf_carbon"].rename(sample="driver_member").assign_coords(driver_member=[5, 6])
         with pytest.raises(ValueError, match="for driver_member 5 alone"):
             extract_sipnet_parameter_at_coords(
-                table.sel(driver_member=5), "leaf_carbon_per_area", target
+                sipnet_parameter_fields.sel(driver_member=5), "leaf_carbon_per_area", target
             )
 
     def test_an_operator_mixing_a_batch_dim_of_any_name_is_not_pointwise(self, stack, labels):
@@ -812,12 +812,12 @@ class TestTwoBatchDimsPassThroughTheOperators:
         for name in crossed.data_vars:
             crossed[name].attrs = stack[name].attrs
         crossed = crossed.transpose("sample", "initial_condition_member", "site", "time")
-        table = xr.Dataset(
+        sipnet_parameter_fields = xr.Dataset(
             {"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])},
             coords={"sample": [0, 1], "site": [1, 2]},
         )
         predicted = check_operator(
-            ComputeLeafAreaIndex(), crossed, dated_observation([1, 2], labels), sipnet_parameters=table
+            ComputeLeafAreaIndex(), crossed, dated_observation([1, 2], labels), sipnet_parameters=sipnet_parameter_fields
         )
         assert predicted.dims == ("sample", "initial_condition_member", "site", "time")
         np.testing.assert_allclose(
@@ -826,21 +826,21 @@ class TestTwoBatchDimsPassThroughTheOperators:
         )
 
 
-class TestAStackedTargetIsNotReadAtATablesLabels:
+class TestAStackedTargetIsNotReadAtSIPNETParameterFieldsLabels:
     """A stack of ``(sample, driver_member)`` labeled ``sample`` 0..n-1 is not
-    theta's ``sample``; reading the table at those labels picked wrong rows."""
+    theta's ``sample``; reading the SIPNET parameter fields at those labels picked wrong rows."""
 
-    def test_a_target_stacked_over_a_table_dim_is_refused(self, stack):
+    def test_a_target_stacked_over_sipnet_parameter_fields_dim_is_refused(self, stack):
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
         relabeled = stack_batch_dims(crossed, into="run").rename(run="sample")
-        table = xr.Dataset(
+        sipnet_parameter_fields = xr.Dataset(
             {"leaf_carbon_per_area": (("sample", "site"), np.arange(8.0).reshape(4, 2) + 1)},
             coords={"sample": [0, 1, 2, 3], "site": [1, 2]},
         )
         with pytest.raises(ValueError, match="is a stack"):
-            extract_sipnet_parameter_at_coords(table, "leaf_carbon_per_area", relabeled)
+            extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "leaf_carbon_per_area", relabeled)
 
     def _stacked_leaf_carbon(self, stack):
         """Leaf carbon over (sample 0..1, driver_member 0..1) stacked into ``run``."""
@@ -855,14 +855,14 @@ class TestAStackedTargetIsNotReadAtATablesLabels:
             coords={"sample": [0, 1, 3], "site": [1, 2]},
         )
 
-    def test_a_table_for_one_sample_is_refused_against_a_stack_of_others(self, stack):
+    def test_sipnet_parameter_fields_for_one_sample_is_refused_against_a_stack_of_others(self, stack):
         """Sample 3's parameter was applied, silently, to runs of samples 0 and 1."""
         with pytest.raises(ValueError, match="for sample 3 alone"):
             extract_sipnet_parameter_at_coords(
                 self._table().sel(sample=3), "leaf_carbon_per_area", self._stacked_leaf_carbon(stack)
             )
 
-    def test_a_table_for_one_sample_serves_a_stack_of_that_sample(self, stack):
+    def test_sipnet_parameter_fields_for_one_sample_serves_a_stack_of_that_sample(self, stack):
         stacked = self._stacked_leaf_carbon(stack)
         of_sample_1 = stacked.isel(run=stacked["sample_label"].values == 1)
         array = extract_sipnet_parameter_at_coords(
@@ -870,7 +870,7 @@ class TestAStackedTargetIsNotReadAtATablesLabels:
         )
         assert array.dims == ("site",) and array.values.tolist() == [30.0, 60.0]
 
-    def test_the_operators_refuse_a_one_sample_table_against_a_stack(self, stack, labels):
+    def test_the_operators_refuse_one_sample_sipnet_parameter_fields_against_a_stack(self, stack, labels):
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
@@ -892,7 +892,7 @@ class TestAStackedTargetIsNotReadAtATablesLabels:
 
 class TestARestackedTargetIsReadAtItsLabels:
     """A stack of a stack records only the dim it stacked, and carries the
-    first stack's ``sample_label`` on the new dim; a one-sample table was
+    first stack's ``sample_label`` on the new dim; one-sample SIPNET parameter fields were
     applied, silently, to runs of other samples."""
 
     def _restacked_leaf_carbon(self, stack):
@@ -907,19 +907,19 @@ class TestARestackedTargetIsReadAtItsLabels:
             coords={"sample": [0, 1, 3], "site": [1, 2]},
         )
 
-    def test_a_table_for_one_sample_is_refused_against_a_restack_of_others(self, stack):
+    def test_sipnet_parameter_fields_for_one_sample_is_refused_against_a_restack_of_others(self, stack):
         with pytest.raises(ValueError, match="for sample 3 alone"):
             extract_sipnet_parameter_at_coords(
                 self._table().sel(sample=3), "leaf_carbon_per_area", self._restacked_leaf_carbon(stack)
             )
 
-    def test_a_table_on_a_dim_restacked_is_refused_as_a_stack(self, stack):
+    def test_sipnet_parameter_fields_on_a_dim_restacked_is_refused_as_a_stack(self, stack):
         with pytest.raises(ValueError, match="'run2' is a stack of \\['sample'\\]"):
             extract_sipnet_parameter_at_coords(
                 self._table(), "leaf_carbon_per_area", self._restacked_leaf_carbon(stack)
             )
 
-    def test_the_operators_refuse_a_one_sample_table_against_a_restack(self, stack, labels):
+    def test_the_operators_refuse_one_sample_sipnet_parameter_fields_against_a_restack(self, stack, labels):
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack.expand_dims(driver_member=[0, 1], axis=1)

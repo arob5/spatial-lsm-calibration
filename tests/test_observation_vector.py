@@ -67,7 +67,7 @@ def soil():
 
 
 @pytest.fixture
-def table():
+def sipnet_parameter_fields():
     return xr.Dataset({"leaf_carbon_per_area": (("sample", "site"), [[270.0, 135.0], [540.0, 270.0]])}, coords={"sample": [0, 1], "site": [1, 2]})
 
 
@@ -229,16 +229,16 @@ class TestRepresentations:
 
 
 class TestPredict:
-    def test_a_stack_predicts_every_observation_source_in_its_units(self, vector, stack, table, times):
-        predicted = vector.predict(stack, sipnet_parameters=table)
+    def test_a_stack_predicts_every_observation_source_in_its_units(self, vector, stack, sipnet_parameter_fields, times):
+        predicted = vector.predict(stack, sipnet_parameters=sipnet_parameter_fields)
         assert set(predicted) == set(vector.observation_source_names)
         assert predicted["landtrendr_aboveground_biomass"].attrs["units"] == "Mg ha-1"
         wood_g = select_timestep_at(stack["wood_carbon"], times)
         np.testing.assert_allclose(predicted["landtrendr_aboveground_biomass"].values, wood_g.values * 0.01)
         assert predicted["soilgrids_soil_organic_carbon"].dims == ("sample", "site")
 
-    def test_flat_of_the_predictions_is_sample_by_observation(self, vector, stack, table):
-        batched_flat = vector.flat(vector.predict(stack, sipnet_parameters=table))
+    def test_flat_of_the_predictions_is_sample_by_observation(self, vector, stack, sipnet_parameter_fields):
+        batched_flat = vector.flat(vector.predict(stack, sipnet_parameters=sipnet_parameter_fields))
         assert batched_flat.shape == (2, vector.dimension)
         assert np.isfinite(batched_flat).all()
         # the second sample's pools are half the first's, and its leaf carbon per
@@ -254,16 +254,16 @@ class TestPredict:
         flat = sub.flat(predicted)
         assert flat.shape == (sub.dimension,)
 
-    def test_a_failed_run_passes_through_as_nan(self, vector, stack, table):
+    def test_a_failed_run_passes_through_as_nan(self, vector, stack, sipnet_parameter_fields):
         failed = stack.copy(deep=True)
         for name in VARIABLES:
             failed[name].loc[{"sample": 1, "site": 2}] = np.nan
-        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=table))
+        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=sipnet_parameter_fields))
         assert np.isnan(batched_flat[1, vector.positions(site=2)]).all()
         assert np.isfinite(batched_flat[0]).all()
         assert np.isfinite(batched_flat[1, vector.positions(site=1)]).all()
 
-    def test_a_gap_the_operator_produced_is_refused(self, lai, stack, table):
+    def test_a_gap_the_operator_produced_is_refused(self, lai, stack, sipnet_parameter_fields):
         @dataclass(frozen=True)
         class Gappy:
             output_variable_names = ("leaf_carbon",)
@@ -288,9 +288,9 @@ class TestPredict:
         with pytest.raises(ValueError, match="pass sipnet_parameters"):
             vector.predict(stack)
 
-    def test_a_model_output_lacking_a_variable_is_refused(self, vector, stack, table):
+    def test_a_model_output_lacking_a_variable_is_refused(self, vector, stack, sipnet_parameter_fields):
         with pytest.raises(ValueError, match="lacks"):
-            vector.predict(stack.drop_vars("soil_carbon"), sipnet_parameters=table)
+            vector.predict(stack.drop_vars("soil_carbon"), sipnet_parameters=sipnet_parameter_fields)
 
     def test_a_mapping_is_refused(self, vector, stack):
         with pytest.raises(TypeError, match="Dataset"):
@@ -360,7 +360,7 @@ class TestTwinObservations:
 
 
 class TestObservationInputsAndBatchedFlatShapes:
-    def test_an_operator_on_the_wrong_time_labels_is_refused_by_predict(self, lai, stack, table):
+    def test_an_operator_on_the_wrong_time_labels_is_refused_by_predict(self, lai, stack, sipnet_parameter_fields):
         @dataclass(frozen=True)
         class OffGrid:
             output_variable_names = ("leaf_carbon",)
@@ -600,19 +600,19 @@ class TestFailedRuns:
         with pytest.raises(ValueError, match="although the run succeeded"):
             ObservationVector([ObservationSource("modis_leaf_area_index", lai, Gappy())]).predict(padded)
 
-    def test_one_read_variable_missing_throughout_is_a_failed_run(self, vector, stack, table):
+    def test_one_read_variable_missing_throughout_is_a_failed_run(self, vector, stack, sipnet_parameter_fields):
         failed = stack.copy(deep=True)
         failed["wood_carbon"].loc[{"sample": 1, "site": 2}] = np.nan  # leaf and soil carbon finite
-        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=table))
+        batched_flat = vector.flat(vector.predict(failed, sipnet_parameters=sipnet_parameter_fields))
         wood = vector.positions(site=2, observation_source_name="landtrendr_aboveground_biomass")
         assert np.isnan(batched_flat[1, wood]).all()
         assert np.isfinite(batched_flat[0]).all()
 
-    def test_the_failure_mask_is_matched_by_site_label(self, lai, stack, table):
+    def test_the_failure_mask_is_matched_by_site_label(self, lai, stack, sipnet_parameter_fields):
         reordered = stack.isel(site=[1, 0]).copy(deep=True)
         reordered["leaf_carbon"].loc[{"sample": 1, "site": 2}] = np.nan
         vector = ObservationVector([ObservationSource("modis_leaf_area_index", lai, ComputeLeafAreaIndex())])
-        batched_flat = vector.flat(vector.predict(reordered, sipnet_parameters=table))
+        batched_flat = vector.flat(vector.predict(reordered, sipnet_parameters=sipnet_parameter_fields))
         assert np.isnan(batched_flat[1, vector.positions(site=2)]).all()
         assert np.isfinite(batched_flat[1, vector.positions(site=1)]).all()
 
@@ -763,17 +763,17 @@ class TestBatchSizes:
 class TestPredictOverAnyBatchDim:
     """A model output's batch dims may carry any name, and several of them."""
 
-    def test_a_batch_dim_not_named_sample_predicts(self, vector, stack, table):
+    def test_a_batch_dim_not_named_sample_predicts(self, vector, stack, sipnet_parameter_fields):
         """Before PR 2 a batch dim not named ``member`` crashed in predict with a
         raw xarray transpose error; it is now carried through like any other."""
         renamed = stack.rename(sample="driver_member")
-        predicted = vector.predict(renamed, sipnet_parameters=table.rename(sample="driver_member"))
+        predicted = vector.predict(renamed, sipnet_parameters=sipnet_parameter_fields.rename(sample="driver_member"))
         assert predicted["modis_leaf_area_index"].dims == ("driver_member", "site", "time")
         batched_flat = vector.flat(predicted)
-        expected = vector.flat(vector.predict(stack, sipnet_parameters=table))
+        expected = vector.flat(vector.predict(stack, sipnet_parameters=sipnet_parameter_fields))
         np.testing.assert_allclose(batched_flat, expected)
 
-    def test_two_batch_dims_predict_and_flatten_once_stacked(self, vector, stack, table):
+    def test_two_batch_dims_predict_and_flatten_once_stacked(self, vector, stack, sipnet_parameter_fields):
         from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
         # Observations that are fields in full: int32 site ids with lon/lat, so
@@ -796,7 +796,7 @@ class TestPredictOverAnyBatchDim:
         for name in crossed.data_vars:
             crossed[name].attrs = stack[name].attrs
         crossed = crossed.transpose("sample", "initial_condition_member", "site", "time")
-        predicted = vector.predict(crossed, sipnet_parameters=table)
+        predicted = vector.predict(crossed, sipnet_parameters=sipnet_parameter_fields)
         assert predicted["modis_leaf_area_index"].dims == (
             "sample", "initial_condition_member", "site", "time"
         )
@@ -980,13 +980,13 @@ class TestFlatRefusesADimThatIsNotABatchDim:
             vector.flat(crossed)
 
 
-class TestPredictChecksAOneSampleTableAgainstAStack:
-    def test_a_table_for_one_sample_is_refused_against_a_stack(self, vector, stack, table):
+class TestPredictChecksAOneSampleSIPNETParameterFieldsAgainstAStack:
+    def test_sipnet_parameter_fields_for_one_sample_is_refused_against_a_stack(self, vector, stack, sipnet_parameter_fields):
         """Sample 3's parameter was applied, silently, to the stacked runs of others."""
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
         stacked = crossed.map(lambda variable: stack_batch_dims(variable, into="run"))
-        three = xr.concat([table, table.isel(sample=[0]).assign_coords(sample=[3])], "sample")
+        three = xr.concat([sipnet_parameter_fields, sipnet_parameter_fields.isel(sample=[0]).assign_coords(sample=[3])], "sample")
         with pytest.raises(ValueError, match="for sample 3 alone"):
             vector.predict(stacked, sipnet_parameters=three.sel(sample=3))

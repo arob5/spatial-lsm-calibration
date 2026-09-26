@@ -69,10 +69,10 @@ class ForeignNiwot(ScaledNiwot):
         return super().__call__(climate=climate, events=events, **overrides)
 
 
-def _expected_wood(table, sample, site, n_steps=None):
+def _expected_wood(sipnet_parameter_fields, sample, site, n_steps=None):
     """What the stand-in writes for wood carbon at this sample and site, in Mg ha-1."""
-    rate = float(table["max_photosynthesis_rate"].sel(sample=sample, site=site))
-    soil = float(table["soil_carbon"].sel(sample=sample, site=site))
+    rate = float(sipnet_parameter_fields["max_photosynthesis_rate"].sel(sample=sample, site=site))
+    soil = float(sipnet_parameter_fields["soil_carbon"].sel(sample=sample, site=site))
     wood = REFERENCE_WOOD if n_steps is None else REFERENCE_WOOD.isel(time=slice(0, n_steps))
     return select_timestep_at(wood, LABELS).values * (rate / 10.0) * (soil / SOIL_REFERENCE) * 0.01
 
@@ -142,15 +142,15 @@ def theta(parameter_vector):
 
 
 def _hooked(parameter_vector, rates):
-    """A to_sipnet_table hook setting max_photosynthesis_rate at (sample, site position)."""
+    """A to_sipnet_parameter_fields hook setting max_photosynthesis_rate at (sample, site position)."""
 
     def hook(theta):
-        table = parameter_vector.sipnet_table(theta)
-        values = table["max_photosynthesis_rate"].values.copy()
+        sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta)
+        values = sipnet_parameter_fields["max_photosynthesis_rate"].values.copy()
         for (sample, site_position), rate in rates.items():
             if sample < values.shape[0]:  # the init-time probe has one sample
                 values[sample, site_position] = rate
-        return table.assign(max_photosynthesis_rate=(("sample", "site"), values))
+        return sipnet_parameter_fields.assign(max_photosynthesis_rate=(("sample", "site"), values))
 
     return hook
 
@@ -161,8 +161,8 @@ class TestEvaluate:
     ):
         evaluation = forward.evaluate(theta)
         assert isinstance(evaluation, ForwardEvaluation)
-        table = parameter_vector.sipnet_table(theta)
-        assert not np.allclose(table["soil_carbon"].sel(site=1), table["soil_carbon"].sel(site=27))
+        sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta)
+        assert not np.allclose(sipnet_parameter_fields["soil_carbon"].sel(site=1), sipnet_parameter_fields["soil_carbon"].sel(site=27))
         fields = observation_vector.fields(evaluation.predictions)["landtrendr_aboveground_biomass"]
         for sample in range(3):
             for site in SITES:
@@ -172,7 +172,7 @@ class TestEvaluate:
                     .notnull()
                     .values
                 )
-                expected = _expected_wood(table, sample, site)
+                expected = _expected_wood(sipnet_parameter_fields, sample, site)
                 np.testing.assert_allclose(
                     fields.sel(sample=sample, site=site).values[observed],
                     expected[observed],
@@ -323,9 +323,9 @@ class TestEvaluate:
         )
         evaluation = forward.evaluate(theta)
         assert evaluation.valid.all() and np.isfinite(evaluation.predictions).all()
-        table = parameter_vector.sipnet_table(theta)
-        rate = table["max_photosynthesis_rate"].sel(site=1).values
-        soil = table["soil_carbon"].sel(site=1).values
+        sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta)
+        rate = sipnet_parameter_fields["max_photosynthesis_rate"].sel(site=1).values
+        soil = sipnet_parameter_fields["soil_carbon"].sel(site=1).values
         expected = REFERENCE_WOOD.values[late] * (rate / 10.0) * (soil / SOIL_REFERENCE) * 0.01
         np.testing.assert_allclose(
             evaluation.predictions[:, observed.positions(site=1)[-1]], expected, rtol=1e-12
@@ -345,7 +345,7 @@ class TestEvaluate:
             site_table=SITE_TABLE,
         )
         assert not forward._run.returns_model_output
-        overrides = sipnet_overrides(parameter_vector.sipnet_table(theta), batch={"sample": 0}, site=27)
+        overrides = sipnet_overrides(parameter_vector.sipnet_parameter_fields(theta), batch={"sample": 0}, site=27)
         output = forward._run(
             climate=climate[27], site=27, site_observation_vector=None, **overrides
         )
@@ -361,7 +361,7 @@ class TestFailures:
             backend=backend or SequentialBackend(),
             observation_vector=observation_vector,
             site_table=SITE_TABLE,
-            to_sipnet_table=_hooked(parameter_vector, rates),
+            to_sipnet_parameter_fields=_hooked(parameter_vector, rates),
         )
 
     def test_a_run_failing_at_its_parameters_is_a_nan_row(
@@ -488,7 +488,7 @@ class TestFailures:
             backend=LocalBackend(n_workers=1),
             observation_vector=observation_vector,
             site_table=SITE_TABLE,
-            to_sipnet_table=_hooked(parameter_vector, {(0, 1): -1.0}),
+            to_sipnet_parameter_fields=_hooked(parameter_vector, {(0, 1): -1.0}),
         )
         with pytest.raises(RuntimeError, match="machinery") as raised:
             forward.evaluate(theta[:1])
@@ -511,12 +511,12 @@ class TestPriorPredictive:
         assert set(output.data_vars) == {"net_ecosystem_exchange", "wood_carbon"}
         assert output["wood_carbon"].dims == ("sample", "site", "time")
         assert output["lon"].values.tolist() == [-105.0, -70.0]
-        table = parameter_vector.sipnet_table(theta)
+        sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta)
         for site, n_steps in ((1, REFERENCE_WOOD.sizes["time"]), (27, SHORT_STEPS)):
             wood = output["wood_carbon"].sel(sample=2, site=site).dropna("time")
             assert wood.sizes["time"] == n_steps  # the shorter drivers make a shorter run
-            rate = float(table["max_photosynthesis_rate"].sel(sample=2, site=site))
-            soil = float(table["soil_carbon"].sel(sample=2, site=site))
+            rate = float(sipnet_parameter_fields["max_photosynthesis_rate"].sel(sample=2, site=site))
+            soil = float(sipnet_parameter_fields["soil_carbon"].sel(sample=2, site=site))
             np.testing.assert_allclose(
                 wood.values, REFERENCE_WOOD.values[:n_steps] * rate / 10.0 * soil / SOIL_REFERENCE
             )
@@ -551,7 +551,7 @@ class TestPriorPredictive:
             backend=SequentialBackend(),
             output_variable_names=("nee",),
             site_table=SITE_TABLE,
-            to_sipnet_table=_hooked(
+            to_sipnet_parameter_fields=_hooked(
                 parameter_vector, {(1, 0): 1.5 * BLOW_UP, (1, 1): 1.5 * BLOW_UP}
             ),
         )
@@ -614,7 +614,7 @@ class TestPriorPredictive:
             backend=SequentialBackend(),
             output_variable_names=("nee",),
             site_table=SITE_TABLE,
-            to_sipnet_table=_hooked(parameter_vector, rates),
+            to_sipnet_parameter_fields=_hooked(parameter_vector, rates),
         )
         with pytest.raises(RuntimeError, match="every run failed") as raised:
             forward.evaluate(theta)
@@ -655,7 +655,7 @@ class TestPriorPredictive:
             backend=SequentialBackend(),
             output_variable_names=("nee",),
             site_table=SITE_TABLE,
-            to_sipnet_table=_hooked(parameter_vector, rates),
+            to_sipnet_parameter_fields=_hooked(parameter_vector, rates),
         )
         output = forward.evaluate(theta).model_output
         assert not bool(output["net_ecosystem_exchange"].sel(site=27).notnull().any())
@@ -769,27 +769,27 @@ class TestRefusals:
         with pytest.raises(ValueError, match="no resampling method leaves unchanged"):
             self._build(parameter_vector, climate, output_variable_names=("year",), freq="1D")
 
-    def test_a_table_hook_that_changes_the_free_fields(
+    def test_sipnet_parameter_fields_hook_that_changes_the_free_inputs(
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._build(parameter_vector, climate, observation_vector)
-        forward._to_sipnet_table = lambda t: parameter_vector.sipnet_table(t).drop_vars(
+        forward._to_sipnet_parameter_fields = lambda t: parameter_vector.sipnet_parameter_fields(t).drop_vars(
             "soil_carbon"
         )
-        with pytest.raises(ValueError, match="free fields are fixed"):
+        with pytest.raises(ValueError, match="free inputs are fixed"):
             forward.evaluate(theta)
 
-    def test_a_table_hook_that_adds_a_parameter(
+    def test_sipnet_parameter_fields_hook_that_adds_a_parameter(
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._build(parameter_vector, climate, observation_vector)
-        forward._to_sipnet_table = lambda t: parameter_vector.sipnet_table(t).assign(
+        forward._to_sipnet_parameter_fields = lambda t: parameter_vector.sipnet_parameter_fields(t).assign(
             leaf_carbon_per_area=lambda d: d["soil_carbon"] * 0 + 50.0
         )
-        with pytest.raises(ValueError, match="free fields are fixed"):
+        with pytest.raises(ValueError, match="free inputs are fixed"):
             forward.evaluate(theta)
 
-    def test_a_table_hook_that_names_a_parameter_by_its_alias(
+    def test_sipnet_parameter_fields_hook_that_names_a_parameter_by_its_alias(
         self, parameter_vector, climate, observation_vector
     ):
         """SIPNETModel refuses an alias, so every run would fail on the workers."""
@@ -800,25 +800,25 @@ class TestRefusals:
                 parameter_vector,
                 climate,
                 observation_vector,
-                to_sipnet_table=lambda t: parameter_vector.sipnet_table(t).rename(
+                to_sipnet_parameter_fields=lambda t: parameter_vector.sipnet_parameter_fields(t).rename(
                     max_photosynthesis_rate="aMax"
                 ),
             )
 
-    def test_a_table_hook_whose_variables_are_not_on_the_batch_dim(
+    def test_sipnet_parameter_fields_hook_whose_variables_are_not_on_the_batch_dim(
         self, parameter_vector, climate, observation_vector
     ):
         """With only a sample coordinate, PyEns would build one run per site, not J x S."""
 
         def site_only(theta):
-            sipnet_table = parameter_vector.sipnet_table(theta)
-            n_samples = sipnet_table.sizes["sample"]
-            return sipnet_table.isel(sample=0, drop=True).assign_coords(sample=np.arange(n_samples))
+            sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta)
+            n_samples = sipnet_parameter_fields.sizes["sample"]
+            return sipnet_parameter_fields.isel(sample=0, drop=True).assign_coords(sample=np.arange(n_samples))
 
         with pytest.raises(ValueError, match="on both sample and site"):
-            self._build(parameter_vector, climate, observation_vector, to_sipnet_table=site_only)
+            self._build(parameter_vector, climate, observation_vector, to_sipnet_parameter_fields=site_only)
 
-    def test_a_table_hook_that_sets_an_unknown_parameter(
+    def test_sipnet_parameter_fields_hook_that_sets_an_unknown_parameter(
         self, parameter_vector, climate, observation_vector
     ):
         with pytest.raises(ValueError, match="not a pySIPNET parameter"):
@@ -826,17 +826,17 @@ class TestRefusals:
                 parameter_vector,
                 climate,
                 observation_vector,
-                to_sipnet_table=lambda t: parameter_vector.sipnet_table(t).assign(
+                to_sipnet_parameter_fields=lambda t: parameter_vector.sipnet_parameter_fields(t).assign(
                     not_a_parameter=lambda d: d["soil_carbon"]
                 ),
             )
 
-    def test_a_table_hook_may_reorder_the_fields(
+    def test_sipnet_parameter_fields_hook_may_reorder_the_fields(
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._build(parameter_vector, climate, observation_vector)
         names = list(forward.sipnet_parameter_names)
-        forward._to_sipnet_table = lambda t: parameter_vector.sipnet_table(t)[names[::-1]]
+        forward._to_sipnet_parameter_fields = lambda t: parameter_vector.sipnet_parameter_fields(t)[names[::-1]]
         assert forward(theta[:1]).shape == (1, observation_vector.dimension)
 
     def test_theta_of_the_wrong_shape_or_not_finite(self, forward, theta):
@@ -876,24 +876,24 @@ class TestRefusals:
         ("make_hook", "match"),
         [
             (
-                lambda v: lambda t: v.sipnet_table(t).isel(sample=slice(None, None, -1)),
+                lambda v: lambda t: v.sipnet_parameter_fields(t).isel(sample=slice(None, None, -1)),
                 "sample labels must be the integers 0 to 2",
             ),
             (
                 lambda v: (
-                    lambda t: v.sipnet_table(t).isel(sample=slice(0, max(1, np.shape(t)[0] - 1)))
+                    lambda t: v.sipnet_parameter_fields(t).isel(sample=slice(0, max(1, np.shape(t)[0] - 1)))
                 ),
                 "sample labels must be the integers 0 to 2",
             ),
             (
-                lambda v: lambda t: v.sipnet_table(t).expand_dims(extra=[0, 1]),
+                lambda v: lambda t: v.sipnet_parameter_fields(t).expand_dims(extra=[0, 1]),
                 r"exactly \(sample, site\)",
             ),
-            (lambda v: lambda t: v.sipnet_table(t).isel(site=[1, 0]), "sites, in order"),
+            (lambda v: lambda t: v.sipnet_parameter_fields(t).isel(site=[1, 0]), "sites, in order"),
         ],
         ids=["samples reversed", "a sample dropped", "an extra dimension", "sites reordered"],
     )
-    def test_a_table_hook_that_does_not_fit_the_batch(
+    def test_sipnet_parameter_fields_hook_that_does_not_fit_the_batch(
         self, parameter_vector, climate, observation_vector, theta, make_hook, match
     ):
         with pytest.raises(ValueError, match=match):
@@ -901,7 +901,7 @@ class TestRefusals:
                 parameter_vector,
                 climate,
                 observation_vector,
-                to_sipnet_table=make_hook(parameter_vector),
+                to_sipnet_parameter_fields=make_hook(parameter_vector),
             ).evaluate(theta)
 
 
@@ -934,7 +934,7 @@ class TestRealSipnet:
 
         # One run's predictions, recomputed by hand: the same run and the same operators, on the driver.
         sample, site = 1, 27
-        overrides = sipnet_overrides(evaluation.sipnet_table, batch={"sample": sample}, site=site)
+        overrides = sipnet_overrides(evaluation.sipnet_parameter_fields, batch={"sample": sample}, site=site)
         direct = label_run(
             model(climate=files[site], **overrides).outputs.select(
                 list(observation_vector.output_variable_names)
@@ -1034,7 +1034,7 @@ def test_an_evaluation_compares_and_hashes_by_identity():
 
     evaluation = ForwardEvaluation(
         theta=np.zeros((2, 3)),
-        sipnet_table=xr.Dataset(),
+        sipnet_parameter_fields=xr.Dataset(),
         model_output=None,
         predictions=np.zeros((2, 4)),
         run_succeeded=xr.DataArray(np.ones((2, 1), dtype=bool), dims=("sample", "site")),
@@ -1047,15 +1047,15 @@ def test_an_evaluation_compares_and_hashes_by_identity():
 
 
 class TestTheBatchDimIsNamedOnce:
-    """``batch_dim=`` names the table's dim, PyEns's axis, and every output."""
+    """``batch_dim=`` names the SIPNET parameter fields' dim, PyEns's axis, and every output."""
 
     def test_every_output_carries_the_named_batch_dim(self, parameter_vector, climate, theta):
         def blow_up_one(theta):
-            table = parameter_vector.sipnet_table(theta, batch_dim="draw")
-            values = table["max_photosynthesis_rate"].values.copy()
+            sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta, batch_dim="draw")
+            values = sipnet_parameter_fields["max_photosynthesis_rate"].values.copy()
             if values.shape[0] > 1:
                 values[1, 0] = 1.5 * BLOW_UP
-            return table.assign(max_photosynthesis_rate=(("draw", "site"), values))
+            return sipnet_parameter_fields.assign(max_photosynthesis_rate=(("draw", "site"), values))
 
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -1064,11 +1064,11 @@ class TestTheBatchDimIsNamedOnce:
             backend=SequentialBackend(),
             output_variable_names=("wood_carbon",),
             site_table=SITE_TABLE,
-            to_sipnet_table=blow_up_one,
+            to_sipnet_parameter_fields=blow_up_one,
             batch_dim="draw",
         )
         evaluation = forward.evaluate(theta)
-        assert evaluation.sipnet_table["soil_carbon"].dims == ("draw", "site")
+        assert evaluation.sipnet_parameter_fields["soil_carbon"].dims == ("draw", "site")
         assert evaluation.model_output["wood_carbon"].dims == ("draw", "site", "time")
         assert evaluation.model_output["draw"].values.tolist() == [0, 1, 2]
         assert evaluation.run_succeeded.dims == ("draw", "site")
@@ -1076,7 +1076,7 @@ class TestTheBatchDimIsNamedOnce:
         assert evaluation.failures["draw"].tolist() == [1]
         assert evaluation.valid.tolist() == [True, False, True]
 
-    def test_the_default_table_takes_the_named_batch_dim(
+    def test_the_default_hook_takes_the_named_batch_dim(
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = ForwardModel(
@@ -1089,7 +1089,7 @@ class TestTheBatchDimIsNamedOnce:
             batch_dim="draw",
         )
         evaluation = forward.evaluate(theta)
-        assert evaluation.sipnet_table["soil_carbon"].dims == ("draw", "site")
+        assert evaluation.sipnet_parameter_fields["soil_carbon"].dims == ("draw", "site")
         np.testing.assert_allclose(
             evaluation.predictions,
             ForwardModel(
@@ -1114,7 +1114,7 @@ class TestTheBatchDimIsNamedOnce:
                 observation_vector=observation_vector,
                 site_table=SITE_TABLE,
                 batch_dim="draw",
-                to_sipnet_table=parameter_vector.sipnet_table,
+                to_sipnet_parameter_fields=parameter_vector.sipnet_parameter_fields,
             )
 
     def test_a_reserved_name_is_refused(self, parameter_vector, climate, observation_vector):
@@ -1133,7 +1133,7 @@ class TestTheBatchDimIsNamedOnce:
         self, parameter_vector, climate, observation_vector, name
     ):
         """Even with a custom hook, which the vector's check never ran for."""
-        for hook in (None, parameter_vector.sipnet_table):
+        for hook in (None, parameter_vector.sipnet_parameter_fields):
             with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
                 ForwardModel(
                     scaled_niwot_model(),
@@ -1143,7 +1143,7 @@ class TestTheBatchDimIsNamedOnce:
                     observation_vector=observation_vector,
                     site_table=SITE_TABLE,
                     batch_dim=name,
-                    to_sipnet_table=hook,
+                    to_sipnet_parameter_fields=hook,
                 )
 
     def test_an_output_variable_name_is_refused_up_front(self, parameter_vector, climate):
@@ -1231,8 +1231,8 @@ class TestTheBatchDimIsNamedOnce:
         self, parameter_vector, climate, observation_vector
     ):
         def floats(theta):
-            table = parameter_vector.sipnet_table(theta)
-            return table.assign_coords(sample=table["sample"].values.astype(float))
+            sipnet_parameter_fields = parameter_vector.sipnet_parameter_fields(theta)
+            return sipnet_parameter_fields.assign_coords(sample=sipnet_parameter_fields["sample"].values.astype(float))
 
         with pytest.raises(ValueError, match="integer"):
             ForwardModel(
@@ -1242,7 +1242,7 @@ class TestTheBatchDimIsNamedOnce:
                 backend=SequentialBackend(),
                 observation_vector=observation_vector,
                 site_table=SITE_TABLE,
-                to_sipnet_table=floats,
+                to_sipnet_parameter_fields=floats,
             )
 
 
