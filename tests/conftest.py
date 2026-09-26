@@ -314,7 +314,7 @@ def real_driver_presence(real_drivers) -> xr.DataArray:
 
 @pytest.fixture(scope="session")
 def real_constraint_fields() -> tuple[dict, dict]:
-    """The constraint observations and their error variances, as field dicts.
+    """The constraints' observed values and their error variances, as field dicts.
 
     Both are keyed on constraint name. The fields have dims ``(site, time)``
     over the whole site pool and each constraint's own time labels, or
