@@ -81,12 +81,12 @@ from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
 from pysipnet.variables import resolve_output_variable
 
+from sipnet_calibration import fields
 from sipnet_calibration.conventions import SITE, TIME, FrozenMapping
 from sipnet_calibration.fields import (
     STACKED_LABEL_SUFFIX,
     batch_dims,
     coordinate_labels,
-    field_label,
     missing_labels,
     recorded_stacked_dims,
     scalar_batch_labels,
@@ -113,7 +113,7 @@ __all__ = [
     "check_operator_declares_names",
     "check_result_is_on_the_observation_grid",
     "extract_sipnet_parameter_at_coords",
-    "select_observed_sites",
+    "restrict_to_observed_sites",
 ]
 
 @runtime_checkable
@@ -155,7 +155,7 @@ class SelectTimestep:
         variable. On a call, if the observed values have no ``time``
         dimension (a static observation source is read by
         :class:`ReduceOverRun`), or for any
-        refusal of :func:`select_observed_sites` or
+        refusal of :func:`restrict_to_observed_sites` or
         :func:`~sipnet_calibration.observation.time_alignment.select_timestep_at`.
     """
 
@@ -174,7 +174,7 @@ class SelectTimestep:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         check_observed_values_are_dated(observed_values, type(self).__name__)
-        variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
+        variable = restrict_to_observed_sites(model_output[self.output_variable_name], observed_values)
         return select_timestep_at(variable, observed_values[TIME])
 
 
@@ -206,7 +206,7 @@ class ReduceOverWindows:
         beyond the model record, which would reduce over part of it
         (:func:`~sipnet_calibration.observation.time_alignment.check_run_spans_the_windows`);
         or for any refusal of
-        :func:`select_observed_sites` or
+        :func:`restrict_to_observed_sites` or
         :func:`~sipnet_calibration.observation.time_alignment.reduce_windows`.
     """
 
@@ -226,9 +226,9 @@ class ReduceOverWindows:
         return ()
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
-        variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
+        variable = restrict_to_observed_sites(model_output[self.output_variable_name], observed_values)
         windows = windows_from_observed_values(observed_values)
-        observed = field_label(observed_values, "the observed values")
+        observed = fields.message_name(observed_values, "the observation source")
         check_run_spans_the_windows(variable, windows, f"{type(self).__name__} on {observed}")
         return reduce_windows(variable, windows, self.how, labels=observed_values[TIME])
 
@@ -258,7 +258,7 @@ class ReduceOverRun:
         On construction, if *output_variable_name* is not a pySIPNET output
         variable or *how* is not a window reduction. On a call, if the
         observed values have a ``time`` dimension, or for any refusal of
-        :func:`select_observed_sites` or
+        :func:`restrict_to_observed_sites` or
         :func:`~sipnet_calibration.observation.time_alignment.reduce_windows`.
     """
 
@@ -279,7 +279,7 @@ class ReduceOverRun:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         check_observed_values_are_static(observed_values, type(self).__name__)
-        variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
+        variable = restrict_to_observed_sites(model_output[self.output_variable_name], observed_values)
         reduced = reduce_windows(variable, run_window(variable), self.how)
         return reduced.isel({TIME: 0}, drop=True)
 
@@ -301,7 +301,7 @@ class ComputeLeafAreaIndex:
         not a number.
     ValueError
         On a call, if the observed values have no ``time`` dimension, or for any
-        refusal of :func:`select_observed_sites`,
+        refusal of :func:`restrict_to_observed_sites`,
         :func:`extract_sipnet_parameter_at_coords` or
         :func:`~sipnet_calibration.observation.time_alignment.select_timestep_at`.
     """
@@ -316,7 +316,7 @@ class ComputeLeafAreaIndex:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         check_observed_values_are_dated(observed_values, type(self).__name__)
-        leaf_carbon = select_observed_sites(model_output["leaf_carbon"], observed_values)
+        leaf_carbon = restrict_to_observed_sites(model_output["leaf_carbon"], observed_values)
         per_area = extract_sipnet_parameter_at_coords(
             sipnet_parameters, "leaf_carbon_per_area", leaf_carbon
         )
@@ -335,64 +335,61 @@ DEFAULT_OBS_OPS: Mapping[str, ObservationOperator] = FrozenMapping(
 )
 
 
-def select_observed_sites(
-    source_field: xr.DataArray, target_field: xr.DataArray
+def restrict_to_observed_sites(
+    model_field: xr.DataArray, observed_values: xr.DataArray
 ) -> xr.DataArray:
-    """Restrict a field to the sites another field is on.
+    """Restrict a model field to the sites observed values are on.
 
-    The operators call this first, with an output variable as the source and
-    the observed values as the target, so that everything after it works on
-    the observation's sites, in the observation's order. A source with a
-    ``site`` dimension is selected down to the target's sites; a source from
-    one run, carrying ``site`` as a scalar coordinate, is returned unchanged
-    when it is the target's one site. Only the two fields' ``site``
-    coordinates are read.
+    The operators call this first, with an output variable as the model field,
+    so that everything after it works on the observed sites, in the observed
+    values' order. A model field with a ``site`` dimension is selected down to
+    the observed sites; a model field from one run, carrying ``site`` as a
+    scalar coordinate, is returned unchanged when it is the one observed site.
+    Only the two fields' ``site`` coordinates are read.
 
     Parameters
     ----------
-    source_field:
+    model_field:
         The field to restrict: typically one output variable of a model
         output, ``model_output[name]``, on ``(time,)`` with a scalar ``site``
         coordinate for one run, or on ``(site, time)`` or
         ``(*batch, site, time)`` for a stack. Its ``site`` labels are the
         site ids.
-    target_field:
-        The field whose sites the result is on: typically the observed values
-        of one product, ``(site[, time])``.
+    observed_values:
+        The observed values whose sites the result is on: those of one
+        observation source, ``(site[, time])``.
 
     Returns
     -------
     xarray.DataArray
-        *source_field* at the target's sites, in the order
-        *target_field* lists them, with every other dimension, coordinate
-        and attribute unchanged. For a one-run source, *source_field*
-        itself.
+        *model_field* at the observed sites, in the order *observed_values*
+        lists them, with every other dimension, coordinate and attribute
+        unchanged. For one run, *model_field* itself.
 
     Raises
     ------
     ValueError
-        If *target_field* lists a site twice; if *source_field* lacks a
-        site the observation observes; if *source_field* is one run at a
-        site other than the observation's one site, or the observation
-        observes several sites; or if *source_field* carries no ``site``
-        coordinate at all.
+        If *observed_values* lists a site twice; if *model_field* lacks an
+        observed site; if *model_field* is one run at a site other than the
+        one observed site, or several sites are observed; or if
+        *model_field* carries no ``site`` coordinate at all.
 
     Notes
     -----
-    A source with no ``site`` is refused rather than assumed to be the
+    A model field with no ``site`` is refused rather than assumed to be at the
     observed site: an unlabeled run could be any site, and matching it by
     position would be a guess. :func:`sipnet_calibration.fields.label_run`
     is what gives a run its site.
     """
-    wanted = coordinate_labels(target_field[SITE])
-    message_name = field_label(target_field, "the observation")
+    wanted = coordinate_labels(observed_values[SITE])
+    message_name = fields.message_name(observed_values, "the observation source")
     check_site_ids_are_unique(wanted, message_name=message_name)
-    if SITE in source_field.dims:
-        check_model_output_has_the_observed_sites(source_field, wanted, message_name)
-        return source_field.sel({SITE: wanted})
-    check_run_is_labeled_with_a_site(source_field, message_name)
-    check_run_is_at_the_observed_site(source_field, wanted, message_name)
-    return source_field
+    if SITE in model_field.dims:
+        check_model_output_has_the_observed_sites(model_field, wanted, message_name)
+        return model_field.sel({SITE: wanted})
+    check_run_is_labeled_with_a_site(model_field, message_name)
+    check_run_is_at_the_observed_site(model_field, wanted, message_name)
+    return model_field
 
 
 def extract_sipnet_parameter_at_coords(
@@ -841,7 +838,7 @@ def check_result_is_at_the_observed_sites(
     if SITE not in result.coords:
         raise ValueError(
             f"{message_name}: the result carries no site; select the model output with "
-            "select_observed_sites, which keeps the observed values' site labels."
+            "restrict_to_observed_sites, which keeps the observed values' site labels."
         )
     if coordinate_labels(result[SITE]) != wanted_sites:
         where = "on the observed values' sites, in order" if SITE in result.dims else (
@@ -850,7 +847,7 @@ def check_result_is_at_the_observed_sites(
         raise ValueError(
             f"{message_name}: the result is not {where} "
             f"({coordinate_labels(result[SITE])[:10]} for {wanted_sites[:10]}); select "
-            "the model output with select_observed_sites, which follows the observed values."
+            "the model output with restrict_to_observed_sites, which follows the observed values."
         )
 
 
@@ -905,8 +902,8 @@ def check_observed_values_are_dated(observed_values: xr.DataArray, message_name:
     if TIME not in observed_values.dims:
         raise ValueError(
             f"{message_name} reads the model at each observed time label, and "
-            f"{field_label(observed_values, 'the observed values')} has no {TIME!r} "
-            "dimension; a static observation source is read over the whole run, with "
+            f"{fields.message_name(observed_values, 'the observation source')} has no "
+            f"{TIME!r} dimension; a static observation source is read over the whole run, with "
             "ReduceOverRun."
         )
 
@@ -915,15 +912,15 @@ def check_observed_values_are_static(observed_values: xr.DataArray, message_name
     if TIME in observed_values.dims:
         raise ValueError(
             f"{message_name} reads a static observation source, and "
-            f"{field_label(observed_values, 'the observed values')} has a {TIME!r} dimension; "
-            "use ReduceOverWindows or SelectTimestep."
+            f"{fields.message_name(observed_values, 'the observation source')} has a "
+            f"{TIME!r} dimension; use ReduceOverWindows or SelectTimestep."
         )
 
 
 def check_model_output_has_the_observed_sites(
-    source_field: xr.DataArray, wanted: Sequence[Any], message_name: str
+    model_field: xr.DataArray, wanted: Sequence[Any], message_name: str
 ) -> None:
-    missing = missing_labels(source_field, SITE, wanted)
+    missing = missing_labels(model_field, SITE, wanted)
     if missing:
         raise ValueError(
             f"the model output has no site(s) {missing[:10]} that {message_name} observes; "
@@ -932,8 +929,8 @@ def check_model_output_has_the_observed_sites(
         )
 
 
-def check_run_is_labeled_with_a_site(source_field: xr.DataArray, message_name: str) -> None:
-    if SITE not in source_field.coords:
+def check_run_is_labeled_with_a_site(model_field: xr.DataArray, message_name: str) -> None:
+    if SITE not in model_field.coords:
         raise ValueError(
             f"the model output carries no {SITE!r} coordinate, so it cannot be matched to "
             f"the sites {message_name} observes; label the run with fields.label_run(site=...)."
@@ -941,13 +938,13 @@ def check_run_is_labeled_with_a_site(source_field: xr.DataArray, message_name: s
 
 
 def check_run_is_at_the_observed_site(
-    source_field: xr.DataArray, wanted: Sequence[Any], message_name: str
+    model_field: xr.DataArray, wanted: Sequence[Any], message_name: str
 ) -> None:
-    site = int(source_field[SITE].values)
+    site = int(model_field[SITE].values)
     if list(wanted) != [site]:
         raise ValueError(
             f"the model output is one run at site {site}, and {message_name} observes "
-            f"site(s) {list(wanted)[:10]}; select the observation to that one site."
+            f"site(s) {list(wanted)[:10]}; select the observed values to that one site."
         )
 
 

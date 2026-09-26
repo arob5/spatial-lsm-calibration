@@ -37,7 +37,7 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.drivers import (
     DRIVER_PRESENT,
-    DRIVER_VARIABLES,
+    DRIVER_VARIABLE_NAMES,
     NEGATIVE_TOLERANCE,
     UNITS_PROVENANCE,
     available_members,
@@ -57,7 +57,7 @@ FILE_COLUMNS = (
 )
 
 #: The value columns, in file order, under SIPNET's names and pySIPNET's.
-VALUE_COLUMNS = dict(zip(FILE_COLUMNS[5:13], DRIVER_VARIABLES, strict=True))
+VALUE_COLUMNS = dict(zip(FILE_COLUMNS[5:13], DRIVER_VARIABLE_NAMES, strict=True))
 
 
 # ── synthetic files ───────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ def root(tmp_path) -> Path:
 
 class TestSchemaConstants:
     def test_the_variables_are_pysipnets_value_columns_in_file_order(self):
-        assert DRIVER_VARIABLES == (
+        assert DRIVER_VARIABLE_NAMES == (
             "air_temperature",
             "soil_temperature",
             "photosynthetically_active_radiation",
@@ -151,7 +151,7 @@ class TestSchemaConstants:
             "vapor_pressure",
             "wind_speed",
         )
-        assert set(DRIVER_VARIABLES) < set(CLIMATE_COLUMN_NAMES)
+        assert set(DRIVER_VARIABLE_NAMES) < set(CLIMATE_COLUMN_NAMES)
 
 
 # ── paths ─────────────────────────────────────────────────────────────────────
@@ -261,8 +261,8 @@ class TestReadDriverFile:
 class TestLoadDrivers:
     def test_returns_the_documented_dims_coords_and_dtypes(self, root, site_table):
         dataset = load_drivers([3, 7], root=root, site_table=site_table)
-        assert tuple(dataset.data_vars) == DRIVER_VARIABLES
-        for name in DRIVER_VARIABLES:
+        assert tuple(dataset.data_vars) == DRIVER_VARIABLE_NAMES
+        for name in DRIVER_VARIABLE_NAMES:
             assert dataset[name].dims == ("driver_member", "site", "time")
             assert dataset[name].dtype == np.float64
         assert dataset.sizes == {"driver_member": 2, "site": 2, "time": 2920, "bounds": 2}
@@ -285,7 +285,7 @@ class TestLoadDrivers:
     def test_values_are_the_files_values(self, root, site_table):
         dataset = load_drivers([3, 7], root=root, site_table=site_table)
         frame = read_driver_file(driver_file(root, 7, 2)).pandas
-        for name in DRIVER_VARIABLES:
+        for name in DRIVER_VARIABLE_NAMES:
             np.testing.assert_array_equal(
                 dataset[name].sel(site=7, driver_member=1).values, frame[name].to_numpy()
             )
@@ -315,7 +315,7 @@ class TestLoadDrivers:
     def test_the_variable_attributes_are_pysipnets_plus_the_units_caveat(self, root, site_table):
         dataset = load_drivers([3], root=root, site_table=site_table)
         own = read_driver_file(driver_file(root, 3, 1)).xarray
-        for name in DRIVER_VARIABLES:
+        for name in DRIVER_VARIABLE_NAMES:
             attrs = dict(dataset[name].attrs)
             assert attrs.pop("units_provenance") == UNITS_PROVENANCE
             attrs.pop("n_values_below_zero", None)
@@ -654,7 +654,7 @@ class TestDriverFields:
     def test_one_field_per_variable_in_order(self, root, site_table):
         dataset = load_drivers([3], root=root, site_table=site_table, allow_missing=True)
         fields = driver_fields(dataset)
-        assert tuple(fields) == DRIVER_VARIABLES
+        assert tuple(fields) == DRIVER_VARIABLE_NAMES
         for name, field in fields.items():
             assert field.name == name
             assert field.dims == ("driver_member", "site", "time")

@@ -21,7 +21,7 @@ from sipnet_calibration.observation import (
     ObservationVector,
     ReduceOverRun,
     SelectTimestep,
-    select_observed_sites,
+    restrict_to_observed_sites,
     select_timestep_at,
 )
 
@@ -591,7 +591,7 @@ class TestFailedRuns:
             sipnet_parameter_names = ()
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
-                leaf = select_observed_sites(model_output["leaf_carbon"], observed_values)
+                leaf = restrict_to_observed_sites(model_output["leaf_carbon"], observed_values)
                 out = select_timestep_at(leaf, observed_values["time"])
                 out.loc[{"sample": 1, "site": 2, "time": out["time"].values[-1]}] = np.nan
                 out.attrs = {"units": "1"}
@@ -830,7 +830,7 @@ class TestFailureMaskIsMatchedByLabel:
             sipnet_parameter_names = ()
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
-                picked = select_observed_sites(model_output["wood_carbon"], observed_values)
+                picked = restrict_to_observed_sites(model_output["wood_carbon"], observed_values)
                 out = select_timestep_at(picked, observed_values["time"])
                 out[..., -1] = np.nan
                 return out

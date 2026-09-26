@@ -383,16 +383,16 @@ def draw_graticule(
 
     if labels:
         _label_crossings(
-            ax, meridians, side="bottom", at=y_min, bounds=(x_min, x_max), longitude=True
+            ax, meridians, side="bottom", edge=y_min, bounds=(x_min, x_max), longitude=True
         )
         on_left = _label_crossings(
-            ax, parallels, side="left", at=x_min, bounds=(y_min, y_max), longitude=False
+            ax, parallels, side="left", edge=x_min, bounds=(y_min, y_max), longitude=False
         )
         # Over a wide frame the northern parallels are arcs that leave through
         # the top edge rather than the left, and would otherwise go unlabeled.
         _label_crossings(
             ax, [line for line in parallels if line[0] not in on_left], side="top",
-            at=y_max, bounds=(x_min, x_max), longitude=False,
+            edge=y_max, bounds=(x_min, x_max), longitude=False,
         )
     return collection
 
@@ -465,12 +465,12 @@ def _graticule_lines(spacing: float, *, meridians: bool) -> list[tuple[float, li
 
 
 def _label_crossings(
-    ax, lines, *, side: str, at: float, bounds: tuple[float, float], longitude: bool
+    ax, lines, *, side: str, edge: float, bounds: tuple[float, float], longitude: bool
 ) -> set[float]:
     """Label each line where it crosses one edge of the frame; return those labeled.
 
     *side* is ``"bottom"`` or ``"top"``, for crossings of the horizontal line
-    ``y = at`` placed by their x, or ``"left"``, for crossings of ``x = at``
+    ``y = edge`` placed by their x, or ``"left"``, for crossings of ``x = edge``
     placed by their y.
     """
     across, along = (0, 1) if side == "left" else (1, 0)
@@ -484,7 +484,7 @@ def _label_crossings(
     labeled: set[float] = set()
     for value, parts in lines:
         for part in parts:
-            offset = part[:, across] - at
+            offset = part[:, across] - edge
             for i in np.flatnonzero(offset[:-1] * offset[1:] < 0):
                 t = offset[i] / (offset[i] - offset[i + 1])
                 position = part[i, along] + t * (part[i + 1, along] - part[i, along])
@@ -494,7 +494,7 @@ def _label_crossings(
                     continue
                 placed.append(position)
                 labeled.add(value)
-                point = (at, position) if side == "left" else (position, at)
+                point = (edge, position) if side == "left" else (position, edge)
                 ax.annotate(
                     _format_degrees(value, longitude=longitude),
                     point, xytext=offset_points, textcoords="offset points", fontsize=7,

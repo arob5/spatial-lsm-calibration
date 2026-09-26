@@ -5,10 +5,10 @@ Two abstractions and a handful of functions:
 * :class:`ObservationOperator` (a protocol) and the shipped operators
   :class:`SelectTimestep`, :class:`ReduceOverWindows`,
   :class:`ReduceOverRun`, :class:`ComputeLeafAreaIndex`, with
-  :data:`DEFAULT_OBS_OPS` binding a product to its default operator where the
-  construction is established from a primary source. An operator is written
-  with :func:`select_observed_sites`, which restricts the model output to the
-  observed sites, and :func:`extract_sipnet_parameter_at_coords`, which lines
+  :data:`DEFAULT_OBS_OPS` binding an observation source to its default
+  operator where the construction is established from a primary source. An
+  operator is written with :func:`restrict_to_observed_sites`, which restricts
+  the model output to the observed sites, and :func:`extract_sipnet_parameter_at_coords`, which lines
   a SIPNET parameter's values up with it; :func:`check_operator` checks one
   against the contract, through the same checks the vector applies
   (:func:`check_operator_declares_names`,
@@ -47,7 +47,7 @@ from sipnet_calibration.observation.operators import (
     check_operator_declares_names,
     check_result_is_on_the_observation_grid,
     extract_sipnet_parameter_at_coords,
-    select_observed_sites,
+    restrict_to_observed_sites,
 )
 from sipnet_calibration.observation.time_alignment import (
     DEFAULT_METHOD_FOR_KIND,
@@ -90,8 +90,8 @@ __all__ = [
     "check_result_is_on_the_observation_grid",
     "extract_sipnet_parameter_at_coords",
     "reduce_windows",
+    "restrict_to_observed_sites",
     "run_window",
-    "select_observed_sites",
     "select_timestep_at",
     "window_counts",
     "windows_from_observed_values",

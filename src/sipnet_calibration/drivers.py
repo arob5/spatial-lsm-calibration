@@ -60,7 +60,7 @@ ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 
 **Data variables**, all ``float64`` on ``(driver_member, site, time)``: the
 eight value columns of the climate file, under pySIPNET's registry names,
-listed in :data:`DRIVER_VARIABLES` -- ``air_temperature``, ``soil_temperature``,
+listed in :data:`DRIVER_VARIABLE_NAMES` -- ``air_temperature``, ``soil_temperature``,
 ``photosynthetically_active_radiation``, ``precipitation``,
 ``vapor_pressure_deficit``, ``soil_vapor_pressure_deficit``,
 ``vapor_pressure`` and ``wind_speed``. Each carries the attributes pySIPNET
@@ -256,7 +256,7 @@ __all__ = [
     "DRIVER_DIRECTORY_TEMPLATE",
     "DRIVER_FILE_GLOB",
     "DRIVER_PRESENT",
-    "DRIVER_VARIABLES",
+    "DRIVER_VARIABLE_NAMES",
     "NEGATIVE_TOLERANCE",
     "UNITS_PROVENANCE",
     "available_members",
@@ -270,7 +270,7 @@ __all__ = [
 #: The driver variables, under pySIPNET's names, in climate-file column order:
 #: every column of pySIPNET's climate registry outside its ``time`` group, which
 #: becomes the time axis.
-DRIVER_VARIABLES: tuple[str, ...] = tuple(
+DRIVER_VARIABLE_NAMES: tuple[str, ...] = tuple(
     spec.name for spec in CLIMATE_VARIABLES if spec.group != "time"
 )
 
@@ -468,7 +468,7 @@ def load_drivers(
     -------
     xarray.Dataset
         The Data model described in the module docstring: the eight
-        :data:`DRIVER_VARIABLES` on ``(driver_member, site, time)``,
+        :data:`DRIVER_VARIABLE_NAMES` on ``(driver_member, site, time)``,
         ``float64``, with pySIPNET's time coordinates, ``lon``/``lat`` on
         ``site`` and ``source_index`` on ``driver_member``.
 
@@ -531,7 +531,7 @@ def load_drivers(
 
 
 def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
-    """One ``DataArray`` per driver variable, in :data:`DRIVER_VARIABLES` order.
+    """One ``DataArray`` per driver variable, in :data:`DRIVER_VARIABLE_NAMES` order.
 
     Each field has dims ``(driver_member, site, time)``, is named for its
     variable, keeps that variable's attributes, and carries pySIPNET's
@@ -555,7 +555,7 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     Raises
     ------
     ValueError
-        If any of :data:`DRIVER_VARIABLES` is absent from *dataset*.
+        If any of :data:`DRIVER_VARIABLE_NAMES` is absent from *dataset*.
 
     Notes
     -----
@@ -564,14 +564,14 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     :func:`sipnet_calibration.fields.from_sipnet_output` does for a model
     field.
     """
-    missing = [name for name in DRIVER_VARIABLES if name not in dataset.data_vars]
+    missing = [name for name in DRIVER_VARIABLE_NAMES if name not in dataset.data_vars]
     if missing:
         raise ValueError(
             f"dataset is missing driver variables {missing}; found "
             f"{sorted(dataset.data_vars)}"
         )
     fields = {}
-    for name in DRIVER_VARIABLES:
+    for name in DRIVER_VARIABLE_NAMES:
         field = dataset[name].copy(deep=False)
         field[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
         fields[name] = field
@@ -697,10 +697,10 @@ def _read_all(
         if reference is None:
             reference, reference_path = dataset, path
             shape = present.shape + (dataset.sizes[TIME],)
-            arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLES}
+            arrays = {name: np.full(shape, np.nan) for name in DRIVER_VARIABLE_NAMES}
         else:
             _check_time_axes_identical(reference, dataset, reference_path=reference_path, path=path)
-        for name in DRIVER_VARIABLES:
+        for name in DRIVER_VARIABLE_NAMES:
             arrays[name][i, j, :] = dataset[name].to_numpy()
     assert reference is not None
     return arrays, reference
@@ -719,7 +719,7 @@ def _assemble(
     """Put the arrays into the Dataset the module docstring describes."""
     dims = (DRIVER_MEMBER, SITE, TIME)
     data_vars = {}
-    for name in DRIVER_VARIABLES:
+    for name in DRIVER_VARIABLE_NAMES:
         values = arrays[name]
         attrs = {**reference[name].attrs, "units_provenance": UNITS_PROVENANCE}
         observed = values[present]

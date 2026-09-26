@@ -179,7 +179,7 @@ SIPNET maps: the :class:`SIPNETMap` protocol, :class:`Identity`,
 :class:`ParameterVector`; :func:`sipnet_overrides`;
 :func:`example_parameter_vector`, the worked example and test fixture.
 
-Constants: :data:`REQUIRED_SIPNET_PARAMETERS`; :data:`NATURAL`,
+Constants: :data:`REQUIRED_SIPNET_PARAMETER_NAMES`; :data:`NATURAL`,
 :data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
 :data:`FIELDS_REPRESENTATION` and :data:`SIPNET_PARAMETER_FIELDS_REPRESENTATION`, the
 ``representation`` attribute of each dataset.
@@ -325,7 +325,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
 
     # Subset it.
     conifer = vector.select(labels={"pft": ["boreal.coniferous"]})         # ParameterVector, D = 8
-    two = vector.select(parameters=("allocation", "initial_soil_carbon"))  # ParameterVector, D = 9
+    two = vector.select(parameter_names=("allocation", "initial_soil_carbon"))  # D = 9
 
     # Sample it and evaluate its density.
     theta = vector.sample(jax.random.key(0), n=50)     # Flat: jax.Array (50, 13), unconstrained
@@ -421,7 +421,7 @@ __all__ = [
     "FIELDS_REPRESENTATION",
     "NATURAL",
     "PHOTOSYNTHESIS",
-    "REQUIRED_SIPNET_PARAMETERS",
+    "REQUIRED_SIPNET_PARAMETER_NAMES",
     "RESERVED_PARAMETER_NAMES",
     "RESERVED_SITE_LABELS_NAMES",
     "SHARED",
@@ -663,19 +663,19 @@ class SIPNETMap(Protocol):
 
     Attributes
     ----------
-    writes:
+    sipnet_parameter_names_written:
         SIPNET parameters this SIPNET map sets.
-    reads:
+    sipnet_parameter_names_read:
         Fixed SIPNET parameters it needs; ``()`` for most.
-    components:
+    component_names:
         Names of the ``k`` components of the natural-space value, in order.
     component_units:
         UDUNITS units of each component, in the same order.
     """
 
-    writes: tuple[str, ...]
-    reads: tuple[str, ...]
-    components: tuple[str, ...]
+    sipnet_parameter_names_written: tuple[str, ...]
+    sipnet_parameter_names_read: tuple[str, ...]
+    component_names: tuple[str, ...]
     component_units: tuple[str, ...]
 
     def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
@@ -691,15 +691,15 @@ class Identity:
     parameter: str
 
     @property
-    def writes(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
         return (self.parameter,)
 
     @property
-    def reads(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
     @property
-    def components(self) -> tuple[str, ...]:
+    def component_names(self) -> tuple[str, ...]:
         return (self.parameter,)
 
     @property
@@ -720,30 +720,31 @@ class SimplexMap:
 
     Parameters
     ----------
-    writes:
+    sipnet_parameter_names_written:
         SIPNET parameters for the first ``k - 1`` components, in order.
     residual:
         Name of the last component; it names a Fields variable and is
         written to no SIPNET parameter.
     """
 
-    writes: tuple[str, ...]
+    sipnet_parameter_names_written: tuple[str, ...]
     residual: str
 
     @property
-    def reads(self) -> tuple[str, ...]:
+    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         return ()
 
     @property
-    def components(self) -> tuple[str, ...]:
-        return (*self.writes, self.residual)
+    def component_names(self) -> tuple[str, ...]:
+        return (*self.sipnet_parameter_names_written, self.residual)
 
     @property
     def component_units(self) -> tuple[str, ...]:
-        return ("1",) * len(self.components)
+        return ("1",) * len(self.component_names)
 
     def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
-        return {name: natural[..., i] for i, name in enumerate(self.writes)}
+        names = self.sipnet_parameter_names_written
+        return {name: natural[..., i] for i, name in enumerate(names)}
 
 
 @dataclass(frozen=True)
@@ -772,7 +773,7 @@ class PhotosynthesisMap:
         \\qquad
         \\texttt{aMax} = \\frac{P\\,\\texttt{cFracLeaf}\\,(1 - \\rho)}{\\texttt{aMaxFrac}}.
 
-    ``components = ("capacity", "respiration_share")``, in that order.
+    ``component_names = ("capacity", "respiration_share")``, in that order.
     ``capacity`` is nmol CO2 per gram of leaf carbon per second: its unit
     string is ``max_photosynthesis_rate``'s, whose gram is of leaf dry
     mass, since ``cFracLeaf`` converts one to the other and has unit
@@ -790,9 +791,15 @@ class PhotosynthesisMap:
     hence ``rho`` for the share.
     """
 
-    writes: tuple[str, ...] = ("max_photosynthesis_rate", "foliar_respiration_fraction")
-    reads: tuple[str, ...] = ("daily_mean_photosynthesis_fraction", "leaf_carbon_fraction")
-    components: tuple[str, ...] = ("capacity", "respiration_share")
+    sipnet_parameter_names_written: tuple[str, ...] = (
+        "max_photosynthesis_rate",
+        "foliar_respiration_fraction",
+    )
+    sipnet_parameter_names_read: tuple[str, ...] = (
+        "daily_mean_photosynthesis_fraction",
+        "leaf_carbon_fraction",
+    )
+    component_names: tuple[str, ...] = ("capacity", "respiration_share")
 
     @property
     def component_units(self) -> tuple[str, ...]:
@@ -809,7 +816,7 @@ class PhotosynthesisMap:
 
 
 ALLOCATION = SimplexMap(
-    writes=("leaf_allocation", "wood_allocation", "fine_root_allocation"),
+    sipnet_parameter_names_written=("leaf_allocation", "wood_allocation", "fine_root_allocation"),
     residual="coarse_root_allocation",
 )
 """The allocation simplex: the 4-vector (leaf, wood, fine root, coarse root)
@@ -851,7 +858,7 @@ dimension or coordinate names already, or reserved for one: those of
 table's ``site_id``. It may not be named like a calibration parameter or a
 SIPNET parameter either."""
 
-REQUIRED_SIPNET_PARAMETERS: tuple[str, ...] = tuple(
+REQUIRED_SIPNET_PARAMETER_NAMES: tuple[str, ...] = tuple(
     name
     for group in SIPNETParameters.model_fields.values()
     for name, field_info in group.annotation.model_fields.items()
@@ -941,7 +948,10 @@ class CalibrationParameter:
         check_prior_is_a_distribution(self)
         check_sipnet_map_is_a_sipnet_map(self)
         check_sipnet_parameters_exist(
-            (*self.sipnet_map.writes, *self.sipnet_map.reads),
+            (
+                *self.sipnet_map.sipnet_parameter_names_written,
+                *self.sipnet_map.sipnet_parameter_names_read,
+            ),
             f"calibration parameter {self.name}",
         )
         check_prior_is_float64(self)
@@ -975,7 +985,7 @@ class CalibrationParameter:
     @property
     def components(self) -> tuple[str, ...]:
         """Natural-space component names, from the SIPNET map."""
-        return tuple(self.sipnet_map.components)
+        return tuple(self.sipnet_map.component_names)
 
     @property
     def component_units(self) -> tuple[str, ...]:
@@ -1111,7 +1121,7 @@ class Layout:
 
     Attributes
     ----------
-    parameters:
+    parameter_names:
         Calibration parameter names in layout order.
     sizes:
         Columns per group, per calibration parameter.
@@ -1136,7 +1146,7 @@ class Layout:
         layout.index("allocation", group="conifer")        # array([2, 3, 4])
     """
 
-    parameters: tuple[str, ...]
+    parameter_names: tuple[str, ...]
     sizes: Mapping[str, int]
     groups: Mapping[str, tuple[Any, ...]]
     dims: Mapping[str, str]
@@ -1146,7 +1156,7 @@ class Layout:
     def slices(self) -> dict[str, slice]:
         """The contiguous slice of ``theta`` each calibration parameter owns."""
         out, start = {}, 0
-        for name in self.parameters:
+        for name in self.parameter_names:
             width = len(self.groups[name]) * self.sizes[name]
             out[name] = slice(start, start + width)
             start += width
@@ -1155,14 +1165,14 @@ class Layout:
     @property
     def dimension(self) -> int:
         """``D``."""
-        return sum(len(self.groups[n]) * self.sizes[n] for n in self.parameters)
+        return sum(len(self.groups[n]) * self.sizes[n] for n in self.parameter_names)
 
     @cached_property
     def column_labels(self) -> tuple[str, ...]:
         """``D`` strings: ``"c"``, ``"c[group]"``, ``"c[element]"`` or
         ``"c[group][element]"`` as the calibration parameter needs."""
         out = []
-        for name in self.parameters:
+        for name in self.parameter_names:
             groups, elements = self.groups[name], self.element_labels[name]
             for group in groups:
                 for element in elements:
@@ -1198,19 +1208,19 @@ class Layout:
             name: theta[..., self.slices[name]].reshape(
                 (*lead, len(self.groups[name]), self.sizes[name])
             )
-            for name in self.parameters
+            for name in self.parameter_names
         }
 
     def pack(self, parts: Mapping[str, Array]) -> Array:
         """Inverse of :meth:`unpack`; refuses a missing or extra calibration
         parameter."""
-        if set(parts) != set(self.parameters):
+        if set(parts) != set(self.parameter_names):
             raise ValueError(
                 "Layout.pack: expected exactly the calibration parameters "
-                f"{list(self.parameters)}, got {sorted(parts)}."
+                f"{list(self.parameter_names)}, got {sorted(parts)}."
             )
         pieces = []
-        for name in self.parameters:
+        for name in self.parameter_names:
             part = jnp.asarray(parts[name], dtype=jnp.float64)
             expected = (len(self.groups[name]), self.sizes[name])
             if part.shape[-2:] != expected:
@@ -1230,7 +1240,7 @@ class Layout:
     def _known(self, parameter: str) -> str:
         if parameter not in self.slices:
             raise KeyError(
-                f"Layout: no calibration parameter {parameter!r}; have {list(self.parameters)}."
+                f"Layout: no calibration parameter {parameter!r}; have {list(self.parameter_names)}."
             )
         return parameter
 
@@ -1276,7 +1286,7 @@ class ParameterVector:
         ``theta``.
     fixed:
         The SIPNET parameters held at a value. Every SIPNET parameter any
-        SIPNET map ``reads`` must appear here.
+        SIPNET map reads (``sipnet_parameter_names_read``) must appear here.
     sites:
         The sites the vector is defined over, as site ids, ascending. Give
         this or *site_table*, not both. The ids are the site table's; ids of
@@ -1298,7 +1308,7 @@ class ParameterVector:
         site, in site order.
         The module Notes say how each decides the groups.
     require_complete:
-        Refuse a vector that leaves any :data:`REQUIRED_SIPNET_PARAMETERS`
+        Refuse a vector that leaves any :data:`REQUIRED_SIPNET_PARAMETER_NAMES`
         neither calibrated nor fixed. Off by default, so a partial vector can
         run on top of a base parameter set.
 
@@ -1413,16 +1423,18 @@ class ParameterVector:
     def sipnet_parameter_names(self) -> tuple[str, ...]:
         """Every SIPNET parameter this vector sets, calibrated and fixed, in
         pySIPNET's declaration order."""
-        written = {n for p in self.parameters for n in p.sipnet_map.writes}
+        written = {
+            n for p in self.parameters for n in p.sipnet_map.sipnet_parameter_names_written
+        }
         written |= {f.name for f in self.fixed}
         return tuple(n for n in _FLAT_SPECS if n in written)
 
     @property
     def unset_sipnet_parameter_names(self) -> tuple[str, ...]:
-        """The :data:`REQUIRED_SIPNET_PARAMETERS` this vector leaves to the
+        """The :data:`REQUIRED_SIPNET_PARAMETER_NAMES` this vector leaves to the
         base parameter set."""
         written = set(self.sipnet_parameter_names)
-        return tuple(n for n in REQUIRED_SIPNET_PARAMETERS if n not in written)
+        return tuple(n for n in REQUIRED_SIPNET_PARAMETER_NAMES if n not in written)
 
     @property
     def dimension(self) -> int:
@@ -1434,7 +1446,7 @@ class ParameterVector:
         """Where each calibration parameter lives in ``theta``; see
         :class:`Layout`."""
         return Layout(
-            parameters=self.parameter_names,
+            parameter_names=self.parameter_names,
             sizes={p.name: p.size for p in self.parameters},
             groups={p.name: self.group_labels(p.varies_by) for p in self.parameters},
             dims={p.name: p.varies_by or SHARED for p in self.parameters},
@@ -1486,7 +1498,7 @@ class ParameterVector:
     def select(
         self,
         *,
-        parameters: Sequence[str] | None = None,
+        parameter_names: Sequence[str] | None = None,
         sites: Sequence[int] | None = None,
         labels: Mapping[str, Any] | None = None,
     ) -> ParameterVector:
@@ -1495,7 +1507,7 @@ class ParameterVector:
 
         Parameters
         ----------
-        parameters:
+        parameter_names:
             Calibration parameter names to keep, a sequence; ``None`` keeps
             all. They keep this vector's layout order. Fixed parameters are
             always kept.
@@ -1520,7 +1532,7 @@ class ParameterVector:
         Raises
         ------
         TypeError
-            If *parameters*, *sites* or a *labels* value is one value, a
+            If *parameter_names*, *sites* or a *labels* value is one value, a
             string or a set; if a name or class is not a string; or if a site
             id is a boolean, a float or not a number.
         KeyError
@@ -1536,7 +1548,7 @@ class ParameterVector:
         ensemble across, go through Fields, where the correspondence is by
         site and by variable: ``small.flat(big.fields(theta))``.
         """
-        names = self._selected_parameter_names(parameters)
+        names = self._selected_parameter_names(parameter_names)
         kept = self._selected_sites(sites, labels)
         positions = np.asarray([self.sites.index(s) for s in kept])
         site_labels = {
@@ -1574,7 +1586,9 @@ class ParameterVector:
                             "parameter": parameter.name,
                             "group": group,
                             "element": element,
-                            "sipnet_parameters": ", ".join(parameter.sipnet_map.writes),
+                            "sipnet_parameters": ", ".join(
+                                parameter.sipnet_map.sipnet_parameter_names_written
+                            ),
                             "distribution": parameter.distribution_name,
                             "theta_mean": moments[0][g, e],
                             "theta_sd": moments[1][g, e],
@@ -1936,10 +1950,12 @@ class ParameterVector:
             return parameter
         return dataclasses.replace(parameter, value={s: parameter.value[s] for s in kept})
 
-    def _selected_parameter_names(self, parameters: Sequence[str] | None) -> tuple[str, ...]:
-        if parameters is None:
+    def _selected_parameter_names(
+        self, parameter_names: Sequence[str] | None
+    ) -> tuple[str, ...]:
+        if parameter_names is None:
             return self.parameter_names
-        wanted = as_names(parameters, message_name="parameters")
+        wanted = as_names(parameter_names, message_name="parameter_names")
         unknown = [n for n in wanted if n not in self.parameter_names]
         if unknown:
             raise KeyError(
@@ -2702,7 +2718,7 @@ def _fields_attributes(
         space=space,
         long_name=f"{parameter.name}: {label}",
         units=parameter.component_units[index] if space == NATURAL else "1",
-        sipnet_parameters=", ".join(parameter.sipnet_map.writes),
+        sipnet_parameters=", ".join(parameter.sipnet_map.sipnet_parameter_names_written),
     )
     return attributes
 
@@ -2733,7 +2749,7 @@ def _summary(vector: ParameterVector) -> str:
                 str(vector.n_groups(p.varies_by)),
                 str(p.size),
                 prior,
-                ", ".join(p.sipnet_map.writes),
+                ", ".join(p.sipnet_map.sipnet_parameter_names_written),
             )
         )
     widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
@@ -2801,7 +2817,8 @@ def check_sipnet_map_is_a_sipnet_map(parameter: CalibrationParameter) -> None:
     if not isinstance(parameter.sipnet_map, SIPNETMap):
         raise TypeError(
             f"calibration parameter {parameter.name!r}: sipnet_map must be a SIPNETMap "
-            "(with writes, reads, components, component_units and __call__) or a SIPNET "
+            "(with sipnet_parameter_names_written, sipnet_parameter_names_read, "
+            "component_names, component_units and __call__) or a SIPNET "
             f"parameter name; got {type(parameter.sipnet_map).__name__}."
         )
 
@@ -3010,7 +3027,7 @@ def check_each_sipnet_parameter_has_one_writer(
 ) -> None:
     writers: dict[str, list[str]] = {}
     for parameter in parameters:
-        for name in parameter.sipnet_map.writes:
+        for name in parameter.sipnet_map.sipnet_parameter_names_written:
             writers.setdefault(name, []).append(f"calibration parameter {parameter.name}")
     for parameter in fixed:
         writers.setdefault(parameter.name, []).append("fixed")
@@ -3027,7 +3044,8 @@ def check_reads_are_fixed(
 ) -> None:
     fixed_names = {f.name for f in fixed}
     for parameter in parameters:
-        missing = [n for n in parameter.sipnet_map.reads if n not in fixed_names]
+        read = parameter.sipnet_map.sipnet_parameter_names_read
+        missing = [n for n in read if n not in fixed_names]
         if missing:
             raise ValueError(
                 f"calibration parameter {parameter.name!r} reads {missing}, which are not "
@@ -3245,10 +3263,10 @@ def check_site_labels_are_present(name: str, labels: Sequence[Any]) -> None:
 def check_sipnet_map_returns_what_it_writes(
     parameter: CalibrationParameter, written: Mapping[str, Any]
 ) -> None:
-    declared = set(parameter.sipnet_map.writes)
+    declared = set(parameter.sipnet_map.sipnet_parameter_names_written)
     if set(written) != declared:
         raise ValueError(
-            f"calibration parameter {parameter.name!r}: its SIPNET map declares writes "
+            f"calibration parameter {parameter.name!r}: its SIPNET map declares it writes "
             f"{sorted(declared)} but returns {sorted(written)}; they must be the same."
         )
 

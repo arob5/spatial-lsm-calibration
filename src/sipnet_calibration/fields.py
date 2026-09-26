@@ -206,8 +206,9 @@ Functions
 :func:`resolve_output_variable_names`
     Requested output variable names as pySIPNET registry names, in order,
     without repeats.
-:func:`field_label`
-    How a field is called in a message: its name, or else its derivation.
+:func:`message_name`
+    The name an error message uses for a field: its name, or else its
+    derivation; the value a check takes as its ``message_name``.
 :func:`coordinate_labels`, :func:`missing_labels`
     A coordinate's labels as a list, and the labels a field's coordinate
     lacks, in the order asked for.
@@ -399,10 +400,10 @@ __all__ = [
     "check_dims_are_batch_spatial_or_time",
     "check_labeled_dims_are_batch_spatial_or_time",
     "coordinate_labels",
-    "field_label",
     "from_sipnet_output",
     "is_categorical",
     "label_run",
+    "message_name",
     "missing_labels",
     "recorded_stacked_dims",
     "resolve_output_variable_names",
@@ -495,7 +496,7 @@ def validate_field(field: Any, *, message_name: str | None = None) -> None:
     nor that batch labels are ``int64``: any integer dtype is a batch label.
     """
     check_field_is_a_dataarray(field, message_name)
-    name = message_name if message_name is not None else field_label(field)
+    name = message_name if message_name is not None else _message_name(field)
     check_field_dims_are_field_dims(field, name)
     check_field_site_holds_site_ids(field, name)
     check_field_locations_are_on_the_spatial_dim(field, name)
@@ -679,7 +680,7 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
     """
     validate_field(field)
     dims = batch_dims(field)
-    check_field_has_a_batch_dim(dims, field_label(field))
+    check_field_has_a_batch_dim(dims, message_name(field))
     label_names = {dim: f"{dim}{STACKED_LABEL_SUFFIX}" for dim in dims}
     check_stack_names_are_free(field, into, dims, tuple(label_names.values()))
     companions = _companion_coordinates(field, dims)
@@ -780,7 +781,7 @@ def unstack_batch_dims(
     unstacked = unstacked.transpose(*originals, *rest)
     for name, on in companions.items():
         unstacked = unstacked.assign_coords({name: _companion_on(saved, name, on, unstacked)})
-    validate_field(unstacked, message_name=f"the unstacked {field_label(field)}")
+    validate_field(unstacked, message_name=f"the unstacked {message_name(field)}")
     return unstacked
 
 
@@ -1132,8 +1133,10 @@ def resolve_output_variable_names(output_variable_names: Iterable[str]) -> list[
     return resolve_sipnet_output_variable_names(requested)
 
 
-def field_label(field: xr.DataArray, default: str = "the field", *, quoted: bool = True) -> str:
-    """How a field is called in a message: its name, or else its derivation.
+def message_name(field: xr.DataArray, default: str = "the field", *, quoted: bool = True) -> str:
+    """The name an error message uses for a field: its name, or else its derivation.
+
+    It is what a check is passed as its ``message_name`` argument.
 
     Parameters
     ----------
@@ -1156,6 +1159,11 @@ def field_label(field: xr.DataArray, default: str = "the field", *, quoted: bool
     if label is None or label == "":
         return default
     return repr(label) if quoted else str(label)
+
+
+# For the functions of this module whose ``message_name`` argument shadows
+# the function of that name.
+_message_name = message_name
 
 
 def coordinate_labels(coordinate: xr.DataArray) -> list:
@@ -1226,9 +1234,9 @@ def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
 #: The scalar location coordinates :func:`label_run` adds beside ``site``.
 _LOCATION_COORD_NAMES: tuple[str, ...] = (SITE, LON, LAT)
 
-#: The attributes that say what a variable is, which every stacked run must
-#: agree on.
-_VARIABLE_IDENTITY_ATTRIBUTE_NAMES: tuple[str, ...] = ("units", "constituent", "kind")
+#: The attributes that say what quantity a variable is, which every stacked
+#: run must agree on.
+_QUANTITY_ATTRIBUTE_NAMES: tuple[str, ...] = ("units", "constituent", "kind")
 
 #: The sets of spatial dims a field may have: none, one of ``site`` and
 #: ``point``, or a raster pair.
@@ -1366,7 +1374,7 @@ def _stacked_dim(field: xr.DataArray) -> str:
     recording = [
         dim for dim in batch_dims(field) if STACKED_DIMS_ATTRIBUTE in field[dim].attrs
     ]
-    check_one_batch_dim_is_stacked(field, recording, field_label(field))
+    check_one_batch_dim_is_stacked(field, recording, message_name(field))
     return recording[0]
 
 
@@ -1517,10 +1525,10 @@ def _stack_along(datasets: list[xr.Dataset], dim: str) -> xr.Dataset:
     )
 
 
-def _variable_identities(dataset: xr.Dataset) -> dict[str, tuple[Any, ...]]:
+def _quantity_attributes(dataset: xr.Dataset) -> dict[str, tuple[Any, ...]]:
     """Each variable's ``units``, ``constituent`` and ``kind``, by name."""
     return {
-        str(name): tuple(variable.attrs.get(a) for a in _VARIABLE_IDENTITY_ATTRIBUTE_NAMES)
+        str(name): tuple(variable.attrs.get(a) for a in _QUANTITY_ATTRIBUTE_NAMES)
         for name, variable in dataset.data_vars.items()
     }
 
@@ -2231,17 +2239,17 @@ def check_run_batch_labels_are_key_dims(
 def check_model_outputs_carry_the_same_variables(
     model_outputs: Mapping[tuple[int, ...], xr.Dataset], key_dims: tuple[str, ...]
 ) -> None:
-    """Every run carries the same variables, each with the same identity attributes.
+    """Every run carries the same variables, each with the same units, constituent and kind.
 
     A run missing a variable would be filled with ``NaN`` by the stack, and
     the stack takes the first run's attributes, so a second run's different
     ``units`` would be relabeled silently.
     """
     (first_key, first), *rest = model_outputs.items()
-    expected = _variable_identities(first)
+    expected = _quantity_attributes(first)
     first_label = _key_label(key_dims, first_key)
     for key, dataset in rest:
-        found = _variable_identities(dataset)
+        found = _quantity_attributes(dataset)
         label = _key_label(key_dims, key)
         if set(found) != set(expected):
             raise ValueError(
@@ -2251,8 +2259,8 @@ def check_model_outputs_carry_the_same_variables(
             )
         for name in expected:
             if found[name] != expected[name]:
-                described = dict(zip(_VARIABLE_IDENTITY_ATTRIBUTE_NAMES, found[name]))
-                first_described = dict(zip(_VARIABLE_IDENTITY_ATTRIBUTE_NAMES, expected[name]))
+                described = dict(zip(_QUANTITY_ATTRIBUTE_NAMES, found[name]))
+                first_described = dict(zip(_QUANTITY_ATTRIBUTE_NAMES, expected[name]))
                 raise ValueError(
                     f"the run keyed {label} describes {name!r} as {described} "
                     f"and the run keyed {first_label} as {first_described}; "

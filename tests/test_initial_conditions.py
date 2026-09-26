@@ -35,7 +35,7 @@ from sipnet_calibration.conventions import (
     data_root,
 )
 from sipnet_calibration.initial_conditions import (
-    CONVERTED_SIPNET_FIELDS,
+    CONVERTED_SIPNET_PARAMETER_NAMES,
     INITIAL_CONDITION_NAMES,
     INITIAL_CONDITIONS,
     RAW_MEMBER,
@@ -341,7 +341,7 @@ def test_read_source_file_refuses_a_path_that_is_not_a_regular_file(tmp_path):
 
 VARIABLE_ATTRIBUTES = (
     "units", "long_name", "description", "product", "source_name", "source_units",
-    "source_long_name", "sipnet_initial_condition", "pecan_conversion",
+    "source_long_name", "sipnet_parameter_name", "pecan_conversion",
     "units_provenance",
 )
 PRODUCT_ATTRIBUTES = (
@@ -513,7 +513,7 @@ def test_specs_are_one_per_source_variable_with_distinct_names():
 
 def test_specs_name_real_sipnet_initial_conditions():
     fields = set(InitialConditions.model_fields)
-    used = {spec.sipnet_initial_condition for spec in INITIAL_CONDITIONS} - {""}
+    used = {spec.sipnet_parameter_name for spec in INITIAL_CONDITIONS} - {""}
     assert used <= fields
     assert {"total_wood_carbon", "leaf_area_index", "soil_carbon", "soil_wetness_fraction"} == used
 
@@ -524,7 +524,7 @@ def test_spec_attributes_carry_the_source_strings():
     assert attrs["units"] == "percent"
     assert attrs["source_units"] == "(-)"
     assert attrs["source_long_name"] == "Average Layer Fraction of Saturation"
-    assert attrs["sipnet_initial_condition"] == "soil_wetness_fraction"
+    assert attrs["sipnet_parameter_name"] == "soil_wetness_fraction"
     assert "constituent" not in attrs
     wood = resolve_initial_condition("initial_wood_carbon").xarray_attributes()
     assert wood["constituent"] == "C"
@@ -540,7 +540,7 @@ def test_spec_refuses_a_bad_name_unit_source_or_sipnet_field():
         constituent="C",
         description="d",
         product="p",
-        sipnet_initial_condition="",
+        sipnet_parameter_name="",
         pecan_conversion="c",
         units_provenance="u",
     )
@@ -552,7 +552,7 @@ def test_spec_refuses_a_bad_name_unit_source_or_sipnet_field():
     with pytest.raises(ValueError, match="source_name"):
         InitialConditionSpec(**{**good, "source_name": "TotSoilCarb"})
     with pytest.raises(ValueError, match="InitialConditions"):
-        InitialConditionSpec(**{**good, "sipnet_initial_condition": "plantWoodInit"})
+        InitialConditionSpec(**{**good, "sipnet_parameter_name": "plantWoodInit"})
     with pytest.raises(ValueError, match="pecan_conversion"):
         InitialConditionSpec(**{**good, "pecan_conversion": ""})
     for empty in ("description", "long_label", "product"):
@@ -903,12 +903,12 @@ def test_conversion_takes_a_pool_of_zero(name):
 
 
 def test_converted_fields_are_the_ones_the_specs_name():
-    assert set(CONVERTED_SIPNET_FIELDS) <= set(InitialConditions.model_fields)
-    named = {spec.sipnet_initial_condition for spec in INITIAL_CONDITIONS} - {""}
-    assert named < set(CONVERTED_SIPNET_FIELDS)
-    assert set(CONVERTED_SIPNET_FIELDS) - named == {"fine_root_fraction", "coarse_root_fraction"}
+    assert set(CONVERTED_SIPNET_PARAMETER_NAMES) <= set(InitialConditions.model_fields)
+    named = {spec.sipnet_parameter_name for spec in INITIAL_CONDITIONS} - {""}
+    assert named < set(CONVERTED_SIPNET_PARAMETER_NAMES)
+    assert set(CONVERTED_SIPNET_PARAMETER_NAMES) - named == {"fine_root_fraction", "coarse_root_fraction"}
     # The order is the class's own, and the table's columns follow it.
-    assert CONVERTED_SIPNET_FIELDS == (
+    assert CONVERTED_SIPNET_PARAMETER_NAMES == (
         "total_wood_carbon",
         "leaf_area_index",
         "soil_carbon",
@@ -916,8 +916,8 @@ def test_converted_fields_are_the_ones_the_specs_name():
         "fine_root_fraction",
         "coarse_root_fraction",
     )
-    assert list(CONVERTED_SIPNET_FIELDS) == [
-        field for field in InitialConditions.model_fields if field in CONVERTED_SIPNET_FIELDS
+    assert list(CONVERTED_SIPNET_PARAMETER_NAMES) == [
+        field for field in InitialConditions.model_fields if field in CONVERTED_SIPNET_PARAMETER_NAMES
     ]
 
 
@@ -1044,7 +1044,7 @@ def test_conversion_table_is_the_single_member_form_cell_by_cell():
         deciduous=deciduous,
     )
 
-    assert list(table.columns) == list(CONVERTED_SIPNET_FIELDS)
+    assert list(table.columns) == list(CONVERTED_SIPNET_PARAMETER_NAMES)
     assert table.index.names == [INITIAL_CONDITION_MEMBER, SITE]
     assert len(table) == 4
     for member in (0, 1):
@@ -1176,7 +1176,7 @@ def test_conversion_table_of_scalars_is_one_unlabeled_row():
         {name: xr.DataArray(value) for name, value in VALID_STATE.items()}, **VALID_PARAMETERS
     )
     assert len(table) == 1
-    assert list(table.columns) == list(CONVERTED_SIPNET_FIELDS)
+    assert list(table.columns) == list(CONVERTED_SIPNET_PARAMETER_NAMES)
     assert InitialConditions(**table.iloc[0]) == to_sipnet_initial_conditions(
         **VALID_STATE, **VALID_PARAMETERS
     )
@@ -1587,8 +1587,8 @@ def test_coordinates_carry_no_fill_value_on_disk(raw, sites_csv, tmp_path):
 
 def test_biomass_spec_is_not_fed_to_sipnet():
     spec = resolve_initial_condition("initial_aboveground_biomass_carbon")
-    assert spec.sipnet_initial_condition == ""
-    assert spec.xarray_attributes()["sipnet_initial_condition"] == "none"
+    assert spec.sipnet_parameter_name == ""
+    assert spec.xarray_attributes()["sipnet_parameter_name"] == "none"
 
 
 def test_conversion_limit_sites_and_a_variable_absent_everywhere(tree, tmp_path, capsys):

@@ -77,9 +77,10 @@ class InitialConditionSpec:
     product: str
     """The upstream data product the ensemble was drawn from."""
 
-    sipnet_initial_condition: str
-    """The field of ``pysipnet.parameters.InitialConditions`` PEcAn fed this
-    variable into, or ``""`` when PEcAn does not use it."""
+    sipnet_parameter_name: str
+    """The SIPNET initial condition parameter, by its pySIPNET name in
+    ``pysipnet.parameters.InitialConditions``, that PEcAn fed this variable
+    into, or ``""`` when PEcAn does not use it."""
 
     pecan_conversion: str
     """In words, the formula PEcAn's ``write.config.SIPNET`` applied to reach
@@ -104,13 +105,13 @@ class InitialConditionSpec:
                 f"{self.name!r}: source_name {self.source_name!r} is not a variable the "
                 f"source files carry: {sorted(SOURCE.variables)}"
             )
-        if self.sipnet_initial_condition and (
-            self.sipnet_initial_condition not in _SIPNET_INITIAL_CONDITION_FIELDS
+        if self.sipnet_parameter_name and (
+            self.sipnet_parameter_name not in _SIPNET_INITIAL_CONDITION_NAMES
         ):
             raise ValueError(
-                f"{self.name!r}: {self.sipnet_initial_condition!r} is not a field of "
+                f"{self.name!r}: {self.sipnet_parameter_name!r} is not a parameter of "
                 f"pysipnet.parameters.InitialConditions: "
-                f"{sorted(_SIPNET_INITIAL_CONDITION_FIELDS)}"
+                f"{sorted(_SIPNET_INITIAL_CONDITION_NAMES)}"
             )
 
     @property
@@ -137,7 +138,7 @@ class InitialConditionSpec:
             "source_name": self.source_name,
             "source_units": self.source_units,
             "source_long_name": self.source_long_name,
-            "sipnet_initial_condition": self.sipnet_initial_condition or "none",
+            "sipnet_parameter_name": self.sipnet_parameter_name or "none",
             "pecan_conversion": self.pecan_conversion,
             "units_provenance": self.units_provenance,
         }
@@ -152,8 +153,8 @@ class InitialConditionSpec:
 _UNCONFIRMED = "Unconfirmed; see data/README.md, open question 24."
 
 #: Checked by InitialConditionSpec, so a spec cannot name a pySIPNET initial
-#: condition field that does not exist.
-_SIPNET_INITIAL_CONDITION_FIELDS: frozenset[str] = frozenset(InitialConditions.model_fields)
+#: condition parameter that does not exist.
+_SIPNET_INITIAL_CONDITION_NAMES: frozenset[str] = frozenset(InitialConditions.model_fields)
 
 INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
     InitialConditionSpec(
@@ -172,7 +173,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         product="Spawn and Gibbs (2020), Global Aboveground and Belowground Biomass Carbon "
         "Density Maps for the Year 2010, ORNL DAAC, doi:10.3334/ORNLDAAC/1763",
-        sipnet_initial_condition="",
+        sipnet_parameter_name="",
         pecan_conversion=(
             "Not used. PEcAn.data.land::prepare_pools takes the wood pool from "
             "wood_carbon_content, which every file carries, and would use AbvGrndWood "
@@ -203,7 +204,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         product="Spawn and Gibbs (2020) biomass carbon minus MODIS-derived leaf carbon, "
         "computed by the PEcAn script",
-        sipnet_initial_condition="total_wood_carbon",
+        sipnet_parameter_name="total_wood_carbon",
         pecan_conversion=(
             "plantWoodInit = 1000 x wood_carbon_content / (1 - fineRootFrac - "
             "coarseRootFrac) in PEcAn since commit 913dcec66 (2025-09-02); plantWoodInit "
@@ -236,7 +237,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         product="MODIS MCD15A3H v061 leaf area index via PEcAn MODIS_LAI_prep, and the "
         "PFT specific leaf area samples of the reanalysis (samples.Rdata)",
-        sipnet_initial_condition="leaf_area_index",
+        sipnet_parameter_name="leaf_area_index",
         pecan_conversion=(
             "laiInit = leaf_carbon_content x SLA, SLA being the run's own specific leaf "
             "area draw, so the round trip to leaf carbon holds only for the same draw; "
@@ -271,7 +272,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         product="ISCN (International Soil Carbon Network) generation 3 database, by CEC "
         "level-2 ecoregion, via PEcAn IC_ISCN_SOC",
-        sipnet_initial_condition="soil_carbon",
+        sipnet_parameter_name="soil_carbon",
         pecan_conversion="soilInit = 1000 x soil_organic_carbon_content.",
         units_provenance=(
             "The target of the PEcAn script's ud_convert(x, 'g cm-2', 'kg m-2') and the "
@@ -299,7 +300,7 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
         ),
         product="Copernicus C3S / ESA CCI Soil moisture gridded data from 1978 to present, "
         "active sensor, CDR v202212, doi:10.24381/cds.d7782f18",
-        sipnet_initial_condition="soil_wetness_fraction",
+        sipnet_parameter_name="soil_wetness_fraction",
         pecan_conversion=(
             "soilWFracInit = SoilMoistFrac / 100. SIPNET defines soilWFracInit as a "
             "fraction of the water holding capacity of its whole soil bucket, so the "
@@ -333,7 +334,7 @@ def describe(spec: InitialConditionSpec) -> str:
         f"{spec.name}: {spec.long_label} ({units}), from {spec.product}.",
         f"  source     {spec.source_name!r}, units {spec.source_units!r}, "
         f"long name {spec.source_long_name!r}",
-        f"  sipnet     {spec.sipnet_initial_condition or 'none'}: {spec.pecan_conversion}",
+        f"  sipnet     {spec.sipnet_parameter_name or 'none'}: {spec.pecan_conversion}",
         f"  units      {spec.units_provenance}",
         f"  what       {spec.description}",
     ]

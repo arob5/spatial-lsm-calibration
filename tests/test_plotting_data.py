@@ -122,7 +122,7 @@ def test_annual_observations_draw_as_points_at_the_observed_years(
     means, _ = real_constraint_fields
     field = means["landtrendr_aboveground_biomass"]
     one = field.sel(site=a_ragged_site(field))
-    plot_time_series(one, ax=ax, role="obs", show="points")
+    plot_time_series(one, ax=ax, role="observation", show="points")
     drawn = ax.containers[0][0].get_ydata()
     assert len(drawn) == int(one.notnull().sum())
     assert len(drawn) < one.sizes["time"]
@@ -137,7 +137,7 @@ def test_the_error_bars_are_the_square_root_of_the_real_variances(
     name = "landtrendr_aboveground_biomass"
     site = most_observed_site(means[name])
     mean, variance = means[name].sel(site=site), variances[name].sel(site=site)
-    plot_time_series(mean, ax=ax, role="obs", show="points", variance=variance)
+    plot_time_series(mean, ax=ax, role="observation", show="points", variance=variance)
     segments = ax.containers[0].lines[2][0].get_segments()
     half = np.array([(s[-1][1] - s[0][1]) / 2 for s in segments])
     observed = np.isfinite(mean.values)
@@ -153,11 +153,11 @@ def test_an_observation_overlay_keeps_the_model_panel(
     plot_time_series(real_driver_field.sel(site=1), ax=ax, role="posterior")
     bands_before = len(ax.collections)
     plot_time_series(
-        field.sel(site=most_observed_site(field)), ax=ax, role="obs", show="points"
+        field.sel(site=most_observed_site(field)), ax=ax, role="observation", show="points"
     )
     assert len(ax.collections) == bands_before
     assert len(ax.containers) == 1
-    assert ax.get_legend_handles_labels()[1] == ["posterior", "obs"]
+    assert ax.get_legend_handles_labels()[1] == ["posterior", "observation"]
 
 
 def test_plot_by_variable_over_the_constraint_fields(real_constraint_fields):
@@ -174,7 +174,7 @@ def test_plot_by_variable_over_the_constraint_fields(real_constraint_fields):
     _, axes = (
         plot_by_variable(
             one_site,
-            lambda data, ax: plot_time_series(data, ax=ax, role="obs", show="points"),
+            lambda data, ax: plot_time_series(data, ax=ax, role="observation", show="points"),
             ncol=2,
         )
     )

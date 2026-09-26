@@ -117,7 +117,8 @@ from sipnet_calibration.conventions import (
     WINDOW_START,
     FrozenMapping,
 )
-from sipnet_calibration.fields import field_label, without_stale_time_attributes
+from sipnet_calibration import fields
+from sipnet_calibration.fields import without_stale_time_attributes
 
 __all__ = [
     "DEFAULT_METHOD_FOR_KIND",
@@ -462,7 +463,7 @@ def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIn
         instead); if a window edge is not a datetime or is ``NaT``; or if a
         window's end does not follow its start.
     """
-    message_name = field_label(observed_values, "the observed values")
+    message_name = fields.message_name(observed_values, "the observation source")
     check_has_windows(observed_values, message_name)
     start = pd.DatetimeIndex(observed_values[WINDOW_START].values)
     end = pd.DatetimeIndex(observed_values[WINDOW_END].values)
@@ -677,7 +678,7 @@ def _variable_kind(field: xr.DataArray) -> VariableKind | None:
             return VariableKind(declared)
         except ValueError as error:
             raise ValueError(
-                f"{field_label(field)} declares kind={declared!r}, which is not one of "
+                f"{fields.message_name(field)} declares kind={declared!r}, which is not one of "
                 f"{[k.value for k in VariableKind]}; set attrs['kind'] to one of them."
             ) from error
     if field.name is None:
@@ -695,30 +696,30 @@ def _method_for(field: xr.DataArray, kind: VariableKind | None, how: str | None)
     if how is None:
         if kind is None:
             raise ValueError(
-                f"{field_label(field)} carries no 'kind' attribute and is not a SIPNET "
+                f"{fields.message_name(field)} carries no 'kind' attribute and is not a SIPNET "
                 "output or climate variable, so there is no rule to take the "
                 "aggregation from. Pass how='sum', 'mean' or 'last'."
             )
         if kind not in DEFAULT_METHOD_FOR_KIND:
             raise ValueError(
-                f"{field_label(field)} is of kind {kind.value!r}, which no method leaves "
+                f"{fields.message_name(field)} is of kind {kind.value!r}, which no method leaves "
                 "unchanged, so there is no default. Pass how= explicitly."
             )
         return DEFAULT_METHOD_FOR_KIND[kind]
 
     if how not in RESAMPLING_METHODS:
         raise ValueError(
-            f"unknown resampling method {how!r} for {field_label(field)}; choose from "
+            f"unknown resampling method {how!r} for {fields.message_name(field)}; choose from "
             f"{list(RESAMPLING_METHODS)}."
         )
     if kind is not None:
-        check_resampling_method(kind, how, name=field_label(field, quoted=False))
+        check_resampling_method(kind, how, name=fields.message_name(field, quoted=False))
     return how
 
 
 def _window_method_for(field: xr.DataArray, kind: VariableKind | None, how: Any) -> str:
     """*how* checked against :data:`WINDOW_REDUCTIONS` and the variable's kind."""
-    check_how_is_a_window_reduction(how, field_label(field))
+    check_how_is_a_window_reduction(how, fields.message_name(field))
     if how in RESAMPLING_METHODS:
         return _method_for(field, kind, how)
     check_kind_has_a_level(field, kind, how)
@@ -1209,7 +1210,7 @@ def check_kind_is_known_for_interval_steps(
     """
     if kind is None:
         raise ValueError(
-            f"{field_label(field)} carries pySIPNET's interval coordinates but no 'kind' "
+            f"{fields.message_name(field)} carries pySIPNET's interval coordinates but no 'kind' "
             "attribute, and is not a SIPNET output or climate variable, so the method "
             f"cannot be checked against it. Set attrs['kind'] to one of "
             f"{[k.value for k in VariableKind]}."
@@ -1220,7 +1221,7 @@ def check_kind_has_a_level(field: xr.DataArray, kind: VariableKind | None, how: 
     """A window's extreme or first reading is asked of a level, where the kind is known."""
     if kind is not None and kind not in _LEVEL_KINDS:
         raise ValueError(
-            f"cannot take the {how!r} of {field_label(field)} over a window: it is of kind "
+            f"cannot take the {how!r} of {fields.message_name(field)} over a window: it is of kind "
             f"{kind.value!r}, and only a level (a pool, a step mean or a rate) has an "
             "extreme or a first reading. A total sums; a running total takes 'last'."
         )
@@ -1237,24 +1238,24 @@ def check_field_has_a_datetime_time_axis(field: Any) -> None:
         raise TypeError(f"expected an xarray.DataArray, got {type(field).__name__}.{advice}")
     if TIME not in field.dims:
         raise ValueError(
-            f"aligning in time needs a {TIME!r} dimension; {field_label(field)} has "
+            f"aligning in time needs a {TIME!r} dimension; {fields.message_name(field)} has "
             f"dims {tuple(str(d) for d in field.dims)}. A static field has nothing to "
             "align."
         )
     if TIME not in field.coords:
         raise ValueError(
-            f"{field_label(field)} has a {TIME!r} dimension but no {TIME!r} "
+            f"{fields.message_name(field)} has a {TIME!r} dimension but no {TIME!r} "
             "coordinate, so there is nothing to place its rows by; assign one."
         )
     dtype = field.coords[TIME].dtype
     if not pd.api.types.is_datetime64_any_dtype(dtype):
         raise ValueError(
-            f"the {TIME!r} coordinate of {field_label(field)} has dtype {dtype}, and "
+            f"the {TIME!r} coordinate of {fields.message_name(field)} has dtype {dtype}, and "
             "alignment needs datetimes; convert it with pandas.to_datetime."
         )
     if pd.isna(field.coords[TIME].values).any():
         raise ValueError(
-            f"the {TIME!r} coordinate of {field_label(field)} holds a missing timestamp "
+            f"the {TIME!r} coordinate of {fields.message_name(field)} holds a missing timestamp "
             "(NaT), so its rows cannot be placed. Drop those rows first."
         )
 
@@ -1273,7 +1274,7 @@ def check_interval_coords_are_one_dimensional(field: xr.DataArray) -> None:
     ]
     if offenders:
         raise ValueError(
-            f"{field_label(field)} has {offenders} on dims "
+            f"{fields.message_name(field)} has {offenders} on dims "
             f"{[tuple(str(d) for d in field[n].dims) for n in offenders]} rather "
             f"than on {TIME!r} alone, which happens when runs on different "
             "time axes are stacked together. Select one site, or drop those "
@@ -1295,7 +1296,7 @@ def check_rows_without_an_interval_hold_no_value(
     if valued.any():
         first = rows[TIME].values[int(np.flatnonzero(valued)[0])]
         raise ValueError(
-            f"{field_label(field)} has values on {int(valued.sum())} row(s) whose "
+            f"{fields.message_name(field)} has values on {int(valued.sum())} row(s) whose "
             f"{TIMESTEP_START} or {TIMESTEP_LENGTH} is NaT, the first at {first}, so "
             "which step those values cover is unknown. Rows of pure padding (NaT "
             "interval and every value missing) are dropped; these are not padding. "
@@ -1313,7 +1314,7 @@ def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     times = field[TIME].values
     if times.size == 0:
         raise ValueError(
-            f"{field_label(field)} has no timesteps left to aggregate. An empty "
+            f"{fields.message_name(field)} has no timesteps left to aggregate. An empty "
             f"{TIME!r} comes from a selection that matched nothing, or from "
             "a site of a stacked ensemble with no record of its own; select a "
             "period or a site the record covers."
@@ -1322,7 +1323,7 @@ def check_the_steps_are_aggregable(field: xr.DataArray) -> None:
     if (spacing <= 0).any():
         where = int(np.flatnonzero(spacing <= 0)[0]) + 1
         raise ValueError(
-            f"{field_label(field)} has timestamps that do not increase: row {where} "
+            f"{fields.message_name(field)} has timestamps that do not increase: row {where} "
             f"({times[where]}) does not follow row {where - 1} "
             f"({times[where - 1]}). Sort the field on {TIME!r}, and drop or "
             "combine the duplicates; two rows sharing a label would be added "
@@ -1361,7 +1362,7 @@ def check_steps_are_equally_spaced(field: xr.DataArray) -> None:
     spacing = _step_spacing_ns(field)
     if spacing.size and (spacing != spacing[0]).any():
         raise ValueError(
-            f"{field_label(field)} has no {TIMESTEP_LENGTH!r} coordinate and its steps "
+            f"{fields.message_name(field)} has no {TIMESTEP_LENGTH!r} coordinate and its steps "
             "are not all the same length, so a mean over them has no defined "
             "weighting. Attach the step lengths, or aggregate a field that "
             "carries them."
@@ -1373,7 +1374,7 @@ def check_has_interval_coords(field: xr.DataArray, message_name: str) -> None:
     missing = [c for c in (TIMESTEP_START, TIMESTEP_LENGTH) if c not in field.coords]
     if missing:
         raise ValueError(
-            f"{message_name} reads the interval each step covers, and {field_label(field)} "
+            f"{message_name} reads the interval each step covers, and {fields.message_name(field)} "
             f"carries no {missing} coordinate. Model output from pySIPNET carries both; "
             "observed values do not, and are not what this reads."
         )
@@ -1472,12 +1473,12 @@ def check_kind_has_an_instant_value(field: xr.DataArray, kind: VariableKind | No
             else "take its last value over a window with reduce_windows instead"
         )
         raise ValueError(
-            f"{field_label(field)} is of kind {kind.value!r}, which has no value at an "
+            f"{fields.message_name(field)} is of kind {kind.value!r}, which has no value at an "
             f"instant; {fix}."
         )
     if kind is VariableKind.TIMESTEP_START_COORDINATE:
         raise ValueError(
-            f"{field_label(field)} is a time coordinate, not a variable to read; read a "
+            f"{fields.message_name(field)} is a time coordinate, not a variable to read; read a "
             "model output variable instead."
         )
 
@@ -1488,7 +1489,7 @@ def check_same_clock(
     """The labels and the field's ``time`` are both naive or in one time zone."""
     if labels.tz != ends.tz:
         raise ValueError(
-            f"the labels are in time zone {labels.tz} and {field_label(field)}'s time "
+            f"the labels are in time zone {labels.tz} and {fields.message_name(field)}'s time "
             f"coordinate in {ends.tz}; localize or convert one of them first."
         )
 
@@ -1497,7 +1498,7 @@ def check_steps_do_not_overlap(field: xr.DataArray, steps: pd.IntervalIndex) -> 
     """No two steps' ``(time_step_start, time]`` intervals share an instant."""
     if steps.is_overlapping:
         raise ValueError(
-            f"{field_label(field)} has steps whose (time_step_start, time] intervals "
+            f"{fields.message_name(field)} has steps whose (time_step_start, time] intervals "
             "overlap, so a label could lie in two of them. pySIPNET's own axes never "
             "overlap; rebuild the interval coordinates from the step ends."
         )
@@ -1514,7 +1515,7 @@ def check_every_label_is_in_a_step(
     if outside.any():
         bad = labels[outside]
         raise ValueError(
-            f"{len(bad)} label(s) fall in no timestep of {field_label(field)}, the first "
+            f"{len(bad)} label(s) fall in no timestep of {fields.message_name(field)}, the first "
             f"being {bad[0]}: the record covers ({steps.left[0]}, {steps.right[-1]}], and "
             "a label must lie inside one step's (time_step_start, time] interval. Select "
             "the observations within the run, or run the model over the observed period."

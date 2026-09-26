@@ -199,15 +199,15 @@ def test_photosynthesis_map_inverts_the_identifiable_pair():
     )
     assert float(out["max_photosynthesis_rate"]) == pytest.approx(a_max)
     assert float(out["foliar_respiration_fraction"]) == pytest.approx(fol_resp)
-    assert PHOTOSYNTHESIS.components == ("capacity", "respiration_share")
-    assert set(PHOTOSYNTHESIS.reads) == set(PhotosynthesisMap().reads)
+    assert PHOTOSYNTHESIS.component_names == ("capacity", "respiration_share")
+    assert set(PHOTOSYNTHESIS.sipnet_parameter_names_read) == set(PhotosynthesisMap().sipnet_parameter_names_read)
 
 
 def test_simplex_map_writes_all_but_the_residual():
     out = ALLOCATION(jnp.array([0.1, 0.2, 0.3, 0.4]), {})
     assert set(out) == {"leaf_allocation", "wood_allocation", "fine_root_allocation"}
-    assert ALLOCATION.components[-1] == "coarse_root_allocation"
-    assert isinstance(ALLOCATION, SimplexMap) and ALLOCATION.reads == ()
+    assert ALLOCATION.component_names[-1] == "coarse_root_allocation"
+    assert isinstance(ALLOCATION, SimplexMap) and ALLOCATION.sipnet_parameter_names_read == ()
 
 
 def test_identity_map_shorthand():
@@ -216,7 +216,7 @@ def test_identity_map_shorthand():
         sipnet_map="wood_turnover_rate", provenance="test",
     )
     assert isinstance(parameter.sipnet_map, Identity)
-    assert parameter.sipnet_map.writes == ("wood_turnover_rate",)
+    assert parameter.sipnet_map.sipnet_parameter_names_written == ("wood_turnover_rate",)
     assert parameter.element_labels == ("log(wood_turnover_rate)",)
     scaled = CalibrationParameter(
         name="t", prior=tfd.Uniform(jnp.float64(1.0), jnp.float64(5.0)),
@@ -447,7 +447,7 @@ def test_in_domain_predicates_at_the_boundaries():
 def test_layout_dimension_labels_and_slices(example):
     layout = example.layout
     assert layout.dimension == 2 + 3 * 2 + 1 * 2 + 1 + 1 * 3 == 14
-    assert layout.parameters == (
+    assert layout.parameter_names == (
         "photosynthesis", "allocation", "base_soil_respiration", "leaf_fall_fraction",
         "initial_soil_carbon",
     )
@@ -466,7 +466,7 @@ def test_layout_dimension_labels_and_slices(example):
         f"allocation[deciduous][{e}]" for e in layout.element_labels["allocation"]
     ]
     assert all("[conifer]" in layout.column_labels[i] for i in layout.index("allocation", group="conifer"))
-    stops = [layout.slice(c).stop for c in layout.parameters]
+    stops = [layout.slice(c).stop for c in layout.parameter_names]
     assert stops == [2, 8, 10, 11, 14]
 
 
@@ -507,7 +507,7 @@ def test_fields_flat_round_trip_in_both_spaces(example, theta):
     natural = example.fields(theta)
     assert natural.attrs == {"representation": "calibration_parameters", "space": "natural"}
     allocation = natural.filter_by_attrs(parameter="allocation")
-    assert list(allocation.data_vars) == [f"allocation.{c}" for c in ALLOCATION.components]
+    assert list(allocation.data_vars) == [f"allocation.{c}" for c in ALLOCATION.component_names]
     np.testing.assert_allclose(allocation.to_array().sum("variable"), 1.0, atol=1e-12)
     assert (natural["initial_soil_carbon"] > 0).all()
     np.testing.assert_allclose(example.flat(natural), theta, rtol=1e-10, atol=1e-10)
@@ -844,7 +844,7 @@ def test_fields_data_model(example, theta):
     natural = example.fields(theta)
     assert list(natural.data_vars) == [
         "photosynthesis.capacity", "photosynthesis.respiration_share",
-        *(f"allocation.{c}" for c in ALLOCATION.components),
+        *(f"allocation.{c}" for c in ALLOCATION.component_names),
         "base_soil_respiration", "leaf_fall_fraction", "initial_soil_carbon",
     ]
     for variable in natural.data_vars.values():
@@ -971,15 +971,15 @@ def test_flat_refuses_what_no_flat_vector_can_be(example, theta):
 
 
 def test_unset_parameters_and_require_complete(example):
-    from sipnet_calibration.parameter_vector import REQUIRED_SIPNET_PARAMETERS
+    from sipnet_calibration.parameter_vector import REQUIRED_SIPNET_PARAMETER_NAMES
 
     # Required means "pySIPNET has no default": flag-dependent parameters and
     # the zero-defaulted ones are not required.
-    assert "snow_melt_rate" not in REQUIRED_SIPNET_PARAMETERS
-    assert "litter_carbon" not in REQUIRED_SIPNET_PARAMETERS
-    assert "max_photosynthesis_rate" in REQUIRED_SIPNET_PARAMETERS
+    assert "snow_melt_rate" not in REQUIRED_SIPNET_PARAMETER_NAMES
+    assert "litter_carbon" not in REQUIRED_SIPNET_PARAMETER_NAMES
+    assert "max_photosynthesis_rate" in REQUIRED_SIPNET_PARAMETER_NAMES
     assert set(example.sipnet_parameter_names) == set(example.sipnet_parameter_fields(example.sample(jax.random.key(0), 1)).data_vars)
-    assert set(example.unset_sipnet_parameter_names) == set(REQUIRED_SIPNET_PARAMETERS) - set(example.sipnet_parameter_names)
+    assert set(example.unset_sipnet_parameter_names) == set(REQUIRED_SIPNET_PARAMETER_NAMES) - set(example.sipnet_parameter_names)
     assert "leaf_carbon_per_area" in example.unset_sipnet_parameter_names
     assert not set(example.unset_sipnet_parameter_names) & set(example.sipnet_parameter_names)
     with pytest.raises(ValueError, match="neither calibrated nor fixed: \\['total_wood_carbon'"):
@@ -1011,7 +1011,7 @@ def test_sites_with_and_parameter_lookup(example):
     with pytest.raises(KeyError, match="'grassland' is not a class of site labels 'pft'"):
         example.sites_with("pft", "grassland")
     assert example["allocation"].sipnet_map is ALLOCATION
-    assert example.parameter_names == example.layout.parameters
+    assert example.parameter_names == example.layout.parameter_names
     with pytest.raises(KeyError):
         example.sites_with("landcover", 1)
     with pytest.raises(KeyError, match="no calibration parameter 'nope'"):
@@ -1092,15 +1092,15 @@ def test_the_module_usage_session_runs_and_prints_what_it_says():
 
 
 def test_select_by_parameters_keeps_layout_order_and_the_fixed(example):
-    small = example.select(parameters=("initial_soil_carbon", "allocation"))
+    small = example.select(parameter_names=("initial_soil_carbon", "allocation"))
     assert small.parameter_names == ("allocation", "initial_soil_carbon")
     assert small.dimension == 3 * 2 + 3
     assert [f.name for f in small.fixed] == [f.name for f in example.fixed]
-    assert small.select(parameters=["allocation"]).parameter_names == ("allocation",)
+    assert small.select(parameter_names=["allocation"]).parameter_names == ("allocation",)
     with pytest.raises(TypeError, match="one string 'allocation'"):
-        small.select(parameters="allocation")
+        small.select(parameter_names="allocation")
     with pytest.raises(KeyError, match="no calibration parameters \\['nope'\\]"):
-        example.select(parameters=("nope",))
+        example.select(parameter_names=("nope",))
 
 
 def test_select_by_sites_slices_per_site_priors_and_moves_draws_across():
@@ -1396,16 +1396,16 @@ def test_flat_takes_fields_selected_to_one_site(example, theta):
 def test_a_sipnet_map_must_return_exactly_what_it_writes():
     @dataclasses.dataclass(frozen=True)
     class Lying:
-        writes: tuple = ("soil_carbon", "base_soil_respiration_rate")
-        reads: tuple = ()
-        components: tuple = ("soil_carbon",)
+        sipnet_parameter_names_written: tuple = ("soil_carbon", "base_soil_respiration_rate")
+        sipnet_parameter_names_read: tuple = ()
+        component_names: tuple = ("soil_carbon",)
         component_units: tuple = ("g m-2",)
 
         def __call__(self, natural, fixed):
             return {"soil_carbon": natural[..., 0]}
 
     liar = CalibrationParameter(name="soil", prior=log_normal(median=1.0, geometric_sd=2.0), sipnet_map=Lying(), provenance="x")
-    with pytest.raises(ValueError, match="declares writes .* but returns"):
+    with pytest.raises(ValueError, match="declares it writes .* but returns"):
         ParameterVector(parameters=(liar,), sites=(1,))
 
 

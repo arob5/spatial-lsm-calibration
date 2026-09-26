@@ -29,7 +29,7 @@ from sipnet_calibration.observation import (
     check_operator_declares_names,
     check_result_is_on_the_observation_grid,
     extract_sipnet_parameter_at_coords,
-    select_observed_sites,
+    restrict_to_observed_sites,
     select_timestep_at,
 )
 
@@ -217,22 +217,22 @@ class TestComputeLeafAreaIndex:
             ComputeLeafAreaIndex()(one_run, dated_observation([1], labels), sipnet_parameters=sipnet_parameter_fields)
 
 
-class TestSelectObservedSites:
+class TestRestrictToObservedSites:
     def test_a_missing_site_is_named(self, stack, labels):
         with pytest.raises(ValueError, match=r"no site\(s\) \[3\]"):
-            select_observed_sites(stack["wood_carbon"], dated_observation([1, 3], labels))
+            restrict_to_observed_sites(stack["wood_carbon"], dated_observation([1, 3], labels))
 
     def test_a_single_run_must_be_the_observed_site(self, one_run, labels):
         with pytest.raises(ValueError, match="one run at site 1"):
-            select_observed_sites(one_run["wood_carbon"], dated_observation([2], labels))
+            restrict_to_observed_sites(one_run["wood_carbon"], dated_observation([2], labels))
 
     def test_an_unlabeled_run_is_refused(self, labels):
         array = niwot_reference_output().select(["wood_carbon"])["wood_carbon"]
         with pytest.raises(ValueError, match="no 'site' coordinate"):
-            select_observed_sites(array, dated_observation([1], labels))
+            restrict_to_observed_sites(array, dated_observation([1], labels))
 
     def test_selection_follows_the_observations_order(self, stack, labels):
-        picked = select_observed_sites(stack["wood_carbon"], dated_observation([2, 1], labels))
+        picked = restrict_to_observed_sites(stack["wood_carbon"], dated_observation([2, 1], labels))
         assert picked["site"].values.tolist() == [2, 1]
 
 
@@ -329,7 +329,7 @@ class TestCheckOperator:
             sipnet_parameter_names = ()
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
-                picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
+                picked = select_timestep_at(restrict_to_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
                 if "site" not in picked.dims:
                     return picked
                 mixed = picked.mean("site").expand_dims(site=picked["site"].values).transpose(*picked.dims)
@@ -430,7 +430,7 @@ class TestParameterLookups:
 
     def test_repeated_observed_sites_are_refused(self, stack, labels):
         with pytest.raises(ValueError, match="more than once"):
-            select_observed_sites(stack["wood_carbon"], dated_observation([1, 1], labels))
+            restrict_to_observed_sites(stack["wood_carbon"], dated_observation([1, 1], labels))
 
 
 class TestParameterLookupsAtScalarCoordinates:
@@ -482,10 +482,10 @@ class TestSelectTimestepOnAStaticObservation:
             ComputeLeafAreaIndex()(one_run, static, sipnet_parameters={"leaf_carbon_per_area": 270.0})
 
 
-class TestSelectObservedSitesOneRun:
+class TestRestrictToObservedSitesOneRun:
     def test_one_run_cannot_serve_two_observed_sites(self, one_run, labels):
         with pytest.raises(ValueError, match=r"one run at site 1.*site\(s\) \[1, 2\]"):
-            select_observed_sites(one_run["wood_carbon"], dated_observation([1, 2], labels))
+            restrict_to_observed_sites(one_run["wood_carbon"], dated_observation([1, 2], labels))
 
 
 class TestCheckOperatorContract:
@@ -496,7 +496,7 @@ class TestCheckOperatorContract:
             sipnet_parameter_names = ()
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
-                picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
+                picked = select_timestep_at(restrict_to_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
                 if "sample" not in picked.dims:
                     return picked
                 mixed = picked.mean("sample").expand_dims(sample=picked["sample"].values).transpose(*picked.dims)
@@ -646,7 +646,7 @@ class TestPointwiseIsComparedByLabel:
             sipnet_parameter_names = ()
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
-                picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
+                picked = select_timestep_at(restrict_to_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
                 if "site" not in picked.dims:
                     picked = picked.expand_dims("site")
                 return picked.transpose(*[d for d in ("sample", "site", "time") if d in picked.dims])
@@ -661,7 +661,7 @@ class TestPointwiseIsComparedByLabel:
             sipnet_parameter_names = ()
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
-                picked = select_timestep_at(select_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
+                picked = select_timestep_at(restrict_to_observed_sites(model_output["wood_carbon"], observed_values), observed_values["time"])
                 return picked.transpose("time", ...)
 
         observed = dated_observation([1, 2], labels, units="Mg ha-1", constituent="C")
@@ -677,7 +677,7 @@ class TestPointwiseIsComparedByLabel:
                 wood = model_output["wood_carbon"]
                 if "sample" in wood.dims:
                     wood = wood.isel(sample=0, drop=True)
-                return select_timestep_at(select_observed_sites(wood, observed_values), observed_values["time"])
+                return select_timestep_at(restrict_to_observed_sites(wood, observed_values), observed_values["time"])
 
         with pytest.raises(ValueError, match="not pointwise in 'sample'"):
             check_operator(
@@ -785,7 +785,7 @@ class TestEveryBatchDimOfSIPNETParameterFieldsIsSelectedOrRefused:
 
             def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
                 picked = select_timestep_at(
-                    select_observed_sites(model_output["wood_carbon"], observed_values),
+                    restrict_to_observed_sites(model_output["wood_carbon"], observed_values),
                     observed_values["time"],
                 )
                 if "driver_member" not in picked.dims:

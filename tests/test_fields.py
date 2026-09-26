@@ -608,14 +608,14 @@ class TestResolveOutputVariableNames:
             resolve_output_variable_names(["nee", 3])
 
 
-class TestFieldLabel:
+class TestMessageName:
     def test_a_name_then_a_derivation_then_the_default(self):
-        from sipnet_calibration.fields import field_label
+        from sipnet_calibration.fields import message_name
 
-        assert field_label(xr.DataArray(0.0, name="wood_carbon")) == "'wood_carbon'"
-        assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"})) == "'a / b'"
-        assert field_label(xr.DataArray(0.0)) == "the field"
-        assert field_label(xr.DataArray(0.0), "the observation") == "the observation"
+        assert message_name(xr.DataArray(0.0, name="wood_carbon")) == "'wood_carbon'"
+        assert message_name(xr.DataArray(0.0, attrs={"derivation": "a / b"})) == "'a / b'"
+        assert message_name(xr.DataArray(0.0)) == "the field"
+        assert message_name(xr.DataArray(0.0), "the observed values") == "the observed values"
 
 
 def stack_model_outputs_of(niwot_output, sites=(1, 27), n_samples=2):
@@ -710,12 +710,12 @@ class TestLabelHelpers:
         assert coordinate_labels(xr.DataArray([0, 0], dims="site", coords={"site": [3, 1]})["site"]) == [3, 1]
         assert coordinate_labels(xr.Dataset(coords={"site": 5})["site"]) == [5]
 
-    def test_field_label_unquoted(self):
-        from sipnet_calibration.fields import field_label
+    def test_message_name_unquoted(self):
+        from sipnet_calibration.fields import message_name
 
-        assert field_label(xr.DataArray(0.0, name="wood_carbon"), quoted=False) == "wood_carbon"
-        assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"}), quoted=False) == "a / b"
-        assert field_label(xr.DataArray(0.0), "the observation", quoted=False) == "the observation"
+        assert message_name(xr.DataArray(0.0, name="wood_carbon"), quoted=False) == "wood_carbon"
+        assert message_name(xr.DataArray(0.0, attrs={"derivation": "a / b"}), quoted=False) == "a / b"
+        assert message_name(xr.DataArray(0.0), "the observed values", quoted=False) == "the observed values"
 
     def test_without_stale_time_attributes(self):
         from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES

@@ -15,10 +15,10 @@ through time.
 
 What it draws
 -------------
-The kind of map follows from the data, never from a mode keyword:
+What map is drawn follows from the data, never from a mode keyword:
 
 ====================  ===================  =====================================
-Kind                  Dimensions           Recognized by
+Map                   Dimensions           Recognized by
 ====================  ===================  =====================================
 values at sites       ``(site,)``          ``site`` dim, numeric values
 classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`:
@@ -366,7 +366,7 @@ def plot_map(
     Parameters
     ----------
     field:
-        An ``xarray.DataArray`` of one of the kinds in the module docstring:
+        An ``xarray.DataArray`` of one of the maps in the module docstring:
         values or classes on ``(site,)`` with ``lon``/``lat`` on ``site``, or a
         raster on ``(lat, lon)``.
     ax:
@@ -423,7 +423,7 @@ def plot_map(
     TypeError
         If *field* is not a ``DataArray``.
     ValueError
-        If *field* is not a field or not one of the kinds above -- in
+        If *field* is not a field or not one of the maps above -- in
         particular if it has a batch dim or a ``time`` dimension, where the
         message names the functions that draw those; if *render* is unknown,
         is given for a raster, or interpolates a categorical field; if

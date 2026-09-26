@@ -102,7 +102,7 @@ data is never edited; :func:`build_initial_conditions` renames it.
 **Attributes** follow CF-1.11 as the constraint products do. Each variable
 carries the spec's ``units``, ``long_name``, ``description``, ``product``,
 ``source_name``, ``source_units``, ``source_long_name``,
-``sipnet_initial_condition``, ``pecan_conversion``, ``units_provenance`` and,
+``sipnet_parameter_name``, ``pecan_conversion``, ``units_provenance`` and,
 when set, ``constituent`` and ``comment``. The dataset carries
 ``Conventions``, ``title``, ``product``, ``source_file``, ``source_root``,
 ``source_script``, ``source_script_note``, ``nominal_date``,
@@ -154,9 +154,9 @@ Notes
 **One spec, no separate schema.** As ``ConstraintSpec`` does for the
 observations, the spec plays the role pySIPNET's ``VariableSpec`` plays for
 model output: one flat record per variable from which the product's attributes
-are derived. ``sipnet_initial_condition`` names a field of
+are derived. ``sipnet_parameter_name`` names a parameter of
 ``pysipnet.parameters.InitialConditions`` and is checked against it at
-import, so a spec cannot name a field that does not exist.
+import, so a spec cannot name a parameter that does not exist.
 
 **Why the files are converted and the conversion tracked.** SIPNET never
 reads these files; they are a PEcAn intermediate, one small file per
@@ -257,7 +257,7 @@ from sipnet_calibration.initial_conditions.processed import (
 )
 from sipnet_calibration.initial_conditions.raw import build_raw, raw_encoding, read_raw
 from sipnet_calibration.initial_conditions.sipnet_parameters import (
-    CONVERTED_SIPNET_FIELDS,
+    CONVERTED_SIPNET_PARAMETER_NAMES,
     to_sipnet_initial_conditions,
     to_sipnet_initial_conditions_table,
 )
@@ -317,7 +317,7 @@ __all__ = [
     "raw_encoding",
     "read_raw",
     # The conversion to SIPNET parameters.
-    "CONVERTED_SIPNET_FIELDS",
+    "CONVERTED_SIPNET_PARAMETER_NAMES",
     "to_sipnet_initial_conditions",
     "to_sipnet_initial_conditions_table",
 ]

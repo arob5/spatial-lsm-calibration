@@ -21,7 +21,7 @@ Importing this module does not change matplotlib's global ``rcParams``;
 Functions
 ---------
 :func:`role_style`
-    A role's keywords for one kind of element, with overrides applied.
+    A role's keywords for one element of a figure, with overrides applied.
 :func:`use_project_style`
     Apply :data:`RC_PARAMS` to matplotlib's global ``rcParams``.
 :func:`axis_label`
@@ -36,7 +36,7 @@ Usage
     from sipnet_calibration.plotting import role_style, use_project_style
 
     use_project_style()                        # once, where figures are made
-    role_style("obs", "points")                # -> color, marker, linestyle
+    role_style("observation", "points")        # -> color, marker, linestyle
     role_style("prior", "line", linewidth=2)   # override the width
 """
 
@@ -63,13 +63,13 @@ __all__ = [
 
 #: Role name to matplotlib keywords. The keys are the roles a panel may be
 #: asked for; :func:`role_style` selects from a value the part that applies to
-#: a given kind of element. No two roles share a line style and marker, so
+#: a given element. No two roles share a line style and marker, so
 #: they stay apart in grayscale as well as in color.
 ROLES: FrozenMapping = FrozenMapping(
     {
         "prior": FrozenMapping({"color": "#999999", "linestyle": "--", "linewidth": 1.0}),
         "posterior": FrozenMapping({"color": "#0072B2", "linestyle": "-", "linewidth": 1.2}),
-        "obs": FrozenMapping(
+        "observation": FrozenMapping(
             {
                 "color": "#000000",
                 "linestyle": "none",
@@ -127,29 +127,29 @@ RC_PARAMS: FrozenMapping = FrozenMapping(
 
 
 
-def role_style(role: str, kind: str = "line", **overrides: Any) -> dict[str, Any]:
-    """A role's keywords for one kind of element, with *overrides* applied.
+def role_style(role: str, element: str = "line", **overrides: Any) -> dict[str, Any]:
+    """A role's keywords for one element of a figure, with *overrides* applied.
 
     Parameters
     ----------
     role:
         A key of :data:`ROLES`.
-    kind:
-        The kind of element the keywords are for, which decides which of the
-        role's keywords are returned:
+    element:
+        The element the keywords are for, which decides which of the role's
+        keywords are returned:
 
-        ==========  ==================================================
-        ``kind``    Keywords taken from the role
-        ==========  ==================================================
-        ``line``    ``color``, ``linestyle``, ``linewidth``
-        ``band``    ``color``
-        ``points``  ``color``, ``marker``, ``markersize``, and
-                    ``linestyle`` set to ``"none"``
-        ==========  ==================================================
+        ===========  ==================================================
+        ``element``  Keywords taken from the role
+        ===========  ==================================================
+        ``line``     ``color``, ``linestyle``, ``linewidth``
+        ``band``     ``color``
+        ``points``   ``color``, ``marker``, ``markersize``, and
+                     ``linestyle`` set to ``"none"``
+        ===========  ==================================================
 
         A role that does not name one of them does not contribute it.
     **overrides:
-        Keywords that override the role's, whatever the kind. They are
+        Keywords that override the role's, whatever the element. They are
         returned unfiltered, so an override that matplotlib does not accept
         raises where it is used rather than being dropped here.
 
@@ -161,21 +161,21 @@ def role_style(role: str, kind: str = "line", **overrides: Any) -> dict[str, Any
     Raises
     ------
     ValueError
-        If *role* is not a key of :data:`ROLES`, or *kind* is not ``"line"``,
+        If *role* is not a key of :data:`ROLES`, or *element* is not ``"line"``,
         ``"band"`` or ``"points"``. The message lists the valid values.
     """
     if role not in ROLES:
         raise ValueError(f"unknown role {role!r}; the roles are {sorted(ROLES)}")
-    if kind not in _KIND_KEYWORDS:
+    if element not in _ELEMENT_KEYWORDS:
         raise ValueError(
-            f"unknown kind {kind!r}; the kinds are {sorted(_KIND_KEYWORDS)}"
+            f"unknown element {element!r}; the elements are {sorted(_ELEMENT_KEYWORDS)}"
         )
     style = {
         key: value
         for key, value in ROLES[role].items()
-        if key in _KIND_KEYWORDS[kind]
+        if key in _ELEMENT_KEYWORDS[element]
     }
-    if kind == "points":
+    if element == "points":
         style["linestyle"] = "none"
     style.update(overrides)
     return style
@@ -259,9 +259,9 @@ def axis_label(field: xr.DataArray) -> str:
 
 # ── supporting definitions ────────────────────────────────────────────────────
 
-#: Which of a role's keywords apply to each kind of element. ``points`` also
-#: has ``linestyle`` forced to ``"none"``, which is not taken from the role.
-_KIND_KEYWORDS = FrozenMapping(
+#: Which of a role's keywords apply to each element. ``points`` also has
+#: ``linestyle`` forced to ``"none"``, which is not taken from the role.
+_ELEMENT_KEYWORDS = FrozenMapping(
     {
         "line": ("color", "linestyle", "linewidth"),
         "band": ("color",),

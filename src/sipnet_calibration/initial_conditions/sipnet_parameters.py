@@ -15,7 +15,7 @@ Contents
     A whole ensemble, over ``(initial_condition_member, site)`` and any other
     batch dim the parameters bring, to a table of the same field values, one
     row per cell.
-:data:`CONVERTED_SIPNET_FIELDS`
+:data:`CONVERTED_SIPNET_PARAMETER_NAMES`
     The fields both of them set.
 
 Both refuse state that is not physically valid rather than flooring or
@@ -41,7 +41,7 @@ from sipnet_calibration.fields import (
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
 
 __all__ = [
-    "CONVERTED_SIPNET_FIELDS",
+    "CONVERTED_SIPNET_PARAMETER_NAMES",
     "to_sipnet_initial_conditions",
     "to_sipnet_initial_conditions_table",
 ]
@@ -51,7 +51,7 @@ __all__ = [
 #: in the class's own order. ``litter_carbon`` and ``snow_water_equivalent`` are
 #: left at pySIPNET's defaults: nothing in the ensemble informs them, and PEcAn
 #: passed them nothing either.
-CONVERTED_SIPNET_FIELDS: tuple[str, ...] = (
+CONVERTED_SIPNET_PARAMETER_NAMES: tuple[str, ...] = (
     "total_wood_carbon",
     "leaf_area_index",
     "soil_carbon",
@@ -114,7 +114,7 @@ def to_sipnet_initial_conditions(
     Returns
     -------
     pysipnet.parameters.InitialConditions
-        The six fields of :data:`CONVERTED_SIPNET_FIELDS`, with
+        The six fields of :data:`CONVERTED_SIPNET_PARAMETER_NAMES`, with
         ``litter_carbon`` and ``snow_water_equivalent`` at pySIPNET's defaults.
 
     Raises
@@ -262,7 +262,7 @@ def to_sipnet_initial_conditions_table(
         One row per cell, indexed by the dims the inputs broadcast to and
         always ordered with the batch dims first, in the order the inputs
         bring them, then ``site``, with
-        :data:`CONVERTED_SIPNET_FIELDS` as columns. For any cell,
+        :data:`CONVERTED_SIPNET_PARAMETER_NAMES` as columns. For any cell,
         ``InitialConditions(**table.loc[cell])`` equals what
         :func:`to_sipnet_initial_conditions` returns for it, so every row
         here also passes pySIPNET's own field validation.
@@ -310,7 +310,7 @@ def to_sipnet_initial_conditions_table(
         **{name: array.values.ravel() for name, array in zip(arrays, broadcast)},
     )
     table = pd.DataFrame(
-        {name: converted[name] for name in CONVERTED_SIPNET_FIELDS},
+        {name: converted[name] for name in CONVERTED_SIPNET_PARAMETER_NAMES},
         index=index if index is not None else pd.RangeIndex(1),
     )
     _check_cells_are_addressable(table)
@@ -376,7 +376,7 @@ def _sipnet_fields_from_state(
     Returns
     -------
     dict
-        :data:`CONVERTED_SIPNET_FIELDS` to its values.
+        :data:`CONVERTED_SIPNET_PARAMETER_NAMES` to its values.
     """
     soil = np.asarray(initial_soil_organic_carbon, dtype=float)
     wood = np.asarray(initial_wood_carbon, dtype=float)
