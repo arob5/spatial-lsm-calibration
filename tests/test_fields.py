@@ -422,9 +422,9 @@ class TestBatchNamesAreNotTheModelOutputsOwn:
         from sipnet_calibration.fields import label_run
 
         dataset = niwot_output.select(["nee"])
-        with pytest.raises(ValueError, match=f"{name!r} is .* of the model output"):
+        with pytest.raises(ValueError, match=f"{name!r} (is .* of the model output|cannot name a batch dim)"):
             label_run(dataset, batch={name: 1})
-        with pytest.raises(ValueError, match=f"{name!r} is .* of the model output"):
+        with pytest.raises(ValueError, match=f"{name!r} (is .* of the model output|cannot name a batch dim)"):
             from_sipnet_output(niwot_output, ["nee"], batch={name: 1})
 
     @pytest.mark.parametrize("name", NAMES)
@@ -432,7 +432,7 @@ class TestBatchNamesAreNotTheModelOutputsOwn:
         from sipnet_calibration.fields import stack_model_outputs
 
         runs = {(0, 1): niwot_output.select(["nee"])}
-        with pytest.raises(ValueError, match=f"{name!r} is .* of the model output"):
+        with pytest.raises(ValueError, match=f"{name!r} (is .* of the model output|cannot name a batch dim)"):
             stack_model_outputs(runs, key_dims=(name, "site"), site_table=_small_table(1))
 
     def test_a_batch_label_that_does_not_fit_int64_is_a_value_error(self, niwot_output):
@@ -1419,6 +1419,14 @@ class TestScalarBatchLabels:
         assert scalar_batch_labels(_field(("time",)).assign_coords(seed=42)) == ("seed",)
 
 
+#: The names beyond NON_BATCH_DIM_NAMES that no batch dim takes: pySIPNET's
+#: output's coordinates and dims, and an observation's window edges.
+COORDINATE_NAMES_NO_BATCH_DIM_TAKES = [
+    "time_step_start", "time_step_length", "time_bounds", "bounds",
+    "year", "day_of_year", "hour_of_day", "time_bounds_start", "time_bounds_end",
+]
+
+
 class TestBatchDimNames:
     def test_a_name_that_is_not_a_string_is_a_type_error(self):
         from sipnet_calibration.fields import check_batch_dim_name_is_not_reserved
@@ -1432,6 +1440,21 @@ class TestBatchDimNames:
 
         with pytest.raises(ValueError, match="cannot name a batch dim"):
             check_batch_dim_name_is_not_reserved(name, message_name="batch_dim")
+
+    @pytest.mark.parametrize("name", COORDINATE_NAMES_NO_BATCH_DIM_TAKES)
+    def test_a_model_output_or_window_coordinate_name_is_refused(self, name):
+        """A batch dim ``time_step_length`` made a field validate_field refused."""
+        from sipnet_calibration.fields import check_batch_dim_name_is_not_reserved
+
+        with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
+            check_batch_dim_name_is_not_reserved(name, message_name="batch_dim")
+
+    @pytest.mark.parametrize("name", COORDINATE_NAMES_NO_BATCH_DIM_TAKES)
+    def test_a_stack_into_a_model_output_or_window_coordinate_name_is_refused(self, name):
+        from sipnet_calibration.fields import stack_batch_dims
+
+        with pytest.raises(ValueError, match="into: .* cannot name a batch dim"):
+            stack_batch_dims(_field(("sample", "site", "time")), into=name)
 
     @pytest.mark.parametrize(
         "name",

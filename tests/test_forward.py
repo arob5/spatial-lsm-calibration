@@ -1167,7 +1167,7 @@ class TestTheBatchDimIsNamedOnce:
         self, parameter_vector, climate, name, freq
     ):
         """It was refused only at stacking, after every run had completed."""
-        with pytest.raises(ValueError, match=f"batch dim {name!r} is a coordinate or dim"):
+        with pytest.raises(ValueError, match=f"{name!r} cannot name a batch dim; it is a coordinate"):
             ForwardModel(
                 scaled_niwot_model(),
                 parameter_vector,

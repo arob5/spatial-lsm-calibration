@@ -867,7 +867,7 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
         assert soil_field["sample"].values.tolist() == [0, 1, 2]
         np.testing.assert_array_equal(vector.flat(fields), block)
 
-    @pytest.mark.parametrize("name", ["time_bounds_start", "ameriflux_site_id", "modis_leaf_area_index"])
+    @pytest.mark.parametrize("name", ["ameriflux_site_id", "modis_leaf_area_index"])
     def test_a_batch_dim_named_like_an_observation_coordinate_is_refused(self, lai, times, name):
         windowed = lai.assign_coords(
             time_bounds_start=("time", times - pd.Timedelta("1D")),
@@ -883,6 +883,14 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
     def test_a_reserved_name_is_refused(self, vector):
         with pytest.raises(ValueError, match="cannot name a batch dim"):
             vector.fields(np.zeros((2, vector.dimension)), batch_dim="source_index")
+
+    @pytest.mark.parametrize(
+        "name", ["time_bounds_start", "time_bounds_end", "time_step_length", "year"]
+    )
+    def test_a_model_output_or_window_coordinate_name_is_refused(self, vector, name):
+        """Fields on ``time_step_length`` were made, and validate_field refused them."""
+        with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
+            vector.fields(np.zeros((2, vector.dimension)), batch_dim=name)
 
     @pytest.mark.parametrize("name", ["driver_member", "initial_condition_member"])
     def test_a_data_source_member_name_is_refused(self, vector, name):

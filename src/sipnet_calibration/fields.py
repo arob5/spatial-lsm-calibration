@@ -436,7 +436,7 @@ STACKED_COMPANIONS_ATTRIBUTE = "stacked_companions"
 #: coordinates, the CF ``time_bounds`` variable and its ``bounds`` dim, and
 #: SIPNET's row labels. A batch dim may take none of them, since labeling a
 #: run with one would replace pySIPNET's coordinate
-#: (:func:`check_batch_dim_name_is_not_a_model_output_name`).
+#: (:func:`check_batch_dim_name_is_not_reserved`).
 MODEL_OUTPUT_COORDINATE_NAMES: tuple[str, ...] = (
     *TIME_COORD_NAMES,
     TIME_BOUNDS,
@@ -655,7 +655,8 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
         ``<dim>_label`` (:data:`STACKED_LABEL_SUFFIX`); a coordinate that was
         on stacked dims alone, such as ``source_index``, is on *into* too and
         recorded in :data:`STACKED_COMPANIONS_ATTRIBUTE`. That is what
-        :func:`unstack_batch_dims` reverses it by.
+        :func:`unstack_batch_dims` reverses it by. The result is checked to
+        be a field (:func:`validate_field`).
 
     Raises
     ------
@@ -690,7 +691,9 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
         coordinate.attrs[STACKED_COMPANIONS_ATTRIBUTE] = json.dumps(
             {name: list(on) for name, on in companions.items()}
         )
-    return stacked.assign_coords({into: coordinate}).transpose(into, *rest)
+    stacked = stacked.assign_coords({into: coordinate}).transpose(into, *rest)
+    validate_field(stacked)
+    return stacked
 
 
 def unstack_batch_dims(
@@ -1229,6 +1232,14 @@ _SPATIAL_DIM_SETS: tuple[frozenset[str], ...] = (
 #: The coordinates that describe an interval on ``time``, and so must be on
 #: ``time`` alone: pySIPNET's timestep coordinates and an observation's window.
 _INTERVAL_COORD_NAMES: tuple[str, ...] = (TIMESTEP_START, TIMESTEP_LENGTH, WINDOW_START, WINDOW_END)
+
+#: The coordinate and dim names, beyond ``NON_BATCH_DIM_NAMES``, that no batch
+#: dim takes: pySIPNET's output's and an observation's window edges.
+_COORDINATE_NAMES_NO_BATCH_DIM_TAKES: tuple[str, ...] = (
+    *(name for name in MODEL_OUTPUT_COORDINATE_NAMES if name not in NON_BATCH_DIM_NAMES),
+    WINDOW_START,
+    WINDOW_END,
+)
 
 
 def _is_batch_dim(field: xr.DataArray | xr.Dataset, dim: str) -> bool:
@@ -1972,7 +1983,12 @@ def check_at_most_one_batch_dim(dims: Sequence[str], *, message_name: str) -> No
 
 
 def check_batch_dim_name_is_not_reserved(name: Any, *, message_name: str) -> None:
-    """*name* can name a batch dim: a non-empty string, not one of ``NON_BATCH_DIM_NAMES``."""
+    """*name* can name a batch dim: a non-empty string, and no reserved name.
+
+    The reserved names are ``NON_BATCH_DIM_NAMES``,
+    :data:`MODEL_OUTPUT_COORDINATE_NAMES` and an observation's window edges,
+    ``WINDOW_START`` and ``WINDOW_END``.
+    """
     if not isinstance(name, str):
         raise TypeError(
             f"{message_name}: a batch dim name is a string, got {type(name).__name__}; name "
@@ -1982,6 +1998,14 @@ def check_batch_dim_name_is_not_reserved(name: Any, *, message_name: str) -> Non
         raise ValueError(
             f"{message_name}: {name!r} cannot name a batch dim; {list(NON_BATCH_DIM_NAMES)} "
             "are reserved and a name is not empty. Name it for what it indexes, such as "
+            "'sample'."
+        )
+    if name in _COORDINATE_NAMES_NO_BATCH_DIM_TAKES:
+        raise ValueError(
+            f"{message_name}: {name!r} cannot name a batch dim; it is a coordinate or dim "
+            "name of pySIPNET's output or of an observation's time window "
+            f"({list(_COORDINATE_NAMES_NO_BATCH_DIM_TAKES)}), which a batch dim of that name "
+            "would collide with or be mistaken for. Name it for what it indexes, such as "
             "'sample'."
         )
 

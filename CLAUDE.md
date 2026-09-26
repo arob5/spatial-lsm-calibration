@@ -285,16 +285,18 @@ The batch-dim rules:
   `failures` column all carry that one name), labeled `0..n_samples-1` in row
   order. Which names each refuses: every creator of a batch dim refuses the
   reserved names (`fields.check_batch_dim_name_is_not_reserved`:
-  `conventions.NON_BATCH_DIM_NAMES`); the vectors, `ForwardModel` and
-  `stack_batch_dims(into=)` also refuse the data source member names
+  `conventions.NON_BATCH_DIM_NAMES`; `fields.MODEL_OUTPUT_COORDINATE_NAMES`,
+  the time coordinates, `time_bounds`, `bounds` and SIPNET's row labels; and
+  an observation's window edges, `WINDOW_START` and `WINDOW_END`), since a
+  batch dim of one of those names collides with that coordinate or is
+  mistaken for it; the vectors, `ForwardModel` and `stack_batch_dims(into=)`
+  also refuse the data source member names
   (`fields.check_batch_dim_name_is_not_a_data_source_member`), since their
   labels are new indices; the parameter vector also refuses `shared`,
   `site_id`, its site-labels names, SIPNET parameter, calibration parameter
   and Fields variable names (`parameter_vector.check_batch_dim_name_is_not_taken`);
   `ForwardModel` runs that check at construction, whatever its table hook,
-  and refuses there too a name the model output uses (an output variable, or
-  `fields.MODEL_OUTPUT_COORDINATE_NAMES`: the time coordinates,
-  `time_bounds`, `bounds` and SIPNET's row labels) and a product name or
+  and refuses there too an output variable's name and a product name or
   observation coordinate of its observation vector, so nothing runs first;
   `ObservationVector.fields` refuses a product name or a coordinate of an
   observation's values (a scalar batch label excepted: an observation's
