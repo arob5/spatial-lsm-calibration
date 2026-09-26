@@ -59,7 +59,9 @@ produced for a batch of ``J`` rows of ``theta``:
     entry of a sample with a failed run; ``None`` without an observation
     vector.
 ``run_succeeded``
-    bool ``xr.DataArray`` on ``(sample, site)``.
+    bool ``xr.DataArray`` on ``(sample, site)``, a field: ``int64``
+    ``sample`` with its attributes, ``int32`` ``site`` with its ``lon``/``lat``,
+    so it can be mapped.
 ``failures``
     ``pd.DataFrame`` with columns ``sample``, ``site``, ``error`` (the class
     name of the exception the run raised) and ``message``, one row per run
@@ -190,8 +192,9 @@ from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE
+from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE, SITE_DTYPE
 from sipnet_calibration.fields import (
+    batch_coordinate,
     check_batch_dim_name_is_not_reserved,
     label_run,
     resolve_output_variable_names,
@@ -205,7 +208,10 @@ from sipnet_calibration.observation import (
 from sipnet_calibration.observation.time_alignment import (
     check_frequency_is_an_offset_alias,
 )
-from sipnet_calibration.parameter_vector import ParameterVector
+from sipnet_calibration.parameter_vector import (
+    ParameterVector,
+    check_batch_dim_name_is_not_taken,
+)
 from sipnet_calibration.sites import (
     load_sites,
     site_locations,
@@ -307,8 +313,11 @@ class ForwardModel:
     batch_dim:
         The name of the batch dim of ``theta``'s rows, which the SIPNET
         table, ``model_output``, ``run_succeeded`` and the ``failures``
-        column all carry; ``sample`` by default. It may not be a spatial name
-        or ``time``.
+        column all carry; ``sample`` by default. It may not be a reserved
+        name, a name the parameter vector refuses (a site-labels name, a
+        SIPNET parameter, calibration parameter or Fields variable name), or
+        an output variable name, whatever *to_sipnet_table* is. Read-only
+        once the model is built, since the default hook is bound to it.
 
     Raises
     ------
@@ -362,12 +371,14 @@ class ForwardModel:
         self.backend = backend
         self.observation_vector = observation_vector
         self.freq = freq
-        self.batch_dim = batch_dim
+        check_batch_dim_name_is_not_taken(parameter_vector, batch_dim)
+        self._batch_dim = batch_dim
         self.climate = {site: climate[site] for site in self.sites}
         self.output_variable_names = _output_variable_names(
             output_variable_names, observation_vector
         )
         check_output_variables_can_be_returned(self.output_variable_names, model, freq)
+        check_batch_dim_is_not_an_output_variable(batch_dim, self.output_variable_names)
         chosen_site_table = _chosen_site_table(site_table, parameter_vector)
         # site_locations checks the table locates the sites, once, before
         # the lookup below relies on it.
@@ -395,6 +406,11 @@ class ForwardModel:
         )
 
     # ── identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def batch_dim(self) -> str:
+        """The name of the batch dim of ``theta``'s rows, on every output."""
+        return self._batch_dim
 
     @property
     def input_dimension(self) -> int:
@@ -483,7 +499,11 @@ class ForwardModel:
             model_output=None,
             predictions=None,
             run_succeeded=_run_succeeded(
-                succeeded, sipnet_table[self.batch_dim].values, self.sites, self.batch_dim
+                succeeded,
+                sipnet_table[self.batch_dim].values,
+                self.sites,
+                batch_dim=self.batch_dim,
+                site_locations=self._site_locations,
             ),
             failures=failures,
             valid=np.zeros(n_samples, dtype=bool),
@@ -752,14 +772,28 @@ def _sort_records(
 
 
 def _run_succeeded(
-    succeeded: np.ndarray, labels: np.ndarray, sites: Sequence[int], batch_dim: str
+    succeeded: np.ndarray,
+    labels: np.ndarray,
+    sites: Sequence[int],
+    *,
+    batch_dim: str,
+    site_locations: Mapping[str, xr.DataArray],
 ) -> xr.DataArray:
-    """*succeeded*, ``(J, S)``, labeled on ``(batch_dim, site)``."""
+    """*succeeded*, ``(J, S)``, as a field on ``(batch_dim, site)``.
+
+    *site_locations* is the ``lon``/``lat`` of *sites*, as
+    :func:`sipnet_calibration.sites.site_locations` gives them.
+    """
     return xr.DataArray(
         succeeded,
         dims=(batch_dim, SITE),
-        coords={batch_dim: labels, SITE: list(sites)},
+        coords={
+            batch_dim: batch_coordinate(batch_dim, labels),
+            SITE: np.asarray(sites, dtype=SITE_DTYPE),
+            **site_locations,
+        },
         name="run_succeeded",
+        attrs={"long_name": "Whether the run succeeded"},
     )
 
 
@@ -1032,11 +1066,23 @@ def check_table_batch_labels_are_the_rows_of_theta(
 ) -> None:
     """The table's batch labels are ``0`` to ``J - 1``, in the order of theta's rows."""
     labels = sipnet_table[batch_dim].values.tolist()
-    if labels != list(range(n_samples)):
+    if sipnet_table[batch_dim].dtype.kind not in "iu" or labels != list(range(n_samples)):
         raise ValueError(
-            f"the SIPNET table's {batch_dim} labels must be 0 to {n_samples - 1}, in the order "
-            f"of theta's {n_samples} rows, got {labels[:10]}; the forward model places each "
-            "run in the row of theta its label names."
+            f"the SIPNET table's {batch_dim} labels must be the integers 0 to {n_samples - 1}, "
+            f"in the order of theta's {n_samples} rows, got {labels[:10]} "
+            f"({sipnet_table[batch_dim].dtype}); the forward model places each run in the row "
+            "of theta its label names."
+        )
+
+
+def check_batch_dim_is_not_an_output_variable(
+    batch_dim: str, output_variable_names: Sequence[str]
+) -> None:
+    """The batch dim is named unlike every output variable a run returns."""
+    if batch_dim in output_variable_names:
+        raise ValueError(
+            f"batch_dim={batch_dim!r} is an output variable the runs return; name the batch "
+            "dim otherwise, such as 'sample'."
         )
 
 

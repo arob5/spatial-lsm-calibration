@@ -875,13 +875,13 @@ class TestRefusals:
         [
             (
                 lambda v: lambda t: v.sipnet_table(t).isel(sample=slice(None, None, -1)),
-                "sample labels must be 0 to 2",
+                "sample labels must be the integers 0 to 2",
             ),
             (
                 lambda v: (
                     lambda t: v.sipnet_table(t).isel(sample=slice(0, max(1, np.shape(t)[0] - 1)))
                 ),
-                "sample labels must be 0 to 2",
+                "sample labels must be the integers 0 to 2",
             ),
             (
                 lambda v: lambda t: v.sipnet_table(t).expand_dims(extra=[0, 1]),
@@ -1125,3 +1125,67 @@ class TestTheBatchDimIsNamedOnce:
                 observation_vector=observation_vector,
                 batch_dim="site",
             )
+
+    @pytest.mark.parametrize("name", ["soil_carbon", "pft", "allocation.leaf_allocation"])
+    def test_a_name_the_vector_refuses_is_refused_up_front(
+        self, parameter_vector, climate, observation_vector, name
+    ):
+        """Even with a custom hook, which the vector's check never ran for."""
+        for hook in (None, parameter_vector.sipnet_table):
+            with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+                ForwardModel(
+                    scaled_niwot_model(),
+                    parameter_vector,
+                    climate=climate,
+                    backend=SequentialBackend(),
+                    observation_vector=observation_vector,
+                    site_table=SITE_TABLE,
+                    batch_dim=name,
+                    to_sipnet_table=hook,
+                )
+
+    def test_an_output_variable_name_is_refused_up_front(self, parameter_vector, climate):
+        with pytest.raises(ValueError, match="'wood_carbon' is an output variable"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",),
+                site_table=SITE_TABLE,
+                batch_dim="wood_carbon",
+            )
+
+    def test_the_batch_dim_is_read_only(self, forward):
+        assert forward.batch_dim == "sample"
+        with pytest.raises(AttributeError):
+            forward.batch_dim = "draw"
+
+    def test_a_hook_labeling_rows_with_floats_is_refused(
+        self, parameter_vector, climate, observation_vector
+    ):
+        def floats(theta):
+            table = parameter_vector.sipnet_table(theta)
+            return table.assign_coords(sample=table["sample"].values.astype(float))
+
+        with pytest.raises(ValueError, match="integer"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                to_sipnet_table=floats,
+            )
+
+
+class TestRunSucceededIsAField:
+    def test_run_succeeded_validates_as_a_field(self, forward, theta):
+        from sipnet_calibration.fields import validate_field
+
+        evaluation = forward.evaluate(theta)
+        validate_field(evaluation.run_succeeded)
+        assert evaluation.run_succeeded["site"].dtype == np.int32
+        assert evaluation.run_succeeded["lon"].values.tolist() == [-105.0, -70.0]
+        assert evaluation.run_succeeded["sample"].attrs["long_name"] == "Sample"
