@@ -805,3 +805,17 @@ def test_windows_from_what_is_not_a_dataarray_is_a_type_error(given):
 
     with pytest.raises(TypeError, match="DataArray"):
         windows_from_observed_values(given)
+
+
+def test_windows_from_observed_values_refuses_what_is_not_a_field():
+    from conftest import dated_observed_values
+    from sipnet_calibration.observation import windows_from_observed_values
+
+    ends = pd.date_range("2012-01-02", periods=3, freq="D")
+    observed = dated_observed_values([1], ends).assign_coords(
+        window_start=("time", ends - pd.Timedelta("1D")), window_end=("time", ends)
+    )
+    windows_from_observed_values(observed)  # a field: accepted
+    observed.attrs.pop("units")
+    with pytest.raises(ValueError, match="units"):
+        windows_from_observed_values(observed)

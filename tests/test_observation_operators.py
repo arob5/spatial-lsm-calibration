@@ -297,6 +297,35 @@ class TestCheckOperator:
                 observed.expand_dims(sample=[0]),
             )
 
+    def test_a_result_that_is_not_a_field_is_refused(self, one_run, labels):
+        """An operator whose result lost its locations is not predicting a field."""
+
+        @dataclass(frozen=True)
+        class Unlocated:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names_read = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
+                picked = select_timestep_at(model_output["wood_carbon"], observed_values["time"])
+                return picked.drop_vars(["lon", "lat"])
+
+        with pytest.raises(ValueError, match="lon"):
+            check_operator(Unlocated(), one_run, dated_observed_values([1], labels))
+
+    def test_what_is_read_includes_the_sipnet_parameter_fields_being_valid(self, one_run):
+        from sipnet_calibration.observation import check_model_output_carries_what_is_read
+
+        aliased = one_run_sipnet_parameter_fields(leaf_carbon_per_area=30.0).rename(
+            leaf_carbon_per_area="leafCSpWt"
+        )
+        with pytest.raises(ValueError, match="alias"):
+            check_model_output_carries_what_is_read(
+                one_run,
+                output_variable_names=("wood_carbon",),
+                sipnet_parameter_names_read=("leaf_carbon_per_area",),
+                sipnet_parameter_fields=aliased,
+            )
+
     def test_restrict_to_observed_sites_validates_the_observed_values(self, one_run, labels):
         observed = dated_observed_values([1], labels)
         with pytest.raises(ValueError, match="carries no 'lon'"):

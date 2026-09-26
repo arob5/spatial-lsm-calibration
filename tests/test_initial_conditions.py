@@ -1709,3 +1709,15 @@ def test_a_state_that_is_neither_a_dataset_nor_a_mapping_is_a_type_error():
     """A list raised 'list indices must be integers or slices, not str'."""
     with pytest.raises(TypeError, match="state must be an xarray Dataset or a mapping"):
         to_sipnet_initial_condition_fields([1], **VALID_PARAMETERS)
+
+
+def test_the_fields_keep_locations_an_input_other_than_the_first_carries():
+    state = ensemble_state()
+    # The first input the conversion reads carries no locations; the others do.
+    state["initial_soil_organic_carbon"] = state["initial_soil_organic_carbon"].drop_vars(["lon", "lat"])
+    fields = to_sipnet_initial_condition_fields(
+        state, leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
+        coarse_root_fraction=0.25, deciduous=False,
+    )
+    assert fields["lon"].dims == ("site",)
+    np.testing.assert_array_equal(fields["lon"].values, state["initial_wood_carbon"]["lon"].values)

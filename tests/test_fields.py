@@ -366,6 +366,24 @@ class TestLabelRun:
     def _table(self):
         return site_table_of(1, 27, lon=[-105.0, -70.0], lat=[40.0, 45.0], keyed=True)
 
+    def test_keeps_a_scalar_batch_label_the_run_carries(self, niwot_output):
+        dataset = niwot_output.select(["wood_carbon"]).assign_coords(sample=np.int64(3))
+        labeled = label_run(dataset, site=1, site_table=self._table())
+        assert int(labeled["sample"]) == 3
+
+    def test_refuses_a_result_that_is_not_a_model_output(self, niwot_output):
+        dataset = niwot_output.select(["wood_carbon"])
+        dataset["wood_carbon"].attrs.pop("units")
+        with pytest.raises(ValueError, match="units"):
+            label_run(dataset, site=1, site_table=self._table())
+
+    def test_leaves_the_callers_time_attributes_alone(self, niwot_output):
+        dataset = niwot_output.select(["wood_carbon"])
+        before = dict(dataset["time"].attrs)
+        assert "bounds" in before  # what label_run strips from its own copy
+        label_run(dataset, site=1, site_table=self._table())
+        assert dict(dataset["time"].attrs) == before
+
     def test_adds_the_labels_and_drops_what_a_model_output_does_not_carry(self, niwot_output):
         from sipnet_calibration.fields import label_run, validate_model_output
 
@@ -1664,3 +1682,18 @@ class TestPyEnsPairsSameNamesAndCrossesDifferentOnes:
         parameters = fields_from_dataset(self._table("sample", 2))
         drivers = fields_from_dataset(self._table("driver_member", 3).rename(x="y"))
         assert EnsembleSpec(inputs={**parameters, **drivers}).n_runs == 2 * 3 * 2
+
+
+class TestInFieldLayout:
+    def test_a_scalar_lon_beside_many_sites_is_left_for_validate_field(self):
+        """Only a site dim of one takes a scalar lon/lat onto it."""
+        from sipnet_calibration.fields import in_field_layout
+
+        array = xr.DataArray(
+            np.zeros((2, 3)), dims=("site", "time"),
+            coords={
+                "site": np.array([1, 2], dtype=np.int32), "time": pd.date_range("2012", periods=3),
+                "lon": -100.0, "lat": 40.0,
+            },
+        )
+        assert in_field_layout(array)["lon"].ndim == 0

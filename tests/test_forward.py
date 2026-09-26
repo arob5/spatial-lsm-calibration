@@ -1424,6 +1424,48 @@ class TestTheBatchDimIsNamedOnce:
             assert isinstance(array, jax.Array)
         assert isinstance(forward(jax.numpy.asarray(theta[0])), jax.Array)
 
+    def test_flat_is_jax_on_the_prior_predictive_path(self, parameter_vector, climate, theta):
+        prior = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            output_variable_names=("wood_carbon",), site_table=SITE_TABLE,
+        )
+        assert isinstance(prior.evaluate(theta).valid, jax.Array)
+
+    def test_flat_is_jax_in_what_a_machinery_failure_carries(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            observation_vector=observation_vector, site_table=SITE_TABLE,
+            to_sipnet_parameter_fields=_hooked(parameter_vector, {(1, 0): 1.5 * DIES_BAND}),
+        )
+        with pytest.raises(RuntimeError, match="machinery") as raised:
+            forward.evaluate(theta)
+        evaluation = raised.value.evaluation
+        assert isinstance(evaluation.theta, jax.Array) and isinstance(evaluation.valid, jax.Array)
+
+    def test_a_hook_that_writes_more_than_the_vector_runs(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """The free inputs are the hook's, learned when built, not the vector's."""
+
+        def hook(t):
+            fields = parameter_vector.sipnet_parameter_fields(t)
+            return fields.assign(
+                leaf_carbon_per_area=parameter_dataarray(
+                    "leaf_carbon_per_area", fields["soil_carbon"] * 0 + 50.0
+                )
+            )
+
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            observation_vector=observation_vector, site_table=SITE_TABLE,
+            to_sipnet_parameter_fields=hook,
+        )
+        assert "leaf_carbon_per_area" in forward.sipnet_parameter_names_written
+        assert "leaf_carbon_per_area" not in parameter_vector.sipnet_parameter_names_written
+        assert forward(theta).shape == (len(theta), observation_vector.dimension)
+
     def test_nothing_read_from_an_evaluation_changes_it(
         self, parameter_vector, climate, theta
     ):

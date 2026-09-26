@@ -756,3 +756,23 @@ def test_run_succeeded_is_mapped(ax):
     succeeded = (field > -10).rename("run_succeeded")
     succeeded.attrs = {"long_name": "Whether the run succeeded"}
     plot_map(succeeded.isel(sample=0), ax=ax)
+
+
+def test_a_raster_with_a_time_dim_is_refused_with_the_maps_advice():
+    import matplotlib.pyplot as plt
+    import pandas as pd
+
+    from sipnet_calibration.plotting.maps import plot_map
+
+    lat, lon = np.arange(30.0, 35.0), np.arange(-110.0, -104.0)
+    field = xr.DataArray(
+        np.zeros((5, 6, 2)), dims=("lat", "lon", "time"),
+        coords={"lat": lat, "lon": lon, "time": pd.date_range("2012", periods=2)},
+        attrs={"units": "m2 m-2", "long_name": "Leaf area index"},
+    )
+    figure, ax = plt.subplots()
+    try:
+        with pytest.raises(ValueError, match="a map draws one value per"):
+            plot_map(field, ax)
+    finally:
+        plt.close(figure)

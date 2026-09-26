@@ -1100,6 +1100,18 @@ class TestTheVectorConventions:
         with pytest.raises(ValueError, match="carries no 'lon' coordinate"):
             vector.flat(fields)
 
+    def test_an_entry_that_is_not_an_observation_source_is_a_type_error(self, vector):
+        with pytest.raises(TypeError, match="ObservationSource"):
+            ObservationVector(observation_sources=[*vector.observation_sources, object()])
+
+    def test_no_observation_source_is_refused_in_the_vectors_words(self):
+        with pytest.raises(ValueError, match="at least one ObservationSource"):
+            ObservationVector(observation_sources=[])
+
+    def test_getitem_of_an_unknown_name_names_the_sources_held(self, vector):
+        with pytest.raises(KeyError, match="the vector holds"):
+            vector["nothing"]
+
     def test_positions_of_an_unknown_site_is_a_key_error(self, vector):
         """An unknown site gave an empty array, as select would not."""
         with pytest.raises(KeyError, match="observes no site"):

@@ -2316,3 +2316,73 @@ def test_the_site_coordinate_carries_the_site_attributes(example, theta):
     for vector in (example, located):
         assert vector.fields(theta)["site"].attrs == dict(SITE_ATTRIBUTES)
         assert vector.sipnet_parameter_fields(theta)["site"].attrs == dict(SITE_ATTRIBUTES)
+
+
+class TestWhatTheValidatorsAndPositionsPin:
+    """Two sites, so that the positions below are those of a small, known layout."""
+
+    @pytest.fixture(scope="class")
+    def two(self):
+        return example_parameter_vector(sites=(1, 27), pft=("deciduous", "conifer"))
+
+    @pytest.fixture(scope="class")
+    def located_two(self):
+        return example_parameter_vector(site_table=site_table_of(1, 27), pft=("deciduous", "conifer"))
+
+    @pytest.fixture(scope="class")
+    def draws(self, two):
+        return two.sample(jax.random.key(0), n=3)
+
+    def test_fields_in_an_unknown_space_are_refused(self, two, draws):
+        """Without the check, 'natral' Fields would be read as unconstrained: a wrong theta."""
+        fields = two.fields(draws, space="unconstrained")
+        fields.attrs["space"] = "natral"
+        with pytest.raises(ValueError, match="space"):
+            validate_calibration_fields(fields)
+        with pytest.raises(ValueError, match="space"):
+            two.flat(fields)
+
+    def test_fields_located_by_lat_alone_are_refused(self, located_two, draws):
+        fields = located_two.fields(draws).drop_vars("lon")
+        with pytest.raises(ValueError, match="lon"):
+            validate_calibration_fields(fields)
+        with pytest.raises(ValueError, match="lon"):
+            located_two.flat(fields)
+
+    def test_locations_that_break_the_contract_are_refused(self, located_two, draws):
+        fields = located_two.fields(draws)
+        fields = fields.assign_coords(lon=fields["lon"].astype(np.float32))
+        with pytest.raises(ValueError, match="lon"):
+            validate_calibration_fields(fields)
+        sipnet_parameter_fields = located_two.sipnet_parameter_fields(draws)
+        sipnet_parameter_fields = sipnet_parameter_fields.assign_coords(
+            lat=sipnet_parameter_fields["lat"].astype(np.float32)
+        )
+        with pytest.raises(ValueError, match="lat"):
+            validate_sipnet_parameter_fields(sipnet_parameter_fields)
+
+    def test_a_sipnet_parameter_name_is_not_a_calibration_parameter(self, two):
+        assert "soil_carbon" in two.sipnet_parameter_names_written
+        assert "soil_carbon" not in two
+
+    def test_positions_narrow_by_element(self, two):
+        element = "alr(wood_allocation:coarse_root_allocation)"
+        np.testing.assert_array_equal(two.positions(element=element), [3, 6])
+        np.testing.assert_array_equal(two.positions(group="deciduous", element=element), [6])
+
+    def test_positions_of_a_parameter_narrow_by_element(self, two):
+        element = "alr(wood_allocation:coarse_root_allocation)"
+        np.testing.assert_array_equal(
+            two.positions(parameter_name="allocation", element=element), [3, 6]
+        )
+        with pytest.raises(KeyError):
+            two.positions(parameter_name="allocation", element="nothing")
+
+    def test_positions_across_parameters_are_int64(self, two):
+        assert two.positions(group=27).dtype == np.int64
+        assert two.positions().dtype == np.int64
+
+    def test_numpy_scalars_are_sipnet_override_numbers(self):
+        module.validate_sipnet_overrides(
+            {"soil_carbon": np.int64(5), "max_photosynthesis_rate": np.float32(3.0)}
+        )
