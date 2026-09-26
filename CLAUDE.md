@@ -124,7 +124,193 @@ Operational rules that follow from the data and are easy to get wrong in code:
 
 ## Code conventions
 
-These are project-wide and apply to new code without being restated.
+These are project-wide and apply to new code without being restated. They
+follow `logs/2026-09-25_Repository Design Model.md` in the vault, the approved
+design every change is measured against; a change that needs a convention not
+written here adds it there and here first. The code is being brought into line
+with it by a series of PRs: PR 1 (the foundation: shared constants, coercion,
+file writing, site-table functions), PR 2 (batch dims), PR 3 (vocabulary
+renames), PR 4 (contracts and vectors), then module cleanups. Where the code
+does not follow a rule below yet, the rule says which PR changes it.
+
+### Glossary
+
+One concept, one word; one word, one concept. A word this glossary does not
+list is either added here or not used for a project concept. The retired words
+are still in the code until the PR that renames them (mostly PR 3).
+
+**Space and sites.**
+
+| Word | Meaning | Retires / not to be confused with |
+|---|---|---|
+| **site** | a location where the model is run and data are indexed: one row of the site table in use, whichever pool that is; the `site` dim and coordinate hold its site id | "location" (only for lon/lat prose); a **point** |
+| **site id** | the integer (`int32`) label of a site, unique within its site table; `site_id` is the site table's column. Ids of a pool shared with collaborators are never renumbered | |
+| **site ids** / `sites` | a sequence of site ids, **always** | `sites` for a DataFrame |
+| **site table** / `site_table` | the pandas site table (`sites.load_sites`), keyed or indexed on `site_id`, with `lon`/`lat` | `sites=`, `sites_table=` for a table |
+| **site pool** (prose) | the sites of the site table in use. Library code counts them from the table in hand (`n_sites`); `N_SITES` exists only where an ingest script checks its raw inputs have the size it expects | `POOL`, `POOL_SIZE`, literal 8000s |
+| **site labels** | the site-labels data source: a class per site, such as PFT | "label" alone for it |
+| **grid cell** | a cell of `sites.SITE_GRID` | |
+| **point** | a location that is not a site, such as a spatial prediction target; the `point` dim carries integer labels with no meaning beyond the field, and `lon`/`lat` coordinates | a site (a point has no site id) |
+
+**Time.**
+
+| Word | Meaning | Retires |
+|---|---|---|
+| **timestep** (prose and identifiers) | one SIPNET step, `(timestep_start, time]`. pySIPNET's coordinates are `time_step_start`/`time_step_length` today; it is renaming them, and `conventions.TIMESTEP_START`/`TIMESTEP_LENGTH` then follow | "time step", `time_step` |
+| **time label** | a value of the `time` coordinate | |
+| **window** | the interval an observation's value covers, which model timesteps are reduced over (`pd.IntervalIndex`); on an observation's `time` as the coordinates `conventions.WINDOW_START`/`WINDOW_END`, built from the CF `time_bounds` variable the processed file stores. Their values are still `time_bounds_start`/`time_bounds_end` until PR 3 renames them `window_start`/`window_end` | "time bounds" for these coordinates |
+| **cell** | **only the CF sense**: the interval or area one value represents (a calendar resampling cell, a grid cell, a raster cell, a map renderer's site cell) | an element of y, a `(member, site)` pair, a CSV field, a figure slot |
+| **record** | a data source's full time extent (a run's record, a site's driver record); also one raw CSV row | |
+
+**Data sources and data.**
+
+| Word | Meaning | Retires |
+|---|---|---|
+| **data source** | a producer's dataset, raw or processed (MODIS LAI, the ERA5 drivers, PEcAn's initial conditions, the site table) | "product" for this |
+| **observation source** | a data source used as observational constraint data; one `ObservationSource` | "product" in the observation package |
+| **processed file** | the file an ingest script writes under `data/processed/` | "processed product" |
+| **upstream product** | the producer's own product name (MCD15A3H v061); the spec field and netCDF attribute `upstream_product` | the spec field and attribute `product` (renaming it needs a re-ingest) |
+| **raw** | a data source as it arrives, never edited | |
+| **constraint** | one of the five constraint data sources of `constraints.py` | |
+| **observation** | one entry of **y**: one observed value of one observation source at one site (and time) | "cell", "observed cell" |
+| **model output** | SIPNET's output as a labeled `xr.Dataset`, one run or a stack | `dataset` as a variable name for it |
+| **run** | one SIPNET execution: one site, one sample, and one member of each driving data source | "cell", "slot", "pair" |
+
+**Representations.**
+
+| Word | Meaning | Retires |
+|---|---|---|
+| **field** | one `xr.DataArray` holding one variable under the field contract below | "canonical field", a Dataset called a field |
+| **Fields** (a representation) | a vector's labeled form: an `xr.Dataset` of fields for the parameter vector, a `dict[str, Field]` for the observation vector | |
+| **Flat** | a vector's unlabeled numeric form: one vector `(D,)`/`(N,)`, or a batch `(n_samples, D)`/`(n_samples, N)`, called "batched Flat" where the shape matters | "block" |
+| **entry** | one position of a Flat vector | "column" (parameter vector), "cell" (observation vector) |
+| **segment** | the contiguous entries of one site, or one piece, in Flat | "block" in `forward.py` |
+| **SIPNET parameter fields** / `sipnet_parameter_fields` | the `xr.Dataset` of SIPNET parameter values over `(sample, site)` or `(site,)` | "SIPNET table", `table` for a Dataset |
+| **SIPNET overrides** / `sipnet_overrides` | one run's flat `dict[str, float]`, the keywords `SIPNETModel` takes | `sipnet_parameters` for this |
+| **SIPNET parameters** / `sipnet_parameters` | **only** a pySIPNET `SIPNETParameters` | the operator keyword of that name |
+| **table** | a pandas DataFrame, only | an `xr.Dataset` called a table |
+
+**Ensembles and batches.**
+
+| Word | Meaning | Retires |
+|---|---|---|
+| **batch dim** | any dim of a field other than its spatial dim and `time` whose index coordinate holds integers: an axis of independent replicates | "member dim", "sample dim" |
+| **sample** | the default name of the batch dim made from the rows of batched Flat; one row of theta is one sample (`conventions.SAMPLE`) | `member` for theta rows |
+| **J** (mathematics only) | the number of samples; in code `n_samples`, or `batch_size` for a batch dim of any name | `J`, `n_members` as identifiers |
+| **member** | one member of a data source's own ensemble, only inside a name that says which source: `initial_condition_member`, `driver_member` | bare `member` as a dim name |
+| **batch shape** | TFP's term, only in TFP code, always written "TFP batch shape"; prior groups are "groups" | "batch member" for a group |
+
+`member` is still the dim name for theta's rows and for every data source's
+ensemble until PR 2.
+
+**Narrowed words.** *label*: an xarray coordinate label, text on a figure, or
+"site labels" the data source. *kind*: only pySIPNET's variable kind. *source*:
+only "data source" and its attributes (`source_file`, `source_column`).
+*identity*: not used. *row*: a table row, or a row of batched Flat (a sample);
+never a timestep or a site position. *grid*: `SITE_GRID`, a raster grid, or a
+PyEns `Grid` (always "PyEns grid").
+
+**Notation.** `J` samples, `D` the dimension of theta
+(`ParameterVector.dimension`), `N` the dimension of y
+(`ObservationVector.dimension`), `S` sites (`n_sites`), `K` observation sources;
+`theta` Flat unconstrained calibration parameters, `y` Flat observations, `G`
+the forward map (`ForwardModel`), `M_s` SIPNET at site s, `H_k` the observation
+operator of source k, `T` the unconstrained-to-natural transform.
+"Predictions" is always a Flat `(N,)`/`(J, N)`; its labeled form is
+`predicted_fields`.
+
+### Field contract
+
+A **field** is one `xr.DataArray` holding one variable. It is a convention
+checked by one validator, not a wrapper class: a wrapper would fight xarray's
+`.sel`/`.resample`/`.quantile`, which are the operations this project needs.
+
+- **dims**: zero or more batch dims, then at most one spatial dim, then `time`
+  if present: `(*batch, space, time)`. A dim that is none of these is not
+  allowed.
+- **The spatial dim** is one of `site` (site ids of the site table in use);
+  `point` (arbitrary locations); or a raster pair `lat`, `lon` (or projected
+  `y`, `x`). These names are reserved (`conventions.SPATIAL_DIM_NAMES`) and are
+  never batch dims. `site` and `point` carry `float64` `lon`/`lat` coordinates
+  with the CF attributes of `conventions.LON_ATTRIBUTES`/`LAT_ATTRIBUTES`
+  (`sites.site_locations` makes them); a scalar `site` coordinate marks a field
+  of one site.
+- **`site`**: `int32` site ids (`conventions.SITE_DTYPE`), unique.
+- **`time`**: naive `datetime64[ns]`, strictly increasing, no `NaT`; pySIPNET's
+  timestep coordinates on `time` alone when the field is model output or
+  drivers (`conventions.TIME_COORD_NAMES`); the window coordinates on `time`
+  when the values are attributed to windows (observations).
+- **attrs**: `units` (validated by pySIPNET), `constituent` where the quantity
+  has one, `long_name`; `kind` where pySIPNET's kind applies.
+- A structural axis (variable, component, quantile, bounds, PFT class) is never
+  a dim of a field: split it into a `dict` or `Dataset` of fields.
+- **Batch dims** (approved design, **being implemented in PR 2**; today every
+  module uses the one name `member`, and plotters and operators key on it). A
+  batch dim is every dim other than the spatial dim and `time` whose index
+  coordinate holds integers. Two batch dims with the same name are the same
+  index (they zip in PyEns and align in xarray); different names are different
+  indices (they cross), so unrelated ensembles are kept apart by distinct names.
+  The batch dim made from batched Flat is `sample`, overridable by a
+  `batch_dim=` keyword, with labels `0..n_samples-1` in row order; a data
+  source's own ensemble is `<source>_member`, with its 1-based file index
+  beside it as `source_index`. Flat has at most one batch dim: a field with
+  several is reduced or stacked first. Batch labels are `int64`. A scalar
+  batch coordinate is not a dim.
+
+One validator, `fields.validate_field(field, *, message_name=None)`, is to
+check all of this at every public entry point that takes a field (PR 2); until
+then the plotters, the operators and the vectors check parts of it themselves.
+**Model output** is an `xr.Dataset` of pySIPNET-named variables on one shared
+time axis, each variable a field; one run's has a scalar `site`, a stack has
+`site` and batch dims.
+
+### Vector-like classes
+
+`ParameterVector`, `ObservationVector` and their pieces (`CalibrationParameter`,
+`FixedParameter`, the observation vector's per-source piece) follow one
+convention (approved; **being implemented in PR 4**, except where noted):
+
+| Aspect | Convention |
+|---|---|
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check; nothing mutable reachable: mappings frozen (`validation.FrozenMapping`, which pickles), arrays copied and read-only. `FixedParameter`, `ParameterVector.site_labels` and its lon/lat already follow this (PR 1) |
+| Pieces | `vector[name]`, `name in vector`, `iter(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
+| Size | `dimension` (D or N) |
+| Entries | `index`: a `pd.MultiIndex` over the entries; `positions(**selectors) -> int64 array` on both |
+| Sites | `sites` (ids, ascending, refused if unsorted on input), `site_table` on both |
+| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order; duplicates are refused (PR 1, through `validation.as_site_ids`); `restrict_to_sites(sites)` is the intersecting form |
+| Representations | `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
+| Flat's array type | JAX everywhere: both vectors and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package (PR 1) |
+| Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line |
+| Directions | where a vector and its pieces list SIPNET parameter names, the name says which way: `sipnet_parameter_names_written`, `sipnet_parameter_names_read` |
+| Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──`, `# ── evaluation ──` |
+
+`ForwardModel` is a regular class with read-only properties;
+`ForwardEvaluation` is `frozen, eq=False` (PR 1). No base class is shared by
+the vectors: they share an interface, not an implementation, and their shared
+coercion lives in `validation.py`.
+
+### Where shared things live
+
+- **`conventions.py`** holds every name constant two modules share (dims,
+  coordinates, the `site_id` column, the CF attributes of `site`/`lon`/`lat`,
+  `SITE_DTYPE`, `NAME_PATTERN`, `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`,
+  `data_root()`). A module imports them; it never defines its own copy.
+- **`validation.py`** holds the argument coercion two modules need, each
+  `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
+  `as_integer`, `as_positive_integer`, `as_batched_flat`, `as_bbox`,
+  `as_names`, `as_frozen_mapping`, and `truncated(items)` for messages.
+  Site-id arguments always go through `as_site_ids`: order kept, duplicates
+  refused, one string refused (`allow_one_id=True` accepts one bare id).
+- **`io.py`** holds writing a file safely (`write_checked`), `file_md5` and
+  `utc_timestamp`.
+- **`sites.py`** holds everything that reads the site table: `load_sites`,
+  `select_sites`, `site_lookup`, `site_locations`,
+  `check_site_table_locates_the_sites`. Nothing joins on `site_id` by hand.
+- **`tests/conftest.py`** holds every fixture or builder more than one test
+  file uses.
+- The package's `__init__.py` documents every module and the direction the
+  dependencies run, re-exports nothing, and turns on 64-bit JAX, its one
+  import-time side effect.
 
 ### Naming in processed data
 
@@ -162,13 +348,15 @@ the ones most often broken.
   strings is `<thing>_name` / `<thing>_names`; the things themselves are the
   plural noun. `parameter_names` and `sipnet_parameter_names` are names;
   `sipnet_parameters` are values. `variable` and `parameter` never mean a
-  string.
-- **A variable holding one representation of a concept says which.** The
-  parameter vector's Flat is `theta`, its Fields is `<thing>_fields`, its
-  SIPNET table is `sipnet_table`; the observation vector's Flat is `y`. A
-  pySIPNET object is named for its class (`sipnet_result`, `sipnet_output`,
-  `sipnet_parameters`); the labeled xarray of a run's output is
-  `model_output`. Nobody should have to ask whether a value is a
+  string. A module-level tuple of names is `*_NAMES` (`TIME_COORD_NAMES`,
+  `SPATIAL_DIM_NAMES`).
+- **A variable holding one representation of a concept says which**, in the
+  glossary's words. The parameter vector's Flat is `theta`, its Fields is
+  `<thing>_fields`, its SIPNET parameter fields are `sipnet_parameter_fields`
+  (still `sipnet_table` in the code until PR 3); the observation vector's Flat
+  is `y`. A pySIPNET object is named for its class (`sipnet_result`,
+  `sipnet_output`, `sipnet_parameters`); the labeled xarray of a run's output
+  is `model_output`. Nobody should have to ask whether a value is a
   `ParameterVector`, a `CalibrationParameter` or a SIPNET parameter.
 - **`sipnet_` prefixes anything in pySIPNET's vocabulary**: names, values,
   objects. The bare word or `calibration_` is this repository's vocabulary.
@@ -176,30 +364,42 @@ the ones most often broken.
   pySIPNET, so a second prefix would have no second referent.
 - **An `xr.Dataset` when the variables share one grid, a
   `dict[str, DataArray]` when they do not.** One run's or one stack's model
-  output shares a time axis and is a Dataset; the constraint products have
+  output shares a time axis and is a Dataset; the constraint data sources have
   three time structures and are a dict. A dict is named for what it holds and
-  its key (`observed_values`, keyed by product name).
-- **A field is one thing.** An `xr.DataArray` holding one variable, whose
-  dims are a subset of `(member, site, time)`, with `lon`/`lat` on `site` and `units`/`long_name`
-  in its attributes. The word "canonical" is not used with it; `fields.py`
-  holds the generic operations on fields and nothing else.
+  its key (`observed_values`, keyed by source name; `run_outputs_by_member_site`
+  where the key order matters).
+- **A field is one thing**, as the field contract above defines it. The word
+  "canonical" is not used with it; `fields.py` holds the generic operations on
+  fields and nothing else.
 - **A class whose call is its whole interface may be named as an imperative
   verb**, for what the call does (`SelectTimestep`, `ComputeLeafAreaIndex`).
   This is not a rule for every callable class: a protocol, a record, or an
   object with an interface of its own beyond the call is a noun
-  (`ObservationOperator`, `Observation`, a model object).
+  (`ObservationOperator`, `ForwardModel`, a model object).
+- **Private helpers are named for what they do or what they return**: a verb
+  phrase (`_sort_by_site_and_time`, `_drop_padding_rows`) or a noun phrase
+  (`_read_only_copy`, `_observation_restricted_to`). Never a bare participle
+  (`_selected`, `_frozen`, `_aggregated`) and never a name that hides a side
+  effect (a `_with_...` that drops, a `_sort_...` that partitions).
+- **A function that validates and converts is `as_<thing>`**; a check never
+  returns a value (below).
+- **Constants are documented with `#:` comments** above them, and **every
+  module has `__all__`** listing its public API.
 - **No abbreviations** beyond the universal ones, as above:
   `constraint_standard_deviations`, not `constraint_sds`. Names that are
   pandas', xarray's or pySIPNET's own (`how`, `freq`, `coords`, `dims`) stay,
   because matching `pysipnet.resample(how=)` or `DataArray.coords` is worth
   more than spelling them out; so does `DEFAULT_OBS_OPS`, which the author
   chose.
+- **Units are not in names** (`radius_km`, `interval_ms` are retired):
+  quantities are SI, meters and seconds, with the unit in the docstring.
 - **An argument is named for what it is for**, never for where it sits: not
-  `at`, not `data`, not `x`.
+  `at`, not `data`, not `x`. A site table is `site_table=` everywhere (PR 3
+  renames the `sites=` and `sites_table=` keywords that still take one).
 
-Existing code is brought into line by mechanical rename PRs, one module at a
-time, with the tests renamed alongside; `logs/2026-09-24_Naming
-Conventions.md` in the vault lists what still changes.
+Existing code is brought into line by the PRs of the design model, with the
+tests renamed alongside; `logs/2026-09-25_Repository Design Model.md` in the
+vault lists what changes in which.
 
 ### File organization
 
@@ -214,17 +414,33 @@ Conventions.md` in the vault lists what still changes.
   work. If it stops reading that way, pull a step out as a helper. Roughly 40
   lines is where to start looking for the seam, not a hard limit.
 
-### Data validation in processing scripts
+### Checks, errors and messages
 
-- Every validation check is its own helper named **`check_*`**, saying what it
-  checks: `check_covariances_were_diagonal`, `check_no_duplicate_triples`,
-  `check_sites_are_in_the_site_table`. Not `validate`, not an inline `assert`
-  buried in a transformation.
-- The `check_*` helpers live together in the **`checks` section at the bottom**
-  of the file.
-- A check raises with a message naming the invariant that broke and, where
-  possible, what to do about it. The script's `main` turns those into a reported
-  error rather than a traceback.
+These apply to the library and the scripts alike.
+
+- **A check is a public-named `check_<subject>_<predicate>` function** with a
+  one-line docstring, saying what it checks: `check_covariances_were_diagonal`,
+  `check_site_table_locates_the_sites`. Not `validate`, not an inline `assert`
+  buried in a transformation. It checks one invariant, and raises or returns
+  `None`; it never returns a value. A group of checks always called together
+  from one place becomes one `check_<thing>_is_valid` that calls them in
+  order. Checks used from another module are in `__all__`.
+- The `check_*` functions live together in the **`# ── checks ──` section at
+  the bottom** of the file.
+- **Error types**: `TypeError` for a wrong type, including a boolean where a
+  number is wanted and one string where a sequence is; `ValueError` for a
+  wrong value; `KeyError` for a name or label that is not there (an unknown
+  parameter, source, site or site-table row); `FileNotFoundError` for a
+  missing file. The coercers of `validation.py` raise by this rule already;
+  plotting and projection, which still raise `ValueError` for some wrong
+  types, are brought into line by the module cleanups.
+- **Messages** start lowercase, name the invariant that broke, then `;` and
+  what to do about it; name the subject through a `message_name` argument,
+  passed last; and truncate a list to ten items with one helper,
+  `validation.truncated(items)`.
+- No inline `assert` in library code, and no inline `raise` in a function
+  that also has `check_*` calls. A script's `main` turns its checks' errors
+  into a reported error rather than a traceback.
 
 ### What does and does not belong in documentation
 
@@ -315,8 +531,13 @@ Function and module docstrings elsewhere are ordinary NumPy style.
   (`SITE_COLUMNS` in `sites.py`, `CONSTRAINTS` in `constraints.py`).
   A script's own round-trip check calls the library loader, never a parallel
   reader.
-- **Write to a `.partial` path and rename only after the checks pass**, so a
-  failed run cannot leave a corrupt file at the canonical path.
+- **Write through `io.write_checked(path, write, check)`**: the file goes to a
+  `.partial` path beside its destination and is renamed only after the checks
+  pass, so a failed run cannot leave a corrupt file at the canonical path.
+  On a failure the `.partial` file is **kept for inspection and its path
+  printed**; it cannot be mistaken for the processed file, and a rerun
+  overwrites it. Every script that writes a file does this, with no protocol
+  of its own.
 
 ## Writing conventions
 
@@ -457,20 +678,33 @@ reader and checks together.
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
 src/sipnet_calibration/
+  __init__.py             # the module map and the dependency direction; no
+                          # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
                           # select_sites(ids=, bbox=, where=, sample=, seed=),
-                          # EXTENTS (named lon/lat boxes)
+                          # EXTENTS (named lon/lat boxes); site_lookup(),
+                          # site_locations(), check_site_table_locates_the_sites()
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
                           # read_raw(), build_constraint(), load_constraint(),
                           # constraint_fields() -> one field per product
-  conventions.py          # CF_CONVENTIONS and data_root(): the settings every
-                          # product has to agree on
+  conventions.py          # every shared name constant: SITE, TIME, SAMPLE,
+                          # the reserved spatial names, TIMESTEP_START/LENGTH,
+                          # WINDOW_START/END, SITE_ID; the CF attributes of
+                          # site/lon/lat; SITE_DTYPE, NAME_PATTERN;
+                          # CF_CONVENTIONS and data_root()
+  validation.py           # argument coercion: as_site_ids, as_site_id,
+                          # as_integer, as_positive_integer, as_batched_flat,
+                          # as_bbox, as_names, as_frozen_mapping/FrozenMapping,
+                          # truncated()
+  io.py                   # write_checked() (the .partial protocol), file_md5(),
+                          # utc_timestamp()
   initial_conditions/     # one module per artifact; __init__ re-exports them all
     __init__.py           # curated exports + the product's data model
-    names.py              # SITE/MEMBER, the two file names, the path helpers
+    names.py              # MEMBER/SOURCE_MEMBER, the two file names, the path
+                          # helpers
     source_files.py       # SOURCE (the PEcAn file format), read_source_file()
     specs.py              # InitialConditionSpec + INITIAL_CONDITIONS
     raw.py                # build_raw(), raw_encoding(), read_raw()
@@ -505,10 +739,8 @@ src/sipnet_calibration/
                           # stack_sipnet_outputs() over SIPNETOutput.select,
                           # stack_model_outputs() (runs' Datasets to one
                           # on (member, site, time)),
-                          # resolve_output_variable_names(), field_label(),
-                          # site_lookup(), check_site_table_locates_the_sites()
-                          # and the time coordinate names; validate_field() is
-                          # still owed (issue #6)
+                          # resolve_output_variable_names(), field_label();
+                          # validate_field() is still owed (PR 2, issue #6)
   observation/            # the observation side of the inverse problem
     __init__.py           # curated exports
     time_alignment.py     # aggregate_time, reduce_windows, select_timestep_at,
@@ -550,7 +782,8 @@ data/raw/                 # never edited; raw/sites/, raw/constraints/,
                           # raw/covariates/ and raw/natural_earth/ are tracked
 data/processed/           # ingest output == the plotting input; untracked;
                           # constraints/<name>.nc is one CF-1.11 netCDF per constraint
-tests/
+tests/                    # conftest.py: every fixture or builder two files use;
+                          # data found through conventions.data_root()
 ```
 
 Conventions:
@@ -571,14 +804,12 @@ Conventions:
 Read `logs/2026-08-28_Plotting Design Spec.md` in the vault before writing
 plotting code. The load-bearing rules:
 
-- **Field**: an `xr.DataArray` with dims a *subset* of
-  `(member, site, time)`, `lon`/`lat` as non-dimension coords on `site`, and
-  units/`long_name` in `attrs`. It is a **convention plus `validate_field()`**
-  (owed, issue #6), not a wrapper class — a wrapper would fight xarray's
-  `.sel`/`.resample`/`.quantile`, which are the three operations this project
-  needs. One `DataArray` per variable; facet-by-variable takes
-  `dict[str, DataArray]`.
-- Plotters branch on **presence of the `member` dim**, never on a mode keyword.
+- **Field**: as the field contract under "Code conventions" defines it. One
+  `DataArray` per variable; facet-by-variable takes `dict[str, DataArray]`.
+- Plotters branch on **presence of a batch dim**, never on a mode keyword;
+  today that dim is `member`, and PR 2 makes it any batch dim, found with
+  `fields.batch_dims`. No plotter types a dim name: `SITE`, `TIME`, `LON`,
+  `LAT` come from `conventions`.
 - **Temporal aggregation lives in `observation/time_alignment.py`**: the
   observation operators are written with it, and it is the verb a caller
   applies before plotting, so a predictive-check figure cannot disagree with
@@ -675,8 +906,9 @@ plotting code. The load-bearing rules:
   operators read the model only inside the kept sites' records.
 - **An annual constraint's array carries its `time_bounds`** as the 1-D
   coordinates `time_bounds_start`/`time_bounds_end` on `time`
-  (`constraint_fields` adds them; the names are `conventions.TIME_BOUNDS_START`
-  and `TIME_BOUNDS_END`, re-exported by `constraints`), which is what
+  (`constraint_fields` adds them; the names are `conventions.WINDOW_START`
+  and `WINDOW_END`, re-exported by `constraints` as `TIME_BOUNDS_START` and
+  `TIME_BOUNDS_END`, and renamed `window_*` in PR 3), which is what
   `ReduceOverTimeBounds` reads; a dated or static product documents no
   interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
@@ -684,7 +916,7 @@ plotting code. The load-bearing rules:
   `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the
   drivers, read through `ClimateDrivers`. The registry names are already
   `lower_case_with_underscores`, so they are the processed names. Both keep
-  `fields.TIME_COORDS`, pySIPNET's axis: `time` at the step end, with
+  `conventions.TIME_COORD_NAMES`, pySIPNET's axis: `time` at the step end, with
   `time_step_start` beside it, so the interval a value covers is
   `[time_step_start, time]` — the pair pySIPNET writes as its CF `time_bounds`
   variable — and a run's output and the drivers it ran on share one axis by
@@ -840,7 +1072,8 @@ plotting code. The load-bearing rules:
   multivariate normal over the index points (event `(S,)`, batch `()`, analytic `.mean()` and
   `.covariance()`), so a GP prior needs no other package; `ParameterVector` admits it as a
   *joint* prior over a scalar calibration parameter's groups (issue #33). Built without x64 it is
-  `float32`, which the vector refuses.
+  `float32`, which the vector refuses; importing `sipnet_calibration` turns x64 on for the
+  process, the package's one import-time side effect.
 - Batch slicing by an **integer** index array (`prior[np.array([0, 2])]`) works for `LogNormal`
   and `LogitNormal` but **fails for a batched `softmax_normal`** once two or more indices are kept
   (TFP's slicing of the `MultivariateNormalDiag` base), so `parameter_vector` rebuilds that family
