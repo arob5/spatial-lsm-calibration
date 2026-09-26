@@ -11,11 +11,14 @@ Foundations, which everything else may import:
     Every name, coordinate attribute and setting two modules share: the dims
     ``site``, ``time`` and ``sample``, the reserved spatial names, pySIPNET's
     timestep coordinates, the window edges, ``site_id``, the CF attributes of
-    ``site``/``lon``/``lat``, and where ``data/`` is
-    (:func:`~sipnet_calibration.conventions.data_root`).
+    ``site``/``lon``/``lat``, where ``data/`` is
+    (:func:`~sipnet_calibration.conventions.data_root`), and
+    :class:`~sipnet_calibration.conventions.FrozenMapping`, the one read-only
+    mapping type.
 :mod:`~sipnet_calibration.validation`
     Argument coercion, ``as_<thing>(value, *, message_name)``: site ids,
-    integers, Flat vectors and batches, boxes, names, frozen mappings.
+    integers, Flat vectors and batches, boxes, names, frozen mappings; and the
+    checks they are written with.
 :mod:`~sipnet_calibration.io`
     Writing a file safely through a ``.partial`` path, and the md5 and
     timestamp its provenance records.
@@ -63,26 +66,34 @@ Dependencies
 ------------
 The dependency runs one way, from the foundations up::
 
-    conventions  <-  validation, io  <-  sites  <-  fields
-        <-  constraints, initial_conditions, drivers, site_labels,
-            parameter_vector, observation
+    conventions  <-  validation  <-  sites
+        <-  constraints, initial_conditions, site_labels, parameter_vector, fields
+        <-  drivers, observation
         <-  forward  <-  experiments
 
-:mod:`~sipnet_calibration.projection` depends on the foundations only, and
-:mod:`~sipnet_calibration.plotting` on the foundations, the site table and the
-projection; nothing outside plotting imports it.
-:mod:`~sipnet_calibration.compute` depends on nothing here.
+:mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
+and :mod:`~sipnet_calibration.projection` write through it;
+``parameter_vector`` reads ``site_labels``' column name. ``drivers`` and
+``observation`` depend on ``fields``, and ``forward`` on ``fields``,
+``observation`` and ``parameter_vector``.
+:mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
+only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
+``validation``, the site table and the projection; nothing outside plotting
+imports it. :mod:`~sipnet_calibration.compute` depends on nothing here.
 
 Notes
 -----
 **The one import-time side effect.** Importing the package, and so any of its
 modules, turns on JAX's 64-bit mode (``jax_enable_x64``), so every JAX array
 the package makes is ``float64``, as pyEKI requires and an MCMC baseline
-that never imports pyEKI still gets. The setting is per process: workers of
-a process pool that compute with JAX need ``JAX_ENABLE_X64=1`` in their
-environment.
+that never imports pyEKI still gets. The setting is per process. A worker of
+a process pool that imports the package -- as unpickling any of its objects
+does -- gets it too; only a worker that computes with JAX without importing
+the package needs ``JAX_ENABLE_X64=1`` in its environment.
 """
 
 import jax as _jax
+
+__all__: list[str] = []
 
 _jax.config.update("jax_enable_x64", True)

@@ -162,7 +162,7 @@ def spaghetti(
 
     label = style.pop("label", None)
     drawn = []
-    for position, index in enumerate(thinned_indices(len(samples), int(n_max))):
+    for position, index in enumerate(thinned_indices(len(samples), n_max)):
         keep_label = position == 0 and label is not None
         drawn.append(
             line(
@@ -440,8 +440,8 @@ def site_cells(
     if not (x_max > x_min and y_max > y_min):
         raise ValueError(f"bounds must have positive width and height, got {bounds}")
 
-    size = (x_max - x_min) / int(pixels)
-    n_x, n_y = int(pixels), max(1, int(np.ceil((y_max - y_min) / size)))
+    size = (x_max - x_min) / pixels
+    n_x, n_y = pixels, max(1, int(np.ceil((y_max - y_min) / size)))
     centers_x = x_min + size * (np.arange(n_x) + 0.5)
     centers_y = y_min + size * (np.arange(n_y) + 0.5)
     grid = np.stack(np.meshgrid(centers_x, centers_y), axis=-1).reshape(-1, 2)

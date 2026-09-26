@@ -214,15 +214,16 @@ import pyproj
 from pyproj.crs import ProjectedCRS
 from pyproj.crs.coordinate_operation import LambertAzimuthalEqualAreaConversion
 
-from sipnet_calibration.io import write_checked
+from sipnet_calibration.io import write_checked_together
 from sipnet_calibration.validation import as_bbox, as_integer
 
 __all__ = [
     "DEFINITION_STEM",
     "LAEA_METHOD",
     "LAEA_METHOD_CODE",
-    "Projection",
     "SITE_PROJECTION",
+    "Projection",
+    "check_definition_file_reads_back",
     "check_definitions",
     "default_definition_dir",
     "definition_paths",
@@ -670,15 +671,28 @@ def write_definitions(
     this is the only thing that should ever write them.
     :func:`check_definitions` makes a hand-edit a test failure.
 
-    Both files are written through :func:`sipnet_calibration.io.write_checked`,
-    and each file's check writes the next one, so no file is moved into place
-    until every one of them is on disk and reads back as written: a failed run
-    cannot leave one file describing this projection and the other describing
-    the last one. A failed file is kept as its ``.partial`` for inspection.
+    Both files are written together through
+    :func:`sipnet_calibration.io.write_checked_together`, so neither is moved
+    into place until both are on disk and read back as written: a failed write
+    or check leaves both previous files as they were, with this run's
+    ``.partial`` files kept for inspection. Only a failed rename, past the
+    checks, can leave the pair mixed, and that is reported;
+    :func:`check_definitions` then refuses the pair until a rerun rewrites it.
     """
     paths = definition_paths(directory, stem=stem)
     contents = _definition_contents(projection)
-    _write_definition_files(list(paths.items()), contents)
+    write_checked_together(
+        [
+            (
+                path,
+                lambda partial, text=contents[key]: partial.write_text(text, encoding="utf-8"),
+                lambda partial, text=contents[key]: check_definition_file_reads_back(
+                    partial, text
+                ),
+            )
+            for key, path in paths.items()
+        ]
+    )
     return paths
 
 
@@ -853,30 +867,6 @@ def _as_float_array(values):
     return np.asarray(values, dtype=float)
 
 
-def _write_definition_files(
-    remaining: list[tuple[str, Path]], contents: dict[str, str]
-) -> None:
-    """Write the first of *remaining*, checking it by writing the rest first."""
-    (key, path), rest = remaining[0], remaining[1:]
-
-    def check(partial: Path) -> None:
-        _check_definition_file_reads_back(partial, contents[key])
-        if rest:
-            _write_definition_files(rest, contents)
-
-    write_checked(
-        path,
-        write=lambda partial: partial.write_text(contents[key], encoding="utf-8"),
-        check=check,
-    )
-
-
-def _check_definition_file_reads_back(partial: Path, expected: str) -> None:
-    """The written file holds exactly the text it was given."""
-    if partial.read_text(encoding="utf-8") != expected:
-        raise ValueError(f"{partial} does not read back as the definition written to it")
-
-
 def _definition_contents(projection: Projection) -> dict[str, str]:
     """The text of each interchange file, keyed as :func:`definition_paths` keys them."""
     return {
@@ -914,7 +904,7 @@ def _main(argv: list[str] | None = None) -> int:
     if arguments.write:
         try:
             written = write_definitions(arguments.directory)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             print(f"error: {error}")
             return 1
         for key, path in written.items():
@@ -928,6 +918,18 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
     print(f"the stored definition matches {SITE_PROJECTION.name}")
     return 0
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_definition_file_reads_back(path: Path, expected: str) -> None:
+    """A written definition file holds exactly the text it was given."""
+    if path.read_text(encoding="utf-8") != expected:
+        raise ValueError(
+            f"{path} does not read back as the definition written to it; check the disk, "
+            "then rerun python -m sipnet_calibration.projection --write."
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

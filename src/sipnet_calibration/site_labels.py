@@ -150,23 +150,26 @@ import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration import conventions
 from sipnet_calibration.conventions import (
     NAME_PATTERN,
     SITE,
-    SITE_ATTRIBUTES,
     SITE_DTYPE,
     SITE_ID,
+    FrozenMapping,
+    data_root,
 )
-from sipnet_calibration.sites import load_sites, site_locations
-from sipnet_calibration.validation import as_frozen_mapping
+from sipnet_calibration.sites import N_SITES, load_sites, site_coordinates
+from sipnet_calibration.validation import (
+    as_frozen_mapping,
+    as_positive_integer,
+    check_site_ids_are_in_range,
+)
 
 __all__ = [
     "LABEL_COLUMN",
@@ -198,7 +201,7 @@ SITE_LABELS_COLUMNS = (SITE_ID, LABEL_COLUMN)
 #:
 #: Read-only: this is the schema, and a caller that mutated it would change what
 #: every later read of a site-labels product produces.
-SITE_LABELS_COLUMN_DTYPES = MappingProxyType({SITE_ID: SITE_DTYPE})
+SITE_LABELS_COLUMN_DTYPES = FrozenMapping({SITE_ID: SITE_DTYPE})
 
 
 @dataclass(frozen=True)
@@ -211,7 +214,7 @@ class SiteLabelsSpec:
     Notes
     -----
     The two mappings are stored as
-    :class:`~sipnet_calibration.validation.FrozenMapping` copies, so a spec
+    :class:`~sipnet_calibration.conventions.FrozenMapping` copies, so a spec
     cannot change after its checks, and hashes and pickles like the other
     specs.
     """
@@ -311,8 +314,9 @@ class SiteLabelsSpec:
             raise ValueError(
                 f"Site labels {self.name!r}: site_column and label_column are the same."
             )
-        if self.expected_rows <= 0:
-            raise ValueError(f"Site labels {self.name!r}: expected_rows must be positive.")
+        as_positive_integer(
+            self.expected_rows, message_name=f"site labels {self.name!r}: expected_rows"
+        )
         if self.display_names is not None:
             unknown = sorted(set(self.display_names) - set(self.labels))
             if unknown:
@@ -362,9 +366,9 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         raw_columns=("site", "pft"),
         site_column="site",
         label_column="pft",
-        expected_rows=8000,
+        expected_rows=N_SITES,
         covers_pool=True,
-        landcover_mapping=MappingProxyType(
+        landcover_mapping=FrozenMapping(
             {
                 1: "boreal.coniferous",
                 2: "boreal.coniferous",
@@ -451,13 +455,13 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         ),
         site_column="index",
         label_column="final_pft",
-        expected_rows=8000,
+        expected_rows=N_SITES,
         covers_pool=True,
         # Not a function of the shapefile's landcover: the classes come from a
         # different land cover product refined by clustering, so no exact
         # relation holds and none is asserted.
         landcover_mapping=None,
-        display_names=MappingProxyType(
+        display_names=FrozenMapping(
             {
                 "Evergreen_Needleleaf_Forest__P1": "Open Cold-seasonal ENF",
                 "Evergreen_Needleleaf_Forest__P2": "Closed Long-season ENF",
@@ -677,10 +681,7 @@ def site_labels_field(
     return xr.DataArray(
         labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
         dims=SITE,
-        coords={
-            SITE: (SITE, labels[SITE_ID].to_numpy(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
-            **site_locations(labels[SITE_ID].tolist(), sites),
-        },
+        coords=site_coordinates(labels[SITE_ID].tolist(), sites),
         attrs=attrs,
         name=spec.name,
     )
@@ -823,7 +824,7 @@ def describe(spec: SiteLabelsSpec) -> str:
 
 
 def _data_root() -> Path:
-    return conventions.data_root()
+    return data_root()
 
 
 def _raw_dtypes(spec: SiteLabelsSpec) -> dict[str, Any]:
@@ -846,12 +847,7 @@ def _check_site_ids(site: pd.Series, source: object, *, sorted_required: bool = 
     """Identifiers are positive, fit ``int32``, are unique, and are ascending."""
     if site.isna().any():
         raise ValueError(f"{source}: {SITE_ID} has a missing value.")
-    high = np.iinfo(SITE_LABELS_COLUMN_DTYPES[SITE_ID]).max
-    if site.min() < 1 or site.max() > high:
-        raise ValueError(
-            f"{source}: {SITE_ID} runs {site.min()}-{site.max()}, which is not a "
-            f"positive int32. Site identifiers are the 1-8000 of the site table."
-        )
+    check_site_ids_are_in_range(site.to_numpy(), message_name=f"{source}: {SITE_ID}")
     duplicated = site[site.duplicated()].unique()
     if duplicated.size:
         raise ValueError(

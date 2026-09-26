@@ -13,9 +13,12 @@ import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
 from conftest import site_table_of
-
-from sipnet_calibration.constraints import TIME_BOUNDS_END, TIME_BOUNDS_START
-from sipnet_calibration.conventions import TIMESTEP_LENGTH, TIMESTEP_START
+from sipnet_calibration.conventions import (
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+    WINDOW_END,
+    WINDOW_START,
+)
 from sipnet_calibration.observation.time_alignment import (
     SELECTED_STEP_COORD,
     WINDOW_REDUCTIONS,
@@ -263,8 +266,8 @@ class TestWindowBuilders:
             coords={
                 "site": [1],
                 "time": pd.DatetimeIndex(["2012-01-01", "2013-01-01"]),
-                TIME_BOUNDS_START: ("time", pd.DatetimeIndex(["2012-01-01", "2013-01-01"])),
-                TIME_BOUNDS_END: ("time", pd.DatetimeIndex(["2013-01-01", "2014-01-01"])),
+                WINDOW_START: ("time", pd.DatetimeIndex(["2012-01-01", "2013-01-01"])),
+                WINDOW_END: ("time", pd.DatetimeIndex(["2013-01-01", "2014-01-01"])),
             },
         )
         windows = windows_from_time_bounds(observed)
@@ -280,7 +283,9 @@ class TestWindowBuilders:
     def test_the_real_annual_product_carries_bounds(self):
         constraints = pytest.importorskip("sipnet_calibration.constraints")
         try:
-            wood = constraints.constraint_fields("landtrendr_aboveground_biomass", sites=[3851])["landtrendr_aboveground_biomass"]
+            wood = constraints.constraint_fields(["landtrendr_aboveground_biomass"], sites=[3851])[
+                "landtrendr_aboveground_biomass"
+            ]
         except FileNotFoundError as error:
             pytest.skip(str(error))
         windows = windows_from_time_bounds(wood)
@@ -461,14 +466,16 @@ class TestPaddedStacks:
 
 class TestBoundsOrientation:
     def test_the_bounds_coordinates_are_start_then_end(self):
-        from sipnet_calibration.constraints import _time_bounds_coords
+        from sipnet_calibration.constraints import _window_coords
 
         times = pd.DatetimeIndex(["2012-01-01", "2013-01-01"])
         bounds = np.array([[t, t + pd.Timedelta("366D")] for t in times]).astype("datetime64[ns]")
         dataset = xr.Dataset(coords={"time": times, "time_bounds": (("time", "bounds"), bounds)})
-        coords = _time_bounds_coords(dataset)
-        np.testing.assert_array_equal(coords[TIME_BOUNDS_START].values, times.values.astype("datetime64[ns]"))
-        assert (coords[TIME_BOUNDS_END].values > coords[TIME_BOUNDS_START].values).all()
+        coords = _window_coords(dataset)
+        np.testing.assert_array_equal(
+            coords[WINDOW_START].values, times.values.astype("datetime64[ns]")
+        )
+        assert (coords[WINDOW_END].values > coords[WINDOW_START].values).all()
 
     def test_reversed_bounds_are_refused(self):
         observed = xr.DataArray(
@@ -477,8 +484,8 @@ class TestBoundsOrientation:
             coords={
                 "site": [1],
                 "time": pd.DatetimeIndex(["2012-01-01"]),
-                TIME_BOUNDS_START: ("time", pd.DatetimeIndex(["2013-01-01"])),
-                TIME_BOUNDS_END: ("time", pd.DatetimeIndex(["2012-01-01"])),
+                WINDOW_START: ("time", pd.DatetimeIndex(["2013-01-01"])),
+                WINDOW_END: ("time", pd.DatetimeIndex(["2012-01-01"])),
             },
         )
         with pytest.raises(ValueError, match="must follow its start"):
@@ -522,9 +529,15 @@ class TestCombinedLengthsAreExact:
         ends = pd.date_range("2001-01-01T01:00", periods=n, freq="1h").as_unit("ns")
         length = np.full(n, 3_600 * 10**9 + 1, dtype="int64").view("timedelta64[ns]")  # 1 h + 1 ns
         return xr.DataArray(
-            np.ones(n), dims="time",
-            coords={"time": ends, TIMESTEP_START: ("time", (ends - pd.Timedelta("1h")).values), TIMESTEP_LENGTH: ("time", length)},
-            attrs={"kind": "timestep_total", "units": "g m-2"}, name="x",
+            np.ones(n),
+            dims="time",
+            coords={
+                "time": ends,
+                TIMESTEP_START: ("time", (ends - pd.Timedelta("1h")).values),
+                TIMESTEP_LENGTH: ("time", length),
+            },
+            attrs={"kind": "timestep_total", "units": "g m-2"},
+            name="x",
         ), int(length.astype("int64").sum())
 
     def test_a_yearly_cell(self, year):
@@ -541,8 +554,14 @@ class TestWindowAndLabelRefusals:
     @staticmethod
     def bounded(start, end):
         return xr.DataArray(
-            [[1.0]], dims=("site", "time"),
-            coords={"site": [1], "time": pd.DatetimeIndex(["2012-01-01"]), TIME_BOUNDS_START: ("time", start), TIME_BOUNDS_END: ("time", end)},
+            [[1.0]],
+            dims=("site", "time"),
+            coords={
+                "site": [1],
+                "time": pd.DatetimeIndex(["2012-01-01"]),
+                WINDOW_START: ("time", start),
+                WINDOW_END: ("time", end),
+            },
             name="annual",
         )
 
@@ -697,7 +716,10 @@ class TestCheckRunSpansTheWindows:
         stacked = stack_model_outputs({(1, 0): run, (2, 0): run.isel(time=slice(0, 40))}, site_table=table)
         one = stacked.sel(site=2, member=0)["wood_carbon"]
         assert np.isnat(one[TIMESTEP_START].values).any()
-        start, end = pd.Timestamp(one[TIMESTEP_START].values[0]), pd.Timestamp(niwot["time"].values[50])
+        start, end = (
+            pd.Timestamp(one[TIMESTEP_START].values[0]),
+            pd.Timestamp(niwot["time"].values[50]),
+        )
         windows = pd.IntervalIndex.from_arrays([start], [end], closed="right")
         with pytest.raises(ValueError, match="reaches beyond the model record"):
             check_run_spans_the_windows(one, windows, "x")

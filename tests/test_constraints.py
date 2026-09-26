@@ -25,12 +25,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from conftest import load_script, write_site_table_csv
-
+from conftest import REPOSITORY, load_script, write_site_table_csv
 from sipnet_calibration import constraints as module
-from sipnet_calibration.conventions import data_root
 from sipnet_calibration.constraints import (
-    CF_CONVENTIONS,
     CONSTRAINT_NAMES,
     CONSTRAINTS,
     STANDARD_DEVIATION,
@@ -47,9 +44,11 @@ from sipnet_calibration.constraints import (
     read_raw,
     resolve_constraint,
 )
+from sipnet_calibration.conventions import CF_CONVENTIONS, data_root
 from sipnet_calibration.sites import default_sites_path, load_sites
 
-RAW_DIR = data_root() / "raw" / "constraints"
+#: The tracked raw files, found from the repository rather than the data root.
+RAW_DIR = REPOSITORY / "data" / "raw" / "constraints"
 ASSEMBLED = data_root() / "processed" / "constraints_annual.nc"
 
 #: Old assembled name -> new constraint, for the reproduction tests.
@@ -397,7 +396,7 @@ def test_read_raw_names_the_missing_file(raw_root):
 
 
 def _refused(spec, rows, raw_root, sites, tmp_path, message):
-    with pytest.raises((ingest.IngestError, ValueError), match=message):
+    with pytest.raises((ingest.IngestError, ValueError, KeyError), match=message):
         _ingest(spec, rows, raw_root, sites, tmp_path / "out")
 
 
@@ -408,12 +407,12 @@ def test_a_duplicate_key_is_refused(raw_root, sites, tmp_path):
 
 def test_a_site_outside_the_pool_is_refused(raw_root, sites, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=9, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "different site pool")
+    _refused(ANNUAL, rows, raw_root, sites, tmp_path, r"site\(s\) \[9\] are not in the site table")
 
 
 def test_a_site_id_below_one_is_refused(raw_root, sites, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=0, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "site ids outside")
+    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "must be site ids from 1 to")
 
 
 def test_coordinates_disagreeing_with_the_site_table_are_refused(raw_root, sites, tmp_path):
@@ -481,7 +480,7 @@ def test_constraint_fields_and_sds_select_sites_in_the_order_given(
     assert sds.values.tolist() == [[2.0, 0.0]]
     assert "standard deviation" in sds.attrs["long_name"]
 
-    with pytest.raises(ValueError, match="not in the pool"):
+    with pytest.raises(KeyError, match=r"site\(s\) \[7\] are not in the product"):
         constraint_fields(sites=[1, 7], directory=out_dir)
 
 
@@ -494,13 +493,33 @@ def test_constraint_fields_refuses_one_string_of_sites_rather_than_reading_its_c
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
 
-    with pytest.raises(TypeError, match="one character per site"):
+    with pytest.raises(TypeError, match="one string '14'"):
         constraint_fields(sites="14", directory=out_dir)
-    with pytest.raises(TypeError, match="one character per site"):
+    with pytest.raises(TypeError, match="one string '14'"):
         constraint_standard_deviations(sites="14", directory=out_dir)
     with pytest.raises(ValueError, match="more than once"):
         constraint_fields(sites=[1, 1], directory=out_dir)
-    assert constraint_fields(sites=4, directory=out_dir)[ANNUAL.name]["site"].values.tolist() == [4]
+    with pytest.raises(TypeError, match="sequence of site ids"):
+        constraint_fields(sites=4, directory=out_dir)
+    with pytest.raises(TypeError, match="no order to keep"):
+        constraint_fields(sites={4, 1}, directory=out_dir)
+    with pytest.raises(TypeError, match="one string"):
+        constraint_fields(ANNUAL.name, directory=out_dir)
+
+
+def test_constraint_fields_takes_sites_as_any_array_like(raw_root, sites, tmp_path, monkeypatch):
+    """A field's own site coordinate, or a JAX array, is a sequence of site ids."""
+    import jax.numpy as jnp
+
+    out_dir = tmp_path / "out"
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
+    monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
+
+    field = constraint_fields(sites=[4, 1], directory=out_dir)[ANNUAL.name]
+    for given in (field["site"], jnp.array([4, 1]), np.array([4, 1]), {4: 0, 1: 0}.keys()):
+        again = constraint_fields(sites=given, directory=out_dir)[ANNUAL.name]
+        assert again["site"].values.tolist() == [4, 1]
 
 
 def test_a_missing_product_names_the_command_that_builds_it(tmp_path):
@@ -751,11 +770,11 @@ def test_constraint_fields_keeps_the_order_of_names_given(
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL, other))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name, other.name))
 
-    fields = constraint_fields([other.name, ANNUAL.name], sites=4, directory=out_dir)
+    fields = constraint_fields([other.name, ANNUAL.name], sites=[4], directory=out_dir)
     assert list(fields) == [other.name, ANNUAL.name]
     assert fields[other.name]["site"].values.tolist() == [4]
     assert list(constraint_fields(directory=out_dir)) == [ANNUAL.name, other.name]
-    assert list(constraint_fields(ANNUAL.name, directory=out_dir)) == [ANNUAL.name]
+    assert list(constraint_fields([ANNUAL.name], directory=out_dir)) == [ANNUAL.name]
 
 
 # ── the real files ────────────────────────────────────────────────────────────

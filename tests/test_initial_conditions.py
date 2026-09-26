@@ -23,21 +23,23 @@ import xarray as xr
 from pysipnet.parameters import InitialConditions
 from scipy.io import netcdf_file
 
-from conftest import load_script, write_site_table_csv
-
+import sipnet_calibration
+from conftest import REPOSITORY, load_script, write_site_table_csv
 from sipnet_calibration import initial_conditions as module
-from sipnet_calibration.conventions import data_root
-from sipnet_calibration.initial_conditions import (
+from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
-    CONVERTED_SIPNET_FIELDS,
-    SOURCE,
-    INITIAL_CONDITIONS,
-    INITIAL_CONDITION_NAMES,
-    InitialConditionSpec,
-    MEMBER,
+    DATA_ROOT_ENV_VAR,
     SITE,
+    data_root,
+)
+from sipnet_calibration.initial_conditions import (
+    CONVERTED_SIPNET_FIELDS,
+    INITIAL_CONDITION_NAMES,
+    INITIAL_CONDITIONS,
+    MEMBER,
     SOURCE,
     SOURCE_MEMBER,
+    InitialConditionSpec,
     SourceFile,
     SourceVariable,
     build_initial_conditions,
@@ -55,12 +57,10 @@ from sipnet_calibration.initial_conditions import (
     to_sipnet_initial_conditions,
     to_sipnet_initial_conditions_table,
 )
-import sipnet_calibration
-from sipnet_calibration import sites as sites_module
 from sipnet_calibration.sites import load_sites
 
 LOCAL_SOURCE_ROOT = data_root() / "raw" / "initial_conditions" / "files"
-TRACKED_RAW = data_root() / "raw" / "initial_conditions" / module.RAW_FILE
+TRACKED_RAW = REPOSITORY / "data" / "raw" / "initial_conditions" / module.RAW_FILE
 SITES_CSV = data_root() / "processed" / "sites" / "sites.csv"
 
 
@@ -437,7 +437,7 @@ def test_build_raw_refuses_member_ids_that_do_not_fit_int16():
         SourceFile(site=1, member=1, values={"AbvGrndWood": 1.0}),
         SourceFile(site=1, member=40000, values={"AbvGrndWood": 2.0}),
     ]
-    with pytest.raises(ValueError, match="int16"):
+    with pytest.raises(ValueError, match="members must be from 1 to 32767"):
         build_raw(files, source_root="r", conversion_script="s")
 
 
@@ -451,7 +451,7 @@ def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
     module under test, so that a module moving deeper into the package cannot
     move the data root with it and still agree with itself.
     """
-    monkeypatch.delenv(sites_module.DATA_ROOT_ENV_VAR, raising=False)
+    monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
     root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
 
     assert module.default_product_path() == root / "processed" / module.PRODUCT_FILE
@@ -483,12 +483,9 @@ def test_every_product_reads_the_same_data_root(monkeypatch, tmp_path):
     ):
         assert path.is_relative_to(root), path
 
-    # sites still exports the name it used to own.
-    assert sites.DATA_ROOT_ENV_VAR == conventions.DATA_ROOT_ENV_VAR
-
 
 def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):
-    monkeypatch.setenv(sites_module.DATA_ROOT_ENV_VAR, str(tmp_path))
+    monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
     assert module.default_product_path() == tmp_path / "processed" / module.PRODUCT_FILE
     assert module.default_source_root() == tmp_path / "raw" / "initial_conditions" / "files"
 
@@ -674,6 +671,24 @@ def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsy
     assert not (tmp_path / "o.nc").exists()
 
 
+def test_a_failed_conversion_check_keeps_the_partial_and_prints_its_path(
+    tree, tmp_path, capsys, monkeypatch
+):
+    sites = _write_sites(tmp_path / "sites.csv")
+    out = tmp_path / "o.nc"
+
+    def refuse(dataset, partial):
+        raise convert.ConversionError("forced: the round trip failed")
+
+    monkeypatch.setattr(convert, "check_round_trip", refuse)
+    argv = ["--root", str(tree), "--out", str(out), "--sites", str(sites), "--jobs", "1"]
+    assert convert.main(argv) == 1
+    err = capsys.readouterr().err
+    partial = out.with_suffix(".nc.partial")
+    assert not out.exists() and partial.exists()
+    assert str(partial) in err and "forced: the round trip failed" in err
+
+
 def test_read_raw_refuses_a_file_off_the_schema(raw, tmp_path):
     with read_raw(raw) as dataset:
         broken = dataset.load().copy()
@@ -709,7 +724,7 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
     assert product["initial_wood_carbon"].sel(member=1, site=1).item() == -0.5
     assert np.isnan(product["initial_leaf_carbon"].sel(site=2).values).all()
     assert product["initial_soil_moisture_saturation"].attrs["units"] == "percent"
-    assert product.attrs["Conventions"] == module.CF_CONVENTIONS
+    assert product.attrs["Conventions"] == CF_CONVENTIONS
     assert product.attrs["nominal_date"] == module.NOMINAL_DATE
     assert product.attrs["member_source"] == "ic"
     assert product.attrs["n_members"] == 2 and product.attrs["n_sites"] == 3
@@ -735,10 +750,26 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
     field = fields["initial_soil_organic_carbon"]
     assert field.dims == (MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
-    with pytest.raises(ValueError, match="not in the pool"):
+    with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial condition"):
         initial_condition_fields(sites=[9], path=out)
     with pytest.raises(KeyError, match="No initial condition named"):
         initial_condition_fields(["soil"], path=out)
+
+
+def test_initial_condition_fields_coerces_sites_and_names_by_the_shared_rules(
+    raw, sites_csv, tmp_path
+):
+    out = tmp_path / "processed" / module.PRODUCT_FILE
+    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 0
+    with pytest.raises(ValueError, match="more than once"):
+        initial_condition_fields(sites=[1, 1], path=out)
+    for sites in ([1.5], [1.0], "3", 3, {1, 3}):
+        with pytest.raises(TypeError, match="sites"):
+            initial_condition_fields(sites=sites, path=out)
+    with pytest.raises(TypeError, match="one string"):
+        initial_condition_fields("initial_soil_organic_carbon", path=out)
+    by_array = initial_condition_fields(sites=np.array([3, 1]), path=out)
+    assert next(iter(by_array.values()))[SITE].values.tolist() == [3, 1]
 
 
 def test_ingest_checks_refuse_a_broken_wood_identity_or_member_gap(raw, sites_csv):
@@ -1368,7 +1399,7 @@ def test_read_source_file_refuses_the_rest_of_the_template(tmp_path):
 
 def test_build_raw_refuses_ids_that_do_not_fit_and_unknown_names():
     records = _records()
-    with pytest.raises(ValueError, match="int32"):
+    with pytest.raises(ValueError, match="site ids from 1 to"):
         build_raw(records + [SourceFile(site=2**31, member=1, values=SYNTHETIC_VALUES[2][1]),
                              SourceFile(site=2**31, member=2, values=SYNTHETIC_VALUES[2][2])],
                   source_root="", conversion_script="")
@@ -1379,7 +1410,7 @@ def test_build_raw_refuses_ids_that_do_not_fit_and_unknown_names():
 def test_read_raw_refuses_the_rest_of_its_schema(raw, tmp_path):
     cases = [
         (lambda d: d.assign_coords(member=np.array([0, 1], dtype=np.int16)), "member"),
-        (lambda d: d.assign_coords(member=np.array([1, 40000], dtype=np.int64)), "int16"),
+        (lambda d: d.assign_coords(member=np.array([1, 40000], dtype=np.int64)), "from 1 to 32767"),
         (lambda d: d.assign_coords(member=np.array([1.0, 2.0])), "integer"),
         (lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending"),
         (lambda d: d.transpose("member", "site"), "dims"),

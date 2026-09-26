@@ -48,7 +48,6 @@ import numpy as np
 import xarray as xr
 
 from sipnet_calibration.conventions import SITE, SITE_ATTRIBUTES, SITE_DTYPE
-from sipnet_calibration.io import utc_timestamp
 from sipnet_calibration.initial_conditions.names import (
     MEMBER,
     raw_path,
@@ -56,6 +55,11 @@ from sipnet_calibration.initial_conditions.names import (
 from sipnet_calibration.initial_conditions.source_files import (
     SOURCE,
     SourceFile,
+)
+from sipnet_calibration.io import utc_timestamp
+from sipnet_calibration.validation import (
+    check_integers_are_in_range,
+    check_site_ids_are_in_range,
 )
 
 __all__ = [
@@ -131,8 +135,13 @@ def build_raw(
     _check_every_site_has_every_member(seen, sites, members)
     _check_presence_is_uniform_over_members(arrays, sites)
 
-    _check_site_ids_fit_dtype(sites, np.int32, "site")
-    _check_site_ids_fit_dtype(members, np.int16, "member")
+    check_site_ids_are_in_range(sites, message_name="the source files' sites")
+    check_integers_are_in_range(
+        members,
+        minimum=1,
+        maximum=int(np.iinfo(np.int16).max),
+        message_name="the source files' members",
+    )
     dataset = xr.Dataset(
         {
             name: (
@@ -151,7 +160,7 @@ def build_raw(
             for name in SOURCE.names
         },
         coords={
-            SITE: (SITE, sites.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
+            SITE: (SITE, sites.astype(SITE_DTYPE), SITE_ATTRIBUTES),
             MEMBER: (
                 MEMBER,
                 members.astype(np.int16),
@@ -271,12 +280,6 @@ def _check_presence_is_uniform_over_members(
             )
 
 
-def _check_site_ids_fit_dtype(values: np.ndarray, dtype: type, what: str) -> None:
-    info = np.iinfo(dtype)
-    if values.min() < max(info.min, 1) or values.max() > info.max:
-        raise ValueError(f"{what} values {values.min()}-{values.max()} do not fit {dtype.__name__}")
-
-
 def _check_raw(dataset: xr.Dataset, path: Path) -> None:
     """Raise unless *dataset* is the raw file :func:`build_raw` describes."""
     if set(dataset.data_vars) != set(SOURCE.names):
@@ -299,14 +302,19 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
         values = array.values
         if np.isinf(values).any():
             raise ValueError(f"{path}: {name} holds an infinite value")
-    for coordinate, dtype in ((SITE, np.int32), (MEMBER, np.int16)):
+    for coordinate, dtype in ((SITE, SITE_DTYPE), (MEMBER, np.int16)):
         values = dataset[coordinate].values
         if values.size == 0 or np.any(np.diff(values) <= 0):
             raise ValueError(f"{path}: {coordinate} is empty or not strictly ascending")
         if not np.issubdtype(values.dtype, np.integer):
             raise ValueError(f"{path}: {coordinate} is {values.dtype}, expected an integer type")
         # The product narrows these with astype, which wraps silently.
-        _check_site_ids_fit_dtype(values.astype(np.int64), dtype, f"{path}: {coordinate}")
+        check_integers_are_in_range(
+            values.astype(np.int64),
+            minimum=1,
+            maximum=int(np.iinfo(dtype).max),
+            message_name=f"{path}: {coordinate}",
+        )
     _check_presence_is_uniform_over_members(
         {name: dataset[name].values for name in SOURCE.names}, dataset[SITE].values
     )

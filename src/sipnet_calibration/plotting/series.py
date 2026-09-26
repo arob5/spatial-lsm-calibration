@@ -48,6 +48,7 @@ from matplotlib.axes import Axes
 from sipnet_calibration.conventions import SITE, TIME
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.style import CURVE_COLORS, axis_label, role_style
+from sipnet_calibration.validation import as_positive_integer
 
 __all__ = ["ALLOWED_DIMS", "SHOW_KINDS", "plot_time_series"]
 
@@ -295,7 +296,9 @@ def _draw_labeled_curves(
 ):
     """Draw each curve in its own color, labeled by a coordinate's value."""
     labels = _curve_labels(data, sample_dims, label_by)
-    chosen = primitives.thinned_indices(len(samples), int(n_max))
+    chosen = primitives.thinned_indices(
+        len(samples), as_positive_integer(n_max, message_name="n_max")
+    )
     for position, index in enumerate(chosen):
         keywords = {
             "color": CURVE_COLORS[position % len(CURVE_COLORS)],

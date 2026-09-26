@@ -103,22 +103,22 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
+from sipnet_calibration.conventions import FrozenMapping
 from sipnet_calibration.projection import SITE_PROJECTION
 
 __all__ = [
     "BASEMAP_LAYERS",
     "BASEMAP_ZORDER",
-    "BasemapLayer",
     "DEFAULT_LAYERS",
     "GRATICULE_ZORDER",
     "MAX_ANGULAR_DISTANCE",
+    "BasemapLayer",
     "basemap_path",
     "clip_to_drawable",
     "draw_basemap",
@@ -152,7 +152,7 @@ class BasemapLayer:
 
 
 #: The layers the basemap holds, in drawing order.
-BASEMAP_LAYERS: Mapping[str, BasemapLayer] = MappingProxyType(
+BASEMAP_LAYERS: Mapping[str, BasemapLayer] = FrozenMapping(
     {
         layer.name: layer
         for layer in (

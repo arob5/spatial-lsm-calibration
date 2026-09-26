@@ -186,34 +186,33 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.dataset import BOUNDS_DIMENSION
 from pysipnet.units import validate_units
 
-from sipnet_calibration import conventions
 from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
+    LAT,
+    LON,
     NAME_PATTERN,
     SITE,
-    SITE_ATTRIBUTES,
-    SITE_DTYPE,
     SITE_ID,
     TIME,
+    TIME_BOUNDS,
+    WINDOW_END,
+    WINDOW_START,
+    data_root,
 )
-from sipnet_calibration.conventions import WINDOW_END as TIME_BOUNDS_END
-from sipnet_calibration.conventions import WINDOW_START as TIME_BOUNDS_START
 from sipnet_calibration.io import utc_timestamp
-from sipnet_calibration.sites import site_locations
-from sipnet_calibration.validation import as_site_ids
+from sipnet_calibration.sites import check_site_table_lists_the_sites, site_coordinates
+from sipnet_calibration.validation import as_names, as_site_ids, truncated
 
 __all__ = [
     "CALENDAR",
-    "CF_CONVENTIONS",
     "CONSTRAINTS",
     "CONSTRAINT_NAMES",
     "MISSING_TOKEN",
     "PRODUCER_UNCONFIRMED",
     "STANDARD_DEVIATION",
-    "TIME_BOUNDS_END",
-    "TIME_BOUNDS_START",
     "TIME_REFERENCE_FOR_STRUCTURE",
     "TIME_UNITS",
     "VALUE",
@@ -661,11 +660,11 @@ def constraint_fields(
     Parameters
     ----------
     names:
-        Constraint names, in the order the result should carry them. Defaults
-        to every constraint in :data:`CONSTRAINT_NAMES`.
+        Constraint names, a sequence, in the order the result should carry
+        them. Defaults to every constraint in :data:`CONSTRAINT_NAMES`.
     sites:
-        Site ids to keep, in the order given, each once, or one id on its
-        own. Defaults to the whole pool.
+        Site ids to keep, a sequence, in the order given, each once. Defaults
+        to the whole pool.
     directory:
         Where the processed files are. Defaults to
         :func:`default_constraints_dir`.
@@ -684,11 +683,14 @@ def constraint_fields(
     Raises
     ------
     TypeError
-        If *sites* is a string, or holds a boolean or a value that is not a
-        number.
+        If *names* or *sites* is one value, a string or a set; if a name is
+        not a string; or if a site id is a boolean, a float or not a number.
     ValueError
-        If a requested site is not a whole number of at least 1, is asked for
-        twice, or is not in the pool.
+        If a site id is not from 1 to the largest ``int32``, is asked for
+        twice, or *sites* is a two-dimensional array.
+    KeyError
+        If a name is not a constraint, or a requested site is not in the
+        product.
     """
     return _fields(VALUE, names, sites, directory)
 
@@ -790,9 +792,11 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
 
     Raises
     ------
+    KeyError
+        If a row's site is not in the site table.
     ValueError
-        If a row's site is not in the pool, if two kept rows share a
-        ``(site, time)``, or if a static constraint's copies differ.
+        If two kept rows share a ``(site, time)``, or if a static
+        constraint's copies differ.
 
     Notes
     -----
@@ -805,7 +809,9 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
     site = np.sort(sites[SITE_ID].to_numpy(np.int64))
 
     row_site = kept[SITE_ID].to_numpy(np.int64)
-    _check_sites_in_pool(row_site, site, spec)
+    check_site_table_lists_the_sites(
+        sites, np.unique(row_site).tolist(), message_name=f"{spec.name}: site(s)"
+    )
     site_index = np.searchsorted(site, row_site)
 
     n_collapsed = 0
@@ -818,12 +824,7 @@ def build_constraint(spec: ConstraintSpec, frame: pd.DataFrame, sites: pd.DataFr
         arrays = _dated_arrays(spec, kept, site_index, time, site.size)
         coords = _time_coords(spec, time)
 
-    coords.update(
-        {
-            SITE: (SITE, site.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
-            **site_locations(site.tolist(), sites),
-        }
-    )
+    coords.update(site_coordinates(site.tolist(), sites))
     dataset = xr.Dataset(
         {
             VALUE: (spec.dims, arrays[0], spec.xarray_attributes()),
@@ -850,10 +851,10 @@ def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
     }
     for name in dataset.coords:
         encoding[str(name)] = {"_FillValue": None}
-    if "time" in dataset.coords:
-        encoding["time"].update({"units": TIME_UNITS, "calendar": CALENDAR, "dtype": "int32"})
-    if "time_bounds" in dataset.coords:
-        encoding["time_bounds"].update(
+    if TIME in dataset.coords:
+        encoding[TIME].update({"units": TIME_UNITS, "calendar": CALENDAR, "dtype": "int32"})
+    if TIME_BOUNDS in dataset.coords:
+        encoding[TIME_BOUNDS].update(
             {"units": TIME_UNITS, "calendar": CALENDAR, "dtype": "int32"}
         )
     return encoding
@@ -884,7 +885,7 @@ def describe(spec: ConstraintSpec) -> str:
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 def _data_root() -> Path:
-    return conventions.data_root()
+    return data_root()
 
 
 def _raw_dtypes(spec: ConstraintSpec) -> dict[str, Any]:
@@ -964,13 +965,13 @@ def _time_coords(spec: ConstraintSpec, row_time: pd.DatetimeIndex) -> dict[str, 
         "long_name": _TIME_LONG_NAME[spec.time_structure],
         "comment": spec.time_reference,
     }
-    coords: dict[str, Any] = {"time": ("time", time.to_numpy(), attrs)}
+    coords: dict[str, Any] = {TIME: (TIME, time.to_numpy(), attrs)}
     if spec.has_time_bounds:
-        attrs["bounds"] = "time_bounds"
+        attrs["bounds"] = TIME_BOUNDS
         start = time.to_numpy()
         end = (time + pd.DateOffset(years=1)).as_unit("ns").to_numpy()
-        coords["time_bounds"] = (
-            ("time", "bounds"),
+        coords[TIME_BOUNDS] = (
+            (TIME, BOUNDS_DIMENSION),
             np.stack([start, end], axis=1),
             {
                 "long_name": "Calendar year the value is attributed to",
@@ -1039,48 +1040,45 @@ def _fields(
     sites: Iterable[int] | None,
     directory: Path | str | None,
 ) -> dict[str, xr.DataArray]:
-    if isinstance(names, str):
-        names = [names]
-    names = list(names) if names is not None else list(CONSTRAINT_NAMES)
-    wanted = None
-    if sites is not None:
-        wanted = list(as_site_ids(sites, message_name="sites", allow_one_id=True))
+    names = CONSTRAINT_NAMES if names is None else as_names(names, message_name="names")
+    wanted = None if sites is None else list(as_site_ids(sites, message_name="sites"))
     fields: dict[str, xr.DataArray] = {}
     for name in names:
         spec = resolve_constraint(name)
         dataset = load_constraint(spec, constraint_path(spec, directory))
         field = dataset[array].rename(name)
-        if "time_bounds" in dataset.coords:
-            field = field.assign_coords(_time_bounds_coords(dataset))
+        if TIME_BOUNDS in dataset.coords:
+            field = field.assign_coords(_window_coords(dataset))
         if wanted is not None:
-            missing = sorted(set(wanted) - set(dataset["site"].values.tolist()))
-            if missing:
-                raise ValueError(f"{name}: sites not in the pool: {missing[:10]}")
-            field = field.sel(site=wanted)
+            check_product_holds_the_sites(dataset, wanted, name=name)
+            field = field.sel({SITE: wanted})
         fields[name] = field
     return fields
 
 
-def _time_bounds_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
+def _window_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     """CF ``time_bounds`` as two one-dimensional coordinates on ``time``.
 
     A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
     ``bounds`` dimension being none of the array's, so the pair rides along
-    as :data:`TIME_BOUNDS_START` and :data:`TIME_BOUNDS_END`, the way pySIPNET's
+    as :data:`~sipnet_calibration.conventions.WINDOW_START` and
+    :data:`~sipnet_calibration.conventions.WINDOW_END`, the way pySIPNET's
     model output carries ``time_step_start`` beside ``time``.
     """
-    bounds = dataset["time_bounds"]
+    bounds = dataset[TIME_BOUNDS]
     comment = "One edge of the CF time_bounds of the value at this label."
+    start_name = "Start of the interval the value is attributed to"
+    end_name = "End of the interval the value is attributed to"
     return {
-        TIME_BOUNDS_START: xr.DataArray(
-            bounds.isel(bounds=0).values,
-            dims="time",
-            attrs={"long_name": "Start of the interval the value is attributed to", "comment": comment},
+        WINDOW_START: xr.DataArray(
+            bounds.isel({BOUNDS_DIMENSION: 0}).values,
+            dims=TIME,
+            attrs={"long_name": start_name, "comment": comment},
         ),
-        TIME_BOUNDS_END: xr.DataArray(
-            bounds.isel(bounds=1).values,
-            dims="time",
-            attrs={"long_name": "End of the interval the value is attributed to", "comment": comment},
+        WINDOW_END: xr.DataArray(
+            bounds.isel({BOUNDS_DIMENSION: 1}).values,
+            dims=TIME,
+            attrs={"long_name": end_name, "comment": comment},
         ),
     }
 
@@ -1088,12 +1086,17 @@ def _time_bounds_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_sites_in_pool(row_site: np.ndarray, pool: np.ndarray, spec: ConstraintSpec) -> None:
-    position = np.searchsorted(pool, row_site)
-    inside = (position < pool.size) & (pool[np.minimum(position, pool.size - 1)] == row_site)
-    if not inside.all():
-        offenders = sorted(set(row_site[~inside].tolist()))[:10]
-        raise ValueError(f"{spec.name}: site ids not in the site table: {offenders}")
+def check_product_holds_the_sites(
+    dataset: xr.Dataset, site_ids: Sequence[int], *, name: str
+) -> None:
+    """A constraint product holds every site asked of it."""
+    held = set(dataset[SITE].values.tolist())
+    missing = [site for site in site_ids if site not in held]
+    if missing:
+        raise KeyError(
+            f"{name}: site(s) {truncated(missing)} are not in the product; ask only for "
+            "sites of the site table it was built on."
+        )
 
 
 def _check_no_duplicate_cells(
@@ -1140,24 +1143,26 @@ def _check_product(dataset: xr.Dataset, spec: ConstraintSpec, path: Path) -> Non
             f"{path}: written for constraint {dataset.attrs.get('constraint')!r}, not {spec.name!r}"
         )
 
-    for coordinate in ("site", "lon", "lat", *spec.dims):
+    for coordinate in (SITE, LON, LAT, *spec.dims):
         if coordinate not in dataset.coords:
             raise ValueError(f"{path}: missing the {coordinate!r} coordinate")
-    for coordinate in ("lon", "lat"):
-        if dataset[coordinate].dims != ("site",):
-            raise ValueError(f"{path}: {coordinate} must be on site, has dims {dataset[coordinate].dims}")
-    if ("time_bounds" in dataset.coords) != spec.has_time_bounds:
+    for coordinate in (LON, LAT):
+        if dataset[coordinate].dims != (SITE,):
+            raise ValueError(
+                f"{path}: {coordinate} must be on site, has dims {dataset[coordinate].dims}"
+            )
+    if (TIME_BOUNDS in dataset.coords) != spec.has_time_bounds:
         raise ValueError(
-            f"{path}: time_bounds {'present' if 'time_bounds' in dataset.coords else 'absent'}, "
+            f"{path}: time_bounds {'present' if TIME_BOUNDS in dataset.coords else 'absent'}, "
             f"but a {spec.time_structure.value} constraint "
             f"{'carries' if spec.has_time_bounds else 'does not carry'} them"
         )
 
-    site = dataset["site"].values
+    site = dataset[SITE].values
     if site.size == 0 or np.any(np.diff(site) <= 0):
         raise ValueError(f"{path}: site is empty or not strictly ascending")
-    if "time" in dataset.dims:
-        time = dataset["time"].values
+    if TIME in dataset.dims:
+        time = dataset[TIME].values
         if time.size == 0 or np.any(np.diff(time) <= np.timedelta64(0, "ns")):
             raise ValueError(f"{path}: time is empty or not strictly ascending")
 

@@ -30,7 +30,6 @@ import pytest
 import xarray as xr
 
 from conftest import load_script
-
 from sipnet_calibration.conventions import data_root
 
 PHENOLOGY_DIR = data_root() / "raw" / "phenology"

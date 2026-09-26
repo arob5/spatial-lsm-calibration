@@ -73,6 +73,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from sipnet_calibration.conventions import LAT, SITE_ID
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
     SITE_LABELS_NAMES,
@@ -86,9 +88,12 @@ from sipnet_calibration.site_labels import (
     resolve_site_labels,
     site_labels_path,
 )
-from sipnet_calibration.conventions import SITE_ID
-from sipnet_calibration.io import write_checked
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import (
+    check_site_table_lists_the_sites,
+    default_sites_path,
+    load_sites,
+    site_lookup,
+)
 
 
 class IngestError(Exception):
@@ -181,7 +186,9 @@ def check_raw_frame(spec: SiteLabelsSpec, frame: pd.DataFrame, sites: pd.DataFra
     # something less useful about why.
     check_row_count_is_the_expected_pool(spec, frame)
     check_no_duplicate_sites(spec, frame)
-    check_sites_are_in_the_site_table(spec, frame, sites)
+    check_site_table_lists_the_sites(
+        sites, frame[spec.site_column].tolist(), message_name=f"{spec.raw_file}: site(s)"
+    )
 
 
 def check_product(spec: SiteLabelsSpec, product: pd.DataFrame, sites: pd.DataFrame) -> None:
@@ -207,8 +214,8 @@ def describe_product(
     counts = product[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
     width = max(len(label) for label in spec.labels)
     latitude = (
-        product.merge(sites[[SITE_ID, "lat"]], on=SITE_ID)
-        .groupby(LABEL_COLUMN, observed=False)["lat"]
+        product.assign(**{LAT: site_lookup(sites).loc[product[SITE_ID], LAT].to_numpy()})
+        .groupby(LABEL_COLUMN, observed=False)[LAT]
         .agg(["min", "median", "max"])
     )
     lines = [
@@ -261,20 +268,6 @@ def check_no_duplicate_sites(spec: SiteLabelsSpec, frame: pd.DataFrame) -> None:
         )
 
 
-def check_sites_are_in_the_site_table(
-    spec: SiteLabelsSpec, frame: pd.DataFrame, sites: pd.DataFrame
-) -> None:
-    """Every identifier the raw file labels is a site in the pool."""
-    unknown = sorted(set(frame[spec.site_column]) - set(sites[SITE_ID]))
-    if unknown:
-        raise IngestError(
-            f"{spec.raw_file}: labels {len(unknown)} identifiers that are not sites, "
-            f"the first being {unknown[:5]}. Site identifiers are a shared key and are "
-            "never renumbered, so this is the wrong site pool rather than a table to "
-            "extend."
-        )
-
-
 def check_labels_are_the_declared_set(spec: SiteLabelsSpec, product: pd.DataFrame) -> None:
     """Every class the spec declares is used, and no other class appears.
 
@@ -319,7 +312,9 @@ def check_labels_match_landcover(
     """
     if spec.landcover_mapping is None:
         return
-    joined = product.merge(sites[[SITE_ID, "landcover"]], on=SITE_ID, how="left")
+    # Every labeled site is in the site table: check_raw_frame checked it.
+    landcover = site_lookup(sites).loc[product[SITE_ID], "landcover"].to_numpy()
+    joined = product.assign(landcover=landcover)
 
     uncovered = sorted(set(joined["landcover"]) - set(spec.landcover_mapping))
     if uncovered:
@@ -329,7 +324,7 @@ def check_labels_match_landcover(
             "set it to None if the relation no longer holds."
         )
 
-    expected = joined["landcover"].map(dict(spec.landcover_mapping))
+    expected = joined["landcover"].map(spec.landcover_mapping)
     disagreeing = joined[expected != joined[LABEL_COLUMN].astype(str)]
     if not disagreeing.empty:
         first = disagreeing.head(5)

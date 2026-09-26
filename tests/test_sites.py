@@ -7,10 +7,45 @@ it is the job of ``scripts/ingest_sites.py``.
 
 from __future__ import annotations
 
-import numpy as np
-import pytest
+import hashlib
+import pathlib
+import re
+import textwrap
 
-from sipnet_calibration.sites import SITE_GRID, Grid
+import numpy as np
+import pandas as pd
+import pytest
+import shapefile
+import xarray as xr
+
+import sipnet_calibration.sites as sites_module
+from conftest import REPOSITORY, load_script, site_table_of
+from sipnet_calibration.conventions import (
+    DATA_ROOT_ENV_VAR,
+    LAT_ATTRIBUTES,
+    LON_ATTRIBUTES,
+    SITE_ATTRIBUTES,
+    FrozenMapping,
+)
+from sipnet_calibration.sites import (
+    N_SITES,
+    SITE_COLUMN_DTYPES,
+    SITE_COLUMNS,
+    SITE_GRID,
+    Grid,
+    check_site_table_has_locations,
+    check_site_table_is_keyed_on_site_ids,
+    check_site_table_lists_the_sites,
+    check_site_table_locates_the_sites,
+    check_site_table_site_ids_are_integers,
+    check_sites_are_the_site_table,
+    default_sites_path,
+    load_sites,
+    select_sites,
+    site_coordinates,
+    site_locations,
+    site_lookup,
+)
 
 # (site_id, lon, lat, lon_index, lat_index) from data/raw/sites/pts.shp
 REAL_SITES = [
@@ -47,10 +82,12 @@ class TestGridGeometry:
         )
 
     def test_rejects_degenerate_construction(self):
-        with pytest.raises(ValueError, match="positive extent"):
+        with pytest.raises(ValueError, match="n_lon must be at least 1"):
             Grid(west=0.0, south=0.0, n_lon=0, n_lat=10, cells_per_degree=120)
         with pytest.raises(ValueError, match="cells_per_degree"):
             Grid(west=0.0, south=0.0, n_lon=10, n_lat=10, cells_per_degree=0)
+        with pytest.raises(TypeError, match="n_lat must be an integer"):
+            Grid(west=0.0, south=0.0, n_lon=10, n_lat=10.0, cells_per_degree=120)
 
     def test_is_immutable(self):
         with pytest.raises(Exception):
@@ -147,35 +184,13 @@ class TestLonLatToIndex:
 
 # ── the site table and the ingest script ─────────────────────────────────────
 #
-# These read the tracked shapefile directly. It is the only input under
-# data/raw/ that is in version control, which is what makes the ingest script
-# testable end to end here rather than only on the SCC.
+# These read the tracked shapefile directly, from the repository rather than
+# the data root, since a tracked input is always in the checkout. That is what
+# makes the ingest script testable end to end here rather than only on the SCC.
 
-import hashlib
-import pathlib
-import re
-import textwrap
-
-import pandas as pd
-import shapefile
-
-from conftest import REPOSITORY, load_script, site_table_of
-
-import sipnet_calibration.sites as sites_module
-from sipnet_calibration.conventions import data_root
-from sipnet_calibration.sites import (
-    SITE_COLUMN_DTYPES,
-    SITE_COLUMNS,
-    default_sites_path,
-    load_sites,
-    select_sites,
-)
-
-RAW_SITES = data_root() / "raw" / "sites"
+RAW_SITES = REPOSITORY / "data" / "raw" / "sites"
 SHAPEFILE = RAW_SITES / "pts.shp"
-SITE_ID_MAP = data_root() / "site_id_map.csv"
-
-N_SITES = 8000
+SITE_ID_MAP = REPOSITORY / "data" / "site_id_map.csv"
 
 # The two records carrying non-ASCII bytes. Under latin-1 both decode to
 # plausible-looking strings rather than raising, which is why the encoding is
@@ -580,13 +595,11 @@ class TestLoadSites:
             load_sites(path)
 
     def test_the_default_path_honors_the_environment_variable(self, monkeypatch, tmp_path):
-        from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
 
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
         assert default_sites_path() == tmp_path / "processed" / "sites" / "sites.csv"
 
     def test_the_default_path_falls_back_to_the_checkout(self, monkeypatch):
-        from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
 
         monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
         assert default_sites_path() == (
@@ -603,8 +616,13 @@ class TestSelectSites:
         assert chosen["site_id"].tolist() == [8000, 1, 4000]
 
     def test_an_unknown_id_raises(self, ingested):
-        with pytest.raises(KeyError, match="not in the table"):
+        with pytest.raises(KeyError, match=r"\[99999\] are not in the site table"):
             select_sites(ingested["table"], ids=[1, 99999])
+
+    @pytest.mark.parametrize("ids", [1, "1", {1, 2}, [1.0]])
+    def test_one_id_a_string_a_set_or_a_float_is_a_type_error(self, ingested, ids):
+        with pytest.raises(TypeError, match="ids"):
+            select_sites(ingested["table"], ids=ids)
 
     def test_a_repeated_id_raises(self, ingested):
         with pytest.raises(ValueError, match="more than once"):
@@ -677,8 +695,13 @@ class TestSelectSites:
         assert drawn["site_id"].nunique() == 200
 
     def test_an_oversized_sample_raises_rather_than_truncating(self, ingested):
-        with pytest.raises(ValueError, match="from 8000 site"):
+        with pytest.raises(ValueError, match=f"sample must be from 0 to {N_SITES}"):
             select_sites(ingested["table"], sample=N_SITES + 1)
+
+    @pytest.mark.parametrize("sample", [1.5, 2.0, True])
+    def test_a_sample_that_is_not_an_integer_is_a_type_error(self, ingested, sample):
+        with pytest.raises(TypeError, match="^sample must be an integer"):
+            select_sites(ingested["table"], sample=sample)
 
     def test_filters_compose_with_sample_applied_last(self, ingested):
         chosen = select_sites(
@@ -802,8 +825,7 @@ class TestSchemaIsPinnedToALiteral:
         )
 
     def test_column_dtypes(self):
-        # A MappingProxyType compares equal to the dict it wraps, so this
-        # still reads as a plain schema assertion.
+        # A FrozenMapping is a dict, so this is a plain schema assertion.
         assert SITE_COLUMN_DTYPES == {
             "site_id": np.int32,
             "lon": np.float64,
@@ -820,9 +842,7 @@ class TestSchemaIsPinnedToALiteral:
     def test_dtypes_cannot_be_mutated(self):
         """The schema is read-only: a caller that reassigned a dtype would
         change what every later read of the table produces."""
-        from types import MappingProxyType
-
-        assert isinstance(SITE_COLUMN_DTYPES, MappingProxyType)
+        assert isinstance(SITE_COLUMN_DTYPES, FrozenMapping)
         with pytest.raises(TypeError):
             SITE_COLUMN_DTYPES["site_id"] = str  # type: ignore[index]
 
@@ -965,7 +985,7 @@ class TestSelectByIdShape:
         self, ingested
     ):
         doubled = pd.concat([ingested["table"].head(3)] * 2, ignore_index=True)
-        with pytest.raises(ValueError, match="repeated site id"):
+        with pytest.raises(ValueError, match=r"lists site\(s\) \[1, 2, 3\] more than once"):
             select_sites(doubled, ids=[1, 2])
 
     def test_it_preserves_dtype_and_column_order(self, ingested):
@@ -981,7 +1001,7 @@ class TestSelectByIdShape:
         assert list(select_sites(joined, ids=[1, 2]).columns) == list(joined.columns)
 
     def test_float_ids_are_rejected_rather_than_truncated(self, ingested):
-        with pytest.raises(ValueError, match="whole number"):
+        with pytest.raises(TypeError, match="float"):
             select_sites(ingested["table"], ids=[5.9, 1.2])
 
 
@@ -1110,7 +1130,6 @@ class TestEmptyAmerifluxMap:
 
 class TestDefaultOutputAgreesWithTheLoader:
     def test_the_script_writes_where_the_loader_reads(self):
-        from sipnet_calibration.sites import default_sites_path
 
         assert ingest.DEFAULT_OUT == default_sites_path()
 
@@ -1119,7 +1138,6 @@ class TestDefaultOutputAgreesWithTheLoader:
         # a default run wrote one place and every consumer read another, and
         # still reported success. DEFAULT_OUT is bound at import, so the module
         # is re-executed here rather than reloaded.
-        from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path
 
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
         fresh = load_script("scripts/ingest_sites.py")
@@ -1273,19 +1291,20 @@ class TestDocstringExamples:
 
 class TestSiteLookup:
     def test_keys_the_table_on_site_id_and_keeps_the_column(self):
-        from sipnet_calibration.sites import site_lookup
-
         keyed = site_lookup(site_table_of(1, 27))
         assert keyed.index.name == "site_id" and "site_id" in keyed.columns
         assert keyed.loc[27, "lon"] == -100.27
         assert site_lookup(keyed) is keyed
 
+    def test_refuses_what_is_not_a_table_or_has_no_site_ids(self):
+        with pytest.raises(TypeError, match="must be a DataFrame"):
+            site_lookup({"site_id": [1], "lon": [0.0], "lat": [0.0]})
+        with pytest.raises(ValueError, match="no 'site_id' column or index"):
+            site_lookup(site_table_of(1).drop(columns="site_id"))
+
 
 class TestSiteLocations:
     def test_gives_lon_and_lat_on_site_in_the_order_asked_with_cf_attributes(self):
-        from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
-        from sipnet_calibration.sites import site_locations
-
         located = site_locations([27, 1], site_table_of(1, 27))
         assert set(located) == {"lon", "lat"}
         assert located["lon"].dims == ("site",) and located["lon"].dtype == np.float64
@@ -1294,59 +1313,92 @@ class TestSiteLocations:
         assert located["lat"].attrs == dict(LAT_ATTRIBUTES)
 
     def test_assigns_by_position_onto_a_site_dimension(self):
-        import xarray as xr
-
-        from sipnet_calibration.sites import site_locations
-
         field = xr.DataArray([1.0, 2.0], dims="site", coords={"site": [27, 1]})
         located = field.assign_coords(site_locations([27, 1], site_table_of(1, 27)))
         assert located.sel(site=1)["lon"].item() == -100.01
 
-    def test_refuses_a_missing_site_a_repeat_and_a_string(self):
-        from sipnet_calibration.sites import site_locations
+    def test_a_field_coordinate_is_accepted_as_the_sites(self):
+        field = xr.DataArray([1.0, 2.0], dims="site", coords={"site": [27, 1]})
+        located = site_locations(field["site"], site_table_of(1, 27))
+        np.testing.assert_array_equal(located["lon"].values, [-100.27, -100.01])
 
+    def test_refuses_a_missing_site_a_repeat_one_id_and_a_string(self):
         with pytest.raises(KeyError, match=r"\[5\] are not in the site table"):
             site_locations([1, 5], site_table_of(1, 27))
         with pytest.raises(ValueError, match="more than once"):
             site_locations([1, 1], site_table_of(1, 27))
-        with pytest.raises(TypeError, match="one character per site"):
+        with pytest.raises(TypeError, match="one string '127'"):
             site_locations("127", site_table_of(1, 27))
+        with pytest.raises(TypeError, match="sequence of site ids"):
+            site_locations(27, site_table_of(1, 27))
 
 
-class TestCheckSiteTableLocatesTheSites:
+class TestSiteCoordinates:
+    def test_gives_site_lon_and_lat_in_the_order_asked(self):
+        coordinates = site_coordinates([27, 1], site_table_of(1, 27))
+        assert set(coordinates) == {"site", "lon", "lat"}
+        assert coordinates["site"].dtype == np.int32
+        assert coordinates["site"].values.tolist() == [27, 1]
+        assert coordinates["site"].attrs == dict(SITE_ATTRIBUTES)
+        np.testing.assert_array_equal(coordinates["lon"].values, [-100.27, -100.01])
+        dataset = xr.Dataset({"x": ("site", [1.0, 2.0])}, coords=coordinates)
+        assert dataset.indexes["site"].tolist() == [27, 1]
+
+    def test_the_attribute_dicts_handed_out_are_the_datasets_own(self):
+        coordinates = site_coordinates([1], site_table_of(1))
+        coordinates["lon"].attrs["extra"] = 1
+        assert "extra" not in LON_ATTRIBUTES
+
+
+class TestSiteTableChecks:
     def test_a_table_that_locates_every_site_passes(self):
-        from sipnet_calibration.sites import check_site_table_locates_the_sites, site_lookup
-
         check_site_table_locates_the_sites(site_table_of(1, 27), [27, 1])
         check_site_table_locates_the_sites(site_lookup(site_table_of(1, 27)), [1])
 
     def test_what_is_not_a_table_is_a_type_error(self):
-        from sipnet_calibration.sites import check_site_table_locates_the_sites
-
         with pytest.raises(TypeError, match="must be a DataFrame"):
             check_site_table_locates_the_sites({"site_id": [1]}, [1])
 
     def test_a_table_without_lat_is_refused(self):
-        from sipnet_calibration.sites import check_site_table_locates_the_sites
-
         with pytest.raises(ValueError, match=r"no \['lat'\] column"):
             check_site_table_locates_the_sites(site_table_of(1).drop(columns="lat"), [1])
+        with pytest.raises(ValueError, match=r"no \['lat'\] column"):
+            check_site_table_has_locations(site_table_of(1).drop(columns="lat"))
 
     def test_a_table_without_site_ids_is_refused(self):
-        from sipnet_calibration.sites import check_site_table_locates_the_sites
-
         with pytest.raises(ValueError, match="no 'site_id' column or index"):
             check_site_table_locates_the_sites(site_table_of(1).drop(columns="site_id"), [1])
 
-    def test_a_repeated_site_is_refused_even_when_not_asked_for(self):
-        from sipnet_calibration.sites import check_site_table_locates_the_sites
+    def test_float_site_ids_are_a_type_error(self):
+        table = site_table_of(1, 27).astype({"site_id": float})
+        with pytest.raises(TypeError, match="site_id must hold integers"):
+            check_site_table_site_ids_are_integers(table)
+        with pytest.raises(TypeError, match="site_id must hold integers"):
+            check_site_table_locates_the_sites(table, [1])
 
+    def test_a_repeated_site_is_refused_even_when_not_asked_for(self):
         table = pd.concat([site_table_of(1, 27), site_table_of(27)])
         with pytest.raises(ValueError, match=r"lists site\(s\) \[27\] more than once"):
             check_site_table_locates_the_sites(table, [1])
 
     def test_a_missing_site_is_a_key_error_naming_it(self):
-        from sipnet_calibration.sites import check_site_table_locates_the_sites
-
         with pytest.raises(KeyError, match=r"site\(s\) \[5\] are not in the site table"):
             check_site_table_locates_the_sites(site_table_of(1, 27), [1, 5])
+        with pytest.raises(KeyError, match=r"^'raw: site\(s\) \[5\]"):
+            check_site_table_lists_the_sites(site_table_of(1, 27), [5], message_name="raw: site(s)")
+
+    def test_a_table_without_lon_lat_is_keyed_on_site_ids(self):
+        check_site_table_is_keyed_on_site_ids(site_table_of(1, 27)[["site_id"]])
+
+    def test_the_sites_of_a_whole_pool_source_are_exactly_the_tables(self):
+        table = site_table_of(1, 2, 3)
+        check_sites_are_the_site_table([3, 1, 2], table, message_name="raw")
+        with pytest.raises(KeyError, match=r"\[4\]"):
+            check_sites_are_the_site_table([1, 2, 3, 4], table, message_name="raw")
+        with pytest.raises(ValueError, match=r"lack 1 site\(s\) of the site table, \[3\]"):
+            check_sites_are_the_site_table([1, 2], table, message_name="raw")
+
+
+def test_n_sites_is_the_pool_the_shapefile_defines():
+    with shapefile.Reader(str(SHAPEFILE)) as reader:
+        assert len(reader) == N_SITES

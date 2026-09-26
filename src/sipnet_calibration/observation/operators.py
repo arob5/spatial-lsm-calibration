@@ -74,7 +74,6 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
-import pandas as pd
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units
 from pysipnet.parameters.model import parameter_dataarray, resolve_parameter_name
@@ -90,6 +89,7 @@ from sipnet_calibration.observation.time_alignment import (
     select_timestep_at,
     windows_from_time_bounds,
 )
+from sipnet_calibration.validation import check_site_ids_are_unique
 
 __all__ = [
     "DEFAULT_OBS_OPS",
@@ -378,7 +378,7 @@ def select_observed_sites(
     """
     wanted = coordinate_labels(target_field[SITE])
     message_name = field_label(target_field, "the observation")
-    check_sites_are_listed_once(wanted, message_name)
+    check_site_ids_are_unique(wanted, message_name=message_name)
     if SITE in source_field.dims:
         check_model_output_has_the_observed_sites(source_field, wanted, message_name)
         return source_field.sel({SITE: wanted})
@@ -859,14 +859,6 @@ def check_observation_is_static(observed_values: xr.DataArray, message_name: str
             f"{message_name} reads a static observation, and "
             f"{field_label(observed_values, 'the observation')} has a {TIME!r} dimension; "
             "use ReduceOverTimeBounds or SelectTimestep."
-        )
-
-
-def check_sites_are_listed_once(sites: Sequence[Any], message_name: str) -> None:
-    if pd.Index(sites).has_duplicates:
-        raise ValueError(
-            f"{message_name} repeats a site; an observation names each site once, so "
-            "combine the repeated rows."
         )
 
 

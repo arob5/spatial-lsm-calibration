@@ -12,7 +12,9 @@ def test_importing_any_module_turns_on_64_bit_jax():
         "import jax; assert not jax.config.jax_enable_x64; "
         "import sipnet_calibration.conventions; print(jax.config.jax_enable_x64)"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
     assert result.stdout.strip() == "True"
 
 
@@ -21,5 +23,13 @@ def test_the_package_re_exports_nothing():
         "import sipnet_calibration as package; "
         "print(sorted(n for n in vars(package) if not n.startswith('_')))"
     )
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    )
     assert result.stdout.strip() == "[]"
+
+
+def test_the_package_declares_its_empty_public_api():
+    import sipnet_calibration
+
+    assert sipnet_calibration.__all__ == []

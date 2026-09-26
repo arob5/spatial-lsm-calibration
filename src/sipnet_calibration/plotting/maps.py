@@ -148,11 +148,11 @@ from sipnet_calibration.sites import EXTENTS
 
 __all__ = [
     "COLOR_KEYWORDS",
+    "RENDERERS",
     "Cells",
     "ColorScale",
     "Points",
     "ProjectedBounds",
-    "RENDERERS",
     "SiteRenderer",
     "Triangles",
     "animate_map",

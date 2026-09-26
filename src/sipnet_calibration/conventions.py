@@ -13,6 +13,9 @@ Coordinates
     edges :data:`WINDOW_START` and :data:`WINDOW_END`.
 Columns
     :data:`SITE_ID`, the site table's key.
+Variables
+    :data:`TIME_BOUNDS`, the CF bounds variable of ``time`` a processed file
+    or pySIPNET's output stores.
 Attributes
     :data:`SITE_ATTRIBUTES`, :data:`LON_ATTRIBUTES`, :data:`LAT_ATTRIBUTES`,
     the CF attributes of those coordinates, one wording each;
@@ -22,23 +25,32 @@ Dtypes and patterns
     processed name looks like.
 Settings
     :data:`CF_CONVENTIONS`, the ``Conventions`` attribute the netCDF files
-    declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where ``data/``
-    is.
+    declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where the
+    storage-backed part of ``data/`` is.
+Read-only mappings
+    :class:`FrozenMapping`, the one read-only mapping type of the package,
+    which the attribute dicts above are.
 
 Notes
 -----
 A name or an attribute lives here once two modules have to agree on it, so
 that no two of them can spell it differently. Modules import what they need
-from here and define none of these values themselves. This module imports
-nothing from the package, so everything else can depend on it.
+from here and define none of these values themselves, and none re-exports
+one. This module imports nothing from the package, so everything else can
+depend on it.
+
+:data:`CF_CONVENTIONS` is this package's own, not pySIPNET's, although the two
+agree today: it is what the processed files declare, and a pin bump of
+pySIPNET must not change it without a re-ingest.
 """
 
 from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from types import MappingProxyType
+from typing import Any, NoReturn
 
 import numpy as np
 from pysipnet.dataset import TIME_DIMENSION
@@ -62,9 +74,11 @@ __all__ = [
     "TIME",
     "TIMESTEP_LENGTH",
     "TIMESTEP_START",
+    "TIME_BOUNDS",
     "TIME_COORD_NAMES",
     "WINDOW_END",
     "WINDOW_START",
+    "FrozenMapping",
     "X",
     "Y",
     "data_root",
@@ -143,6 +157,15 @@ WINDOW_START = "time_bounds_start"
 WINDOW_END = "time_bounds_end"
 
 
+# ── variables ─────────────────────────────────────────────────────────────────
+
+#: The CF bounds variable of ``time``, ``(time, bounds)``, that a processed
+#: file stores where a value's support is documented and pySIPNET's output
+#: stores for its timesteps. Its second dimension is pySIPNET's
+#: ``pysipnet.dataset.BOUNDS_DIMENSION``.
+TIME_BOUNDS = "time_bounds"
+
+
 # ── columns ───────────────────────────────────────────────────────────────────
 
 #: The site table's key column, and the column every file keyed on sites
@@ -152,24 +175,78 @@ SITE_ID = "site_id"
 
 # ── attributes ────────────────────────────────────────────────────────────────
 
-#: The attributes of a ``site`` coordinate. Read-only; a caller writing them
-#: onto a coordinate passes a copy, ``dict(SITE_ATTRIBUTES)``.
-SITE_ATTRIBUTES = MappingProxyType(
+
+class FrozenMapping(dict):
+    """A dict that cannot be changed after it is built.
+
+    Parameters
+    ----------
+    items:
+        A mapping, or an iterable of key-value pairs, as ``dict`` takes; it is
+        copied.
+
+    Raises
+    ------
+    TypeError
+        From every method that would change it (``m[key] = value``, ``del``,
+        ``update``, ``pop``, ``popitem``, ``setdefault``, ``clear``, ``|=``),
+        and from ``hash`` when a value is unhashable.
+
+    Notes
+    -----
+    It is a ``dict`` subclass, so pandas builds one column per key from it
+    and ``json`` writes it, as they would a dict; it compares equal to a dict
+    with the same items. It pickles, copies, and hashes by its items, which
+    ``types.MappingProxyType``, the standard read-only view, does not: a
+    frozen dataclass holding one could be neither sent to a worker nor used
+    as a key. ``dict(m)`` and ``m.copy()`` give an ordinary, mutable dict.
+    """
+
+    __slots__ = ()
+
+    def __init__(self, items: Mapping[Any, Any] | Iterable[tuple[Any, Any]] = ()) -> None:
+        super().__init__(items)
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        return hash(frozenset(self.items()))
+
+    def __repr__(self) -> str:
+        return f"FrozenMapping({dict.__repr__(self)})"
+
+    def __reduce__(self) -> tuple[type[FrozenMapping], tuple[dict[Any, Any]]]:
+        return (FrozenMapping, (dict(self),))
+
+    def copy(self) -> dict[Any, Any]:
+        """An ordinary, mutable ``dict`` of the same items."""
+        return dict(self)
+
+    def _refuse(self, *args: Any, **kwargs: Any) -> NoReturn:
+        raise TypeError(
+            "a FrozenMapping cannot be changed; copy it with dict(...) and change the copy."
+        )
+
+    __setitem__ = __delitem__ = __ior__ = _refuse
+    update = pop = popitem = setdefault = clear = _refuse
+
+
+#: The attributes of a ``site`` coordinate: read-only, so a coordinate can be
+#: given them as they are (xarray copies what it is given).
+SITE_ATTRIBUTES = FrozenMapping(
     {
         "long_name": "Model site identifier",
-        "comment": "The handed-down 1-8000 identifier of the site table; never renumbered.",
+        "comment": "Site identifier of the site table; never renumbered.",
     }
 )
 
 #: The CF attributes of a ``lon`` coordinate. Read-only, as
 #: :data:`SITE_ATTRIBUTES`.
-LON_ATTRIBUTES = MappingProxyType(
+LON_ATTRIBUTES = FrozenMapping(
     {"standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"}
 )
 
 #: The CF attributes of a ``lat`` coordinate. Read-only, as
 #: :data:`SITE_ATTRIBUTES`.
-LAT_ATTRIBUTES = MappingProxyType(
+LAT_ATTRIBUTES = FrozenMapping(
     {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
 )
 

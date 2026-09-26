@@ -202,7 +202,7 @@ from sipnet_calibration.sites import (
     site_locations,
     site_lookup,
 )
-from sipnet_calibration.validation import as_batched_flat
+from sipnet_calibration.validation import as_batched_flat, truncated
 
 __all__ = [
     "MODEL_FAILURES",
@@ -354,6 +354,7 @@ class ForwardModel:
         )
         check_output_variables_can_be_returned(self.output_variable_names, model, freq)
         self.site_table = _site_table_for(site_table, parameter_vector, self.sites)
+        self._site_locations = site_locations(self.sites, self.site_table)
         self._to_sipnet_table = to_sipnet_table or parameter_vector.sipnet_table
         self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
         self._base_values = _base_values_for(
@@ -421,7 +422,8 @@ class ForwardModel:
         Raises
         ------
         TypeError
-            If the table hook returns something other than an ``xr.Dataset``.
+            If *theta* is not a rectangular array of real numbers, or the
+            table hook returns something other than an ``xr.Dataset``.
         ValueError
             If *theta* is not ``(D,)`` or ``(J, D)`` with ``J >= 1``, or holds
             a non-finite value; or if the SIPNET table the hook returns is not
@@ -437,14 +439,9 @@ class ForwardModel:
             :class:`ForwardEvaluation` of what was collected, with no
             predictions or model output.
         """
-        theta, _ = as_batched_flat(
-            theta,
-            self.input_dimension,
-            message_name="theta",
-            allow_no_rows=False,
-            allow_non_finite=False,
-        )
-        theta = np.asarray(theta)
+        theta = np.asarray(as_batched_flat(theta, self.input_dimension, message_name="theta"))
+        check_theta_has_a_row(theta)
+        check_theta_is_finite(theta)
         n_members = len(theta)
         sipnet_table = self._to_sipnet_table(theta)
         check_table_is_a_sipnet_table(
@@ -473,7 +470,11 @@ class ForwardModel:
         if self.observation_vector is None:
             check_some_run_succeeded(collected)
             model_output = _stacked_model_output(
-                run_outputs_by_member_site, n_members, self.sites, self.site_table
+                run_outputs_by_member_site,
+                n_members,
+                self.sites,
+                site_table=self.site_table,
+                site_locations=self._site_locations,
             )
             return replace(collected, model_output=model_output, valid=member_succeeded)
         predictions = self._placed_predictions(run_outputs_by_member_site, n_members)
@@ -763,7 +764,9 @@ def _stacked_model_output(
     run_outputs_by_member_site: Mapping[tuple[int, int], _RunOutput],
     n_members: int,
     sites: Sequence[int],
+    *,
     site_table: pd.DataFrame,
+    site_locations: dict[str, xr.DataArray],
 ) -> xr.Dataset:
     """The runs' output on the full ``(member, site, time)`` grid, ``NaN`` where a run failed."""
     model_outputs_by_site_member = {
@@ -779,7 +782,7 @@ def _stacked_model_output(
     )
     # A site at which every run failed is absent from the stack, so the reindex
     # leaves its lon/lat NaN; they are the site table's whatever the runs did.
-    return full.assign_coords(site_locations(sites, site_table))
+    return full.assign_coords(site_locations)
 
 
 def _with_evaluation(error: RuntimeError, evaluation: ForwardEvaluation) -> RuntimeError:
@@ -813,8 +816,25 @@ def check_forward_model_arguments(
     check_climate_is_file_backed(climate, sites, backend)
     if observation_vector is not None:
         check_observation_sites_are_run(observation_vector, sites)
-    if site_table is not None:
-        check_site_table_locates_the_sites(site_table, sites)
+
+
+def check_theta_has_a_row(theta: np.ndarray) -> None:
+    """``theta`` holds at least one row, since an evaluation of none runs nothing."""
+    if theta.shape[0] == 0:
+        raise ValueError(
+            f"theta must be at least one row of {theta.shape[1]} entries, got shape "
+            f"{theta.shape}; pass (D,) or (J, D) with J >= 1."
+        )
+
+
+def check_theta_is_finite(theta: np.ndarray) -> None:
+    """Every entry of ``theta`` is finite, since SIPNET cannot run at a NaN."""
+    rows = np.flatnonzero(~np.isfinite(theta).all(axis=1)).tolist()
+    if rows:
+        raise ValueError(
+            f"theta holds a non-finite value in row(s) {truncated(rows)}; every entry must "
+            "be a finite number."
+        )
 
 
 def check_model_is_a_sipnet_model(model: Any) -> None:

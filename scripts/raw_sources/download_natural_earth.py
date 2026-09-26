@@ -22,7 +22,7 @@ The four archives named in :data:`SOURCES`, over HTTPS from
 
 Output data
 -----------
-``--out-dir``, default ``data/raw/natural_earth/``
+``--out-dir``, default the repository's ``data/raw/natural_earth/``
     One ``.zip`` per layer, byte for byte as served. Each is written to a
     ``.partial`` path and renamed only once its md5 has been checked, so a
     failed or interrupted download cannot leave a corrupt archive where a
@@ -67,7 +67,10 @@ from sipnet_calibration.io import file_md5, write_checked
 #: resolve to.
 BASE_URL = "https://naciscdn.org/naturalearth/50m"
 
-DEFAULT_OUT_DIR = Path("data/raw/natural_earth")
+#: Where the tracked archives go: this repository's ``data/raw/natural_earth/``,
+#: whatever ``$SIPNET_CALIBRATION_DATA`` says, since a tracked input lives in
+#: the checkout.
+DEFAULT_OUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "natural_earth"
 
 
 @dataclass(frozen=True)

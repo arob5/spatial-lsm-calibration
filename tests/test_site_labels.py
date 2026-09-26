@@ -21,10 +21,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from conftest import load_script, write_site_table_csv
-
-from sipnet_calibration.conventions import SITE_ID, data_root
-from sipnet_calibration.site_labels import _check_labels_are_flag_meanings
+from conftest import REPOSITORY, load_script, write_site_table_csv
+from sipnet_calibration.conventions import (
+    LAT_ATTRIBUTES,
+    LON_ATTRIBUTES,
+    SITE_ATTRIBUTES,
+    SITE_ID,
+)
 from sipnet_calibration.site_labels import (
     LABEL_COLUMN,
     SITE_LABELS,
@@ -32,6 +35,7 @@ from sipnet_calibration.site_labels import (
     SITE_LABELS_COLUMNS,
     SITE_LABELS_NAMES,
     SiteLabelsSpec,
+    _check_labels_are_flag_meanings,
     build_site_labels,
     default_raw_dir,
     default_site_labels_dir,
@@ -42,9 +46,10 @@ from sipnet_calibration.site_labels import (
     site_labels_field,
     site_labels_path,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import N_SITES, default_sites_path, load_sites
 
-RAW_DIR = data_root() / "raw" / "site_labels"
+#: The tracked raw files, found from the repository rather than the data root.
+RAW_DIR = REPOSITORY / "data" / "raw" / "site_labels"
 
 
 ingest = load_script("scripts/ingest_site_labels.py")
@@ -158,7 +163,7 @@ def test_describe_names_the_classes_and_the_relation():
         ("labels", ("a", "a", "b"), "repeats a class"),
         ("raw_columns", ("site", "site"), "repeats a column"),
         ("site_column", "absent", "is not in raw_columns"),
-        ("expected_rows", 0, "must be positive"),
+        ("expected_rows", 0, "expected_rows must be at least 1"),
         ("description", "", "needs a description"),
         ("label_kind", "", "needs a label_kind"),
     ],
@@ -305,8 +310,8 @@ def test_a_site_outside_the_pool_is_refused(tmp_path, synthetic):
     rows = SYNTHETIC_ROWS[:3] + [{"site": 99, "klass": "grass"}]
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
-    with pytest.raises(ingest.IngestError, match="not sites"):
-        ingest.check_sites_are_in_the_site_table(SYNTHETIC_SPEC, frame, sites)
+    with pytest.raises(KeyError, match=r"site\(s\) \[99\] are not in the site table"):
+        ingest.check_raw_frame(SYNTHETIC_SPEC, frame, sites)
 
 
 def test_an_unlabeled_site_is_refused_when_the_spec_covers_the_pool(tmp_path):
@@ -383,7 +388,7 @@ def test_an_absent_product_names_the_command_that_makes_it(tmp_path):
         ("site_id,label\n2,conifer\n1,grass\n", "ascending"),
         ("site_id,label\n1,conifer\n2,tundra\n", "does not declare"),
         ("site_id,klass\n1,conifer\n", "header is"),
-        ("site_id,label\n0,conifer\n", "positive int32"),
+        ("site_id,label\n0,conifer\n", "site ids from 1 to 2147483647"),
     ],
 )
 def test_load_site_labels_refuses_a_file_off_the_data_model(tmp_path, content, match):
@@ -516,7 +521,7 @@ def test_the_two_site_labels_products_do_not_nest(real_product, real_16class):
 RAW_CHECKS = (
     "check_row_count_is_the_expected_pool",
     "check_no_duplicate_sites",
-    "check_sites_are_in_the_site_table",
+    "check_site_table_lists_the_sites",
 )
 PRODUCT_CHECKS = (
     "check_labels_are_the_declared_set",
@@ -782,7 +787,7 @@ def test_an_identifier_too_large_for_int32_is_refused(tmp_path):
     """Narrowing without the check would wrap silently to a negative id."""
     path = tmp_path / "bad.csv"
     path.write_text(f"site_id,label\n{2**31},conifer\n")
-    with pytest.raises(ValueError, match="positive int32"):
+    with pytest.raises(ValueError, match="site ids from 1 to 2147483647"):
         load_site_labels(SYNTHETIC_SPEC, path)
 
 
@@ -832,8 +837,8 @@ def test_the_registry_class_orders_are_what_was_run_against():
 
 
 def test_the_registry_declares_what_the_readme_says_it_does():
-    assert resolve_site_labels("reanalysis_3pft").expected_rows == 8000
-    assert resolve_site_labels("pft_16class").expected_rows == 8000
+    assert resolve_site_labels("reanalysis_3pft").expected_rows == N_SITES
+    assert resolve_site_labels("pft_16class").expected_rows == N_SITES
     assert resolve_site_labels("reanalysis_3pft").covers_pool is True
     assert resolve_site_labels("pft_16class").covers_pool is True
 
@@ -899,6 +904,9 @@ def test_site_labels_field_is_cf_flag_codes_with_locations(synthetic):
     meanings = field.attrs["flag_meanings"].split()
     assert [meanings[code] for code in field.values] == ["conifer", "conifer", "broadleaf", "grass"]
     np.testing.assert_array_equal(field["lon"].values, sites["lon"].to_numpy())
+    assert field["lon"].attrs == dict(LON_ATTRIBUTES)
+    assert field["lat"].attrs == dict(LAT_ATTRIBUTES)
+    assert field["site"].attrs == dict(SITE_ATTRIBUTES)
     assert field.name == SYNTHETIC_SPEC.name
     assert field.attrs["long_name"] == "Plant functional type (synthetic_3class)"
     assert "flag_display_names" not in field.attrs

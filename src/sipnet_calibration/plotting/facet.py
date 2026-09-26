@@ -72,7 +72,7 @@ from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
 from sipnet_calibration.plotting.style import axis_label
-from sipnet_calibration.validation import as_positive_integer
+from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
 
 __all__ = [
     "LEGEND_MODES",
@@ -163,7 +163,7 @@ def build_plot_grid(
         raise ValueError(f"legend must be one of {list(LEGEND_MODES)}, got {legend!r}")
     titles = _panel_titles(items, labels)
 
-    ncol = min(int(ncol), len(items))
+    ncol = min(ncol, len(items))
     nrow = math.ceil(len(items) / ncol)
     figure, grid = plt.subplots(
         nrow,
@@ -248,8 +248,9 @@ def plot_by_site(
         ``None`` uses
         :func:`sipnet_calibration.plotting.series.plot_time_series`.
     sites:
-        The site ids to draw, in that order. ``None`` draws every site in
-        *data*, which for a whole-pool field is 8000 panels.
+        The site ids to draw, a sequence, in that order, each once. ``None``
+        draws every site in *data*, which for a whole-pool field is a panel
+        per site of the pool.
     **grid_kwargs:
         Passed to :func:`build_plot_grid`. ``labels`` defaults to
         ``"site <id>"``.
@@ -261,9 +262,14 @@ def plot_by_site(
 
     Raises
     ------
+    TypeError
+        If *sites* is one id, a string or a set, or holds a boolean, a float
+        or a value that is not a number.
     ValueError
-        If *data* has no ``site`` dimension, or *sites* names an id that is
-        not in it.
+        If *data* has no ``site`` dimension or coordinate, or *sites* names a
+        site twice or holds a value that is not a site id.
+    KeyError
+        If *sites* names a site that is not in *data*.
     """
     if SITE not in data.dims:
         raise ValueError(
@@ -275,19 +281,9 @@ def plot_by_site(
             f"the array has a {SITE!r} dimension but no {SITE!r} "
             "coordinate, so its panels cannot be named or selected"
         )
-    available = list(data.coords[SITE].values)
-    if sites is None:
-        chosen = available
-    else:
-        if isinstance(sites, (str, bytes)) or not hasattr(sites, "__iter__"):
-            raise ValueError(f"sites must be a sequence of site ids, got {sites!r}")
-        chosen = list(sites)
-        missing = [site for site in chosen if site not in available]
-        if missing:
-            raise ValueError(
-                f"no such site(s) in the data: {missing}. It holds "
-                f"{len(available)} site(s), starting {available[:5]}"
-            )
+    available = data.coords[SITE].values.tolist()
+    chosen = available if sites is None else list(as_site_ids(sites, message_name="sites"))
+    check_data_holds_the_sites(available, chosen)
 
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     grid_kwargs.setdefault("labels", lambda site: f"site {site}")
@@ -463,7 +459,7 @@ def plot_map_by(
     n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
-        chosen = available[thinned_indices(len(available), int(n_max))]
+        chosen = available[thinned_indices(len(available), n_max)]
     else:
         chosen = np.asarray(getattr(values, "values", values))
         missing = [v for v in chosen if v not in available]
@@ -541,3 +537,17 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
         title=label or scale.label,
         loc="outside right center",
     )
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_data_holds_the_sites(available: list[int], chosen: list[int]) -> None:
+    """Every site asked for is on the data's ``site`` coordinate."""
+    held = set(available)
+    missing = [site for site in chosen if site not in held]
+    if missing:
+        raise KeyError(
+            f"no such site(s) in the data: {truncated(missing)}; it holds "
+            f"{len(available)} site(s), starting {available[:5]}, so ask for those."
+        )

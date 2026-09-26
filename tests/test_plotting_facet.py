@@ -239,7 +239,7 @@ def test_empty_items_is_rejected():
 
 def test_a_non_positive_ncol_is_rejected():
     """``ncol=0`` raises."""
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="at least 1"):
         build_plot_grid([1], draw_nothing, ncol=0)
 
 
@@ -316,9 +316,15 @@ def test_plot_by_site_rejects_a_site_dim_without_a_site_coordinate():
 
 
 def test_plot_by_site_rejects_a_bare_site_id(field_member_site_time):
-    """``sites=1`` raises rather than failing on iteration."""
-    with pytest.raises(ValueError, match="sequence of site ids"):
-        plot_by_site(field_member_site_time, sites=1)
+    """``sites=1``, a string or a set raises rather than failing on iteration."""
+    for sites in (1, "1", {1}):
+        with pytest.raises(TypeError, match="sites"):
+            plot_by_site(field_member_site_time, sites=sites)
+
+
+def test_plot_by_site_refuses_a_repeated_site(field_member_site_time):
+    with pytest.raises(ValueError, match="more than once"):
+        plot_by_site(field_member_site_time, sites=[1, 1])
 
 
 def test_plot_by_site_rejects_a_field_without_a_site_dim(field_member_time):
@@ -331,7 +337,7 @@ def test_plot_by_site_rejects_a_site_that_is_not_on_the_field(
     field_member_site_time,
 ):
     """An unknown site id raises rather than yielding an empty panel."""
-    with pytest.raises(ValueError, match="no such site"):
+    with pytest.raises(KeyError, match="no such site"):
         plot_by_site(field_member_site_time, sites=[9999])
 
 

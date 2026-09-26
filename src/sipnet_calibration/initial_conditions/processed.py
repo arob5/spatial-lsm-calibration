@@ -37,8 +37,6 @@ from sipnet_calibration.conventions import (
     LAT,
     LON,
     SITE,
-    SITE_ATTRIBUTES,
-    SITE_DTYPE,
     SITE_ID,
 )
 from sipnet_calibration.initial_conditions.names import (
@@ -62,8 +60,8 @@ from sipnet_calibration.initial_conditions.specs import (
     resolve_initial_condition,
 )
 from sipnet_calibration.io import utc_timestamp
-from sipnet_calibration.sites import site_locations
-from sipnet_calibration.validation import as_site_ids
+from sipnet_calibration.sites import site_coordinates
+from sipnet_calibration.validation import as_names, as_site_ids, truncated
 
 __all__ = [
     "build_initial_conditions",
@@ -143,8 +141,7 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
                 "comment": "The 1-based <member> of the source file name.",
             },
         ),
-        SITE: (SITE, pool.astype(SITE_DTYPE), dict(SITE_ATTRIBUTES)),
-        **site_locations(pool.tolist(), sites),
+        **site_coordinates(pool.tolist(), sites),
     }
     return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(raw))
 
@@ -210,12 +207,11 @@ def initial_condition_fields(
     Parameters
     ----------
     names:
-        Processed names, in the order the result should carry them, or one
-        name on its own. Defaults to every one of
-        :data:`INITIAL_CONDITION_NAMES`.
+        Processed names, a sequence, in the order the result should carry
+        them. Defaults to every one of :data:`INITIAL_CONDITION_NAMES`.
     sites:
-        Site ids to keep, in the order given, or one id on its own. Each must
-        be a whole number and appear once. Defaults to the whole pool.
+        Site ids to keep, a sequence, in the order given, each once.
+        Defaults to the whole pool.
     path:
         The product to read. Defaults to
         :func:`sipnet_calibration.initial_conditions.names.default_product_path`.
@@ -229,28 +225,27 @@ def initial_condition_fields(
     Raises
     ------
     TypeError
-        If *sites* is a string, or holds a boolean or a value that is not a
-        number.
+        If *names* or *sites* is one value, a string or a set; if a name is
+        not a string; or if a site id is a boolean, a float or not a number.
     ValueError
-        If a requested site is not a whole number of at least 1, is not in
-        the pool, or is asked for twice.
+        If a site id is not from 1 to the largest ``int32``, is asked for
+        twice, or *sites* is a two-dimensional array.
+    KeyError
+        If a name is not an initial condition, or a requested site is not in
+        the product.
     """
-    if isinstance(names, str):
-        names = [names]
-    wanted_names = list(names) if names is not None else list(INITIAL_CONDITION_NAMES)
+    wanted_names = (
+        INITIAL_CONDITION_NAMES if names is None else as_names(names, message_name="names")
+    )
     for name in wanted_names:
         resolve_initial_condition(name)
     # A repeated site would make the site coordinate non-unique, and a table
     # built from it could not be addressed one cell at a time.
-    wanted_sites = None
-    if sites is not None:
-        wanted_sites = list(as_site_ids(sites, message_name="sites", allow_one_id=True))
+    wanted_sites = None if sites is None else list(as_site_ids(sites, message_name="sites"))
 
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
-        missing = sorted(set(wanted_sites) - set(dataset[SITE].values.tolist()))
-        if missing:
-            raise ValueError(f"sites not in the pool: {missing[:10]}")
+        check_product_holds_the_sites(dataset, wanted_sites)
         dataset = dataset.sel({SITE: wanted_sites})
     return {name: dataset[name] for name in wanted_names}
 
@@ -350,3 +345,17 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
     )
     if dataset.attrs.get("Conventions") != CF_CONVENTIONS:
         raise ValueError(f"{path}: Conventions is {dataset.attrs.get('Conventions')!r}, expected {CF_CONVENTIONS!r}")
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_product_holds_the_sites(dataset: xr.Dataset, site_ids: Sequence[int]) -> None:
+    """The initial condition product holds every site asked of it."""
+    held = set(dataset[SITE].values.tolist())
+    missing = [site for site in site_ids if site not in held]
+    if missing:
+        raise KeyError(
+            f"site(s) {truncated(missing)} are not in the initial condition product; ask "
+            "only for sites of the site table it was built on."
+        )

@@ -11,7 +11,7 @@ to be drawn, and writes them into the package as the file
 
 Input data
 ----------
-``--raw-dir``, default ``data/raw/natural_earth/``
+``--raw-dir``, default the repository's ``data/raw/natural_earth/``
     The zipped Natural Earth 1:50m shapefiles that
     ``scripts/raw_sources/download_natural_earth.py`` downloads, read in place
     with ``pyshp``. Polyline layers are read as lines and the lakes' polygons as
@@ -57,7 +57,10 @@ from sipnet_calibration.plotting.basemap import (
     write_basemap,
 )
 
-DEFAULT_RAW_DIR = Path("data/raw/natural_earth")
+#: Where the tracked Natural Earth archives are: in this repository, whatever
+#: ``$SIPNET_CALIBRATION_DATA`` says, since a tracked input is found from the
+#: checkout rather than from the storage-backed data root.
+DEFAULT_RAW_DIR = Path(__file__).resolve().parents[1] / "data" / "raw" / "natural_earth"
 
 
 # ── entry point ───────────────────────────────────────────────────────────────

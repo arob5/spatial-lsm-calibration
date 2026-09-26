@@ -17,7 +17,11 @@ from matplotlib.image import AxesImage
 
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import BASEMAP_ZORDER, MAX_ANGULAR_DISTANCE
-from sipnet_calibration.plotting.facet import plot_map_by, plot_map_grid, plot_map_quantiles
+from sipnet_calibration.plotting.facet import (
+    plot_map_by,
+    plot_map_grid,
+    plot_map_quantiles,
+)
 from sipnet_calibration.plotting.maps import (
     Cells,
     ProjectedBounds,
@@ -527,7 +531,7 @@ def test_initial_wood_carbon_quantiles_over_conus():
     from sipnet_calibration.initial_conditions import initial_condition_fields
 
     try:
-        wood = initial_condition_fields("initial_wood_carbon")["initial_wood_carbon"]
+        wood = initial_condition_fields(["initial_wood_carbon"])["initial_wood_carbon"]
     except FileNotFoundError as error:
         pytest.skip(str(error))
     figure, axes = plot_map_quantiles(wood, extent="CONUS", robust=True)

@@ -205,7 +205,7 @@ def survey_one_file(directory: Path) -> FileFacts:
     facts.constants = {
         "n_columns": [float(climate.n_columns)],
         "loc": [float(climate.loc)],
-        "time_step_length": [float(v) for v in np.unique(frame["time_step_length"].to_numpy())],
+        TIMESTEP_LENGTH: [float(v) for v in np.unique(frame[TIMESTEP_LENGTH].to_numpy())],
     }
     return facts
 
@@ -235,7 +235,7 @@ def build_report(results: list[FileFacts], off_template: list[str]) -> dict[str,
             }
     constants = {
         column: sorted({v for r in parsed for v in r.constants.get(column, [])})
-        for column in ("n_columns", "loc", "time_step_length")
+        for column in ("n_columns", "loc", TIMESTEP_LENGTH)
     }
 
     return {

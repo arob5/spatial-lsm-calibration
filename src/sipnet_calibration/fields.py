@@ -72,8 +72,8 @@ readers in :mod:`sipnet_calibration.drivers` and
 Identifiers
 -----------
 ``site``
-    The handed-down integer site id, 1 to 8000, as ``int32``. It is a shared
-    key with collaborators' files and is never renumbered; a spatially
+    The integer site id of the site table in use, as ``int32``. Ids of a pool
+    shared with collaborators' files are never renumbered; a spatially
     meaningful ordering, where one is wanted, is added as a separate
     coordinate. Only 185 of the sites are Ameriflux sites, so an
     Ameriflux-keyed identifier cannot address the pool: ``ameriflux_site_id``
@@ -207,7 +207,7 @@ An ensemble over sites and members, keyed by the pair each run stands for::
     from sipnet_calibration.plotting import plot_time_series
 
     runs = {(1, 0): first, (1, 1): second, (27, 0): third, (27, 1): fourth}
-    nee = stack_sipnet_outputs(runs, "nee")["net_ecosystem_exchange"]
+    nee = stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"]
     nee.dims                                       # ('member', 'site', 'time')
 
     plot_time_series(aggregate_time(nee, "1D").sel(site=1))
@@ -218,7 +218,7 @@ Adapting run after run, with the site table read once::
 
     table = site_lookup(load_sites())
     for site, member, run in ensemble:
-        fields = from_sipnet_output(run, "nee", site=site, member=member, sites=table)
+        fields = from_sipnet_output(run, ["nee"], site=site, member=member, sites=table)
 """
 
 from __future__ import annotations
@@ -244,12 +244,12 @@ from sipnet_calibration.conventions import (
     TIME_COORD_NAMES,
 )
 from sipnet_calibration.sites import (
-    check_site_table_locates_the_sites,
     load_sites,
+    site_coordinates,
     site_locations,
     site_lookup,
 )
-from sipnet_calibration.validation import as_names, as_site_id
+from sipnet_calibration.validation import as_bounded_integer, as_names, as_site_id
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from pysipnet.output import SIPNETOutput
@@ -314,11 +314,13 @@ def label_run(
     Raises
     ------
     TypeError
-        If *dataset* is not an ``xr.Dataset``.
+        If *dataset* is not an ``xr.Dataset``, *site* or *member* is a
+        boolean, a float or not an integer, or *site_table* is not a
+        ``DataFrame``.
     ValueError
         If *dataset* has no ``time`` rows, which is what a failed run leaves;
-        if *site* or *member* is not a whole number in range; or if the site
-        table lists a site twice or has no ``lon`` and ``lat`` columns.
+        if *site* or *member* is out of range; or if the site table lists a
+        site twice or has no ``lon`` and ``lat`` columns.
     KeyError
         If *site* is not in the site table.
     FileNotFoundError
@@ -332,7 +334,7 @@ def label_run(
 
 def from_sipnet_output(
     output: SIPNETResult | SIPNETOutput,
-    output_variable_names: str | Sequence[str],
+    output_variable_names: Sequence[str],
     *,
     site: int | None = None,
     member: int | None = None,
@@ -346,13 +348,13 @@ def from_sipnet_output(
         A :class:`pysipnet.result.SIPNETResult` or the
         :class:`pysipnet.output.SIPNETOutput` inside one.
     output_variable_names:
-        One name, or a sequence of them. pySIPNET's names and aliases are both
-        accepted (``"nee"``, ``"NEE"`` and ``"net_ecosystem_exchange"`` are the
-        same variable); the keys of the result are always the registry name.
+        A sequence of names. pySIPNET's names and aliases are both accepted
+        (``"nee"``, ``"NEE"`` and ``"net_ecosystem_exchange"`` are the same
+        variable); the keys of the result are always the registry name.
         Repeats are dropped and the requested order is kept.
     site:
-        The 1-8000 site identifier this run is for, or ``None`` when the run is
-        not a site of the pool. When given, it becomes a scalar ``site``
+        The site id this run is for, or ``None`` when the run is not at a
+        site of the site table. When given, it becomes a scalar ``site``
         coordinate and ``lon``/``lat`` are looked up beside it.
     member:
         The 0-based ensemble index this run is, or ``None``. When given, it
@@ -369,8 +371,8 @@ def from_sipnet_output(
         Keyed by pySIPNET registry name, in the order requested. Each value is
         a ``DataArray`` with dimension ``time``, the ``time`` coordinates of
         :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`, scalar
-        ``site``/``lon``/``lat`` and ``member`` coordinates for the labels that were given, and pySIPNET's
-        variable attributes unchanged.
+        ``site``/``lon``/``lat`` and ``member`` coordinates for the labels
+        that were given, and pySIPNET's variable attributes unchanged.
 
     Raises
     ------
@@ -379,13 +381,14 @@ def from_sipnet_output(
         not in the site table.
     ValueError
         If *output_variable_names* is empty; if the run wrote no rows, which
-        is what a failed run leaves; if *member* or *site* is not a whole
-        number in range; or if the site table lists a site twice or has no
-        ``lon`` and ``lat`` columns.
+        is what a failed run leaves; if *member* or *site* is out of range;
+        or if the site table lists a site twice or has no ``lon`` and ``lat``
+        columns.
     TypeError
-        If *output* is neither a ``SIPNETResult`` nor a ``SIPNETOutput``; or if
-        *output_variable_names* is a set, is not iterable, or holds a name
-        that is not a string.
+        If *output* is neither a ``SIPNETResult`` nor a ``SIPNETOutput``; if
+        *output_variable_names* is one string, a set, is not iterable, or
+        holds a name that is not a string; or if *site* or *member* is a
+        boolean, a float or not an integer.
     FileNotFoundError
         If *site* is given, *sites* is not, and the site table is absent.
 
@@ -403,7 +406,7 @@ def from_sipnet_output(
 
 def stack_sipnet_outputs(
     runs: Mapping[tuple[int, int], SIPNETResult | SIPNETOutput],
-    output_variable_names: str | Sequence[str],
+    output_variable_names: Sequence[str],
     *,
     sites: pd.DataFrame | None = None,
 ) -> dict[str, xr.DataArray]:
@@ -413,7 +416,7 @@ def stack_sipnet_outputs(
     ----------
     runs:
         A mapping from ``(site, member)`` to the run for that pair.
-        ``site`` is the 1-8000 identifier and ``member`` the 0-based ensemble
+        ``site`` is the site id and ``member`` the 0-based ensemble
         index. The pairs need not form a full rectangle; a pair left out reads
         as ``NaN``.
     output_variable_names:
@@ -434,8 +437,9 @@ def stack_sipnet_outputs(
     ------
     TypeError
         If *runs* is not a mapping; if a value is neither a ``SIPNETResult``
-        nor a ``SIPNETOutput``; or if *output_variable_names* is not a name or
-        an ordered iterable of names.
+        nor a ``SIPNETOutput``; if *output_variable_names* is not an ordered
+        sequence of names; if a key's site or member is a boolean, a float or
+        not an integer; or if *sites* is not a ``DataFrame``.
     ValueError
         If *runs* is empty, or a key is not a pair of integers in range; and
         for any refusal of :func:`stack_model_outputs`.
@@ -476,7 +480,7 @@ def stack_model_outputs(
         A mapping from ``(site, member)`` to that run's output ``Dataset``,
         from ``result.outputs.select(names)`` or :func:`label_run`, every run
         carrying the same variables with the same ``units``, ``constituent``
-        and ``kind``. ``site`` is the 1-8000 identifier and ``member`` the
+        and ``kind``. ``site`` is the site id and ``member`` the
         0-based ensemble index. A run already labeled by :func:`label_run`
         must carry the labels of its key. The pairs need not form a full
         rectangle; a pair left out reads as ``NaN``.
@@ -490,8 +494,9 @@ def stack_model_outputs(
         ``member`` (``int16``) and ``site`` (``int32``), with ``lon``/``lat``
         (``float64``, CF attributes) on ``site`` and the ``time`` coordinates
         of :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`. The
-        variables' and the first run's dataset attributes are pySIPNET's. Every other coordinate -- ``time_bounds``,
-        which a field cannot carry, and SIPNET's
+        variables' and the first run's dataset attributes are pySIPNET's.
+        Every other coordinate -- ``time_bounds``, which a field cannot
+        carry, and SIPNET's
         ``year``/``day_of_year``/``hour_of_day`` row labels -- is dropped, as
         is the ``bounds`` attribute of ``time``, so each variable of the
         result is a field.
@@ -500,7 +505,8 @@ def stack_model_outputs(
     ------
     TypeError
         If *model_outputs* is not a mapping, or a value is not an
-        ``xr.Dataset``.
+        ``xr.Dataset``; if a key's site or member is a boolean, a float or
+        not an integer; or if *site_table* is not a ``DataFrame``.
     ValueError
         If *model_outputs* is empty; if a key is not a pair of integers in
         range; if a run has no ``time`` rows; if a run's own ``site`` or
@@ -522,7 +528,9 @@ def stack_model_outputs(
     check_is_a_nonempty_mapping(model_outputs, "model_outputs")
     by_key = _checked_model_outputs(model_outputs)
     table = site_table if site_table is not None else load_sites()
-    check_site_table_locates_the_sites(table, sorted({site_id for site_id, _ in by_key}))
+    # Located before stacking, so a site the table lacks fails before the work;
+    # the stack's sites are ascending, as these are.
+    locations = site_locations(sorted({site_id for site_id, _ in by_key}), table)
     by_member: dict[int, list[xr.Dataset]] = {}
     for (site_id, member_id), dataset in by_key.items():
         labeled = _labeled_for_stacking(dataset, site_id, member_id)
@@ -533,19 +541,19 @@ def stack_model_outputs(
     # which promotes a scalar coordinate to the concatenated dimension only
     # when the values it is given differ, so a one-site or one-member stack
     # would otherwise keep them scalar and break the convention.
-    return stacked.assign_coords(site_locations(stacked[SITE].values, table))
+    return stacked.assign_coords(locations)
 
 
-def resolve_output_variable_names(output_variable_names: str | Iterable[str]) -> list[str]:
+def resolve_output_variable_names(output_variable_names: Iterable[str]) -> list[str]:
     """Requested output variable names as pySIPNET registry names.
 
     Parameters
     ----------
     output_variable_names:
-        One name, or an ordered iterable of them. pySIPNET's registry names,
-        aliases and SIPNET's own column names, the legacy ones included, are
-        all accepted (``"nee"``, ``"NEE"`` and ``"net_ecosystem_exchange"`` are
-        the same variable).
+        An ordered sequence of names. pySIPNET's registry names, aliases and
+        SIPNET's own column names, the legacy ones included, are all accepted
+        (``"nee"``, ``"NEE"`` and ``"net_ecosystem_exchange"`` are the same
+        variable).
 
     Returns
     -------
@@ -556,23 +564,15 @@ def resolve_output_variable_names(output_variable_names: str | Iterable[str]) ->
     Raises
     ------
     TypeError
-        If *output_variable_names* is a set (which has no order to keep) or is
-        neither a name nor an iterable of names, or if an item is not a
-        string.
+        If *output_variable_names* is one string, a set (which has no order to
+        keep) or not iterable, or if an item is not a string.
     ValueError
         If *output_variable_names* is empty.
     KeyError
         If a name is not a pySIPNET output variable or alias.
     """
-    if isinstance(output_variable_names, str):
-        requested = [output_variable_names]
-    else:
-        requested = list(as_names(output_variable_names, message_name="output_variable_names"))
-    if not requested:
-        raise ValueError(
-            "no variables were asked for; name at least one SIPNET output "
-            "variable, e.g. output_variable_names=['nee']."
-        )
+    requested = list(as_names(output_variable_names, message_name="output_variable_names"))
+    check_names_are_given(requested)
     return resolve_sipnet_output_variable_names(requested)
 
 
@@ -676,34 +676,20 @@ def _identity_coords(
     """Scalar ``site``/``lon``/``lat`` and ``member`` coordinates for the labels given."""
     coords: dict[str, xr.DataArray] = {}
     if member is not None:
-        coords[MEMBER_DIM] = xr.DataArray(
-            _bounded_integer(member, name="member", dtype=np.int16, minimum=0),
-            attrs=dict(_MEMBER_ATTRS),
-        )
+        coords[MEMBER_DIM] = xr.DataArray(np.int16(_as_member(member)), attrs=_MEMBER_ATTRS)
     if site is not None:
         site_id = as_site_id(site, message_name="site")
-        located = site_locations([site_id], site_table)
-        coords[SITE] = xr.DataArray(SITE_DTYPE(site_id), attrs=dict(SITE_ATTRIBUTES))
-        coords.update({name: location.isel({SITE: 0}) for name, location in located.items()})
+        table = site_table if site_table is not None else load_sites()
+        located = site_coordinates([site_id], table)
+        coords.update({name: coordinate.isel({SITE: 0}) for name, coordinate in located.items()})
     return coords
 
 
-def _bounded_integer(value: Any, *, name: str, dtype: type, minimum: int) -> Any:
-    """*value* as *dtype*, raising if it is not a whole number at least *minimum*."""
-    if isinstance(value, (bool, np.bool_)):
-        raise ValueError(f"{name} must be an integer, got the boolean {value!r}.")
-    try:
-        as_int = int(value)
-    except (TypeError, ValueError, OverflowError) as error:
-        raise ValueError(f"{name} must be an integer, got {value!r}.") from error
-    if as_int != value:
-        raise ValueError(f"{name} must be a whole number, got {value!r}.")
-    if as_int < minimum:
-        raise ValueError(f"{name} must be at least {minimum}, got {as_int}.")
-    info = np.iinfo(dtype)
-    if as_int > info.max:
-        raise ValueError(f"{name} {as_int} does not fit in {dtype.__name__}.")
-    return dtype(as_int)
+def _as_member(member: Any) -> int:
+    """A member label as a plain ``int``, from 0 to the largest ``int16``."""
+    return as_bounded_integer(
+        member, minimum=0, maximum=int(np.iinfo(np.int16).max), message_name="member"
+    )
 
 
 def _run_key(key: Any) -> tuple[int, int]:
@@ -714,10 +700,7 @@ def _run_key(key: Any) -> tuple[int, int]:
             "each run by the site and member it was."
         )
     site, member = key
-    return (
-        as_site_id(site, message_name="site"),
-        int(_bounded_integer(member, name="member", dtype=np.int16, minimum=0)),
-    )
+    return as_site_id(site, message_name="site"), _as_member(member)
 
 
 def _checked_model_outputs(
@@ -741,8 +724,8 @@ def _labeled_for_stacking(dataset: xr.Dataset, site_id: int, member_id: int) -> 
     labeled = _with_field_coords(dataset.drop_vars(_IDENTITY_COORD_NAMES, errors="ignore"))
     return labeled.assign_coords(
         {
-            SITE: xr.DataArray(SITE_DTYPE(site_id), attrs=dict(SITE_ATTRIBUTES)),
-            MEMBER_DIM: xr.DataArray(np.int16(member_id), attrs=dict(_MEMBER_ATTRS)),
+            SITE: xr.DataArray(SITE_DTYPE(site_id), attrs=SITE_ATTRIBUTES),
+            MEMBER_DIM: xr.DataArray(np.int16(member_id), attrs=_MEMBER_ATTRS),
         }
     )
 
@@ -751,8 +734,8 @@ def _with_field_coords(dataset: xr.Dataset) -> xr.Dataset:
     """*dataset* with only the coordinates a field keeps.
 
     Those are :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES` and
-    the identity coordinates. ``time``'s ``bounds`` attribute goes too, since the ``time_bounds`` variable it names
-    is one of the coordinates dropped.
+    the identity coordinates. ``time``'s ``bounds`` attribute goes too, since
+    the ``time_bounds`` variable it names is one of the coordinates dropped.
     """
     keep = {*TIME_COORD_NAMES, *_IDENTITY_COORD_NAMES}
     # The copy gives this dataset its own variables, so rewriting an attribute
@@ -815,6 +798,15 @@ def check_run_has_rows(dataset: xr.Dataset) -> None:
             "this SIPNET output has no rows, so there is nothing to put on a time axis. "
             "That usually means the run failed; check result.provenance.success and its "
             "stderr. Stacking an ensemble hits this on the first member that did not run."
+        )
+
+
+def check_names_are_given(names: list[str]) -> None:
+    """At least one output variable is asked for."""
+    if not names:
+        raise ValueError(
+            "no variables were asked for; name at least one SIPNET output "
+            "variable, e.g. output_variable_names=['nee']."
         )
 
 

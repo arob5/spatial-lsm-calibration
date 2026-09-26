@@ -10,9 +10,13 @@ import pytest
 import xarray as xr
 from pysipnet import niwot_reference_output
 
-from conftest import dated_observation, niwot_stack_of, site_table_of, windowed_observation
-
-from sipnet_calibration.constraints import TIME_BOUNDS_END, TIME_BOUNDS_START
+from conftest import (
+    dated_observation,
+    niwot_stack_of,
+    site_table_of,
+    windowed_observation,
+)
+from sipnet_calibration.conventions import WINDOW_END, WINDOW_START
 from sipnet_calibration.fields import label_run
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
@@ -35,7 +39,12 @@ VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon", "net_ecosystem_exchang
 @pytest.fixture(scope="module")
 def one_run():
     """One Niwot run labeled as site 1, member 0."""
-    return label_run(niwot_reference_output().select(VARIABLES), site=1, member=0, site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True))
+    return label_run(
+        niwot_reference_output().select(VARIABLES),
+        site=1,
+        member=0,
+        site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -51,7 +60,9 @@ def labels(one_run):
 
 class TestSelectTimestep:
     def test_reads_the_state_at_the_observed_labels(self, one_run, labels):
-        observed = dated_observation([1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = dated_observation(
+            [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         predicted = SelectTimestep("wood_carbon")(one_run, observed)
         expected = select_timestep_at(one_run["wood_carbon"], labels)
         np.testing.assert_array_equal(predicted.values, expected.values)
@@ -71,7 +82,9 @@ class TestSelectTimestep:
         assert isinstance(SelectTimestep("wood_carbon"), ObservationOperator)
 
     def test_a_stack_is_read_pointwise(self, stack, labels):
-        observed = dated_observation([1, 2], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = dated_observation(
+            [1, 2], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         predicted = check_operator(SelectTimestep("wood_carbon"), stack, observed)
         assert predicted.dims == ("member", "site", "time")
         np.testing.assert_allclose(predicted.sel(site=2, member=1).values, 0.75 * predicted.sel(site=1, member=0).values)
@@ -79,17 +92,21 @@ class TestSelectTimestep:
 
 class TestReduceOverTimeBounds:
     def test_reduces_over_each_observations_own_bounds(self, one_run, labels):
-        observed = windowed_observation([1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = windowed_observation(
+            [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         # Give each label a bounds window of its own length, so a window read
         # from the wrong label's bounds would give a different value.
-        observed = observed.assign_coords({TIME_BOUNDS_START: ("time", labels - pd.to_timedelta([1, 2, 3], unit="D"))})
+        observed = observed.assign_coords(
+            {WINDOW_START: ("time", labels - pd.to_timedelta([1, 2, 3], unit="D"))}
+        )
         predicted = ReduceOverTimeBounds("wood_carbon", "last")(one_run, observed)
         np.testing.assert_array_equal(predicted["time"].values, observed["time"].values)
         assert predicted.attrs["kind"] == "timestep_end_state"
         wood = one_run["wood_carbon"]
         ends = pd.DatetimeIndex(wood["time"].values)
         starts = pd.DatetimeIndex(wood["time_step_start"].values)
-        for k, (start, end) in enumerate(zip(observed[TIME_BOUNDS_START].values, labels)):
+        for k, (start, end) in enumerate(zip(observed[WINDOW_START].values, labels)):
             inside = (ends > start) & (ends <= end)
             assert predicted.values[k] == wood.values[inside][-1]
             assert predicted["time_step_start"].values[k] == starts[inside].min()
@@ -99,8 +116,8 @@ class TestReduceOverTimeBounds:
         return xr.DataArray(
             [[5.0]], dims=("site", "time"),
             coords={"site": [1], "time": [pd.Timestamp(end)],
-                    TIME_BOUNDS_START: ("time", [pd.Timestamp(start)]),
-                    TIME_BOUNDS_END: ("time", [pd.Timestamp(end)])},
+                    WINDOW_START: ("time", [pd.Timestamp(start)]),
+                    WINDOW_END: ("time", [pd.Timestamp(end)])},
             attrs={"units": "g m-2", "constituent": "C"}, name="annual_total",
         )
 
@@ -325,7 +342,9 @@ class TestCheckOperator:
 
 class TestSiteOrderAndCoverage:
     def test_an_operator_follows_an_observation_out_of_model_order(self, stack, labels):
-        observed = dated_observation([2, 1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = dated_observation(
+            [2, 1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         predicted = check_operator(SelectTimestep("wood_carbon"), stack, observed)
         assert predicted["site"].values.tolist() == [2, 1]
         np.testing.assert_allclose(predicted.sel(site=2, member=0).values, 1.5 * predicted.sel(site=1, member=0).values)
@@ -341,13 +360,19 @@ class TestSiteOrderAndCoverage:
                 return select_timestep_at(model_output["wood_carbon"].sel(site=sites), observed_values["time"])
 
         with pytest.raises(ValueError, match="sites, in order"):
-            check_operator(ModelOrder(), stack, dated_observation([2, 1], labels, units="Mg ha-1", constituent="C"))
+            check_operator(
+                ModelOrder(),
+                stack,
+                dated_observation([2, 1], labels, units="Mg ha-1", constituent="C"),
+            )
 
     def test_check_operator_handles_a_run_over_more_sites_than_observed(self, stack, labels):
         wider = xr.concat([stack, (stack.isel(site=[1]) * 2).assign_coords(site=[3])], dim="site")
         for name in VARIABLES:
             wider[name].attrs = stack[name].attrs
-        observed = dated_observation([1, 2], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = dated_observation(
+            [1, 2], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         predicted = check_operator(SelectTimestep("wood_carbon"), wider, observed)
         assert predicted["site"].values.tolist() == [1, 2]
 
@@ -359,7 +384,9 @@ class TestSiteOrderAndCoverage:
 
 class TestReduceOverTimeBoundsValues:
     def test_the_label_need_not_be_a_bound_edge(self, one_run, labels):
-        observed = windowed_observation([1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = windowed_observation(
+            [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         shifted = observed.assign_coords(time=observed["time"].values - np.timedelta64(12, "h"))
         predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, shifted)
         np.testing.assert_array_equal(predicted["time"].values, shifted["time"].values)
@@ -372,7 +399,9 @@ class TestReduceOverTimeBoundsValues:
         np.testing.assert_array_equal(predicted.values, expected.values)
 
     def test_the_mean_over_a_window_is_the_length_weighted_mean(self, one_run, labels):
-        observed = windowed_observation([1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass")
+        observed = windowed_observation(
+            [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
+        )
         predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, observed)
         wood = one_run["wood_carbon"]
         ends = pd.DatetimeIndex(wood["time"].values)
@@ -387,14 +416,20 @@ class TestParameterLookups:
     def test_a_table_missing_the_runs_members_is_named(self, stack, labels):
         table = xr.Dataset({"leaf_carbon_per_area": (("member", "site"), [[270.0, 135.0]])}, coords={"member": [0], "site": [1, 2]})
         with pytest.raises(ValueError, match=r"no member label\(s\) \[1\]"):
-            ComputeLeafAreaIndex()(stack, dated_observation([1, 2], labels), sipnet_parameters=table)
+            ComputeLeafAreaIndex()(
+                stack, dated_observation([1, 2], labels), sipnet_parameters=table
+            )
 
     def test_a_non_numeric_mapping_value_is_refused(self, one_run, labels):
         with pytest.raises(TypeError, match="must be a number"):
-            ComputeLeafAreaIndex()(one_run, dated_observation([1], labels), sipnet_parameters={"leaf_carbon_per_area": "270"})
+            ComputeLeafAreaIndex()(
+                one_run,
+                dated_observation([1], labels),
+                sipnet_parameters={"leaf_carbon_per_area": "270"},
+            )
 
     def test_repeated_observed_sites_are_refused(self, stack, labels):
-        with pytest.raises(ValueError, match="repeats a site"):
+        with pytest.raises(ValueError, match="more than once"):
             select_observed_sites(stack["wood_carbon"], dated_observation([1, 1], labels))
 
 
@@ -413,7 +448,9 @@ class TestParameterLookupsAtScalarCoordinates:
         assert array.dims == () and float(array) == 270.0
 
     def test_one_run_is_predicted_on_its_own_grid_from_a_table(self, one_run, labels, table):
-        predicted = check_operator(ComputeLeafAreaIndex(), one_run, dated_observation([1], labels), sipnet_parameters=table)
+        predicted = check_operator(
+            ComputeLeafAreaIndex(), one_run, dated_observation([1], labels), sipnet_parameters=table
+        )
         assert predicted.dims == ("time",)
         expected = select_timestep_at(one_run["leaf_carbon"], labels).values / 270.0
         np.testing.assert_allclose(predicted.values, expected)
@@ -467,7 +504,11 @@ class TestCheckOperatorContract:
                 return mixed
 
         with pytest.raises(ValueError, match="not pointwise in 'member'"):
-            check_operator(MemberMean(), stack, dated_observation([1, 2], labels, units="Mg ha-1", constituent="C"))
+            check_operator(
+                MemberMean(),
+                stack,
+                dated_observation([1, 2], labels, units="Mg ha-1", constituent="C"),
+            )
 
     def test_declarations_as_a_list_are_refused(self, one_run, labels):
         @dataclass(frozen=True)
@@ -495,7 +536,11 @@ class TestCheckOperatorContract:
 
     def test_a_model_output_lacking_the_variable_is_refused(self, one_run, labels):
         with pytest.raises(ValueError, match=r"lacks \['wood_carbon'\], which SelectTimestep read"):
-            check_operator(SelectTimestep("wood_carbon"), one_run.drop_vars("wood_carbon"), dated_observation([1], labels))
+            check_operator(
+                SelectTimestep("wood_carbon"),
+                one_run.drop_vars("wood_carbon"),
+                dated_observation([1], labels),
+            )
 
     def test_parameters_read_and_not_given_are_refused(self, one_run, labels):
         with pytest.raises(ValueError, match="ComputeLeafAreaIndex read SIPNET parameters"):
@@ -522,9 +567,15 @@ class TestTheGridCheck:
         return select_timestep_at(one_run["wood_carbon"], labels)
 
     def test_a_result_on_the_grid_passes_with_a_scalar_or_a_dimension_site(self, one_run, labels, result):
-        check_result_is_on_the_observation_grid(result, dated_observation([1], labels), one_run, "x")
-        check_result_is_on_the_observation_grid(result.expand_dims("site"), dated_observation([1], labels), one_run, "x")
-        check_result_is_on_the_observation_grid(result, dated_observation([1], labels).isel(site=0), one_run, "x")
+        check_result_is_on_the_observation_grid(
+            result, dated_observation([1], labels), one_run, "x"
+        )
+        check_result_is_on_the_observation_grid(
+            result.expand_dims("site"), dated_observation([1], labels), one_run, "x"
+        )
+        check_result_is_on_the_observation_grid(
+            result, dated_observation([1], labels).isel(site=0), one_run, "x"
+        )
 
     def test_labels_are_compared_as_instants_across_units(self, one_run, labels, result):
         coarse = dated_observation([1], labels.as_unit("s"))
@@ -533,15 +584,27 @@ class TestTheGridCheck:
 
     def test_a_spurious_member_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="member dimension the model output lacks"):
-            check_result_is_on_the_observation_grid(result.drop_vars("member").expand_dims(member=[0]), dated_observation([1], labels), one_run, "x")
+            check_result_is_on_the_observation_grid(
+                result.drop_vars("member").expand_dims(member=[0]),
+                dated_observation([1], labels),
+                one_run,
+                "x",
+            )
 
     def test_a_scalar_site_result_at_the_wrong_site_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="not at the observation's site"):
-            check_result_is_on_the_observation_grid(result.assign_coords(site=2), dated_observation([1], labels), one_run, "x")
+            check_result_is_on_the_observation_grid(
+                result.assign_coords(site=2), dated_observation([1], labels), one_run, "x"
+            )
 
     def test_a_result_with_no_site_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="carries no site"):
-            check_result_is_on_the_observation_grid(result.drop_vars(["site", "lon", "lat"]), dated_observation([1], labels), one_run, "x")
+            check_result_is_on_the_observation_grid(
+                result.drop_vars(["site", "lon", "lat"]),
+                dated_observation([1], labels),
+                one_run,
+                "x",
+            )
 
     def test_a_time_dimension_for_a_static_observation_is_refused(self, one_run, result):
         static = xr.DataArray([1.0], dims="site", coords={"site": [1]}, attrs={"units": "Mg ha-1"})
@@ -550,11 +613,15 @@ class TestTheGridCheck:
 
     def test_a_result_without_time_for_a_dated_observation_is_refused(self, one_run, labels, result):
         with pytest.raises(ValueError, match="time labels"):
-            check_result_is_on_the_observation_grid(result.isel(time=0), dated_observation([1], labels), one_run, "x")
+            check_result_is_on_the_observation_grid(
+                result.isel(time=0), dated_observation([1], labels), one_run, "x"
+            )
 
     def test_the_label_prefixes_the_message(self, one_run, labels, result):
         with pytest.raises(ValueError, match="^my_product: "):
-            check_result_is_on_the_observation_grid(result.assign_coords(site=2), dated_observation([1], labels), one_run, "my_product")
+            check_result_is_on_the_observation_grid(
+                result.assign_coords(site=2), dated_observation([1], labels), one_run, "my_product"
+            )
 
     def test_an_operator_returning_the_wrong_site_is_refused_by_check_operator(self, one_run, labels):
         @dataclass(frozen=True)
@@ -613,7 +680,11 @@ class TestPointwiseIsComparedByLabel:
                 return select_timestep_at(select_observed_sites(wood, observed_values), observed_values["time"])
 
         with pytest.raises(ValueError, match="not pointwise in 'member'"):
-            check_operator(FirstMember(), stack, dated_observation([1, 2], labels, units="Mg ha-1", constituent="C"))
+            check_operator(
+                FirstMember(),
+                stack,
+                dated_observation([1, 2], labels, units="Mg ha-1", constituent="C"),
+            )
 
 
 class _Declares:
@@ -646,7 +717,9 @@ class TestDeclarationsAndConstruction:
         result = select_timestep_at(one_run["wood_carbon"], labels)
         result.attrs["units"] = None
         with pytest.raises(ValueError, match="no 'units'"):
-            check_result_is_on_the_observation_grid(result, dated_observation([1], labels), one_run, "x")
+            check_result_is_on_the_observation_grid(
+                result, dated_observation([1], labels), one_run, "x"
+            )
 
 
 class TestTheOperatorsNameThemselves:

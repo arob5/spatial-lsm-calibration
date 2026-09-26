@@ -3,7 +3,7 @@
 
 Overview
 --------
-Read the point shapefile that defines the 8000-site pool and write it as a CSV,
+Read the point shapefile that defines the site pool and write it as a CSV,
 carrying every field of the shapefile plus the grid indices and the Ameriflux
 identifier. The shapefile is the only input under ``data/raw/`` that is tracked
 in version control, so this is the one ingest script that runs end to end on a
@@ -18,7 +18,8 @@ Input data
     ``site_id``, ``site_names``, ``site_order``, ``cluster`` and ``landcover``;
     the three numeric fields are declared with 15 decimals and so arrive as
     floats. ``pts.cpg`` declares the ``.dbf`` encoding, which is UTF-8.
-    :data:`N_SITES` is the pool size the checks require.
+    :data:`sipnet_calibration.sites.N_SITES` is the pool size the checks
+    require.
 
 ``--site-id-map``
     ``data/site_id_map.csv``: rows of ``Site_ID, index``, mapping an Ameriflux
@@ -77,6 +78,12 @@ Ameriflux map naming each site at most once and only sites that exist. After
 writing: the bitwise round trip, which also catches the sites named literally
 ``NA``.
 
+The table is written to a ``.partial`` path beside the output and renamed into
+place only once the round trip passes
+(:func:`sipnet_calibration.io.write_checked`). A failed check keeps the
+``.partial`` file for inspection and prints its path; the output is left as it
+was, and a rerun overwrites the partial file.
+
 Run it from the project environment: it imports ``sipnet_calibration``, numpy,
 pandas and ``pyshp``, so a bare system ``python3`` fails on the first import.
 Either activate the environment, as the README describes, or use ``uv run``.
@@ -102,8 +109,10 @@ import numpy as np
 import pandas as pd
 import shapefile
 
+from sipnet_calibration.conventions import LAT, LON, SITE_ID
 from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import (
+    N_SITES,
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
     SITE_GRID,
@@ -126,11 +135,6 @@ DEFAULT_OUT = default_sites_path()
 #: The encoding ``pts.cpg`` is expected to declare, normalized by
 #: :func:`normalize_encoding`.
 EXPECTED_ENCODING = "utf-8"
-
-#: Site count of the pool. The identifiers are handed down and shared with
-#: collaborators' files, so this is a fixed property of the data, not a
-#: configurable one.
-N_SITES = 8000
 
 #: Highest ``site_order`` value; the non-zero values are a permutation of
 #: ``1..NAMED_SITE_COUNT`` and the remaining sites carry 0.
@@ -306,13 +310,13 @@ def build_site_table(
     check_shapes_are_single_points(contents)
     check_fields_are_present(
         contents,
-        required=("site_id", "site_names", "site_order", "cluster", "landcover"),
+        required=(SITE_ID, "site_names", "site_order", "cluster", "landcover"),
     )
 
     site_ids = _as_integer(
-        numeric_field(contents.records, "site_id"),
-        name="site_id",
-        dtype=np.int32,
+        numeric_field(contents.records, SITE_ID),
+        name=SITE_ID,
+        dtype=SITE_COLUMN_DTYPES[SITE_ID],
     )
     check_site_ids_are_the_full_range(site_ids)
 
@@ -341,9 +345,9 @@ def build_site_table(
 
     table = pd.DataFrame(
         {
-            "site_id": site_ids,
-            "lon": lon,
-            "lat": lat,
+            SITE_ID: site_ids,
+            LON: lon,
+            LAT: lat,
             "lon_index": _as_integer(lon_index, name="lon_index", dtype=np.int32),
             "lat_index": _as_integer(lat_index, name="lat_index", dtype=np.int32),
             "site_name": names,
@@ -372,13 +376,13 @@ def describe_site_table(table: pd.DataFrame) -> str:
     ]
     mapped = table["ameriflux_site_id"] != ""
     na_hazards = na_hazard_site_ids(
-        table["site_name"].tolist(), site_ids=table["site_id"].to_numpy()
+        table["site_name"].tolist(), site_ids=table[SITE_ID].to_numpy()
     )
     lines = [
         f"  rows                  : {len(table)}",
-        f"  site_id               : {table.site_id.min()}..{table.site_id.max()}",
-        f"  longitude             : {table.lon.min():.4f} to {table.lon.max():.4f}",
-        f"  latitude              : {table.lat.min():.4f} to {table.lat.max():.4f}",
+        f"  site_id               : {table[SITE_ID].min()}..{table[SITE_ID].max()}",
+        f"  longitude             : {table[LON].min():.4f} to {table[LON].max():.4f}",
+        f"  latitude              : {table[LAT].min():.4f} to {table[LAT].max():.4f}",
         f"  named sites           : {int(named.sum())}"
         f" (site_order 1..{int(table.site_order.max())})",
         f"  sampled points        : {int((~named).sum())}",
@@ -763,12 +767,15 @@ def check_ameriflux_map_is_usable(mapping: dict[int, str], *, site_ids: np.ndarr
 def write_checked_site_table(table: pd.DataFrame, out_path: Path) -> None:
     """Write the table, verify the round trip, and only then publish it.
 
-    The check has to run against a real file, so the file is written to a
-    sibling temporary path and renamed over *out_path* once it passes. Writing
-    to *out_path* directly would mean that a failed check leaves a corrupt table
-    at the canonical path -- the one every other product joins against -- while
-    the script exits non-zero. The rename is atomic on a POSIX filesystem, so
-    *out_path* is either the previous table or a fully checked new one.
+    The check has to run against a real file, so the file is written to the
+    ``.partial`` path beside *out_path* and renamed over it once it passes
+    (:func:`sipnet_calibration.io.write_checked`). Writing to *out_path*
+    directly would mean that a failed check leaves a corrupt table at the
+    canonical path -- the one every other product joins against -- while the
+    script exits non-zero. A failed check keeps the ``.partial`` file for
+    inspection and prints its path. The rename is atomic on a POSIX
+    filesystem, so *out_path* is either the previous table or a fully checked
+    new one.
     """
     write_checked(
         out_path,
@@ -796,7 +803,7 @@ def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> None:
             f"read {len(read_back)}"
         )
 
-    for column in ("lon", "lat"):
+    for column in (LON, LAT):
         original = written[column].to_numpy(dtype=np.float64)
         returned = read_back[column].to_numpy(dtype=np.float64)
         # Bitwise, not approximate: `==` on float64 is exact, and neither column
@@ -812,7 +819,7 @@ def check_csv_round_trip(written: pd.DataFrame, out_path: Path) -> None:
             )
 
     for column in written.columns:
-        if column in ("lon", "lat"):
+        if column in (LON, LAT):
             continue
         original = written[column].to_numpy()
         returned = read_back[column].to_numpy()

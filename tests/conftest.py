@@ -23,13 +23,14 @@ every figure a test makes is closed after it (:func:`close_figures`).
 The real-data fixtures read the driver files, the site table and the
 constraint products present in this working copy, found through
 :func:`sipnet_calibration.conventions.data_root`, and skip when they are not
-there. The local driver files carry the drifting hour column of
-``data/README.md`` Note 15, which pySIPNET refuses, so the driver fixtures
+there; a tracked input is found from :data:`REPOSITORY` instead, since it is
+always in the checkout. The local driver files carry the drifting hour column
+of ``data/README.md`` Note 15, which pySIPNET refuses, so the driver fixtures
 read them with that one column rewritten to regular 3-hourly labels; every
-value is the file's own. The SIPNET output fixtures read the Niwot reference data pySIPNET ships inside the
-package, so they need neither a pySIPNET checkout nor a binary; the one that
-runs the model skips without a binary, which ``pysipnet install-sipnet``
-provides.
+value is the file's own. The SIPNET output fixtures read the Niwot reference
+data pySIPNET ships inside the package, so they need neither a pySIPNET
+checkout nor a binary; the one that runs the model skips without a binary,
+which ``pysipnet install-sipnet`` provides.
 """
 
 from __future__ import annotations
@@ -470,12 +471,6 @@ def site_table_of(
     return table.set_index(conventions.SITE_ID, drop=False) if keyed else table
 
 
-@pytest.fixture
-def site_table():
-    """:func:`site_table_of`, for a test that builds its own site table."""
-    return site_table_of
-
-
 def write_site_table_csv(
     path: Path,
     site_ids: Sequence[int],
@@ -506,15 +501,17 @@ def write_site_table_csv(
     n = len(site_ids)
     frame = pd.DataFrame(
         {
-            "site_id": np.array(site_ids, dtype=np.int32),
-            "lon": list(lon),
-            "lat": list(lat),
+            conventions.SITE_ID: np.array(site_ids, dtype=conventions.SITE_DTYPE),
+            conventions.LON: list(lon),
+            conventions.LAT: list(lat),
             "lon_index": np.arange(n, dtype=np.int32) + 1000,
             "lat_index": np.arange(n, dtype=np.int32) + 2000,
             "site_name": [f"site {site}" for site in site_ids],
             "site_order": np.zeros(n, dtype=np.int32),
             "cluster": np.ones(n, dtype=np.int8),
-            "landcover": np.ones(n, dtype=np.int8) if landcover is None else np.array(landcover, dtype=np.int8),
+            "landcover": np.ones(n, dtype=np.int8)
+            if landcover is None
+            else np.array(landcover, dtype=np.int8),
             "ameriflux_site_id": [""] * n,
         }
     )
@@ -574,12 +571,6 @@ def niwot_stack_of(
             factor = (1 + position / 2) * 0.5**member
             runs[(site, member)] = record.map(_scaled_keeping_attributes, factor=factor)
     return stack_model_outputs(runs, site_table=site_table_of(*sites))
-
-
-@pytest.fixture
-def niwot_stack():
-    """:func:`niwot_stack_of`, for a test that builds its own stack."""
-    return niwot_stack_of
 
 
 def _scaled_keeping_attributes(variable: xr.DataArray, *, factor: float) -> xr.DataArray:

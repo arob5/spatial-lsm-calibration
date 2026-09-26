@@ -24,8 +24,9 @@ source cell for cell.
 Input data
 ----------
 ``--source``, default the path in :data:`DEFAULT_SOURCE`
-    The producer's table: 8000 rows by 60 columns, keyed on ``index``, which
-    holds this project's 1-8000 site identifiers.
+    The producer's table: one row per site of the pool
+    (:data:`sipnet_calibration.sites.N_SITES`) by 60 columns, keyed on
+    ``index``, which holds this project's site ids.
 
 Output data
 -----------
@@ -38,11 +39,13 @@ Output data
     ``site_covariates_pft_assignment.csv``: ``index`` and every other column,
     likewise unchanged.
 
-Both are written to a ``.partial`` path and renamed only once the round trip
-has been checked, so a failed run cannot leave a corrupt file where a tracked
-one belongs.
-A failed check keeps the ``.partial`` file for inspection and prints its
-path (:func:`sipnet_calibration.io.write_checked`).
+The two are written together
+(:func:`sipnet_calibration.io.write_checked_together`): each goes to a
+``.partial`` path, and neither is renamed into place until both round trips
+have been checked, so a failed write or check leaves both tracked files as
+they were. A failed check keeps the ``.partial`` files for inspection and
+prints their paths; a failed rename, past the checks, is reported with which
+file is new.
 
 Notes
 -----
@@ -75,7 +78,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from sipnet_calibration.io import file_md5, write_checked
+from sipnet_calibration.io import file_md5, write_checked_together
+from sipnet_calibration.sites import N_SITES
 
 #: Where the producer's table lives on the SCC.
 DEFAULT_SOURCE = Path(
@@ -121,9 +125,6 @@ SITE_LABELS_COLUMNS = (
 #: Output file names, which are what the provenance records name.
 SITE_LABELS_FILE = "site_pft_16class.csv"
 COVARIATES_FILE = "site_covariates_pft_assignment.csv"
-
-#: The site pool the table is indexed against.
-POOL = range(1, 8001)
 
 
 class SplitError(Exception):
@@ -233,18 +234,22 @@ def write_halves(
     site_labels_dir: Path,
     covariates_dir: Path,
 ) -> dict[str, Path]:
-    """Write each half to a ``.partial`` path, check the round trip, rename."""
-    written = {}
-    for frame, directory, name in (
-        (site_labels, site_labels_dir, SITE_LABELS_FILE),
-        (covariates, covariates_dir, COVARIATES_FILE),
-    ):
-        written[name] = write_checked(
-            directory / name,
-            write=lambda partial, frame=frame: frame.to_csv(partial, index=False),
-            check=lambda partial, frame=frame: check_the_written_file_reads_back(frame, partial),
-        )
-    return written
+    """Write both halves to ``.partial`` paths, check both round trips, then rename."""
+    halves = (
+        (site_labels, site_labels_dir / SITE_LABELS_FILE),
+        (covariates, covariates_dir / COVARIATES_FILE),
+    )
+    written = write_checked_together(
+        [
+            (
+                path,
+                lambda partial, frame=frame: frame.to_csv(partial, index=False),
+                lambda partial, frame=frame: check_the_written_file_reads_back(frame, partial),
+            )
+            for frame, path in halves
+        ]
+    )
+    return {path.name: path for path in written}
 
 
 def report(
@@ -329,9 +334,9 @@ def check_both_halves_are_keyed_on_the_whole_pool(
         key = frame[KEY_COLUMN].astype(int)
         if key.duplicated().any():
             raise SplitError(f"{name}: {KEY_COLUMN} repeats")
-        if sorted(key) != list(POOL):
+        if sorted(key) != list(range(1, N_SITES + 1)):
             raise SplitError(
-                f"{name}: {KEY_COLUMN} is not the whole site pool {POOL.start}-{POOL.stop - 1}"
+                f"{name}: {KEY_COLUMN} is not the whole site pool 1-{N_SITES}"
             )
 
 

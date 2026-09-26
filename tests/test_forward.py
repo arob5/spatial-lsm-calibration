@@ -29,7 +29,6 @@ from conftest import (
     scaled_niwot_model,
     site_table_of,
 )
-
 from sipnet_calibration.compute import scc_backend
 from sipnet_calibration.forward import ForwardEvaluation, ForwardModel
 from sipnet_calibration.observation import (
@@ -913,7 +912,6 @@ class TestRealSipnet:
         if find_binary() is None:
             pytest.skip(missing_binary_message())
         from conftest import niwot_parameters
-
         from sipnet_calibration.fields import label_run
         from sipnet_calibration.parameter_vector import sipnet_overrides
 

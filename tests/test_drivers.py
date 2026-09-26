@@ -28,7 +28,13 @@ from pysipnet.climate import ClimateDrivers
 from pysipnet.variables import CLIMATE_COLUMN_NAMES
 
 from conftest import DRIVERS_ROOT, LOCAL_DRIVER_PAIRS, REPOSITORY, site_table_of
-
+from sipnet_calibration.conventions import (
+    DATA_ROOT_ENV_VAR,
+    LAT_ATTRIBUTES,
+    LON_ATTRIBUTES,
+    SITE_ATTRIBUTES,
+    TIME_COORD_NAMES,
+)
 from sipnet_calibration.drivers import (
     DRIVER_PRESENT,
     DRIVER_VARIABLES,
@@ -42,10 +48,8 @@ from sipnet_calibration.drivers import (
     load_drivers,
     read_driver_file,
 )
-from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES, TIME_COORD_NAMES
 from sipnet_calibration.observation.time_alignment import aggregate_time
-from sipnet_calibration.sites import DATA_ROOT_ENV_VAR, default_sites_path, load_sites
-
+from sipnet_calibration.sites import default_sites_path, load_sites
 
 #: The 14 fields of a legacy-layout row, under SIPNET's own names.
 FILE_COLUMNS = (
@@ -327,9 +331,16 @@ class TestLoadDrivers:
         assert dataset.attrs["Conventions"] == "CF-1.11"
         assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
 
-    def test_sites_come_back_ascending_whatever_order_is_given(self, root, sites_table):
+    def test_sites_come_back_in_the_order_given(self, root, sites_table):
         dataset = load_drivers([7, 3], root=root, sites_table=sites_table)
-        np.testing.assert_array_equal(dataset["site"].values, [3, 7])
+        np.testing.assert_array_equal(dataset["site"].values, [7, 3])
+        np.testing.assert_array_equal(
+            dataset["lon"].values, sites_table.set_index("site_id").loc[[7, 3], "lon"].values
+        )
+        ascending = load_drivers([3, 7], root=root, sites_table=sites_table)
+        xr.testing.assert_identical(
+            dataset["air_temperature"].sel(site=[3, 7]), ascending["air_temperature"]
+        )
 
     def test_member_is_zero_based_and_source_member_index_is_the_file_index(self, root, sites_table):
         write_pair(root, 3, 5)
@@ -350,25 +361,25 @@ class TestLoadDrivers:
         np.testing.assert_array_equal(dataset["source_member_index"].values, [1, 2, 5])
 
     def test_rejects_a_non_positive_member_index(self, root, sites_table):
-        with pytest.raises(ValueError, match="1-based.*positive integer"):
+        with pytest.raises(ValueError, match=r"members\[0\] must be at least 1"):
             load_drivers([3], members=[0], root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("members", [[1.5], "12", ["1", "2"], [True], [np.inf]])
+    @pytest.mark.parametrize("members", [[1.5], [2.0], "12", 2, ["1", "2"], [True], [np.inf]])
     def test_rejects_members_that_are_not_integers(self, root, sites_table, members):
-        with pytest.raises(TypeError, match="member indices"):
+        with pytest.raises(TypeError, match="members"):
             load_drivers([3], members=members, root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("members", [[40000], []])
+    @pytest.mark.parametrize("members", [[40000], [32768], []])
     def test_rejects_members_out_of_range_or_none(self, root, sites_table, members):
-        with pytest.raises(ValueError, match="member indices"):
+        with pytest.raises(ValueError, match="members"):
             load_drivers([3], members=members, root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("sites", [3, ["3"], "3", [True]])
+    @pytest.mark.parametrize("sites", [3, ["3"], "3", [True], {3, 7}, [np.inf], [1.5], [3.0]])
     def test_rejects_sites_that_are_not_integers(self, root, sites_table, sites):
         with pytest.raises(TypeError, match="sites"):
             load_drivers(sites, root=root, sites_table=sites_table)
 
-    @pytest.mark.parametrize("sites", [[np.inf], [2**31], [1.5], [0], [], [3, 3]])
+    @pytest.mark.parametrize("sites", [[2**31], [0], [], [3, 3]])
     def test_rejects_sites_that_are_not_positive_whole_numbers_named_once(
         self, root, sites_table, sites
     ):
@@ -400,6 +411,11 @@ class TestLoadDrivers:
         np.testing.assert_array_equal(dataset["lon"].values, expected["lon"].to_numpy())
         field = driver_fields(dataset)["air_temperature"]
         assert field["lat"].attrs == dict(LAT_ATTRIBUTES)
+
+    def test_site_carries_the_shared_site_attributes(self, root, sites_table):
+        dataset = load_drivers([3, 7], root=root, sites_table=sites_table)
+        assert dataset["site"].attrs == dict(SITE_ATTRIBUTES)
+        assert dataset["site"].dtype == np.int32
 
     def test_a_directory_off_the_template_is_ignored_by_discovery(self, root, sites_table):
         """``ERA5_3_04`` names member 4 but is not the directory ``driver_file``
@@ -450,7 +466,7 @@ class TestLoadDrivers:
         self, root, sites_table
     ):
         (root / "ERA5_3_40000").mkdir()
-        with pytest.raises(ValueError, match="member indices"):
+        with pytest.raises(ValueError, match="members must lie within"):
             load_drivers([3], root=root, sites_table=sites_table)
 
     @pytest.mark.parametrize("time_zone", ["America/Denver", "EST"])
@@ -671,7 +687,7 @@ class TestRealFiles:
         construction, not by any code here: both axes are pySIPNET's."""
         from sipnet_calibration.fields import from_sipnet_output
 
-        nee = from_sipnet_output(site_1_result, "nee")["net_ecosystem_exchange"]
+        nee = from_sipnet_output(site_1_result, ["nee"])["net_ecosystem_exchange"]
         par = driver_fields(real_drivers)["photosynthetically_active_radiation"]
         head = par.sel(site=1, source_member_index=1).isel(time=slice(0, nee.sizes["time"]))
         for name in TIME_COORD_NAMES:
