@@ -37,9 +37,12 @@ Settings
     :data:`CF_CONVENTIONS`, the ``Conventions`` attribute the netCDF files
     declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where the
     storage-backed part of ``data/`` is.
-Read-only mappings
+Read-only containers
     :class:`FrozenMapping`, the one read-only mapping type of the package,
-    which the attribute dicts above are.
+    which the attribute dicts above are; :func:`read_only_copy`, a copy of a
+    ``DataArray`` or ``Dataset`` whose arrays cannot be written; and
+    :class:`ReadOnlyCopies`, a dataclass attribute that keeps and hands out
+    such copies.
 
 Notes
 -----
@@ -63,6 +66,8 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
+import pandas as pd
+import xarray as xr
 from pysipnet.dataset import BOUNDS_DIMENSION, TIME_DIMENSION
 
 __all__ = [
@@ -100,9 +105,11 @@ __all__ = [
     "WINDOW_END",
     "WINDOW_START",
     "FrozenMapping",
+    "ReadOnlyCopies",
     "X",
     "Y",
     "data_root",
+    "read_only_copy",
 ]
 
 
@@ -357,6 +364,78 @@ SOURCE_INDEX_ATTRIBUTES = FrozenMapping(
 #: two-dimensional ``time_bounds`` variable, which a field cannot carry and
 #: which describes the source's timesteps, not a coarser one's.
 STALE_TIME_ATTRIBUTE_NAMES: tuple[str, ...] = ("bounds",)
+
+
+# ── read-only data ────────────────────────────────────────────────────────────
+
+
+def read_only_copy(data: xr.DataArray | xr.Dataset) -> xr.DataArray | xr.Dataset:
+    """A shallow copy of *data* whose NumPy arrays cannot be written.
+
+    The copy has its own attributes and coordinate bindings; its arrays are
+    *data*'s, made read-only.
+
+    Parameters
+    ----------
+    data:
+        A ``DataArray`` or ``Dataset``.
+
+    Returns
+    -------
+    xarray.DataArray or xarray.Dataset
+        The copy.
+    """
+    copied = data.copy(deep=False)
+    variables = (
+        copied.variables.values()
+        if isinstance(copied, xr.Dataset)
+        else (copied.variable, *(c.variable for c in copied.coords.values()))
+    )
+    for variable in variables:
+        if isinstance(variable.data, np.ndarray):
+            variable.data.flags.writeable = False
+    return copied
+
+
+class ReadOnlyCopies:
+    """A dataclass attribute that keeps a copy of what it is given and hands out copies.
+
+    Assigned a ``DataArray`` or ``Dataset``, it keeps a deep, in-memory,
+    read-only copy, and every read returns :func:`read_only_copy` of that;
+    assigned a ``DataFrame``, it keeps a copy, and every read returns a copy;
+    anything else is kept and returned as it is. It has no default.
+
+    Notes
+    -----
+    The copy is made on assignment, so nothing the caller holds is made
+    read-only, and a frozen dataclass whose attributes these are hands out
+    nothing that changes the instance. A read freezes the kept copy again,
+    so a ``copy.deepcopy`` of the instance, whose arrays NumPy makes
+    writeable, still hands out read-only ones.
+    """
+
+    def __set_name__(self, owner: type, name: str) -> None:
+        self._stored = f"_{name}"
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            # What dataclasses reads for a default: none.
+            raise AttributeError(self._stored)
+        value = instance.__dict__[self._stored]
+        if isinstance(value, (xr.DataArray, xr.Dataset)):
+            return read_only_copy(value)
+        if isinstance(value, pd.DataFrame):
+            return value.copy()
+        return value
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        if isinstance(value, (xr.DataArray, xr.Dataset)):
+            # load() computes a dask or lazily indexed copy in place, so the
+            # arrays frozen are the ones kept rather than fresh ones per read.
+            value = read_only_copy(value.copy(deep=True).load())
+        elif isinstance(value, pd.DataFrame):
+            value = value.copy()
+        instance.__dict__[self._stored] = value
 
 
 # ── dtypes and patterns ───────────────────────────────────────────────────────

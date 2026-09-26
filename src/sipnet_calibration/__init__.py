@@ -13,9 +13,10 @@ Foundations, which everything else may import:
     timestep coordinates, the window edges, ``site_id``, ``source_index``,
     the attributes of ``site``/``lon``/``lat``/``sample`` and of a data
     source's member dim, the batch-label dtype, where ``data/`` is
-    (:func:`~sipnet_calibration.conventions.data_root`), and
+    (:func:`~sipnet_calibration.conventions.data_root`),
     :class:`~sipnet_calibration.conventions.FrozenMapping`, the one read-only
-    mapping type.
+    mapping type, and the read-only copies of xarray data a frozen class
+    keeps (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`).
 :mod:`~sipnet_calibration.validation`
     Argument coercion, ``as_<thing>(value, *, message_name)``: site ids,
     integers, Flat vectors and batches, boxes, names, frozen mappings; and the

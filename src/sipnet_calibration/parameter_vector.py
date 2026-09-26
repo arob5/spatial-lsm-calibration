@@ -2894,11 +2894,11 @@ def _normalized_sites(
     if {LON, LAT} & set(table.columns):
         check_site_table_has_locations(table)
         check_site_table_positions_are_finite(table)
-        return ids, (_read_only_copy(table[LON]), _read_only_copy(table[LAT]))
+        return ids, (_read_only_float64_array(table[LON]), _read_only_float64_array(table[LAT]))
     return ids, None
 
 
-def _read_only_copy(column: pd.Series) -> np.ndarray:
+def _read_only_float64_array(column: pd.Series) -> np.ndarray:
     """*column* as a ``float64`` array of its own, which cannot be written."""
     array = column.to_numpy(np.float64, copy=True)
     array.flags.writeable = False

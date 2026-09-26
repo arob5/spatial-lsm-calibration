@@ -1489,6 +1489,38 @@ class TestTheBatchDimIsNamedOnce:
         with pytest.raises(TypeError):
             ForwardEvaluation(*[None] * 7)
 
+    def test_what_the_hook_returns_stays_writeable_in_its_hands(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """The evaluation froze the Dataset the hook returned, which the hook may keep."""
+        returned = []
+
+        def hook(t):
+            returned.append(parameter_vector.sipnet_parameter_fields(t).copy(deep=True))
+            return returned[-1]
+
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            observation_vector=observation_vector, site_table=SITE_TABLE,
+            to_sipnet_parameter_fields=hook,
+        )
+        evaluation = forward.evaluate(theta)
+        evaluation.sipnet_parameter_fields
+        returned[-1]["soil_carbon"].values[0, 0] = 0.0
+        assert evaluation.sipnet_parameter_fields["soil_carbon"].values[0, 0] != 0.0
+
+    def test_an_evaluation_built_from_the_callers_arrays_leaves_them_writeable(self):
+        run_succeeded = xr.DataArray(np.ones((1, 1), dtype=bool), dims=("sample", "site"))
+        failures = pd.DataFrame({"sample": [0]})
+        evaluation = ForwardEvaluation(
+            theta=jax.numpy.zeros((1, 1)), sipnet_parameter_fields=xr.Dataset(),
+            model_output=None, predictions=None, run_succeeded=run_succeeded,
+            failures=failures, valid=jax.numpy.ones(1, dtype=bool),
+        )
+        evaluation.run_succeeded, evaluation.failures
+        run_succeeded.values[0, 0] = False
+        assert bool(evaluation.run_succeeded.values[0, 0])
+
     def test_a_crossed_batch_is_refused_with_the_advice_to_give_theta_its_rows(
         self, parameter_vector, climate, observation_vector
     ):

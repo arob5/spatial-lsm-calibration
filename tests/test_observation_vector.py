@@ -534,6 +534,17 @@ class TestObservationSourceHoldsItsOwnValues:
         assert source.n_observations == 4
         assert np.isnan(source.observed_values.values[1, 0])
 
+    def test_the_callers_array_stays_writeable(self, lai):
+        """Reading the source froze the caller's own buffers."""
+        lai = lai.assign_coords(lon=("site", lai["lon"].values.copy()))
+        source = ObservationSource(observation_source_name="x", observed_values=lai, operator=SelectTimestep("wood_carbon"))
+        vector = ObservationVector(observation_sources=[source])
+        source.observed_values, vector.observed_values_by_source, vector["x"].observed_values
+        lai.values[0, 0] = -1.0
+        lai["lon"].values[0] = 0.0
+        assert source.observed_values.values[0, 0] != -1.0
+        assert source.observed_values["lon"].values[0] != 0.0
+
     def test_the_stored_values_are_read_only(self, vector):
         dimension = vector.dimension
         with pytest.raises(ValueError, match="read-only"):

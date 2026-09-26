@@ -219,11 +219,11 @@ from sipnet_calibration.conventions import (
     SITE,
     SITE_DTYPE,
     FrozenMapping,
+    ReadOnlyCopies,
 )
 from sipnet_calibration.fields import (
     Field,
     ModelOutput,
-    ReadOnlyCopies,
     SIPNETParameterFields,
     batch_coordinate,
     check_batch_dim_name_is_not_a_model_output_name,
@@ -288,7 +288,7 @@ class ForwardEvaluation:
     read from it changes it: ``theta``, ``predictions`` and ``valid`` are
     ``jax.Array``\\ s, which cannot be written to; ``sipnet_parameter_fields``,
     ``model_output`` and ``run_succeeded`` are read-only copies
-    (:func:`~sipnet_calibration.fields.read_only_copy`) and ``failures`` a copy,
+    (:func:`~sipnet_calibration.conventions.read_only_copy`) and ``failures`` a copy,
     on every read.
 
     Notes

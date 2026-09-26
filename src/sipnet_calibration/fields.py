@@ -380,7 +380,6 @@ __all__ = [
     "MODEL_OUTPUT_COORDINATE_NAMES",
     "Field",
     "ModelOutput",
-    "ReadOnlyCopies",
     "SIPNETParameterFields",
     "STACKED_COMPANIONS_ATTRIBUTE",
     "STACKED_DIMS_ATTRIBUTE",
@@ -405,7 +404,6 @@ __all__ = [
     "to_model_output",
     "message_name",
     "missing_labels",
-    "read_only_copy",
     "recorded_stacked_dims",
     "resolve_output_variable_names",
     "scalar_batch_labels",
@@ -1198,70 +1196,6 @@ def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
     Those are :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
     """
     return {key: value for key, value in attrs.items() if key not in STALE_TIME_ATTRIBUTE_NAMES}
-
-
-def read_only_copy(data: xr.DataArray | xr.Dataset) -> xr.DataArray | xr.Dataset:
-    """A shallow copy of *data* whose arrays cannot be written.
-
-    The copy has its own attributes and coordinate bindings, so changing them
-    leaves *data* as it was; its values and coordinates share *data*'s
-    buffers, which are made read-only, so they cannot be changed either.
-
-    Parameters
-    ----------
-    data:
-        A ``DataArray`` or ``Dataset`` holding NumPy arrays.
-
-    Returns
-    -------
-    xarray.DataArray or xarray.Dataset
-        The copy.
-    """
-    copied = data.copy(deep=False)
-    variables = (
-        copied.variables.values()
-        if isinstance(copied, xr.Dataset)
-        else (copied.variable, *(c.variable for c in copied.coords.values()))
-    )
-    for variable in variables:
-        if isinstance(variable.data, np.ndarray):
-            variable.data.flags.writeable = False
-    return copied
-
-
-class ReadOnlyCopies:
-    """A dataclass field that hands out a read-only copy of what it holds.
-
-    Assigned a ``DataArray`` or ``Dataset``, the field keeps it, and every
-    read returns :func:`read_only_copy` of it; assigned a ``DataFrame``, every
-    read returns a copy; ``None`` is returned as it is. A frozen dataclass
-    whose fields are these hands out nothing that changes the instance. The
-    field has no default.
-
-    Notes
-    -----
-    The first read makes the buffers of what was assigned read-only, so a
-    class assigned a caller's array keeps a copy of its own: its
-    ``__post_init__`` reads what was assigned from ``vars(self)["_<name>"]``,
-    not through the field.
-    """
-
-    def __set_name__(self, owner: type, name: str) -> None:
-        self._stored = f"_{name}"
-
-    def __get__(self, instance: Any, owner: type | None = None) -> Any:
-        if instance is None:
-            # What dataclasses reads for a default: none.
-            raise AttributeError(self._stored)
-        value = instance.__dict__[self._stored]
-        if isinstance(value, (xr.DataArray, xr.Dataset)):
-            return read_only_copy(value)
-        if isinstance(value, pd.DataFrame):
-            return value.copy()
-        return value
-
-    def __set__(self, instance: Any, value: Any) -> None:
-        instance.__dict__[self._stored] = value
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────

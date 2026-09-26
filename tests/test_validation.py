@@ -18,6 +18,8 @@ from sipnet_calibration.conventions import (
     LON_ATTRIBUTES,
     SITE_ATTRIBUTES,
     FrozenMapping,
+    ReadOnlyCopies,
+    read_only_copy,
 )
 from sipnet_calibration.validation import (
     as_batched_flat,
@@ -470,6 +472,66 @@ class TestFrozenMapping:
         array = xr.DataArray([1], dims="site", attrs=SITE_ATTRIBUTES)
         array.attrs["extra"] = 1
         assert "extra" not in SITE_ATTRIBUTES
+
+
+class TestReadOnlyCopies:
+    """It kept what it was assigned, so the first read froze the caller's arrays."""
+
+    @staticmethod
+    def record_type():
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True, eq=False)
+        class Record:
+            array: xr.DataArray = ReadOnlyCopies()
+            dataset: xr.Dataset = ReadOnlyCopies()
+            table: pd.DataFrame = ReadOnlyCopies()
+
+        return Record
+
+    @staticmethod
+    def given():
+        array = xr.DataArray(
+            [1.0, 2.0], dims="site", coords={"site": [1, 27], "lon": ("site", [-105.0, -70.0])}
+        )
+        return array, array.to_dataset(name="x"), pd.DataFrame({"a": [1.0]})
+
+    def test_what_the_caller_holds_stays_writeable(self):
+        array, dataset, table = self.given()
+        record = self.record_type()(array, dataset, table)
+        for _ in range(2):
+            record.array, record.dataset, record.table
+        array.values[0] = 5.0
+        array["lon"].values[0] = 0.0
+        dataset["x"].values[0] = 5.0
+        table.loc[0, "a"] = 5.0
+        assert record.array.values.tolist() == [1.0, 2.0]
+        assert record.array["lon"].values.tolist() == [-105.0, -70.0]
+        assert record.dataset["x"].values.tolist() == [1.0, 2.0]
+        assert record.table["a"].tolist() == [1.0]
+
+    def test_what_it_hands_out_cannot_change_it(self):
+        record = self.record_type()(*self.given())
+        with pytest.raises(ValueError, match="read-only"):
+            record.array.values[0] = 5.0
+        with pytest.raises(ValueError, match="read-only"):
+            record.dataset["lon"].values[0] = 0.0
+        record.array.attrs["units"] = "m"
+        record.table.loc[0, "a"] = 5.0
+        assert "units" not in record.array.attrs and record.table["a"].tolist() == [1.0]
+
+    def test_a_deep_copy_hands_out_read_only_arrays(self):
+        record = copy.deepcopy(self.record_type()(*self.given()))
+        with pytest.raises(ValueError, match="read-only"):
+            record.array.values[0] = 5.0
+
+    def test_read_only_copy_has_its_own_attributes_and_frozen_arrays(self):
+        array = xr.DataArray([1.0], dims="site", coords={"site": [1]})
+        frozen = read_only_copy(array)
+        frozen.attrs["units"] = "m"
+        assert array.attrs == {}
+        with pytest.raises(ValueError, match="read-only"):
+            frozen.values[0] = 2.0
 
 
 class TestChecks:

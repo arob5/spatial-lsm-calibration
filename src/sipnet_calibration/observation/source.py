@@ -102,13 +102,12 @@ from sipnet_calibration.conventions import (
     TIME,
     WINDOW_END,
     WINDOW_START,
+    ReadOnlyCopies,
 )
 from sipnet_calibration.fields import (
     MODEL_OUTPUT_COORDINATE_NAMES,
-    ReadOnlyCopies,
     batch_dims,
     message_name,
-    read_only_copy,
     validate_field,
 )
 
@@ -230,11 +229,9 @@ class ObservationSource:
     operator: operators.ObservationOperator
 
     def __post_init__(self) -> None:
-        # The caller's array as given: a read through the field would make
-        # the caller's own buffers read-only.
-        values = _sort_by_site_and_time(vars(self)["_observed_values"])
+        values = _sort_by_site_and_time(self.observed_values)
         check_observation_source_is_valid(self.observation_source_name, values, self.operator)
-        stored = _read_only_copy(_observed_labels_only(values), self.observation_source_name)
+        stored = _observed_labels_only(values).rename(self.observation_source_name)
         object.__setattr__(self, "observed_values", stored)
 
     # ── identity ──────────────────────────────────────────────────────────────
@@ -315,14 +312,6 @@ def _observed_labels_only(values: xr.DataArray) -> xr.DataArray:
         values = values.isel({TIME: np.flatnonzero(observed.any(SITE).values)})
         return values
     return values.isel({SITE: np.flatnonzero(observed.values)})
-
-
-def _read_only_copy(values: xr.DataArray, observation_source_name: str) -> xr.DataArray:
-    """A read-only, in-memory copy of *values*, named *observation_source_name*."""
-    # load() computes a dask or lazily indexed copy in place, so the buffer made
-    # read-only is the one the observation source keeps rather than a fresh one
-    # per read.
-    return read_only_copy(values.rename(observation_source_name).copy(deep=True).load())
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
