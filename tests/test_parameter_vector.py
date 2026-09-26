@@ -928,20 +928,53 @@ def test_fields_carry_lon_lat_from_a_site_table():
     assert "lon" not in only_ids.site_table.columns
 
 
-def test_sites_and_site_table_are_two_keywords_of_which_exactly_one_is_given():
+def test_sites_or_site_table_is_given_and_both_must_agree():
     table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
-    with pytest.raises(TypeError, match="exactly one; got both"):
-        build((rate(),), sites=SITES, site_table=table)
-    with pytest.raises(TypeError, match="exactly one; got neither"):
+    with pytest.raises(TypeError, match="got neither"):
         ParameterVector(parameters=(rate(),))
     with pytest.raises(TypeError, match="pass a site table as site_table="):
         build((rate(),), sites=table)
-    with pytest.raises(TypeError, match="exactly one; got neither"):
+    with pytest.raises(TypeError, match="pass a site table as site_table="):
+        build((rate(),), sites=table, site_table=table)
+    with pytest.raises(TypeError, match="got neither"):
         example_parameter_vector(pft=PFT)
-    by_ids, by_table = build((rate(),)), build((rate(),), sites=None, site_table=table)
-    assert by_ids.sites == by_table.sites == SITES
+    with pytest.raises(ValueError, match=r"disagree \(at position 1, 4711 against 27\)"):
+        build((rate(),), sites=(1, 4711, 27), site_table=table)
+    with pytest.raises(ValueError, match=r"disagree \(2 site ids against the table's 3\)"):
+        build((rate(),), sites=(1, 27), site_table=table)
+    with pytest.raises(ValueError, match="disagree"):
+        example_parameter_vector(sites=(1, 27), site_table=table, pft=PFT)
+    by_ids = build((rate(),))
+    by_table = build((rate(),), sites=None, site_table=table)
+    by_both = build((rate(),), sites=SITES, site_table=table)
+    assert by_ids.sites == by_table.sites == by_both.sites == SITES
     assert "lon" not in by_ids.site_table.columns
     np.testing.assert_allclose(by_table.site_table["lon"], [-24.6, -78.6, -107.3])
+    pd.testing.assert_frame_equal(by_both.site_table, by_table.site_table)
+    example = example_parameter_vector(sites=SITES, site_table=table, pft=PFT)
+    np.testing.assert_allclose(example.site_table["lat"], [82.5, 80.6, 44.0])
+
+
+@pytest.mark.parametrize("from_table", [False, True], ids=["site_ids", "site_table"])
+def test_dataclasses_replace_rebuilds_the_same_vector(from_table):
+    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
+    keywords = {"site_table": table} if from_table else {"sites": SITES}
+    partial = example_parameter_vector(**keywords, pft=PFT)
+    filled = tuple(
+        FixedParameter(name=name, value=_in_domain_value(name), provenance="test")
+        for name in partial.unset_sipnet_parameter_names
+    )
+    vector = dataclasses.replace(partial, fixed=partial.fixed + filled)
+    theta = vector.sample(jax.random.key(0), 2)
+    for copy in (dataclasses.replace(vector), dataclasses.replace(vector, require_complete=True)):
+        assert copy.sites == vector.sites
+        assert copy.layout.entry_labels == vector.layout.entry_labels
+        pd.testing.assert_frame_equal(copy.site_table, vector.site_table)
+        xr.testing.assert_identical(
+            copy.sipnet_parameter_fields(theta), vector.sipnet_parameter_fields(theta)
+        )
+    assert ("lon" in vector.site_table.columns) is from_table
+    assert dataclasses.replace(vector, require_complete=True).require_complete
 
 
 def test_flat_refuses_what_no_flat_vector_can_be(example, theta):

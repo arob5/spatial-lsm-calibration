@@ -1289,16 +1289,20 @@ class ParameterVector:
         The SIPNET parameters held at a value. Every SIPNET parameter any
         SIPNET map reads (``sipnet_parameter_names_read``) must appear here.
     sites:
-        The sites the vector is defined over, as site ids, ascending. Give
-        this or *site_table*, not both. The ids are the site table's; ids of
-        a shared pool are never renumbered.
+        The sites the vector is defined over, as site ids, ascending. The ids
+        are the site table's; ids of a shared pool are never renumbered.
     site_table:
         The sites the vector is defined over, as a site table with a
         ``site_id`` column in ascending order, such as
         :func:`sipnet_calibration.sites.select_sites` returns, whose
         ``lon``/``lat`` are then carried onto Fields and the SIPNET parameter
-        fields. Give this or *sites*, not both. The table is read, not kept:
-        :attr:`site_table` is the vector's own.
+        fields. The table is read, not kept: :attr:`site_table` is the
+        vector's own.
+
+        Give *sites* or *site_table*; giving neither is refused. Both may be
+        given only when *sites* are the table's site ids in its order, and the
+        table is then what is read, so ``dataclasses.replace(vector)``, which
+        passes both, keeps the vector's ``lon``/``lat``.
     site_labels:
         ``{site_labels_name: labels}`` for every ``varies_by`` other than
         ``None`` and ``"site"``: a site-labels table with ``site_id`` and
@@ -1336,8 +1340,14 @@ class ParameterVector:
 
     Raises
     ------
+    TypeError
+        If neither *sites* nor *site_table* is given, or *sites* is a
+        DataFrame (a site table goes to *site_table*).
+    ValueError
+        If *sites* and *site_table* are both given and *sites* are not the
+        table's site ids in its order.
     ValueError, TypeError
-        From the ``check_*`` helpers: a repeated or reserved name, two
+        From the other ``check_*`` helpers: a repeated or reserved name, two
         writers of one SIPNET parameter, a SIPNET map reading a parameter
         nobody fixed, site labels missing, of the wrong length, not covering
         every site or colliding with another name, a prior whose shape does
@@ -2238,10 +2248,11 @@ def example_parameter_vector(
     Parameters
     ----------
     sites:
-        Site ids, ascending. Give this or *site_table*, not both.
+        Site ids, ascending.
     site_table:
         A site table in ascending ``site_id`` order, whose ``lon``/``lat``
-        the vector carries. Give this or *sites*, not both.
+        the vector carries. Give this or *sites*; both only when *sites* are
+        its site ids in its order, as :class:`ParameterVector` takes them.
     pft:
         One PFT label per site, or a site-labels table; named ``"pft"`` in
         the vector.
@@ -2257,6 +2268,11 @@ def example_parameter_vector(
         site); fixed ``daily_mean_photosynthesis_fraction`` (shared),
         ``leaf_carbon_fraction`` (by ``"pft"``) and
         ``vapor_pressure_deficit_exponent`` (shared).
+
+    Raises
+    ------
+    TypeError, ValueError
+        As :class:`ParameterVector` does, for *sites* and *site_table*.
     """
     check_sites_or_site_table_is_given(sites, site_table)
     n_sites = len(sites) if site_table is None else len(site_table)
@@ -2530,14 +2546,21 @@ def _in_domain(domain: ParameterDomain, values: Array) -> bool:
 def _normalized_sites(
     sites: Any, site_table: Any
 ) -> tuple[tuple[int, ...], tuple[np.ndarray, np.ndarray] | None]:
-    """Site ids, and ``lon``/``lat`` when a site table that has them is given."""
-    if site_table is None:
+    """Site ids, and ``lon``/``lat`` when a site table that has them is given.
+
+    With both, the ids must be the table's, in its order, and the table is
+    what is read.
+    """
+    if sites is not None:
         check_sites_are_not_a_site_table(sites)
+    if site_table is None:
         return as_site_ids(sites, message_name="sites"), None
     check_site_table_is_keyed_on_site_ids(site_table)
     table = site_lookup(site_table)
     ids = as_site_ids(table.index, message_name="the site table's site_id")
     check_site_table_is_in_site_order(ids)
+    if sites is not None:
+        check_sites_are_the_site_tables(as_site_ids(sites, message_name="sites"), ids)
     if {LON, LAT} & set(table.columns):
         check_site_table_has_locations(table)
         check_site_table_positions_are_finite(table)
@@ -3219,12 +3242,31 @@ def check_fixed_values_are_numbers(parameter: FixedParameter) -> None:
 
 
 def check_sites_or_site_table_is_given(sites: Any, site_table: Any) -> None:
-    """Exactly one of ``sites=`` and ``site_table=`` is given."""
-    if (sites is None) == (site_table is None):
+    """At least one of ``sites=`` and ``site_table=`` is given."""
+    if sites is None and site_table is None:
         raise TypeError(
-            "give the vector's sites as sites= (site ids) or site_table= (a site table), "
-            f"exactly one; got {'both' if sites is not None else 'neither'}."
+            "give the vector's sites as sites= (site ids) or site_table= (a site "
+            "table); got neither."
         )
+
+
+def check_sites_are_the_site_tables(
+    sites: tuple[int, ...], table_ids: tuple[int, ...]
+) -> None:
+    """``sites=`` given beside ``site_table=`` are the table's site ids, in order."""
+    if tuple(sites) == tuple(table_ids):
+        return
+    pairs = zip(sites, table_ids)
+    where = next((k for k, (a, b) in enumerate(pairs) if a != b), None)
+    detail = (
+        f"{len(sites)} site ids against the table's {len(table_ids)}"
+        if where is None
+        else f"at position {where}, {sites[where]} against {table_ids[where]}"
+    )
+    raise ValueError(
+        f"sites= and the site table's site_id disagree ({detail}); give only one of "
+        "sites= and site_table=, or the table's own ids in its order."
+    )
 
 
 def check_sites_are_not_a_site_table(sites: Any) -> None:
