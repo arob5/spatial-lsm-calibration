@@ -1910,3 +1910,20 @@ def test_a_per_class_fixed_parameter_compares_and_hashes_by_identity():
     second = dataclasses.replace(first)
     assert first == first and first != second
     assert len({first, second}) == 2
+
+
+@pytest.mark.parametrize("site", [27, 1])
+def test_sipnet_overrides_refuses_a_table_selected_to_one_site_in_its_words(site):
+    """A table with a scalar ``site`` raised a raw TypeError from ``in``."""
+    table = xr.Dataset(
+        {"soil_carbon": (("sample", "site"), np.ones((2, 2)))},
+        coords={"sample": [0, 1], "site": np.array([1, 27], np.int32)},
+    )
+    with pytest.raises(ValueError, match="selected to site 27 alone"):
+        sipnet_overrides(table.isel(site=1), site=site, batch={"sample": 1})
+
+
+def test_sipnet_overrides_refuses_a_table_without_sites_in_its_words():
+    table = xr.Dataset({"soil_carbon": (("sample",), np.ones(2))}, coords={"sample": [0, 1]})
+    with pytest.raises(ValueError, match="has no site dim"):
+        sipnet_overrides(table, site=1, batch={"sample": 1})

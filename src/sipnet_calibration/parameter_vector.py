@@ -2137,8 +2137,9 @@ def sipnet_overrides(
         or *batch* is not a mapping.
     ValueError
         If a table variable has a dim that is neither a batch dim (integer
-        labels), ``site`` nor ``time``; or if *batch* does not name exactly
-        the table's batch dims.
+        labels), ``site`` nor ``time``; if the table has no ``site`` dim,
+        having been selected to one site or never having had one; or if
+        *batch* does not name exactly the table's batch dims.
     KeyError
         If *site*, or a batch label, is not in the table, naming it.
 
@@ -2152,6 +2153,7 @@ def sipnet_overrides(
     requested = _requested_batch_labels(batch)
     for name, variable in table.data_vars.items():
         check_dims_are_batch_spatial_or_time(variable, message_name=repr(str(name)))
+    check_table_is_on_sites(table)
     check_batch_label_is_in_the_table(table, SITE, site_id)
     selected = table.sel({SITE: site_id})
     check_batch_labels_name_the_table_batch_dims(batch_dims(selected), requested)
@@ -3311,6 +3313,22 @@ def check_batch_labels_name_the_table_batch_dims(
             f"{list(requested)}; pass batch={{dim: label}} for each of the table's batch "
             "dims and no other."
         )
+
+
+def check_table_is_on_sites(table: xr.Dataset) -> None:
+    """The SIPNET table has a ``site`` dim, which :func:`sipnet_overrides` selects on."""
+    if SITE in table.dims:
+        return
+    if SITE in table.coords and table[SITE].ndim == 0:
+        raise ValueError(
+            f"the SIPNET table was selected to site {table[SITE].values.item()!r} alone; "
+            "sipnet_overrides selects the site itself, so pass the table on its site dim, "
+            "as ParameterVector.sipnet_table returns it."
+        )
+    raise ValueError(
+        "the SIPNET table has no site dim; pass a table on its site dim, as "
+        "ParameterVector.sipnet_table returns it."
+    )
 
 
 def check_batch_label_is_in_the_table(table: xr.Dataset, dim: str, label: Any) -> None:
