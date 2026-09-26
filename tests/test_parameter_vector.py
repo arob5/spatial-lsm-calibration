@@ -1155,7 +1155,7 @@ def test_select_by_parameters_keeps_layout_order_and_the_fixed(example):
     assert small.select(parameter_names=["allocation"]).parameter_names == ("allocation",)
     with pytest.raises(TypeError, match="one string 'allocation'"):
         small.select(parameter_names="allocation")
-    with pytest.raises(KeyError, match="no calibration parameters \\['nope'\\]"):
+    with pytest.raises(KeyError, match="no calibration parameter 'nope'"):
         example.select(parameter_names=("nope",))
 
 
@@ -1190,7 +1190,7 @@ def test_select_by_labels_intersects_with_sites_and_refuses_the_unknown(example)
         example.select(labels={"pft": ["grassland"]})
     with pytest.raises(KeyError, match="no site labels 'landcover'"):
         example.select(labels={"landcover": [1]})
-    with pytest.raises(KeyError, match="sites \\[99\\] are not in this vector"):
+    with pytest.raises(KeyError, match="no site\\(s\\) \\[99\\]"):
         example.select(sites=(1, 99))
     with pytest.raises(ValueError, match="no site of this vector"):
         example.select(sites=(27,), labels={"pft": ["deciduous"]})
@@ -2156,10 +2156,47 @@ class TestTheVectorConventions:
             example.positions(parameter_name="allocation", group="deciduous"), [5, 6, 7]
         )
         np.testing.assert_array_equal(example.positions(group=27), [12])
-        assert example.positions(group="nothing").size == 0
         assert example.positions().tolist() == list(range(example.dimension))
-        with pytest.raises(KeyError):
+        with pytest.raises(KeyError, match="no calibration parameter 'nothing'"):
             example.positions(parameter_name="nothing")
+
+    def test_positions_of_an_unknown_label_is_a_key_error(self, example):
+        """An unknown group gave an empty array, as select would not."""
+        with pytest.raises(KeyError, match="not a group of any calibration parameter"):
+            example.positions(group="nothing")
+        with pytest.raises(KeyError, match="not an element of any calibration parameter"):
+            example.positions(element="nothing")
+        with pytest.raises(KeyError, match="not a group of calibration parameter 'allocation'"):
+            example.positions(parameter_name="allocation", group=27)
+        with pytest.raises(KeyError, match="no calibration parameter 'nothing'"):
+            example.positions(parameter_name="nothing")
+
+    @pytest.mark.parametrize("group", [True, 27.0, np.float64(27.0)])
+    def test_positions_refuses_a_bool_or_float_group(self, example, group):
+        """group=True read site 1's entry, and 27.0 was taken for site 27."""
+        with pytest.raises(TypeError, match="group must be"):
+            example.positions(group=group)
+        with pytest.raises(TypeError, match="group must be"):
+            example.positions(parameter_name="initial_soil_carbon", group=group)
+
+    def test_a_fixed_parameter_is_no_piece(self, example):
+        fixed = example.fixed_parameters[0].name
+        assert fixed not in example and fixed not in list(example)
+        with pytest.raises(KeyError, match="read vector.fixed_parameters"):
+            example[fixed]
+        assert example.fixed_parameters == example.fixed
+
+    def test_reversed_gives_the_names_in_reverse(self, example):
+        """reversed() fell back to integer indexing and raised KeyError."""
+        assert list(reversed(example)) == list(example.parameter_names)[::-1]
+        assert ([1] in example) is False
+
+    def test_select_refuses_a_repeated_class_and_labels_that_are_not_a_mapping(self, example):
+        with pytest.raises(ValueError, match="more than once"):
+            example.select(labels={"pft": ["conifer", "conifer"]})
+        for labels in (["pft"], "pft"):
+            with pytest.raises(TypeError, match="labels must map"):
+                example.select(labels=labels)
 
     def test_select_refuses_a_repeated_name_and_keeps_the_vector_order(self, example):
         with pytest.raises(ValueError, match="more than once"):
@@ -2172,7 +2209,7 @@ class TestTheVectorConventions:
     def test_restrict_to_sites_ignores_sites_the_vector_does_not_have(self, example):
         small = example.restrict_to_sites([27, 99, 1])
         assert small.sites == (1, 27)
-        with pytest.raises(KeyError, match="not in this vector"):
+        with pytest.raises(KeyError, match="use restrict_to_sites"):
             example.select(sites=[27, 99])
         with pytest.raises(ValueError, match="none of the vector's sites"):
             example.restrict_to_sites([99])

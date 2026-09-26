@@ -323,11 +323,16 @@ class ObservationVector:
         return self._by_name[observation_source_name]
 
     def __contains__(self, observation_source_name: object) -> bool:
-        return observation_source_name in self._by_name
+        """Whether *observation_source_name* is an observation source of the vector."""
+        return observation_source_name in self.observation_source_names
 
     def __iter__(self) -> Iterator[str]:
         """The observation source names, in the vector's order."""
         return iter(self.observation_source_names)
+
+    def __reversed__(self) -> Iterator[str]:
+        """The observation source names, in reverse order."""
+        return reversed(self.observation_source_names)
 
     def __len__(self) -> int:
         """The number of observation sources."""
@@ -477,7 +482,8 @@ class ObservationVector:
         -------
         numpy.ndarray
             The ascending ``int64`` positions in Flat of the observations
-            matching both; empty for a site with no observation.
+            matching both, which may be none when the site is observed but not
+            by that observation source.
 
         Raises
         ------
@@ -486,13 +492,14 @@ class ObservationVector:
         ValueError
             If *site* is not a site id, from 1 to the largest ``int32``.
         KeyError
-            If *observation_source_name* is not held.
+            If *site* is not one of :attr:`sites`, or
+            *observation_source_name* is not held.
         """
         mask = np.ones(self.dimension, dtype=bool)
         if site is not None:
-            mask &= self._index.get_level_values(SITE).values == as_site_id(
-                site, message_name="site"
-            )
+            site_id = as_site_id(site, message_name="site")
+            check_sites_are_the_vectors([site_id], self._sites)
+            mask &= self._index.get_level_values(SITE).values == site_id
         if observation_source_name is not None:
             check_observation_source_names_are_held(
                 [observation_source_name], self.observation_source_names
@@ -882,13 +889,13 @@ def check_observation_vector_is_valid(observation_sources: Sequence[Any]) -> Non
 def check_observation_sources_agree_on_site_locations(
     observation_sources: Sequence[ObservationSource],
 ) -> None:
-    """Every observation source gives a site the same ``lon`` and ``lat``."""
+    """Every observation source gives a site the same ``lon`` and ``lat``, exactly."""
     seen: dict[int, tuple[float, float, str]] = {}
     for source in observation_sources:
         values = source.observed_values
         for site, x, y in zip(values[SITE].values, values[LON].values, values[LAT].values):
             held = seen.setdefault(int(site), (float(x), float(y), source.observation_source_name))
-            if not np.allclose(held[:2], (x, y), equal_nan=True):
+            if held[:2] != (float(x), float(y)):
                 raise ValueError(
                     f"site {int(site)} is at ({held[0]}, {held[1]}) in {held[2]!r} and at "
                     f"({float(x)}, {float(y)}) in {source.observation_source_name!r}; a site has "
@@ -1019,9 +1026,10 @@ def check_batch_dim_is_not_an_observation_source_name(
             else None
         )
         if what is not None:
+            other = "run" if batch_dim == SAMPLE else SAMPLE
             raise ValueError(
                 f"batch_dim={batch_dim!r} is {what}; name the batch dim otherwise, such as "
-                "'sample'."
+                f"{other!r}."
             )
 
 
@@ -1056,19 +1064,33 @@ def check_fields_agree_on_the_batch_dim(
 def check_field_is_on_the_grid(array: Any, source: ObservationSource) -> None:
     """An array to flatten is a field holding every observation of its source.
 
-    Runs :func:`sipnet_calibration.fields.validate_field` on it laid out as
-    a field (:func:`sipnet_calibration.fields.in_field_layout`, so any dim
-    order and a scalar ``site`` are accepted), then checks it has the
-    source's observed sites and, for a dated source, its time labels.
+    Runs :func:`check_array_is_a_dataarray`, then, on the array laid out as a
+    field (:func:`sipnet_calibration.fields.in_field_layout`, so any dim order
+    and a scalar ``site`` are accepted),
+    :func:`sipnet_calibration.fields.validate_field`,
+    :func:`check_array_has_the_observed_sites` and
+    :func:`check_array_has_the_observed_time_labels`.
     """
     name = source.observation_source_name
+    check_array_is_a_dataarray(array, name)
+    array = in_field_layout(array)
+    validate_field(array, message_name=name)
+    check_array_has_the_observed_sites(array, source)
+    check_array_has_the_observed_time_labels(array, source)
+
+
+def check_array_is_a_dataarray(array: Any, name: str) -> None:
+    """An observation source's array is a ``DataArray``."""
     if not isinstance(array, xr.DataArray):
         raise TypeError(
             f"{name}: expected a DataArray, got {type(array).__name__}; pass the field "
             "predict or fields returns for it."
         )
-    array = in_field_layout(array)
-    validate_field(array, message_name=name)
+
+
+def check_array_has_the_observed_sites(array: xr.DataArray, source: ObservationSource) -> None:
+    """The array has a ``site`` dim holding every site the source observes."""
+    name = source.observation_source_name
     if SITE not in array.dims:
         raise ValueError(
             f"{name}: the array has no site; label it with the observation source's sites, "
@@ -1081,20 +1103,28 @@ def check_field_is_on_the_grid(array: Any, source: ObservationSource) -> None:
             "every site the observation source holds, or select the vector to the sites "
             "given."
         )
-    if not source.is_static:
-        if TIME not in array.dims:
-            raise ValueError(
-                f"{name}: the array has no time dimension; read the model at the "
-                "observation source's time labels."
-            )
-        observed_times = source.observed_values[TIME].values
-        missing_times = observed_times[~np.isin(observed_times, array[TIME].values)]
-        if missing_times.size:
-            raise ValueError(
-                f"{name}: the array lacks {missing_times.size} observed time label(s), the "
-                f"first being {missing_times[0]}; read the model at the observation source's "
-                "time labels, or select the vector to the period given."
-            )
+
+
+def check_array_has_the_observed_time_labels(
+    array: xr.DataArray, source: ObservationSource
+) -> None:
+    """For a dated source, the array has a ``time`` dim holding every observed label."""
+    if source.is_static:
+        return
+    name = source.observation_source_name
+    if TIME not in array.dims:
+        raise ValueError(
+            f"{name}: the array has no time dimension; read the model at the "
+            "observation source's time labels."
+        )
+    observed_times = source.observed_values[TIME].values
+    missing_times = observed_times[~np.isin(observed_times, array[TIME].values)]
+    if missing_times.size:
+        raise ValueError(
+            f"{name}: the array lacks {missing_times.size} observed time label(s), the "
+            f"first being {missing_times[0]}; read the model at the observation source's "
+            "time labels, or select the vector to the period given."
+        )
 
 
 def check_prediction_is_finite_where_the_run_succeeded(

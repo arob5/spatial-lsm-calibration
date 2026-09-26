@@ -1099,3 +1099,73 @@ class TestTheVectorConventions:
         fields["modis_leaf_area_index"] = fields["modis_leaf_area_index"].drop_vars(["lon", "lat"])
         with pytest.raises(ValueError, match="carries no 'lon' coordinate"):
             vector.flat(fields)
+
+    def test_positions_of_an_unknown_site_is_a_key_error(self, vector):
+        """An unknown site gave an empty array, as select would not."""
+        with pytest.raises(KeyError, match="observes no site"):
+            vector.positions(site=999)
+        with pytest.raises(KeyError, match="no observation source 'nothing'"):
+            vector.positions(observation_source_name="nothing")
+
+    def test_reversed_and_an_unhashable_name(self, vector):
+        """reversed() fell back to integer indexing; [1] in vector raised TypeError."""
+        assert list(reversed(vector)) == list(vector.observation_source_names)[::-1]
+        assert ([1] in vector) is False
+
+    def test_locations_that_differ_at_all_are_two_locations(self, lai, soil):
+        """np.allclose let two lon/lat 0.0009 degrees apart stand for one site."""
+        moved = soil.assign_coords(lon=soil["lon"] + 0.0009)
+        with pytest.raises(ValueError, match="a site has one location"):
+            ObservationVector(observation_sources=[
+                ObservationSource(observation_source_name="lai", observed_values=lai, operator=SelectTimestep("leaf_carbon")),
+                ObservationSource(observation_source_name="soil", observed_values=moved, operator=ReduceOverRun("soil_carbon", "mean")),
+            ])
+
+    @pytest.mark.parametrize("name", ["sample", "site", "lon", "time", "window_start", "time_step_start"])
+    def test_a_source_named_like_a_coordinate_is_refused(self, lai, name):
+        with pytest.raises(ValueError, match=f"observation_source_name '{name}' is reserved"):
+            ObservationSource(observation_source_name=name, observed_values=lai, operator=SelectTimestep("leaf_carbon"))
+
+    def test_the_batch_dim_advice_never_names_the_name_it_refused(self, lai):
+        vector = ObservationVector(observation_sources=[
+            ObservationSource(
+                observation_source_name="lai",
+                observed_values=lai.assign_coords(sample=("site", np.array([4, 5]))),
+                operator=SelectTimestep("leaf_carbon"),
+            )
+        ])
+        with pytest.raises(ValueError, match="such as 'run'"):
+            vector.fields(np.zeros((2, vector.dimension)), batch_dim="sample")
+
+
+class TestPredictRefusesAResultOffTheBatch:
+    """An operator that reduced, selected or relabeled the batch dim passed predict."""
+
+    @pytest.mark.parametrize(
+        "mangle",
+        [
+            lambda r: r.mean("sample", keep_attrs=True),
+            lambda r: r.isel(sample=0, drop=True),
+            lambda r: r.assign_coords(sample=[5, 6]),
+        ],
+        ids=["mean", "isel", "relabel"],
+    )
+    def test_through_predict(self, stack, lai, mangle):
+        @dataclass(frozen=True)
+        class Mangles:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names_read = ()
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
+                wood = restrict_to_observed_sites(model_output["wood_carbon"], observed_values)
+                return mangle(select_timestep_at(wood, observed_values["time"]))
+
+        vector = ObservationVector(observation_sources=[
+            ObservationSource(
+                observation_source_name="wood",
+                observed_values=lai.assign_attrs(units="g m-2", constituent="C"),
+                operator=Mangles(),
+            )
+        ])
+        with pytest.raises(ValueError, match="'sample'|sample labels"):
+            vector.predict(stack)

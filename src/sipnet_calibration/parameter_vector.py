@@ -462,6 +462,7 @@ from sipnet_calibration.validation import (
     as_site_ids,
     check_names_are_unique,
     is_one_vector,
+    truncated,
 )
 
 __all__ = [
@@ -1562,18 +1563,22 @@ class ParameterVector:
     # ── identity ──────────────────────────────────────────────────────────────
 
     def __getitem__(self, name: str) -> CalibrationParameter:
-        """The calibration parameter called *name*."""
-        for parameter in self.parameters:
-            if parameter.name == name:
-                return parameter
-        raise KeyError(f"no calibration parameter {name!r}; have {list(self.parameter_names)}.")
+        """The calibration parameter called *name*; a fixed parameter is not one
+        (:attr:`fixed_parameters`)."""
+        check_parameter_names_are_held([name], self)
+        return self.parameters[self.parameter_names.index(name)]
 
     def __contains__(self, name: object) -> bool:
+        """Whether *name* is a calibration parameter of the vector."""
         return name in self.parameter_names
 
     def __iter__(self) -> Iterator[str]:
         """The calibration parameter names, in layout order."""
         return iter(self.parameter_names)
+
+    def __reversed__(self) -> Iterator[str]:
+        """The calibration parameter names, in reverse layout order."""
+        return reversed(self.parameter_names)
 
     def __len__(self) -> int:
         """The number of calibration parameters."""
@@ -1595,6 +1600,12 @@ class ParameterVector:
     def parameter_names(self) -> tuple[str, ...]:
         """Calibration parameter names in layout order."""
         return tuple(p.name for p in self.parameters)
+
+    @property
+    def fixed_parameters(self) -> tuple[FixedParameter, ...]:
+        """The fixed parameters, which are not pieces of the vector: ``theta``
+        holds none of them. The same tuple as :attr:`fixed`."""
+        return self.fixed
 
     @property
     def sipnet_parameter_names_written(self) -> tuple[str, ...]:
@@ -1802,22 +1813,37 @@ class ParameterVector:
         -------
         numpy.ndarray
             The ascending ``int64`` positions in Flat of the entries matching
-            all three; empty when a group or element no calibration parameter
-            has is asked for across every calibration parameter.
+            all three, which may be none when a group and an element are
+            each some calibration parameter's but never one entry's.
 
         Raises
         ------
+        TypeError
+            If *group* is a boolean or a float: a site group is a site id.
         KeyError
-            If *parameter_name* is not held, or, with *parameter_name* given,
-            *group* or *element* is not one of that calibration parameter's.
+            If *parameter_name* is not held; if *group* or *element* is not
+            one of that calibration parameter's, or, without
+            *parameter_name*, not one of any calibration parameter's.
         """
+        check_group_label_is_not_a_bool_or_a_float(group)
         if parameter_name is not None:
+            check_parameter_names_are_held([parameter_name], self)
+            check_label_is_the_parameters(
+                group, self.layout.groups[parameter_name], "a group", parameter_name
+            )
+            check_label_is_the_parameters(
+                element, self.layout.element_labels[parameter_name], "an element", parameter_name
+            )
             return self.layout.positions(parameter_name, group=group, element=element)
         mask = np.ones(self.dimension, dtype=bool)
         if group is not None:
-            mask &= _labels_equal(self.index.get_level_values("group"), group)
+            groups = self.index.get_level_values("group")
+            check_label_is_the_vectors(group, groups, "a group")
+            mask &= _labels_equal(groups, group)
         if element is not None:
-            mask &= _labels_equal(self.index.get_level_values("element"), element)
+            elements = self.index.get_level_values("element")
+            check_label_is_the_vectors(element, elements, "an element")
+            mask &= _labels_equal(elements, element)
         return np.flatnonzero(mask).astype(np.int64)
 
     def describe(self) -> pd.DataFrame:
@@ -2272,11 +2298,7 @@ class ParameterVector:
             return self.parameter_names
         wanted = as_names(parameter_names, message_name="parameter_names")
         check_names_are_unique(wanted, message_name="parameter_names")
-        unknown = [n for n in wanted if n not in self.parameter_names]
-        if unknown:
-            raise KeyError(
-                f"select: no calibration parameters {unknown}; have {list(self.parameter_names)}."
-            )
+        check_parameter_names_are_held(wanted, self)
         return tuple(n for n in self.parameter_names if n in wanted)
 
     def _selected_sites(
@@ -2284,25 +2306,21 @@ class ParameterVector:
     ) -> list[int]:
         kept = list(self.sites)
         if sites is not None:
-            requested = set(as_site_ids(sites, message_name="sites"))
-            unknown = sorted(requested - set(self.sites))
-            if unknown:
-                raise KeyError(f"select: sites {unknown} are not in this vector.")
-            kept = [s for s in kept if s in requested]
-        for name, wanted in (labels or {}).items():
-            if name not in self.site_labels:
-                raise KeyError(f"select: no site labels {name!r}; have {sorted(self.site_labels)}.")
-            wanted = set(as_sequence(wanted, message_name=f"labels[{name!r}]"))
-            undeclared = sorted(map(str, wanted - set(self._declared_classes[name])))
-            if undeclared:
-                raise KeyError(
-                    f"select: {undeclared} are not classes of site labels {name!r}; have "
-                    f"{list(self._declared_classes[name])}."
-                )
-            carrying = {s for s, lab in zip(self.sites, self.site_labels[name]) if lab in wanted}
-            kept = [s for s in kept if s in carrying]
-        if not kept:
-            raise ValueError("select: no site of this vector satisfies every condition given.")
+            requested = as_site_ids(sites, message_name="sites")
+            check_sites_are_the_vectors(requested, self.sites)
+            kept = [s for s in kept if s in set(requested)]
+        if labels is not None:
+            check_labels_are_a_mapping(labels)
+            for name, classes in labels.items():
+                check_site_labels_are_held(name, self)
+                wanted = as_sequence(classes, message_name=f"labels[{name!r}]")
+                check_names_are_unique(wanted, message_name=f"labels[{name!r}]")
+                check_classes_are_declared(name, wanted, self._declared_classes[name])
+                carrying = {
+                    s for s, lab in zip(self.sites, self.site_labels[name]) if lab in wanted
+                }
+                kept = [s for s in kept if s in carrying]
+        check_the_selection_keeps_a_site(kept)
         return kept
 
     def _site_keywords(self, positions: np.ndarray) -> dict[str, Any]:
@@ -3163,6 +3181,95 @@ def check_parameter_vector_is_valid(vector: ParameterVector) -> None:
         check_sipnet_map_image_is_in_domain(vector, parameter)
     if vector.require_complete:
         check_every_required_parameter_is_set(vector)
+
+
+def check_parameter_names_are_held(names: Sequence[str], vector: ParameterVector) -> None:
+    """Every name asked for is a calibration parameter of the vector."""
+    unknown = [name for name in names if name not in vector.parameter_names]
+    if unknown:
+        what = repr(unknown[0]) if len(unknown) == 1 else str(unknown)
+        raise KeyError(
+            f"no calibration parameter {what}; the vector holds {list(vector.parameter_names)}. "
+            "A fixed parameter is not one: read vector.fixed_parameters."
+        )
+
+
+def check_group_label_is_not_a_bool_or_a_float(group: Any) -> None:
+    """A group label asked for is not a boolean or a float, which no site id is."""
+    if isinstance(group, (bool, np.bool_, float, np.floating)):
+        raise TypeError(
+            f"group must be 'shared', a site id or a class, got {type(group).__name__} "
+            f"{group!r}; pass a site id as an int, such as int(27)."
+        )
+
+
+def check_label_is_the_parameters(
+    label: Any, labels: Sequence[Any], what: str, parameter_name: str
+) -> None:
+    """A group or element label asked for, if any, is one of the calibration parameter's."""
+    if label is not None and not _labels_equal(list(labels), label).any():
+        raise KeyError(
+            f"{label!r} is not {what} of calibration parameter {parameter_name!r}; it has "
+            f"{truncated(list(labels))}."
+        )
+
+
+def check_label_is_the_vectors(label: Any, labels: Sequence[Any], what: str) -> None:
+    """A group or element label asked for is some calibration parameter's."""
+    if not _labels_equal(list(labels), label).any():
+        raise KeyError(
+            f"{label!r} is not {what} of any calibration parameter; the vector has "
+            f"{truncated(list(dict.fromkeys(labels)))}."
+        )
+
+
+def check_sites_are_the_vectors(sites: Sequence[int], held: Sequence[int]) -> None:
+    """Every site asked for is one of the vector's."""
+    unknown = [site for site in sites if site not in set(held)]
+    if unknown:
+        raise KeyError(
+            f"the vector has no site(s) {truncated(unknown)}; it has {truncated(list(held))}. "
+            "Select from its sites, or use restrict_to_sites to keep the ones it has."
+        )
+
+
+def check_labels_are_a_mapping(labels: Any) -> None:
+    """``labels=`` maps site-labels names to the classes kept."""
+    if not isinstance(labels, Mapping):
+        raise TypeError(
+            f"labels must map a site-labels name to the classes to keep, got "
+            f"{type(labels).__name__} {labels!r}; pass labels={{'pft': ['boreal.coniferous']}}."
+        )
+
+
+def check_site_labels_are_held(name: Any, vector: ParameterVector) -> None:
+    """A site-labels name asked for is one of the vector's."""
+    if name not in vector.site_labels:
+        raise KeyError(
+            f"no site labels {name!r}; the vector has {sorted(vector.site_labels)}. Select by "
+            "a site-labels name the vector was built with."
+        )
+
+
+def check_classes_are_declared(
+    name: str, classes: Sequence[Any], declared: Sequence[Any]
+) -> None:
+    """Every class asked for is a declared class of the site labels."""
+    undeclared = [c for c in classes if c not in declared]
+    if undeclared:
+        raise KeyError(
+            f"{truncated(undeclared)} are not classes of site labels {name!r}; its classes are "
+            f"{truncated(list(declared))}."
+        )
+
+
+def check_the_selection_keeps_a_site(kept: Sequence[int]) -> None:
+    """A selection keeps at least one site."""
+    if not kept:
+        raise ValueError(
+            "no site of this vector satisfies every condition given; select sites or "
+            "classes the vector has."
+        )
 
 
 def check_the_restriction_keeps_a_site(kept: Sequence[int]) -> None:

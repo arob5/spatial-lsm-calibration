@@ -306,7 +306,7 @@ class TestEvaluate:
         sparse = ObservationVector(
             observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
-        assert sparse.positions(site=27).size == 0 and sparse.sites == (1,)
+        assert 27 not in sparse.sites and sparse.sites == (1,)
         forward = ForwardModel(
             scaled_niwot_model(),
             parameter_vector,

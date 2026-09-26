@@ -351,7 +351,7 @@ class TestCheckOperator:
                 out.attrs = {}
                 return out
 
-        with pytest.raises(ValueError, match="no 'units'"):
+        with pytest.raises(ValueError, match="carries its units"):
             check_operator(Unitless(), one_run, dated_observed_values([1], labels))
 
     def test_an_operator_that_mixes_sites_is_refused(self, stack, labels):
@@ -712,7 +712,7 @@ class TestPointwiseIsComparedByLabel:
                     wood = wood.isel(sample=0, drop=True)
                 return select_timestep_at(restrict_to_observed_sites(wood, observed_values), observed_values["time"])
 
-        with pytest.raises(ValueError, match="not pointwise in 'sample'"):
+        with pytest.raises(ValueError, match="has no 'sample' dim"):
             check_operator(
                 FirstMember(),
                 stack,
@@ -749,7 +749,7 @@ class TestDeclarationsAndConstruction:
     def test_units_that_are_not_a_string_are_refused(self, one_run, labels):
         result = select_timestep_at(one_run["wood_carbon"], labels)
         result.attrs["units"] = None
-        with pytest.raises(ValueError, match="no 'units'"):
+        with pytest.raises(ValueError, match="carries its units"):
             check_result_is_on_the_observation_grid(
                 result, dated_observed_values([1], labels), one_run, "x"
             )

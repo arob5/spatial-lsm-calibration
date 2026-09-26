@@ -837,8 +837,9 @@ def check_result_is_on_the_observation_grid(
     TypeError
         If *result* is not a ``DataArray``.
     ValueError
-        If it carries no ``units`` attribute; has a dim that neither the
-        model output nor the observed values have; is not on the observed
+        If it has a dim that neither the model output nor the observed values
+        have; lacks a batch dim of the model output, or carries other labels
+        on it (a mean over ``sample``, a selection, a relabeling); is not on the observed
         values' sites, in order, whether ``site`` is a dimension or a scalar;
         or is not on the observed values' ``time`` labels (compared as
         instants, whatever their datetime units), or has a ``time`` dimension
@@ -847,18 +848,29 @@ def check_result_is_on_the_observation_grid(
         operator its own dim order and a scalar ``site``), it is not one
         (:func:`~sipnet_calibration.fields.validate_field`).
     """
+    check_result_is_a_dataarray(result, message_name)
+    check_result_adds_no_dim(result, observed_values, model_output, message_name)
+    check_result_keeps_the_batch_dims(result, model_output, message_name)
+    check_result_is_at_the_observed_sites(result, observed_values, message_name)
+    check_result_is_on_the_observed_time_labels(result, observed_values, message_name)
+    fields.validate_field(
+        fields.in_field_layout(result), message_name=f"{message_name}: the operator's result"
+    )
+
+
+def check_result_is_a_dataarray(result: Any, message_name: str) -> None:
+    """An operator's result is a ``DataArray``."""
     if not isinstance(result, xr.DataArray):
         raise TypeError(
             f"{message_name}: the operator returned {type(result).__name__}, not a "
             "DataArray; return the labeled array the time-alignment verbs give."
         )
-    if not isinstance(result.attrs.get("units"), str):
-        raise ValueError(
-            f"{message_name}: the operator's result carries no 'units' attribute, so it "
-            "cannot be converted into the observed values' units. Write the operator with "
-            "pysipnet.arithmetic, which labels its results, or set attrs['units'] on "
-            "its result."
-        )
+
+
+def check_result_adds_no_dim(
+    result: xr.DataArray, observed_values: xr.DataArray, model_output: xr.Dataset, message_name: str
+) -> None:
+    """An operator's result has no dim that neither the model output nor the observed values have."""
     added = [
         str(d) for d in result.dims if d not in model_output.dims and d not in observed_values.dims
     ]
@@ -868,11 +880,26 @@ def check_result_is_on_the_observation_grid(
             "nor the observed values have; an operator keeps the model output's batch dims and "
             "adds none."
         )
-    check_result_is_at_the_observed_sites(result, observed_values, message_name)
-    check_result_is_on_the_observed_time_labels(result, observed_values, message_name)
-    fields.validate_field(
-        fields.in_field_layout(result), message_name=f"{message_name}: the operator's result"
-    )
+
+
+def check_result_keeps_the_batch_dims(
+    result: xr.DataArray, model_output: xr.Dataset, message_name: str
+) -> None:
+    """An operator's result keeps every batch dim of the model output, with its labels in order."""
+    for dim in batch_dims(model_output):
+        if dim not in result.dims:
+            raise ValueError(
+                f"{message_name}: the result has no {dim!r} dim, which the model output has; "
+                f"an operator is pointwise in {dim}, so compute each {dim} from its own model "
+                "output and keep the dim, rather than reducing or selecting it away."
+            )
+        if not np.array_equal(result[dim].values, model_output[dim].values):
+            raise ValueError(
+                f"{message_name}: the result's {dim} labels "
+                f"{coordinate_labels(result[dim])[:10]} are not the model output's "
+                f"{coordinate_labels(model_output[dim])[:10]}; an operator keeps the model "
+                "output's labels, in its order."
+            )
 
 
 def check_result_is_at_the_observed_sites(

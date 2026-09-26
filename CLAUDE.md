@@ -399,15 +399,19 @@ dims, which merge into a vector's.
 
 ### Vector-like classes
 
-`ParameterVector`, `ObservationVector` and their pieces (`CalibrationParameter`,
-`FixedParameter`, `ObservationSource`) follow one convention:
+`ParameterVector`, `ObservationVector` and their pieces follow one convention.
+A parameter vector's pieces are its calibration parameters, what `theta`
+holds (`vector[name]`, `in`, `iter`, `len` and `describe()` cover them); its
+`FixedParameter`s are reached through `vector.fixed_parameters`. An
+observation vector's are its `ObservationSource`s. `CalibrationParameter`,
+`FixedParameter` and `ObservationSource` are built the same way:
 
 | Aspect | Convention |
 |---|---|
 | Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`; the parameter vector's two, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, sit either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only |
-| Pieces | `vector[name]`, `name in vector`, `iter(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
+| Pieces | `vector[name]`, `name in vector` (`False` for anything else, an unhashable value included), `iter(vector)` and `reversed(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
 | Size | `dimension` (D or N) |
-| Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, group, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both (`Layout.positions` beneath the parameter vector's) |
+| Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, group, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` (`Layout.positions` beneath the parameter vector's) |
 | Sites | `sites` (ids, ascending, refused if unsorted on input; an observation source's values are sorted by site and time as a normalization, since their order carries nothing), `site_table` on both (the observation vector's from its observed values' `lon`/`lat`, which its sources must agree on) |
 | Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused (`validation.as_site_ids`, `validation.check_names_are_unique`); `restrict_to_sites(sites)` is the intersecting form, which the forward model's advice uses |
 | Representations | `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |

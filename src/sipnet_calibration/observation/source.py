@@ -93,8 +93,23 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.conventions import SITE, TIME
-from sipnet_calibration.fields import batch_dims, message_name, validate_field
+from sipnet_calibration.conventions import (
+    DATA_SOURCE_MEMBER_NAMES,
+    LAT,
+    LON,
+    SAMPLE,
+    SITE,
+    SOURCE_INDEX,
+    TIME,
+    WINDOW_END,
+    WINDOW_START,
+)
+from sipnet_calibration.fields import (
+    MODEL_OUTPUT_COORDINATE_NAMES,
+    batch_dims,
+    message_name,
+    validate_field,
+)
 
 # The module, not its names: the operators read ObservedValues and
 # validate_observed_values from here, and the package imports the operators
@@ -103,11 +118,31 @@ from sipnet_calibration.fields import batch_dims, message_name, validate_field
 from sipnet_calibration.observation import operators
 
 __all__ = [
+    "RESERVED_OBSERVATION_SOURCE_NAMES",
     "ObservationSource",
     "ObservedValues",
     "check_observation_source_is_valid",
     "validate_observed_values",
 ]
+
+#: Names an observation source cannot take, because its arrays are named for
+#: it and would then share a name with a dim or coordinate of theirs or of a
+#: model output: ``sample``, ``site``, ``lon``, ``lat``, ``source_index``, the
+#: data sources' member dims, the model output's coordinates (``time`` among
+#: them) and the window edges.
+RESERVED_OBSERVATION_SOURCE_NAMES: frozenset[str] = frozenset(
+    {
+        SAMPLE,
+        SITE,
+        LON,
+        LAT,
+        SOURCE_INDEX,
+        *DATA_SOURCE_MEMBER_NAMES,
+        *MODEL_OUTPUT_COORDINATE_NAMES,
+        WINDOW_START,
+        WINDOW_END,
+    }
+)
 
 #: One observation source's observed values: a field on ``(site[, time])``
 #: with no batch dim, ``NaN`` where nothing was observed; checked by
@@ -182,7 +217,8 @@ class ObservationSource:
         not a ``DataArray``, or *operator* is not callable or declares its
         names other than as tuples of strings.
     ValueError
-        If *observation_source_name* is empty; if *observed_values* are not
+        If *observation_source_name* is empty or reserved
+        (:data:`RESERVED_OBSERVATION_SOURCE_NAMES`); if *observed_values* are not
         observed values (:func:`validate_observed_values`), once sorted; or
         if the operator declares an alias.
     KeyError
@@ -304,11 +340,13 @@ def check_observation_source_is_valid(
     """An observation source's name, observed values and operator are what it needs.
 
     Runs :func:`check_observation_source_name_is_a_nonempty_string`,
+    :func:`check_observation_source_name_is_not_reserved`,
     :func:`validate_observed_values` and
     :func:`~sipnet_calibration.observation.operators.check_operator_declares_names`,
     in that order.
     """
     check_observation_source_name_is_a_nonempty_string(observation_source_name)
+    check_observation_source_name_is_not_reserved(observation_source_name)
     validate_observed_values(observed_values, message_name=observation_source_name)
     operators.check_operator_declares_names(operator, observation_source_name)
 
@@ -325,6 +363,17 @@ def check_observation_source_name_is_a_nonempty_string(observation_source_name: 
         raise ValueError(
             "observation_source_name is empty; name the observation source as its "
             "constraint file is named, e.g. 'modis_leaf_area_index'."
+        )
+
+
+def check_observation_source_name_is_not_reserved(observation_source_name: str) -> None:
+    """The observation source's name is none of :data:`RESERVED_OBSERVATION_SOURCE_NAMES`."""
+    if observation_source_name in RESERVED_OBSERVATION_SOURCE_NAMES:
+        raise ValueError(
+            f"observation_source_name {observation_source_name!r} is reserved: the source's "
+            "arrays are named for it, and would share the name of a dim or coordinate; name "
+            "the observation source as its constraint file is named, e.g. "
+            "'modis_leaf_area_index'."
         )
 
 
