@@ -293,7 +293,7 @@ The batch-dim rules:
   time coordinates, `time_bounds`, `bounds` and SIPNET's row labels; and an
   observation's window edges, `WINDOW_START` and `WINDOW_END`), since a batch
   dim of one of those names collides with that coordinate or is mistaken for it;
-  the vectors, `ForwardModel` and `stack_batch_dims(into=)` also refuse the data
+  the vectors, `ForwardModel` and `stack_batch_dims(new_batch_dim=)` also refuse the data
   source member names
   (`fields.check_batch_dim_name_is_not_a_data_source_member`), since their
   labels are new indices; the parameter vector also refuses `shared`, `site_id`,
@@ -322,9 +322,10 @@ The batch-dim rules:
   integers `0..J-1` in row order, because it places each run in the row its
   label names.
 - **Flat has at most one batch dim.** A field with several is reduced, or
-  stacked with `fields.stack_batch_dims(field, into="run")`. The stacked dim is
-  a new index, labeled `0..n-1`, so it takes a new name (`into` is required, and
-  may not be a dim stacked, a coordinate or a `<dim>_label` name): stacking
+  stacked with `fields.stack_batch_dims(field, new_batch_dim="run")`. The
+  stacked dim is a new index, labeled `0..n-1`, so it takes a new name
+  (`new_batch_dim` is required, and may not be a dim stacked, a coordinate or a
+  `<dim>_label` name): stacking
   `(sample, driver_member)` into `sample` would align it with theta's samples,
   which it is not, and the operators refuse a model output stacked over a dim of
   the SIPNET parameter fields. The stack keeps each original dim's labels as a
@@ -335,7 +336,7 @@ The batch-dim rules:
   dims alone (`source_index`), and checks that the result is a field. Through
   Flat: a vector's `fields(y, batch_dim="run")` carries no labels, and
   `unstack_batch_dims(array, labels_from=stacked_array)` copies them; a Dataset
-  is stacked with `dataset.map(lambda f: stack_batch_dims(f, into="run"))`, a
+  is stacked with `dataset.map(lambda f: stack_batch_dims(f, new_batch_dim="run"))`, a
   dict entry by entry. The round trip needs fields. The observation vector's
   always are, since an observation source holds fields; a parameter vector
   built from bare site ids gives Fields without `lon`/`lat`, which are not

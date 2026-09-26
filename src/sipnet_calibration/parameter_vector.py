@@ -1989,7 +1989,7 @@ class ParameterVector:
         vector project onto this one. Fields of several batch dims, a
         ``sample`` crossed with an ``initial_condition_member`` say, are
         stacked into one new batch dim first
-        (``fields.map(lambda field: stack_batch_dims(field, into="run"))``),
+        (``fields.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))``),
         whose rows are then Flat's rows. The stack needs fields, so a vector
         built from bare site ids, whose Fields carry no ``lon``/``lat``, has
         no such path; build it from a site table.

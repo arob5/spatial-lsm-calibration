@@ -1239,7 +1239,7 @@ def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(
             f"is one row of theta, so a batch crossed with a data source's ensemble (a "
             "sample and an initial_condition_member, say) is run by giving theta one row "
             "per combination, each sample's row repeated once per member, and selecting "
-            "each row's member in the hook. (fields.stack_batch_dims(field, into='run') is "
+            "each row's member in the hook. (fields.stack_batch_dims(field, new_batch_dim='run') is "
             "how such crossed fields reach a vector's Flat; a run still needs one row of "
             "theta, which the hook maps to its own SIPNET parameters.)"
         )

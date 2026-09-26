@@ -1420,7 +1420,7 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
 
     field = processed["initial_soil_organic_carbon"].isel(site=[0, 26, 864])
     crossed = field.expand_dims(sample=2).assign_coords(sample=batch_coordinate("sample", [0, 1]))
-    restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
+    restored = unstack_batch_dims(stack_batch_dims(crossed, new_batch_dim="run"))
     xr.testing.assert_identical(restored, crossed)
 
 
@@ -1623,7 +1623,7 @@ def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, 
     crossed = field.expand_dims(sample=np.arange(3, dtype=np.int64)).assign_coords(
         sample=("sample", np.arange(3, dtype=np.int64), dict(SAMPLE_ATTRIBUTES))
     )
-    restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
+    restored = unstack_batch_dims(stack_batch_dims(crossed, new_batch_dim="run"))
     xr.testing.assert_identical(restored, crossed)
     assert restored.equals(crossed)
 

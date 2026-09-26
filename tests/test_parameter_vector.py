@@ -1806,8 +1806,8 @@ def test_two_batch_dims_are_refused_until_stacked(theta):
     with pytest.raises(ValueError, match="stack_batch_dims") as refusal:
         located.flat(crossed)
     # The advice for a Dataset is the call that runs.
-    assert "dataset.map(lambda field: stack_batch_dims(field, into='run'))" in str(refusal.value)
-    stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+    assert "dataset.map(lambda field: stack_batch_dims(field, new_batch_dim='run'))" in str(refusal.value)
+    stacked = crossed.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))
     flat = located.flat(stacked)
     assert flat.shape == (2 * len(theta), located.dimension)
     np.testing.assert_allclose(flat[::2], theta, rtol=1e-10, atol=1e-10)
@@ -1822,7 +1822,7 @@ def test_the_flat_round_trip_of_a_stack_unstacks(theta):
     crossed = fields.expand_dims(initial_condition_member=[4, 1]).transpose(
         "sample", "initial_condition_member", "site"
     )
-    stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+    stacked = crossed.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))
     made = located.fields(located.flat(stacked), space="unconstrained", batch_dim="run")
     restored = made.map(
         lambda array: unstack_batch_dims(array, labels_from=stacked[array.name])
@@ -2225,7 +2225,7 @@ class TestTheVectorConventions:
         )
         with pytest.raises(ValueError, match="stack_batch_dims"):
             vector.flat(crossed)
-        stacked = crossed.map(lambda field: stack_batch_dims(field, into="run"))
+        stacked = crossed.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))
         rows = vector.flat(stacked)
         assert rows.shape == (2 * theta.shape[0], vector.dimension)
         np.testing.assert_allclose(rows[::2], theta, rtol=1e-10, atol=1e-10)

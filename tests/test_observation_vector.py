@@ -856,7 +856,7 @@ class TestPredictOverAnyBatchDim:
         )
         with pytest.raises(ValueError, match="stack_batch_dims"):
             vector.flat(predicted)
-        stacked = {name: stack_batch_dims(field, into="run") for name, field in predicted.items()}
+        stacked = {name: stack_batch_dims(field, new_batch_dim="run") for name, field in predicted.items()}
         batched_flat = vector.flat(stacked)
         assert batched_flat.shape == (4, vector.dimension)
         back = vector.fields(batched_flat, batch_dim="run")
@@ -986,7 +986,7 @@ class TestFieldsNeverLetAnObservationSourceCoordinateTakeTheBatchDim:
         vector = ObservationVector(observation_sources=[ObservationSource(observation_source_name="wood", observed_values=wood, operator=SelectTimestep("wood_carbon"))])
         crossed = stack.expand_dims(driver_member=[0, 3], axis=1)
         predicted = vector.predict(crossed)
-        stacked = {name: stack_batch_dims(field, into="run") for name, field in predicted.items()}
+        stacked = {name: stack_batch_dims(field, new_batch_dim="run") for name, field in predicted.items()}
         made = vector.fields(vector.flat(stacked), batch_dim="run")
         restored = unstack_batch_dims(made["wood"], labels_from=stacked["wood"])
         assert restored.dims == ("sample", "driver_member", "site", "time")
@@ -1040,7 +1040,7 @@ class TestPredictChecksAOneSampleSIPNETParameterFieldsAgainstAStack:
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
-        stacked = crossed.map(lambda variable: stack_batch_dims(variable, into="run"))
+        stacked = crossed.map(lambda variable: stack_batch_dims(variable, new_batch_dim="run"))
         three = xr.concat([sipnet_parameter_fields, sipnet_parameter_fields.isel(sample=[0]).assign_coords(sample=[3])], "sample")
         with pytest.raises(ValueError, match="for sample 3 alone"):
             vector.predict(stacked, sipnet_parameter_fields=three.sel(sample=3))

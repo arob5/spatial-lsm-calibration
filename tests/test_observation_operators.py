@@ -896,7 +896,7 @@ class TestAStackedTargetIsNotReadAtSIPNETParameterFieldsLabels:
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
-        relabeled = stack_batch_dims(crossed, into="run").rename(run="sample")
+        relabeled = stack_batch_dims(crossed, new_batch_dim="run").rename(run="sample")
         sipnet_parameter_fields = as_sipnet_parameter_fields(xr.Dataset(
             {"leaf_carbon_per_area": (("sample", "site"), np.arange(8.0).reshape(4, 2) + 1)},
             coords={"sample": [0, 1, 2, 3], "site": [1, 2]},
@@ -909,7 +909,7 @@ class TestAStackedTargetIsNotReadAtSIPNETParameterFieldsLabels:
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
-        return stack_batch_dims(crossed, into="run")
+        return stack_batch_dims(crossed, new_batch_dim="run")
 
     def _table(self):
         return as_sipnet_parameter_fields(xr.Dataset(
@@ -936,7 +936,7 @@ class TestAStackedTargetIsNotReadAtSIPNETParameterFieldsLabels:
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
-        stacked = crossed.map(lambda variable: stack_batch_dims(variable, into="run"))
+        stacked = crossed.map(lambda variable: stack_batch_dims(variable, new_batch_dim="run"))
         with pytest.raises(ValueError, match="for sample 3 alone"):
             ComputeLeafAreaIndex()(
                 stacked,
@@ -961,7 +961,7 @@ class TestARestackedTargetIsReadAtItsLabels:
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
-        return stack_batch_dims(stack_batch_dims(crossed, into="run"), into="run2")
+        return stack_batch_dims(stack_batch_dims(crossed, new_batch_dim="run"), new_batch_dim="run2")
 
     def _table(self):
         return as_sipnet_parameter_fields(xr.Dataset(
@@ -986,7 +986,7 @@ class TestARestackedTargetIsReadAtItsLabels:
 
         crossed = stack.expand_dims(driver_member=[0, 1], axis=1)
         restacked = crossed.map(
-            lambda variable: stack_batch_dims(stack_batch_dims(variable, into="run"), into="run2")
+            lambda variable: stack_batch_dims(stack_batch_dims(variable, new_batch_dim="run"), new_batch_dim="run2")
         )
         with pytest.raises(ValueError, match="for sample 3 alone"):
             ComputeLeafAreaIndex()(
@@ -999,7 +999,7 @@ class TestARestackedTargetIsReadAtItsLabels:
         from sipnet_calibration.fields import stack_batch_dims
 
         crossed = stack["leaf_carbon"].expand_dims(driver_member=[0, 1], axis=1)
-        unlabeled = stack_batch_dims(crossed, into="run").drop_vars("sample_label")
+        unlabeled = stack_batch_dims(crossed, new_batch_dim="run").drop_vars("sample_label")
         with pytest.raises(ValueError, match="no 'sample_label'"):
             extract_sipnet_parameter_at_coords(
                 self._table().sel(sample=3), "leaf_carbon_per_area", unlabeled

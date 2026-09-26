@@ -552,7 +552,7 @@ class ObservationVector:
             if an array has a dim that is neither a batch dim (integer
             labels), a spatial dim nor ``time``; if an array has more than
             one batch dim (stack each into a new one first,
-            ``{name: stack_batch_dims(array, into="run") for name, array in
+            ``{name: stack_batch_dims(array, new_batch_dim="run") for name, array in
             fields.items()}``, with
             :func:`sipnet_calibration.fields.stack_batch_dims`); or if some
             arrays carry a batch dim and others do not, they carry different
