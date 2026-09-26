@@ -284,7 +284,7 @@ convention (approved; **being implemented in PR 4**, except where noted):
 | Size | `dimension` (D or N) |
 | Entries | `index`: a `pd.MultiIndex` over the entries; `positions(**selectors) -> int64 array` on both |
 | Sites | `sites` (ids, ascending, refused if unsorted on input), `site_table` on both |
-| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order; duplicates are refused (PR 1, through `validation.as_site_ids`); `restrict_to_sites(sites)` is the intersecting form |
+| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError` (PR 4; `ObservationVector.select(sites=)` ignores an unknown site until then); the result keeps vector order whatever the request order; duplicates are refused (PR 1, through `validation.as_site_ids`); `restrict_to_sites(sites)` is the intersecting form |
 | Representations | `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
 | Flat's array type | JAX everywhere: both vectors and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package (PR 1) |
 | Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line |
@@ -326,7 +326,9 @@ coercion lives in `validation.py`.
     any type through `as_sequence`;
   - **an integer** (a site id, a source index, a count) refuses a boolean, a
     missing value and a float, even an integral one ("cast it with int()");
-  - **a site the data lacks** is a `KeyError`.
+  - **a site the data lacks** is a `KeyError` (the vectors' `select` from
+    PR 4, which aligns their selection: `ObservationVector.select(sites=)`
+    still ignores a site it does not observe).
   `as_batched_flat(values, dimension, *, message_name)` returns the 2-D
   batch alone, `float64`, JAX when given JAX; a caller that must know a
   one-vector input was given asks `is_one_vector(values)` (not
