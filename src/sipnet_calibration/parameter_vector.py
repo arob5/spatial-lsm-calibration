@@ -2516,19 +2516,22 @@ def sipnet_overrides(
 
     Returns
     -------
-    dict[str, float]
-        ``{SIPNET parameter: value}``, Python floats.
+    SIPNETOverrides
+        ``{SIPNET parameter: value}``, Python floats, a ``dict``; checked by
+        :func:`validate_sipnet_overrides`.
 
     Raises
     ------
     TypeError
-        If *site* or a batch label is a boolean, a float or not an integer,
-        or *batch* is not a mapping.
+        If *sipnet_parameter_fields* is not an ``xr.Dataset``; if *site* or a
+        batch label is a boolean, a float or not an integer, or *batch* is not
+        a mapping.
     ValueError
-        If a variable has a dim that is neither a batch dim (integer labels),
-        ``site`` nor ``time``; if there is no ``site`` dim, the SIPNET
-        parameter fields having been selected to one site or never having
-        had one; or if *batch* does not name exactly their batch dims.
+        If *sipnet_parameter_fields* are not SIPNET parameter fields
+        (:func:`validate_sipnet_parameter_fields`); if there is no ``site``
+        dim, the SIPNET parameter fields having been selected to one site or
+        never having had one; or if *batch* does not name exactly their batch
+        dims.
     KeyError
         If *site*, or a batch label, is not in the SIPNET parameter fields,
         naming it.

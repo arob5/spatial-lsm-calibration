@@ -139,7 +139,8 @@ design every change is measured against; a change that needs a convention not
 written here adds it there and here first. The code is being brought into line
 with it by a series of PRs: PR 1 (the foundation: shared constants, coercion,
 file writing, site-table functions), PR 2 (batch dims), PR 3 (vocabulary
-renames), PR 4 (contracts and vectors), then module cleanups. Where the code
+renames), PR 4 (contracts and vectors: the aliases and their validators, the
+vector conventions), then module cleanups. Where the code
 does not follow a rule below yet, the rule says which PR changes it.
 
 ### Glossary
@@ -304,8 +305,8 @@ The batch-dim rules:
   its observed values, so nothing runs first; `ObservationVector.fields` refuses
   an observation source name or a coordinate of its observed values (a scalar
   batch label excepted: an observation source's scalar batch labels are metadata
-  of the input and are not carried); `fields.label_run`,
-  `from_sipnet_output(batch=)` and the stackers' `key_dims` refuse a variable,
+  of the input and are not carried); `fields.label_run(batch=)` and
+  `stack_model_outputs(key_dims=)` refuse a variable,
   dim or coordinate of the model output. The parameter vector reserves `sample`,
   `conventions.NON_BATCH_DIM_NAMES` and the data source member names against
   parameter names, and `shared` and `site_id` as well against site-labels names.
@@ -335,9 +336,12 @@ The batch-dim rules:
   Flat: a vector's `fields(y, batch_dim="run")` carries no labels, and
   `unstack_batch_dims(array, labels_from=stacked_array)` copies them; a Dataset
   is stacked with `dataset.map(lambda f: stack_batch_dims(f, into="run"))`, a
-  dict entry by entry. The round trip needs fields: a vector built from bare
-  site ids gives arrays without `lon`/`lat` (or with `int64` sites), which are
-  not fields yet and are refused; PR 4 closes it.
+  dict entry by entry. The round trip needs fields. The observation vector's
+  always are, since an observation source holds fields; a parameter vector
+  built from bare site ids gives Fields without `lon`/`lat`, which are not
+  fields in full (`validate_calibration_fields` checks every other rule of
+  them) and which the stack refuses, so a vector that needs the stack is built
+  from a site table.
 - **A scalar coordinate is not a dim.** A field whose batch dim was selected
   away with `.isel(sample=k)` has no batch dim; its scalar label is metadata
   (`fields.scalar_batch_labels` finds them: any scalar integer coordinate
@@ -345,42 +349,72 @@ The batch-dim rules:
   `seed=42` must name it in `key_dims` or drop it), and `flat` gives one
   vector. An observation source refuses a batch dim, not a scalar batch label.
 
-Every plotter calls `validate_field` first, as `stack_batch_dims` and
-`unstack_batch_dims` do, and plotting stays strict: a plotter takes only
-fields (`int32` `site` with `lon`/`lat`). The time-alignment verbs, the
-observation source, the operators' grid check and the parameter vector still
-check their own parts of the contract until PR 4 and the module cleanups
-route them through it. **Model output** is an `xr.Dataset` of pySIPNET-named
-variables on one shared time axis, each variable a field; one run's has a
-scalar `site` and scalar batch labels (`fields.label_run(dataset, site=,
-batch={"sample": 3})`), a stack has `site` and batch dims
-(`fields.stack_model_outputs(runs, key_dims=("sample", "site"))`, keys in
-`key_dims` order, every batch label a run carries named in `key_dims`).
+`validate_field` is called at every public entry point that takes a field:
+every plotter first, as `stack_batch_dims` and `unstack_batch_dims` do; the
+time-alignment verbs; `ObservationSource` (through
+`validate_observed_values`); the operators' grid check and
+`ObservationVector.flat`/`predict` (on the array laid out by
+`fields.in_field_layout`, which leaves an operator its own dim order and a
+scalar `site`); and the parameter vector's validators. Plotting stays strict:
+a plotter takes only fields (`int32` `site` with `lon`/`lat`), with no
+leniency for a plot that would not need a location. **Model output**
+(`fields.ModelOutput`, checked by `fields.validate_model_output`) is an
+`xr.Dataset` of pySIPNET-named variables on one shared time axis, each
+variable a field; one run's has a scalar `site` and scalar batch labels
+(`fields.label_run(sipnet_output, output_variable_names=[...], site=,
+batch={"sample": 3})`, which takes a pySIPNET `SIPNETOutput` or its Dataset
+and drops `time_bounds` and SIPNET's row labels), a stack has `site` and
+batch dims (`fields.stack_model_outputs(runs, key_dims=("sample", "site"))`,
+keys in `key_dims` order, every batch label a run carries named in
+`key_dims`). `dict(model_output.data_vars)` is its dict form.
+
+**The aliases.** One per form that crosses a module boundary, each exactly
+one type with one validator beside it (PEP 695 `type` statements):
+
+| Alias | Type | Home | Validator |
+|---|---|---|---|
+| `Field` | `xr.DataArray` | `fields` | `validate_field` |
+| `ModelOutput` | `xr.Dataset` | `fields` | `validate_model_output` |
+| `ObservedValues` | `xr.DataArray`, a field on `(site[, time])`, no batch dim, `NaN` unobserved | `observation.source` | `validate_observed_values` |
+| `SIPNETParameterFields` | `xr.Dataset`, one variable per pySIPNET flat parameter name on `(*batch, site)`, `(site,)` or none, pySIPNET's `xarray_attributes()` | `parameter_vector` | `validate_sipnet_parameter_fields` |
+| `SIPNETOverrides` | `Mapping[str, float]` | `parameter_vector` | `validate_sipnet_overrides` |
+| `CalibrationFields` | `xr.Dataset`, a parameter vector's Fields | `parameter_vector` | `validate_calibration_fields` |
+
+The operators, `check_operator` and `ObservationVector.predict` take SIPNET
+parameter values in one form, `sipnet_parameter_fields=`; the forward model's
+worker builds one run's zero-dimensional ones from its own
+`SIPNETResult.parameters` (`SIPNETParameters.dataarray(name)`) for every name
+the operators read. `initial_conditions.to_sipnet_initial_condition_fields`
+gives an initial condition ensemble's as SIPNET parameter fields on its batch
+dims, which merge into a vector's.
 
 ### Vector-like classes
 
 `ParameterVector`, `ObservationVector` and their pieces (`CalibrationParameter`,
-`FixedParameter`, the observation vector's per-source piece) follow one
-convention (approved; **being implemented in PR 4**, except where noted):
+`FixedParameter`, `ObservationSource`) follow one convention:
 
 | Aspect | Convention |
 |---|---|
-| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check; nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only. `FixedParameter`'s value, `ParameterVector.site_labels` and its lon/lat are frozen already (PR 1); one grouped check in `__post_init__` is PR 4's |
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`; the parameter vector's two, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, sit either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`conventions.FrozenMapping`, which pickles), arrays copied and read-only |
 | Pieces | `vector[name]`, `name in vector`, `iter(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
 | Size | `dimension` (D or N) |
-| Entries | `index`: a `pd.MultiIndex` over the entries; `positions(**selectors) -> int64 array` on both |
-| Sites | `sites` (ids, ascending, refused if unsorted on input), `site_table` on both |
-| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError` (PR 4; `ObservationVector.select(sites=)` ignores an unknown site until then); the result keeps vector order whatever the request order; duplicates are refused (PR 1, through `validation.as_site_ids`); `restrict_to_sites(sites)` is the intersecting form |
+| Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, group, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both (`Layout.positions` beneath the parameter vector's) |
+| Sites | `sites` (ids, ascending, refused if unsorted on input; an observation source's values are sorted by site and time as a normalization, since their order carries nothing), `site_table` on both (the observation vector's from its observed values' `lon`/`lat`, which its sources must agree on) |
+| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused (`validation.as_site_ids`, `validation.check_names_are_unique`); `restrict_to_sites(sites)` is the intersecting form, which the forward model's advice uses |
 | Representations | `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
 | Flat's array type | JAX everywhere: both vectors and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package (PR 1) |
-| Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line |
+| Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line. The parameter vector adds `describe_entries()` (one row per entry, with the prior's moments) and `summary()` (the table as text) |
 | Directions | where a vector and its pieces list SIPNET parameter names, the name says which way: `sipnet_parameter_names_written`, `sipnet_parameter_names_read` |
 | Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──`, `# ── evaluation ──` |
 
-`ForwardModel` is a regular class with read-only properties (PR 4; its
-attributes are still plain and reassignable, bar `batch_dim`, read-only since
-PR 2 because the default SIPNET-parameter-fields hook is bound to it);
-`ForwardEvaluation` is `frozen, eq=False` (PR 1). No base class is shared by the
+`ForwardModel` is a regular class with read-only properties (its arguments
+and what it derives from them, so the run machinery cannot go stale; its
+climate a `FrozenMapping`, its site table a copy); `ForwardEvaluation` is
+`frozen, eq=False` with JAX `theta`, `predictions` and `valid`. A batch crossed
+with a data source's ensemble reaches Flat through `stack_batch_dims` into a
+new batch dim (the parameter vector's `flat` takes the stacked Fields), and
+reaches `ForwardModel` as rows of `theta`, one per combination: it refuses
+SIPNET parameter fields on a second batch dim, with that advice. No base class is shared by the
 vectors: they share an interface, not an implementation, and their shared
 coercion lives in `validation.py`.
 
@@ -422,9 +456,8 @@ coercion lives in `validation.py`.
     any type through `as_sequence`;
   - **an integer** (a site id, a source index, a count) refuses a boolean, a
     missing value and a float, even an integral one ("cast it with int()");
-  - **a site the data lacks** is a `KeyError` (the vectors' `select` from
-    PR 4, which aligns their selection: `ObservationVector.select(sites=)`
-    still ignores a site it does not observe).
+  - **a site the data lacks** is a `KeyError` (the vectors' `select`
+    included; `restrict_to_sites` is their intersecting form).
   `as_batched_flat(values, dimension, *, message_name)` returns the 2-D
   batch alone, `float64`, JAX when given JAX; a caller that must know a
   one-vector input was given asks `is_one_vector(values)` (not
@@ -866,7 +899,8 @@ src/sipnet_calibration/
     raw.py                # build_raw(), raw_encoding(), read_raw()
     processed.py          # build_initial_conditions(), load_initial_conditions(),
                           # netcdf_encoding(), initial_condition_fields()
-    sipnet_parameters.py  # to_sipnet_initial_conditions() and its table form
+    sipnet_parameters.py  # to_sipnet_initial_conditions() and, for an ensemble,
+                          # to_sipnet_initial_condition_fields()
   drivers.py              # load_drivers(): raw .clim files read by pySIPNET's
                           # ClimateDrivers, stacked into (driver_member, site, time) on
                           # pySIPNET's axis; no processed file exists
@@ -884,7 +918,9 @@ src/sipnet_calibration/
                           # fields on (sample, site), attrs["space"]), and
                           # sipnet_parameter_fields() -> sipnet_overrides(), and
                           # PyEns grids
-                          # through pyens.xarray.fields_from_dataset;
+                          # through pyens.xarray.fields_from_dataset; the
+                          # CalibrationFields, SIPNETParameterFields and
+                          # SIPNETOverrides aliases and their validators;
                           # example_parameter_vector()
   forward.py              # ForwardModel: theta (J, D) -> predictions (J, N),
                           # SIPNET once per (sample, site) through PyEns, the
@@ -893,13 +929,14 @@ src/sipnet_calibration/
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   fields.py               # the field contract: validate_field(), batch_dims(),
                           # stack_batch_dims()/unstack_batch_dims(),
-                          # batch_coordinate(), scalar_batch_labels(); label_run()
-                          # (a run's Dataset with site/lon/lat and batch labels:
-                          # the model_output the observation operators read),
-                          # from_sipnet_output(), stack_sipnet_outputs() over
-                          # SIPNETOutput.select, stack_model_outputs() (runs'
-                          # Datasets to one on (*batch, site, time)),
-                          # resolve_output_variable_names(), message_name()
+                          # batch_coordinate(), scalar_batch_labels(); the Field
+                          # and ModelOutput aliases, validate_model_output();
+                          # label_run() (a SIPNETOutput or its Dataset with
+                          # site/lon/lat and batch labels: the model output the
+                          # observation operators read), stack_model_outputs()
+                          # (runs to one on (*batch, site, time)),
+                          # in_field_layout(), resolve_output_variable_names(),
+                          # message_name()
   observation/            # the observation side of the inverse problem
     __init__.py           # curated exports
     time_alignment.py     # aggregate_time, reduce_windows, select_timestep_at,
@@ -910,7 +947,9 @@ src/sipnet_calibration/
                           # ComputeLeafAreaIndex; DEFAULT_OBS_OPS;
                           # check_operator and the contract's checks the
                           # vector shares
-    vector.py             # ObservationSource, ObservationVector: index (site,
+    source.py             # ObservedValues + validate_observed_values();
+                          # ObservationSource, one source's fields and operator
+    vector.py             # ObservationVector: index (site,
                           # observation_source, time), y, flat()/fields(),
                           # positions(),
                           # predict()
@@ -1006,9 +1045,10 @@ plotting code. The load-bearing rules:
   of a pool. An invalid pair is refused in pySIPNET's own words.
 - **An observation operator is a callable checked at the boundary, not a
   grammar.** `observation.ObservationOperator` is a protocol:
-  `operator(model_output: xr.Dataset, observed_values: xr.DataArray, *,
-  sipnet_parameters=None) -> xr.DataArray` on the observed values' own `(site[,
-  time])` grid, declaring `output_variable_names` and `sipnet_parameter_names`,
+  `operator(model_output: ModelOutput, observed_values: ObservedValues, *,
+  sipnet_parameter_fields=None) -> Field` on the observed values' own `(site[,
+  time])` grid, declaring `output_variable_names` and
+  `sipnet_parameter_names_read`,
   and pointwise in `site` and in every batch dim so it can run on a worker
   (`check_operator` slices each to test that). Every dim of the SIPNET parameter
   fields is selected at the model output's labels or refused, so none of their
@@ -1083,7 +1123,7 @@ plotting code. The load-bearing rules:
   `ReduceOverWindows` reads; a dated or static constraint documents no
   interval.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
-  unchanged.** `fields.from_sipnet_output` adds `site`, batch labels and
+  unchanged.** `fields.label_run` adds `site`, batch labels and
   `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the
   drivers, read through `ClimateDrivers`. The registry names are already
   `lower_case_with_underscores`, so they are the processed names. Both keep

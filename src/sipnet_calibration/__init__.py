@@ -33,8 +33,9 @@ The site table and the fields:
 :mod:`~sipnet_calibration.projection`
     The display projection, over PROJ.
 :mod:`~sipnet_calibration.fields`
-    The field contract (``validate_field``, batch dims and their stacking),
-    and labeling and stacking SIPNET runs.
+    The field and model-output contracts (``Field``, ``ModelOutput`` and
+    their validators, batch dims and their stacking), and labeling and
+    stacking SIPNET runs.
 
 The data sources, each a spec, a reader, a builder, a loader and a field view:
 
@@ -70,15 +71,18 @@ The dependency runs one way, from the foundations up::
 
     conventions  <-  validation  <-  sites
         <-  fields, constraints, site_labels
-        <-  initial_conditions, drivers, parameter_vector, observation
+        <-  drivers, parameter_vector
+        <-  initial_conditions, observation
         <-  forward  <-  experiments
 
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
 and :mod:`~sipnet_calibration.projection` write through it;
 ``parameter_vector`` reads ``site_labels``' column name. ``drivers``,
 ``initial_conditions``, ``parameter_vector`` and ``observation`` depend on
-``fields`` (the field contract and its batch dims), and ``forward`` on
-``fields``, ``observation`` and ``parameter_vector``.
+``fields`` (the field contract and its batch dims); ``initial_conditions``
+and ``observation`` depend on ``parameter_vector`` too, for the SIPNET
+parameter fields alias and its validator; and ``forward`` on ``fields``,
+``observation`` and ``parameter_vector``.
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside

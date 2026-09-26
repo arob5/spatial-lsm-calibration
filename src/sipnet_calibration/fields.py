@@ -328,9 +328,10 @@ rest from the stacked field::
 
 For a Dataset, such as a parameter vector's Fields,
 ``fields_dataset.map(lambda field: stack_batch_dims(field, into="run"))``.
-The round trip needs fields (``int32`` ``site`` with ``lon``/``lat``): a
-vector built from bare site ids gives arrays without them, which are not
-fields yet and are refused.
+The round trip needs fields (``int32`` ``site`` with ``lon``/``lat``): the
+observation vector's always are, and a parameter vector's are when it was
+built from a site table; one built from bare site ids gives Fields without
+``lon``/``lat``, which the stack refuses.
 
 Labeling run after run, with the site table read once::
 
