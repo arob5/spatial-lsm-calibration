@@ -7,6 +7,8 @@ Dimensions
     names :data:`POINT`, :data:`LAT`, :data:`LON`, :data:`Y`, :data:`X`,
     collected in :data:`SPATIAL_DIM_NAMES`.
 Coordinates
+    :data:`SOURCE_INDEX`, the 1-based file index beside a data source's
+    own ensemble dim;
     :data:`LON` and :data:`LAT` on a site or a point; pySIPNET's timestep
     coordinates :data:`TIMESTEP_START` and :data:`TIMESTEP_LENGTH`, with
     ``time`` collected in :data:`TIME_COORD_NAMES`; an observation's window
@@ -18,11 +20,14 @@ Variables
     or pySIPNET's output stores.
 Attributes
     :data:`SITE_ATTRIBUTES`, :data:`LON_ATTRIBUTES`, :data:`LAT_ATTRIBUTES`,
-    the CF attributes of those coordinates, one wording each;
+    :data:`SAMPLE_ATTRIBUTES`, :data:`SOURCE_MEMBER_ATTRIBUTES` and
+    :data:`SOURCE_INDEX_ATTRIBUTES`, the attributes of those coordinates,
+    one wording each;
     :data:`STALE_TIME_ATTRIBUTE_NAMES`, the ``time`` attributes a field drops.
 Dtypes and patterns
-    :data:`SITE_DTYPE`, the dtype of a site id; :data:`NAME_PATTERN`, what a
-    processed name looks like.
+    :data:`SITE_DTYPE`, the dtype of a site id; :data:`BATCH_LABEL_DTYPE`, the
+    dtype of a batch dim's labels; :data:`NAME_PATTERN`, what a processed name
+    looks like.
 Settings
     :data:`CF_CONVENTIONS`, the ``Conventions`` attribute the netCDF files
     declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where the
@@ -56,6 +61,7 @@ import numpy as np
 from pysipnet.dataset import TIME_DIMENSION
 
 __all__ = [
+    "BATCH_LABEL_DTYPE",
     "CF_CONVENTIONS",
     "DATA_ROOT_ENV_VAR",
     "LAT",
@@ -65,10 +71,14 @@ __all__ = [
     "NAME_PATTERN",
     "POINT",
     "SAMPLE",
+    "SAMPLE_ATTRIBUTES",
     "SITE",
     "SITE_ATTRIBUTES",
     "SITE_DTYPE",
     "SITE_ID",
+    "SOURCE_INDEX",
+    "SOURCE_INDEX_ATTRIBUTES",
+    "SOURCE_MEMBER_ATTRIBUTES",
     "SPATIAL_DIM_NAMES",
     "STALE_TIME_ATTRIBUTE_NAMES",
     "TIME",
@@ -93,8 +103,10 @@ SITE = "site"
 #: The time dimension, pySIPNET's own name for it.
 TIME = TIME_DIMENSION
 
-#: The batch dimension created from the rows of batched Flat: one row of
-#: ``theta`` is one sample.
+#: The default name of the batch dimension created from the rows of batched
+#: Flat: one row of ``theta`` is one sample. Every function that creates one
+#: takes ``batch_dim=`` to name it otherwise, and all default to this, so the
+#: Fields of the two vectors align on one dim.
 SAMPLE = "sample"
 
 #: The spatial dimension of locations that are not sites, such as spatial
@@ -155,6 +167,13 @@ WINDOW_START = "time_bounds_start"
 #: The coordinate on an observation's ``time`` for the end of the window its
 #: value covers; see :data:`WINDOW_START`.
 WINDOW_END = "time_bounds_end"
+
+
+#: The coordinate beside a data source's own ensemble dim (such as
+#: ``initial_condition_member`` or ``driver_member``) holding each member's
+#: 1-based index in the source's file names, so a file can always be found
+#: from a member. One name for every data source.
+SOURCE_INDEX = "source_index"
 
 
 # ── variables ─────────────────────────────────────────────────────────────────
@@ -265,6 +284,36 @@ LAT_ATTRIBUTES = FrozenMapping(
     {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
 )
 
+#: The attributes of a ``sample`` coordinate. Read-only, as
+#: :data:`SITE_ATTRIBUTES`.
+SAMPLE_ATTRIBUTES = FrozenMapping(
+    {
+        "long_name": "Sample",
+        "comment": "Label of the row of batched Flat the value was computed from.",
+    }
+)
+
+#: The attributes of a data source's own ensemble dim, such as
+#: ``initial_condition_member``. Read-only, as :data:`SITE_ATTRIBUTES`.
+SOURCE_MEMBER_ATTRIBUTES = FrozenMapping(
+    {
+        "long_name": "Ensemble member of the data source",
+        "comment": (
+            "0-based, meaningful only within this data source; source_index is the "
+            "member's 1-based index in the source's file names."
+        ),
+    }
+)
+
+#: The attributes of a :data:`SOURCE_INDEX` coordinate. Read-only, as
+#: :data:`SITE_ATTRIBUTES`.
+SOURCE_INDEX_ATTRIBUTES = FrozenMapping(
+    {
+        "long_name": "Member index in the data source's file names",
+        "comment": "1-based, as the data source numbers its files.",
+    }
+)
+
 #: ``time`` attributes a field does not keep. ``bounds`` names pySIPNET's
 #: two-dimensional ``time_bounds`` variable, which a field cannot carry and
 #: which describes the source's timesteps, not a coarser one's.
@@ -275,6 +324,10 @@ STALE_TIME_ATTRIBUTE_NAMES: tuple[str, ...] = ("bounds",)
 
 #: The dtype of a site id, on a ``site`` coordinate and in the site table.
 SITE_DTYPE = np.int32
+
+#: The dtype of a batch dim's labels, which may be any distinct integers. The
+#: labels a batched Flat is given are ``0`` to ``n_samples - 1``.
+BATCH_LABEL_DTYPE = np.int64
 
 #: What a processed name looks like: lower-case words of letters and digits,
 #: joined by single underscores.
