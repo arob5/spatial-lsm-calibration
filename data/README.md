@@ -584,9 +584,10 @@ holding capacity the calibration also proposes, so its meaning moves as well.
 the mapping to one member at one site for one proposed parameter vector, and
 `to_sipnet_initial_conditions_table` does it over a whole
 `(initial_condition_member, site)` ensemble, crossed with any other batch dim
-a parameter carries (a `sample` drawn by the calibration). Both write the leaf row with SIPNET's own `leafCSpWt` rather than
-PEcAn's SLA draw, and both guard `fineRootFrac + coarseRootFrac < 1`, which
-pySIPNET does not check and SIPNET runs to completion without.
+a parameter carries (a `sample` drawn by the calibration). Both write the leaf
+row with SIPNET's own `leafCSpWt` rather than PEcAn's SLA draw, and both guard
+`fineRootFrac + coarseRootFrac < 1`, which pySIPNET does not check and SIPNET
+runs to completion without.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
 > `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
@@ -1550,9 +1551,12 @@ the file has for its output: `time` at the end of each step, with
 `time_step_start`, `time_step_length` and CF `time_bounds`, and `time_zone`
 `"undeclared"` unless the caller declares the clock. Those are the semantics of
 SIPNET's format; the ERA5 files depart from them as Note 16 says. A requested
-`(site, member)` pair with no file is an error unless `allow_missing=True`,
-which fills it with `NaN` and adds a boolean `driver_present(driver_member, site)`. The three local files are such a case:
-site 1 has members 1 and 2, site 27 has member 5.
+`(site, source index)` pair with no file is an error unless
+`allow_missing=True`, which fills it with `NaN` and adds a boolean
+`driver_present(driver_member, site)`. The three local files are such a case:
+site 1 has members 1 and 2, site 27 has member 5. `driver_member` is
+`source_index - 1`, the member's identity, whatever members a call loads, so
+two loads align member for member.
 
 `initial_conditions.nc` carries the initial condition ensemble on
 `(initial_condition_member, site)`, in the source files' units, read through
@@ -1568,8 +1572,9 @@ fields by `initial_condition_fields`:
 | `initial_soil_moisture_saturation` | `SoilMoistFrac` | `percent` |
 
 `site` is the whole pool with `lon`/`lat`; `initial_condition_member` is
-0-based (`int64`) with `source_index` carrying the source files' 1-based
-index; there is no `time`,
+0-based (`int64`), `source_index - 1`, with `source_index` carrying the source
+files' 1-based index (the raw file holds members 1 to 100 contiguously, which
+the ingest checks, so the labels are 0 to 99); there is no `time`,
 and what the source's degenerate one claimed is kept in the `source_time_*`
 attributes. `NaN` has one meaning, that no source file for the site carries
 the variable, uniform over the site's members and asserted on load. Each variable
@@ -1580,9 +1585,10 @@ PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
 `constituent` and `comment`. The dataset records the PEcAn preparation script
 and its caveat as `source_script` and `source_script_note`, the nominal date
 2011-07-15 with where it comes from. The member dim's name says which
-ensemble it is (Note 12). A file written before the dim was renamed from
-`member` is refused on load and re-made by
-`scripts/ingest_initial_conditions.py`. The names carry `initial_` because
+ensemble it is (Note 12). The dataset's member count is
+`n_initial_condition_members`. A file written before the dim was renamed from
+`member`, or the attribute from `n_members`, is refused on load and re-made
+by `scripts/ingest_initial_conditions.py`. The names carry `initial_` because
 the product is the model's starting state -- PEcAn calls the format
 `pool_initial_conditions` -- and so that no name collides with a constraint
 product's; `biomass` rather than the file's `woody` because the Spawn and
@@ -1595,8 +1601,10 @@ The following conventions apply to every product.
 - A product's own ensemble is a batch dim named for the product
   (`initial_condition_member`, `driver_member`), a zero-based `int64` index
   meaningful only within that product, with the source's 1-based file index
-  beside it as `source_index`. The tracked raw initial condition file keeps
-  its own `member`, the 1-based index, since raw data is never edited.
+  beside it as `source_index`. The label is the member's identity,
+  `source_index - 1`, whatever subset is loaded, so a member keeps its label
+  in every load. The tracked raw initial condition file keeps its own
+  `member`, the 1-based index, since raw data is never edited.
 - Time is stored as a datetime index. For the drivers and SIPNET output it is
   pySIPNET's axis, built by pySIPNET from SIPNET's `year`, `day` and `time`
   labels and the drivers' step lengths, so a run and its drivers share one
@@ -1772,8 +1780,10 @@ the reanalysis's per-PFT trait posteriors map onto the sixteen.
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial condition member *i* and the calibration ensemble were drawn jointly
 or independently determines whether arithmetic that pairs them is meaningful.
-Because xarray aligns on coordinate values automatically, an incorrect assumption
-here would combine unrelated members without any error being raised. One
+The ensembles' dims carry distinct names, so xarray and PyEns cross them rather
+than pair them; the risk left is in deliberately giving two of them one name,
+which pairs them label by label, and that is to be done only once this
+question is answered yes. One
 connection is known: the members of [GAPFILL] are gap-filled series driven by
 successive members of a driver ensemble, so if that is the same ensemble used here,
 net ecosystem exchange member *i* and driver member *i* would share a realization.

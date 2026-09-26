@@ -86,7 +86,9 @@ is ``"C"``, never ``"kg C m-2"``::
 ============================ ============================ ===============================
 Name                         Dims                         Meaning
 ============================ ============================ ===============================
-``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based, ascending
+``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based: the
+                                                          member's identity,
+                                                          ``source_index - 1``
 ``source_index``             ``initial_condition_member`` ``int64``, the 1-based index in
                                                           the source file name
 ``site``                     ``site``                     ``int32``, the whole pool,
@@ -106,7 +108,7 @@ when set, ``constituent`` and ``comment``. The dataset carries
 ``source_script``, ``source_script_note``, ``nominal_date``,
 ``nominal_date_provenance``,
 ``source_time_units``, ``source_time_long_name``, ``source_time_value``,
-``n_sites``, ``n_members``, ``history`` and ``created``.
+``n_sites``, ``n_initial_condition_members``, ``history`` and ``created``.
 
 **Values are the source files', unchanged.** No unit conversion, no masking:
 negative wood and leaf carbon are written through and counted in the ingest

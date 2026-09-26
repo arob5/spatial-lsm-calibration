@@ -35,7 +35,6 @@ import xarray as xr
 from sipnet_calibration.conventions import (
     BATCH_LABEL_DTYPE,
     CF_CONVENTIONS,
-    DATA_SOURCE_MEMBER_ATTRIBUTES,
     INITIAL_CONDITION_MEMBER,
     LAT,
     LON,
@@ -44,6 +43,7 @@ from sipnet_calibration.conventions import (
     SOURCE_INDEX,
     SOURCE_INDEX_ATTRIBUTES,
 )
+from sipnet_calibration.fields import batch_coordinate
 from sipnet_calibration.initial_conditions.names import (
     RAW_FILE,
     RAW_MEMBER,
@@ -126,11 +126,9 @@ def build_initial_conditions(raw: xr.Dataset, sites: pd.DataFrame) -> xr.Dataset
         for spec in INITIAL_CONDITIONS
     }
     coords = {
-        INITIAL_CONDITION_MEMBER: (
-            INITIAL_CONDITION_MEMBER,
-            np.arange(source_index.size, dtype=BATCH_LABEL_DTYPE),
-            dict(DATA_SOURCE_MEMBER_ATTRIBUTES),
-        ),
+        # A member's label is its identity, source_index - 1, as the drivers'
+        # is; the ingest checks the source indices run 1..n, so it is 0..n-1.
+        INITIAL_CONDITION_MEMBER: batch_coordinate(INITIAL_CONDITION_MEMBER, source_index - 1),
         SOURCE_INDEX: (INITIAL_CONDITION_MEMBER, source_index, dict(SOURCE_INDEX_ATTRIBUTES)),
         **site_coordinates(pool.tolist(), sites),
     }
@@ -263,7 +261,7 @@ def _product_attributes(raw: xr.Dataset) -> dict[str, Any]:
         "source_time_long_name": SOURCE.time_long_name,
         "source_time_value": SOURCE.time_value,
         "n_sites": int(raw.sizes[SITE]),
-        "n_members": int(raw.sizes[RAW_MEMBER]),
+        "n_initial_condition_members": int(raw.sizes[RAW_MEMBER]),
         "history": (
             f"scripts/ingest_initial_conditions.py: read {RAW_FILE}, renamed the source "
             "variables to the spec names, renamed member to initial_condition_member and "
@@ -320,6 +318,18 @@ def _check_product(dataset: xr.Dataset, path: Path) -> None:
         raise ValueError(
             f"{path}: {SOURCE_INDEX} is not strictly ascending from 1 or more; a source "
             "file name could not be recovered from it"
+        )
+    if not np.array_equal(member, source_index - 1):
+        raise ValueError(
+            f"{path}: {INITIAL_CONDITION_MEMBER} is not {SOURCE_INDEX} - 1, the member's "
+            "identity; re-make the product with scripts/ingest_initial_conditions.py"
+        )
+    if dataset.attrs.get("n_initial_condition_members") != member.size:
+        raise ValueError(
+            f"{path}: attribute n_initial_condition_members is "
+            f"{dataset.attrs.get('n_initial_condition_members')!r}, not the {member.size} "
+            "members; a product written before the attribute was renamed from n_members "
+            "is re-made by scripts/ingest_initial_conditions.py"
         )
     site = dataset[SITE].values
     if site.size == 0 or np.any(np.diff(site) <= 0):

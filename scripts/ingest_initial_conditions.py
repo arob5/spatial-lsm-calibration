@@ -28,18 +28,19 @@ Input data
 
 Output data
 -----------
-``--out``, default ``data/processed/initial_conditions.nc``::
+``--out``, default ``data/processed/initial_conditions.nc``, each variable
+on ``(initial_condition_member, site)``, ``float64``::
 
-    initial_aboveground_biomass_carbon(initial_condition_member, site)  float64, kg C m-2
-    initial_wood_carbon(initial_condition_member, site)                 float64, kg C m-2
-    initial_leaf_carbon(initial_condition_member, site)                 float64, kg C m-2
-    initial_soil_organic_carbon(initial_condition_member, site)         float64, kg C m-2
-    initial_soil_moisture_saturation(initial_condition_member, site)    float64, percent
+    initial_aboveground_biomass_carbon    kg m-2, constituent C
+    initial_wood_carbon                   kg m-2, constituent C
+    initial_leaf_carbon                   kg m-2, constituent C
+    initial_soil_organic_carbon           kg m-2, constituent C
+    initial_soil_moisture_saturation      percent
 
 ``NaN`` where no source file for the site carried the variable;
-``initial_condition_member`` 0-based with ``source_index`` carrying the source
-files' 1-based index; ``site`` the whole pool. ``sipnet_calibration.initial_conditions`` documents the data
-model.
+``initial_condition_member`` 0-based, ``source_index - 1``, with
+``source_index`` carrying the source files' 1-based index; ``site`` the whole
+pool. ``sipnet_calibration.initial_conditions`` documents the data model.
 
 Notes
 -----

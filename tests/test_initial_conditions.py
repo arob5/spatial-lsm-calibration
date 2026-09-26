@@ -348,7 +348,7 @@ PRODUCT_ATTRIBUTES = (
     "Conventions", "title", "product", "source_file", "source_root", "source_script",
     "source_script_note", "nominal_date", "nominal_date_provenance",
     "source_time_units", "source_time_long_name", "source_time_value",
-    "n_sites", "n_members", "history", "created",
+    "n_sites", "n_initial_condition_members", "history", "created",
 )
 RAW_ATTRIBUTES = (
     "title", "source_root", "source_layout", "source_format", "source_fill_value",
@@ -741,7 +741,7 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
     assert "member_source" not in product.attrs and "member_correspondence" not in product.attrs
     assert product[INITIAL_CONDITION_MEMBER].dtype == np.int64
     assert product[SOURCE_INDEX].dtype == np.int64
-    assert product.attrs["n_members"] == 2 and product.attrs["n_sites"] == 3
+    assert product.attrs["n_initial_condition_members"] == 2 and product.attrs["n_sites"] == 3
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
@@ -1490,6 +1490,40 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
     refused(lambda d: _rename_attr(d, "initial_wood_carbon", "long_name", ""), "long_name")
     refused(lambda d: d.assign_attrs(Conventions="CF-1.6"), "Conventions")
     refused(lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending")
+    refused(
+        lambda d: d.assign_coords(source_index=(INITIAL_CONDITION_MEMBER, np.array([1, 3], dtype=np.int64))),
+        "source_index - 1",
+    )
+    refused(lambda d: d.assign_attrs(n_initial_condition_members=5), "n_initial_condition_members")
+    refused(lambda d: _without_attr(d, "n_initial_condition_members"), "renamed from n_members")
+
+
+def test_a_member_label_is_its_source_index_less_one(raw, sites_csv):
+    sites = load_sites(sites_csv)
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, sites)
+    np.testing.assert_array_equal(
+        product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
+    )
+    assert "n_members" not in product.attrs
+
+
+def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, sites_csv, tmp_path):
+    """The real product's source_index and attributes survive the Flat round trip."""
+    from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
+    from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+    out = tmp_path / "product.nc"
+    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 0
+    field = initial_condition_fields(["initial_soil_organic_carbon"], path=out)[
+        "initial_soil_organic_carbon"
+    ]
+    crossed = field.expand_dims(sample=np.arange(3, dtype=np.int64)).assign_coords(
+        sample=("sample", np.arange(3, dtype=np.int64), dict(SAMPLE_ATTRIBUTES))
+    )
+    restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
+    xr.testing.assert_identical(restored, crossed)
+    assert restored.equals(crossed)
 
 
 def _rename_attr(dataset, variable, key, value):

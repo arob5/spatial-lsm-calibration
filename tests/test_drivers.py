@@ -330,7 +330,7 @@ class TestLoadDrivers:
         for key, value in own.attrs.items():
             assert dataset.attrs[key] == value, key
         assert dataset.attrs["Conventions"] == "CF-1.11"
-        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_members"] == 2
+        assert dataset.attrs["n_sites"] == 1 and dataset.attrs["n_driver_members"] == 2
 
     def test_sites_come_back_in_the_order_given(self, root, sites_table):
         dataset = load_drivers([7, 3], root=root, sites_table=sites_table)
@@ -347,11 +347,11 @@ class TestLoadDrivers:
         write_pair(root, 3, 5)
         write_pair(root, 7, 5)
         dataset = load_drivers([3, 7], source_indices=[5, 1], root=root, sites_table=sites_table)
-        np.testing.assert_array_equal(dataset["driver_member"].values, [0, 1])
+        np.testing.assert_array_equal(dataset["driver_member"].values, [4, 0])
         np.testing.assert_array_equal(dataset["source_index"].values, [5, 1])
         frame = read_driver_file(driver_file(root, 3, 5)).pandas
         np.testing.assert_array_equal(
-            dataset["photosynthetically_active_radiation"].sel(site=3, driver_member=0).values,
+            dataset["photosynthetically_active_radiation"].sel(site=3, driver_member=4).values,
             frame["photosynthetically_active_radiation"].to_numpy(),
         )
 
@@ -389,7 +389,7 @@ class TestLoadDrivers:
             load_drivers([3], source_indices=[], root=root, sites_table=sites_table)
 
     def test_a_source_index_beyond_int16_is_a_directory_like_any_other(self, root, sites_table):
-        with pytest.raises(FileNotFoundError, match="site 3 member 40000"):
+        with pytest.raises(FileNotFoundError, match="site 3 source index 40000"):
             load_drivers([3], source_indices=[1, 40000], root=root, sites_table=sites_table)
 
     @pytest.mark.parametrize("sites", [3, ["3"], "3", [True], {3, 7}, [np.inf], [1.5], [3.0]])
@@ -510,7 +510,7 @@ class TestLoadDrivers:
 
     def test_missing_pair_raises_by_default(self, root, sites_table):
         write_pair(root, 3, 5)
-        with pytest.raises(FileNotFoundError, match="site 7 member 5.*allow_missing=True"):
+        with pytest.raises(FileNotFoundError, match=r"\(site, source index\) pair\(s\).*site 7 source index 5.*allow_missing=True"):
             load_drivers([3, 7], root=root, sites_table=sites_table)
 
     def test_allow_missing_fills_nan_and_writes_driver_present(self, root, sites_table):
@@ -520,9 +520,25 @@ class TestLoadDrivers:
         assert present.dims == ("driver_member", "site") and present.dtype == bool
         np.testing.assert_array_equal(present.values, [[True, True], [True, True], [True, False]])
         par = dataset["photosynthetically_active_radiation"]
-        assert np.isnan(par.sel(site=7, driver_member=2).values).all()
-        assert np.isfinite(par.sel(site=3, driver_member=2).values).all()
+        assert np.isnan(par.sel(site=7, driver_member=4).values).all()
+        assert np.isfinite(par.sel(site=3, driver_member=4).values).all()
         assert dataset.attrs["coverage"] == "gaps"
+        assert present.attrs["long_name"] == (
+            "Whether a driver file existed for the driver member and site"
+        )
+
+    def test_two_loads_of_different_members_align_member_for_member(self, root, sites_table):
+        """A member's label is its identity: ``source_index - 1`` in every load."""
+        write_pair(root, 3, 5)
+        both = load_drivers([3], source_indices=[1, 5], root=root, sites_table=sites_table)
+        one = load_drivers([3], source_indices=[5], root=root, sites_table=sites_table)
+        assert one["driver_member"].values.tolist() == [4]
+        difference = both["air_temperature"] - one["air_temperature"]
+        assert difference["driver_member"].values.tolist() == [4]
+        assert float(abs(difference).max()) == 0.0
+        xr.testing.assert_identical(
+            one["air_temperature"], both["air_temperature"].sel(driver_member=[4])
+        )
 
     def test_driver_present_is_all_true_when_nothing_is_missing(self, root, sites_table):
         """The variable's presence follows the flag, not the data, so a caller

@@ -89,8 +89,9 @@ requested pair must exist, so the variable is not written.
 ======================= ================== ====================================
 Name                    Dims               Meaning
 ======================= ================== ====================================
-``driver_member``       ``driver_member``  0-based ``int64``, ``0`` to
-                                           ``n - 1``
+``driver_member``       ``driver_member``  0-based ``int64``, the member's
+                                           identity: ``source_index - 1``,
+                                           whatever members are loaded
 ``source_index``        ``driver_member``  ``int64``, the 1-based index in the
                                            directory name, in the order the
                                            members were asked for (ascending
@@ -125,7 +126,7 @@ columns are instantaneous at the label rather than means over the step.
 **Attributes** on the dataset: pySIPNET's -- ``Conventions``,
 ``time_convention``, ``time_zone``, ``time_axis_source`` and
 ``time_step_length_source`` among them -- and ``title``, ``source_root``,
-``source_layout``, ``n_sites``, ``n_members`` and ``coverage``
+``source_layout``, ``n_sites``, ``n_driver_members`` and ``coverage``
 (``"complete"`` or ``"gaps"``).
 
 **Missing values.** There are none in the source. A ``NaN`` appears only under
@@ -175,12 +176,14 @@ are site-major only: a site's whole record is one file, but one timestep across
 the pool means reading every file. Calibration and the per-site figures need
 the former.
 
-**Member indices.** ``driver_member`` is 0-based, as every batch dim made
-here is; ``source_index`` keeps the 1-based file index beside it so the
-mapping to a directory is never guesswork. Whether driver member *i*
-corresponds to initial-condition member *i* is not established (open question
-12 in ``data/README.md``), which is why the two ensembles carry different dim
-names: xarray and PyEns cross them rather than pair them by label.
+**Member indices.** ``driver_member`` is 0-based, ``source_index - 1``, so a
+member's label is its identity: two loads of different members align member
+for member, as a batch dim's one name promises. ``source_index`` keeps the
+1-based file index beside it so the mapping to a directory is never
+guesswork. Whether driver member *i* corresponds to initial-condition member
+*i* is not established (open question 12 in ``data/README.md``), which is why
+the two ensembles carry different dim names: xarray and PyEns cross them
+rather than pair them by label.
 
 Usage
 -----
@@ -227,7 +230,6 @@ from pysipnet.variables import CLIMATE_VARIABLES
 
 from sipnet_calibration.conventions import (
     BATCH_LABEL_DTYPE,
-    DATA_SOURCE_MEMBER_ATTRIBUTES,
     DRIVER_MEMBER,
     SITE,
     SITE_DTYPE,
@@ -240,7 +242,7 @@ from sipnet_calibration.conventions import (
     TIMESTEP_START,
     data_root,
 )
-from sipnet_calibration.fields import without_stale_time_attributes
+from sipnet_calibration.fields import batch_coordinate, without_stale_time_attributes
 from sipnet_calibration.sites import load_sites, site_coordinates
 from sipnet_calibration.validation import as_positive_integers, as_site_ids, truncated
 
@@ -446,7 +448,7 @@ def load_drivers(
         it. Loaded from its default location when ``None``. Only ``site_id``,
         ``lon`` and ``lat`` are read, and ``site_id`` must be unique.
     allow_missing:
-        What to do about a ``(site, member)`` pair with no file. ``False``, the
+        What to do about a ``(site, source index)`` pair with no file. ``False``, the
         default, raises, because a missing driver member that became ``NaN``
         would propagate silently through any statistic over members. ``True``
         fills the pair with ``NaN`` and adds :data:`DRIVER_PRESENT`. At least
@@ -458,7 +460,7 @@ def load_drivers(
     Returns
     -------
     xarray.Dataset
-        The `Data model`_ described in the module docstring: the eight
+        The Data model described in the module docstring: the eight
         :data:`DRIVER_VARIABLES` on ``(driver_member, site, time)``,
         ``float64``, with pySIPNET's time coordinates, ``lon``/``lat`` on
         ``site`` and ``source_index`` on ``driver_member``.
@@ -498,12 +500,14 @@ def load_drivers(
     # Located before any file is read, so a site the table lacks fails fast.
     coordinates = site_coordinates(site_ids.tolist(), table)
 
-    member_ids = _member_ids(source_indices, root=root, sites=site_ids)
+    indices = _source_indices(source_indices, root=root, sites=site_ids)
 
-    paths, present = _locate_files(root, sites=site_ids, members=member_ids)
-    check_some_pair_has_a_file(present, sites=site_ids, members=member_ids, root=root)
+    paths, present = _locate_files(root, sites=site_ids, source_indices=indices)
+    check_some_pair_has_a_file(present, sites=site_ids, source_indices=indices, root=root)
     if not allow_missing:
-        _check_members_complete(present, sites=site_ids, members=member_ids, root=root)
+        _check_every_requested_pair_has_a_file(
+            present, sites=site_ids, source_indices=indices, root=root
+        )
 
     arrays, reference = _read_all(paths, present, time_zone=time_zone)
     return _assemble(
@@ -511,7 +515,7 @@ def load_drivers(
         present=present,
         reference=reference,
         coordinates=coordinates,
-        members=member_ids,
+        source_indices=indices,
         root=root,
         allow_missing=allow_missing,
     )
@@ -608,11 +612,11 @@ def _site_ids(sites: Iterable[int]) -> np.ndarray:
     return np.asarray(site_ids, dtype=SITE_DTYPE)
 
 
-def _member_ids(
-    members: Iterable[int] | None, *, root: Path, sites: np.ndarray
+def _source_indices(
+    source_indices: Iterable[int] | None, *, root: Path, sites: np.ndarray
 ) -> np.ndarray:
     """Requested source indices as ``int64``, in the order given; found, ascending, for ``None``."""
-    if members is None:
+    if source_indices is None:
         found: set[int] = set()
         for site in sites:
             found.update(available_members(root, int(site)))
@@ -620,32 +624,32 @@ def _member_ids(
             raise FileNotFoundError(
                 f"no driver directories under {root} for sites {sites.tolist()}"
             )
-        members = sorted(found)
-    return _source_member_indices(members)
+        source_indices = sorted(found)
+    return _as_source_indices(source_indices)
 
 
-def _source_member_indices(members: Iterable[int]) -> np.ndarray:
-    """*members* as an ``int64`` array, in the order given, or a clear error.
+def _as_source_indices(source_indices: Iterable[int]) -> np.ndarray:
+    """*source_indices* as an ``int64`` array, in the order given, or a clear error.
 
     Strings, booleans, floats, non-positive values and repeats are refused,
     since each would otherwise resolve to a plausible-looking wrong directory.
     """
-    indices = as_positive_integers(members, message_name="source_indices")
+    indices = as_positive_integers(source_indices, message_name="source_indices")
     check_some_are_requested(indices, what="source indices", example="source index")
     check_source_indices_are_unique(indices)
     return np.asarray(indices, dtype=np.int64)
 
 
 def _locate_files(
-    root: Path, *, sites: np.ndarray, members: np.ndarray
+    root: Path, *, sites: np.ndarray, source_indices: np.ndarray
 ) -> tuple[dict[tuple[int, int], Path], np.ndarray]:
     """Paths for every ``(driver_member, site)`` pair that has one, and a presence mask."""
-    present = np.zeros((members.size, sites.size), dtype=bool)
+    present = np.zeros((source_indices.size, sites.size), dtype=bool)
     paths: dict[tuple[int, int], Path] = {}
     for j, site in enumerate(sites):
-        for i, member in enumerate(members):
+        for i, source_index in enumerate(source_indices):
             try:
-                paths[(i, j)] = driver_file(root, int(site), int(member))
+                paths[(i, j)] = driver_file(root, int(site), int(source_index))
             except FileNotFoundError:
                 continue
             present[i, j] = True
@@ -688,7 +692,7 @@ def _assemble(
     present: np.ndarray,
     reference: xr.Dataset,
     coordinates: dict[str, xr.DataArray],
-    members: np.ndarray,
+    source_indices: np.ndarray,
     root: Path,
     allow_missing: bool,
 ) -> xr.Dataset:
@@ -709,7 +713,7 @@ def _assemble(
             present,
             dims=(DRIVER_MEMBER, SITE),
             attrs={
-                "long_name": "Whether a driver file existed for the member and site",
+                "long_name": "Whether a driver file existed for the driver member and site",
                 "comment": "The eight driver variables are NaN where this is False.",
             },
         )
@@ -717,14 +721,11 @@ def _assemble(
     dataset = xr.Dataset(
         data_vars,
         coords={
-            DRIVER_MEMBER: (
-                DRIVER_MEMBER,
-                np.arange(members.size, dtype=BATCH_LABEL_DTYPE),
-                dict(DATA_SOURCE_MEMBER_ATTRIBUTES),
-            ),
+            # A member's label is its identity, the same in every load.
+            DRIVER_MEMBER: batch_coordinate(DRIVER_MEMBER, source_indices - 1),
             SOURCE_INDEX: (
                 DRIVER_MEMBER,
-                members.astype(BATCH_LABEL_DTYPE),
+                source_indices.astype(BATCH_LABEL_DTYPE),
                 dict(SOURCE_INDEX_ATTRIBUTES),
             ),
             **coordinates,
@@ -737,7 +738,7 @@ def _assemble(
         "source_root": str(root),
         "source_layout": f"{DRIVER_DIRECTORY_TEMPLATE}/{DRIVER_FILE_GLOB}",
         "n_sites": int(dataset.sizes[SITE]),
-        "n_members": int(members.size),
+        "n_driver_members": int(source_indices.size),
         "coverage": "complete" if present.all() else "gaps",
     }
     return unfilled_coordinates(dataset)
@@ -773,13 +774,13 @@ def check_source_indices_are_unique(indices: tuple[int, ...]) -> None:
 
 
 def check_some_pair_has_a_file(
-    present: np.ndarray, *, sites: np.ndarray, members: np.ndarray, root: Path
+    present: np.ndarray, *, sites: np.ndarray, source_indices: np.ndarray, root: Path
 ) -> None:
-    """At least one requested ``(site, member)`` pair has a driver file."""
+    """At least one requested ``(site, source index)`` pair has a driver file."""
     if not present.any():
         raise FileNotFoundError(
             f"no driver files under {root} for sites {sites.tolist()} and "
-            f"source indices {members.tolist()}; check the root and the site ids."
+            f"source indices {source_indices.tolist()}; check the root and the site ids."
         )
 
 
@@ -853,10 +854,10 @@ def _check_time_axes_identical(
             )
 
 
-def _check_members_complete(
-    present: np.ndarray, *, sites: np.ndarray, members: np.ndarray, root: Path
+def _check_every_requested_pair_has_a_file(
+    present: np.ndarray, *, sites: np.ndarray, source_indices: np.ndarray, root: Path
 ) -> None:
-    """Every requested ``(site, member)`` pair has a file, unless gaps are allowed.
+    """Every requested ``(site, source index)`` pair has a file, unless gaps are allowed.
 
     The message lists the missing pairs, and says that ``allow_missing=True``
     reads the rest with ``NaN`` in their place.
@@ -864,13 +865,13 @@ def _check_members_complete(
     if present.all():
         return
     missing = [
-        (int(sites[j]), int(members[i]))
+        (int(sites[j]), int(source_indices[i]))
         for i, j in zip(*np.nonzero(~present), strict=True)
     ]
-    shown = ", ".join(f"site {s} member {m}" for s, m in missing[:10])
+    shown = ", ".join(f"site {s} source index {m}" for s, m in missing[:10])
     more = f", and {len(missing) - 10} more" if len(missing) > 10 else ""
     raise FileNotFoundError(
-        f"{len(missing)} requested (site, member) pair(s) have no driver file "
+        f"{len(missing)} requested (site, source index) pair(s) have no driver file "
         f"under {root}: {shown}{more}. Pass allow_missing=True to read the rest "
         "with NaN in their place and a driver_present array saying which."
     )
