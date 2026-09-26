@@ -30,7 +30,7 @@ The checks
     The ``check_*`` functions the coercers are written with, which other
     modules call where they check the same thing of an array:
     :func:`check_site_ids_are_unique`, :func:`check_site_ids_are_in_range`,
-    :func:`check_integers_are_in_range`.
+    :func:`check_integers_are_in_range`, :func:`check_names_are_unique`.
 
 Every coercer takes the name the value goes by in a message, *message_name*,
 as its last argument, a keyword, and raises by one rule: :class:`TypeError`
@@ -100,6 +100,7 @@ __all__ = [
     "as_site_id",
     "as_site_ids",
     "check_integers_are_in_range",
+    "check_names_are_unique",
     "check_site_ids_are_in_range",
     "check_site_ids_are_unique",
     "is_one_vector",
@@ -927,6 +928,16 @@ def check_names_are_strings(names: tuple[Any, ...], *, message_name: str) -> Non
     if wrong:
         raise TypeError(
             f"{message_name} must be strings, got {truncated(wrong)}; pass names as strings."
+        )
+
+
+def check_names_are_unique(names: Sequence[str], *, message_name: str) -> None:
+    """No name appears twice."""
+    seen: set[str] = set()
+    repeated = sorted({name for name in names if name in seen or seen.add(name)})
+    if repeated:
+        raise ValueError(
+            f"{message_name} names {truncated(repeated)} more than once; name each once."
         )
 
 

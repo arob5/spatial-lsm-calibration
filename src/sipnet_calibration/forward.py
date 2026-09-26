@@ -294,7 +294,8 @@ class ForwardModel:
     observation_vector:
         The observation vector whose operators reduce each run on the worker
         and whose order the predictions take. Its sites must be among the
-        parameter vector's; ``select`` it first otherwise.
+        parameter vector's; ``restrict_to_sites(parameter_vector.sites)`` it
+        first otherwise.
     output_variable_names:
         Without an observation vector, which pySIPNET output variables each
         run returns. With one, defaults to the names its operators read.
@@ -998,8 +999,8 @@ def check_observation_sites_are_run(
     if extra:
         raise ValueError(
             f"the observation vector observes site(s) {extra[:10]} that the parameter vector "
-            "does not run; select the observation vector to the parameter vector's sites "
-            "first (observation_vector.select(sites=...))."
+            "does not run; restrict the observation vector to the parameter vector's sites "
+            "first (observation_vector.restrict_to_sites(parameter_vector.sites))."
         )
 
 

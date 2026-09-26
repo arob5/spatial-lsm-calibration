@@ -8,11 +8,12 @@ Where this sits
 
     scripts/ingest_constraints.py                    data/processed/constraints/*.nc
       -> constraints.constraint_fields()             observed values, (site[, time])
-      -> ObservationSource(observation_source_name, observed_values, operator)
+      -> ObservationSource(observation_source_name=, observed_values=, operator=)
                                                      one per observation source
-      -> ObservationVector([...])                    the observations, in Flat order
+                                                     (observation.source)
+      -> ObservationVector(observation_sources=[...]) the observations, in Flat order
            .y                                        what pyEKI compares against
-           .predict(model_output, sipnet_parameters=)
+           .predict(model_output, sipnet_parameter_fields=)
                                                      H applied, converted, checked
            .flat(fields) / .fields(flat_values)      Fields <-> Flat
 
@@ -24,30 +25,27 @@ observation source is built from arrays, and reads their attributes.
 
 What it reads
 -------------
-:attr:`ObservationSource.observed_values`
-    A field ``(site[, time])`` with ``NaN`` where nothing was observed, finite
-    elsewhere, integer ``site`` labels, naive datetime ``time`` labels, and
-    ``units`` (and ``constituent``, where the quantity has one) in its
-    attributes. An annual source's values also carry their windows as
-    ``window_start``/``window_end``. A batch dim is refused: an observation
-    ensemble is reduced to one value per (site[, time]) by the experiment
-    before it enters the vector. A scalar coordinate, such as one left by
-    ``.isel(sample=0)``, is metadata and is kept.
-:attr:`ObservationSource.operator`
-    An :class:`~sipnet_calibration.observation.operators.ObservationOperator`.
+:class:`~sipnet_calibration.observation.source.ObservationSource`\ s, each
+holding one observation source's observed values
+(:data:`~sipnet_calibration.observation.source.ObservedValues`, a field on
+``(site[, time])``) and its
+:class:`~sipnet_calibration.observation.operators.ObservationOperator`.
 
 Data model
 ----------
-**Fields**: ``dict[str, xr.DataArray]`` keyed by observation source name,
-each ``float64`` on that source's own ``(site[, time])`` grid, ``NaN`` where
-nothing is observed; a ``(J, N)`` batch unstacks to the same with a leading
-batch dim, ``sample`` unless ``batch_dim=`` names it otherwise, an ``int64``
-coordinate labeled ``0`` to ``J - 1``. A source's grid holds only the sites
-and time labels with at least one observation: the rest are dropped when its
-:class:`ObservationSource` is built.
+**Fields**: ``dict[str, Field]`` keyed by observation source name, each a
+``float64`` field on that source's own ``(site[, time])`` grid, with its
+``site``, ``lon``/``lat`` and time coordinates, ``NaN`` where nothing is
+observed; a ``(J, N)`` batch unstacks to the same with a leading batch dim,
+``sample`` unless ``batch_dim=`` names it otherwise, an ``int64`` coordinate
+labeled ``0`` to ``J - 1``. A source's grid holds only the sites and time
+labels with at least one observation: the rest are dropped when its
+observation source is built. A dict and not a Dataset, since each source is
+on its own time grid.
 
-**Flat**: ``y`` in ``R^N``, ``float64``, finite, one entry per observation;
-predictions are ``(N,)`` or ``(J, N)``, where a ``NaN`` marks a failed run.
+**Flat**: ``y`` in ``R^N``, a ``float64`` ``jax.Array``, finite, one entry per
+observation; predictions are ``(N,)`` or ``(J, N)`` ``jax.Array``\ s, where a
+``NaN`` marks a failed run. Every method taking Flat accepts any array-like.
 
 **The index**: a ``pandas.MultiIndex`` with levels
 ``(site, observation_source, time)`` -- ``site`` ``int64``,
@@ -57,23 +55,26 @@ sources in declaration order, then times ascending. A static source's
 observations have ``time = NaT``. The order is a property of the vector;
 consumers read it off ``index`` and ``positions`` and never assume it.
 
+**The site table**: ``site_table``, one row per observed site, ascending:
+``site_id`` (``int32``), ``lon`` and ``lat``, read off the observed values,
+which every observation source must agree on.
+
 Functions
 ---------
-:class:`ObservationSource`
-    One observation source's observed values and operator; ``sites``,
-    ``is_static``, ``n_observations`` and ``observations()`` (the
-    observations as a table).
 :class:`ObservationVector`
-    ``observation_sources``, ``observation_source_names``, ``sites``,
-    ``dimension``, ``index``, ``output_variable_names`` and
-    ``sipnet_parameter_names`` (the union over the operators),
-    ``observed_values_by_source`` (Fields) and ``y`` (Flat);
-    ``select(observation_source_names=, sites=, time=)`` for a sub-vector;
+    A frozen, keyword-only dataclass. Its pieces are its observation
+    sources: ``vector[name]``, ``name in vector``, ``iter(vector)`` (the
+    names), ``len(vector)``, ``observation_source_names``,
+    ``observation_sources``. ``sites``, ``site_table``, ``dimension``,
+    ``index``, ``output_variable_names`` and ``sipnet_parameter_names_read``
+    (the unions over the operators), ``observed_values_by_source`` (Fields)
+    and ``y`` (Flat); ``select(observation_source_names=, sites=, time=)`` for
+    a sub-vector and ``restrict_to_sites(sites)``, its intersecting form;
     ``positions(site=, observation_source_name=)`` for where a segment sits
     in Flat; ``flat(fields)`` and ``fields(flat_values)`` between the
-    representations; ``predict(model_output, sipnet_parameters=)`` for every
-    operator applied, converted and checked; ``describe()`` for one row per
-    observation source.
+    representations; ``predict(model_output, sipnet_parameter_fields=)`` for
+    every operator applied, converted and checked; ``describe()`` for one
+    row per observation source.
 
 Notes
 -----
@@ -81,6 +82,11 @@ Notes
 covariance block-diagonal by site, reads a site's observations as one
 contiguous segment, and a worker producing one site's predictions produces
 that segment. ``(site, observation_source)`` sub-segments are contiguous too.
+
+**Selection never reorders.** ``select`` keeps the vector's order of sources
+and sites whatever order they are asked in, and refuses a name or site the
+vector does not hold, so a typo cannot silently shrink it;
+``restrict_to_sites`` is the form for a caller holding a larger site set.
 
 **No noise model here.** The observation sources' standard deviations, the
 covariance and the likelihood are the inference layer's; this module gives it
@@ -95,12 +101,6 @@ repaired away.
 labels it observes, so an operator reads the model nowhere else: not at a site
 the model output need not carry, and not at a label outside a shorter run.
 
-**Frozen values.** An observation source holds its own read-only copy of the
-observed values it was given, loaded into memory, so neither a later write to
-the caller's array nor one through
-:attr:`ObservationVector.observed_values_by_source` can change the
-observations after ``y`` and the index were built from them.
-
 Usage
 -----
 ::
@@ -112,32 +112,49 @@ Usage
 
     names = ["modis_leaf_area_index", "landtrendr_aboveground_biomass"]
     observed = constraint_fields(names, sites=sites)
-    vector = ObservationVector([
-        ObservationSource("modis_leaf_area_index", observed["modis_leaf_area_index"],
-                          DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-        ObservationSource("landtrendr_aboveground_biomass",
-                          observed["landtrendr_aboveground_biomass"],
-                          ReduceOverWindows("wood_carbon", "mean")),  # the experiment's reading
+    vector = ObservationVector(observation_sources=[
+        ObservationSource(
+            observation_source_name="modis_leaf_area_index",
+            observed_values=observed["modis_leaf_area_index"],
+            operator=DEFAULT_OBS_OPS["modis_leaf_area_index"],
+        ),
+        ObservationSource(
+            observation_source_name="landtrendr_aboveground_biomass",
+            observed_values=observed["landtrendr_aboveground_biomass"],
+            operator=ReduceOverWindows("wood_carbon", "mean"),  # the experiment's reading
+        ),
     ]).select(time=slice("2012", "2024"))
 
     vector.dimension, vector.y.shape           # N, (N,)
-    predicted_fields = vector.predict(model_output, sipnet_parameters=sipnet_parameter_fields)
+    predicted_fields = vector.predict(model_output, sipnet_parameter_fields=sipnet_parameter_fields)
     predictions = vector.flat(predicted_fields)  # (J, N) for a (sample, site, time) output
     vector.fields(predictions)["modis_leaf_area_index"]  # back to (sample, site, time)
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from itertools import chain
 from typing import Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
 from pysipnet.units import convert_dataarray_units
 
-from sipnet_calibration.conventions import SAMPLE, SITE, TIME
+from sipnet_calibration.conventions import (
+    LAT,
+    LON,
+    SAMPLE,
+    SITE,
+    SITE_DTYPE,
+    SITE_ID,
+    TIME,
+    FrozenMapping,
+)
 from sipnet_calibration.fields import (
     Field,
     ModelOutput,
@@ -147,7 +164,7 @@ from sipnet_calibration.fields import (
     check_at_most_one_batch_dim,
     check_batch_dim_name_is_not_a_data_source_member,
     check_batch_dim_name_is_not_reserved,
-    check_dims_are_batch_spatial_or_time,
+    validate_field,
     missing_labels,
     scalar_batch_labels,
 )
@@ -160,9 +177,12 @@ from sipnet_calibration.parameter_vector import SIPNETParameterFields
 from sipnet_calibration.validation import (
     as_batched_flat,
     as_names,
+    as_sequence,
     as_site_id,
     as_site_ids,
+    check_names_are_unique,
     is_one_vector,
+    truncated,
 )
 
 __all__ = [
@@ -181,45 +201,65 @@ INDEX_LEVELS: tuple[str, ...] = (SITE, OBSERVATION_SOURCE, TIME)
 _OBSERVATION_DIM = "__observation__"
 
 
+@dataclass(frozen=True, eq=False, kw_only=True)
 class ObservationVector:
     """The observations of several observation sources, in the module docstring's order.
 
     Parameters
     ----------
     observation_sources:
-        One :class:`ObservationSource` per observation source, in the order
-        the sources take within each site's segment.
+        One :class:`~sipnet_calibration.observation.source.ObservationSource`
+        per observation source, in the order the sources take within each
+        site's segment; stored as a tuple.
 
     Raises
     ------
     TypeError
-        If an entry is not an :class:`ObservationSource`.
+        If *observation_sources* is not a sequence, or an entry is not an
+        ``ObservationSource``.
     ValueError
-        If there is no observation source, two share a name, or one holds no
-        observation.
+        If there is no observation source, two share a name, one holds no
+        observation, or two give one site different ``lon``/``lat``.
+
+    Notes
+    -----
+    Compared and hashed by identity (``eq=False``), as every vector-like
+    class of the package is: its observations are arrays, which have no
+    single truth value to compare by. It pickles, which the forward model
+    relies on to send a site's slice to a worker.
     """
 
-    def __init__(self, observation_sources: Sequence[ObservationSource]) -> None:
-        observation_sources = tuple(observation_sources)
-        check_there_is_an_observation_source(observation_sources)
-        check_entries_are_observation_sources(observation_sources)
-        check_observation_source_names_are_unique(observation_sources)
-        check_every_observation_source_has_an_observation(observation_sources)
-        self._observation_sources = observation_sources
-        self._by_name = {source.observation_source_name: source for source in observation_sources}
-        self._index = _build_index(observation_sources)
-        self._sites = tuple(int(s) for s in np.unique(self._index.get_level_values(SITE)))
-        self._y = self.flat(self.observed_values_by_source)
+    observation_sources: tuple[ObservationSource, ...]
+    _by_name: Mapping[str, ObservationSource] = field(init=False, repr=False)
+    _index: pd.MultiIndex = field(init=False, repr=False)
+    _sites: tuple[int, ...] = field(init=False, repr=False)
+    _locations: tuple[np.ndarray, np.ndarray] = field(init=False, repr=False)
+    _y: jax.Array = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        observation_sources = tuple(
+            as_sequence(self.observation_sources, message_name="observation_sources")
+        )
+        check_observation_vector_is_valid(observation_sources)
+        object.__setattr__(self, "observation_sources", observation_sources)
+        object.__setattr__(
+            self,
+            "_by_name",
+            FrozenMapping({source.observation_source_name: source for source in observation_sources}),
+        )
+        index = _build_index(observation_sources)
+        object.__setattr__(self, "_index", index)
+        sites = tuple(int(s) for s in np.unique(index.get_level_values(SITE)))
+        object.__setattr__(self, "_sites", sites)
+        object.__setattr__(self, "_locations", _site_locations_of(observation_sources, sites))
+        object.__setattr__(self, "_y", self.flat(self.observed_values_by_source))
 
     # ── identity ──────────────────────────────────────────────────────────────
 
     @property
-    def observation_sources(self) -> tuple[ObservationSource, ...]:
-        return self._observation_sources
-
-    @property
     def observation_source_names(self) -> tuple[str, ...]:
-        return tuple(source.observation_source_name for source in self._observation_sources)
+        """The observation sources' names, in the vector's order."""
+        return tuple(source.observation_source_name for source in self.observation_sources)
 
     @property
     def sites(self) -> tuple[int, ...]:
@@ -227,42 +267,71 @@ class ObservationVector:
         return self._sites
 
     @property
+    def site_table(self) -> pd.DataFrame:
+        """The site table of :attr:`sites`: ``site_id`` (``int32``), ``lon`` and ``lat``.
+
+        A new frame on every access, read off the observed values'
+        locations.
+        """
+        lon, lat = self._locations
+        return pd.DataFrame(
+            {SITE_ID: np.asarray(self._sites, dtype=SITE_DTYPE), LON: lon.copy(), LAT: lat.copy()}
+        )
+
+    @property
     def dimension(self) -> int:
+        """``N``, the number of observations."""
         return len(self._index)
 
     @property
     def index(self) -> pd.MultiIndex:
+        """One row per entry of Flat: levels :data:`INDEX_LEVELS`."""
         return self._index
 
     @property
     def output_variable_names(self) -> tuple[str, ...]:
+        """The pySIPNET output variables the operators read, in declaration order."""
         return _union(
-            source.operator.output_variable_names for source in self._observation_sources
+            source.operator.output_variable_names for source in self.observation_sources
         )
 
     @property
     def sipnet_parameter_names_read(self) -> tuple[str, ...]:
         """The SIPNET parameters the operators read, in declaration order."""
         return _union(
-            source.operator.sipnet_parameter_names_read for source in self._observation_sources
+            source.operator.sipnet_parameter_names_read for source in self.observation_sources
         )
 
     @property
-    def observed_values_by_source(self) -> dict[str, xr.DataArray]:
+    def observed_values_by_source(self) -> dict[str, Field]:
+        """Fields: each observation source's read-only observed values, by name."""
         return {
             source.observation_source_name: source.observed_values
-            for source in self._observation_sources
+            for source in self.observation_sources
         }
 
     @property
-    def y(self) -> np.ndarray:
-        return self._y.copy()
+    def y(self) -> jax.Array:
+        """Flat: the observations, ``(N,)`` ``float64``, in :attr:`index` order."""
+        return self._y
 
     def __getitem__(self, observation_source_name: str) -> ObservationSource:
+        """The observation source called *observation_source_name*."""
         check_observation_source_names_are_held(
             [observation_source_name], self.observation_source_names
         )
         return self._by_name[observation_source_name]
+
+    def __contains__(self, observation_source_name: object) -> bool:
+        return observation_source_name in self._by_name
+
+    def __iter__(self) -> Iterator[str]:
+        """The observation source names, in the vector's order."""
+        return iter(self.observation_source_names)
+
+    def __len__(self) -> int:
+        """The number of observation sources."""
+        return len(self.observation_sources)
 
     def __repr__(self) -> str:
         return (
@@ -274,7 +343,7 @@ class ObservationVector:
     def describe(self) -> pd.DataFrame:
         """One row per observation source: counts, dates, units and operator."""
         rows = []
-        for source in self._observation_sources:
+        for source in self.observation_sources:
             observations = source.observations()
             rows.append(
                 {
@@ -304,12 +373,16 @@ class ObservationVector:
         Parameters
         ----------
         observation_source_names:
-            The observation sources to keep, a sequence, in the order the
-            sub-vector takes them. Defaults to every observation source.
+            The observation sources to keep, a sequence, each held by the
+            vector and named once. The sub-vector keeps this vector's order,
+            whatever the order asked for. Defaults to every observation
+            source.
         sites:
-            The sites to keep, a sequence of site ids, which is read once.
-            Sites the vector does not observe are ignored. Defaults to every
-            site.
+            The sites to keep, a sequence of site ids, each one of
+            :attr:`sites` and named once, read once. The sub-vector keeps
+            them ascending. Defaults to every site;
+            :meth:`restrict_to_sites` is the form that ignores a site the
+            vector does not observe.
         time:
             A slice of ``time`` labels, such as ``slice("2012", "2024")``. It
             does not apply to a static observation source.
@@ -321,7 +394,8 @@ class ObservationVector:
             source left with no observations is dropped, and each source's
             ``time`` keeps only the labels where a kept site is observed, so an
             operator run on the sub-vector reads the model only at those
-            labels.
+            labels. Its Flat order is this vector's, restricted: a selection
+            never reorders the entries it keeps.
 
         Raises
         ------
@@ -330,27 +404,61 @@ class ObservationVector:
             is one value, a string or a set; or if a site id is a boolean, a
             float or not a number.
         KeyError
-            If an observation source name is not held.
+            If an observation source name is not held, or a site is not one
+            of :attr:`sites`.
         ValueError
-            If a site id is out of range, a site is named twice, *sites* is a
-            two-dimensional array, or the selection leaves no observation.
+            If a name or a site is given twice, a site id is out of range,
+            *sites* is a two-dimensional array, or the selection leaves no
+            observation.
+
+        Notes
+        -----
+        The sub-vector's Flat values are not this one's: move predictions
+        across through Fields, where the correspondence is by label.
         """
+        chosen = self.observation_sources
         if observation_source_names is not None:
-            observation_source_names = as_names(
-                observation_source_names, message_name="observation_source_names"
-            )
-        wanted_sites = None if sites is None else list(as_site_ids(sites, message_name="sites"))
+            names = as_names(observation_source_names, message_name="observation_source_names")
+            check_names_are_unique(names, message_name="observation_source_names")
+            check_observation_source_names_are_held(names, self.observation_source_names)
+            chosen = tuple(source for source in chosen if source.observation_source_name in names)
+        wanted_sites = None
+        if sites is not None:
+            wanted_sites = list(as_site_ids(sites, message_name="sites"))
+            check_sites_are_the_vectors(wanted_sites, self._sites)
         check_time_is_a_slice(time)
-        chosen = self._observation_sources
-        if observation_source_names is not None:
-            check_observation_source_names_are_held(
-                observation_source_names, self.observation_source_names
-            )
-            chosen = tuple(self._by_name[n] for n in observation_source_names)
-        kept = [_selected(source, wanted_sites, time) for source in chosen]
+        kept = [_source_restricted_to(source, wanted_sites, time) for source in chosen]
         kept = [source for source in kept if source is not None]
         check_the_selection_keeps_an_observation(kept)
-        return ObservationVector(kept)
+        return ObservationVector(observation_sources=kept)
+
+    def restrict_to_sites(self, sites: Iterable[int]) -> ObservationVector:
+        """The sub-vector over the vector's sites among *sites*; the others are ignored.
+
+        The intersecting form of ``select(sites=)``: a site the vector does not
+        observe is not an error here, which is what a caller holding a larger
+        site set (a parameter vector's) wants.
+
+        Parameters
+        ----------
+        sites:
+            A sequence of site ids, each named once.
+
+        Returns
+        -------
+        ObservationVector
+            ``select(sites=[s for s in self.sites if s in sites])``.
+
+        Raises
+        ------
+        TypeError, ValueError
+            As ``select(sites=)`` raises them for *sites*; ``ValueError`` too
+            if none of the vector's sites is among them.
+        """
+        wanted = set(as_site_ids(sites, message_name="sites"))
+        kept = [site for site in self._sites if site in wanted]
+        check_the_restriction_keeps_a_site(kept)
+        return self.select(sites=kept)
 
     def positions(
         self, *, site: int | None = None, observation_source_name: str | None = None
@@ -391,11 +499,11 @@ class ObservationVector:
             )
             labels = self._index.get_level_values(OBSERVATION_SOURCE).values
             mask &= labels == observation_source_name
-        return np.flatnonzero(mask)
+        return np.flatnonzero(mask).astype(np.int64)
 
     # ── representations ───────────────────────────────────────────────────────
 
-    def flat(self, fields: Mapping[str, xr.DataArray]) -> np.ndarray:
+    def flat(self, fields: Mapping[str, Field]) -> jax.Array:
         """Fields to Flat: ``(N,)``, or ``(J, N)`` when the fields carry a batch dim.
 
         Parameters
@@ -412,7 +520,7 @@ class ObservationVector:
 
         Returns
         -------
-        numpy.ndarray
+        jax.Array
             ``float64``, ``(N,)``, or ``(J, N)`` in the order of the fields'
             batch labels. Values are taken as they are: a ``NaN`` prediction
             stays ``NaN``.
@@ -435,12 +543,16 @@ class ObservationVector:
             ones, or they disagree on its labels.
         """
         check_fields_hold_the_observation_sources(fields, self.observation_source_names)
-        batch = _batch_dim_and_labels(fields, self.observation_source_names)
-        shape = (len(batch[1]), self.dimension) if batch is not None else (self.dimension,)
-        out = np.full(shape, np.nan, dtype=np.float64)
-        for source in self._observation_sources:
+        arrays = {}
+        for source in self.observation_sources:
             array = fields[source.observation_source_name]
             check_field_is_on_the_grid(array, source)
+            arrays[source.observation_source_name] = in_field_layout(array)
+        batch = _batch_dim_and_labels(arrays, self.observation_source_names)
+        shape = (len(batch[1]), self.dimension) if batch is not None else (self.dimension,)
+        out = np.full(shape, np.nan, dtype=np.float64)
+        for source in self.observation_sources:
+            array = arrays[source.observation_source_name]
             positions = self.positions(observation_source_name=source.observation_source_name)
             out[..., positions] = _read_observations(
                 array,
@@ -448,15 +560,16 @@ class ObservationVector:
                 source.is_static,
                 None if batch is None else batch[0],
             )
-        return out
+        return jnp.asarray(out)
 
-    def fields(self, flat_values: Any, *, batch_dim: str = SAMPLE) -> dict[str, xr.DataArray]:
+    def fields(self, flat_values: Any, *, batch_dim: str = SAMPLE) -> dict[str, Field]:
         """Flat to Fields: ``(N,)`` or ``(J, N)`` onto each observation source's grid.
 
         Parameters
         ----------
         flat_values:
-            An array-like of shape ``(N,)`` or ``(J, N)``, in Flat order.
+            An array-like of shape ``(N,)`` or ``(J, N)``, in Flat order: a
+            JAX or NumPy array, or a nested list.
         batch_dim:
             The name of the batch dim a ``(J, N)`` batch is given. It may not
             be a reserved name (a spatial name, ``time``, ``source_index``),
@@ -493,13 +606,13 @@ class ObservationVector:
         """
         check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
         check_batch_dim_name_is_not_a_data_source_member(batch_dim, message_name="batch_dim")
-        check_batch_dim_is_not_an_observation_source_name(self._observation_sources, batch_dim)
+        check_batch_dim_is_not_an_observation_source_name(self.observation_sources, batch_dim)
         batched = np.asarray(
             as_batched_flat(flat_values, self.dimension, message_name="flat_values")
         )
         was_one_vector = is_one_vector(flat_values)
         out: dict[str, xr.DataArray] = {}
-        for source in self._observation_sources:
+        for source in self.observation_sources:
             positions = self.positions(observation_source_name=source.observation_source_name)
             array = _unstacked(source, batched[:, positions], self._index[positions], batch_dim)
             out[source.observation_source_name] = (
@@ -507,7 +620,7 @@ class ObservationVector:
             )
         return out
 
-    # ── prediction ────────────────────────────────────────────────────────────
+    # ── evaluation ────────────────────────────────────────────────────────────
 
     def predict(
         self,
@@ -569,7 +682,7 @@ class ObservationVector:
             source.observation_source_name: _predicted(
                 source, model_output, sipnet_parameter_fields, failed
             )
-            for source in self._observation_sources
+            for source in self.observation_sources
         }
 
 
@@ -580,7 +693,7 @@ def _union(groups: Iterable[Sequence[str]]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(chain.from_iterable(groups)))
 
 
-def _selected(
+def _source_restricted_to(
     source: ObservationSource, sites: list[int] | None, time: slice | None
 ) -> ObservationSource | None:
     """*source* restricted to *sites* and *time*, or ``None`` if no observation is left.
@@ -601,6 +714,24 @@ def _selected(
         observed_values=values,
         operator=source.operator,
     )
+
+
+def _site_locations_of(
+    observation_sources: Sequence[ObservationSource], sites: Sequence[int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """The ``lon`` and ``lat`` of each of *sites*, read-only, from the observed values."""
+    lon = np.full(len(sites), np.nan)
+    lat = np.full(len(sites), np.nan)
+    position = {site: k for k, site in enumerate(sites)}
+    for source in observation_sources:
+        values = source.observed_values
+        for site, x, y in zip(values[SITE].values, values[LON].values, values[LAT].values):
+            k = position.get(int(site))
+            if k is not None:
+                lon[k], lat[k] = x, y
+    lon.flags.writeable = False
+    lat.flags.writeable = False
+    return lon, lat
 
 
 def _build_index(observation_sources: Sequence[ObservationSource]) -> pd.MultiIndex:
@@ -650,11 +781,7 @@ def _batch_dim_and_labels(
     fields: Mapping[str, xr.DataArray], observation_source_names: Sequence[str]
 ) -> tuple[str, np.ndarray] | None:
     """The one batch dim the fields share and its labels, or ``None`` if they have none."""
-    arrays = {
-        n: fields[n] for n in observation_source_names if isinstance(fields[n], xr.DataArray)
-    }
-    for name, array in arrays.items():
-        check_dims_are_batch_spatial_or_time(array, message_name=repr(name))
+    arrays = {n: fields[n] for n in observation_source_names}
     by_source = {name: batch_dims(array) for name, array in arrays.items()}
     for name, dims in by_source.items():
         check_at_most_one_batch_dim(dims, message_name=f"the field {name!r}")
@@ -727,12 +854,46 @@ def _predicted(
         to_constituent=source.observed_values.attrs.get("constituent", "") or "",
     )
     predicted = in_field_layout(predicted)
+    validate_field(predicted, message_name=f"{source.observation_source_name}: the prediction")
     check_prediction_is_finite_where_the_run_succeeded(predicted, source, failed)
     predicted.name = source.observation_source_name
     return predicted
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_observation_vector_is_valid(observation_sources: Sequence[Any]) -> None:
+    """The observation sources can make one vector.
+
+    Runs :func:`check_there_is_an_observation_source`,
+    :func:`check_entries_are_observation_sources`,
+    :func:`check_observation_source_names_are_unique`,
+    :func:`check_every_observation_source_has_an_observation` and
+    :func:`check_observation_sources_agree_on_site_locations`, in that order.
+    """
+    check_there_is_an_observation_source(observation_sources)
+    check_entries_are_observation_sources(observation_sources)
+    check_observation_source_names_are_unique(observation_sources)
+    check_every_observation_source_has_an_observation(observation_sources)
+    check_observation_sources_agree_on_site_locations(observation_sources)
+
+
+def check_observation_sources_agree_on_site_locations(
+    observation_sources: Sequence[ObservationSource],
+) -> None:
+    """Every observation source gives a site the same ``lon`` and ``lat``."""
+    seen: dict[int, tuple[float, float, str]] = {}
+    for source in observation_sources:
+        values = source.observed_values
+        for site, x, y in zip(values[SITE].values, values[LON].values, values[LAT].values):
+            held = seen.setdefault(int(site), (float(x), float(y), source.observation_source_name))
+            if not np.allclose(held[:2], (x, y), equal_nan=True):
+                raise ValueError(
+                    f"site {int(site)} is at ({held[0]}, {held[1]}) in {held[2]!r} and at "
+                    f"({float(x)}, {float(y)}) in {source.observation_source_name!r}; a site has "
+                    "one location, so locate every observation source from one site table."
+                )
 
 
 def check_there_is_an_observation_source(observation_sources: Sequence[Any]) -> None:
@@ -788,6 +949,26 @@ def check_the_selection_keeps_an_observation(kept: Sequence[ObservationSource]) 
         raise ValueError(
             "the selection leaves no observation; select sites, observation sources or a "
             "period the vector observes."
+        )
+
+
+def check_sites_are_the_vectors(sites: Sequence[int], held: Sequence[int]) -> None:
+    """Every site asked for is observed by the vector."""
+    unknown = [site for site in sites if site not in set(held)]
+    if unknown:
+        raise KeyError(
+            f"the vector observes no site(s) {truncated(unknown)}; it observes "
+            f"{truncated(list(held))}. Select from its sites, or use "
+            "restrict_to_sites to keep the ones it observes."
+        )
+
+
+def check_the_restriction_keeps_a_site(kept: Sequence[int]) -> None:
+    """At least one of the vector's sites is among the sites restricted to."""
+    if not kept:
+        raise ValueError(
+            "none of the vector's sites is among the sites given, so the restriction leaves "
+            "no observation; restrict to sites the vector observes."
         )
 
 
@@ -873,16 +1054,25 @@ def check_fields_agree_on_the_batch_dim(
 
 
 def check_field_is_on_the_grid(array: Any, source: ObservationSource) -> None:
+    """An array to flatten is a field holding every observation of its source.
+
+    Runs :func:`sipnet_calibration.fields.validate_field` on it laid out as
+    a field (:func:`sipnet_calibration.fields.in_field_layout`, so any dim
+    order and a scalar ``site`` are accepted), then checks it has the
+    source's observed sites and, for a dated source, its time labels.
+    """
     name = source.observation_source_name
     if not isinstance(array, xr.DataArray):
         raise TypeError(
             f"{name}: expected a DataArray, got {type(array).__name__}; pass the field "
             "predict or fields returns for it."
         )
+    array = in_field_layout(array)
+    validate_field(array, message_name=name)
     if SITE not in array.dims:
         raise ValueError(
-            f"{name}: the array has no site dimension; give a one-site array a site "
-            "dimension of length one with .expand_dims('site')."
+            f"{name}: the array has no site; label it with the observation source's sites, "
+            "as predict and fields do."
         )
     missing_sites = missing_labels(array, SITE, source.observed_values.indexes[SITE])
     if missing_sites:
@@ -902,8 +1092,8 @@ def check_field_is_on_the_grid(array: Any, source: ObservationSource) -> None:
         if missing_times.size:
             raise ValueError(
                 f"{name}: the array lacks {missing_times.size} observed time label(s), the "
-                f"first being {missing_times[0]}; read the model at the observation source's time "
-                "labels, or select the vector to the period given."
+                f"first being {missing_times[0]}; read the model at the observation source's "
+                "time labels, or select the vector to the period given."
             )
 
 

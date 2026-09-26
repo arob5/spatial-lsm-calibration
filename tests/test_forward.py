@@ -136,7 +136,7 @@ def observation_vector():
         name="modis_leaf_area_index",
     ), site_table=SITE_TABLE)
     return ObservationVector(
-        [
+        observation_sources=[
             ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon")),
             ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ]
@@ -216,7 +216,7 @@ class TestEvaluate:
             site_table=SITE_TABLE,
         )
         observation_vector = ObservationVector(
-            [
+            observation_sources=[
                 ObservationSource(
                     observation_source_name="soil",
                     observed_values=observed,
@@ -288,7 +288,7 @@ class TestEvaluate:
         wood = observation_vector["landtrendr_aboveground_biomass"].observed_values.copy()
         wood.loc[{"site": 27}] = np.nan
         sparse = ObservationVector(
-            [ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
+            observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
         assert sparse.positions(site=27).size == 0 and sparse.sites == (1,)
         forward = ForwardModel(
@@ -347,7 +347,7 @@ class TestEvaluate:
             name="soil",
         ))
         observation_vector = ObservationVector(
-            [
+            observation_sources=[
                 ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon")),
                 ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
                 ObservationSource(observation_source_name="soil", observed_values=soil, operator=ReduceOverRun("soil_carbon", "mean")),
@@ -373,7 +373,7 @@ class TestEvaluate:
             name="landtrendr_aboveground_biomass",
         ), site_table=SITE_TABLE)
         observed = ObservationVector(
-            [ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
+            observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -503,7 +503,7 @@ class TestFailures:
             name="landtrendr_aboveground_biomass",
         ), site_table=SITE_TABLE)
         infinite = ObservationVector(
-            [ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=Infinite())]
+            observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=Infinite())]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
