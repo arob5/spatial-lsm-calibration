@@ -251,13 +251,16 @@ What `fields.validate_field(field, *, message_name=None)` checks:
   coordinates (observations) are on `time` alone, or scalars once one time is
   selected.
 - **units**: `attrs["units"]`, validated by pySIPNET, unless the field is
-  categorical (CF `flag_values`/`flag_meanings`, or string, bytes or boolean
-  values; an object array only when every element is a string).
+  categorical, by the one rule `fields.is_categorical` holds (and the maps
+  use): CF `flag_values` or `flag_meanings`, or string, bytes or boolean
+  values; an object array when every element is a string or missing.
 - **Batch dims.** A batch dim is every dim other than the spatial dim and
-  `time` whose index coordinate holds integers, of any integer dtype
-  (`fields.batch_dims` finds them), with distinct labels; a dim with string or
-  float labels, or none, is refused, which is what keeps `variable`,
-  `quantile`, `pft` and `bounds` off a field. Batch dims come first.
+  `time` whose index coordinate holds integers, of any integer dtype that fits
+  `int64` (`fields.batch_dims` finds them), with distinct labels; a dim with
+  string or float labels, or none, is refused, which is what keeps
+  `variable`, `quantile`, `pft` and `bounds` off a field. No name of
+  `conventions.NON_BATCH_DIM_NAMES` (the spatial names, `time`,
+  `source_index`) is ever a batch dim. Batch dims come first.
 
 Conventions a creator follows, which `validate_field` does not check:
 `long_name`, `constituent` where the quantity has one and `kind` where
@@ -281,18 +284,26 @@ The batch-dim rules:
   `ForwardModel`, whose `sipnet_table`, `model_output`, `run_succeeded` and
   `failures` column all carry that one name), labeled `0..n_samples-1` in row
   order. Which names each refuses: every creator of a batch dim refuses the
-  reserved names (`fields.check_batch_dim_name_is_not_reserved`: the spatial
-  names, `time`, `source_index`); the parameter vector also refuses its
-  site-labels names, SIPNET parameter, calibration parameter and Fields
-  variable names, and `ForwardModel` runs that check at construction,
-  whatever its table hook, and refuses an output variable name;
+  reserved names (`fields.check_batch_dim_name_is_not_reserved`:
+  `conventions.NON_BATCH_DIM_NAMES`); the vectors, `ForwardModel` and
+  `stack_batch_dims(into=)` also refuse the data source member names
+  (`fields.check_batch_dim_name_is_not_a_data_source_member`), since their
+  labels are new indices; the parameter vector also refuses `shared`,
+  `site_id`, its site-labels names, SIPNET parameter, calibration parameter
+  and Fields variable names (`parameter_vector.check_batch_dim_name_is_not_taken`);
+  `ForwardModel` runs that check at construction, whatever its table hook,
+  and refuses there too a name the model output uses (an output variable, or
+  `fields.MODEL_OUTPUT_COORDINATE_NAMES`: the time coordinates,
+  `time_bounds`, `bounds` and SIPNET's row labels) and a product name or
+  observation coordinate of its observation vector, so nothing runs first;
   `ObservationVector.fields` refuses a product name or a coordinate of an
-  observation's values (a scalar batch label excepted, which the batch dim
-  replaces); `fields.label_run`, `from_sipnet_output(batch=)` and the
-  stackers' `key_dims` refuse a variable, dim or coordinate of the model
-  output. The parameter vector reserves `sample`, the spatial names, the
-  data source member names and `source_index` against parameter and
-  site-labels names.
+  observation's values (a scalar batch label excepted: an observation's
+  scalar batch labels are metadata of the input and are not carried);
+  `fields.label_run`, `from_sipnet_output(batch=)` and the stackers'
+  `key_dims` refuse a variable, dim or coordinate of the model output. The
+  parameter vector reserves `sample`, `conventions.NON_BATCH_DIM_NAMES` and
+  the data source member names against parameter names, and `shared` and
+  `site_id` as well against site-labels names.
 - **A data source's own ensemble** is a batch dim named for the source:
   `conventions.INITIAL_CONDITION_MEMBER`, `conventions.DRIVER_MEMBER` (and
   `nee_member` when NEE is ingested), with its 1-based file index beside it as
@@ -312,17 +323,22 @@ The batch-dim rules:
   theta's samples, which it is not, and the operators refuse a model output
   stacked over a SIPNET table's dim. The stack keeps each original dim's
   labels as a `<dim>_label` coordinate and records the dims, in order, on the
-  stacked coordinate (`stacked_dims`); `fields.unstack_batch_dims` reads only
-  that record, restoring the dims in that order, labels in first-appearance
-  order, and a coordinate that was on stacked dims alone (`source_index`).
+  stacked coordinate (`stacked_dims`, JSON, as `stacked_companions` is);
+  `fields.unstack_batch_dims` reads only that record, restoring the dims in
+  that order, labels in first-appearance order, and a coordinate that was on
+  stacked dims alone (`source_index`), and checks that the result is a field.
   Through Flat: a vector's `fields(y, batch_dim="run")` carries no labels, and
   `unstack_batch_dims(array, labels_from=stacked_array)` copies them; a
   Dataset is stacked with `dataset.map(lambda f: stack_batch_dims(f,
-  into="run"))`, a dict entry by entry.
+  into="run"))`, a dict entry by entry. The round trip needs fields: a vector
+  built from bare site ids gives arrays without `lon`/`lat` (or with `int64`
+  sites), which are not fields yet and are refused; PR 4 closes it.
 - **A scalar coordinate is not a dim.** A field whose batch dim was selected
   away with `.isel(sample=k)` has no batch dim; its scalar label is metadata
-  (`fields.scalar_batch_labels` finds them), and `flat` gives one vector. An
-  observation refuses a batch dim, not a scalar batch label.
+  (`fields.scalar_batch_labels` finds them: any scalar integer coordinate
+  but `NON_BATCH_DIM_NAMES` and SIPNET's row labels, so a run carrying
+  `seed=42` must name it in `key_dims` or drop it), and `flat` gives one
+  vector. An observation refuses a batch dim, not a scalar batch label.
 
 Every plotter calls `validate_field` first, as `stack_batch_dims` and
 `unstack_batch_dims` do, and plotting stays strict: a plotter takes only
@@ -369,8 +385,10 @@ coercion lives in `validation.py`.
   the data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
   (`DATA_SOURCE_MEMBER_NAMES`), coordinates, `SOURCE_INDEX`, the `site_id`
   column, the `time_bounds`
-  variable, the attributes of `site`/`lon`/`lat`/`sample` and of a data
-  source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`), `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
+  variable and its `BOUNDS` dim, `NON_BATCH_DIM_NAMES`,
+  `SIPNET_ROW_LABEL_NAMES`, the attributes of `site`/`lon`/`lat`/`sample`
+  and of a data source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`),
+  `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
   `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
   `data_root()`), and `FrozenMapping`, the one read-only mapping type: a
   `dict` subclass whose mutators (a second `__init__` included) raise, so
@@ -950,7 +968,10 @@ plotting code. The load-bearing rules:
   `site` dim (select a site, or facet with `plot_by_site`); `plot_map` refuses
   a batch dim with advice naming it (`plot_map_by`,
   `plot_map_quantiles(batch_dim=)`, `summarize_batch(field, stat,
-  batch_dim=)`). No plotter types a dim name: `SITE`, `TIME`, `LON`, `LAT`
+  batch_dim=)`); `plot_map_by` and `plot_map_quantiles` refuse a batch dim
+  besides the one their panels are over with the same advice, and the map
+  grids and `animate_map` check every panel is a map
+  (`maps.check_field_is_a_map`) before a shared scale reads its values. No plotter types a dim name: `SITE`, `TIME`, `LON`, `LAT`
   and `SAMPLE` come from `conventions`.
 - **Temporal aggregation lives in `observation/time_alignment.py`**: the
   observation operators are written with it, and it is the verb a caller
@@ -1091,9 +1112,11 @@ plotting code. The load-bearing rules:
   by another name. `plot_map` refuses a batch or `time` dim rather than
   reducing it: use `summarize_batch`, `plot_map_by`, `plot_map_quantiles` or
   `animate_map`. A GP is not fitted in plotting; its predictions are a
-  `(lat, lon)` raster or site values, mapped like any field. Categorical
-  fields are CF `flag_values`/`flag_meanings`, colored by class position so a
-  class keeps its color across figures; an optional `flag_display_names`
+  `(lat, lon)` raster or site values, mapped like any field. A field is
+  categorical by `fields.is_categorical`, the field contract's one rule (CF
+  `flag_values`/`flag_meanings`, strings, or booleans such as
+  `run_succeeded`), and is colored by class position so a class keeps its
+  color across figures; an optional `flag_display_names`
   tuple (ours, not CF's) is what the legend shows, and `site_labels_field`
   sets it from the spec's `display_names`. Sites are 8000 **irregular points**
   spanning 7-82 deg N, so a real projection is required and CONUS-only
@@ -1128,8 +1151,9 @@ plotting code. The load-bearing rules:
   `site`. PFT is **not** site metadata and is not a column of the site table:
   which site labels to use is an experimental choice, so site labels are their
   own product at `data/processed/site_labels/<name>.csv`, keyed on `site_id`,
-  and a caller joins one on before selecting. A batch label is an `int64`,
-  meaningful only within its dim's name. See the Data section above for the
+  and a caller joins one on before selecting. A batch label is an integer,
+  created `int64` (any integer dtype is accepted), meaningful only within its
+  dim's name. See the Data section above for the
   rules these imply.
 
 ## Key API facts (hard-won from source reading)

@@ -1346,9 +1346,8 @@ Conversions applied during ingest rather than downstream:
   in the source files' names and units strings; the ingest renames the
   variables to the spec names, renames `member` to `initial_condition_member`
   and renumbers it from the 1-based index to a 0-based one, keeping the
-  original as `source_index`, and drops
-  the degenerate `time`. No state-to-parameter conversion and no unit
-  conversion: three of the four SIPNET initial parameters depend on parameters
+  original as `source_index`, and drops the degenerate `time`. No
+  state-to-parameter conversion and no unit conversion: three of the four SIPNET initial parameters depend on parameters
   the calibration proposes (see [Initial conditions](#initial-conditions)), so
   the mapping is evaluated per proposed parameter vector in the experiment
   layer. Negative wood and leaf draws pass through and are counted in the run
@@ -1783,10 +1782,10 @@ or independently determines whether arithmetic that pairs them is meaningful.
 The ensembles' dims carry distinct names, so xarray and PyEns cross them rather
 than pair them; the risk left is in deliberately giving two of them one name,
 which pairs them label by label, and that is to be done only once this
-question is answered yes. One
-connection is known: the members of [GAPFILL] are gap-filled series driven by
-successive members of a driver ensemble, so if that is the same ensemble used here,
-net ecosystem exchange member *i* and driver member *i* would share a realization.
+question is answered yes. One connection is known: the members of [GAPFILL]
+are gap-filled series driven by successive members of a driver ensemble, so if
+that is the same ensemble used here, net ecosystem exchange member *i* and
+driver member *i* would share a realization.
 Whether it is the same ensemble has not been established.
 
 **13. Site ordering in the processed form.** The 1-8000 identifiers are fixed, but
