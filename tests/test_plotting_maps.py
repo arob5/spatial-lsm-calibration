@@ -655,6 +655,17 @@ def test_animate_map_refuses_a_non_field_in_the_fields_words(dense):
     assert plt.get_fignums() == before
 
 
+def test_plot_map_by_refuses_a_field_stored_out_of_order(ensemble):
+    """Each panel alone would be a map; the field given is not a field."""
+    with pytest.raises(ValueError, match="not in the order"):
+        plot_map_by(ensemble.transpose("site", "sample"), "sample")
+
+
+def test_animate_map_refuses_a_field_stored_out_of_order(dense):
+    with pytest.raises(ValueError, match="not in the order"):
+        animate_map(frames(dense).transpose("time", "site"))
+
+
 def test_quantile_maps_take_the_batch_dim_named(ensemble):
     renamed = ensemble.rename(sample="initial_condition_member")
     figure, axes = plot_map_quantiles(renamed, batch_dim="initial_condition_member")
