@@ -457,15 +457,15 @@ def test_layout_dimension_labels_and_slices(example):
         "photosynthesis": "shared", "allocation": "pft", "base_soil_respiration": "pft",
         "leaf_fall_fraction": "shared", "initial_soil_carbon": "site",
     }
-    assert layout.column_labels[0] == "photosynthesis[log(capacity)]"
-    assert layout.column_labels[2] == "allocation[conifer][alr(leaf_allocation:coarse_root_allocation)]"
-    assert layout.column_labels[-1] == "initial_soil_carbon[4711]"
-    assert len(layout.column_labels) == 14
-    deciduous = [layout.column_labels[i] for i in layout.index("allocation", group="deciduous")]
+    assert layout.entry_labels[0] == "photosynthesis[log(capacity)]"
+    assert layout.entry_labels[2] == "allocation[conifer][alr(leaf_allocation:coarse_root_allocation)]"
+    assert layout.entry_labels[-1] == "initial_soil_carbon[4711]"
+    assert len(layout.entry_labels) == 14
+    deciduous = [layout.entry_labels[i] for i in layout.index("allocation", group="deciduous")]
     assert deciduous == [
         f"allocation[deciduous][{e}]" for e in layout.element_labels["allocation"]
     ]
-    assert all("[conifer]" in layout.column_labels[i] for i in layout.index("allocation", group="conifer"))
+    assert all("[conifer]" in layout.entry_labels[i] for i in layout.index("allocation", group="conifer"))
     stops = [layout.slice(c).stop for c in layout.parameter_names]
     assert stops == [2, 8, 10, 11, 14]
 
@@ -1021,7 +1021,7 @@ def test_sites_with_and_parameter_lookup(example):
 def test_describe_has_one_row_per_column(example):
     frame = example.describe()
     assert len(frame) == 14
-    assert list(frame["parameter"]) == [example.layout.column_labels[i].split("[")[0] for i in range(14)]
+    assert list(frame["parameter"]) == [example.layout.entry_labels[i].split("[")[0] for i in range(14)]
     assert (frame["provenance"].str.len() > 0).all()
     assert set(frame["distribution"]) == {
         "product of transformed Gaussians", "softmax-normal", "log-normal", "logit-normal",

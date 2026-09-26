@@ -71,9 +71,9 @@ site labels
     A site-labels data source assigns one class to every site. A vector names the
     sources it uses in ``site_labels={site_labels_name: ...}``, and a
     calibration parameter's ``varies_by`` names one of them.
-column label
-    The name of one of the ``D`` columns of ``theta``, from
-    :attr:`Layout.column_labels`.
+entry label
+    The name of one of the ``D`` entries of ``theta``, from
+    :attr:`Layout.entry_labels`.
 
 Data model
 ----------
@@ -83,7 +83,7 @@ representations. Every public function says which one it takes and returns.
 **Flat.** A float64 ``jax.Array``, ``(D,)`` for one value and ``(J, D)`` for
 an ensemble, always in unconstrained space: a natural-space flat vector is
 not defined, since the simplex has one more component than it has elements.
-Columns follow :class:`Layout`: calibration parameters in declaration order;
+Entries follow :class:`Layout`: calibration parameters in declaration order;
 within one, groups in group order; within a group, elements in order. Flat is
 what :meth:`ParameterVector.sample` returns and what
 :meth:`ParameterVector.log_prior` and pyEKI consume. NaN is never produced
@@ -318,9 +318,9 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     #   fixed: daily_mean_photosynthesis_fraction (shared), leaf_carbon_fraction (pft)
     #   unset: 39 required SIPNET parameters, taken from the run's base parameter set
     vector.dimension                                   # int: 13
-    vector.layout.column_labels[:2]                    # ('photosynthesis[log(capacity)]', ...)
-    vector["allocation"].components                    # ('leaf_allocation', ..., 'coarse_root_allocation')
-    vector.describe()                                  # DataFrame: one row per column of theta
+    vector.layout.entry_labels[:2]                     # ('photosynthesis[log(capacity)]', ...)
+    vector["allocation"].component_names               # ('leaf_allocation', ..., 'coarse_root_allocation')
+    vector.describe()                                  # DataFrame: one row per entry of theta
     vector.site_table                                  # DataFrame: site_id, lon, lat, pft
 
     # Subset it.
@@ -615,7 +615,7 @@ def product_transformed_gaussian_prior(
     moments. A component with any other base, a vector event, or a batch
     shape is refused.
 
-    Keyword order is component order; it must match the ``components`` of
+    Keyword order is component order; it must match the ``component_names`` of
     the calibration parameter's :class:`SIPNETMap`.
 
     Examples
@@ -919,7 +919,7 @@ class CalibrationParameter:
         For a malformed or reserved name, an empty provenance, SIPNET
         parameters that do not exist, a prior that is not ``float64``, of the
         wrong batch or event rank, or without a default event-space bijector,
-        or a SIPNET map whose ``components`` do not match the prior's event.
+        or a SIPNET map whose ``component_names`` do not match the prior's event.
 
     Examples
     --------
@@ -983,7 +983,7 @@ class CalibrationParameter:
         return tfd.TransformedDistribution(self.prior, tfb.Invert(self.bijector))
 
     @property
-    def components(self) -> tuple[str, ...]:
+    def component_names(self) -> tuple[str, ...]:
         """Natural-space component names, from the SIPNET map."""
         return tuple(self.sipnet_map.component_names)
 
@@ -995,7 +995,7 @@ class CalibrationParameter:
     @property
     def natural_size(self) -> int:
         """``k``, the number of natural-space components of one copy."""
-        return len(self.components)
+        return len(self.component_names)
 
     @property
     def is_scalar(self) -> bool:
@@ -1014,7 +1014,7 @@ class CalibrationParameter:
 
     @property
     def size(self) -> int:
-        """The number of columns of ``theta`` per group."""
+        """The number of entries of ``theta`` per group."""
         if self.is_scalar:
             return 1
         shape = self.bijector.inverse_event_shape(self.prior.event_shape)
@@ -1026,7 +1026,7 @@ class CalibrationParameter:
         ``alr(a:residual)``, ``logit(x in (low, high))``, derived from the
         bijector. None contains ``/``, so every Fields variable name is a
         legal netCDF name."""
-        return _unconstrained_labels(self.bijector, self.components)
+        return _unconstrained_labels(self.bijector, self.component_names)
 
     @property
     def distribution_name(self) -> str:
@@ -1124,7 +1124,7 @@ class Layout:
     parameter_names:
         Calibration parameter names in layout order.
     sizes:
-        Columns per group, per calibration parameter.
+        Entries per group, per calibration parameter.
     groups:
         Group labels per calibration parameter, in the order they occupy
         ``theta``.
@@ -1168,7 +1168,7 @@ class Layout:
         return sum(len(self.groups[n]) * self.sizes[n] for n in self.parameter_names)
 
     @cached_property
-    def column_labels(self) -> tuple[str, ...]:
+    def entry_labels(self) -> tuple[str, ...]:
         """``D`` strings: ``"c"``, ``"c[group]"``, ``"c[element]"`` or
         ``"c[group][element]"`` as the calibration parameter needs."""
         out = []
@@ -1185,11 +1185,11 @@ class Layout:
         return tuple(out)
 
     def slice(self, parameter: str) -> slice:
-        """The columns of ``theta`` a calibration parameter owns."""
+        """The entries of ``theta`` a calibration parameter owns."""
         return self.slices[self._known(parameter)]
 
     def index(self, parameter: str, group: Any = None, element: str | None = None) -> np.ndarray:
-        """Column indices of a calibration parameter, narrowed by group and
+        """Entry positions of a calibration parameter, narrowed by group and
         element label."""
         name = self._known(parameter)
         n_groups, size = len(self.groups[name]), self.sizes[name]
@@ -1318,7 +1318,7 @@ class ParameterVector:
     dimension : int
         ``D``.
     layout : Layout
-        Which columns of ``theta`` belong to which calibration parameter,
+        Which entries of ``theta`` belong to which calibration parameter,
         group and element.
     parameter_names : tuple[str, ...]
         Calibration parameter names in layout order.
@@ -1565,7 +1565,7 @@ class ParameterVector:
         )
 
     def describe(self) -> pd.DataFrame:
-        """One row per column of ``theta``.
+        """One row per entry of ``theta``, indexed by ``entry``.
 
         Columns: ``parameter``, ``group``, ``element``,
         ``sipnet_parameters``, ``distribution``, ``theta_mean``,
@@ -1603,7 +1603,7 @@ class ParameterVector:
                         }
                     )
         frame = pd.DataFrame(rows)
-        frame.index.name = "column"
+        frame.index.name = "entry"
         return frame
 
     # -- the prior, on Flat --------------------------------------------------
@@ -2698,7 +2698,7 @@ def _as_batch_labels(values: Any) -> np.ndarray:
 
 def _space_labels(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
     """Component names in natural space, element labels in unconstrained."""
-    return parameter.components if space == NATURAL else parameter.element_labels
+    return parameter.component_names if space == NATURAL else parameter.element_labels
 
 
 def _fields_variable_names(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
@@ -2901,9 +2901,10 @@ def check_components_match_prior(parameter: CalibrationParameter) -> None:
     if natural != parameter.natural_size:
         raise ValueError(
             f"calibration parameter {parameter.name!r}: the SIPNET map names "
-            f"{parameter.natural_size} components {parameter.components} but the prior's "
-            f"natural value has {natural}. Match the prior (product_transformed_gaussian_prior "
-            "keyword order, softmax_normal center length) to the SIPNET map."
+            f"{parameter.natural_size} components {parameter.component_names} but the "
+            f"prior's natural value has {natural}. Match the prior "
+            "(product_transformed_gaussian_prior keyword order, softmax_normal center "
+            "length) to the SIPNET map."
         )
 
 
