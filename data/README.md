@@ -1656,9 +1656,9 @@ only be surveyed where the files are.
 
 **2. Meaning of the `cluster` and `landcover` fields.** Neither is documented in
 the sources available. The evidence that they define sampling strata is
-circumstantial but consistent: their cross-tabulation leaves 13 of 48 cells empty
-in a staircase pattern rather than at random, several columns hold near-equal
-counts across clusters, and the 6907 non-named sites are labeled
+circumstantial but consistent: their cross-tabulation leaves 13 of 48 (cluster,
+class) pairs empty in a staircase pattern rather than at random, several columns
+hold near-equal counts across clusters, and the 6907 non-named sites are labeled
 `weighted_sample`. Against a geographic reading, mean within-cluster pairwise
 distance runs from 1636 to 3455 km where the pool as a whole averages 3098, so
 cluster 4 is more dispersed than the pool and the grouping cannot be spatial.

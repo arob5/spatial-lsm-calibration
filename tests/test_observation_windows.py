@@ -158,7 +158,7 @@ class TestReduceWindowsSemantics:
         assert windows[5].left < last_end <= windows[5].right
         assert last_end == pd.Timestamp(array["time"].values[windows.get_indexer(pd.DatetimeIndex(array["time"].values)) == 5][-1])
 
-    def test_the_observations_labels_and_attributes_are_kept(self, niwot):
+    def test_the_observed_values_labels_and_attributes_are_kept(self, niwot):
         array = niwot["wood_carbon"]
         windows = _daily_windows(array)
         labels = xr.DataArray(windows.left, dims="time", attrs={"time_reference": "the key"})

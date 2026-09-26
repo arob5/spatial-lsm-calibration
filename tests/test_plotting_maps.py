@@ -176,7 +176,7 @@ def test_raster_refuses_corners_that_do_not_bound_the_values(ax):
         primitives.raster(ax, np.zeros((3, 3)), np.zeros((3, 3)), np.zeros((3, 3)))
 
 
-# ── plot_map: kinds, renderers, refusals ──────────────────────────────────────
+# ── plot_map: maps, renderers, refusals ───────────────────────────────────────
 
 
 def test_points_are_the_default_and_draw_every_site_with_a_value(ax, dense):

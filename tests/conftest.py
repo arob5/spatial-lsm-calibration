@@ -15,8 +15,8 @@ time)`` dimensions (and of other batch dims), with a real ``DatetimeIndex`` on
 The in-memory builders make what several test files need: a site table
 (:func:`site_table_of`, and the :func:`site_table` fixture that hands it
 out), a stack of Niwot runs (:func:`niwot_stack_of`), observed values that are
-dated, static or attributed to windows (:func:`dated_observation`,
-:func:`static_observation`, :func:`windowed_observation`), and a stand-in
+dated, static or attributed to windows (:func:`dated_observed_values`,
+:func:`static_observed_values`, :func:`windowed_observed_values`), and a stand-in
 SIPNET model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
 every figure a test makes is closed after it (:func:`close_figures`).
 
@@ -586,7 +586,7 @@ def _scaled_keeping_attributes(variable: xr.DataArray, *, factor: float) -> xr.D
 # ── observed values ───────────────────────────────────────────────────────────
 
 
-def dated_observation(
+def dated_observed_values(
     sites: Sequence[int],
     times: Sequence,
     *,
@@ -602,12 +602,12 @@ def dated_observation(
         data,
         dims=(conventions.SITE, conventions.TIME),
         coords={conventions.SITE: list(sites), conventions.TIME: times},
-        attrs=_observation_attributes(units, constituent),
+        attrs=_observed_values_attributes(units, constituent),
         name=name,
     )
 
 
-def static_observation(
+def static_observed_values(
     sites: Sequence[int],
     *,
     values: np.ndarray | None = None,
@@ -621,26 +621,26 @@ def static_observation(
         data,
         dims=conventions.SITE,
         coords={conventions.SITE: list(sites)},
-        attrs=_observation_attributes(units, constituent),
+        attrs=_observed_values_attributes(units, constituent),
         name=name,
     )
 
 
-def windowed_observation(
+def windowed_observed_values(
     sites: Sequence[int],
     times: Sequence,
     *,
     window_length: str = "1D",
     **keywords,
 ) -> xr.DataArray:
-    """:func:`dated_observation`, each value attributed to the window ending at its label.
+    """:func:`dated_observed_values`, each value attributed to the window ending at its label.
 
     The window edges are the coordinates
     :data:`sipnet_calibration.conventions.WINDOW_START` and
     :data:`~sipnet_calibration.conventions.WINDOW_END` on ``time``, as the
     constraints' reader writes them; each window is *window_length* long.
     """
-    observed = dated_observation(sites, times, **keywords)
+    observed = dated_observed_values(sites, times, **keywords)
     ends = pd.DatetimeIndex(observed[conventions.TIME].values)
     return observed.assign_coords(
         {
@@ -650,7 +650,7 @@ def windowed_observation(
     )
 
 
-def _observation_attributes(units: str, constituent: str) -> dict[str, str]:
+def _observed_values_attributes(units: str, constituent: str) -> dict[str, str]:
     attrs = {"units": units}
     if constituent:
         attrs["constituent"] = constituent

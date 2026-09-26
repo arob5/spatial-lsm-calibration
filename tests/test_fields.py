@@ -37,8 +37,8 @@ FIELD_DIMS = ("sample", "site", "time")
 def rescaled(output, factor: float):
     """A second run's worth of output, differing from *output* by a known factor.
 
-    Real output kept real: only the values are scaled, so a stacked field's
-    cells can be told apart by which run they came from.
+    Real output kept real: only the values are scaled, so each (sample, site)
+    element of a stacked field can be told apart by the run it came from.
     """
     from pysipnet.output import SIPNETOutput
 
@@ -201,7 +201,7 @@ class TestStackSipnetOutputs:
         expected = real_site_table.set_index("site_id").loc[[1, 27]]
         assert field["lon"].values == pytest.approx(expected["lon"].to_numpy())
 
-    def test_each_cell_holds_the_run_it_was_labeled_with(self, runs, real_site_table):
+    def test_each_sample_and_site_holds_the_run_it_was_labeled_with(self, runs, real_site_table):
         field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]

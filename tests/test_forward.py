@@ -255,7 +255,7 @@ class TestEvaluate:
         )
         assert forward.output_variable_names == ("net_ecosystem_exchange", "wood_carbon")
 
-    def test_a_site_slice_is_the_site_block_of_the_whole_vector(self):
+    def test_a_site_slice_is_the_site_segment_of_the_whole_vector(self):
         """A run's segment is placed at positions(site=), which needs a site-major vector."""
         sites = [1, 27, 40]
         times = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, 30, 50]])

@@ -451,7 +451,7 @@ def test_a_malformed_date_is_refused(raw_root, site_table, tmp_path):
     _refused(DATED, rows, raw_root, site_table, tmp_path, "ISO date")
 
 
-def test_build_constraint_refuses_a_duplicate_cell_itself(site_table):
+def test_build_constraint_refuses_a_duplicate_site_time_key_itself(site_table):
     frame = pd.DataFrame(ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)])
     with pytest.raises(ValueError, match="share a"):
         build_constraint(ANNUAL, frame, site_table)

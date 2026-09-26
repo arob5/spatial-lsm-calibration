@@ -103,7 +103,7 @@ def test_an_unknown_share_is_rejected():
     """The message lists :data:`SHARE_OPTIONS`."""
     with pytest.raises(ValueError, match="share must be one of") as raised:
         build_plot_grid([1], draw_nothing, share="diagonal")
-    assert all(mode in str(raised.value) for mode in SHARE_OPTIONS)
+    assert all(option in str(raised.value) for option in SHARE_OPTIONS)
 
 
 # ── titles ────────────────────────────────────────────────────────────────────
@@ -223,7 +223,7 @@ def test_nothing_labeled_means_no_legend():
 
 
 def test_an_unknown_legend_is_rejected():
-    """An unrecognized legend mode raises."""
+    """An unrecognized legend option raises."""
     with pytest.raises(ValueError, match="legend must be one of"):
         build_plot_grid([1], draw_nothing, legend="footnote")
 

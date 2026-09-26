@@ -1031,7 +1031,7 @@ def test_conversion_refuses_a_deciduous_flag_that_is_not_boolean(bad):
         to_sipnet_initial_conditions(**VALID_STATE, **{**VALID_PARAMETERS, "deciduous": bad})
 
 
-def test_conversion_table_is_the_single_member_form_cell_by_cell():
+def test_conversion_table_is_the_single_member_form_element_by_element():
     state = ensemble_state()
     leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=INITIAL_CONDITION_MEMBER, coords={INITIAL_CONDITION_MEMBER: [0, 1]})
     deciduous = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})

@@ -81,7 +81,7 @@ def test_the_halves_rejoin_to_the_source():
     split.check_the_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
 
 
-def test_the_rejoin_check_catches_a_changed_cell():
+def test_the_rejoin_check_catches_a_changed_value():
     source = _source()
     site_labels, covariates = split.split(source)
     covariates = covariates.copy()

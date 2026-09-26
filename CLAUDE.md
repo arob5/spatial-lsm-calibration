@@ -377,10 +377,10 @@ convention (approved; **being implemented in PR 4**, except where noted):
 | Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──`, `# ── evaluation ──` |
 
 `ForwardModel` is a regular class with read-only properties (PR 4; its
-attributes are still plain and reassignable, bar `batch_dim`, read-only
-since PR 2 because the default table hook is bound to it); `ForwardEvaluation` is
-`frozen, eq=False` (PR 1). No base class is shared by
-the vectors: they share an interface, not an implementation, and their shared
+attributes are still plain and reassignable, bar `batch_dim`, read-only since
+PR 2 because the default SIPNET-parameter-fields hook is bound to it);
+`ForwardEvaluation` is `frozen, eq=False` (PR 1). No base class is shared by the
+vectors: they share an interface, not an implementation, and their shared
 coercion lives in `validation.py`.
 
 ### Where shared things live

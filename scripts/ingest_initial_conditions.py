@@ -247,9 +247,10 @@ def check_wood_is_biomass_minus_leaf(raw: xr.Dataset) -> None:
     if mismatch.any():
         raise IngestError(
             f"wood_carbon_content differs from AbvGrndWood - leaf_carbon_content (or "
-            f"AbvGrndWood where leaf is absent) at {int(mismatch.sum())} cells, first at "
-            f"site {raw[SITE].values[np.argwhere(mismatch)[0][0]]}. That identity is how the "
-            "PEcAn built the wood pool; a break means the source changed."
+            f"AbvGrndWood where leaf is absent) at {int(mismatch.sum())} (site, member) "
+            f"pairs, first at site {raw[SITE].values[np.argwhere(mismatch)[0][0]]}. That "
+            "identity is how the PEcAn built the wood pool; a break means the source "
+            "changed."
         )
 
 

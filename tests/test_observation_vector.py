@@ -332,7 +332,7 @@ class TestRealConstraints:
 class TestTwinObservations:
     """Observations built from the model output are reproduced exactly."""
 
-    def test_the_state_at_the_labels_in_the_observations_units(self, one_run, times):
+    def test_the_state_at_the_labels_in_the_observed_values_units(self, one_run, times):
         wood = one_run["wood_carbon"]
         ends = pd.DatetimeIndex(wood["time"].values)
         at = ends.get_indexer(times)
@@ -473,7 +473,7 @@ class TestSelectKeepsOnlyObservedLabels:
         assert vector.select(observation_source_names=list(names)).observation_source_names == names
 
 
-class TestObservationHoldsItsOwnValues:
+class TestObservationSourceHoldsItsOwnValues:
     def test_a_write_to_the_callers_array_does_not_reach_the_observation_source(self, lai):
         source = ObservationSource("x", lai, SelectTimestep("wood_carbon"))
         lai[1, 0] = 5.0  # an unobserved element of the caller's array
@@ -505,7 +505,7 @@ class TestVectorSites:
         assert vector.sites == (1, 3, 8, 27)
 
 
-class TestObservationRefusals:
+class TestObservationSourceRefusals:
     def test_duplicate_sites_are_refused(self, lai):
         with pytest.raises(ValueError, match="site coordinate has duplicates"):
             ObservationSource("x", lai.assign_coords(site=[1, 1]), SelectTimestep("wood_carbon"))
@@ -647,7 +647,7 @@ class TestPredictSharesTheOperatorChecks:
             ObservationVector([ObservationSource("modis_leaf_area_index", lai, Numpy())]).predict(stack)
 
 
-class TestObservationKeepsOnlyObservedLabels:
+class TestObservationSourceKeepsOnlyObservedLabels:
     def test_unobserved_sites_and_labels_are_dropped_on_construction(self, times):
         values = xr.DataArray(
             [[100.0, np.nan, np.nan], [np.nan, np.nan, np.nan], [np.nan, np.nan, 120.0]],
@@ -685,7 +685,7 @@ class TestObservationKeepsOnlyObservedLabels:
         assert bool(source.observed_values.notnull().any("site").all())
 
 
-class TestObservationKeepsAScalarBatchLabelAsMetadata:
+class TestObservationSourceKeepsAScalarBatchLabelAsMetadata:
     def test_a_scalar_batch_coordinate_is_accepted(self, lai):
         one = lai.expand_dims(nee_member=[4]).isel(nee_member=0)
         source = ObservationSource("x", one, SelectTimestep("wood_carbon"))
@@ -726,15 +726,15 @@ class TestSiteIdsAreIntegers:
         assert vector.positions(site=np.int64(2)).tolist() == vector.positions(site=2).tolist()
 
 
-class TestObservationIdentity:
-    def test_observations_compare_and_hash_by_identity(self, lai):
+class TestObservationSourceIdentity:
+    def test_observation_sources_compare_and_hash_by_identity(self, lai):
         first = ObservationSource("x", lai, SelectTimestep("wood_carbon"))
         second = ObservationSource("x", lai, SelectTimestep("wood_carbon"))
         assert first == first and first != second
         assert len({first, second, first}) == 2
 
 
-class TestObservationLoadsLazyValues:
+class TestObservationSourceLoadsLazyValues:
     def test_dask_backed_values_are_loaded_and_read_only(self, lai):
         pytest.importorskip("dask")
         source = ObservationSource("x", lai.chunk({"site": 1}), SelectTimestep("wood_carbon"))
@@ -839,7 +839,7 @@ class TestFailureMaskIsMatchedByLabel:
             ObservationVector([ObservationSource("wood", values, Gappy())]).predict(stack)
 
 
-class TestObservationNamesAndUnits:
+class TestObservationSourceNamesAndUnits:
     def test_an_observation_source_name_that_is_not_a_string_is_a_type_error(self, lai):
         with pytest.raises(TypeError, match="observation_source_name must be a string"):
             ObservationSource(3, lai, SelectTimestep("wood_carbon"))
@@ -853,8 +853,8 @@ class TestObservationNamesAndUnits:
             ObservationSource("x", lai.assign_attrs(units="g C m-2"), SelectTimestep("wood_carbon"))
 
 
-class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
-    def test_a_scalar_batch_label_on_an_observation_gives_way_to_the_batch_dim(self, soil, lai):
+class TestFieldsNeverLetAnObservationSourceCoordinateTakeTheBatchDim:
+    def test_a_scalar_batch_label_on_an_observation_source_gives_way_to_the_batch_dim(self, soil, lai):
         """Before, the observation source's scalar ``sample=4`` overwrote the created batch
         coordinate, and flat then failed with a raw xarray error."""
         labeled = soil.assign_coords(sample=np.int64(4))
@@ -900,7 +900,7 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
         with pytest.raises(ValueError, match="a data source's member dim"):
             vector.fields(np.zeros((2, vector.dimension)), batch_dim=name)
 
-    def test_an_observations_scalar_batch_labels_are_not_carried(self, soil, lai):
+    def test_an_observation_sources_scalar_batch_labels_are_not_carried(self, soil, lai):
         """An observation source's ``sample=4`` rode along and contradicted the rows."""
         from sipnet_calibration.fields import scalar_batch_labels
 
@@ -917,7 +917,7 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
         one = vector.fields(batched_flat[0])["soilgrids_soil_organic_carbon"]
         assert scalar_batch_labels(one) == ()
 
-    def test_the_labels_from_recipe_runs_with_an_observations_scalar_label(self, stack, times):
+    def test_the_labels_from_recipe_runs_with_an_observation_sources_scalar_label(self, stack, times):
         """The documented recipe crashed on an observation source carrying ``sample=4``."""
         from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
