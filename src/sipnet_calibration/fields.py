@@ -44,34 +44,48 @@ What it reads
 
 The field contract
 ------------------
-A **field** is an ``xarray.DataArray`` holding one variable, with
+A **field** is an ``xarray.DataArray`` holding one variable. What
+:func:`validate_field` checks:
 
 * **dims** ``(*batch, space, time)``: zero or more batch dims, then at most
   one spatial dim, then ``time`` if present. No other dim is allowed: a
   structural axis (variable, component, quantile, bounds, a PFT class) is
-  split into a ``dict`` or ``Dataset`` of fields instead.
+  split into a ``dict`` or ``Dataset`` of fields instead. Every dim has an
+  index coordinate.
 * **the spatial dim** one of ``site`` (site ids of the site table in use),
   ``point`` (arbitrary locations, integer labels) or a raster pair ``lat``,
   ``lon`` (or projected ``y``, ``x``); these names
   (:data:`~sipnet_calibration.conventions.SPATIAL_DIM_NAMES`) are never batch
   dims. ``site`` and ``point`` carry ``float64`` ``lon``/``lat`` coordinates on
-  that dim; a scalar ``site`` coordinate marks a field of one site.
+  that dim, and a scalar ``site`` or ``point`` (a field of one location)
+  carries them as ``float64`` scalars; ``lon``/``lat`` are never on a batch
+  dim or ``time``.
 * **a batch dim** every other dim whose index coordinate holds integers, any
-  distinct ones: an axis of independent replicates. A dim with string or float
-  labels, or none, is refused, which is what keeps a ``variable``,
-  ``quantile``, ``pft`` or ``bounds`` dim off a field.
-* ``site`` ``int32`` site ids, unique; ``time`` naive ``datetime64``,
-  strictly increasing, no ``NaT`` (any datetime64 unit; pandas and
-  xarray make microseconds), with pySIPNET's timestep coordinates and
-  an observation's window coordinates, where present, on ``time`` alone.
-* ``units`` in ``attrs``, valid by pySIPNET's ``validate_units`` (a
-  categorical field -- CF ``flag_values``, or string or boolean values --
-  needs none); ``long_name``;
-  ``constituent`` and ``kind`` where pySIPNET's apply.
+  distinct ones, of any integer dtype: an axis of independent replicates. A
+  dim with string or float labels, or none, is refused, which is what keeps a
+  ``variable``, ``quantile``, ``pft`` or ``bounds`` dim off a field.
+* ``site`` ``int32`` site ids, unique; ``time`` naive ``datetime64`` of any
+  unit (pandas and xarray make microseconds), strictly increasing, no
+  ``NaT``, with pySIPNET's timestep coordinates and an observation's window
+  coordinates, where present, on ``time`` alone (scalars once one time is
+  selected).
+* ``units`` in ``attrs``, valid by pySIPNET's ``validate_units``, unless the
+  field is categorical: CF ``flag_values`` or ``flag_meanings``, or values
+  that are strings, bytes or booleans (an object array only when every
+  element is a string).
 
-:func:`validate_field` checks all of this. A **scalar** coordinate is not a
-dim: a field whose batch dim was selected away with ``.isel(sample=k)`` has no
-batch dim, and its scalar label is metadata.
+Conventions a creator follows, which :func:`validate_field` does not check:
+batch labels are created ``int64``
+(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`, which
+:func:`batch_coordinate` gives), though any integer dtype is accepted, so that
+an ``int16`` or unsigned label read from a file is still a batch label;
+``long_name`` in ``attrs``, and ``constituent`` and ``kind`` where pySIPNET's
+apply; the CF attributes of ``lon``/``lat``
+(:func:`sipnet_calibration.sites.site_locations` makes them).
+
+A **scalar** coordinate is not a dim: a field whose batch dim was selected
+away with ``.isel(sample=k)`` has no batch dim, and its scalar label is
+metadata (:func:`scalar_batch_labels` finds such labels).
 
 **Two batch dims with the same name are the same index; different names are
 different indices.** xarray aligns two ``sample`` dims by label and PyEns
@@ -168,8 +182,11 @@ Functions
 :func:`batch_dims`
     A field's batch dims, in its dim order.
 :func:`stack_batch_dims`, :func:`unstack_batch_dims`
-    Several batch dims stacked into one, labeled ``0`` to ``n - 1`` with the
-    original labels kept beside it, and back.
+    Several batch dims stacked into one new batch dim, labeled ``0`` to
+    ``n - 1`` with the original labels kept beside it, and back.
+:func:`batch_coordinate`, :func:`scalar_batch_labels`
+    A batch dim's ``int64`` coordinate with its attributes, and the scalar
+    coordinates of a field that are batch labels.
 :func:`from_sipnet_output`
     One run's chosen variables as fields, optionally labeled with a site and
     batch labels.
@@ -220,7 +237,9 @@ operations.
 **Why Flat takes one batch dim.** pyEKI takes exactly ``(J, ·)``, and a
 ``(J, N)`` array cannot say which of several dims its rows came from, so a
 field with several is reduced, or stacked with :func:`stack_batch_dims`,
-before it is flattened.
+before it is flattened. The stacked dim takes a new name: its labels
+``0..n-1`` are a new index, and giving it the name of a dim stacked into it,
+``sample`` say, would align it with theta's samples, which it is not.
 
 **Why the adapter selects.** ``SIPNETOutput.xarray`` reads and caches every
 column SIPNET wrote. Across an ensemble that is every run's full output held
@@ -267,10 +286,28 @@ Two batch dims, stacked into one for Flat and back::
 
     from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
-    wood.dims                                  # ('sample', 'initial_condition_member', 'site')
-    stacked = stack_batch_dims(wood)           # ('sample', 'site'), sample 0..n-1
-    stacked.coords["initial_condition_member_label"]   # the original labels, on sample
-    unstack_batch_dims(stacked).dims           # ('sample', 'initial_condition_member', 'site')
+    wood.dims            # ('sample', 'initial_condition_member', 'site')
+    stacked = stack_batch_dims(wood, into="run")     # ('run', 'site'), 0..n-1
+    stacked["initial_condition_member_label"]        # the labels, on run
+    unstack_batch_dims(stacked).dims
+    # ('sample', 'initial_condition_member', 'site')
+
+Through Flat and back: a vector's ``fields(y, batch_dim="run")`` gives arrays
+labeled ``run`` ``0..n-1`` and nothing else, and ``labels_from`` copies the
+rest from the stacked field::
+
+    stacked = {
+        name: stack_batch_dims(array, into="run") for name, array in predicted.items()
+    }
+    y = observation_vector.flat(stacked)
+    made = observation_vector.fields(y, batch_dim="run")
+    restored = {
+        name: unstack_batch_dims(array, labels_from=stacked[name])
+        for name, array in made.items()
+    }
+
+For a Dataset, such as a parameter vector's Fields,
+``fields_dataset.map(lambda field: stack_batch_dims(field, into="run"))``.
 
 Adapting run after run, with the site table read once::
 
@@ -407,12 +444,22 @@ def validate_field(field: Any, *, message_name: str | None = None) -> None:
         Naming the first rule broken: a dim that is neither a batch dim, a
         spatial dim nor ``time``, or dims out of the ``(*batch, space, time)``
         order; more than one spatial dim; a dim without an index coordinate;
-        repeated batch labels; ``site`` labels that are not unique ``int32``
-        site ids; ``lon``/``lat`` missing from, or not ``float64`` on, a
-        ``site`` or ``point`` dim; ``time`` labels that are not naive
-        ``datetime64``, strictly increasing and free of ``NaT``; a
-        timestep or window coordinate on a dim other than ``time``; or
-        ``units`` missing or refused by pySIPNET's ``validate_units``.
+        ``point`` labels that are not integers; repeated batch labels; ``site``
+        labels that are not unique ``int32`` site ids; ``lon``/``lat``
+        missing from, or not ``float64`` on, a ``site`` or ``point`` dim,
+        not ``float64`` scalars beside a scalar ``site`` or ``point``, or on a
+        batch dim or ``time``; ``time`` labels that are not naive
+        ``datetime64`` (a time zone aware axis included), strictly increasing
+        and free of ``NaT``; a timestep or window coordinate on a dim other
+        than ``time`` (or not a scalar once ``time`` is selected away); or
+        ``units`` missing or refused by pySIPNET's ``validate_units``, the
+        message naming the field.
+
+    Notes
+    -----
+    It does not check ``long_name``, ``constituent``, ``kind`` or the CF
+    attributes of ``lon``/``lat``, which are conventions a creator follows,
+    nor that batch labels are ``int64``: any integer dtype is a batch label.
     """
     check_field_is_a_dataarray(field, message_name)
     name = message_name if message_name is not None else field_label(field)

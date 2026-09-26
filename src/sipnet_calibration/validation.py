@@ -8,9 +8,10 @@ Contents
 --------
 :func:`as_site_ids`, :func:`as_site_id`
     Site ids as plain Python integers.
-:func:`as_integer`, :func:`as_positive_integer`, :func:`as_bounded_integer`,
+:func:`as_integer`, :func:`as_positive_integer`, :func:`as_bounded_integer`
+    A count, a size or an index as a plain Python integer.
 :func:`as_positive_integers`
-    A count, a size, an index or a sequence of them as plain Python integers.
+    A sequence of positive integers, such as source indices.
 :func:`as_batch_label`
     A batch dim's label, an integer that fits ``int64``.
 :func:`as_batched_flat`, :func:`is_one_vector`

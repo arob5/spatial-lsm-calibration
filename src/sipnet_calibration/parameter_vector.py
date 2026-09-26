@@ -1694,8 +1694,10 @@ class ParameterVector:
             elements.
         batch_dim:
             The name of the batch dim a ``(J, D)`` *theta* is given, labeled
-            ``0`` to ``J - 1`` in row order. It may not be a spatial name,
-            ``time``, a site-labels name or a calibration parameter name.
+            ``0`` to ``J - 1`` in row order. It may not be a reserved name
+            (a spatial name, ``time``, ``source_index``), a site-labels name,
+            or a name a variable takes (a SIPNET parameter, calibration
+            parameter or Fields variable name).
 
         Returns
         -------
@@ -1704,6 +1706,15 @@ class ParameterVector:
             scalar component (or element) on ``(batch_dim, site)``, or
             ``(site,)`` for one value, shared and per-class copies repeated
             at every site that reads them.
+
+        Raises
+        ------
+        TypeError
+            If *batch_dim* is not a string, or *theta* is not an array of
+            real numbers.
+        ValueError
+            If *space* is unknown; if *batch_dim* is a name it may not be; or
+            if *theta* is not ``(D,)`` or ``(J, D)``.
         """
         check_space_is_known(space)
         check_batch_dim_name_is_not_taken(self, batch_dim)
@@ -1743,10 +1754,12 @@ class ParameterVector:
         ------
         ValueError
             If ``attrs["space"]`` is missing or unknown; if *fields* has more
-            than one batch dim (stack them first, with
-            :func:`sipnet_calibration.fields.stack_batch_dims`); if a needed
-            variable or site is absent, or a variable is not on the dataset's
-            ``(*batch, site)``; if a value is not finite; or if a group's
+            than one batch dim (stack them into a new one first,
+            ``fields.map(lambda field: stack_batch_dims(field, into="run"))``
+            with :func:`sipnet_calibration.fields.stack_batch_dims`); if a
+            needed variable has a dim that is neither a batch dim (integer
+            labels), ``site`` nor ``time``; if a needed variable or site is
+            absent, or a variable is not on the dataset's ``(*batch, site)``; if a value is not finite; or if a group's
             value differs between two of its sites, which no Flat vector can
             represent.
         """
@@ -1792,8 +1805,8 @@ class ParameterVector:
             dim, its name and its labels, is kept.
         batch_dim:
             The name of the batch dim a ``(J, D)`` Flat is given; ignored for
-            Fields, which keep their own. It may not be a spatial name,
-            ``time``, a site-labels name or a calibration parameter name.
+            Fields, which keep their own. It may not be a name
+            :meth:`fields` refuses.
 
         Returns
         -------
@@ -1804,6 +1817,17 @@ class ParameterVector:
             ``units``, ``sipnet_name``, ``source`` and, where pySIPNET
             declares one, ``constituent``. :attr:`unset_sipnet_parameter_names`
             are absent and take the base parameter set's values at the run.
+
+        Raises
+        ------
+        TypeError
+            If *batch_dim* is not a string, or Flat is not an array of real
+            numbers.
+        ValueError
+            If Flat is given and *batch_dim* is a name :meth:`fields`
+            refuses; if Flat is not ``(D,)`` or ``(J, D)``; and for Fields,
+            whatever :meth:`flat` refuses, and batch labels that are not
+            distinct integers.
 
         Notes
         -----

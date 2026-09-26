@@ -231,70 +231,110 @@ A **field** is one `xr.DataArray` holding one variable. It is a convention
 checked by one validator, not a wrapper class: a wrapper would fight xarray's
 `.sel`/`.resample`/`.quantile`, which are the operations this project needs.
 
+What `fields.validate_field(field, *, message_name=None)` checks:
+
 - **dims**: zero or more batch dims, then at most one spatial dim, then `time`
-  if present: `(*batch, space, time)`. A dim that is none of these is not
-  allowed.
+  if present: `(*batch, space, time)`, each with an index coordinate. A dim
+  that is none of these is not allowed.
 - **The spatial dim** is one of `site` (site ids of the site table in use);
-  `point` (arbitrary locations); or a raster pair `lat`, `lon` (or projected
-  `y`, `x`). These names are reserved (`conventions.SPATIAL_DIM_NAMES`) and are
-  never batch dims. `site` and `point` carry `float64` `lon`/`lat` coordinates
-  with the CF attributes of `conventions.LON_ATTRIBUTES`/`LAT_ATTRIBUTES`
-  (`sites.site_locations` makes them); a scalar `site` coordinate marks a field
-  of one site.
+  `point` (arbitrary locations, integer labels); or a raster pair `lat`, `lon`
+  (or projected `y`, `x`). These names are reserved
+  (`conventions.SPATIAL_DIM_NAMES`) and are never batch dims. `site` and
+  `point` carry `float64` `lon`/`lat` coordinates on that dim; a scalar `site`
+  (or `point`) marks a field of one location and carries them as `float64`
+  scalars; `lon`/`lat` are never on a batch dim or `time`.
 - **`site`**: `int32` site ids (`conventions.SITE_DTYPE`), unique.
-- **`time`**: naive `datetime64[ns]`, strictly increasing, no `NaT`; pySIPNET's
-  timestep coordinates on `time` alone when the field is model output or
-  drivers (`conventions.TIME_COORD_NAMES`); the window coordinates on `time`
-  when the values are attributed to windows (observations).
-- **attrs**: `units` (validated by pySIPNET), `constituent` where the quantity
-  has one, `long_name`; `kind` where pySIPNET's kind applies.
+- **`time`**: naive `datetime64` of any unit (pandas and xarray make
+  microseconds, and numpy compares across units), strictly increasing, no
+  `NaT`; a time zone aware axis is refused. pySIPNET's timestep coordinates
+  (`conventions.TIME_COORD_NAMES`, model output and drivers) and the window
+  coordinates (observations) are on `time` alone, or scalars once one time is
+  selected.
+- **units**: `attrs["units"]`, validated by pySIPNET, unless the field is
+  categorical (CF `flag_values`/`flag_meanings`, or string, bytes or boolean
+  values; an object array only when every element is a string).
+- **Batch dims.** A batch dim is every dim other than the spatial dim and
+  `time` whose index coordinate holds integers, of any integer dtype
+  (`fields.batch_dims` finds them), with distinct labels; a dim with string or
+  float labels, or none, is refused, which is what keeps `variable`,
+  `quantile`, `pft` and `bounds` off a field. Batch dims come first.
+
+Conventions a creator follows, which `validate_field` does not check:
+`long_name`, `constituent` where the quantity has one and `kind` where
+pySIPNET's applies, in `attrs`; the CF attributes of
+`conventions.LON_ATTRIBUTES`/`LAT_ATTRIBUTES` on `lon`/`lat`
+(`sites.site_locations` makes them); batch labels created `int64`
+(`conventions.BATCH_LABEL_DTYPE`, which `fields.batch_coordinate` gives, with
+the `sample` or data source member attributes).
+
+The batch-dim rules:
+
 - A structural axis (variable, component, quantile, bounds, PFT class) is never
   a dim of a field: split it into a `dict` or `Dataset` of fields.
-- **Batch dims.** A batch dim is every dim other than the spatial dim and
-  `time` whose index coordinate holds integers (`fields.batch_dims` finds
-  them); a dim with string or float labels, or none, is refused, which is what
-  keeps `variable`, `quantile`, `pft` and `bounds` off a field. Two batch dims
-  with the same name are the same index (they zip in PyEns and align in
-  xarray); different names are different indices (they cross), so unrelated
-  ensembles are kept apart by distinct names, and a deliberate pairing is
-  spelled by giving two dims one name. Batch dims come first.
+- **Two batch dims with the same name are the same index** (they zip in PyEns
+  and align in xarray); different names are different indices (they cross),
+  so unrelated ensembles are kept apart by distinct names, and a deliberate
+  pairing is spelled by giving two dims one name.
 - **The batch dim made from batched Flat** is `sample` (`conventions.SAMPLE`)
   by default, overridable by `batch_dim=` on every function that creates one
   (`ParameterVector.fields` and `.sipnet_table`, `ObservationVector.fields`,
   `ForwardModel`, whose `sipnet_table`, `model_output`, `run_succeeded` and
   `failures` column all carry that one name), labeled `0..n_samples-1` in row
-  order. A created batch dim may not take a spatial name, `time`, a
-  site-labels name or a calibration parameter name.
+  order. Which names each refuses: every creator of a batch dim refuses the
+  reserved names (`fields.check_batch_dim_name_is_not_reserved`: the spatial
+  names, `time`, `source_index`); the parameter vector also refuses its
+  site-labels names, SIPNET parameter, calibration parameter and Fields
+  variable names, and `ForwardModel` runs that check at construction,
+  whatever its table hook, and refuses an output variable name;
+  `ObservationVector.fields` refuses a product name or a coordinate of an
+  observation's values (a scalar batch label excepted, which the batch dim
+  replaces); `fields.label_run`, `from_sipnet_output(batch=)` and the
+  stackers' `key_dims` refuse a variable, dim or coordinate of the model
+  output. The parameter vector reserves `sample`, the spatial names, the
+  data source member names and `source_index` against parameter and
+  site-labels names.
 - **A data source's own ensemble** is a batch dim named for the source:
-  `initial_condition_member`, `driver_member` (and `nee_member` when NEE is
-  ingested), with its 1-based file index beside it as
-  `conventions.SOURCE_INDEX` (`source_index`). The tracked raw initial
-  condition file keeps its own `member` dim, since raw data is never edited.
-- **Labels** are `int64` (`conventions.BATCH_LABEL_DTYPE`), any distinct
-  integers, with no cap on their number. `ForwardModel` alone requires its
-  table's labels to be `0..J-1` in row order, because it places each run in
-  the row its label names.
+  `conventions.INITIAL_CONDITION_MEMBER`, `conventions.DRIVER_MEMBER` (and
+  `nee_member` when NEE is ingested), with its 1-based file index beside it as
+  `conventions.SOURCE_INDEX` (`source_index`). **The label is the member's
+  identity**, `source_index - 1`, whatever subset is loaded, so two loads
+  align member for member. The tracked raw initial condition file keeps its
+  own `member` dim, since raw data is never edited.
+- **Labels** are any distinct integers, with no cap on their number.
+  `ForwardModel` alone requires its table's labels to be the integers
+  `0..J-1` in row order, because it places each run in the row its label
+  names.
 - **Flat has at most one batch dim.** A field with several is reduced, or
-  stacked with `fields.stack_batch_dims(field, into=SAMPLE)`, which labels the
-  stacked dim `0..n-1` and keeps each original dim's labels as a
-  `<dim>_label` coordinate on it; `fields.unstack_batch_dims` reverses it.
+  stacked with `fields.stack_batch_dims(field, into="run")`. The stacked dim
+  is a new index, labeled `0..n-1`, so it takes a new name (`into` is
+  required, and may not be a dim stacked, a coordinate or a `<dim>_label`
+  name): stacking `(sample, driver_member)` into `sample` would align it with
+  theta's samples, which it is not, and the operators refuse a model output
+  stacked over a SIPNET table's dim. The stack keeps each original dim's
+  labels as a `<dim>_label` coordinate and records the dims, in order, on the
+  stacked coordinate (`stacked_dims`); `fields.unstack_batch_dims` reads only
+  that record, restoring the dims in that order, labels in first-appearance
+  order, and a coordinate that was on stacked dims alone (`source_index`).
+  Through Flat: a vector's `fields(y, batch_dim="run")` carries no labels, and
+  `unstack_batch_dims(array, labels_from=stacked_array)` copies them; a
+  Dataset is stacked with `dataset.map(lambda f: stack_batch_dims(f,
+  into="run"))`, a dict entry by entry.
 - **A scalar coordinate is not a dim.** A field whose batch dim was selected
-  away with `.isel(sample=k)` has no batch dim; its scalar label is metadata,
-  and `flat` gives one vector. An observation refuses a batch dim, not a
-  scalar batch label.
+  away with `.isel(sample=k)` has no batch dim; its scalar label is metadata
+  (`fields.scalar_batch_labels` finds them), and `flat` gives one vector. An
+  observation refuses a batch dim, not a scalar batch label.
 
-One validator, `fields.validate_field(field, *, message_name=None)`, checks
-all of this. Every plotter calls it first, as `stack_batch_dims` and
-`unstack_batch_dims` do; the time-alignment verbs, the observation class and
-the parameter vector still check their own parts of it until PR 4 and the
-module cleanups route them through it. Time labels may be in any
-`datetime64` unit (pandas and xarray make microseconds), since numpy compares
-them across units. **Model output** is an `xr.Dataset` of pySIPNET-named
+Every plotter calls `validate_field` first, as `stack_batch_dims` and
+`unstack_batch_dims` do, and plotting stays strict: a plotter takes only
+fields (`int32` `site` with `lon`/`lat`). The time-alignment verbs, the
+observation class, the operators' grid check and the parameter vector still
+check their own parts of the contract until PR 4 and the module cleanups
+route them through it. **Model output** is an `xr.Dataset` of pySIPNET-named
 variables on one shared time axis, each variable a field; one run's has a
 scalar `site` and scalar batch labels (`fields.label_run(dataset, site=,
 batch={"sample": 3})`), a stack has `site` and batch dims
 (`fields.stack_model_outputs(runs, key_dims=("sample", "site"))`, keys in
-`key_dims` order).
+`key_dims` order, every batch label a run carries named in `key_dims`).
 
 ### Vector-like classes
 
@@ -317,7 +357,8 @@ convention (approved; **being implemented in PR 4**, except where noted):
 | Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──`, `# ── evaluation ──` |
 
 `ForwardModel` is a regular class with read-only properties (PR 4; its
-attributes are still plain and reassignable); `ForwardEvaluation` is
+attributes are still plain and reassignable, bar `batch_dim`, read-only
+since PR 2 because the default table hook is bound to it); `ForwardEvaluation` is
 `frozen, eq=False` (PR 1). No base class is shared by
 the vectors: they share an interface, not an implementation, and their shared
 coercion lives in `validation.py`.
@@ -325,9 +366,11 @@ coercion lives in `validation.py`.
 ### Where shared things live
 
 - **`conventions.py`** holds every name constant two modules share (dims,
-  coordinates, `SOURCE_INDEX`, the `site_id` column, the `time_bounds`
+  the data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
+  (`DATA_SOURCE_MEMBER_NAMES`), coordinates, `SOURCE_INDEX`, the `site_id`
+  column, the `time_bounds`
   variable, the attributes of `site`/`lon`/`lat`/`sample` and of a data
-  source's member dim, `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
+  source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`), `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
   `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
   `data_root()`), and `FrozenMapping`, the one read-only mapping type: a
   `dict` subclass whose mutators (a second `__init__` included) raise, so
@@ -337,12 +380,12 @@ coercion lives in `validation.py`.
   xarray copies attrs; pandas' `agg`, which refills the mapping it is given,
   takes a `dict(...)` copy. A module imports these; it never defines its own
   copy and never re-exports one. A name only one module uses lives in that
-  module: `DRIVER_MEMBER` in `drivers`, `INITIAL_CONDITION_MEMBER` and
-  `RAW_MEMBER` in `initial_conditions.names`.
+  module: `RAW_MEMBER` in `initial_conditions.names`.
 - **`validation.py`** holds the argument coercion two modules need, each
   `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
   `as_integer`, `as_positive_integer`, `as_bounded_integer`,
-  `as_positive_integers`, `as_batched_flat` (with `is_one_vector`),
+  `as_positive_integers`, `as_batch_label`, `as_batched_flat` (with
+  `is_one_vector`),
   `as_bbox`, `as_sequence`, `as_names`, `as_frozen_mapping`; the `check_*`
   functions they are written with; and `truncated(items)` for messages and
   `range_summary(values)` for reports. One rule for every argument of a kind:
@@ -406,9 +449,9 @@ Raw variable names are not ours to choose; processed ones are.
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
-- **The `VARIABLES` registry is keyed on processed names**, so a
-  field's `name` is a processed name, which is what makes `validate_field()`
-  usable against anything an adapter produces.
+- **The `VARIABLES` registry is keyed on processed names**, so a field's
+  `name` is a processed name. `validate_field()` reads neither the name nor
+  the registry.
 
 ### Naming in code
 
@@ -779,6 +822,7 @@ src/sipnet_calibration/
                           # read_raw(), build_constraint(), load_constraint(),
                           # constraint_fields() -> one field per product
   conventions.py          # every shared name constant: SITE, TIME, SAMPLE,
+                          # INITIAL_CONDITION_MEMBER, DRIVER_MEMBER,
                           # the reserved spatial names, TIMESTEP_START/LENGTH,
                           # WINDOW_START/END, TIME_BOUNDS, SITE_ID, SOURCE_INDEX;
                           # the attributes of site/lon/lat/sample and a source
@@ -786,14 +830,15 @@ src/sipnet_calibration/
                           # CF_CONVENTIONS and data_root(); FrozenMapping
   validation.py           # argument coercion: as_site_ids, as_site_id,
                           # as_integer, as_positive_integer, as_bounded_integer,
-                          # as_positive_integers, as_batched_flat, as_bbox,
+                          # as_positive_integers, as_batch_label,
+                          # as_batched_flat, as_bbox,
                           # as_names, as_frozen_mapping; its checks; truncated(),
                           # range_summary()
   io.py                   # write_checked() and write_checked_together() (the
                           # .partial protocol), file_md5(), utc_timestamp()
   initial_conditions/     # one module per artifact; __init__ re-exports them all
     __init__.py           # curated exports + the product's data model
-    names.py              # INITIAL_CONDITION_MEMBER/RAW_MEMBER, the two file
+    names.py              # RAW_MEMBER, the two file
                           # names, the path helpers
     source_files.py       # SOURCE (the PEcAn file format), read_source_file()
     specs.py              # InitialConditionSpec + INITIAL_CONDITIONS
@@ -824,7 +869,8 @@ src/sipnet_calibration/
                           # ForwardEvaluation; the failure split
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   fields.py               # the field contract: validate_field(), batch_dims(),
-                          # stack_batch_dims()/unstack_batch_dims(); label_run()
+                          # stack_batch_dims()/unstack_batch_dims(),
+                          # batch_coordinate(), scalar_batch_labels(); label_run()
                           # (a run's Dataset with site/lon/lat and batch labels:
                           # the model_output the observation operators read),
                           # from_sipnet_output(), stack_sipnet_outputs() over

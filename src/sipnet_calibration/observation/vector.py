@@ -484,7 +484,11 @@ class ObservationVector:
         ValueError
             If a product is missing; if an array lacks an observed site or
             time label, or a ``site`` or ``time`` dimension the product has;
-            if an array has more than one batch dim (stack them first, with
+            if an array has a dim that is neither a batch dim (integer
+            labels), a spatial dim nor ``time``; if an array has more than
+            one batch dim (stack each into a new one first,
+            ``{name: stack_batch_dims(array, into="run") for name, array in
+            fields.items()}``, with
             :func:`sipnet_calibration.fields.stack_batch_dims`); or if some
             arrays carry a batch dim and others do not, they carry different
             ones, or they disagree on its labels.

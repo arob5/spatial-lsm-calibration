@@ -9,8 +9,8 @@ to pySIPNET, which owns the SIPNET climate format:
 :class:`pysipnet.climate.ClimateDrivers` parses it, validates it, names its
 columns and builds its time axis. What this module adds is the ensemble: the
 ``ERA5_<site>_<member>`` directory layout, the stacking of many files into
-``(driver_member, site, time)``, the site coordinates, and a few checks on the source
-that pySIPNET has no reason to make.
+``(driver_member, site, time)``, the site coordinates, and a few checks on the
+source that pySIPNET has no reason to make.
 
 Unlike the site table and the constraints, the drivers have **no
 processed file**. SIPNET reads the raw ``.clim`` text directly (pySIPNET
@@ -53,7 +53,8 @@ Data model
 ----------
 :func:`load_drivers` returns an ``xarray.Dataset`` shaped as follows.
 
-**Dimensions**: ``driver_member`` (:data:`~sipnet_calibration.conventions.DRIVER_MEMBER`, the drivers' own
+**Dimensions**: ``driver_member``
+(:data:`~sipnet_calibration.conventions.DRIVER_MEMBER`, the drivers' own
 ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 ``time_bounds``.
 
@@ -140,9 +141,9 @@ Functions
     return the Dataset above.
 
 :func:`driver_fields`
-    Split the Dataset into fields -- one ``DataArray`` per variable
-    with dims ``(driver_member, site, time)`` and its own units. This is the view the
-    plotting layer wants.
+    Split the Dataset into fields -- one ``DataArray`` per variable with
+    dims ``(driver_member, site, time)`` and its own units. This is the view
+    the plotting layer wants.
 
 :func:`read_driver_file`
     Read one ``.clim`` file through pySIPNET and apply this module's own check
@@ -195,7 +196,7 @@ Name the sites, get the canonical form::
     sites = select_sites(load_sites(), bbox=(-125, 24, -66, 50), sample=20, seed=0)
     drivers = load_drivers(sites["site_id"])          # every member present
 
-    drivers["air_temperature"].dims                   # ('driver_member', 'site', 'time')
+    drivers["air_temperature"].dims   # ('driver_member', 'site', 'time')
     drivers["precipitation"].attrs["kind"]            # 'timestep_total'
     drivers["time"].attrs["time_zone"]                # 'undeclared'
 
