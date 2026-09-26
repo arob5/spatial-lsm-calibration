@@ -23,7 +23,7 @@ from sipnet_calibration.observation import (
     ComputeLeafAreaIndex,
     ObservationOperator,
     ReduceOverRun,
-    ReduceOverTimeBounds,
+    ReduceOverWindows,
     SelectTimestep,
     check_operator,
     check_operator_declares_names,
@@ -90,7 +90,7 @@ class TestSelectTimestep:
         np.testing.assert_allclose(predicted.sel(site=2, sample=1).values, 0.75 * predicted.sel(site=1, sample=0).values)
 
 
-class TestReduceOverTimeBounds:
+class TestReduceOverWindows:
     def test_reduces_over_each_observations_own_bounds(self, one_run, labels):
         observed = windowed_observation(
             [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
@@ -100,7 +100,7 @@ class TestReduceOverTimeBounds:
         observed = observed.assign_coords(
             {WINDOW_START: ("time", labels - pd.to_timedelta([1, 2, 3], unit="D"))}
         )
-        predicted = ReduceOverTimeBounds("wood_carbon", "last")(one_run, observed)
+        predicted = ReduceOverWindows("wood_carbon", "last")(one_run, observed)
         np.testing.assert_array_equal(predicted["time"].values, observed["time"].values)
         assert predicted.attrs["kind"] == "timestep_end_state"
         wood = one_run["wood_carbon"]
@@ -124,7 +124,7 @@ class TestReduceOverTimeBounds:
     def test_a_window_the_run_covers_only_in_part_is_refused(self, one_run):
         # The Niwot record is November 1998; a calendar-1998 total is not its sum.
         with pytest.raises(ValueError, match="reaches beyond the model record"):
-            ReduceOverTimeBounds("net_ecosystem_exchange", "sum")(
+            ReduceOverWindows("net_ecosystem_exchange", "sum")(
                 one_run, self._one_window("1998-01-01", "1999-01-01")
             )
 
@@ -132,7 +132,7 @@ class TestReduceOverTimeBounds:
         wood = one_run["wood_carbon"]
         starts = pd.DatetimeIndex(wood["time_step_start"].values)
         ends = pd.DatetimeIndex(wood["time"].values)
-        predicted = ReduceOverTimeBounds("wood_carbon", "last")(
+        predicted = ReduceOverWindows("wood_carbon", "last")(
             one_run, self._one_window(starts[0], ends[-1])
         )
         assert predicted.values.ravel()[0] == wood.values[-1]
@@ -143,24 +143,24 @@ class TestReduceOverTimeBounds:
         ends = pd.DatetimeIndex(wood["time"].values)
         first, last = ends[0] - starts[0], ends[-1] - starts[-1]
         observed = self._one_window(starts[0] - first / 2, ends[-1] + last / 2)
-        ReduceOverTimeBounds("wood_carbon", "last")(one_run, observed)
+        ReduceOverWindows("wood_carbon", "last")(one_run, observed)
         with pytest.raises(ValueError, match="reaches beyond the model record"):
-            ReduceOverTimeBounds("wood_carbon", "last")(
+            ReduceOverWindows("wood_carbon", "last")(
                 one_run, self._one_window(starts[0], ends[-1] + last)
             )
         with pytest.raises(ValueError, match="reaches beyond the model record"):
-            ReduceOverTimeBounds("wood_carbon", "last")(
+            ReduceOverWindows("wood_carbon", "last")(
                 one_run, self._one_window(starts[0] - first, ends[-1])
             )
 
     def test_refuses_an_observation_without_bounds(self, one_run, labels):
         observed = dated_observation([1], labels, units="Mg ha-1", constituent="C")
         with pytest.raises(ValueError, match="documents no interval"):
-            ReduceOverTimeBounds("wood_carbon", "mean")(one_run, observed)
+            ReduceOverWindows("wood_carbon", "mean")(one_run, observed)
 
     def test_refuses_an_unknown_reduction(self):
         with pytest.raises(ValueError, match="how must be one of"):
-            ReduceOverTimeBounds("wood_carbon", "median")
+            ReduceOverWindows("wood_carbon", "median")
 
 
 class TestReduceOverRun:
@@ -382,27 +382,27 @@ class TestSiteOrderAndCoverage:
         assert int(predicted["site"]) == 1
 
 
-class TestReduceOverTimeBoundsValues:
+class TestReduceOverWindowsValues:
     def test_the_label_need_not_be_a_bound_edge(self, one_run, labels):
         observed = windowed_observation(
             [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
         )
         shifted = observed.assign_coords(time=observed["time"].values - np.timedelta64(12, "h"))
-        predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, shifted)
+        predicted = ReduceOverWindows("wood_carbon", "mean")(one_run, shifted)
         np.testing.assert_array_equal(predicted["time"].values, shifted["time"].values)
         from sipnet_calibration.observation import (
             reduce_windows,
-            windows_from_time_bounds,
+            windows_from_observed_values,
         )
 
-        expected = reduce_windows(one_run["wood_carbon"], windows_from_time_bounds(shifted), "mean")
+        expected = reduce_windows(one_run["wood_carbon"], windows_from_observed_values(shifted), "mean")
         np.testing.assert_array_equal(predicted.values, expected.values)
 
     def test_the_mean_over_a_window_is_the_length_weighted_mean(self, one_run, labels):
         observed = windowed_observation(
             [1], labels, units="Mg ha-1", constituent="C", name="landtrendr_aboveground_biomass"
         )
-        predicted = ReduceOverTimeBounds("wood_carbon", "mean")(one_run, observed)
+        predicted = ReduceOverWindows("wood_carbon", "mean")(one_run, observed)
         wood = one_run["wood_carbon"]
         ends = pd.DatetimeIndex(wood["time"].values)
         lengths = wood["time_step_length"].values.astype("timedelta64[ns]").astype("float64")
@@ -711,7 +711,7 @@ class TestDeclarationsAndConstruction:
 
     def test_a_reduction_that_is_not_a_string_is_a_type_error(self):
         with pytest.raises(TypeError, match="how must be a string"):
-            ReduceOverTimeBounds("wood_carbon", None)
+            ReduceOverWindows("wood_carbon", None)
 
     def test_units_that_are_not_a_string_are_refused(self, one_run, labels):
         result = select_timestep_at(one_run["wood_carbon"], labels)
@@ -726,13 +726,13 @@ class TestTheOperatorsNameThemselves:
     def test_a_window_reduction_on_output_without_intervals_names_the_operator(self, one_run, labels):
         bare = one_run.drop_vars(["time_step_start", "time_step_length", "time_bounds"], errors="ignore")
         observed = windowed_observation([1], labels, units="g m-2", constituent="C", name="annual")
-        with pytest.raises(ValueError, match="^ReduceOverTimeBounds on 'annual' reads the interval"):
-            ReduceOverTimeBounds("wood_carbon", "last")(bare, observed)
+        with pytest.raises(ValueError, match="^ReduceOverWindows on 'annual' reads the interval"):
+            ReduceOverWindows("wood_carbon", "last")(bare, observed)
 
     def test_a_window_beyond_the_record_names_the_operator_and_observation(self, one_run):
-        observed = TestReduceOverTimeBounds._one_window("1998-01-01", "1999-01-01")
-        with pytest.raises(ValueError, match="^ReduceOverTimeBounds on 'annual_total': the window"):
-            ReduceOverTimeBounds("net_ecosystem_exchange", "sum")(one_run, observed)
+        observed = TestReduceOverWindows._one_window("1998-01-01", "1999-01-01")
+        with pytest.raises(ValueError, match="^ReduceOverWindows on 'annual_total': the window"):
+            ReduceOverWindows("net_ecosystem_exchange", "sum")(one_run, observed)
 
 
 class TestScalarTableLabels:

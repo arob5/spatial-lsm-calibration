@@ -1,6 +1,6 @@
-"""Placing model output on an observation's time grid.
+"""Placing model output on an observation source's time grid.
 
-The functions here put a model field on an observation's time grid, build the
+The functions here put a model field on an observation source's time grid, build the
 windows a reduction reads over, and count what went into each cell. The
 observation operators are written with them, and a caller aggregates a field
 with the same :func:`aggregate_time` before plotting it, so a predictive-check
@@ -17,7 +17,8 @@ Provided:
   observation's own support.
 * ``select_timestep_at(field, times)`` -- for each label, the value of the
   model timestep whose interval contains it.
-* ``windows_from_time_bounds(observed_values)`` and ``run_window(field)`` --
+* ``windows_from_observed_values(observed_values)`` and ``run_window(field)``
+  --
   the two ways windows are usually built; both return a
   ``pandas.IntervalIndex``.
 * ``aggregation_counts(field, freq)`` and ``window_counts(field, windows)``
@@ -76,14 +77,14 @@ step whose interval ``(time_step_start, time]`` contains the label: for a
 pool, the state at the end of that step; for a step mean or a rate, the mean
 over it. A label exactly at a step end reads that step.
 
-A row whose interval coordinates are ``NaT`` and whose values are all missing
-is the padding xarray leaves when runs on different time axes are stacked and
-one of them is then selected. It is not a step, and every function here drops
-it before anything is combined; a row with a value and a ``NaT`` interval is
-refused, since which step its value covers is unknown.
+A time label whose interval coordinates are ``NaT`` and whose values are all
+missing is the padding xarray leaves when runs on different time axes are
+stacked and one of them is then selected. It is not a step, and every function
+here drops it before anything is combined; a time label with a value and a
+``NaT`` interval is refused, since which step its value covers is unknown.
 
 Nothing here converts between clocks. The model field's ``time`` carries
-pySIPNET's ``time_zone`` attribute, and the labels an observation supplies are
+pySIPNET's ``time_zone`` attribute, and the labels observed values supply are
 taken to be on that clock; where they are not, the operator shifts them
 first.
 """
@@ -132,7 +133,7 @@ __all__ = [
     "run_window",
     "select_timestep_at",
     "window_counts",
-    "windows_from_time_bounds",
+    "windows_from_observed_values",
 ]
 
 #: The three ways pySIPNET's tables combine consecutive steps, under
@@ -295,7 +296,7 @@ def reduce_windows(
         naive or in the field's time zone. Its ``closed`` side decides which of
         two adjacent windows a step ending on their shared edge belongs to;
         ``"right"`` is the natural choice for end-labeled steps, and is what
-        :func:`windows_from_time_bounds` and :func:`run_window` build.
+        :func:`windows_from_observed_values` and :func:`run_window` build.
     how:
         One of :data:`WINDOW_REDUCTIONS`. Required: a window is an
         observation's support, and what the observation wants of the model over
@@ -431,41 +432,41 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
     return selected
 
 
-def windows_from_time_bounds(observed_values: xr.DataArray) -> pd.IntervalIndex:
-    """An observation field's attribution intervals, as windows for :func:`reduce_windows`.
+def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIndex:
+    """Observed values' windows, the intervals their values cover, for :func:`reduce_windows`.
 
     Reads :data:`~sipnet_calibration.conventions.WINDOW_START` and
     :data:`~sipnet_calibration.conventions.WINDOW_END`, the
     one-dimensional form of CF ``time_bounds`` that
     :func:`sipnet_calibration.constraints.constraint_fields` puts on an annual
-    product's ``time``. The windows are right-closed, so a model step ending
+    constraint's ``time``. The windows are right-closed, so a model step ending
     on the shared edge of two years belongs to the year that ended.
 
     Parameters
     ----------
     observed_values:
-        An observation field carrying the two bounds coordinates on ``time``.
+        Observed values carrying the two window coordinates on ``time``.
 
     Returns
     -------
     pandas.IntervalIndex
         One right-closed window per ``time`` label, in the field's order, from
-        its ``time_bounds_start`` to its ``time_bounds_end``.
+        its ``window_start`` to its ``window_end``.
 
     Raises
     ------
     ValueError
-        If the field carries no bounds (a dated or static product documents no
-        interval, and an operator over it reads an instant with
+        If the field carries no windows (a dated or static constraint
+        documents no interval, and an operator over it reads an instant with
         :func:`select_timestep_at` or the run with :func:`run_window`
-        instead); if a bound is not a datetime or is ``NaT``; or if a
+        instead); if a window edge is not a datetime or is ``NaT``; or if a
         window's end does not follow its start.
     """
-    message_name = field_label(observed_values, "the observation")
-    check_has_time_bounds(observed_values, message_name)
+    message_name = field_label(observed_values, "the observed values")
+    check_has_windows(observed_values, message_name)
     start = pd.DatetimeIndex(observed_values[WINDOW_START].values)
     end = pd.DatetimeIndex(observed_values[WINDOW_END].values)
-    check_time_bounds_are_complete_and_ordered(start, end, message_name)
+    check_windows_are_complete_and_ordered(start, end, message_name)
     return pd.IntervalIndex.from_arrays(start, end, closed="right")
 
 
@@ -473,7 +474,7 @@ def run_window(field: xr.DataArray) -> pd.IntervalIndex:
     """One right-closed window spanning a model field's whole record.
 
     From the first step's ``time_step_start`` to the last step's ``time``, so
-    that every step belongs to it. For a static observation, which documents no
+    that every step belongs to it. For a static observation source, which documents no
     time at all, this is the window an operator reduces over.
 
     Parameters
@@ -1108,7 +1109,7 @@ def check_run_spans_the_windows(
         A model field carrying pySIPNET's interval coordinates.
     windows:
         The windows it is to be reduced over, as
-        :func:`windows_from_time_bounds` builds them.
+        :func:`windows_from_observed_values` builds them.
     message_name:
         What the messages call the reader, such as the operator and the
         observation it predicts.
@@ -1374,17 +1375,17 @@ def check_has_interval_coords(field: xr.DataArray, message_name: str) -> None:
         raise ValueError(
             f"{message_name} reads the interval each step covers, and {field_label(field)} "
             f"carries no {missing} coordinate. Model output from pySIPNET carries both; "
-            "an observation field does not, and is not what this reads."
+            "observed values do not, and are not what this reads."
         )
 
 
-def check_has_time_bounds(observed_values: xr.DataArray, message_name: str) -> None:
-    """*observed_values* carries both time-bounds coordinates, as datetimes."""
+def check_has_windows(observed_values: xr.DataArray, message_name: str) -> None:
+    """*observed_values* carries both window coordinates, as datetimes."""
     missing = [c for c in (WINDOW_START, WINDOW_END) if c not in observed_values.coords]
     if missing:
         raise ValueError(
             f"{message_name} carries no {missing} coordinate, so it documents no interval "
-            "to reduce the model over. Only an annual product has time bounds; for a "
+            "to reduce the model over. Only an annual constraint has windows; for a "
             "dated or static one read an instant with select_timestep_at, or the "
             "whole run with run_window."
         )
@@ -1397,19 +1398,19 @@ def check_has_time_bounds(observed_values: xr.DataArray, message_name: str) -> N
             )
 
 
-def check_time_bounds_are_complete_and_ordered(
+def check_windows_are_complete_and_ordered(
     start: pd.DatetimeIndex, end: pd.DatetimeIndex, message_name: str
 ) -> None:
-    """Every time bound is present, and each window's end follows its start."""
+    """Every window edge is present, and each window's end follows its start."""
     if start.hasnans or end.hasnans:
         raise ValueError(
-            f"{message_name}: a time bound is missing (NaT); drop the labels whose "
+            f"{message_name}: a window edge is missing (NaT); drop the labels whose "
             "support is unknown, or read them at an instant with select_timestep_at."
         )
     if not (end > start).all():
         raise ValueError(
-            f"{message_name}: every time_bounds_end must follow its start; the bounds "
-            "are reversed or empty, so check how they were read."
+            f"{message_name}: every window_end must follow its window_start; the "
+            "windows are reversed or empty, so check how they were read."
         )
 
 
@@ -1418,7 +1419,7 @@ def check_windows_are_datetime_intervals(windows: Any) -> None:
     if not isinstance(windows, pd.IntervalIndex):
         raise TypeError(
             "windows must be a pandas.IntervalIndex, for instance from "
-            "windows_from_time_bounds(observed_values) or "
+            "windows_from_observed_values(observed_values) or "
             "pd.IntervalIndex.from_arrays(starts, ends, closed='right'); got "
             f"{type(windows).__name__}."
         )

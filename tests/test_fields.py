@@ -906,8 +906,8 @@ class TestValidateField:
         validate_field(field.isel(time=-1))
         validate_field(field.sel(time=field["time"].values[3]))
         windowed = _field(("site", "time"), n_time=3).assign_coords(
-            time_bounds_start=("time", pd.date_range("2011-01-01", periods=3, freq="D")),
-            time_bounds_end=("time", pd.date_range("2011-01-02", periods=3, freq="D")),
+            window_start=("time", pd.date_range("2011-01-01", periods=3, freq="D")),
+            window_end=("time", pd.date_range("2011-01-02", periods=3, freq="D")),
         )
         validate_field(windowed.isel(time=0))
 
@@ -1446,7 +1446,7 @@ class TestScalarBatchLabels:
 #: output's coordinates and dims, and an observation's window edges.
 COORDINATE_NAMES_NO_BATCH_DIM_TAKES = [
     "time_step_start", "time_step_length", "time_bounds", "bounds",
-    "year", "day_of_year", "hour_of_day", "time_bounds_start", "time_bounds_end",
+    "year", "day_of_year", "hour_of_day", "window_start", "window_end",
 ]
 
 

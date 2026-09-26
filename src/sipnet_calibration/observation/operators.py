@@ -29,7 +29,7 @@ them). Its call is::
   ``(*batch, site, time)`` with any batch dims (``sample``, a data source's
   ``<source>_member``), carrying pySIPNET's time coordinates and attributes.
 * ``observed_values`` is the observed array of one product, ``(site[, time])``,
-  read for its ``site`` and ``time`` coordinates, its time bounds where
+  read for its ``site`` and ``time`` coordinates, its windows where
   present, and nothing else; never for its values.
 * ``sipnet_parameters`` is the SIPNET table for these ``(*batch, site)``, a
   ``(site,)`` table, or a mapping of scalars for one run.
@@ -96,7 +96,7 @@ from sipnet_calibration.observation.time_alignment import (
     reduce_windows,
     run_window,
     select_timestep_at,
-    windows_from_time_bounds,
+    windows_from_observed_values,
 )
 from sipnet_calibration.validation import check_site_ids_are_unique
 
@@ -105,7 +105,7 @@ __all__ = [
     "ComputeLeafAreaIndex",
     "ObservationOperator",
     "ReduceOverRun",
-    "ReduceOverTimeBounds",
+    "ReduceOverWindows",
     "SelectTimestep",
     "check_model_output_carries_what_is_read",
     "check_operator",
@@ -177,11 +177,11 @@ class SelectTimestep:
 
 
 @dataclass(frozen=True)
-class ReduceOverTimeBounds:
-    """One model variable reduced over each observation's own time bounds.
+class ReduceOverWindows:
+    """One model variable reduced over each observation's own window.
 
-    Requires ``observed_values`` to carry ``time_bounds_start`` and
-    ``time_bounds_end``, which an annual product's array does.
+    Requires ``observed_values`` to carry ``window_start`` and
+    ``window_end``, which an annual constraint's field does.
 
     Parameters
     ----------
@@ -200,7 +200,7 @@ class ReduceOverTimeBounds:
     ValueError
         On construction, if *output_variable_name* is not a pySIPNET output
         variable or *how* is not a window reduction. On a call, if the
-        observation carries no time bounds; if a window reaches a step or more
+        observed values carry no windows; if a window reaches a step or more
         beyond the model record, which would reduce over part of it
         (:func:`~sipnet_calibration.observation.time_alignment.check_run_spans_the_windows`);
         or for any refusal of
@@ -225,7 +225,7 @@ class ReduceOverTimeBounds:
 
     def __call__(self, model_output, observed_values, *, sipnet_parameters=None) -> xr.DataArray:
         variable = select_observed_sites(model_output[self.output_variable_name], observed_values)
-        windows = windows_from_time_bounds(observed_values)
+        windows = windows_from_observed_values(observed_values)
         observation = field_label(observed_values, "the observation")
         check_run_spans_the_windows(variable, windows, f"{type(self).__name__} on {observation}")
         return reduce_windows(variable, windows, self.how, labels=observed_values[TIME])
@@ -911,7 +911,7 @@ def check_observation_is_static(observed_values: xr.DataArray, message_name: str
         raise ValueError(
             f"{message_name} reads a static observation, and "
             f"{field_label(observed_values, 'the observation')} has a {TIME!r} dimension; "
-            "use ReduceOverTimeBounds or SelectTimestep."
+            "use ReduceOverWindows or SelectTimestep."
         )
 
 

@@ -1641,7 +1641,7 @@ def test_a_batch_dim_may_not_take_a_reserved_or_taken_name(example, theta, name)
 
 
 @pytest.mark.parametrize(
-    "name", ["time_step_start", "time_step_length", "year", "hour_of_day", "time_bounds_end"]
+    "name", ["time_step_start", "time_step_length", "year", "hour_of_day", "window_end"]
 )
 def test_a_batch_dim_may_not_take_a_model_output_or_window_coordinate_name(example, theta, name):
     """Fields on ``time_step_length`` were made, and validate_field refused them."""

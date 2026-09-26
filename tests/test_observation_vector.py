@@ -872,7 +872,7 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
     @pytest.mark.parametrize("name", ["ameriflux_site_id", "modis_leaf_area_index"])
     def test_a_batch_dim_named_like_an_observation_coordinate_is_refused(self, lai, times, name):
         windowed = lai.assign_coords(
-            time_bounds_start=("time", times - pd.Timedelta("1D")),
+            window_start=("time", times - pd.Timedelta("1D")),
             ameriflux_site_id=("site", ["US-A", "US-B"]),
         )
         vector = ObservationVector([
@@ -887,7 +887,7 @@ class TestFieldsNeverLetAnObservationCoordinateTakeTheBatchDim:
             vector.fields(np.zeros((2, vector.dimension)), batch_dim="source_index")
 
     @pytest.mark.parametrize(
-        "name", ["time_bounds_start", "time_bounds_end", "time_step_length", "year"]
+        "name", ["window_start", "window_end", "time_step_length", "year"]
     )
     def test_a_model_output_or_window_coordinate_name_is_refused(self, vector, name):
         """Fields on ``time_step_length`` were made, and validate_field refused them."""

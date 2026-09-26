@@ -9,7 +9,7 @@ longitude/latitude grid.
 :func:`plot_map` is the one-panel function. Like
 :func:`~sipnet_calibration.plotting.series.plot_time_series`, it draws onto an
 ``Axes`` it is given and returns it. Grids of maps -- one per batch label,
-per quantile, per time step -- are built by
+per quantile, per timestep -- are built by
 :mod:`sipnet_calibration.plotting.facet`, and :func:`animate_map` plays a map
 through time.
 

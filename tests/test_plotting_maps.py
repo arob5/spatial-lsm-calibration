@@ -594,8 +594,8 @@ def test_model_output_is_animated_over_time(model_wood):
 
 def test_an_annual_field_with_windows_is_animated(dense):
     annual = frames(dense).assign_coords(
-        time_bounds_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
-        time_bounds_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
+        window_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
+        window_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
     )
     animation = animate_map(annual)
     animation._func(1)

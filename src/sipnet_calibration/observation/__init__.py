@@ -3,7 +3,7 @@
 Two abstractions and a handful of functions:
 
 * :class:`ObservationOperator` (a protocol) and the shipped operators
-  :class:`SelectTimestep`, :class:`ReduceOverTimeBounds`,
+  :class:`SelectTimestep`, :class:`ReduceOverWindows`,
   :class:`ReduceOverRun`, :class:`ComputeLeafAreaIndex`, with
   :data:`DEFAULT_OBS_OPS` binding a product to its default operator where the
   construction is established from a primary source. An operator is written
@@ -40,7 +40,7 @@ from sipnet_calibration.observation.operators import (
     ComputeLeafAreaIndex,
     ObservationOperator,
     ReduceOverRun,
-    ReduceOverTimeBounds,
+    ReduceOverWindows,
     SelectTimestep,
     check_model_output_carries_what_is_read,
     check_operator,
@@ -59,7 +59,7 @@ from sipnet_calibration.observation.time_alignment import (
     run_window,
     select_timestep_at,
     window_counts,
-    windows_from_time_bounds,
+    windows_from_observed_values,
 )
 from sipnet_calibration.observation.vector import (
     INDEX_LEVELS,
@@ -79,7 +79,7 @@ __all__ = [
     "ObservationSource",
     "ObservationVector",
     "ReduceOverRun",
-    "ReduceOverTimeBounds",
+    "ReduceOverWindows",
     "SelectTimestep",
     "aggregate_time",
     "aggregation_counts",
@@ -94,5 +94,5 @@ __all__ = [
     "select_observed_sites",
     "select_timestep_at",
     "window_counts",
-    "windows_from_time_bounds",
+    "windows_from_observed_values",
 ]

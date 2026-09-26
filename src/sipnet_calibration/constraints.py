@@ -108,8 +108,9 @@ Functions
 :func:`constraint_fields`, :func:`constraint_standard_deviations`
     The ``value`` or ``standard_deviation`` arrays of several products, one
     field per constraint, optionally for a subset of sites. An annual
-    product's array carries its ``time_bounds`` as the one-dimensional
-    coordinates ``time_bounds_start`` and ``time_bounds_end`` on ``time``.
+    constraint's field carries its windows, read from ``time_bounds``, as the
+    one-dimensional coordinates ``window_start`` and ``window_end`` on
+    ``time``.
 
 :func:`read_raw`
     Parse a raw file exactly, in its source column names.
@@ -677,9 +678,9 @@ def constraint_fields(
     dict
         Constraint name to its ``value`` array, renamed to the constraint,
         with dims ``(site, time)`` or ``(site,)`` and the array's attributes.
-        An annual product's array also carries its CF ``time_bounds`` as the
-        one-dimensional coordinates ``time_bounds_start`` and
-        ``time_bounds_end`` on ``time``
+        An annual constraint's field also carries its windows, read from the
+        CF ``time_bounds``, as the one-dimensional coordinates
+        ``window_start`` and ``window_end`` on ``time``
         (:data:`~sipnet_calibration.conventions.WINDOW_START`,
         :data:`~sipnet_calibration.conventions.WINDOW_END`).
 
@@ -1062,7 +1063,7 @@ def _fields(
 
 
 def _window_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
-    """CF ``time_bounds`` as two one-dimensional coordinates on ``time``.
+    """CF ``time_bounds`` as the two one-dimensional window coordinates on ``time``.
 
     A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
     ``bounds`` dimension being none of the array's, so the pair rides along
