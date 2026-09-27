@@ -152,7 +152,7 @@ def test_a_file_built_for_another_center_is_refused(tmp_path):
     arrays["center"] = np.array([-90.0, 45.0])
     path = tmp_path / "moved.npz"
     np.savez(path, **arrays)
-    with pytest.raises(ValueError, match="Rebuild it"):
+    with pytest.raises(ValueError, match="rebuild it with scripts/build_basemap.py"):
         load_basemap(path)
 
 
@@ -188,10 +188,12 @@ def test_angular_distance_is_zero_at_the_center_and_180_at_the_antipode():
 
 
 def test_draw_basemap_adds_one_collection_per_layer_above_the_data(ax):
-    drawn = draw_basemap(ax, layers=("coastline", "states"))
+    drawn = draw_basemap(ax, layer_names=("coastline", "states"))
     assert len(drawn) == 2 and all(c.zorder == BASEMAP_ZORDER for c in drawn)
-    with pytest.raises(ValueError, match="unknown basemap layer"):
-        draw_basemap(ax, layers=("rivers",))
+    with pytest.raises(KeyError, match="unknown basemap layer"):
+        draw_basemap(ax, layer_names=("rivers",))
+    with pytest.raises(TypeError, match="layer_names"):
+        draw_basemap(ax, layer_names="coastline")
 
 
 def test_the_graticule_labels_meridians_on_the_bottom_and_parallels_on_the_left(ax):

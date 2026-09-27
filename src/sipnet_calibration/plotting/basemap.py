@@ -95,7 +95,7 @@ Usage
 
     ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)   # projected meters
     draw_graticule(ax)
-    draw_basemap(ax, layers=("coastline", "borders"))
+    draw_basemap(ax, layer_names=("coastline", "borders"))
 """
 
 from __future__ import annotations
@@ -111,11 +111,12 @@ from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
 from sipnet_calibration.projection import SITE_PROJECTION
+from sipnet_calibration.validation import as_names, truncated
 
 __all__ = [
     "BASEMAP_LAYERS",
     "BASEMAP_ZORDER",
-    "DEFAULT_LAYERS",
+    "DEFAULT_LAYER_NAMES",
     "GRATICULE_ZORDER",
     "MAX_ANGULAR_DISTANCE",
     "BasemapLayer",
@@ -164,8 +165,8 @@ BASEMAP_LAYERS: Mapping[str, BasemapLayer] = frozendict(
     }
 )
 
-#: What :func:`draw_basemap` draws when not told otherwise: all of it.
-DEFAULT_LAYERS: tuple[str, ...] = tuple(BASEMAP_LAYERS)
+#: The layers :func:`draw_basemap` draws when not told otherwise: all of them.
+DEFAULT_LAYER_NAMES: tuple[str, ...] = tuple(BASEMAP_LAYERS)
 
 #: Degrees of arc from the projection center beyond which nothing is kept.
 MAX_ANGULAR_DISTANCE = 100.0
@@ -199,7 +200,8 @@ def load_basemap(path: Path | str | None = None) -> dict[str, list[np.ndarray]]:
     ------
     ValueError
         If a layer of :data:`BASEMAP_LAYERS` is missing from the file, or the
-        file was built for a different center or clip than the current ones.
+        file was built for a different center or clip than the current ones
+        (:func:`check_basemap_was_built_for_this_projection`).
     """
     if path is None:
         return _default_basemap()
@@ -230,18 +232,14 @@ def write_basemap(
     ValueError
         If a layer is missing, or a part is not ``(n, 2)`` with ``n >= 2``.
     """
-    missing = [name for name in BASEMAP_LAYERS if name not in parts or name not in source_md5]
-    if missing:
-        raise ValueError(f"no parts or md5 for basemap layer(s) {missing}")
+    check_basemap_parts_cover_every_layer(parts, source_md5)
     arrays: dict[str, np.ndarray] = {
         "center": np.array([SITE_PROJECTION.lon_0, SITE_PROJECTION.lat_0]),
         "max_angular_distance": np.array(MAX_ANGULAR_DISTANCE),
     }
     for name in BASEMAP_LAYERS:
         layer_parts = [np.asarray(part, dtype=float) for part in parts[name]]
-        bad = [p.shape for p in layer_parts if p.ndim != 2 or p.shape[1] != 2 or len(p) < 2]
-        if bad:
-            raise ValueError(f"layer {name!r} has parts that are not (n >= 2, 2): {bad[:3]}")
+        check_basemap_parts_are_polylines(name, layer_parts)
         lengths = [len(part) for part in layer_parts]
         arrays[f"{name}_vertices"] = (
             np.concatenate(layer_parts).astype(np.float32)
@@ -283,7 +281,7 @@ def clip_to_drawable(lon: np.ndarray, lat: np.ndarray) -> list[np.ndarray]:
 
 
 def draw_basemap(
-    ax: Axes, *, layers: Sequence[str] = DEFAULT_LAYERS, **style: Any
+    ax: Axes, *, layer_names: Sequence[str] = DEFAULT_LAYER_NAMES, **style: Any
 ) -> list[LineCollection]:
     """Draw basemap layers onto *ax*, in projected meters.
 
@@ -292,8 +290,9 @@ def draw_basemap(
     ax:
         The axes, whose data coordinates are
         :data:`~sipnet_calibration.projection.SITE_PROJECTION` meters.
-    layers:
-        Names from :data:`BASEMAP_LAYERS`, drawn in the order given.
+    layer_names:
+        A sequence of names from :data:`BASEMAP_LAYERS`, drawn in the order
+        given.
     **style:
         Passed to every ``LineCollection``, overriding each layer's own color
         and line width.
@@ -305,7 +304,9 @@ def draw_basemap(
 
     Raises
     ------
-    ValueError
+    TypeError
+        If *layer_names* is one string, or not a sequence of strings.
+    KeyError
         If a name is not in :data:`BASEMAP_LAYERS`.
 
     Notes
@@ -313,13 +314,10 @@ def draw_basemap(
     Drawing does not change the axes limits, so it can come before or after
     they are set.
     """
-    if isinstance(layers, str):
-        layers = (layers,)
-    unknown = [name for name in layers if name not in BASEMAP_LAYERS]
-    if unknown:
-        raise ValueError(f"unknown basemap layer(s) {unknown}; the layers are {list(BASEMAP_LAYERS)}")
+    layer_names = as_names(layer_names, message_name="layer_names")
+    check_layer_names_are_known(layer_names)
     drawn = []
-    for name in layers:
+    for name in layer_names:
         layer = BASEMAP_LAYERS[name]
         keywords = {
             "colors": layer.color,
@@ -370,8 +368,7 @@ def draw_graticule(
     y_min, y_max = sorted(ax.get_ylim())
     if spacing is None:
         spacing = graticule_spacing(max(x_max - x_min, y_max - y_min))
-    if not (np.isfinite(spacing) and spacing > 0):
-        raise ValueError(f"spacing must be finite and positive, got {spacing!r}")
+    check_graticule_spacing_is_positive(spacing)
 
     meridians = _graticule_lines(float(spacing), meridians=True)
     parallels = _graticule_lines(float(spacing), meridians=False)
@@ -405,23 +402,22 @@ def graticule_spacing(frame_size: float) -> float:
     return 1.0
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── private helpers ───────────────────────────────────────────────────────────
 
 
 @functools.cache
 def _default_basemap() -> dict[str, list[np.ndarray]]:
+    """The package's basemap, read once per process."""
     return _read_basemap(basemap_path())
 
 
 def _read_basemap(path: Path) -> dict[str, list[np.ndarray]]:
+    """The basemap at *path*, layer name to its parts."""
     with np.load(path) as stored:
-        _check_built_for_this_projection(stored, path)
+        check_basemap_was_built_for_this_projection(stored, path)
+        check_basemap_holds_every_layer(stored, path)
         layers = {}
         for name in BASEMAP_LAYERS:
-            if f"{name}_vertices" not in stored:
-                raise ValueError(
-                    f"{path} has no layer {name!r}; rebuild it with scripts/build_basemap.py"
-                )
             vertices = stored[f"{name}_vertices"].astype(float)
             offsets = stored[f"{name}_offsets"]
             layers[name] = [vertices[a:b] for a, b in zip(offsets[:-1], offsets[1:])]
@@ -516,14 +512,65 @@ def _format_degrees(value: float, *, longitude: bool) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_built_for_this_projection(stored, path: Path) -> None:
-    """Raise unless *stored* was clipped for the current center and radius."""
+def check_basemap_was_built_for_this_projection(stored: Mapping[str, Any], path: Path) -> None:
+    """A stored basemap was clipped for the current projection center and radius."""
     center = tuple(float(v) for v in stored["center"])
     expected = (SITE_PROJECTION.lon_0, SITE_PROJECTION.lat_0)
     radius = float(stored["max_angular_distance"])
     if center != expected or radius != MAX_ANGULAR_DISTANCE:
         raise ValueError(
-            f"{path} was built for center {center} and a {radius}-degree clip, but the "
-            f"projection is centered at {expected} and the clip is "
-            f"{MAX_ANGULAR_DISTANCE} degrees. Rebuild it with scripts/build_basemap.py."
+            f"{path} was built for center {center} and a {radius}-degree clip, and the "
+            f"projection is centered at {expected} with a {MAX_ANGULAR_DISTANCE}-degree "
+            "clip; rebuild it with scripts/build_basemap.py."
+        )
+
+
+def check_basemap_holds_every_layer(stored: Mapping[str, Any], path: Path) -> None:
+    """A stored basemap holds every layer of :data:`BASEMAP_LAYERS`."""
+    missing = [name for name in BASEMAP_LAYERS if f"{name}_vertices" not in stored]
+    if missing:
+        raise ValueError(
+            f"{path} has no layer(s) {missing}, and the basemap holds every layer of "
+            "BASEMAP_LAYERS; rebuild it with scripts/build_basemap.py."
+        )
+
+
+def check_basemap_parts_cover_every_layer(
+    parts: Mapping[str, Any], source_md5: Mapping[str, str]
+) -> None:
+    """A basemap to write has parts and an md5 for every layer of :data:`BASEMAP_LAYERS`."""
+    missing = [name for name in BASEMAP_LAYERS if name not in parts or name not in source_md5]
+    if missing:
+        raise ValueError(
+            f"a basemap holds every layer of BASEMAP_LAYERS, and there are no parts or md5 "
+            f"for {missing}; pass both for every layer."
+        )
+
+
+def check_basemap_parts_are_polylines(name: str, layer_parts: Sequence[np.ndarray]) -> None:
+    """Every part of a layer is an ``(n, 2)`` polyline of at least two vertices."""
+    bad = [p.shape for p in layer_parts if p.ndim != 2 or p.shape[1] != 2 or len(p) < 2]
+    if bad:
+        raise ValueError(
+            f"layer {name!r}: every part is an (n >= 2, 2) polyline of longitude and "
+            f"latitude, and some are {truncated(bad)}; drop runs of fewer than two "
+            "vertices, as clip_to_drawable does."
+        )
+
+
+def check_layer_names_are_known(layer_names: Sequence[str]) -> None:
+    """Every layer name is a key of :data:`BASEMAP_LAYERS`."""
+    unknown = [name for name in layer_names if name not in BASEMAP_LAYERS]
+    if unknown:
+        raise KeyError(
+            f"unknown basemap layer(s) {unknown}; pass names from {list(BASEMAP_LAYERS)}."
+        )
+
+
+def check_graticule_spacing_is_positive(spacing: float) -> None:
+    """The graticule spacing, in degrees, is finite and positive."""
+    if not (np.isfinite(spacing) and spacing > 0):
+        raise ValueError(
+            f"spacing must be finite and positive, in degrees, got {spacing!r}; pass one "
+            "such as 10, or None to fit it to the frame."
         )

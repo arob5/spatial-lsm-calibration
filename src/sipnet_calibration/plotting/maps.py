@@ -145,7 +145,7 @@ from sipnet_calibration.conventions import LAT, LON, SAMPLE, SITE, TIME
 from sipnet_calibration.fields import batch_dims, is_categorical, message_name, validate_field
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
-    DEFAULT_LAYERS,
+    DEFAULT_LAYER_NAMES,
     MAX_ANGULAR_DISTANCE,
     draw_basemap,
     draw_graticule,
@@ -265,11 +265,14 @@ def plot_map(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``, *ax* is not an ``Axes``, or
-        *render* is neither a renderer name nor a :class:`SiteRenderer`.
+        If *field* is not a ``DataArray``, *ax* is not an ``Axes``, *render*
+        is neither a renderer name nor a :class:`SiteRenderer`, or *basemap*
+        is one layer name rather than a sequence of them.
     KeyError
         If *render* or *extent* is a name that is not a key of
-        :data:`RENDERERS` or :data:`~sipnet_calibration.sites.EXTENTS`.
+        :data:`RENDERERS` or :data:`~sipnet_calibration.sites.EXTENTS`, or
+        *basemap* names a layer that is not in
+        :data:`~sipnet_calibration.plotting.basemap.BASEMAP_LAYERS`.
     ValueError
         If *field* is not a field or holds the data of none of the maps above
         -- in particular if it has a batch dim or a ``time`` dimension, where
@@ -820,7 +823,7 @@ def _draw_map(
     else:
         artist = renderer.draw(ax, geometry.x, geometry.y, geometry.values, bounds=bounds, **keywords)
     if basemap:
-        draw_basemap(ax, layers=DEFAULT_LAYERS if basemap is True else basemap)
+        draw_basemap(ax, layer_names=DEFAULT_LAYER_NAMES if basemap is True else basemap)
     if colorbar:
         _add_scale_key(ax, scale, geometry, bounds)
     # Drawing an image or a mesh can move the limits; the frame is the frame.
