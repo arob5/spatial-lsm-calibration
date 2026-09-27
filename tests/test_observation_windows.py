@@ -12,7 +12,7 @@ import pytest
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
-from conftest import located, site_table_of
+from conftest import located, niwot_stack_of
 from sipnet_calibration.conventions import (
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -716,11 +716,7 @@ class TestValuedTimeLabelsWithoutAnIntervalAreRefused:
 
 class TestCheckRunSpansTheWindows:
     def test_a_window_beyond_a_selected_sites_shorter_record_is_refused(self, niwot):
-        from sipnet_calibration.fields import stack_model_outputs
-
-        run = niwot[["wood_carbon"]]
-        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
-        stacked = stack_model_outputs({(0, 1): run, (0, 2): run.isel(time=slice(0, 40))}, site_table=table)
+        stacked = niwot_stack_of(["wood_carbon"], sites=(1, 2), n_samples=1, lengths={2: 40})
         one = stacked.sel(site=2, sample=0)["wood_carbon"]
         assert np.isnat(one[TIMESTEP_START].values).any()
         start, end = (
