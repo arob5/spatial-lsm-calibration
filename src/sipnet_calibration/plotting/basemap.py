@@ -113,9 +113,7 @@ from matplotlib.collections import LineCollection
 from sipnet_calibration.plotting.style import (
     check_key_is_known,
     check_keywords_are_not_retired,
-    check_number_is_finite,
-    check_number_is_positive,
-    check_value_is_a_number,
+    as_positive_number,
 )
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.validation import as_names, truncated
@@ -392,9 +390,11 @@ def draw_graticule(
     y_min, y_max = sorted(ax.get_ylim())
     if spacing is None:
         spacing = graticule_spacing(max(x_max - x_min, y_max - y_min))
-    check_value_is_a_number(spacing, message_name="spacing")
-    check_number_is_finite(spacing, message_name="spacing")
-    check_number_is_positive(spacing, message_name="spacing")
+    spacing = as_positive_number(
+        spacing,
+        fix="pass the degrees between lines, such as 10, or None to fit it to the frame",
+        message_name="spacing",
+    )
 
     meridians = _graticule_lines(float(spacing), meridians=True)
     parallels = _graticule_lines(float(spacing), meridians=False)

@@ -223,5 +223,13 @@ def test_graticule_spacing_shrinks_with_the_frame(size, spacing):
 def test_the_graticule_refuses_a_spacing_that_is_not_a_number(ax, spacing):
     ax.set_xlim(-1e6, 1e6)
     ax.set_ylim(-1e6, 1e6)
-    with pytest.raises(TypeError, match="spacing must be a number"):
+    with pytest.raises(TypeError, match="spacing must be a real number"):
         draw_graticule(ax, spacing=spacing)
+
+
+def test_the_graticule_takes_a_zero_dimensional_spacing_and_keeps_its_advice(ax):
+    ax.set_xlim(-1e6, 1e6)
+    ax.set_ylim(-1e6, 1e6)
+    draw_graticule(ax, spacing=np.array(10.0))
+    with pytest.raises(ValueError, match="degrees between lines.*or None to fit it to the frame"):
+        draw_graticule(ax, spacing=-1.0)

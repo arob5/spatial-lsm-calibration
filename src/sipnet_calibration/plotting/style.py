@@ -42,6 +42,7 @@ Usage
 
 from __future__ import annotations
 
+import math
 import numbers
 from collections.abc import Collection, Mapping
 from typing import Any
@@ -64,10 +65,9 @@ __all__ = [
     "category_colors",
     "check_key_is_known",
     "check_keywords_are_not_retired",
-    "check_number_is_finite",
-    "check_number_is_positive",
+    "as_positive_number",
+    "as_real_number",
     "check_option_is_known",
-    "check_value_is_a_number",
     "role_style",
     "use_project_style",
 ]
@@ -251,6 +251,41 @@ def axis_label(field: xr.DataArray) -> str:
     return f"{field.attrs['long_name']} ({field.attrs['units']})"
 
 
+def as_real_number(value: Any, *, fix: str = "pass one", message_name: str) -> float:
+    """*value* as a ``float``: a real number, or a zero-dimensional array holding one.
+
+    A NumPy, xarray or JAX scalar array is unwrapped; *fix* ends the message
+    that refuses anything else.
+
+    Raises
+    ------
+    TypeError
+        If *value* is a boolean, or not a real number.
+    """
+    number = _scalar_of(value)
+    check_value_is_a_real_number(number, fix=fix, message_name=message_name)
+    return float(number)
+
+
+def as_positive_number(
+    value: Any, *, finite: bool = True, fix: str, message_name: str
+) -> float:
+    """*value* as a positive ``float``, finite unless *finite* is false; *fix* ends a refusal.
+
+    Raises
+    ------
+    TypeError
+        If *value* is a boolean, or not a real number.
+    ValueError
+        If it is not positive, or is infinite when *finite*.
+    """
+    number = as_real_number(value, fix=fix, message_name=message_name)
+    if finite:
+        check_number_is_finite(number, fix=fix, message_name=message_name)
+    check_number_is_positive(number, fix=fix, message_name=message_name)
+    return number
+
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
 #: Which of a role's keywords apply to each element. ``points`` also has
@@ -266,6 +301,12 @@ _ELEMENT_KEYWORDS = frozendict(
 #: The most classes a palette of :func:`category_colors` tells apart.
 _MOST_CLASSES = 20
 
+
+def _scalar_of(value: Any) -> Any:
+    """*value*, or the scalar a zero-dimensional array-like (NumPy, xarray, JAX) holds."""
+    if hasattr(value, "__array__") and not isinstance(value, (str, bytes)) and np.ndim(value) == 0:
+        return np.asarray(value).item()
+    return value
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
@@ -319,24 +360,23 @@ def check_keywords_are_not_retired(
             raise TypeError(f"{message_name} no longer takes {old}=; use {replacement}.")
 
 
-def check_value_is_a_number(value: Any, *, message_name: str) -> None:
-    """*value* is a real number, not a boolean."""
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+def check_value_is_a_real_number(value: Any, *, fix: str, message_name: str) -> None:
+    """*value* is a real number (a ``Fraction`` and a ``Decimal`` are), not a boolean."""
+    is_complex = isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real)
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Number) or is_complex:
         raise TypeError(
-            f"{message_name} must be a number, got {type(value).__name__} {value!r}; pass a "
-            "real number."
+            f"{message_name} must be a real number, got {type(value).__name__} {value!r}; "
+            f"{fix}."
         )
 
 
-def check_number_is_positive(value: float, *, message_name: str) -> None:
+def check_number_is_positive(value: float, *, fix: str, message_name: str) -> None:
     """A number is positive: infinity is, ``NaN`` is not."""
     if not value > 0:
-        raise ValueError(
-            f"{message_name} must be positive, got {value!r}; pass a positive number."
-        )
+        raise ValueError(f"{message_name} must be positive, got {value!r}; {fix}.")
 
 
-def check_number_is_finite(value: float, *, message_name: str) -> None:
+def check_number_is_finite(value: float, *, fix: str, message_name: str) -> None:
     """A number is finite."""
-    if not np.isfinite(value):
-        raise ValueError(f"{message_name} must be finite, got {value!r}; pass a finite number.")
+    if not math.isfinite(value):
+        raise ValueError(f"{message_name} must be finite, got {value!r}; {fix}.")

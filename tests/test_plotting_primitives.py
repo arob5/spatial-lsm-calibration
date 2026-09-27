@@ -289,7 +289,7 @@ def test_fan_rejects_a_single_number_for_levels(ax, x, samples):
     # A NumPy number was iterated and failed in numpy's words.
     with pytest.raises(TypeError, match="levels must be a sequence"):
         fan(ax, x, samples, levels=np.int64(1))
-    with pytest.raises(TypeError, match="levels must be a number"):
+    with pytest.raises(TypeError, match="levels must be a real number"):
         fan(ax, x, samples, levels=("wide",))
 
 

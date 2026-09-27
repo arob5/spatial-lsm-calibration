@@ -568,7 +568,18 @@ def test_label_by_a_scalar_coordinate_is_refused(ax):
 def test_a_boolean_n_sigma_is_refused(ax, field_time):
     """``True`` was taken as one standard deviation."""
     deviation = field_time.copy(data=np.ones(field_time.shape))
-    with pytest.raises(TypeError, match="n_sigma must be a number"):
+    with pytest.raises(TypeError, match="n_sigma must be a real number"):
         plot_time_series(
             field_time, ax=ax, show="points", standard_deviation=deviation, n_sigma=True
+        )
+
+
+def test_n_sigma_takes_a_zero_dimensional_array_and_keeps_its_advice(ax, field_time):
+    deviation = field_time.copy(data=np.ones(field_time.shape))
+    plot_time_series(
+        field_time, ax=ax, show="points", standard_deviation=deviation, n_sigma=np.array(2.0)
+    )
+    with pytest.raises(ValueError, match="standard deviations each bar spans"):
+        plot_time_series(
+            field_time, ax=ax, show="points", standard_deviation=deviation, n_sigma=-1.0
         )

@@ -827,7 +827,7 @@ def test_a_raster_with_a_time_dim_is_refused_with_the_maps_advice():
 )
 def test_a_renderer_refuses_a_length_that_is_not_a_number(build):
     """A boolean was taken as 1 m, and a string failed inside the primitive."""
-    with pytest.raises(TypeError, match="must be a number"):
+    with pytest.raises(TypeError, match="must be a real number"):
         build()
 
 
@@ -846,7 +846,7 @@ def test_an_infinite_max_edge_masks_no_triangle(ax, dense):
 
 @pytest.mark.parametrize("stat", [True, None, [0.5]])
 def test_summarize_batch_refuses_a_stat_that_is_neither_a_name_nor_a_number(ensemble, stat):
-    with pytest.raises(TypeError, match="stat must be one of"):
+    with pytest.raises(TypeError, match="'wood_carbon': stat must be a real number"):
         summarize_batch(ensemble, stat)
 
 
@@ -859,8 +859,8 @@ def test_an_animation_interval_is_seconds_rounded_to_milliseconds(ax, dense, int
 @pytest.mark.parametrize(
     "interval, error, match",
     [
-        ("x", TypeError, "interval must be a number"),
-        (True, TypeError, "interval must be a number"),
+        ("x", TypeError, "interval must be a real number"),
+        (True, TypeError, "interval must be a real number"),
         (0.0, ValueError, "interval must be positive"),
         (-1.0, ValueError, "interval must be positive"),
         (250, ValueError, "interval is in seconds"),
@@ -894,7 +894,7 @@ def test_plot_map_quantiles_refuses_quantiles_that_are_not_a_sequence(ensemble):
 
 def test_plot_map_quantiles_names_its_own_argument_for_a_quantile_out_of_range(ensemble):
     """The message named summarize_batch's stat, which the caller never passed."""
-    with pytest.raises(ValueError, match=r"quantiles: a quantile lies in \(0, 1\), got 1.5"):
+    with pytest.raises(ValueError, match=r"quantiles must be a quantile in \(0, 1\), got 1.5"):
         plot_map_quantiles(ensemble, (1.5,))
 
 
@@ -968,3 +968,62 @@ def test_plot_map_by_names_a_missing_time_label_as_the_field_holds_it(dense):
     with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[Timestamp\('2013"):
         plot_map_by(frames(dense), "time", values=[np.datetime64("2013-01-01", "ns")])
     del pd
+
+
+# ── numbers in every form a caller has them ───────────────────────────────────
+
+
+def _scalar_forms(value):
+    """*value* as the scalars callers pass: 0-d arrays of NumPy, xarray and JAX, a Fraction."""
+    from fractions import Fraction
+
+    import jax.numpy as jnp
+
+    return [np.array(value), xr.DataArray(value), jnp.float32(value),
+            Fraction(value).limit_denominator(1000), np.float32(value)]
+
+
+@pytest.mark.parametrize("form", range(5), ids=["ndarray", "DataArray", "jax", "Fraction", "float32"])
+def test_renderers_and_animations_take_any_real_scalar(ax, dense, form):
+    """0-d arrays and JAX scalars were refused as not numbers; a Fraction failed in numpy."""
+    plot_map(dense, ax, render=Cells(radius=_scalar_forms(50e3)[form], pixels=50))
+    plot_map(dense, ax, render=Triangles(max_edge=_scalar_forms(150e3)[form]))
+    plot_map(dense, ax, render=Points(size=_scalar_forms(10.0)[form]))
+    animation = animate_map(frames(dense), ax, interval=_scalar_forms(0.5)[form])
+    assert animation._interval == 500
+    summary = summarize_batch(xr.concat([dense, dense * 2], dim="sample").assign_coords(
+        sample=[0, 1]).assign_attrs(dense.attrs), _scalar_forms(0.5)[form])
+    assert "median" in summary.attrs["long_name"]
+
+
+def test_a_decimal_is_a_real_number(ax, dense):
+    from decimal import Decimal
+
+    plot_map(dense, ax, render=Cells(radius=Decimal("50000"), pixels=50))
+
+
+@pytest.mark.parametrize(
+    "interval, match",
+    [
+        (1e-4, "rounds to no milliseconds"),
+        (float("inf"), "interval must be finite"),
+        (11.0, "interval is in seconds"),
+        (33, "interval is in seconds"),
+    ],
+)
+def test_an_interval_outside_a_millisecond_to_ten_seconds_is_refused(ax, dense, interval, match):
+    """1e-4 s rounded to 0 ms, which save() then crashed on; inf read 'pass interval=inf'."""
+    with pytest.raises(ValueError, match=match):
+        animate_map(frames(dense), ax, interval=interval)
+
+
+def test_intervals_at_the_limits_are_taken(ax, dense):
+    assert animate_map(frames(dense), ax, interval=10.0)._interval == 10_000
+    assert animate_map(frames(dense), ax, interval=0.0015)._interval == 2
+
+
+def test_a_length_refusal_keeps_its_units_and_advice():
+    with pytest.raises(ValueError, match=r"radius must be positive, got -1.0; .*projected meters, such as 50e3"):
+        Cells(radius=-1)
+    with pytest.raises(ValueError, match="max_edge must be positive.*float\\('inf'\\) to mask none"):
+        Triangles(max_edge=0)

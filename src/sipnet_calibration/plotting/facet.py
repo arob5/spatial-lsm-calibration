@@ -89,7 +89,7 @@ from sipnet_calibration.plotting.style import (
     axis_label,
     check_keywords_are_not_retired,
     check_option_is_known,
-    check_value_is_a_number,
+    as_real_number,
 )
 from sipnet_calibration.validation import (
     as_positive_integer,
@@ -517,10 +517,12 @@ def plot_map_quantiles(
     )
     quantiles = as_sequence(quantiles, message_name="quantiles")
     check_quantiles_are_given(quantiles)
+    quantiles = [
+        as_real_number(q, fix="pass quantiles in (0, 1)", message_name="quantiles")
+        for q in quantiles
+    ]
     for quantile in quantiles:
-        check_value_is_a_number(quantile, message_name="quantiles")
         maps.check_quantile_is_in_range(quantile, message_name="quantiles")
-    quantiles = [float(q) for q in quantiles]
     validate_field(field)
     name = message_name(field)
     maps.check_batch_dim_is_the_fields(field, batch_dim, message_name=name)

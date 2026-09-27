@@ -71,12 +71,7 @@ from matplotlib.lines import Line2D
 from matplotlib.tri import Triangulation
 from scipy.spatial import cKDTree
 
-from sipnet_calibration.plotting.style import (
-    BAND_ALPHAS,
-    check_number_is_finite,
-    check_number_is_positive,
-    check_value_is_a_number,
-)
+from sipnet_calibration.plotting.style import BAND_ALPHAS, as_positive_number, as_real_number
 from sipnet_calibration.validation import as_positive_integer, as_sequence, truncated
 
 __all__ = [
@@ -448,9 +443,9 @@ def site_cells(
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
     check_arrays_are_one_series(x=x, y=y, values=values)
-    check_value_is_a_number(radius, message_name="radius")
-    check_number_is_finite(radius, message_name="radius")
-    check_number_is_positive(radius, message_name="radius")
+    radius = as_positive_number(
+        radius, fix="pass a distance in the units of x and y, such as 50e3", message_name="radius"
+    )
     pixels = as_positive_integer(pixels, message_name="pixels")
     check_bounds_enclose_an_area(bounds)
     x_min, y_min, x_max, y_max = (float(b) for b in bounds)
@@ -531,8 +526,12 @@ def site_triangles(
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
     check_arrays_are_one_series(x=x, y=y, values=values)
-    check_value_is_a_number(max_edge, message_name="max_edge")
-    check_number_is_positive(max_edge, message_name="max_edge")
+    max_edge = as_positive_number(
+        max_edge,
+        finite=False,
+        fix="pass a length in the units of x and y, or np.inf to mask none",
+        message_name="max_edge",
+    )
     check_triangulation_has_three_sites(x.size)
 
     triangulation = Triangulation(x, y)
@@ -637,9 +636,10 @@ def _is_present(values: np.ndarray) -> np.ndarray:
 def _as_levels(levels: Any) -> tuple[float, ...]:
     """*levels* as a tuple of interval widths, each within ``(0, 1)``."""
     levels = as_sequence(levels, message_name="levels")
-    for level in levels:
-        check_value_is_a_number(level, message_name="levels")
-    levels = tuple(float(level) for level in levels)
+    levels = tuple(
+        as_real_number(level, fix="pass interval widths in (0, 1)", message_name="levels")
+        for level in levels
+    )
     check_levels_are_given(levels)
     check_levels_are_distinct(levels)
     check_levels_lie_within_zero_and_one(levels)
