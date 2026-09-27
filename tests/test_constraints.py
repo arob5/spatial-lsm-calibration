@@ -434,7 +434,7 @@ def test_a_negative_standard_deviation_is_refused(raw_root, site_table, tmp_path
 def test_a_static_table_whose_copies_differ_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in STATIC_ROWS]
     rows[1]["soc"] = 743.0
-    _refused(STATIC, rows, raw_root, site_table, tmp_path, "either the source changed")
+    _refused(STATIC, rows, raw_root, site_table, tmp_path, "correct the spec.s time_structure")
     frame = read_raw(STATIC, raw_root)
     with pytest.raises(ValueError, match="static"):
         build_constraint(STATIC, frame, site_table)
@@ -744,6 +744,23 @@ def test_a_missing_raw_directory_is_a_reported_error_not_a_traceback(tmp_path, c
     captured = capsys.readouterr()
     assert captured.err.startswith("error: ") and "provenance" in captured.err
     assert captured.out == ""
+
+
+def test_a_corrupt_gzip_is_a_reported_error_naming_the_file(tmp_path, capsys):
+    """A truncated gzip stream raised EOFError, a traceback."""
+    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    raw_directory = tmp_path / "raw"
+    raw_directory.mkdir()
+    spec = resolve_constraint("smap_soil_moisture")
+    whole = gzip.compress(b"site_id,date,sm,sm_sd\n" + b"1,2016-01-01,0.2,0.01\n" * 1000)
+    (raw_directory / spec.raw_file).write_bytes(whole[: len(whole) // 2])
+    code = ingest.main(
+        ["--raw-directory", str(raw_directory), "--site-table", str(site_table_path),
+         "--output-directory", str(tmp_path / "out"), "--constraint", spec.name]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and str(raw_directory / spec.raw_file) in err
 
 
 def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch, capsys):

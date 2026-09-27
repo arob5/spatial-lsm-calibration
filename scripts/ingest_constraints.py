@@ -47,15 +47,16 @@ Usage
 -----
 ::
 
-    uv run python scripts/ingest_constraints.py                         # every constraint
+    uv run python scripts/ingest_constraints.py               # every constraint
     uv run python scripts/ingest_constraints.py --constraint modis_leaf_area_index
-    uv run python scripts/ingest_constraints.py --describe              # the specs, no I/O
+    uv run python scripts/ingest_constraints.py --describe    # the specs, no I/O
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -89,11 +90,11 @@ from sipnet_calibration.sites import (
 )
 from sipnet_calibration.validation import check_site_ids_are_in_range, truncated
 
-#: How far a raw file's lat/lon may sit from the site table before the site
-#: ids are taken to mean a different pool. The real files agree to 5e-13.
-COORDINATE_TOLERANCE_DEGREES = 1e-9
+#: How far, in degrees, a raw file's lat/lon may sit from the site table before
+#: the site ids are taken to mean a different pool.
+COORDINATE_TOLERANCE = 1e-9
 
-#: The years an annual or static constraint's time column may hold.
+#: The first and last year an annual or static constraint's time column may hold.
 PLAUSIBLE_YEARS = (1900, 2100)
 
 
@@ -125,7 +126,9 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--constraint",
@@ -144,19 +147,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--raw-directory",
         type=Path,
         default=None,
-        help="Directory of the raw files. Default: data/raw/constraints.",
+        help=f"Directory of the raw files. Default: {default_raw_dir()}.",
     )
     parser.add_argument(
         "--site-table",
         type=Path,
         default=None,
-        help="The site table. Default: data/processed/sites/sites.csv.",
+        help=f"The site table. Default: {default_sites_path()}.",
     )
     parser.add_argument(
         "--output-directory",
         type=Path,
         default=None,
-        help="Where to write. Default: data/processed/constraints.",
+        help=f"Where to write. Default: {default_constraints_dir()}.",
     )
     return parser.parse_args(argv)
 
@@ -168,22 +171,11 @@ def ingest(
     spec: ConstraintSpec, raw_directory: Path, site_table: pd.DataFrame, output_directory: Path
 ) -> xr.Dataset:
     """Read, check, build and write one constraint; the dataset written."""
-    frame = read_raw(spec, raw_directory)
+    frame = read_raw_frame(spec, raw_directory)
     check_raw_frame_is_valid(spec, frame, site_table)
     dataset = build_constraint(spec, frame, site_table)
     write_processed_file(dataset, constraint_path(spec, output_directory), spec)
     return dataset
-
-
-def write_processed_file(dataset: xr.Dataset, path: Path, spec: ConstraintSpec) -> None:
-    """Write through a ``.partial`` file, moved in once it reads back identical."""
-    write_checked(
-        path,
-        write=lambda partial: dataset.to_netcdf(
-            partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
-        ),
-        check=lambda partial: check_round_trip(dataset, partial, spec),
-    )
 
 
 def describe_processed_file(dataset: xr.Dataset, path: Path) -> str:
@@ -218,6 +210,40 @@ class IngestError(RuntimeError):
     """A raw or written file breaks an invariant the processed file depends on."""
 
 
+def read_raw_frame(spec: ConstraintSpec, raw_directory: Path) -> pd.DataFrame:
+    """The constraint's raw rows, as ``constraints.read_raw`` reads them.
+
+    Raises
+    ------
+    IngestError
+        If the gzip stream is truncated or corrupt, which ``read_raw`` lets
+        through as ``EOFError`` or ``zlib.error``.
+    """
+    try:
+        return read_raw(spec, raw_directory)
+    except (EOFError, zlib.error) as error:
+        raise IngestError(
+            f"{Path(raw_directory) / spec.raw_file} is a truncated or corrupt gzip file "
+            f"({error}); re-copy it and compare it with data/raw/constraints/provenance.md."
+        ) from error
+
+
+def write_processed_file(dataset: xr.Dataset, path: Path, spec: ConstraintSpec) -> None:
+    """Write through a ``.partial`` file, moved in once it reads back identical."""
+    write_checked(
+        path,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
+        ),
+        check=lambda partial: check_written_file_reads_back_identically(dataset, partial, spec),
+    )
+
+
+def _key_column_names(spec: ConstraintSpec) -> list[str]:
+    """The columns a raw row is keyed on: the site id, and any time column."""
+    return [SITE_ID, *([spec.time_column] if spec.time_column else [])]
+
+
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
@@ -225,58 +251,91 @@ def check_raw_frame_is_valid(
     spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame
 ) -> None:
     """The raw rows are fit to build the constraint's processed file from."""
-    message_name = spec.raw_file
+    check_site_ids_are_the_site_tables(frame, site_table, message_name=spec.raw_file)
+    check_coordinates_are_the_site_tables(spec, frame, site_table)
+    check_key_is_unique(frame, key=_key_column_names(spec), message_name=spec.raw_file)
+    check_observed_values_are_valid(spec, frame)
+    check_time_column_is_valid(spec, frame)
+
+
+def check_site_ids_are_the_site_tables(
+    frame: pd.DataFrame, site_table: pd.DataFrame, *, message_name: str
+) -> None:
+    """The raw file's site ids are integers, in range, and sites of the site table."""
     check_site_id_column_is_integer_valued(frame, message_name=message_name)
     check_site_ids_are_in_range(frame[SITE_ID].to_numpy(), message_name=f"{message_name}: {SITE_ID}")
     check_site_table_lists_the_sites(
         site_table, frame[SITE_ID].unique().tolist(), message_name=f"{message_name}: site(s)"
     )
+
+
+def check_coordinates_are_the_site_tables(
+    spec: ConstraintSpec, frame: pd.DataFrame, site_table: pd.DataFrame
+) -> None:
+    """Where the raw file carries lat/lon, they are finite and the site table's."""
     # The raw files that carry coordinates name them as the site table does.
-    if {LAT, LON} <= set(spec.raw_columns):
-        check_coordinates_match_site_table(frame, site_table, message_name=message_name)
-    check_key_is_unique(
-        frame, key=[SITE_ID, *([spec.time_column] if spec.time_column else [])],
-        message_name=message_name,
-    )
+    if not {LAT, LON} <= set(spec.raw_columns):
+        return
+    check_coordinates_are_finite(frame, message_name=spec.raw_file)
+    check_coordinates_match_site_table(frame, site_table, message_name=spec.raw_file)
+
+
+def check_observed_values_are_valid(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """The values, standard deviations and quality flags are fit to build from."""
     check_value_and_standard_deviation_missing_together(
         frame, value_column=spec.value_column, standard_deviation_column=spec.sd_column,
-        message_name=message_name,
+        message_name=spec.raw_file,
     )
     check_values_are_finite(
-        frame, columns=(spec.value_column, spec.sd_column), message_name=message_name
+        frame, columns=(spec.value_column, spec.sd_column), message_name=spec.raw_file
     )
     check_standard_deviation_is_not_negative(
-        frame, column=spec.sd_column, message_name=message_name
+        frame, column=spec.sd_column, message_name=spec.raw_file
     )
     if spec.quality_column is not None:
         check_quality_flag_passes_some_row(
             frame, column=spec.quality_column, passing_value=spec.quality_pass,
-            message_name=message_name,
+            message_name=spec.raw_file,
         )
     check_some_rows_are_observed(
         frame, value_column=spec.value_column, quality_column=spec.quality_column,
-        passing_value=spec.quality_pass, message_name=message_name,
+        passing_value=spec.quality_pass, message_name=spec.raw_file,
     )
-    if spec.time_column is not None:
-        check_time_column_is_complete(frame, column=spec.time_column, message_name=message_name)
-        if spec.time_structure is TimeStructure.DATED:
-            check_time_column_holds_dates(frame, column=spec.time_column, message_name=message_name)
-        else:
-            check_time_column_holds_years(frame, column=spec.time_column, message_name=message_name)
-        if spec.time_structure is TimeStructure.STATIC:
-            check_static_copies_agree(
-                frame, value_columns=(spec.value_column, spec.sd_column),
-                message_name=message_name,
-            )
+
+
+def check_time_column_is_valid(spec: ConstraintSpec, frame: pd.DataFrame) -> None:
+    """Where the constraint has a time column, it holds what its time structure says."""
+    if spec.time_column is None:
+        return
+    check_time_column_is_complete(frame, column=spec.time_column, message_name=spec.raw_file)
+    if spec.time_structure is TimeStructure.DATED:
+        check_time_column_holds_dates(frame, column=spec.time_column, message_name=spec.raw_file)
+    else:
+        check_time_column_holds_years(frame, column=spec.time_column, message_name=spec.raw_file)
+    if spec.time_structure is TimeStructure.STATIC:
+        check_static_copies_agree(
+            frame, value_columns=(spec.value_column, spec.sd_column),
+            message_name=spec.raw_file,
+        )
 
 
 def check_site_id_column_is_integer_valued(frame: pd.DataFrame, *, message_name: str) -> None:
     """The raw file's ``site_id`` column is of an integer dtype."""
     if not np.issubdtype(frame[SITE_ID].to_numpy().dtype, np.integer):
         raise IngestError(
-            f"{message_name}: {SITE_ID} is not integer-valued; the raw file's site ids "
-            "are integers, so check which file was copied."
+            f"{message_name}: {SITE_ID} is not integer-valued; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
+
+
+def check_coordinates_are_finite(frame: pd.DataFrame, *, message_name: str) -> None:
+    """Every row of a raw file carrying lat/lon has finite coordinates."""
+    for column in (LON, LAT):
+        given = frame[column].to_numpy(np.float64)
+        if not np.isfinite(given).all():
+            raise IngestError(
+                f"{message_name}: {column} is missing or not finite in "
+                f"{int((~np.isfinite(given)).sum())} rows; re-copy it and compare it with data/raw/constraints/provenance.md."
+            )
 
 
 def check_coordinates_match_site_table(
@@ -289,20 +348,13 @@ def check_coordinates_match_site_table(
     table = site_lookup(site_table).loc[frame[SITE_ID].to_numpy(), [LON, LAT]]
     for column in (LON, LAT):
         given = frame[column].to_numpy(np.float64)
-        if not np.isfinite(given).all():
-            raise IngestError(
-                f"{message_name}: {column} is missing or not finite in "
-                f"{int((~np.isfinite(given)).sum())} rows; every row carries its site's "
-                "coordinates, so check which file was copied."
-            )
         difference = np.abs(given - table[column].to_numpy())
-        if difference.max() > COORDINATE_TOLERANCE_DEGREES:
+        if difference.max() > COORDINATE_TOLERANCE:
             worst = int(np.argmax(difference))
             raise IngestError(
                 f"{message_name}: {column} disagrees with the site table by up to "
                 f"{difference[worst]:.3g} degrees (site {frame[SITE_ID].iloc[worst]}), so "
-                "the site ids do not mean what the site table means; check the file "
-                "was made for this site pool."
+                f"the site ids do not mean what the site table means; re-copy it and compare it with data/raw/constraints/provenance.md."
             )
 
 
@@ -313,7 +365,7 @@ def check_key_is_unique(frame: pd.DataFrame, *, key: list[str], message_name: st
         example = frame.loc[duplicated, key].iloc[0].tolist()
         raise IngestError(
             f"{message_name}: {int(duplicated.sum())} rows repeat a {tuple(key)} key, "
-            f"such as {example}; a raw file holds one row per key."
+            f"such as {example}; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
@@ -327,8 +379,7 @@ def check_value_and_standard_deviation_missing_together(
     if mismatched.any():
         raise IngestError(
             f"{message_name}: {int(mismatched.sum())} rows have {value_column!r} and "
-            f"{standard_deviation_column!r} missing in different places; an observation "
-            "carries both or neither, so the file has changed."
+            f"{standard_deviation_column!r} missing in different places; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
@@ -340,8 +391,8 @@ def check_values_are_finite(
         infinite = np.isinf(frame[column].to_numpy(np.float64))
         if infinite.any():
             raise IngestError(
-                f"{message_name}: {column!r} is infinite in {int(infinite.sum())} rows; "
-                "only NA may stand for a missing value, so the file has changed."
+                f"{message_name}: {column!r} is infinite in {int(infinite.sum())} rows, "
+                f"and only NA may stand for a missing value; re-copy it and compare it with data/raw/constraints/provenance.md."
             )
 
 
@@ -354,8 +405,7 @@ def check_standard_deviation_is_not_negative(
     if negative.any():
         raise IngestError(
             f"{message_name}: {int(negative.sum())} negative standard deviations, "
-            f"smallest {standard_deviations[negative].min():.6g}; a standard deviation "
-            "is never negative, so the file has changed."
+            f"smallest {standard_deviations[negative].min():.6g}; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
@@ -390,7 +440,7 @@ def check_some_rows_are_observed(
         raise IngestError(
             f"{message_name}: no row carries an observed value"
             + (" after the quality filter" if quality_column else "")
-            + "; check which file was copied."
+            + "; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
@@ -398,8 +448,7 @@ def check_time_column_is_complete(frame: pd.DataFrame, *, column: str, message_n
     """No time value is missing."""
     if frame[column].isna().any():
         raise IngestError(
-            f"{message_name}: {column!r} has missing values; every row is labeled with "
-            "its time, so the file has changed."
+            f"{message_name}: {column!r} has missing values; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
@@ -409,15 +458,13 @@ def check_time_column_holds_dates(frame: pd.DataFrame, *, column: str, message_n
         parsed = pd.to_datetime(frame[column], format="%Y-%m-%d")
     except (ValueError, TypeError) as error:
         raise IngestError(
-            f"{message_name}: {column!r} is not an ISO date column ({error}); the dated "
-            "constraints are labeled YYYY-MM-DD, so the file has changed."
+            f"{message_name}: {column!r} is not an ISO date column ({error}); re-copy it and compare it with data/raw/constraints/provenance.md."
         ) from error
     # An empty string parses to NaT without raising.
     if parsed.isna().any():
         raise IngestError(
             f"{message_name}: {column!r} has {int(parsed.isna().sum())} values that are "
-            "not dates; the dated constraints are labeled YYYY-MM-DD, so the file has "
-            "changed."
+            f"not dates; re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
@@ -442,36 +489,39 @@ def check_static_copies_agree(
         raise IngestError(
             f"{message_name}: {len(varying)} sites carry different values in different "
             f"years, {truncated(varying.index.tolist())}, but the constraint is declared "
-            "static; either the source changed or the spec's time_structure is wrong."
+            "static; correct the spec's time_structure if the source is right, or else "
+            "re-copy it and compare it with data/raw/constraints/provenance.md."
         )
 
 
-def check_round_trip(dataset: xr.Dataset, partial: Path, spec: ConstraintSpec) -> None:
+def check_written_file_reads_back_identically(
+    dataset: xr.Dataset, partial: Path, spec: ConstraintSpec
+) -> None:
     """The written file reads back through the library loader as what was built."""
     with load_constraint(spec, partial) as written:
         written = written.load()
-    check_written_file_is_identical(dataset, written, partial=partial)
-    check_time_is_encoded_in_days(written, partial=partial)
+    check_read_back_is_identical(dataset, written, message_name=str(partial))
+    check_time_is_encoded_in_days(written, message_name=str(partial))
 
 
-def check_written_file_is_identical(
-    dataset: xr.Dataset, written: xr.Dataset, *, partial: Path
+def check_read_back_is_identical(
+    dataset: xr.Dataset, read_back: xr.Dataset, *, message_name: str
 ) -> None:
     """The file read back is identical to the dataset it was written from."""
-    if not written.identical(dataset):
+    if not read_back.identical(dataset):
         raise IngestError(
-            f"{partial}: the written file does not read back identical to what was "
+            f"{message_name}: the written file does not read back identical to what was "
             "built; inspect the kept partial file."
         )
 
 
-def check_time_is_encoded_in_days(written: xr.Dataset, *, partial: Path) -> None:
+def check_time_is_encoded_in_days(written: xr.Dataset, *, message_name: str) -> None:
     """The written file's ``time`` is encoded in :data:`TIME_UNITS`."""
     # xarray silently changes the units when a label is not a whole day.
     if TIME in written.coords and written[TIME].encoding.get("units") != TIME_UNITS:
         raise IngestError(
-            f"{partial}: time was encoded as {written[TIME].encoding.get('units')!r}, not "
-            f"{TIME_UNITS!r}, so a label is not a whole day; label each record by its day."
+            f"{message_name}: time was encoded as {written[TIME].encoding.get('units')!r}, "
+            f"not {TIME_UNITS!r}, so a label is not a whole day; label each record by its day."
         )
 
 
