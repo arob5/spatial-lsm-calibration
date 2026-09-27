@@ -500,8 +500,11 @@ These apply to the library and the scripts alike.
   parameter, source, site or site-table row); `FileNotFoundError` for a
   missing file. The coercers of `validation.py` raise by this rule already,
   and so do the plotting package and `projection.py`, where an unknown key of
-  a registry (a role, a renderer, an extent, a basemap layer) is a `KeyError`
-  and an unknown option string (`show=`, `share=`, `scale=`) a `ValueError`.
+  a registry (a role, a renderer, an extent, a basemap layer) is a `KeyError`,
+  an unknown option string (`show=`, `share=`, `scale=`) a `ValueError`, and
+  a key or option that is not a string a `TypeError`; a number argument takes
+  any real scalar, a zero-dimensional NumPy, xarray or JAX array included
+  (`style.as_real_number`).
 - **Messages** start lowercase, name the invariant that broke, then `;` and
   what to do about it; name the subject through a `message_name` argument,
   passed last; and truncate a list to ten items with one helper,

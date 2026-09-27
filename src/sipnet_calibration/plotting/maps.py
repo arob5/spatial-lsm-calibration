@@ -1390,7 +1390,7 @@ def check_interval_is_in_seconds(interval: float) -> None:
     if interval > _LONGEST_INTERVAL:
         raise ValueError(
             f"interval is in seconds, and {interval!r} s between frames is more than "
-            f"{_LONGEST_INTERVAL:g}; pass interval={interval / 1e3:g} for {interval!r} ms."
+            f"{_LONGEST_INTERVAL:g} s; pass interval={interval / 1e3:g} for {interval!r} ms."
         )
 
 
