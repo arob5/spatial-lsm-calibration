@@ -311,7 +311,7 @@ def test_a_site_outside_the_pool_is_refused(tmp_path, synthetic):
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     with pytest.raises(KeyError, match=r"site\(s\) \[99\] are not in the site table"):
-        ingest.check_raw_frame(SYNTHETIC_SPEC, frame, site_table)
+        ingest.check_raw_frame_is_valid(SYNTHETIC_SPEC, frame, site_table)
 
 
 def test_an_unlabeled_site_is_refused_when_the_spec_covers_the_pool(tmp_path):
@@ -627,9 +627,9 @@ def test_the_round_trip_check_compares_against_the_library_loader(
 def _argv(raw_root, site_table_path, out_dir, *extra):
     return [
         "--site-labels", SYNTHETIC_SPEC.name,
-        "--raw-root", str(raw_root),
+        "--raw-directory", str(raw_root),
         "--site-table", str(site_table_path),
-        "--out-dir", str(out_dir),
+        "--output-directory", str(out_dir),
         *extra,
     ]
 
@@ -649,7 +649,7 @@ def real_argv(tmp_path):
 @pytest.mark.parametrize("name", SITE_LABELS_NAMES)
 def test_main_exits_zero_and_writes_the_processed_file(real_argv, name):
     out_dir = real_argv / "out"
-    code = ingest.main(["--site-labels", name, "--out-dir", str(out_dir)])
+    code = ingest.main(["--site-labels", name, "--output-directory", str(out_dir)])
     assert code == 0
     written = load_site_labels(name, site_labels_path(name, out_dir))
     assert len(written) == resolve_site_labels(name).expected_rows
@@ -657,14 +657,14 @@ def test_main_exits_zero_and_writes_the_processed_file(real_argv, name):
 
 def test_main_with_no_arguments_builds_every_site_labels_data_source(real_argv):
     out_dir = real_argv / "out"
-    assert ingest.main(["--out-dir", str(out_dir)]) == 0
+    assert ingest.main(["--output-directory", str(out_dir)]) == 0
     assert sorted(path.stem for path in out_dir.glob("*.csv")) == sorted(SITE_LABELS_NAMES)
 
 
 def test_main_honors_the_site_labels_argument(real_argv):
     """Naming one site-labels data source must not build the others."""
     out_dir = real_argv / "out"
-    code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
+    code = ingest.main(["--site-labels", "reanalysis_3pft", "--output-directory", str(out_dir)])
     assert code == 0
     assert [path.name for path in out_dir.glob("*.csv")] == ["reanalysis_3pft.csv"]
 
@@ -680,9 +680,9 @@ def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
     code = ingest.main(
         [
             "--site-labels", spec.name,
-            "--raw-root", str(raw_root),
+            "--raw-directory", str(raw_root),
             "--site-table", str(site_table_path),
-            "--out-dir", str(tmp_path / "out"),
+            "--output-directory", str(tmp_path / "out"),
         ]
     )
     assert code == 1
@@ -693,7 +693,7 @@ def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
 
 
 def test_main_describes_without_reading_data(tmp_path, capsys):
-    code = ingest.main(["--describe", "--raw-root", str(tmp_path / "absent")])
+    code = ingest.main(["--describe", "--raw-directory", str(tmp_path / "absent")])
     assert code == 0
     out = capsys.readouterr().out
     assert "reanalysis_3pft" in out and "pft_16class" in out
@@ -709,7 +709,7 @@ def test_describe_processed_file_reports_the_pool_the_right_way_round(synthetic)
     raw_root, site_table, out_dir = synthetic
     site_labels = ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
     text = ingest.describe_processed_file(
-        SYNTHETIC_SPEC, site_labels, site_table, site_labels_path(SYNTHETIC_SPEC, out_dir)
+        site_labels, site_labels_path(SYNTHETIC_SPEC, out_dir), SYNTHETIC_SPEC, site_table
     )
     assert f"{len(site_labels)} of {len(site_table)} in the pool" in text
     for label in SYNTHETIC_SPEC.labels:
@@ -722,7 +722,7 @@ def test_describe_processed_file_survives_a_class_no_site_uses(synthetic):
     spec = dataclasses.replace(SYNTHETIC_SPEC, landcover_mapping=None)
     site_labels = build_site_labels(spec, read_raw(spec, raw_root))
     site_labels = site_labels[site_labels[LABEL_COLUMN] != "grass"]
-    text = ingest.describe_processed_file(spec, site_labels, site_table, Path("x.csv"))
+    text = ingest.describe_processed_file(site_labels, Path("x.csv"), spec, site_table)
     assert "grass" in text
 
 
