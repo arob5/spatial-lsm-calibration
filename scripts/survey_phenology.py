@@ -10,23 +10,15 @@ site-years carry a leaf-on day at or after their leaf-off day. Then compare the
 measurements against the characteristics ``data/README.md`` records for this
 file, and **exit non-zero if one no longer holds**.
 
-That last part is what makes this more than a diagnostic. The README records
-measured characteristics of raw data, which is its job, but a number written
-down and nowhere else goes stale in silence. The numbers live here as
-:data:`RECORDED`, the README says what the property is and points here, and a
-re-copied or regenerated file that changed is refused rather than absorbed.
-
-This is not part of the ingest pipeline: nothing is written, nothing under
-``data/processed/`` depends on it, and no processed file is built from phenology yet.
-
 Input data
 ----------
-``--path``, default ``data/raw/phenology/leaf_phenology_8k.csv``
+``--path``, default ``data/raw/phenology/leaf_phenology_8k.csv`` under
+:func:`sipnet_calibration.conventions.data_root`
     One row per site-year with the columns of :data:`COLUMNS`. ``leafonday``
     and ``leafoffday`` are day-of-year or the literal ``NA``; the two ``_qa``
     columns are integers 0-3.
 
-``--site-table``, default ``data/processed/sites/sites.csv``
+``--site-table``, default :func:`sipnet_calibration.sites.default_sites_path`
     The site table, used only to check that the file's identifiers are the
     project's site pool and that its coordinates agree with it. Skipped with
     ``--no-site-table``, which is what the NEON companion file needs: it is
@@ -44,6 +36,15 @@ for.
 
 Notes
 -----
+**The comparison is what makes this more than a diagnostic.** The README
+records measured characteristics of raw data, which is its job, but a number
+written down and nowhere else goes stale in silence. The numbers live here as
+:data:`RECORDED`, the README says what the property is and points here, and a
+re-copied or regenerated file that changed is refused rather than absorbed.
+
+This is not part of the ingest pipeline: nothing is written under ``data/``,
+and no processed file is built from phenology yet.
+
 **The day columns invert on about one site-year in ninety, and the file is
 right to.** ``PEcAn.data.remote::extract_phenology_MODIS`` reads two MODIS bands
 that are days since 1970-01-01, guards against leaf-on falling after leaf-off on
@@ -57,10 +58,10 @@ Usage
 -----
 ::
 
-    python scripts/survey_phenology.py
-    python scripts/survey_phenology.py --path data/raw/phenology/leaf_phenology_neon.csv \\
-        --no-site-table --no-check
-    python scripts/survey_phenology.py --out phenology_survey.json
+    uv run python scripts/survey_phenology.py
+    uv run python scripts/survey_phenology.py \\
+        --path data/raw/phenology/leaf_phenology_neon.csv --no-site-table --no-check
+    uv run python scripts/survey_phenology.py --out phenology_survey.json
 """
 
 from __future__ import annotations
@@ -74,20 +75,24 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from sipnet_calibration import conventions
+from sipnet_calibration.conventions import LAT, LON, SITE_ID, data_root
 from sipnet_calibration.sites import default_sites_path, load_sites
 
+#: Each column of the file's header, in order, with the dtype it is read as.
+#: ``leafonday`` and ``leafoffday`` are floats because they hold ``NA``.
+COLUMN_DTYPES = {
+    "year": np.int64,
+    SITE_ID: np.int64,
+    LAT: np.float64,
+    LON: np.float64,
+    "leafonday": np.float64,
+    "leafoffday": np.float64,
+    "leafon_qa": np.int64,
+    "leafoff_qa": np.int64,
+}
+
 #: The file's header, in order. Any other header is a different data source.
-COLUMNS = (
-    "year",
-    "site_id",
-    "lat",
-    "lon",
-    "leafonday",
-    "leafoffday",
-    "leafon_qa",
-    "leafoff_qa",
-)
+COLUMNS = tuple(COLUMN_DTYPES)
 
 #: The two day-of-year columns, each with the quality column that grades it.
 DAY_COLUMNS = {"leafonday": "leafon_qa", "leafoffday": "leafoff_qa"}
@@ -139,22 +144,13 @@ RECORDED: dict[str, dict[str, Any]] = {
 }
 
 
-def default_data_root() -> Path:
-    """The repository's ``data/``, honoring ``$SIPNET_CALIBRATION_DATA``.
-
-    Delegates to :func:`sipnet_calibration.conventions.data_root`, which finds
-    it from the installed package rather than by counting parents from this
-    file, so moving a script does not silently retarget every path it reads.
-    """
-    return conventions.data_root()
-
-
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Survey one phenology file, report it, and compare it with :data:`RECORDED`."""
     args = parse_args(argv)
-    path = args.path or default_data_root() / "raw" / "phenology" / "leaf_phenology_8k.csv"
+    path = args.path or data_root() / "raw" / "phenology" / "leaf_phenology_8k.csv"
     try:
         frame = read_phenology(path)
         site_table = (
@@ -183,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -219,36 +216,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def read_phenology(path: Path) -> pd.DataFrame:
-    """Read a phenology CSV exactly, refusing a header that is not :data:`COLUMNS`."""
-    if not path.exists():
-        raise FileNotFoundError(f"{path} not found; see data/README.md, Leaf phenology")
+    """A phenology CSV, read exactly.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *path* does not exist.
+    ValueError
+        If the file cannot be parsed, its header is not :data:`COLUMNS`, or it
+        holds no rows.
+    """
+    check_phenology_file_exists(path)
     try:
-        return _read_checked(path)
+        frame = pd.read_csv(path, dtype=dict(COLUMN_DTYPES), index_col=False)
     except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as error:
-        if isinstance(error, ValueError) and str(error).startswith(str(path)):
-            raise
         raise ValueError(f"{path}: could not be parsed as a phenology table: {error}") from error
-
-
-def _read_checked(path: Path) -> pd.DataFrame:
-    frame = pd.read_csv(
-        path,
-        dtype={
-            "year": np.int64,
-            "site_id": np.int64,
-            "lat": np.float64,
-            "lon": np.float64,
-            "leafonday": np.float64,
-            "leafoffday": np.float64,
-            "leafon_qa": np.int64,
-            "leafoff_qa": np.int64,
-        },
-        index_col=False,
-    )
-    if tuple(frame.columns) != COLUMNS:
-        raise ValueError(f"{path}: header is {tuple(frame.columns)}, expected {COLUMNS}")
-    if frame.empty:
-        raise ValueError(f"{path}: holds no rows")
+    check_header_is_the_phenology_header(frame, path)
+    check_phenology_table_has_rows(frame, path)
     return frame
 
 
@@ -259,9 +243,9 @@ def build_report(
     report: dict[str, Any] = {
         "path": str(path),
         "rows": len(frame),
-        "sites": int(frame["site_id"].nunique()),
+        "sites": int(frame[SITE_ID].nunique()),
         "years": [int(year) for year in sorted(frame["year"].unique())],
-        "duplicate_site_years": int(frame.duplicated(["site_id", "year"]).sum()),
+        "duplicate_site_years": int(frame.duplicated([SITE_ID, "year"]).sum()),
     }
     report["complete_rectangle"] = (
         report["duplicate_site_years"] == 0
@@ -307,13 +291,13 @@ def survey_days(frame: pd.DataFrame) -> dict[str, Any]:
     """Per day column: how much is missing, its extremes and median, its coverage."""
     return {
         "missing_days": {day: int(frame[day].isna().sum()) for day in DAY_COLUMNS},
-        "median_day": {day: _or_none(frame[day].median()) for day in DAY_COLUMNS},
+        "median_day": {day: _float_or_none(frame[day].median()) for day in DAY_COLUMNS},
         "day_range": {
-            day: [_or_none(frame[day].min()), _or_none(frame[day].max())]
+            day: [_float_or_none(frame[day].min()), _float_or_none(frame[day].max())]
             for day in DAY_COLUMNS
         },
         "sites_with_any_day": {
-            day: int(frame.groupby("site_id")[day].count().gt(0).sum())
+            day: int(frame.groupby(SITE_ID)[day].count().gt(0).sum())
             for day in DAY_COLUMNS
         },
     }
@@ -331,8 +315,8 @@ def survey_inversions(frame: pd.DataFrame) -> dict[str, Any]:
     return {
         "rows_with_both_days": len(both),
         "inverted_rows": len(inverted),
-        "inverted_sites": int(inverted["site_id"].nunique()),
-        "inverted_leafoffday_median": _or_none(inverted["leafoffday"].median()),
+        "inverted_sites": int(inverted[SITE_ID].nunique()),
+        "inverted_leafoffday_median": _float_or_none(inverted["leafoffday"].median()),
     }
 
 
@@ -342,20 +326,20 @@ def survey_against_site_table(
     """Whether the file's identifiers are the project's sites, and agree on position."""
     if site_table is None:
         return {"checked": False}
-    known = set(site_table["site_id"])
-    unknown = sorted(set(frame["site_id"]) - known)
+    known = set(site_table[SITE_ID])
+    unknown = sorted(set(frame[SITE_ID]) - known)
     joined = frame.merge(
-        site_table[["site_id", "lon", "lat"]], on="site_id", how="inner", suffixes=("", "_table")
+        site_table[[SITE_ID, LON, LAT]], on=SITE_ID, how="inner", suffixes=("", "_table")
     )
     return {
         "checked": True,
         "identifiers_not_in_the_site_table": len(unknown),
         "first_unknown_identifiers": unknown[:5],
-        "sites_of_the_pool_absent": len(known - set(frame["site_id"])),
-        "max_coordinate_difference_degrees": _or_none(
+        "sites_of_the_pool_absent": len(known - set(frame[SITE_ID])),
+        "max_coordinate_difference_degrees": _float_or_none(
             max(
-                (joined["lat"] - joined["lat_table"]).abs().max(),
-                (joined["lon"] - joined["lon_table"]).abs().max(),
+                (joined[LAT] - joined[f"{LAT}_table"]).abs().max(),
+                (joined[LON] - joined[f"{LON}_table"]).abs().max(),
             )
             if not joined.empty
             else None
@@ -372,7 +356,7 @@ def format_report(report: dict[str, Any]) -> str:
         f"  sites                 : {report['sites']}",
         f"  years                 : {years[0]}-{years[-1]} ({len(years)})",
         f"  duplicate site-years  : {report['duplicate_site_years']}",
-        f"  complete rectangle    : {_yes(report['complete_rectangle'])}",
+        f"  complete rectangle    : {_yes_or_no(report['complete_rectangle'])}",
         "",
     ]
     for day, quality in DAY_COLUMNS.items():
@@ -392,29 +376,14 @@ def format_report(report: dict[str, Any]) -> str:
         ]
     lines += [
         "",
-        f"  quality 3 is exactly missing : {_yes(report['quality_three_is_exactly_missing'])}",
+        f"  quality 3 is exactly missing : {_yes_or_no(report['quality_three_is_exactly_missing'])}",
         f"  quality values outside 0-3   : {report['quality_values_outside_0_3'] or 'none'}",
         f"  rows with both days          : {report['rows_with_both_days']}",
         f"  of those, leaf-on >= leaf-off: {report['inverted_rows']} rows over "
         f"{report['inverted_sites']} sites, leaf-off day median "
         f"{report['inverted_leafoffday_median']}",
     ]
-    table = report["site_table"]
-    if table["checked"]:
-        lines += [
-            "",
-            f"  identifiers not a site       : {table['identifiers_not_in_the_site_table']}"
-            + (
-                f" (first {table['first_unknown_identifiers']})"
-                if table["first_unknown_identifiers"]
-                else ""
-            ),
-            f"  pool sites absent            : {table['sites_of_the_pool_absent']}",
-            f"  max coordinate difference    : "
-            f"{table['max_coordinate_difference_degrees']} degrees",
-        ]
-    else:
-        lines += ["", "  site table                   : not checked (--no-site-table)"]
+    lines += _format_site_table_lines(report["site_table"])
     return "\n".join(lines)
 
 
@@ -459,7 +428,7 @@ def format_comparison(failures: list[str], file_name: str) -> str:
     return "\n".join(lines)
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── supporting types and helpers ──────────────────────────────────────────────
 
 
 def _stringify_keys(value: Any) -> Any:
@@ -475,15 +444,60 @@ def _stringify_keys(value: Any) -> Any:
     return value
 
 
-def _or_none(value: Any) -> float | None:
+def _format_site_table_lines(table: dict[str, Any]) -> list[str]:
+    """The comparison with the site table, as report lines."""
+    if not table["checked"]:
+        return ["", "  site table                   : not checked (--no-site-table)"]
+    return [
+        "",
+        f"  identifiers not a site       : {table['identifiers_not_in_the_site_table']}"
+        + (
+            f" (first {table['first_unknown_identifiers']})"
+            if table["first_unknown_identifiers"]
+            else ""
+        ),
+        f"  pool sites absent            : {table['sites_of_the_pool_absent']}",
+        f"  max coordinate difference    : "
+        f"{table['max_coordinate_difference_degrees']} degrees",
+    ]
+
+
+def _float_or_none(value: Any) -> float | None:
     """A float, or ``None`` where the measurement has no value."""
     if value is None or (isinstance(value, float) and np.isnan(value)):
         return None
     return float(value)
 
 
-def _yes(value: bool) -> str:
+def _yes_or_no(value: bool) -> str:
+    """``"yes"``, or a ``"NO"`` that stands out in the report."""
     return "yes" if value else "NO"
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_phenology_file_exists(path: Path) -> None:
+    """The phenology file exists."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found; data/README.md, Leaf phenology, says where it comes from."
+        )
+
+
+def check_header_is_the_phenology_header(frame: pd.DataFrame, path: Path) -> None:
+    """The file's header is :data:`COLUMNS`, in order."""
+    if tuple(frame.columns) != COLUMNS:
+        raise ValueError(
+            f"{path}: header is {tuple(frame.columns)}, expected {COLUMNS}; a file with "
+            "another header is a different data source."
+        )
+
+
+def check_phenology_table_has_rows(frame: pd.DataFrame, path: Path) -> None:
+    """The file holds at least one row."""
+    if frame.empty:
+        raise ValueError(f"{path}: holds no rows; check which file was copied.")
 
 
 if __name__ == "__main__":

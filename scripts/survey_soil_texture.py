@@ -10,18 +10,10 @@ PEcAn formula gives for them. Then compare the measurements against the
 characteristics ``data/README.md`` records, and **exit non-zero if one no longer
 holds**.
 
-That last part is what makes this more than a diagnostic. The README records
-measured characteristics of raw data, which is its job, but a number written
-down and nowhere else goes stale in silence. The numbers live here as
-:data:`RECORDED`, the README says what the property is and points here, and a
-regenerated ensemble that changed is refused rather than absorbed.
-
-This is not part of the ingest pipeline: nothing is written, and no processed file is
-built from soil texture yet.
-
 Input data
 ----------
-``--root``, default ``data/raw/soil_texture``
+``--root``, default ``data/raw/soil_texture`` under
+:func:`sipnet_calibration.conventions.data_root`
     A directory laid out as ``<site>/Soil_params_0-<site>_<member>.nc``. Each
     file is a netCDF with a single ``depth`` dimension whose values are **layer
     bottoms in meters**, and one ``float32`` variable per soil property on it.
@@ -36,6 +28,15 @@ does not, and 2 when the root could not be read at all.
 
 Notes
 -----
+**The comparison is what makes this more than a diagnostic.** The README
+records measured characteristics of raw data, which is its job, but a number
+written down and nowhere else goes stale in silence. The numbers live here as
+:data:`RECORDED`, the README says what the property is and points here, and a
+regenerated ensemble that changed is refused rather than absorbed.
+
+This is not part of the ingest pipeline: nothing is written under ``data/``,
+and no processed file is built from soil texture yet.
+
 **Coverage and content are surveyed separately, because their costs differ by
 four orders of magnitude.** Which sites and members exist is a directory
 listing over some 770,000 files and takes seconds; opening each to read its
@@ -61,9 +62,9 @@ Usage
 -----
 ::
 
-    python scripts/survey_soil_texture.py --no-check            # a partial local copy
-    python scripts/survey_soil_texture.py --root /path/on/scc   # the real thing
-    python scripts/survey_soil_texture.py --root ... --all --out soil_survey.json
+    uv run python scripts/survey_soil_texture.py --no-check            # a partial local copy
+    uv run python scripts/survey_soil_texture.py --root /path/on/scc   # the real thing
+    uv run python scripts/survey_soil_texture.py --root ... --all --out soil_survey.json
 """
 
 from __future__ import annotations
@@ -79,7 +80,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from sipnet_calibration import conventions
+from sipnet_calibration.conventions import data_root
 from sipnet_calibration.sites import N_SITES
 
 #: File name template, with the site repeated inside it. The ``0-`` prefix is
@@ -121,22 +122,13 @@ RECORDED: dict[str, Any] = {
 }
 
 
-def default_data_root() -> Path:
-    """The repository's ``data/``, honoring ``$SIPNET_CALIBRATION_DATA``.
-
-    Delegates to :func:`sipnet_calibration.conventions.data_root`, which finds
-    it from the installed package rather than by counting parents from this
-    file, so moving a script does not silently retarget every path it reads.
-    """
-    return conventions.data_root()
-
-
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Survey the soil texture root, report it, and compare it with :data:`RECORDED`."""
     args = parse_args(argv)
-    root = args.root or default_data_root() / "raw" / "soil_texture"
+    root = args.root or data_root() / "raw" / "soil_texture"
     try:
         coverage = survey_coverage(root)
         content = survey_content(root, coverage["sites"], args.sample, args.all)
@@ -164,6 +156,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -199,43 +192,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def survey_coverage(root: Path) -> dict[str, Any]:
-    """Which sites and members exist, from directory listings alone."""
-    if not root.is_dir():
-        raise FileNotFoundError(f"{root} is not a directory; see data/README.md, Soil texture")
+    """Which sites and members exist, from directory listings alone.
 
-    sites: dict[int, list[int]] = {}
-    off_template: list[str] = []
-    for entry in sorted(root.iterdir()):
-        if not entry.is_dir():
-            off_template.append(entry.name)
-            continue
-        if not entry.name.isdecimal() or entry.name != str(int(entry.name)):
-            # isdecimal, not isdigit: the latter accepts superscripts and other
-            # non-decimal digits that int() then rejects. The round-trip catches
-            # "0027", which would otherwise collide with "27" and silently
-            # discard one directory's files.
-            off_template.append(f"{entry.name}/")
-            continue
-        site = int(entry.name)
-        members = []
-        for file in entry.iterdir():
-            match = FILE_PATTERN.match(file.name)
-            if match is None or int(match.group(1)) != site:
-                off_template.append(f"{entry.name}/{file.name}")
-                continue
-            members.append(int(match.group(2)))
-        sites[site] = sorted(members)
-
-    if not sites:
-        raise ValueError(f"{root}: holds no site directories on the template")
-
+    Raises
+    ------
+    FileNotFoundError
+        If *root* is not a directory.
+    ValueError
+        If it holds no site directory, or none of them a file on the template.
+    """
+    check_soil_root_is_a_directory(root)
+    sites, off_template = _members_by_site(root)
+    check_root_holds_site_directories(root, sites)
     counts = sorted({len(members) for members in sites.values()})
     all_members = sorted({member for members in sites.values() for member in members})
-    if not all_members:
-        raise ValueError(
-            f"{root}: {len(sites)} site directories, none holding a file on the "
-            "template. An interrupted copy looks like this."
-        )
+    check_site_directories_hold_files(root, sites, all_members)
     return {
         "sites": sites,
         "sites_with_a_directory": len(sites),
@@ -254,7 +225,7 @@ def survey_content(
     root: Path, sites: dict[int, list[int]], sample: int, every: bool
 ) -> dict[str, Any]:
     """What the files hold, over every file or an evenly spaced sample of sites."""
-    chosen = sorted(sites) if every else _evenly_spaced(sorted(sites), sample)
+    chosen = sorted(sites) if every else _evenly_spaced_subset(sorted(sites), sample)
     variables: Counter[tuple[str, ...]] = Counter()
     depth_sets: set[tuple[float, ...]] = set()
     units: dict[str, set[str]] = {}
@@ -333,7 +304,7 @@ def format_report(report: dict[str, Any]) -> str:
         f"  pool sites absent        : {report['sites_of_the_pool_absent']} of {N_SITES}",
         f"  members per site         : {report['members_per_site']}",
         f"  member range             : {report['member_range'][0]}-{report['member_range'][1]}"
-        f", contiguous {_yes(report['members_are_contiguous'])}",
+        f", contiguous {_yes_or_no(report['members_are_contiguous'])}",
         f"  files on the template    : {report['total_files']}",
         f"  file names off template  : {report['file_names_off_template']}"
         + (f" (first {report['first_off_template']})" if report["first_off_template"] else ""),
@@ -348,7 +319,7 @@ def format_report(report: dict[str, Any]) -> str:
         f"  distinct depth sets      : {[list(one) for one in report['depth_sets']]}",
         f"  unreadable files         : {report['unreadable_files']}"
         + (f" (first {report['first_unreadable']})" if report["first_unreadable"] else ""),
-        f"  depths as expected       : {_yes(report['depths_are_the_expected_profile'])}",
+        f"  depths as expected       : {_yes_or_no(report['depths_are_the_expected_profile'])}",
         f"  files missing a porosity : {report['files_with_missing_porosity']}",
     ]
     lines += _format_variable_sets(report["variable_sets"])
@@ -403,7 +374,34 @@ def format_comparison(failures: list[str]) -> str:
     return "\n".join(lines)
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── supporting types and helpers ──────────────────────────────────────────────
+
+
+def _members_by_site(root: Path) -> tuple[dict[int, list[int]], list[str]]:
+    """Site id -> its members on the template, and every entry off the template."""
+    sites: dict[int, list[int]] = {}
+    off_template: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            off_template.append(entry.name)
+            continue
+        if not entry.name.isdecimal() or entry.name != str(int(entry.name)):
+            # isdecimal, not isdigit: the latter accepts superscripts and other
+            # non-decimal digits that int() then rejects. The round-trip catches
+            # "0027", which would otherwise collide with "27" and silently
+            # discard one directory's files.
+            off_template.append(f"{entry.name}/")
+            continue
+        site = int(entry.name)
+        members = []
+        for file in entry.iterdir():
+            match = FILE_PATTERN.match(file.name)
+            if match is None or int(match.group(1)) != site:
+                off_template.append(f"{entry.name}/{file.name}")
+                continue
+            members.append(int(match.group(2)))
+        sites[site] = sorted(members)
+    return sites, off_template
 
 
 def _format_variable_sets(sets: list[dict[str, Any]]) -> list[str]:
@@ -420,15 +418,18 @@ def _format_variable_sets(sets: list[dict[str, Any]]) -> list[str]:
     return ["  variable sets:", *lines]
 
 
-def _evenly_spaced(values: list[int], count: int) -> list[int]:
+def _evenly_spaced_subset(values: list[int], count: int) -> list[int]:
     """At most *count* of *values*, evenly spaced, deterministically.
 
-    Even spacing rather than a random sample so that a rerun surveys the same
-    sites, and so that a sample of an identifier-ordered pool spans it: the
-    identifiers run north to south, so the first *n* would all be Arctic.
+    Raises
+    ------
+    ValueError
+        If *count* is negative.
     """
-    if count < 0:
-        raise ValueError(f"sample must not be negative, got {count}")
+    # Even spacing rather than a random sample so that a rerun surveys the same
+    # sites, and so that a sample of an identifier-ordered pool spans it: the
+    # identifiers run north to south, so the first n would all be Arctic.
+    check_sample_size_is_not_negative(count)
     if count == 0:
         return []
     if count >= len(values):
@@ -449,8 +450,47 @@ def _extremes(values: list[float]) -> dict[str, float] | None:
     }
 
 
-def _yes(value: bool) -> str:
+def _yes_or_no(value: bool) -> str:
+    """``"yes"``, or a ``"NO"`` that stands out in the report."""
     return "yes" if value else "NO"
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_soil_root_is_a_directory(root: Path) -> None:
+    """The soil texture root is a directory."""
+    if not root.is_dir():
+        raise FileNotFoundError(
+            f"{root} is not a directory; data/README.md, Soil texture, says where the "
+            "ensemble is."
+        )
+
+
+def check_root_holds_site_directories(root: Path, sites: dict[int, list[int]]) -> None:
+    """The soil texture root holds at least one site directory on the template."""
+    if not sites:
+        raise ValueError(
+            f"{root}: holds no site directories on the template; pass the soil texture "
+            "root with --root."
+        )
+
+
+def check_site_directories_hold_files(
+    root: Path, sites: dict[int, list[int]], members: list[int]
+) -> None:
+    """Some site directory holds a file on the template."""
+    if not members:
+        raise ValueError(
+            f"{root}: {len(sites)} site directories, none holding a file on the "
+            "template, which is what an interrupted copy looks like; copy it again."
+        )
+
+
+def check_sample_size_is_not_negative(count: int) -> None:
+    """A ``--sample`` size is not negative."""
+    if count < 0:
+        raise ValueError(f"sample must not be negative, got {count}; pass 0 or more.")
 
 
 if __name__ == "__main__":

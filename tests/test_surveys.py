@@ -1,9 +1,10 @@
-"""Tests for the two survey scripts that assert what ``data/README.md`` records.
+"""Tests for the survey scripts.
 
-These scripts are diagnostics, but they are also the mechanism that keeps the
-coverage numbers in the README from going stale: each carries a ``RECORDED``
-table, compares its measurements against it, and exits non-zero when one no
-longer holds. That makes the comparison itself worth testing, because a checker
+Two of them, the phenology and soil texture surveys, assert what
+``data/README.md`` records. They are diagnostics, but they are also the
+mechanism that keeps the coverage numbers in the README from going stale: each
+carries a ``RECORDED`` table, compares its measurements against it, and exits
+non-zero when one no longer holds. That makes the comparison itself worth testing, because a checker
 that cannot fail is worse than no checker -- it reports success over a changed
 file.
 
@@ -320,17 +321,17 @@ def test_units_disagreeing_between_files_are_all_reported(tmp_path):
 
 def test_the_sample_is_deterministic_and_bounded():
     values = list(range(1, 101))
-    assert soil._evenly_spaced(values, 5) == soil._evenly_spaced(values, 5)
-    assert len(soil._evenly_spaced(values, 5)) == 5
-    assert soil._evenly_spaced(values, 0) == []
-    assert soil._evenly_spaced(values, 500) == values
+    assert soil._evenly_spaced_subset(values, 5) == soil._evenly_spaced_subset(values, 5)
+    assert len(soil._evenly_spaced_subset(values, 5)) == 5
+    assert soil._evenly_spaced_subset(values, 0) == []
+    assert soil._evenly_spaced_subset(values, 500) == values
     with pytest.raises(ValueError, match="must not be negative"):
-        soil._evenly_spaced(values, -1)
+        soil._evenly_spaced_subset(values, -1)
 
 
 def test_the_sample_spans_the_identifier_range():
     """Identifiers run north to south, so a head-of-list sample would be Arctic."""
-    chosen = soil._evenly_spaced(list(range(1, N_SITES + 1)), 25)
+    chosen = soil._evenly_spaced_subset(list(range(1, N_SITES + 1)), 25)
     assert chosen[0] == 1
     assert chosen[-1] == N_SITES
 
@@ -409,7 +410,7 @@ def _driver_pair(root: Path, rows) -> Path:
 def test_the_driver_survey_reads_a_file_pysipnet_accepts(tmp_path):
     from test_drivers import synthetic_rows
 
-    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path, synthetic_rows()))
+    facts = drivers_survey.survey_driver_directory(_driver_pair(tmp_path, synthetic_rows()))
     assert facts.error is None and facts.n_rows == 2920
     assert facts.data_dates == ("2013-01-01", "2013-12-31")
     assert facts.constants["n_columns"] == [14.0]
@@ -421,10 +422,10 @@ def test_the_driver_survey_names_the_check_a_file_fails(tmp_path):
 
     drifting = synthetic_rows()
     drifting["time"] = np.linspace(0, 24 * 365 - 1, len(drifting)) % 24
-    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path / "a", drifting))
+    facts = drivers_survey.survey_driver_directory(_driver_pair(tmp_path / "a", drifting))
     assert facts.failed_check == "pysipnet"
 
     negative = synthetic_rows()
     negative.loc[7, "par"] = -0.01
-    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path / "b", negative))
+    facts = drivers_survey.survey_driver_directory(_driver_pair(tmp_path / "b", negative))
     assert facts.failed_check == "negative_excursions"

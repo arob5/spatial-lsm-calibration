@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """Survey the ERA5 driver files.
 
 Overview
@@ -7,14 +7,7 @@ Walk a drivers root, apply :func:`sipnet_calibration.drivers.read_driver_file`
 -- pySIPNET's reader and validation, and the loader's own value check -- to
 every file, and report what holds across the whole ensemble: whether the
 directory template covers every site and member, whether the ``(site, member)``
-set is a complete rectangle, and which files fail which check. The three files
-available locally settle the format; only the SCC can settle the coverage, and
-that is what this answers.
-
-This is a diagnostic, not an ingest: it reports what it finds and never refuses
-or rewrites anything. It is a one-off, run once where the files are and then
-discarded; the facts it establishes go into ``data/README.md``, the script does
-not.
+set is a complete rectangle, and which files fail which check.
 
 Input data
 ----------
@@ -26,10 +19,11 @@ Input data
 
 Output data
 -----------
-A report to stdout and, with ``--out``, the same content as JSON:
+A report to stdout and, with ``--out``, the same content as JSON. Nothing is
+written to ``data/``. The report holds:
 
-* the site identifiers and member indices seen, and whether every
-  ``(site, member)`` pair has a directory and a file;
+* the site ids and member indices seen, and whether every ``(site, member)``
+  pair has a directory and a file;
 * directories that do not match the template, and pairs with zero or several
   ``.clim`` files;
 * per check, the files that fail it, with the message: ``pysipnet`` for a file
@@ -41,23 +35,32 @@ A report to stdout and, with ``--out``, the same content as JSON:
 * whether every file shares one time axis;
 * any file that failed unexpectedly, with the reason.
 
+The exit status is 0 once the report is written, and 1 when the root could not
+be surveyed at all.
+
 Notes
 -----
+This is a diagnostic, not an ingest: it reports what it finds and never refuses
+or rewrites anything, and unlike the other two surveys it records no
+characteristics to check against. The three files available locally settle
+the format; only the SCC can settle the coverage, and the facts it establishes
+there go into ``data/README.md``.
+
 Runs under the project environment rather than bare Python: the whole point is
 to apply the reader's own checks, so it imports them. A file pySIPNET refuses
 is read no further, so the value statistics cover only the files it accepts.
 pySIPNET refuses the ERA5 files as generated for their drifting hour column
 (``data/README.md`` Note 15), so until they are corrected the report on them
-is the refusal alone. Parsing costs about a
-tenth of a second per file and there are 80,000, so a serial run is about two
-hours; ``--jobs`` parallelizes over files.
+is the refusal alone. Parsing costs about a tenth of a second per file and
+there are 80,000, so a serial run is about two hours; ``--jobs`` parallelizes
+over files.
 
 Usage
 -----
 ::
 
-    python scripts/survey_drivers.py --root /path/to/ERA5_2012_2024
-    python scripts/survey_drivers.py --root ... --jobs 16 --out drivers_survey.json
+    uv run python scripts/survey_drivers.py --root /path/to/ERA5_2012_2024
+    uv run python scripts/survey_drivers.py --root ... --jobs 16 --out drivers_survey.json
 """
 
 from __future__ import annotations
@@ -69,7 +72,7 @@ import re
 import sys
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -82,7 +85,12 @@ from sipnet_calibration.drivers import (
     read_driver_file,
 )
 
+#: A driver directory's name, ``ERA5_<site>_<member>``: the pattern
+#: :mod:`sipnet_calibration.drivers` matches its directories with.
 DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
+
+#: A driver file's name, ``ERA5.<member>.<start>.<end>.clim``: the pattern
+#: :mod:`sipnet_calibration.drivers` matches its files with.
 FILE_PATTERN = re.compile(r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$")
 
 #: Which check a ``read_driver_file`` message is about, by a phrase it
@@ -99,14 +107,12 @@ CHECK_PHRASES = {
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Survey every driver directory under the root and report it."""
     args = parse_args(argv)
-    if not args.root.is_dir():
-        print(f"error: {args.root} is not a directory", file=sys.stderr)
-        return 1
-
-    directories, off_template = find_driver_directories(args.root)
-    if not directories:
-        print(f"error: no ERA5_<site>_<member> directories under {args.root}", file=sys.stderr)
+    try:
+        directories, off_template = find_driver_directories(args.root)
+    except (OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
         return 1
 
     results = run_survey(directories, jobs=args.jobs)
@@ -119,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -132,8 +139,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def find_driver_directories(root: Path) -> tuple[list[Path], list[str]]:
-    """Every ``ERA5_<site>_<member>`` directory under *root*, and every
-    directory that does not match the template."""
+    """Every ``ERA5_<site>_<member>`` directory under *root*, and every other directory's name."""
+    check_root_is_a_directory(root)
     matching, off_template = [], []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
@@ -142,19 +149,21 @@ def find_driver_directories(root: Path) -> tuple[list[Path], list[str]]:
             matching.append(entry)
         else:
             off_template.append(entry.name)
+    check_root_holds_driver_directories(root, matching)
     return matching, off_template
 
 
 def run_survey(directories: list[Path], *, jobs: int) -> list[FileFacts]:
+    """The facts of every directory, surveyed in *jobs* worker processes."""
     if jobs <= 1:
-        return [survey_one_file(d) for d in directories]
+        return [survey_driver_directory(directory) for directory in directories]
     with ProcessPoolExecutor(max_workers=jobs) as pool:
-        return list(pool.map(survey_one_file, directories, chunksize=64))
+        return list(pool.map(survey_driver_directory, directories, chunksize=64))
 
 
-def survey_one_file(directory: Path) -> FileFacts:
-    """Locate and parse one pair's file, recording what passed and what failed."""
-    site, member = (int(x) for x in DIRECTORY_PATTERN.match(directory.name).groups())
+def survey_driver_directory(directory: Path) -> FileFacts:
+    """The facts of one pair's directory: its file, what passed and what failed."""
+    site, member = (int(number) for number in DIRECTORY_PATTERN.match(directory.name).groups())
     facts = FileFacts(site=site, member=member, directory=str(directory))
     matches = sorted(directory.glob(DRIVER_FILE_GLOB))
     facts.n_files = len(matches)
@@ -162,29 +171,148 @@ def survey_one_file(directory: Path) -> FileFacts:
         return facts
     path = matches[0]
     facts.file = path.name
-
-    name_match = FILE_PATTERN.match(path.name)
-    if name_match is None:
-        facts.name_problems.append("file name off the template")
-    else:
-        if int(name_match.group(1)) != member:
-            facts.name_problems.append(
-                f"file name member {name_match.group(1)} differs from directory member {member}"
-            )
-        facts.name_dates = (name_match.group(2), name_match.group(3))
+    _record_file_name_facts(facts, path.name)
 
     try:
         climate = read_driver_file(path)
         frame, axis = climate.pandas, climate.xarray
     except ValueError as error:
         facts.error = str(error)
-        facts.failed_check = classify(facts.error)
+        facts.failed_check = failed_check_named_by(facts.error)
         return facts
     except Exception as error:  # noqa: BLE001 -- a survey reports, it does not stop
         facts.error = f"{type(error).__name__}: {error}"
         facts.failed_check = "unexpected"
         return facts
+    _record_file_content_facts(facts, climate, frame, axis)
+    return facts
 
+
+def build_report(results: list[FileFacts], off_template: list[str]) -> dict[str, object]:
+    """The per-file facts aggregated into the report the module docstring describes."""
+    sites = sorted({facts.site for facts in results})
+    members = sorted({facts.member for facts in results})
+    have_file = {(facts.site, facts.member) for facts in results if facts.n_files == 1}
+    missing_pairs = [
+        (site, member) for site in sites for member in members if (site, member) not in have_file
+    ]
+
+    by_check: dict[str, list[dict[str, str]]] = defaultdict(list)
+    for facts in results:
+        if facts.error:
+            by_check[facts.failed_check or "unknown"].append(
+                {"directory": facts.directory, "message": facts.error}
+            )
+
+    parsed = [facts for facts in results if facts.n_rows is not None]
+    constants = {
+        column: sorted({value for facts in parsed for value in facts.constants.get(column, [])})
+        for column in ("n_columns", "loc", TIMESTEP_LENGTH)
+    }
+    return {
+        "n_directories": len(results),
+        "directories_off_template": off_template,
+        "sites": {
+            "n": len(sites),
+            "min": sites[0] if sites else None,
+            "max": sites[-1] if sites else None,
+            "missing_in_range": _missing_site_ids(sites),
+        },
+        "members": members,
+        "rectangle_complete": not missing_pairs,
+        "n_missing_pairs": len(missing_pairs),
+        "missing_pairs_sample": missing_pairs[:50],
+        "pairs_with_no_file": [facts.directory for facts in results if facts.n_files == 0],
+        "pairs_with_several_files": [facts.directory for facts in results if facts.n_files > 1],
+        "name_problems": [
+            {"directory": facts.directory, "problems": facts.name_problems}
+            for facts in results
+            if facts.name_problems
+        ],
+        "n_parsed": len(parsed),
+        "n_failed": sum(1 for facts in results if facts.error),
+        "failures_by_check": {
+            check: {"n": len(failures), "sample": failures[:20]}
+            for check, failures in by_check.items()
+        },
+        "distinct_name_dates": sorted({facts.name_dates for facts in results if facts.name_dates}),
+        "distinct_row_counts": sorted({facts.n_rows for facts in parsed}),
+        "distinct_grid_hashes": len({facts.grid_hash for facts in parsed}),
+        "constants_seen": constants,
+        "value_stats": _summed_value_stats(parsed),
+    }
+
+
+def print_report(report: dict[str, object]) -> None:
+    """Print the report as readable lines."""
+    sites = report["sites"]
+    print(f"directories        {report['n_directories']}  (off template: {len(report['directories_off_template'])})")
+    print(f"sites              {sites['n']} from {sites['min']} to {sites['max']}; "
+          f"{len(sites['missing_in_range'])} identifiers absent in that range")
+    print(f"members            {report['members']}")
+    print(f"rectangle complete {report['rectangle_complete']}  (missing pairs: {report['n_missing_pairs']})")
+    print(f"pairs with no file {len(report['pairs_with_no_file'])}, with several {len(report['pairs_with_several_files'])}")
+    print(f"name problems      {len(report['name_problems'])}")
+    print(f"parsed {report['n_parsed']}, failed {report['n_failed']}")
+    for check, entry in report["failures_by_check"].items():
+        print(f"  {check:24s} {entry['n']}")
+        for item in entry["sample"][:3]:
+            print(f"      {item['message'][:160]}")
+    print(f"file-name dates    {report['distinct_name_dates']}")
+    print(f"row counts         {report['distinct_row_counts']}")
+    print(f"distinct grids     {report['distinct_grid_hashes']}")
+    print(f"constants          {report['constants_seen']}")
+    for column, stats in report["value_stats"].items():
+        print(f"  {column:36s} min {stats['min']:12.5g} max {stats['max']:12.5g} "
+              f"below zero {stats['n_below_zero']:9d} not positive {stats['n_not_positive']:9d}")
+
+
+# ── supporting types and helpers ──────────────────────────────────────────────
+
+
+@dataclass
+class FileFacts:
+    """What the survey found for one ``(site, member)`` directory, filled in as it goes."""
+
+    site: int
+    member: int
+    directory: str
+    n_files: int = 0
+    file: str | None = None
+    name_dates: tuple[str, str] | None = None
+    data_dates: tuple[str, str] | None = None
+    name_problems: list[str] = field(default_factory=list)
+    error: str | None = None
+    failed_check: str | None = None
+    n_rows: int | None = None
+    grid_hash: str | None = None
+    stats: dict[str, dict[str, float | int]] = field(default_factory=dict)
+    constants: dict[str, list[float]] = field(default_factory=dict)
+
+
+def failed_check_named_by(message: str) -> str:
+    """The check a ``read_driver_file`` message is about, or ``"unknown"``."""
+    for phrase, check in CHECK_PHRASES.items():
+        if phrase in message:
+            return check
+    return "unknown"
+
+
+def _record_file_name_facts(facts: FileFacts, file_name: str) -> None:
+    """Record on *facts* the dates in *file_name* and how it departs from the template."""
+    name_match = FILE_PATTERN.match(file_name)
+    if name_match is None:
+        facts.name_problems.append("file name off the template")
+        return
+    if int(name_match.group(1)) != facts.member:
+        facts.name_problems.append(
+            f"file name member {name_match.group(1)} differs from directory member {facts.member}"
+        )
+    facts.name_dates = (name_match.group(2), name_match.group(3))
+
+
+def _record_file_content_facts(facts: FileFacts, climate, frame: pd.DataFrame, axis) -> None:
+    """Record on *facts* the rows, dates, time axis, value statistics and constants of a file."""
     facts.n_rows = len(frame)
     starts = pd.DatetimeIndex(axis[TIMESTEP_START].values)
     facts.data_dates = (str(starts[0].date()), str(starts[-1].date()))
@@ -205,122 +333,48 @@ def survey_one_file(directory: Path) -> FileFacts:
     facts.constants = {
         "n_columns": [float(climate.n_columns)],
         "loc": [float(climate.loc)],
-        TIMESTEP_LENGTH: [float(v) for v in np.unique(frame[TIMESTEP_LENGTH].to_numpy())],
+        TIMESTEP_LENGTH: [float(value) for value in np.unique(frame[TIMESTEP_LENGTH].to_numpy())],
     }
-    return facts
 
 
-def build_report(results: list[FileFacts], off_template: list[str]) -> dict[str, object]:
-    """Aggregate the per-file results into the report described above."""
-    sites = sorted({r.site for r in results})
-    members = sorted({r.member for r in results})
-    have_file = {(r.site, r.member) for r in results if r.n_files == 1}
-    missing_pairs = [(s, m) for s in sites for m in members if (s, m) not in have_file]
-
-    by_check: dict[str, list[dict[str, str]]] = defaultdict(list)
-    for r in results:
-        if r.error:
-            by_check[r.failed_check or "unknown"].append({"directory": r.directory, "message": r.error})
-
-    parsed = [r for r in results if r.n_rows is not None]
+def _summed_value_stats(parsed: list[FileFacts]) -> dict[str, dict[str, float | int]]:
+    """Per variable, the extremes and the counts summed over the files read."""
     stats: dict[str, dict[str, float | int]] = {}
     for column in DRIVER_VARIABLE_NAMES:
-        per = [r.stats[column] for r in parsed if column in r.stats]
-        if per:
+        per_file = [facts.stats[column] for facts in parsed if column in facts.stats]
+        if per_file:
             stats[column] = {
-                "min": min(p["min"] for p in per),
-                "max": max(p["max"] for p in per),
-                "n_below_zero": sum(p["n_below_zero"] for p in per),
-                "n_not_positive": sum(p["n_not_positive"] for p in per),
+                "min": min(one["min"] for one in per_file),
+                "max": max(one["max"] for one in per_file),
+                "n_below_zero": sum(one["n_below_zero"] for one in per_file),
+                "n_not_positive": sum(one["n_not_positive"] for one in per_file),
             }
-    constants = {
-        column: sorted({v for r in parsed for v in r.constants.get(column, [])})
-        for column in ("n_columns", "loc", TIMESTEP_LENGTH)
-    }
-
-    return {
-        "n_directories": len(results),
-        "directories_off_template": off_template,
-        "sites": {"n": len(sites), "min": sites[0] if sites else None, "max": sites[-1] if sites else None,
-                  "missing_in_range": _gaps(sites)},
-        "members": members,
-        "rectangle_complete": not missing_pairs,
-        "n_missing_pairs": len(missing_pairs),
-        "missing_pairs_sample": missing_pairs[:50],
-        "pairs_with_no_file": [r.directory for r in results if r.n_files == 0],
-        "pairs_with_several_files": [r.directory for r in results if r.n_files > 1],
-        "name_problems": [
-            {"directory": r.directory, "problems": r.name_problems} for r in results if r.name_problems
-        ],
-        "n_parsed": len(parsed),
-        "n_failed": sum(1 for r in results if r.error),
-        "failures_by_check": {k: {"n": len(v), "sample": v[:20]} for k, v in by_check.items()},
-        "distinct_name_dates": sorted({r.name_dates for r in results if r.name_dates}),
-        "distinct_row_counts": sorted({r.n_rows for r in parsed}),
-        "distinct_grid_hashes": len({r.grid_hash for r in parsed}),
-        "constants_seen": constants,
-        "value_stats": stats,
-    }
+    return stats
 
 
-def print_report(report: dict[str, object]) -> None:
-    sites = report["sites"]
-    print(f"directories        {report['n_directories']}  (off template: {len(report['directories_off_template'])})")
-    print(f"sites              {sites['n']} from {sites['min']} to {sites['max']}; "
-          f"{len(sites['missing_in_range'])} identifiers absent in that range")
-    print(f"members            {report['members']}")
-    print(f"rectangle complete {report['rectangle_complete']}  (missing pairs: {report['n_missing_pairs']})")
-    print(f"pairs with no file {len(report['pairs_with_no_file'])}, with several {len(report['pairs_with_several_files'])}")
-    print(f"name problems      {len(report['name_problems'])}")
-    print(f"parsed {report['n_parsed']}, failed {report['n_failed']}")
-    for check, entry in report["failures_by_check"].items():
-        print(f"  {check:24s} {entry['n']}")
-        for item in entry["sample"][:3]:
-            print(f"      {item['message'][:160]}")
-    print(f"file-name dates    {report['distinct_name_dates']}")
-    print(f"row counts         {report['distinct_row_counts']}")
-    print(f"distinct grids     {report['distinct_grid_hashes']}")
-    print(f"constants          {report['constants_seen']}")
-    for column, s in report["value_stats"].items():
-        print(f"  {column:36s} min {s['min']:12.5g} max {s['max']:12.5g} "
-              f"below zero {s['n_below_zero']:9d} not positive {s['n_not_positive']:9d}")
-
-
-# ── supporting types and helpers ──────────────────────────────────────────────
-
-
-@dataclass
-class FileFacts:
-    site: int
-    member: int
-    directory: str
-    n_files: int = 0
-    file: str | None = None
-    name_dates: tuple[str, str] | None = None
-    data_dates: tuple[str, str] | None = None
-    name_problems: list[str] = field(default_factory=list)
-    error: str | None = None
-    failed_check: str | None = None
-    n_rows: int | None = None
-    grid_hash: str | None = None
-    stats: dict[str, dict[str, float | int]] = field(default_factory=dict)
-    constants: dict[str, list[float]] = field(default_factory=dict)
-
-    def to_dict(self) -> dict[str, object]:
-        return asdict(self)
-
-
-def classify(message: str) -> str:
-    for phrase, check in CHECK_PHRASES.items():
-        if phrase in message:
-            return check
-    return "unknown"
-
-
-def _gaps(sites: list[int]) -> list[int]:
+def _missing_site_ids(sites: list[int]) -> list[int]:
+    """The site ids absent between the smallest and the largest of *sites*."""
     if not sites:
         return []
     return sorted(set(range(sites[0], sites[-1] + 1)) - set(sites))
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_root_is_a_directory(root: Path) -> None:
+    """The drivers root is a directory."""
+    if not root.is_dir():
+        raise FileNotFoundError(f"{root} is not a directory; pass the drivers root with --root.")
+
+
+def check_root_holds_driver_directories(root: Path, directories: list[Path]) -> None:
+    """The drivers root holds at least one ``ERA5_<site>_<member>`` directory."""
+    if not directories:
+        raise ValueError(
+            f"no ERA5_<site>_<member> directories under {root}; pass the drivers root "
+            "with --root."
+        )
 
 
 if __name__ == "__main__":
