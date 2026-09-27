@@ -23,8 +23,8 @@ Input data
 ----------
 ``data/processed/sites/sites.csv``
     The site table, read by :func:`load_sites`, whose layout is the
-    `Data model`_ below. :func:`default_sites_path` says where it is expected
-    to be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
+    `Data model`_ below. :func:`default_site_table_path` says where it is
+    expected to be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
     :data:`sipnet_calibration.conventions.DATA_ROOT_ENV_VAR`.
 
 The grid itself is not read from anywhere. :data:`SITE_GRID` is defined in code
@@ -89,7 +89,7 @@ Functions
     A subset of a site table, by identifier, bounding box, arbitrary predicate,
     or a number of sites drawn at random. The filters compose.
 
-:func:`default_sites_path`
+:func:`default_site_table_path`
     Where the table is expected to be.
 
 :func:`site_lookup`, :func:`site_locations`, :func:`site_coordinates`
@@ -98,11 +98,13 @@ Functions
     them; and those with the ``site`` coordinate itself.
 
 The checks
-    One invariant each, with the two groups callers use:
+    One invariant each, with the groups callers use:
     :func:`check_site_table_locates_the_sites`, the check every ``lon``/``lat``
-    lookup makes of a site table, and
+    lookup makes of a site table;
     :func:`check_site_table_is_keyed_on_site_ids`, for a table that need not
-    carry ``lon``/``lat``; and :func:`check_site_table_lists_the_sites` and
+    carry ``lon``/``lat``; :func:`check_site_table_file_is_valid`, what
+    :func:`load_sites` holds the file to; and
+    :func:`check_site_table_lists_the_sites` and
     :func:`check_sites_are_the_site_table`, which a raw data source's sites
     are checked against.
 
@@ -144,7 +146,7 @@ Read the table and select from it::
     site_table = load_sites()               # or load_sites(path)
 
     # Named sites, by identifier, in the order given.
-    named = select_sites(site_table, ids=[4102, 4113, 5584])
+    named = select_sites(site_table, site_ids=[4102, 4113, 5584])
 
     # A bounding box, as (west, south, east, north), edges included. Every
     # longitude in the pool is negative.
@@ -236,17 +238,32 @@ __all__ = [
     "SITE_COLUMN_DTYPES",
     "SITE_GRID",
     "Grid",
+    "check_coordinates_are_cell_centers",
+    "check_coordinates_are_finite",
+    "check_grid_indices_are_inside",
+    "check_grid_indices_are_whole",
+    "check_site_table_file_exists",
+    "check_site_table_file_is_valid",
     "check_site_table_has_locations",
     "check_site_table_has_site_ids",
+    "check_site_table_has_the_columns",
+    "check_site_table_holds_rows",
+    "check_site_table_integers_fit_their_dtypes",
     "check_site_table_is_a_dataframe",
+    "check_site_table_is_in_site_id_order",
     "check_site_table_is_keyed_on_site_ids",
     "check_site_table_lists_each_site_once",
     "check_site_table_lists_the_sites",
     "check_site_table_locates_the_sites",
     "check_site_table_site_ids_are_integers",
+    "check_site_table_site_ids_are_positive",
     "check_site_table_sites_are_all_listed",
     "check_sites_are_the_site_table",
-    "default_sites_path",
+    "check_where_mask_aligns_with_the_table",
+    "check_where_mask_has_no_missing_values",
+    "check_where_mask_has_one_value_per_row",
+    "check_where_mask_is_boolean",
+    "default_site_table_path",
     "load_sites",
     "select_sites",
     "site_coordinates",
@@ -342,14 +359,14 @@ class Grid:
         """
         j = np.asarray(lon_index)
         k = np.asarray(lat_index)
-        if not (np.issubdtype(j.dtype, np.integer) and np.issubdtype(k.dtype, np.integer)):
-            if np.any(j != np.floor(j)) or np.any(k != np.floor(k)):
-                raise ValueError("indices must be integers; use lonlat_to_index for coordinates")
-            j, k = j.astype(np.int64), k.astype(np.int64)
-        if np.any(j < 0) or np.any(j >= self.n_lon):
-            raise ValueError(f"lon_index outside 0..{self.n_lon - 1}")
-        if np.any(k < 0) or np.any(k >= self.n_lat):
-            raise ValueError(f"lat_index outside 0..{self.n_lat - 1}")
+        check_grid_indices_are_whole(j, k)
+        j, k = j.astype(np.int64), k.astype(np.int64)
+        check_grid_indices_are_inside(
+            j, size=self.n_lon, extent=f"0..{self.n_lon - 1}", message_name="lon_index"
+        )
+        check_grid_indices_are_inside(
+            k, size=self.n_lat, extent=f"0..{self.n_lat - 1}", message_name="lat_index"
+        )
 
         lon = self.west + (j + 0.5) / self.cells_per_degree
         lat = self.south + (k + 0.5) / self.cells_per_degree
@@ -391,28 +408,20 @@ class Grid:
         # Checked first because NaN defeats both guards below: np.rint(nan) is 0
         # on this platform, and every comparison against NaN is False, so a NaN
         # coordinate would silently resolve to a real cell.
-        non_finite = ~(np.isfinite(x) & np.isfinite(y))
-        if np.any(non_finite):
-            n = int(np.count_nonzero(non_finite))
-            raise ValueError(
-                f"{n} coordinate(s) are not finite, so they are not on the grid"
-            )
+        check_coordinates_are_finite(x, y)
         jf = (x - self.west) * self.cells_per_degree - 0.5
         kf = (y - self.south) * self.cells_per_degree - 0.5
         j = np.rint(jf).astype(np.int64)
         k = np.rint(kf).astype(np.int64)
 
-        off = np.maximum(np.abs(jf - j), np.abs(kf - k)) / self.cells_per_degree
-        if np.any(off > tol):
-            worst = float(np.max(off))
-            raise ValueError(
-                f"coordinates are not on the grid: worst departure from a cell center is "
-                f"{worst:.3g} degrees, tolerance is {tol:g}"
-            )
-        if np.any(j < 0) or np.any(j >= self.n_lon):
-            raise ValueError(f"longitude outside the grid ({self.west} to {self.east})")
-        if np.any(k < 0) or np.any(k >= self.n_lat):
-            raise ValueError(f"latitude outside the grid ({self.south} to {self.north})")
+        departure = np.maximum(np.abs(jf - j), np.abs(kf - k)) / self.cells_per_degree
+        check_coordinates_are_cell_centers(departure, tolerance=tol)
+        check_grid_indices_are_inside(
+            j, size=self.n_lon, extent=f"{self.west} to {self.east}", message_name="longitude"
+        )
+        check_grid_indices_are_inside(
+            k, size=self.n_lat, extent=f"{self.south} to {self.north}", message_name="latitude"
+        )
 
         if j.ndim == 0 and k.ndim == 0:
             return int(j), int(k)
@@ -463,9 +472,8 @@ SITE_COLUMNS = (
     "ameriflux_site_id",
 )
 
-#: Dtype per column, matching the site-table schema in the processed-format
-#: plan. ``lon_index`` genuinely needs ``int32``; the other integer columns would
-#: fit ``int16`` and are widened to match it.
+#: Dtype per column. ``lon_index`` genuinely needs ``int32``; the other integer
+#: columns would fit ``int16`` and are widened to match it.
 #:
 #: The two text columns are declared ``str`` so that nothing is inferred from
 #: their content. Note that this alone does **not** save the eight sites named
@@ -490,7 +498,7 @@ SITE_COLUMN_DTYPES = frozendict(
 )
 
 
-def default_sites_path() -> Path:
+def default_site_table_path() -> Path:
     """Where the site table is expected to be.
 
     ``$SIPNET_CALIBRATION_DATA/processed/sites/sites.csv`` when that variable is
@@ -507,7 +515,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     Parameters
     ----------
     path:
-        The CSV to read. Defaults to :func:`default_sites_path`.
+        The CSV to read. Defaults to :func:`default_site_table_path`.
 
     Returns
     -------
@@ -523,9 +531,8 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     FileNotFoundError
         If the file is absent, with the command that produces it.
     ValueError
-        If the columns are not the expected set, the file holds no rows,
-        ``site_id`` is not unique, not ascending, or below 1, or any integer
-        column holds a value outside the range of its declared dtype.
+        If the file does not follow the data model
+        (:func:`check_site_table_file_is_valid`).
 
     Notes
     -----
@@ -544,12 +551,8 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     setting makes the read correct whatever decimal representation the file
     happens to carry.
     """
-    csv_path = Path(path) if path is not None else default_sites_path()
-    if not csv_path.is_file():
-        raise FileNotFoundError(
-            f"no site table at {csv_path}; build it with "
-            "`python scripts/ingest_sites.py` from the project environment"
-        )
+    csv_path = Path(path) if path is not None else default_site_table_path()
+    check_site_table_file_exists(csv_path)
 
     # Read integers wide, then narrow after checking. Reading straight into the
     # declared widths wraps out-of-range values silently: a site_id of
@@ -565,7 +568,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
         na_values=[],
         float_precision="round_trip",
     )
-    _check_site_table(table, source=csv_path)
+    check_site_table_file_is_valid(table, message_name=f"the site table {csv_path}")
     return table[list(SITE_COLUMNS)].astype(SITE_COLUMN_DTYPES)
 
 
@@ -588,10 +591,9 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #:   and none of them wraps. No site is lost, since every site longitude is
 #:   negative, but a basemap drawn to this box omits the western Aleutians.
 #:
-#: The plotting design spec calls the middle one ``NA``. It is spelled out here
-#: under the project's convention against abbreviations, and because ``NA`` is
-#: an unhappy name in a module that has to read ``NA`` as a literal site name.
-#: Read-only, like :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
+#: ``NORTH_AMERICA`` is spelled out under the project's convention against
+#: abbreviations, and because ``NA`` is an unhappy name in a module that has to
+#: read ``NA`` as a literal site name. Read-only, like :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
 #: silently change every later figure in the process.
 EXTENTS = frozendict(
     {
@@ -605,7 +607,7 @@ EXTENTS = frozendict(
 def select_sites(
     site_table: pd.DataFrame,
     *,
-    ids: Iterable[int] | None = None,
+    site_ids: Iterable[int] | None = None,
     bbox: tuple[float, float, float, float] | None = None,
     where: Callable[[pd.DataFrame], object] | None = None,
     n_random: int | None = None,
@@ -621,7 +623,7 @@ def select_sites(
     site_table:
         A site table, from :func:`load_sites`, or one with extra columns joined
         on. Never modified.
-    ids:
+    site_ids:
         Site ids to keep, a sequence of them; every one must exist. The result
         is in the order given, unless *n_random* is also passed, which re-sorts
         by ``site_id``.
@@ -650,16 +652,17 @@ def select_sites(
     Raises
     ------
     KeyError
-        If *ids* names a site the table does not hold.
+        If *site_ids* names a site the table does not hold.
     TypeError
-        If *ids* is one id, a string, a set or a mapping, or holds a
+        If *site_ids* is one id, a string, a set or a mapping, or holds a
         boolean, a float or a value that is not a number; if *bbox* is not a
-        sequence of four numbers; or if *n_random* is a boolean or not an
-        integer.
+        sequence of four numbers; if *where* returns a mask that is not
+        boolean; or if *n_random* is a boolean or not an integer.
     ValueError
-        If *ids* holds duplicates or values that are not site ids, is a
+        If *site_ids* holds duplicates or values that are not site ids, is a
         two-dimensional array, or the table lists a site twice; if *bbox* is
-        malformed; if *where* does not return a usable mask; or if *n_random*
+        malformed; if *where* returns a mask that cannot be aligned with the
+        table, has missing values or has the wrong length; or if *n_random*
         is negative or exceeds the number of rows available.
 
     Notes
@@ -685,8 +688,8 @@ def select_sites(
     """
     selected = site_table
 
-    if ids is not None:
-        selected = _select_by_id(selected, ids)
+    if site_ids is not None:
+        selected = _rows_of_site_ids(selected, site_ids)
     if bbox is not None:
         selected = selected.loc[_bbox_mask(selected, bbox)]
     if where is not None:
@@ -813,56 +816,19 @@ def site_coordinates(
     }
 
 
-# ── helpers ───────────────────────────────────────────────────────────────────
-#
-# Private: the shape of the table and of a selection, not part of the API.
+# ── private helpers ───────────────────────────────────────────────────────────
 
 
-def _check_site_table(table: pd.DataFrame, *, source: Path) -> None:
-    """Raise unless *table* is a usable site table, naming what is wrong."""
-    found = set(table.columns)
-    expected = set(SITE_COLUMNS)
-    if found != expected:
-        missing = sorted(expected - found)
-        extra = sorted(found - expected)
-        raise ValueError(
-            f"{source} is not a site table: missing columns {missing}, "
-            f"unexpected columns {extra}"
-        )
-    site_ids = table[SITE_ID].to_numpy()
-    if site_ids.size == 0:
-        raise ValueError(f"{source} holds no rows")
-    if np.unique(site_ids).size != site_ids.size:
-        raise ValueError(f"{source} holds duplicate site_id values")
-    if np.any(np.diff(site_ids) <= 0):
-        raise ValueError(f"{source} is not in ascending site_id order")
-    if site_ids.min() < 1:
-        raise ValueError(f"{source} holds a site_id below 1")
-
-    for column, dtype in SITE_COLUMN_DTYPES.items():
-        if not np.issubdtype(np.dtype(dtype), np.integer):
-            continue
-        info = np.iinfo(dtype)
-        values = table[column].to_numpy()
-        outside = np.flatnonzero((values < info.min) | (values > info.max))
-        if outside.size:
-            index = int(outside[0])
-            raise ValueError(
-                f"{source} row {index} has {column}={values[index]}, outside the "
-                f"range of {np.dtype(dtype).name} ({info.min}..{info.max})"
-            )
-
-
-def _select_by_id(site_table: pd.DataFrame, ids: Iterable[int]) -> pd.DataFrame:
-    """Rows for *ids*, in the order given. Raises on an unknown identifier.
+def _rows_of_site_ids(site_table: pd.DataFrame, site_ids: Iterable[int]) -> pd.DataFrame:
+    """The rows of *site_ids*, in the order given. Raises on an unknown site.
 
     Selection is positional rather than ``set_index(...).loc[...]``, which would
     change ``site_id``'s dtype and move it to the first column -- so the frame
     this path returns would differ in shape from the one every other path
     returns, on a table with joined columns.
     """
-    wanted = list(as_site_ids(ids, message_name="ids"))
-    # A repeated site would make ids= return more rows than it was asked for.
+    wanted = list(as_site_ids(site_ids, message_name="site_ids"))
+    # A repeated site would make site_ids= return more rows than it asked for.
     check_site_table_lists_each_site_once(site_table)
     check_site_table_lists_the_sites(site_table, wanted)
     position = pd.Series(np.arange(len(site_table)), index=site_table[SITE_ID].to_numpy())
@@ -898,33 +864,15 @@ def _predicate_mask(
 
     if isinstance(result, pd.Series):
         if not result.index.equals(site_table.index):
-            if len(result) != len(site_table) or set(result.index) != set(site_table.index):
-                raise ValueError(
-                    "where returned a Series whose index does not match the "
-                    "table's, so it cannot be aligned; return a mask over the "
-                    "frame that was passed in"
-                )
+            check_where_mask_aligns_with_the_table(result, site_table)
             result = result.reindex(site_table.index)
         if isinstance(result.dtype, pd.BooleanDtype):
-            if result.isna().any():
-                raise ValueError(
-                    f"where returned a nullable boolean mask with "
-                    f"{int(result.isna().sum())} missing value(s); pandas cannot "
-                    "index with those. Say what a missing label means, for "
-                    'example (t["pft"] == "DBF").fillna(False)'
-                )
+            check_where_mask_has_no_missing_values(result)
             result = result.astype(bool)
 
     mask = np.asarray(result)
-    if mask.dtype != bool:
-        raise ValueError(
-            f"where must return a boolean mask, got dtype {mask.dtype}"
-        )
-    if mask.shape != (len(site_table),):
-        raise ValueError(
-            f"where returned a mask of shape {mask.shape}, expected "
-            f"{(len(site_table),)}"
-        )
+    check_where_mask_is_boolean(mask)
+    check_where_mask_has_one_value_per_row(mask, site_table)
     return mask
 
 
@@ -944,8 +892,7 @@ def _draw_n_random(
 
 
 def check_site_table_locates_the_sites(site_table: Any, site_ids: Iterable[int]) -> None:
-    """The site table, as :func:`load_sites` or :func:`site_lookup` gives it, locates
-    each of *site_ids* once."""
+    """The site table locates each of *site_ids* once."""
     check_site_table_is_keyed_on_site_ids(site_table)
     check_site_table_has_locations(site_table)
     check_site_table_lists_the_sites(site_table, site_ids)
@@ -957,6 +904,80 @@ def check_site_table_is_keyed_on_site_ids(site_table: Any) -> None:
     check_site_table_has_site_ids(site_table)
     check_site_table_site_ids_are_integers(site_table)
     check_site_table_lists_each_site_once(site_table)
+
+
+def check_site_table_file_is_valid(table: pd.DataFrame, *, message_name: str) -> None:
+    """A site table read from its file follows the data model."""
+    check_site_table_has_the_columns(table, message_name=message_name)
+    check_site_table_holds_rows(table, message_name=message_name)
+    check_site_table_lists_each_site_once(table)
+    check_site_table_is_in_site_id_order(table, message_name=message_name)
+    check_site_table_site_ids_are_positive(table, message_name=message_name)
+    check_site_table_integers_fit_their_dtypes(table, message_name=message_name)
+
+
+def check_site_table_file_exists(path: Path) -> None:
+    """The site table's file exists."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no site table at {path}; build it with `python scripts/ingest_sites.py` "
+            "from the project environment"
+        )
+
+
+def check_site_table_has_the_columns(table: pd.DataFrame, *, message_name: str) -> None:
+    """A site table read from its file has exactly :data:`SITE_COLUMNS`."""
+    found = set(table.columns)
+    expected = set(SITE_COLUMNS)
+    if found != expected:
+        raise ValueError(
+            f"{message_name} is not a site table: missing columns {sorted(expected - found)}, "
+            f"unexpected columns {sorted(found - expected)}; rebuild it with "
+            "`python scripts/ingest_sites.py`."
+        )
+
+
+def check_site_table_holds_rows(table: pd.DataFrame, *, message_name: str) -> None:
+    """A site table read from its file holds at least one site."""
+    if table.empty:
+        raise ValueError(
+            f"{message_name} holds no rows; rebuild it with `python scripts/ingest_sites.py`."
+        )
+
+
+def check_site_table_is_in_site_id_order(table: pd.DataFrame, *, message_name: str) -> None:
+    """A site table read from its file is in ascending ``site_id`` order."""
+    if np.any(np.diff(table[SITE_ID].to_numpy()) <= 0):
+        raise ValueError(
+            f"{message_name} is not in ascending {SITE_ID} order; rebuild it with "
+            "`python scripts/ingest_sites.py`, which writes it sorted."
+        )
+
+
+def check_site_table_site_ids_are_positive(table: pd.DataFrame, *, message_name: str) -> None:
+    """Every ``site_id`` of a site table read from its file is at least 1."""
+    if table[SITE_ID].min() < 1:
+        raise ValueError(
+            f"{message_name} holds a {SITE_ID} below 1; site ids are positive, so rebuild it "
+            "from the raw site table."
+        )
+
+
+def check_site_table_integers_fit_their_dtypes(table: pd.DataFrame, *, message_name: str) -> None:
+    """Every integer column of a site table read from its file fits its declared dtype."""
+    for column, dtype in SITE_COLUMN_DTYPES.items():
+        if not np.issubdtype(np.dtype(dtype), np.integer):
+            continue
+        info = np.iinfo(dtype)
+        values = table[column].to_numpy()
+        outside = np.flatnonzero((values < info.min) | (values > info.max))
+        if outside.size:
+            index = int(outside[0])
+            raise ValueError(
+                f"{message_name} row {index} has {column}={values[index]}, outside the range "
+                f"of {np.dtype(dtype).name} ({info.min}..{info.max}); narrowing it would wrap "
+                "silently, so correct the value in the source."
+            )
 
 
 def check_site_table_is_a_dataframe(site_table: Any) -> None:
@@ -1039,12 +1060,85 @@ def check_site_table_sites_are_all_listed(
 def check_sites_are_the_site_table(
     site_table: pd.DataFrame, site_ids: Iterable[int], *, message_name: str
 ) -> None:
-    """*site_ids* are exactly the sites of the site table.
-
-    The group of :func:`check_site_table_lists_the_sites` and
-    :func:`check_site_table_sites_are_all_listed`, which a whole-pool raw data
-    source's sites are checked with.
-    """
+    """*site_ids* are exactly the sites of the site table."""
     site_ids = list(site_ids)
     check_site_table_lists_the_sites(site_table, site_ids, message_name=message_name)
     check_site_table_sites_are_all_listed(site_table, site_ids, message_name=message_name)
+
+
+def check_where_mask_aligns_with_the_table(mask: pd.Series, site_table: pd.DataFrame) -> None:
+    """A ``Series`` that *where* returns is indexed like the table, so it can be aligned."""
+    if len(mask) != len(site_table) or set(mask.index) != set(site_table.index):
+        raise ValueError(
+            "where returned a Series whose index does not match the table's, so it cannot "
+            "be aligned; return a mask over the frame that was passed in."
+        )
+
+
+def check_where_mask_has_no_missing_values(mask: pd.Series) -> None:
+    """A nullable boolean mask that *where* returns has no missing value."""
+    if mask.isna().any():
+        raise ValueError(
+            f"where returned a nullable boolean mask with {int(mask.isna().sum())} missing "
+            "value(s), which pandas cannot index with; say what a missing label means, for "
+            'example (t["pft"] == "DBF").fillna(False).'
+        )
+
+
+def check_where_mask_is_boolean(mask: np.ndarray) -> None:
+    """The mask *where* returns is boolean."""
+    if mask.dtype != bool:
+        raise TypeError(
+            f"where must return a boolean mask, got dtype {mask.dtype}; return a comparison "
+            "over the table's columns."
+        )
+
+
+def check_where_mask_has_one_value_per_row(mask: np.ndarray, site_table: pd.DataFrame) -> None:
+    """The mask *where* returns has one value per row of the table."""
+    if mask.shape != (len(site_table),):
+        raise ValueError(
+            f"where returned a mask of shape {mask.shape}, expected {(len(site_table),)}; "
+            "return one value per row of the frame that was passed in."
+        )
+
+
+def check_grid_indices_are_whole(lon_index: np.ndarray, lat_index: np.ndarray) -> None:
+    """Grid indices given as floats are whole numbers."""
+    for index in (lon_index, lat_index):
+        if not np.issubdtype(index.dtype, np.integer) and np.any(index != np.floor(index)):
+            raise ValueError(
+                "grid indices must be integers, got a fractional or missing one; use "
+                "lonlat_to_index for coordinates."
+            )
+
+
+def check_grid_indices_are_inside(
+    indices: np.ndarray, *, size: int, extent: str, message_name: str
+) -> None:
+    """Every grid index along one axis is inside the grid."""
+    if np.any(indices < 0) or np.any(indices >= size):
+        raise ValueError(
+            f"{message_name} outside the grid ({extent}); pass positions of this grid's cells."
+        )
+
+
+def check_coordinates_are_finite(lon: np.ndarray, lat: np.ndarray) -> None:
+    """Every coordinate to look up on the grid is finite."""
+    non_finite = ~(np.isfinite(lon) & np.isfinite(lat))
+    if np.any(non_finite):
+        raise ValueError(
+            f"{int(np.count_nonzero(non_finite))} coordinate(s) are not finite, so they are "
+            "not on the grid; drop or fill missing coordinates first."
+        )
+
+
+def check_coordinates_are_cell_centers(departure: np.ndarray, *, tolerance: float) -> None:
+    """Every coordinate is within *tolerance* degrees of a cell center."""
+    if np.any(departure > tolerance):
+        raise ValueError(
+            f"coordinates are not on the grid: the worst departure from a cell center is "
+            f"{float(np.max(departure)):.3g} degrees, beyond the tolerance {tolerance:g}; "
+            "check the grid and the CRS, since this looks cell centers up rather than "
+            "binning points."
+        )

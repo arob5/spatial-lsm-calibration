@@ -484,7 +484,7 @@ def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
     assert conventions.data_root() == tmp_path
     assert module.default_raw_dir() == tmp_path / "raw" / "initial_conditions"
     assert constraints.default_raw_dir() == tmp_path / "raw" / "constraints"
-    assert sites.default_sites_path().is_relative_to(tmp_path)
+    assert sites.default_site_table_path().is_relative_to(tmp_path)
     assert drivers.default_drivers_root().is_relative_to(tmp_path)
 
     monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
@@ -492,7 +492,7 @@ def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
     for path in (
         module.default_raw_dir(),
         constraints.default_raw_dir(),
-        sites.default_sites_path(),
+        sites.default_site_table_path(),
         drivers.default_drivers_root(),
     ):
         assert path.is_relative_to(root), path

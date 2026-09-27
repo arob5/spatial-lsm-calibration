@@ -88,7 +88,7 @@ from sipnet_calibration.conventions import LAT, LON, SITE_ID, TIME
 from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import (
     check_site_table_lists_the_sites,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
     site_lookup,
 )
@@ -116,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
     raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
     out_dir = args.out_dir if args.out_dir is not None else default_constraints_dir()
-    site_table_path = args.site_table or default_sites_path()
+    site_table_path = args.site_table or default_site_table_path()
 
     try:
         site_table = load_sites(site_table_path)

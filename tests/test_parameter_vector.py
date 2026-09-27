@@ -1123,9 +1123,9 @@ def test_the_module_usage_session_runs_and_prints_what_it_says():
     """The module docstring's worked session, executed against the real site
     table and site labels, with its printed summary compared line for line."""
     from sipnet_calibration.site_labels import site_labels_path
-    from sipnet_calibration.sites import default_sites_path
+    from sipnet_calibration.sites import default_site_table_path
 
-    if not (default_sites_path().exists() and site_labels_path("reanalysis_3pft").exists()):
+    if not (default_site_table_path().exists() and site_labels_path("reanalysis_3pft").exists()):
         pytest.skip("processed site table or site labels not available in this working copy")
     namespace: dict = {}
 

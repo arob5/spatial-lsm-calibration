@@ -46,7 +46,7 @@ from sipnet_calibration.site_labels import (
     site_labels_field,
     site_labels_path,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import default_site_table_path, load_sites
 
 #: The tracked raw files, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "site_labels"
@@ -404,7 +404,7 @@ def test_load_site_labels_refuses_a_file_off_the_data_model(tmp_path, content, m
 @pytest.fixture(scope="session")
 def real_site_table() -> pd.DataFrame:
     try:
-        return load_sites(default_sites_path())
+        return load_sites(default_site_table_path())
     except (FileNotFoundError, ValueError) as error:
         pytest.skip(f"site table not available in this working copy: {error}")
 
@@ -641,7 +641,7 @@ def real_argv(tmp_path):
     for spec in SITE_LABELS:
         if not (default_raw_dir() / spec.raw_file).exists():
             pytest.skip("raw site labels not available in this working copy")
-    if not default_sites_path().exists():
+    if not default_site_table_path().exists():
         pytest.skip("site table not available in this working copy")
     return tmp_path
 

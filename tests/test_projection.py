@@ -52,7 +52,7 @@ from sipnet_calibration.projection import _main as projection_main
 from sipnet_calibration.sites import (
     EXTENTS,
     SITE_GRID,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
     select_sites,
 )
@@ -77,7 +77,7 @@ EXPECTED_BOUNDS_KM = {
 }
 
 needs_site_table = pytest.mark.skipif(
-    not default_sites_path().exists(),
+    not default_site_table_path().exists(),
     reason="processed/sites/sites.csv is not present; set $SIPNET_CALIBRATION_DATA",
 )
 

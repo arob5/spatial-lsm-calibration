@@ -99,7 +99,7 @@ from sipnet_calibration.initial_conditions import (
 from sipnet_calibration.io import file_md5, write_checked
 from sipnet_calibration.sites import (
     check_sites_are_the_site_table,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
 )
 from sipnet_calibration.validation import range_summary
@@ -118,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root if args.root is not None else default_source_root()
     out = args.out if args.out is not None else raw_path()
-    site_table_path = args.site_table or default_sites_path()
+    site_table_path = args.site_table or default_site_table_path()
 
     try:
         sites = discover_sites(root)

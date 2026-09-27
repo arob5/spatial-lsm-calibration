@@ -771,7 +771,7 @@ src/sipnet_calibration/
   __init__.py             # the module map and the dependency direction; no
                           # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
-                          # select_sites(ids=, bbox=, where=, n_random=, seed=),
+                          # select_sites(site_ids=, bbox=, where=, n_random=, seed=),
                           # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
                           # site_locations(), site_coordinates(), the site-table
                           # and pool checks

@@ -48,7 +48,7 @@ from sipnet_calibration.drivers import (
     read_driver_file,
 )
 from sipnet_calibration.observation.time_alignment import aggregate_time
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import default_site_table_path, load_sites
 
 #: The 14 fields of a legacy-layout row, under SIPNET's own names.
 FILE_COLUMNS = (
@@ -709,7 +709,7 @@ needs_real_files = pytest.mark.skipif(
     not real_pairs(), reason="the local driver files are not present in this checkout"
 )
 needs_site_table = pytest.mark.skipif(
-    not default_sites_path().exists(), reason="processed/sites/sites.csv is not present"
+    not default_site_table_path().exists(), reason="processed/sites/sites.csv is not present"
 )
 
 

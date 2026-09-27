@@ -45,7 +45,7 @@ from sipnet_calibration.constraints import (
     resolve_constraint,
 )
 from sipnet_calibration.conventions import CF_CONVENTIONS, data_root
-from sipnet_calibration.sites import N_SITES, default_sites_path, load_sites
+from sipnet_calibration.sites import N_SITES, default_site_table_path, load_sites
 
 #: The tracked raw files, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "constraints"
@@ -781,7 +781,7 @@ def test_constraint_fields_keeps_the_order_of_names_given(
 
 
 def _real_files_present() -> bool:
-    return default_sites_path().exists() and all(
+    return default_site_table_path().exists() and all(
         (RAW_DIR / spec.raw_file).exists() for spec in CONSTRAINTS
     )
 
