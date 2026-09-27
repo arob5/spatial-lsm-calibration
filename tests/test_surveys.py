@@ -400,16 +400,16 @@ def test_the_local_soil_texture_files_are_on_the_template_and_readable():
 
 
 def _driver_pair(root: Path, rows) -> Path:
-    from test_drivers import write_pair
+    from conftest import write_driver_pair
 
-    write_pair(root, 3, 1, rows)
+    write_driver_pair(root, 3, 1, rows)
     return root / "ERA5_3_1"
 
 
 def test_the_driver_survey_reads_a_file_pysipnet_accepts(tmp_path):
-    from test_drivers import synthetic_rows
+    from conftest import synthetic_driver_rows
 
-    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path, synthetic_rows()))
+    facts = drivers_survey.survey_one_file(_driver_pair(tmp_path, synthetic_driver_rows()))
     assert facts.error is None and facts.n_rows == 2920
     assert facts.data_dates == ("2013-01-01", "2013-12-31")
     assert facts.constants["n_columns"] == [14.0]
@@ -417,14 +417,14 @@ def test_the_driver_survey_reads_a_file_pysipnet_accepts(tmp_path):
 
 def test_the_driver_survey_names_the_check_a_file_fails(tmp_path):
     """Coupled to ``read_driver_file``'s wording, which is why it is pinned."""
-    from test_drivers import synthetic_rows
+    from conftest import synthetic_driver_rows
 
-    drifting = synthetic_rows()
+    drifting = synthetic_driver_rows()
     drifting["time"] = np.linspace(0, 24 * 365 - 1, len(drifting)) % 24
     facts = drivers_survey.survey_one_file(_driver_pair(tmp_path / "a", drifting))
     assert facts.failed_check == "pysipnet"
 
-    negative = synthetic_rows()
+    negative = synthetic_driver_rows()
     negative.loc[7, "par"] = -0.01
     facts = drivers_survey.survey_one_file(_driver_pair(tmp_path / "b", negative))
     assert facts.failed_check == "negative_excursions"
