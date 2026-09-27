@@ -62,18 +62,19 @@ from sipnet_calibration.sites import (
 # ceilings rather than as the measured values, since a slightly better number is
 # not a regression. For contrast, the ESRI:102003 Albers that the published
 # reanalysis figures used reaches 107 degrees and 9.2:1 over the same sites.
-SITE_OMEGA_CEILING_DEG = 14.0
+#: In degrees.
+SITE_ANGULAR_DEFORMATION_CEILING = 14.0
 SITE_ANISOTROPY_CEILING = 1.3
 SITE_AREA_TOLERANCE = 1e-6
 
 #: The projected bounds of each named extent, in meters, to the nearest
-#: kilometer. Literal rather than recomputed, so that a change in the extent, in
+#: 100 m. Literal rather than recomputed, so that a change in the extent, in
 #: the projection, or in the boundary sampling has to be noticed and re-blessed
 #: rather than silently agreeing with itself.
-EXPECTED_BOUNDS_KM = {
-    "CONUS": (-2564.9, -2861.6, 3436.4, 546.3),
-    "NORTH_AMERICA": (-7968.8, -4657.9, 8031.0, 4265.3),
-    "ALASKA": (-4289.3, 561.0, -1046.0, 3823.3),
+EXPECTED_BOUNDS = {
+    "CONUS": (-2564.9e3, -2861.6e3, 3436.4e3, 546.3e3),
+    "NORTH_AMERICA": (-7968.8e3, -4657.9e3, 8031.0e3, 4265.3e3),
+    "ALASKA": (-4289.3e3, 561.0e3, -1046.0e3, 3823.3e3),
 }
 
 needs_site_table = pytest.mark.skipif(
@@ -460,7 +461,7 @@ class TestSiteDomainDistortion:
     def test_angular_deformation_stays_under_the_ceiling(self):
         """No site exceeds 14 degrees, against 107 for the ESRI:102003 that the
         published reanalysis figures used."""
-        assert self._factors().angular_distortion.max() < SITE_OMEGA_CEILING_DEG
+        assert self._factors().angular_distortion.max() < SITE_ANGULAR_DEFORMATION_CEILING
 
     def test_anisotropy_stays_under_the_ceiling(self):
         """No site exceeds 1.3:1, against 9.2:1 for ESRI:102003. Load-bearing
@@ -478,31 +479,22 @@ class TestSiteDomainDistortion:
         extremes of the pool are where the ceilings are tested and a change of
         center moves both together."""
         site_table = load_sites()
-        lon = site_table["lon"].to_numpy()
-        lat = site_table["lat"].to_numpy()
-        center = math.radians(SITE_PROJECTION.lat_0)
-        distance = np.arccos(
-            np.clip(
-                math.sin(center) * np.sin(np.radians(lat))
-                + math.cos(center) * np.cos(np.radians(lat))
-                * np.cos(np.radians(lon - SITE_PROJECTION.lon_0)),
-                -1.0,
-                1.0,
-            )
+        distance = SITE_PROJECTION.angular_distance(
+            site_table["lon"].to_numpy(), site_table["lat"].to_numpy()
         )
         assert int(np.argmax(self._factors().angular_distortion)) == int(np.argmax(distance))
-        assert np.degrees(distance.max()) == pytest.approx(54.8, abs=0.1)
+        assert distance.max() == pytest.approx(54.8, abs=0.1)
 
 
 class TestProjectedBounds:
-    @pytest.mark.parametrize("name", sorted(EXPECTED_BOUNDS_KM))
+    @pytest.mark.parametrize("name", sorted(EXPECTED_BOUNDS))
     def test_bounds_of_each_named_extent(self, name):
-        """Pinned to literal kilometers, so the answer cannot drift with the
+        """Pinned to literal meters, so the answer cannot drift with the
         extent, the projection or the sampling without being re-blessed. A
         containment assertion alone would pass for an arbitrarily wide box, and
         an over-wide box is a figure whose data fills half the axes."""
-        bounds_km = tuple(v / 1000.0 for v in SITE_PROJECTION.projected_bounds(EXTENTS[name]))
-        assert bounds_km == pytest.approx(EXPECTED_BOUNDS_KM[name], abs=0.1)
+        bounds = SITE_PROJECTION.projected_bounds(EXTENTS[name])
+        assert bounds == pytest.approx(EXPECTED_BOUNDS[name], abs=100.0)
 
     def test_boundary_sampling_beats_the_four_corners(self):
         """A longitude/latitude box projects to a curved quadrilateral, so the

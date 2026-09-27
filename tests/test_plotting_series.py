@@ -15,7 +15,7 @@ import pytest
 import xarray as xr
 from matplotlib.container import ErrorbarContainer
 
-from conftest import make_field
+from conftest import error_bar_bounds, make_field
 from sipnet_calibration.plotting.primitives import nanquantile
 from sipnet_calibration.plotting.series import SHOW_OPTIONS, plot_time_series
 from sipnet_calibration.plotting.style import CURVE_COLORS, ROLES, axis_label
@@ -351,8 +351,8 @@ def test_label_by_accepts_a_non_dimension_coordinate(ax, field_sample_time):
 
 def error_bar_half_lengths(ax):
     """Half the length of every error bar drawn on *ax*."""
-    segments = ax.containers[0].lines[2][0].get_segments()
-    return np.array([(s[-1][1] - s[0][1]) / 2 for s in segments])
+    bounds = error_bar_bounds(ax.containers[0])
+    return (bounds[:, 1] - bounds[:, 0]) / 2
 
 
 def test_variance_becomes_a_standard_deviation_bar(ax, field_time):
@@ -400,7 +400,6 @@ def test_an_error_field_without_show_points_is_rejected(ax, field_time):
 
 def test_a_misaligned_error_field_is_rejected(ax, field_time):
     """An error field on a different time axis raises rather than aligning."""
-    from conftest import make_field
 
     other = make_field(("time",), n_time=field_time.sizes["time"] + 3)
     with pytest.raises(ValueError, match="not aligned"):

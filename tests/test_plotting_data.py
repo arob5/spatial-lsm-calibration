@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from conftest import error_bar_bounds
 from sipnet_calibration.plotting import (
     axis_label,
     plot_by_site,
@@ -138,8 +139,8 @@ def test_the_error_bars_are_the_square_root_of_the_real_variances(
     site = most_observed_site(means[name])
     mean, variance = means[name].sel(site=site), variances[name].sel(site=site)
     plot_time_series(mean, ax=ax, role="observation", show="points", variance=variance)
-    segments = ax.containers[0].lines[2][0].get_segments()
-    half = np.array([(s[-1][1] - s[0][1]) / 2 for s in segments])
+    bounds = error_bar_bounds(ax.containers[0])
+    half = (bounds[:, 1] - bounds[:, 0]) / 2
     observed = np.isfinite(mean.values)
     np.testing.assert_allclose(half, np.sqrt(variance.values[observed]))
 

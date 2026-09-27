@@ -19,7 +19,8 @@ dated, static or attributed to windows (:func:`dated_observed_values`,
 :func:`static_observed_values`, :func:`windowed_observed_values`), each a
 field whose sites :func:`located` gives ``lon``/``lat``, and a stand-in SIPNET
 model (:func:`scaled_niwot_model`, a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script` imports a script, and
-every figure a test makes is closed after it (:func:`close_figures`).
+every figure a test makes is closed after it (:func:`close_figures`);
+:func:`error_bar_bounds` reads the bars a plot drew.
 
 The real-data fixtures read the driver files, the site table and the
 constraints' processed files present in this working copy, found through
@@ -218,6 +219,15 @@ def field_with_gaps() -> xr.DataArray:
     values[:, 5] = np.nan
     values[0, 9] = np.nan
     return field.copy(data=values)
+
+
+# ── plotting ──────────────────────────────────────────────────────────────────
+
+
+def error_bar_bounds(container) -> np.ndarray:
+    """The lower and upper end of every bar in an ``ErrorbarContainer``, ``(n, 2)``."""
+    segments = container.lines[2][0].get_segments()
+    return np.array([(segment[0][1], segment[-1][1]) for segment in segments])
 
 
 #: The local driver files, under the data root. Through

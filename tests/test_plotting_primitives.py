@@ -15,6 +15,7 @@ from matplotlib.container import ErrorbarContainer
 from matplotlib.dates import date2num
 from matplotlib.lines import Line2D
 
+from conftest import error_bar_bounds
 from sipnet_calibration.plotting.primitives import band, fan, line, points, spaghetti
 from sipnet_calibration.plotting.style import BAND_ALPHAS
 
@@ -29,12 +30,6 @@ def x():
 def samples():
     """An ensemble of 40 curves over six points."""
     return np.random.default_rng(0).normal(size=(40, 6))
-
-
-def error_bar_bounds(container):
-    """The lower and upper end of every bar in an ``ErrorbarContainer``."""
-    segments = container.lines[2][0].get_segments()
-    return np.array([(segment[0][1], segment[-1][1]) for segment in segments])
 
 
 # ── line ──────────────────────────────────────────────────────────────────────
