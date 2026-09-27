@@ -22,8 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sipnet_calibration.conventions import data_root
-from sipnet_calibration.sites import tracked_data_root
+from sipnet_calibration.conventions import data_root, tracked_data_root
 
 __all__ = [
     "PROCESSED_FILE",
@@ -62,7 +61,7 @@ def default_raw_directory() -> Path:
     """Where the converted raw file is: ``data/raw/initial_conditions/`` of this checkout.
 
     It is tracked, so this is found from
-    :func:`~sipnet_calibration.sites.tracked_data_root` and
+    :func:`~sipnet_calibration.conventions.tracked_data_root` and
     ``$SIPNET_CALIBRATION_DATA`` does not move it.
     """
     return tracked_data_root() / "raw" / "initial_conditions"

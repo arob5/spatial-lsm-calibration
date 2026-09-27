@@ -214,13 +214,10 @@ from sipnet_calibration.conventions import (
     WINDOW_END,
     WINDOW_START,
     data_root,
-)
-from sipnet_calibration.io import utc_timestamp
-from sipnet_calibration.sites import (
-    check_site_table_lists_the_sites,
-    site_coordinates,
     tracked_data_root,
 )
+from sipnet_calibration.io import utc_timestamp
+from sipnet_calibration.sites import check_site_table_lists_the_sites, site_coordinates
 from sipnet_calibration.validation import as_names, as_site_ids, check_names_are_unique, truncated
 
 __all__ = [
@@ -463,7 +460,7 @@ def default_raw_directory() -> Path:
     """Where the raw constraint files are: ``data/raw/constraints/`` of this checkout.
 
     They are tracked, so this is found from
-    :func:`~sipnet_calibration.sites.tracked_data_root` and
+    :func:`~sipnet_calibration.conventions.tracked_data_root` and
     ``$SIPNET_CALIBRATION_DATA`` does not move it.
     """
     return tracked_data_root() / "raw" / "constraints"

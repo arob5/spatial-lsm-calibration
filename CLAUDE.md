@@ -92,8 +92,9 @@ Facts specific to this working copy, which the README deliberately does not carr
   the variable set is another tree; a tracked file is always in the checkout.
   The tests (`conftest.REPOSITORY`), the Natural Earth scripts,
   `split_site_pft_16class.py` and the library's own `default_raw_directory()`
-  resolvers for tracked directories (through `sites.tracked_data_root()`)
-  follow this.
+  resolvers for tracked directories (through
+  `conventions.tracked_data_root()`, which falls back to `data_root()` under a
+  non-editable install, where there is no checkout) follow this.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
@@ -319,7 +320,7 @@ their shared coercion lives in `validation.py`.
   and of a data source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`),
   `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
   `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
-  `data_root()`); and `read_only_copy` and `ReadOnlyCopies`, the read-only
+  `data_root()`, `tracked_data_root()`); and `read_only_copy` and `ReadOnlyCopies`, the read-only
   copies of xarray data a frozen class keeps and hands out, copied on
   assignment so nothing a caller holds is frozen. Read-only mappings are
   `frozendict`s (the `frozendict` package): a `dict` subclass, so pandas and
@@ -365,8 +366,7 @@ their shared coercion lives in `validation.py`.
   `check_site_table_locates_the_sites` and
   `check_site_table_is_keyed_on_site_ids`), the pool checks a raw data source's
   sites are held to (`check_site_table_lists_the_sites`,
-  `check_sites_are_the_site_table`), `N_SITES`, and `tracked_data_root()`,
-  the checkout's `data/` that the tracked raw directories are found from. No lookup is written as a
+  `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
   hand `set_index("site_id")`; `site_lookup` is the keyed form.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
@@ -774,8 +774,7 @@ src/sipnet_calibration/
                           # select_sites(site_ids=, bbox=, where=, n_random=, seed=),
                           # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
                           # site_locations(), site_coordinates(), the site-table
-                          # and pool checks; default_site_table_path(),
-                          # tracked_data_root()
+                          # and pool checks; default_site_table_path()
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
@@ -788,7 +787,8 @@ src/sipnet_calibration/
                           # WINDOW_START/END, TIME_BOUNDS, SITE_ID, SOURCE_INDEX;
                           # the attributes of site/lon/lat/sample and a source
                           # member; SITE_DTYPE, BATCH_LABEL_DTYPE, NAME_PATTERN;
-                          # CF_CONVENTIONS and data_root(); read_only_copy(),
+                          # CF_CONVENTIONS, data_root() and
+                          # tracked_data_root(); read_only_copy(),
                           # ReadOnlyCopies
   validation.py           # argument coercion: as_site_ids, as_site_id,
                           # as_integer, as_positive_integer, as_bounded_integer,

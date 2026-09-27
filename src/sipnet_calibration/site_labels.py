@@ -173,8 +173,9 @@ from sipnet_calibration.conventions import (
     SITE_DTYPE,
     SITE_ID,
     data_root,
+    tracked_data_root,
 )
-from sipnet_calibration.sites import N_SITES, load_sites, site_coordinates, tracked_data_root
+from sipnet_calibration.sites import N_SITES, load_sites, site_coordinates
 from sipnet_calibration.validation import (
     as_frozen_mapping,
     as_positive_integer,
@@ -337,7 +338,7 @@ def default_raw_directory() -> Path:
     """Where the raw site-labels files are: ``data/raw/site_labels/`` of this checkout.
 
     They are tracked, so this is found from
-    :func:`~sipnet_calibration.sites.tracked_data_root` and
+    :func:`~sipnet_calibration.conventions.tracked_data_root` and
     ``$SIPNET_CALIBRATION_DATA`` does not move it.
     """
     return tracked_data_root() / "raw" / "site_labels"

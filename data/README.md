@@ -146,9 +146,11 @@ files, phenology and soil texture files, lives on storage and is symlinked.
 A tracked input is therefore always in the checkout, and the library finds it
 there: the `default_raw_directory()` of `sipnet_calibration.constraints`,
 `sipnet_calibration.site_labels` and `sipnet_calibration.initial_conditions`
-resolve from `sipnet_calibration.sites.tracked_data_root()`, which
+resolve from `sipnet_calibration.conventions.tracked_data_root()`, which
 `$SIPNET_CALIBRATION_DATA` does not move. That variable moves the storage-backed
-part of `raw/` and `processed/` together.
+part of `raw/` and `processed/` together. Under a non-editable install there is
+no checkout beside the package, and the tracked inputs are found under the
+variable too.
 
 ---
 

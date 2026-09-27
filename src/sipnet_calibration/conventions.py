@@ -36,7 +36,8 @@ Dtypes and patterns
 Settings
     :data:`CF_CONVENTIONS`, the ``Conventions`` attribute the netCDF files
     declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where the
-    storage-backed part of ``data/`` is.
+    storage-backed part of ``data/`` is; :func:`tracked_data_root`, where the
+    tracked raw inputs are.
 Read-only containers
     :func:`read_only_copy`, a copy of a ``DataArray`` or ``Dataset`` whose
     arrays cannot be written; and :class:`ReadOnlyCopies`, a dataclass
@@ -107,6 +108,7 @@ __all__ = [
     "Y",
     "data_root",
     "read_only_copy",
+    "tracked_data_root",
 ]
 
 
@@ -409,3 +411,15 @@ def data_root() -> Path:
     """
     root = os.environ.get(DATA_ROOT_ENV_VAR)
     return Path(root) if root else _PACKAGE_DIRECTORY.parents[1] / "data"
+
+
+def tracked_data_root() -> Path:
+    """``data/`` of this checkout, where the tracked raw inputs are.
+
+    It ignores ``$SIPNET_CALIBRATION_DATA``, which moves the storage-backed
+    part of ``data/``, since a tracked file is always in the checkout. Under a
+    non-editable install there is no checkout beside the package, and it is
+    :func:`data_root` instead.
+    """
+    checkout = _PACKAGE_DIRECTORY.parents[1] / "data"
+    return checkout if checkout.is_dir() else data_root()
