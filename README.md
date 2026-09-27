@@ -222,7 +222,7 @@ src/sipnet_calibration/
                           # time-alignment verbs
   forward.py              # ForwardModel: theta -> predictions through PyEns
   compute.py              # the SCC backend preset
-  plotting/               # style, registry, primitives, series, maps, facet, diagnostics
+  plotting/               # style, primitives, series, maps, basemap, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
 data/raw/                 # inputs, never edited; raw/sites/, raw/constraints/,

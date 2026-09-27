@@ -14,7 +14,6 @@ rather than in terms of matplotlib.
 :mod:`facet`        grids of panels, and the figure around them
 :mod:`diagnostics`  inference diagnostics (not implemented)
 :mod:`style`        roles, colors and matplotlib settings
-:mod:`registry`     per-variable display metadata (not implemented)
 ==================  ==================================================
 
 Every plotting function draws onto an ``Axes`` it is given and returns it.

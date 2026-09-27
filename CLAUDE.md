@@ -398,9 +398,8 @@ Raw variable names are not ours to choose; processed ones are.
 - Renaming is safe only where a record carries its own identity. Where the
   source pairs values *positionally*, the positional read stays in source names
   and the rename happens after the data is self-describing.
-- **The `VARIABLES` registry is keyed on processed names**, so a field's
-  `name` is a processed name. `validate_field()` reads neither the name nor
-  the registry.
+- A field's `name` is a processed name. `validate_field()` does not read
+  it.
 
 ### Naming in code
 
@@ -449,8 +448,8 @@ the ones most often broken.
   returns a value (below).
 - **Constants are documented with `#:` comments** above them, and **every
   module has `__all__`** listing its public API (the package's own is empty;
-  the docstring-only `plotting/registry.py` and `plotting/diagnostics.py`
-  stubs are the exceptions, until PR 5e).
+  the docstring-only `plotting/diagnostics.py` stub is the exception, until
+  it is written).
 - **No abbreviations** beyond the universal ones, as above:
   `constraint_standard_deviations`, not `constraint_sds`. Names that are
   pandas', xarray's or pySIPNET's own (`how`, `freq`, `coords`, `dims`) stay,
@@ -863,7 +862,6 @@ src/sipnet_calibration/
   plotting/
     __init__.py           # curated exports
     style.py              # ROLES, rcParams
-    registry.py           # VARIABLES
     primitives.py         # L1: (ax, plain numpy, **style) -> artist
     series.py             # L2 time series panels
     maps.py               # L2 plot_map (points/cells/triangles renderers,
@@ -1029,9 +1027,10 @@ plotting code. The load-bearing rules:
   (that is an adapter's job).
 - **Anything that knows an experiment/task name belongs in
   `experiments/<task>/plots.py`, not the library.**
-- Style comes from the `VARIABLES` registry and `ROLES` palette, not per-call
-  keywords. `center=0.0` for signed fluxes such as NEE is correctness, not
-  cosmetics.
+- Style comes from the `ROLES` palette, not per-call keywords. There is no
+  per-variable registry; one is added when a figure needs it. `center=0.0`
+  for signed fluxes such as NEE is correctness, not cosmetics, and the caller
+  asks for it.
 - **Maps never interpolate unless asked.** Site values go through a
   `SiteRenderer`: `Points` (the default) and `Cells` (nearest site within a
   fixed radius, blank beyond it) draw only sites' own values, so a sparse set
