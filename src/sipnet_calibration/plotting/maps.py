@@ -55,9 +55,9 @@ How sites are drawn
 ==================  =============================================================
 :class:`Points`     one marker per site. The default.
 :class:`Cells`      each pixel takes its nearest site's value, if that site is
-                    within ``radius_km``; otherwise it is left blank.
+                    within ``radius``; otherwise it is left blank.
 :class:`Triangles`  linear interpolation over the Delaunay triangulation,
-                    omitting triangles with an edge over ``max_edge_km``.
+                    omitting triangles with an edge over ``max_edge``.
                     Continuous fields only.
 ==================  =============================================================
 
@@ -242,26 +242,26 @@ class Points:
 
 @dataclass(frozen=True)
 class Cells:
-    """Each pixel takes the value of its nearest site within ``radius_km``.
+    """Each pixel takes the value of its nearest site within ``radius``.
 
     Parameters
     ----------
-    radius_km:
-        The farthest a colored pixel may be from its site, in kilometers
-        measured in the projection. The projection's anisotropy stays under 1.3
+    radius:
+        The farthest a colored pixel may be from its site, in meters measured
+        in the projection. The projection's anisotropy stays under 1.3
         over the site pool (``tests/test_projection.py``), so this is within
         that factor of ground distance.
     pixels:
         Pixels across the frame.
     """
 
-    radius_km: float = 50.0
+    radius: float = 50e3
     pixels: int = 800
     interpolates = False
 
     def draw(self, ax, x, y, values, *, bounds, **style):
         return primitives.site_cells(
-            ax, x, y, values, radius=self.radius_km * 1e3, bounds=tuple(bounds),
+            ax, x, y, values, radius=self.radius, bounds=tuple(bounds),
             pixels=self.pixels, **style,
         )
 
@@ -276,21 +276,21 @@ class Triangles:
 
     Parameters
     ----------
-    max_edge_km:
-        Triangles with an edge longer than this, in projected kilometers, are
-        not drawn, so no fill spans a wider gap between sites.
+    max_edge:
+        Triangles with an edge longer than this, in projected meters, are not
+        drawn, so no fill spans a wider gap between sites.
     shading:
         ``"gouraud"`` interpolates linearly; ``"flat"`` colors each triangle by
         the mean of its corners.
     """
 
-    max_edge_km: float = 150.0
+    max_edge: float = 150e3
     shading: str = "gouraud"
     interpolates = True
 
     def draw(self, ax, x, y, values, *, bounds, **style):
         artist = primitives.site_triangles(
-            ax, x, y, values, max_edge=self.max_edge_km * 1e3, shading=self.shading, **style
+            ax, x, y, values, max_edge=self.max_edge, shading=self.shading, **style
         )
         artist._redraw = functools.partial(self.draw, ax, x, y, bounds=bounds, **style)
         return artist
@@ -377,7 +377,7 @@ def plot_map(
     render:
         How to draw a site field: ``"points"`` (the default when ``None``),
         ``"cells"``, ``"triangles"``, or any :class:`SiteRenderer`, such as
-        ``Cells(radius_km=25)``. Must be ``None`` for a raster.
+        ``Cells(radius=25e3)``. Must be ``None`` for a raster.
     extent:
         The frame: ``None`` fits it to what is drawn; a key of
         :data:`~sipnet_calibration.sites.EXTENTS`; a ``(west, south, east,
@@ -511,7 +511,7 @@ def animate_map(
     dim: str = TIME,
     *,
     ax: Axes,
-    interval_ms: int = 250,
+    interval: float = 0.25,
     **map_kwargs: Any,
 ) -> FuncAnimation:
     """Play *field* through *dim*, one map per step, on one color scale.
@@ -525,8 +525,8 @@ def animate_map(
         The dimension to play through.
     ax:
         The axes to draw on, whose figure the animation plays in.
-    interval_ms:
-        Milliseconds between frames.
+    interval:
+        Seconds between frames.
     **map_kwargs:
         Passed to :func:`plot_map`. The color keywords are resolved once, over
         every frame, and ``extent=None`` fits the frame to all of them.
@@ -580,7 +580,7 @@ def animate_map(
         ax.set_title(labels[position])
         return (state["artist"],)
 
-    return FuncAnimation(ax.figure, show, frames=len(frames), interval=interval_ms, blit=False)
+    return FuncAnimation(ax.figure, show, frames=len(frames), interval=interval * 1e3, blit=False)
 
 
 def map_bounds(

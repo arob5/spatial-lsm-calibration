@@ -188,7 +188,7 @@ def test_points_are_the_default_and_draw_every_site_with_a_value(ax, dense):
 
 
 def test_render_chooses_cells_and_a_renderer_instance_carries_its_settings(ax, dense):
-    plot_map(dense, ax, render=Cells(radius_km=20.0, pixels=300))
+    plot_map(dense, ax, render=Cells(radius=20e3, pixels=300))
     image = data_artist(ax)
     assert isinstance(image, AxesImage) and image.site_index.shape[1] == 300
 
@@ -231,7 +231,7 @@ def test_triangles_refuse_a_categorical_field(ax, categorical):
 
 
 def test_triangles_draw_a_continuous_field(ax, dense):
-    plot_map(dense, ax, render=Triangles(max_edge_km=300.0))
+    plot_map(dense, ax, render=Triangles(max_edge=300e3))
     assert data_artist(ax).get_array() is not None
 
 
