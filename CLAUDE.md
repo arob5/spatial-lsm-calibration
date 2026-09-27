@@ -474,8 +474,15 @@ vault lists what changes in which.
 - Data processing scripts follow the section order
   `entry point` -> `the steps, in the order main calls them` ->
   `supporting types and helpers` -> `checks`, with `# ── ... ──` section
-  comments. `scripts/ingest_sites.py` and `scripts/ingest_constraints.py` are
-  the worked examples.
+  comments, and their module constants above the entry point. A script's own
+  error is one class, `IngestError(RuntimeError)`, in the supporting types;
+  `main` reports it, and the `OSError`, `ValueError`, `LookupError` and
+  `TypeError` the library's checks raise, as `error: <message>` and exits 1.
+  Their flags name what they take: `--raw-directory` or `--raw-file`,
+  `--output` or `--output-directory`, `--site-table`. The survey scripts, which
+  write nothing under `data/`, keep the flags and exit codes their docstrings
+  give. `scripts/ingest_sites.py` and `scripts/ingest_constraints.py` are the
+  worked examples.
 - Keep functions short enough that the top-level one reads as a summary of the
   work. If it stops reading that way, pull a step out as a helper. Roughly 40
   lines is where to start looking for the seam, not a hard limit.
@@ -745,8 +752,9 @@ published Linux SIPNET binary is built against a newer glibc than the SCC
 provides; `pysipnet info` reports the reason it refused the prebuilt, and
 `gcc`, `make` and `git` on a login node are all the compile needs. The binary
 then lives under `$PYSIPNET_CACHE_DIR`, and any environment exporting that
-variable finds it. A `qsub` script has to export all three itself, and
-`#$ -P dietzelab` with `#$ -l buyin` is the queue. For PyEns jobs,
+variable finds it. A `qsub` script has to export the two cache variables
+itself, leaving `TMPDIR` to Grid Engine, which gives a job node-local scratch,
+and `#$ -P dietzelab` with `#$ -l buyin` is the queue. For PyEns jobs,
 `compute.scc_backend` writes those directives and a `-v` exporting the
 cache, binary and data variables; its module docstring says why `TMPDIR` is
 left to Grid Engine.
