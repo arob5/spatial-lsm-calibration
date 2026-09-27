@@ -200,7 +200,7 @@ def check_initial_condition_name_is_a_processed_name(spec: InitialConditionSpec)
 
 
 def check_initial_condition_spec_is_described(spec: InitialConditionSpec) -> None:
-    """An initial condition spec has a description, a long label and an upstream product."""
+    """An initial condition spec has a description, long label and upstream product."""
     if not spec.description or not spec.long_label or not spec.upstream_product:
         raise ValueError(
             f"initial condition {spec.name!r} needs a description, long_label and "
@@ -241,8 +241,7 @@ def check_initial_condition_sipnet_parameter_exists(spec: InitialConditionSpec) 
 
 # ── the registry ──────────────────────────────────────────────────────────────
 #
-# Last in the module, since building a spec runs its checks, which Python must
-# have defined first.
+# Last in the module, since building a spec runs the checks above.
 
 #: Every initial condition, one spec per variable of the source files, in the
 #: order of ``SOURCE.names``.

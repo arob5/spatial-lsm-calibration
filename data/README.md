@@ -123,9 +123,9 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with five exceptions: three small
-primary sources and two derived inputs, none of them a pipeline output and all
-of them inputs the repository cannot do without. `raw/sites/` holds the site
+directory is tracked in version control, with the exceptions below: six
+directories under `raw/` and one file beside it, none of them a pipeline
+output. `raw/sites/` holds the site
 shapefile, without which the repository carries no site information at all;
 `site_id_map.csv` is tracked for the same reason. `raw/constraints/` holds the
 five per-variable constraint files, which are tracked because the upstream

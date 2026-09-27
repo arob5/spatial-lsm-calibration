@@ -60,10 +60,7 @@ ensemble, a batch dim), ``site``, ``time``, and ``bounds`` for
 
 **Data variables**, all ``float64`` on ``(driver_member, site, time)``: the
 eight value columns of the climate file, under pySIPNET's registry names,
-listed in :data:`DRIVER_VARIABLE_NAMES` -- ``air_temperature``, ``soil_temperature``,
-``photosynthetically_active_radiation``, ``precipitation``,
-``vapor_pressure_deficit``, ``soil_vapor_pressure_deficit``,
-``vapor_pressure`` and ``wind_speed``. Each carries the attributes pySIPNET
+listed in :data:`DRIVER_VARIABLE_NAMES`. Each carries the attributes pySIPNET
 gives it -- ``units``, ``long_name``, ``description``, ``kind``,
 ``time_reference``, ``cell_methods`` and the rest -- plus
 ``units_provenance``: the units are the ones the SIPNET format documents, not
@@ -195,9 +192,9 @@ Usage
 Name the sites, get the canonical form::
 
     from sipnet_calibration.drivers import driver_fields, load_drivers
-    from sipnet_calibration.sites import load_sites, select_sites
+    from sipnet_calibration.sites import EXTENTS, load_sites, select_sites
 
-    site_table = select_sites(load_sites(), bbox=(-125, 24, -66, 50), n_random=20, seed=0)
+    site_table = select_sites(load_sites(), bbox=EXTENTS["CONUS"], n_random=20, seed=0)
     drivers = load_drivers(site_table["site_id"])     # every member present
 
     drivers["air_temperature"].dims   # ('driver_member', 'site', 'time')
@@ -322,115 +319,6 @@ DRIVER_FILE_PATTERN = re.compile(
 NEGATIVE_TOLERANCE = 1e-4
 
 
-def default_drivers_root() -> Path:
-    """Where the raw driver directory is expected to be.
-
-    ``$SIPNET_CALIBRATION_DATA/raw/drivers`` when that variable is set, and
-    otherwise ``data/raw/drivers`` under this checkout. Experiments name their
-    paths in ``config.py``.
-    """
-    return data_root() / "raw" / "drivers"
-
-
-def driver_file(root: Path | str, site: int, source_index: int) -> Path:
-    """The ``.clim`` file for one site and one member's source index.
-
-    Parameters
-    ----------
-    root:
-        The drivers root, laid out as :data:`DRIVER_DIRECTORY_TEMPLATE`.
-    site:
-        The site id.
-    source_index:
-        The member's 1-based index in the directory name.
-
-    Returns
-    -------
-    pathlib.Path
-        The single file matching :data:`DRIVER_FILE_GLOB` in the pair's
-        directory.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the directory, or a file matching the glob inside it, is absent.
-    ValueError
-        If more than one file matches, since the layout promises exactly one.
-    """
-    name = DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member=int(source_index))
-    directory = Path(root) / name
-    check_driver_directory_exists(directory, site=site, source_index=source_index)
-    matches = sorted(directory.glob(DRIVER_FILE_GLOB))
-    check_driver_directory_holds_one_file(directory, matches)
-    return matches[0]
-
-
-def available_source_indices(root: Path | str, site: int) -> tuple[int, ...]:
-    """The source indices of the members that have a directory for *site*.
-
-    Parameters
-    ----------
-    root:
-        The drivers root.
-    site:
-        The site id.
-
-    Returns
-    -------
-    tuple of int
-        1-based source indices in ascending order, possibly empty. Only the
-        directory's existence is consulted; whether the file inside it is
-        present and well formed is :func:`driver_file` and
-        :func:`read_driver_file`'s business. A directory whose name is not
-        exactly the template for its numbers, ``ERA5_3_01`` say, is ignored,
-        since :func:`driver_file` could not find it either.
-    """
-    root = Path(root)
-    source_indices = []
-    pattern = DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member="*")
-    for directory in root.glob(pattern):
-        parsed = _site_and_source_index_of_directory(directory.name)
-        if parsed is None or not directory.is_dir():
-            continue
-        canonical = DRIVER_DIRECTORY_TEMPLATE.format(site=parsed[0], member=parsed[1])
-        if parsed[0] == int(site) and directory.name == canonical:
-            source_indices.append(parsed[1])
-    return tuple(sorted(source_indices))
-
-
-def read_driver_file(path: Path | str, *, time_zone: str | None = None) -> ClimateDrivers:
-    """Read one ``.clim`` file through pySIPNET and check its values.
-
-    Parameters
-    ----------
-    path:
-        The file to read.
-    time_zone:
-        The clock the file's labels are on, ``"UTC"`` or a fixed offset such
-        as ``"UTC-07:00"``, passed to pySIPNET. ``None`` leaves it undeclared.
-
-    Returns
-    -------
-    pysipnet.climate.ClimateDrivers
-        The file, read and validated by pySIPNET.
-
-    Raises
-    ------
-    ValueError
-        If pySIPNET refuses the file, with pySIPNET's reason; or if
-        photosynthetically active radiation or precipitation falls further
-        below zero than :data:`NEGATIVE_TOLERANCE`. The message names the file.
-    OSError
-        If the file cannot be opened, as pySIPNET raises it:
-        ``FileNotFoundError`` for a missing file or a dangling link, among
-        others.
-    """
-    path = Path(path)
-    climate = _climate_drivers_of_file(path, time_zone=time_zone)
-    check_radiation_and_precipitation_are_not_below_zero(climate.pandas, message_name=str(path))
-    return climate
-
-
 def load_drivers(
     sites: Iterable[int],
     *,
@@ -481,19 +369,15 @@ def load_drivers(
     Raises
     ------
     FileNotFoundError
-        If the root is not a directory, no requested pair has a file, or a
-        requested pair has none and *allow_missing* is ``False``.
+        If the root, or a requested pair's file where *allow_missing* is
+        ``False``, is absent.
     TypeError
-        If *sites* or *source_indices* is not a sequence of integers, as
-        :mod:`sipnet_calibration.validation` defines one, or *site_table* is
-        not a ``DataFrame`` keyed on integer site ids.
+        If *sites*, *source_indices* or *site_table* has the wrong type.
     KeyError
         If a site is not in the site table.
     ValueError
-        If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if
-        *sites* or *source_indices* is empty or refused by the coercers of
-        :mod:`sipnet_calibration.validation`; or if a directory or a file
-        fails a check of this module.
+        If an argument has a wrong value, or a directory or a file fails a
+        check of this module.
     """
     root = Path(root) if root is not None else default_drivers_root()
     check_drivers_root_is_a_directory(root)
@@ -567,6 +451,115 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
     return fields
 
 
+def read_driver_file(path: Path | str, *, time_zone: str | None = None) -> ClimateDrivers:
+    """Read one ``.clim`` file through pySIPNET and check its values.
+
+    Parameters
+    ----------
+    path:
+        The file to read.
+    time_zone:
+        The clock the file's labels are on, ``"UTC"`` or a fixed offset such
+        as ``"UTC-07:00"``, passed to pySIPNET. ``None`` leaves it undeclared.
+
+    Returns
+    -------
+    pysipnet.climate.ClimateDrivers
+        The file, read and validated by pySIPNET.
+
+    Raises
+    ------
+    ValueError
+        If pySIPNET refuses the file, with pySIPNET's reason; or if
+        photosynthetically active radiation or precipitation falls further
+        below zero than :data:`NEGATIVE_TOLERANCE`. The message names the file.
+    OSError
+        If the file cannot be opened, as pySIPNET raises it:
+        ``FileNotFoundError`` for a missing file or a dangling link, among
+        others.
+    """
+    path = Path(path)
+    climate = _climate_drivers_of_file(path, time_zone=time_zone)
+    check_radiation_and_precipitation_are_not_below_zero(climate.pandas, message_name=str(path))
+    return climate
+
+
+def driver_file(root: Path | str, site: int, source_index: int) -> Path:
+    """The ``.clim`` file for one site and one member's source index.
+
+    Parameters
+    ----------
+    root:
+        The drivers root, laid out as :data:`DRIVER_DIRECTORY_TEMPLATE`.
+    site:
+        The site id.
+    source_index:
+        The member's 1-based index in the directory name.
+
+    Returns
+    -------
+    pathlib.Path
+        The single file matching :data:`DRIVER_FILE_GLOB` in the pair's
+        directory.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the directory, or a file matching the glob inside it, is absent.
+    ValueError
+        If more than one file matches, since the layout promises exactly one.
+    """
+    name = DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member=int(source_index))
+    directory = Path(root) / name
+    check_driver_directory_exists(directory, site=site, source_index=source_index)
+    matches = sorted(directory.glob(DRIVER_FILE_GLOB))
+    check_driver_directory_holds_one_file(directory, matches)
+    return matches[0]
+
+
+def available_source_indices(root: Path | str, site: int) -> tuple[int, ...]:
+    """The source indices of the members that have a directory for *site*.
+
+    Parameters
+    ----------
+    root:
+        The drivers root.
+    site:
+        The site id.
+
+    Returns
+    -------
+    tuple of int
+        1-based source indices in ascending order, possibly empty. Only the
+        directory's existence is consulted; whether the file inside it is
+        present and well formed is :func:`driver_file` and
+        :func:`read_driver_file`'s business. A directory whose name is not
+        exactly the template for its numbers, ``ERA5_3_01`` say, is ignored,
+        since :func:`driver_file` could not find it either.
+    """
+    root = Path(root)
+    source_indices = []
+    pattern = DRIVER_DIRECTORY_TEMPLATE.format(site=int(site), member="*")
+    for directory in root.glob(pattern):
+        parsed = _site_and_source_index_of_directory(directory.name)
+        if parsed is None or not directory.is_dir():
+            continue
+        canonical = DRIVER_DIRECTORY_TEMPLATE.format(site=parsed[0], member=parsed[1])
+        if parsed[0] == int(site) and directory.name == canonical:
+            source_indices.append(parsed[1])
+    return tuple(sorted(source_indices))
+
+
+def default_drivers_root() -> Path:
+    """Where the raw driver directory is expected to be.
+
+    ``$SIPNET_CALIBRATION_DATA/raw/drivers`` when that variable is set, and
+    otherwise ``data/raw/drivers`` under this checkout. Experiments name their
+    paths in ``config.py``.
+    """
+    return data_root() / "raw" / "drivers"
+
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
 #: Variables whose values below zero are counted, into ``n_values_below_zero``.
@@ -628,7 +621,7 @@ def _site_id_array(sites: Iterable[int]) -> np.ndarray:
 def _source_index_array(
     source_indices: Iterable[int] | None, *, root: Path, sites: np.ndarray
 ) -> np.ndarray:
-    """Requested source indices as ``int64``, in the order given; found, ascending, for ``None``."""
+    """Requested source indices as ``int64``, in order, or the discovered ones."""
     if source_indices is None:
         found: set[int] = set()
         for site in sites:
@@ -664,7 +657,7 @@ def _as_source_indices(source_indices: Iterable[int]) -> np.ndarray:
 def _locate_files(
     root: Path, *, sites: np.ndarray, source_indices: np.ndarray
 ) -> tuple[dict[tuple[int, int], Path], np.ndarray]:
-    """Paths for every ``(driver_member, site)`` pair that has one, and a presence mask."""
+    """The path of each ``(driver_member, site)`` pair that has one, and the mask."""
     present = np.zeros((source_indices.size, sites.size), dtype=bool)
     paths: dict[tuple[int, int], Path] = {}
     for j, site in enumerate(sites):
@@ -794,7 +787,7 @@ def check_request_is_not_empty(
 def check_some_driver_directory_exists(
     source_indices: set[int], *, root: Path, sites: np.ndarray
 ) -> None:
-    """At least one requested site has a driver directory, when the members are discovered."""
+    """Some requested site has a driver directory, when the members are discovered."""
     if not source_indices:
         raise FileNotFoundError(
             f"no driver directories under {root} for sites {truncated(sites.tolist())}; check "
@@ -857,7 +850,7 @@ def check_driver_directory_holds_one_file(directory: Path, matches: list[Path]) 
 def check_radiation_and_precipitation_are_not_below_zero(
     frame: pd.DataFrame, *, message_name: str
 ) -> None:
-    """Radiation and precipitation never fall further below zero than :data:`NEGATIVE_TOLERANCE`."""
+    """Radiation and precipitation stay above ``-NEGATIVE_TOLERANCE``."""
     # Small negatives are known and read through; a large one would be a
     # different kind of problem and is refused.
     for name in _NAMES_COUNTED_BELOW_ZERO:

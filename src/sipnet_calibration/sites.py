@@ -35,9 +35,8 @@ Data model
 ----------
 :func:`load_sites` returns a ``pandas.DataFrame`` with one row per site, in
 ascending ``site_id`` order, holding the columns of :data:`SITE_COLUMNS` with
-the dtypes of :data:`SITE_COLUMN_DTYPES`, which the read imposes. A missing or
-unexpected column, a duplicate or non-ascending ``site_id``, or an
-out-of-range integer raises.
+the dtypes of :data:`SITE_COLUMN_DTYPES`, which the read imposes, and holds
+the file to :func:`check_site_table_file_is_valid`.
 
 ================================ ============= ==============================
 Column                           Dtype         Meaning
@@ -196,7 +195,7 @@ Look sites up, and give a field its coordinates::
 
     keyed = site_lookup(site_table)                     # indexed on site_id
     keyed.loc[4102, "lon"]
-    coords = site_locations([4113, 4102], site_table)   # {"lon", "lat"} on site, CF attributes
+    coords = site_locations([4113, 4102], site_table)   # {"lon", "lat"}, CF attributes
     coords = site_coordinates([4113, 4102], site_table)  # {"site", "lon", "lat"}
 """
 
@@ -505,11 +504,7 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
     Returns
     -------
     pandas.DataFrame
-        One row per site, the columns of :data:`SITE_COLUMNS` in that order with
-        the dtypes of :data:`SITE_COLUMN_DTYPES`, in ascending ``site_id`` order.
-        ``site_id`` is left as a column rather than made the index, so that the
-        frame is a table rather than a lookup; callers wanting lookup call
-        :func:`site_lookup`.
+        The site table, as the module's data model describes it.
 
     Raises
     ------
@@ -578,7 +573,8 @@ def load_sites(path: Path | str | None = None) -> pd.DataFrame:
 #:
 #: ``NORTH_AMERICA`` is spelled out under the project's convention against
 #: abbreviations, and because ``NA`` is an unhappy name in a module that has to
-#: read ``NA`` as a literal site name. Read-only, like :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
+#: read ``NA`` as a literal site name. Read-only, like
+#: :data:`SITE_COLUMN_DTYPES`: reassigning an entry would
 #: silently change every later figure in the process.
 EXTENTS = frozendict(
     {
@@ -638,11 +634,12 @@ def select_sites(
     ------
     KeyError
         If *site_ids* names a site the table does not hold.
-    TypeError, ValueError
-        If *site_ids*, *bbox* or *n_random* is refused by the coercers of
-        :mod:`sipnet_calibration.validation` (``as_site_ids``, ``as_bbox``,
-        ``as_bounded_integer``), the table lists a site twice, or *where*
-        returns something that is not one boolean per row.
+    TypeError
+        If *site_ids*, *bbox* or *n_random* has the wrong type, or *where*
+        returns a mask that is not boolean.
+    ValueError
+        If *site_ids*, *bbox* or *n_random* has a wrong value, the table lists
+        a site twice, or *where* returns a mask that does not fit the table.
 
     Notes
     -----
@@ -738,10 +735,11 @@ def site_locations(
 
     Raises
     ------
-    TypeError, ValueError
-        If *site_ids* is refused by
-        :func:`sipnet_calibration.validation.as_site_ids`, or *site_table* by
-        :func:`check_site_table_locates_the_sites`.
+    TypeError
+        If *site_ids* is not a sequence of integers, or *site_table* not a
+        ``DataFrame`` with an integer ``site_id``.
+    ValueError
+        If *site_ids* has a wrong value, or *site_table* cannot locate a site.
     KeyError
         If a site is not in the site table.
     FileNotFoundError
@@ -760,7 +758,7 @@ def site_locations(
 def site_coordinates(
     site_ids: Iterable[int], site_table: pd.DataFrame
 ) -> dict[str, xr.DataArray]:
-    """The ``site``, ``lon`` and ``lat`` coordinates of *site_ids*, as a field carries them.
+    """The ``site``, ``lon`` and ``lat`` coordinates of *site_ids*, as a field has them.
 
     Parameters
     ----------
@@ -781,8 +779,12 @@ def site_coordinates(
 
     Raises
     ------
-    TypeError, ValueError, KeyError
-        As :func:`site_locations` raises them.
+    TypeError
+        As :func:`site_locations`.
+    ValueError
+        As :func:`site_locations`.
+    KeyError
+        As :func:`site_locations`.
     """
     wanted = as_site_ids(site_ids, message_name="site_ids")
     return {
@@ -874,7 +876,7 @@ def check_site_table_locates_the_sites(site_table: Any, site_ids: Iterable[int])
 
 
 def check_site_table_is_keyed_on_site_ids(site_table: Any) -> None:
-    """The site table is a ``DataFrame`` whose integer ``site_id`` lists each site once."""
+    """The site table is a ``DataFrame`` whose integer ``site_id`` lists a site once."""
     check_site_table_is_a_dataframe(site_table)
     check_site_table_has_site_ids(site_table)
     check_site_table_site_ids_are_integers(site_table)
@@ -940,7 +942,7 @@ def check_site_table_site_ids_are_positive(table: pd.DataFrame, *, message_name:
 
 
 def check_site_table_integers_fit_their_dtypes(table: pd.DataFrame, *, message_name: str) -> None:
-    """Every integer column of a site table read from its file fits its declared dtype."""
+    """Every integer column of a site table read from its file fits its dtype."""
     for column, dtype in SITE_COLUMN_DTYPES.items():
         if not np.issubdtype(np.dtype(dtype), np.integer):
             continue
@@ -1094,7 +1096,7 @@ def check_processed_file_holds_the_sites(
 
 
 def check_where_mask_aligns_with_the_table(mask: pd.Series, site_table: pd.DataFrame) -> None:
-    """A ``Series`` that *where* returns is indexed like the table, so it can be aligned."""
+    """A ``Series`` that *where* returns is indexed like the table, so it aligns."""
     if len(mask) != len(site_table) or set(mask.index) != set(site_table.index):
         raise ValueError(
             "where returned a Series whose index does not match the table's, so it cannot "

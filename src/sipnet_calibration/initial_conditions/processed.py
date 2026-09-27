@@ -216,10 +216,10 @@ def initial_condition_fields(
 
     Raises
     ------
-    TypeError, ValueError
-        If *names* or *sites* is refused by
-        :func:`~sipnet_calibration.validation.as_names` or
-        :func:`~sipnet_calibration.validation.as_site_ids`.
+    TypeError
+        If *names* or *sites* is not a sequence of names or of site ids.
+    ValueError
+        If a site id is not one, or is asked for twice.
     KeyError
         If a name is not an initial condition, or a requested site is not in
         the processed file.
@@ -456,7 +456,7 @@ def check_processed_locations_are_in_range(dataset: xr.Dataset, *, message_name:
 
 
 def check_processed_member_is_its_source_index(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed file's member label is its source index less one, the member's identity."""
+    """A processed file's member label is its source index less one, its identity."""
     member = dataset[INITIAL_CONDITION_MEMBER].values
     if not np.array_equal(member, dataset[SOURCE_INDEX].values - 1):
         raise ValueError(
@@ -466,7 +466,7 @@ def check_processed_member_is_its_source_index(dataset: xr.Dataset, *, message_n
 
 
 def check_processed_member_count_is_recorded(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed file's ``n_initial_condition_members`` attribute counts its members."""
+    """A processed file's ``n_initial_condition_members`` counts its members."""
     n_members = dataset.sizes[INITIAL_CONDITION_MEMBER]
     recorded = dataset.attrs.get("n_initial_condition_members")
     if recorded != n_members:

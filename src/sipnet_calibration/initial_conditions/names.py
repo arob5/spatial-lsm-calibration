@@ -58,7 +58,7 @@ def default_source_root() -> Path:
 
 
 def default_raw_directory() -> Path:
-    """Where the converted raw file is: ``data/raw/initial_conditions/`` of this checkout.
+    """Where the converted raw file is: the checkout's ``data/raw/initial_conditions/``.
 
     It is tracked, so this is found from
     :func:`~sipnet_calibration.conventions.tracked_data_root` and

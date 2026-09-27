@@ -103,11 +103,8 @@ def build_raw(
     Raises
     ------
     ValueError
-        If no file was given; if a site is not an integer site id or a member
-        not an integer that fits ``int16``; if two files claim the same
-        ``(site, member)`` or a file holds a variable the format does not; if
-        the member set differs between sites; or if a variable's presence
-        differs between the members of one site.
+        If the files do not form the complete, consistent ensemble the data
+        model describes, by any of this module's checks.
 
     Notes
     -----
@@ -246,7 +243,7 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
 def _open_checked_netcdf4(
     path: Path, check: Callable[..., None], *, remedy: str
 ) -> xr.Dataset:
-    """*path* opened lazily through ``h5netcdf`` and held to *check*, closed if it fails.
+    """*path* opened lazily by ``h5netcdf`` and held to *check*, closed if it fails.
 
     A file ``h5netcdf`` cannot read is a ``ValueError`` ending in *remedy*.
     Shared with :mod:`sipnet_calibration.initial_conditions.processed`, which

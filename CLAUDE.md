@@ -320,8 +320,9 @@ their shared coercion lives in `validation.py`.
   and of a data source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`),
   `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
   `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
-  `data_root()`, `tracked_data_root()`); and `read_only_copy` and `ReadOnlyCopies`, the read-only
-  copies of xarray data a frozen class keeps and hands out, copied on
+  `data_root()`, `tracked_data_root()`); and `read_only_copy` and
+  `ReadOnlyCopies`, the read-only copies of xarray data a frozen class keeps
+  and hands out, copied on
   assignment so nothing a caller holds is frozen. Read-only mappings are
   `frozendict`s (the `frozendict` package): a `dict` subclass, so pandas and
   `json` read one as a dict, and it pickles and hashes. Every module-level
@@ -470,7 +471,10 @@ vault lists what changes in which.
 ### File organization
 
 - **Public first, private last.** Public functions, classes and constants at the
-  top of a file; helpers and anything underscore-prefixed below them.
+  top of a file; helpers and anything underscore-prefixed below them. The one
+  exception is a constant whose construction runs module functions, such as a
+  spec registry, whose specs run their checks when built: it follows them,
+  last in the file, under a one-line comment saying why.
 - Data processing scripts follow the section order
   `entry point` -> `the steps, in the order main calls them` ->
   `supporting types and helpers` -> `checks`, with `# ── ... ──` section
@@ -771,7 +775,8 @@ src/sipnet_calibration/
   __init__.py             # the module map and the dependency direction; no
                           # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
-                          # select_sites(site_ids=, bbox=, where=, n_random=, seed=),
+                          # select_sites(site_ids=, bbox=, where=, n_random=,
+                          # seed=),
                           # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
                           # site_locations(), site_coordinates(), the site-table
                           # and pool checks; default_site_table_path()

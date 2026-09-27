@@ -85,18 +85,21 @@ is ``"C"``, never ``"kg C m-2"``::
 
 **Coordinates**
 
-============================ ============================ ===============================
+============================ ============================ =====================
 Name                         Dims                         Meaning
-============================ ============================ ===============================
-``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based: the
-                                                          member's identity,
+============================ ============================ =====================
+``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based:
+                                                          the member's
+                                                          identity,
                                                           ``source_index - 1``
-``source_index``             ``initial_condition_member`` ``int64``, the 1-based index in
-                                                          the source file name
-``site``                     ``site``                     ``int32``, the whole pool,
-                                                          ascending
-``lon``, ``lat``             ``site``                     ``float64``, from the site table
-============================ ============================ ===============================
+``source_index``             ``initial_condition_member`` ``int64``, the
+                                                          1-based index in the
+                                                          source file name
+``site``                     ``site``                     ``int32``, the whole
+                                                          pool, ascending
+``lon``, ``lat``             ``site``                     ``float64``, from the
+                                                          site table
+============================ ============================ =====================
 
 The tracked raw file keeps its own ``member`` dim, the source index, since raw
 data is never edited; :func:`build_initial_conditions` renames it.
@@ -208,7 +211,7 @@ Usage
     )
 
     initial_conditions = load_initial_conditions()    # (initial_condition_member, site)
-    initial_conditions["initial_soil_organic_carbon"].sel(site=4102)   # one site's members
+    initial_conditions["initial_soil_organic_carbon"].sel(site=4102)  # its members
     initial_conditions["initial_wood_carbon"].mean("initial_condition_member")  # a map
 
     fields = initial_condition_fields(sites=[4102, 4113])
@@ -239,7 +242,7 @@ Usage
     site = {name: field.sel(site=4102) for name, field in fields.items()}
     usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
     converted = to_sipnet_initial_condition_fields(      # (initial_condition_member,)
-        {name: field.isel(initial_condition_member=usable) for name, field in site.items()},
+        {name: f.isel(initial_condition_member=usable) for name, f in site.items()},
         leaf_carbon_per_area=32.0,                       # scalar or per member
         fine_root_fraction=0.2,
         coarse_root_fraction=0.2,

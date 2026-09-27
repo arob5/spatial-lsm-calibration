@@ -85,7 +85,8 @@ Functions
 :func:`resolve_site_labels`
     The spec of a name, or a ``KeyError`` listing the names that exist.
 
-:func:`site_labels_path`, :func:`default_raw_directory`, :func:`default_site_labels_directory`
+:func:`site_labels_path`, :func:`default_raw_directory`,
+:func:`default_site_labels_directory`
     Where things are expected to be.
 
 :func:`describe`
@@ -140,7 +141,8 @@ Read site labels and join them to the site table::
     from sipnet_calibration.sites import EXTENTS, load_sites, select_sites
 
     labels = load_site_labels("reanalysis_3pft")
-    site_table = select_sites(load_sites(), bbox=EXTENTS["CONUS"]).merge(labels, on="site_id")
+    conus = select_sites(load_sites(), bbox=EXTENTS["CONUS"])
+    site_table = conus.merge(labels, on="site_id")
     for name, group in site_table.groupby("label", observed=False):
         ...
 
@@ -370,9 +372,7 @@ def load_site_labels(
     FileNotFoundError
         If the file is absent, with the command that produces it.
     ValueError
-        If the file does not follow the data model: a wrong header, no rows,
-        site labels that fail :func:`check_site_labels_are_valid`, or rows out
-        of ``site_id`` order.
+        If the file does not follow the data model.
     """
     spec = (
         site_labels
@@ -534,8 +534,8 @@ def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame
     names its columns: each record carries its own identity, so nothing is
     matched positionally. Checks that need the site table -- that every
     identifier is a real site, that the pool is covered, that the classes agree
-    with ``landcover`` -- are the ingest script's, since this module does not
-    read the site table.
+    with ``landcover`` -- are the ingest script's, since the build takes no
+    site table.
     """
     site = frame[spec.site_column]
     label = frame[spec.label_column]
@@ -853,8 +853,7 @@ def check_classes_are_flag_meanings(spec: SiteLabelsSpec) -> None:
 
 # ── the registry ──────────────────────────────────────────────────────────────
 #
-# Last in the module, since building a spec runs its checks, which Python must
-# have defined first.
+# Last in the module, since building a spec runs the checks above.
 
 #: Every site-labels data source, in registry order. One entry per raw file.
 SITE_LABELS: tuple[SiteLabelsSpec, ...] = (

@@ -127,7 +127,8 @@ Functions
 :func:`describe`
     A spec rendered as a paragraph.
 
-:func:`default_raw_directory`, :func:`default_constraint_directory`, :func:`constraint_path`
+:func:`default_raw_directory`, :func:`default_constraint_directory`,
+:func:`constraint_path`
     Where the raw files and the processed files are expected.
 
 The checks
@@ -172,7 +173,7 @@ Usage
         resolve_constraint,
     )
 
-    lai = load_constraint("modis_leaf_area_index")       # Dataset: value, standard_deviation
+    lai = load_constraint("modis_leaf_area_index")       # value, standard_deviation
     lai["value"].sel(site=4102).dropna("time")            # one site's composites
 
     fields = constraint_fields(sites=[4102, 4113])        # every constraint, two sites
@@ -284,13 +285,13 @@ class ConstraintSpec:
     """
 
     name: str
-    """Processed name: the raw file's stem, the registry key and the output file's stem."""
+    """Processed name: the raw file's stem, the registry key and the output's stem."""
 
     long_label: str
     """Plot-ready name without units, e.g. ``"Leaf area index"``."""
 
     units: str
-    """UDUNITS-style unit string, physical units only, validated by :mod:`pysipnet.units`."""
+    """UDUNITS-style string of physical units only, as :mod:`pysipnet.units` checks."""
 
     constituent: str
     """Substance the unit refers to, ``"C"`` for carbon, or ``""``."""
@@ -321,7 +322,7 @@ class ConstraintSpec:
     (``DATED``); ``None`` only for a static table with no time column."""
 
     quality_column: str | None = None
-    """Raw column holding a quality flag; rows not equal to *quality_pass* are dropped."""
+    """Raw column holding a quality flag; rows other than *quality_pass* are dropped."""
 
     quality_pass: str = ""
     """The flag value of a row that passes; required with *quality_column*."""
@@ -535,10 +536,10 @@ def constraint_fields(
 
     Raises
     ------
-    TypeError, ValueError
-        If *names* or *sites* is refused by
-        :func:`~sipnet_calibration.validation.as_names` or
-        :func:`~sipnet_calibration.validation.as_site_ids`.
+    TypeError
+        If *names* or *sites* is not a sequence of names or of site ids.
+    ValueError
+        If a site id is not one, or is asked for twice.
     KeyError
         If a name is not a constraint, or a requested site is not in the
         processed file.
@@ -552,7 +553,7 @@ def constraint_standard_deviations(
     sites: Iterable[int] | None = None,
     directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The reported standard deviations, as :func:`constraint_fields` does the values."""
+    """The reported standard deviations, as :func:`constraint_fields` gives values."""
     return _fields_of_variable(STANDARD_DEVIATION, names, sites, directory)
 
 
@@ -790,7 +791,7 @@ def _dense_site_time_arrays(
     row_time: pd.DatetimeIndex,
     n_sites: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """The value and standard deviation on ``(site, time)``, ``NaN`` where not observed."""
+    """The value and standard deviation on ``(site, time)``, ``NaN`` if not observed."""
     time = pd.DatetimeIndex(sorted(row_time.unique())).as_unit("ns")
     time_index = time.get_indexer(row_time)
     check_site_time_keys_are_unique(site_index, time_index, message_name=spec.name)
@@ -816,7 +817,7 @@ def _dense_site_arrays(
 
 
 def _time_coords(spec: ConstraintSpec, row_time: pd.DatetimeIndex) -> dict[str, Any]:
-    """The ``time`` coordinate, and ``time_bounds`` where the structure documents them."""
+    """The ``time`` coordinate, and ``time_bounds`` where the structure has them."""
     time = pd.DatetimeIndex(sorted(row_time.unique())).as_unit("ns")
     attrs = {
         "standard_name": "time",
@@ -1094,7 +1095,7 @@ def check_site_time_keys_are_unique(
 
 
 def check_static_copies_agree(frame: pd.DataFrame, spec: ConstraintSpec) -> None:
-    """Every site of a static constraint carries one value across the raw time column."""
+    """Every site of a static constraint has one value across the raw time column."""
     distinct = frame.groupby(SITE_ID)[[spec.value_column, spec.sd_column]].nunique(
         dropna=False
     )
@@ -1167,7 +1168,7 @@ def check_processed_constraint_is_for_the_spec(
 def check_processed_constraint_time_bounds_match_the_structure(
     dataset: xr.Dataset, spec: ConstraintSpec, *, message_name: str
 ) -> None:
-    """A processed constraint carries ``time_bounds`` exactly when its structure documents them."""
+    """A processed constraint has ``time_bounds`` exactly when its structure does."""
     present = TIME_BOUNDS in dataset.coords
     if present != spec.has_time_bounds:
         raise ValueError(
@@ -1192,7 +1193,7 @@ def check_processed_constraint_times_ascend(dataset: xr.Dataset, *, message_name
 def check_processed_constraint_values_and_deviations_are_missing_together(
     dataset: xr.Dataset, *, message_name: str
 ) -> None:
-    """A processed constraint's value and standard deviation are missing at the same elements."""
+    """A processed constraint's value and standard deviation are missing together."""
     observed = np.isfinite(dataset[VALUE].values)
     if not np.array_equal(observed, np.isfinite(dataset[STANDARD_DEVIATION].values)):
         raise ValueError(
@@ -1203,8 +1204,7 @@ def check_processed_constraint_values_and_deviations_are_missing_together(
 
 # ── the registry ──────────────────────────────────────────────────────────────
 #
-# Last in the module, since building a spec runs its checks, which Python must
-# have defined first.
+# Last in the module, since building a spec runs the checks above.
 
 #: Every constraint, one spec per raw file, in registry order.
 CONSTRAINTS: tuple[ConstraintSpec, ...] = (

@@ -226,14 +226,8 @@ def read_source_file(path: Path | str) -> SourceFile:
     FileNotFoundError
         If *path* does not exist.
     ValueError
-        If the name is not the template or disagrees with its directory; the
-        file is not netCDF-3 classic; it has a global attribute, a dimension
-        other than an unlimited length-1 ``time``, or a ``time`` variable
-        whose attributes or value differ from the source template; a data
-        variable is not a scalar ``float64`` on ``("time",)``, is not one of
-        ``SOURCE.names``, or carries attributes other than exactly the
-        expected ``_FillValue``, ``long_name`` and ``units``; a value is the
-        fill or not finite; or the file carries no data variable.
+        If *path* is not a regular file, or the file or its name departs from
+        :data:`SOURCE` in any way this module checks.
 
     Notes
     -----
@@ -274,16 +268,18 @@ def read_source_directory(root: Path | str, site: int) -> list[SourceFile]:
 
     Raises
     ------
+    FileNotFoundError
+        If the site's directory is absent, or as :func:`read_source_file`.
     ValueError
-        If the directory is missing or empty, or holds an entry that is not
-        an ``IC_site_<site>_<member>.nc`` file (hidden files such as
-        ``.DS_Store`` are skipped as filesystem debris), plus whatever
-        :func:`read_source_file` raises for a file.
+        If the directory is empty or holds an entry that is not a source file,
+        or as :func:`read_source_file`.
 
     Notes
     -----
-    The unit of parallel work in ``scripts/convert_initial_conditions.py``,
-    which is why it lives here: a worker process has to be able to import it.
+    Hidden files such as ``.DS_Store`` are skipped as filesystem debris. This
+    is the unit of parallel work in
+    ``scripts/raw_sources/convert_initial_conditions.py``, which is why it
+    lives here: a worker process has to be able to import it.
     """
     directory = Path(root) / str(int(site))
     check_source_site_directory_exists(directory)
@@ -304,7 +300,7 @@ _SOURCE_FILE_NAME = re.compile(r"^IC_site_(?P<site>[1-9]\d*)_(?P<member>[1-9]\d*
 
 
 def _opened_source_file(path: Path) -> Any:
-    """*path* opened by ``scipy.io.netcdf_file``; one it cannot read is a ``ValueError``."""
+    """*path* opened by ``scipy.io.netcdf_file``; unreadable, it is a ``ValueError``."""
     try:
         return netcdf_file(str(path), "r", mmap=False, maskandscale=False)
     except Exception as error:
@@ -358,7 +354,7 @@ def _netcdf_attributes(obj: Any) -> dict[str, Any]:
 
 
 def check_source_file_layout_is_the_template(handle: Any, *, message_name: str) -> None:
-    """A source file is netCDF-3 classic with no global attribute and one length-1 record ``time``."""
+    """A source file's layout is the template: classic, bare, one record of ``time``."""
     check_source_file_is_netcdf3_classic(handle, message_name=message_name)
     check_source_file_has_no_global_attributes(handle, message_name=message_name)
     check_source_file_has_only_the_time_dimension(handle, message_name=message_name)
@@ -367,7 +363,7 @@ def check_source_file_layout_is_the_template(handle: Any, *, message_name: str) 
 
 
 def check_source_time_is_the_template(handle: Any, *, message_name: str) -> None:
-    """A source file's ``time`` variable is the degenerate template every file carries."""
+    """A source file's ``time`` variable is the degenerate template every file has."""
     check_source_file_has_a_time_variable(handle, message_name=message_name)
     check_source_time_attributes_are_the_template(handle, message_name=message_name)
     check_source_time_value_is_the_template(handle, message_name=message_name)
@@ -415,7 +411,7 @@ def check_source_site_directory_exists(directory: Path) -> None:
 
 
 def check_source_directory_entry_is_a_source_file(path: Path) -> None:
-    """An entry of a site's source directory is an ``IC_site_<site>_<member>.nc`` file."""
+    """An entry of a site's source directory is an ``IC_site_<site>_<member>.nc``."""
     if site_member_from_file_name(path.name) is None:
         raise ValueError(
             f"{path}: not an IC_site_<site>_<member>.nc file; a source site directory holds "
@@ -538,7 +534,7 @@ def check_source_variable_is_float64(variable: Any, *, message_name: str) -> Non
 def check_source_variable_attributes_are_the_template(
     name: str, variable: Any, *, message_name: str
 ) -> None:
-    """A source data variable carries exactly the template's ``_FillValue``, ``long_name`` and ``units``."""
+    """A source data variable's attributes are exactly the template's three."""
     attrs = _netcdf_attributes(variable)
     expected = {
         "_FillValue": SOURCE.fill_value,

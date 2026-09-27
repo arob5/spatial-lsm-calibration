@@ -16,11 +16,13 @@ The in-memory builders make what several test files need: a site table
 (:func:`site_table_of`, or :func:`write_site_table_csv` for one on disk),
 synthetic driver files (:func:`synthetic_driver_rows`,
 :func:`write_driver_pair`), a stack of Niwot runs (:func:`niwot_stack_of`),
-observed values that are dated, static or attributed to windows (:func:`dated_observed_values`,
-:func:`static_observed_values`, :func:`windowed_observed_values`), each a
-field whose sites :func:`located` gives ``lon``/``lat``, and a stand-in SIPNET
-model (:func:`scaled_niwot_model`, a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script` imports a script, and
-every figure a test makes is closed after it (:func:`close_figures`).
+observed values that are dated, static or attributed to windows
+(:func:`dated_observed_values`, :func:`static_observed_values`,
+:func:`windowed_observed_values`), each a field whose sites :func:`located`
+gives ``lon``/``lat``, and a stand-in SIPNET model (:func:`scaled_niwot_model`,
+a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script`
+imports a script, and every figure a test makes is closed after it
+(:func:`close_figures`).
 
 The real-data fixtures read the driver files, the site table and the
 constraints' processed files present in this working copy, found through
@@ -511,7 +513,9 @@ def write_site_table_csv(
     frame = pd.DataFrame(
         {
             conventions.SITE_ID: np.array(site_ids, dtype=conventions.SITE_DTYPE),
-            conventions.LON: [-99.0 - site for site in site_ids] if lon is None else list(lon),
+            conventions.LON: (
+                [-99.0 - site for site in site_ids] if lon is None else list(lon)
+            ),
             conventions.LAT: [39.0 + site for site in site_ids] if lat is None else list(lat),
             "lon_index": np.arange(n, dtype=np.int32) + 1000,
             "lat_index": np.arange(n, dtype=np.int32) + 2000,
@@ -585,16 +589,19 @@ def write_driver_rows(path: Path, rows: pd.DataFrame) -> Path:
 
 
 def driver_file_name(rows: pd.DataFrame, member: int) -> str:
-    """The file name the source gives *rows* of *member*: ``ERA5.<member>.<start>.<end>.clim``."""
-    first = pd.Timestamp(int(rows["year"].iloc[0]), 1, 1) + pd.Timedelta(days=int(rows["day"].iloc[0]) - 1)
-    last = pd.Timestamp(int(rows["year"].iloc[-1]), 1, 1) + pd.Timedelta(days=int(rows["day"].iloc[-1]) - 1)
+    """The name the source gives the file of *rows* and *member*, ``ERA5.<member>...``."""
+    days = [
+        pd.Timestamp(int(rows["year"].iloc[k]), 1, 1) + pd.Timedelta(days=int(rows["day"].iloc[k]) - 1)
+        for k in (0, -1)
+    ]
+    first, last = days
     return f"ERA5.{member}.{first.date()}.{last.date()}.clim"
 
 
 def write_driver_pair(
     root: Path, site: int, member: int, rows: pd.DataFrame | None = None, **kwargs
 ) -> Path:
-    """A synthetic driver file of *site* and *member* in the real layout, returning its path."""
+    """A synthetic driver file of *site* and *member* in the real layout; its path."""
     from sipnet_calibration.drivers import DRIVER_DIRECTORY_TEMPLATE
 
     if rows is None:
