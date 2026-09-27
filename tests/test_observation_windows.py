@@ -914,3 +914,54 @@ class TestMessagesNameTheReaderAndTheSubject:
             check_how_is_a_window_reduction("median", "R")
         with pytest.raises(ValueError, match="how must be one of .* for R, got 'median'"):
             check_how_is_a_window_reduction("median", message_name="R")
+
+
+class TestWhatEachReductionAdmits:
+    def test_a_running_total_takes_its_last_value_over_a_window(self, niwot):
+        running = niwot["cumulative_net_ecosystem_exchange"]
+        reduced = reduce_windows(running, run_window(running), "last")
+        np.testing.assert_allclose(reduced.values, running.values[-1:])
+        assert reduced.attrs["kind"] == "cumulative"
+
+    @pytest.mark.parametrize("how, expected", [("min", [1.0, 3.0]), ("max", [2.0, 4.0]), ("first", [1.0, 3.0])])
+    def test_a_field_of_no_kind_takes_an_extreme_or_first_reading(self, how, expected):
+        observed = xr.DataArray(
+            [1.0, 2.0, 3.0, 4.0], dims="time",
+            coords={"time": pd.date_range("2012-01-01 12:00", periods=4, freq="12h")},
+            attrs={"units": "g m-2"}, name="x",
+        )
+        windows = pd.IntervalIndex.from_breaks(pd.DatetimeIndex(["2012-01-01", "2012-01-02", "2012-01-03"]), closed="right")
+        np.testing.assert_array_equal(reduce_windows(observed, windows, how).values, expected)
+
+    @pytest.mark.parametrize("gaps_in_hours", [[12, 6, 6], [6, 12, 12]])
+    def test_a_mean_over_unequally_spaced_labels_without_lengths_is_refused(self, gaps_in_hours):
+        times = pd.Timestamp("2012-01-01 06:00") + pd.to_timedelta(np.cumsum([0, *gaps_in_hours]), unit="h")
+        observed = xr.DataArray(
+            [1.0, 2.0, 3.0, 4.0], dims="time", coords={"time": times},
+            attrs={"units": "g m-2", "kind": "timestep_mean"}, name="x",
+        )
+        windows = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["2012-01-01"]), pd.DatetimeIndex(["2012-01-03"]), closed="right"
+        )
+        with pytest.raises(ValueError, match="not all the same length"):
+            reduce_windows(observed, windows, "mean")
+
+    def test_a_windows_length_says_it_is_a_sum_as_pysipnets_cells_do(self, niwot):
+        from pysipnet.resample import STEP_LENGTH_RESAMPLED
+
+        pool = niwot["wood_carbon"]
+        reduced = reduce_windows(pool, run_window(pool), "last")
+        assert reduced[TIMESTEP_LENGTH].attrs["source"] == STEP_LENGTH_RESAMPLED
+        assert aggregate_time(pool, "1D")[TIMESTEP_LENGTH].attrs["source"] == STEP_LENGTH_RESAMPLED
+
+
+class TestWhatAnInstantReadRefuses:
+    def test_a_time_coordinate_is_not_read_at_an_instant(self, niwot):
+        coordinate = niwot["wood_carbon"].assign_attrs(kind="timestep_start_coordinate")
+        with pytest.raises(ValueError, match="is a time coordinate, not a variable to read"):
+            select_timestep_at(coordinate, niwot["time"].values[:1])
+
+    def test_run_window_refuses_observed_values_naming_itself(self, niwot):
+        observed = niwot["wood_carbon"].drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
+        with pytest.raises(ValueError, match="run_window reads the interval each step covers"):
+            run_window(observed)

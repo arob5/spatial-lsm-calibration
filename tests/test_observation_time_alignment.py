@@ -818,3 +818,17 @@ class TestTheLastGapRuleOnModelOutput:
         theirs = resample(gappy, "1D", how="last").drop_vars(list(SIPNET_ROW_LABEL_NAMES))
         assert np.isfinite(theirs.values[1]) and np.isnan(ours.values[1])
         xr.testing.assert_identical(ours.drop_isel(time=1), theirs.drop_isel(time=1))
+
+
+class TestAFieldOfNoKind:
+    def test_an_unknown_method_is_refused_in_words(self):
+        observed = _daily_observed_values()
+        del observed.attrs["kind"]
+        with pytest.raises(ValueError, match="unknown resampling method 'median' for 'x'"):
+            aggregate_time(observed, "1D", how="median")
+
+    def test_a_kind_no_method_preserves_needs_how(self):
+        coordinate = _daily_observed_values()
+        coordinate.attrs["kind"] = "timestep_start_coordinate"
+        with pytest.raises(ValueError, match="which no method leaves unchanged"):
+            aggregate_time(coordinate, "1D")
