@@ -302,7 +302,7 @@ def test_a_duplicate_site_is_refused(tmp_path):
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     with pytest.raises(ingest.IngestError, match="more than once"):
-        ingest.check_no_duplicate_sites(SYNTHETIC_SPEC, frame)
+        ingest.check_raw_sites_are_each_labeled_once(SYNTHETIC_SPEC, frame)
 
 
 def test_a_site_outside_the_pool_is_refused(tmp_path, synthetic):
@@ -338,7 +338,7 @@ def test_a_declared_class_no_site_uses_is_refused(tmp_path, synthetic):
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
     site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="that no site has"):
-        ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, site_labels)
+        ingest.check_declared_labels_are_all_used(SYNTHETIC_SPEC, site_labels)
 
 
 def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, synthetic):
@@ -520,11 +520,11 @@ def test_the_two_site_labels_data_sources_do_not_nest(real_site_labels, real_16c
 
 RAW_CHECKS = (
     "check_row_count_is_the_expected_pool",
-    "check_no_duplicate_sites",
+    "check_raw_sites_are_each_labeled_once",
     "check_site_table_lists_the_sites",
 )
 SITE_LABELS_CHECKS = (
-    "check_labels_are_the_declared_set",
+    "check_declared_labels_are_all_used",
     "check_pool_is_completely_labeled",
     "check_labels_match_landcover",
 )
@@ -534,7 +534,7 @@ class _Sentinel(ingest.IngestError):
     """Raised by a stubbed check, so the test can tell it apart from a real one."""
 
 
-@pytest.mark.parametrize("check", RAW_CHECKS + SITE_LABELS_CHECKS + ("check_round_trip",))
+@pytest.mark.parametrize("check", RAW_CHECKS + SITE_LABELS_CHECKS + ("check_written_file_reads_back_identically",))
 def test_ingest_calls_every_check(synthetic, monkeypatch, check):
     """Each check is reached on a run whose data is otherwise valid."""
     raw_root, site_table, out_dir = synthetic
@@ -583,7 +583,7 @@ def test_a_failed_site_labels_round_trip_keeps_the_partial_and_never_writes_the_
     def boom(*args, **kwargs):
         raise ingest.IngestError("round trip")
 
-    monkeypatch.setattr(ingest, "check_round_trip", boom)
+    monkeypatch.setattr(ingest, "check_written_file_reads_back_identically", boom)
     with pytest.raises(ingest.IngestError):
         ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
 
@@ -602,7 +602,7 @@ def test_a_failed_round_trip_leaves_an_existing_processed_file_intact(synthetic,
     def boom(*args, **kwargs):
         raise ingest.IngestError("round trip")
 
-    monkeypatch.setattr(ingest, "check_round_trip", boom)
+    monkeypatch.setattr(ingest, "check_written_file_reads_back_identically", boom)
     with pytest.raises(ingest.IngestError):
         ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
     assert out.read_bytes() == before
@@ -618,7 +618,7 @@ def test_the_round_trip_check_compares_against_the_library_loader(
     site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     site_labels.iloc[:-1].to_csv(partial, index=False)
     with pytest.raises(ingest.IngestError, match="does not read back"):
-        ingest.check_round_trip(SYNTHETIC_SPEC, site_labels, partial)
+        ingest.check_written_file_reads_back_identically(SYNTHETIC_SPEC, site_labels, partial)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -747,7 +747,7 @@ def test_exactly_one_unused_class_is_refused(tmp_path, synthetic):
     _write_raw(raw_root, SYNTHETIC_SPEC, rows)
     site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match=r"\['grass'\]"):
-        ingest.check_labels_are_the_declared_set(SYNTHETIC_SPEC, site_labels)
+        ingest.check_declared_labels_are_all_used(SYNTHETIC_SPEC, site_labels)
 
 
 def test_partial_site_labels_are_allowed_when_the_spec_says_so(tmp_path):
