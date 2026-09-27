@@ -20,6 +20,10 @@ Contents
     Read it and check it against the specs.
 :func:`initial_condition_fields`
     The processed file as one field per variable.
+The checks
+    One invariant each, grouped as
+    :func:`check_processed_initial_conditions_are_valid`, which
+    :func:`load_initial_conditions` holds the file to.
 """
 
 from __future__ import annotations
@@ -49,9 +53,7 @@ from sipnet_calibration.initial_conditions.names import (
     RAW_MEMBER,
     default_processed_path,
 )
-from sipnet_calibration.initial_conditions.raw import (  # a shared package internal
-    _check_presence_is_uniform_over_members,
-)
+from sipnet_calibration.initial_conditions.raw import check_presence_is_uniform_over_members
 from sipnet_calibration.initial_conditions.source_files import (
     NOMINAL_DATE,
     SOURCE,
@@ -64,11 +66,30 @@ from sipnet_calibration.initial_conditions.specs import (
     resolve_initial_condition,
 )
 from sipnet_calibration.io import utc_timestamp
-from sipnet_calibration.sites import site_coordinates
+from sipnet_calibration.sites import check_sites_are_the_site_table, site_coordinates
 from sipnet_calibration.validation import as_names, as_site_ids, truncated
 
 __all__ = [
     "build_initial_conditions",
+    "check_processed_initial_conditions_are_valid",
+    "check_processed_initial_conditions_declare_the_conventions",
+    "check_processed_initial_conditions_exist",
+    "check_processed_initial_conditions_have_the_coordinates",
+    "check_processed_initial_conditions_hold_the_sites",
+    "check_processed_locations_are_geographic",
+    "check_processed_locations_are_on_site",
+    "check_processed_member_count_is_recorded",
+    "check_processed_member_is_its_source_index",
+    "check_processed_members_count_from_zero",
+    "check_processed_sites_ascend",
+    "check_processed_source_index_ascends_from_one",
+    "check_processed_source_index_is_on_the_member",
+    "check_processed_variable_has_no_infinite_value",
+    "check_processed_variable_has_the_spec_long_name",
+    "check_processed_variable_has_the_spec_units",
+    "check_processed_variable_is_on_member_and_site",
+    "check_processed_variable_was_written_from_the_source",
+    "check_processed_variables_are_the_specs",
     "initial_condition_fields",
     "load_initial_conditions",
     "netcdf_encoding",
@@ -96,8 +117,10 @@ def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Da
 
     Raises
     ------
+    KeyError
+        If the raw file has a site the site table lacks.
     ValueError
-        If the raw file's sites are not exactly the site table's pool.
+        If the raw file lacks a site of the site table.
 
     Notes
     -----
@@ -107,14 +130,9 @@ def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Da
     ``source_index`` so a source file name can always be recovered.
     """
     pool = np.sort(site_table[SITE_ID].to_numpy(np.int64))
-    raw_sites = raw[SITE].values.astype(np.int64)
-    if not np.array_equal(raw_sites, pool):
-        extra = sorted(set(raw_sites.tolist()) - set(pool.tolist()))[:10]
-        missing = sorted(set(pool.tolist()) - set(raw_sites.tolist()))[:10]
-        raise ValueError(
-            f"raw file sites are not the site table's pool: not in the table {extra}, "
-            f"not in the file {missing}"
-        )
+    check_sites_are_the_site_table(
+        site_table, raw[SITE].values.tolist(), message_name="the raw file's site(s)"
+    )
     source_index = raw[RAW_MEMBER].values.astype(BATCH_LABEL_DTYPE)
 
     data_vars = {
@@ -166,19 +184,14 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     FileNotFoundError
         If the file is absent, with the command that produces it.
     ValueError
-        If the file does not match the data model.
+        If the file is not netCDF-4, or does not follow the data model
+        (:func:`check_processed_initial_conditions_are_valid`).
     """
     path = Path(path) if path is not None else default_processed_path()
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"{path} is not a file. Produce it with:\n  python scripts/ingest_initial_conditions.py"
-        )
+    check_processed_initial_conditions_exist(path)
+    dataset = _opened_netcdf4(path)
     try:
-        dataset = xr.open_dataset(path, engine="h5netcdf")
-    except OSError as error:
-        raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error})") from error
-    try:
-        _check_processed_file_matches_the_data_model(dataset, path)
+        check_processed_initial_conditions_are_valid(dataset, message_name=str(path))
     except Exception:
         dataset.close()
         raise
@@ -234,13 +247,26 @@ def initial_condition_fields(
 
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
-        check_initial_conditions_hold_the_sites(dataset, wanted_sites)
+        check_processed_initial_conditions_hold_the_sites(dataset, wanted_sites)
         dataset = dataset.sel({SITE: wanted_sites})
     return {name: dataset[name] for name in wanted_names}
 
+# ── private helpers ───────────────────────────────────────────────────────────
+
+
+def _opened_netcdf4(path: Path) -> xr.Dataset:
+    """*path* opened lazily through ``h5netcdf``; one it cannot read is a ``ValueError``."""
+    try:
+        return xr.open_dataset(path, engine="h5netcdf")
+    except OSError as error:
+        raise ValueError(
+            f"{path}: not readable as netCDF-4/HDF5 ({error}); re-make it with "
+            "scripts/ingest_initial_conditions.py."
+        ) from error
 
 
 def _dataset_attributes(raw: xr.Dataset) -> dict[str, Any]:
+    """The processed file's dataset attributes, from the raw file's."""
     return {
         "Conventions": CF_CONVENTIONS,
         "title": "Initial condition ensemble for the 8000-site pool",
@@ -273,83 +299,216 @@ def _dataset_attributes(raw: xr.Dataset) -> dict[str, Any]:
     }
 
 
-def _check_processed_file_matches_the_data_model(dataset: xr.Dataset, path: Path) -> None:
-    """Raise unless *dataset* is the processed file the data model describes."""
+# ── checks ────────────────────────────────────────────────────────────────────
+
+#: The advice every refusal of a processed file ends with.
+_REMAKE = "re-make it with scripts/ingest_initial_conditions.py"
+
+
+def check_processed_initial_conditions_are_valid(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed initial conditions file follows the data model."""
+    check_processed_variables_are_the_specs(dataset, message_name=message_name)
+    for spec in INITIAL_CONDITIONS:
+        subject = f"{message_name}: {spec.name}"
+        array = dataset[spec.name]
+        check_processed_variable_is_on_member_and_site(array, message_name=subject)
+        check_processed_variable_has_the_spec_units(array, spec.units, message_name=subject)
+        check_processed_variable_was_written_from_the_source(
+            array, spec.source_name, message_name=subject
+        )
+        check_processed_variable_has_the_spec_long_name(array, spec.long_label, message_name=subject)
+        check_processed_variable_has_no_infinite_value(array, message_name=subject)
+    check_processed_initial_conditions_have_the_coordinates(dataset, message_name=message_name)
+    check_processed_locations_are_on_site(dataset, message_name=message_name)
+    check_processed_source_index_is_on_the_member(dataset, message_name=message_name)
+    check_processed_members_count_from_zero(dataset, message_name=message_name)
+    check_processed_source_index_ascends_from_one(dataset, message_name=message_name)
+    check_processed_member_is_its_source_index(dataset, message_name=message_name)
+    check_processed_member_count_is_recorded(dataset, message_name=message_name)
+    check_processed_sites_ascend(dataset, message_name=message_name)
+    check_processed_locations_are_geographic(dataset, message_name=message_name)
+    check_presence_is_uniform_over_members(
+        {name: dataset[name].values.T for name in INITIAL_CONDITION_NAMES}, dataset[SITE].values
+    )
+    check_processed_initial_conditions_declare_the_conventions(dataset, message_name=message_name)
+
+
+def check_processed_initial_conditions_exist(path: Path) -> None:
+    """The processed initial conditions file exists."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} is not a file; produce it with "
+            "`python scripts/ingest_initial_conditions.py`."
+        )
+
+
+def check_processed_variables_are_the_specs(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file holds exactly the specs' variables."""
     if set(dataset.data_vars) != set(INITIAL_CONDITION_NAMES):
         raise ValueError(
-            f"{path}: variables are {sorted(dataset.data_vars)}, expected "
-            f"{sorted(INITIAL_CONDITION_NAMES)}"
+            f"{message_name}: variables are {sorted(dataset.data_vars)}, expected "
+            f"{sorted(INITIAL_CONDITION_NAMES)}; {_REMAKE}."
         )
-    for spec in INITIAL_CONDITIONS:
-        array = dataset[spec.name]
-        if array.dims != (INITIAL_CONDITION_MEMBER, SITE):
-            raise ValueError(
-                f"{path}: {spec.name} has dims {array.dims}, expected "
-                f"{(INITIAL_CONDITION_MEMBER, SITE)}; a processed file written before the "
-                "member dim was renamed is re-made by scripts/ingest_initial_conditions.py"
-            )
-        if array.attrs.get("units") != spec.units:
-            raise ValueError(
-                f"{path}: {spec.name} has units {array.attrs.get('units')!r}, the spec says "
-                f"{spec.units!r}"
-            )
-        if array.attrs.get("source_name") != spec.source_name:
-            raise ValueError(
-                f"{path}: {spec.name} was written from {array.attrs.get('source_name')!r}, "
-                f"the spec says {spec.source_name!r}"
-            )
-        if array.attrs.get("long_name") != spec.long_label:
-            raise ValueError(f"{path}: {spec.name} lacks the spec's long_name")
-        if np.isinf(array.values).any():
-            raise ValueError(f"{path}: {spec.name} holds an infinite value")
+
+
+def check_processed_variable_is_on_member_and_site(
+    array: xr.DataArray, *, message_name: str
+) -> None:
+    """A processed variable is on ``(initial_condition_member, site)``."""
+    if array.dims != (INITIAL_CONDITION_MEMBER, SITE):
+        raise ValueError(
+            f"{message_name} has dims {array.dims}, expected "
+            f"{(INITIAL_CONDITION_MEMBER, SITE)}; a processed file written before the member "
+            f"dim was renamed is out of date, so {_REMAKE}."
+        )
+
+
+def check_processed_variable_has_the_spec_units(
+    array: xr.DataArray, units: str, *, message_name: str
+) -> None:
+    """A processed variable is in its spec's units."""
+    if array.attrs.get("units") != units:
+        raise ValueError(
+            f"{message_name} has units {array.attrs.get('units')!r}, the spec says {units!r}; "
+            f"{_REMAKE}."
+        )
+
+
+def check_processed_variable_was_written_from_the_source(
+    array: xr.DataArray, source_name: str, *, message_name: str
+) -> None:
+    """A processed variable was written from its spec's source variable."""
+    if array.attrs.get("source_name") != source_name:
+        raise ValueError(
+            f"{message_name} was written from {array.attrs.get('source_name')!r}, the spec says "
+            f"{source_name!r}; {_REMAKE}."
+        )
+
+
+def check_processed_variable_has_the_spec_long_name(
+    array: xr.DataArray, long_label: str, *, message_name: str
+) -> None:
+    """A processed variable's ``long_name`` is its spec's long label."""
+    if array.attrs.get("long_name") != long_label:
+        raise ValueError(f"{message_name} lacks the spec's long_name; {_REMAKE}.")
+
+
+def check_processed_variable_has_no_infinite_value(
+    array: xr.DataArray, *, message_name: str
+) -> None:
+    """A processed variable holds no infinite value."""
+    if np.isinf(array.values).any():
+        raise ValueError(f"{message_name} holds an infinite value; {_REMAKE}.")
+
+
+def check_processed_initial_conditions_have_the_coordinates(
+    dataset: xr.Dataset, *, message_name: str
+) -> None:
+    """A processed file carries the member, source index, site and location coordinates."""
     for coordinate in (INITIAL_CONDITION_MEMBER, SOURCE_INDEX, SITE, LON, LAT):
         if coordinate not in dataset.coords:
-            raise ValueError(f"{path}: missing the {coordinate!r} coordinate")
+            raise ValueError(
+                f"{message_name}: missing the {coordinate!r} coordinate; {_REMAKE}."
+            )
+
+
+def check_processed_locations_are_on_site(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's ``lon`` and ``lat`` are on ``site``."""
     for coordinate in (LON, LAT):
         if dataset[coordinate].dims != (SITE,):
-            raise ValueError(f"{path}: {coordinate} must be on site, has dims {dataset[coordinate].dims}")
+            raise ValueError(
+                f"{message_name}: {coordinate} must be on site, has dims "
+                f"{dataset[coordinate].dims}; {_REMAKE}."
+            )
+
+
+def check_processed_source_index_is_on_the_member(
+    dataset: xr.Dataset, *, message_name: str
+) -> None:
+    """A processed file's ``source_index`` is on ``initial_condition_member``."""
     if dataset[SOURCE_INDEX].dims != (INITIAL_CONDITION_MEMBER,):
-        raise ValueError(f"{path}: {SOURCE_INDEX} must be on {INITIAL_CONDITION_MEMBER}")
+        raise ValueError(
+            f"{message_name}: {SOURCE_INDEX} must be on {INITIAL_CONDITION_MEMBER}; {_REMAKE}."
+        )
+
+
+def check_processed_members_count_from_zero(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's members are ``0`` to ``n - 1``."""
     member = dataset[INITIAL_CONDITION_MEMBER].values
     if member.size == 0 or not np.array_equal(member, np.arange(member.size)):
-        raise ValueError(f"{path}: {INITIAL_CONDITION_MEMBER} is not 0..n-1")
+        raise ValueError(
+            f"{message_name}: {INITIAL_CONDITION_MEMBER} is not 0..n-1; {_REMAKE}."
+        )
+
+
+def check_processed_source_index_ascends_from_one(
+    dataset: xr.Dataset, *, message_name: str
+) -> None:
+    """A processed file's source indices are strictly ascending from 1 or more."""
     source_index = dataset[SOURCE_INDEX].values
     if source_index.min() < 1 or np.any(np.diff(source_index) <= 0):
         raise ValueError(
-            f"{path}: {SOURCE_INDEX} is not strictly ascending from 1 or more; a source "
-            "file name could not be recovered from it"
+            f"{message_name}: {SOURCE_INDEX} is not strictly ascending from 1 or more, so a "
+            f"source file name could not be recovered from it; {_REMAKE}."
         )
-    if not np.array_equal(member, source_index - 1):
+
+
+def check_processed_member_is_its_source_index(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's member label is its source index less one, the member's identity."""
+    member = dataset[INITIAL_CONDITION_MEMBER].values
+    if not np.array_equal(member, dataset[SOURCE_INDEX].values - 1):
         raise ValueError(
-            f"{path}: {INITIAL_CONDITION_MEMBER} is not {SOURCE_INDEX} - 1, the member's "
-            "identity; re-make the processed file with scripts/ingest_initial_conditions.py"
+            f"{message_name}: {INITIAL_CONDITION_MEMBER} is not {SOURCE_INDEX} - 1, the "
+            f"member's identity; {_REMAKE}."
         )
-    if dataset.attrs.get("n_initial_condition_members") != member.size:
+
+
+def check_processed_member_count_is_recorded(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's ``n_initial_condition_members`` attribute counts its members."""
+    n_members = dataset.sizes[INITIAL_CONDITION_MEMBER]
+    recorded = dataset.attrs.get("n_initial_condition_members")
+    if recorded != n_members:
         raise ValueError(
-            f"{path}: attribute n_initial_condition_members is "
-            f"{dataset.attrs.get('n_initial_condition_members')!r}, not the {member.size} "
-            "members; a processed file written before the attribute was renamed from n_members "
-            "is re-made by scripts/ingest_initial_conditions.py"
+            f"{message_name}: attribute n_initial_condition_members is {recorded!r}, not the "
+            f"{n_members} members; a processed file written before the attribute was renamed "
+            f"from n_members is out of date, so {_REMAKE}."
         )
+
+
+def check_processed_sites_ascend(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's ``site`` is non-empty and strictly ascending."""
     site = dataset[SITE].values
     if site.size == 0 or np.any(np.diff(site) <= 0):
-        raise ValueError(f"{path}: site is empty or not strictly ascending")
+        raise ValueError(f"{message_name}: site is empty or not strictly ascending; {_REMAKE}.")
+
+
+def check_processed_locations_are_geographic(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's ``lon`` and ``lat`` are finite and in the geographic range."""
     lon, lat = dataset[LON].values, dataset[LAT].values
     if not (np.isfinite(lon).all() and np.isfinite(lat).all()):
-        raise ValueError(f"{path}: lon or lat holds a non-finite value")
+        raise ValueError(f"{message_name}: lon or lat holds a non-finite value; {_REMAKE}.")
     if np.abs(lon).max() > 180 or np.abs(lat).max() > 90:
-        raise ValueError(f"{path}: lon or lat is outside the geographic range; are they swapped?")
-    _check_presence_is_uniform_over_members(
-        {name: dataset[name].values.T for name in INITIAL_CONDITION_NAMES}, site
-    )
-    if dataset.attrs.get("Conventions") != CF_CONVENTIONS:
-        raise ValueError(f"{path}: Conventions is {dataset.attrs.get('Conventions')!r}, expected {CF_CONVENTIONS!r}")
+        raise ValueError(
+            f"{message_name}: lon or lat is outside the geographic range, as if swapped; "
+            f"{_REMAKE}."
+        )
 
 
-# ── checks ────────────────────────────────────────────────────────────────────
+def check_processed_initial_conditions_declare_the_conventions(
+    dataset: xr.Dataset, *, message_name: str
+) -> None:
+    """A processed file declares the package's CF conventions."""
+    declared = dataset.attrs.get("Conventions")
+    if declared != CF_CONVENTIONS:
+        raise ValueError(
+            f"{message_name}: Conventions is {declared!r}, expected {CF_CONVENTIONS!r}; "
+            f"{_REMAKE}."
+        )
 
 
-def check_initial_conditions_hold_the_sites(dataset: xr.Dataset, site_ids: Sequence[int]) -> None:
+def check_processed_initial_conditions_hold_the_sites(
+    dataset: xr.Dataset, site_ids: Sequence[int]
+) -> None:
     """The initial conditions' processed file holds every site asked of it."""
     held = set(dataset[SITE].values.tolist())
     missing = [site for site in site_ids if site not in held]

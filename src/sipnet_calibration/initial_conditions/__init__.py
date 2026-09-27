@@ -146,10 +146,16 @@ member; :func:`to_sipnet_initial_condition_fields` converts a whole
 ``(initial_condition_member, site)`` ensemble to SIPNET parameter fields,
 which merge into a parameter vector's.
 
-**Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
-:func:`raw_path` and :func:`default_processed_path` say where each file is
-expected, all honoring ``$SIPNET_CALIBRATION_DATA``; :func:`raw_encoding` and
+**Paths and encodings.** :func:`default_source_root` and
+:func:`default_processed_path` say where the source tree and the processed
+file are expected, honoring ``$SIPNET_CALIBRATION_DATA``;
+:func:`default_raw_directory` and :func:`raw_path` say where the tracked raw
+file is, in this checkout whatever that variable says; :func:`raw_encoding` and
 :func:`netcdf_encoding` give the two files' on-disk encodings.
+
+**The checks.** Each module's refusals are its public ``check_*`` functions,
+one invariant each, in its checks section; :func:`read_source_file`,
+:func:`read_raw` and :func:`load_initial_conditions` hold a file to them.
 
 Notes
 -----
@@ -247,7 +253,7 @@ from sipnet_calibration.initial_conditions.names import (
     RAW_FILE,
     RAW_MEMBER,
     default_processed_path,
-    default_raw_dir,
+    default_raw_directory,
     default_source_root,
     raw_path,
 )
@@ -289,7 +295,7 @@ __all__ = [
     "RAW_FILE",
     "RAW_MEMBER",
     "default_processed_path",
-    "default_raw_dir",
+    "default_raw_directory",
     "default_source_root",
     "raw_path",
     # What the source files contain, and their provenance.

@@ -33,7 +33,6 @@ from sipnet_calibration.conventions import (
     INITIAL_CONDITION_MEMBER,
     SITE,
     SOURCE_INDEX,
-    data_root,
 )
 from sipnet_calibration.initial_conditions import (
     CONVERTED_SIPNET_PARAMETER_NAMES,
@@ -60,11 +59,11 @@ from sipnet_calibration.initial_conditions import (
     to_sipnet_initial_condition_fields,
 )
 from sipnet_calibration.fields import validate_sipnet_parameter_fields
-from sipnet_calibration.sites import N_SITES, load_sites
+from sipnet_calibration.sites import N_SITES, default_site_table_path, load_sites
 
-LOCAL_SOURCE_ROOT = data_root() / "raw" / "initial_conditions" / "files"
+LOCAL_SOURCE_ROOT = module.default_source_root()
 TRACKED_RAW = REPOSITORY / "data" / "raw" / "initial_conditions" / module.RAW_FILE
-SITES_CSV = data_root() / "processed" / "sites" / "sites.csv"
+SITES_CSV = default_site_table_path()
 
 
 convert = load_script("scripts/raw_sources/convert_initial_conditions.py")
@@ -458,37 +457,44 @@ def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
     root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
 
     assert module.default_processed_path() == root / "processed" / module.PROCESSED_FILE
-    assert module.default_raw_dir() == root / "raw" / "initial_conditions"
+    assert module.default_raw_directory() == root / "raw" / "initial_conditions"
     assert module.raw_path() == root / "raw" / "initial_conditions" / module.RAW_FILE
     assert module.default_source_root() == root / "raw" / "initial_conditions" / "files"
 
 
 def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
     """The root lives in sipnet_calibration.conventions so that one setting
-    moves all of them. Four modules used to spell it out separately, and the
+    moves every storage-backed path, while a tracked raw input stays in the
+    checkout. Four modules used to spell the root out separately, and the
     spelling broke here the moment a module moved a directory deeper."""
-    from sipnet_calibration import constraints, conventions, drivers, sites
+    from sipnet_calibration import constraints, conventions, drivers, site_labels, sites
+
+    checkout = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
+    storage_backed = (
+        module.default_processed_path,
+        module.default_source_root,
+        constraints.default_constraint_directory,
+        site_labels.default_site_labels_directory,
+        sites.default_site_table_path,
+        drivers.default_drivers_root,
+    )
+    tracked = (
+        module.default_raw_directory,
+        constraints.default_raw_directory,
+        site_labels.default_raw_directory,
+    )
 
     monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(tmp_path))
     assert conventions.data_root() == tmp_path
-    assert module.default_raw_dir() == tmp_path / "raw" / "initial_conditions"
-    assert constraints.default_constraint_directory() == tmp_path / "processed" / "constraints"
-    assert sites.default_site_table_path().is_relative_to(tmp_path)
-    assert drivers.default_drivers_root().is_relative_to(tmp_path)
-
-    # A tracked raw input stays in the checkout whatever the variable says.
-    root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
-    assert sites.tracked_data_root() == root
-    assert constraints.default_raw_directory() == root / "raw" / "constraints"
+    assert sites.tracked_data_root() == checkout
+    for resolve in storage_backed:
+        assert resolve().is_relative_to(tmp_path), resolve
+    for resolve in tracked:
+        assert resolve().is_relative_to(checkout), resolve
 
     monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
-    for path in (
-        module.default_raw_dir(),
-        constraints.default_constraint_directory(),
-        sites.default_site_table_path(),
-        drivers.default_drivers_root(),
-    ):
-        assert path.is_relative_to(root), path
+    for resolve in (*storage_backed, *tracked):
+        assert resolve().is_relative_to(checkout), resolve
 
 
 def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):
@@ -740,9 +746,12 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
-    site_table = load_sites(write_site_table_csv(tmp_path / "s.csv", [1, 2]))
-    with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="pool"):
-        build_initial_conditions(raw_dataset, site_table)
+    fewer = load_sites(write_site_table_csv(tmp_path / "fewer.csv", [1, 2]))
+    with read_raw(raw) as raw_dataset, pytest.raises(KeyError, match="not in the site table"):
+        build_initial_conditions(raw_dataset, fewer)
+    more = load_sites(write_site_table_csv(tmp_path / "more.csv", [1, 2, 3, 4]))
+    with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="lack 1 site"):
+        build_initial_conditions(raw_dataset, more)
 
 
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
@@ -761,7 +770,7 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
     with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial condition"):
         initial_condition_fields(sites=[9], path=out)
-    with pytest.raises(KeyError, match="No initial condition named"):
+    with pytest.raises(KeyError, match="no initial condition named"):
         initial_condition_fields(["soil"], path=out)
 
 
@@ -1417,7 +1426,7 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     xr.testing.assert_identical(restored, crossed)
 
 
-# ── the gaps mutation testing found ───────────────────────────────────────────
+# ── the remaining refusals ────────────────────────────────────────────────────
 
 
 def _write_raw_variant(raw: Path, tmp_path: Path, mutate) -> Path:
@@ -1510,7 +1519,7 @@ def test_build_raw_refuses_ids_that_do_not_fit_and_unknown_names():
         build_raw(records + [SourceFile(site=2**31, member=1, values=SYNTHETIC_VALUES[2][1]),
                              SourceFile(site=2**31, member=2, values=SYNTHETIC_VALUES[2][2])],
                   source_root="", conversion_script="")
-    with pytest.raises(ValueError, match="not one of"):
+    with pytest.raises(ValueError, match="not one the source files carry"):
         build_raw([SourceFile(site=1, member=1, values={"TotSoilCarb": 1.0})], source_root="", conversion_script="")
 
 
@@ -1559,8 +1568,8 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
     refused(lambda d: d.assign_coords(lon=(SITE, d["lat"].values * 5)), "geographic")
     refused(lambda d: d.assign_coords(lat=(SITE, np.array([np.nan, 1.0, 2.0]))), "non-finite")
     refused(lambda d: d.drop_vars("lat"), "coordinate")
-    refused(lambda d: _rename_attr(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
-    refused(lambda d: _rename_attr(d, "initial_wood_carbon", "long_name", ""), "long_name")
+    refused(lambda d: _with_attribute_set(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
+    refused(lambda d: _with_attribute_set(d, "initial_wood_carbon", "long_name", ""), "long_name")
     refused(lambda d: d.assign_attrs(Conventions="CF-1.6"), "Conventions")
     refused(lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending")
     refused(
@@ -1621,7 +1630,7 @@ def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, 
     assert restored.equals(crossed)
 
 
-def _rename_attr(dataset, variable, key, value):
+def _with_attribute_set(dataset, variable, key, value):
     dataset[variable].attrs[key] = value
     return dataset
 
