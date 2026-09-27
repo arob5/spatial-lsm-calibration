@@ -76,8 +76,8 @@ from sipnet_calibration.constraints import (
     TimeStructure,
     build_constraint,
     constraint_path,
-    default_constraints_dir,
-    default_raw_dir,
+    default_constraint_directory,
+    default_raw_directory,
     describe,
     load_constraint,
     netcdf_encoding,
@@ -114,8 +114,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\n\n".join(describe(resolve_constraint(name)) for name in names))
         return 0
 
-    raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
-    out_dir = args.out_dir if args.out_dir is not None else default_constraints_dir()
+    raw_root = args.raw_root if args.raw_root is not None else default_raw_directory()
+    out_dir = args.out_dir if args.out_dir is not None else default_constraint_directory()
     site_table_path = args.site_table or default_site_table_path()
 
     try:

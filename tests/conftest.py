@@ -479,8 +479,8 @@ def write_site_table_csv(
     path: Path,
     site_ids: Sequence[int],
     *,
-    lon: Sequence[float],
-    lat: Sequence[float],
+    lon: Sequence[float] | None = None,
+    lat: Sequence[float] | None = None,
     landcover: Sequence[int] | None = None,
 ) -> Path:
     """Write a site table with every column of the schema, as the ingest does.
@@ -489,8 +489,12 @@ def write_site_table_csv(
     ----------
     path:
         Where to write it; its directory is created.
-    site_ids, lon, lat:
-        The sites and their coordinates.
+    site_ids:
+        The sites.
+    lon, lat:
+        Their coordinates. By default site *s* is at ``(-99 - s, 39 + s)``,
+        so site 1 is at ``(-100, 40)``, as the synthetic raw data sources
+        written beside it place their records.
     landcover:
         The landcover class of each site; class 1 for every site by default.
 
@@ -506,8 +510,8 @@ def write_site_table_csv(
     frame = pd.DataFrame(
         {
             conventions.SITE_ID: np.array(site_ids, dtype=conventions.SITE_DTYPE),
-            conventions.LON: list(lon),
-            conventions.LAT: list(lat),
+            conventions.LON: [-99.0 - site for site in site_ids] if lon is None else list(lon),
+            conventions.LAT: [39.0 + site for site in site_ids] if lat is None else list(lat),
             "lon_index": np.arange(n, dtype=np.int32) + 1000,
             "lat_index": np.arange(n, dtype=np.int32) + 2000,
             "site_name": [f"site {site}" for site in site_ids],

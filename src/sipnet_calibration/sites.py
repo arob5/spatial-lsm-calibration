@@ -89,8 +89,9 @@ Functions
     A subset of a site table, by identifier, bounding box, arbitrary predicate,
     or a number of sites drawn at random. The filters compose.
 
-:func:`default_site_table_path`
-    Where the table is expected to be.
+:func:`default_site_table_path`, :func:`tracked_data_root`
+    Where the table is expected to be; and ``data/`` of this checkout, which
+    the data sources' tracked raw directories are found from.
 
 :func:`site_lookup`, :func:`site_locations`, :func:`site_coordinates`
     The table keyed on ``site_id`` for repeated lookups; the ``lon``/``lat``
@@ -269,6 +270,7 @@ __all__ = [
     "site_coordinates",
     "site_locations",
     "site_lookup",
+    "tracked_data_root",
 ]
 
 
@@ -507,6 +509,17 @@ def default_site_table_path() -> Path:
     tests, notebooks and the ingest script agree on one default.
     """
     return data_root() / "processed" / "sites" / "sites.csv"
+
+
+def tracked_data_root() -> Path:
+    """``data/`` of this checkout, where the tracked raw inputs are.
+
+    Unlike :func:`sipnet_calibration.conventions.data_root`, it ignores
+    ``$SIPNET_CALIBRATION_DATA``: that variable moves the storage-backed part
+    of ``data/``, and a tracked file is always in the checkout. The
+    data sources' resolvers for tracked raw directories start here.
+    """
+    return Path(__file__).resolve().parents[2] / "data"
 
 
 def load_sites(path: Path | str | None = None) -> pd.DataFrame:

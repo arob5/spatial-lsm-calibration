@@ -74,7 +74,6 @@ ingest = load_script("scripts/ingest_initial_conditions.py")
 # ── synthetic fixtures ────────────────────────────────────────────────────────
 
 SYNTHETIC_SITES = [1, 2, 3]
-SYNTHETIC_COORDS = {1: (-100.0, 40.0), 2: (-101.0, 41.0), 3: (-102.0, 42.0), 4: (-103.0, 43.0)}
 
 #: Per site, per member, the source values. Site 1 has every variable
 #: with a negative wood draw in member 2; site 2 lacks leaf and soil
@@ -188,16 +187,6 @@ def _write_tree(root: Path, values=SYNTHETIC_VALUES) -> Path:
     return root
 
 
-def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
-    """A minimal site table that ``load_sites`` accepts."""
-    return write_site_table_csv(
-        path,
-        site_ids,
-        lon=[SYNTHETIC_COORDS[site][0] for site in site_ids],
-        lat=[SYNTHETIC_COORDS[site][1] for site in site_ids],
-    )
-
-
 def _records(values=SYNTHETIC_VALUES) -> list[SourceFile]:
     return [
         SourceFile(site=site, member=member, values=record)
@@ -213,14 +202,14 @@ def tree(tmp_path) -> Path:
 
 @pytest.fixture
 def sites_csv(tmp_path) -> Path:
-    return _write_sites(tmp_path / "sites.csv")
+    return write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
 
 
 @pytest.fixture
 def raw(tree, tmp_path) -> Path:
     """The synthetic tree converted through the script, as a path."""
     out = tmp_path / "raw" / module.RAW_FILE
-    sites_csv = _write_sites(tmp_path / "sites.csv")
+    sites_csv = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(sites_csv), "--jobs", "1"]) == 0
     return out
 
@@ -483,15 +472,19 @@ def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
     monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(tmp_path))
     assert conventions.data_root() == tmp_path
     assert module.default_raw_dir() == tmp_path / "raw" / "initial_conditions"
-    assert constraints.default_raw_dir() == tmp_path / "raw" / "constraints"
+    assert constraints.default_constraint_directory() == tmp_path / "processed" / "constraints"
     assert sites.default_site_table_path().is_relative_to(tmp_path)
     assert drivers.default_drivers_root().is_relative_to(tmp_path)
 
-    monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
+    # A tracked raw input stays in the checkout whatever the variable says.
     root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
+    assert sites.tracked_data_root() == root
+    assert constraints.default_raw_directory() == root / "raw" / "constraints"
+
+    monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
     for path in (
         module.default_raw_dir(),
-        constraints.default_raw_dir(),
+        constraints.default_constraint_directory(),
         sites.default_site_table_path(),
         drivers.default_drivers_root(),
     ):
@@ -670,7 +663,7 @@ def test_conversion_script_writes_a_raw_file_that_reads_back(raw):
 
 
 def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     (tree / "notes.txt").write_text("x")
     assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "not site directories" in capsys.readouterr().err
@@ -679,7 +672,7 @@ def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsy
     assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "IC_site" in capsys.readouterr().err
     (tree / "1" / "README").unlink()
-    wrong = _write_sites(tmp_path / "wrong.csv", site_ids=[1, 2, 3, 4])
+    wrong = write_site_table_csv(tmp_path / "wrong.csv", [1, 2, 3, 4])
     assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(wrong), "--jobs", "1"]) == 1
     assert "pool" in capsys.readouterr().err
     assert not (tmp_path / "o.nc").exists()
@@ -688,7 +681,7 @@ def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsy
 def test_a_failed_conversion_check_keeps_the_partial_and_prints_its_path(
     tree, tmp_path, capsys, monkeypatch
 ):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     out = tmp_path / "o.nc"
 
     def refuse(dataset, partial):
@@ -747,7 +740,7 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
-    site_table = load_sites(_write_sites(tmp_path / "s.csv", site_ids=[1, 2]))
+    site_table = load_sites(write_site_table_csv(tmp_path / "s.csv", [1, 2]))
     with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="pool"):
         build_initial_conditions(raw_dataset, site_table)
 
@@ -1655,7 +1648,7 @@ def test_biomass_spec_is_not_fed_to_sipnet():
 
 
 def test_conversion_limit_sites_and_a_variable_absent_everywhere(tree, tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     out = tmp_path / "trial.nc"
     assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "2"]) == 0
     text = capsys.readouterr().out

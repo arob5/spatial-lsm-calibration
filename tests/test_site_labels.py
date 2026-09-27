@@ -84,14 +84,10 @@ SYNTHETIC_ROWS = [
 ]
 
 
-def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
-    """A minimal site table that ``load_sites`` accepts."""
+def _write_site_table(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
+    """A site table whose landcover the synthetic spec's relation holds for."""
     return write_site_table_csv(
-        path,
-        site_ids,
-        lon=[-100.0 - site for site in site_ids],
-        lat=[40.0 + site for site in site_ids],
-        landcover=[SYNTHETIC_LANDCOVER.get(site, 1) for site in site_ids],
+        path, site_ids, landcover=[SYNTHETIC_LANDCOVER.get(site, 1) for site in site_ids]
     )
 
 
@@ -109,7 +105,7 @@ def synthetic(tmp_path):
     """A raw file, a site table and an output directory that agree with each other."""
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
-    site_table = load_sites(_write_sites(tmp_path / "sites.csv"))
+    site_table = load_sites(_write_site_table(tmp_path / "sites.csv"))
     return raw_root, site_table, tmp_path / "out"
 
 
@@ -316,7 +312,7 @@ def test_a_site_outside_the_pool_is_refused(tmp_path, synthetic):
 
 def test_an_unlabeled_site_is_refused_when_the_spec_covers_the_pool(tmp_path):
     raw_root = tmp_path / "raw"
-    site_table = load_sites(_write_sites(tmp_path / "sites.csv", [1, 2, 3, 4, 5]))
+    site_table = load_sites(_write_site_table(tmp_path / "sites.csv", [1, 2, 3, 4, 5]))
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
     site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="unlabeled"):
@@ -354,7 +350,7 @@ def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, s
 def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
     raw_root = tmp_path / "raw"
     site_table_path = tmp_path / "sites.csv"
-    _write_sites(site_table_path)
+    _write_site_table(site_table_path)
     site_table = load_sites(site_table_path)
     site_table.loc[site_table[SITE_ID] == 4, "landcover"] = np.int8(7)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
@@ -670,7 +666,7 @@ def test_main_honors_the_site_labels_argument(real_argv):
 
 
 def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = _write_site_table(tmp_path / "sites.csv")
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS[:3])
     # main resolves by name, so drive it through the registry's own spec with a
@@ -754,7 +750,7 @@ def test_partial_site_labels_are_allowed_when_the_spec_says_so(tmp_path):
     spec = dataclasses.replace(SYNTHETIC_SPEC, covers_pool=False, expected_rows=3)
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, spec, SYNTHETIC_ROWS[:3])
-    site_table = load_sites(_write_sites(tmp_path / "sites.csv"))
+    site_table = load_sites(_write_site_table(tmp_path / "sites.csv"))
     site_labels = build_site_labels(spec, read_raw(spec, raw_root))
     ingest.check_pool_is_completely_labeled(spec, site_labels, site_table)  # must not raise
 

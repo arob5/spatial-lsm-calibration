@@ -66,17 +66,6 @@ ingest = load_script("scripts/ingest_constraints.py")
 # ── synthetic fixtures ────────────────────────────────────────────────────────
 
 SYNTHETIC_SITES = [1, 2, 3, 4]
-SYNTHETIC_COORDS = {1: (-100.0, 40.0), 2: (-101.0, 41.0), 3: (-102.0, 42.0), 4: (-103.0, 43.0)}
-
-
-def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
-    """A minimal site table that ``load_sites`` accepts."""
-    return write_site_table_csv(
-        path,
-        site_ids,
-        lon=[SYNTHETIC_COORDS[site][0] for site in site_ids],
-        lat=[SYNTHETIC_COORDS[site][1] for site in site_ids],
-    )
 
 
 def _write_raw(root: Path, spec: ConstraintSpec, rows: list[dict]) -> Path:
@@ -168,7 +157,7 @@ STATIC_ROWS = [
 
 @pytest.fixture
 def site_table(tmp_path) -> pd.DataFrame:
-    return load_sites(_write_sites(tmp_path / "sites" / "sites.csv"))
+    return load_sites(write_site_table_csv(tmp_path / "sites" / "sites.csv", SYNTHETIC_SITES))
 
 
 @pytest.fixture
@@ -218,7 +207,7 @@ def test_resolve_constraint_names_the_known_constraints_on_a_miss():
         ({"value_column": "nope"}, "not in raw_columns"),
         ({"time_column": None}, "needs a time_column"),
         ({"quality_column": "sd"}, "go together"),
-        ({"raw_columns": ("site_id", "year", "mean", "sd", "sd")}, "repeats"),
+        ({"raw_columns": ("site_id", "year", "mean", "sd", "sd")}, "more than once"),
         ({"raw_columns": ("id", "year", "mean", "sd")}, "site_id"),
         ({"description": ""}, "needs a description"),
     ],
@@ -735,7 +724,7 @@ def test_describe_exits_zero_without_touching_data(capsys):
 
 
 def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites" / "sites.csv", SYNTHETIC_SITES)
     code = ingest.main(
         ["--raw-root", str(tmp_path / "absent"), "--site-table", str(site_table_path),
          "--out-dir", str(tmp_path / "out"), "--constraint", "smap_soil_moisture"]
@@ -747,7 +736,7 @@ def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys
 
 
 def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch, capsys):
-    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites" / "sites.csv", SYNTHETIC_SITES)
     _write_raw(raw_root, ANNUAL, ANNUAL_ROWS)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
