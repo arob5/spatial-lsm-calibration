@@ -153,9 +153,9 @@ def test_writing_both_halves_round_trips(tmp_path):
     source = _source()
     site_labels, covariates = split.split_source(source)
     written = split.write_halves(site_labels, covariates, tmp_path / "l", tmp_path / "c")
-    assert set(written) == {split.SITE_LABELS_FILE, split.COVARIATES_FILE}
+    assert set(written) == {split.SITE_LABELS_FILE_NAME, split.COVARIATES_FILE_NAME}
     for name, path in written.items():
-        expected = site_labels if name == split.SITE_LABELS_FILE else covariates
+        expected = site_labels if name == split.SITE_LABELS_FILE_NAME else covariates
         back = pd.read_csv(path, dtype=str, keep_default_na=False, index_col=False)
         pd.testing.assert_frame_equal(back, expected.reset_index(drop=True))
 
@@ -173,14 +173,14 @@ def test_a_failed_second_check_moves_neither_half_and_keeps_both_partials(
     changed = source.copy()
     changed.loc[0, split.CLASS_COLUMN] = "grass"
     changed_labels, changed_covariates = split.split_source(changed)
-    real_check = split.check_written_file_reads_back
+    real_check = split.check_written_file_reads_back_identically
 
     def fail_on_covariates(frame, partial):
-        if partial.name.startswith(split.COVARIATES_FILE):
+        if partial.name.startswith(split.COVARIATES_FILE_NAME):
             raise split.IngestError("forced: covariates misread")
         real_check(frame, partial)
 
-    monkeypatch.setattr(split, "check_written_file_reads_back", fail_on_covariates)
+    monkeypatch.setattr(split, "check_written_file_reads_back_identically", fail_on_covariates)
     with pytest.raises(split.IngestError, match="forced"):
         split.write_halves(changed_labels, changed_covariates, tmp_path / "l", tmp_path / "c")
 
@@ -215,7 +215,7 @@ def test_main_reports_an_error_rather_than_a_traceback(tmp_path, capsys):
 def test_describe_needs_no_input(capsys):
     assert split.main(["--describe"]) == 0
     out = capsys.readouterr().out
-    assert split.SITE_LABELS_FILE in out and split.COVARIATES_FILE in out
+    assert split.SITE_LABELS_FILE_NAME in out and split.COVARIATES_FILE_NAME in out
 
 
 # ── the real halves ───────────────────────────────────────────────────────────

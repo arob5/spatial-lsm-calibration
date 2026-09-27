@@ -3,17 +3,17 @@
 
 Overview
 --------
-The producer's ``final_8000_sites_with_final_pft_v4.csv`` is one 60-column
-table holding two different things: the site labels with the workings of how
-each label was derived, and a set of environmental covariates assembled to
-derive it. This script cuts it in two along the column partition in
+The producer's ``final_8000_sites_with_final_pft_v4.csv`` is one table holding
+two different things: the site labels with the workings of how each label was
+derived, and a set of environmental covariates assembled to derive it. This
+script cuts it in two along the column partition in
 :data:`SITE_LABELS_COLUMN_NAMES`, writing both halves as tracked raw inputs.
 
 Input data
 ----------
 ``--source``, default the path in :data:`DEFAULT_SOURCE`
     The producer's table: one row per site of the pool
-    (:data:`sipnet_calibration.sites.N_SITES`) by 60 columns, keyed on
+    (:data:`sipnet_calibration.sites.N_SITES`), keyed on
     ``index``, which holds this project's site ids.
 
 Output data
@@ -120,14 +120,18 @@ SITE_LABELS_COLUMN_NAMES = (
 #: The repository, where the tracked inputs are.
 REPOSITORY = Path(__file__).resolve().parents[2]
 
-#: Where the two halves go by default: this repository's tracked raw inputs,
-#: whatever the working directory or ``$SIPNET_CALIBRATION_DATA``.
+#: Where the site-labels half goes by default: this repository's tracked raw
+#: input, whatever the working directory or ``$SIPNET_CALIBRATION_DATA``.
 DEFAULT_SITE_LABELS_DIRECTORY = REPOSITORY / "data" / "raw" / "site_labels"
+
+#: Where the covariate half goes by default, found from the checkout likewise.
 DEFAULT_COVARIATES_DIRECTORY = REPOSITORY / "data" / "raw" / "covariates"
 
-#: Output file names, which are what the provenance records name.
-SITE_LABELS_FILE = "site_pft_16class.csv"
-COVARIATES_FILE = "site_covariates_pft_assignment.csv"
+#: The site-labels half's file name, which the provenance records name.
+SITE_LABELS_FILE_NAME = "site_pft_16class.csv"
+
+#: The covariate half's file name, which the provenance records name.
+COVARIATES_FILE_NAME = "site_covariates_pft_assignment.csv"
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -157,22 +161,27 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
-        "--source", type=Path, default=DEFAULT_SOURCE, help=f"Default: {DEFAULT_SOURCE}"
+        "--source",
+        type=Path,
+        default=DEFAULT_SOURCE,
+        help=f"The producer's table. Default: {DEFAULT_SOURCE}."
     )
     parser.add_argument(
         "--site-labels-directory",
         type=Path,
         default=DEFAULT_SITE_LABELS_DIRECTORY,
-        help="Where the site-labels half goes. Default: the repository's data/raw/site_labels.",
+        help=f"Where the site-labels half goes. Default: {DEFAULT_SITE_LABELS_DIRECTORY}.",
     )
     parser.add_argument(
         "--covariates-directory",
         type=Path,
         default=DEFAULT_COVARIATES_DIRECTORY,
-        help="Where the covariate half goes. Default: the repository's data/raw/covariates.",
+        help=f"Where the covariate half goes. Default: {DEFAULT_COVARIATES_DIRECTORY}.",
     )
     parser.add_argument(
         "--describe",
@@ -188,9 +197,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def describe_partition() -> str:
     """The column partition, without reading anything."""
     return (
-        f"{SITE_LABELS_FILE}: {len(SITE_LABELS_COLUMN_NAMES)} columns\n  "
+        f"{SITE_LABELS_FILE_NAME}: {len(SITE_LABELS_COLUMN_NAMES)} columns\n  "
         + "\n  ".join(SITE_LABELS_COLUMN_NAMES)
-        + f"\n\n{COVARIATES_FILE}: {KEY_COLUMN} and every other column of the source."
+        + f"\n\n{COVARIATES_FILE_NAME}: {KEY_COLUMN} and every other column of the source."
     )
 
 
@@ -201,12 +210,12 @@ def read_source(path: Path) -> pd.DataFrame:
     # becomes a NaN that would be written as "" rather than what was there.
     check_source_exists(path)
     frame = pd.read_csv(path, dtype=str, keep_default_na=False, index_col=False)
-    check_source_has_rows(frame, path)
+    check_source_has_rows(frame, message_name=str(path))
     return frame
 
 
 def split_source(source: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The site-labels half and the covariate half, each in the source's column order."""
+    """The site-labels half and the covariate half, each in the source's order."""
     check_source_has_the_site_labels_columns(source)
     site_labels_column_names = [
         column for column in source.columns if column in set(SITE_LABELS_COLUMN_NAMES)
@@ -225,17 +234,19 @@ def write_halves(
     site_labels_directory: Path,
     covariates_directory: Path,
 ) -> dict[str, Path]:
-    """Write both halves together, each moved in once both read back; file name -> path."""
+    """Write both halves, moved in once both read back; file name -> path written."""
     halves = (
-        (site_labels, site_labels_directory / SITE_LABELS_FILE),
-        (covariates, covariates_directory / COVARIATES_FILE),
+        (site_labels, site_labels_directory / SITE_LABELS_FILE_NAME),
+        (covariates, covariates_directory / COVARIATES_FILE_NAME),
     )
     written = write_checked_together(
         [
             (
                 path,
                 lambda partial, frame=frame: frame.to_csv(partial, index=False),
-                lambda partial, frame=frame: check_written_file_reads_back(frame, partial),
+                lambda partial, frame=frame: check_written_file_reads_back_identically(
+                    frame, partial
+                ),
             )
             for frame, path in halves
         ]
@@ -258,7 +269,7 @@ def describe_written_halves(
         "",
     ]
     for name, path in written.items():
-        frame = site_labels if name == SITE_LABELS_FILE else covariates
+        frame = site_labels if name == SITE_LABELS_FILE_NAME else covariates
         lines.append(
             f"wrote  : {path}\n"
             f"         {len(frame)} rows x {len(frame.columns)} columns, "
@@ -292,10 +303,10 @@ def check_source_exists(path: Path) -> None:
         )
 
 
-def check_source_has_rows(frame: pd.DataFrame, path: Path) -> None:
+def check_source_has_rows(frame: pd.DataFrame, *, message_name: str) -> None:
     """The producer's table holds at least one row."""
     if frame.empty:
-        raise IngestError(f"{path}: holds no rows; check which file was copied.")
+        raise IngestError(f"{message_name}: holds no rows; re-copy it and compare it with data/raw/site_labels/provenance.md.")
 
 
 def check_source_has_the_site_labels_columns(source: pd.DataFrame) -> None:
@@ -303,7 +314,8 @@ def check_source_has_the_site_labels_columns(source: pd.DataFrame) -> None:
     absent = [column for column in SITE_LABELS_COLUMN_NAMES if column not in source.columns]
     if absent:
         raise IngestError(
-            f"the source does not carry {absent}, which SITE_LABELS_COLUMN_NAMES names; "
+            f"the source does not carry {truncated(absent)}, which SITE_LABELS_COLUMN_NAMES "
+            "names; "
             "a new version of the producer's table is a change to that constant, not "
             "something to split around."
         )
@@ -335,8 +347,8 @@ def check_halves_cover_the_source(
     if union != set(source.columns):
         raise IngestError(
             f"the halves do not cover the source: missing "
-            f"{sorted(set(source.columns) - union)}, extra "
-            f"{sorted(union - set(source.columns))}; split with split_source."
+            f"{truncated(sorted(set(source.columns) - union))}, extra "
+            f"{truncated(sorted(union - set(source.columns)))}; split with split_source."
         )
 
 
@@ -345,7 +357,7 @@ def check_halves_share_only_the_key(site_labels: pd.DataFrame, covariates: pd.Da
     shared = set(site_labels.columns) & set(covariates.columns)
     if shared != {KEY_COLUMN}:
         raise IngestError(
-            f"the halves share {sorted(shared)}; they should share only {KEY_COLUMN!r}, "
+            f"the halves share {truncated(sorted(shared))}; they should share only {KEY_COLUMN!r}, "
             "since a column in both is a column that can drift between them."
         )
 
@@ -354,7 +366,7 @@ def check_both_halves_are_keyed_on_the_whole_pool(
     site_labels: pd.DataFrame, covariates: pd.DataFrame
 ) -> None:
     """Both halves hold every site once, so the join cannot lose or duplicate a row."""
-    for name, frame in ((SITE_LABELS_FILE, site_labels), (COVARIATES_FILE, covariates)):
+    for name, frame in ((SITE_LABELS_FILE_NAME, site_labels), (COVARIATES_FILE_NAME, covariates)):
         key = frame[KEY_COLUMN].astype(int)
         check_key_does_not_repeat(key, message_name=name)
         check_key_is_the_whole_pool(key, message_name=name)
@@ -365,8 +377,8 @@ def check_key_does_not_repeat(key: pd.Series, *, message_name: str) -> None:
     repeated = sorted(key[key.duplicated()].unique().tolist())
     if repeated:
         raise IngestError(
-            f"{message_name}: {KEY_COLUMN} repeats {truncated(repeated)}; a half holds one "
-            "row per site, so the source has changed."
+            f"{message_name}: {KEY_COLUMN} repeats {truncated(repeated)}, and a half holds "
+            f"one row per site; re-copy it and compare it with data/raw/site_labels/provenance.md."
         )
 
 
@@ -374,8 +386,7 @@ def check_key_is_the_whole_pool(key: pd.Series, *, message_name: str) -> None:
     """A half's key is exactly the site pool ``1..N_SITES``."""
     if sorted(key) != list(range(1, N_SITES + 1)):
         raise IngestError(
-            f"{message_name}: {KEY_COLUMN} is not the whole site pool 1-{N_SITES}; the "
-            "source labels every site of the pool, so check which file was copied."
+            f"{message_name}: {KEY_COLUMN} is not the whole site pool 1-{N_SITES}; re-copy it and compare it with data/raw/site_labels/provenance.md."
         )
 
 
@@ -384,9 +395,9 @@ def check_class_column_is_complete(site_labels: pd.DataFrame) -> None:
     blank = site_labels[site_labels[CLASS_COLUMN].str.strip() == ""]
     if not blank.empty:
         raise IngestError(
-            f"{SITE_LABELS_FILE}: {len(blank)} sites have an empty {CLASS_COLUMN}, "
-            f"{truncated(blank[KEY_COLUMN].tolist())}; every site of the pool has a class, "
-            "so the source has changed."
+            f"{SITE_LABELS_FILE_NAME}: {len(blank)} sites have an empty {CLASS_COLUMN}, "
+            f"{truncated(blank[KEY_COLUMN].tolist())}, and every site of the pool has a "
+            f"class; re-copy it and compare it with data/raw/site_labels/provenance.md."
         )
 
 
@@ -414,7 +425,7 @@ def check_rejoined_halves_reproduce_the_source(
         ) from error
 
 
-def check_written_file_reads_back(frame: pd.DataFrame, partial: Path) -> None:
+def check_written_file_reads_back_identically(frame: pd.DataFrame, partial: Path) -> None:
     """The file on disk parses back to exactly what was written."""
     written = pd.read_csv(partial, dtype=str, keep_default_na=False, index_col=False)
     try:
