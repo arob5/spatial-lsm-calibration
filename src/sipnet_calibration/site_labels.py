@@ -192,29 +192,6 @@ __all__ = [
     "SITE_LABELS_NAMES",
     "SiteLabelsSpec",
     "build_site_labels",
-    "check_class_names_are_not_empty",
-    "check_classes_are_declared",
-    "check_classes_are_flag_meanings",
-    "check_classes_are_present",
-    "check_display_names_are_classes",
-    "check_display_names_cover_every_class",
-    "check_landcover_mapping_sends_to_classes",
-    "check_processed_site_labels_exist",
-    "check_raw_site_labels_exist",
-    "check_site_and_label_columns_differ",
-    "check_site_ids_are_present",
-    "check_site_labels_are_in_site_id_order",
-    "check_site_labels_are_registered",
-    "check_site_labels_are_valid",
-    "check_site_labels_file_has_the_header",
-    "check_site_labels_file_holds_rows",
-    "check_site_labels_have_two_classes",
-    "check_site_labels_list_each_site_once",
-    "check_site_labels_name_is_a_processed_name",
-    "check_site_labels_named_columns_are_raw_columns",
-    "check_site_labels_spec_has_a_class_noun",
-    "check_site_labels_spec_is_described",
-    "check_site_labels_spec_is_valid",
     "default_raw_directory",
     "default_site_labels_directory",
     "describe",
@@ -709,7 +686,7 @@ def check_site_labels_have_two_classes(spec: SiteLabelsSpec) -> None:
     if len(spec.labels) < 2:
         raise ValueError(
             f"site labels {spec.name!r}: a source needs at least two classes, got "
-            f"{list(spec.labels)}; declare every class it uses."
+            f"{truncated(spec.labels)}; declare every class it uses."
         )
 
 
@@ -728,7 +705,7 @@ def check_site_labels_named_columns_are_raw_columns(spec: SiteLabelsSpec) -> Non
         if column not in spec.raw_columns:
             raise ValueError(
                 f"site labels {spec.name!r}: {role} {column!r} is not in raw_columns "
-                f"{spec.raw_columns}; name a column of the raw file's header."
+                f"{truncated(spec.raw_columns)}; name a column of the raw file's header."
             )
 
 
@@ -748,7 +725,7 @@ def check_display_names_are_classes(spec: SiteLabelsSpec) -> None:
     unknown = sorted(set(spec.display_names) - set(spec.labels))
     if unknown:
         raise ValueError(
-            f"site labels {spec.name!r}: display_names names {unknown}, which are not classes "
+            f"site labels {spec.name!r}: display_names names {truncated(unknown)}, which are not classes "
             "of these site labels; name only declared classes."
         )
 
@@ -760,7 +737,7 @@ def check_display_names_cover_every_class(spec: SiteLabelsSpec) -> None:
     absent = [label for label in spec.labels if label not in spec.display_names]
     if absent:
         raise ValueError(
-            f"site labels {spec.name!r}: display_names has no entry for {absent}; give every "
+            f"site labels {spec.name!r}: display_names has no entry for {truncated(absent)}; give every "
             "class a display name or none."
         )
 
@@ -772,8 +749,9 @@ def check_landcover_mapping_sends_to_classes(spec: SiteLabelsSpec) -> None:
     unknown = sorted(set(spec.landcover_mapping.values()) - set(spec.labels))
     if unknown:
         raise ValueError(
-            f"site labels {spec.name!r}: landcover_mapping sends cover classes to {unknown}, "
-            f"which are not in labels {list(spec.labels)}; map onto declared classes."
+            f"site labels {spec.name!r}: landcover_mapping sends cover classes to "
+            f"{truncated(unknown)}, "
+            f"which are not in labels {truncated(spec.labels)}; map onto declared classes."
         )
 
 
@@ -801,7 +779,8 @@ def check_site_labels_file_has_the_header(
     """A site-labels file's header is *columns*, in order."""
     if tuple(frame.columns) != columns:
         raise ValueError(
-            f"{message_name}: header is {tuple(frame.columns)}, expected {columns}; a changed "
+            f"{message_name}: header is {truncated(frame.columns)}, expected "
+            f"{truncated(columns)}; a changed "
             "file is a spec change, not a new row."
         )
 
@@ -855,8 +834,9 @@ def check_classes_are_declared(
     unknown = sorted(set(label.unique()) - set(spec.labels))
     if unknown:
         raise ValueError(
-            f"{message_name}: holds classes {unknown} that {spec.name!r} does not declare "
-            f"(declared: {list(spec.labels)}); a new class is a spec change, not a new row."
+            f"{message_name}: holds classes {truncated(unknown)} that {spec.name!r} does not "
+            f"declare (declared: {truncated(spec.labels)}); a new class is a spec change, not a "
+            "new row."
         )
 
 
@@ -865,7 +845,7 @@ def check_classes_are_flag_meanings(spec: SiteLabelsSpec) -> None:
     spaced = [label for label in spec.labels if re.search(r"\s", label)]
     if spaced:
         raise ValueError(
-            f"class name(s) {spaced} of {spec.name!r} contain whitespace, which a CF "
+            f"class name(s) {truncated(spaced)} of {spec.name!r} contain whitespace, which a CF "
             "flag_meanings entry cannot, so the categorical field cannot represent them; "
             "read the classes with load_site_labels instead."
         )

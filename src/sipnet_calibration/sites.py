@@ -238,31 +238,16 @@ __all__ = [
     "SITE_COLUMN_DTYPES",
     "SITE_GRID",
     "Grid",
-    "check_coordinates_are_cell_centers",
-    "check_coordinates_are_finite",
-    "check_grid_indices_are_inside",
-    "check_grid_indices_are_whole",
-    "check_site_table_file_exists",
-    "check_site_table_file_is_valid",
+    "check_processed_file_has_the_coordinates",
+    "check_processed_file_holds_sites",
+    "check_processed_file_holds_the_sites",
+    "check_processed_file_locations_are_on_site",
+    "check_processed_file_sites_ascend",
     "check_site_table_has_locations",
-    "check_site_table_has_site_ids",
-    "check_site_table_has_the_columns",
-    "check_site_table_holds_rows",
-    "check_site_table_integers_fit_their_dtypes",
-    "check_site_table_is_a_dataframe",
-    "check_site_table_is_in_site_id_order",
     "check_site_table_is_keyed_on_site_ids",
-    "check_site_table_lists_each_site_once",
     "check_site_table_lists_the_sites",
     "check_site_table_locates_the_sites",
-    "check_site_table_site_ids_are_integers",
-    "check_site_table_site_ids_are_positive",
-    "check_site_table_sites_are_all_listed",
     "check_sites_are_the_site_table",
-    "check_where_mask_aligns_with_the_table",
-    "check_where_mask_has_no_missing_values",
-    "check_where_mask_has_one_value_per_row",
-    "check_where_mask_is_boolean",
     "default_site_table_path",
     "load_sites",
     "select_sites",
@@ -900,7 +885,7 @@ def check_site_table_file_is_valid(table: pd.DataFrame, *, message_name: str) ->
     """A site table read from its file follows the data model."""
     check_site_table_has_the_columns(table, message_name=message_name)
     check_site_table_holds_rows(table, message_name=message_name)
-    check_site_table_lists_each_site_once(table)
+    check_site_table_lists_each_site_once(table, message_name=message_name)
     check_site_table_is_in_site_id_order(table, message_name=message_name)
     check_site_table_site_ids_are_positive(table, message_name=message_name)
     check_site_table_integers_fit_their_dtypes(table, message_name=message_name)
@@ -921,8 +906,9 @@ def check_site_table_has_the_columns(table: pd.DataFrame, *, message_name: str) 
     expected = set(SITE_COLUMNS)
     if found != expected:
         raise ValueError(
-            f"{message_name} is not a site table: missing columns {sorted(expected - found)}, "
-            f"unexpected columns {sorted(found - expected)}; rebuild it with "
+            f"{message_name} is not a site table: missing columns "
+            f"{truncated(sorted(expected - found))}, unexpected columns "
+            f"{truncated(sorted(found - expected))}; rebuild it with "
             "`python scripts/ingest_sites.py`."
         )
 
@@ -998,14 +984,17 @@ def check_site_table_site_ids_are_integers(site_table: pd.DataFrame) -> None:
         )
 
 
-def check_site_table_lists_each_site_once(site_table: pd.DataFrame) -> None:
+def check_site_table_lists_each_site_once(
+    site_table: pd.DataFrame, *, message_name: str = "the site table"
+) -> None:
     """The site table lists no site twice."""
     site_ids = _site_ids_of(site_table)
     if site_ids.has_duplicates:
         repeated = sorted(set(site_ids[site_ids.duplicated()].tolist()))
         raise ValueError(
-            f"the site table lists site(s) {truncated(repeated)} more than once; a site "
-            "has one row, as load_sites() gives it, so drop the repeated rows."
+            f"{message_name} lists site(s) {truncated(repeated)} more than once; a site "
+            "has one row, so drop the repeated rows, or rebuild the table with "
+            "`python scripts/ingest_sites.py`."
         )
 
 
@@ -1014,7 +1003,7 @@ def check_site_table_has_locations(site_table: pd.DataFrame) -> None:
     absent = [name for name in (LON, LAT) if name not in site_table.columns]
     if absent:
         raise ValueError(
-            f"the site table has no {absent} column(s), and needs {LON!r} and {LAT!r} to "
+            f"the site table has no {truncated(absent)} column(s), and needs {LON!r} and {LAT!r} to "
             "locate a site; pass the table load_sites() returns."
         )
 
@@ -1054,6 +1043,54 @@ def check_sites_are_the_site_table(
     site_ids = list(site_ids)
     check_site_table_lists_the_sites(site_table, site_ids, message_name=message_name)
     check_site_table_sites_are_all_listed(site_table, site_ids, message_name=message_name)
+
+
+def check_processed_file_has_the_coordinates(
+    dataset: xr.Dataset, coordinate_names: Iterable[str], *, remedy: str, message_name: str
+) -> None:
+    """A processed file carries every one of *coordinate_names*."""
+    for coordinate in coordinate_names:
+        if coordinate not in dataset.coords:
+            raise ValueError(f"{message_name}: missing the {coordinate!r} coordinate; {remedy}.")
+
+
+def check_processed_file_locations_are_on_site(
+    dataset: xr.Dataset, *, remedy: str, message_name: str
+) -> None:
+    """A processed file's ``lon`` and ``lat`` are on ``site``."""
+    for coordinate in (LON, LAT):
+        if dataset[coordinate].dims != (SITE,):
+            raise ValueError(
+                f"{message_name}: {coordinate} must be on site, has dims "
+                f"{dataset[coordinate].dims}; {remedy}."
+            )
+
+
+def check_processed_file_holds_sites(dataset: xr.Dataset, *, remedy: str, message_name: str) -> None:
+    """A processed file's ``site`` holds at least one site."""
+    if dataset.sizes[SITE] == 0:
+        raise ValueError(f"{message_name}: site is empty; {remedy}.")
+
+
+def check_processed_file_sites_ascend(
+    dataset: xr.Dataset, *, remedy: str, message_name: str
+) -> None:
+    """A processed file's ``site`` is strictly ascending."""
+    if np.any(np.diff(dataset[SITE].values) <= 0):
+        raise ValueError(f"{message_name}: site is not strictly ascending; {remedy}.")
+
+
+def check_processed_file_holds_the_sites(
+    dataset: xr.Dataset, site_ids: Iterable[int], *, message_name: str
+) -> None:
+    """A processed file holds every site asked of it."""
+    held = set(dataset[SITE].values.tolist())
+    missing = [site for site in site_ids if site not in held]
+    if missing:
+        raise KeyError(
+            f"{message_name}: site(s) {truncated(missing)} are not in the processed file; ask "
+            "only for sites of the site table it was built on."
+        )
 
 
 def check_where_mask_aligns_with_the_table(mask: pd.Series, site_table: pd.DataFrame) -> None:

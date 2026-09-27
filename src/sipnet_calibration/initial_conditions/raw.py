@@ -41,7 +41,7 @@ the two cannot drift apart.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -67,20 +67,7 @@ from sipnet_calibration.validation import (
 
 __all__ = [
     "build_raw",
-    "check_every_site_has_every_member",
     "check_presence_is_uniform_over_members",
-    "check_raw_coordinate_ascends",
-    "check_raw_coordinate_is_integer",
-    "check_raw_initial_conditions_are_valid",
-    "check_raw_initial_conditions_carry_the_source_attributes",
-    "check_raw_initial_conditions_exist",
-    "check_raw_variable_carries_the_source_strings",
-    "check_raw_variable_has_no_infinite_value",
-    "check_raw_variable_is_float64",
-    "check_raw_variable_is_on_site_and_member",
-    "check_raw_variables_are_the_source_variables",
-    "check_source_file_is_the_first_for_its_pair",
-    "check_source_files_are_given",
     "raw_encoding",
     "read_raw",
 ]
@@ -160,7 +147,7 @@ def build_raw(
             )
             arrays[name][i, j] = value
     check_every_site_has_every_member(seen, sites, members)
-    check_presence_is_uniform_over_members(arrays, sites)
+    check_presence_is_uniform_over_members(arrays, sites, message_name="the source files")
 
     dataset = xr.Dataset(
         {
@@ -248,27 +235,33 @@ def read_raw(path: Path | str | None = None) -> xr.Dataset:
     """
     path = Path(path) if path is not None else raw_path()
     check_raw_initial_conditions_exist(path)
-    dataset = _opened_netcdf4(path)
-    try:
-        check_raw_initial_conditions_are_valid(dataset, message_name=str(path))
-    except Exception:
-        dataset.close()
-        raise
-    return dataset
+    return _open_checked_netcdf4(
+        path, check_raw_initial_conditions_are_valid, remedy="restore it from version control"
+    )
 
 
 # ── private helpers ───────────────────────────────────────────────────────────
 
 
-def _opened_netcdf4(path: Path) -> xr.Dataset:
-    """*path* opened lazily through ``h5netcdf``; one it cannot read is a ``ValueError``."""
+def _open_checked_netcdf4(
+    path: Path, check: Callable[..., None], *, remedy: str
+) -> xr.Dataset:
+    """*path* opened lazily through ``h5netcdf`` and held to *check*, closed if it fails.
+
+    A file ``h5netcdf`` cannot read is a ``ValueError`` ending in *remedy*.
+    Shared with :mod:`sipnet_calibration.initial_conditions.processed`, which
+    reads its file the same way.
+    """
     try:
-        return xr.open_dataset(path, engine="h5netcdf")
+        dataset = xr.open_dataset(path, engine="h5netcdf")
     except OSError as error:
-        raise ValueError(
-            f"{path}: not readable as netCDF-4/HDF5 ({error}); restore the file from version "
-            "control."
-        ) from error
+        raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error}); {remedy}.") from error
+    try:
+        check(dataset, message_name=str(path))
+    except Exception:
+        dataset.close()
+        raise
+    return dataset
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -296,7 +289,9 @@ def check_raw_initial_conditions_are_valid(dataset: xr.Dataset, *, message_name:
             message_name=subject,
         )
     check_presence_is_uniform_over_members(
-        {name: dataset[name].values for name in SOURCE.names}, dataset[SITE].values
+        {name: dataset[name].values for name in SOURCE.names},
+        dataset[SITE].values,
+        message_name=message_name,
     )
     check_raw_initial_conditions_carry_the_source_attributes(dataset, message_name=message_name)
 
@@ -341,7 +336,7 @@ def check_every_site_has_every_member(
 
 
 def check_presence_is_uniform_over_members(
-    arrays: Mapping[str, np.ndarray], sites: np.ndarray
+    arrays: Mapping[str, np.ndarray], sites: np.ndarray, *, message_name: str
 ) -> None:
     """Each variable is present for every member of a site, or for none."""
     # Shared with the processed file's checks: it is what gives NaN its one
@@ -351,7 +346,7 @@ def check_presence_is_uniform_over_members(
         mixed = present.any(axis=1) & ~present.all(axis=1)
         if mixed.any():
             raise ValueError(
-                f"{name}: present for some members and absent for others at "
+                f"{message_name}: {name}: present for some members and absent for others at "
                 f"{int(mixed.sum())} sites, {truncated(sites[mixed].tolist())}; presence is a "
                 "property of the site in this ensemble, so the source tree is inconsistent."
             )
@@ -363,8 +358,8 @@ def check_raw_variables_are_the_source_variables(
     """A raw file holds exactly the source format's variables."""
     if set(dataset.data_vars) != set(SOURCE.names):
         raise ValueError(
-            f"{message_name}: variables are {sorted(dataset.data_vars)}, expected "
-            f"{sorted(SOURCE.names)}; restore the file from version control."
+            f"{message_name}: variables are {truncated(sorted(dataset.data_vars))}, expected "
+            f"{truncated(sorted(SOURCE.names))}; restore the file from version control."
         )
 
 

@@ -266,7 +266,7 @@ def test_read_source_directory_skips_debris_and_refuses_strays(tree, tmp_path):
         read_source_directory(tree, 1)
     (tree / "1" / "notes.txt").unlink()
 
-    with pytest.raises(ValueError, match="no such site directory"):
+    with pytest.raises(FileNotFoundError, match="no such site directory"):
         read_source_directory(tree, 999)
 
     empty = tmp_path / "empty"
@@ -794,7 +794,7 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
     field = fields["initial_soil_organic_carbon"]
     assert field.dims == (INITIAL_CONDITION_MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
-    with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial condition"):
+    with pytest.raises(KeyError, match=r"initial conditions: site\(s\) \[9\] are not in the processed file"):
         initial_condition_fields(sites=[9], path=out)
     with pytest.raises(KeyError, match="no initial condition named"):
         initial_condition_fields(["soil"], path=out)

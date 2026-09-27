@@ -582,8 +582,8 @@ def _perturbations():
         pytest.param(drop_lon, "missing the 'lon'", id="missing-lon"),
         pytest.param(lon_on_time, "must be on site", id="lon-off-site"),
         pytest.param(drop_bounds, "time_bounds absent", id="missing-bounds"),
-        pytest.param(reversed_site, "site is empty or not strictly ascending", id="site-order"),
-        pytest.param(reversed_time, "time is empty or not strictly ascending", id="time-order"),
+        pytest.param(reversed_site, "site is not strictly ascending", id="site-order"),
+        pytest.param(reversed_time, "time is not strictly ascending", id="time-order"),
         pytest.param(orphan_sd, "missing at different elements", id="nan-mismatch"),
     ]
 

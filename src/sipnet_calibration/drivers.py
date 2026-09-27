@@ -253,6 +253,7 @@ from sipnet_calibration.validation import (
     as_bounded_integer,
     as_positive_integers,
     as_site_ids,
+    check_names_are_unique,
     truncated,
 )
 
@@ -266,20 +267,6 @@ __all__ = [
     "NEGATIVE_TOLERANCE",
     "UNITS_PROVENANCE",
     "available_source_indices",
-    "check_driver_directory_exists",
-    "check_driver_directory_holds_one_file",
-    "check_driver_file_name_agrees_with_its_directory",
-    "check_driver_file_name_dates_are_its_record",
-    "check_driver_file_name_follows_the_template",
-    "check_driver_files_share_a_time_axis",
-    "check_drivers_have_the_variables",
-    "check_drivers_root_is_a_directory",
-    "check_every_requested_pair_has_a_file",
-    "check_radiation_and_precipitation_are_not_below_zero",
-    "check_some_are_requested",
-    "check_some_driver_directory_exists",
-    "check_some_pair_has_a_file",
-    "check_source_indices_are_unique",
     "default_drivers_root",
     "driver_fields",
     "driver_file",
@@ -619,19 +606,22 @@ def _site_and_source_index_of_directory(name: str) -> tuple[int, int] | None:
 def _dates_of_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
     """The ``<start>`` and ``<end>`` dates of a file name that follows the template."""
     match = DRIVER_FILE_PATTERN.match(path.name)
+    return pd.Timestamp(match.group(2)), pd.Timestamp(match.group(3))
+
+
+def _is_a_date(text: str) -> bool:
+    """Whether *text*, ``YYYY-MM-DD``, is a real calendar date."""
     try:
-        return pd.Timestamp(match.group(2)), pd.Timestamp(match.group(3))
-    except ValueError as error:
-        raise ValueError(
-            f"{path}: file name carries an invalid date: {error}; rename the file for the "
-            "days its first and last steps start on."
-        ) from error
+        pd.Timestamp(text)
+    except ValueError:
+        return False
+    return True
 
 
 def _site_id_array(sites: Iterable[int]) -> np.ndarray:
     """Requested sites as an ``int32`` array, in the order given."""
     site_ids = as_site_ids(sites, message_name="sites")
-    check_some_are_requested(site_ids, what="sites", example="site id")
+    check_request_is_not_empty(site_ids, example="site id", message_name="sites")
     return np.asarray(site_ids, dtype=SITE_DTYPE)
 
 
@@ -666,8 +656,8 @@ def _as_source_indices(source_indices: Iterable[int]) -> np.ndarray:
         )
         for position, index in enumerate(positive)
     )
-    check_some_are_requested(indices, what="source indices", example="source index")
-    check_source_indices_are_unique(indices)
+    check_request_is_not_empty(indices, example="source index", message_name="source indices")
+    check_names_are_unique(indices, message_name="source_indices")
     return np.asarray(indices, dtype=BATCH_LABEL_DTYPE)
 
 
@@ -707,6 +697,7 @@ def _read_located_files(
         _, source_index = _site_and_source_index_of_directory(path.parent.name)
         check_driver_file_name_follows_the_template(path)
         check_driver_file_name_agrees_with_its_directory(path, source_index=source_index)
+        check_driver_file_name_dates_are_dates(path)
         check_driver_file_name_dates_are_its_record(path, dataset)
         if reference is None:
             reference, reference_path = dataset, path
@@ -792,21 +783,12 @@ def check_drivers_root_is_a_directory(root: Path) -> None:
         )
 
 
-def check_some_are_requested(values: tuple[int, ...], *, what: str, example: str) -> None:
-    """At least one site, or one source index, is asked for."""
+def check_request_is_not_empty(
+    values: tuple[int, ...], *, example: str, message_name: str
+) -> None:
+    """A request names at least one site, or one source index."""
     if not values:
-        raise ValueError(f"no {what} requested; pass at least one {example}.")
-
-
-def check_source_indices_are_unique(indices: tuple[int, ...]) -> None:
-    """No source index is asked for twice."""
-    seen: set[int] = set()
-    repeated = sorted({index for index in indices if index in seen or seen.add(index)})
-    if repeated:
-        raise ValueError(
-            f"source_indices names source index(es) {truncated(repeated)} more than once; "
-            "name each source index once."
-        )
+        raise ValueError(f"no {message_name} requested; pass at least one {example}.")
 
 
 def check_some_driver_directory_exists(
@@ -837,13 +819,13 @@ def check_every_requested_pair_has_a_file(
 ) -> None:
     """Every requested ``(site, source index)`` pair has a driver file."""
     missing = [
-        f"site {int(sites[j])} source index {int(source_indices[i])}"
+        (int(sites[j]), int(source_indices[i]))
         for i, j in zip(*np.nonzero(~present), strict=True)
     ]
     if missing:
         raise FileNotFoundError(
             f"{len(missing)} requested (site, source index) pair(s) have no driver file "
-            f"under {root}: {truncated(missing)}; pass allow_missing=True to read the rest "
+            f"under {root}, {truncated(missing)}; pass allow_missing=True to read the rest "
             "with NaN in their place and a driver_present array saying which."
         )
 
@@ -908,6 +890,17 @@ def check_driver_file_name_agrees_with_its_directory(path: Path, *, source_index
         )
 
 
+def check_driver_file_name_dates_are_dates(path: Path) -> None:
+    """A driver file's name carries two real calendar dates."""
+    match = DRIVER_FILE_PATTERN.match(path.name)
+    invalid = [text for text in match.group(2, 3) if not _is_a_date(text)]
+    if invalid:
+        raise ValueError(
+            f"{path}: file name carries the invalid date(s) {truncated(invalid)}; rename the file "
+            "for the days its first and last steps start on."
+        )
+
+
 def check_driver_file_name_dates_are_its_record(path: Path, dataset: xr.Dataset) -> None:
     """A driver file's name gives the days its first and last steps start on."""
     start, end = _dates_of_file_name(path)
@@ -949,6 +942,6 @@ def check_drivers_have_the_variables(dataset: xr.Dataset) -> None:
     missing = [name for name in DRIVER_VARIABLE_NAMES if name not in dataset.data_vars]
     if missing:
         raise ValueError(
-            f"dataset is missing driver variables {missing}, holding "
+            f"dataset is missing driver variables {truncated(missing)}, holding "
             f"{truncated(sorted(dataset.data_vars))}; pass the Dataset load_drivers returns."
         )

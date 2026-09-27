@@ -40,6 +40,8 @@ import numpy as np
 from frozendict import frozendict
 from scipy.io import netcdf_file
 
+from sipnet_calibration.validation import truncated
+
 
 __all__ = [
     "NOMINAL_DATE",
@@ -49,29 +51,6 @@ __all__ = [
     "SourceFile",
     "SourceFormat",
     "SourceVariable",
-    "check_source_directory_entry_is_a_source_file",
-    "check_source_file_carries_a_variable",
-    "check_source_file_has_a_time_variable",
-    "check_source_file_has_no_global_attributes",
-    "check_source_file_has_only_the_time_dimension",
-    "check_source_file_is_a_regular_file",
-    "check_source_file_is_in_its_site_directory",
-    "check_source_file_is_netcdf3_classic",
-    "check_source_file_layout_is_the_template",
-    "check_source_file_name_is_the_template",
-    "check_source_site_directory_exists",
-    "check_source_site_directory_holds_files",
-    "check_source_time_attributes_are_the_template",
-    "check_source_time_has_one_record",
-    "check_source_time_is_the_record_dimension",
-    "check_source_time_is_the_template",
-    "check_source_time_value_is_the_template",
-    "check_source_value_is_finite",
-    "check_source_value_is_not_the_fill",
-    "check_source_variable_attributes_are_the_template",
-    "check_source_variable_holds_one_value",
-    "check_source_variable_is_a_scalar_on_time",
-    "check_source_variable_is_float64",
     "check_source_variable_is_known",
     "read_source_directory",
     "read_source_file",
@@ -430,7 +409,7 @@ def check_source_file_is_in_its_site_directory(path: Path, *, site: int) -> None
 def check_source_site_directory_exists(directory: Path) -> None:
     """A site's source directory exists."""
     if not directory.is_dir():
-        raise ValueError(
+        raise FileNotFoundError(
             f"{directory}: no such site directory; check the source root and the site id."
         )
 
@@ -466,8 +445,8 @@ def check_source_file_has_no_global_attributes(handle: Any, *, message_name: str
     attrs = _netcdf_attributes(handle)
     if attrs:
         raise ValueError(
-            f"{message_name}: carries global attributes {sorted(attrs)}; source files carry "
-            "none, so the file is not one PEcAn wrote."
+            f"{message_name}: carries global attributes {truncated(sorted(attrs))}; source "
+            "files carry none, so the file is not one PEcAn wrote."
         )
 
 
@@ -475,7 +454,7 @@ def check_source_file_has_only_the_time_dimension(handle: Any, *, message_name: 
     """A source file's only dimension is ``time``."""
     if set(handle.dimensions) != {"time"}:
         raise ValueError(
-            f"{message_name}: dimensions are {sorted(handle.dimensions)}, expected exactly "
+            f"{message_name}: dimensions are {truncated(sorted(handle.dimensions))}, expected "
             "['time']; a layer-resolved file would look like this, and needs a spec change."
         )
 
@@ -533,7 +512,8 @@ def check_source_variable_is_known(name: str, *, message_name: str) -> None:
     if name not in SOURCE.variables:
         raise ValueError(
             f"{message_name}: variable {name!r} is not one the source files carry "
-            f"({sorted(SOURCE.variables)}); a new variable is a spec change, not a new column."
+            f"({truncated(sorted(SOURCE.variables))}); a new variable is a spec change, not a new "
+            "column."
         )
 
 

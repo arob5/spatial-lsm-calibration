@@ -42,13 +42,6 @@ __all__ = [
     "INITIAL_CONDITIONS",
     "INITIAL_CONDITION_NAMES",
     "InitialConditionSpec",
-    "check_initial_condition_is_registered",
-    "check_initial_condition_name_is_a_processed_name",
-    "check_initial_condition_sipnet_parameter_exists",
-    "check_initial_condition_source_name_is_a_source_variable",
-    "check_initial_condition_spec_is_described",
-    "check_initial_condition_spec_is_valid",
-    "check_initial_condition_spec_records_its_provenance",
     "describe",
     "resolve_initial_condition",
 ]
@@ -229,7 +222,8 @@ def check_initial_condition_source_name_is_a_source_variable(spec: InitialCondit
     if spec.source_name not in SOURCE.variables:
         raise ValueError(
             f"initial condition {spec.name!r}: source_name {spec.source_name!r} is not a "
-            f"variable the source files carry, {sorted(SOURCE.variables)}; name one of them."
+            f"variable the source files carry, {truncated(sorted(SOURCE.variables))}; name one of "
+            "them."
         )
 
 
@@ -241,7 +235,7 @@ def check_initial_condition_sipnet_parameter_exists(spec: InitialConditionSpec) 
         raise ValueError(
             f"initial condition {spec.name!r}: {spec.sipnet_parameter_name!r} is not a "
             "parameter of pysipnet.parameters.InitialConditions, "
-            f"{sorted(_SIPNET_INITIAL_CONDITION_NAMES)}; name one by its pySIPNET name."
+            f"{truncated(sorted(_SIPNET_INITIAL_CONDITION_NAMES))}; name one by its pySIPNET name."
         )
 
 

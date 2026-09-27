@@ -53,7 +53,10 @@ from sipnet_calibration.initial_conditions.names import (
     RAW_MEMBER,
     default_processed_path,
 )
-from sipnet_calibration.initial_conditions.raw import check_presence_is_uniform_over_members
+from sipnet_calibration.initial_conditions.raw import (
+    _open_checked_netcdf4,
+    check_presence_is_uniform_over_members,
+)
 from sipnet_calibration.initial_conditions.source_files import (
     NOMINAL_DATE,
     SOURCE,
@@ -66,30 +69,19 @@ from sipnet_calibration.initial_conditions.specs import (
     resolve_initial_condition,
 )
 from sipnet_calibration.io import utc_timestamp
-from sipnet_calibration.sites import check_sites_are_the_site_table, site_coordinates
+from sipnet_calibration.sites import (
+    check_processed_file_has_the_coordinates,
+    check_processed_file_holds_sites,
+    check_processed_file_holds_the_sites,
+    check_processed_file_locations_are_on_site,
+    check_processed_file_sites_ascend,
+    check_sites_are_the_site_table,
+    site_coordinates,
+)
 from sipnet_calibration.validation import as_names, as_site_ids, truncated
 
 __all__ = [
     "build_initial_conditions",
-    "check_processed_initial_conditions_are_valid",
-    "check_processed_initial_conditions_declare_the_conventions",
-    "check_processed_initial_conditions_exist",
-    "check_processed_initial_conditions_have_the_coordinates",
-    "check_processed_initial_conditions_hold_the_sites",
-    "check_processed_locations_are_geographic",
-    "check_processed_locations_are_on_site",
-    "check_processed_member_count_is_recorded",
-    "check_processed_member_is_its_source_index",
-    "check_processed_members_count_from_zero",
-    "check_processed_sites_ascend",
-    "check_processed_source_index_ascends_from_one",
-    "check_processed_source_index_is_on_the_member",
-    "check_processed_variable_has_no_infinite_value",
-    "check_processed_variable_has_the_spec_long_name",
-    "check_processed_variable_has_the_spec_units",
-    "check_processed_variable_is_on_member_and_site",
-    "check_processed_variable_was_written_from_the_source",
-    "check_processed_variables_are_the_specs",
     "initial_condition_fields",
     "load_initial_conditions",
     "netcdf_encoding",
@@ -193,13 +185,7 @@ def load_initial_conditions(path: Path | str | None = None) -> xr.Dataset:
     """
     path = Path(path) if path is not None else default_processed_path()
     check_processed_initial_conditions_exist(path)
-    dataset = _opened_netcdf4(path)
-    try:
-        check_processed_initial_conditions_are_valid(dataset, message_name=str(path))
-    except Exception:
-        dataset.close()
-        raise
-    return dataset
+    return _open_checked_netcdf4(path, check_processed_initial_conditions_are_valid, remedy=_REMAKE)
 
 
 def initial_condition_fields(
@@ -249,22 +235,17 @@ def initial_condition_fields(
 
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
-        check_processed_initial_conditions_hold_the_sites(dataset, wanted_sites)
+        check_processed_file_holds_the_sites(
+            dataset, wanted_sites, message_name="the initial conditions"
+        )
         dataset = dataset.sel({SITE: wanted_sites})
     return {name: dataset[name] for name in wanted_names}
 
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
-
-def _opened_netcdf4(path: Path) -> xr.Dataset:
-    """*path* opened lazily through ``h5netcdf``; one it cannot read is a ``ValueError``."""
-    try:
-        return xr.open_dataset(path, engine="h5netcdf")
-    except OSError as error:
-        raise ValueError(
-            f"{path}: not readable as netCDF-4/HDF5 ({error}); re-make it with "
-            "scripts/ingest_initial_conditions.py."
-        ) from error
+#: The advice every refusal of a processed file ends with.
+_REMAKE = "re-make it with scripts/ingest_initial_conditions.py"
 
 
 def _dataset_attributes(raw: xr.Dataset) -> dict[str, Any]:
@@ -303,9 +284,6 @@ def _dataset_attributes(raw: xr.Dataset) -> dict[str, Any]:
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
-#: The advice every refusal of a processed file ends with.
-_REMAKE = "re-make it with scripts/ingest_initial_conditions.py"
-
 
 def check_processed_initial_conditions_are_valid(dataset: xr.Dataset, *, message_name: str) -> None:
     """A processed initial conditions file follows the data model."""
@@ -320,17 +298,27 @@ def check_processed_initial_conditions_are_valid(dataset: xr.Dataset, *, message
         )
         check_processed_variable_has_the_spec_long_name(array, spec.long_label, message_name=subject)
         check_processed_variable_has_no_infinite_value(array, message_name=subject)
-    check_processed_initial_conditions_have_the_coordinates(dataset, message_name=message_name)
-    check_processed_locations_are_on_site(dataset, message_name=message_name)
+    check_processed_file_has_the_coordinates(
+        dataset,
+        (INITIAL_CONDITION_MEMBER, SOURCE_INDEX, SITE, LON, LAT),
+        remedy=_REMAKE,
+        message_name=message_name,
+    )
+    check_processed_file_locations_are_on_site(dataset, remedy=_REMAKE, message_name=message_name)
     check_processed_source_index_is_on_the_member(dataset, message_name=message_name)
     check_processed_members_count_from_zero(dataset, message_name=message_name)
-    check_processed_source_index_ascends_from_one(dataset, message_name=message_name)
+    check_processed_source_index_starts_at_one(dataset, message_name=message_name)
+    check_processed_source_index_ascends(dataset, message_name=message_name)
     check_processed_member_is_its_source_index(dataset, message_name=message_name)
     check_processed_member_count_is_recorded(dataset, message_name=message_name)
-    check_processed_sites_ascend(dataset, message_name=message_name)
-    check_processed_locations_are_geographic(dataset, message_name=message_name)
+    check_processed_file_holds_sites(dataset, remedy=_REMAKE, message_name=message_name)
+    check_processed_file_sites_ascend(dataset, remedy=_REMAKE, message_name=message_name)
+    check_processed_locations_are_finite(dataset, message_name=message_name)
+    check_processed_locations_are_in_range(dataset, message_name=message_name)
     check_presence_is_uniform_over_members(
-        {name: dataset[name].values.T for name in INITIAL_CONDITION_NAMES}, dataset[SITE].values
+        {name: dataset[name].values.T for name in INITIAL_CONDITION_NAMES},
+        dataset[SITE].values,
+        message_name=message_name,
     )
     check_processed_initial_conditions_declare_the_conventions(dataset, message_name=message_name)
 
@@ -358,8 +346,8 @@ def check_processed_variables_are_the_specs(dataset: xr.Dataset, *, message_name
     """A processed file holds exactly the specs' variables."""
     if set(dataset.data_vars) != set(INITIAL_CONDITION_NAMES):
         raise ValueError(
-            f"{message_name}: variables are {sorted(dataset.data_vars)}, expected "
-            f"{sorted(INITIAL_CONDITION_NAMES)}; {_REMAKE}."
+            f"{message_name}: variables are {truncated(sorted(dataset.data_vars))}, expected "
+            f"{truncated(sorted(INITIAL_CONDITION_NAMES))}; {_REMAKE}."
         )
 
 
@@ -413,27 +401,6 @@ def check_processed_variable_has_no_infinite_value(
         raise ValueError(f"{message_name} holds an infinite value; {_REMAKE}.")
 
 
-def check_processed_initial_conditions_have_the_coordinates(
-    dataset: xr.Dataset, *, message_name: str
-) -> None:
-    """A processed file carries the member, source index, site and location coordinates."""
-    for coordinate in (INITIAL_CONDITION_MEMBER, SOURCE_INDEX, SITE, LON, LAT):
-        if coordinate not in dataset.coords:
-            raise ValueError(
-                f"{message_name}: missing the {coordinate!r} coordinate; {_REMAKE}."
-            )
-
-
-def check_processed_locations_are_on_site(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed file's ``lon`` and ``lat`` are on ``site``."""
-    for coordinate in (LON, LAT):
-        if dataset[coordinate].dims != (SITE,):
-            raise ValueError(
-                f"{message_name}: {coordinate} must be on site, has dims "
-                f"{dataset[coordinate].dims}; {_REMAKE}."
-            )
-
-
 def check_processed_source_index_is_on_the_member(
     dataset: xr.Dataset, *, message_name: str
 ) -> None:
@@ -453,15 +420,38 @@ def check_processed_members_count_from_zero(dataset: xr.Dataset, *, message_name
         )
 
 
-def check_processed_source_index_ascends_from_one(
+def check_processed_source_index_starts_at_one(
     dataset: xr.Dataset, *, message_name: str
 ) -> None:
-    """A processed file's source indices are strictly ascending from 1 or more."""
-    source_index = dataset[SOURCE_INDEX].values
-    if source_index.min() < 1 or np.any(np.diff(source_index) <= 0):
+    """A processed file's source indices are all at least 1."""
+    if dataset[SOURCE_INDEX].values.min() < 1:
         raise ValueError(
-            f"{message_name}: {SOURCE_INDEX} is not strictly ascending from 1 or more, so a "
-            f"source file name could not be recovered from it; {_REMAKE}."
+            f"{message_name}: {SOURCE_INDEX} holds a value below 1, so a source file name could "
+            f"not be recovered from it; {_REMAKE}."
+        )
+
+
+def check_processed_source_index_ascends(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's source indices are strictly ascending."""
+    if np.any(np.diff(dataset[SOURCE_INDEX].values) <= 0):
+        raise ValueError(
+            f"{message_name}: {SOURCE_INDEX} is not strictly ascending, so a source file name "
+            f"could not be recovered from it; {_REMAKE}."
+        )
+
+
+def check_processed_locations_are_finite(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's ``lon`` and ``lat`` are finite."""
+    if not (np.isfinite(dataset[LON].values).all() and np.isfinite(dataset[LAT].values).all()):
+        raise ValueError(f"{message_name}: lon or lat holds a non-finite value; {_REMAKE}.")
+
+
+def check_processed_locations_are_in_range(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed file's ``lon`` and ``lat`` are in the geographic range."""
+    if np.abs(dataset[LON].values).max() > 180 or np.abs(dataset[LAT].values).max() > 90:
+        raise ValueError(
+            f"{message_name}: lon or lat is outside the geographic range, as if swapped; "
+            f"{_REMAKE}."
         )
 
 
@@ -487,25 +477,6 @@ def check_processed_member_count_is_recorded(dataset: xr.Dataset, *, message_nam
         )
 
 
-def check_processed_sites_ascend(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed file's ``site`` is non-empty and strictly ascending."""
-    site = dataset[SITE].values
-    if site.size == 0 or np.any(np.diff(site) <= 0):
-        raise ValueError(f"{message_name}: site is empty or not strictly ascending; {_REMAKE}.")
-
-
-def check_processed_locations_are_geographic(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed file's ``lon`` and ``lat`` are finite and in the geographic range."""
-    lon, lat = dataset[LON].values, dataset[LAT].values
-    if not (np.isfinite(lon).all() and np.isfinite(lat).all()):
-        raise ValueError(f"{message_name}: lon or lat holds a non-finite value; {_REMAKE}.")
-    if np.abs(lon).max() > 180 or np.abs(lat).max() > 90:
-        raise ValueError(
-            f"{message_name}: lon or lat is outside the geographic range, as if swapped; "
-            f"{_REMAKE}."
-        )
-
-
 def check_processed_initial_conditions_declare_the_conventions(
     dataset: xr.Dataset, *, message_name: str
 ) -> None:
@@ -517,15 +488,3 @@ def check_processed_initial_conditions_declare_the_conventions(
             f"{_REMAKE}."
         )
 
-
-def check_processed_initial_conditions_hold_the_sites(
-    dataset: xr.Dataset, site_ids: Sequence[int]
-) -> None:
-    """The initial conditions' processed file holds every site asked of it."""
-    held = set(dataset[SITE].values.tolist())
-    missing = [site for site in site_ids if site not in held]
-    if missing:
-        raise KeyError(
-            f"site(s) {truncated(missing)} are not in the initial conditions' processed file; ask "
-            "only for sites of the site table it was built on."
-        )

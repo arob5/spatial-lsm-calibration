@@ -217,7 +217,15 @@ from sipnet_calibration.conventions import (
     tracked_data_root,
 )
 from sipnet_calibration.io import utc_timestamp
-from sipnet_calibration.sites import check_site_table_lists_the_sites, site_coordinates
+from sipnet_calibration.sites import (
+    check_processed_file_has_the_coordinates,
+    check_processed_file_holds_sites,
+    check_processed_file_holds_the_sites,
+    check_processed_file_locations_are_on_site,
+    check_processed_file_sites_ascend,
+    check_site_table_lists_the_sites,
+    site_coordinates,
+)
 from sipnet_calibration.validation import as_names, as_site_ids, check_names_are_unique, truncated
 
 __all__ = [
@@ -233,32 +241,6 @@ __all__ = [
     "ConstraintSpec",
     "TimeStructure",
     "build_constraint",
-    "check_constraint_has_a_time_column",
-    "check_constraint_is_registered",
-    "check_constraint_name_is_a_processed_name",
-    "check_constraint_named_columns_are_raw_columns",
-    "check_constraint_quality_fields_go_together",
-    "check_constraint_raw_columns_hold_the_site_id",
-    "check_constraint_spec_is_described",
-    "check_constraint_spec_is_valid",
-    "check_processed_constraint_exists",
-    "check_processed_constraint_has_the_coordinates",
-    "check_processed_constraint_has_the_variables",
-    "check_processed_constraint_holds_the_sites",
-    "check_processed_constraint_is_for_the_spec",
-    "check_processed_constraint_is_valid",
-    "check_processed_constraint_locations_are_on_site",
-    "check_processed_constraint_sites_ascend",
-    "check_processed_constraint_time_bounds_match_the_structure",
-    "check_processed_constraint_times_ascend",
-    "check_processed_constraint_values_and_deviations_are_missing_together",
-    "check_processed_constraint_variables_have_the_spec_dims",
-    "check_processed_constraint_variables_have_the_spec_units",
-    "check_raw_constraint_exists",
-    "check_raw_file_holds_rows",
-    "check_raw_header_is_the_specs",
-    "check_site_time_keys_are_unique",
-    "check_static_copies_agree",
     "constraint_fields",
     "constraint_path",
     "constraint_standard_deviations",
@@ -735,6 +717,9 @@ def describe(spec: ConstraintSpec) -> str:
 
 # ── private helpers ───────────────────────────────────────────────────────────
 
+#: The advice a refusal of a processed constraint ends with.
+_REMAKE = "re-make it with scripts/ingest_constraints.py"
+
 
 def _parsed_raw_file(path: Path, spec: ConstraintSpec) -> pd.DataFrame:
     """The raw file read with the spec's dtypes; a parse failure is a ``ValueError``."""
@@ -930,7 +915,7 @@ def _fields_of_variable(
         if TIME_BOUNDS in dataset.coords:
             field = field.assign_coords(_window_coords(dataset))
         if wanted is not None:
-            check_processed_constraint_holds_the_sites(dataset, wanted, message_name=name)
+            check_processed_file_holds_the_sites(dataset, wanted, message_name=name)
             field = field.sel({SITE: wanted})
         fields[name] = field
     return fields
@@ -986,13 +971,18 @@ def check_processed_constraint_is_valid(
     check_processed_constraint_variables_have_the_spec_dims(dataset, spec, message_name=message_name)
     check_processed_constraint_variables_have_the_spec_units(dataset, spec, message_name=message_name)
     check_processed_constraint_is_for_the_spec(dataset, spec, message_name=message_name)
-    check_processed_constraint_has_the_coordinates(dataset, spec, message_name=message_name)
-    check_processed_constraint_locations_are_on_site(dataset, message_name=message_name)
+    check_processed_file_has_the_coordinates(
+        dataset, (SITE, LON, LAT, *spec.dims), remedy=_REMAKE, message_name=message_name
+    )
+    check_processed_file_locations_are_on_site(dataset, remedy=_REMAKE, message_name=message_name)
     check_processed_constraint_time_bounds_match_the_structure(
         dataset, spec, message_name=message_name
     )
-    check_processed_constraint_sites_ascend(dataset, message_name=message_name)
-    check_processed_constraint_times_ascend(dataset, message_name=message_name)
+    check_processed_file_holds_sites(dataset, remedy=_REMAKE, message_name=message_name)
+    check_processed_file_sites_ascend(dataset, remedy=_REMAKE, message_name=message_name)
+    if TIME in dataset.dims:
+        check_processed_constraint_holds_times(dataset, message_name=message_name)
+        check_processed_constraint_times_ascend(dataset, message_name=message_name)
     check_processed_constraint_values_and_deviations_are_missing_together(
         dataset, message_name=message_name
     )
@@ -1039,7 +1029,7 @@ def check_constraint_named_columns_are_raw_columns(spec: ConstraintSpec) -> None
         if column not in spec.raw_columns:
             raise ValueError(
                 f"constraint {spec.name!r}: {role} {column!r} is not in raw_columns "
-                f"{spec.raw_columns}; name a column of the raw file's header."
+                f"{truncated(spec.raw_columns)}; name a column of the raw file's header."
             )
 
 
@@ -1076,7 +1066,8 @@ def check_raw_header_is_the_specs(
     """A raw file's header is the one its spec declares, in order."""
     if tuple(frame.columns) != raw_columns:
         raise ValueError(
-            f"{message_name}: header is {tuple(frame.columns)}, expected {raw_columns}; a "
+            f"{message_name}: header is {truncated(frame.columns)}, expected "
+            f"{truncated(raw_columns)}; a "
             "changed raw file is a spec change, not a new row."
         )
 
@@ -1132,8 +1123,7 @@ def check_processed_constraint_has_the_variables(
     missing = {VALUE, STANDARD_DEVIATION} - set(dataset.data_vars)
     if missing:
         raise ValueError(
-            f"{message_name}: missing data variables {sorted(missing)}; re-make it with "
-            "scripts/ingest_constraints.py."
+            f"{message_name}: missing data variables {truncated(sorted(missing))}; {_REMAKE}."
         )
 
 
@@ -1145,7 +1135,7 @@ def check_processed_constraint_variables_have_the_spec_dims(
         if dataset[name].dims != spec.dims:
             raise ValueError(
                 f"{message_name}: {name} has dims {dataset[name].dims}, expected {spec.dims}; "
-                "re-make it with scripts/ingest_constraints.py."
+                f"{_REMAKE}."
             )
 
 
@@ -1158,7 +1148,7 @@ def check_processed_constraint_variables_have_the_spec_units(
         if units != spec.units:
             raise ValueError(
                 f"{message_name}: {name} has units {units!r}, the spec says {spec.units!r}; "
-                "re-make it with scripts/ingest_constraints.py."
+                f"{_REMAKE}."
             )
 
 
@@ -1174,30 +1164,6 @@ def check_processed_constraint_is_for_the_spec(
         )
 
 
-def check_processed_constraint_has_the_coordinates(
-    dataset: xr.Dataset, spec: ConstraintSpec, *, message_name: str
-) -> None:
-    """A processed constraint carries ``site``, ``lon``, ``lat`` and its spec's dims."""
-    for coordinate in (SITE, LON, LAT, *spec.dims):
-        if coordinate not in dataset.coords:
-            raise ValueError(
-                f"{message_name}: missing the {coordinate!r} coordinate; re-make it with "
-                "scripts/ingest_constraints.py."
-            )
-
-
-def check_processed_constraint_locations_are_on_site(
-    dataset: xr.Dataset, *, message_name: str
-) -> None:
-    """A processed constraint's ``lon`` and ``lat`` are on ``site``."""
-    for coordinate in (LON, LAT):
-        if dataset[coordinate].dims != (SITE,):
-            raise ValueError(
-                f"{message_name}: {coordinate} must be on site, has dims "
-                f"{dataset[coordinate].dims}; re-make it with scripts/ingest_constraints.py."
-            )
-
-
 def check_processed_constraint_time_bounds_match_the_structure(
     dataset: xr.Dataset, spec: ConstraintSpec, *, message_name: str
 ) -> None:
@@ -1207,31 +1173,20 @@ def check_processed_constraint_time_bounds_match_the_structure(
         raise ValueError(
             f"{message_name}: time_bounds {'present' if present else 'absent'}, but a "
             f"{spec.time_structure.value} constraint "
-            f"{'carries' if spec.has_time_bounds else 'does not carry'} them; re-make it with "
-            "scripts/ingest_constraints.py."
+            f"{'carries' if spec.has_time_bounds else 'does not carry'} them; {_REMAKE}."
         )
 
 
-def check_processed_constraint_sites_ascend(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed constraint's ``site`` is non-empty and strictly ascending."""
-    site = dataset[SITE].values
-    if site.size == 0 or np.any(np.diff(site) <= 0):
-        raise ValueError(
-            f"{message_name}: site is empty or not strictly ascending; re-make it with "
-            "scripts/ingest_constraints.py."
-        )
+def check_processed_constraint_holds_times(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed constraint with a ``time`` dimension holds at least one time."""
+    if dataset.sizes[TIME] == 0:
+        raise ValueError(f"{message_name}: time is empty; {_REMAKE}.")
 
 
 def check_processed_constraint_times_ascend(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed constraint's ``time``, where it has one, is non-empty and strictly ascending."""
-    if TIME not in dataset.dims:
-        return
-    time = dataset[TIME].values
-    if time.size == 0 or np.any(np.diff(time) <= np.timedelta64(0, "ns")):
-        raise ValueError(
-            f"{message_name}: time is empty or not strictly ascending; re-make it with "
-            "scripts/ingest_constraints.py."
-        )
+    """A processed constraint's ``time`` is strictly ascending."""
+    if np.any(np.diff(dataset[TIME].values) <= np.timedelta64(0, "ns")):
+        raise ValueError(f"{message_name}: time is not strictly ascending; {_REMAKE}.")
 
 
 def check_processed_constraint_values_and_deviations_are_missing_together(
@@ -1242,20 +1197,7 @@ def check_processed_constraint_values_and_deviations_are_missing_together(
     if not np.array_equal(observed, np.isfinite(dataset[STANDARD_DEVIATION].values)):
         raise ValueError(
             f"{message_name}: value and standard_deviation are missing at different elements; "
-            "re-make it with scripts/ingest_constraints.py."
-        )
-
-
-def check_processed_constraint_holds_the_sites(
-    dataset: xr.Dataset, site_ids: Sequence[int], *, message_name: str
-) -> None:
-    """A constraint's processed file holds every site asked of it."""
-    held = set(dataset[SITE].values.tolist())
-    missing = [site for site in site_ids if site not in held]
-    if missing:
-        raise KeyError(
-            f"{message_name}: site(s) {truncated(missing)} are not in the processed file; ask "
-            "only for sites of the site table it was built on."
+            f"{_REMAKE}."
         )
 
 
