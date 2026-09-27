@@ -35,10 +35,10 @@ from sipnet_calibration.site_labels import (
     SITE_LABELS_COLUMNS,
     SITE_LABELS_NAMES,
     SiteLabelsSpec,
-    _check_labels_are_flag_meanings,
+    check_classes_are_flag_meanings,
     build_site_labels,
-    default_raw_dir,
-    default_site_labels_dir,
+    default_raw_directory,
+    default_site_labels_directory,
     describe,
     load_site_labels,
     read_raw,
@@ -63,7 +63,7 @@ SYNTHETIC_LANDCOVER = {1: 1, 2: 2, 3: 3, 4: 5}
 SYNTHETIC_SPEC = SiteLabelsSpec(
     name="synthetic_3class",
     long_label="Synthetic three-class site labels",
-    label_kind="plant functional type",
+    class_noun="plant functional type",
     labels=("conifer", "broadleaf", "grass"),
     description="Site labels that exist only in these tests.",
     upstream_product="test fixture",
@@ -156,19 +156,19 @@ def test_describe_names_the_classes_and_the_relation():
     [
         ("name", "Reanalysis3PFT", "lower_case_with_underscores"),
         ("labels", ("only_one",), "at least two classes"),
-        ("labels", ("a", "a", "b"), "repeats a class"),
-        ("raw_columns", ("site", "site"), "repeats a column"),
+        ("labels", ("a", "a", "b"), r"labels names \['a'\] more than once"),
+        ("raw_columns", ("site", "site"), r"raw_columns names \['site'\] more than once"),
         ("site_column", "absent", "is not in raw_columns"),
         ("expected_rows", 0, "expected_rows must be at least 1"),
         ("description", "", "needs a description"),
-        ("label_kind", "", "needs a label_kind"),
+        ("class_noun", "", "needs a class_noun"),
     ],
 )
 def test_spec_refuses_an_inconsistent_field(field, value, match):
     kwargs = {
         "name": "ok_name",
         "long_label": "Fine",
-        "label_kind": "plant functional type",
+        "class_noun": "plant functional type",
         "labels": ("a", "b"),
         "description": "Fine.",
         "upstream_product": "test",
@@ -188,7 +188,7 @@ def test_spec_refuses_a_landcover_mapping_onto_an_undeclared_class():
         SiteLabelsSpec(
             name="ok_name",
             long_label="Fine",
-            label_kind="plant functional type",
+            class_noun="plant functional type",
             labels=("a", "b"),
             description="Fine.",
             upstream_product="test",
@@ -247,7 +247,7 @@ def test_a_class_literally_named_na_survives_the_read(tmp_path):
     spec = SiteLabelsSpec(
         name="na_class",
         long_label="Site labels with a class named NA",
-        label_kind="cover class",
+        class_noun="cover class",
         labels=("NA", "other"),
         description="Exists to prove the null handling.",
         upstream_product="test",
@@ -461,7 +461,7 @@ def test_display_names_must_cover_every_class():
     kwargs = dict(
         name="ok_name",
         long_label="Fine",
-        label_kind="plant functional type",
+        class_noun="plant functional type",
         labels=("a", "b"),
         description="Fine.",
         upstream_product="test",
@@ -635,7 +635,7 @@ def real_argv(tmp_path):
     """A `main` invocation against the registry's own site labels and raw file."""
     # main reads both from its defaults, so check the paths it will read.
     for spec in SITE_LABELS:
-        if not (default_raw_dir() / spec.raw_file).exists():
+        if not (default_raw_directory() / spec.raw_file).exists():
             pytest.skip("raw site labels not available in this working copy")
     if not default_site_table_path().exists():
         pytest.skip("site table not available in this working copy")
@@ -865,7 +865,7 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
     kwargs = {
         "name": "ok_name",
         "long_label": "Fine",
-        "label_kind": "plant functional type",
+        "class_noun": "plant functional type",
         "labels": ("a", "b"),
         "description": "Fine.",
         "upstream_product": "test",
@@ -943,16 +943,19 @@ def test_a_class_name_with_whitespace_cannot_be_a_flag_meaning():
         landcover_mapping={1: "conifer", 2: "conifer", 3: "broad leaf", 5: "grass"},
     )
     with pytest.raises(ValueError, match="whitespace"):
-        _check_labels_are_flag_meanings(spaced)
+        check_classes_are_flag_meanings(spaced)
 
 
 # ── the default paths ─────────────────────────────────────────────────────────
 
 
-def test_the_default_paths_honor_the_data_root_override(monkeypatch, tmp_path):
+def test_the_processed_directory_honors_the_data_root_override_and_the_raw_one_does_not(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("SIPNET_CALIBRATION_DATA", str(tmp_path))
-    assert default_raw_dir() == tmp_path / "raw" / "site_labels"
-    assert default_site_labels_dir() == tmp_path / "processed" / "site_labels"
+    assert default_site_labels_directory() == tmp_path / "processed" / "site_labels"
+    # The raw files are tracked, so they are always in the checkout.
+    assert default_raw_directory() == RAW_DIR
 
 
 def test_site_labels_path_is_the_name_with_a_csv_suffix(tmp_path):

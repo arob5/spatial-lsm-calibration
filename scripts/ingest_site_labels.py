@@ -82,8 +82,8 @@ from sipnet_calibration.site_labels import (
     SITE_LABELS_NAMES,
     SiteLabelsSpec,
     build_site_labels,
-    default_raw_dir,
-    default_site_labels_dir,
+    default_raw_directory,
+    default_site_labels_directory,
     describe,
     load_site_labels,
     read_raw,
@@ -113,8 +113,8 @@ def main(argv: list[str] | None = None) -> int:
         print("\n\n".join(describe(resolve_site_labels(name)) for name in names))
         return 0
 
-    raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
-    out_dir = args.out_dir if args.out_dir is not None else default_site_labels_dir()
+    raw_root = args.raw_root if args.raw_root is not None else default_raw_directory()
+    out_dir = args.out_dir if args.out_dir is not None else default_site_labels_directory()
     site_table_path = args.site_table or default_site_table_path()
 
     try:
@@ -229,7 +229,7 @@ def describe_processed_file(
     )
     lines = [
         f"{path}",
-        f"  site labels           : {spec.name} ({spec.label_kind})",
+        f"  site labels           : {spec.name} ({spec.class_noun})",
         f"  sites labeled         : {len(site_labels)} of {len(site_table)} in the pool",
         f"  classes               : {len(spec.labels)}",
     ]

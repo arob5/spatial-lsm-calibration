@@ -148,8 +148,7 @@ rule below yet, the rule says which PR changes it.
 One concept, one word; one word, one concept. A word this glossary does not
 list is either added here or not used for a project concept. The retired words
 are gone from the code, except where a rule below names the PR that retires
-them, and except `SiteLabelsSpec.label_kind`, whose "kind" is not pySIPNET's
-and which the data-source cleanup (PR 5d) renames.
+them.
 
 **Space and sites.**
 

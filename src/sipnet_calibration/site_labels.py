@@ -32,7 +32,9 @@ Input data
     The processed file, read by :func:`load_site_labels`, whose layout is the
     `Data model`_ below. :func:`site_labels_path` says where it is expected to
     be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
-    :data:`~sipnet_calibration.conventions.DATA_ROOT_ENV_VAR`.
+    :data:`~sipnet_calibration.conventions.DATA_ROOT_ENV_VAR`. The raw files
+    are tracked, so :func:`default_raw_directory` finds them in this
+    checkout whatever that variable says.
 
 Data model
 ----------
@@ -83,7 +85,7 @@ Functions
 :func:`resolve_site_labels`
     The spec of a name, or a ``KeyError`` listing the names that exist.
 
-:func:`site_labels_path`, :func:`default_raw_dir`, :func:`default_site_labels_dir`
+:func:`site_labels_path`, :func:`default_raw_directory`, :func:`default_site_labels_directory`
     Where things are expected to be.
 
 :func:`describe`
@@ -92,6 +94,12 @@ Functions
 :data:`SITE_LABELS`, :data:`SITE_LABELS_NAMES`
     The registry, and its keys in order.
 
+The checks
+    One invariant each, with two groups: :func:`check_site_labels_spec_is_valid`,
+    which every spec passes on construction, and
+    :func:`check_site_labels_are_valid`, which a processed file and a raw file
+    are held to.
+
 Notes
 -----
 **The class column is ``label``, not ``pft``.** One schema across sources, so
@@ -99,7 +107,7 @@ that :func:`load_site_labels` returns the same frame shape whatever it is asked
 for and code that pools over classes -- a partial-pooling prior, a facet-by-class
 figure -- indexes ``label`` without knowing which source it got. The site
 labels' name, not a column, says which source a frame came from, and
-:attr:`SiteLabelsSpec.label_kind` carries the domain word for prose and axis
+:attr:`SiteLabelsSpec.class_noun` carries the domain word for prose and axis
 labels. A source whose classes are not plant
 functional types then costs no schema change.
 
@@ -166,11 +174,13 @@ from sipnet_calibration.conventions import (
     SITE_ID,
     data_root,
 )
-from sipnet_calibration.sites import N_SITES, load_sites, site_coordinates
+from sipnet_calibration.sites import N_SITES, load_sites, site_coordinates, tracked_data_root
 from sipnet_calibration.validation import (
     as_frozen_mapping,
     as_positive_integer,
+    check_names_are_unique,
     check_site_ids_are_in_range,
+    truncated,
 )
 
 __all__ = [
@@ -181,8 +191,31 @@ __all__ = [
     "SITE_LABELS_NAMES",
     "SiteLabelsSpec",
     "build_site_labels",
-    "default_raw_dir",
-    "default_site_labels_dir",
+    "check_class_names_are_not_empty",
+    "check_classes_are_declared",
+    "check_classes_are_flag_meanings",
+    "check_classes_are_present",
+    "check_display_names_are_classes",
+    "check_display_names_cover_every_class",
+    "check_landcover_mapping_sends_to_classes",
+    "check_processed_site_labels_exist",
+    "check_raw_site_labels_exist",
+    "check_site_and_label_columns_differ",
+    "check_site_ids_are_present",
+    "check_site_labels_are_in_site_id_order",
+    "check_site_labels_are_registered",
+    "check_site_labels_are_valid",
+    "check_site_labels_file_has_the_header",
+    "check_site_labels_file_holds_rows",
+    "check_site_labels_have_two_classes",
+    "check_site_labels_list_each_site_once",
+    "check_site_labels_name_is_a_processed_name",
+    "check_site_labels_named_columns_are_raw_columns",
+    "check_site_labels_spec_has_a_class_noun",
+    "check_site_labels_spec_is_described",
+    "check_site_labels_spec_is_valid",
+    "default_raw_directory",
+    "default_site_labels_directory",
     "describe",
     "label_dtype",
     "load_site_labels",
@@ -225,7 +258,7 @@ class SiteLabelsSpec:
     long_label: str
     """Plot-ready name, e.g. ``"Reanalysis three-PFT site labels"``."""
 
-    label_kind: str
+    class_noun: str
     """What the classes are, as a noun phrase: ``"plant functional type"``."""
 
     labels: tuple[str, ...]
@@ -288,65 +321,566 @@ class SiteLabelsSpec:
             value = getattr(self, name)
             if value is not None:
                 object.__setattr__(self, name, as_frozen_mapping(value, message_name=name))
-        if not NAME_PATTERN.match(self.name):
-            raise ValueError(f"Site-labels name {self.name!r} is not lower_case_with_underscores.")
-        if not self.description or not self.long_label or not self.upstream_product:
-            raise ValueError(
-                f"Site labels {self.name!r} needs a description, long_label and upstream_product."
-            )
-        if not self.label_kind:
-            raise ValueError(f"Site labels {self.name!r} needs a label_kind.")
-        if len(self.labels) < 2:
-            raise ValueError(f"Site labels {self.name!r}: a source needs at least two classes.")
-        if len(set(self.labels)) != len(self.labels):
-            raise ValueError(f"Site labels {self.name!r}: labels repeats a class.")
-        if any(not label for label in self.labels):
-            raise ValueError(f"Site labels {self.name!r}: a class name is empty.")
-        if len(set(self.raw_columns)) != len(self.raw_columns):
-            raise ValueError(f"Site labels {self.name!r}: raw_columns repeats a column.")
-        for role, column in (("site_column", self.site_column), ("label_column", self.label_column)):
-            if column not in self.raw_columns:
-                raise ValueError(
-                    f"Site labels {self.name!r}: {role} {column!r} is not in raw_columns "
-                    f"{self.raw_columns}."
-                )
-        if self.site_column == self.label_column:
-            raise ValueError(
-                f"Site labels {self.name!r}: site_column and label_column are the same."
-            )
-        as_positive_integer(
-            self.expected_rows, message_name=f"site labels {self.name!r}: expected_rows"
+        check_site_labels_spec_is_valid(self)
+
+
+def resolve_site_labels(name: str) -> SiteLabelsSpec:
+    """The spec named *name*, or a ``KeyError`` listing the names that exist."""
+    check_site_labels_are_registered(name)
+    return next(spec for spec in SITE_LABELS if spec.name == name)
+
+
+# ── the processed file ────────────────────────────────────────────────────────
+
+
+def default_raw_directory() -> Path:
+    """Where the raw site-labels files are: ``data/raw/site_labels/`` of this checkout.
+
+    They are tracked, so this is found from
+    :func:`~sipnet_calibration.sites.tracked_data_root` and
+    ``$SIPNET_CALIBRATION_DATA`` does not move it.
+    """
+    return tracked_data_root() / "raw" / "site_labels"
+
+
+def default_site_labels_directory() -> Path:
+    """Where the processed files are expected: ``data/processed/site_labels/``.
+
+    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
+    """
+    return data_root() / "processed" / "site_labels"
+
+
+def site_labels_path(
+    site_labels: str | SiteLabelsSpec, directory: Path | str | None = None
+) -> Path:
+    """The processed file of site labels: ``<directory>/<name>.csv``."""
+    name = site_labels if isinstance(site_labels, str) else site_labels.name
+    base = Path(directory) if directory is not None else default_site_labels_directory()
+    return base / f"{name}.csv"
+
+
+def label_dtype(spec: SiteLabelsSpec) -> pd.CategoricalDtype:
+    """The ``label`` column's dtype: *spec.labels* as unordered categories.
+
+    Unordered because the classes have no ranking; the *order of the
+    categories* is still the spec's, which is what fixes a class axis.
+    """
+    return pd.CategoricalDtype(categories=list(spec.labels), ordered=False)
+
+
+def load_site_labels(
+    site_labels: str | SiteLabelsSpec, path: Path | str | None = None
+) -> pd.DataFrame:
+    """Read one site-labels processed file and check it against its spec.
+
+    Parameters
+    ----------
+    site_labels:
+        A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
+    path:
+        The CSV to read. Defaults to :func:`site_labels_path`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The columns of :data:`SITE_LABELS_COLUMNS`, in ascending ``site_id``
+        order, with ``label`` a categorical over ``spec.labels``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file is absent, with the command that produces it.
+    ValueError
+        If the file does not follow the data model: a wrong header, no rows,
+        site labels that fail :func:`check_site_labels_are_valid`, or rows out
+        of ``site_id`` order.
+    """
+    spec = (
+        site_labels
+        if isinstance(site_labels, SiteLabelsSpec)
+        else resolve_site_labels(site_labels)
+    )
+    path = Path(path) if path is not None else site_labels_path(spec)
+    check_processed_site_labels_exist(path, spec)
+    # site_id is read wide and narrowed after checking, as load_sites does:
+    # reading straight into int32 wraps silently.
+    frame = _parsed_csv(path, dtype={SITE_ID: np.int64, LABEL_COLUMN: str})
+    check_site_labels_file_has_the_header(frame, SITE_LABELS_COLUMNS, message_name=str(path))
+    check_site_labels_file_holds_rows(frame, message_name=str(path))
+    check_site_labels_are_valid(frame[SITE_ID], frame[LABEL_COLUMN], spec, message_name=str(path))
+    check_site_labels_are_in_site_id_order(frame[SITE_ID], message_name=str(path))
+
+    return pd.DataFrame(
+        {
+            SITE_ID: frame[SITE_ID].astype(SITE_LABELS_COLUMN_DTYPES[SITE_ID]),
+            LABEL_COLUMN: frame[LABEL_COLUMN].astype(label_dtype(spec)),
+        }
+    )
+
+
+def site_labels_field(
+    site_labels: str | SiteLabelsSpec,
+    *,
+    site_table: pd.DataFrame | None = None,
+    path: Path | str | None = None,
+) -> xr.DataArray:
+    """Site labels as a categorical field on ``site``.
+
+    Parameters
+    ----------
+    site_labels:
+        A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
+    site_table:
+        The site table, for ``lon``/``lat``. Defaults to
+        :func:`sipnet_calibration.sites.load_sites`.
+    path:
+        The processed file to read. Defaults to :func:`site_labels_path`.
+
+    Returns
+    -------
+    xarray.DataArray
+        ``int8`` class codes on ``site`` (``int32``, ascending), one per labeled
+        site, with ``lon`` and ``lat`` on ``site``. The attributes follow CF's
+        convention for coded classes: ``flag_values`` is ``0 .. k-1`` and
+        ``flag_meanings`` the spec's class names, space-separated, in the spec's
+        order and all of them whether or not every class is used. There are no
+        ``units``. ``long_name`` names the class noun and the site labels, and
+        the array is named for the site labels (``spec.name``). Where the spec has
+        :attr:`~SiteLabelsSpec.display_names`, ``flag_display_names`` holds
+        them as a tuple aligned with ``flag_meanings``; it is this project's
+        attribute, not CF's, and is absent otherwise.
+
+    Raises
+    ------
+    KeyError
+        If a labeled site is not in the site table.
+    ValueError
+        If a class name contains whitespace, which a CF flag meaning cannot.
+    """
+    spec = (
+        site_labels
+        if isinstance(site_labels, SiteLabelsSpec)
+        else resolve_site_labels(site_labels)
+    )
+    labels = load_site_labels(spec, path)
+    site_table = load_sites() if site_table is None else site_table
+    check_classes_are_flag_meanings(spec)
+    attrs = {
+        "long_name": f"{spec.class_noun[:1].upper()}{spec.class_noun[1:]} ({spec.name})",
+        "flag_values": np.arange(len(spec.labels), dtype=np.int8),
+        "flag_meanings": " ".join(spec.labels),
+    }
+    if spec.display_names is not None:
+        # A tuple, since a display name may contain spaces and flag_meanings
+        # is space-separated.
+        attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.labels)
+    return xr.DataArray(
+        labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
+        dims=SITE,
+        coords=site_coordinates(labels[SITE_ID].tolist(), site_table),
+        attrs=attrs,
+        name=spec.name,
+    )
+
+
+def read_raw(spec: SiteLabelsSpec, raw_directory: Path | str | None = None) -> pd.DataFrame:
+    """Parse the raw file of site labels exactly, in its source column names.
+
+    Parameters
+    ----------
+    spec:
+        Which site-labels data source.
+    raw_directory:
+        The directory holding the raw files. Defaults to
+        :func:`default_raw_directory`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The columns of ``spec.raw_columns``, in order, the site column as
+        ``int64`` and every other column as a string.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the file is absent.
+    ValueError
+        If the header is not ``spec.raw_columns``, or the file has no rows.
+
+    Notes
+    -----
+    ``keep_default_na=False`` is what keeps a class literally named ``NA`` a
+    string, as it does for the eight sites named ``NA`` in the site table. A
+    site-labels data source has no missing values, so nothing should become
+    ``NaN`` here and an empty field is caught downstream as an undeclared class
+    rather than silently read as missing.
+
+    The row count is **not** checked here. It is an invariant of the file
+    rather than of parsing it, and the ingest script raises on it with a message
+    naming the other file it might be; see ``data/raw/site_labels/provenance.md``.
+    """
+    directory = Path(raw_directory) if raw_directory is not None else default_raw_directory()
+    path = directory / spec.raw_file
+    check_raw_site_labels_exist(path)
+    frame = _parsed_csv(path, dtype=_raw_dtypes(spec))
+    check_site_labels_file_has_the_header(frame, spec.raw_columns, message_name=str(path))
+    check_site_labels_file_holds_rows(frame, message_name=str(path))
+    return frame
+
+
+def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame:
+    """Turn a raw frame into the site labels the data model describes.
+
+    Parameters
+    ----------
+    spec:
+        Which site-labels data source.
+    frame:
+        The raw frame, as :func:`read_raw` returns it.
+
+    Returns
+    -------
+    pandas.DataFrame
+        The columns of :data:`SITE_LABELS_COLUMNS`, in ascending ``site_id``
+        order, with ``label`` a categorical over ``spec.labels``.
+
+    Raises
+    ------
+    ValueError
+        If the site labels fail :func:`check_site_labels_are_valid`.
+
+    Notes
+    -----
+    Renaming to the processed column names is safe here because the raw file
+    names its columns: each record carries its own identity, so nothing is
+    matched positionally. Checks that need the site table -- that every
+    identifier is a real site, that the pool is covered, that the classes agree
+    with ``landcover`` -- are the ingest script's, since this module does not
+    read the site table.
+    """
+    site = frame[spec.site_column]
+    label = frame[spec.label_column]
+    check_site_labels_are_valid(site, label, spec, message_name=spec.raw_file)
+    built = pd.DataFrame(
+        {
+            SITE_ID: site.to_numpy(dtype=SITE_LABELS_COLUMN_DTYPES[SITE_ID]),
+            LABEL_COLUMN: pd.Categorical(label, dtype=label_dtype(spec)),
+        }
+    )
+    return built.sort_values(SITE_ID, ignore_index=True)
+
+
+def describe(spec: SiteLabelsSpec) -> str:
+    """A spec as readable prose, for a script's log."""
+    lines = [
+        f"{spec.name}: {spec.long_label}",
+        f"  {spec.class_noun}, {len(spec.labels)} classes: {', '.join(spec.labels)}",
+        f"  upstream product: {spec.upstream_product}, raw/site_labels/{spec.raw_file}, "
+        f"{spec.expected_rows} rows",
+        f"  {spec.description}",
+    ]
+    if spec.display_names is not None:
+        width = max(len(label) for label in spec.labels)
+        lines.append("  display names:")
+        lines += [
+            f"    {label:<{width}} : {spec.display_names[label]}" for label in spec.labels
+        ]
+    if spec.comment:
+        lines.append(f"  comment: {spec.comment}")
+    lines.extend(f"  note: {note}" for note in spec.notes)
+    if spec.landcover_mapping is not None:
+        groups: dict[str, list[int]] = {}
+        for cover, label in sorted(spec.landcover_mapping.items()):
+            groups.setdefault(label, []).append(cover)
+        rule = "; ".join(
+            f"landcover {_range_text(covers)} -> {label}" for label, covers in groups.items()
         )
-        if self.display_names is not None:
-            unknown = sorted(set(self.display_names) - set(self.labels))
-            if unknown:
-                raise ValueError(
-                    f"Site labels {self.name!r}: display_names names {unknown}, which are "
-                    f"not classes of these site labels."
-                )
-            absent = [label for label in self.labels if label not in self.display_names]
-            if absent:
-                raise ValueError(
-                    f"Site labels {self.name!r}: display_names has no entry for {absent}. "
-                    "Give every class a display name or none."
-                )
-        if self.landcover_mapping is not None:
-            unknown = sorted(set(self.landcover_mapping.values()) - set(self.labels))
-            if unknown:
-                raise ValueError(
-                    f"Site labels {self.name!r}: landcover_mapping sends cover classes to "
-                    f"{unknown}, which are not in labels {list(self.labels)}."
-                )
+        lines.append(f"  landcover relation: {rule}")
+    return "\n".join(lines)
+
+
+# ── private helpers ───────────────────────────────────────────────────────────
+
+
+def _parsed_csv(path: Path, *, dtype: dict[str, Any]) -> pd.DataFrame:
+    """A site-labels CSV read with *dtype*; a parse failure is a ``ValueError``."""
+    try:
+        with warnings.catch_warnings():
+            # A row with more fields than the header only warns by default and
+            # loses its trailing field; here that is a malformed file.
+            warnings.simplefilter("error", pd.errors.ParserWarning)
+            return pd.read_csv(path, dtype=dtype, keep_default_na=False, index_col=False)
+    except (ValueError, OverflowError, pd.errors.ParserWarning) as error:
+        raise ValueError(
+            f"{path}: could not be parsed as site labels: {error}; correct or re-make the "
+            "file."
+        ) from error
+
+
+def _raw_dtypes(spec: SiteLabelsSpec) -> dict[str, Any]:
+    """What to hand pandas per column, so nothing is inferred."""
+    # The site column is read wide and narrowed after checking; everything else
+    # is a string, since a class name is text and must not be inferred numeric.
+    dtypes: dict[str, Any] = {column: str for column in spec.raw_columns}
+    dtypes[spec.site_column] = np.int64
+    return dtypes
+
+
+def _range_text(values: list[int]) -> str:
+    """``[1, 2]`` as ``"1-2"``, ``[5, 6, 7, 8]`` as ``"5-8"``, otherwise a list."""
+    if len(values) > 1 and values == list(range(values[0], values[-1] + 1)):
+        return f"{values[0]}-{values[-1]}"
+    return ", ".join(str(value) for value in values)
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_site_labels_spec_is_valid(spec: SiteLabelsSpec) -> None:
+    """A site-labels spec is complete and consistent with its raw file's columns."""
+    check_site_labels_name_is_a_processed_name(spec)
+    check_site_labels_spec_is_described(spec)
+    check_site_labels_spec_has_a_class_noun(spec)
+    check_site_labels_have_two_classes(spec)
+    check_names_are_unique(spec.labels, message_name=f"site labels {spec.name!r}: labels")
+    check_class_names_are_not_empty(spec)
+    check_names_are_unique(
+        spec.raw_columns, message_name=f"site labels {spec.name!r}: raw_columns"
+    )
+    check_site_labels_named_columns_are_raw_columns(spec)
+    check_site_and_label_columns_differ(spec)
+    as_positive_integer(
+        spec.expected_rows, message_name=f"site labels {spec.name!r}: expected_rows"
+    )
+    check_display_names_are_classes(spec)
+    check_display_names_cover_every_class(spec)
+    check_landcover_mapping_sends_to_classes(spec)
+
+
+def check_site_labels_are_valid(
+    site: pd.Series, label: pd.Series, spec: SiteLabelsSpec, *, message_name: str
+) -> None:
+    """Site labels name each site once, by a site id, with a class the spec declares."""
+    check_site_ids_are_present(site, message_name=message_name)
+    check_site_ids_are_in_range(site.to_numpy(), message_name=f"{message_name}: {SITE_ID}")
+    check_site_labels_list_each_site_once(site, message_name=message_name)
+    check_classes_are_present(label, message_name=message_name)
+    check_classes_are_declared(label, spec, message_name=message_name)
+
+
+def check_site_labels_are_registered(name: str) -> None:
+    """A site-labels name is one of :data:`SITE_LABELS_NAMES`."""
+    if name not in SITE_LABELS_NAMES:
+        raise KeyError(
+            f"no site labels named {name!r}; pass one of {truncated(SITE_LABELS_NAMES)}."
+        )
+
+
+def check_site_labels_name_is_a_processed_name(spec: SiteLabelsSpec) -> None:
+    """A site-labels name is ``lower_case_with_underscores``."""
+    if not NAME_PATTERN.match(spec.name):
+        raise ValueError(
+            f"site-labels name {spec.name!r} is not lower_case_with_underscores; rename it."
+        )
+
+
+def check_site_labels_spec_is_described(spec: SiteLabelsSpec) -> None:
+    """A site-labels spec has a description, a long label and an upstream product."""
+    if not spec.description or not spec.long_label or not spec.upstream_product:
+        raise ValueError(
+            f"site labels {spec.name!r} needs a description, long_label and "
+            "upstream_product; give all three."
+        )
+
+
+def check_site_labels_spec_has_a_class_noun(spec: SiteLabelsSpec) -> None:
+    """A site-labels spec says what its classes are."""
+    if not spec.class_noun:
+        raise ValueError(
+            f"site labels {spec.name!r} needs a class_noun; say what the classes are, such "
+            'as "plant functional type".'
+        )
+
+
+def check_site_labels_have_two_classes(spec: SiteLabelsSpec) -> None:
+    """A site-labels data source has at least two classes."""
+    if len(spec.labels) < 2:
+        raise ValueError(
+            f"site labels {spec.name!r}: a source needs at least two classes, got "
+            f"{list(spec.labels)}; declare every class it uses."
+        )
+
+
+def check_class_names_are_not_empty(spec: SiteLabelsSpec) -> None:
+    """No class of a site-labels spec is the empty string."""
+    if any(not label for label in spec.labels):
+        raise ValueError(
+            f"site labels {spec.name!r}: a class name is empty; name every class as the "
+            "producer does."
+        )
+
+
+def check_site_labels_named_columns_are_raw_columns(spec: SiteLabelsSpec) -> None:
+    """The site and label columns a spec names are among its raw columns."""
+    for role, column in (("site_column", spec.site_column), ("label_column", spec.label_column)):
+        if column not in spec.raw_columns:
+            raise ValueError(
+                f"site labels {spec.name!r}: {role} {column!r} is not in raw_columns "
+                f"{spec.raw_columns}; name a column of the raw file's header."
+            )
+
+
+def check_site_and_label_columns_differ(spec: SiteLabelsSpec) -> None:
+    """A spec's site column and label column are two columns."""
+    if spec.site_column == spec.label_column:
+        raise ValueError(
+            f"site labels {spec.name!r}: site_column and label_column are the same; name the "
+            "raw column of the site and the one of the class."
+        )
+
+
+def check_display_names_are_classes(spec: SiteLabelsSpec) -> None:
+    """Every class *display_names* names is a class of the spec."""
+    if spec.display_names is None:
+        return
+    unknown = sorted(set(spec.display_names) - set(spec.labels))
+    if unknown:
+        raise ValueError(
+            f"site labels {spec.name!r}: display_names names {unknown}, which are not classes "
+            "of these site labels; name only declared classes."
+        )
+
+
+def check_display_names_cover_every_class(spec: SiteLabelsSpec) -> None:
+    """*display_names*, where given, has an entry for every class."""
+    if spec.display_names is None:
+        return
+    absent = [label for label in spec.labels if label not in spec.display_names]
+    if absent:
+        raise ValueError(
+            f"site labels {spec.name!r}: display_names has no entry for {absent}; give every "
+            "class a display name or none."
+        )
+
+
+def check_landcover_mapping_sends_to_classes(spec: SiteLabelsSpec) -> None:
+    """Every class a *landcover_mapping* sends a cover class to is one of the spec's."""
+    if spec.landcover_mapping is None:
+        return
+    unknown = sorted(set(spec.landcover_mapping.values()) - set(spec.labels))
+    if unknown:
+        raise ValueError(
+            f"site labels {spec.name!r}: landcover_mapping sends cover classes to {unknown}, "
+            f"which are not in labels {list(spec.labels)}; map onto declared classes."
+        )
+
+
+def check_raw_site_labels_exist(path: Path) -> None:
+    """A site-labels raw file exists."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no raw site-labels file at {path}; see data/raw/site_labels/provenance.md for "
+            "where it comes from."
+        )
+
+
+def check_processed_site_labels_exist(path: Path, spec: SiteLabelsSpec) -> None:
+    """A site-labels processed file exists."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"no processed site labels at {path}; produce them with "
+            f"`python scripts/ingest_site_labels.py --site-labels {spec.name}`."
+        )
+
+
+def check_site_labels_file_has_the_header(
+    frame: pd.DataFrame, columns: tuple[str, ...], *, message_name: str
+) -> None:
+    """A site-labels file's header is *columns*, in order."""
+    if tuple(frame.columns) != columns:
+        raise ValueError(
+            f"{message_name}: header is {tuple(frame.columns)}, expected {columns}; a changed "
+            "file is a spec change, not a new row."
+        )
+
+
+def check_site_labels_file_holds_rows(frame: pd.DataFrame, *, message_name: str) -> None:
+    """A site-labels file holds at least one row."""
+    if frame.empty:
+        raise ValueError(f"{message_name}: holds no rows; restore or re-make the file.")
+
+
+def check_site_ids_are_present(site: pd.Series, *, message_name: str) -> None:
+    """No site id of site labels is missing."""
+    if site.isna().any():
+        raise ValueError(
+            f"{message_name}: {SITE_ID} has a missing value; every row labels one site."
+        )
+
+
+def check_site_labels_list_each_site_once(site: pd.Series, *, message_name: str) -> None:
+    """Site labels give each site one class."""
+    repeated = site[site.duplicated()].unique()
+    if repeated.size:
+        raise ValueError(
+            f"{message_name}: {SITE_ID} repeats {truncated(repeated.tolist())}; a site-labels "
+            "data source gives each site exactly one class."
+        )
+
+
+def check_site_labels_are_in_site_id_order(site: pd.Series, *, message_name: str) -> None:
+    """A processed site-labels file is in ascending ``site_id`` order."""
+    if not site.is_monotonic_increasing:
+        raise ValueError(
+            f"{message_name}: {SITE_ID} is not in ascending order; re-make it with "
+            "scripts/ingest_site_labels.py, which writes it sorted."
+        )
+
+
+def check_classes_are_present(label: pd.Series, *, message_name: str) -> None:
+    """No class of site labels is missing."""
+    if label.isna().any():
+        raise ValueError(
+            f"{message_name}: {LABEL_COLUMN} has a missing value; a site-labels data source "
+            "has no unlabeled class, and a site it does not label is absent from its file."
+        )
+
+
+def check_classes_are_declared(
+    label: pd.Series, spec: SiteLabelsSpec, *, message_name: str
+) -> None:
+    """Every class of site labels is one the spec declares."""
+    unknown = sorted(set(label.unique()) - set(spec.labels))
+    if unknown:
+        raise ValueError(
+            f"{message_name}: holds classes {unknown} that {spec.name!r} does not declare "
+            f"(declared: {list(spec.labels)}); a new class is a spec change, not a new row."
+        )
+
+
+def check_classes_are_flag_meanings(spec: SiteLabelsSpec) -> None:
+    """No class name holds whitespace, which a CF ``flag_meanings`` entry cannot."""
+    spaced = [label for label in spec.labels if re.search(r"\s", label)]
+    if spaced:
+        raise ValueError(
+            f"class name(s) {spaced} of {spec.name!r} contain whitespace, which a CF "
+            "flag_meanings entry cannot, so the categorical field cannot represent them; "
+            "read the classes with load_site_labels instead."
+        )
 
 
 # ── the registry ──────────────────────────────────────────────────────────────
+#
+# Last in the module, since building a spec runs its checks, which Python must
+# have defined first.
 
 #: Every site-labels data source, in registry order. One entry per raw file.
 SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
     SiteLabelsSpec(
         name="reanalysis_3pft",
         long_label="Reanalysis three-PFT site labels",
-        label_kind="plant functional type",
+        class_noun="plant functional type",
         # Ordered by the landcover classes they aggregate, which is the order
         # the classes are generated in, rather than by how many sites each has.
         labels=(
@@ -383,11 +917,11 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         comment=(
             "Three classes over a pool spanning 7-82 degrees north, so the classes are "
             "coarse and two of the three names mislead: boreal.coniferous is neither "
-            "boreal nor reliably coniferous (805 of its 2369 sites lie south of 40 N, "
-            "and it holds a California annual grassland), and semiarid.grassland_HPDA "
-            "is the catch-all for everything non-forest, 992 of its sites lying north "
-            "of the Arctic Circle. A prior built on these labels inherits that "
-            "coarseness."
+            "boreal nor reliably coniferous (many of its sites lie south of 40 N, and "
+            "it holds a California annual grassland), and semiarid.grassland_HPDA is "
+            "the catch-all for everything non-forest, many of its sites lying north of "
+            "the Arctic Circle; data/README.md has the counts. A prior built on these "
+            "labels inherits that coarseness."
         ),
         notes=(
             "The landcover relation is measured over all 8000 rows, not stated by the "
@@ -402,7 +936,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
     SiteLabelsSpec(
         name="pft_16class",
         long_label="Sixteen-class PFT site labels",
-        label_kind="plant functional type",
+        class_noun="plant functional type",
         # Ordered by cover type -- needleleaf, broadleaf, mixed, shrub, open,
         # cropland, wetland -- rather than by site count, so that neighboring
         # classes in a prior's class axis are ecologically neighboring too.
@@ -428,8 +962,8 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
             "The sixteen plant functional types this project calibrates under, one per "
             "site. Assembled for the SIPNET calibration by a colleague in the Dietze "
             "lab and received on 2026-09-22, from MODIS land cover refined by clustering "
-            "on climate, vegetation structure, soil and biogeography. 7637 sites were "
-            "assigned directly and 363 by nearest median ecological profile."
+            "on climate, vegetation structure, soil and biogeography. Most sites were "
+            "assigned directly and the rest by nearest median ecological profile."
         ),
         upstream_product="Dietze lab PFT assignment",
         raw_file="site_pft_16class.csv",
@@ -493,392 +1027,14 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
             "scripts/raw_sources/split_site_pft_16class.py. Those covariates are what "
             "the classes were derived from, so a model using both a class effect and "
             "them relates the two by construction.",
-            "363 sites were assigned by nearest ecological profile rather than directly, "
-            "and 292 of those have a runner-up class nearly as close as the one chosen; "
-            "second_nearest_final_pft and distance_margin are kept in the raw file so "
-            "that sensitivity can be measured.",
+            "The sites assigned by nearest ecological profile rather than directly are "
+            "mostly ones with a runner-up class nearly as close as the one chosen "
+            "(data/README.md has the counts); second_nearest_final_pft and "
+            "distance_margin are kept in the raw file so that sensitivity can be "
+            "measured.",
         ),
     ),
 )
 
 #: The site-labels names, in registry order.
 SITE_LABELS_NAMES: tuple[str, ...] = tuple(spec.name for spec in SITE_LABELS)
-
-
-def resolve_site_labels(name: str) -> SiteLabelsSpec:
-    """The spec named *name*, or a ``KeyError`` listing the names that exist."""
-    for spec in SITE_LABELS:
-        if spec.name == name:
-            return spec
-    raise KeyError(f"No site labels named {name!r}. Known: {list(SITE_LABELS_NAMES)}")
-
-
-# ── the processed file ────────────────────────────────────────────────────────
-
-
-def default_raw_dir() -> Path:
-    """Where the raw site-labels files are expected: ``data/raw/site_labels/``.
-
-    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
-    """
-    return _data_root() / "raw" / "site_labels"
-
-
-def default_site_labels_dir() -> Path:
-    """Where the processed files are expected: ``data/processed/site_labels/``.
-
-    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
-    """
-    return _data_root() / "processed" / "site_labels"
-
-
-def site_labels_path(
-    site_labels: str | SiteLabelsSpec, directory: Path | str | None = None
-) -> Path:
-    """The processed file of site labels: ``<directory>/<name>.csv``."""
-    name = site_labels if isinstance(site_labels, str) else site_labels.name
-    base = Path(directory) if directory is not None else default_site_labels_dir()
-    return base / f"{name}.csv"
-
-
-def label_dtype(spec: SiteLabelsSpec) -> pd.CategoricalDtype:
-    """The ``label`` column's dtype: *spec.labels* as unordered categories.
-
-    Unordered because the classes have no ranking; the *order of the
-    categories* is still the spec's, which is what fixes a class axis.
-    """
-    return pd.CategoricalDtype(categories=list(spec.labels), ordered=False)
-
-
-def load_site_labels(
-    site_labels: str | SiteLabelsSpec, path: Path | str | None = None
-) -> pd.DataFrame:
-    """Read one site-labels processed file and check it against its spec.
-
-    Parameters
-    ----------
-    site_labels:
-        A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
-    path:
-        The CSV to read. Defaults to :func:`site_labels_path`.
-
-    Returns
-    -------
-    pandas.DataFrame
-        The columns of :data:`SITE_LABELS_COLUMNS`, in ascending ``site_id``
-        order, with ``label`` a categorical over ``spec.labels``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the file is absent, with the command that produces it.
-    ValueError
-        If the file does not match the data model: a wrong header, a duplicate
-        or non-ascending identifier, an identifier outside ``int32``, a missing
-        value, or a class the spec does not declare.
-    """
-    spec = (
-        site_labels
-        if isinstance(site_labels, SiteLabelsSpec)
-        else resolve_site_labels(site_labels)
-    )
-    path = Path(path) if path is not None else site_labels_path(spec)
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} not found. Produce it with:\n"
-            f"  python scripts/ingest_site_labels.py --site-labels {spec.name}"
-        )
-
-    try:
-        with warnings.catch_warnings():
-            # A row with more fields than the header only warns by default and
-            # loses its trailing field; here that is a malformed file.
-            warnings.simplefilter("error", pd.errors.ParserWarning)
-            frame = pd.read_csv(
-                path,
-                # site_id is read wide and narrowed after checking, as
-                # load_sites does: reading straight into int32 wraps silently.
-                dtype={SITE_ID: np.int64, LABEL_COLUMN: str},
-                keep_default_na=False,
-                index_col=False,
-            )
-    except (ValueError, OverflowError, pd.errors.ParserWarning) as error:
-        raise ValueError(f"{path}: could not be parsed as site labels: {error}") from error
-
-    if tuple(frame.columns) != SITE_LABELS_COLUMNS:
-        raise ValueError(
-            f"{path}: header is {tuple(frame.columns)}, expected {SITE_LABELS_COLUMNS}."
-        )
-    if frame.empty:
-        raise ValueError(f"{path}: holds no rows")
-    _check_site_ids(frame[SITE_ID], path)
-    _check_labels_are_declared(frame[LABEL_COLUMN], spec, path)
-
-    return pd.DataFrame(
-        {
-            SITE_ID: frame[SITE_ID].astype(SITE_LABELS_COLUMN_DTYPES[SITE_ID]),
-            LABEL_COLUMN: frame[LABEL_COLUMN].astype(label_dtype(spec)),
-        }
-    )
-
-
-def site_labels_field(
-    site_labels: str | SiteLabelsSpec,
-    *,
-    site_table: pd.DataFrame | None = None,
-    path: Path | str | None = None,
-) -> xr.DataArray:
-    """Site labels as a categorical field on ``site``.
-
-    Parameters
-    ----------
-    site_labels:
-        A site-labels name from :data:`SITE_LABELS_NAMES`, or a spec.
-    site_table:
-        The site table, for ``lon``/``lat``. Defaults to
-        :func:`sipnet_calibration.sites.load_sites`.
-    path:
-        The processed file to read. Defaults to :func:`site_labels_path`.
-
-    Returns
-    -------
-    xarray.DataArray
-        ``int8`` class codes on ``site`` (``int32``, ascending), one per labeled
-        site, with ``lon`` and ``lat`` on ``site``. The attributes follow CF's
-        convention for coded classes: ``flag_values`` is ``0 .. k-1`` and
-        ``flag_meanings`` the spec's class names, space-separated, in the spec's
-        order and all of them whether or not every class is used. There are no
-        ``units``. ``long_name`` names the label kind and the site labels, and
-        the array is named for the site labels (``spec.name``). Where the spec has
-        :attr:`~SiteLabelsSpec.display_names`, ``flag_display_names`` holds
-        them as a tuple aligned with ``flag_meanings``; it is this project's
-        attribute, not CF's, and is absent otherwise.
-
-    Raises
-    ------
-    KeyError
-        If a labeled site is not in the site table.
-    ValueError
-        If a class name contains whitespace, which a CF flag meaning cannot.
-    """
-    spec = (
-        site_labels
-        if isinstance(site_labels, SiteLabelsSpec)
-        else resolve_site_labels(site_labels)
-    )
-    labels = load_site_labels(spec, path)
-    site_table = load_sites() if site_table is None else site_table
-    _check_labels_are_flag_meanings(spec)
-    attrs = {
-        "long_name": f"{spec.label_kind[:1].upper()}{spec.label_kind[1:]} ({spec.name})",
-        "flag_values": np.arange(len(spec.labels), dtype=np.int8),
-        "flag_meanings": " ".join(spec.labels),
-    }
-    if spec.display_names is not None:
-        # A tuple, since a display name may contain spaces and flag_meanings
-        # is space-separated.
-        attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.labels)
-    return xr.DataArray(
-        labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
-        dims=SITE,
-        coords=site_coordinates(labels[SITE_ID].tolist(), site_table),
-        attrs=attrs,
-        name=spec.name,
-    )
-
-
-def read_raw(spec: SiteLabelsSpec, root: Path | str | None = None) -> pd.DataFrame:
-    """Parse the raw file of site labels exactly, in its source column names.
-
-    Parameters
-    ----------
-    spec:
-        Which site-labels data source.
-    root:
-        The directory holding the raw files. Defaults to :func:`default_raw_dir`.
-
-    Returns
-    -------
-    pandas.DataFrame
-        The columns of ``spec.raw_columns``, in order, the site column as
-        ``int64`` and every other column as a string.
-
-    Raises
-    ------
-    FileNotFoundError
-        If the file is absent.
-    ValueError
-        If the header is not ``spec.raw_columns``, or the file has no rows.
-
-    Notes
-    -----
-    ``keep_default_na=False`` is what keeps a class literally named ``NA`` a
-    string, as it does for the eight sites named ``NA`` in the site table. A
-    site-labels data source has no missing values, so nothing should become
-    ``NaN`` here and an empty field is caught downstream as an undeclared class
-    rather than silently read as missing.
-
-    The row count is **not** checked here. It is an invariant of the file
-    rather than of parsing it, and the ingest script raises on it with a message
-    naming the other file it might be; see ``data/raw/site_labels/provenance.md``.
-    """
-    path = (Path(root) if root is not None else default_raw_dir()) / spec.raw_file
-    if not path.exists():
-        raise FileNotFoundError(f"{path} not found; see data/raw/site_labels/provenance.md")
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", pd.errors.ParserWarning)
-            frame = pd.read_csv(
-                path,
-                dtype=_raw_dtypes(spec),
-                keep_default_na=False,
-                index_col=False,
-            )
-    except (ValueError, OverflowError, pd.errors.ParserWarning) as error:
-        raise ValueError(f"{path}: could not be parsed as its spec declares: {error}") from error
-    if tuple(frame.columns) != spec.raw_columns:
-        raise ValueError(
-            f"{path}: header is {tuple(frame.columns)}, expected {spec.raw_columns}. "
-            "A changed raw file is a spec change, not a new row."
-        )
-    if frame.empty:
-        raise ValueError(f"{path}: holds no rows")
-    return frame
-
-
-def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame:
-    """Turn a raw frame into the site labels the data model describes.
-
-    Parameters
-    ----------
-    spec:
-        Which site-labels data source.
-    frame:
-        The raw frame, as :func:`read_raw` returns it.
-
-    Returns
-    -------
-    pandas.DataFrame
-        The columns of :data:`SITE_LABELS_COLUMNS`, in ascending ``site_id``
-        order, with ``label`` a categorical over ``spec.labels``.
-
-    Raises
-    ------
-    ValueError
-        If an identifier is duplicated or outside ``int32``, or a class is not
-        one the spec declares.
-
-    Notes
-    -----
-    Renaming to the processed column names is safe here because the raw file
-    names its columns: each record carries its own identity, so nothing is
-    matched positionally. Checks that need the site table -- that every
-    identifier is a real site, that the pool is covered, that the classes agree
-    with ``landcover`` -- are the ingest script's, since this module does not
-    read the site table.
-    """
-    site = frame[spec.site_column]
-    label = frame[spec.label_column]
-    _check_site_ids(site, spec.raw_file, sorted_required=False)
-    _check_labels_are_declared(label, spec, spec.raw_file)
-    built = pd.DataFrame(
-        {
-            SITE_ID: site.to_numpy(dtype=SITE_LABELS_COLUMN_DTYPES[SITE_ID]),
-            LABEL_COLUMN: pd.Categorical(label, dtype=label_dtype(spec)),
-        }
-    )
-    return built.sort_values(SITE_ID, ignore_index=True)
-
-
-def describe(spec: SiteLabelsSpec) -> str:
-    """A spec as readable prose, for a script's log."""
-    lines = [
-        f"{spec.name}: {spec.long_label}",
-        f"  {spec.label_kind}, {len(spec.labels)} classes: {', '.join(spec.labels)}",
-        f"  upstream product: {spec.upstream_product}, raw/site_labels/{spec.raw_file}, "
-        f"{spec.expected_rows} rows",
-        f"  {spec.description}",
-    ]
-    if spec.display_names is not None:
-        width = max(len(label) for label in spec.labels)
-        lines.append("  display names:")
-        lines += [
-            f"    {label:<{width}} : {spec.display_names[label]}" for label in spec.labels
-        ]
-    if spec.comment:
-        lines.append(f"  comment: {spec.comment}")
-    lines.extend(f"  note: {note}" for note in spec.notes)
-    if spec.landcover_mapping is not None:
-        groups: dict[str, list[int]] = {}
-        for cover, label in sorted(spec.landcover_mapping.items()):
-            groups.setdefault(label, []).append(cover)
-        rule = "; ".join(
-            f"landcover {_compact(covers)} -> {label}" for label, covers in groups.items()
-        )
-        lines.append(f"  landcover relation: {rule}")
-    return "\n".join(lines)
-
-
-# ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def _data_root() -> Path:
-    return data_root()
-
-
-def _raw_dtypes(spec: SiteLabelsSpec) -> dict[str, Any]:
-    """What to hand pandas per column, so nothing is inferred."""
-    # The site column is read wide and narrowed after checking; everything else
-    # is a string, since a class name is text and must not be inferred numeric.
-    dtypes: dict[str, Any] = {column: str for column in spec.raw_columns}
-    dtypes[spec.site_column] = np.int64
-    return dtypes
-
-
-def _compact(values: list[int]) -> str:
-    """``[1, 2]`` as ``"1-2"``, ``[5, 6, 7, 8]`` as ``"5-8"``, otherwise a list."""
-    if len(values) > 1 and values == list(range(values[0], values[-1] + 1)):
-        return f"{values[0]}-{values[-1]}"
-    return ", ".join(str(value) for value in values)
-
-
-def _check_site_ids(site: pd.Series, source: object, *, sorted_required: bool = True) -> None:
-    """Identifiers are positive, fit ``int32``, are unique, and are ascending."""
-    if site.isna().any():
-        raise ValueError(f"{source}: {SITE_ID} has a missing value.")
-    check_site_ids_are_in_range(site.to_numpy(), message_name=f"{source}: {SITE_ID}")
-    duplicated = site[site.duplicated()].unique()
-    if duplicated.size:
-        raise ValueError(
-            f"{source}: {SITE_ID} repeats {duplicated[:5].tolist()}"
-            f"{' and more' if duplicated.size > 5 else ''}. "
-            "A site-labels data source gives each site exactly one class."
-        )
-    if sorted_required and not site.is_monotonic_increasing:
-        raise ValueError(f"{source}: {SITE_ID} is not in ascending order.")
-
-
-def _check_labels_are_declared(label: pd.Series, spec: SiteLabelsSpec, source: object) -> None:
-    """Every class is one the spec declares."""
-    if label.isna().any():
-        raise ValueError(
-            f"{source}: {LABEL_COLUMN} has a missing value. A site-labels data "
-            "source has no unlabeled class; a site it does not label is absent from "
-            "its file."
-        )
-    unknown = sorted(set(label.unique()) - set(spec.labels))
-    if unknown:
-        raise ValueError(
-            f"{source}: holds classes {unknown} that {spec.name!r} does not declare. "
-            f"Declared: {list(spec.labels)}. A new class is a spec change, not a new row."
-        )
-
-
-def _check_labels_are_flag_meanings(spec: SiteLabelsSpec) -> None:
-    spaced = [label for label in spec.labels if re.search(r"\s", label)]
-    if spaced:
-        raise ValueError(
-            f"class name(s) {spaced} of {spec.name!r} contain whitespace, which a CF "
-            "flag_meanings entry cannot; the categorical field cannot represent them"
-        )
