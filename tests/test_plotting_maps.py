@@ -924,3 +924,47 @@ def test_animate_map_takes_its_axes_second_like_the_other_plotters(ax, dense):
     """animate_map(field, ax, dim), as plot_map(field, ax) and plot_time_series(field, ax)."""
     animation = animate_map(frames(dense), ax, "time")
     assert animation._fig is ax.figure
+
+
+# ── labels asked for by value, in every form a caller has them ───────────────
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        lambda t: [t.to_datetime64().astype("datetime64[ns]")],
+        lambda t: [t.to_datetime64().astype("datetime64[D]")],
+        lambda t: [t],
+        lambda t: [t.to_pydatetime()],
+        lambda t: np.array([t.to_datetime64()], dtype="datetime64[ns]"),
+        lambda t: (label for label in [t]),
+    ],
+    ids=["datetime64[ns] list", "datetime64[D] list", "Timestamp list", "datetime list",
+         "datetime64 array", "generator"],
+)
+def test_plot_map_by_finds_time_labels_given_in_any_form(dense, form):
+    """A list of datetime64[ns] labels was turned into integers and not found."""
+    import pandas as pd
+
+    field = frames(dense)
+    second = pd.Timestamp(field.time.values[1])
+    figure, axes = plot_map_by(field, "time", values=form(second))
+    assert [ax.get_title() for ax in axes] == ["2012-02-01"]
+
+
+def test_plot_map_by_finds_integer_labels_and_names_a_missing_one_as_held(ensemble, dense):
+    figure, axes = plot_map_by(ensemble, "sample", values=[3, 7])
+    assert [ax.get_title() for ax in axes] == ["sample 3", "sample 7"]
+    # A string is not a time label; the message shows the field's own labels.
+    with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[np.str_\('2012-02'\)\]; "
+                       r"it holds 3, \[Timestamp\('2012-01-01"):
+        plot_map_by(frames(dense), "time", values=["2012-02"])
+
+
+def test_plot_map_by_names_a_missing_time_label_as_the_field_holds_it(dense):
+    """Held ns labels were printed as integers, so a label read as missing and held at once."""
+    import pandas as pd
+
+    with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[Timestamp\('2013"):
+        plot_map_by(frames(dense), "time", values=[np.datetime64("2013-01-01", "ns")])
+    del pd

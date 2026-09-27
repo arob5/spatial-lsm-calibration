@@ -71,7 +71,7 @@ Usage
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -461,9 +461,12 @@ def plot_map_by(
     else:
         chosen = _labels_asked_for(values)
         check_field_holds_the_labels(field, dim, chosen, message_name=name)
-    panels = {maps.coordinate_label(dim, value): field.sel({dim: value}) for value in chosen}
-    if len(panels) < len(chosen):
-        panels = {f"{dim} {value}": field.sel({dim: value}) for value in chosen}
+    # Titled by the label as the field holds it, so a Timestamp asked for is
+    # titled as the date it selects.
+    selected = [field.sel({dim: value}) for value in chosen]
+    panels = {maps.coordinate_label(dim, panel[dim].values): panel for panel in selected}
+    if len(panels) < len(selected):
+        panels = {f"{dim} {panel[dim].values}": panel for panel in selected}
     return plot_map_grid(panels, scale=scale, **grid_kwargs)
 
 
@@ -547,13 +550,15 @@ def _panel_titles(
 
 
 def _labels_asked_for(values: Any) -> np.ndarray:
-    """The labels of a ``values=`` argument, a sequence, as an array."""
-    items = as_sequence(values, message_name="values")
-    # An array-like is kept as it is, since as_sequence gives its datetimes
-    # as integers.
-    if hasattr(values, "__array__"):
-        return np.asarray(getattr(values, "values", values))
-    return np.asarray(items)
+    """The labels of a ``values=`` argument, a sequence, as an array of the caller's elements."""
+    if isinstance(values, Iterator):
+        values = tuple(values)  # a generator can be read only once
+    # as_sequence checks the form alone: it gives datetime64 elements back as
+    # integers or dates, which no longer match a time coordinate.
+    as_sequence(values, message_name="values")
+    if not hasattr(values, "__array__"):
+        values = tuple(values)
+    return np.asarray(getattr(values, "values", values))
 
 
 def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:
@@ -644,7 +649,7 @@ def check_field_holds_the_labels(
     """Every label asked for is on the field's *dim* coordinate."""
     missing = missing_labels(field, dim, labels)
     if missing:
-        held = field.coords[dim].values.tolist()
+        held = field.indexes[dim].tolist()  # as the field holds them: Timestamps, not ints
         raise KeyError(
             f"{message_name}: no such {dim} label(s) in the field: {truncated(missing)}; it "
             f"holds {len(held)}, {truncated(held)}, so ask for those."
