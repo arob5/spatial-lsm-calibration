@@ -43,7 +43,7 @@ from sipnet_calibration.projection import (
     LAEA_METHOD_CODE,
     SITE_PROJECTION,
     Projection,
-    check_definitions,
+    check_definition_files_match_the_projection,
     default_definition_dir,
     definition_paths,
     write_definitions,
@@ -173,6 +173,12 @@ class TestTheProjectionThatWasChosen:
             with pytest.raises(ValueError, match="false_northing must be finite"):
                 Projection(name="bad", lat_0=50.0, lon_0=-100.0, false_northing=bad)
 
+    def test_rejects_a_parameter_that_is_not_a_number_as_a_type_error(self):
+        with pytest.raises(TypeError, match="lat_0 must be a number"):
+            Projection(name="bad", lat_0=True, lon_0=-100.0)
+        with pytest.raises(TypeError, match="false_easting must be a number"):
+            Projection(name="bad", lat_0=50.0, lon_0=-100.0, false_easting="0")
+
     def test_is_immutable(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
             SITE_PROJECTION.lat_0 = 0.0  # type: ignore[misc]
@@ -193,9 +199,8 @@ class TestBaseCrs:
     def test_rejects_an_unhashable_base_crs(self):
         """A ``dict`` is a form ``CRS.from_user_input`` accepts, but it cannot
         key the cache, and the failure would otherwise be an unhashable-type
-        ``TypeError`` at first use rather than a ``ValueError`` at
-        construction."""
-        with pytest.raises(ValueError, match="base_crs must be hashable"):
+        error at first use rather than one naming the field at construction."""
+        with pytest.raises(TypeError, match="base_crs must be hashable"):
             Projection(
                 name="bad",
                 lat_0=50.0,
@@ -328,6 +333,12 @@ class TestForward:
             SITE_PROJECTION.forward(
                 np.array([-100.0, -95.0, -90.0]), np.array([45.0, 999.0, 50.0])
             )
+
+    def test_rejects_a_coordinate_that_is_not_a_number_as_a_type_error(self):
+        with pytest.raises(TypeError, match="lon must be numbers in degrees"):
+            SITE_PROJECTION.forward("west", 50.0)
+        with pytest.raises(TypeError, match="lat must be numbers in degrees"):
+            SITE_PROJECTION.angular_distance(-100.0, [object()])
 
     def test_rejects_a_longitude_fill_value(self):
         """PROJ accepts -9999 as a longitude and projects it to a real-looking
@@ -680,7 +691,7 @@ class TestInterchangeFiles:
         """The anti-drift device: a parameter change that skips the
         regeneration fails here, and so does a PROJ upgrade that changes the
         serialization."""
-        check_definitions()
+        check_definition_files_match_the_projection()
         for path in definition_paths().values():
             assert path.is_file()
             assert path.parent == default_definition_dir()
@@ -691,24 +702,24 @@ class TestInterchangeFiles:
         stored = json.loads(definition_paths()["projjson"].read_text())
         assert stored == SITE_PROJECTION.projjson()
 
-    def test_check_definitions_rejects_an_edited_file(self, tmp_path):
+    def test_the_definition_check_rejects_an_edited_file(self, tmp_path):
         paths = write_definitions(tmp_path)
-        check_definitions(tmp_path)
+        check_definition_files_match_the_projection(tmp_path)
         paths["projstring"].write_text(
             paths["projstring"].read_text().replace("+lat_0=50", "+lat_0=45")
         )
         with pytest.raises(ValueError, match="disagree"):
-            check_definitions(tmp_path)
+            check_definition_files_match_the_projection(tmp_path)
 
-    def test_check_definitions_detects_a_changed_parameter(self, tmp_path):
+    def test_the_definition_check_detects_a_changed_parameter(self, tmp_path):
         write_definitions(tmp_path)
         moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
         with pytest.raises(ValueError, match="regenerate"):
-            check_definitions(tmp_path, projection=moved)
+            check_definition_files_match_the_projection(tmp_path, projection=moved)
 
-    def test_check_definitions_names_the_regeneration_command(self, tmp_path):
+    def test_the_definition_check_names_the_regeneration_command(self, tmp_path):
         with pytest.raises(FileNotFoundError, match="--write"):
-            check_definitions(tmp_path)
+            check_definition_files_match_the_projection(tmp_path)
 
     def test_write_definitions_is_idempotent(self, tmp_path):
         first = {key: path.read_text() for key, path in write_definitions(tmp_path).items()}
@@ -718,12 +729,12 @@ class TestInterchangeFiles:
     def test_write_definitions_overwrites_a_stale_file(self, tmp_path):
         """Idempotence alone is satisfied by a function that writes nothing the
         second time, and this is the only escape hatch when
-        ``check_definitions`` fails."""
+        ``check_definition_files_match_the_projection`` fails."""
         paths = write_definitions(tmp_path)
         paths["projstring"].write_text("+proj=laea +lat_0=45\n")
         write_definitions(tmp_path)
         assert paths["projstring"].read_text() == SITE_PROJECTION.proj_string() + "\n"
-        check_definitions(tmp_path)
+        check_definition_files_match_the_projection(tmp_path)
 
     def test_write_definitions_creates_a_missing_directory(self, tmp_path):
         paths = write_definitions(tmp_path / "nested" / "dir")
@@ -758,7 +769,7 @@ class TestInterchangeFiles:
             f"{DEFINITION_STEM}.projjson.partial",
             f"{DEFINITION_STEM}.projstring.partial",
         ]
-        check_definitions(tmp_path)
+        check_definition_files_match_the_projection(tmp_path)
 
     def test_a_failed_second_check_moves_neither_file(self, tmp_path, monkeypatch, capsys):
         write_definitions(tmp_path)
@@ -781,11 +792,11 @@ class TestInterchangeFiles:
         err = capsys.readouterr().err
         assert f"{DEFINITION_STEM}.projjson.partial" in err
         assert f"{DEFINITION_STEM}.projstring.partial" in err
-        check_definitions(tmp_path)
+        check_definition_files_match_the_projection(tmp_path)
 
     def test_a_failed_second_move_leaves_a_pair_the_check_refuses(self, tmp_path, monkeypatch):
         """Past the checks only the moves remain; one failing still cannot
-        pass silently, since check_definitions compares the pair."""
+        pass silently, since check_definition_files_match_the_projection compares the pair."""
         write_definitions(tmp_path)
         moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
 
@@ -807,9 +818,9 @@ class TestInterchangeFiles:
             f"{DEFINITION_STEM}.projstring.partial"
         ]
         # The first file did move, so the pair is inconsistent -- which is
-        # exactly what check_definitions is for, and it must say so.
+        # exactly what check_definition_files_match_the_projection is for, and it must say so.
         with pytest.raises(ValueError, match="regenerate"):
-            check_definitions(tmp_path)
+            check_definition_files_match_the_projection(tmp_path)
 
     def test_files_end_in_a_newline(self, tmp_path):
         for path in write_definitions(tmp_path).values():

@@ -3,10 +3,10 @@
 Overview
 --------
 Site coordinates are geographic -- longitude and latitude on WGS 84 -- and are
-not plottable as they stand: a cell of the site grid is about 921 m wide at the
-south of the pool and a small fraction of that at the north
-(``data/README.md``), so plotting degrees directly stretches the Arctic by more
-than sevenfold and makes any density or heatmap panel misleading.
+not plottable as they stand: a degree of longitude shrinks with the cosine of
+latitude, and the site pool runs from the tropics to the high Arctic, so
+plotting degrees directly stretches the north several-fold and makes any
+density or heatmap panel misleading.
 
 This module owns the one projection the project's spatial figures use. It holds
 the parameters, builds a :class:`pyproj.CRS` from them, and provides the
@@ -44,9 +44,10 @@ It writes two files, the interchange form for anything that is not this package
 
 Both are **serialized by PROJ** from :data:`SITE_PROJECTION`, not hand-written,
 so they are authoritative rather than a transcription. They are tracked, so a
-fresh checkout has them, and :func:`check_definitions` compares them against
-what the parameters serialize to now; the test suite calls it. Editing them by
-hand is therefore a test failure, not a way to change the projection.
+fresh checkout has them, and
+:func:`check_definition_files_match_the_projection` compares them against what
+the parameters serialize to now; the test suite calls it. Editing them by hand
+is therefore a test failure, not a way to change the projection.
 
 Data model
 ----------
@@ -99,7 +100,7 @@ Functions
 :attr:`Projection.antipode`
     The one point :meth:`Projection.forward` cannot project.
 
-:func:`write_definitions` and :func:`check_definitions`
+:func:`write_definitions`, :func:`check_definition_files_match_the_projection`
     Write the interchange files, and verify the tracked ones still match the
     parameters. ``python -m sipnet_calibration.projection --write`` regenerates
     them.
@@ -110,17 +111,17 @@ Functions
 Notes
 -----
 **Why this projection.** The choice, the alternatives, and the distortion
-measured over the real 8000 sites are recorded in
+measured over the real site pool are recorded in
 `issue #4 <https://github.com/arob5/spatial-lsm-calibration/issues/4>`_. In
 summary: every candidate considered is equal-area, which is the property the
-plotting design requires, so the choice turns on shape. The site pool spans 7 N
-to 82.5 N and 178.8 W to 20.0 W, which is outside the domain of use of any
-Albers Equal Area Conic -- Snyder's guidance puts Albers at regions of
-predominant east-west expanse -- and ESRI:102003, which the published reanalysis
-figures used, reaches a maximum angular deformation of 107 degrees and a 9:1
-local anisotropy at the northernmost sites. This projection holds angular
-deformation under 14 degrees and anisotropy under 1.3 over the whole pool, which
-``tests/test_projection.py`` asserts against the real site table.
+plotting design requires, so the choice turns on shape. The site pool spans the
+tropics to the high Arctic and most of North America's longitudes, which is
+outside the domain of use of any Albers Equal Area Conic -- Snyder's guidance
+puts Albers at regions of predominant east-west expanse -- and ESRI:102003,
+which the published reanalysis figures used, distorts the northernmost sites
+severely. This projection holds angular deformation under 14 degrees and
+anisotropy under 1.3 over the whole pool, which ``tests/test_projection.py``
+asserts against the real site table.
 
 **Anisotropy is not only cosmetic here.** The ``Triangles`` renderer in
 ``plotting/maps.py`` triangulates *after* projecting, and a Delaunay
@@ -138,14 +139,13 @@ extent is 16,000 km across, so the shift is under a thousandth of a pixel at any
 figure size anyone would render.
 
 **North is not up, and not by a little.** Over the site pool the rotation of
-projected north runs from -71 degrees on the Chukchi coast to +75 in northeast
-Greenland, a spread of about 146 degrees; across the whole
-``NORTH_AMERICA`` extent it runs from -78 to +79, and the two extremes are the
-northwest and *northeast* corners rather than opposite ends of a diagonal. A
-single north arrow is therefore not merely imprecise but wrong nearly
-everywhere on such a figure; a graticule is the honest indicator.
-:meth:`Projection.factors` reports the rotation at a point as
-``meridian_convergence``, and ``tests/test_projection.py`` pins those extremes.
+projected north spreads over about 150 degrees, from the Chukchi coast to
+northeast Greenland, and across the whole ``NORTH_AMERICA`` extent the two
+extremes are the northwest and *northeast* corners rather than opposite ends
+of a diagonal. A single north arrow is therefore not merely imprecise but
+wrong nearly everywhere on such a figure; a graticule is the honest
+indicator. :meth:`Projection.factors` reports the rotation at a point as
+``meridian_convergence``, and ``tests/test_projection.py`` pins the extremes.
 Mind its sign convention, which is PROJ's: see that method's Notes.
 
 **There is no inverse transform**, because nothing in the spatial panels as
@@ -159,7 +159,8 @@ leaves the left spine, or drive a raster renderer.
 limit or into a triangulation as a silently dropped point, so the transform is
 run with ``errcheck=True`` and the error is re-raised as a ``ValueError`` naming
 what was wrong. The only such point here is the antipode of the center, at
-:attr:`Projection.antipode`; no site is within 125 degrees of it.
+:attr:`Projection.antipode`, far from every site: ``tests/test_projection.py``
+asserts how far the farthest site is from the center.
 
 **A longitude/latitude box does not project to a rectangle**, so axes limits
 come from :meth:`Projection.projected_bounds` rather than from projecting the
@@ -205,9 +206,11 @@ import argparse
 import functools
 import json
 import math
+import numbers
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyproj
@@ -215,7 +218,7 @@ from pyproj.crs import ProjectedCRS
 from pyproj.crs.coordinate_operation import LambertAzimuthalEqualAreaConversion
 
 from sipnet_calibration.io import write_checked_together
-from sipnet_calibration.validation import as_bbox, as_integer
+from sipnet_calibration.validation import as_bbox, as_bounded_integer
 
 __all__ = [
     "DEFINITION_STEM",
@@ -224,7 +227,7 @@ __all__ = [
     "SITE_PROJECTION",
     "Projection",
     "check_definition_file_reads_back",
-    "check_definitions",
+    "check_definition_files_match_the_projection",
     "default_definition_dir",
     "definition_paths",
     "write_definitions",
@@ -276,44 +279,7 @@ class Projection:
     base_crs: str = "EPSG:4326"
 
     def __post_init__(self) -> None:
-        if not -90.0 <= self.lat_0 <= 90.0:
-            raise ValueError(f"lat_0 must be in [-90, 90], got {self.lat_0}")
-        if not -360.0 <= self.lon_0 <= 360.0:
-            raise ValueError(f"lon_0 must be in [-360, 360], got {self.lon_0}")
-        # The false origin is added to every projected coordinate and written
-        # into the definition files, so a NaN here would put "+x_0=nan" in a
-        # file meant to be authoritative.
-        for field, value in (
-            ("false_easting", self.false_easting),
-            ("false_northing", self.false_northing),
-        ):
-            if not math.isfinite(value):
-                raise ValueError(f"{field} must be finite, got {value}")
-        # Checked here rather than left to first use. An unhashable base_crs
-        # would otherwise fail in the transformer cache with "unhashable type",
-        # and a projected one would fail inside PROJ with several kilobytes of
-        # JSON -- neither of which names the field.
-        # Hashability first, and explicitly: a dict is a form
-        # CRS.from_user_input accepts, and a geographic one at that, so it
-        # passes every check below and then fails in the cache with
-        # "unhashable type: 'dict'" at the first transform.
-        try:
-            hash(self.base_crs)
-        except TypeError as error:
-            raise ValueError(
-                f"base_crs must be hashable, since the built CRS is cached on it; "
-                f"got {type(self.base_crs).__name__}. Pass an EPSG string, a PROJ "
-                "string or a pyproj.CRS"
-            ) from error
-        try:
-            base = pyproj.CRS.from_user_input(self.base_crs)
-        except pyproj.exceptions.CRSError as error:
-            raise ValueError(f"base_crs is not a CRS PROJ recognizes: {error}") from error
-        if not base.is_geographic:
-            raise ValueError(
-                f"base_crs must be geographic, since forward() takes degrees; "
-                f"{self.base_crs} is {base.type_name}"
-            )
+        check_projection_is_valid(self)
 
     # ── the transform ────────────────────────────────────────────────────────
 
@@ -344,6 +310,8 @@ class Projection:
 
         Raises
         ------
+        TypeError
+            If a coordinate is not a number.
         ValueError
             If any coordinate is not finite, any latitude is outside
             ``[-90, 90]``, or any point lies outside the projection's domain --
@@ -357,7 +325,7 @@ class Projection:
         silently dropped point. So the transform runs with ``errcheck=True`` and
         the resulting ``ProjError`` is re-raised as a ``ValueError``.
         """
-        longitude, latitude, scalar = _check_coordinates(lon, lat)
+        longitude, latitude, scalar = _as_coordinates(lon, lat)
         # Built outside the try: pyproj's CRSError is a subclass of ProjError,
         # so a definition that will not build would otherwise be re-raised as a
         # complaint about an input point that was fine.
@@ -413,12 +381,11 @@ class Projection:
         ``tissot_semiminor`` multiply to 1 here, since the projection is
         equal-area.
         """
-        longitude, latitude, _ = _check_coordinates(lon, lat)
-        if longitude.size == 0:
-            # PROJ raises "longitude and latitude must be same size" on empty
-            # input, which is both false and a different exception type from
-            # everything else this module raises.
-            raise ValueError("factors() needs at least one point, got an empty array")
+        longitude, latitude, _ = _as_coordinates(lon, lat)
+        # PROJ raises "longitude and latitude must be same size" on empty
+        # input, which is both false and a different exception type from
+        # everything else this module raises.
+        check_coordinates_are_not_empty(longitude)
         try:
             return _proj(self).get_factors(longitude, latitude, radians=False, errcheck=True)
         except pyproj.exceptions.ProjError as error:
@@ -439,6 +406,8 @@ class Projection:
 
         Raises
         ------
+        TypeError
+            If a coordinate is not a number.
         ValueError
             If any coordinate is not finite or a latitude is outside
             ``[-90, 90]``.
@@ -451,7 +420,7 @@ class Projection:
         ``plotting/`` -- where the at-most-0.2-degree difference from the
         ellipsoidal angle is immaterial; the transform itself is ellipsoidal.
         """
-        longitude, latitude, scalar = _check_coordinates(lon, lat)
+        longitude, latitude, scalar = _as_coordinates(lon, lat)
         lat_0, lon_0 = np.radians(self.lat_0), np.radians(self.lon_0)
         phi, lam = np.radians(latitude), np.radians(longitude)
         cosine = np.sin(lat_0) * np.sin(phi) + np.cos(lat_0) * np.cos(phi) * np.cos(lam - lon_0)
@@ -516,10 +485,10 @@ class Projection:
         would be wrong without being obviously wrong.
         """
         west, south, east, north = as_bbox(bbox, message_name="bbox")
-        samples_per_edge = as_integer(samples_per_edge, message_name="samples_per_edge")
-        if samples_per_edge < 2:
-            raise ValueError(f"samples_per_edge must be at least 2, got {samples_per_edge}")
-        self._check_bbox_excludes_antipode(west, south, east, north)
+        samples_per_edge = as_bounded_integer(
+            samples_per_edge, minimum=2, message_name="samples_per_edge"
+        )
+        check_bbox_excludes_the_antipode(self, (west, south, east, north))
 
         along = np.linspace(0.0, 1.0, samples_per_edge)
         lons = west + along * (east - west)
@@ -561,45 +530,6 @@ class Projection:
         """
         return json.loads(self.crs().to_json())
 
-    # ── helpers ──────────────────────────────────────────────────────────────
-
-    def _check_bbox_excludes_antipode(self, west, south, east, north) -> None:
-        """Raise if :attr:`antipode` lies inside the box.
-
-        :meth:`projected_bounds` takes its bound over the boundary, which is
-        valid only where the transform is defined throughout the box.
-        """
-        antipode_lon, antipode_lat = self.antipode
-        # How far east of the box's western edge the antipode lies, on the
-        # circle, since the box's own longitudes need not lie in [-180, 180].
-        # Reduced to [0, 360) rather than to [-180, 180): the symmetric range
-        # cannot express an offset above 180, so a box wider than that would
-        # appear to end before the antipode it actually contains.
-        offset = (antipode_lon - west) % 360.0
-        if offset <= (east - west) and south <= antipode_lat <= north:
-            raise ValueError(
-                f"the box contains ({antipode_lon}, {antipode_lat}), the antipode of the "
-                "projection center, where this projection is undefined; the bounds of "
-                "such a box are unbounded, not merely large"
-            )
-
-
-#: The project's display projection: Lambert Azimuthal Equal Area centered at
-#: 50 N, 100 W, on WGS 84, in meters, with no false origin.
-#:
-#: Chosen over the ESRI:102003 Albers of the published reanalysis figures, and
-#: over the other candidates, on measured distortion across the real site pool;
-#: see the module Notes and issue #4. It is the project default, and one
-#: projection serving both the full-domain and the CONUS figures is what keeps
-#: panels comparable -- but it is not a prohibition. A caller wanting a
-#: different center builds its own :class:`Projection`, or
-#: ``dataclasses.replace``s this one.
-SITE_PROJECTION = Projection(
-    name="North America LAEA (SIPNET calibration display projection)",
-    lat_0=50.0,
-    lon_0=-100.0,
-)
-
 
 # ── the interchange files ─────────────────────────────────────────────────────
 
@@ -639,8 +569,7 @@ def definition_paths(
     ValueError
         If *stem* is empty or is a path rather than a bare file name.
     """
-    if not stem or Path(stem).name != stem:
-        raise ValueError(f"stem must be a bare file name, not a path, got {stem!r}")
+    check_stem_is_a_file_name(stem)
     root = Path(directory) if directory is not None else default_definition_dir()
     return {suffix: root / f"{stem}.{suffix}" for suffix in ("projjson", "projstring")}
 
@@ -648,7 +577,7 @@ def definition_paths(
 def write_definitions(
     directory: Path | str | None = None,
     *,
-    projection: Projection = SITE_PROJECTION,
+    projection: Projection | None = None,
     stem: str = DEFINITION_STEM,
 ) -> dict[str, Path]:
     """Write *projection*'s interchange files, overwriting them.
@@ -658,7 +587,7 @@ def write_definitions(
     directory, stem:
         As :func:`definition_paths`.
     projection:
-        The projection to serialize. Defaults to :data:`SITE_PROJECTION`.
+        The projection to serialize; ``None`` is :data:`SITE_PROJECTION`.
 
     Returns
     -------
@@ -669,7 +598,8 @@ def write_definitions(
     -----
     The parameters are the source of truth and these files are their output, so
     this is the only thing that should ever write them.
-    :func:`check_definitions` makes a hand-edit a test failure.
+    :func:`check_definition_files_match_the_projection` makes a hand-edit a
+    test failure.
 
     Both files are written together through
     :func:`sipnet_calibration.io.write_checked_together`, so neither is moved
@@ -677,10 +607,11 @@ def write_definitions(
     or check leaves both previous files as they were, with this run's
     ``.partial`` files kept for inspection. Only a failed rename, past the
     checks, can leave the pair mixed, and that is reported;
-    :func:`check_definitions` then refuses the pair until a rerun rewrites it.
+    :func:`check_definition_files_match_the_projection` then refuses the
+    pair until a rerun rewrites it.
     """
     paths = definition_paths(directory, stem=stem)
-    contents = _definition_contents(projection)
+    contents = _definition_contents(SITE_PROJECTION if projection is None else projection)
     write_checked_together(
         [
             (
@@ -696,58 +627,9 @@ def write_definitions(
     return paths
 
 
-def check_definitions(
-    directory: Path | str | None = None,
-    *,
-    projection: Projection = SITE_PROJECTION,
-    stem: str = DEFINITION_STEM,
-) -> None:
-    """Raise unless the stored interchange files match *projection* exactly.
-
-    Parameters
-    ----------
-    directory, projection, stem:
-        As :func:`write_definitions`.
-
-    Raises
-    ------
-    FileNotFoundError
-        If a file is missing, naming the command that writes it.
-    ValueError
-        If a file's content is not what *projection* serializes to, naming the
-        command that regenerates it.
-
-    Notes
-    -----
-    This is the anti-drift device: the parameters live in the dataclass, the
-    files are generated, and the test suite calls this, so a parameter change
-    that skips the regeneration fails rather than shipping a definition that
-    disagrees with the transform. It is the same arrangement as the site table's
-    round-trip assertion in ``scripts/ingest_sites.py``.
-
-    It also catches a PROJ upgrade that changes the serialization, which is a
-    real event: the files carry a PROJJSON schema version and PROJ's spelling of
-    the parameters, neither of which this project chooses.
-    """
-    paths = definition_paths(directory, stem=stem)
-    contents = _definition_contents(projection)
-    for key, path in paths.items():
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"no {key} definition at {path}; write it with {_WRITE_COMMAND}"
-            )
-        if path.read_text(encoding="utf-8") != contents[key]:
-            raise ValueError(
-                f"{path} is not what {projection.name} serializes to, so the stored "
-                f"definition and the transform disagree; regenerate it with "
-                f"{_WRITE_COMMAND}, and if the file was edited by hand, make the "
-                "change in the dataclass instead"
-            )
-
-
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── private helpers ───────────────────────────────────────────────────────────
 #
-# Private: building the CRS, checking arguments, and the command line.
+# Building the CRS, reading coordinates, and the command line.
 
 _WRITE_COMMAND = "`python -m sipnet_calibration.projection --write`"
 
@@ -812,50 +694,27 @@ def _outside_domain_message(projection: Projection, error: Exception) -> str:
     )
 
 
-def _check_coordinates(lon, lat):
-    """The broadcast, finite, in-range ``(lon, lat)`` pair, as ``float64`` arrays.
-
-    PROJ would reject an out-of-range latitude itself, but with a message about
-    an internal error rather than about the argument, and it treats a NaN as a
-    point it simply cannot project. Checking here means the message names the
-    problem, and the counts are taken before broadcasting so they say how many
-    values the caller passed that are bad rather than how large the result would
-    have been.
-    """
+def _as_coordinates(lon: Any, lat: Any) -> tuple[np.ndarray, np.ndarray, bool]:
+    """The broadcast, finite, in-range ``(lon, lat)`` pair as ``float64`` arrays, and
+    whether both were scalars."""
+    # PROJ would reject an out-of-range latitude itself, but with a message
+    # about an internal error rather than about the argument, and it treats a
+    # NaN as a point it simply cannot project. The counts are taken before
+    # broadcasting, so they say how many values the caller passed that are bad
+    # rather than how large the result would have been.
+    check_coordinates_are_numbers(lon, message_name="lon")
+    check_coordinates_are_numbers(lat, message_name="lat")
     longitude = _as_float_array(lon)
     latitude = _as_float_array(lat)
+    check_coordinates_are_finite(longitude, latitude)
+    check_latitudes_are_in_range(latitude)
+    check_longitudes_are_in_range(longitude)
     scalar = longitude.ndim == 0 and latitude.ndim == 0
-
-    bad_lon = int(np.count_nonzero(~np.isfinite(longitude)))
-    bad_lat = int(np.count_nonzero(~np.isfinite(latitude)))
-    if bad_lon or bad_lat:
-        raise ValueError(
-            f"{bad_lon} longitude(s) and {bad_lat} latitude(s) are not finite, so they "
-            "cannot be projected"
-        )
-    outside = np.abs(latitude) > 90.0
-    if np.any(outside):
-        worst = float(np.max(np.abs(latitude[outside])))
-        raise ValueError(
-            f"{int(np.count_nonzero(outside))} latitude(s) are outside [-90, 90], the "
-            f"worst being {worst}; arguments are (lon, lat), longitude first"
-        )
-    # Longitudes are deliberately not wrapped, but they are bounded: PROJ
-    # accepts -9999 as a longitude and projects it to a real-looking point.
-    wild = np.abs(longitude) > 360.0
-    if np.any(wild):
-        worst = float(np.max(np.abs(longitude[wild])))
-        raise ValueError(
-            f"{int(np.count_nonzero(wild))} longitude(s) are outside [-360, 360], the "
-            f"worst being {worst}; longitudes need not be wrapped to [-180, 180], but a "
-            "value this large is a fill value or a swapped argument"
-        )
-
     longitude, latitude = np.broadcast_arrays(longitude, latitude)
     return longitude, latitude, scalar
 
 
-def _as_float_array(values):
+def _as_float_array(values: Any) -> np.ndarray:
     """*values* as a ``float64`` array, with any masked entries as ``NaN``.
 
     ``np.asarray`` drops a mask silently, so a masked array would project its
@@ -912,7 +771,7 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        check_definitions(arguments.directory)
+        check_definition_files_match_the_projection(arguments.directory)
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}")
         return 1
@@ -930,6 +789,231 @@ def check_definition_file_reads_back(path: Path, expected: str) -> None:
             f"{path} does not read back as the definition written to it; check the disk, "
             "then rerun python -m sipnet_calibration.projection --write."
         )
+
+
+def check_definition_files_match_the_projection(
+    directory: Path | str | None = None,
+    *,
+    projection: Projection | None = None,
+    stem: str = DEFINITION_STEM,
+) -> None:
+    """The stored interchange files match what *projection*, by default
+    :data:`SITE_PROJECTION`, serializes to."""
+    # The anti-drift device: the parameters live in the dataclass, the files
+    # are generated, and the test suite calls this, so a parameter change that
+    # skips the regeneration fails. It also catches a PROJ upgrade that
+    # changes the serialization: the files carry a PROJJSON schema version
+    # and PROJ's spelling of the parameters, neither of which is chosen here.
+    projection = SITE_PROJECTION if projection is None else projection
+    contents = _definition_contents(projection)
+    for key, path in definition_paths(directory, stem=stem).items():
+        check_definition_file_exists(path, key)
+        check_definition_file_matches(path, contents[key], projection)
+
+
+def check_definition_file_exists(path: Path, key: str) -> None:
+    """An interchange file is where the definition says."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"no {key} definition at {path}; write it with {_WRITE_COMMAND}."
+        )
+
+
+def check_definition_file_matches(path: Path, expected: str, projection: Projection) -> None:
+    """A stored interchange file holds exactly what *projection* serializes to."""
+    if path.read_text(encoding="utf-8") != expected:
+        raise ValueError(
+            f"{path} is not what {projection.name} serializes to, so the stored "
+            f"definition and the transform disagree; regenerate it with "
+            f"{_WRITE_COMMAND}, and if the file was edited by hand, make the "
+            "change in the dataclass instead."
+        )
+
+
+def check_projection_is_valid(projection: Projection) -> None:
+    """A projection's parameters are numbers in range, on a geographic base CRS."""
+    check_projection_parameters_are_numbers(projection)
+    check_origin_is_in_range(projection)
+    check_false_origin_is_finite(projection)
+    check_base_crs_is_hashable(projection.base_crs)
+    check_base_crs_is_geographic(projection.base_crs)
+
+
+def check_projection_parameters_are_numbers(projection: Projection) -> None:
+    """The origin and the false origin are real numbers, not booleans."""
+    for name in ("lat_0", "lon_0", "false_easting", "false_northing"):
+        value = getattr(projection, name)
+        if isinstance(value, bool) or not isinstance(value, numbers.Real):
+            raise TypeError(
+                f"{name} must be a number, got {type(value).__name__} {value!r}; pass it "
+                "in degrees (lat_0, lon_0) or meters (the false origin)."
+            )
+
+
+def check_origin_is_in_range(projection: Projection) -> None:
+    """The natural origin is a latitude in [-90, 90] and a longitude in [-360, 360]."""
+    if not -90.0 <= projection.lat_0 <= 90.0:
+        raise ValueError(
+            f"lat_0 must be in [-90, 90], got {projection.lat_0}; pass a latitude in degrees."
+        )
+    if not -360.0 <= projection.lon_0 <= 360.0:
+        raise ValueError(
+            f"lon_0 must be in [-360, 360], got {projection.lon_0}; pass a longitude in "
+            "degrees."
+        )
+
+
+def check_false_origin_is_finite(projection: Projection) -> None:
+    """The false easting and northing are finite."""
+    # The false origin is added to every projected coordinate and written into
+    # the definition files, so a NaN here would put "+x_0=nan" in a file meant
+    # to be authoritative.
+    for name in ("false_easting", "false_northing"):
+        value = getattr(projection, name)
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite, got {value}; pass it in meters.")
+
+
+def check_base_crs_is_hashable(base_crs: Any) -> None:
+    """The base CRS can key the cache of built CRSs."""
+    # Checked at construction, and before the CRS is parsed: a dict is a form
+    # CRS.from_user_input accepts, and a geographic one at that, so it passes
+    # every other check and then fails in the cache with "unhashable type:
+    # 'dict'" at the first transform.
+    try:
+        hash(base_crs)
+    except TypeError as error:
+        raise TypeError(
+            f"base_crs must be hashable, since the built CRS is cached on it, got "
+            f"{type(base_crs).__name__}; pass an EPSG string, a PROJ string or a "
+            "pyproj.CRS."
+        ) from error
+
+
+def check_base_crs_is_geographic(base_crs: Any) -> None:
+    """The base CRS is one PROJ recognizes, and geographic, since ``forward`` takes degrees."""
+    # Checked at construction: a projected base CRS would otherwise fail
+    # inside PROJ with several kilobytes of JSON that never name the field.
+    try:
+        base = pyproj.CRS.from_user_input(base_crs)
+    except pyproj.exceptions.CRSError as error:
+        raise ValueError(
+            f"base_crs is not a CRS PROJ recognizes: {error}; pass an EPSG code such as "
+            "'EPSG:4326'."
+        ) from error
+    if not base.is_geographic:
+        raise ValueError(
+            f"base_crs must be geographic, since forward() takes degrees, and {base_crs} "
+            f"is {base.type_name}; pass a geographic CRS such as 'EPSG:4326'."
+        )
+
+
+def check_bbox_excludes_the_antipode(
+    projection: Projection, bbox: tuple[float, float, float, float]
+) -> None:
+    """A ``(west, south, east, north)`` box does not contain the projection's antipode."""
+    # projected_bounds takes its bound over the boundary, which is valid only
+    # where the transform is defined throughout the box.
+    west, south, east, north = bbox
+    antipode_lon, antipode_lat = projection.antipode
+    # How far east of the box's western edge the antipode lies, on the
+    # circle, since the box's own longitudes need not lie in [-180, 180].
+    # Reduced to [0, 360) rather than to [-180, 180): the symmetric range
+    # cannot express an offset above 180, so a box wider than that would
+    # appear to end before the antipode it actually contains.
+    offset = (antipode_lon - west) % 360.0
+    if offset <= (east - west) and south <= antipode_lat <= north:
+        raise ValueError(
+            f"the box contains ({antipode_lon}, {antipode_lat}), the antipode of the "
+            "projection center, where this projection is undefined, so the bounds of "
+            "such a box are unbounded, not merely large; pass a box that leaves it out."
+        )
+
+
+def check_coordinates_are_numbers(values: Any, *, message_name: str) -> None:
+    """Coordinates are numbers, or arrays of them."""
+    try:
+        _as_float_array(values)
+    except (TypeError, ValueError) as error:
+        raise TypeError(
+            f"{message_name} must be numbers in degrees, got {type(values).__name__}; pass "
+            "a number or an array of them."
+        ) from error
+
+
+def check_coordinates_are_finite(longitude: np.ndarray, latitude: np.ndarray) -> None:
+    """Every longitude and latitude is finite."""
+    bad_lon = int(np.count_nonzero(~np.isfinite(longitude)))
+    bad_lat = int(np.count_nonzero(~np.isfinite(latitude)))
+    if bad_lon or bad_lat:
+        raise ValueError(
+            f"{bad_lon} longitude(s) and {bad_lat} latitude(s) are not finite, so they "
+            "cannot be projected; drop or fill them first."
+        )
+
+
+def check_latitudes_are_in_range(latitude: np.ndarray) -> None:
+    """Every latitude is in [-90, 90]."""
+    outside = np.abs(latitude) > 90.0
+    if np.any(outside):
+        worst = float(np.max(np.abs(latitude[outside])))
+        raise ValueError(
+            f"{int(np.count_nonzero(outside))} latitude(s) are outside [-90, 90], the "
+            f"worst being {worst}; arguments are (lon, lat), longitude first."
+        )
+
+
+def check_longitudes_are_in_range(longitude: np.ndarray) -> None:
+    """Every longitude is in [-360, 360]: unwrapped, but not a fill value."""
+    # Longitudes are deliberately not wrapped, but they are bounded: PROJ
+    # accepts -9999 as a longitude and projects it to a real-looking point.
+    wild = np.abs(longitude) > 360.0
+    if np.any(wild):
+        worst = float(np.max(np.abs(longitude[wild])))
+        raise ValueError(
+            f"{int(np.count_nonzero(wild))} longitude(s) are outside [-360, 360], the "
+            f"worst being {worst}; longitudes need not be wrapped to [-180, 180], but a "
+            "value this large is a fill value or a swapped argument."
+        )
+
+
+def check_coordinates_are_not_empty(longitude: np.ndarray) -> None:
+    """There is at least one point to compute distortion factors at."""
+    if longitude.size == 0:
+        raise ValueError(
+            "factors() needs at least one point, got an empty array; pass the points to "
+            "measure."
+        )
+
+
+def check_stem_is_a_file_name(stem: str) -> None:
+    """A definition file stem is a bare file name, not a path."""
+    if not stem or Path(stem).name != stem:
+        raise ValueError(
+            f"stem must be a bare file name, not a path, got {stem!r}; pass the directory "
+            "as directory=."
+        )
+
+
+# ── the project's projection ──────────────────────────────────────────────────
+#
+# Last, because building it runs the checks above.
+
+#: The project's display projection: Lambert Azimuthal Equal Area centered at
+#: 50 N, 100 W, on WGS 84, in meters, with no false origin.
+#:
+#: Chosen over the ESRI:102003 Albers of the published reanalysis figures, and
+#: over the other candidates, on measured distortion across the real site pool;
+#: see the module Notes and issue #4. It is the project default, and one
+#: projection serving both the full-domain and the CONUS figures is what keeps
+#: panels comparable -- but it is not a prohibition. A caller wanting a
+#: different center builds its own :class:`Projection`, or
+#: ``dataclasses.replace``s this one.
+SITE_PROJECTION = Projection(
+    name="North America LAEA (SIPNET calibration display projection)",
+    lat_0=50.0,
+    lon_0=-100.0,
+)
 
 
 if __name__ == "__main__":  # pragma: no cover
