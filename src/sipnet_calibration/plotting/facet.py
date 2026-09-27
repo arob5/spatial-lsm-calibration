@@ -69,7 +69,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from sipnet_calibration.conventions import SAMPLE, SITE
-from sipnet_calibration.fields import batch_dims, validate_field
+from sipnet_calibration.fields import message_name, missing_labels, validate_field
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
@@ -135,9 +135,10 @@ def build_plot_grid(
         constrained layout, which is what keeps the legend clear of the
         panels.
     legend:
-        ``"dedup"`` collects the handles and labels of every panel, keeps the
-        first occurrence of each label, and places one legend on the figure.
-        ``"each"`` gives every panel its own. ``"none"`` draws none.
+        One of :data:`LEGEND_OPTIONS`. ``"dedup"`` collects the handles and
+        labels of every panel, keeps the first occurrence of each label, and
+        places one legend on the figure. ``"each"`` gives every panel its
+        own. ``"none"`` draws none.
 
     Returns
     -------
@@ -148,21 +149,17 @@ def build_plot_grid(
     Raises
     ------
     TypeError
-        If *ncol* is a boolean or not an integer.
+        If *ncol* is a boolean or not an integer, or *labels* is one string.
     ValueError
-        If *items* is empty; if *ncol* is less than 1; if *share*
-        is not in :data:`SHARE_OPTIONS`; if *legend* is not ``"dedup"``,
-        ``"each"`` or ``"none"``; or if *labels* is a sequence of a different
-        length from *items*.
+        If *items* is empty; if *ncol* is less than 1; if *share* or *legend*
+        is not one of its options; or if *labels* is a sequence of a
+        different length from *items*.
     """
     items = list(items)
-    if not items:
-        raise ValueError("items is empty; there is nothing to draw")
+    check_items_are_given(items)
     ncol = as_positive_integer(ncol, message_name="ncol")
-    if share not in SHARE_OPTIONS:
-        raise ValueError(f"share must be one of {list(SHARE_OPTIONS)}, got {share!r}")
-    if legend not in LEGEND_OPTIONS:
-        raise ValueError(f"legend must be one of {list(LEGEND_OPTIONS)}, got {legend!r}")
+    check_share_is_an_option(share)
+    check_legend_is_an_option(legend)
     titles = _panel_titles(items, labels)
 
     ncol = min(ncol, len(items))
@@ -192,44 +189,6 @@ def build_plot_grid(
         plt.close(figure)
         raise
     return figure, axes
-
-
-def _panel_titles(items, labels) -> list[str] | None:
-    """One title per item, or ``None`` when no titles were asked for."""
-    if labels is None:
-        return None
-    if callable(labels):
-        return [str(labels(item)) for item in items]
-    if isinstance(labels, str):
-        raise ValueError(
-            f"labels is the single string {labels!r}, which would title the "
-            "panels one character each; pass one label per panel, or a callable"
-        )
-    titles = list(labels)
-    if len(titles) != len(items):
-        raise ValueError(
-            f"labels has {len(titles)} entries and there are {len(items)} "
-            "panels; they must match"
-        )
-    return [str(title) for title in titles]
-
-
-def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:
-    """Place the legend asked for, if there is anything to put in it."""
-    if legend == "none":
-        return
-    if legend == "each":
-        for ax in axes:
-            if ax.get_legend_handles_labels()[1]:
-                ax.legend()
-        return
-    unique: dict[str, Any] = {}
-    for ax in axes:
-        handles, labels = ax.get_legend_handles_labels()
-        for handle, label in zip(handles, labels):
-            unique.setdefault(label, handle)
-    if unique:
-        figure.legend(list(unique.values()), list(unique), loc="outside upper right")
 
 
 def plot_by_site(
@@ -277,11 +236,14 @@ def plot_by_site(
         If *sites* names a site that is not in *field*.
     """
     validate_field(field)
-    check_field_has_a_site_dimension(field)
-    check_field_has_a_site_coordinate(field)
-    available = field.coords[SITE].values.tolist()
-    chosen = available if sites is None else list(as_site_ids(sites, message_name="sites"))
-    check_field_holds_the_sites(available, chosen)
+    name = message_name(field)
+    check_field_has_a_site_dim(field, message_name=name)
+    chosen = (
+        field.coords[SITE].values.tolist()
+        if sites is None
+        else list(as_site_ids(sites, message_name="sites"))
+    )
+    check_field_holds_the_sites(field, chosen, message_name=name)
 
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     grid_kwargs.setdefault("labels", lambda site: f"site {site}")
@@ -302,12 +264,12 @@ def plot_by_variable(
     Parameters
     ----------
     fields_by_name:
-        Variable name to ``DataArray``, as
+        Variable name to field, as
         :func:`sipnet_calibration.drivers.driver_fields` and
         :func:`sipnet_calibration.constraints.constraint_fields` return. The
         variables need not share a time axis.
     panel_fn:
-        Called as ``panel_fn(array, ax=ax)`` for each variable. ``None`` uses
+        Called as ``panel_fn(field, ax=ax)`` for each variable. ``None`` uses
         :func:`sipnet_calibration.plotting.series.plot_time_series`.
     **grid_kwargs:
         Passed to :func:`build_plot_grid`. ``labels`` defaults to each
@@ -324,8 +286,7 @@ def plot_by_variable(
     ValueError
         If *fields_by_name* is empty.
     """
-    if not fields_by_name:
-        raise ValueError("fields_by_name is empty; there is nothing to draw")
+    check_fields_are_given(fields_by_name, message_name="fields_by_name")
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     names = list(fields_by_name)
     grid_kwargs.setdefault(
@@ -337,7 +298,7 @@ def plot_by_variable(
 
 
 def plot_map_grid(
-    fields: Mapping[str, xr.DataArray],
+    fields_by_title: Mapping[str, xr.DataArray],
     *,
     scale: str = "each",
     extent: Any = None,
@@ -346,18 +307,19 @@ def plot_map_grid(
     colorbar_label: str | None = None,
     **map_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One map per entry of *fields*, all in one frame.
+    """One map per entry of *fields_by_title*, all in one frame.
 
     Parameters
     ----------
-    fields:
+    fields_by_title:
         Panel title to field, in panel order. Each field is a map in the sense
         of :func:`sipnet_calibration.plotting.maps.plot_map`.
     scale:
-        ``"shared"`` resolves one color scale over every panel's values in the
-        frame and draws one colorbar, or one legend, for the figure. ``"each"``
-        gives each panel its own, which suits panels of different quantities,
-        such as a mean beside a standard deviation.
+        One of :data:`SCALE_OPTIONS`. ``"shared"`` resolves one color scale
+        over every panel's values in the frame and draws one colorbar, or one
+        legend, for the figure. ``"each"`` gives each panel its own, which
+        suits panels of different quantities, such as a mean beside a
+        standard deviation.
     extent:
         As :func:`~sipnet_calibration.plotting.maps.plot_map` takes it.
         ``None`` fits one frame to every panel's data, so the panels line up.
@@ -381,34 +343,39 @@ def plot_map_grid(
     Raises
     ------
     ValueError
-        If *fields* is empty or *scale* is not in :data:`SCALE_OPTIONS`, and
-        whatever :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map`
-        raises for a panel, every panel checked before any is drawn.
+        If *fields_by_title* is empty or *scale* is not in
+        :data:`SCALE_OPTIONS`, and whatever
+        :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map` raises
+        for a panel, every panel checked before any is drawn.
     """
-    check_map_grid_has_a_field(fields)
-    check_scale_option_is_known(scale)
-    arrays = list(fields.values())
+    check_fields_are_given(fields_by_title, message_name="fields_by_title")
+    check_scale_is_an_option(scale)
+    panel_fields = list(fields_by_title.values())
     # Every panel is checked before the frame and a shared scale read their
     # values, which a panel that is not a map would break with a raw error.
-    for array in arrays:
-        maps.check_field_is_a_map(array)
-    bounds = maps.map_bounds(arrays, extent)
-    color = {k: map_kwargs.pop(k) for k in maps.COLOR_KEYWORDS if k in map_kwargs}
-    shared = maps.color_scale(arrays, bounds=bounds, **color) if scale == "shared" else None
+    for panel_field in panel_fields:
+        maps.check_field_is_a_map(panel_field)
+    bounds = maps.map_bounds(panel_fields, extent)
+    color, map_kwargs = maps.split_color_keywords(map_kwargs)
+    shared = maps.color_scale(panel_fields, bounds=bounds, **color) if scale == "shared" else None
     if panel_size is None:
         panel_size = _map_panel_size(bounds, own_key=shared is None)
 
-    def draw(ax: Axes, name: str) -> None:
+    def draw(ax: Axes, title: str) -> None:
         if shared is None:
-            maps.plot_map(fields[name], ax, extent=bounds, **color, **map_kwargs)
+            maps.plot_map(fields_by_title[title], ax, extent=bounds, **color, **map_kwargs)
         else:
-            maps.plot_map(fields[name], ax, extent=bounds, scale=shared, colorbar=False, **map_kwargs)
+            maps.plot_map(
+                fields_by_title[title], ax, extent=bounds, scale=shared, colorbar=False,
+                **map_kwargs,
+            )
 
+    titles = list(fields_by_title)
     figure, axes = build_plot_grid(
-        list(fields), draw, ncol=ncol, labels=list(fields), panel_size=panel_size, legend="none"
+        titles, draw, ncol=ncol, labels=titles, panel_size=panel_size, legend="none"
     )
     if shared is not None:
-        _add_shared_key(figure, axes, shared, arrays, bounds, colorbar_label)
+        _add_shared_key(figure, axes, shared, panel_fields, bounds, colorbar_label)
     return figure, axes
 
 
@@ -430,7 +397,7 @@ def plot_map_by(
     dim:
         The dimension to split on, such as ``"sample"`` or ``"time"``.
     values:
-        The coordinate values to draw, in order. ``None`` draws them all, or
+        The coordinate labels to draw, in order. ``None`` draws them all, or
         *n_max* evenly spaced ones, first and last included, if there are more.
     n_max:
         The most panels drawn when *values* is ``None``.
@@ -450,23 +417,26 @@ def plot_map_by(
     TypeError
         If *field* is not a ``DataArray``, or *n_max* is a boolean or not an
         integer.
+    KeyError
+        If *values* names a label *dim* does not hold.
     ValueError
         If *field* is not a field
         (:func:`sipnet_calibration.fields.validate_field`); if it has no
         *dim*, or a batch dim other than *dim* (with advice on each); if
-        *values* names one it does not hold, or *n_max* is less than 1; and
-        whatever :func:`plot_map_grid` raises for a panel.
+        *n_max* is less than 1; and whatever :func:`plot_map_grid` raises for
+        a panel.
     """
     validate_field(field)
-    check_field_has_the_dim_to_split(field, dim)
-    check_field_has_no_other_batch_dim(field, dim, "plot_map_by draws one map per")
+    name = message_name(field)
+    maps.check_field_has_the_dim(field, dim, message_name=name)
+    maps.check_field_has_no_batch_dim_besides(field, dim, message_name=name)
     n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
         chosen = available[thinned_indices(len(available), n_max)]
     else:
         chosen = np.asarray(getattr(values, "values", values))
-        check_values_are_on_the_dim(available, chosen, dim)
+        check_field_holds_the_labels(field, dim, chosen, message_name=name)
     panels = {maps.coordinate_label(dim, value): field.sel({dim: value}) for value in chosen}
     if len(panels) < len(chosen):
         panels = {f"{dim} {value}": field.sel({dim: value}) for value in chosen}
@@ -519,14 +489,50 @@ def plot_map_quantiles(
     quantiles = [float(q) for q in quantiles]
     check_quantiles_are_given(quantiles)
     validate_field(field)
-    check_quantile_batch_dim_is_the_fields(field, batch_dim)
-    check_field_has_no_other_batch_dim(field, batch_dim, "quantile maps are taken over")
+    name = message_name(field)
+    maps.check_batch_dim_is_the_fields(field, batch_dim, message_name=name)
+    maps.check_field_has_no_batch_dim_besides(field, batch_dim, message_name=name)
     panels = {
         maps.quantile_label(q): maps.summarize_batch(field, q, batch_dim=batch_dim)
         for q in quantiles
     }
     grid_kwargs.setdefault("colorbar_label", axis_label(field))
     return plot_map_grid(panels, scale=scale, **grid_kwargs)
+
+
+# ── private helpers ───────────────────────────────────────────────────────────
+
+
+def _panel_titles(
+    items: list[Any], labels: Sequence[str] | Callable[[Any], str] | None
+) -> list[str] | None:
+    """One title per item, or ``None`` when no titles were asked for."""
+    if labels is None:
+        return None
+    if callable(labels):
+        return [str(labels(item)) for item in items]
+    check_labels_are_not_one_string(labels)
+    titles = [str(title) for title in labels]
+    check_labels_match_the_items(titles, items)
+    return titles
+
+
+def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:
+    """Place the legend asked for, if there is anything to put in it."""
+    if legend == "none":
+        return
+    if legend == "each":
+        for ax in axes:
+            if ax.get_legend_handles_labels()[1]:
+                ax.legend()
+        return
+    unique: dict[str, Any] = {}
+    for ax in axes:
+        handles, labels = ax.get_legend_handles_labels()
+        for handle, label in zip(handles, labels):
+            unique.setdefault(label, handle)
+    if unique:
+        figure.legend(list(unique.values()), list(unique), loc="outside upper right")
 
 
 def _map_panel_size(bounds: maps.ProjectedBounds, *, own_key: bool) -> tuple[float, float]:
@@ -537,15 +543,22 @@ def _map_panel_size(bounds: maps.ProjectedBounds, *, own_key: bool) -> tuple[flo
     return (width + (1.2 if own_key else 0.0), height)
 
 
-def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
+def _add_shared_key(
+    figure: Figure,
+    axes: np.ndarray,
+    scale: maps.ColorScale,
+    panel_fields: Sequence[xr.DataArray],
+    bounds: maps.ProjectedBounds,
+    label: str | None,
+) -> None:
     """One colorbar, or one legend of the classes present, for the figure."""
-    if scale.categories is None:
+    if scale.class_names is None:
         figure.colorbar(
             scale.mappable(), ax=list(axes), shrink=0.8, label=label or scale.label
         )
         return
     figure.legend(
-        handles=scale.legend_handles(scale.classes_in(fields, bounds)),
+        handles=scale.legend_handles(scale.classes_in(panel_fields, bounds)),
         title=label or scale.label,
         loc="outside right center",
     )
@@ -554,66 +567,103 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_map_grid_has_a_field(fields: Mapping[str, Any]) -> None:
-    """A map grid is given at least one field."""
-    if not fields:
-        raise ValueError("fields is empty; there is nothing to draw. Pass {title: field}.")
+def check_items_are_given(items: list[Any]) -> None:
+    """A grid is given at least one item to draw a panel for."""
+    if not items:
+        raise ValueError("items is empty, so there is nothing to draw; pass one item per panel.")
 
 
-def check_scale_option_is_known(scale: str) -> None:
-    """The scale option of a grid of maps is one of :data:`SCALE_OPTIONS`."""
+def check_share_is_an_option(share: str) -> None:
+    """*share* is one of :data:`SHARE_OPTIONS`."""
+    if share not in SHARE_OPTIONS:
+        raise ValueError(
+            f"share must be one of {list(SHARE_OPTIONS)}, got {share!r}; pass one of them."
+        )
+
+
+def check_legend_is_an_option(legend: str) -> None:
+    """*legend* is one of :data:`LEGEND_OPTIONS`."""
+    if legend not in LEGEND_OPTIONS:
+        raise ValueError(
+            f"legend must be one of {list(LEGEND_OPTIONS)}, got {legend!r}; pass one of them."
+        )
+
+
+def check_scale_is_an_option(scale: str) -> None:
+    """*scale* is one of :data:`SCALE_OPTIONS`."""
     if scale not in SCALE_OPTIONS:
-        raise ValueError(f"scale must be one of {list(SCALE_OPTIONS)}, got {scale!r}")
-
-
-def check_field_has_the_dim_to_split(field: xr.DataArray, dim: str) -> None:
-    """The field to draw one map per value of *dim* has *dim*."""
-    if dim not in field.dims:
         raise ValueError(
-            f"plot_map_by needs a DataArray with a {dim!r} dimension; got "
-            f"{list(field.dims)}. Pass one of them, such as 'time' or a batch dim."
+            f"scale must be one of {list(SCALE_OPTIONS)}, got {scale!r}; pass one of them."
         )
 
 
-def check_field_has_no_other_batch_dim(field: xr.DataArray, dim: str, what: str) -> None:
-    """Every panel is one map: no batch dim beside *dim*, the one the panels are over."""
-    others = [d for d in batch_dims(field) if d != dim]
-    if others:
+def check_labels_are_not_one_string(labels: Any) -> None:
+    """Panel titles are a sequence or a callable, not one string."""
+    if isinstance(labels, str):
+        raise TypeError(
+            f"labels is the single string {labels!r}, which would title the panels one "
+            "character each; pass one label per panel, or a callable."
+        )
+
+
+def check_labels_match_the_items(titles: list[str], items: list[Any]) -> None:
+    """There is one panel title per item."""
+    if len(titles) != len(items):
         raise ValueError(
-            f"{what} {dim}, but the field also has the batch dim(s) {others}, so a panel "
-            "would not be one map; " + "; ".join(maps.batch_dim_advice(field, others))
+            f"labels has {len(titles)} entries and there are {len(items)} panels; they "
+            "must match, one title per panel."
         )
 
 
-def check_quantile_batch_dim_is_the_fields(field: xr.DataArray, batch_dim: str) -> None:
-    """The batch dim quantile maps are taken over is one of *field*'s."""
-    have = list(batch_dims(field))
-    if batch_dim not in have:
-        advice = (
-            f"pass batch_dim= naming one of {have}"
-            if have
-            else "a field without one is one map already; draw it with maps.plot_map(field)"
-        )
+def check_fields_are_given(fields: Mapping[str, Any], *, message_name: str) -> None:
+    """A grid of fields is given at least one."""
+    if not fields:
         raise ValueError(
-            f"quantile maps are taken over batch_dim={batch_dim!r}, and {batch_dim!r} is not "
-            f"a batch dim of the field (its batch dims are {have}); {advice}."
+            f"{message_name} is empty, so there is nothing to draw; pass {{title: field}}."
         )
 
 
-def check_values_are_on_the_dim(available: np.ndarray, chosen: np.ndarray, dim: str) -> None:
-    """Every value asked for is one of the field's labels on *dim*."""
-    missing = [v for v in chosen if v not in available]
+def check_field_has_a_site_dim(field: xr.DataArray, *, message_name: str) -> None:
+    """The field drawn one panel per site has a ``site`` dim."""
+    if SITE not in field.dims:
+        raise ValueError(
+            f"{message_name}: panels are drawn one per site, and the field has no {SITE!r} "
+            f"dim (its dims are {list(field.dims)}); draw it on one panel instead."
+        )
+
+
+def check_field_holds_the_sites(
+    field: xr.DataArray, site_ids: Sequence[int], *, message_name: str
+) -> None:
+    """Every site asked for is on the field's ``site`` coordinate."""
+    missing = missing_labels(field, SITE, site_ids)
     if missing:
-        raise ValueError(
-            f"no such {dim} value(s) in the field: {missing[:5]}; pass values= from the "
-            f"field's {dim} labels."
+        held = field.coords[SITE].values.tolist()
+        raise KeyError(
+            f"{message_name}: no such site(s) in the field: {truncated(missing)}; it holds "
+            f"{len(held)} site(s), starting {held[:5]}, so ask for those."
+        )
+
+
+def check_field_holds_the_labels(
+    field: xr.DataArray, dim: str, labels: Sequence[Any], *, message_name: str
+) -> None:
+    """Every label asked for is on the field's *dim* coordinate."""
+    missing = missing_labels(field, dim, labels)
+    if missing:
+        raise KeyError(
+            f"{message_name}: no such {dim} label(s) in the field: {truncated(missing)}; "
+            f"pass values= from the field's {dim} labels."
         )
 
 
 def check_quantiles_are_given(quantiles: Sequence[float]) -> None:
     """At least one quantile is asked for."""
     if not quantiles:
-        raise ValueError("quantiles must name at least one quantile, such as (0.05, 0.5, 0.95).")
+        raise ValueError(
+            "quantiles is empty, so there is no map to draw; pass at least one, such as "
+            "(0.05, 0.5, 0.95)."
+        )
 
 
 def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any]) -> None:
@@ -622,33 +672,4 @@ def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any])
         raise TypeError(
             "plot_map_quantiles takes the batch dim as batch_dim=, not dim=; pass "
             f"batch_dim={grid_kwargs['dim']!r}."
-        )
-
-
-def check_field_has_a_site_dimension(field: xr.DataArray) -> None:
-    """The array has a ``site`` dimension to split by."""
-    if SITE not in field.dims:
-        raise ValueError(
-            f"the array has dimensions {list(field.dims)} and needs {SITE!r} "
-            "to be split by site"
-        )
-
-
-def check_field_has_a_site_coordinate(field: xr.DataArray) -> None:
-    """The array's ``site`` dimension has a coordinate to name and select its panels by."""
-    if SITE not in field.coords:
-        raise ValueError(
-            f"the array has a {SITE!r} dimension but no {SITE!r} "
-            "coordinate, so its panels cannot be named or selected"
-        )
-
-
-def check_field_holds_the_sites(available: list[int], chosen: list[int]) -> None:
-    """Every site asked for is on the field's ``site`` coordinate."""
-    held = set(available)
-    missing = [site for site in chosen if site not in held]
-    if missing:
-        raise KeyError(
-            f"no such site(s) in the field: {truncated(missing)}; it holds "
-            f"{len(available)} site(s), starting {available[:5]}, so ask for those."
         )

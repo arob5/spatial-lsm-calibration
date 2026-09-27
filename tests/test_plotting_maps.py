@@ -219,9 +219,13 @@ def test_a_site_field_without_coordinates_is_refused(ax, dense):
         plot_map(dense.drop_vars(["lon", "lat"]), ax)
 
 
-@pytest.mark.parametrize("render, match", [("smooth", "render must be one of"), (object(), "SiteRenderer")])
-def test_an_unknown_renderer_is_refused(ax, dense, render, match):
-    with pytest.raises(ValueError, match=match):
+@pytest.mark.parametrize(
+    "render, error, match",
+    [("smooth", KeyError, "render must be one of"), (object(), TypeError, "SiteRenderer")],
+)
+def test_an_unknown_renderer_is_refused(ax, dense, render, error, match):
+    """An unknown name is a KeyError; something that is not a renderer, a TypeError."""
+    with pytest.raises(error, match=match):
         plot_map(dense, ax, render=render)
 
 
@@ -259,7 +263,7 @@ def test_named_boxed_and_projected_extents_resolve_to_projected_bounds(dense):
     assert tuple(map_bounds([dense], box)) == SITE_PROJECTION.projected_bounds(box)
     frame = ProjectedBounds(0.0, 0.0, 1.0, 1.0)
     assert map_bounds([dense], frame) is frame
-    with pytest.raises(ValueError, match="unknown extent"):
+    with pytest.raises(KeyError, match="unknown extent"):
         map_bounds([dense], "EUROPE")
 
 
@@ -420,9 +424,9 @@ def test_summarize_batch_refuses_an_unknown_statistic(ensemble, stat):
 def test_summarize_batch_refuses_classes_and_a_missing_or_non_batch_dim(categorical, dense):
     with pytest.raises(ValueError, match="categorical"):
         summarize_batch(categorical.expand_dims(sample=[0, 1]), "mean")
-    with pytest.raises(ValueError, match="'sample' is not one of the field's"):
+    with pytest.raises(ValueError, match="'sample' is not a batch dim of the field"):
         summarize_batch(dense, "mean")
-    with pytest.raises(ValueError, match="'site' is not one of the field's"):
+    with pytest.raises(ValueError, match="'site' is not a batch dim of the field"):
         summarize_batch(dense, "mean", batch_dim="site")
 
 
@@ -498,7 +502,7 @@ def test_plot_map_by_thins_to_n_max_and_titles_by_value(ensemble):
     assert [ax.get_title() for ax in axes] == ["sample 0", "sample 6", "sample 13", "sample 19"]
     figure, axes = plot_map_by(ensemble, "sample", values=[2, 5])
     assert len(axes) == 2
-    with pytest.raises(ValueError, match="no such sample"):
+    with pytest.raises(KeyError, match=r"no such sample label\(s\) in the field: \[99\]"):
         plot_map_by(ensemble, "sample", values=[99])
 
 
@@ -633,7 +637,7 @@ def _without_units(field):
 def test_a_table_is_refused_as_a_type_error(ax):
     import pandas as pd
 
-    with pytest.raises(TypeError, match="expected an xarray.DataArray"):
+    with pytest.raises(TypeError, match="a map is drawn from a field, an xarray.DataArray"):
         plot_map(pd.DataFrame({"x": [1.0]}), ax=ax)
 
 

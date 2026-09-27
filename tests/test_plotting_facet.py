@@ -130,8 +130,8 @@ def test_no_labels_means_no_titles():
 
 
 def test_a_single_string_for_labels_is_rejected():
-    """A bare string would title the panels one character each."""
-    with pytest.raises(ValueError, match="one character each"):
+    """A bare string, where a sequence is wanted, would title the panels one character each."""
+    with pytest.raises(TypeError, match="one character each"):
         build_plot_grid([1, 2, 3, 4], draw_nothing, labels="Site")
 
 
@@ -329,7 +329,7 @@ def test_plot_by_site_refuses_a_repeated_site(field_sample_site_time):
 
 def test_plot_by_site_rejects_a_field_without_a_site_dim(field_sample_time):
     """A field with no ``site`` dimension raises."""
-    with pytest.raises(ValueError, match="needs 'site'"):
+    with pytest.raises(ValueError, match="no 'site' dim"):
         plot_by_site(field_sample_time)
 
 
