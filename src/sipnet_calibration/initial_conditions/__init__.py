@@ -21,8 +21,9 @@ share: the names, the variable specs, and the conversion to SIPNET.
 ``sipnet_parameters``     the conversion to SIPNET's initial parameters
 ========================  ==================================================
 
-Each module's public API is re-exported here, except the two checks one
-module shares with another (``raw.check_presence_is_uniform_over_members``,
+Each module's public API is re-exported here, except the checks one module
+shares with another (``raw.check_presence_is_uniform_over_members``,
+``raw.check_raw_initial_conditions_are_valid``,
 ``source_files.check_source_variable_is_known``), so a caller imports from
 ``sipnet_calibration.initial_conditions`` and never names a module.
 

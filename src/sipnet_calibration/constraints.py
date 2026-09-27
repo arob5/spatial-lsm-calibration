@@ -916,7 +916,9 @@ def _fields_of_variable(
         if TIME_BOUNDS in dataset.coords:
             field = field.assign_coords(_window_coords(dataset))
         if wanted is not None:
-            check_processed_file_holds_the_sites(dataset, wanted, message_name=name)
+            check_processed_file_holds_the_sites(
+                dataset, wanted, message_name=f"the processed file of {name}"
+            )
             field = field.sel({SITE: wanted})
         fields[name] = field
     return fields

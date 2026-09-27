@@ -235,9 +235,10 @@ def test_the_written_file_reads_back_as_what_was_built(synthetic):
     pd.testing.assert_frame_equal(written, site_labels)
 
 
-def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path):
+@pytest.mark.parametrize("order", [[3, 2, 1, 0], [2, 0, 3, 1]], ids=["reversed", "shuffled"])
+def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path, order):
     raw_root = tmp_path / "raw"
-    _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
+    _write_raw(raw_root, SYNTHETIC_SPEC, [SYNTHETIC_ROWS[k] for k in order])
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     site_labels = build_site_labels(SYNTHETIC_SPEC, frame)
     assert site_labels[SITE_ID].tolist() == SYNTHETIC_SITES
@@ -835,7 +836,7 @@ def test_the_site_labels_index_is_reset_after_sorting(tmp_path):
 
 
 def test_the_registry_class_orders_are_what_was_run_against():
-    """`labels` is a prior's class axis; reordering it silently would move it."""
+    """`class_names` is a prior's class axis; reordering it silently would move it."""
     assert resolve_site_labels("reanalysis_3pft").class_names == (
         "boreal.coniferous",
         "temperate.deciduous.HPDA",

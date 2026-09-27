@@ -68,6 +68,7 @@ from sipnet_calibration.validation import (
 __all__ = [
     "build_raw",
     "check_presence_is_uniform_over_members",
+    "check_raw_initial_conditions_are_valid",
     "raw_encoding",
     "read_raw",
 ]
@@ -246,8 +247,9 @@ def _open_checked_netcdf4(
     """*path* opened lazily by ``h5netcdf`` and held to *check*, closed if it fails.
 
     A file ``h5netcdf`` cannot read is a ``ValueError`` ending in *remedy*.
-    Shared with :mod:`sipnet_calibration.initial_conditions.processed`, which
-    reads its file the same way.
+    Private to the package, and shared with
+    :mod:`sipnet_calibration.initial_conditions.processed`, which reads its
+    file the same way.
     """
     try:
         dataset = xr.open_dataset(path, engine="h5netcdf")
@@ -276,6 +278,7 @@ def check_raw_initial_conditions_are_valid(dataset: xr.Dataset, *, message_name:
     for coordinate, dtype in ((SITE, SITE_DTYPE), (RAW_MEMBER, np.int16)):
         values = dataset[coordinate].values
         subject = f"{message_name}: {coordinate}"
+        check_raw_coordinate_is_not_empty(values, message_name=subject)
         check_raw_coordinate_ascends(values, message_name=subject)
         check_raw_coordinate_is_integer(values, message_name=subject)
         # The processed file narrows these with astype, which wraps silently.
@@ -400,12 +403,18 @@ def check_raw_variable_has_no_infinite_value(array: xr.DataArray, *, message_nam
         )
 
 
+def check_raw_coordinate_is_not_empty(values: np.ndarray, *, message_name: str) -> None:
+    """A raw coordinate holds at least one value."""
+    if values.size == 0:
+        raise ValueError(f"{message_name} is empty; restore the file from version control.")
+
+
 def check_raw_coordinate_ascends(values: np.ndarray, *, message_name: str) -> None:
-    """A raw coordinate is non-empty and strictly ascending."""
-    if values.size == 0 or np.any(np.diff(values) <= 0):
+    """A raw coordinate is strictly ascending."""
+    if np.any(np.diff(values) <= 0):
         raise ValueError(
-            f"{message_name} is empty or not strictly ascending; restore the file from "
-            "version control."
+            f"{message_name} is not strictly ascending; restore the file from version "
+            "control, or sort the Dataset with .sortby()."
         )
 
 

@@ -771,13 +771,61 @@ def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
         build_initial_conditions(raw_dataset, more)
 
 
-def test_build_initial_conditions_refuses_raw_sites_out_of_order(raw, sites_csv):
-    """Its values are taken in raw order and labeled in pool order, so a reordered
-    raw Dataset would put every value under the wrong site."""
+def _raw_variant(raw: Path, mutate) -> xr.Dataset:
+    """The synthetic raw file, loaded, with *mutate* applied."""
     with read_raw(raw) as raw_dataset:
-        reversed_sites = raw_dataset.load().isel(site=slice(None, None, -1))
-    with pytest.raises(ValueError, match="not in ascending site id order"):
-        build_initial_conditions(reversed_sites, load_sites(sites_csv))
+        return mutate(raw_dataset.load())
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda d: d.isel(site=slice(None, None, -1)), "site is not strictly ascending"),
+        (lambda d: d.isel(member=slice(None, None, -1)), "member is not strictly ascending"),
+        (lambda d: d.transpose(RAW_MEMBER, SITE), "has dims"),
+        (
+            lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"].transpose(RAW_MEMBER, SITE)),
+            "AbvGrndWood has dims",
+        ),
+    ],
+    ids=["sites reversed", "members reversed", "dims transposed", "one variable transposed"],
+)
+def test_build_initial_conditions_refuses_a_raw_dataset_off_its_data_model(
+    raw, sites_csv, mutate, message
+):
+    """Its values are placed by name, but a reordered or transposed raw Dataset
+    would still pair a value with the wrong (member, site), so it is refused."""
+    with pytest.raises(ValueError, match=message):
+        build_initial_conditions(_raw_variant(raw, mutate), load_sites(sites_csv))
+
+
+def _square_raw_and_site_table(raw: Path, sites_csv: Path) -> tuple[xr.Dataset, pd.DataFrame]:
+    """Two sites of the synthetic raw file, as many as its members, and their site table."""
+    square = _raw_variant(raw, lambda d: d.isel(site=slice(0, 2)))
+    site_table = load_sites(sites_csv)
+    return square, site_table[site_table["site_id"].isin(square[SITE].values)]
+
+
+def test_build_initial_conditions_refuses_a_square_raw_dataset_on_member_and_site(
+    raw, sites_csv
+):
+    """With as many members as sites, a positional transpose would go unnoticed."""
+    square, site_table = _square_raw_and_site_table(raw, sites_csv)
+    with pytest.raises(ValueError, match="has dims"):
+        build_initial_conditions(square.transpose(RAW_MEMBER, SITE), site_table)
+
+
+def test_build_initial_conditions_places_each_value_by_site_and_member(raw, sites_csv):
+    square, site_table = _square_raw_and_site_table(raw, sites_csv)
+    processed = build_initial_conditions(square, site_table)
+    for spec in INITIAL_CONDITIONS:
+        for site in square[SITE].values:
+            for position, member in enumerate(square[RAW_MEMBER].values):
+                expected = square[spec.source_name].sel({SITE: site, RAW_MEMBER: member}).item()
+                built = processed[spec.name].sel(
+                    {SITE: site, INITIAL_CONDITION_MEMBER: position}
+                ).item()
+                assert built == expected or (np.isnan(built) and np.isnan(expected))
 
 
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
@@ -794,7 +842,7 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
     field = fields["initial_soil_organic_carbon"]
     assert field.dims == (INITIAL_CONDITION_MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
-    with pytest.raises(KeyError, match=r"initial conditions: site\(s\) \[9\] are not in the processed file"):
+    with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial conditions' processed file"):
         initial_condition_fields(sites=[9], path=out)
     with pytest.raises(KeyError, match="no initial condition named"):
         initial_condition_fields(["soil"], path=out)

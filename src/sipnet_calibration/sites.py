@@ -1090,8 +1090,8 @@ def check_processed_file_holds_the_sites(
     missing = [site for site in site_ids if site not in held]
     if missing:
         raise KeyError(
-            f"{message_name}: site(s) {truncated(missing)} are not in the processed file; ask "
-            "only for sites of the site table it was built on."
+            f"site(s) {truncated(missing)} are not in {message_name}; ask only for sites of "
+            "the site table it was built on."
         )
 
 

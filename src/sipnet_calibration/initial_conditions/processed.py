@@ -53,9 +53,12 @@ from sipnet_calibration.initial_conditions.names import (
     RAW_MEMBER,
     default_processed_path,
 )
+# _open_checked_netcdf4 is private to the package, shared with raw, which
+# reads its own file the same way; it is not part of the public API.
 from sipnet_calibration.initial_conditions.raw import (
     _open_checked_netcdf4,
     check_presence_is_uniform_over_members,
+    check_raw_initial_conditions_are_valid,
 )
 from sipnet_calibration.initial_conditions.source_files import (
     NOMINAL_DATE,
@@ -112,8 +115,8 @@ def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Da
     KeyError
         If the raw file has a site the site table lacks.
     ValueError
-        If the raw file lacks a site of the site table, or its sites are not
-        in ascending order.
+        If the raw file lacks a site of the site table, or *raw* does not
+        follow the raw file's data model.
 
     Notes
     -----
@@ -126,15 +129,16 @@ def build_initial_conditions(raw: xr.Dataset, site_table: pd.DataFrame) -> xr.Da
     check_sites_are_the_site_table(
         site_table, raw[SITE].values.tolist(), message_name="the raw file's site(s)"
     )
-    # The values are taken in the raw file's order and labeled with the
-    # sorted pool, so the two orders must agree.
-    check_raw_sites_are_in_site_id_order(raw[SITE].values, message_name="the raw file's sites")
+    # The values are labeled with the sorted pool and the raw member order, so
+    # the raw Dataset is held to the raw file's own rules first: on
+    # (site, member), both ascending.
+    check_raw_initial_conditions_are_valid(raw, message_name="the raw Dataset")
     source_index = raw[RAW_MEMBER].values.astype(BATCH_LABEL_DTYPE)
 
     data_vars = {
         spec.name: (
             (INITIAL_CONDITION_MEMBER, SITE),
-            np.ascontiguousarray(raw[spec.source_name].values.T),
+            np.ascontiguousarray(raw[spec.source_name].transpose(RAW_MEMBER, SITE).values),
             spec.xarray_attributes(),
         )
         for spec in INITIAL_CONDITIONS
@@ -236,7 +240,7 @@ def initial_condition_fields(
     dataset = load_initial_conditions(path)
     if wanted_sites is not None:
         check_processed_file_holds_the_sites(
-            dataset, wanted_sites, message_name="the initial conditions"
+            dataset, wanted_sites, message_name="the initial conditions' processed file"
         )
         dataset = dataset.sel({SITE: wanted_sites})
     return {name: dataset[name] for name in wanted_names}
@@ -321,16 +325,6 @@ def check_processed_initial_conditions_are_valid(dataset: xr.Dataset, *, message
         message_name=message_name,
     )
     check_processed_initial_conditions_declare_the_conventions(dataset, message_name=message_name)
-
-
-def check_raw_sites_are_in_site_id_order(site: np.ndarray, *, message_name: str) -> None:
-    """The raw file's sites are in ascending site id order."""
-    if np.any(np.diff(site.astype(np.int64)) <= 0):
-        raise ValueError(
-            f"{message_name} are not in ascending site id order, so its values would be "
-            "labeled with the wrong sites; pass the raw file as read_raw returns it, or "
-            "sort it with .sortby('site')."
-        )
 
 
 def check_processed_initial_conditions_exist(path: Path) -> None:
