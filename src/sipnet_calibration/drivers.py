@@ -369,8 +369,9 @@ def load_drivers(
     Raises
     ------
     FileNotFoundError
-        If the root, or a requested pair's file where *allow_missing* is
-        ``False``, is absent.
+        If the root is absent; if no requested site has a driver directory
+        or no requested pair has a file, whatever *allow_missing* says; or
+        if a requested pair has no file and *allow_missing* is ``False``.
     TypeError
         If *sites*, *source_indices* or *site_table* has the wrong type.
     KeyError
@@ -513,6 +514,7 @@ def driver_file(root: Path | str, site: int, source_index: int) -> Path:
     directory = Path(root) / name
     check_driver_directory_exists(directory, site=site, source_index=source_index)
     matches = sorted(directory.glob(DRIVER_FILE_GLOB))
+    check_driver_directory_holds_a_file(directory, matches)
     check_driver_directory_holds_one_file(directory, matches)
     return matches[0]
 
@@ -812,14 +814,14 @@ def check_every_requested_pair_has_a_file(
 ) -> None:
     """Every requested ``(site, source index)`` pair has a driver file."""
     missing = [
-        (int(sites[j]), int(source_indices[i]))
+        f"site {int(sites[j])} source index {int(source_indices[i])}"
         for i, j in zip(*np.nonzero(~present), strict=True)
     ]
     if missing:
         raise FileNotFoundError(
-            f"{len(missing)} requested (site, source index) pair(s) have no driver file "
-            f"under {root}, {truncated(missing)}; pass allow_missing=True to read the rest "
-            "with NaN in their place and a driver_present array saying which."
+            f"{len(missing)} requested pair(s) have no driver file under {root}: "
+            f"{truncated(missing)}; pass allow_missing=True to read the rest with NaN in "
+            "their place and a driver_present array saying which."
         )
 
 
@@ -832,13 +834,17 @@ def check_driver_directory_exists(directory: Path, *, site: int, source_index: i
         )
 
 
-def check_driver_directory_holds_one_file(directory: Path, matches: list[Path]) -> None:
-    """A driver directory holds exactly one file matching :data:`DRIVER_FILE_GLOB`."""
+def check_driver_directory_holds_a_file(directory: Path, matches: list[Path]) -> None:
+    """A driver directory holds a file matching :data:`DRIVER_FILE_GLOB`."""
     if not matches:
         raise FileNotFoundError(
             f"{directory} holds no file matching {DRIVER_FILE_GLOB!r}; copy its .clim file "
             "from the SCC."
         )
+
+
+def check_driver_directory_holds_one_file(directory: Path, matches: list[Path]) -> None:
+    """A driver directory holds no more than one file matching :data:`DRIVER_FILE_GLOB`."""
     if len(matches) > 1:
         raise ValueError(
             f"{directory} holds {len(matches)} files matching {DRIVER_FILE_GLOB!r}, where the "

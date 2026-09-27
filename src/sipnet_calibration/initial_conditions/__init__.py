@@ -156,7 +156,8 @@ which merge into a parameter vector's.
 :func:`default_processed_path` say where the source tree and the processed
 file are expected, honoring ``$SIPNET_CALIBRATION_DATA``;
 :func:`default_raw_directory` and :func:`raw_path` say where the tracked raw
-file is, in this checkout whatever that variable says; :func:`raw_encoding` and
+file is, as :func:`sipnet_calibration.conventions.tracked_data_root` finds
+it; :func:`raw_encoding` and
 :func:`netcdf_encoding` give the two files' on-disk encodings.
 
 **The checks.** Each module's refusals are its public ``check_*`` functions,

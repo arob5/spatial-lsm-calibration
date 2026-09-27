@@ -239,6 +239,7 @@ def read_source_file(path: Path | str) -> SourceFile:
     would need two workarounds for nothing the parser wants.
     """
     path = Path(path)
+    check_source_file_exists(path)
     check_source_file_is_a_regular_file(path)
     check_source_file_name_is_the_template(path)
     site, member = site_member_from_file_name(path.name)
@@ -369,19 +370,22 @@ def check_source_time_is_the_template(handle: Any, *, message_name: str) -> None
     check_source_time_value_is_the_template(handle, message_name=message_name)
 
 
+def check_source_file_exists(path: Path) -> None:
+    """A source file exists, as a file or as a link."""
+    if not (path.exists() or path.is_symlink()):
+        raise FileNotFoundError(
+            f"no such initial condition file: {path}; check the source root and the file name."
+        )
+
+
 def check_source_file_is_a_regular_file(path: Path) -> None:
-    """A source file exists and is a regular file."""
-    if path.is_file():
-        return
-    if path.exists() or path.is_symlink():
+    """A source file is a regular file, or a link to one."""
+    if not path.is_file():
         raise ValueError(
             f"{path} is not a regular file; on the SCC the source tree is symlinked, so a "
             "broken link looks like this rather than like a missing file, and the link "
             "needs repairing."
         )
-    raise FileNotFoundError(
-        f"no such initial condition file: {path}; check the source root and the file name."
-    )
 
 
 def check_source_file_name_is_the_template(path: Path) -> None:

@@ -33,8 +33,8 @@ Input data
     spec's ``time_column``. Missing values are the literal ``NA``; the three
     files serialized from R carry 17 significant digits. :func:`read_raw` is
     the only reader and parses them exactly. The files are tracked, so
-    :func:`default_raw_directory` finds them in this checkout whatever
-    ``$SIPNET_CALIBRATION_DATA`` says.
+    :func:`default_raw_directory` finds them as
+    :func:`~sipnet_calibration.conventions.tracked_data_root` does.
 
 ``data/processed/sites/sites.csv``
     The site table, for the site pool and the ``lon``/``lat`` coordinates,
@@ -440,11 +440,12 @@ CALENDAR = "proleptic_gregorian"
 
 
 def default_raw_directory() -> Path:
-    """Where the raw constraint files are: ``data/raw/constraints/`` of this checkout.
+    """Where the raw constraint files are: ``data/raw/constraints/``.
 
     They are tracked, so this is found from
-    :func:`~sipnet_calibration.conventions.tracked_data_root` and
-    ``$SIPNET_CALIBRATION_DATA`` does not move it.
+    :func:`~sipnet_calibration.conventions.tracked_data_root`: in the checkout
+    whatever ``$SIPNET_CALIBRATION_DATA`` says, and under that variable only
+    for a non-editable install, which has no checkout.
     """
     return tracked_data_root() / "raw" / "constraints"
 

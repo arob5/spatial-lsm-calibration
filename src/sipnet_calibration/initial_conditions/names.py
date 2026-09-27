@@ -14,8 +14,8 @@ Contents
 The path functions
     :func:`default_source_root` and :func:`default_processed_path`, which
     honor ``$SIPNET_CALIBRATION_DATA``; and :func:`default_raw_directory` and
-    :func:`raw_path`, the tracked raw file's, which are always in this
-    checkout.
+    :func:`raw_path`, the tracked raw file's, found as
+    :func:`sipnet_calibration.conventions.tracked_data_root` finds it.
 """
 
 from __future__ import annotations
@@ -58,11 +58,12 @@ def default_source_root() -> Path:
 
 
 def default_raw_directory() -> Path:
-    """Where the converted raw file is: the checkout's ``data/raw/initial_conditions/``.
+    """Where the converted raw file is: ``data/raw/initial_conditions/``.
 
     It is tracked, so this is found from
-    :func:`~sipnet_calibration.conventions.tracked_data_root` and
-    ``$SIPNET_CALIBRATION_DATA`` does not move it.
+    :func:`~sipnet_calibration.conventions.tracked_data_root`: in the checkout
+    whatever ``$SIPNET_CALIBRATION_DATA`` says, and under that variable only
+    for a non-editable install, which has no checkout.
     """
     return tracked_data_root() / "raw" / "initial_conditions"
 

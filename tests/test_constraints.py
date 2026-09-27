@@ -264,6 +264,24 @@ def test_describe_names_the_file_the_columns_and_the_filter():
     assert "dated" in text
 
 
+# ── the default paths ─────────────────────────────────────────────────────────
+
+
+def test_the_processed_directory_follows_the_data_root_and_the_raw_one_stays(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SIPNET_CALIBRATION_DATA", str(tmp_path))
+    assert module.default_constraint_directory() == tmp_path / "processed" / "constraints"
+    # The raw files are tracked, so they are always in the checkout.
+    assert module.default_raw_directory() == RAW_DIR
+
+
+def test_the_raw_directory_follows_the_data_root_under_a_non_editable_install(
+    non_editable_install,
+):
+    assert module.default_raw_directory() == non_editable_install / "raw" / "constraints"
+
+
 # ── the conversion, on synthetic tables ───────────────────────────────────────
 
 

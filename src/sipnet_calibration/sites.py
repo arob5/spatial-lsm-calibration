@@ -311,7 +311,7 @@ class Grid:
         return self.south + self.n_lat / self.cells_per_degree
 
     @property
-    def resolution(self) -> float:
+    def arcseconds_per_cell(self) -> float:
         """Cell width in arcseconds: 30 for :data:`SITE_GRID`."""
         return 3600.0 / self.cells_per_degree
 
@@ -806,7 +806,7 @@ def _rows_of_site_ids(site_table: pd.DataFrame, site_ids: Iterable[int]) -> pd.D
     """
     wanted = list(as_site_ids(site_ids, message_name="site_ids"))
     # A repeated site would make site_ids= return more rows than it asked for.
-    check_site_table_lists_each_site_once(site_table)
+    check_site_table_lists_each_site_once(site_table, message_name="the site table")
     check_site_table_lists_the_sites(site_table, wanted)
     position = pd.Series(np.arange(len(site_table)), index=site_table[SITE_ID].to_numpy())
     return site_table.iloc[position.loc[wanted].to_numpy()]
@@ -880,7 +880,7 @@ def check_site_table_is_keyed_on_site_ids(site_table: Any) -> None:
     check_site_table_is_a_dataframe(site_table)
     check_site_table_has_site_ids(site_table)
     check_site_table_site_ids_are_integers(site_table)
-    check_site_table_lists_each_site_once(site_table)
+    check_site_table_lists_each_site_once(site_table, message_name="the site table")
 
 
 def check_site_table_file_is_valid(table: pd.DataFrame, *, message_name: str) -> None:
@@ -987,7 +987,7 @@ def check_site_table_site_ids_are_integers(site_table: pd.DataFrame) -> None:
 
 
 def check_site_table_lists_each_site_once(
-    site_table: pd.DataFrame, *, message_name: str = "the site table"
+    site_table: pd.DataFrame, *, message_name: str
 ) -> None:
     """The site table lists no site twice."""
     site_ids = _site_ids_of(site_table)

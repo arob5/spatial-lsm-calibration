@@ -311,27 +311,25 @@ their shared coercion lives in `validation.py`.
 
 ### Where shared things live
 
-- **`conventions.py`** holds every name constant two modules share (dims,
-  the data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
+- **`conventions.py`** holds every name constant two modules share (dims, the
+  data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
   (`DATA_SOURCE_MEMBER_NAMES`), coordinates, `SOURCE_INDEX`, the `site_id`
-  column, the `time_bounds`
-  variable and its `BOUNDS` dim, `NON_BATCH_DIM_NAMES`,
-  `SIPNET_ROW_LABEL_NAMES`, the attributes of `site`/`lon`/`lat`/`sample`
-  and of a data source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`),
-  `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
-  `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
-  `data_root()`, `tracked_data_root()`); and `read_only_copy` and
-  `ReadOnlyCopies`, the read-only copies of xarray data a frozen class keeps
-  and hands out, copied on
-  assignment so nothing a caller holds is frozen. Read-only mappings are
-  `frozendict`s (the `frozendict` package): a `dict` subclass, so pandas and
-  `json` read one as a dict, and it pickles and hashes. Every module-level
-  mapping constant of the package is one (the scripts' own tables are not
-  the package's), and one is handed to xarray as it is, since xarray copies
-  attrs; pandas' `agg`, which refills the mapping it is given, takes a
-  `dict(...)` copy. A module imports these; it never defines its own
-  copy and never re-exports one. A name only one module uses lives in that
-  module: `RAW_MEMBER` in `initial_conditions.names`.
+  column, the `time_bounds` variable and its `BOUNDS` dim,
+  `NON_BATCH_DIM_NAMES`, `SIPNET_ROW_LABEL_NAMES`, the attributes of
+  `site`/`lon`/`lat`/`sample` and of a data source's member dim
+  (`DATA_SOURCE_MEMBER_ATTRIBUTES`), `SITE_DTYPE`, `BATCH_LABEL_DTYPE`,
+  `NAME_PATTERN`, `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`,
+  `DATA_ROOT_ENV_VAR`, `data_root()`, `tracked_data_root()`); and
+  `read_only_copy` and `ReadOnlyCopies`, the read-only copies of xarray data a
+  frozen class keeps and hands out, copied on assignment so nothing a caller
+  holds is frozen. Read-only mappings are `frozendict`s (the `frozendict`
+  package): a `dict` subclass, so pandas and `json` read one as a dict, and it
+  pickles and hashes. Every module-level mapping constant of the package is
+  one (the scripts' own tables are not the package's), and one is handed to
+  xarray as it is, since xarray copies attrs; pandas' `agg`, which refills the
+  mapping it is given, takes a `dict(...)` copy. A module imports these; it
+  never defines its own copy and never re-exports one. A name only one module
+  uses lives in that module: `RAW_MEMBER` in `initial_conditions.names`.
 - **`validation.py`** holds the argument coercion two modules need, each
   `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
   `as_integer`, `as_positive_integer`, `as_bounded_integer`,
@@ -776,10 +774,10 @@ src/sipnet_calibration/
                           # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
                           # select_sites(site_ids=, bbox=, where=, n_random=,
-                          # seed=),
-                          # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
-                          # site_locations(), site_coordinates(), the site-table
-                          # and pool checks; default_site_table_path()
+                          # seed=), EXTENTS (named lon/lat boxes), N_SITES;
+                          # site_lookup(), site_locations(), site_coordinates(),
+                          # the site-table and pool checks;
+                          # default_site_table_path()
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass

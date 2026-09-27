@@ -69,7 +69,7 @@ class TestGridGeometry:
         assert SITE_GRID.shape == (9360, 19080)
 
     def test_step_is_thirty_arcseconds(self):
-        assert SITE_GRID.resolution == pytest.approx(30.0)
+        assert SITE_GRID.arcseconds_per_cell == pytest.approx(30.0)
         assert SITE_GRID.step == pytest.approx(1 / 120)
 
     def test_extent_is_consistent_with_dimensions(self):

@@ -33,8 +33,8 @@ Input data
     `Data model`_ below. :func:`site_labels_path` says where it is expected to
     be, honoring the ``$SIPNET_CALIBRATION_DATA`` override in
     :data:`~sipnet_calibration.conventions.DATA_ROOT_ENV_VAR`. The raw files
-    are tracked, so :func:`default_raw_directory` finds them in this
-    checkout whatever that variable says.
+    are tracked, so :func:`default_raw_directory` finds them as
+    :func:`~sipnet_calibration.conventions.tracked_data_root` does.
 
 Data model
 ----------
@@ -314,11 +314,12 @@ def resolve_site_labels(name: str) -> SiteLabelsSpec:
 
 
 def default_raw_directory() -> Path:
-    """Where the raw site-labels files are: ``data/raw/site_labels/`` of this checkout.
+    """Where the raw site-labels files are: ``data/raw/site_labels/``.
 
     They are tracked, so this is found from
-    :func:`~sipnet_calibration.conventions.tracked_data_root` and
-    ``$SIPNET_CALIBRATION_DATA`` does not move it.
+    :func:`~sipnet_calibration.conventions.tracked_data_root`: in the checkout
+    whatever ``$SIPNET_CALIBRATION_DATA`` says, and under that variable only
+    for a non-editable install, which has no checkout.
     """
     return tracked_data_root() / "raw" / "site_labels"
 

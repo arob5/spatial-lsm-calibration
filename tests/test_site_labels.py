@@ -974,6 +974,12 @@ def test_the_processed_directory_honors_the_data_root_override_and_the_raw_one_d
     assert default_raw_directory() == RAW_DIR
 
 
+def test_the_raw_directory_follows_the_data_root_under_a_non_editable_install(
+    non_editable_install,
+):
+    assert default_raw_directory() == non_editable_install / "raw" / "site_labels"
+
+
 def test_site_labels_path_is_the_name_with_a_csv_suffix(tmp_path):
     three = site_labels_path("reanalysis_3pft", tmp_path)
     assert three == tmp_path / "reanalysis_3pft.csv"

@@ -448,6 +448,24 @@ def niwot_parameters():
     )
 
 
+# ── the data root ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def non_editable_install(monkeypatch, tmp_path) -> Path:
+    """The package as a non-editable install sees it: no checkout beside it.
+
+    ``conventions``' package directory is moved into a fake site-packages, and
+    ``$SIPNET_CALIBRATION_DATA`` is set; the fixture returns that data root.
+    """
+    installed = tmp_path / "venv" / "lib" / "python3.14" / "site-packages" / "sipnet_calibration"
+    installed.mkdir(parents=True)
+    monkeypatch.setattr(conventions, "_PACKAGE_DIRECTORY", installed)
+    data = tmp_path / "data"
+    monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(data))
+    return data
+
+
 # ── in-memory site tables ─────────────────────────────────────────────────────
 
 

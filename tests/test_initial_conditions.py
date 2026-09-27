@@ -462,56 +462,18 @@ def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
     assert module.default_source_root() == root / "raw" / "initial_conditions" / "files"
 
 
-def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
-    """The root lives in sipnet_calibration.conventions so that one setting
-    moves every storage-backed path, while a tracked raw input stays in the
-    checkout. Four modules used to spell the root out separately, and the
-    spelling broke here the moment a module moved a directory deeper."""
-    from sipnet_calibration import constraints, conventions, drivers, site_labels, sites
-
+def test_only_the_raw_file_stays_in_the_checkout_when_the_data_root_moves(monkeypatch, tmp_path):
+    """The source tree and the processed file follow the variable; the tracked
+    raw file does not."""
     checkout = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
-    storage_backed = (
-        module.default_processed_path,
-        module.default_source_root,
-        constraints.default_constraint_directory,
-        site_labels.default_site_labels_directory,
-        sites.default_site_table_path,
-        drivers.default_drivers_root,
-    )
-    tracked = (
-        module.default_raw_directory,
-        constraints.default_raw_directory,
-        site_labels.default_raw_directory,
-    )
-
-    monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(tmp_path))
-    assert conventions.data_root() == tmp_path
-    assert conventions.tracked_data_root() == checkout
-    for resolve in storage_backed:
-        assert resolve().is_relative_to(tmp_path), resolve
-    for resolve in tracked:
-        assert resolve().is_relative_to(checkout), resolve
-
-    monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
-    for resolve in (*storage_backed, *tracked):
-        assert resolve().is_relative_to(checkout), resolve
+    monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
+    assert module.default_processed_path().is_relative_to(tmp_path)
+    assert module.default_source_root().is_relative_to(tmp_path)
+    assert module.default_raw_directory() == checkout / "raw" / "initial_conditions"
 
 
-def test_tracked_inputs_follow_the_data_root_under_a_non_editable_install(monkeypatch, tmp_path):
-    """Installed into site-packages, the package has no checkout beside it, so the
-    tracked raw inputs are wherever ``$SIPNET_CALIBRATION_DATA`` says."""
-    from sipnet_calibration import constraints, conventions, site_labels
-
-    installed = tmp_path / "venv" / "lib" / "python3.14" / "site-packages" / "sipnet_calibration"
-    installed.mkdir(parents=True)
-    monkeypatch.setattr(conventions, "_PACKAGE_DIRECTORY", installed)
-    data = tmp_path / "data"
-    monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(data))
-
-    assert conventions.tracked_data_root() == data
-    assert constraints.default_raw_directory() == data / "raw" / "constraints"
-    assert site_labels.default_raw_directory() == data / "raw" / "site_labels"
-    assert module.raw_path() == data / "raw" / "initial_conditions" / module.RAW_FILE
+def test_the_raw_file_follows_the_data_root_under_a_non_editable_install(non_editable_install):
+    assert module.raw_path() == non_editable_install / "raw" / "initial_conditions" / module.RAW_FILE
 
 
 def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):

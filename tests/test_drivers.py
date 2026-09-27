@@ -351,7 +351,7 @@ class TestLoadDrivers:
             load_drivers([3], source_indices=[], root=root, site_table=site_table)
 
     def test_a_source_index_beyond_int16_is_a_directory_like_any_other(self, root, site_table):
-        with pytest.raises(FileNotFoundError, match=r"\[\(3, 40000\)\]"):
+        with pytest.raises(FileNotFoundError, match="site 3 source index 40000"):
             load_drivers([3], source_indices=[1, 40000], root=root, site_table=site_table)
 
     @pytest.mark.parametrize("sites", [3, ["3"], "3", [True], {3, 7}, [np.inf], [1.5], [3.0]])
@@ -472,7 +472,7 @@ class TestLoadDrivers:
 
     def test_missing_pair_raises_by_default(self, root, site_table):
         write_driver_pair(root, 3, 5)
-        with pytest.raises(FileNotFoundError, match=r"\(site, source index\) pair\(s\).*\[\(7, 5\)\].*allow_missing=True"):
+        with pytest.raises(FileNotFoundError, match=r"pair\(s\) have no driver file.*site 7 source index 5.*allow_missing=True"):
             load_drivers([3, 7], root=root, site_table=site_table)
 
     def test_allow_missing_fills_nan_and_writes_driver_present(self, root, site_table):
