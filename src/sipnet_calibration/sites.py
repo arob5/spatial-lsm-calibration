@@ -405,14 +405,14 @@ class Grid:
             If any coordinate is not finite, lies further than *tol* from a cell
             center, or resolves to an index outside the grid.
         """
-        x = np.asarray(lon, dtype=float)
-        y = np.asarray(lat, dtype=float)
+        lon_degrees = np.asarray(lon, dtype=float)
+        lat_degrees = np.asarray(lat, dtype=float)
         # Checked first because NaN defeats both guards below: np.rint(nan) is 0
         # on this platform, and every comparison against NaN is False, so a NaN
         # coordinate would silently resolve to a real cell.
-        check_coordinates_are_finite(x, y)
-        jf = (x - self.west) * self.cells_per_degree - 0.5
-        kf = (y - self.south) * self.cells_per_degree - 0.5
+        check_coordinates_are_finite(lon_degrees, lat_degrees)
+        jf = (lon_degrees - self.west) * self.cells_per_degree - 0.5
+        kf = (lat_degrees - self.south) * self.cells_per_degree - 0.5
         j = np.rint(jf).astype(np.int64)
         k = np.rint(kf).astype(np.int64)
 

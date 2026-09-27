@@ -90,10 +90,10 @@ Facts specific to this working copy, which the README deliberately does not carr
   `conventions.data_root()`.** `data_root()` (and `$SIPNET_CALIBRATION_DATA`)
   says where the storage-backed part of `data/` is, which on the SCC or with
   the variable set is another tree; a tracked file is always in the checkout.
-  The tests (`conftest.REPOSITORY`), the Natural Earth scripts and
-  `split_site_pft_16class.py` follow this;
-  the library's own `default_raw_dir()` resolvers for tracked directories
-  still go through `data_root()` until the data-source cleanup (PR 5d).
+  The tests (`conftest.REPOSITORY`), the Natural Earth scripts,
+  `split_site_pft_16class.py` and the library's own `default_raw_directory()`
+  resolvers for tracked directories (through `sites.tracked_data_root()`)
+  follow this.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
@@ -365,7 +365,8 @@ their shared coercion lives in `validation.py`.
   `check_site_table_locates_the_sites` and
   `check_site_table_is_keyed_on_site_ids`), the pool checks a raw data source's
   sites are held to (`check_site_table_lists_the_sites`,
-  `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
+  `check_sites_are_the_site_table`), `N_SITES`, and `tracked_data_root()`,
+  the checkout's `data/` that the tracked raw directories are found from. No lookup is written as a
   hand `set_index("site_id")`; `site_lookup` is the keyed form.
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
@@ -773,7 +774,8 @@ src/sipnet_calibration/
                           # select_sites(site_ids=, bbox=, where=, n_random=, seed=),
                           # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
                           # site_locations(), site_coordinates(), the site-table
-                          # and pool checks
+                          # and pool checks; default_site_table_path(),
+                          # tracked_data_root()
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass

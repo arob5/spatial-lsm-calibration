@@ -143,6 +143,13 @@ offline, and `raw/natural_earth/provenance.md` records where they came from.
 Everything else under `raw/`, including the much larger drivers, eddy-covariance
 files, phenology and soil texture files, lives on storage and is symlinked.
 
+A tracked input is therefore always in the checkout, and the library finds it
+there: the `default_raw_directory()` of `sipnet_calibration.constraints`,
+`sipnet_calibration.site_labels` and `sipnet_calibration.initial_conditions`
+resolve from `sipnet_calibration.sites.tracked_data_root()`, which
+`$SIPNET_CALIBRATION_DATA` does not move. That variable moves the storage-backed
+part of `raw/` and `processed/` together.
+
 ---
 
 ## Site metadata
@@ -157,7 +164,7 @@ the identifiers are treated as fixed and are never renumbered.
 The site table as an ESRI point shapefile: 8000 `Point` records in `pts.shp`, with
 `pts.shx`, `pts.dbf`, `pts.prj` and `pts.cpg` alongside. Record *N* corresponds to
 site identifier *N*. This is the only site source in the repository, and one of the
-three inputs tracked under `raw/` (see [Directory layout](#directory-layout)):
+inputs tracked under `raw/` (see [Directory layout](#directory-layout)):
 it is small, it is a primary source rather than a pipeline output, and without
 it the repository carries no site information at all.
 

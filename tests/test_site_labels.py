@@ -631,8 +631,8 @@ def _argv(raw_root, site_table_path, out_dir, *extra):
 
 
 @pytest.fixture
-def real_argv(tmp_path):
-    """A `main` invocation against the registry's own site labels and raw file."""
+def real_output_root(tmp_path):
+    """A directory to write into, where `main` can read the registry's own raw files."""
     # main reads both from its defaults, so check the paths it will read.
     for spec in SITE_LABELS:
         if not (default_raw_directory() / spec.raw_file).exists():
@@ -643,23 +643,23 @@ def real_argv(tmp_path):
 
 
 @pytest.mark.parametrize("name", SITE_LABELS_NAMES)
-def test_main_exits_zero_and_writes_the_processed_file(real_argv, name):
-    out_dir = real_argv / "out"
+def test_main_exits_zero_and_writes_the_processed_file(real_output_root, name):
+    out_dir = real_output_root / "out"
     code = ingest.main(["--site-labels", name, "--out-dir", str(out_dir)])
     assert code == 0
     written = load_site_labels(name, site_labels_path(name, out_dir))
     assert len(written) == resolve_site_labels(name).expected_rows
 
 
-def test_main_with_no_arguments_builds_every_site_labels_data_source(real_argv):
-    out_dir = real_argv / "out"
+def test_main_with_no_arguments_builds_every_site_labels_data_source(real_output_root):
+    out_dir = real_output_root / "out"
     assert ingest.main(["--out-dir", str(out_dir)]) == 0
     assert sorted(path.stem for path in out_dir.glob("*.csv")) == sorted(SITE_LABELS_NAMES)
 
 
-def test_main_honors_the_site_labels_argument(real_argv):
+def test_main_honors_the_site_labels_argument(real_output_root):
     """Naming one site-labels data source must not build the others."""
-    out_dir = real_argv / "out"
+    out_dir = real_output_root / "out"
     code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
     assert code == 0
     assert [path.name for path in out_dir.glob("*.csv")] == ["reanalysis_3pft.csv"]
