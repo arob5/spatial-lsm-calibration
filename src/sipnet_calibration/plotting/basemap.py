@@ -127,6 +127,7 @@ __all__ = [
     "GRATICULE_ZORDER",
     "MAX_ANGULAR_DISTANCE",
     "BasemapLayer",
+    "as_layer_names",
     "basemap_path",
     "clip_to_drawable",
     "draw_basemap",
@@ -259,6 +260,22 @@ def write_basemap(
         np.savez_compressed(handle, **arrays)
 
 
+def as_layer_names(layer_names: Any, *, message_name: str) -> tuple[str, ...]:
+    """A sequence of names of :data:`BASEMAP_LAYERS`, as a tuple, in the order given.
+
+    Raises
+    ------
+    TypeError
+        If *layer_names* is one string, or not a sequence of strings.
+    KeyError
+        If a name is not in :data:`BASEMAP_LAYERS`.
+    """
+    layer_names = as_names(layer_names, message_name=message_name)
+    for name in layer_names:
+        check_key_is_known(name, BASEMAP_LAYERS, message_name="basemap layer")
+    return layer_names
+
+
 def clip_to_drawable(lon: np.ndarray, lat: np.ndarray) -> list[np.ndarray]:
     """The runs of a polyline that lie within the drawable distance of the center.
 
@@ -322,9 +339,7 @@ def draw_basemap(
     they are set.
     """
     check_keywords_are_not_retired(style, {"layers": "layer_names="}, message_name="draw_basemap")
-    layer_names = as_names(layer_names, message_name="layer_names")
-    for name in layer_names:
-        check_key_is_known(name, BASEMAP_LAYERS, message_name="basemap layer")
+    layer_names = as_layer_names(layer_names, message_name="layer_names")
     drawn = []
     for name in layer_names:
         layer = BASEMAP_LAYERS[name]

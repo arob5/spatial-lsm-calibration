@@ -131,8 +131,14 @@ def test_no_labels_means_no_titles():
 
 def test_a_single_string_for_labels_is_rejected():
     """A bare string, where a sequence is wanted, would title the panels one character each."""
-    with pytest.raises(TypeError, match="one character each"):
+    with pytest.raises(TypeError, match="labels must be a sequence of values, got the one string"):
         build_plot_grid([1, 2, 3, 4], draw_nothing, labels="Site")
+
+
+def test_a_set_of_labels_is_rejected():
+    """A set has no order, so its titles would land on panels in hash order."""
+    with pytest.raises(TypeError, match="labels was given as a set"):
+        build_plot_grid([1, 2], draw_nothing, labels={"a", "b"})
 
 
 def test_a_labels_sequence_of_the_wrong_length_is_rejected():

@@ -870,3 +870,51 @@ def test_an_animation_refuses_an_interval_that_is_not_seconds(ax, dense, interva
     with pytest.raises(error, match=match):
         animate_map(frames(dense), ax=ax, interval=interval)
     assert not ax.collections
+
+
+# ── sequence arguments, and what is refused before drawing ───────────────────
+
+
+@pytest.mark.parametrize("values, match", [(5, "got int 5"), ("ab", "one string"), ({1, 2}, "a set")])
+def test_plot_map_by_refuses_values_that_are_not_a_sequence(ensemble, values, match):
+    with pytest.raises(TypeError, match=match):
+        plot_map_by(ensemble, "sample", values=values)
+
+
+def test_plot_map_by_takes_time_labels_as_an_array(dense):
+    field = frames(dense)
+    figure, axes = plot_map_by(field, "time", values=field.time[::2])
+    assert [ax.get_title() for ax in axes] == ["2012-01-01", "2012-03-01"]
+
+
+def test_plot_map_quantiles_refuses_quantiles_that_are_not_a_sequence(ensemble):
+    with pytest.raises(TypeError, match="quantiles must be a sequence"):
+        plot_map_quantiles(ensemble, 0.5)
+
+
+def test_plot_map_quantiles_names_its_own_argument_for_a_quantile_out_of_range(ensemble):
+    """The message named summarize_batch's stat, which the caller never passed."""
+    with pytest.raises(ValueError, match=r"quantiles: a quantile lies in \(0, 1\), got 1.5"):
+        plot_map_quantiles(ensemble, (1.5,))
+
+
+def test_plot_map_grid_refuses_a_list_of_fields(dense):
+    """It raised AttributeError on .values()."""
+    with pytest.raises(TypeError, match="fields_by_title must be a mapping"):
+        plot_map_grid([dense])
+
+
+def test_an_extent_that_is_not_a_box_is_a_type_error(ax, dense):
+    """tuple(5) raised Python's own TypeError before the box was checked."""
+    with pytest.raises(TypeError, match="extent"):
+        plot_map(dense, ax, extent=5)
+
+
+@pytest.mark.parametrize(
+    "basemap, error", [(["rivers"], KeyError), ("coastline", TypeError), (None, TypeError)]
+)
+def test_basemap_layers_are_checked_before_anything_is_drawn(ax, dense, basemap, error):
+    """The layers were checked by draw_basemap, after the graticule and the data."""
+    with pytest.raises(error):
+        plot_map(dense, ax, basemap=basemap)
+    assert not ax.collections and not ax.texts

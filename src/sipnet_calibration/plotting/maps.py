@@ -148,6 +148,7 @@ from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
     DEFAULT_LAYER_NAMES,
     MAX_ANGULAR_DISTANCE,
+    as_layer_names,
     draw_basemap,
     draw_graticule,
 )
@@ -163,7 +164,7 @@ from sipnet_calibration.plotting.style import (
 )
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.sites import EXTENTS
-from sipnet_calibration.validation import as_positive_integer, truncated
+from sipnet_calibration.validation import as_bbox, as_positive_integer, truncated
 
 __all__ = [
     "COLOR_KEYWORDS",
@@ -650,6 +651,8 @@ def map_bounds(
 
     Raises
     ------
+    TypeError
+        If *extent* is none of the forms :func:`plot_map` takes.
     KeyError
         If *extent* is a name that is not a key of
         :data:`~sipnet_calibration.sites.EXTENTS`.
@@ -664,7 +667,8 @@ def map_bounds(
         )
         return ProjectedBounds(*SITE_PROJECTION.projected_bounds(EXTENTS[extent]))
     if extent is not None:
-        return ProjectedBounds(*SITE_PROJECTION.projected_bounds(tuple(extent)))
+        box = as_bbox(extent, message_name="extent")
+        return ProjectedBounds(*SITE_PROJECTION.projected_bounds(box))
 
     xs, ys = [], []
     for field in fields:
@@ -849,6 +853,7 @@ def _draw_map(
     """
     check_field_is_a_map(field)
     primitives.check_ax_is_an_axes(ax)
+    layer_names = _basemap_layer_names(basemap)
     is_raster = SITE not in field.dims
     renderer = None if is_raster else _renderer_for(render)
     if is_raster:
@@ -869,13 +874,22 @@ def _draw_map(
         artist = primitives.raster(ax, geometry.x_corners, geometry.y_corners, geometry.values, **keywords)
     else:
         artist = renderer.draw(ax, geometry.x, geometry.y, geometry.values, bounds=bounds, **keywords)
-    if basemap:
-        draw_basemap(ax, layer_names=DEFAULT_LAYER_NAMES if basemap is True else basemap)
+    if layer_names:
+        draw_basemap(ax, layer_names=layer_names)
     if colorbar:
         _add_scale_key(ax, scale, geometry, bounds)
     # Drawing an image or a mesh can move the limits; the frame is the frame.
     _frame_axes(ax, bounds)
     return artist, renderer
+
+
+def _basemap_layer_names(basemap: bool | Sequence[str]) -> tuple[str, ...]:
+    """The basemap layers ``basemap=`` asks for: all, none, or the names given."""
+    if basemap is True:
+        return DEFAULT_LAYER_NAMES
+    if basemap is False:
+        return ()
+    return as_layer_names(basemap, message_name="basemap")
 
 
 def _renderer_for(render: str | SiteRenderer | None) -> SiteRenderer:

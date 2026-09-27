@@ -77,7 +77,7 @@ from sipnet_calibration.plotting.style import (
     check_number_is_positive,
     check_value_is_a_number,
 )
-from sipnet_calibration.validation import as_positive_integer
+from sipnet_calibration.validation import as_positive_integer, as_sequence
 
 __all__ = [
     "band",
@@ -258,7 +258,8 @@ def fan(
     Raises
     ------
     TypeError
-        If *levels* is one number rather than a sequence.
+        If *levels* is one number rather than a sequence, or holds a value
+        that is not a number.
     ValueError
         If *samples* is not two-dimensional or its second axis differs in
         length from *x*; or if *levels* is empty, holds a duplicate, or holds
@@ -635,7 +636,9 @@ def _is_present(values: np.ndarray) -> np.ndarray:
 
 def _as_levels(levels: Any) -> tuple[float, ...]:
     """*levels* as a tuple of interval widths, each within ``(0, 1)``."""
-    check_levels_are_a_sequence(levels)
+    levels = as_sequence(levels, message_name="levels")
+    for level in levels:
+        check_value_is_a_number(level, message_name="levels")
     levels = tuple(float(level) for level in levels)
     check_levels_are_widths(levels)
     return levels
@@ -704,15 +707,6 @@ def check_samples_match_x(x: np.ndarray, samples: np.ndarray) -> None:
         raise ValueError(
             f"samples: each sample has one value per entry of x, and a sample has "
             f"{samples.shape[1]} values and x {x.size}; they must match."
-        )
-
-
-def check_levels_are_a_sequence(levels: Any) -> None:
-    """*levels* is a sequence of interval widths, not one number."""
-    if isinstance(levels, (int, float)):
-        raise TypeError(
-            f"levels: the interval widths are a sequence, got the single number "
-            f"{levels!r}; pass ({levels},) to draw one band."
         )
 
 

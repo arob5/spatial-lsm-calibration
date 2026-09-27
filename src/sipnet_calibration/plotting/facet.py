@@ -77,8 +77,15 @@ from sipnet_calibration.plotting.style import (
     axis_label,
     check_keywords_are_not_retired,
     check_option_is_known,
+    check_value_is_a_number,
 )
-from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
+from sipnet_calibration.validation import (
+    as_positive_integer,
+    as_sequence,
+    as_site_ids,
+    check_value_is_a_mapping,
+    truncated,
+)
 
 __all__ = [
     "LEGEND_OPTIONS",
@@ -352,6 +359,7 @@ def plot_map_grid(
         :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map` raises
         for a panel, every panel checked before any is drawn.
     """
+    check_value_is_a_mapping(fields_by_title, message_name="fields_by_title")
     check_fields_are_given(fields_by_title, message_name="fields_by_title")
     check_option_is_known(scale, SCALE_OPTIONS, message_name="scale")
     panel_fields = list(fields_by_title.values())
@@ -439,7 +447,7 @@ def plot_map_by(
     if values is None:
         chosen = available[thinned_indices(len(available), n_max)]
     else:
-        chosen = np.asarray(getattr(values, "values", values))
+        chosen = _labels_asked_for(values)
         check_field_holds_the_labels(field, dim, chosen, message_name=name)
     panels = {maps.coordinate_label(dim, value): field.sel({dim: value}) for value in chosen}
     if len(panels) < len(chosen):
@@ -492,8 +500,12 @@ def plot_map_quantiles(
     check_keywords_are_not_retired(
         grid_kwargs, {"dim": "batch_dim="}, message_name="plot_map_quantiles"
     )
-    quantiles = [float(q) for q in quantiles]
+    quantiles = as_sequence(quantiles, message_name="quantiles")
     check_quantiles_are_given(quantiles)
+    for quantile in quantiles:
+        check_value_is_a_number(quantile, message_name="quantiles")
+        maps.check_quantile_is_in_range(quantile, message_name="quantiles")
+    quantiles = [float(q) for q in quantiles]
     validate_field(field)
     name = message_name(field)
     maps.check_batch_dim_is_the_fields(field, batch_dim, message_name=name)
@@ -517,10 +529,19 @@ def _panel_titles(
         return None
     if callable(labels):
         return [str(labels(item)) for item in items]
-    check_labels_are_not_one_string(labels)
-    titles = [str(title) for title in labels]
+    titles = [str(title) for title in as_sequence(labels, message_name="labels")]
     check_labels_match_the_items(titles, items)
     return titles
+
+
+def _labels_asked_for(values: Any) -> np.ndarray:
+    """The labels of a ``values=`` argument, a sequence, as an array."""
+    items = as_sequence(values, message_name="values")
+    # An array-like is kept as it is, since as_sequence gives its datetimes
+    # as integers.
+    if hasattr(values, "__array__"):
+        return np.asarray(getattr(values, "values", values))
+    return np.asarray(items)
 
 
 def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:
@@ -577,15 +598,6 @@ def check_items_are_given(items: list[Any]) -> None:
     """A grid is given at least one item to draw a panel for."""
     if not items:
         raise ValueError("items is empty, so there is nothing to draw; pass one item per panel.")
-
-
-def check_labels_are_not_one_string(labels: Any) -> None:
-    """Panel titles are a sequence or a callable, not one string."""
-    if isinstance(labels, str):
-        raise TypeError(
-            f"labels is the single string {labels!r}, which would title the panels one "
-            "character each; pass one label per panel, or a callable."
-        )
 
 
 def check_labels_match_the_items(titles: list[str], items: list[Any]) -> None:
