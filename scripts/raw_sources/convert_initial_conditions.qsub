@@ -6,8 +6,8 @@
 #
 #     qsub scripts/raw_sources/convert_initial_conditions.qsub
 #
-# Reading the 800,000 files takes a few minutes on 16 slots; the hard time
-# limit is generous. The log lands in the checkout as ic_convert.o<jobid>.
+# Reading the source files takes minutes on 16 slots; the hard time limit is
+# generous. The log lands in the checkout as ic_convert.o<jobid>.
 #$ -P dietzelab
 #$ -l buyin
 #$ -pe omp 16
@@ -15,9 +15,11 @@
 #$ -j y
 #$ -N ic_convert
 #$ -cwd
-# The home directory is small and quota-limited, so uv's cache and the SIPNET
-# binary cache are in project space (CLAUDE.md, "Running on the SCC").
-# TMPDIR is left to Grid Engine, which gives the job node-local scratch.
-export UV_CACHE_DIR=/projectnb/dietzelab/$USER/uv_cache
-export PYSIPNET_CACHE_DIR=/projectnb/dietzelab/$USER/pysipnet_cache
+# The home directory is small and quota-limited, so uv's cache is in project
+# space unless the user has set their own (CLAUDE.md, "Running on the SCC").
+# The job runs no SIPNET, so it needs no SIPNET binary cache. TMPDIR is left to
+# Grid Engine, which gives the job node-local scratch, unless the login profile
+# this "bash -l" reads sets it.
+: "${UV_CACHE_DIR:=/projectnb/dietzelab/$USER/uv_cache}"
+export UV_CACHE_DIR
 uv run python scripts/raw_sources/convert_initial_conditions.py --jobs "$NSLOTS"

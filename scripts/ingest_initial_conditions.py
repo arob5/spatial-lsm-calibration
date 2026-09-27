@@ -53,7 +53,7 @@ Usage
 ::
 
     uv run python scripts/ingest_initial_conditions.py
-    uv run python scripts/ingest_initial_conditions.py --describe     # the specs, no I/O
+    uv run python scripts/ingest_initial_conditions.py --describe   # the specs, no I/O
 """
 
 from __future__ import annotations
@@ -66,13 +66,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.conventions import (
-    INITIAL_CONDITION_MEMBER,
-    LAT,
-    LON,
-    SITE,
-    SOURCE_INDEX,
-)
+from sipnet_calibration.conventions import INITIAL_CONDITION_MEMBER, SITE
 from sipnet_calibration.initial_conditions import (
     INITIAL_CONDITIONS,
     RAW_MEMBER,
@@ -91,11 +85,15 @@ from sipnet_calibration.sites import (
     default_sites_path,
     load_sites,
 )
-from sipnet_calibration.validation import range_summary
+from sipnet_calibration.validation import range_summary, truncated
 
-#: The raw file's names for the three pools PEcAn's wood identity relates.
+#: The raw file's name for aboveground biomass, the whole of PEcAn's wood identity.
 BIOMASS_SOURCE_NAME = "AbvGrndWood"
+
+#: The raw file's name for wood carbon, biomass less leaf in PEcAn's wood identity.
 WOOD_SOURCE_NAME = "wood_carbon_content"
+
+#: The raw file's name for leaf carbon, the part of biomass that is not wood.
 LEAF_SOURCE_NAME = "leaf_carbon_content"
 
 
@@ -127,7 +125,9 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--describe", action="store_true", help="Print each spec and exit without reading data."
@@ -136,20 +136,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--raw-file",
         type=Path,
         default=None,
-        help="The converted raw file. Default: data/raw/initial_conditions/"
-        "pecan_pool_initial_conditions.nc.",
+        help=f"The converted raw file. Default: {raw_path()}.",
     )
     parser.add_argument(
         "--site-table",
         type=Path,
         default=None,
-        help="The site table. Default: data/processed/sites/sites.csv.",
+        help=f"The site table. Default: {default_sites_path()}.",
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Where to write. Default: data/processed/initial_conditions.nc.",
+        help=f"Where to write. Default: {default_processed_path()}.",
     )
     return parser.parse_args(argv)
 
@@ -164,7 +163,7 @@ def write_processed_file(dataset: xr.Dataset, path: Path) -> None:
         write=lambda partial: dataset.to_netcdf(
             partial, engine="h5netcdf", encoding=netcdf_encoding(dataset)
         ),
-        check=lambda partial: check_round_trip(dataset, partial),
+        check=lambda partial: check_written_file_reads_back_identically(dataset, partial),
     )
 
 
@@ -198,7 +197,7 @@ class IngestError(RuntimeError):
 
 
 def check_raw_file_is_valid(raw: xr.Dataset, site_table: pd.DataFrame) -> None:
-    """The raw file is fit to build the processed file from, beyond what ``read_raw`` checks."""
+    """The raw file is fit to build from, beyond what ``read_raw`` checks."""
     check_every_source_variable_has_a_spec()
     check_sites_are_the_site_table(
         site_table, raw[SITE].values.tolist(), message_name="the raw file's sites"
@@ -213,8 +212,8 @@ def check_every_source_variable_has_a_spec() -> None:
     specified = {spec.source_name for spec in INITIAL_CONDITIONS}
     if specified != set(SOURCE.names):
         raise IngestError(
-            f"the specs cover {sorted(specified)} but the source variables are "
-            f"{sorted(SOURCE.names)}, and a variable without a spec would be dropped "
+            f"the specs cover {truncated(sorted(specified))} but the source variables are "
+            f"{truncated(sorted(SOURCE.names))}, and a variable without a spec would be dropped "
             "silently; give every source variable a spec in INITIAL_CONDITIONS."
         )
 
@@ -225,9 +224,8 @@ def check_members_are_contiguous_from_one(raw: xr.Dataset) -> None:
     expected = np.arange(1, members.size + 1)
     if not np.array_equal(members, expected):
         raise IngestError(
-            f"source member indices are {members[:5].tolist()}... to {members[-1]}, "
-            f"expected 1..{members.size}, and renumbering to 0-based would hide the gap; "
-            "rebuild the raw file from the complete source tree."
+            f"source member indices are {truncated(members.tolist())}, expected "
+            f"1..{members.size}, and renumbering to 0-based would hide the gap; re-copy it and compare it with data/raw/initial_conditions/provenance.md."
         )
 
 
@@ -237,7 +235,7 @@ def check_biomass_and_wood_are_everywhere(raw: xr.Dataset) -> None:
     if not both.all():
         raise IngestError(
             f"{BIOMASS_SOURCE_NAME} and {WOOD_SOURCE_NAME} are not present at every site "
-            "and member; every PEcAn source file carries both, so the source changed."
+            f"and member, which every PEcAn source file carries; re-copy it and compare it with data/raw/initial_conditions/provenance.md."
         )
 
 
@@ -252,55 +250,26 @@ def check_wood_is_biomass_minus_leaf(raw: xr.Dataset) -> None:
             f"{WOOD_SOURCE_NAME} differs from {BIOMASS_SOURCE_NAME} - {LEAF_SOURCE_NAME} "
             f"(or {BIOMASS_SOURCE_NAME} where leaf is absent) at {int(mismatch.sum())} "
             f"(site, member) pairs, first at site "
-            f"{raw[SITE].values[np.argwhere(mismatch)[0][0]]}; that identity is how PEcAn "
-            "built the wood pool, so the source changed."
+            f"{raw[SITE].values[np.argwhere(mismatch)[0][0]]}, and that identity is how "
+            f"PEcAn built the wood pool; re-copy it and compare it with data/raw/initial_conditions/provenance.md."
         )
 
 
-def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
-    """The written file reads back through the library as what was built, bit for bit."""
+def check_written_file_reads_back_identically(dataset: xr.Dataset, partial: Path) -> None:
+    """The written file reads back through the library as what was built."""
     with load_initial_conditions(partial) as read_back:
-        check_variables_read_back_bitwise(dataset, read_back, partial=partial)
-        check_variable_attributes_read_back(dataset, read_back, partial=partial)
-        check_coordinates_read_back(dataset, read_back, partial=partial)
+        check_read_back_is_identical(dataset, read_back.load(), message_name=str(partial))
 
 
-def check_variables_read_back_bitwise(
-    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
+def check_read_back_is_identical(
+    dataset: xr.Dataset, read_back: xr.Dataset, *, message_name: str
 ) -> None:
-    """Every variable reads back bit for bit."""
-    for spec in INITIAL_CONDITIONS:
-        if not np.array_equal(
-            dataset[spec.name].values, read_back[spec.name].values, equal_nan=True
-        ):
-            raise IngestError(
-                f"{spec.name} did not round-trip bit for bit through {partial}; inspect "
-                "the kept partial file."
-            )
-
-
-def check_variable_attributes_read_back(
-    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
-) -> None:
-    """Every variable's attributes read back unchanged."""
-    for spec in INITIAL_CONDITIONS:
-        if dict(read_back[spec.name].attrs) != dict(dataset[spec.name].attrs):
-            raise IngestError(
-                f"{spec.name}'s attributes changed on the way to disk through {partial}; "
-                "inspect the kept partial file."
-            )
-
-
-def check_coordinates_read_back(
-    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
-) -> None:
-    """Every coordinate reads back unchanged."""
-    for coordinate in (INITIAL_CONDITION_MEMBER, SOURCE_INDEX, SITE, LON, LAT):
-        if not np.array_equal(dataset[coordinate].values, read_back[coordinate].values):
-            raise IngestError(
-                f"{coordinate} did not round-trip through {partial}; inspect the kept "
-                "partial file."
-            )
+    """The file read back is identical to what was written, NaN for NaN."""
+    if not read_back.identical(dataset):
+        raise IngestError(
+            f"{message_name}: the written file does not read back identical to what was "
+            "built; inspect the kept partial file."
+        )
 
 
 if __name__ == "__main__":

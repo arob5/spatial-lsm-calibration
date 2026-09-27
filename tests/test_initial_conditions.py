@@ -694,7 +694,7 @@ def test_a_failed_conversion_check_keeps_the_partial_and_prints_its_path(
     def refuse(dataset, partial):
         raise convert.IngestError("forced: the round trip failed")
 
-    monkeypatch.setattr(convert, "check_round_trip", refuse)
+    monkeypatch.setattr(convert, "check_written_file_reads_back_identically", refuse)
     argv = ["--source-directory", str(tree), "--output", str(out), "--site-table", str(site_table_path), "--jobs", "1"]
     assert convert.main(argv) == 1
     err = capsys.readouterr().err
@@ -1688,16 +1688,23 @@ def test_round_trip_checks_notice_a_file_that_differs(
         dataset = raw_dataset.load().copy(deep=True)
         processed = build_initial_conditions(raw_dataset, site_table)
     other = _write_raw_variant(raw, tmp_path, lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"] + 1))
-    with pytest.raises(convert.IngestError, match="round-trip"):
-        convert.check_round_trip(dataset, other)
+    with pytest.raises(convert.IngestError, match="does not read back identical"):
+        convert.check_written_file_reads_back_identically(dataset, other)
     changed = processed.copy(deep=True)
     changed["initial_wood_carbon"].values[0, 0] += 1
     path = tmp_path / "changed.nc"
     changed.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(changed))
-    with pytest.raises(ingest.IngestError, match="round-trip"):
-        ingest.check_round_trip(processed, path)
+    with pytest.raises(ingest.IngestError, match="does not read back identical"):
+        ingest.check_written_file_reads_back_identically(processed, path)
+    # an attribute changed on the way to disk is caught as well as a value
+    relabeled = processed.copy(deep=True)
+    relabeled["initial_wood_carbon"].attrs["comment"] = "not what was built"
+    relabeled_path = tmp_path / "relabeled.nc"
+    relabeled.to_netcdf(relabeled_path, engine="h5netcdf", encoding=netcdf_encoding(relabeled))
+    with pytest.raises(ingest.IngestError, match="does not read back identical"):
+        ingest.check_written_file_reads_back_identically(processed, relabeled_path)
     # a failing round trip keeps the .partial for inspection and says where it is
-    monkeypatch.setattr(ingest, "check_round_trip", lambda d, p: (_ for _ in ()).throw(ingest.IngestError("boom")))
+    monkeypatch.setattr(ingest, "check_written_file_reads_back_identically", lambda d, p: (_ for _ in ()).throw(ingest.IngestError("boom")))
     out = tmp_path / "never.nc"
     capsys.readouterr()
     assert ingest.main(["--raw-file", str(raw), "--site-table", str(sites_csv), "--output", str(out)]) == 1

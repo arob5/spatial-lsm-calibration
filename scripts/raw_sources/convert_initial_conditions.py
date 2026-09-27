@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Make the tracked raw initial condition file out of PEcAn's 800,000 netCDFs.
+"""Make the tracked raw initial condition file out of PEcAn's per-member netCDFs.
 
 Overview
 --------
@@ -45,8 +45,8 @@ counts, the variable-set signatures, and the md5 of the written file -- is
 what ``data/raw/initial_conditions/provenance.md`` records. The numbers are
 printed rather than checked because they describe the source data, not an
 invariant of ours; the invariants (a complete rectangle, presence uniform over
-members, the source template in every file) are the ``check_*`` functions and
-the per-file checks in the library.
+members, the source template in every file) are checked by
+``initial_conditions.read_source_directory`` and ``build_raw``.
 
 The file is written through :func:`sipnet_calibration.io.write_checked`, and
 its check reads it back with ``read_raw``.
@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         write_raw_file(dataset, output)
         print(f"wrote {output}  ({output.stat().st_size / 1e6:.1f} MB, md5 {file_md5(output)})")
         print(report)
-    except (IngestError, OSError, ValueError, LookupError, TypeError, BrokenProcessPool) as error:
+    except (IngestError, OSError, ValueError, LookupError, TypeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
@@ -138,26 +138,28 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--source-directory",
         type=Path,
         default=None,
-        help="The source tree. Default: data/raw/initial_conditions/files.",
+        help=f"The source tree. Default: {default_source_root()}.",
     )
     parser.add_argument(
         "--output",
         type=Path,
         default=None,
-        help="Where to write. Default: data/raw/initial_conditions/pecan_pool_initial_conditions.nc.",
+        help=f"Where to write. Default: {raw_path()}.",
     )
     parser.add_argument(
         "--site-table",
         type=Path,
         default=None,
         help="The site table, to check the directories are the pool. Default: "
-        "data/processed/sites/sites.csv; skipped if absent.",
+        f"{default_sites_path()}; skipped if absent.",
     )
     parser.add_argument(
         "--jobs", type=int, default=8, help="Worker processes reading files. Default 8."
@@ -199,7 +201,7 @@ def choose_site_ids(
     site_table_path: Path,
     site_table_given: bool,
 ) -> list[int]:
-    """The site ids to read: the pool, checked against the site table, or a trial prefix."""
+    """The site ids to read: the pool, checked against the site table, or a prefix."""
     if limit is not None:
         # A trial run reads a prefix of the tree, which is not the pool, so the
         # pool check is skipped and the result must not be committed.
@@ -207,8 +209,9 @@ def choose_site_ids(
         check_trial_run_names_its_output(output_given)
         print(f"note: --limit-sites {limit}; the pool check is skipped", flush=True)
         return site_ids[:limit]
+    if site_table_given:
+        check_site_table_exists(site_table_path)
     if not site_table_path.exists():
-        check_named_site_table_exists(site_table_path, named=site_table_given)
         print(f"note: {site_table_path} absent; the pool check is left to the ingest", flush=True)
         return site_ids
     check_sites_are_the_site_table(
@@ -222,17 +225,15 @@ def read_source_files(source_directory: Path, site_ids: list[int], *, jobs: int)
     files: list[SourceFile] = []
     pool = ProcessPoolExecutor(max_workers=max(1, jobs))
     try:
-        for count, site_files in enumerate(
-            pool.map(
-                read_source_directory, [source_directory] * len(site_ids), site_ids, chunksize=8
-            ),
-            start=1,
-        ):
-            files.extend(site_files)
-            if count % 500 == 0 or count == len(site_ids):
-                print(f"  ... {count} of {len(site_ids)} sites, {len(files)} files", flush=True)
+        _read_into(files, pool, source_directory, site_ids)
+    except BrokenProcessPool as error:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise IngestError(
+            f"a worker process reading the source files died ({error}); rerun with fewer "
+            "--jobs, or on a node with more memory."
+        ) from error
     except BaseException:
-        # A bad file should stop the run now, not after the other 799,999 are read.
+        # A bad file should stop the run now, not after every other file is read.
         pool.shutdown(wait=False, cancel_futures=True)
         raise
     pool.shutdown(wait=True)
@@ -265,7 +266,7 @@ def write_raw_file(dataset: xr.Dataset, path: Path) -> None:
         write=lambda partial: dataset.to_netcdf(
             partial, engine="h5netcdf", encoding=raw_encoding(dataset)
         ),
-        check=lambda partial: check_round_trip(dataset, partial),
+        check=lambda partial: check_written_file_reads_back_identically(dataset, partial),
     )
 
 
@@ -273,7 +274,23 @@ def write_raw_file(dataset: xr.Dataset, path: Path) -> None:
 
 
 class IngestError(RuntimeError):
-    """The source tree or the written file breaks an invariant the raw file depends on."""
+    """The source tree or the written file breaks an invariant of the raw file."""
+
+
+def _read_into(
+    files: list[SourceFile],
+    pool: ProcessPoolExecutor,
+    source_directory: Path,
+    site_ids: list[int],
+) -> None:
+    """Extend *files* with every file of every site, read on *pool*."""
+    for count, site_files in enumerate(
+        pool.map(read_source_directory, [source_directory] * len(site_ids), site_ids, chunksize=8),
+        start=1,
+    ):
+        files.extend(site_files)
+        if count % 500 == 0 or count == len(site_ids):
+            print(f"  ... {count} of {len(site_ids)} sites, {len(files)} files", flush=True)
 
 
 def _is_site_directory_name(name: str) -> bool:
@@ -321,7 +338,7 @@ def check_limit_is_positive(limit: int) -> None:
 
 
 def check_trial_run_names_its_output(output_given: bool) -> None:
-    """A trial run names its ``--output``, so it cannot overwrite the tracked raw file."""
+    """A trial run names its ``--output``, so it cannot overwrite the tracked file."""
     if not output_given:
         raise IngestError(
             "--limit-sites needs an explicit --output, since its output is a prefix of the "
@@ -330,57 +347,30 @@ def check_trial_run_names_its_output(output_given: bool) -> None:
         )
 
 
-def check_named_site_table_exists(site_table_path: Path, *, named: bool) -> None:
+def check_site_table_exists(site_table_path: Path) -> None:
     """A site table named on the command line exists."""
-    if named and not site_table_path.exists():
+    if not site_table_path.exists():
         raise FileNotFoundError(
             f"site table {site_table_path} does not exist; build it with "
             "scripts/ingest_sites.py or name another with --site-table."
         )
 
 
-def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
-    """The written file reads back through the library as what was built, bit for bit."""
+def check_written_file_reads_back_identically(dataset: xr.Dataset, partial: Path) -> None:
+    """The written file reads back through the library as what was built."""
     with read_raw(partial) as read_back:
-        check_variables_read_back_bitwise(dataset, read_back, partial=partial)
-        check_variable_attributes_read_back(dataset, read_back, partial=partial)
-        check_coordinates_read_back(dataset, read_back, partial=partial)
+        check_read_back_is_identical(dataset, read_back.load(), message_name=str(partial))
 
 
-def check_variables_read_back_bitwise(
-    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
+def check_read_back_is_identical(
+    dataset: xr.Dataset, read_back: xr.Dataset, *, message_name: str
 ) -> None:
-    """Every variable reads back bit for bit."""
-    for name in SOURCE.names:
-        if not np.array_equal(dataset[name].values, read_back[name].values, equal_nan=True):
-            raise IngestError(
-                f"{name} did not round-trip bit for bit through {partial}; inspect the kept "
-                "partial file."
-            )
-
-
-def check_variable_attributes_read_back(
-    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
-) -> None:
-    """Every variable's attributes read back unchanged."""
-    for name in SOURCE.names:
-        if dict(read_back[name].attrs) != dict(dataset[name].attrs):
-            raise IngestError(
-                f"{name}'s attributes changed on the way to disk through {partial}; inspect "
-                "the kept partial file."
-            )
-
-
-def check_coordinates_read_back(
-    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
-) -> None:
-    """The ``site`` and ``member`` coordinates read back unchanged."""
-    for coordinate in (SITE, RAW_MEMBER):
-        if not np.array_equal(dataset[coordinate].values, read_back[coordinate].values):
-            raise IngestError(
-                f"{coordinate} did not round-trip through {partial}; inspect the kept "
-                "partial file."
-            )
+    """The file read back is identical to what was written, NaN for NaN."""
+    if not read_back.identical(dataset):
+        raise IngestError(
+            f"{message_name}: the written file does not read back identical to what was "
+            "built; inspect the kept partial file."
+        )
 
 
 if __name__ == "__main__":
