@@ -332,7 +332,7 @@ class Projection:
         # so a definition that will not build would otherwise be re-raised as a
         # complaint about an input point that was fine.
         transformer = _transformer(self)
-        with _points_outside_the_domain_refused(self):
+        with _refuse_points_outside_the_domain(self):
             x, y = transformer.transform(longitude, latitude, errcheck=True)
         if scalar:
             return float(x), float(y)
@@ -386,7 +386,7 @@ class Projection:
         # input, which is both false and a different exception type from
         # everything else this module raises.
         check_coordinates_are_not_empty(longitude)
-        with _points_outside_the_domain_refused(self):
+        with _refuse_points_outside_the_domain(self):
             return _proj(self).get_factors(longitude, latitude, radians=False, errcheck=True)
 
     def angular_distance(self, lon, lat):
@@ -683,7 +683,7 @@ def _proj(projection: Projection) -> pyproj.Proj:
 
 
 @contextlib.contextmanager
-def _points_outside_the_domain_refused(projection: Projection) -> Iterator[None]:
+def _refuse_points_outside_the_domain(projection: Projection) -> Iterator[None]:
     """Re-raise PROJ's error for a point it would not take as a ``ValueError``
     saying where the projection is undefined."""
     try:
