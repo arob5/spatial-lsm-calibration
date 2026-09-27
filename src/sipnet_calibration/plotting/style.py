@@ -42,15 +42,17 @@ Usage
 
 from __future__ import annotations
 
+import numbers
 from collections.abc import Collection, Mapping
 from typing import Any
 
 import matplotlib
+import numpy as np
 import xarray as xr
 from frozendict import frozendict
 
-from sipnet_calibration.fields import message_name
-from sipnet_calibration.validation import truncated
+from sipnet_calibration.fields import check_field_is_a_dataarray, message_name
+from sipnet_calibration.validation import as_bounded_integer, truncated
 
 __all__ = [
     "BAND_ALPHAS",
@@ -62,7 +64,10 @@ __all__ = [
     "category_colors",
     "check_key_is_known",
     "check_keywords_are_not_retired",
+    "check_number_is_finite",
+    "check_number_is_positive",
     "check_option_is_known",
+    "check_value_is_a_number",
     "role_style",
     "use_project_style",
 ]
@@ -200,9 +205,12 @@ def category_colors(n: int) -> list[str]:
 
     Raises
     ------
+    TypeError
+        If *n* is a boolean, a float or not an integer.
     ValueError
-        If *n* exceeds twenty; pass explicit colors instead.
+        If *n* is negative or exceeds twenty; pass explicit colors instead.
     """
+    n = as_bounded_integer(n, minimum=0, message_name="n")
     check_classes_fit_a_palette(n)
     if n <= len(CATEGORY_COLORS):
         return list(CATEGORY_COLORS[:n])
@@ -233,9 +241,12 @@ def axis_label(field: xr.DataArray) -> str:
 
     Raises
     ------
+    TypeError
+        If *field* is not a ``DataArray``.
     ValueError
         If ``long_name`` or ``units`` is missing from ``attrs``, naming which.
     """
+    check_field_is_a_dataarray(field)
     check_field_has_a_label(field, message_name=message_name(field))
     return f"{field.attrs['long_name']} ({field.attrs['units']})"
 
@@ -306,3 +317,26 @@ def check_keywords_are_not_retired(
     for old, replacement in retired.items():
         if old in keywords:
             raise TypeError(f"{message_name} no longer takes {old}=; use {replacement}.")
+
+
+def check_value_is_a_number(value: Any, *, message_name: str) -> None:
+    """*value* is a real number, not a boolean."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Real):
+        raise TypeError(
+            f"{message_name} must be a number, got {type(value).__name__} {value!r}; pass a "
+            "real number."
+        )
+
+
+def check_number_is_positive(value: float, *, message_name: str) -> None:
+    """A number is positive: infinity is, ``NaN`` is not."""
+    if not value > 0:
+        raise ValueError(
+            f"{message_name} must be positive, got {value!r}; pass a positive number."
+        )
+
+
+def check_number_is_finite(value: float, *, message_name: str) -> None:
+    """A number is finite."""
+    if not np.isfinite(value):
+        raise ValueError(f"{message_name} must be finite, got {value!r}; pass a finite number.")

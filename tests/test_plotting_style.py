@@ -14,6 +14,7 @@ from sipnet_calibration.plotting.style import (
     RC_PARAMS,
     ROLES,
     axis_label,
+    category_colors,
     role_style,
     use_project_style,
 )
@@ -169,3 +170,17 @@ def test_axis_label_on_a_real_driver_field(real_driver_field):
     label = axis_label(real_driver_field)
     assert "air temperature" in label.lower()
     assert label.endswith("(degC)")
+
+
+@pytest.mark.parametrize("n", [True, 2.5])
+def test_category_colors_refuses_a_count_that_is_not_an_integer(n):
+    with pytest.raises(TypeError, match="n must be an integer"):
+        category_colors(n)
+
+
+def test_axis_label_refuses_something_that_is_not_a_data_array():
+    """It raised numpy's AttributeError."""
+    import numpy as np
+
+    with pytest.raises(TypeError, match="a field is an xarray DataArray"):
+        axis_label(np.ones(2))

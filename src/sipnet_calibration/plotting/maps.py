@@ -126,6 +126,7 @@ Usage
 from __future__ import annotations
 
 import functools
+import numbers
 import textwrap
 from dataclasses import dataclass
 from typing import Any, Mapping, NamedTuple, Protocol, Sequence
@@ -155,10 +156,14 @@ from sipnet_calibration.plotting.style import (
     category_colors,
     check_key_is_known,
     check_keywords_are_not_retired,
+    check_number_is_finite,
+    check_number_is_positive,
+    check_option_is_known,
+    check_value_is_a_number,
 )
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.sites import EXTENTS
-from sipnet_calibration.validation import truncated
+from sipnet_calibration.validation import as_positive_integer, truncated
 
 __all__ = [
     "COLOR_KEYWORDS",
@@ -175,6 +180,7 @@ __all__ = [
     "check_field_has_no_batch_dim_besides",
     "check_field_has_the_dim",
     "check_field_is_a_map",
+    "check_quantile_is_in_range",
     "color_scale",
     "coordinate_label",
     "map_bounds",
@@ -330,7 +336,11 @@ def summarize_batch(
     name = message_name(field)
     check_batch_dim_is_the_fields(field, batch_dim, message_name=name)
     check_field_is_continuous(field, message_name=name)
-    check_stat_is_a_summary(stat)
+    check_stat_is_a_name_or_a_number(stat)
+    if isinstance(stat, str):
+        check_option_is_known(stat, _SUMMARY_NAMES, message_name="stat, when a name,")
+    else:
+        check_quantile_is_in_range(stat, message_name="stat")
     if isinstance(stat, str):
         reducers = {
             "mean": field.mean,
@@ -369,7 +379,7 @@ def animate_map(
     ax:
         The axes to draw on, whose figure the animation plays in.
     interval:
-        Seconds between frames.
+        Seconds between frames, at most a minute.
     **map_kwargs:
         Passed to :func:`plot_map`. The color keywords are resolved once, over
         every frame, and ``extent=None`` fits the frame to all of them.
@@ -393,6 +403,9 @@ def animate_map(
     check_keywords_are_not_retired(
         map_kwargs, {"interval_ms": "interval=, in seconds"}, message_name="animate_map"
     )
+    check_value_is_a_number(interval, message_name="interval")
+    check_number_is_positive(interval, message_name="interval")
+    check_interval_is_in_seconds(interval)
     validate_field(field)
     primitives.check_ax_is_an_axes(ax)
     name = message_name(field)
@@ -427,7 +440,7 @@ def animate_map(
         return (state["artist"],)
 
     return FuncAnimation(
-        ax.figure, draw_frame, frames=len(frames), interval=interval * 1e3, blit=False
+        ax.figure, draw_frame, frames=len(frames), interval=round(interval * 1e3), blit=False
     )
 
 
@@ -466,6 +479,12 @@ class Points:
     size: float | None = None
     interpolates = False
 
+    def __post_init__(self) -> None:
+        if self.size is not None:
+            check_value_is_a_number(self.size, message_name="size")
+            check_number_is_finite(self.size, message_name="size")
+            check_number_is_positive(self.size, message_name="size")
+
     def draw(self, ax, x, y, values, *, bounds, **style):
         size = self.size if self.size is not None else _automatic_marker_area(ax, x, y, values, bounds)
         style.setdefault("s", size)
@@ -500,6 +519,12 @@ class Cells:
     pixels: int = 800
     interpolates = False
 
+    def __post_init__(self) -> None:
+        check_value_is_a_number(self.radius, message_name="radius")
+        check_number_is_finite(self.radius, message_name="radius")
+        check_number_is_positive(self.radius, message_name="radius")
+        as_positive_integer(self.pixels, message_name="pixels")
+
     def draw(self, ax, x, y, values, *, bounds, **style):
         return primitives.site_cells(
             ax, x, y, values, radius=self.radius, bounds=tuple(bounds),
@@ -519,7 +544,8 @@ class Triangles:
     ----------
     max_edge:
         Triangles with an edge longer than this, in projected meters, are not
-        drawn, so no fill spans a wider gap between sites.
+        drawn, so no fill spans a wider gap between sites; ``float("inf")``
+        masks none.
     shading:
         ``"gouraud"`` interpolates linearly; ``"flat"`` colors each triangle by
         the mean of its corners.
@@ -528,6 +554,10 @@ class Triangles:
     max_edge: float = 150e3
     shading: str = "gouraud"
     interpolates = True
+
+    def __post_init__(self) -> None:
+        check_value_is_a_number(self.max_edge, message_name="max_edge")
+        check_number_is_positive(self.max_edge, message_name="max_edge")
 
     def draw(self, ax, x, y, values, *, bounds, **style):
         artist = primitives.site_triangles(
@@ -761,6 +791,10 @@ _MARKER_AREA_LIMITS = (2.0, 30.0)
 
 #: What else ``extent`` may be, beside a named extent.
 _EXTENT_ALTERNATIVES = ", a (west, south, east, north) box in degrees, or a ProjectedBounds"
+
+#: The longest interval between animation frames, in seconds, that is not
+#: taken for milliseconds passed by mistake.
+_LONGEST_INTERVAL = 60.0
 
 #: The statistics :func:`summarize_batch` takes by name.
 _SUMMARY_NAMES: tuple[str, ...] = ("mean", "median", "standard_deviation")
@@ -1186,16 +1220,24 @@ def check_field_is_continuous(field: xr.DataArray, *, message_name: str) -> None
         )
 
 
-def check_stat_is_a_summary(stat: str | float) -> None:
-    """*stat* is a statistic :func:`summarize_batch` takes: a name, or a quantile in (0, 1)."""
-    if isinstance(stat, str):
-        if stat not in _SUMMARY_NAMES:
-            raise ValueError(
-                f"stat must be one of {list(_SUMMARY_NAMES)} or a quantile in (0, 1), got "
-                f"{stat!r}; pass one of them."
-            )
-    elif not 0.0 < float(stat) < 1.0:
-        raise ValueError(f"stat: a quantile lies in (0, 1), got {stat!r}; pass one such as 0.05.")
+def check_stat_is_a_name_or_a_number(stat: Any) -> None:
+    """*stat* is the name of a summary or a number, a quantile."""
+    if not isinstance(stat, str) and (
+        isinstance(stat, (bool, np.bool_)) or not isinstance(stat, numbers.Real)
+    ):
+        raise TypeError(
+            f"stat must be one of {list(_SUMMARY_NAMES)} or a quantile in (0, 1), got "
+            f"{type(stat).__name__} {stat!r}; pass a name or a number."
+        )
+
+
+def check_quantile_is_in_range(quantile: float, *, message_name: str) -> None:
+    """A quantile lies in (0, 1)."""
+    if not 0.0 < float(quantile) < 1.0:
+        raise ValueError(
+            f"{message_name}: a quantile lies in (0, 1), got {quantile!r}; pass one such as "
+            "0.05."
+        )
 
 
 def check_render_is_a_renderer(render: Any) -> None:
@@ -1322,4 +1364,13 @@ def check_codes_are_declared(
         raise ValueError(
             f"{message_name}: code(s) {truncated(sorted(set(values[undeclared].tolist())))} "
             f"are not among flag_values {codes.tolist()}; declare every code the field holds."
+        )
+
+
+def check_interval_is_in_seconds(interval: float) -> None:
+    """An animation's interval is in seconds: at most a minute between frames."""
+    if interval > _LONGEST_INTERVAL:
+        raise ValueError(
+            f"interval is in seconds, and {interval!r} s between frames is more than a "
+            f"minute; pass interval={interval / 1e3:g} for {interval!r} ms."
         )

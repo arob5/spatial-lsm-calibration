@@ -54,7 +54,10 @@ from sipnet_calibration.plotting.style import (
     CURVE_COLORS,
     axis_label,
     check_key_is_known,
+    check_number_is_finite,
+    check_number_is_positive,
     check_option_is_known,
+    check_value_is_a_number,
     role_style,
 )
 from sipnet_calibration.validation import as_positive_integer
@@ -318,7 +321,9 @@ def _error_bar_lengths(
         return None
     check_error_is_given_once(given)
     check_error_bars_are_drawn_as_points(show)
-    check_n_sigma_is_positive(n_sigma)
+    check_value_is_a_number(n_sigma, message_name="n_sigma")
+    check_number_is_finite(n_sigma, message_name="n_sigma")
+    check_number_is_positive(n_sigma, message_name="n_sigma")
     ((name, error),) = given.items()
     check_error_is_aligned_with_the_field(field, error, message_name=name)
     # show == "points" here, so the field has no batch dim and both arrays
@@ -431,15 +436,6 @@ def check_error_bars_are_drawn_as_points(show: str) -> None:
         raise ValueError(
             f"error bars are drawn by show='points', not show={show!r}; pass "
             "show='points' with an error."
-        )
-
-
-def check_n_sigma_is_positive(n_sigma: float) -> None:
-    """The error bar multiplier is finite and positive."""
-    if not (np.isfinite(n_sigma) and n_sigma > 0):
-        raise ValueError(
-            f"n_sigma must be finite and positive, got {n_sigma!r}; pass the number of "
-            "standard deviations each bar spans, such as 2."
         )
 
 

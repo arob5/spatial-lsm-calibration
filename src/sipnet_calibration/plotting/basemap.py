@@ -110,7 +110,13 @@ from frozendict import frozendict
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
-from sipnet_calibration.plotting.style import check_key_is_known, check_keywords_are_not_retired
+from sipnet_calibration.plotting.style import (
+    check_key_is_known,
+    check_keywords_are_not_retired,
+    check_number_is_finite,
+    check_number_is_positive,
+    check_value_is_a_number,
+)
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.validation import as_names, truncated
 
@@ -371,7 +377,9 @@ def draw_graticule(
     y_min, y_max = sorted(ax.get_ylim())
     if spacing is None:
         spacing = graticule_spacing(max(x_max - x_min, y_max - y_min))
-    check_graticule_spacing_is_positive(spacing)
+    check_value_is_a_number(spacing, message_name="spacing")
+    check_number_is_finite(spacing, message_name="spacing")
+    check_number_is_positive(spacing, message_name="spacing")
 
     meridians = _graticule_lines(float(spacing), meridians=True)
     parallels = _graticule_lines(float(spacing), meridians=False)
@@ -561,10 +569,3 @@ def check_basemap_parts_are_polylines(name: str, layer_parts: Sequence[np.ndarra
         )
 
 
-def check_graticule_spacing_is_positive(spacing: float) -> None:
-    """The graticule spacing, in degrees, is finite and positive."""
-    if not (np.isfinite(spacing) and spacing > 0):
-        raise ValueError(
-            f"spacing must be finite and positive, in degrees, got {spacing!r}; pass one "
-            "such as 10, or None to fit it to the frame."
-        )

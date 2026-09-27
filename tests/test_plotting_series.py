@@ -563,3 +563,12 @@ def test_label_by_a_scalar_coordinate_is_refused(ax):
     field = make_field(("sample", "time")).assign_coords(run=7)
     with pytest.raises(ValueError, match="not among the batch dims"):
         plot_time_series(field, show="spaghetti", label_by="run", ax=ax)
+
+
+def test_a_boolean_n_sigma_is_refused(ax, field_time):
+    """``True`` was taken as one standard deviation."""
+    deviation = field_time.copy(data=np.ones(field_time.shape))
+    with pytest.raises(TypeError, match="n_sigma must be a number"):
+        plot_time_series(
+            field_time, ax=ax, show="points", standard_deviation=deviation, n_sigma=True
+        )

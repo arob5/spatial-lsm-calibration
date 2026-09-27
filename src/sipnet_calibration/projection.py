@@ -705,8 +705,9 @@ def _as_coordinates(lon: Any, lat: Any) -> tuple[np.ndarray, np.ndarray, bool]:
     # NaN as a point it simply cannot project. The counts are taken before
     # broadcasting, so they say how many values the caller passed that are bad
     # rather than how large the result would have been.
-    check_coordinates_are_numbers(lon, message_name="lon")
-    check_coordinates_are_numbers(lat, message_name="lat")
+    for values, name in ((lon, "lon"), (lat, "lat")):
+        check_coordinates_form_an_array(values, message_name=name)
+        check_coordinates_are_numbers(values, message_name=name)
     longitude = _as_float_array(lon)
     latitude = _as_float_array(lat)
     check_coordinates_are_finite(longitude, latitude)
@@ -934,13 +935,23 @@ def check_bbox_excludes_the_antipode(
 
 
 def check_coordinates_are_numbers(values: Any, *, message_name: str) -> None:
-    """Coordinates are numbers, or arrays of them."""
-    try:
-        _as_float_array(values)
-    except (TypeError, ValueError) as error:
+    """Coordinates are real numbers, or an array of them: not booleans, not strings."""
+    kind = np.asarray(np.ma.getdata(values)).dtype.kind
+    if kind not in "iuf":
         raise TypeError(
-            f"{message_name} must be numbers in degrees, got {type(values).__name__}; pass "
-            "a number or an array of them."
+            f"{message_name} must be numbers in degrees, got {type(values).__name__} of "
+            f"dtype kind {kind!r}; pass a number or an array of them."
+        )
+
+
+def check_coordinates_form_an_array(values: Any, *, message_name: str) -> None:
+    """Coordinates are a number or a rectangular array, not a ragged nesting."""
+    try:
+        np.asarray(np.ma.getdata(values))
+    except ValueError as error:
+        raise ValueError(
+            f"{message_name} must be a number or a rectangular array, and it is ragged "
+            f"({error}); pass one array of coordinates."
         ) from error
 
 

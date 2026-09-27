@@ -217,3 +217,11 @@ def test_the_graticule_labels_meridians_on_the_bottom_and_parallels_on_the_left(
 @pytest.mark.parametrize("size, spacing", [(1.6e7, 20.0), (5e6, 10.0), (2e6, 5.0), (5e5, 2.0), (1e5, 1.0)])
 def test_graticule_spacing_shrinks_with_the_frame(size, spacing):
     assert graticule_spacing(size) == spacing
+
+
+@pytest.mark.parametrize("spacing", [True, "a"])
+def test_the_graticule_refuses_a_spacing_that_is_not_a_number(ax, spacing):
+    ax.set_xlim(-1e6, 1e6)
+    ax.set_ylim(-1e6, 1e6)
+    with pytest.raises(TypeError, match="spacing must be a number"):
+        draw_graticule(ax, spacing=spacing)

@@ -24,6 +24,7 @@ from sipnet_calibration.plotting.facet import (
 )
 from sipnet_calibration.plotting.maps import (
     Cells,
+    Points,
     ProjectedBounds,
     Triangles,
     animate_map,
@@ -810,3 +811,62 @@ def test_a_raster_with_a_time_dim_is_refused_with_the_maps_advice():
             plot_map(field, ax)
     finally:
         plt.close(figure)
+
+
+# ── arguments that are not numbers, and animation intervals ──────────────────
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: Cells(radius=True),
+        lambda: Cells(radius="50"),
+        lambda: Triangles(max_edge=True),
+        lambda: Points(size=True),
+    ],
+)
+def test_a_renderer_refuses_a_length_that_is_not_a_number(build):
+    """A boolean was taken as 1 m, and a string failed inside the primitive."""
+    with pytest.raises(TypeError, match="must be a number"):
+        build()
+
+
+def test_an_infinite_max_edge_masks_no_triangle(ax, dense):
+    """Infinity means no length is too long, as it did before the length checks."""
+    plot_map(dense, ax, render=Triangles(max_edge=float("inf")))
+    artist = data_artist(ax)
+    assert not artist._triangulation.mask.any()
+    drawn = primitives.site_triangles(
+        ax, np.array([0.0, 1, 0, 1]), np.array([0.0, 0, 1, 1]), np.ones(4), max_edge=np.inf
+    )
+    assert not drawn._triangulation.mask.any()
+    with pytest.raises(ValueError, match="max_edge must be positive"):
+        Triangles(max_edge=float("nan"))
+
+
+@pytest.mark.parametrize("stat", [True, None, [0.5]])
+def test_summarize_batch_refuses_a_stat_that_is_neither_a_name_nor_a_number(ensemble, stat):
+    with pytest.raises(TypeError, match="stat must be one of"):
+        summarize_batch(ensemble, stat)
+
+
+@pytest.mark.parametrize("interval, milliseconds", [(0.25, 250), (1.001, 1001)])
+def test_an_animation_interval_is_seconds_rounded_to_milliseconds(ax, dense, interval, milliseconds):
+    animation = animate_map(frames(dense), ax=ax, interval=interval)
+    assert animation._interval == milliseconds
+
+
+@pytest.mark.parametrize(
+    "interval, error, match",
+    [
+        ("x", TypeError, "interval must be a number"),
+        (True, TypeError, "interval must be a number"),
+        (0.0, ValueError, "interval must be positive"),
+        (-1.0, ValueError, "interval must be positive"),
+        (250, ValueError, "interval is in seconds"),
+    ],
+)
+def test_an_animation_refuses_an_interval_that_is_not_seconds(ax, dense, interval, error, match):
+    with pytest.raises(error, match=match):
+        animate_map(frames(dense), ax=ax, interval=interval)
+    assert not ax.collections

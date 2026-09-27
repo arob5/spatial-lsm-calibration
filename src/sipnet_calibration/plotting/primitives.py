@@ -71,7 +71,12 @@ from matplotlib.lines import Line2D
 from matplotlib.tri import Triangulation
 from scipy.spatial import cKDTree
 
-from sipnet_calibration.plotting.style import BAND_ALPHAS
+from sipnet_calibration.plotting.style import (
+    BAND_ALPHAS,
+    check_number_is_finite,
+    check_number_is_positive,
+    check_value_is_a_number,
+)
 from sipnet_calibration.validation import as_positive_integer
 
 __all__ = [
@@ -442,7 +447,9 @@ def site_cells(
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
     check_arrays_are_one_series(x=x, y=y, values=values)
-    check_length_is_positive(radius, message_name="radius")
+    check_value_is_a_number(radius, message_name="radius")
+    check_number_is_finite(radius, message_name="radius")
+    check_number_is_positive(radius, message_name="radius")
     pixels = as_positive_integer(pixels, message_name="pixels")
     check_bounds_enclose_an_area(bounds)
     x_min, y_min, x_max, y_max = (float(b) for b in bounds)
@@ -523,7 +530,8 @@ def site_triangles(
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
     check_arrays_are_one_series(x=x, y=y, values=values)
-    check_length_is_positive(max_edge, message_name="max_edge")
+    check_value_is_a_number(max_edge, message_name="max_edge")
+    check_number_is_positive(max_edge, message_name="max_edge")
     check_triangulation_has_three_sites(x.size)
 
     triangulation = Triangulation(x, y)
@@ -723,15 +731,6 @@ def check_levels_are_widths(levels: tuple[float, ...]) -> None:
         raise ValueError(
             f"levels: every level lies within (0, 1), and {outside} do not; pass interval "
             "widths such as 0.5 for the central half."
-        )
-
-
-def check_length_is_positive(length: float, *, message_name: str) -> None:
-    """A length in projected meters is finite and positive."""
-    if not (np.isfinite(length) and length > 0):
-        raise ValueError(
-            f"{message_name}: a length in projected meters is finite and positive, got "
-            f"{length!r}; pass one such as 50e3."
         )
 
 

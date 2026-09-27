@@ -340,6 +340,16 @@ class TestForward:
             SITE_PROJECTION.forward("west", 50.0)
         with pytest.raises(TypeError, match="lat must be numbers in degrees"):
             SITE_PROJECTION.angular_distance(-100.0, [object()])
+        # A boolean and a numeric string were read as 1.0 and -100.0.
+        with pytest.raises(TypeError, match="lon must be numbers in degrees"):
+            SITE_PROJECTION.forward(True, 50.0)
+        with pytest.raises(TypeError, match="lon must be numbers in degrees"):
+            SITE_PROJECTION.forward("-100", 50.0)
+
+    def test_rejects_ragged_coordinates_as_ragged(self):
+        """They were reported as not being numbers."""
+        with pytest.raises(ValueError, match="lon must be a number or a rectangular array"):
+            SITE_PROJECTION.forward([[-100.0, -90.0], [-80.0]], 50.0)
 
     def test_rejects_a_longitude_fill_value(self):
         """PROJ accepts -9999 as a longitude and projects it to a real-looking
