@@ -864,34 +864,45 @@ class TestEveryReaderRefusesTheSameThings:
 
 
 class TestEqualSpacingHasPysipnetsTolerance:
+    """Only the last label moves, so the spread of the spacing is exactly the shift."""
+
     @staticmethod
     def nearly_regular(shift):
         times = pd.date_range("2012-01-01 12:00", periods=6, freq="12h").as_unit("ns").to_numpy().copy()
-        times[2] += np.timedelta64(pd.Timedelta(shift))
+        times[-1] -= np.timedelta64(pd.Timedelta(shift))
         return xr.DataArray(
             np.arange(1.0, 7.0), dims="time", coords={"time": times},
             attrs={"units": "g m-2", "kind": "timestep_mean"}, name="x",
         )
 
-    def test_a_label_moved_by_less_than_the_tolerance_still_means(self):
+    def test_a_spread_of_the_tolerance_still_means(self):
         from pysipnet.dataset import STEP_TOLERANCE
 
-        field = self.nearly_regular(pd.Timedelta(STEP_TOLERANCE) / 2)
+        field = self.nearly_regular(pd.Timedelta(STEP_TOLERANCE))
         windows = pd.IntervalIndex.from_arrays(
             pd.DatetimeIndex(["2012-01-01", "2012-01-02"]), pd.DatetimeIndex(["2012-01-02", "2012-01-04"]), closed="right"
         )
         np.testing.assert_allclose(reduce_windows(field, windows, "mean").values, [1.5, 4.5])
         assert aggregate_time(field, "1D", how="mean").sizes["time"] == 3
 
-    def test_a_label_moved_by_more_than_the_tolerance_is_refused_by_both(self):
-        field = self.nearly_regular("2h")
+    def test_a_spread_just_over_the_tolerance_is_refused_by_both(self):
+        from pysipnet.dataset import STEP_TOLERANCE
+
+        field = self.nearly_regular(pd.Timedelta(STEP_TOLERANCE) + pd.Timedelta("1s"))
         windows = pd.IntervalIndex.from_arrays(
             pd.DatetimeIndex(["2012-01-01"]), pd.DatetimeIndex(["2012-01-04"]), closed="right"
         )
-        with pytest.raises(ValueError, match="not all the same length"):
+        with pytest.raises(ValueError, match="not all the same length to within"):
             reduce_windows(field, windows, "mean")
         with pytest.raises(ValueError, match="not equally spaced"):
             aggregate_time(field, "1D", how="mean")
+
+
+class TestCountsIgnoreTheKind:
+    def test_window_counts_and_aggregation_counts_both_ignore_an_invalid_kind(self, niwot):
+        pool = niwot["wood_carbon"].assign_attrs(kind="bogus")
+        assert window_counts(pool, run_window(pool)).values[0] == pool.sizes["time"]
+        assert aggregation_counts(pool, "1D").sum() == pool.sizes["time"]
 
 
 class TestMessagesNameTheReaderAndTheSubject:

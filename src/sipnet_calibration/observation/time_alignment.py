@@ -269,13 +269,14 @@ def reduce_windows(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``, *windows* is not a
-        ``pandas.IntervalIndex``, or *how* is not a string.
+        If *field* is not a ``DataArray``; if *windows* is not a
+        ``pandas.IntervalIndex`` of datetimes; if *how* is not a string; or
+        if *labels* are not timestamps.
     ValueError
         If the field fails the checks of :func:`aggregate_time`; if the kind
         does not admit *how*; if *windows* are not non-empty, disjoint,
-        increasing datetime intervals on the field's clock; or if *labels*
-        are not one strictly increasing timestamp per window.
+        increasing intervals on the field's clock; or if *labels* are not
+        one strictly increasing timestamp per window.
     """
     field = _as_steps(field)
     kind = variable_kind(field, default=None)
@@ -323,13 +324,13 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray``, or *times* are not timestamps.
     ValueError
         If the field fails the checks of :func:`aggregate_time`, has no
         interval coordinates or has overlapping steps; if its kind has no
         value at an instant (a per-step total, a running total); or if
-        *times* are not strictly increasing timestamps on the field's clock,
-        each inside a step.
+        *times* are not strictly increasing, on the field's clock, each
+        inside a step.
     """
     field = _as_steps(field)
     message_name = fields.message_name(field)
@@ -390,12 +391,13 @@ def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIn
     Raises
     ------
     TypeError
-        If *observed_values* is not a ``DataArray``.
+        If *observed_values* is not a ``DataArray``, or a window edge is not
+        a datetime.
     ValueError
         If *observed_values* is not a field; if it carries no windows (a dated
         or static constraint documents none: read it with
         :func:`select_timestep_at` or :func:`run_window`); or if a window
-        edge is not a datetime, is ``NaT``, or does not follow its start.
+        edge is ``NaT`` or does not follow its start.
     """
     fields.validate_field(observed_values)
     message_name = fields.message_name(observed_values, "the observation source")
@@ -469,7 +471,10 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
     field = _as_steps(field)
     check_frequency_is_an_offset_alias(freq)
     counts = _steps_per_cell(field, field.notnull(), freq).astype(np.int64)
-    if _is_described_by_itself(field, variable_kind(field, default=None)):
+    # The counts read no kind, so an invalid one is not refused here; a field
+    # that declares one, valid or not, is not described by itself.
+    declares_a_kind = "kind" in field.attrs
+    if not declares_a_kind and _is_described_by_itself(field, variable_kind(field, default=None)):
         counts[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
     counts.name = None
     counts.attrs = {}
@@ -581,12 +586,10 @@ def _padding_mask(field: xr.DataArray) -> np.ndarray:
 
 
 def _without_output_decimals(attrs: Mapping[str, Any]) -> dict[str, Any]:
-    """*attrs* less ``output_decimals``, for a value pySIPNET's ``resampled_attributes`` cannot take.
-
-    The same rule as pySIPNET's: SIPNET's printf precision does not describe
-    a combined value. It is applied here where there is no kind, or the
-    reduction is not one of pySIPNET's.
-    """
+    """*attrs* less ``output_decimals``, for a value pySIPNET's ``resampled_attributes`` cannot take."""
+    # pySIPNET's rule, applied where there is no kind or the reduction is not
+    # one of pySIPNET's: SIPNET's printf precision does not describe a
+    # combined value.
     return {key: value for key, value in attrs.items() if key != "output_decimals"}
 
 
@@ -621,8 +624,7 @@ def _resampling_method_for(
     """The method :func:`aggregate_time` applies: *how* checked, or the kind's default."""
     message_name = fields.message_name(field)
     if how is None:
-        if kind is None:
-            variable_kind(field)  # raises pySIPNET's refusal of an unknown kind
+        check_kind_is_known(kind, message_name=message_name)
         check_kind_has_a_default_method(kind, message_name=message_name)
         return DEFAULT_METHOD_FOR_KIND[kind]
     check_how_is_a_string(how, choices=RESAMPLING_METHODS, message_name=message_name)
@@ -926,7 +928,7 @@ def check_how_is_a_string(
 ) -> None:
     """*how* is a string, as the name of a method is."""
     if not isinstance(how, str):
-        for_what = f", for {message_name}" if message_name else ""
+        for_what = f" for {message_name}" if message_name else ""
         raise TypeError(
             f"how must be a string, one of {list(choices)}{for_what}, got "
             f"{type(how).__name__}; pass one of them."
@@ -939,6 +941,16 @@ def check_how_is_a_resampling_method(how: str, *, message_name: str) -> None:
         raise ValueError(
             f"unknown resampling method {how!r} for {message_name}; choose from "
             f"{list(RESAMPLING_METHODS)}."
+        )
+
+
+def check_kind_is_known(kind: VariableKind | None, *, message_name: str) -> None:
+    """The variable's kind is known, so a default method can be taken from it."""
+    if kind is None:
+        raise ValueError(
+            f"{message_name} carries no 'kind' attribute and is not a SIPNET output or "
+            "climate variable, so there is no default method to take from it; pass "
+            "how='sum', 'mean' or 'last', or set attrs['kind']."
         )
 
 
@@ -1031,8 +1043,9 @@ def check_steps_are_equally_spaced(field: xr.DataArray, *, message_name: str) ->
     if spacing.size and int(spacing.max() - spacing.min()) > tolerance:
         raise ValueError(
             f"a mean over steps with no {TIMESTEP_LENGTH!r} weighs them equally, and the "
-            f"steps of {message_name} are not all the same length; attach the step lengths, "
-            "or reduce a field that carries them."
+            f"steps of {message_name} are not all the same length to within pySIPNET's "
+            f"STEP_TOLERANCE ({pd.Timedelta(STEP_TOLERANCE)}); attach the step lengths, or "
+            "reduce a field that carries them."
         )
 
 

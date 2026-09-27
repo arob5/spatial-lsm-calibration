@@ -832,3 +832,24 @@ class TestAFieldOfNoKind:
         coordinate.attrs["kind"] = "timestep_start_coordinate"
         with pytest.raises(ValueError, match="which no method leaves unchanged"):
             aggregate_time(coordinate, "1D")
+
+
+class TestAFieldOfNoKindIsToldToPassHow:
+    def test_the_advice_is_to_pass_how(self):
+        observed = _daily_observed_values()
+        del observed.attrs["kind"]
+        with pytest.raises(ValueError, match=r"^'x' carries no 'kind' attribute .*; pass how='sum', 'mean' or 'last'"):
+            aggregate_time(observed, "1D")
+
+
+class TestPaddingIsCountedAcrossBatchDims:
+    def test_a_time_label_valued_in_any_sample_counts_once(self):
+        stacked = niwot_stack_of(["wood_carbon"], sites=(1, 2), n_samples=3, lengths={2: 40})
+        short = stacked["wood_carbon"].sel(site=2)
+        padding = np.flatnonzero(np.isnat(short[TIMESTEP_START].values))
+        assert padding.size >= 2
+        values = short.values.copy()
+        values[0, padding[0]] = 1.0  # sample 0 only
+        values[1, padding[1]] = 1.0  # sample 1 only
+        with pytest.raises(ValueError, match=r"at 2 time label\(s\)"):
+            aggregate_time(short.copy(data=values), "1D")
