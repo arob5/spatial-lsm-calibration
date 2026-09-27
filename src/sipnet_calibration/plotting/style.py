@@ -48,6 +48,7 @@ import matplotlib
 import xarray as xr
 from frozendict import frozendict
 
+from sipnet_calibration.fields import message_name
 
 __all__ = [
     "BAND_ALPHAS",
@@ -126,7 +127,6 @@ RC_PARAMS: frozendict = frozendict(
 )
 
 
-
 def role_style(role: str, element: str = "line", **overrides: Any) -> dict[str, Any]:
     """A role's keywords for one element of a figure, with *overrides* applied.
 
@@ -160,16 +160,13 @@ def role_style(role: str, element: str = "line", **overrides: Any) -> dict[str, 
 
     Raises
     ------
+    KeyError
+        If *role* is not a key of :data:`ROLES`.
     ValueError
-        If *role* is not a key of :data:`ROLES`, or *element* is not ``"line"``,
-        ``"band"`` or ``"points"``. The message lists the valid values.
+        If *element* is not ``"line"``, ``"band"`` or ``"points"``.
     """
-    if role not in ROLES:
-        raise ValueError(f"unknown role {role!r}; the roles are {sorted(ROLES)}")
-    if element not in _ELEMENT_KEYWORDS:
-        raise ValueError(
-            f"unknown element {element!r}; the elements are {sorted(_ELEMENT_KEYWORDS)}"
-        )
+    check_role_is_known(role)
+    check_element_is_known(element)
     style = {
         key: value
         for key, value in ROLES[role].items()
@@ -201,14 +198,10 @@ def category_colors(n: int) -> list[str]:
     ValueError
         If *n* exceeds twenty; pass explicit colors instead.
     """
+    check_classes_fit_a_palette(n)
     if n <= len(CATEGORY_COLORS):
         return list(CATEGORY_COLORS[:n])
-    if n <= 20:
-        return [matplotlib.colors.to_hex(c) for c in matplotlib.colormaps["tab20"].colors[:n]]
-    raise ValueError(
-        f"{n} classes is more than the palettes distinguish (20); pass colors "
-        "explicitly, one per class"
-    )
+    return [matplotlib.colors.to_hex(c) for c in matplotlib.colormaps["tab20"].colors[:n]]
 
 
 def use_project_style() -> None:
@@ -216,10 +209,6 @@ def use_project_style() -> None:
 
     Call this once where a set of figures is produced. Nothing in this package
     calls it, and importing the package leaves ``rcParams`` untouched.
-
-    Returns
-    -------
-    None
     """
     matplotlib.rcParams.update(RC_PARAMS)
 
@@ -230,8 +219,7 @@ def axis_label(field: xr.DataArray) -> str:
     Parameters
     ----------
     field:
-        A field carrying ``long_name`` and ``units`` in ``attrs``, as the
-        readers in this project produce.
+        A field carrying ``long_name`` and ``units`` in ``attrs``.
 
     Returns
     -------
@@ -241,23 +229,13 @@ def axis_label(field: xr.DataArray) -> str:
     Raises
     ------
     ValueError
-        If ``long_name`` or ``units`` is missing from ``attrs``, naming which
-        one. An xarray operation that does not carry attributes forward is the
-        usual cause.
+        If ``long_name`` or ``units`` is missing from ``attrs``, naming which.
     """
-    attrs = getattr(field, "attrs", {})
-    missing = [name for name in ("long_name", "units") if not attrs.get(name)]
-    if missing:
-        name = getattr(field, "name", None)
-        raise ValueError(
-            f"the array{f' {name!r}' if name else ''} has no "
-            f"{' and no '.join(repr(m) for m in missing)} attribute; an xarray "
-            "operation that does not carry attributes forward is the usual cause"
-        )
-    return f"{attrs['long_name']} ({attrs['units']})"
+    check_field_has_a_label(field, message_name=message_name(field))
+    return f"{field.attrs['long_name']} ({field.attrs['units']})"
 
 
-# ── supporting definitions ────────────────────────────────────────────────────
+# ── private helpers ───────────────────────────────────────────────────────────
 
 #: Which of a role's keywords apply to each element. ``points`` also has
 #: ``linestyle`` forced to ``"none"``, which is not taken from the role.
@@ -268,3 +246,45 @@ _ELEMENT_KEYWORDS = frozendict(
         "points": ("color", "marker", "markersize"),
     }
 )
+
+#: The most classes a palette of :func:`category_colors` tells apart.
+_MOST_CLASSES = 20
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_role_is_known(role: str) -> None:
+    """*role* is a key of :data:`ROLES`."""
+    if role not in ROLES:
+        raise KeyError(f"unknown role {role!r}; pass one of the roles {sorted(ROLES)}.")
+
+
+def check_element_is_known(element: str) -> None:
+    """*element* is one a role has keywords for."""
+    if element not in _ELEMENT_KEYWORDS:
+        raise ValueError(
+            f"unknown element {element!r}; pass one of the elements "
+            f"{sorted(_ELEMENT_KEYWORDS)}."
+        )
+
+
+def check_classes_fit_a_palette(n: int) -> None:
+    """*n* classes are few enough for :func:`category_colors` to tell apart."""
+    if n > _MOST_CLASSES:
+        raise ValueError(
+            f"{n} classes are more than the palettes distinguish ({_MOST_CLASSES}); pass "
+            "colors explicitly, one per class."
+        )
+
+
+def check_field_has_a_label(field: xr.DataArray, *, message_name: str) -> None:
+    """*field* carries the ``long_name`` and ``units`` an axis label is made of."""
+    missing = [name for name in ("long_name", "units") if not field.attrs.get(name)]
+    if missing:
+        raise ValueError(
+            f"{message_name}: an axis label is made of attrs['long_name'] and "
+            f"attrs['units'], and the field has no {' and no '.join(repr(m) for m in missing)}; "
+            "set them, or keep them through the xarray operation that dropped them "
+            "(keep_attrs=True)."
+        )

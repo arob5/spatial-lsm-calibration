@@ -288,8 +288,8 @@ def test_fan_honors_an_explicit_alpha(ax, x, samples):
 
 
 def test_fan_rejects_a_single_number_for_levels(ax, x, samples):
-    """A bare number raises rather than failing on iteration."""
-    with pytest.raises(ValueError, match="sequence of interval widths"):
+    """A bare number is a TypeError rather than a failure on iteration."""
+    with pytest.raises(TypeError, match="the interval widths are a sequence"):
         fan(ax, x, samples, levels=0.5)
 
 

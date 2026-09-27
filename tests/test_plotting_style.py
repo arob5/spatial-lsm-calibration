@@ -64,8 +64,8 @@ def test_role_style_returns_a_fresh_dictionary():
 
 
 def test_role_style_rejects_an_unknown_role():
-    """An unknown role raises, and the message lists the valid roles."""
-    with pytest.raises(ValueError, match="unknown role") as raised:
+    """An unknown role is a KeyError, and the message lists the valid roles."""
+    with pytest.raises(KeyError, match="unknown role") as raised:
         role_style("bayesian")
     assert "posterior" in str(raised.value)
 
@@ -160,7 +160,7 @@ def test_axis_label_rejects_a_field_missing_an_attribute(field_time, missing):
     """A field without the attribute raises, and the message names it."""
     stripped = field_time.copy()
     stripped.attrs = {k: v for k, v in field_time.attrs.items() if k != missing}
-    with pytest.raises(ValueError, match=missing):
+    with pytest.raises(ValueError, match=f"has no {missing!r}"):
         axis_label(stripped)
 
 

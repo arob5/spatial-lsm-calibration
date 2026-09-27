@@ -13,17 +13,23 @@ it, and returns what it added. They accept no pandas and no xarray, they
 create no figure, and they know nothing about roles or about variables. Style
 keywords are passed straight through to matplotlib.
 
-====================  ==============================================
-:func:`line`          one curve
-:func:`spaghetti`     an ensemble as individual curves
-:func:`band`          one filled interval between explicit bounds
-:func:`fan`           nested central intervals computed from samples
-:func:`points`        scattered values, with optional error bars
-:func:`site_points`   one colored marker per site
-:func:`site_cells`    a nearest-site mosaic, capped at a radius
-:func:`site_triangles`  linear interpolation between sites
-:func:`raster`        a colored mesh of cells
-====================  ==============================================
+========================  ==============================================
+:func:`line`              one curve
+:func:`spaghetti`         an ensemble as individual curves
+:func:`band`              one filled interval between explicit bounds
+:func:`fan`               nested central intervals computed from samples
+:func:`points`            scattered values, with optional error bars
+:func:`site_points`       one colored marker per site
+:func:`site_cells`        a nearest-site mosaic, capped at a radius
+:func:`site_triangles`    linear interpolation between sites
+:func:`raster`            a colored mesh of cells
+========================  ==============================================
+
+Three helpers serve the drawing functions and the layers above them:
+:func:`cells_from_index` recolors a :func:`site_cells` mosaic,
+:func:`nanquantile` takes quantiles over samples without numpy's warning, and
+:func:`thinned_indices` picks the evenly spaced samples :func:`spaghetti`
+draws.
 
 The map primitives take projected coordinates, in the meters of
 :data:`sipnet_calibration.projection.SITE_PROJECTION`, and pass ``cmap`` and
@@ -112,7 +118,7 @@ def line(ax: Axes, x: np.ndarray, y: np.ndarray, **style: Any) -> Line2D:
         If *x* or *y* is not one-dimensional, or they differ in length.
     """
     x, y = np.asarray(x), np.asarray(y)
-    _check_same_length(x=x, y=y)
+    check_arrays_are_one_series(x=x, y=y)
     (drawn,) = ax.plot(x, y, **style)
     return drawn
 
@@ -158,7 +164,7 @@ def spaghetti(
     rather than sample it, use :func:`fan`.
     """
     x, samples = np.asarray(x), np.asarray(samples)
-    _check_samples(x, samples)
+    check_samples_are_curves_over_x(x, samples)
     n_max = as_positive_integer(n_max, message_name="n_max")
 
     label = style.pop("label", None)
@@ -205,7 +211,7 @@ def band(
         If the three arrays are not one-dimensional and the same length.
     """
     x, lower, upper = np.asarray(x), np.asarray(lower), np.asarray(upper)
-    _check_same_length(x=x, lower=lower, upper=upper)
+    check_arrays_are_one_series(x=x, lower=lower, upper=upper)
     return ax.fill_between(x, lower, upper, **style)
 
 
@@ -246,6 +252,8 @@ def fan(
 
     Raises
     ------
+    TypeError
+        If *levels* is one number rather than a sequence.
     ValueError
         If *samples* is not two-dimensional or its second axis differs in
         length from *x*; or if *levels* is empty, holds a duplicate, or holds
@@ -259,8 +267,8 @@ def fan(
     around the quantile calculation.
     """
     x, samples = np.asarray(x), np.asarray(samples)
-    _check_samples(x, samples)
-    levels = _checked_levels(levels)
+    check_samples_are_curves_over_x(x, samples)
+    levels = _as_levels(levels)
 
     widest_first = sorted(levels, reverse=True)
     given_alpha = style.pop("alpha", None)
@@ -337,11 +345,11 @@ def points(
     if yerr is not None:
         yerr = np.asarray(yerr)
         arrays["yerr"] = yerr
-    _check_same_length(**arrays)
+    check_arrays_are_one_series(**arrays)
 
-    keep = _is_finite(x) & _is_finite(y)
+    keep = _is_present(x) & _is_present(y)
     if yerr is not None:
-        keep = keep & _is_finite(yerr)
+        keep = keep & _is_present(yerr)
     return ax.errorbar(
         x[keep], y[keep], yerr=None if yerr is None else yerr[keep], **style
     )
@@ -376,7 +384,7 @@ def site_points(
         If the arrays are not one-dimensional and the same length.
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
-    _check_same_length(x=x, y=y, values=values)
+    check_arrays_are_one_series(x=x, y=y, values=values)
     keep = np.isfinite(values)
     style.setdefault("linewidths", 0)
     return ax.scatter(x[keep], y[keep], c=values[keep], **style)
@@ -433,13 +441,11 @@ def site_cells(
         1.
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
-    _check_same_length(x=x, y=y, values=values)
-    if not (np.isfinite(radius) and radius > 0):
-        raise ValueError(f"radius must be finite and positive, got {radius!r}")
+    check_arrays_are_one_series(x=x, y=y, values=values)
+    check_length_is_positive(radius, message_name="radius")
     pixels = as_positive_integer(pixels, message_name="pixels")
+    check_bounds_enclose_an_area(bounds)
     x_min, y_min, x_max, y_max = (float(b) for b in bounds)
-    if not (x_max > x_min and y_max > y_min):
-        raise ValueError(f"bounds must have positive width and height, got {bounds}")
 
     size = (x_max - x_min) / pixels
     n_x, n_y = pixels, max(1, int(np.ceil((y_max - y_min) / size)))
@@ -513,14 +519,12 @@ def site_triangles(
     ------
     ValueError
         If the arrays are not one-dimensional and the same length, *max_edge*
-        is not positive, or there are fewer than three sites.
+        is not finite and positive, or there are fewer than three sites.
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
-    _check_same_length(x=x, y=y, values=values)
-    if not max_edge > 0:
-        raise ValueError(f"max_edge must be positive, got {max_edge!r}")
-    if x.size < 3:
-        raise ValueError(f"a triangulation needs at least three sites, got {x.size}")
+    check_arrays_are_one_series(x=x, y=y, values=values)
+    check_length_is_positive(max_edge, message_name="max_edge")
+    check_triangulation_has_three_sites(x.size)
 
     triangulation = Triangulation(x, y)
     corners = triangulation.triangles
@@ -570,16 +574,12 @@ def raster(
     Raises
     ------
     ValueError
-        If the corners are not one larger than *values* in each dimension.
+        If *values* is not two-dimensional, or the corners are not one larger
+        than it in each dimension.
     """
     x_corners, y_corners = np.asarray(x_corners), np.asarray(y_corners)
     values = np.asarray(values, dtype=float)
-    expected = (values.shape[0] + 1, values.shape[1] + 1) if values.ndim == 2 else None
-    if expected is None or x_corners.shape != expected or y_corners.shape != expected:
-        raise ValueError(
-            f"values of shape {values.shape} need corners of shape {expected}; got "
-            f"{x_corners.shape} and {y_corners.shape}"
-        )
+    check_corners_bound_the_values(x_corners, y_corners, values)
     style.setdefault("shading", "flat")
     return ax.pcolormesh(x_corners, y_corners, np.ma.masked_invalid(values), **style)
 
@@ -613,11 +613,11 @@ def thinned_indices(n_samples: int, n_max: int) -> np.ndarray:
     return np.linspace(0, n_samples - 1, n_max).round().astype(int)
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── private helpers ───────────────────────────────────────────────────────────
 
 
-def _is_finite(values: np.ndarray) -> np.ndarray:
-    """Which entries are usable, for datetimes as well as for numbers."""
+def _is_present(values: np.ndarray) -> np.ndarray:
+    """Which entries are not missing: not ``NaN`` for numbers, not ``NaT`` for times."""
     if np.issubdtype(values.dtype, np.datetime64):
         return ~np.isnat(values)
     if values.dtype.kind in "iub":
@@ -625,49 +625,11 @@ def _is_finite(values: np.ndarray) -> np.ndarray:
     return np.isfinite(values)
 
 
-def _check_same_length(**arrays: np.ndarray) -> None:
-    """Raise unless every array is one-dimensional and they share a length."""
-    wrong = {name: a.ndim for name, a in arrays.items() if a.ndim != 1}
-    if wrong:
-        detail = ", ".join(f"{n} has {d} dimensions" for n, d in wrong.items())
-        raise ValueError(f"expected one-dimensional arrays; {detail}")
-    lengths = {name: a.size for name, a in arrays.items()}
-    if len(set(lengths.values())) > 1:
-        detail = ", ".join(f"{n} of {s}" for n, s in lengths.items())
-        raise ValueError(f"expected arrays of the same length; got {detail}")
-
-
-def _check_samples(x: np.ndarray, samples: np.ndarray) -> None:
-    """Raise unless *samples* is shaped ``(n_samples, len(x))``."""
-    if x.ndim != 1:
-        raise ValueError(f"x must be one-dimensional; it has {x.ndim} dimensions")
-    if samples.ndim != 2:
-        raise ValueError(
-            f"samples must be two-dimensional, (n_samples, {x.size}); it has "
-            f"{samples.ndim}. A single series is drawn by line()."
-        )
-    if samples.shape[1] != x.size:
-        raise ValueError(
-            f"each sample has {samples.shape[1]} values and x has {x.size}; "
-            "they must match"
-        )
-
-
-def _checked_levels(levels) -> tuple[float, ...]:
-    """*levels* as a tuple, raising unless they are widths within ``(0, 1)``."""
-    if isinstance(levels, (int, float)):
-        raise ValueError(
-            f"levels must be a sequence of interval widths, got the single "
-            f"number {levels!r}; pass ({levels},) to draw one band"
-        )
+def _as_levels(levels: Any) -> tuple[float, ...]:
+    """*levels* as a tuple of interval widths, each within ``(0, 1)``."""
+    check_levels_are_a_sequence(levels)
     levels = tuple(float(level) for level in levels)
-    if not levels:
-        raise ValueError("levels must name at least one interval width")
-    if len(set(levels)) != len(levels):
-        raise ValueError(f"levels must not repeat a width; got {levels}")
-    outside = [level for level in levels if not 0.0 < level < 1.0]
-    if outside:
-        raise ValueError(f"every level must lie within (0, 1); got {outside}")
+    check_levels_are_widths(levels)
     return levels
 
 
@@ -681,4 +643,125 @@ def check_ax_is_an_axes(ax: Any) -> None:
             f"ax: a plotter draws on the matplotlib Axes it is given, got "
             f"{type(ax).__name__}; pass one, from plt.subplots() or a grid of "
             "facet.build_plot_grid, which makes the figure."
+        )
+
+
+def check_arrays_are_one_series(**arrays: np.ndarray) -> None:
+    """The arrays, keyed by argument name, are one-dimensional and of one length."""
+    check_arrays_are_one_dimensional(**arrays)
+    check_arrays_have_one_length(**arrays)
+
+
+def check_arrays_are_one_dimensional(**arrays: np.ndarray) -> None:
+    """Every array, keyed by argument name, is one-dimensional."""
+    wrong = {name: a.ndim for name, a in arrays.items() if a.ndim != 1}
+    if wrong:
+        detail = ", ".join(f"{n} has {d} dimensions" for n, d in wrong.items())
+        raise ValueError(
+            f"{', '.join(arrays)}: a series is drawn from one-dimensional arrays, and "
+            f"{detail}; pass one series, or draw an ensemble with spaghetti() or fan()."
+        )
+
+
+def check_arrays_have_one_length(**arrays: np.ndarray) -> None:
+    """Every array, keyed by argument name, has the same length."""
+    lengths = {name: a.size for name, a in arrays.items()}
+    if len(set(lengths.values())) > 1:
+        detail = ", ".join(f"{n} of {s}" for n, s in lengths.items())
+        raise ValueError(
+            f"{', '.join(arrays)}: the arrays of one series have the same length, and "
+            f"they have {detail}; pass values aligned entry by entry."
+        )
+
+
+def check_samples_are_curves_over_x(x: np.ndarray, samples: np.ndarray) -> None:
+    """*samples* is ``(n_samples, len(x))``: one curve per row, over a one-dimensional *x*."""
+    check_arrays_are_one_dimensional(x=x)
+    check_samples_are_two_dimensional(samples, x.size)
+    check_samples_match_x(x, samples)
+
+
+def check_samples_are_two_dimensional(samples: np.ndarray, n: int) -> None:
+    """*samples* is two-dimensional, one row per curve."""
+    if samples.ndim != 2:
+        raise ValueError(
+            f"samples: an ensemble is two-dimensional, (n_samples, {n}), and it has "
+            f"{samples.ndim} dimensions; draw a single series with line()."
+        )
+
+
+def check_samples_match_x(x: np.ndarray, samples: np.ndarray) -> None:
+    """Each row of *samples* has one value per entry of *x*."""
+    if samples.shape[1] != x.size:
+        raise ValueError(
+            f"samples: each sample has one value per entry of x, and a sample has "
+            f"{samples.shape[1]} values and x {x.size}; they must match."
+        )
+
+
+def check_levels_are_a_sequence(levels: Any) -> None:
+    """*levels* is a sequence of interval widths, not one number."""
+    if isinstance(levels, (int, float)):
+        raise TypeError(
+            f"levels: the interval widths are a sequence, got the single number "
+            f"{levels!r}; pass ({levels},) to draw one band."
+        )
+
+
+def check_levels_are_widths(levels: tuple[float, ...]) -> None:
+    """*levels* names at least one width, none twice, each within ``(0, 1)``."""
+    if not levels:
+        raise ValueError(
+            "levels: a fan draws at least one interval width; pass one, such as (0.9,)."
+        )
+    if len(set(levels)) != len(levels):
+        raise ValueError(
+            f"levels: each interval width is drawn once, and {levels} repeats one; drop it."
+        )
+    outside = [level for level in levels if not 0.0 < level < 1.0]
+    if outside:
+        raise ValueError(
+            f"levels: every level lies within (0, 1), and {outside} do not; pass interval "
+            "widths such as 0.5 for the central half."
+        )
+
+
+def check_length_is_positive(length: float, *, message_name: str) -> None:
+    """A length in projected meters is finite and positive."""
+    if not (np.isfinite(length) and length > 0):
+        raise ValueError(
+            f"{message_name}: a length in projected meters is finite and positive, got "
+            f"{length!r}; pass one such as 50e3."
+        )
+
+
+def check_bounds_enclose_an_area(bounds: tuple[float, float, float, float]) -> None:
+    """``(x_min, y_min, x_max, y_max)`` has a positive width and height."""
+    x_min, y_min, x_max, y_max = (float(b) for b in bounds)
+    if not (x_max > x_min and y_max > y_min):
+        raise ValueError(
+            f"bounds: (x_min, y_min, x_max, y_max) has a positive width and height, got "
+            f"{bounds}; pass the frame's bounds in that order."
+        )
+
+
+def check_triangulation_has_three_sites(n_sites: int) -> None:
+    """A triangulation is made of at least three sites."""
+    if n_sites < 3:
+        raise ValueError(
+            f"x, y: a triangulation needs at least three sites, got {n_sites}; draw so "
+            "few with site_points()."
+        )
+
+
+def check_corners_bound_the_values(
+    x_corners: np.ndarray, y_corners: np.ndarray, values: np.ndarray
+) -> None:
+    """A raster's corners are one larger than its two-dimensional values each way."""
+    expected = (values.shape[0] + 1, values.shape[1] + 1) if values.ndim == 2 else None
+    if expected is None or x_corners.shape != expected or y_corners.shape != expected:
+        raise ValueError(
+            f"x_corners, y_corners: values of shape {values.shape} need corners of shape "
+            f"{expected}, and they are {x_corners.shape} and {y_corners.shape}; pass the "
+            "(m + 1, n + 1) cell corners of (m, n) values."
         )
