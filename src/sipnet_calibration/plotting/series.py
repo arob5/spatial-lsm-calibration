@@ -50,8 +50,14 @@ from matplotlib.axes import Axes
 from sipnet_calibration.conventions import SITE, SPATIAL_DIM_NAMES, TIME
 from sipnet_calibration.fields import batch_dims, message_name, validate_field
 from sipnet_calibration.plotting import primitives
-from sipnet_calibration.plotting.style import CURVE_COLORS, axis_label, role_style
-from sipnet_calibration.validation import as_positive_integer, truncated
+from sipnet_calibration.plotting.style import (
+    CURVE_COLORS,
+    axis_label,
+    check_key_is_known,
+    check_option_is_known,
+    role_style,
+)
+from sipnet_calibration.validation import as_positive_integer
 
 __all__ = ["SHOW_OPTIONS", "plot_time_series"]
 
@@ -177,7 +183,7 @@ def plot_time_series(
     name = message_name(field)
     check_field_is_a_time_series(field, message_name=name)
     batch = batch_dims(field)
-    check_show_is_an_option(show)
+    check_option_is_known(show, SHOW_OPTIONS, message_name="show")
     show = _show_for_the_batch(show, batch)
     check_show_suits_the_batch(show, batch, message_name=name)
     if label_by is not None:
@@ -359,14 +365,6 @@ def check_field_has_no_spatial_dim(field: xr.DataArray, *, message_name: str) ->
         )
 
 
-def check_show_is_an_option(show: str) -> None:
-    """*show* is one of :data:`SHOW_OPTIONS`."""
-    if show not in SHOW_OPTIONS:
-        raise ValueError(
-            f"show must be one of {list(SHOW_OPTIONS)}, got {show!r}; pass one of them."
-        )
-
-
 def check_show_suits_the_batch(show: str, batch: tuple[str, ...], *, message_name: str) -> None:
     """A summary of several curves is drawn over batch dims, one curve without them."""
     if show in ("fan", "spaghetti") and not batch:
@@ -392,7 +390,7 @@ def check_label_by_names_the_curves(
 ) -> None:
     """*label_by* names a coordinate on the batch dims of a spaghetti plot."""
     check_label_by_is_drawn_as_spaghetti(show)
-    check_label_by_is_a_coordinate(label_by, field, message_name=message_name)
+    check_key_is_known(label_by, field.coords, message_name="coordinate")
     check_label_by_is_on_the_batch_dims(label_by, field, batch, message_name=message_name)
 
 
@@ -402,17 +400,6 @@ def check_label_by_is_drawn_as_spaghetti(show: str) -> None:
         raise ValueError(
             f"label_by labels individual curves, which only show='spaghetti' draws, not "
             f"show={show!r}; pass show='spaghetti'."
-        )
-
-
-def check_label_by_is_a_coordinate(
-    label_by: str, field: xr.DataArray, *, message_name: str
-) -> None:
-    """*label_by* is a coordinate of the field."""
-    if label_by not in field.coords:
-        raise ValueError(
-            f"{message_name}: label_by={label_by!r} is not a coordinate of the field; pass "
-            f"one of {truncated(sorted(field.coords))}."
         )
 
 

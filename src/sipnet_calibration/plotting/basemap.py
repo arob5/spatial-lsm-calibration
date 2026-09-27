@@ -110,6 +110,7 @@ from frozendict import frozendict
 from matplotlib.axes import Axes
 from matplotlib.collections import LineCollection
 
+from sipnet_calibration.plotting.style import check_key_is_known, check_keywords_are_not_retired
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.validation import as_names, truncated
 
@@ -314,8 +315,10 @@ def draw_basemap(
     Drawing does not change the axes limits, so it can come before or after
     they are set.
     """
+    check_keywords_are_not_retired(style, {"layers": "layer_names="}, message_name="draw_basemap")
     layer_names = as_names(layer_names, message_name="layer_names")
-    check_layer_names_are_known(layer_names)
+    for name in layer_names:
+        check_key_is_known(name, BASEMAP_LAYERS, message_name="basemap layer")
     drawn = []
     for name in layer_names:
         layer = BASEMAP_LAYERS[name]
@@ -555,15 +558,6 @@ def check_basemap_parts_are_polylines(name: str, layer_parts: Sequence[np.ndarra
             f"layer {name!r}: every part is an (n >= 2, 2) polyline of longitude and "
             f"latitude, and some are {truncated(bad)}; drop runs of fewer than two "
             "vertices, as clip_to_drawable does."
-        )
-
-
-def check_layer_names_are_known(layer_names: Sequence[str]) -> None:
-    """Every layer name is a key of :data:`BASEMAP_LAYERS`."""
-    unknown = [name for name in layer_names if name not in BASEMAP_LAYERS]
-    if unknown:
-        raise KeyError(
-            f"unknown basemap layer(s) {unknown}; pass names from {list(BASEMAP_LAYERS)}."
         )
 
 

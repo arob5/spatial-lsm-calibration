@@ -196,6 +196,13 @@ def test_draw_basemap_adds_one_collection_per_layer_above_the_data(ax):
         draw_basemap(ax, layer_names="coastline")
 
 
+def test_draw_basemap_refuses_the_retired_layers_keyword(ax):
+    """It reached matplotlib's LineCollection as an unknown property."""
+    with pytest.raises(TypeError, match="no longer takes layers=; use layer_names="):
+        draw_basemap(ax, layers=("coastline",))
+    assert not ax.collections
+
+
 def test_the_graticule_labels_meridians_on_the_bottom_and_parallels_on_the_left(ax):
     x0, y0, x1, y1 = SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
     ax.set_xlim(x0, x1)

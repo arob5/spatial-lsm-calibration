@@ -73,7 +73,11 @@ from sipnet_calibration.fields import message_name, missing_labels, validate_fie
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
-from sipnet_calibration.plotting.style import axis_label
+from sipnet_calibration.plotting.style import (
+    axis_label,
+    check_keywords_are_not_retired,
+    check_option_is_known,
+)
 from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
 
 __all__ = [
@@ -158,8 +162,8 @@ def build_plot_grid(
     items = list(items)
     check_items_are_given(items)
     ncol = as_positive_integer(ncol, message_name="ncol")
-    check_share_is_an_option(share)
-    check_legend_is_an_option(legend)
+    check_option_is_known(share, SHARE_OPTIONS, message_name="share")
+    check_option_is_known(legend, LEGEND_OPTIONS, message_name="legend")
     titles = _panel_titles(items, labels)
 
     ncol = min(ncol, len(items))
@@ -349,7 +353,7 @@ def plot_map_grid(
         for a panel, every panel checked before any is drawn.
     """
     check_fields_are_given(fields_by_title, message_name="fields_by_title")
-    check_scale_is_an_option(scale)
+    check_option_is_known(scale, SCALE_OPTIONS, message_name="scale")
     panel_fields = list(fields_by_title.values())
     # Every panel is checked before the frame and a shared scale read their
     # values, which a panel that is not a map would break with a raw error.
@@ -485,7 +489,9 @@ def plot_map_quantiles(
         each); and whatever
         :func:`~sipnet_calibration.plotting.maps.summarize_batch` raises.
     """
-    check_quantile_grid_keywords_are_not_retired(grid_kwargs)
+    check_keywords_are_not_retired(
+        grid_kwargs, {"dim": "batch_dim="}, message_name="plot_map_quantiles"
+    )
     quantiles = [float(q) for q in quantiles]
     check_quantiles_are_given(quantiles)
     validate_field(field)
@@ -573,30 +579,6 @@ def check_items_are_given(items: list[Any]) -> None:
         raise ValueError("items is empty, so there is nothing to draw; pass one item per panel.")
 
 
-def check_share_is_an_option(share: str) -> None:
-    """*share* is one of :data:`SHARE_OPTIONS`."""
-    if share not in SHARE_OPTIONS:
-        raise ValueError(
-            f"share must be one of {list(SHARE_OPTIONS)}, got {share!r}; pass one of them."
-        )
-
-
-def check_legend_is_an_option(legend: str) -> None:
-    """*legend* is one of :data:`LEGEND_OPTIONS`."""
-    if legend not in LEGEND_OPTIONS:
-        raise ValueError(
-            f"legend must be one of {list(LEGEND_OPTIONS)}, got {legend!r}; pass one of them."
-        )
-
-
-def check_scale_is_an_option(scale: str) -> None:
-    """*scale* is one of :data:`SCALE_OPTIONS`."""
-    if scale not in SCALE_OPTIONS:
-        raise ValueError(
-            f"scale must be one of {list(SCALE_OPTIONS)}, got {scale!r}; pass one of them."
-        )
-
-
 def check_labels_are_not_one_string(labels: Any) -> None:
     """Panel titles are a sequence or a callable, not one string."""
     if isinstance(labels, str):
@@ -666,10 +648,3 @@ def check_quantiles_are_given(quantiles: Sequence[float]) -> None:
         )
 
 
-def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any]) -> None:
-    """No keyword the quantile grid once took under another name is passed."""
-    if "dim" in grid_kwargs:
-        raise TypeError(
-            "plot_map_quantiles takes the batch dim as batch_dim=, not dim=; pass "
-            f"batch_dim={grid_kwargs['dim']!r}."
-        )

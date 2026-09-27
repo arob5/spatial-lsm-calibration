@@ -150,7 +150,12 @@ from sipnet_calibration.plotting.basemap import (
     draw_basemap,
     draw_graticule,
 )
-from sipnet_calibration.plotting.style import axis_label, category_colors
+from sipnet_calibration.plotting.style import (
+    axis_label,
+    category_colors,
+    check_key_is_known,
+    check_keywords_are_not_retired,
+)
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.sites import EXTENTS
 from sipnet_calibration.validation import truncated
@@ -385,6 +390,9 @@ def animate_map(
         or a batch dim other than *dim*; or if a single step of it is not a
         map (:func:`check_field_is_a_map`), checked before any frame is drawn.
     """
+    check_keywords_are_not_retired(
+        map_kwargs, {"interval_ms": "interval=, in seconds"}, message_name="animate_map"
+    )
     validate_field(field)
     primitives.check_ax_is_an_axes(ax)
     name = message_name(field)
@@ -621,7 +629,9 @@ def map_bounds(
     if isinstance(extent, ProjectedBounds):
         return extent
     if isinstance(extent, str):
-        check_extent_name_is_known(extent)
+        check_key_is_known(
+            extent, EXTENTS, alternatives=_EXTENT_ALTERNATIVES, message_name="extent"
+        )
         return ProjectedBounds(*SITE_PROJECTION.projected_bounds(EXTENTS[extent]))
     if extent is not None:
         return ProjectedBounds(*SITE_PROJECTION.projected_bounds(tuple(extent)))
@@ -749,6 +759,9 @@ _DATA_ZORDER = 1.5
 _MARKER_COVERAGE = 0.35
 _MARKER_AREA_LIMITS = (2.0, 30.0)
 
+#: What else ``extent`` may be, beside a named extent.
+_EXTENT_ALTERNATIVES = ", a (west, south, east, north) box in degrees, or a ProjectedBounds"
+
 #: The statistics :func:`summarize_batch` takes by name.
 _SUMMARY_NAMES: tuple[str, ...] = ("mean", "median", "standard_deviation")
 
@@ -836,7 +849,9 @@ def _renderer_for(render: str | SiteRenderer | None) -> SiteRenderer:
     if render is None:
         return RENDERERS["points"]
     if isinstance(render, str):
-        check_renderer_name_is_known(render)
+        check_key_is_known(
+            render, RENDERERS, alternatives=", or a SiteRenderer", message_name="renderer"
+        )
         return RENDERERS[render]
     check_render_is_a_renderer(render)
     return render
@@ -978,7 +993,7 @@ def _categorical_scale(
         )
     palette = category_colors(len(class_names)) if len(class_names) else []
     for class_name, class_color in (colors or {}).items():
-        check_color_names_a_class(class_name, class_names)
+        check_key_is_known(class_name, class_names, message_name="class")
         palette[class_names.index(class_name)] = class_color
     cmap = ListedColormap(palette) if palette else ListedColormap(["#999999"])
     count = max(len(class_names), 1)
@@ -1183,15 +1198,6 @@ def check_stat_is_a_summary(stat: str | float) -> None:
         raise ValueError(f"stat: a quantile lies in (0, 1), got {stat!r}; pass one such as 0.05.")
 
 
-def check_renderer_name_is_known(render: str) -> None:
-    """A renderer named by a string is a key of :data:`RENDERERS`."""
-    if render not in RENDERERS:
-        raise KeyError(
-            f"render must be one of {list(RENDERERS)} or a SiteRenderer, got {render!r}; "
-            "pass one of them."
-        )
-
-
 def check_render_is_a_renderer(render: Any) -> None:
     """*render* is a :class:`SiteRenderer`: it has ``draw`` and ``update``."""
     if not (hasattr(render, "draw") and hasattr(render, "update")):
@@ -1216,15 +1222,6 @@ def check_renderer_draws_only_site_values(renderer: SiteRenderer) -> None:
         raise ValueError(
             "a categorical field cannot be interpolated between sites; use "
             "render='points' or render='cells'."
-        )
-
-
-def check_extent_name_is_known(extent: str) -> None:
-    """A named extent is a key of :data:`~sipnet_calibration.sites.EXTENTS`."""
-    if extent not in EXTENTS:
-        raise KeyError(
-            f"unknown extent {extent!r}; pass one of the named extents {list(EXTENTS)}, "
-            "a (west, south, east, north) box, or a ProjectedBounds."
         )
 
 
@@ -1264,15 +1261,6 @@ def check_fields_share_the_display_names(
             "categorical fields sharing a color scale must have the same "
             f"flag_display_names, and they have {truncated(display_names or ())} and "
             f"{truncated(other or ())}; map them on separate scales (scale='each')."
-        )
-
-
-def check_color_names_a_class(class_name: str, class_names: tuple[str, ...]) -> None:
-    """A color override is keyed by one of the field's classes."""
-    if class_name not in class_names:
-        raise ValueError(
-            f"colors names {class_name!r}, which is not a class; key colors by the classes "
-            f"{truncated(class_names)}."
         )
 
 

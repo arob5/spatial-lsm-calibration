@@ -221,7 +221,7 @@ def test_a_site_field_without_coordinates_is_refused(ax, dense):
 
 @pytest.mark.parametrize(
     "render, error, match",
-    [("smooth", KeyError, "render must be one of"), (object(), TypeError, "SiteRenderer")],
+    [("smooth", KeyError, "unknown renderer 'smooth'"), (object(), TypeError, "SiteRenderer")],
 )
 def test_an_unknown_renderer_is_refused(ax, dense, render, error, match):
     """An unknown name is a KeyError; something that is not a renderer, a TypeError."""
@@ -336,7 +336,7 @@ def test_color_overrides_name_classes(ax, categorical):
     artist = data_artist(ax)
     colors = [to_hex(c) for c in artist.to_rgba(artist.get_array())]
     assert colors[0] == "#123456"
-    with pytest.raises(ValueError, match="not a class"):
+    with pytest.raises(KeyError, match="unknown class 'shrub'"):
         plot_map(categorical, ax, colors={"shrub": "red"})
 
 
@@ -621,8 +621,16 @@ def test_an_animation_refuses_a_batch_dim_with_advice(ax, dense):
 
 def test_plot_map_quantiles_refuses_the_retired_dim_keyword_naming_batch_dim(ensemble):
     """It fell through to matplotlib as an unknown artist property."""
-    with pytest.raises(TypeError, match="batch_dim='sample'"):
+    with pytest.raises(TypeError, match="no longer takes dim=; use batch_dim="):
         plot_map_quantiles(ensemble, dim="sample")
+
+
+@pytest.mark.parametrize("render", ["points", "cells", "triangles"])
+def test_animate_map_refuses_the_retired_interval_ms_before_drawing(ax, dense, render):
+    """It reached matplotlib as an unknown artist property, after the graticule was drawn."""
+    with pytest.raises(TypeError, match="no longer takes interval_ms=; use interval=, in seconds"):
+        animate_map(frames(dense), ax=ax, render=render, interval_ms=250)
+    assert not ax.collections and not ax.images
 
 
 # ── the entry points validate first ───────────────────────────────────────────

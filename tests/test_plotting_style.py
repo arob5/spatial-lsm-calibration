@@ -72,7 +72,7 @@ def test_role_style_rejects_an_unknown_role():
 
 def test_role_style_rejects_an_unknown_element():
     """An unknown element raises, and the message lists the valid elements."""
-    with pytest.raises(ValueError, match="unknown element") as raised:
+    with pytest.raises(ValueError, match="element must be one of") as raised:
         role_style("prior", "surface")
     assert "band" in str(raised.value)
 

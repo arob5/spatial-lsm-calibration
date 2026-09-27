@@ -42,6 +42,7 @@ Usage
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from typing import Any
 
 import matplotlib
@@ -49,6 +50,7 @@ import xarray as xr
 from frozendict import frozendict
 
 from sipnet_calibration.fields import message_name
+from sipnet_calibration.validation import truncated
 
 __all__ = [
     "BAND_ALPHAS",
@@ -58,6 +60,9 @@ __all__ = [
     "ROLES",
     "axis_label",
     "category_colors",
+    "check_key_is_known",
+    "check_keywords_are_not_retired",
+    "check_option_is_known",
     "role_style",
     "use_project_style",
 ]
@@ -165,8 +170,8 @@ def role_style(role: str, element: str = "line", **overrides: Any) -> dict[str, 
     ValueError
         If *element* is not ``"line"``, ``"band"`` or ``"points"``.
     """
-    check_role_is_known(role)
-    check_element_is_known(element)
+    check_key_is_known(role, ROLES, message_name="role")
+    check_option_is_known(element, tuple(_ELEMENT_KEYWORDS), message_name="element")
     style = {
         key: value
         for key, value in ROLES[role].items()
@@ -254,21 +259,6 @@ _MOST_CLASSES = 20
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_role_is_known(role: str) -> None:
-    """*role* is a key of :data:`ROLES`."""
-    if role not in ROLES:
-        raise KeyError(f"unknown role {role!r}; pass one of the roles {sorted(ROLES)}.")
-
-
-def check_element_is_known(element: str) -> None:
-    """*element* is one a role has keywords for."""
-    if element not in _ELEMENT_KEYWORDS:
-        raise ValueError(
-            f"unknown element {element!r}; pass one of the elements "
-            f"{sorted(_ELEMENT_KEYWORDS)}."
-        )
-
-
 def check_classes_fit_a_palette(n: int) -> None:
     """*n* classes are few enough for :func:`category_colors` to tell apart."""
     if n > _MOST_CLASSES:
@@ -288,3 +278,31 @@ def check_field_has_a_label(field: xr.DataArray, *, message_name: str) -> None:
             "set them, or keep them through the xarray operation that dropped them "
             "(keep_attrs=True)."
         )
+
+
+def check_option_is_known(value: Any, options: Collection[str], *, message_name: str) -> None:
+    """*value* is one of *options*, the strings an argument may be."""
+    if value not in options:
+        raise ValueError(
+            f"{message_name} must be one of {list(options)}, got {value!r}; pass one of them."
+        )
+
+
+def check_key_is_known(
+    key: Any, registry: Collection[str], *, alternatives: str = "", message_name: str
+) -> None:
+    """*key* names an entry of *registry*; *message_name* says what kind of entry."""
+    if key not in registry:
+        raise KeyError(
+            f"unknown {message_name} {key!r}; pass one of {truncated(list(registry))}"
+            f"{alternatives}."
+        )
+
+
+def check_keywords_are_not_retired(
+    keywords: Mapping[str, Any], retired: Mapping[str, str], *, message_name: str
+) -> None:
+    """No keyword is one *message_name* has retired, which ``**kwargs`` would swallow."""
+    for old, replacement in retired.items():
+        if old in keywords:
+            raise TypeError(f"{message_name} no longer takes {old}=; use {replacement}.")

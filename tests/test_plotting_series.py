@@ -328,8 +328,8 @@ def test_label_by_requires_spaghetti(ax, field_sample_time):
 
 
 def test_label_by_rejects_an_unknown_coordinate(ax, field_sample_time):
-    """Naming a coordinate that is not there raises."""
-    with pytest.raises(ValueError, match="not a coordinate"):
+    """Naming a coordinate that is not there is a KeyError."""
+    with pytest.raises(KeyError, match="unknown coordinate 'pft'"):
         plot_time_series(field_sample_time, ax=ax, show="spaghetti", label_by="pft")
 
 
