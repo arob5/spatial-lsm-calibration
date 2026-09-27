@@ -24,23 +24,28 @@ source cell for cell.
 Input data
 ----------
 ``--source``, default the path in :data:`DEFAULT_SOURCE`
-    The producer's table: 8000 rows by 60 columns, keyed on ``index``, which
-    holds this project's 1-8000 site identifiers.
+    The producer's table: one row per site of the pool
+    (:data:`sipnet_calibration.sites.N_SITES`) by 60 columns, keyed on
+    ``index``, which holds this project's site ids.
 
 Output data
 -----------
-``--site-labels-dir``, default ``data/raw/site_labels/``
+``--site-labels-dir``, default the repository's ``data/raw/site_labels/``
     ``site_pft_16class.csv``: ``index``, ``final_pft`` and the columns
     recording how each label was assigned, in the source's own column order
     and with its values written through unchanged.
 
-``--covariates-dir``, default ``data/raw/covariates/``
+``--covariates-dir``, default the repository's ``data/raw/covariates/``
     ``site_covariates_pft_assignment.csv``: ``index`` and every other column,
     likewise unchanged.
 
-Both are written to a ``.partial`` path and renamed only once the round trip
-has been checked, so a failed run cannot leave a corrupt file where a tracked
-one belongs.
+The two are written together
+(:func:`sipnet_calibration.io.write_checked_together`): each goes to a
+``.partial`` path, and neither is renamed into place until both round trips
+have been checked, so a failed write or check leaves both tracked files as
+they were. A failed check keeps the ``.partial`` files for inspection and
+prints their paths; a failed rename, past the checks, is reported with which
+file is new.
 
 Notes
 -----
@@ -68,11 +73,13 @@ Usage
 from __future__ import annotations
 
 import argparse
-import hashlib
 import sys
 from pathlib import Path
 
 import pandas as pd
+
+from sipnet_calibration.io import file_md5, write_checked_together
+from sipnet_calibration.sites import N_SITES
 
 #: Where the producer's table lives on the SCC.
 DEFAULT_SOURCE = Path(
@@ -115,12 +122,15 @@ SITE_LABELS_COLUMNS = (
     "n_vars_used_in_distance",
 )
 
+#: Where the two halves go by default: this repository's tracked raw inputs,
+#: whatever the working directory or ``$SIPNET_CALIBRATION_DATA``, since a
+#: tracked input is found from the checkout.
+DEFAULT_SITE_LABELS_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "site_labels"
+DEFAULT_COVARIATES_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "covariates"
+
 #: Output file names, which are what the provenance records name.
 SITE_LABELS_FILE = "site_pft_16class.csv"
 COVARIATES_FILE = "site_covariates_pft_assignment.csv"
-
-#: The site pool the table is indexed against.
-POOL = range(1, 8001)
 
 
 class SplitError(Exception):
@@ -159,14 +169,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--site-labels-dir",
         type=Path,
-        default=Path("data/raw/site_labels"),
-        help="Where the site-labels half goes. Default: data/raw/site_labels.",
+        default=DEFAULT_SITE_LABELS_DIR,
+        help="Where the site-labels half goes. Default: the repository's data/raw/site_labels.",
     )
     parser.add_argument(
         "--covariates-dir",
         type=Path,
-        default=Path("data/raw/covariates"),
-        help="Where the covariate half goes. Default: data/raw/covariates.",
+        default=DEFAULT_COVARIATES_DIR,
+        help="Where the covariate half goes. Default: the repository's data/raw/covariates.",
     )
     parser.add_argument(
         "--describe",
@@ -230,20 +240,22 @@ def write_halves(
     site_labels_dir: Path,
     covariates_dir: Path,
 ) -> dict[str, Path]:
-    """Write each half to a ``.partial`` path, check the round trip, rename."""
-    written = {}
-    for frame, directory, name in (
-        (site_labels, site_labels_dir, SITE_LABELS_FILE),
-        (covariates, covariates_dir, COVARIATES_FILE),
-    ):
-        directory.mkdir(parents=True, exist_ok=True)
-        out = directory / name
-        partial = out.with_suffix(out.suffix + ".partial")
-        frame.to_csv(partial, index=False)
-        check_the_written_file_reads_back(frame, partial)
-        partial.replace(out)
-        written[name] = out
-    return written
+    """Write both halves to ``.partial`` paths, check both round trips, then rename."""
+    halves = (
+        (site_labels, site_labels_dir / SITE_LABELS_FILE),
+        (covariates, covariates_dir / COVARIATES_FILE),
+    )
+    written = write_checked_together(
+        [
+            (
+                path,
+                lambda partial, frame=frame: frame.to_csv(partial, index=False),
+                lambda partial, frame=frame: check_the_written_file_reads_back(frame, partial),
+            )
+            for frame, path in halves
+        ]
+    )
+    return {path.name: path for path in written}
 
 
 def report(
@@ -257,7 +269,7 @@ def report(
     lines = [
         f"source : {source_path}",
         f"         {len(source)} rows x {len(source.columns)} columns, "
-        f"md5 {md5(source_path)}",
+        f"md5 {file_md5(source_path)}",
         "",
     ]
     for name, path in written.items():
@@ -265,7 +277,7 @@ def report(
         lines.append(
             f"wrote  : {path}\n"
             f"         {len(frame)} rows x {len(frame.columns)} columns, "
-            f"{path.stat().st_size:,} bytes, md5 {md5(path)}"
+            f"{path.stat().st_size:,} bytes, md5 {file_md5(path)}"
         )
     lines += [
         "",
@@ -286,15 +298,6 @@ def describe() -> str:
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def md5(path: Path) -> str:
-    """The md5 of a file, for the provenance record."""
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -337,9 +340,9 @@ def check_both_halves_are_keyed_on_the_whole_pool(
         key = frame[KEY_COLUMN].astype(int)
         if key.duplicated().any():
             raise SplitError(f"{name}: {KEY_COLUMN} repeats")
-        if sorted(key) != list(POOL):
+        if sorted(key) != list(range(1, N_SITES + 1)):
             raise SplitError(
-                f"{name}: {KEY_COLUMN} is not the whole site pool {POOL.start}-{POOL.stop - 1}"
+                f"{name}: {KEY_COLUMN} is not the whole site pool 1-{N_SITES}"
             )
 
 
@@ -386,8 +389,7 @@ def check_the_written_file_reads_back(frame: pd.DataFrame, partial: Path) -> Non
         pd.testing.assert_frame_equal(written, frame.reset_index(drop=True))
     except AssertionError as error:
         raise SplitError(
-            f"{partial}: does not read back as what was written: {error}. "
-            "The partial file is left in place for inspection."
+            f"{partial}: does not read back as what was written: {error}."
         ) from error
 
 

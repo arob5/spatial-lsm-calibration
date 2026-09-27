@@ -10,30 +10,19 @@ has it.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import pandas as pd
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+from conftest import REPOSITORY, load_script
+from sipnet_calibration.sites import N_SITES
+
 SOURCE_HALVES = (
-    REPO_ROOT / "data" / "raw" / "site_labels" / "site_pft_16class.csv",
-    REPO_ROOT / "data" / "raw" / "covariates" / "site_covariates_pft_assignment.csv",
+    REPOSITORY / "data" / "raw" / "site_labels" / "site_pft_16class.csv",
+    REPOSITORY / "data" / "raw" / "covariates" / "site_covariates_pft_assignment.csv",
 )
 
 
-def _load_script():
-    path = REPO_ROOT / "scripts" / "raw_sources" / "split_site_pft_16class.py"
-    spec = importlib.util.spec_from_file_location("split_site_pft_16class", path)
-    loaded = importlib.util.module_from_spec(spec)
-    sys.modules["split_site_pft_16class"] = loaded
-    spec.loader.exec_module(loaded)
-    return loaded
-
-
-split = _load_script()
+split = load_script("scripts/raw_sources/split_site_pft_16class.py")
 
 
 # ── synthetic fixtures ────────────────────────────────────────────────────────
@@ -51,8 +40,21 @@ def _source(rows: int = 4) -> pd.DataFrame:
 
 @pytest.fixture(autouse=True)
 def _small_pool(monkeypatch):
-    """The real script checks against 1-8000; the fixtures are four sites."""
-    monkeypatch.setattr(split, "POOL", range(1, 5))
+    """The real script checks against the whole pool; the fixtures are four sites."""
+    monkeypatch.setattr(split, "N_SITES", 4)
+
+
+# ── where the halves go ───────────────────────────────────────────────────────
+
+
+def test_the_default_destinations_are_the_repositorys_whatever_the_working_directory(
+    monkeypatch, tmp_path
+):
+    """The halves are tracked raw inputs, found from the checkout, not from the cwd."""
+    monkeypatch.chdir(tmp_path)
+    args = split.parse_args([])
+    assert args.site_labels_dir == REPOSITORY / "data" / "raw" / "site_labels"
+    assert args.covariates_dir == REPOSITORY / "data" / "raw" / "covariates"
 
 
 # ── the split itself ──────────────────────────────────────────────────────────
@@ -158,6 +160,37 @@ def test_writing_both_halves_round_trips(tmp_path):
         pd.testing.assert_frame_equal(back, expected.reset_index(drop=True))
 
 
+def test_a_failed_second_check_moves_neither_half_and_keeps_both_partials(
+    tmp_path, monkeypatch, capsys
+):
+    """The halves are written together: the covariates half failing its round
+    trip leaves the site-labels half as it was, not new beside an old other."""
+    source = _source()
+    site_labels, covariates = split.split(source)
+    written = split.write_halves(site_labels, covariates, tmp_path / "l", tmp_path / "c")
+    before = {name: path.read_text() for name, path in written.items()}
+
+    changed = source.copy()
+    changed.loc[0, split.LABEL_COLUMN] = "grass"
+    changed_labels, changed_covariates = split.split(changed)
+    real_check = split.check_the_written_file_reads_back
+
+    def fail_on_covariates(frame, partial):
+        if partial.name.startswith(split.COVARIATES_FILE):
+            raise split.SplitError("forced: covariates misread")
+        real_check(frame, partial)
+
+    monkeypatch.setattr(split, "check_the_written_file_reads_back", fail_on_covariates)
+    with pytest.raises(split.SplitError, match="forced"):
+        split.write_halves(changed_labels, changed_covariates, tmp_path / "l", tmp_path / "c")
+
+    assert {name: path.read_text() for name, path in written.items()} == before
+    err = capsys.readouterr().err
+    for path in written.values():
+        partial = path.with_name(path.name + ".partial")
+        assert partial.exists() and str(partial) in err
+
+
 def test_main_reports_and_exits_zero(tmp_path, capsys):
     path = tmp_path / "s.csv"
     _source().to_csv(path, index=False)
@@ -192,7 +225,7 @@ def test_the_committed_halves_rejoin_losslessly(monkeypatch):
     """The two tracked files really are one table cut in two."""
     if not all(path.exists() for path in SOURCE_HALVES):
         pytest.skip("the split halves are not in this working copy")
-    monkeypatch.setattr(split, "POOL", range(1, 8001))
+    monkeypatch.setattr(split, "N_SITES", N_SITES)
     site_labels, covariates = (
         pd.read_csv(path, dtype=str, keep_default_na=False, index_col=False)
         for path in SOURCE_HALVES

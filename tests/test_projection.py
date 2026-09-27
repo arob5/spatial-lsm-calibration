@@ -30,12 +30,13 @@ import dataclasses
 import json
 import math
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pyproj
 import pytest
-from types import MappingProxyType
 
+from sipnet_calibration.conventions import FrozenMapping
 from sipnet_calibration.projection import (
     DEFINITION_STEM,
     LAEA_METHOD,
@@ -48,7 +49,13 @@ from sipnet_calibration.projection import (
     write_definitions,
 )
 from sipnet_calibration.projection import _main as projection_main
-from sipnet_calibration.sites import EXTENTS, SITE_GRID, default_sites_path, load_sites, select_sites
+from sipnet_calibration.sites import (
+    EXTENTS,
+    SITE_GRID,
+    default_sites_path,
+    load_sites,
+    select_sites,
+)
 
 # Measured over data/processed/sites/sites.csv under SITE_PROJECTION, and the
 # reason this projection was chosen over the alternatives; see issue #4. Held as
@@ -522,21 +529,20 @@ class TestProjectedBounds:
             SITE_PROJECTION.projected_bounds((-66.0, 24.0, -125.0, 50.0))
         with pytest.raises(ValueError, match="north of north"):
             SITE_PROJECTION.projected_bounds((-125.0, 50.0, -66.0, 24.0))
-        with pytest.raises(ValueError, match="must be numbers"):
-            SITE_PROJECTION.projected_bounds({"west": -125.0, "s": 1, "e": 2, "n": 3})
         with pytest.raises(ValueError, match="must be finite"):
             SITE_PROJECTION.projected_bounds((-125.0, 24.0, -66.0, np.nan))
-        with pytest.raises(ValueError, match=r"\(west, south, east, north\)"):
-            SITE_PROJECTION.projected_bounds(None)
         with pytest.raises(ValueError, match="samples_per_edge must be at least 2"):
             SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=1)
-        with pytest.raises(ValueError, match="samples_per_edge must be an integer"):
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=8.0)
 
-    def test_coerces_numeric_strings_the_way_it_documents(self):
-        assert SITE_PROJECTION.projected_bounds(("-125", "24", "-66", "50")) == pytest.approx(
-            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"])
-        )
+    def test_refuses_a_box_or_a_sample_count_of_the_wrong_type(self):
+        with pytest.raises(TypeError, match=r"\(west, south, east, north\)"):
+            SITE_PROJECTION.projected_bounds({"west": -125.0, "s": 1, "e": 2, "n": 3})
+        with pytest.raises(TypeError, match=r"\(west, south, east, north\)"):
+            SITE_PROJECTION.projected_bounds(None)
+        with pytest.raises(TypeError, match="must be numbers"):
+            SITE_PROJECTION.projected_bounds(("-125", "24", "-66", "50"))
+        with pytest.raises(TypeError, match="samples_per_edge must be an integer"):
+            SITE_PROJECTION.projected_bounds(EXTENTS["CONUS"], samples_per_edge=8.0)
 
     def test_samples_per_edge_actually_controls_the_sampling(self):
         """Nothing else observes the parameter taking effect: comparing the
@@ -724,28 +730,82 @@ class TestInterchangeFiles:
         assert all(path.is_file() for path in paths.values())
 
     def test_a_failed_write_leaves_the_previous_pair_intact(self, tmp_path, monkeypatch):
-        """What the staging is for. With the second move failing, neither file
-        may be half-updated and no partial may be left behind — otherwise a
-        colleague pastes a definition that describes neither projection."""
+        """What the staging is for. With the first file failing its check,
+        neither file may be moved into place -- otherwise a colleague pastes a
+        definition that describes neither projection -- and both files this run
+        wrote are kept as their partials, for inspection."""
+        write_definitions(tmp_path)
+        before = {path.name: path.read_text() for path in tmp_path.iterdir()}
+        moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
+
+        real_read_text = Path.read_text
+
+        def misread(path, *args, **kwargs):
+            text = real_read_text(path, *args, **kwargs)
+            return text + "garbled" if path.name.endswith(".projjson.partial") else text
+
+        monkeypatch.setattr(Path, "read_text", misread)
+        with pytest.raises(ValueError, match="does not read back"):
+            write_definitions(tmp_path, projection=moved)
+        monkeypatch.undo()
+
+        assert {
+            path.name: path.read_text()
+            for path in tmp_path.glob("*.proj*")
+            if not path.name.endswith(".partial")
+        } == before
+        assert sorted(path.name for path in tmp_path.glob("*.partial")) == [
+            f"{DEFINITION_STEM}.projjson.partial",
+            f"{DEFINITION_STEM}.projstring.partial",
+        ]
+        check_definitions(tmp_path)
+
+    def test_a_failed_second_check_moves_neither_file(self, tmp_path, monkeypatch, capsys):
+        write_definitions(tmp_path)
+        before = {path.name: path.read_text() for path in tmp_path.iterdir()}
+        moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
+
+        real_read_text = Path.read_text
+
+        def misread(path, *args, **kwargs):
+            text = real_read_text(path, *args, **kwargs)
+            return text + "garbled" if path.name.endswith(".projstring.partial") else text
+
+        monkeypatch.setattr(Path, "read_text", misread)
+        with pytest.raises(ValueError, match="does not read back"):
+            write_definitions(tmp_path, projection=moved)
+        monkeypatch.undo()
+
+        finals = {p.name: p.read_text() for p in tmp_path.iterdir() if p.suffix != ".partial"}
+        assert finals == before
+        err = capsys.readouterr().err
+        assert f"{DEFINITION_STEM}.projjson.partial" in err
+        assert f"{DEFINITION_STEM}.projstring.partial" in err
+        check_definitions(tmp_path)
+
+    def test_a_failed_second_move_leaves_a_pair_the_check_refuses(self, tmp_path, monkeypatch):
+        """Past the checks only the moves remain; one failing still cannot
+        pass silently, since check_definitions compares the pair."""
         write_definitions(tmp_path)
         moved = dataclasses.replace(SITE_PROJECTION, lat_0=45.0)
 
-        import sipnet_calibration.projection as module
-
-        real_replace = module.os.replace
+        real_replace = Path.replace
         calls = {"n": 0}
 
-        def failing_replace(src, dst):
+        def failing_replace(self, target):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise OSError("disk full")
-            return real_replace(src, dst)
+            return real_replace(self, target)
 
-        monkeypatch.setattr(module.os, "replace", failing_replace)
+        monkeypatch.setattr(Path, "replace", failing_replace)
         with pytest.raises(OSError, match="disk full"):
             write_definitions(tmp_path, projection=moved)
+        monkeypatch.undo()
 
-        assert list(tmp_path.glob("*.partial")) == []
+        assert [path.name for path in tmp_path.glob("*.partial")] == [
+            f"{DEFINITION_STEM}.projstring.partial"
+        ]
         # The first file did move, so the pair is inconsistent -- which is
         # exactly what check_definitions is for, and it must say so.
         with pytest.raises(ValueError, match="regenerate"):
@@ -792,6 +852,18 @@ class TestInterchangeFiles:
         assert projection_main(["--write", "--directory", str(blocked / "sub")]) == 1
         assert "Not a directory" in capsys.readouterr().out
 
+    def test_module_main_reports_a_failed_read_back_rather_than_a_traceback(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        from sipnet_calibration import projection
+
+        def refuse(path, expected):
+            raise ValueError("forced: projstring misread")
+
+        monkeypatch.setattr(projection, "check_definition_file_reads_back", refuse)
+        assert projection_main(["--write", "--directory", str(tmp_path)]) == 1
+        assert "forced: projstring misread" in capsys.readouterr().out
+
 
 class TestExtents:
     def test_named_extents_are_well_formed_boxes(self):
@@ -806,7 +878,7 @@ class TestExtents:
     def test_extents_cannot_be_mutated(self):
         """A figure and the site subset it plots are supposed to agree on what a
         region means, so a caller must not be able to reassign an entry."""
-        assert isinstance(EXTENTS, MappingProxyType)
+        assert isinstance(EXTENTS, FrozenMapping)
         with pytest.raises(TypeError):
             EXTENTS["CONUS"] = (0.0, 0.0, 1.0, 1.0)  # type: ignore[index]
         with pytest.raises(TypeError):

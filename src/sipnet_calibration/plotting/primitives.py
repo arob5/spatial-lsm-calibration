@@ -66,6 +66,7 @@ from matplotlib.tri import Triangulation
 from scipy.spatial import cKDTree
 
 from sipnet_calibration.plotting.style import BAND_ALPHAS
+from sipnet_calibration.validation import as_positive_integer
 
 __all__ = [
     "band",
@@ -144,9 +145,11 @@ def spaghetti(
 
     Raises
     ------
+    TypeError
+        If *n_max* is a boolean or not an integer.
     ValueError
         If *samples* is not two-dimensional, its second axis differs in length
-        from *x*, or *n_max* is not a positive integer.
+        from *x*, or *n_max* is less than 1.
 
     Notes
     -----
@@ -155,12 +158,11 @@ def spaghetti(
     """
     x, samples = np.asarray(x), np.asarray(samples)
     _check_samples(x, samples)
-    if not isinstance(n_max, (int, np.integer)) or int(n_max) < 1:
-        raise ValueError(f"n_max must be a positive integer, got {n_max!r}")
+    n_max = as_positive_integer(n_max, message_name="n_max")
 
     label = style.pop("label", None)
     drawn = []
-    for position, index in enumerate(thinned_indices(len(samples), int(n_max))):
+    for position, index in enumerate(thinned_indices(len(samples), n_max)):
         keep_label = position == 0 and label is not None
         drawn.append(
             line(
@@ -422,23 +424,24 @@ def site_cells(
 
     Raises
     ------
+    TypeError
+        If *pixels* is a boolean or not an integer.
     ValueError
         If the arrays are not one-dimensional and the same length, *radius* is
-        not finite and positive, *bounds* is empty, or *pixels* is not a
-        positive integer.
+        not finite and positive, *bounds* is empty, or *pixels* is less than
+        1.
     """
     x, y, values = np.asarray(x), np.asarray(y), np.asarray(values, dtype=float)
     _check_same_length(x=x, y=y, values=values)
     if not (np.isfinite(radius) and radius > 0):
         raise ValueError(f"radius must be finite and positive, got {radius!r}")
-    if not isinstance(pixels, (int, np.integer)) or int(pixels) < 1:
-        raise ValueError(f"pixels must be a positive integer, got {pixels!r}")
+    pixels = as_positive_integer(pixels, message_name="pixels")
     x_min, y_min, x_max, y_max = (float(b) for b in bounds)
     if not (x_max > x_min and y_max > y_min):
         raise ValueError(f"bounds must have positive width and height, got {bounds}")
 
-    size = (x_max - x_min) / int(pixels)
-    n_x, n_y = int(pixels), max(1, int(np.ceil((y_max - y_min) / size)))
+    size = (x_max - x_min) / pixels
+    n_x, n_y = pixels, max(1, int(np.ceil((y_max - y_min) / size)))
     centers_x = x_min + size * (np.arange(n_x) + 0.5)
     centers_y = y_min + size * (np.arange(n_y) + 0.5)
     grid = np.stack(np.meshgrid(centers_x, centers_y), axis=-1).reshape(-1, 2)

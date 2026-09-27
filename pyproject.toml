@@ -90,3 +90,7 @@ build-backend = "hatchling.build"
 markers = [
     "slow: exercises the real source data end to end; takes tens of seconds",
 ]
+
+[tool.ruff.lint.isort]
+# conftest is the test suite's own module, imported beside the package's.
+known-first-party = ["sipnet_calibration", "conftest"]

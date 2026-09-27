@@ -205,8 +205,12 @@ contrary are wrong.
 
 ```
 src/sipnet_calibration/
-  conventions.py          # constants every product must agree on; data_root()
-  sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...)
+  conventions.py          # every name, attribute and setting two modules share;
+                          # FrozenMapping; data_root()
+  validation.py           # argument coercion: as_site_ids(), as_names(), ...
+  io.py                   # write_checked(): the .partial protocol; file_md5()
+  sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...),
+                          # the site-table lookups and checks
   projection.py           # SITE_PROJECTION and the projected coordinates
   constraints.py          # one spec per raw constraint file; load_constraint()
   initial_conditions/     # the PEcAn IC ensemble, one module per artifact
@@ -221,8 +225,9 @@ src/sipnet_calibration/
   plotting/               # style, registry, primitives, series, maps, facet, diagnostics
 scripts/                  # ingest: data/raw/ -> data/processed/
 experiments/<task>/       # config.py (source of truth) + plots.py (report figures)
-data/raw/                 # inputs, never edited; raw/sites/, raw/constraints/ and
-                          # raw/initial_conditions/ are tracked
+data/raw/                 # inputs, never edited; raw/sites/, raw/constraints/,
+                          # raw/initial_conditions/, raw/site_labels/,
+                          # raw/covariates/ and raw/natural_earth/ are tracked
 data/processed/           # ingest output == the canonical format used throughout
 tests/
 ```

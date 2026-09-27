@@ -140,7 +140,7 @@ def test_spaghetti_keeps_nan(ax, x, samples):
 
 def test_spaghetti_rejects_a_non_positive_n_max(ax, x, samples):
     """``n_max=0`` raises rather than drawing nothing."""
-    with pytest.raises(ValueError, match="positive integer"):
+    with pytest.raises(ValueError, match="at least 1"):
         spaghetti(ax, x, samples, n_max=0)
 
 

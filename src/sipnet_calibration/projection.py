@@ -205,7 +205,6 @@ import argparse
 import functools
 import json
 import math
-import os
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -215,12 +214,16 @@ import pyproj
 from pyproj.crs import ProjectedCRS
 from pyproj.crs.coordinate_operation import LambertAzimuthalEqualAreaConversion
 
+from sipnet_calibration.io import write_checked_together
+from sipnet_calibration.validation import as_bbox, as_integer
+
 __all__ = [
     "DEFINITION_STEM",
     "LAEA_METHOD",
     "LAEA_METHOD_CODE",
-    "Projection",
     "SITE_PROJECTION",
+    "Projection",
+    "check_definition_file_reads_back",
     "check_definitions",
     "default_definition_dir",
     "definition_paths",
@@ -487,11 +490,13 @@ class Projection:
 
         Raises
         ------
+        TypeError
+            If *bbox* is not a sequence of numbers, or *samples_per_edge* is a
+            boolean or not an integer.
         ValueError
             If *bbox* is not four finite numbers, west is east of east, south is
-            north of north, *samples_per_edge* is not an integer of at least 2,
-            the box contains :attr:`antipode`, or any sampled point fails
-            :meth:`forward`.
+            north of north, *samples_per_edge* is less than 2, the box contains
+            :attr:`antipode`, or any sampled point fails :meth:`forward`.
 
         Notes
         -----
@@ -510,11 +515,8 @@ class Projection:
         singularity, the boundary bound is not a bound, and the returned box
         would be wrong without being obviously wrong.
         """
-        west, south, east, north = _check_bbox(bbox)
-        if not isinstance(samples_per_edge, (int, np.integer)) or isinstance(
-            samples_per_edge, bool
-        ):
-            raise ValueError(f"samples_per_edge must be an integer, got {samples_per_edge!r}")
+        west, south, east, north = as_bbox(bbox, message_name="bbox")
+        samples_per_edge = as_integer(samples_per_edge, message_name="samples_per_edge")
         if samples_per_edge < 2:
             raise ValueError(f"samples_per_edge must be at least 2, got {samples_per_edge}")
         self._check_bbox_excludes_antipode(west, south, east, north)
@@ -669,25 +671,28 @@ def write_definitions(
     this is the only thing that should ever write them.
     :func:`check_definitions` makes a hand-edit a test failure.
 
-    Both files are staged beside their destinations and moved into place only
-    once every one of them is on disk, so an interrupted or failed run cannot
-    leave one file describing this projection and the other describing the last
-    one.
+    Both files are written together through
+    :func:`sipnet_calibration.io.write_checked_together`, so neither is moved
+    into place until both are on disk and read back as written: a failed write
+    or check leaves both previous files as they were, with this run's
+    ``.partial`` files kept for inspection. Only a failed rename, past the
+    checks, can leave the pair mixed, and that is reported;
+    :func:`check_definitions` then refuses the pair until a rerun rewrites it.
     """
     paths = definition_paths(directory, stem=stem)
     contents = _definition_contents(projection)
-    staged: dict[Path, Path] = {}
-    try:
-        for key, path in paths.items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            partial = path.with_suffix(path.suffix + ".partial")
-            partial.write_text(contents[key], encoding="utf-8")
-            staged[path] = partial
-        for path, partial in staged.items():
-            os.replace(partial, path)
-    finally:
-        for partial in staged.values():
-            partial.unlink(missing_ok=True)
+    write_checked_together(
+        [
+            (
+                path,
+                lambda partial, text=contents[key]: partial.write_text(text, encoding="utf-8"),
+                lambda partial, text=contents[key]: check_definition_file_reads_back(
+                    partial, text
+                ),
+            )
+            for key, path in paths.items()
+        ]
+    )
     return paths
 
 
@@ -862,38 +867,6 @@ def _as_float_array(values):
     return np.asarray(values, dtype=float)
 
 
-def _check_bbox(bbox):
-    """The four floats of a well-formed ``(west, south, east, north)`` box.
-
-    Everything unusable raises :class:`ValueError`, including the cases that
-    would otherwise surface as a ``TypeError`` from unpacking or as a bare numpy
-    message, so a caller has one exception type to handle and a message that
-    names the parameter.
-    """
-    try:
-        values = tuple(bbox)
-    except TypeError:
-        raise ValueError(f"bbox must be (west, south, east, north), got {bbox!r}") from None
-    if len(values) != 4:
-        raise ValueError(
-            f"bbox must be (west, south, east, north), got {len(values)} value(s): {bbox!r}"
-        )
-    try:
-        west, south, east, north = (float(value) for value in values)
-    except (TypeError, ValueError):
-        raise ValueError(f"bbox values must be numbers, got {bbox!r}") from None
-    if not all(math.isfinite(value) for value in (west, south, east, north)):
-        raise ValueError(f"bbox values must be finite, got {bbox!r}")
-    if west > east:
-        raise ValueError(
-            f"bbox west {west} is east of east {east}; this does not wrap the "
-            "antimeridian, matching sipnet_calibration.sites.select_sites"
-        )
-    if south > north:
-        raise ValueError(f"bbox south {south} is north of north {north}")
-    return west, south, east, north
-
-
 def _definition_contents(projection: Projection) -> dict[str, str]:
     """The text of each interchange file, keyed as :func:`definition_paths` keys them."""
     return {
@@ -931,7 +904,7 @@ def _main(argv: list[str] | None = None) -> int:
     if arguments.write:
         try:
             written = write_definitions(arguments.directory)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             print(f"error: {error}")
             return 1
         for key, path in written.items():
@@ -945,6 +918,18 @@ def _main(argv: list[str] | None = None) -> int:
         return 1
     print(f"the stored definition matches {SITE_PROJECTION.name}")
     return 0
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_definition_file_reads_back(path: Path, expected: str) -> None:
+    """A written definition file holds exactly the text it was given."""
+    if path.read_text(encoding="utf-8") != expected:
+        raise ValueError(
+            f"{path} does not read back as the definition written to it; check the disk, "
+            "then rerun python -m sipnet_calibration.projection --write."
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

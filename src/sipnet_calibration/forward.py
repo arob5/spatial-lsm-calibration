@@ -181,11 +181,10 @@ from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
+from sipnet_calibration.conventions import LAT, LON, SITE
 from sipnet_calibration.fields import (
-    check_site_table_locates_the_sites,
     label_run,
     resolve_output_variable_names,
-    site_lookup,
     stack_model_outputs,
 )
 from sipnet_calibration.observation import (
@@ -197,7 +196,12 @@ from sipnet_calibration.observation.time_alignment import (
     check_frequency_is_an_offset_alias,
 )
 from sipnet_calibration.parameter_vector import ParameterVector
-from sipnet_calibration.sites import load_sites
+from sipnet_calibration.sites import (
+    load_sites,
+    site_locations,
+    site_lookup,
+)
+from sipnet_calibration.validation import as_batched_flat, is_one_vector, truncated
 
 __all__ = [
     "MODEL_FAILURES",
@@ -206,7 +210,6 @@ __all__ = [
     "ModelOutputNotFiniteError",
 ]
 
-SITE = "site"
 MEMBER = "member"
 
 
@@ -229,11 +232,17 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ForwardEvaluation:
     """What one evaluation of a :class:`ForwardModel` produced.
 
     The fields are described in the module docstring's Data model.
+
+    Notes
+    -----
+    Compared and hashed by identity (``eq=False``), as the package's other
+    records of arrays are: a generated ``==`` would compare arrays, whose
+    truth value is ambiguous, and a generated hash would fail on them.
     """
 
     theta: np.ndarray
@@ -343,7 +352,11 @@ class ForwardModel:
             output_variable_names, observation_vector
         )
         check_output_variables_can_be_returned(self.output_variable_names, model, freq)
-        self.site_table = _site_table_for(site_table, parameter_vector, self.sites)
+        chosen_site_table = _chosen_site_table(site_table, parameter_vector)
+        # site_locations checks the table locates the sites, once, before
+        # the lookup below relies on it.
+        self._site_locations = site_locations(self.sites, chosen_site_table)
+        self.site_table = site_lookup(chosen_site_table).loc[list(self.sites)]
         self._to_sipnet_table = to_sipnet_table or parameter_vector.sipnet_table
         self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
         self._base_values = _base_values_for(
@@ -411,7 +424,8 @@ class ForwardModel:
         Raises
         ------
         TypeError
-            If the table hook returns something other than an ``xr.Dataset``.
+            If *theta* is not a rectangular array of real numbers, or the
+            table hook returns something other than an ``xr.Dataset``.
         ValueError
             If *theta* is not ``(D,)`` or ``(J, D)`` with ``J >= 1``, or holds
             a non-finite value; or if the SIPNET table the hook returns is not
@@ -427,7 +441,9 @@ class ForwardModel:
             :class:`ForwardEvaluation` of what was collected, with no
             predictions or model output.
         """
-        theta = _as_batch(theta, self.input_dimension)
+        theta = np.asarray(as_batched_flat(theta, self.input_dimension, message_name="theta"))
+        check_theta_has_a_row(theta)
+        check_theta_is_finite(theta)
         n_members = len(theta)
         sipnet_table = self._to_sipnet_table(theta)
         check_table_is_a_sipnet_table(
@@ -456,7 +472,11 @@ class ForwardModel:
         if self.observation_vector is None:
             check_some_run_succeeded(collected)
             model_output = _stacked_model_output(
-                run_outputs_by_member_site, n_members, self.sites, self.site_table
+                run_outputs_by_member_site,
+                n_members,
+                self.sites,
+                site_table=self.site_table,
+                site_locations=self._site_locations,
             )
             return replace(collected, model_output=model_output, valid=member_succeeded)
         predictions = self._placed_predictions(run_outputs_by_member_site, n_members)
@@ -478,7 +498,7 @@ class ForwardModel:
         """
         self._observation_vector_for("__call__")
         predictions = self.evaluate(theta).predictions
-        return predictions[0] if np.ndim(theta) == 1 else predictions
+        return predictions[0] if is_one_vector(theta) else predictions
 
     # ── supporting methods ────────────────────────────────────────────────────
 
@@ -594,14 +614,6 @@ class _Run:
 # ── supporting helpers ────────────────────────────────────────────────────────
 
 
-def _as_batch(theta: Any, input_dimension: int) -> np.ndarray:
-    """*theta* as a ``(J, D)`` float64 batch, a ``(D,)`` input as one row."""
-    array = np.asarray(theta, dtype=np.float64)
-    check_theta_has_the_batch_shape(array, input_dimension)
-    check_theta_is_finite(array)
-    return np.atleast_2d(array)
-
-
 def _output_variable_names(
     output_variable_names: Sequence[str] | None, observation_vector: ObservationVector | None
 ) -> tuple[str, ...]:
@@ -615,15 +627,14 @@ def _output_variable_names(
     return names
 
 
-def _site_table_for(
-    site_table: pd.DataFrame | None, parameter_vector: ParameterVector, sites: Sequence[int]
+def _chosen_site_table(
+    site_table: pd.DataFrame | None, parameter_vector: ParameterVector
 ) -> pd.DataFrame:
-    """The site table's rows for *sites*, keyed on ``site_id``."""
-    chosen = site_table
-    if chosen is None:
-        own = parameter_vector.site_table
-        chosen = own if {"lon", "lat"} <= set(own.columns) else load_sites()
-    return site_lookup(chosen).loc[list(sites)]
+    """*site_table*, else the vector's own when it has ``lon``/``lat``, else the default one."""
+    if site_table is not None:
+        return site_table
+    own = parameter_vector.site_table
+    return own if {LON, LAT} <= set(own.columns) else load_sites()
 
 
 def _base_values_for(
@@ -753,7 +764,9 @@ def _stacked_model_output(
     run_outputs_by_member_site: Mapping[tuple[int, int], _RunOutput],
     n_members: int,
     sites: Sequence[int],
+    *,
     site_table: pd.DataFrame,
+    site_locations: dict[str, xr.DataArray],
 ) -> xr.Dataset:
     """The runs' output on the full ``(member, site, time)`` grid, ``NaN`` where a run failed."""
     model_outputs_by_site_member = {
@@ -769,11 +782,7 @@ def _stacked_model_output(
     )
     # A site at which every run failed is absent from the stack, so the reindex
     # leaves its lon/lat NaN; they are the site table's whatever the runs did.
-    located = {
-        name: full[name].copy(data=site_table.loc[list(sites), name].to_numpy(np.float64))
-        for name in ("lon", "lat")
-    }
-    return full.assign_coords(located)
+    return full.assign_coords(site_locations)
 
 
 def _with_evaluation(error: RuntimeError, evaluation: ForwardEvaluation) -> RuntimeError:
@@ -807,8 +816,25 @@ def check_forward_model_arguments(
     check_climate_is_file_backed(climate, sites, backend)
     if observation_vector is not None:
         check_observation_sites_are_run(observation_vector, sites)
-    if site_table is not None:
-        check_site_table_locates_the_sites(site_table, sites)
+
+
+def check_theta_has_a_row(theta: np.ndarray) -> None:
+    """``theta`` holds at least one row, since an evaluation of none runs nothing."""
+    if theta.shape[0] == 0:
+        raise ValueError(
+            f"theta must be at least one row of {theta.shape[1]} entries, got shape "
+            f"{theta.shape}; pass (D,) or (J, D) with J >= 1."
+        )
+
+
+def check_theta_is_finite(theta: np.ndarray) -> None:
+    """Every entry of ``theta`` is finite, since SIPNET cannot run at a NaN."""
+    rows = np.flatnonzero(~np.isfinite(theta).all(axis=1)).tolist()
+    if rows:
+        raise ValueError(
+            f"theta holds a non-finite value in row(s) {truncated(rows)}; every entry must "
+            "be a finite number."
+        )
 
 
 def check_model_is_a_sipnet_model(model: Any) -> None:
@@ -1006,19 +1032,6 @@ def check_table_sets_the_parameters_built_for(
             f"for {sorted(expected_sipnet_parameter_names)}; a ForwardModel's free fields are "
             "fixed when it is built, so the hook must set the same parameters every call."
         )
-
-
-def check_theta_has_the_batch_shape(theta: np.ndarray, input_dimension: int) -> None:
-    if theta.ndim not in (1, 2) or theta.shape[-1] != input_dimension or theta.shape[0] == 0:
-        raise ValueError(
-            f"theta must be (D,) or (J, D) with J >= 1 and D = {input_dimension}, got shape "
-            f"{theta.shape}."
-        )
-
-
-def check_theta_is_finite(theta: np.ndarray) -> None:
-    if not np.isfinite(theta).all():
-        raise ValueError("theta holds a non-finite value; the parameter vector never produces one.")
 
 
 def check_output_is_finite(dataset: xr.Dataset, site: int) -> None:

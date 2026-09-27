@@ -67,16 +67,17 @@ import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from sipnet_calibration.conventions import SITE
 from sipnet_calibration.plotting import maps
 from sipnet_calibration.plotting.primitives import thinned_indices
 from sipnet_calibration.plotting.series import plot_time_series
 from sipnet_calibration.plotting.style import axis_label
+from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
 
 __all__ = [
     "LEGEND_MODES",
     "SCALE_MODES",
     "SHARE_MODES",
-    "SITE_DIM",
     "build_plot_grid",
     "plot_by_site",
     "plot_by_variable",
@@ -90,9 +91,6 @@ SHARE_MODES: tuple[str, ...] = ("none", "x", "y", "both")
 
 #: What ``legend`` may be.
 LEGEND_MODES: tuple[str, ...] = ("dedup", "each", "none")
-
-#: The dimension :func:`plot_by_site` splits on.
-SITE_DIM = "site"
 
 #: What ``scale`` may be for a grid of maps: one color scale for every panel,
 #: or one per panel.
@@ -147,8 +145,10 @@ def build_plot_grid(
 
     Raises
     ------
+    TypeError
+        If *ncol* is a boolean or not an integer.
     ValueError
-        If *items* is empty; if *ncol* is not a positive integer; if *share*
+        If *items* is empty; if *ncol* is less than 1; if *share*
         is not in :data:`SHARE_MODES`; if *legend* is not ``"dedup"``,
         ``"each"`` or ``"none"``; or if *labels* is a sequence of a different
         length from *items*.
@@ -156,15 +156,14 @@ def build_plot_grid(
     items = list(items)
     if not items:
         raise ValueError("items is empty; there is nothing to draw")
-    if not isinstance(ncol, (int, np.integer)) or int(ncol) < 1:
-        raise ValueError(f"ncol must be a positive integer, got {ncol!r}")
+    ncol = as_positive_integer(ncol, message_name="ncol")
     if share not in SHARE_MODES:
         raise ValueError(f"share must be one of {list(SHARE_MODES)}, got {share!r}")
     if legend not in LEGEND_MODES:
         raise ValueError(f"legend must be one of {list(LEGEND_MODES)}, got {legend!r}")
     titles = _panel_titles(items, labels)
 
-    ncol = min(int(ncol), len(items))
+    ncol = min(ncol, len(items))
     nrow = math.ceil(len(items) / ncol)
     figure, grid = plt.subplots(
         nrow,
@@ -249,8 +248,9 @@ def plot_by_site(
         ``None`` uses
         :func:`sipnet_calibration.plotting.series.plot_time_series`.
     sites:
-        The site ids to draw, in that order. ``None`` draws every site in
-        *data*, which for a whole-pool field is 8000 panels.
+        The site ids to draw, a sequence, in that order, each once. ``None``
+        draws every site in *data*, which for a whole-pool field is a panel
+        per site of the pool.
     **grid_kwargs:
         Passed to :func:`build_plot_grid`. ``labels`` defaults to
         ``"site <id>"``.
@@ -262,39 +262,26 @@ def plot_by_site(
 
     Raises
     ------
+    TypeError
+        If *sites* is one id, a string or a set, or holds a boolean, a float
+        or a value that is not a number.
     ValueError
-        If *data* has no ``site`` dimension, or *sites* names an id that is
-        not in it.
+        If *data* has no ``site`` dimension or coordinate, or *sites* names a
+        site twice or holds a value that is not a site id.
+    KeyError
+        If *sites* names a site that is not in *data*.
     """
-    if SITE_DIM not in data.dims:
-        raise ValueError(
-            f"the array has dimensions {list(data.dims)} and needs {SITE_DIM!r} "
-            "to be split by site"
-        )
-    if SITE_DIM not in data.coords:
-        raise ValueError(
-            f"the array has a {SITE_DIM!r} dimension but no {SITE_DIM!r} "
-            "coordinate, so its panels cannot be named or selected"
-        )
-    available = list(data.coords[SITE_DIM].values)
-    if sites is None:
-        chosen = available
-    else:
-        if isinstance(sites, (str, bytes)) or not hasattr(sites, "__iter__"):
-            raise ValueError(f"sites must be a sequence of site ids, got {sites!r}")
-        chosen = list(sites)
-        missing = [site for site in chosen if site not in available]
-        if missing:
-            raise ValueError(
-                f"no such site(s) in the data: {missing}. It holds "
-                f"{len(available)} site(s), starting {available[:5]}"
-            )
+    check_data_has_a_site_dimension(data)
+    check_data_has_a_site_coordinate(data)
+    available = data.coords[SITE].values.tolist()
+    chosen = available if sites is None else list(as_site_ids(sites, message_name="sites"))
+    check_data_holds_the_sites(available, chosen)
 
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     grid_kwargs.setdefault("labels", lambda site: f"site {site}")
     return build_plot_grid(
         chosen,
-        lambda ax, site: panel_fn(data.sel({SITE_DIM: site}), ax=ax),
+        lambda ax, site: panel_fn(data.sel({SITE: site}), ax=ax),
         **grid_kwargs,
     )
 
@@ -452,18 +439,19 @@ def plot_map_by(
 
     Raises
     ------
+    TypeError
+        If *n_max* is a boolean or not an integer.
     ValueError
         If *field* has no *dim*, *values* names one it does not hold, or
-        *n_max* is not a positive integer.
+        *n_max* is less than 1.
     """
     if not isinstance(field, xr.DataArray) or dim not in field.dims:
         dims = list(getattr(field, "dims", ()))
         raise ValueError(f"plot_map_by needs a DataArray with a {dim!r} dimension; got {dims}")
-    if not isinstance(n_max, (int, np.integer)) or int(n_max) < 1:
-        raise ValueError(f"n_max must be a positive integer, got {n_max!r}")
+    n_max = as_positive_integer(n_max, message_name="n_max")
     available = field[dim].values
     if values is None:
-        chosen = available[thinned_indices(len(available), int(n_max))]
+        chosen = available[thinned_indices(len(available), n_max)]
     else:
         chosen = np.asarray(getattr(values, "values", values))
         missing = [v for v in chosen if v not in available]
@@ -541,3 +529,35 @@ def _add_shared_key(figure, axes, scale, fields, bounds, label) -> None:
         title=label or scale.label,
         loc="outside right center",
     )
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_data_has_a_site_dimension(data: xr.DataArray) -> None:
+    """The array has a ``site`` dimension to split by."""
+    if SITE not in data.dims:
+        raise ValueError(
+            f"the array has dimensions {list(data.dims)} and needs {SITE!r} "
+            "to be split by site"
+        )
+
+
+def check_data_has_a_site_coordinate(data: xr.DataArray) -> None:
+    """The array's ``site`` dimension has a coordinate to name and select its panels by."""
+    if SITE not in data.coords:
+        raise ValueError(
+            f"the array has a {SITE!r} dimension but no {SITE!r} "
+            "coordinate, so its panels cannot be named or selected"
+        )
+
+
+def check_data_holds_the_sites(available: list[int], chosen: list[int]) -> None:
+    """Every site asked for is on the data's ``site`` coordinate."""
+    held = set(available)
+    missing = [site for site in chosen if site not in held]
+    if missing:
+        raise KeyError(
+            f"no such site(s) in the data: {truncated(missing)}; it holds "
+            f"{len(available)} site(s), starting {available[:5]}, so ask for those."
+        )

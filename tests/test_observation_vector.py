@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
 from pysipnet import niwot_reference_output
 
+from conftest import niwot_stack_of, site_table_of
 from sipnet_calibration.fields import label_run
 from sipnet_calibration.observation import (
     DEFAULT_OBS_OPS,
@@ -26,23 +28,20 @@ from sipnet_calibration.observation import (
 VARIABLES = ["leaf_carbon", "wood_carbon", "soil_carbon"]
 
 
-def _site_table(*sites):
-    return pd.DataFrame({"site_id": list(sites), "lon": [-105.0] * len(sites), "lat": [40.0] * len(sites)}).set_index("site_id", drop=False)
-
-
 @pytest.fixture(scope="module")
 def one_run():
-    return label_run(niwot_reference_output().select(VARIABLES), site=1, member=0, site_table=_site_table(1))
+    return label_run(
+        niwot_reference_output().select(VARIABLES),
+        site=1,
+        member=0,
+        site_table=site_table_of(1, lon=-105.0, lat=40.0, keyed=True),
+    )
 
 
 @pytest.fixture(scope="module")
-def stack(one_run):
-    base = one_run.drop_vars(["site", "lon", "lat", "member"])
-    sites = xr.concat([base.assign_coords(site=1), (base * 1.5).assign_coords(site=2)], dim="site")
-    members = xr.concat([sites.assign_coords(member=0), (sites * 0.5).assign_coords(member=1)], dim="member")
-    for name in VARIABLES:
-        members[name].attrs = one_run[name].attrs
-    return members
+def stack():
+    """Two sites and two members built from the Niwot run by known factors."""
+    return niwot_stack_of(VARIABLES)
 
 
 @pytest.fixture(scope="module")
@@ -396,9 +395,13 @@ class TestObservationInputsAndBlockShapes:
         with pytest.raises(ValueError, match="at most"):
             vector.fields(np.zeros((40000, vector.dimension)))
 
-    def test_select_accepts_one_name_and_one_site(self, vector):
-        assert vector.select(product_names="landtrendr_aboveground_biomass").dimension == 3
-        assert vector.select(sites=2).sites == (2,)
+    def test_select_takes_sequences_and_refuses_one_name_or_one_site(self, vector):
+        assert vector.select(product_names=["landtrendr_aboveground_biomass"]).dimension == 3
+        assert vector.select(sites=[2]).sites == (2,)
+        with pytest.raises(TypeError, match="one string"):
+            vector.select(product_names="landtrendr_aboveground_biomass")
+        with pytest.raises(TypeError, match="sequence of site ids"):
+            vector.select(sites=2)
         with pytest.raises(TypeError, match="slice"):
             vector.select(time="2012")
 
@@ -675,25 +678,32 @@ class TestObservationRefusesAScalarMember:
 
 
 class TestSiteIdsAreIntegers:
-    @pytest.mark.parametrize("sites", [True, [1.7], ["1"], "1", [None]])
-    def test_select_refuses_what_is_not_a_site_id(self, vector, sites):
-        with pytest.raises((TypeError, ValueError), match="site id"):
+    @pytest.mark.parametrize("sites", [True, [1.7], [2.0], ["1"], "1", [None], {2}])
+    def test_select_refuses_what_is_not_a_sequence_of_site_ids(self, vector, sites):
+        with pytest.raises(TypeError, match="sites"):
             vector.select(sites=sites)
 
-    def test_a_boolean_or_string_is_a_type_error_and_a_fraction_a_value_error(self, vector):
-        with pytest.raises(TypeError):
-            vector.select(sites=True)
-        with pytest.raises(TypeError):
-            vector.select(sites=["1"])
-        with pytest.raises(ValueError, match="whole number"):
-            vector.select(sites=[1.7])
-        with pytest.raises(ValueError, match="whole number"):
+    def test_a_float_site_is_a_type_error_and_an_id_out_of_range_a_value_error(self, vector):
+        with pytest.raises(TypeError, match="float"):
             vector.positions(site=27.9)
+        with pytest.raises(TypeError, match="float"):
+            vector.positions(site=2.0)
         with pytest.raises(TypeError):
             vector.positions(site=True)
+        with pytest.raises(ValueError, match="from 1 to"):
+            vector.select(sites=[0])
 
-    @pytest.mark.parametrize("sites", [np.int64(2), np.array([2]), np.array(2), [np.int32(2)], 2.0])
-    def test_numpy_integers_and_whole_numbers_are_accepted(self, vector, sites):
+    @pytest.mark.parametrize(
+        "sites",
+        [
+            np.array([2]),
+            [np.int32(2)],
+            jnp.array([2]),
+            xr.DataArray([2], dims="site"),
+            pd.Index([2]),
+        ],
+    )
+    def test_integer_array_likes_are_accepted(self, vector, sites):
         assert vector.select(sites=sites).sites == (2,)
 
     def test_positions_accepts_a_numpy_integer(self, vector):

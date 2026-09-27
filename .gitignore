@@ -29,3 +29,6 @@ data/raw/initial_conditions/files
 data/processed/
 
 .claude/worktrees/
+
+# A file io.write_checked kept after a failed write or check, for inspection.
+*.partial

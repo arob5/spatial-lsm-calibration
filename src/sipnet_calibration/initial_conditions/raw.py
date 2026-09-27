@@ -47,16 +47,19 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from sipnet_calibration.conventions import SITE, SITE_ATTRIBUTES, SITE_DTYPE
 from sipnet_calibration.initial_conditions.names import (
     MEMBER,
-    SITE,
-    _SITE_ATTRS,
-    _utc_timestamp,
     raw_path,
 )
 from sipnet_calibration.initial_conditions.source_files import (
     SOURCE,
     SourceFile,
+)
+from sipnet_calibration.io import utc_timestamp
+from sipnet_calibration.validation import (
+    check_integers_are_in_range,
+    check_site_ids_are_in_range,
 )
 
 __all__ = [
@@ -96,9 +99,10 @@ def build_raw(
     Raises
     ------
     ValueError
-        If two files claim the same ``(site, member)``, if the member set
-        differs between sites, if a variable's presence differs between the
-        members of one site, or if no file was given.
+        If a site is not an integer site id or a member not an integer that
+        fits ``int16``, if two files claim the same ``(site, member)``, if the
+        member set differs between sites, if a variable's presence differs
+        between the members of one site, or if no file was given.
 
     Notes
     -----
@@ -109,6 +113,18 @@ def build_raw(
     records = list(files)
     if not records:
         raise ValueError("no source files to assemble")
+    # Checked before they are made int64, which would truncate 1.5 to 1 and
+    # refuse NaN with NumPy's message rather than the module's.
+    check_site_ids_are_in_range(
+        np.array([record.site for record in records], dtype=object),
+        message_name="the source files' sites",
+    )
+    check_integers_are_in_range(
+        np.array([record.member for record in records], dtype=object),
+        minimum=1,
+        maximum=int(np.iinfo(np.int16).max),
+        message_name="the source files' members",
+    )
     sites = np.array(sorted({record.site for record in records}), dtype=np.int64)
     members = np.array(sorted({record.member for record in records}), dtype=np.int64)
     site_index = {int(site): i for i, site in enumerate(sites)}
@@ -132,8 +148,6 @@ def build_raw(
     _check_every_site_has_every_member(seen, sites, members)
     _check_presence_is_uniform_over_members(arrays, sites)
 
-    _check_site_ids_fit_dtype(sites, np.int32, "site")
-    _check_site_ids_fit_dtype(members, np.int16, "member")
     dataset = xr.Dataset(
         {
             name: (
@@ -152,7 +166,7 @@ def build_raw(
             for name in SOURCE.names
         },
         coords={
-            SITE: (SITE, sites.astype(np.int32), _SITE_ATTRS),
+            SITE: (SITE, sites.astype(SITE_DTYPE), SITE_ATTRIBUTES),
             MEMBER: (
                 MEMBER,
                 members.astype(np.int16),
@@ -180,7 +194,7 @@ def build_raw(
                 "root, checked each against the source template, and laid the values on "
                 "(site, member) unchanged, in the source files' names and units strings"
             ),
-            "converted": _utc_timestamp(),
+            "converted": utc_timestamp(),
         },
     )
     return dataset
@@ -256,8 +270,7 @@ def _check_presence_is_uniform_over_members(
 ) -> None:
     """Raise unless each variable is present for every member of a site or none.
 
-    Private to the package but shared across it, like ``_SITE_ATTRS`` and
-    ``_utc_timestamp`` in :mod:`sipnet_calibration.initial_conditions.names`:
+    Private to the package but shared across it:
     :mod:`sipnet_calibration.initial_conditions.processed` asserts the same
     invariant on the product, and it has to be the same rule, since it is what
     gives ``NaN`` its one meaning.
@@ -271,12 +284,6 @@ def _check_presence_is_uniform_over_members(
                 f"{int(mixed.sum())} sites, for example {sites[mixed][:5].tolist()}. "
                 "Presence is a property of the site in this ensemble."
             )
-
-
-def _check_site_ids_fit_dtype(values: np.ndarray, dtype: type, what: str) -> None:
-    info = np.iinfo(dtype)
-    if values.min() < max(info.min, 1) or values.max() > info.max:
-        raise ValueError(f"{what} values {values.min()}-{values.max()} do not fit {dtype.__name__}")
 
 
 def _check_raw(dataset: xr.Dataset, path: Path) -> None:
@@ -301,14 +308,19 @@ def _check_raw(dataset: xr.Dataset, path: Path) -> None:
         values = array.values
         if np.isinf(values).any():
             raise ValueError(f"{path}: {name} holds an infinite value")
-    for coordinate, dtype in ((SITE, np.int32), (MEMBER, np.int16)):
+    for coordinate, dtype in ((SITE, SITE_DTYPE), (MEMBER, np.int16)):
         values = dataset[coordinate].values
         if values.size == 0 or np.any(np.diff(values) <= 0):
             raise ValueError(f"{path}: {coordinate} is empty or not strictly ascending")
         if not np.issubdtype(values.dtype, np.integer):
             raise ValueError(f"{path}: {coordinate} is {values.dtype}, expected an integer type")
         # The product narrows these with astype, which wraps silently.
-        _check_site_ids_fit_dtype(values.astype(np.int64), dtype, f"{path}: {coordinate}")
+        check_integers_are_in_range(
+            values.astype(np.int64),
+            minimum=1,
+            maximum=int(np.iinfo(dtype).max),
+            message_name=f"{path}: {coordinate}",
+        )
     _check_presence_is_uniform_over_members(
         {name: dataset[name].values for name in SOURCE.names}, dataset[SITE].values
     )

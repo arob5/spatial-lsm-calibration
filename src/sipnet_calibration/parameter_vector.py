@@ -221,15 +221,22 @@ the bottom of this module) are what keep a prior draw from reaching that
 failure.
 
 **What crosses a process boundary.** A ``ParameterVector`` holds live TFP
-objects, and those built from ``TransformedDistribution`` or ``Blockwise``
-(the simplex, the product prior) do not survive ``pickle.loads`` with this
-TFP build. Ship the SIPNET table, or the ``Grid``\\ s of plain floats
+objects. Everything the vector itself holds pickles -- its mappings are
+:class:`~sipnet_calibration.conventions.FrozenMapping`\\ s and its arrays
+plain NumPy -- so a vector whose priors are ``LogNormal`` or ``LogitNormal``
+round-trips through ``pickle`` and ``copy.deepcopy``. A prior built from
+``TransformedDistribution`` or ``Blockwise`` (the simplex, the product
+prior, and so :func:`example_parameter_vector`) pickles but fails
+``pickle.loads`` with this TFP build, and so does a vector holding one. Ship
+the SIPNET table, or the ``Grid``\\ s of plain floats
 ``pyens.xarray.fields_from_dataset`` makes from it, never the vector.
 
-Importing this module sets ``jax_enable_x64``, as ``import pyeki`` does, so
-an MCMC baseline that never imports pyEKI still computes in float64. The
-setting is per process: workers of a process pool need ``JAX_ENABLE_X64=1``
-in their environment.
+The vector computes in float64: importing the package sets
+``jax_enable_x64``, as ``import pyeki`` does, so an MCMC baseline that never
+imports pyEKI still gets it (see :mod:`sipnet_calibration`). The setting is
+per process, and a worker that imports the package, as unpickling anything
+of it does, gets it too; only a worker that computes with JAX without
+importing the package needs ``JAX_ENABLE_X64=1`` in its environment.
 
 Usage
 -----
@@ -313,7 +320,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     vector.site_table                                  # DataFrame: site_id, lon, lat, pft
 
     # Subset it.
-    conifer = vector.select(labels={"pft": "boreal.coniferous"})           # ParameterVector, D = 8
+    conifer = vector.select(labels={"pft": ["boreal.coniferous"]})         # ParameterVector, D = 8
     two = vector.select(parameters=("allocation", "initial_soil_carbon"))  # ParameterVector, D = 9
 
     # Sample it and evaluate its density.
@@ -345,26 +352,87 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import jax
+import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+import xarray as xr
+from pyeki.gauss import Gaussian
+from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp
+from pysipnet.parameters.base import ParameterDomain, ParameterSpec
+from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
+from tensorflow_probability.substrates import jax as tfp
 
-jax.config.update("jax_enable_x64", True)
+# SITE, the site dimension's name, is also the reserved ``varies_by`` value
+# meaning one copy per site. Calibration parameter names match NAME_PATTERN.
+from sipnet_calibration.conventions import (
+    LAT,
+    LAT_ATTRIBUTES,
+    LON,
+    LON_ATTRIBUTES,
+    NAME_PATTERN,
+    POINT,
+    SAMPLE,
+    SITE,
+    SITE_DTYPE,
+    SITE_ID,
+    FrozenMapping,
+    X,
+    Y,
+)
+from sipnet_calibration.site_labels import LABEL_COLUMN
+from sipnet_calibration.sites import (
+    check_site_table_has_locations,
+    check_site_table_is_keyed_on_site_ids,
+    site_lookup,
+)
+from sipnet_calibration.validation import (
+    as_batched_flat,
+    as_frozen_mapping,
+    as_names,
+    as_sequence,
+    as_site_ids,
+    is_one_vector,
+)
 
-import jax.numpy as jnp  # noqa: E402
-import numpy as np  # noqa: E402
-import pandas as pd  # noqa: E402
-import xarray as xr  # noqa: E402
-from pyeki.gauss import Gaussian  # noqa: E402
-from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp  # noqa: E402
-from pysipnet.parameters.base import ParameterDomain, ParameterSpec  # noqa: E402
-from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters  # noqa: E402
-from tensorflow_probability.substrates import jax as tfp  # noqa: E402
+__all__ = [
+    "ALLOCATION",
+    "DOMAIN_CHECK_CORNERS",
+    "FIELDS_REPRESENTATION",
+    "MEMBER",
+    "NATURAL",
+    "PHOTOSYNTHESIS",
+    "REQUIRED_SIPNET_PARAMETERS",
+    "RESERVED_PARAMETER_NAMES",
+    "RESERVED_SITE_LABELS_NAMES",
+    "SHARED",
+    "SIPNET_TABLE_REPRESENTATION",
+    "SPACES",
+    "UNCONSTRAINED",
+    "CalibrationParameter",
+    "FixedParameter",
+    "Identity",
+    "Layout",
+    "ParameterVector",
+    "PhotosynthesisMap",
+    "SIPNETMap",
+    "SimplexMap",
+    "example_parameter_vector",
+    "log_normal",
+    "log_normal_from_interval",
+    "log_normal_from_samples",
+    "logit_normal",
+    "logit_normal_from_interval",
+    "logit_normal_from_samples",
+    "product_transformed_gaussian_prior",
+    "sipnet_overrides",
+    "softmax_normal",
+]
 
 tfd = tfp.distributions
 tfb = tfp.bijectors
@@ -750,27 +818,24 @@ PHOTOSYNTHESIS = PhotosynthesisMap()
 
 # ── the specs ─────────────────────────────────────────────────────────────────
 
-NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(_[a-z0-9]+)*$")
-"""Calibration parameter names: ``lower_case_with_underscores``."""
-
 SHARED = "shared"
 """Group label, and ``varies_by`` attribute value, of a calibration parameter
 that does not vary."""
 
-SITE = "site"
-"""The reserved ``varies_by`` value meaning one copy per site."""
-
 MEMBER = "member"
 """The ensemble dimension of Fields and of the SIPNET table."""
 
-RESERVED_SITE_LABELS_NAMES = frozenset({SHARED, SITE, MEMBER, "lon", "lat", "site_id"})
+RESERVED_SITE_LABELS_NAMES = frozenset(
+    {SHARED, SITE, MEMBER, SAMPLE, POINT, LON, LAT, X, Y, SITE_ID}
+)
 """Names a site-labels product cannot take in a vector, because they are
-dimension or coordinate names already. It may not be named like a
-calibration parameter or a SIPNET parameter either."""
+dimension or coordinate names already, or reserved for one. It may not be
+named like a calibration parameter or a SIPNET parameter either."""
 
-RESERVED_PARAMETER_NAMES = frozenset({SITE, MEMBER, "lon", "lat"})
+RESERVED_PARAMETER_NAMES = frozenset({SITE, MEMBER, SAMPLE, POINT, LON, LAT, X, Y})
 """Names a calibration parameter cannot take, because a Fields variable of
-that name would collide with a coordinate."""
+that name would collide with a coordinate, or with a dimension name reserved
+for one."""
 
 REQUIRED_SIPNET_PARAMETERS: tuple[str, ...] = tuple(
     name
@@ -959,7 +1024,7 @@ class CalibrationParameter:
         return True
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(frozen=True, eq=False, kw_only=True)
 class FixedParameter:
     """A SIPNET parameter held at a value.
 
@@ -985,6 +1050,13 @@ class FixedParameter:
     ...     provenance="Braswell et al. (2005) fix the exponent at 2.",
     ... ).value
     2.0
+
+    Notes
+    -----
+    A mapping *value* is stored as a
+    :class:`~sipnet_calibration.conventions.FrozenMapping`, so it cannot be
+    changed after the checks and the parameter pickles. Compared and hashed
+    by identity (``eq=False``), as :class:`CalibrationParameter` is.
     """
 
     name: str
@@ -997,7 +1069,9 @@ class FixedParameter:
         check_provenance_is_given(self.name, self.provenance)
         check_fixed_value_shape(self)
         if isinstance(self.value, Mapping):
-            object.__setattr__(self, "value", MappingProxyType(dict(self.value)))
+            object.__setattr__(
+                self, "value", as_frozen_mapping(self.value, message_name="value")
+            )
         check_fixed_values_are_numbers(self)
         for value in self.values():
             check_fixed_value_is_in_domain(self.name, value)
@@ -1193,11 +1267,13 @@ class ParameterVector:
         table with a ``site_id`` column in ascending order, such as
         :func:`sipnet_calibration.sites.select_sites` returns, whose
         ``lon``/``lat`` are then carried onto Fields and the SIPNET table.
-        The ids are the project's 1-8000 and are never renumbered.
+        The ids are the site table's; ids of a shared pool are never
+        renumbered.
     site_labels:
         ``{site_labels_name: labels}`` for every ``varies_by`` other than
         ``None`` and ``"site"``: a site-labels product with ``site_id`` and
-        ``label`` columns, such as
+        ``label`` columns (:data:`~sipnet_calibration.site_labels.LABEL_COLUMN`),
+        such as
         :func:`sipnet_calibration.site_labels.load_site_labels` returns, which
         must label every site here; a pandas categorical; or one label per
         site, in site order.
@@ -1262,12 +1338,13 @@ class ParameterVector:
         sites, lon_lat = _normalized_sites(self.sites)
         object.__setattr__(self, "sites", sites)
         object.__setattr__(self, "_lon_lat", lon_lat)
+        check_vector_has_a_site(self.sites)
         check_sites_are_ascending(self.sites)
         labels, declared = {}, {}
         for name, value in dict(self.site_labels).items():
             labels[name], declared[name] = _normalized_site_labels(name, value, self.sites)
-        object.__setattr__(self, "site_labels", labels)
-        object.__setattr__(self, "_declared_classes", declared)
+        object.__setattr__(self, "site_labels", FrozenMapping(labels))
+        object.__setattr__(self, "_declared_classes", FrozenMapping(declared))
         object.__setattr__(self, "parameters", tuple(self.parameters))
         object.__setattr__(self, "fixed", tuple(self.fixed))
         check_parameters_have_their_types(self.parameters, self.fixed)
@@ -1345,9 +1422,9 @@ class ParameterVector:
     def site_table(self) -> pd.DataFrame:
         """``site_id`` (``int32``), ``lon``/``lat`` when known, and one
         categorical column per site-labels name, one row per site."""
-        frame = pd.DataFrame({"site_id": np.asarray(self.sites, dtype=np.int32)})
+        frame = pd.DataFrame({SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE)})
         if self._lon_lat is not None:
-            frame["lon"], frame["lat"] = self._lon_lat
+            frame[LON], frame[LAT] = self._lon_lat
         for name, labels in self.site_labels.items():
             frame[name] = pd.Categorical(labels, categories=self.group_labels(name))
         return frame
@@ -1397,14 +1474,17 @@ class ParameterVector:
         Parameters
         ----------
         parameters:
-            Calibration parameter names to keep; ``None`` keeps all. They
-            keep this vector's layout order. Fixed parameters are always
-            kept.
+            Calibration parameter names to keep, a sequence; ``None`` keeps
+            all. They keep this vector's layout order. Fixed parameters are
+            always kept.
         sites:
-            Site ids to keep, each one of :attr:`sites`; ``None`` keeps all.
+            Site ids to keep, a sequence, each one of :attr:`sites` and named
+            once; ``None`` keeps all. The result keeps this vector's site
+            order.
         labels:
-            ``{site_labels_name: class or classes}``: keeps the sites carrying
-            one of those classes. Composes with *sites* by intersection.
+            ``{site_labels_name: classes}``, each a sequence of class names:
+            keeps the sites carrying one of those classes. Composes with
+            *sites* by intersection.
 
         Returns
         -------
@@ -1417,11 +1497,16 @@ class ParameterVector:
 
         Raises
         ------
+        TypeError
+            If *parameters*, *sites* or a *labels* value is one value, a
+            string or a set; if a name or class is not a string; or if a site
+            id is a boolean, a float or not a number.
         KeyError
             For an unknown calibration parameter, site, site-labels name or
             class.
         ValueError
-            If no site remains.
+            If a site is named twice or is not a site id, *sites* is a
+            two-dimensional array, or no site remains.
 
         Notes
         -----
@@ -1773,7 +1858,7 @@ class ParameterVector:
     def _selected_parameter_names(self, parameters: Sequence[str] | None) -> tuple[str, ...]:
         if parameters is None:
             return self.parameter_names
-        wanted = (parameters,) if isinstance(parameters, str) else tuple(parameters)
+        wanted = as_names(parameters, message_name="parameters")
         unknown = [n for n in wanted if n not in self.parameter_names]
         if unknown:
             raise KeyError(
@@ -1786,9 +1871,7 @@ class ParameterVector:
     ) -> list[int]:
         kept = list(self.sites)
         if sites is not None:
-            if np.ndim(sites) == 0:
-                sites = (sites,)
-            requested = set(_as_site_ids(sites))
+            requested = set(as_site_ids(sites, message_name="sites"))
             unknown = sorted(requested - set(self.sites))
             if unknown:
                 raise KeyError(f"select: sites {unknown} are not in this vector.")
@@ -1796,9 +1879,7 @@ class ParameterVector:
         for name, wanted in (labels or {}).items():
             if name not in self.site_labels:
                 raise KeyError(f"select: no site labels {name!r}; have {sorted(self.site_labels)}.")
-            wanted = {wanted} if isinstance(wanted, str) or np.ndim(wanted) == 0 else set(
-                np.asarray(wanted, dtype=object).ravel().tolist()
-            )
+            wanted = set(as_sequence(wanted, message_name=f"labels[{name!r}]"))
             undeclared = sorted(map(str, wanted - set(self._declared_classes[name])))
             if undeclared:
                 raise KeyError(
@@ -1816,16 +1897,18 @@ class ParameterVector:
         if self._lon_lat is None:
             return tuple(ids)
         lon, lat = self._lon_lat
-        return pd.DataFrame({"site_id": ids, "lon": lon[positions], "lat": lat[positions]})
+        return pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
 
     def _coordinates(self, theta: Array, members: np.ndarray | None = None) -> dict[str, Any]:
         """The coordinates Fields and the SIPNET table share; *members*
         labels the ensemble, 0 to J-1 when ``None``."""
-        coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=np.int32)}
+        coords: dict[str, Any] = {SITE: np.asarray(self.sites, dtype=SITE_DTYPE)}
         if self._lon_lat is not None:
+            # Copies, so the Dataset handed out is writable and a write to it
+            # never reaches the vector's own read-only arrays.
             lon, lat = self._lon_lat
-            coords["lon"] = (SITE, lon, {"standard_name": "longitude", "units": "degrees_east"})
-            coords["lat"] = (SITE, lat, {"standard_name": "latitude", "units": "degrees_north"})
+            coords[LON] = (SITE, lon.copy(), LON_ATTRIBUTES)
+            coords[LAT] = (SITE, lat.copy(), LAT_ATTRIBUTES)
         for name, labels in self.site_labels.items():
             coords[name] = (SITE, list(labels))
         if theta.ndim == 2:
@@ -2142,17 +2225,16 @@ def example_parameter_vector(
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-_FLAT_SPECS: dict[str, ParameterSpec] = {
-    path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()
-}
-_SPEC_ORDER: dict[str, int] = {name: i for i, name in enumerate(_FLAT_SPECS)}
+_FLAT_SPECS: Mapping[str, ParameterSpec] = FrozenMapping(
+    {path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()}
+)
+_SPEC_ORDER: Mapping[str, int] = FrozenMapping({name: i for i, name in enumerate(_FLAT_SPECS)})
 
 
 def _as_theta(theta: Any, dimension: int) -> Array:
-    theta = jnp.asarray(theta, dtype=jnp.float64)
-    if theta.ndim not in (1, 2) or theta.shape[-1] != dimension:
-        raise ValueError(f"theta must be (D,) or (J, D) with D = {dimension}; got shape {theta.shape}.")
-    return theta
+    """*theta* as a JAX ``float64`` array, ``(D,)`` or ``(J, D)`` as given."""
+    batched = as_batched_flat(theta, dimension, message_name="theta")
+    return jnp.asarray(batched[0] if is_one_vector(theta) else batched)
 
 
 def _positive_array(what: str, value: Any) -> Array:
@@ -2201,21 +2283,6 @@ def _positive_std(values: Array, what: str) -> Array:
     if not bool(std > 0):
         raise ValueError(f"{what}: samples are all equal; no scale can be fitted.")
     return std
-
-
-def _as_site_ids(sites: Any) -> tuple[int, ...]:
-    """Site ids as Python ints; refuses anything that is not an integer."""
-    out = []
-    for site in sites:
-        array = np.asarray(site)
-        integral = array.ndim == 0 and (
-            np.issubdtype(array.dtype, np.integer)
-            or (np.issubdtype(array.dtype, np.floating) and float(array).is_integer())
-        )
-        if not integral:
-            raise TypeError(f"site ids must be integers; got {site!r}.")
-        out.append(int(array))
-    return tuple(out)
 
 
 def _as_labels(name: str, labels: Any) -> tuple[Any, ...]:
@@ -2306,14 +2373,23 @@ def _normalized_sites(sites: Any) -> tuple[tuple[int, ...], tuple[np.ndarray, np
     """Site ids, and ``lon``/``lat`` when *sites* is a site table that has
     them."""
     if not isinstance(sites, pd.DataFrame):
-        return _as_site_ids(sites), None
-    check_site_table_has_site_ids(sites)
-    ids = _as_site_ids(sites["site_id"].tolist())
+        return as_site_ids(sites, message_name="sites"), None
+    check_site_table_is_keyed_on_site_ids(sites)
+    table = site_lookup(sites)
+    ids = as_site_ids(table.index, message_name="the site table's site_id")
     check_site_table_is_in_site_order(ids)
-    check_site_table_positions_are_usable(sites)
-    if "lon" in sites.columns:
-        return ids, (sites["lon"].to_numpy(np.float64), sites["lat"].to_numpy(np.float64))
+    if {LON, LAT} & set(table.columns):
+        check_site_table_has_locations(table)
+        check_site_table_positions_are_finite(table)
+        return ids, (_read_only_copy(table[LON]), _read_only_copy(table[LAT]))
     return ids, None
+
+
+def _read_only_copy(column: pd.Series) -> np.ndarray:
+    """*column* as a ``float64`` array of its own, which cannot be written."""
+    array = column.to_numpy(np.float64, copy=True)
+    array.flags.writeable = False
+    return array
 
 
 def _normalized_site_labels(
@@ -2323,7 +2399,7 @@ def _normalized_site_labels(
     the declared classes, in their order)."""
     if isinstance(value, pd.DataFrame):
         check_site_labels_product_has_columns(name, value)
-        indexed = value.set_index("site_id")["label"]
+        indexed = site_lookup(value)[LABEL_COLUMN]
         check_site_labels_product_covers_sites(name, indexed, sites)
         labels = tuple(indexed.loc[list(sites)].tolist())
         check_site_labels_are_present(name, labels)
@@ -2344,7 +2420,7 @@ def _declared_classes_of(name: str, value: Any) -> tuple[Any, ...]:
     else its sorted distinct labels."""
     if isinstance(value, pd.DataFrame):
         check_site_labels_product_has_columns(name, value)
-        value = value["label"]
+        value = value[LABEL_COLUMN]
     if isinstance(value, pd.Categorical) or isinstance(
         getattr(value, "dtype", None), pd.CategoricalDtype
     ):
@@ -2708,28 +2784,25 @@ def check_fixed_value_covers_groups(parameter: FixedParameter, groups: tuple[Any
         )
 
 
-def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
+def check_vector_has_a_site(sites: tuple[int, ...]) -> None:
+    """The vector has at least one site."""
     if not sites:
         raise ValueError("a ParameterVector needs at least one site.")
+
+
+def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
+    """The vector's sites are strictly ascending, so each is listed once."""
     if list(sites) != sorted(set(sites)):
         raise ValueError("sites must be strictly ascending with no repeats.")
 
 
-def check_site_table_has_site_ids(table: pd.DataFrame) -> None:
-    if "site_id" not in table.columns:
-        raise ValueError(
-            "a site table passed as sites= needs a 'site_id' column, as "
-            f"sipnet_calibration.sites.select_sites returns; got columns {list(table.columns)}."
-        )
-
-
 def check_site_labels_product_has_columns(name: str, frame: pd.DataFrame) -> None:
-    missing = sorted({"site_id", "label"} - set(frame.columns))
+    missing = sorted({SITE_ID, LABEL_COLUMN} - set(frame.columns))
     if missing:
         raise ValueError(
-            f"site labels {name!r}: a site-labels product needs 'site_id' and 'label' "
-            f"columns, as sipnet_calibration.site_labels.load_site_labels returns; missing "
-            f"{missing}."
+            f"site labels {name!r}: a site-labels product needs {SITE_ID!r} and "
+            f"{LABEL_COLUMN!r} columns, as sipnet_calibration.site_labels.load_site_labels "
+            f"returns; missing {missing}."
         )
 
 
@@ -2987,6 +3060,7 @@ def check_fixed_values_are_numbers(parameter: FixedParameter) -> None:
 
 
 def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
+    """A site table given as ``sites=`` lists its sites ascending, each once."""
     if list(ids) != sorted(set(ids)):
         raise ValueError(
             "a site table passed as sites= must be in ascending site_id order with no repeats, "
@@ -2995,12 +3069,13 @@ def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
         )
 
 
-def check_site_table_positions_are_usable(table: pd.DataFrame) -> None:
-    present = {"lon", "lat"} & set(table.columns)
-    if len(present) == 1:
-        raise ValueError(f"a site table passed as sites= has {sorted(present)} but not both.")
-    if present and not np.isfinite(table[["lon", "lat"]].to_numpy(np.float64)).all():
-        raise ValueError("a site table passed as sites= has missing or non-finite lon/lat.")
+def check_site_table_positions_are_finite(table: pd.DataFrame) -> None:
+    """A site table given as ``sites=`` has a finite ``lon`` and ``lat`` for every site."""
+    if not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
+        raise ValueError(
+            "a site table passed as sites= has missing or non-finite lon/lat; give every "
+            "site its coordinates, or pass a table without lon and lat."
+        )
 
 
 def check_site_labels_are_present(name: str, labels: Sequence[Any]) -> None:

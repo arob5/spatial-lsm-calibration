@@ -80,6 +80,7 @@ import numpy as np
 import xarray as xr
 
 from sipnet_calibration import conventions
+from sipnet_calibration.sites import N_SITES
 
 #: File name template, with the site repeated inside it. The ``0-`` prefix is
 #: PEcAn's input identifier and is constant across the ensemble.
@@ -98,9 +99,6 @@ TEXTURE_FRACTIONS = (
     "fraction_of_silt_in_soil",
     "fraction_of_clay_in_soil",
 )
-
-#: The site pool the ensemble is indexed against; see ``data/README.md``.
-POOL_SIZE = 8000
 
 #: The characteristics ``data/README.md`` records. Measured on 2026-09-21 over
 #: the SCC copy named in the README's `Soil texture` section; the local copy is
@@ -241,8 +239,8 @@ def survey_coverage(root: Path) -> dict[str, Any]:
     return {
         "sites": sites,
         "sites_with_a_directory": len(sites),
-        "sites_of_the_pool_absent": POOL_SIZE - len(set(sites) & set(range(1, POOL_SIZE + 1))),
-        "sites_outside_the_pool": sorted(set(sites) - set(range(1, POOL_SIZE + 1)))[:5],
+        "sites_of_the_pool_absent": N_SITES - len(set(sites) & set(range(1, N_SITES + 1))),
+        "sites_outside_the_pool": sorted(set(sites) - set(range(1, N_SITES + 1)))[:5],
         "members_per_site": counts,
         "member_range": [all_members[0], all_members[-1]],
         "members_are_contiguous": all_members == list(range(all_members[0], all_members[-1] + 1)),
@@ -332,7 +330,7 @@ def format_report(report: dict[str, Any]) -> str:
     lines = [
         f"{report['root']}",
         f"  sites with a directory   : {report['sites_with_a_directory']}",
-        f"  pool sites absent        : {report['sites_of_the_pool_absent']} of {POOL_SIZE}",
+        f"  pool sites absent        : {report['sites_of_the_pool_absent']} of {N_SITES}",
         f"  members per site         : {report['members_per_site']}",
         f"  member range             : {report['member_range'][0]}-{report['member_range'][1]}"
         f", contiguous {_yes(report['members_are_contiguous'])}",

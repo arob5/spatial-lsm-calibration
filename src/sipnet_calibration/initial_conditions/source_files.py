@@ -31,11 +31,12 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any
 
 import numpy as np
 from scipy.io import netcdf_file
+
+from sipnet_calibration.conventions import FrozenMapping
 
 __all__ = [
     "NOMINAL_DATE",
@@ -109,7 +110,7 @@ class SourceFormat:
         # caller could add a variable, and the specs would follow: they read
         # this mapping at attribute-access time, so an already-built spec would
         # start reporting different source units.
-        object.__setattr__(self, "variables", MappingProxyType(dict(self.variables)))
+        object.__setattr__(self, "variables", FrozenMapping(self.variables))
 
     def __hash__(self) -> int:
         # dataclass(frozen=True) generates a __hash__ that hashes the fields,

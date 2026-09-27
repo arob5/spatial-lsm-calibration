@@ -7,14 +7,11 @@ a quietly wrong coastline.
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
-import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
+from conftest import REPOSITORY, load_script
+from sipnet_calibration.io import file_md5
 from sipnet_calibration.plotting import basemap
 from sipnet_calibration.plotting.basemap import (
     BASEMAP_LAYERS,
@@ -29,24 +26,8 @@ from sipnet_calibration.plotting.basemap import (
 from sipnet_calibration.projection import SITE_PROJECTION
 from sipnet_calibration.sites import EXTENTS
 
-REPOSITORY = Path(__file__).resolve().parents[1]
+#: The tracked archives, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "natural_earth"
-
-
-def load_script(relative: str):
-    path = REPOSITORY / relative
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[path.stem] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.fixture
-def ax():
-    figure, axes = plt.subplots()
-    yield axes
-    plt.close(figure)
 
 
 # ── the tracked file ──────────────────────────────────────────────────────────
@@ -88,13 +69,81 @@ def test_the_archives_are_the_ones_the_download_script_records():
         path = RAW_DIR / file_name
         if not path.is_file():
             pytest.skip(f"{path} is not in this working copy")
-        assert download.md5_of(path) == md5
+        assert file_md5(path) == md5
 
 
 def test_the_download_refuses_an_archive_with_the_wrong_md5():
     download = load_script("scripts/raw_sources/download_natural_earth.py")
     with pytest.raises(download.DownloadError, match="new release"):
         download.check_md5_matches(download.SOURCES[0], "0" * 32)
+
+
+def test_a_failed_basemap_check_keeps_the_partial_and_prints_its_path(
+    tmp_path, capsys, monkeypatch
+):
+    if not all((RAW_DIR / layer.source_file).is_file() for layer in BASEMAP_LAYERS.values()):
+        pytest.skip("the Natural Earth archives are not in this working copy")
+    build = load_script("scripts/build_basemap.py")
+
+    def refuse(parts, path):
+        raise build.BuildError("forced: did not read back")
+
+    monkeypatch.setattr(build, "check_round_trip", refuse)
+    out = tmp_path / "basemap.npz"
+    assert build.main(["--raw-dir", str(RAW_DIR), "--out", str(out)]) == 1
+    err = capsys.readouterr().err
+    partial = out.with_name(out.name + ".partial")
+    assert not out.exists() and partial.exists() and str(partial) in err
+
+
+def test_the_build_finds_the_tracked_archives_from_the_repository():
+    build = load_script("scripts/build_basemap.py")
+    assert build.DEFAULT_RAW_DIR == RAW_DIR
+
+
+class _Response:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self.payload
+
+
+def test_a_download_with_the_wrong_md5_keeps_the_partial_and_prints_its_path(
+    tmp_path, capsys, monkeypatch
+):
+    download = load_script("scripts/raw_sources/download_natural_earth.py")
+    monkeypatch.setattr(
+        download.urllib.request, "urlopen", lambda *a, **k: _Response(b"a new release")
+    )
+    assert download.main(["--out-dir", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    partial = tmp_path / (download.SOURCES[0].file_name + ".partial")
+    assert partial.read_bytes() == b"a new release" and str(partial) in err
+    assert not (tmp_path / download.SOURCES[0].file_name).exists()
+
+
+def test_a_download_that_fails_early_does_not_report_a_stale_partial(
+    tmp_path, capsys, monkeypatch
+):
+    download = load_script("scripts/raw_sources/download_natural_earth.py")
+    stale = tmp_path / (download.SOURCES[0].file_name + ".partial")
+    stale.write_bytes(b"last week's wrong release")
+
+    def offline(*args, **kwargs):
+        raise OSError("network is unreachable")
+
+    monkeypatch.setattr(download.urllib.request, "urlopen", offline)
+    assert download.main(["--out-dir", str(tmp_path)]) == 1
+    err = capsys.readouterr().err
+    assert "network is unreachable" in err and "kept the partial" not in err
+    assert not stale.exists()
 
 
 def test_a_file_built_for_another_center_is_refused(tmp_path):
