@@ -666,17 +666,11 @@ def select_sites(
     ------
     KeyError
         If *site_ids* names a site the table does not hold.
-    TypeError
-        If *site_ids* is one id, a string, a set or a mapping, or holds a
-        boolean, a float or a value that is not a number; if *bbox* is not a
-        sequence of four numbers; if *where* returns a mask that is not
-        boolean; or if *n_random* is a boolean or not an integer.
-    ValueError
-        If *site_ids* holds duplicates or values that are not site ids, is a
-        two-dimensional array, or the table lists a site twice; if *bbox* is
-        malformed; if *where* returns a mask that cannot be aligned with the
-        table, has missing values or has the wrong length; or if *n_random*
-        is negative or exceeds the number of rows available.
+    TypeError, ValueError
+        If *site_ids*, *bbox* or *n_random* is refused by the coercers of
+        :mod:`sipnet_calibration.validation` (``as_site_ids``, ``as_bbox``,
+        ``as_bounded_integer``), the table lists a site twice, or *where*
+        returns something that is not one boolean per row.
 
     Notes
     -----
@@ -772,13 +766,9 @@ def site_locations(
 
     Raises
     ------
-    TypeError
-        For a refusal of :func:`sipnet_calibration.validation.as_site_ids`
-        (one id, a string, a set, a float or a boolean), or if *site_table*
-        is not a ``DataFrame`` or its ``site_id`` is not integers.
-    ValueError
-        If *site_ids* is a two-dimensional array, an id is not a site id or is
-        named twice, or for any refusal of
+    TypeError, ValueError
+        If *site_ids* is refused by
+        :func:`sipnet_calibration.validation.as_site_ids`, or *site_table* by
         :func:`check_site_table_locates_the_sites`.
     KeyError
         If a site is not in the site table.

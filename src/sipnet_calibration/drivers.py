@@ -494,30 +494,19 @@ def load_drivers(
     Raises
     ------
     FileNotFoundError
-        If the root does not exist; if *source_indices* is ``None`` and no
-        requested site has a driver directory; if no requested pair has a
-        file at all; or if a requested pair has no file and *allow_missing*
-        is ``False``.
+        If the root is not a directory, no requested pair has a file, or a
+        requested pair has none and *allow_missing* is ``False``.
     TypeError
-        If *sites* or *source_indices* is one value, a string, a set or not
-        iterable, or holds a boolean, a float or a value that is not an
-        integer; or if *site_table* is not a ``DataFrame`` or its
-        ``site_id`` is not integers.
+        If *sites* or *source_indices* is not a sequence of integers, as
+        :mod:`sipnet_calibration.validation` defines one, or *site_table* is
+        not a ``DataFrame`` keyed on integer site ids.
     KeyError
         If a site is not in the site table.
     ValueError
-        If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if *sites*
-        or *source_indices* is empty or a two-dimensional array, or holds a
-        value that is not positive, discovered ones included, or a source
-        index beyond the ``int64`` range; if *sites*
-        names a site twice or *source_indices* a source index twice; if the
-        site table lacks ``site_id``,
-        ``lon`` or ``lat`` or repeats a ``site_id``; if a pair's
-        directory holds more than one ``.clim`` file; if a file fails
-        :func:`read_driver_file`, its name does not follow the template, the
-        directory and file-name members disagree, or the dates in the file name
-        do not match its first and last day; or if two files are not on one
-        time axis, since the time coordinates are shared by every file.
+        If *time_zone* is neither ``"UTC"`` nor a fixed UTC offset; if
+        *sites* or *source_indices* is empty or refused by the coercers of
+        :mod:`sipnet_calibration.validation`; or if a directory or a file
+        fails a check of this module.
     """
     root = Path(root) if root is not None else default_drivers_root()
     check_drivers_root_is_a_directory(root)

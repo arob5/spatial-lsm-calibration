@@ -56,8 +56,8 @@ REAL_SITES = [
 ]
 
 # The stored coordinates depart from exact cell centers by up to this much,
-# consistent with 32-bit storage upstream. See SITE_GRID's documentation.
-STORED_COORD_TOLERANCE_DEG = 1.02e-6
+# in degrees, consistent with 32-bit storage upstream. See SITE_GRID's documentation.
+STORED_COORDINATE_TOLERANCE = 1.02e-6
 
 
 class TestGridGeometry:
@@ -140,8 +140,8 @@ class TestLonLatToIndex:
         self, site_id, lon, lat, lon_index, lat_index
     ):
         back_lon, back_lat = SITE_GRID.index_to_lonlat(lon_index, lat_index)
-        assert abs(back_lon - lon) <= STORED_COORD_TOLERANCE_DEG
-        assert abs(back_lat - lat) <= STORED_COORD_TOLERANCE_DEG
+        assert abs(back_lon - lon) <= STORED_COORDINATE_TOLERANCE
+        assert abs(back_lat - lat) <= STORED_COORDINATE_TOLERANCE
 
     def test_round_trip_over_the_whole_grid(self):
         rng = np.random.default_rng(0)
@@ -176,10 +176,10 @@ class TestLonLatToIndex:
             SITE_GRID.lonlat_to_index(lon, lat - 1.0)
 
     def test_the_stored_offset_does_not_shift_any_index(self):
-        # every site is within STORED_COORD_TOLERANCE_DEG of a center, which is
+        # every site is within STORED_COORDINATE_TOLERANCE of a center, which is
         # three orders of magnitude below half a cell, so rounding is unambiguous
         half_cell = 0.5 / SITE_GRID.cells_per_degree
-        assert STORED_COORD_TOLERANCE_DEG < half_cell / 100
+        assert STORED_COORDINATE_TOLERANCE < half_cell / 100
 
 
 # ── the site table and the ingest script ─────────────────────────────────────
@@ -392,8 +392,8 @@ class TestCoordinateRoundTrip:
         lon, lat = SITE_GRID.index_to_lonlat(
             table["lon_index"].to_numpy(), table["lat_index"].to_numpy()
         )
-        assert np.abs(lon - table["lon"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
-        assert np.abs(lat - table["lat"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
+        assert np.abs(lon - table["lon"].to_numpy()).max() <= STORED_COORDINATE_TOLERANCE
+        assert np.abs(lat - table["lat"].to_numpy()).max() <= STORED_COORDINATE_TOLERANCE
 
 
 class TestTextRoundTrip:

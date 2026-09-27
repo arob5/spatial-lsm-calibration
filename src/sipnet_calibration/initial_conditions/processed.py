@@ -226,12 +226,10 @@ def initial_condition_fields(
 
     Raises
     ------
-    TypeError
-        If *names* or *sites* is one value, a string or a set; if a name is
-        not a string; or if a site id is a boolean, a float or not a number.
-    ValueError
-        If a site id is not from 1 to the largest ``int32``, is asked for
-        twice, or *sites* is a two-dimensional array.
+    TypeError, ValueError
+        If *names* or *sites* is refused by
+        :func:`~sipnet_calibration.validation.as_names` or
+        :func:`~sipnet_calibration.validation.as_site_ids`.
     KeyError
         If a name is not an initial condition, or a requested site is not in
         the processed file.
