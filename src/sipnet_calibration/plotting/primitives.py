@@ -71,6 +71,7 @@ from sipnet_calibration.validation import as_positive_integer
 __all__ = [
     "band",
     "cells_from_index",
+    "check_ax_is_an_axes",
     "fan",
     "line",
     "nanquantile",
@@ -668,3 +669,16 @@ def _checked_levels(levels) -> tuple[float, ...]:
     if outside:
         raise ValueError(f"every level must lie within (0, 1); got {outside}")
     return levels
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_ax_is_an_axes(ax: Any) -> None:
+    """A plotter is given the ``Axes`` it draws on."""
+    if not isinstance(ax, Axes):
+        raise TypeError(
+            f"ax: a plotter draws on the matplotlib Axes it is given, got "
+            f"{type(ax).__name__}; pass one, from plt.subplots() or a grid of "
+            "facet.build_plot_grid, which makes the figure."
+        )

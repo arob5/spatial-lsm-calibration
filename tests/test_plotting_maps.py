@@ -450,10 +450,9 @@ def frames(dense) -> xr.DataArray:
 
 
 @pytest.mark.parametrize("render", ["points", "cells", "triangles"])
-def test_an_animation_keeps_one_scale_and_shows_each_frames_values(dense, render):
+def test_an_animation_keeps_one_scale_and_shows_each_frames_values(ax, dense, render):
     field = frames(dense)
-    animation = animate_map(field, render=render)
-    ax = animation._fig.axes[0]
+    animation = animate_map(field, ax=ax, render=render)
     drawn = []
     for position in range(3):
         (artist,) = animation._func(position)
@@ -470,8 +469,8 @@ def _drawn_count(artist) -> int:
     return int(np.isfinite(np.ma.filled(np.asarray(artist.get_array(), dtype=float), np.nan)).sum())
 
 
-def test_an_animated_points_frame_places_exactly_the_sites_with_values(dense):
-    animation = animate_map(frames(dense))
+def test_an_animated_points_frame_places_exactly_the_sites_with_values(ax, dense):
+    animation = animate_map(frames(dense), ax=ax)
     (artist,) = animation._func(2)
     assert len(artist.get_offsets()) == int((dense.lon < -95).sum())
 
@@ -530,19 +529,19 @@ def test_a_shared_scale_refuses_categorical_beside_continuous(categorical, dense
 # ── real data ─────────────────────────────────────────────────────────────────
 
 
-def test_the_site_pool_maps_by_class(real_site_table):
+def test_the_site_pool_maps_by_class(ax, real_site_table):
     from sipnet_calibration.site_labels import site_labels_field
 
     try:
         field = site_labels_field("reanalysis_3pft", site_table=real_site_table)
     except FileNotFoundError as error:
         pytest.skip(str(error))
-    ax = plot_map(field)
+    plot_map(field, ax)
     assert len(data_artist(ax).get_offsets()) == field.sizes["site"]
     assert len(ax.get_legend().get_texts()) == 3
 
 
-def test_the_site_pool_maps_by_sixteen_classes_with_display_names(real_site_table):
+def test_the_site_pool_maps_by_sixteen_classes_with_display_names(ax, real_site_table):
     from sipnet_calibration.site_labels import resolve_site_labels, site_labels_field
 
     try:
@@ -550,7 +549,7 @@ def test_the_site_pool_maps_by_sixteen_classes_with_display_names(real_site_tabl
     except FileNotFoundError as error:
         pytest.skip(str(error))
     spec = resolve_site_labels("pft_16class")
-    ax = plot_map(field)
+    plot_map(field, ax)
     legend = ax.get_legend()
     assert [t.get_text() for t in legend.get_texts()] == [spec.display_names[label] for label in spec.labels]
     colors = [to_hex(handle.get_facecolor()) for handle in legend.legend_handles]
@@ -593,27 +592,27 @@ def test_model_output_is_mapped_by_time_and_by_quantile_at_one_time(model_wood):
     assert len(axes) == 3
 
 
-def test_model_output_is_animated_over_time(model_wood):
-    animation = animate_map(model_wood.isel(sample=0, time=slice(0, 3)))
+def test_model_output_is_animated_over_time(ax, model_wood):
+    animation = animate_map(model_wood.isel(sample=0, time=slice(0, 3)), ax=ax)
     (artist,) = animation._func(2)
     assert artist.get_array().size == 3
 
 
-def test_an_annual_field_with_windows_is_animated(dense):
+def test_an_annual_field_with_windows_is_animated(ax, dense):
     annual = frames(dense).assign_coords(
         window_start=("time", np.array(["2011-12", "2012-01", "2012-02"], dtype="datetime64[ns]")),
         window_end=("time", np.array(["2012-01", "2012-02", "2012-03"], dtype="datetime64[ns]")),
     )
-    animation = animate_map(annual)
+    animation = animate_map(annual, ax=ax)
     animation._func(1)
 
 
-def test_an_animation_refuses_a_batch_dim_with_advice(dense):
+def test_an_animation_refuses_a_batch_dim_with_advice(ax, dense):
     field = xr.concat([frames(dense), frames(dense)], dim="driver_member").assign_coords(
         driver_member=[0, 1]
     )
     with pytest.raises(ValueError, match="driver_member.*summarize_batch"):
-        animate_map(field)
+        animate_map(field, ax=ax)
 
 
 def test_plot_map_quantiles_refuses_the_retired_dim_keyword_naming_batch_dim(ensemble):
@@ -638,6 +637,22 @@ def test_a_table_is_refused_as_a_type_error(ax):
         plot_map(pd.DataFrame({"x": [1.0]}), ax=ax)
 
 
+def test_a_map_and_an_animation_need_the_axes_they_draw_on(dense):
+    """Neither makes a figure: a missing or empty ``ax`` is refused."""
+    import matplotlib.pyplot as plt
+
+    before = plt.get_fignums()
+    with pytest.raises(TypeError, match="ax"):
+        plot_map(dense)
+    with pytest.raises(TypeError, match="ax: a plotter draws on the matplotlib Axes"):
+        plot_map(dense, None)
+    with pytest.raises(TypeError, match="ax"):
+        animate_map(frames(dense))
+    with pytest.raises(TypeError, match="ax: a plotter draws on the matplotlib Axes"):
+        animate_map(frames(dense), ax=None)
+    assert plt.get_fignums() == before
+
+
 def test_summarize_batch_refuses_a_field_without_units(ensemble):
     """With its validate_field removed, a field without units was summarized."""
     with pytest.raises(ValueError, match="attrs\\['units'\\]"):
@@ -653,12 +668,12 @@ def test_plot_map_by_refuses_a_non_field_in_the_fields_words(ensemble):
     assert plt.get_fignums() == before
 
 
-def test_animate_map_refuses_a_non_field_in_the_fields_words(dense):
+def test_animate_map_refuses_a_non_field_in_the_fields_words(ax, dense):
     import matplotlib.pyplot as plt
 
     before = plt.get_fignums()
     with pytest.raises(ValueError, match="attrs\\['units'\\]; set them"):
-        animate_map(_without_units(frames(dense)))
+        animate_map(_without_units(frames(dense)), ax=ax)
     assert plt.get_fignums() == before
 
 
@@ -668,9 +683,9 @@ def test_plot_map_by_refuses_a_field_stored_out_of_order(ensemble):
         plot_map_by(ensemble.transpose("site", "sample"), "sample")
 
 
-def test_animate_map_refuses_a_field_stored_out_of_order(dense):
+def test_animate_map_refuses_a_field_stored_out_of_order(ax, dense):
     with pytest.raises(ValueError, match="not in the order"):
-        animate_map(frames(dense).transpose("time", "site"))
+        animate_map(frames(dense).transpose("time", "site"), ax=ax)
 
 
 def test_quantile_maps_take_the_batch_dim_named(ensemble):
@@ -711,25 +726,25 @@ def test_a_shared_map_grid_checks_every_panel_first(ensemble):
         plot_map_grid({"a": ensemble, "b": ensemble}, scale="shared")
 
 
-def test_animating_a_batch_dim_of_a_field_with_time_is_refused(ensemble):
+def test_animating_a_batch_dim_of_a_field_with_time_is_refused(ax, ensemble):
     moving = ensemble.expand_dims(time=pd_dates(2)).transpose("sample", "site", "time")
     with pytest.raises(ValueError, match="for 'time'"):
-        animate_map(moving, "sample")
+        animate_map(moving, "sample", ax=ax)
 
 
-def test_animating_a_zero_length_dim_is_refused_in_the_modules_words(dense):
+def test_animating_a_zero_length_dim_is_refused_in_the_modules_words(ax, dense):
     """It raised a raw IndexError from the first of no frames."""
     with pytest.raises(ValueError, match="no 'time' steps to play"):
-        animate_map(frames(dense).isel(time=slice(0, 0)))
+        animate_map(frames(dense).isel(time=slice(0, 0)), ax=ax)
 
 
-def test_animate_map_checks_a_frame_is_a_map_before_its_scale_is_read():
+def test_animate_map_checks_a_frame_is_a_map_before_its_scale_is_read(ax):
     """Without the check before the scale, a field with no spatial dim reached
     map_bounds and failed with xarray's own error about lat and lon."""
     from conftest import make_field
 
     with pytest.raises(ValueError, match="a map needs a 'site' dimension"):
-        animate_map(make_field(("time",), n_time=3))
+        animate_map(make_field(("time",), n_time=3), ax=ax)
 
 
 def pd_dates(n):

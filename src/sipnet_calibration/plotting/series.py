@@ -22,17 +22,20 @@ Usage
 -----
 ::
 
+    import matplotlib.pyplot as plt
+
     from sipnet_calibration.drivers import driver_fields, load_drivers
     from sipnet_calibration.plotting import plot_time_series
 
     tair = driver_fields(load_drivers([1, 27]))["air_temperature"]
 
-    plot_time_series(tair.sel(site=1))                     # quantile bands
-    plot_time_series(tair.sel(site=1), show="spaghetti")   # driver members as curves
+    figure, ax = plt.subplots()
+    plot_time_series(tair.sel(site=1), ax)                     # quantile bands
+    plot_time_series(tair.sel(site=1), ax, show="spaghetti")   # driver members as curves
 
     # Observations, with their error variance, over a model panel.
-    ax = plot_time_series(predicted_wood.sel(site=s))
-    plot_time_series(observed_wood.sel(site=s), ax=ax, role="observation",
+    plot_time_series(predicted_wood.sel(site=s), ax)
+    plot_time_series(observed_wood.sel(site=s), ax, role="observation",
                      show="points", variance=wood_variance.sel(site=s))
 """
 
@@ -40,7 +43,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
 from matplotlib.axes import Axes
@@ -59,7 +61,7 @@ SHOW_OPTIONS: tuple[str, ...] = ("auto", "line", "spaghetti", "fan", "points")
 
 def plot_time_series(
     field: xr.DataArray,
-    ax: Axes | None = None,
+    ax: Axes,
     *,
     show: str = "auto",
     role: str = "posterior",
@@ -98,8 +100,7 @@ def plot_time_series(
         ``time`` dim and no spatial dim, whose ``units`` and ``long_name``
         become the y axis label; a scalar ``site`` coordinate is fine.
     ax:
-        The axes to draw on. If ``None``, a figure and axes are created with
-        ``matplotlib.pyplot.subplots``.
+        The axes to draw on.
     show:
         One of :data:`SHOW_OPTIONS`. ``"auto"`` draws quantile bands when *field*
         has a sample dimension and a single curve when it does not. Asking for
@@ -136,14 +137,14 @@ def plot_time_series(
     Returns
     -------
     matplotlib.axes.Axes
-        The axes drawn on, which is *ax* itself when it was given. Its y label
+        *ax*, drawn on. Its y label
         is set from :func:`.style.axis_label`; the x axis and the title are
         left alone, a panel title being the grid's to set.
 
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray`` or *ax* is not an ``Axes``.
     ValueError
         If *field* is not a field, has no ``time`` dimension, or has a spatial
         dim (a ``site`` dim among them); if *show* is
@@ -170,14 +171,13 @@ def plot_time_series(
     two stages.
     """
     validate_field(field)
+    primitives.check_ax_is_an_axes(ax)
     check_field_is_a_time_series(field)
     batch = batch_dims(field)
     show = _resolved_show(show, batch)
     _check_label_by(label_by, show, field, batch)
     yerr = _error_bar_lengths(field, variance, standard_deviation, n_sigma, show)
 
-    if ax is None:
-        _, ax = plt.subplots()
     if label is None:
         label = role
     x = (

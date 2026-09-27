@@ -489,12 +489,14 @@ def test_no_figure_is_created_when_axes_are_given(ax, field_time, monkeypatch):
     plot_time_series(field_time, ax=ax)
 
 
-def test_a_figure_is_created_when_no_axes_are_given(field_time):
-    """Called without ``ax``, the panel makes its own figure and axes."""
+def test_the_axes_are_required(field_time):
+    """A panel never makes a figure: a missing or empty ``ax`` is refused."""
     before = plt.get_fignums()
-    returned = plot_time_series(field_time)
-    assert returned.figure.number not in before
-    plt.close(returned.figure)
+    with pytest.raises(TypeError, match="ax"):
+        plot_time_series(field_time)
+    with pytest.raises(TypeError, match="ax: a plotter draws on the matplotlib Axes"):
+        plot_time_series(field_time, ax=None)
+    assert plt.get_fignums() == before
 
 
 def test_the_panel_never_shows_or_saves(ax, field_time, monkeypatch):

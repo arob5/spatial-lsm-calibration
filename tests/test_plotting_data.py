@@ -240,7 +240,7 @@ def test_an_annual_constraint_is_mapped_at_one_time_and_animated(ax, real_constr
         field = fields[name]
         observed = field.isel(site=np.flatnonzero(field.notnull().any("time").values)[:50])
         plot_map(observed.isel(time=0), ax=ax)
-        animate_map(observed.isel(time=slice(0, 2)))._func(1)
+        animate_map(observed.isel(time=slice(0, 2)), ax=ax)._func(1)
 
 
 def test_one_driver_member_is_mapped_at_one_time(ax, real_driver_field):

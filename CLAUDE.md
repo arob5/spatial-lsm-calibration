@@ -927,7 +927,7 @@ plotting code. The load-bearing rules:
   observation operators are written with it, and it is the verb a caller
   applies before plotting, so a predictive-check figure cannot disagree with
   what the likelihood consumed. The plotting layer imports nothing from it:
-  `plot_time_series(aggregate_time(f, "1D"))`, never a plotter keyword.
+  `plot_time_series(aggregate_time(f, "1D"), ax)`, never a plotter keyword.
 - **The variable's kind says which resampling methods are valid; the caller
   may name one.** pySIPNET owns the first half: since its PR #38 every
   variable has a `kind`, `RESAMPLING_METHODS_FOR_KIND` says what may be done
@@ -1024,7 +1024,9 @@ plotting code. The load-bearing rules:
 - **L1 primitives** take `(ax, plain numpy, **style)` and return artists: no
   pandas, no xarray, no figure creation. **No plotter** calls `plt.show()` or
   `savefig`, creates a figure implicitly, or accepts a `SIPNETResult` or a path
-  (that is an adapter's job).
+  (that is an adapter's job): the L2 plotters (`plot_time_series`, `plot_map`,
+  `animate_map`) require the `ax` they draw on, and only `facet` makes a
+  figure.
 - **Anything that knows an experiment/task name belongs in
   `experiments/<task>/plots.py`, not the library.**
 - Style comes from the `ROLES` palette, not per-call keywords. There is no

@@ -107,16 +107,19 @@ Usage
 -----
 ::
 
-    from sipnet_calibration.plotting import plot_map, summarize_batch
+    import matplotlib.pyplot as plt
+
+    from sipnet_calibration.plotting import animate_map, plot_map, summarize_batch
     from sipnet_calibration.site_labels import site_labels_field
 
-    plot_map(site_labels_field("reanalysis_3pft"))              # classes
-    plot_map(wood.isel(initial_condition_member=0), extent="CONUS", log=True)  # one member
+    figure, ax = plt.subplots(layout="constrained")
+    plot_map(site_labels_field("reanalysis_3pft"), ax)              # classes
+    plot_map(wood.isel(initial_condition_member=0), ax, extent="CONUS", log=True)
     plot_map(summarize_batch(wood, "median", batch_dim="initial_condition_member"),
-             render="cells")                                    # a mosaic
-    plot_map(residual, center=0.0, extent=(-90, 35, -75, 45))   # a region
+             ax, render="cells")                                    # a mosaic
+    plot_map(residual, ax, center=0.0, extent=(-90, 35, -75, 45))   # a region
 
-    animation = animate_map(monthly_nee, "time", center=0.0)
+    animation = animate_map(monthly_nee, "time", ax=ax, center=0.0)
     animation.save("nee.gif", writer="pillow")
 """
 
@@ -343,7 +346,7 @@ class ColorScale:
 
 def plot_map(
     field: xr.DataArray,
-    ax: Axes | None = None,
+    ax: Axes,
     *,
     render: str | SiteRenderer | None = None,
     extent: str | tuple[float, float, float, float] | ProjectedBounds | None = None,
@@ -370,7 +373,7 @@ def plot_map(
         module docstring: values or classes on ``(site,)`` with ``lon``/``lat``
         on ``site``, or a raster on ``(lat, lon)``.
     ax:
-        The axes to draw on. If ``None``, a figure and axes are created.
+        The axes to draw on.
     render:
         How to draw a site field: ``"points"`` (the default when ``None``),
         ``"cells"``, ``"triangles"``, or any :class:`SiteRenderer`, such as
@@ -415,13 +418,13 @@ def plot_map(
     Returns
     -------
     matplotlib.axes.Axes
-        The axes drawn on, with its limits set to the frame, an equal aspect,
+        *ax*, drawn on, with its limits set to the frame, an equal aspect,
         and no ticks. The title is left alone.
 
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray`` or *ax* is not an ``Axes``.
     ValueError
         If *field* is not a field or holds the data of none of the maps above --
         in particular if it has a batch dim or a ``time`` dimension, where the
@@ -430,7 +433,7 @@ def plot_map(
         not a known name or a valid box; or if *log* is asked for with a
         nonpositive value in the frame.
     """
-    ax, _, _ = _draw_map(
+    _draw_map(
         field, ax, render=render, extent=extent,
         color={"cmap": cmap, "vmin": vmin, "vmax": vmax, "center": center, "log": log,
                "robust": robust, "norm": norm, "colors": colors},
@@ -507,7 +510,7 @@ def animate_map(
     field: xr.DataArray,
     dim: str = TIME,
     *,
-    ax: Axes | None = None,
+    ax: Axes,
     interval_ms: int = 250,
     **map_kwargs: Any,
 ) -> FuncAnimation:
@@ -521,7 +524,7 @@ def animate_map(
     dim:
         The dimension to play through.
     ax:
-        The axes to draw on. If ``None``, a figure and axes are created.
+        The axes to draw on, whose figure the animation plays in.
     interval_ms:
         Milliseconds between frames.
     **map_kwargs:
@@ -538,7 +541,7 @@ def animate_map(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray`` or *ax* is not an ``Axes``.
     ValueError
         If *field* is not a field
         (:func:`sipnet_calibration.fields.validate_field`); if it has no
@@ -559,7 +562,7 @@ def animate_map(
     bounds = map_bounds(frames, rest.pop("extent", None))
     scale = color_scale(frames, bounds=bounds, **color)
 
-    ax, artist, renderer = _draw_map(
+    artist, renderer = _draw_map(
         frames[0], ax, render=rest.pop("render", None), extent=bounds, scale=scale,
         colorbar=rest.pop("colorbar", True), basemap=rest.pop("basemap", True),
         graticule=rest.pop("graticule", True), style=rest,
@@ -771,12 +774,13 @@ class _Geometry:
 
 def _draw_map(field, ax, *, render, extent, colorbar, basemap, graticule, style,
               color=None, scale=None):
-    """Draw *field*; return the axes, the data artist, and the renderer used.
+    """Draw *field* on *ax*; return the data artist and the renderer used.
 
     The scale is *scale* when given, as the grids and animations pass it, and
     otherwise resolved from *color* over this field alone.
     """
     check_field_is_a_map(field)
+    primitives.check_ax_is_an_axes(ax)
     is_raster = SITE not in field.dims
     renderer = None if is_raster else _resolved_renderer(render)
     if is_raster and render is not None:
@@ -793,8 +797,6 @@ def _draw_map(field, ax, *, render, extent, colorbar, basemap, graticule, style,
         scale = color_scale([field], bounds=bounds, **(color or {}))
     geometry = _geometry(field, scale)
 
-    if ax is None:
-        _, ax = plt.subplots(layout="constrained")
     _frame_axes(ax, bounds)
     if graticule:
         draw_graticule(ax)
@@ -809,7 +811,7 @@ def _draw_map(field, ax, *, render, extent, colorbar, basemap, graticule, style,
         _add_scale_key(ax, scale, geometry, bounds)
     # Drawing an image or a mesh can move the limits; the frame is the frame.
     _frame_axes(ax, bounds)
-    return ax, artist, renderer
+    return artist, renderer
 
 
 def _resolved_renderer(render) -> SiteRenderer:
