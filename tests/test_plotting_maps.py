@@ -552,9 +552,9 @@ def test_the_site_pool_maps_by_sixteen_classes_with_display_names(real_site_tabl
     spec = resolve_site_labels("pft_16class")
     ax = plot_map(field)
     legend = ax.get_legend()
-    assert [t.get_text() for t in legend.get_texts()] == [spec.display_names[label] for label in spec.labels]
+    assert [t.get_text() for t in legend.get_texts()] == [spec.display_names[label] for label in spec.class_names]
     colors = [to_hex(handle.get_facecolor()) for handle in legend.legend_handles]
-    assert len(set(colors)) == len(spec.labels)
+    assert len(set(colors)) == len(spec.class_names)
 
 
 def test_initial_wood_carbon_quantiles_over_conus():

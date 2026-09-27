@@ -39,7 +39,7 @@ from sipnet_calibration.sites import (
     check_site_table_locates_the_sites,
     check_site_table_site_ids_are_integers,
     check_sites_are_the_site_table,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
     select_sites,
     site_coordinates,
@@ -56,8 +56,8 @@ REAL_SITES = [
 ]
 
 # The stored coordinates depart from exact cell centers by up to this much,
-# consistent with 32-bit storage upstream. See SITE_GRID's documentation.
-STORED_COORD_TOLERANCE_DEG = 1.02e-6
+# in degrees, consistent with 32-bit storage upstream. See SITE_GRID's documentation.
+STORED_COORDINATE_TOLERANCE = 1.02e-6
 
 
 class TestGridGeometry:
@@ -69,7 +69,7 @@ class TestGridGeometry:
         assert SITE_GRID.shape == (9360, 19080)
 
     def test_step_is_thirty_arcseconds(self):
-        assert SITE_GRID.step_arcsec == pytest.approx(30.0)
+        assert SITE_GRID.arcseconds_per_cell == pytest.approx(30.0)
         assert SITE_GRID.step == pytest.approx(1 / 120)
 
     def test_extent_is_consistent_with_dimensions(self):
@@ -140,8 +140,8 @@ class TestLonLatToIndex:
         self, site_id, lon, lat, lon_index, lat_index
     ):
         back_lon, back_lat = SITE_GRID.index_to_lonlat(lon_index, lat_index)
-        assert abs(back_lon - lon) <= STORED_COORD_TOLERANCE_DEG
-        assert abs(back_lat - lat) <= STORED_COORD_TOLERANCE_DEG
+        assert abs(back_lon - lon) <= STORED_COORDINATE_TOLERANCE
+        assert abs(back_lat - lat) <= STORED_COORDINATE_TOLERANCE
 
     def test_round_trip_over_the_whole_grid(self):
         rng = np.random.default_rng(0)
@@ -166,7 +166,7 @@ class TestLonLatToIndex:
         nudged = lon + 5e-4
         with pytest.raises(ValueError, match="not on the grid"):
             SITE_GRID.lonlat_to_index(nudged, lat)
-        assert SITE_GRID.lonlat_to_index(nudged, lat, tol=1e-3) == (100, 100)
+        assert SITE_GRID.lonlat_to_index(nudged, lat, tolerance=1e-3) == (100, 100)
 
     def test_rejects_coordinates_outside_the_grid(self):
         lon, lat = SITE_GRID.index_to_lonlat(0, 0)
@@ -176,10 +176,10 @@ class TestLonLatToIndex:
             SITE_GRID.lonlat_to_index(lon, lat - 1.0)
 
     def test_the_stored_offset_does_not_shift_any_index(self):
-        # every site is within STORED_COORD_TOLERANCE_DEG of a center, which is
+        # every site is within STORED_COORDINATE_TOLERANCE of a center, which is
         # three orders of magnitude below half a cell, so rounding is unambiguous
         half_cell = 0.5 / SITE_GRID.cells_per_degree
-        assert STORED_COORD_TOLERANCE_DEG < half_cell / 100
+        assert STORED_COORDINATE_TOLERANCE < half_cell / 100
 
 
 # ── the site table and the ingest script ─────────────────────────────────────
@@ -392,8 +392,8 @@ class TestCoordinateRoundTrip:
         lon, lat = SITE_GRID.index_to_lonlat(
             table["lon_index"].to_numpy(), table["lat_index"].to_numpy()
         )
-        assert np.abs(lon - table["lon"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
-        assert np.abs(lat - table["lat"].to_numpy()).max() <= STORED_COORD_TOLERANCE_DEG
+        assert np.abs(lon - table["lon"].to_numpy()).max() <= STORED_COORDINATE_TOLERANCE
+        assert np.abs(lat - table["lat"].to_numpy()).max() <= STORED_COORDINATE_TOLERANCE
 
 
 class TestTextRoundTrip:
@@ -585,24 +585,24 @@ class TestLoadSites:
         table = ingested["table"].head(3).copy()
         table.loc[2, "site_id"] = 1
         table.to_csv(path, index=False)
-        with pytest.raises(ValueError, match="duplicate site_id"):
+        with pytest.raises(ValueError, match="more than once"):
             load_sites(path)
 
     def test_an_unsorted_table_is_rejected(self, ingested, tmp_path):
         path = tmp_path / "unsorted.csv"
         ingested["table"].head(3).iloc[::-1].to_csv(path, index=False)
-        with pytest.raises(ValueError, match="ascending site_id"):
+        with pytest.raises(ValueError, match="ascending site_id order"):
             load_sites(path)
 
     def test_the_default_path_honors_the_environment_variable(self, monkeypatch, tmp_path):
 
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
-        assert default_sites_path() == tmp_path / "processed" / "sites" / "sites.csv"
+        assert default_site_table_path() == tmp_path / "processed" / "sites" / "sites.csv"
 
     def test_the_default_path_falls_back_to_the_checkout(self, monkeypatch):
 
         monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
-        assert default_sites_path() == (
+        assert default_site_table_path() == (
             REPOSITORY / "data" / "processed" / "sites" / "sites.csv"
         )
 
@@ -612,21 +612,21 @@ class TestSelectSites:
         assert len(select_sites(ingested["table"])) == N_SITES
 
     def test_ids_are_returned_in_the_order_given(self, ingested):
-        chosen = select_sites(ingested["table"], ids=[8000, 1, 4000])
+        chosen = select_sites(ingested["table"], site_ids=[8000, 1, 4000])
         assert chosen["site_id"].tolist() == [8000, 1, 4000]
 
     def test_an_unknown_id_raises(self, ingested):
         with pytest.raises(KeyError, match=r"\[99999\] are not in the site table"):
-            select_sites(ingested["table"], ids=[1, 99999])
+            select_sites(ingested["table"], site_ids=[1, 99999])
 
     @pytest.mark.parametrize("ids", [1, "1", {1, 2}, [1.0]])
     def test_one_id_a_string_a_set_or_a_float_is_a_type_error(self, ingested, ids):
         with pytest.raises(TypeError, match="ids"):
-            select_sites(ingested["table"], ids=ids)
+            select_sites(ingested["table"], site_ids=ids)
 
     def test_a_repeated_id_raises(self, ingested):
         with pytest.raises(ValueError, match="more than once"):
-            select_sites(ingested["table"], ids=[1, 1])
+            select_sites(ingested["table"], site_ids=[1, 1])
 
     def test_bbox_selects_the_conterminous_us(self, ingested):
         # 3640 of the 8000 sites, per data/README.md.
@@ -668,7 +668,7 @@ class TestSelectSites:
         assert len(select_sites(labeled, where=lambda t: t["pft"] == "DBF")) == 4
 
     def test_where_must_return_a_boolean_mask(self, ingested):
-        with pytest.raises(ValueError, match="boolean mask"):
+        with pytest.raises(TypeError, match="boolean mask"):
             select_sites(ingested["table"], where=lambda t: t["site_id"])
 
     def test_where_must_return_one_value_per_row(self, ingested):
@@ -986,11 +986,11 @@ class TestSelectByIdShape:
     ):
         doubled = pd.concat([ingested["table"].head(3)] * 2, ignore_index=True)
         with pytest.raises(ValueError, match=r"lists site\(s\) \[1, 2, 3\] more than once"):
-            select_sites(doubled, ids=[1, 2])
+            select_sites(doubled, site_ids=[1, 2])
 
     def test_it_preserves_dtype_and_column_order(self, ingested):
         table = ingested["table"]
-        by_id = select_sites(table, ids=[1, 2])
+        by_id = select_sites(table, site_ids=[1, 2])
         by_bbox = select_sites(table, bbox=(-125, 24, -66, 50))
         assert by_id.dtypes["site_id"] == by_bbox.dtypes["site_id"] == np.int32
         assert list(by_id.columns) == list(by_bbox.columns) == list(SITE_COLUMNS)
@@ -998,11 +998,11 @@ class TestSelectByIdShape:
     def test_it_preserves_column_order_on_a_joined_table(self, ingested):
         site_labels = pd.DataFrame({"pft": ["A", "B", "C"], "site_id": [1, 2, 3]})
         joined = site_labels.merge(ingested["table"], on="site_id")
-        assert list(select_sites(joined, ids=[1, 2]).columns) == list(joined.columns)
+        assert list(select_sites(joined, site_ids=[1, 2]).columns) == list(joined.columns)
 
     def test_float_ids_are_rejected_rather_than_truncated(self, ingested):
         with pytest.raises(TypeError, match="float"):
-            select_sites(ingested["table"], ids=[5.9, 1.2])
+            select_sites(ingested["table"], site_ids=[5.9, 1.2])
 
 
 class TestIngestPublishesAtomically:
@@ -1131,7 +1131,7 @@ class TestEmptyAmerifluxMap:
 class TestDefaultOutputAgreesWithTheLoader:
     def test_the_script_writes_where_the_loader_reads(self):
 
-        assert ingest.DEFAULT_OUT == default_sites_path()
+        assert ingest.DEFAULT_OUT == default_site_table_path()
 
     def test_both_follow_the_environment_variable(self, monkeypatch, tmp_path):
         # The script's default was hard-coded to the checkout, so with this set
@@ -1141,7 +1141,7 @@ class TestDefaultOutputAgreesWithTheLoader:
 
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
         fresh = load_script("scripts/ingest_sites.py")
-        assert fresh.DEFAULT_OUT == default_sites_path()
+        assert fresh.DEFAULT_OUT == default_site_table_path()
         assert str(tmp_path) in str(fresh.DEFAULT_OUT)
 
 
@@ -1276,7 +1276,7 @@ class TestDocstringExamples:
         assert len(self._usage_code_blocks()) >= 3
 
     @pytest.mark.skipif(
-        not default_sites_path().exists(),
+        not default_site_table_path().exists(),
         reason="needs the built site table at the default path",
     )
     def test_every_usage_example_executes(self):

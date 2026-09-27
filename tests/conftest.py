@@ -13,13 +13,16 @@ time)`` dimensions (and of other batch dims), with a real ``DatetimeIndex`` on
 ``units``/``long_name`` in ``attrs``.
 
 The in-memory builders make what several test files need: a site table
-(:func:`site_table_of`, and the :func:`site_table` fixture that hands it
-out), a stack of Niwot runs (:func:`niwot_stack_of`), observed values that are
-dated, static or attributed to windows (:func:`dated_observed_values`,
-:func:`static_observed_values`, :func:`windowed_observed_values`), each a
-field whose sites :func:`located` gives ``lon``/``lat``, and a stand-in SIPNET
-model (:func:`scaled_niwot_model`, a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script` imports a script, and
-every figure a test makes is closed after it (:func:`close_figures`).
+(:func:`site_table_of`, or :func:`write_site_table_csv` for one on disk),
+synthetic driver files (:func:`synthetic_driver_rows`,
+:func:`write_driver_pair`), a stack of Niwot runs (:func:`niwot_stack_of`),
+observed values that are dated, static or attributed to windows
+(:func:`dated_observed_values`, :func:`static_observed_values`,
+:func:`windowed_observed_values`), each a field whose sites :func:`located`
+gives ``lon``/``lat``, and a stand-in SIPNET model (:func:`scaled_niwot_model`,
+a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script`
+imports a script, and every figure a test makes is closed after it
+(:func:`close_figures`).
 
 The real-data fixtures read the driver files, the site table and the
 constraints' processed files present in this working copy, found through
@@ -445,6 +448,24 @@ def niwot_parameters():
     )
 
 
+# ── the data root ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def non_editable_install(monkeypatch, tmp_path) -> Path:
+    """The package as a non-editable install sees it: no checkout beside it.
+
+    ``conventions``' package directory is moved into a fake site-packages, and
+    ``$SIPNET_CALIBRATION_DATA`` is set; the fixture returns that data root.
+    """
+    installed = tmp_path / "venv" / "lib" / "python3.14" / "site-packages" / "sipnet_calibration"
+    installed.mkdir(parents=True)
+    monkeypatch.setattr(conventions, "_PACKAGE_DIRECTORY", installed)
+    data = tmp_path / "data"
+    monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(data))
+    return data
+
+
 # ── in-memory site tables ─────────────────────────────────────────────────────
 
 
@@ -479,8 +500,8 @@ def write_site_table_csv(
     path: Path,
     site_ids: Sequence[int],
     *,
-    lon: Sequence[float],
-    lat: Sequence[float],
+    lon: Sequence[float] | None = None,
+    lat: Sequence[float] | None = None,
     landcover: Sequence[int] | None = None,
 ) -> Path:
     """Write a site table with every column of the schema, as the ingest does.
@@ -489,8 +510,12 @@ def write_site_table_csv(
     ----------
     path:
         Where to write it; its directory is created.
-    site_ids, lon, lat:
-        The sites and their coordinates.
+    site_ids:
+        The sites.
+    lon, lat:
+        Their coordinates. By default site *s* is at ``(-99 - s, 39 + s)``,
+        so site 1 is at ``(-100, 40)``, as the synthetic raw data sources
+        written beside it place their records.
     landcover:
         The landcover class of each site; class 1 for every site by default.
 
@@ -506,8 +531,10 @@ def write_site_table_csv(
     frame = pd.DataFrame(
         {
             conventions.SITE_ID: np.array(site_ids, dtype=conventions.SITE_DTYPE),
-            conventions.LON: list(lon),
-            conventions.LAT: list(lat),
+            conventions.LON: (
+                [-99.0 - site for site in site_ids] if lon is None else list(lon)
+            ),
+            conventions.LAT: [39.0 + site for site in site_ids] if lat is None else list(lat),
             "lon_index": np.arange(n, dtype=np.int32) + 1000,
             "lat_index": np.arange(n, dtype=np.int32) + 2000,
             "site_name": [f"site {site}" for site in site_ids],
@@ -523,6 +550,82 @@ def write_site_table_csv(
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_csv(path, index=False)
     return path
+
+
+# ── synthetic driver files ────────────────────────────────────────────────────
+
+
+#: The 14 fields of a legacy-layout ``.clim`` row, under SIPNET's own names.
+DRIVER_FILE_COLUMNS = (
+    "loc", "year", "day", "time", "length", "tair", "tsoil", "par", "precip",
+    "vpd", "vpd_soil", "vpress", "wspd", "soil_wetness",
+)
+
+
+def synthetic_driver_rows(years=(2013,), *, seed=0) -> pd.DataFrame:
+    """One whole year of 3-hourly rows per entry of *years*, in the 14-column layout."""
+    rng = np.random.default_rng(seed)
+    frames = []
+    for year in years:
+        n_days = 366 if pd.Timestamp(year, 1, 1).is_leap_year else 365
+        n = 8 * n_days
+        frames.append(
+            pd.DataFrame(
+                {
+                    "loc": 0,
+                    "year": year,
+                    "day": np.repeat(np.arange(1, n_days + 1), 8),
+                    "time": np.tile(np.arange(8) * 3.0, n_days),
+                    "length": 0.125,
+                    "tair": rng.normal(5, 10, n).round(3),
+                    "tsoil": rng.normal(4, 6, n).round(3),
+                    "par": np.abs(rng.normal(3, 2, n)).round(4),
+                    "precip": np.abs(rng.normal(0, 0.5, n)).round(4),
+                    "vpd": np.abs(rng.normal(300, 100, n)).round(2) + 1.0,
+                    "vpd_soil": np.abs(rng.normal(200, 100, n)).round(2),
+                    "vpress": np.abs(rng.normal(800, 200, n)).round(2) + 1.0,
+                    "wspd": np.abs(rng.normal(3, 1, n)).round(3) + 0.1,
+                    "soil_wetness": 0.6,
+                }
+            )
+        )
+    return pd.concat(frames, ignore_index=True)[list(DRIVER_FILE_COLUMNS)]
+
+
+def write_driver_rows(path: Path, rows: pd.DataFrame) -> Path:
+    """Write *rows* the way the source does: tabs between space-padded fields."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    formats = {"year": "{:d}", "day": "{:3d}", "time": "{:9.6f}", "loc": "{:d}"}
+    lines = []
+    for record in rows.itertuples(index=False):
+        fields = []
+        for column, value in zip(DRIVER_FILE_COLUMNS, record, strict=True):
+            fields.append(formats.get(column, "{}").format(value))
+        lines.append("\t".join(fields))
+    path.write_text("\n".join(lines) + "\n")
+    return path
+
+
+def driver_file_name(rows: pd.DataFrame, member: int) -> str:
+    """The name the source gives the file of *rows* and *member*, ``ERA5.<member>...``."""
+    days = [
+        pd.Timestamp(int(rows["year"].iloc[k]), 1, 1) + pd.Timedelta(days=int(rows["day"].iloc[k]) - 1)
+        for k in (0, -1)
+    ]
+    first, last = days
+    return f"ERA5.{member}.{first.date()}.{last.date()}.clim"
+
+
+def write_driver_pair(
+    root: Path, site: int, member: int, rows: pd.DataFrame | None = None, **kwargs
+) -> Path:
+    """A synthetic driver file of *site* and *member* in the real layout; its path."""
+    from sipnet_calibration.drivers import DRIVER_DIRECTORY_TEMPLATE
+
+    if rows is None:
+        rows = synthetic_driver_rows(seed=site * 100 + member, **kwargs)
+    directory = root / DRIVER_DIRECTORY_TEMPLATE.format(site=site, member=member)
+    return write_driver_rows(directory / driver_file_name(rows, member), rows)
 
 
 # ── Niwot runs ────────────────────────────────────────────────────────────────

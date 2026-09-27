@@ -90,10 +90,11 @@ Facts specific to this working copy, which the README deliberately does not carr
   `conventions.data_root()`.** `data_root()` (and `$SIPNET_CALIBRATION_DATA`)
   says where the storage-backed part of `data/` is, which on the SCC or with
   the variable set is another tree; a tracked file is always in the checkout.
-  The tests (`conftest.REPOSITORY`), the Natural Earth scripts and
-  `split_site_pft_16class.py` follow this;
-  the library's own `default_raw_dir()` resolvers for tracked directories
-  still go through `data_root()` until the data-source cleanup (PR 5d).
+  The tests (`conftest.REPOSITORY`), the Natural Earth scripts,
+  `split_site_pft_16class.py` and the library's own `default_raw_directory()`
+  resolvers for tracked directories (through
+  `conventions.tracked_data_root()`, which falls back to `data_root()` under a
+  non-editable install, where there is no checkout) follow this.
 - R is available on this machine (`Rscript`), which is how the `.Rdata` files can
   be inspected; `pyreadr` is not installed and would not handle their nesting.
 - **`pyproj` installs here.** Issue #4 recorded that it could not, on the
@@ -148,8 +149,7 @@ rule below yet, the rule says which PR changes it.
 One concept, one word; one word, one concept. A word this glossary does not
 list is either added here or not used for a project concept. The retired words
 are gone from the code, except where a rule below names the PR that retires
-them, and except `SiteLabelsSpec.label_kind`, whose "kind" is not pySIPNET's
-and which the data-source cleanup (PR 5d) renames.
+them.
 
 **Space and sites.**
 
@@ -311,26 +311,25 @@ their shared coercion lives in `validation.py`.
 
 ### Where shared things live
 
-- **`conventions.py`** holds every name constant two modules share (dims,
-  the data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
+- **`conventions.py`** holds every name constant two modules share (dims, the
+  data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
   (`DATA_SOURCE_MEMBER_NAMES`), coordinates, `SOURCE_INDEX`, the `site_id`
-  column, the `time_bounds`
-  variable and its `BOUNDS` dim, `NON_BATCH_DIM_NAMES`,
-  `SIPNET_ROW_LABEL_NAMES`, the attributes of `site`/`lon`/`lat`/`sample`
-  and of a data source's member dim (`DATA_SOURCE_MEMBER_ATTRIBUTES`),
-  `SITE_DTYPE`, `BATCH_LABEL_DTYPE`, `NAME_PATTERN`,
-  `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`, `DATA_ROOT_ENV_VAR`,
-  `data_root()`); and `read_only_copy` and `ReadOnlyCopies`, the read-only
-  copies of xarray data a frozen class keeps and hands out, copied on
-  assignment so nothing a caller holds is frozen. Read-only mappings are
-  `frozendict`s (the `frozendict` package): a `dict` subclass, so pandas and
-  `json` read one as a dict, and it pickles and hashes. Every module-level
-  mapping constant of the package is one (the scripts' own tables are not
-  the package's), and one is handed to xarray as it is, since xarray copies
-  attrs; pandas' `agg`, which refills the mapping it is given, takes a
-  `dict(...)` copy. A module imports these; it never defines its own
-  copy and never re-exports one. A name only one module uses lives in that
-  module: `RAW_MEMBER` in `initial_conditions.names`.
+  column, the `time_bounds` variable and its `BOUNDS` dim,
+  `NON_BATCH_DIM_NAMES`, `SIPNET_ROW_LABEL_NAMES`, the attributes of
+  `site`/`lon`/`lat`/`sample` and of a data source's member dim
+  (`DATA_SOURCE_MEMBER_ATTRIBUTES`), `SITE_DTYPE`, `BATCH_LABEL_DTYPE`,
+  `NAME_PATTERN`, `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`,
+  `DATA_ROOT_ENV_VAR`, `data_root()`, `tracked_data_root()`); and
+  `read_only_copy` and `ReadOnlyCopies`, the read-only copies of xarray data a
+  frozen class keeps and hands out, copied on assignment so nothing a caller
+  holds is frozen. Read-only mappings are `frozendict`s (the `frozendict`
+  package): a `dict` subclass, so pandas and `json` read one as a dict, and it
+  pickles and hashes. Every module-level mapping constant of the package is
+  one (the scripts' own tables are not the package's), and one is handed to
+  xarray as it is, since xarray copies attrs; pandas' `agg`, which refills the
+  mapping it is given, takes a `dict(...)` copy. A module imports these; it
+  never defines its own copy and never re-exports one. A name only one module
+  uses lives in that module: `RAW_MEMBER` in `initial_conditions.names`.
 - **`validation.py`** holds the argument coercion two modules need, each
   `as_<thing>(value, *, message_name) -> thing`: `as_site_ids`, `as_site_id`,
   `as_integer`, `as_positive_integer`, `as_bounded_integer`,
@@ -470,7 +469,10 @@ vault lists what changes in which.
 ### File organization
 
 - **Public first, private last.** Public functions, classes and constants at the
-  top of a file; helpers and anything underscore-prefixed below them.
+  top of a file; helpers and anything underscore-prefixed below them. The one
+  exception is a constant whose construction runs module functions, such as a
+  spec registry, whose specs run their checks when built: it follows them,
+  last in the file, under a one-line comment saying why.
 - Data processing scripts follow the section order
   `entry point` -> `the steps, in the order main calls them` ->
   `supporting types and helpers` -> `checks`, with `# ── ... ──` section
@@ -771,10 +773,11 @@ src/sipnet_calibration/
   __init__.py             # the module map and the dependency direction; no
                           # re-exports; turns on 64-bit JAX
   sites.py                # SITE_GRID + grid conversions, load_sites(),
-                          # select_sites(ids=, bbox=, where=, n_random=, seed=),
-                          # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
-                          # site_locations(), site_coordinates(), the site-table
-                          # and pool checks
+                          # select_sites(site_ids=, bbox=, where=, n_random=,
+                          # seed=), EXTENTS (named lon/lat boxes), N_SITES;
+                          # site_lookup(), site_locations(), site_coordinates(),
+                          # the site-table and pool checks;
+                          # default_site_table_path()
   projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
@@ -787,7 +790,8 @@ src/sipnet_calibration/
                           # WINDOW_START/END, TIME_BOUNDS, SITE_ID, SOURCE_INDEX;
                           # the attributes of site/lon/lat/sample and a source
                           # member; SITE_DTYPE, BATCH_LABEL_DTYPE, NAME_PATTERN;
-                          # CF_CONVENTIONS and data_root(); read_only_copy(),
+                          # CF_CONVENTIONS, data_root() and
+                          # tracked_data_root(); read_only_copy(),
                           # ReadOnlyCopies
   validation.py           # argument coercion: as_site_ids, as_site_id,
                           # as_integer, as_positive_integer, as_bounded_integer,

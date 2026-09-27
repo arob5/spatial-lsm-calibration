@@ -82,8 +82,8 @@ from sipnet_calibration.site_labels import (
     SITE_LABELS_NAMES,
     SiteLabelsSpec,
     build_site_labels,
-    default_raw_dir,
-    default_site_labels_dir,
+    default_raw_directory,
+    default_site_labels_directory,
     describe,
     load_site_labels,
     read_raw,
@@ -92,7 +92,7 @@ from sipnet_calibration.site_labels import (
 )
 from sipnet_calibration.sites import (
     check_site_table_lists_the_sites,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
     site_lookup,
 )
@@ -113,9 +113,9 @@ def main(argv: list[str] | None = None) -> int:
         print("\n\n".join(describe(resolve_site_labels(name)) for name in names))
         return 0
 
-    raw_root = args.raw_root if args.raw_root is not None else default_raw_dir()
-    out_dir = args.out_dir if args.out_dir is not None else default_site_labels_dir()
-    site_table_path = args.site_table or default_sites_path()
+    raw_root = args.raw_root if args.raw_root is not None else default_raw_directory()
+    out_dir = args.out_dir if args.out_dir is not None else default_site_labels_directory()
+    site_table_path = args.site_table or default_site_table_path()
 
     try:
         site_table = load_sites(site_table_path)
@@ -218,8 +218,8 @@ def describe_processed_file(
     spec: SiteLabelsSpec, site_labels: pd.DataFrame, site_table: pd.DataFrame, path: Path
 ) -> str:
     """A short report of what was written, for the run log."""
-    counts = site_labels[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
-    width = max(len(label) for label in spec.labels)
+    counts = site_labels[LABEL_COLUMN].value_counts().reindex(list(spec.class_names), fill_value=0)
+    width = max(len(label) for label in spec.class_names)
     latitude = (
         site_labels.assign(
             **{LAT: site_lookup(site_table).loc[site_labels[SITE_ID], LAT].to_numpy()}
@@ -229,11 +229,11 @@ def describe_processed_file(
     )
     lines = [
         f"{path}",
-        f"  site labels           : {spec.name} ({spec.label_kind})",
+        f"  site labels           : {spec.name} ({spec.class_noun})",
         f"  sites labeled         : {len(site_labels)} of {len(site_table)} in the pool",
-        f"  classes               : {len(spec.labels)}",
+        f"  classes               : {len(spec.class_names)}",
     ]
-    for label in spec.labels:
+    for label in spec.class_names:
         row = latitude.loc[label]
         lines.append(
             f"    {label:<{width}} : {counts[label]:>5} sites, "
@@ -285,7 +285,7 @@ def check_labels_are_the_declared_set(spec: SiteLabelsSpec, site_labels: pd.Data
     spec and the file have drifted apart.
     """
     used = set(site_labels[LABEL_COLUMN].unique())
-    missing = [label for label in spec.labels if label not in used]
+    missing = [label for label in spec.class_names if label not in used]
     if missing:
         raise IngestError(
             f"{spec.raw_file}: declares classes {missing} that no site has. "

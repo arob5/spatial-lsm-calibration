@@ -75,7 +75,7 @@ import numpy as np
 import pandas as pd
 
 from sipnet_calibration import conventions
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import default_site_table_path, load_sites
 
 #: The file's header, in order. Any other header is a different data source.
 COLUMNS = (
@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         frame = read_phenology(path)
         site_table = (
-            None if args.no_site_table else load_sites(args.site_table or default_sites_path())
+            None if args.no_site_table else load_sites(args.site_table or default_site_table_path())
         )
         report = build_report(frame, path, site_table)
     except (OSError, ValueError, KeyError) as error:

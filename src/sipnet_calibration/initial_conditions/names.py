@@ -1,38 +1,35 @@
-"""Dimension names and file locations the package's modules share.
+"""The names and file locations the package's modules share.
 
-The names of the dimensions the two netCDFs use beyond the shared ones of
-:mod:`sipnet_calibration.conventions`, where the source tree and each netCDF
-are expected on disk. Nothing here reads or writes anything.
+The name of the raw file's member dimension, which the shared ones of
+:mod:`sipnet_calibration.conventions` do not cover, and where the source tree
+and each netCDF are expected on disk. Nothing here reads or writes anything.
 
 Contents
 --------
 :data:`RAW_MEMBER`
-    The member dimension of the raw file, spelled once. The processed
-    file's is
-    :data:`sipnet_calibration.conventions.INITIAL_CONDITION_MEMBER`, the site
-    dimension :data:`sipnet_calibration.conventions.SITE`, and the 1-based
-    source index beside the processed member
-    :data:`sipnet_calibration.conventions.SOURCE_INDEX`.
+    The member dimension of the raw file. The processed file's dims and
+    coordinates are :mod:`sipnet_calibration.conventions`' own.
 :data:`RAW_FILE`, :data:`PROCESSED_FILE`
     The two file names, without their directories.
-The four path functions
-    :func:`default_source_root`, :func:`default_raw_dir`, :func:`raw_path` and
-    :func:`default_processed_path` say where each is expected, all honoring
-    ``$SIPNET_CALIBRATION_DATA``.
+The path functions
+    :func:`default_source_root` and :func:`default_processed_path`, which
+    honor ``$SIPNET_CALIBRATION_DATA``; and :func:`default_raw_directory` and
+    :func:`raw_path`, the tracked raw file's, found as
+    :func:`sipnet_calibration.conventions.tracked_data_root` finds it.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from sipnet_calibration import conventions
+from sipnet_calibration.conventions import data_root, tracked_data_root
 
 __all__ = [
     "PROCESSED_FILE",
     "RAW_FILE",
     "RAW_MEMBER",
     "default_processed_path",
-    "default_raw_dir",
+    "default_raw_directory",
     "default_source_root",
     "raw_path",
 ]
@@ -57,20 +54,32 @@ def default_source_root() -> Path:
     Present only on the SCC, as a symlink. ``$SIPNET_CALIBRATION_DATA``
     replaces ``data/`` when set.
     """
-    return default_raw_dir() / "files"
+    return data_root() / "raw" / "initial_conditions" / "files"
 
 
-def default_raw_dir() -> Path:
-    """Where the converted raw file lives: ``data/raw/initial_conditions/``."""
-    return conventions.data_root() / "raw" / "initial_conditions"
+def default_raw_directory() -> Path:
+    """Where the converted raw file is: ``data/raw/initial_conditions/``.
+
+    It is tracked, so this is found from
+    :func:`~sipnet_calibration.conventions.tracked_data_root`: in the checkout
+    whatever ``$SIPNET_CALIBRATION_DATA`` says, and under that variable only
+    for a non-editable install, which has no checkout.
+    """
+    return tracked_data_root() / "raw" / "initial_conditions"
 
 
 def raw_path(directory: Path | str | None = None) -> Path:
-    """The converted raw file: ``<directory>/pecan_pool_initial_conditions.nc``."""
-    base = Path(directory) if directory else default_raw_dir()
+    """The converted raw file: ``<directory>/pecan_pool_initial_conditions.nc``.
+
+    *directory* defaults to :func:`default_raw_directory`.
+    """
+    base = Path(directory) if directory is not None else default_raw_directory()
     return base / RAW_FILE
 
 
 def default_processed_path() -> Path:
-    """The processed file's expected path: ``data/processed/initial_conditions.nc``."""
-    return conventions.data_root() / "processed" / PROCESSED_FILE
+    """The processed file's expected path: ``data/processed/initial_conditions.nc``.
+
+    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
+    """
+    return data_root() / "processed" / PROCESSED_FILE

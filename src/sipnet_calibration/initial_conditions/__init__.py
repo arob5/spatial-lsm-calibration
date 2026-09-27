@@ -21,7 +21,10 @@ share: the names, the variable specs, and the conversion to SIPNET.
 ``sipnet_parameters``     the conversion to SIPNET's initial parameters
 ========================  ==================================================
 
-Everything below is re-exported here, so a caller imports from
+Each module's public API is re-exported here, except the checks one module
+shares with another (``raw.check_presence_is_uniform_over_members``,
+``raw.check_raw_initial_conditions_are_valid``,
+``source_files.check_source_variable_is_known``), so a caller imports from
 ``sipnet_calibration.initial_conditions`` and never names a module.
 
 The data flows one way, and the first arrow is taken once, on the SCC::
@@ -83,18 +86,21 @@ is ``"C"``, never ``"kg C m-2"``::
 
 **Coordinates**
 
-============================ ============================ ===============================
+============================ ============================ =====================
 Name                         Dims                         Meaning
-============================ ============================ ===============================
-``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based: the
-                                                          member's identity,
+============================ ============================ =====================
+``initial_condition_member`` ``initial_condition_member`` ``int64``, 0-based:
+                                                          the member's
+                                                          identity,
                                                           ``source_index - 1``
-``source_index``             ``initial_condition_member`` ``int64``, the 1-based index in
-                                                          the source file name
-``site``                     ``site``                     ``int32``, the whole pool,
-                                                          ascending
-``lon``, ``lat``             ``site``                     ``float64``, from the site table
-============================ ============================ ===============================
+``source_index``             ``initial_condition_member`` ``int64``, the
+                                                          1-based index in the
+                                                          source file name
+``site``                     ``site``                     ``int32``, the whole
+                                                          pool, ascending
+``lon``, ``lat``             ``site``                     ``float64``, from the
+                                                          site table
+============================ ============================ =====================
 
 The tracked raw file keeps its own ``member`` dim, the source index, since raw
 data is never edited; :func:`build_initial_conditions` renames it.
@@ -146,10 +152,17 @@ member; :func:`to_sipnet_initial_condition_fields` converts a whole
 ``(initial_condition_member, site)`` ensemble to SIPNET parameter fields,
 which merge into a parameter vector's.
 
-**Paths and encodings.** :func:`default_source_root`, :func:`default_raw_dir`,
-:func:`raw_path` and :func:`default_processed_path` say where each file is
-expected, all honoring ``$SIPNET_CALIBRATION_DATA``; :func:`raw_encoding` and
+**Paths and encodings.** :func:`default_source_root` and
+:func:`default_processed_path` say where the source tree and the processed
+file are expected, honoring ``$SIPNET_CALIBRATION_DATA``;
+:func:`default_raw_directory` and :func:`raw_path` say where the tracked raw
+file is, as :func:`sipnet_calibration.conventions.tracked_data_root` finds
+it; :func:`raw_encoding` and
 :func:`netcdf_encoding` give the two files' on-disk encodings.
+
+**The checks.** Each module's refusals are its public ``check_*`` functions,
+one invariant each, in its checks section; :func:`read_source_file`,
+:func:`read_raw` and :func:`load_initial_conditions` hold a file to them.
 
 Notes
 -----
@@ -199,9 +212,9 @@ Usage
         resolve_initial_condition,
     )
 
-    ic = load_initial_conditions()          # Dataset, (initial_condition_member, site)
-    ic["initial_soil_organic_carbon"].sel(site=4102)     # one site's 100 members
-    ic["initial_wood_carbon"].mean("initial_condition_member")  # a map
+    initial_conditions = load_initial_conditions()    # (initial_condition_member, site)
+    initial_conditions["initial_soil_organic_carbon"].sel(site=4102)  # its members
+    initial_conditions["initial_wood_carbon"].mean("initial_condition_member")  # a map
 
     fields = initial_condition_fields(sites=[4102, 4113])
     fields["initial_leaf_carbon"].dims      # ('initial_condition_member', 'site')
@@ -231,7 +244,7 @@ Usage
     site = {name: field.sel(site=4102) for name, field in fields.items()}
     usable = np.flatnonzero(site["initial_wood_carbon"].values >= 0)
     converted = to_sipnet_initial_condition_fields(      # (initial_condition_member,)
-        {name: field.isel(initial_condition_member=usable) for name, field in site.items()},
+        {name: f.isel(initial_condition_member=usable) for name, f in site.items()},
         leaf_carbon_per_area=32.0,                       # scalar or per member
         fine_root_fraction=0.2,
         coarse_root_fraction=0.2,
@@ -247,7 +260,7 @@ from sipnet_calibration.initial_conditions.names import (
     RAW_FILE,
     RAW_MEMBER,
     default_processed_path,
-    default_raw_dir,
+    default_raw_directory,
     default_source_root,
     raw_path,
 )
@@ -289,7 +302,7 @@ __all__ = [
     "RAW_FILE",
     "RAW_MEMBER",
     "default_processed_path",
-    "default_raw_dir",
+    "default_raw_directory",
     "default_source_root",
     "raw_path",
     # What the source files contain, and their provenance.

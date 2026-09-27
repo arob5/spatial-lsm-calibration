@@ -99,7 +99,7 @@ from sipnet_calibration.initial_conditions import (
 from sipnet_calibration.io import write_checked
 from sipnet_calibration.sites import (
     check_sites_are_the_site_table,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
 )
 from sipnet_calibration.validation import range_summary
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
 
     raw = args.raw if args.raw is not None else raw_path()
     out = args.out if args.out is not None else default_processed_path()
-    site_table_path = args.site_table or default_sites_path()
+    site_table_path = args.site_table or default_site_table_path()
 
     try:
         site_table = load_sites(site_table_path)

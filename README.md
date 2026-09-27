@@ -209,7 +209,7 @@ src/sipnet_calibration/
                           # read_only_copy(); data_root()
   validation.py           # argument coercion: as_site_ids(), as_names(), ...
   io.py                   # write_checked(): the .partial protocol; file_md5()
-  sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...),
+  sites.py                # SITE_GRID, load_sites(), select_sites(site_ids=, bbox=, where=, ...),
                           # the site-table lookups and checks
   projection.py           # SITE_PROJECTION and the projected coordinates
   constraints.py          # one spec per raw constraint file; load_constraint()

@@ -33,7 +33,6 @@ from sipnet_calibration.conventions import (
     INITIAL_CONDITION_MEMBER,
     SITE,
     SOURCE_INDEX,
-    data_root,
 )
 from sipnet_calibration.initial_conditions import (
     CONVERTED_SIPNET_PARAMETER_NAMES,
@@ -60,11 +59,11 @@ from sipnet_calibration.initial_conditions import (
     to_sipnet_initial_condition_fields,
 )
 from sipnet_calibration.fields import validate_sipnet_parameter_fields
-from sipnet_calibration.sites import N_SITES, load_sites
+from sipnet_calibration.sites import N_SITES, default_site_table_path, load_sites
 
-LOCAL_SOURCE_ROOT = data_root() / "raw" / "initial_conditions" / "files"
+LOCAL_SOURCE_ROOT = module.default_source_root()
 TRACKED_RAW = REPOSITORY / "data" / "raw" / "initial_conditions" / module.RAW_FILE
-SITES_CSV = data_root() / "processed" / "sites" / "sites.csv"
+SITES_CSV = default_site_table_path()
 
 
 convert = load_script("scripts/raw_sources/convert_initial_conditions.py")
@@ -74,7 +73,6 @@ ingest = load_script("scripts/ingest_initial_conditions.py")
 # ── synthetic fixtures ────────────────────────────────────────────────────────
 
 SYNTHETIC_SITES = [1, 2, 3]
-SYNTHETIC_COORDS = {1: (-100.0, 40.0), 2: (-101.0, 41.0), 3: (-102.0, 42.0), 4: (-103.0, 43.0)}
 
 #: Per site, per member, the source values. Site 1 has every variable
 #: with a negative wood draw in member 2; site 2 lacks leaf and soil
@@ -188,16 +186,6 @@ def _write_tree(root: Path, values=SYNTHETIC_VALUES) -> Path:
     return root
 
 
-def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
-    """A minimal site table that ``load_sites`` accepts."""
-    return write_site_table_csv(
-        path,
-        site_ids,
-        lon=[SYNTHETIC_COORDS[site][0] for site in site_ids],
-        lat=[SYNTHETIC_COORDS[site][1] for site in site_ids],
-    )
-
-
 def _records(values=SYNTHETIC_VALUES) -> list[SourceFile]:
     return [
         SourceFile(site=site, member=member, values=record)
@@ -213,14 +201,14 @@ def tree(tmp_path) -> Path:
 
 @pytest.fixture
 def sites_csv(tmp_path) -> Path:
-    return _write_sites(tmp_path / "sites.csv")
+    return write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
 
 
 @pytest.fixture
 def raw(tree, tmp_path) -> Path:
     """The synthetic tree converted through the script, as a path."""
     out = tmp_path / "raw" / module.RAW_FILE
-    sites_csv = _write_sites(tmp_path / "sites.csv")
+    sites_csv = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(sites_csv), "--jobs", "1"]) == 0
     return out
 
@@ -278,7 +266,7 @@ def test_read_source_directory_skips_debris_and_refuses_strays(tree, tmp_path):
         read_source_directory(tree, 1)
     (tree / "1" / "notes.txt").unlink()
 
-    with pytest.raises(ValueError, match="no such site directory"):
+    with pytest.raises(FileNotFoundError, match="no such site directory"):
         read_source_directory(tree, 999)
 
     empty = tmp_path / "empty"
@@ -469,33 +457,23 @@ def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
     root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
 
     assert module.default_processed_path() == root / "processed" / module.PROCESSED_FILE
-    assert module.default_raw_dir() == root / "raw" / "initial_conditions"
+    assert module.default_raw_directory() == root / "raw" / "initial_conditions"
     assert module.raw_path() == root / "raw" / "initial_conditions" / module.RAW_FILE
     assert module.default_source_root() == root / "raw" / "initial_conditions" / "files"
 
 
-def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
-    """The root lives in sipnet_calibration.conventions so that one setting
-    moves all of them. Four modules used to spell it out separately, and the
-    spelling broke here the moment a module moved a directory deeper."""
-    from sipnet_calibration import constraints, conventions, drivers, sites
+def test_only_the_raw_file_stays_in_the_checkout_when_the_data_root_moves(monkeypatch, tmp_path):
+    """The source tree and the processed file follow the variable; the tracked
+    raw file does not."""
+    checkout = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
+    monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
+    assert module.default_processed_path().is_relative_to(tmp_path)
+    assert module.default_source_root().is_relative_to(tmp_path)
+    assert module.default_raw_directory() == checkout / "raw" / "initial_conditions"
 
-    monkeypatch.setenv(conventions.DATA_ROOT_ENV_VAR, str(tmp_path))
-    assert conventions.data_root() == tmp_path
-    assert module.default_raw_dir() == tmp_path / "raw" / "initial_conditions"
-    assert constraints.default_raw_dir() == tmp_path / "raw" / "constraints"
-    assert sites.default_sites_path().is_relative_to(tmp_path)
-    assert drivers.default_drivers_root().is_relative_to(tmp_path)
 
-    monkeypatch.delenv(conventions.DATA_ROOT_ENV_VAR)
-    root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
-    for path in (
-        module.default_raw_dir(),
-        constraints.default_raw_dir(),
-        sites.default_sites_path(),
-        drivers.default_drivers_root(),
-    ):
-        assert path.is_relative_to(root), path
+def test_the_raw_file_follows_the_data_root_under_a_non_editable_install(non_editable_install):
+    assert module.raw_path() == non_editable_install / "raw" / "initial_conditions" / module.RAW_FILE
 
 
 def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):
@@ -670,7 +648,7 @@ def test_conversion_script_writes_a_raw_file_that_reads_back(raw):
 
 
 def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     (tree / "notes.txt").write_text("x")
     assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "not site directories" in capsys.readouterr().err
@@ -679,7 +657,7 @@ def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsy
     assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "IC_site" in capsys.readouterr().err
     (tree / "1" / "README").unlink()
-    wrong = _write_sites(tmp_path / "wrong.csv", site_ids=[1, 2, 3, 4])
+    wrong = write_site_table_csv(tmp_path / "wrong.csv", [1, 2, 3, 4])
     assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(wrong), "--jobs", "1"]) == 1
     assert "pool" in capsys.readouterr().err
     assert not (tmp_path / "o.nc").exists()
@@ -688,7 +666,7 @@ def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsy
 def test_a_failed_conversion_check_keeps_the_partial_and_prints_its_path(
     tree, tmp_path, capsys, monkeypatch
 ):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     out = tmp_path / "o.nc"
 
     def refuse(dataset, partial):
@@ -747,9 +725,69 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
-    site_table = load_sites(_write_sites(tmp_path / "s.csv", site_ids=[1, 2]))
-    with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="pool"):
-        build_initial_conditions(raw_dataset, site_table)
+    fewer = load_sites(write_site_table_csv(tmp_path / "fewer.csv", [1, 2]))
+    with read_raw(raw) as raw_dataset, pytest.raises(KeyError, match="not in the site table"):
+        build_initial_conditions(raw_dataset, fewer)
+    more = load_sites(write_site_table_csv(tmp_path / "more.csv", [1, 2, 3, 4]))
+    with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="lack 1 site"):
+        build_initial_conditions(raw_dataset, more)
+
+
+def _raw_variant(raw: Path, mutate) -> xr.Dataset:
+    """The synthetic raw file, loaded, with *mutate* applied."""
+    with read_raw(raw) as raw_dataset:
+        return mutate(raw_dataset.load())
+
+
+@pytest.mark.parametrize(
+    "mutate, message",
+    [
+        (lambda d: d.isel(site=slice(None, None, -1)), "site is not strictly ascending"),
+        (lambda d: d.isel(member=slice(None, None, -1)), "member is not strictly ascending"),
+        (lambda d: d.transpose(RAW_MEMBER, SITE), "has dims"),
+        (
+            lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"].transpose(RAW_MEMBER, SITE)),
+            "AbvGrndWood has dims",
+        ),
+    ],
+    ids=["sites reversed", "members reversed", "dims transposed", "one variable transposed"],
+)
+def test_build_initial_conditions_refuses_a_raw_dataset_off_its_data_model(
+    raw, sites_csv, mutate, message
+):
+    """Its values are placed by name, but a reordered or transposed raw Dataset
+    would still pair a value with the wrong (member, site), so it is refused."""
+    with pytest.raises(ValueError, match=message):
+        build_initial_conditions(_raw_variant(raw, mutate), load_sites(sites_csv))
+
+
+def _square_raw_and_site_table(raw: Path, sites_csv: Path) -> tuple[xr.Dataset, pd.DataFrame]:
+    """Two sites of the synthetic raw file, as many as its members, and their site table."""
+    square = _raw_variant(raw, lambda d: d.isel(site=slice(0, 2)))
+    site_table = load_sites(sites_csv)
+    return square, site_table[site_table["site_id"].isin(square[SITE].values)]
+
+
+def test_build_initial_conditions_refuses_a_square_raw_dataset_on_member_and_site(
+    raw, sites_csv
+):
+    """With as many members as sites, a positional transpose would go unnoticed."""
+    square, site_table = _square_raw_and_site_table(raw, sites_csv)
+    with pytest.raises(ValueError, match="has dims"):
+        build_initial_conditions(square.transpose(RAW_MEMBER, SITE), site_table)
+
+
+def test_build_initial_conditions_places_each_value_by_site_and_member(raw, sites_csv):
+    square, site_table = _square_raw_and_site_table(raw, sites_csv)
+    processed = build_initial_conditions(square, site_table)
+    for spec in INITIAL_CONDITIONS:
+        for site in square[SITE].values:
+            for position, member in enumerate(square[RAW_MEMBER].values):
+                expected = square[spec.source_name].sel({SITE: site, RAW_MEMBER: member}).item()
+                built = processed[spec.name].sel(
+                    {SITE: site, INITIAL_CONDITION_MEMBER: position}
+                ).item()
+                assert built == expected or (np.isnan(built) and np.isnan(expected))
 
 
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
@@ -766,9 +804,9 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
     field = fields["initial_soil_organic_carbon"]
     assert field.dims == (INITIAL_CONDITION_MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
-    with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial condition"):
+    with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial conditions' processed file"):
         initial_condition_fields(sites=[9], path=out)
-    with pytest.raises(KeyError, match="No initial condition named"):
+    with pytest.raises(KeyError, match="no initial condition named"):
         initial_condition_fields(["soil"], path=out)
 
 
@@ -1424,7 +1462,7 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     xr.testing.assert_identical(restored, crossed)
 
 
-# ── the gaps mutation testing found ───────────────────────────────────────────
+# ── the remaining refusals ────────────────────────────────────────────────────
 
 
 def _write_raw_variant(raw: Path, tmp_path: Path, mutate) -> Path:
@@ -1517,7 +1555,7 @@ def test_build_raw_refuses_ids_that_do_not_fit_and_unknown_names():
         build_raw(records + [SourceFile(site=2**31, member=1, values=SYNTHETIC_VALUES[2][1]),
                              SourceFile(site=2**31, member=2, values=SYNTHETIC_VALUES[2][2])],
                   source_root="", conversion_script="")
-    with pytest.raises(ValueError, match="not one of"):
+    with pytest.raises(ValueError, match="not one the source files carry"):
         build_raw([SourceFile(site=1, member=1, values={"TotSoilCarb": 1.0})], source_root="", conversion_script="")
 
 
@@ -1566,8 +1604,8 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
     refused(lambda d: d.assign_coords(lon=(SITE, d["lat"].values * 5)), "geographic")
     refused(lambda d: d.assign_coords(lat=(SITE, np.array([np.nan, 1.0, 2.0]))), "non-finite")
     refused(lambda d: d.drop_vars("lat"), "coordinate")
-    refused(lambda d: _rename_attr(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
-    refused(lambda d: _rename_attr(d, "initial_wood_carbon", "long_name", ""), "long_name")
+    refused(lambda d: _set_attribute(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
+    refused(lambda d: _set_attribute(d, "initial_wood_carbon", "long_name", ""), "long_name")
     refused(lambda d: d.assign_attrs(Conventions="CF-1.6"), "Conventions")
     refused(lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending")
     refused(
@@ -1628,7 +1666,7 @@ def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, 
     assert restored.equals(crossed)
 
 
-def _rename_attr(dataset, variable, key, value):
+def _set_attribute(dataset, variable, key, value):
     dataset[variable].attrs[key] = value
     return dataset
 
@@ -1655,7 +1693,7 @@ def test_biomass_spec_is_not_fed_to_sipnet():
 
 
 def test_conversion_limit_sites_and_a_variable_absent_everywhere(tree, tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites.csv", SYNTHETIC_SITES)
     out = tmp_path / "trial.nc"
     assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "2"]) == 0
     text = capsys.readouterr().out

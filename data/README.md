@@ -123,25 +123,34 @@ so `sipnet_calibration.drivers.load_drivers` produces the canonical
 
 Files under `raw/` are treated as read-only; all conversion happens on the way
 into `processed/`, which is regenerable and absent on a fresh clone. Neither
-directory is tracked in version control, with five exceptions: three small
-primary sources and two derived inputs, none of them a pipeline output and all
-of them inputs the repository cannot do without. `raw/sites/` holds the site
-shapefile, without which the repository carries no site information at all;
-`site_id_map.csv` is tracked for the same reason. `raw/constraints/` holds the
-five per-variable constraint files, which are tracked because the upstream
-copies are edited and moved in place, so a symlink is not a stable input; see
-[Constraints](#constraints). `raw/initial_conditions/` holds the initial
-condition ensemble converted from PEcAn's 800,000 per-member source files into
-one 26 MB array, which is the only form in which it exists off the SCC; see
-[Initial conditions](#initial-conditions). `raw/site_labels/` and
-`raw/covariates/` hold the site labels and the per-site predictors, a few
-megabytes in all and, like the initial conditions, held nowhere else off the
-SCC; see [Site labels](#site-labels) and [Site covariates](#site-covariates).
+directory is tracked in version control, with the exceptions below: six
+directories under `raw/` and one file beside it, none of them a pipeline output.
+`raw/sites/` holds the site shapefile, without which the repository carries no
+site information at all; `site_id_map.csv` is tracked for the same reason.
+`raw/constraints/` holds the five per-variable constraint files, which are
+tracked because the upstream copies are edited and moved in place, so a symlink
+is not a stable input; see [Constraints](#constraints).
+`raw/initial_conditions/` holds the initial condition ensemble converted from
+PEcAn's 800,000 per-member source files into one 26 MB array, which is the only
+form in which it exists off the SCC; see [Initial
+conditions](#initial-conditions). `raw/site_labels/` and `raw/covariates/` hold
+the site labels and the per-site predictors, a few megabytes in all and, like
+the initial conditions, held nowhere else off the SCC; see [Site
+labels](#site-labels) and [Site covariates](#site-covariates).
 `raw/natural_earth/` holds the Natural Earth archives the map basemap is built
 from; they are not project data, but tracking them makes the basemap rebuildable
 offline, and `raw/natural_earth/provenance.md` records where they came from.
 Everything else under `raw/`, including the much larger drivers, eddy-covariance
 files, phenology and soil texture files, lives on storage and is symlinked.
+
+A tracked input is therefore always in the checkout, and the library finds it
+there: the `default_raw_directory()` of `sipnet_calibration.constraints`,
+`sipnet_calibration.site_labels` and `sipnet_calibration.initial_conditions`
+resolve from `sipnet_calibration.conventions.tracked_data_root()`, which
+`$SIPNET_CALIBRATION_DATA` does not move. That variable moves the
+storage-backed part of `raw/` and `processed/` together. Under a non-editable
+install there is no checkout beside the package, and the tracked inputs are
+found under the variable too.
 
 ---
 
@@ -157,7 +166,7 @@ the identifiers are treated as fixed and are never renumbered.
 The site table as an ESRI point shapefile: 8000 `Point` records in `pts.shp`, with
 `pts.shx`, `pts.dbf`, `pts.prj` and `pts.cpg` alongside. Record *N* corresponds to
 site identifier *N*. This is the only site source in the repository, and one of the
-three inputs tracked under `raw/` (see [Directory layout](#directory-layout)):
+inputs tracked under `raw/` (see [Directory layout](#directory-layout)):
 it is small, it is a primary source rather than a pipeline output, and without
 it the repository carries no site information at all.
 

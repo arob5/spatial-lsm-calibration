@@ -281,7 +281,7 @@ look at it, subset it, draw from it, and take the draws to SIPNET::
     from sipnet_calibration.sites import load_sites, select_sites
 
     # Build it for a site set and a site-labels data source.
-    site_table = select_sites(load_sites(), ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat
+    site_table = select_sites(load_sites(), site_ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat
     pft = load_site_labels("reanalysis_3pft")                  # DataFrame: site_id, label
     vector = ParameterVector(                                  # ParameterVector, D = 13
         parameters=(

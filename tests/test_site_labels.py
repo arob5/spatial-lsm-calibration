@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 from conftest import REPOSITORY, load_script, write_site_table_csv
 from sipnet_calibration.conventions import (
@@ -35,10 +36,10 @@ from sipnet_calibration.site_labels import (
     SITE_LABELS_COLUMNS,
     SITE_LABELS_NAMES,
     SiteLabelsSpec,
-    _check_labels_are_flag_meanings,
+    check_classes_are_flag_meanings,
     build_site_labels,
-    default_raw_dir,
-    default_site_labels_dir,
+    default_raw_directory,
+    default_site_labels_directory,
     describe,
     load_site_labels,
     read_raw,
@@ -46,7 +47,7 @@ from sipnet_calibration.site_labels import (
     site_labels_field,
     site_labels_path,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import default_site_table_path, load_sites
 
 #: The tracked raw files, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "site_labels"
@@ -63,8 +64,8 @@ SYNTHETIC_LANDCOVER = {1: 1, 2: 2, 3: 3, 4: 5}
 SYNTHETIC_SPEC = SiteLabelsSpec(
     name="synthetic_3class",
     long_label="Synthetic three-class site labels",
-    label_kind="plant functional type",
-    labels=("conifer", "broadleaf", "grass"),
+    class_noun="plant functional type",
+    class_names=("conifer", "broadleaf", "grass"),
     description="Site labels that exist only in these tests.",
     upstream_product="test fixture",
     raw_file="synthetic_site_class.csv",
@@ -84,14 +85,10 @@ SYNTHETIC_ROWS = [
 ]
 
 
-def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
-    """A minimal site table that ``load_sites`` accepts."""
+def _write_site_table(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
+    """A site table whose landcover the synthetic spec's relation holds for."""
     return write_site_table_csv(
-        path,
-        site_ids,
-        lon=[-100.0 - site for site in site_ids],
-        lat=[40.0 + site for site in site_ids],
-        landcover=[SYNTHETIC_LANDCOVER.get(site, 1) for site in site_ids],
+        path, site_ids, landcover=[SYNTHETIC_LANDCOVER.get(site, 1) for site in site_ids]
     )
 
 
@@ -109,7 +106,7 @@ def synthetic(tmp_path):
     """A raw file, a site table and an output directory that agree with each other."""
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
-    site_table = load_sites(_write_sites(tmp_path / "sites.csv"))
+    site_table = load_sites(_write_site_table(tmp_path / "sites.csv"))
     return raw_root, site_table, tmp_path / "out"
 
 
@@ -146,7 +143,7 @@ def test_spec_raw_columns_are_the_real_files_header(spec):
 def test_landcover_mapping_sends_every_cover_class_to_a_declared_label(spec):
     if spec.landcover_mapping is None:
         pytest.skip("no landcover relation declared")
-    assert set(spec.landcover_mapping.values()) <= set(spec.labels)
+    assert set(spec.landcover_mapping.values()) <= set(spec.class_names)
 
 
 def test_describe_names_the_classes_and_the_relation():
@@ -159,21 +156,21 @@ def test_describe_names_the_classes_and_the_relation():
     ("field", "value", "match"),
     [
         ("name", "Reanalysis3PFT", "lower_case_with_underscores"),
-        ("labels", ("only_one",), "at least two classes"),
-        ("labels", ("a", "a", "b"), "repeats a class"),
-        ("raw_columns", ("site", "site"), "repeats a column"),
+        ("class_names", ("only_one",), "at least two classes"),
+        ("class_names", ("a", "a", "b"), r"class_names names \['a'\] more than once"),
+        ("raw_columns", ("site", "site"), r"raw_columns names \['site'\] more than once"),
         ("site_column", "absent", "is not in raw_columns"),
         ("expected_rows", 0, "expected_rows must be at least 1"),
         ("description", "", "needs a description"),
-        ("label_kind", "", "needs a label_kind"),
+        ("class_noun", "", "needs a class_noun"),
     ],
 )
 def test_spec_refuses_an_inconsistent_field(field, value, match):
     kwargs = {
         "name": "ok_name",
         "long_label": "Fine",
-        "label_kind": "plant functional type",
-        "labels": ("a", "b"),
+        "class_noun": "plant functional type",
+        "class_names": ("a", "b"),
         "description": "Fine.",
         "upstream_product": "test",
         "raw_file": "f.csv",
@@ -188,12 +185,12 @@ def test_spec_refuses_an_inconsistent_field(field, value, match):
 
 
 def test_spec_refuses_a_landcover_mapping_onto_an_undeclared_class():
-    with pytest.raises(ValueError, match="not in labels"):
+    with pytest.raises(ValueError, match="not in class_names"):
         SiteLabelsSpec(
             name="ok_name",
             long_label="Fine",
-            label_kind="plant functional type",
-            labels=("a", "b"),
+            class_noun="plant functional type",
+            class_names=("a", "b"),
             description="Fine.",
             upstream_product="test",
             raw_file="f.csv",
@@ -225,10 +222,10 @@ def test_label_is_a_categorical_over_the_specs_classes_in_order(synthetic):
     written = load_site_labels(SYNTHETIC_SPEC, site_labels_path(SYNTHETIC_SPEC, out_dir))
 
     assert written[LABEL_COLUMN].dtype == pd.CategoricalDtype(
-        list(SYNTHETIC_SPEC.labels), ordered=False
+        list(SYNTHETIC_SPEC.class_names), ordered=False
     )
     # Every class, in the spec's order, whether or not the file uses them all.
-    assert list(written[LABEL_COLUMN].cat.categories) == list(SYNTHETIC_SPEC.labels)
+    assert list(written[LABEL_COLUMN].cat.categories) == list(SYNTHETIC_SPEC.class_names)
 
 
 def test_the_written_file_reads_back_as_what_was_built(synthetic):
@@ -238,12 +235,27 @@ def test_the_written_file_reads_back_as_what_was_built(synthetic):
     pd.testing.assert_frame_equal(written, site_labels)
 
 
-def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path):
+@pytest.mark.parametrize("order", [[3, 2, 1, 0], [2, 0, 3, 1]], ids=["reversed", "shuffled"])
+def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path, order):
     raw_root = tmp_path / "raw"
-    _write_raw(raw_root, SYNTHETIC_SPEC, list(reversed(SYNTHETIC_ROWS)))
+    _write_raw(raw_root, SYNTHETIC_SPEC, [SYNTHETIC_ROWS[k] for k in order])
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     site_labels = build_site_labels(SYNTHETIC_SPEC, frame)
     assert site_labels[SITE_ID].tolist() == SYNTHETIC_SITES
+    # Each class stays with its own site through the sort.
+    expected = {row["site"]: row["klass"] for row in SYNTHETIC_ROWS}
+    assert dict(zip(site_labels[SITE_ID], site_labels[LABEL_COLUMN], strict=True)) == expected
+
+
+def test_site_labels_field_locates_each_site_whatever_the_table_order(synthetic):
+    raw_root, site_table, out_dir = synthetic
+    ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
+    path = site_labels_path(SYNTHETIC_SPEC, out_dir)
+    expected = site_labels_field(SYNTHETIC_SPEC, site_table=site_table, path=path)
+    reordered = site_labels_field(
+        SYNTHETIC_SPEC, site_table=site_table.iloc[::-1].reset_index(drop=True), path=path
+    )
+    xr.testing.assert_identical(reordered, expected)
 
 
 def test_a_class_literally_named_na_survives_the_read(tmp_path):
@@ -251,8 +263,8 @@ def test_a_class_literally_named_na_survives_the_read(tmp_path):
     spec = SiteLabelsSpec(
         name="na_class",
         long_label="Site labels with a class named NA",
-        label_kind="cover class",
-        labels=("NA", "other"),
+        class_noun="cover class",
+        class_names=("NA", "other"),
         description="Exists to prove the null handling.",
         upstream_product="test",
         raw_file="na.csv",
@@ -316,7 +328,7 @@ def test_a_site_outside_the_pool_is_refused(tmp_path, synthetic):
 
 def test_an_unlabeled_site_is_refused_when_the_spec_covers_the_pool(tmp_path):
     raw_root = tmp_path / "raw"
-    site_table = load_sites(_write_sites(tmp_path / "sites.csv", [1, 2, 3, 4, 5]))
+    site_table = load_sites(_write_site_table(tmp_path / "sites.csv", [1, 2, 3, 4, 5]))
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
     site_labels = build_site_labels(SYNTHETIC_SPEC, read_raw(SYNTHETIC_SPEC, raw_root))
     with pytest.raises(ingest.IngestError, match="unlabeled"):
@@ -354,7 +366,7 @@ def test_a_class_that_departs_from_the_landcover_relation_is_refused(tmp_path, s
 def test_a_cover_class_the_mapping_does_not_cover_is_refused(tmp_path):
     raw_root = tmp_path / "raw"
     site_table_path = tmp_path / "sites.csv"
-    _write_sites(site_table_path)
+    _write_site_table(site_table_path)
     site_table = load_sites(site_table_path)
     site_table.loc[site_table[SITE_ID] == 4, "landcover"] = np.int8(7)
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS)
@@ -404,7 +416,7 @@ def test_load_site_labels_refuses_a_file_off_the_data_model(tmp_path, content, m
 @pytest.fixture(scope="session")
 def real_site_table() -> pd.DataFrame:
     try:
-        return load_sites(default_sites_path())
+        return load_sites(default_site_table_path())
     except (FileNotFoundError, ValueError) as error:
         pytest.skip(f"site table not available in this working copy: {error}")
 
@@ -431,12 +443,12 @@ def test_the_real_site_labels_are_exactly_the_landcover_aggregation(real_site_la
     expected = joined["landcover"].map(dict(spec.landcover_mapping))
     assert (expected == joined[LABEL_COLUMN].astype(str)).all()
     # And the relation is onto: every class is reached from some cover class.
-    assert set(expected) == set(spec.labels)
+    assert set(expected) == set(spec.class_names)
 
 
 def test_every_declared_class_is_used_by_the_real_site_labels(real_site_labels):
     spec = resolve_site_labels("reanalysis_3pft")
-    assert set(real_site_labels[LABEL_COLUMN].unique()) == set(spec.labels)
+    assert set(real_site_labels[LABEL_COLUMN].unique()) == set(spec.class_names)
 
 
 def test_the_real_raw_file_has_the_specs_row_count(real_site_table):
@@ -453,7 +465,7 @@ def test_the_real_raw_file_has_the_specs_row_count(real_site_table):
 def test_display_names_cover_exactly_the_classes(spec):
     if spec.display_names is None:
         pytest.skip("no display names declared")
-    assert set(spec.display_names) == set(spec.labels)
+    assert set(spec.display_names) == set(spec.class_names)
 
 
 def test_the_16class_spec_declares_no_landcover_relation():
@@ -465,8 +477,8 @@ def test_display_names_must_cover_every_class():
     kwargs = dict(
         name="ok_name",
         long_label="Fine",
-        label_kind="plant functional type",
-        labels=("a", "b"),
+        class_noun="plant functional type",
+        class_names=("a", "b"),
         description="Fine.",
         upstream_product="test",
         raw_file="f.csv",
@@ -492,7 +504,7 @@ def real_16class(real_site_table, tmp_path_factory) -> pd.DataFrame:
 def test_the_16class_site_labels_cover_the_pool_with_all_sixteen(real_16class, real_site_table):
     spec = resolve_site_labels("pft_16class")
     assert len(real_16class) == len(real_site_table)
-    assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.labels)
+    assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.class_names)
 
 
 def test_the_two_site_labels_data_sources_do_not_nest(real_site_labels, real_16class):
@@ -635,48 +647,48 @@ def _argv(raw_root, site_table_path, out_dir, *extra):
 
 
 @pytest.fixture
-def real_argv(tmp_path):
-    """A `main` invocation against the registry's own site labels and raw file."""
+def real_output_root(tmp_path):
+    """A directory to write into, where `main` can read the registry's own raw files."""
     # main reads both from its defaults, so check the paths it will read.
     for spec in SITE_LABELS:
-        if not (default_raw_dir() / spec.raw_file).exists():
+        if not (default_raw_directory() / spec.raw_file).exists():
             pytest.skip("raw site labels not available in this working copy")
-    if not default_sites_path().exists():
+    if not default_site_table_path().exists():
         pytest.skip("site table not available in this working copy")
     return tmp_path
 
 
 @pytest.mark.parametrize("name", SITE_LABELS_NAMES)
-def test_main_exits_zero_and_writes_the_processed_file(real_argv, name):
-    out_dir = real_argv / "out"
+def test_main_exits_zero_and_writes_the_processed_file(real_output_root, name):
+    out_dir = real_output_root / "out"
     code = ingest.main(["--site-labels", name, "--out-dir", str(out_dir)])
     assert code == 0
     written = load_site_labels(name, site_labels_path(name, out_dir))
     assert len(written) == resolve_site_labels(name).expected_rows
 
 
-def test_main_with_no_arguments_builds_every_site_labels_data_source(real_argv):
-    out_dir = real_argv / "out"
+def test_main_with_no_arguments_builds_every_site_labels_data_source(real_output_root):
+    out_dir = real_output_root / "out"
     assert ingest.main(["--out-dir", str(out_dir)]) == 0
     assert sorted(path.stem for path in out_dir.glob("*.csv")) == sorted(SITE_LABELS_NAMES)
 
 
-def test_main_honors_the_site_labels_argument(real_argv):
+def test_main_honors_the_site_labels_argument(real_output_root):
     """Naming one site-labels data source must not build the others."""
-    out_dir = real_argv / "out"
+    out_dir = real_output_root / "out"
     code = ingest.main(["--site-labels", "reanalysis_3pft", "--out-dir", str(out_dir)])
     assert code == 0
     assert [path.name for path in out_dir.glob("*.csv")] == ["reanalysis_3pft.csv"]
 
 
 def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites.csv")
+    site_table_path = _write_site_table(tmp_path / "sites.csv")
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, SYNTHETIC_SPEC, SYNTHETIC_ROWS[:3])
     # main resolves by name, so drive it through the registry's own spec with a
     # raw file of the wrong length.
     spec = resolve_site_labels("reanalysis_3pft")
-    _write_raw(raw_root, spec, [{"site": 1, "pft": spec.labels[0]}])
+    _write_raw(raw_root, spec, [{"site": 1, "pft": spec.class_names[0]}])
     code = ingest.main(
         [
             "--site-labels", spec.name,
@@ -712,7 +724,7 @@ def test_describe_processed_file_reports_the_pool_the_right_way_round(synthetic)
         SYNTHETIC_SPEC, site_labels, site_table, site_labels_path(SYNTHETIC_SPEC, out_dir)
     )
     assert f"{len(site_labels)} of {len(site_table)} in the pool" in text
-    for label in SYNTHETIC_SPEC.labels:
+    for label in SYNTHETIC_SPEC.class_names:
         assert label in text
 
 
@@ -754,7 +766,7 @@ def test_partial_site_labels_are_allowed_when_the_spec_says_so(tmp_path):
     spec = dataclasses.replace(SYNTHETIC_SPEC, covers_pool=False, expected_rows=3)
     raw_root = tmp_path / "raw"
     _write_raw(raw_root, spec, SYNTHETIC_ROWS[:3])
-    site_table = load_sites(_write_sites(tmp_path / "sites.csv"))
+    site_table = load_sites(_write_site_table(tmp_path / "sites.csv"))
     site_labels = build_site_labels(spec, read_raw(spec, raw_root))
     ingest.check_pool_is_completely_labeled(spec, site_labels, site_table)  # must not raise
 
@@ -796,7 +808,7 @@ def test_a_class_named_na_survives_the_processed_file_round_trip(tmp_path):
     spec = dataclasses.replace(
         SYNTHETIC_SPEC,
         name="na_labels",
-        labels=("NA", "other"),
+        class_names=("NA", "other"),
         expected_rows=2,
         landcover_mapping=None,
     )
@@ -824,13 +836,13 @@ def test_the_site_labels_index_is_reset_after_sorting(tmp_path):
 
 
 def test_the_registry_class_orders_are_what_was_run_against():
-    """`labels` is a prior's class axis; reordering it silently would move it."""
-    assert resolve_site_labels("reanalysis_3pft").labels == (
+    """`class_names` is a prior's class axis; reordering it silently would move it."""
+    assert resolve_site_labels("reanalysis_3pft").class_names == (
         "boreal.coniferous",
         "temperate.deciduous.HPDA",
         "semiarid.grassland_HPDA",
     )
-    sixteen = resolve_site_labels("pft_16class").labels
+    sixteen = resolve_site_labels("pft_16class").class_names
     assert sixteen[0] == "Evergreen_Needleleaf_Forest__P1"
     assert sixteen[-1] == "Permanent_Wetlands"
     assert len(sixteen) == 16
@@ -859,7 +871,7 @@ def test_a_spec_cannot_be_mutated_after_construction():
     [
         ("long_label", "", "needs a description"),
         ("upstream_product", "", "needs a description"),
-        ("labels", ("a", ""), "class name is empty"),
+        ("class_names", ("a", ""), "class name is empty"),
         ("label_column", "absent", "is not in raw_columns"),
         ("site_column", "klass", "are the same"),
         ("name", "ok_name!!", "lower_case_with_underscores"),
@@ -869,8 +881,8 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
     kwargs = {
         "name": "ok_name",
         "long_label": "Fine",
-        "label_kind": "plant functional type",
-        "labels": ("a", "b"),
+        "class_noun": "plant functional type",
+        "class_names": ("a", "b"),
         "description": "Fine.",
         "upstream_product": "test",
         "raw_file": "f.csv",
@@ -927,9 +939,9 @@ def test_the_16class_field_labels_every_site_with_readable_names(real_16class, r
     real_16class.to_csv(path, index=False)
     field = site_labels_field(spec, site_table=real_site_table, path=path)
     assert field.sizes["site"] == len(real_site_table)
-    assert field.attrs["flag_meanings"].split() == list(spec.labels)
-    assert field.attrs["flag_display_names"] == tuple(spec.display_names[label] for label in spec.labels)
-    assert sorted(np.unique(field.values).tolist()) == list(range(len(spec.labels)))
+    assert field.attrs["flag_meanings"].split() == list(spec.class_names)
+    assert field.attrs["flag_display_names"] == tuple(spec.display_names[label] for label in spec.class_names)
+    assert sorted(np.unique(field.values).tolist()) == list(range(len(spec.class_names)))
 
 
 def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):
@@ -943,20 +955,29 @@ def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):
 
 def test_a_class_name_with_whitespace_cannot_be_a_flag_meaning():
     spaced = dataclasses.replace(
-        SYNTHETIC_SPEC, labels=("conifer", "broad leaf", "grass"),
+        SYNTHETIC_SPEC, class_names=("conifer", "broad leaf", "grass"),
         landcover_mapping={1: "conifer", 2: "conifer", 3: "broad leaf", 5: "grass"},
     )
     with pytest.raises(ValueError, match="whitespace"):
-        _check_labels_are_flag_meanings(spaced)
+        check_classes_are_flag_meanings(spaced)
 
 
 # ── the default paths ─────────────────────────────────────────────────────────
 
 
-def test_the_default_paths_honor_the_data_root_override(monkeypatch, tmp_path):
+def test_the_processed_directory_honors_the_data_root_override_and_the_raw_one_does_not(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("SIPNET_CALIBRATION_DATA", str(tmp_path))
-    assert default_raw_dir() == tmp_path / "raw" / "site_labels"
-    assert default_site_labels_dir() == tmp_path / "processed" / "site_labels"
+    assert default_site_labels_directory() == tmp_path / "processed" / "site_labels"
+    # The raw files are tracked, so they are always in the checkout.
+    assert default_raw_directory() == RAW_DIR
+
+
+def test_the_raw_directory_follows_the_data_root_under_a_non_editable_install(
+    non_editable_install,
+):
+    assert default_raw_directory() == non_editable_install / "raw" / "site_labels"
 
 
 def test_site_labels_path_is_the_name_with_a_csv_suffix(tmp_path):
@@ -982,8 +1003,8 @@ def test_a_registered_spec_hashes_pickles_and_cannot_change(spec):
 
 
 def test_a_spec_keeps_its_own_copy_of_the_mappings_it_was_given():
-    display_names = {label: label.title() for label in SYNTHETIC_SPEC.labels}
+    display_names = {label: label.title() for label in SYNTHETIC_SPEC.class_names}
     spec = dataclasses.replace(SYNTHETIC_SPEC, display_names=display_names)
-    display_names[SYNTHETIC_SPEC.labels[0]] = "changed"
-    assert spec.display_names[SYNTHETIC_SPEC.labels[0]] == SYNTHETIC_SPEC.labels[0].title()
+    display_names[SYNTHETIC_SPEC.class_names[0]] = "changed"
+    assert spec.display_names[SYNTHETIC_SPEC.class_names[0]] == SYNTHETIC_SPEC.class_names[0].title()
     assert hash(spec) == hash(dataclasses.replace(spec))

@@ -21,6 +21,9 @@ Contents
     A spec by its processed name.
 :func:`describe`
     One spec as a paragraph, for a run log.
+The checks
+    One invariant each, grouped as :func:`check_initial_condition_spec_is_valid`,
+    which every spec passes on construction.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from pysipnet.units import validate_units
 
 from sipnet_calibration.conventions import NAME_PATTERN
 from sipnet_calibration.initial_conditions.source_files import SOURCE
+from sipnet_calibration.validation import truncated
 
 __all__ = [
     "INITIAL_CONDITIONS",
@@ -93,28 +97,9 @@ class InitialConditionSpec:
     """Anything else a reader must know; the CF ``comment`` attribute."""
 
     def __post_init__(self) -> None:
-        if not NAME_PATTERN.match(self.name):
-            raise ValueError(f"Name {self.name!r} is not lower_case_with_underscores.")
-        validate_units(self.units)
-        if not self.description or not self.long_label or not self.upstream_product:
-            raise ValueError(
-                f"{self.name!r} needs a description, long_label and upstream_product."
-            )
-        if not self.pecan_conversion or not self.units_provenance:
-            raise ValueError(f"{self.name!r} needs pecan_conversion and units_provenance.")
-        if self.source_name not in SOURCE.variables:
-            raise ValueError(
-                f"{self.name!r}: source_name {self.source_name!r} is not a variable the "
-                f"source files carry: {sorted(SOURCE.variables)}"
-            )
-        if self.sipnet_parameter_name and (
-            self.sipnet_parameter_name not in _SIPNET_INITIAL_CONDITION_NAMES
-        ):
-            raise ValueError(
-                f"{self.name!r}: {self.sipnet_parameter_name!r} is not a parameter of "
-                f"pysipnet.parameters.InitialConditions: "
-                f"{sorted(_SIPNET_INITIAL_CONDITION_NAMES)}"
-            )
+        check_initial_condition_spec_is_valid(self)
+
+    # ── description ───────────────────────────────────────────────────────────
 
     @property
     def source_units(self) -> str:
@@ -151,6 +136,30 @@ class InitialConditionSpec:
         return attrs
 
 
+def resolve_initial_condition(name: str) -> InitialConditionSpec:
+    """The spec named *name*, or a ``KeyError`` listing the names that exist."""
+    check_initial_condition_is_registered(name)
+    return next(spec for spec in INITIAL_CONDITIONS if spec.name == name)
+
+
+def describe(spec: InitialConditionSpec) -> str:
+    """A spec as a paragraph, for ``--describe`` and the run log."""
+    units = f"{spec.units} {spec.constituent}".strip()
+    lines = [
+        f"{spec.name}: {spec.long_label} ({units}), from {spec.upstream_product}.",
+        f"  source     {spec.source_name!r}, units {spec.source_units!r}, "
+        f"long name {spec.source_long_name!r}",
+        f"  sipnet     {spec.sipnet_parameter_name or 'none'}: {spec.pecan_conversion}",
+        f"  units      {spec.units_provenance}",
+        f"  what       {spec.description}",
+    ]
+    if spec.comment:
+        lines.append(f"  comment    {spec.comment}")
+    return "\n".join(lines)
+
+
+# ── private helpers ───────────────────────────────────────────────────────────
+
 #: The caveat every spec's units_provenance ends with.
 _UNCONFIRMED = "Unconfirmed; see data/README.md, open question 24."
 
@@ -158,6 +167,84 @@ _UNCONFIRMED = "Unconfirmed; see data/README.md, open question 24."
 #: condition parameter that does not exist.
 _SIPNET_INITIAL_CONDITION_NAMES: frozenset[str] = frozenset(InitialConditions.model_fields)
 
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_initial_condition_spec_is_valid(spec: InitialConditionSpec) -> None:
+    """An initial condition spec is complete and names what exists."""
+    check_initial_condition_name_is_a_processed_name(spec)
+    validate_units(spec.units)
+    check_initial_condition_spec_is_described(spec)
+    check_initial_condition_spec_records_its_provenance(spec)
+    check_initial_condition_source_name_is_a_source_variable(spec)
+    check_initial_condition_sipnet_parameter_exists(spec)
+
+
+def check_initial_condition_is_registered(name: str) -> None:
+    """An initial condition name is one of :data:`INITIAL_CONDITION_NAMES`."""
+    if name not in INITIAL_CONDITION_NAMES:
+        raise KeyError(
+            f"no initial condition named {name!r}; pass one of "
+            f"{truncated(INITIAL_CONDITION_NAMES)}."
+        )
+
+
+def check_initial_condition_name_is_a_processed_name(spec: InitialConditionSpec) -> None:
+    """An initial condition's name is ``lower_case_with_underscores``."""
+    if not NAME_PATTERN.match(spec.name):
+        raise ValueError(
+            f"initial condition name {spec.name!r} is not lower_case_with_underscores; "
+            "rename it."
+        )
+
+
+def check_initial_condition_spec_is_described(spec: InitialConditionSpec) -> None:
+    """An initial condition spec has a description, long label and upstream product."""
+    if not spec.description or not spec.long_label or not spec.upstream_product:
+        raise ValueError(
+            f"initial condition {spec.name!r} needs a description, long_label and "
+            "upstream_product; give all three."
+        )
+
+
+def check_initial_condition_spec_records_its_provenance(spec: InitialConditionSpec) -> None:
+    """An initial condition spec says what PEcAn did and how firm its units are."""
+    if not spec.pecan_conversion or not spec.units_provenance:
+        raise ValueError(
+            f"initial condition {spec.name!r} needs pecan_conversion and units_provenance; "
+            "give both."
+        )
+
+
+def check_initial_condition_source_name_is_a_source_variable(spec: InitialConditionSpec) -> None:
+    """An initial condition's source name is a variable the source files carry."""
+    if spec.source_name not in SOURCE.variables:
+        raise ValueError(
+            f"initial condition {spec.name!r}: source_name {spec.source_name!r} is not a "
+            f"variable the source files carry, {truncated(sorted(SOURCE.variables))}; name one of "
+            "them."
+        )
+
+
+def check_initial_condition_sipnet_parameter_exists(spec: InitialConditionSpec) -> None:
+    """An initial condition's SIPNET parameter, where it names one, is pySIPNET's."""
+    if spec.sipnet_parameter_name and (
+        spec.sipnet_parameter_name not in _SIPNET_INITIAL_CONDITION_NAMES
+    ):
+        raise ValueError(
+            f"initial condition {spec.name!r}: {spec.sipnet_parameter_name!r} is not a "
+            "parameter of pysipnet.parameters.InitialConditions, "
+            f"{truncated(sorted(_SIPNET_INITIAL_CONDITION_NAMES))}; name one by its pySIPNET name."
+        )
+
+
+# ── the registry ──────────────────────────────────────────────────────────────
+#
+# Last in the module, since building a spec runs the checks above.
+
+#: Every initial condition, one spec per variable of the source files, in the
+#: order of ``SOURCE.names``.
 INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
     InitialConditionSpec(
         name="initial_aboveground_biomass_carbon",
@@ -323,27 +410,3 @@ INITIAL_CONDITIONS: tuple[InitialConditionSpec, ...] = (
 
 #: The processed names, in registry order.
 INITIAL_CONDITION_NAMES: tuple[str, ...] = tuple(spec.name for spec in INITIAL_CONDITIONS)
-
-
-def resolve_initial_condition(name: str) -> InitialConditionSpec:
-    """The spec named *name*, or a ``KeyError`` listing the names that exist."""
-    for spec in INITIAL_CONDITIONS:
-        if spec.name == name:
-            return spec
-    raise KeyError(f"No initial condition named {name!r}. Known: {list(INITIAL_CONDITION_NAMES)}")
-
-
-def describe(spec: InitialConditionSpec) -> str:
-    """A spec as a paragraph, for ``--describe`` and the run log."""
-    units = f"{spec.units} {spec.constituent}".strip()
-    lines = [
-        f"{spec.name}: {spec.long_label} ({units}), from {spec.upstream_product}.",
-        f"  source     {spec.source_name!r}, units {spec.source_units!r}, "
-        f"long name {spec.source_long_name!r}",
-        f"  sipnet     {spec.sipnet_parameter_name or 'none'}: {spec.pecan_conversion}",
-        f"  units      {spec.units_provenance}",
-        f"  what       {spec.description}",
-    ]
-    if spec.comment:
-        lines.append(f"  comment    {spec.comment}")
-    return "\n".join(lines)

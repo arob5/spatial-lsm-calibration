@@ -45,7 +45,7 @@ from sipnet_calibration.constraints import (
     resolve_constraint,
 )
 from sipnet_calibration.conventions import CF_CONVENTIONS, data_root
-from sipnet_calibration.sites import N_SITES, default_sites_path, load_sites
+from sipnet_calibration.sites import N_SITES, default_site_table_path, load_sites
 
 #: The tracked raw files, found from the repository rather than the data root.
 RAW_DIR = REPOSITORY / "data" / "raw" / "constraints"
@@ -66,17 +66,6 @@ ingest = load_script("scripts/ingest_constraints.py")
 # ── synthetic fixtures ────────────────────────────────────────────────────────
 
 SYNTHETIC_SITES = [1, 2, 3, 4]
-SYNTHETIC_COORDS = {1: (-100.0, 40.0), 2: (-101.0, 41.0), 3: (-102.0, 42.0), 4: (-103.0, 43.0)}
-
-
-def _write_sites(path: Path, site_ids=SYNTHETIC_SITES) -> Path:
-    """A minimal site table that ``load_sites`` accepts."""
-    return write_site_table_csv(
-        path,
-        site_ids,
-        lon=[SYNTHETIC_COORDS[site][0] for site in site_ids],
-        lat=[SYNTHETIC_COORDS[site][1] for site in site_ids],
-    )
 
 
 def _write_raw(root: Path, spec: ConstraintSpec, rows: list[dict]) -> Path:
@@ -168,7 +157,7 @@ STATIC_ROWS = [
 
 @pytest.fixture
 def site_table(tmp_path) -> pd.DataFrame:
-    return load_sites(_write_sites(tmp_path / "sites" / "sites.csv"))
+    return load_sites(write_site_table_csv(tmp_path / "sites" / "sites.csv", SYNTHETIC_SITES))
 
 
 @pytest.fixture
@@ -218,7 +207,7 @@ def test_resolve_constraint_names_the_known_constraints_on_a_miss():
         ({"value_column": "nope"}, "not in raw_columns"),
         ({"time_column": None}, "needs a time_column"),
         ({"quality_column": "sd"}, "go together"),
-        ({"raw_columns": ("site_id", "year", "mean", "sd", "sd")}, "repeats"),
+        ({"raw_columns": ("site_id", "year", "mean", "sd", "sd")}, "more than once"),
         ({"raw_columns": ("id", "year", "mean", "sd")}, "site_id"),
         ({"description": ""}, "needs a description"),
     ],
@@ -273,6 +262,24 @@ def test_describe_names_the_file_the_columns_and_the_filter():
     assert "modis_leaf_area_index.csv.gz" in text
     assert "'lai'" in text and "'qc' == '000'" in text
     assert "dated" in text
+
+
+# ── the default paths ─────────────────────────────────────────────────────────
+
+
+def test_the_processed_directory_follows_the_data_root_and_the_raw_one_stays(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("SIPNET_CALIBRATION_DATA", str(tmp_path))
+    assert module.default_constraint_directory() == tmp_path / "processed" / "constraints"
+    # The raw files are tracked, so they are always in the checkout.
+    assert module.default_raw_directory() == RAW_DIR
+
+
+def test_the_raw_directory_follows_the_data_root_under_a_non_editable_install(
+    non_editable_install,
+):
+    assert module.default_raw_directory() == non_editable_install / "raw" / "constraints"
 
 
 # ── the conversion, on synthetic tables ───────────────────────────────────────
@@ -451,6 +458,22 @@ def test_a_malformed_date_is_refused(raw_root, site_table, tmp_path):
     _refused(DATED, rows, raw_root, site_table, tmp_path, "ISO date")
 
 
+@pytest.mark.parametrize("spec, rows", [(ANNUAL, ANNUAL_ROWS), (DATED, DATED_ROWS), (STATIC, STATIC_ROWS)])
+def test_build_constraint_places_values_by_site_whatever_the_row_and_table_order(
+    raw_root, site_table, spec, rows
+):
+    """Rows and site-table rows are matched by site id, never by position."""
+    _write_raw(raw_root, spec, rows)
+    frame = read_raw(spec, raw_root)
+    expected = build_constraint(spec, frame, site_table)
+    reordered = build_constraint(
+        spec, frame.iloc[::-1].reset_index(drop=True), site_table.iloc[::-1].reset_index(drop=True)
+    )
+    for dataset in (expected, reordered):
+        dataset.attrs.pop("created")
+    xr.testing.assert_identical(reordered, expected)
+
+
 def test_build_constraint_refuses_a_duplicate_site_time_key_itself(site_table):
     frame = pd.DataFrame(ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)])
     with pytest.raises(ValueError, match="share a"):
@@ -577,8 +600,8 @@ def _perturbations():
         pytest.param(drop_lon, "missing the 'lon'", id="missing-lon"),
         pytest.param(lon_on_time, "must be on site", id="lon-off-site"),
         pytest.param(drop_bounds, "time_bounds absent", id="missing-bounds"),
-        pytest.param(reversed_site, "site is empty or not strictly ascending", id="site-order"),
-        pytest.param(reversed_time, "time is empty or not strictly ascending", id="time-order"),
+        pytest.param(reversed_site, "site is not strictly ascending", id="site-order"),
+        pytest.param(reversed_time, "time is not strictly ascending", id="time-order"),
         pytest.param(orphan_sd, "missing at different elements", id="nan-mismatch"),
     ]
 
@@ -735,7 +758,7 @@ def test_describe_exits_zero_without_touching_data(capsys):
 
 
 def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys):
-    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites" / "sites.csv", SYNTHETIC_SITES)
     code = ingest.main(
         ["--raw-root", str(tmp_path / "absent"), "--site-table", str(site_table_path),
          "--out-dir", str(tmp_path / "out"), "--constraint", "smap_soil_moisture"]
@@ -747,7 +770,7 @@ def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys
 
 
 def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch, capsys):
-    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = write_site_table_csv(tmp_path / "sites" / "sites.csv", SYNTHETIC_SITES)
     _write_raw(raw_root, ANNUAL, ANNUAL_ROWS)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
@@ -781,7 +804,7 @@ def test_constraint_fields_keeps_the_order_of_names_given(
 
 
 def _real_files_present() -> bool:
-    return default_sites_path().exists() and all(
+    return default_site_table_path().exists() and all(
         (RAW_DIR / spec.raw_file).exists() for spec in CONSTRAINTS
     )
 

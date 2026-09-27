@@ -116,7 +116,7 @@ from sipnet_calibration.sites import (
     SITE_COLUMN_DTYPES,
     SITE_COLUMNS,
     SITE_GRID,
-    default_sites_path,
+    default_site_table_path,
     load_sites,
 )
 
@@ -130,7 +130,7 @@ DEFAULT_SITE_ID_MAP = REPO_ROOT / "data" / "site_id_map.csv"
 #: when ``$SIPNET_CALIBRATION_DATA`` redirects both. Hard-coding the checkout
 #: path here meant that, with that variable set, a default run wrote one place
 #: and every consumer read another, and the run still reported success.
-DEFAULT_OUT = default_sites_path()
+DEFAULT_OUT = default_site_table_path()
 
 #: The encoding ``pts.cpg`` is expected to declare, normalized by
 #: :func:`normalize_encoding`.

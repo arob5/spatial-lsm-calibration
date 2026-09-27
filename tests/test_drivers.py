@@ -27,7 +27,16 @@ import xarray as xr
 from pysipnet.climate import ClimateDrivers
 from pysipnet.variables import CLIMATE_COLUMN_NAMES
 
-from conftest import DRIVERS_ROOT, LOCAL_DRIVER_PAIRS, REPOSITORY, site_table_of
+from conftest import (
+    DRIVER_FILE_COLUMNS,
+    DRIVERS_ROOT,
+    LOCAL_DRIVER_PAIRS,
+    REPOSITORY,
+    site_table_of,
+    synthetic_driver_rows,
+    write_driver_pair,
+    write_driver_rows,
+)
 from sipnet_calibration.conventions import (
     DATA_ROOT_ENV_VAR,
     LAT_ATTRIBUTES,
@@ -36,11 +45,12 @@ from sipnet_calibration.conventions import (
     TIME_COORD_NAMES,
 )
 from sipnet_calibration.drivers import (
+    DRIVER_DIRECTORY_TEMPLATE,
     DRIVER_PRESENT,
     DRIVER_VARIABLE_NAMES,
     NEGATIVE_TOLERANCE,
     UNITS_PROVENANCE,
-    available_members,
+    available_source_indices,
     default_drivers_root,
     driver_fields,
     driver_file,
@@ -48,76 +58,13 @@ from sipnet_calibration.drivers import (
     read_driver_file,
 )
 from sipnet_calibration.observation.time_alignment import aggregate_time
-from sipnet_calibration.sites import default_sites_path, load_sites
-
-#: The 14 fields of a legacy-layout row, under SIPNET's own names.
-FILE_COLUMNS = (
-    "loc", "year", "day", "time", "length", "tair", "tsoil", "par", "precip",
-    "vpd", "vpd_soil", "vpress", "wspd", "soil_wetness",
-)
+from sipnet_calibration.sites import default_site_table_path, load_sites
 
 #: The value columns, in file order, under SIPNET's names and pySIPNET's.
-VALUE_COLUMNS = dict(zip(FILE_COLUMNS[5:13], DRIVER_VARIABLE_NAMES, strict=True))
+VALUE_COLUMNS = dict(zip(DRIVER_FILE_COLUMNS[5:13], DRIVER_VARIABLE_NAMES, strict=True))
 
 
 # ── synthetic files ───────────────────────────────────────────────────────────
-
-
-def synthetic_rows(years=(2013,), *, seed=0) -> pd.DataFrame:
-    """One whole year of 3-hourly rows per entry of *years*, in the 14-column layout."""
-    rng = np.random.default_rng(seed)
-    frames = []
-    for year in years:
-        n_days = 366 if pd.Timestamp(year, 1, 1).is_leap_year else 365
-        n = 8 * n_days
-        frames.append(
-            pd.DataFrame(
-                {
-                    "loc": 0,
-                    "year": year,
-                    "day": np.repeat(np.arange(1, n_days + 1), 8),
-                    "time": np.tile(np.arange(8) * 3.0, n_days),
-                    "length": 0.125,
-                    "tair": rng.normal(5, 10, n).round(3),
-                    "tsoil": rng.normal(4, 6, n).round(3),
-                    "par": np.abs(rng.normal(3, 2, n)).round(4),
-                    "precip": np.abs(rng.normal(0, 0.5, n)).round(4),
-                    "vpd": np.abs(rng.normal(300, 100, n)).round(2) + 1.0,
-                    "vpd_soil": np.abs(rng.normal(200, 100, n)).round(2),
-                    "vpress": np.abs(rng.normal(800, 200, n)).round(2) + 1.0,
-                    "wspd": np.abs(rng.normal(3, 1, n)).round(3) + 0.1,
-                    "soil_wetness": 0.6,
-                }
-            )
-        )
-    return pd.concat(frames, ignore_index=True)[list(FILE_COLUMNS)]
-
-
-def write_rows(path: Path, rows: pd.DataFrame) -> Path:
-    """Write *rows* the way the source does: tabs between space-padded fields."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    formats = {"year": "{:d}", "day": "{:3d}", "time": "{:9.6f}", "loc": "{:d}"}
-    lines = []
-    for record in rows.itertuples(index=False):
-        fields = []
-        for column, value in zip(FILE_COLUMNS, record, strict=True):
-            fields.append(formats.get(column, "{}").format(value))
-        lines.append("\t".join(fields))
-    path.write_text("\n".join(lines) + "\n")
-    return path
-
-
-def file_name(rows: pd.DataFrame, member: int) -> str:
-    first = pd.Timestamp(int(rows["year"].iloc[0]), 1, 1) + pd.Timedelta(days=int(rows["day"].iloc[0]) - 1)
-    last = pd.Timestamp(int(rows["year"].iloc[-1]), 1, 1) + pd.Timedelta(days=int(rows["day"].iloc[-1]) - 1)
-    return f"ERA5.{member}.{first.date()}.{last.date()}.clim"
-
-
-def write_pair(root: Path, site: int, member: int, rows: pd.DataFrame | None = None, **kwargs) -> Path:
-    """A synthetic file in the real layout, returning its path."""
-    if rows is None:
-        rows = synthetic_rows(seed=site * 100 + member, **kwargs)
-    return write_rows(root / f"ERA5_{site}_{member}" / file_name(rows, member), rows)
 
 
 @pytest.fixture
@@ -132,7 +79,7 @@ def root(tmp_path) -> Path:
     """Two sites with two members each, all present."""
     for site in (3, 7):
         for member in (1, 2):
-            write_pair(tmp_path, site, member)
+            write_driver_pair(tmp_path, site, member)
     return tmp_path
 
 
@@ -184,13 +131,13 @@ class TestPaths:
         with pytest.raises(ValueError, match="promises one"):
             driver_file(root, 3, 1)
 
-    def test_available_members_lists_the_directories_in_order(self, root):
+    def test_available_source_indices_lists_the_directories_in_order(self, root):
         (root / "ERA5_3_10").mkdir()
         (root / "ERA5_30_5").mkdir()  # another site that shares a prefix
         (root / "ERA5_3_notanumber").mkdir()
-        assert available_members(root, 3) == (1, 2, 10)
-        assert available_members(root, 30) == (5,)
-        assert available_members(root, 4) == ()
+        assert available_source_indices(root, 3) == (1, 2, 10)
+        assert available_source_indices(root, 30) == (5,)
+        assert available_source_indices(root, 4) == ()
 
 
 # ── read_driver_file ──────────────────────────────────────────────────────────
@@ -198,8 +145,8 @@ class TestPaths:
 
 class TestReadDriverFile:
     def test_returns_pysipnets_reading_of_the_file(self, tmp_path):
-        rows = synthetic_rows()
-        path = write_rows(tmp_path / "a.clim", rows)
+        rows = synthetic_driver_rows()
+        path = write_driver_rows(tmp_path / "a.clim", rows)
         climate = read_driver_file(path)
         assert isinstance(climate, ClimateDrivers)
         assert climate.n_columns == 14
@@ -213,44 +160,44 @@ class TestReadDriverFile:
     def test_a_file_pysipnet_refuses_is_refused_with_its_path_and_pysipnets_reason(self, tmp_path):
         """The drift of ``data/README.md`` Note 15: each label 2.47 s later
         than the one before it plus the declared length."""
-        rows = synthetic_rows()
+        rows = synthetic_driver_rows()
         rows["time"] = np.linspace(0, 24 * 365 - 1, len(rows)) % 24
-        path = write_rows(tmp_path / "a.clim", rows)
+        path = write_driver_rows(tmp_path / "a.clim", rows)
         with pytest.raises(ValueError, match=r"a\.clim: pySIPNET refused the file: .*drift"):
             read_driver_file(path)
 
     def test_a_label_that_steps_backwards_is_refused(self, tmp_path):
-        rows = synthetic_rows()
+        rows = synthetic_driver_rows()
         rows.loc[100, "time"] -= 1.0
-        path = write_rows(tmp_path / "a.clim", rows)
+        path = write_driver_rows(tmp_path / "a.clim", rows)
         with pytest.raises(ValueError, match="pySIPNET refused the file"):
             read_driver_file(path)
 
     def test_the_declared_clock_is_passed_to_pysipnet(self, tmp_path):
-        path = write_rows(tmp_path / "a.clim", synthetic_rows())
+        path = write_driver_rows(tmp_path / "a.clim", synthetic_driver_rows())
         assert read_driver_file(path).time_zone is None
         assert read_driver_file(path, time_zone="UTC").time_zone == "UTC"
 
     @pytest.mark.parametrize("column", ["par", "precip"])
     def test_rejects_totals_far_below_zero(self, tmp_path, column):
-        rows = synthetic_rows()
+        rows = synthetic_driver_rows()
         rows.loc[7, column] = -0.01
         with pytest.raises(ValueError, match=f"{VALUE_COLUMNS[column]} value\\(s\\) below"):
-            read_driver_file(write_rows(tmp_path / "a.clim", rows))
+            read_driver_file(write_driver_rows(tmp_path / "a.clim", rows))
 
     def test_negative_tolerance_is_the_exact_bound(self, tmp_path):
-        rows = synthetic_rows()
+        rows = synthetic_driver_rows()
         rows.loc[7, "par"] = -NEGATIVE_TOLERANCE
-        read_driver_file(write_rows(tmp_path / "a.clim", rows))
+        read_driver_file(write_driver_rows(tmp_path / "a.clim", rows))
         rows.loc[7, "par"] = -NEGATIVE_TOLERANCE * 1.01
         with pytest.raises(ValueError, match="photosynthetically_active_radiation value"):
-            read_driver_file(write_rows(tmp_path / "b.clim", rows))
+            read_driver_file(write_driver_rows(tmp_path / "b.clim", rows))
 
     def test_reads_small_negatives_through_unchanged(self, tmp_path):
-        rows = synthetic_rows()
+        rows = synthetic_driver_rows()
         rows.loc[7, "par"] = -1.374e-05
         rows.loc[8, "precip"] = -NEGATIVE_TOLERANCE / 2
-        frame = read_driver_file(write_rows(tmp_path / "a.clim", rows)).pandas
+        frame = read_driver_file(write_driver_rows(tmp_path / "a.clim", rows)).pandas
         assert frame["photosynthetically_active_radiation"].iloc[7] == -1.374e-05
         assert frame["precipitation"].iloc[8] == -NEGATIVE_TOLERANCE / 2
 
@@ -344,8 +291,8 @@ class TestLoadDrivers:
         )
 
     def test_driver_member_is_zero_based_and_source_index_is_the_file_index(self, root, site_table):
-        write_pair(root, 3, 5)
-        write_pair(root, 7, 5)
+        write_driver_pair(root, 3, 5)
+        write_driver_pair(root, 7, 5)
         dataset = load_drivers([3, 7], source_indices=[5, 1], root=root, site_table=site_table)
         np.testing.assert_array_equal(dataset["driver_member"].values, [4, 0])
         np.testing.assert_array_equal(dataset["source_index"].values, [5, 1])
@@ -356,7 +303,7 @@ class TestLoadDrivers:
         )
 
     def test_source_indices_keep_the_order_given_as_sites_do(self, root, site_table):
-        write_pair(root, 3, 5)
+        write_driver_pair(root, 3, 5)
         forward = load_drivers([3], source_indices=[1, 5, 2], root=root, site_table=site_table)
         backward = load_drivers([3], source_indices=[2, 5, 1], root=root, site_table=site_table)
         np.testing.assert_array_equal(forward["source_index"].values, [1, 5, 2])
@@ -366,12 +313,12 @@ class TestLoadDrivers:
         )
 
     def test_a_source_index_named_twice_is_refused(self, root, site_table):
-        with pytest.raises(ValueError, match=r"source index\(es\) \[1\] more than once"):
+        with pytest.raises(ValueError, match=r"source_indices names \[1\] more than once"):
             load_drivers([3], source_indices=[1, 2, 1], root=root, site_table=site_table)
 
     def test_source_indices_none_means_every_member_found(self, root, site_table):
-        write_pair(root, 3, 5)
-        write_pair(root, 7, 5)
+        write_driver_pair(root, 3, 5)
+        write_driver_pair(root, 7, 5)
         dataset = load_drivers([3, 7], root=root, site_table=site_table)
         np.testing.assert_array_equal(dataset["source_index"].values, [1, 2, 5])
 
@@ -453,14 +400,14 @@ class TestLoadDrivers:
     def test_a_directory_off_the_template_is_ignored_by_discovery(self, root, site_table):
         """``ERA5_3_04`` names member 4 but is not the directory ``driver_file``
         would look in, so discovery does not report it."""
-        write_pair(root, 3, 4)
+        write_driver_pair(root, 3, 4)
         (root / "ERA5_3_4").rename(root / "ERA5_3_04")
-        assert available_members(root, 3) == (1, 2)
+        assert available_source_indices(root, 3) == (1, 2)
         dataset = load_drivers([3], root=root, site_table=site_table)
         np.testing.assert_array_equal(dataset["source_index"].values, [1, 2])
 
     def test_non_physical_values_are_counted_not_altered(self, tmp_path, site_table):
-        rows = synthetic_rows(seed=1)
+        rows = synthetic_driver_rows(seed=1)
         rows.loc[[0, 1, 2], "par"] = -1e-6
         rows.loc[[20, 21, 22, 23, 24], "par"] = 0.0  # zeros are not below zero
         rows.loc[[3], "precip"] = -1e-15
@@ -468,7 +415,7 @@ class TestLoadDrivers:
         rows.loc[[4, 5], "vpd"] = 0.0
         rows.loc[[6], "wspd"] = 0.0
         rows.loc[[7, 8, 9, 10], "vpd_soil"] = 0.0
-        write_pair(tmp_path, 3, 1, rows)
+        write_driver_pair(tmp_path, 3, 1, rows)
         with warnings.catch_warnings():
             # pySIPNET warns about the zero vpd and wind speed; they are the point.
             warnings.simplefilter("ignore")
@@ -484,10 +431,10 @@ class TestLoadDrivers:
 
     def test_counts_are_over_every_file_present_and_nothing_else(self, tmp_path, site_table):
         for member, n_negative in ((1, 2), (2, 5)):
-            rows = synthetic_rows(seed=member)
+            rows = synthetic_driver_rows(seed=member)
             rows.loc[list(range(n_negative)), "par"] = -1e-6
-            write_pair(tmp_path, 3, member, rows)
-        write_pair(tmp_path, 7, 1)
+            write_driver_pair(tmp_path, 3, member, rows)
+        write_driver_pair(tmp_path, 7, 1)
         dataset = load_drivers(
             [3, 7], source_indices=[1, 2], root=tmp_path, site_table=site_table, allow_missing=True
         )
@@ -496,7 +443,7 @@ class TestLoadDrivers:
         assert attrs["n_values_below_zero"] == 7
 
     def test_a_discovered_member_beyond_int16_is_read_like_any_other(self, root, site_table):
-        write_pair(root, 3, 40000)
+        write_driver_pair(root, 3, 40000)
         dataset = load_drivers([3], root=root, site_table=site_table)
         assert dataset["source_index"].values.tolist() == [1, 2, 40000]
 
@@ -524,12 +471,12 @@ class TestLoadDrivers:
                 assert "_FillValue" not in written[name].attrs, name
 
     def test_missing_pair_raises_by_default(self, root, site_table):
-        write_pair(root, 3, 5)
-        with pytest.raises(FileNotFoundError, match=r"\(site, source index\) pair\(s\).*site 7 source index 5.*allow_missing=True"):
+        write_driver_pair(root, 3, 5)
+        with pytest.raises(FileNotFoundError, match=r"pair\(s\) have no driver file.*site 7 source index 5.*allow_missing=True"):
             load_drivers([3, 7], root=root, site_table=site_table)
 
     def test_allow_missing_fills_nan_and_writes_driver_present(self, root, site_table):
-        write_pair(root, 3, 5)
+        write_driver_pair(root, 3, 5)
         dataset = load_drivers([3, 7], root=root, site_table=site_table, allow_missing=True)
         present = dataset[DRIVER_PRESENT]
         assert present.dims == ("driver_member", "site") and present.dtype == bool
@@ -548,7 +495,7 @@ class TestLoadDrivers:
 
         from sipnet_calibration.plotting import plot_map
 
-        write_pair(root, 3, 5)
+        write_driver_pair(root, 3, 5)
         dataset = load_drivers([3, 7], root=root, site_table=site_table, allow_missing=True)
         figure, ax = plt.subplots()
         try:
@@ -558,7 +505,7 @@ class TestLoadDrivers:
 
     def test_two_loads_of_different_members_align_member_for_member(self, root, site_table):
         """A member's label is its identity: ``source_index - 1`` in every load."""
-        write_pair(root, 3, 5)
+        write_driver_pair(root, 3, 5)
         both = load_drivers([3], source_indices=[1, 5], root=root, site_table=site_table)
         one = load_drivers([3], source_indices=[5], root=root, site_table=site_table)
         assert one["driver_member"].values.tolist() == [4]
@@ -588,11 +535,11 @@ class TestLoadDrivers:
             load_drivers([3], root=tmp_path / "nowhere", site_table=site_table)
 
     def test_rejects_a_site_not_in_the_site_table(self, root, site_table):
-        write_pair(root, 11, 1)
+        write_driver_pair(root, 11, 1)
         with pytest.raises(KeyError, match="not in the site table"):
             load_drivers([11], root=root, site_table=site_table)
 
-    def test_rejects_a_directory_member_that_disagrees_with_the_file_name(self, root, site_table):
+    def test_rejects_a_directory_member_that_disagrees_with_the_driver_file_name(self, root, site_table):
         path = driver_file(root, 3, 2)
         path.rename(path.with_name(path.name.replace("ERA5.2.", "ERA5.4.")))
         with pytest.raises(ValueError, match="file name says member 4, the directory says member 2"):
@@ -615,27 +562,27 @@ class TestLoadDrivers:
             load_drivers([3], root=root, site_table=site_table)
 
     def test_rejects_two_files_on_different_time_axes(self, root, site_table):
-        write_pair(root, 7, 3, synthetic_rows(years=(2014,)))
-        write_pair(root, 3, 3, synthetic_rows(years=(2013,)))
+        write_driver_pair(root, 7, 3, synthetic_driver_rows(years=(2014,)))
+        write_driver_pair(root, 3, 3, synthetic_driver_rows(years=(2013,)))
         with pytest.raises(ValueError, match="timestep_start differs from"):
             load_drivers([3, 7], source_indices=[3], root=root, site_table=site_table)
-        write_pair(root, 7, 4, synthetic_rows(years=(2013, 2014)))
-        write_pair(root, 3, 4, synthetic_rows(years=(2013,)))
+        write_driver_pair(root, 7, 4, synthetic_driver_rows(years=(2013, 2014)))
+        write_driver_pair(root, 3, 4, synthetic_driver_rows(years=(2013,)))
         with pytest.raises(ValueError, match="steps where"):
             load_drivers([3, 7], source_indices=[4], root=root, site_table=site_table)
         # One label moved by a fraction of a second, well inside what pySIPNET
         # accepts as rounding: still a different axis.
-        rows = synthetic_rows(years=(2013,))
-        write_pair(root, 3, 6, rows)
+        rows = synthetic_driver_rows(years=(2013,))
+        write_driver_pair(root, 3, 6, rows)
         rows.loc[100, "time"] += 5e-6
-        write_pair(root, 7, 6, rows)
+        write_driver_pair(root, 7, 6, rows)
         with pytest.raises(ValueError, match="timestep_start differs from"):
             load_drivers([3, 7], source_indices=[6], root=root, site_table=site_table)
         # The same starts, and a last step half as long: a different axis too.
-        rows = synthetic_rows(years=(2013,))
-        write_pair(root, 3, 8, rows)
+        rows = synthetic_driver_rows(years=(2013,))
+        write_driver_pair(root, 3, 8, rows)
         rows.loc[len(rows) - 1, "length"] = 0.0625
-        write_pair(root, 7, 8, rows)
+        write_driver_pair(root, 7, 8, rows)
         with pytest.raises(ValueError, match="timestep_length differs from"):
             load_drivers([3, 7], source_indices=[8], root=root, site_table=site_table)
 
@@ -678,7 +625,7 @@ class TestDriverFields:
         assert fields["photosynthetically_active_radiation"].attrs["units"] == "mol m-2"
 
     def test_driver_present_is_not_a_field(self, root, site_table):
-        write_pair(root, 3, 5)
+        write_driver_pair(root, 3, 5)
         dataset = load_drivers([3, 7], root=root, site_table=site_table, allow_missing=True)
         assert DRIVER_PRESENT in dataset
         assert DRIVER_PRESENT not in driver_fields(dataset)
@@ -701,7 +648,7 @@ def real_pairs() -> list[tuple[int, int]]:
     return [
         (site, member)
         for site, member in LOCAL_DRIVER_PAIRS
-        if (REAL_ROOT / f"ERA5_{site}_{member}").is_dir()
+        if (REAL_ROOT / DRIVER_DIRECTORY_TEMPLATE.format(site=site, member=member)).is_dir()
     ]
 
 
@@ -709,7 +656,7 @@ needs_real_files = pytest.mark.skipif(
     not real_pairs(), reason="the local driver files are not present in this checkout"
 )
 needs_site_table = pytest.mark.skipif(
-    not default_sites_path().exists(), reason="processed/sites/sites.csv is not present"
+    not default_site_table_path().exists(), reason="processed/sites/sites.csv is not present"
 )
 
 
