@@ -646,7 +646,7 @@ def _step_weights(field: xr.DataArray) -> xr.DataArray:
     return _as_step_array(field, np.ones(field.sizes[TIME]))
 
 
-def _steps_frame(field: xr.DataArray) -> pd.DataFrame:
+def _steps_table(field: xr.DataArray) -> pd.DataFrame:
     """Each step's start, end and length, in nanoseconds, indexed by its end."""
     return pd.DataFrame(
         {
@@ -765,7 +765,7 @@ def _window_interval_coords(
     codes = _window_codes(field, windows)
     inside = codes >= 0
     spans = (
-        _steps_frame(field)[inside]
+        _steps_table(field)[inside]
         .groupby(codes[inside])
         # A plain dict: pandas rebuilds the mapping it is given as its own type
         # and fills it in place, which a frozendict refuses.
