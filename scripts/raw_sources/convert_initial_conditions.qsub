@@ -15,4 +15,9 @@
 #$ -j y
 #$ -N ic_convert
 #$ -cwd
+# The home directory is small and quota-limited, so uv's cache and the SIPNET
+# binary cache are in project space (CLAUDE.md, "Running on the SCC").
+# TMPDIR is left to Grid Engine, which gives the job node-local scratch.
+export UV_CACHE_DIR=/projectnb/dietzelab/$USER/uv_cache
+export PYSIPNET_CACHE_DIR=/projectnb/dietzelab/$USER/pysipnet_cache
 uv run python scripts/raw_sources/convert_initial_conditions.py --jobs "$NSLOTS"

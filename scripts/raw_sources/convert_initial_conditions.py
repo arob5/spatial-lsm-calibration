@@ -1,39 +1,30 @@
 #!/usr/bin/env python
 """Make the tracked raw initial condition file out of PEcAn's 800,000 netCDFs.
 
-**Not part of the raw-to-processed pipeline.** This script sits upstream of
-``data/raw/``: it *creates* a raw input rather than processing one, it needs
-the SCC, where the source files are, and it ran once, in 2026-09, to produce
-the file that is now in version control. Nothing in a normal working copy has
-to run it. It lives under ``scripts/raw_sources/`` for that reason, beside no
-other pipeline script; the ingest that reads what it wrote is
-``scripts/ingest_initial_conditions.py``. Run this again only if the source
-files themselves change.
-
 Overview
 --------
-Read every ``<site>/IC_site_<site>_<member>.nc`` under the source root, check
-each against the source template, and lay the values on ``(site, member)`` as
-``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``, in the source
-files' variable names, units strings and 1-based member index. Values are
-copied bit for bit; nothing is renamed, converted or masked.
+Read every ``<site>/IC_site_<site>_<member>.nc`` under the source directory,
+check each against the source template, and lay the values on
+``(site, member)`` as the tracked raw file, in the source files' variable
+names, units strings and 1-based member index. Values are copied bit for bit;
+nothing is renamed, converted or masked.
 
 Input data
 ----------
-``--root``, default ``data/raw/initial_conditions/files/``
-    The source tree: one directory per site, named by the 1-8000 site
-    identifier, holding one netCDF-3 classic file per ensemble member. The
-    file format is described in ``sipnet_calibration.initial_conditions`` and
-    parsed by its ``read_source_directory``, which refuses anything outside
-    the template.
+``--source-directory``, default
+:func:`sipnet_calibration.initial_conditions.default_source_root`
+    The source tree: one directory per site, named by its site id, holding one
+    netCDF-3 classic file per ensemble member. The file format is described in
+    ``sipnet_calibration.initial_conditions`` and parsed by its
+    ``read_source_directory``, which refuses anything outside the template.
 
-``--site-table``, default ``data/processed/sites/sites.csv``
+``--site-table``, default :func:`sipnet_calibration.sites.default_sites_path`
     The site table, used only to check that the site directories are exactly
-    the pool. Skipped with a note if the table is absent.
+    the pool. Skipped with a note if the default table is absent.
 
 Output data
 -----------
-``--out``, default ``data/raw/initial_conditions/pecan_pool_initial_conditions.nc``
+``--output``, default :func:`sipnet_calibration.initial_conditions.raw_path`
     Five ``float64`` variables on ``(site, member)``, ``NaN`` where a site's
     files lack the variable, with the source attribute strings; ``site``
     ``int32`` and ``member`` ``int16`` ascending; the source's time metadata,
@@ -42,19 +33,23 @@ Output data
 
 Notes
 -----
+**Not part of the raw-to-processed pipeline.** This script sits upstream of
+``data/raw/``: it *creates* a raw input rather than processing one, it needs
+the SCC, where the source files are, and it ran once, in 2026-09, to produce
+the file that is now in version control. Run it again only if the source files
+themselves change; the ingest that reads what it wrote is
+``scripts/ingest_initial_conditions.py``.
+
 The report printed at the end -- per-variable coverage, ranges and negative
 counts, the variable-set signatures, and the md5 of the written file -- is
 what ``data/raw/initial_conditions/provenance.md`` records. The numbers are
-printed rather than asserted because they describe the source data, not an
+printed rather than checked because they describe the source data, not an
 invariant of ours; the invariants (a complete rectangle, presence uniform over
 members, the source template in every file) are the ``check_*`` functions and
 the per-file checks in the library.
 
-Output is written to a ``.partial`` path and renamed only once it reads back
-bit-identical through ``read_raw``, so a failed run cannot leave a corrupt
-file where the tracked one belongs.
-A failed check keeps the ``.partial`` file for inspection and prints its
-path (:func:`sipnet_calibration.io.write_checked`).
+The file is written through :func:`sipnet_calibration.io.write_checked`, and
+its check reads it back with ``read_raw``.
 
 Usage
 -----
@@ -66,11 +61,11 @@ or through the batch system, on the group's buy-in nodes::
 
     qsub scripts/raw_sources/convert_initial_conditions.qsub
 
-A quick check on a partial tree (the three files in a local checkout are not
-the site pool and do not form a rectangle, so this fails at the pool check, or
-at the rectangle check without a site table, by design)::
+A trial run on a partial tree, which is not the pool, so its output must not
+be committed::
 
-    uv run python scripts/raw_sources/convert_initial_conditions.py --root data/raw/initial_conditions/files
+    uv run python scripts/raw_sources/convert_initial_conditions.py \\
+        --limit-sites 2 --output /tmp/trial.nc
 """
 
 from __future__ import annotations
@@ -87,6 +82,7 @@ import xarray as xr
 
 from sipnet_calibration.conventions import SITE
 from sipnet_calibration.initial_conditions import (
+    RAW_MEMBER,
     SOURCE,
     SourceFile,
     build_raw,
@@ -102,69 +98,56 @@ from sipnet_calibration.sites import (
     default_sites_path,
     load_sites,
 )
-from sipnet_calibration.validation import range_summary
+from sipnet_calibration.validation import range_summary, truncated
 
+#: This script, as the raw file's conversion record names it.
 SCRIPT = "scripts/raw_sources/convert_initial_conditions.py"
-
-
-class ConversionError(Exception):
-    """A check failed, or the tree is not what it claims to be."""
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Read the source tree and write the raw file, or report why not."""
     args = parse_args(argv)
-    root = args.root if args.root is not None else default_source_root()
-    out = args.out if args.out is not None else raw_path()
-    site_table_path = args.site_table or default_sites_path()
-
+    source_directory = args.source_directory or default_source_root()
+    output = args.output or raw_path()
     try:
-        sites = discover_sites(root)
-        if args.limit_sites is not None:
-            # A trial run reads a prefix of the tree, which is not the pool, so the
-            # pool check is skipped and the result must not be committed.
-            if args.limit_sites < 1:
-                raise ConversionError("--limit-sites must be at least 1")
-            if args.out is None:
-                raise ConversionError(
-                    "--limit-sites needs an explicit --out. Its output is a prefix of "
-                    f"the tree rather than the pool, and the default path ({raw_path()}) "
-                    "is the tracked raw file, which a trial run must not overwrite."
-                )
-            sites = sites[: args.limit_sites]
-            print(f"note: --limit-sites {args.limit_sites}; the pool check is skipped", flush=True)
-        else:
-            check_site_directories_are_the_pool(
-                sites, site_table_path, explicit=args.site_table is not None
-            )
-        print(f"{len(sites)} site directories under {root}", flush=True)
+        site_ids = find_site_ids(source_directory)
+        site_ids = choose_site_ids(
+            site_ids,
+            limit=args.limit_sites,
+            output_given=args.output is not None,
+            site_table_path=args.site_table or default_sites_path(),
+            site_table_given=args.site_table is not None,
+        )
+        print(f"{len(site_ids)} site directories under {source_directory}", flush=True)
 
-        files = read_all_files(root, sites, jobs=args.jobs)
-        dataset = build_raw(files, source_root=str(root), conversion_script=SCRIPT)
-        report = describe_raw(dataset, files)
-        write_raw(dataset, out)
-        print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {file_md5(out)})")
+        files = read_source_files(source_directory, site_ids, jobs=args.jobs)
+        dataset = build_raw(files, source_root=str(source_directory), conversion_script=SCRIPT)
+        report = describe_raw_file(dataset, files)
+        write_raw_file(dataset, output)
+        print(f"wrote {output}  ({output.stat().st_size / 1e6:.1f} MB, md5 {file_md5(output)})")
         print(report)
-    except (ConversionError, OSError, ValueError, KeyError, BrokenProcessPool) as error:
+    except (IngestError, OSError, ValueError, LookupError, TypeError, BrokenProcessPool) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--root",
+        "--source-directory",
         type=Path,
         default=None,
         help="The source tree. Default: data/raw/initial_conditions/files.",
     )
     parser.add_argument(
-        "--out",
+        "--output",
         type=Path,
         default=None,
         help="Where to write. Default: data/raw/initial_conditions/pecan_pool_initial_conditions.nc.",
@@ -192,39 +175,62 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the steps, in the order main calls them ───────────────────────────────────
 
 
-def discover_sites(root: Path) -> list[int]:
-    """The site directories under *root*, ascending, refusing anything else."""
-    if not root.is_dir():
-        raise ConversionError(f"source root {root} is not a directory")
-    sites, strays = [], []
-    for entry in sorted(root.iterdir()):
+def find_site_ids(source_directory: Path) -> list[int]:
+    """The site ids of the site directories under *source_directory*, ascending."""
+    check_source_directory_exists(source_directory)
+    site_ids, strays = [], []
+    for entry in sorted(source_directory.iterdir()):
         if entry.name.startswith("."):
             continue  # filesystem debris such as .DS_Store
-        if entry.is_dir() and entry.name.isascii() and entry.name.isdigit() and str(int(entry.name)) == entry.name:
-            sites.append(int(entry.name))
+        if entry.is_dir() and _is_site_directory_name(entry.name):
+            site_ids.append(int(entry.name))
         else:
             strays.append(entry.name)
-    if strays:
-        raise ConversionError(
-            f"{root} holds entries that are not site directories: {strays[:10]}. The "
-            "source tree is one numeric directory per site and nothing else."
-        )
-    if not sites:
-        raise ConversionError(f"{root} holds no site directories")
-    return sorted(sites)
+    check_source_directory_holds_only_site_directories(source_directory, strays)
+    check_source_directory_holds_a_site(source_directory, site_ids)
+    return sorted(site_ids)
 
 
-def read_all_files(root: Path, sites: list[int], *, jobs: int) -> list[SourceFile]:
-    """Parse every file of every site, in parallel over sites."""
+def choose_site_ids(
+    site_ids: list[int],
+    *,
+    limit: int | None,
+    output_given: bool,
+    site_table_path: Path,
+    site_table_given: bool,
+) -> list[int]:
+    """The site ids to read: the pool, checked against the site table, or a trial prefix."""
+    if limit is not None:
+        # A trial run reads a prefix of the tree, which is not the pool, so the
+        # pool check is skipped and the result must not be committed.
+        check_limit_is_positive(limit)
+        check_trial_run_names_its_output(output_given)
+        print(f"note: --limit-sites {limit}; the pool check is skipped", flush=True)
+        return site_ids[:limit]
+    if not site_table_path.exists():
+        check_named_site_table_exists(site_table_path, named=site_table_given)
+        print(f"note: {site_table_path} absent; the pool check is left to the ingest", flush=True)
+        return site_ids
+    check_sites_are_the_site_table(
+        load_sites(site_table_path), site_ids, message_name="the site directories"
+    )
+    return site_ids
+
+
+def read_source_files(source_directory: Path, site_ids: list[int], *, jobs: int) -> list[SourceFile]:
+    """Every file of every site, parsed in parallel over sites."""
     files: list[SourceFile] = []
     pool = ProcessPoolExecutor(max_workers=max(1, jobs))
     try:
-        for i, batch in enumerate(
-            pool.map(read_source_directory, [root] * len(sites), sites, chunksize=8), start=1
+        for count, site_files in enumerate(
+            pool.map(
+                read_source_directory, [source_directory] * len(site_ids), site_ids, chunksize=8
+            ),
+            start=1,
         ):
-            files.extend(batch)
-            if i % 500 == 0 or i == len(sites):
-                print(f"  ... {i} of {len(sites)} sites, {len(files)} files", flush=True)
+            files.extend(site_files)
+            if count % 500 == 0 or count == len(site_ids):
+                print(f"  ... {count} of {len(site_ids)} sites, {len(files)} files", flush=True)
     except BaseException:
         # A bad file should stop the run now, not after the other 799,999 are read.
         pool.shutdown(wait=False, cancel_futures=True)
@@ -233,28 +239,18 @@ def read_all_files(root: Path, sites: list[int], *, jobs: int) -> list[SourceFil
     return files
 
 
-def write_raw(dataset: xr.Dataset, out: Path) -> None:
-    """Write to a ``.partial`` path, verify the round trip, then rename."""
-    write_checked(
-        out,
-        write=lambda partial: dataset.to_netcdf(
-            partial, engine="h5netcdf", encoding=raw_encoding(dataset)
-        ),
-        check=lambda partial: check_round_trip(dataset, partial),
-    )
-
-
-def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
+def describe_raw_file(dataset: xr.Dataset, files: list[SourceFile]) -> str:
     """The run report: what provenance.md records."""
     lines = [
-        f"sites {dataset.sizes[SITE]}  members {dataset.sizes['member']}  files {len(files)}",
+        f"sites {dataset.sizes[SITE]}  members {dataset.sizes[RAW_MEMBER]}  files {len(files)}",
         "variable                       sites   min          median       max          negative",
     ]
     for name in SOURCE.names:
         values = dataset[name].values
         present = np.isfinite(values)
-        finite = values[present]
-        lines.append(f"{name:30s} {int(present.any(axis=1).sum()):5d}   {range_summary(finite)}")
+        lines.append(
+            f"{name:30s} {int(present.any(axis=1).sum()):5d}   {range_summary(values[present])}"
+        )
     signatures = Counter(tuple(sorted(record.values)) for record in files)
     lines.append("variable sets:")
     for signature, count in signatures.most_common():
@@ -262,52 +258,130 @@ def describe_raw(dataset: xr.Dataset, files: list[SourceFile]) -> str:
     return "\n".join(lines)
 
 
-# ── checks ────────────────────────────────────────────────────────────────────
-
-
-def check_site_directories_are_the_pool(
-    sites: list[int], site_table_path: Path, *, explicit: bool
-) -> None:
-    """Raise unless the site directories are exactly the site table's pool.
-
-    Skipped, with a note, when the *default* site table is not present; the
-    ingest repeats the comparison against the written file. A table named on
-    the command line has to exist.
-    """
-    if not site_table_path.exists():
-        check_a_named_site_table_exists(site_table_path, explicit=explicit)
-        print(
-            f"note: {site_table_path} absent; the pool check is left to the ingest",
-            flush=True,
-        )
-        return
-    check_sites_are_the_site_table(
-        load_sites(site_table_path), sites, message_name="the site directories"
+def write_raw_file(dataset: xr.Dataset, path: Path) -> None:
+    """Write through a ``.partial`` file, moved in once it reads back bit for bit."""
+    write_checked(
+        path,
+        write=lambda partial: dataset.to_netcdf(
+            partial, engine="h5netcdf", encoding=raw_encoding(dataset)
+        ),
+        check=lambda partial: check_round_trip(dataset, partial),
     )
 
 
-def check_a_named_site_table_exists(site_table_path: Path, *, explicit: bool) -> None:
+# ── supporting types and helpers ──────────────────────────────────────────────
+
+
+class IngestError(RuntimeError):
+    """The source tree or the written file breaks an invariant the raw file depends on."""
+
+
+def _is_site_directory_name(name: str) -> bool:
+    """Whether *name* is a site id written plainly: ASCII digits, no leading zero."""
+    return name.isascii() and name.isdigit() and str(int(name)) == name
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_source_directory_exists(source_directory: Path) -> None:
+    """The source directory is a directory."""
+    if not source_directory.is_dir():
+        raise FileNotFoundError(
+            f"source directory {source_directory} is not a directory; pass the source "
+            "tree with --source-directory."
+        )
+
+
+def check_source_directory_holds_only_site_directories(
+    source_directory: Path, strays: list[str]
+) -> None:
+    """The source directory holds nothing but site directories."""
+    if strays:
+        raise IngestError(
+            f"{source_directory} holds entries that are not site directories, "
+            f"{truncated(strays)}; the source tree is one numeric directory per site and "
+            "nothing else, so move them out."
+        )
+
+
+def check_source_directory_holds_a_site(source_directory: Path, site_ids: list[int]) -> None:
+    """The source directory holds at least one site directory."""
+    if not site_ids:
+        raise IngestError(
+            f"{source_directory} holds no site directories; pass the source tree with "
+            "--source-directory."
+        )
+
+
+def check_limit_is_positive(limit: int) -> None:
+    """A trial run's ``--limit-sites`` is at least 1."""
+    if limit < 1:
+        raise IngestError(f"--limit-sites must be at least 1, got {limit}; pass a positive count.")
+
+
+def check_trial_run_names_its_output(output_given: bool) -> None:
+    """A trial run names its ``--output``, so it cannot overwrite the tracked raw file."""
+    if not output_given:
+        raise IngestError(
+            "--limit-sites needs an explicit --output, since its output is a prefix of the "
+            f"tree rather than the pool and the default path ({raw_path()}) is the tracked "
+            "raw file; name another path with --output."
+        )
+
+
+def check_named_site_table_exists(site_table_path: Path, *, named: bool) -> None:
     """A site table named on the command line exists."""
-    if explicit and not site_table_path.exists():
-        raise ConversionError(
+    if named and not site_table_path.exists():
+        raise FileNotFoundError(
             f"site table {site_table_path} does not exist; build it with "
             "scripts/ingest_sites.py or name another with --site-table."
         )
 
 
 def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
-    """Raise unless the written file reads back bit-identical through the library."""
+    """The written file reads back through the library as what was built, bit for bit."""
     with read_raw(partial) as read_back:
-        for name in SOURCE.names:
-            written, back = dataset[name].values, read_back[name].values
-            if not np.array_equal(written, back, equal_nan=True):
-                raise ConversionError(f"{name} did not round-trip bit for bit through {partial}")
-            if dict(read_back[name].attrs) != dict(dataset[name].attrs):
-                raise ConversionError(f"{name}'s attributes changed on the way to disk")
-        for coordinate in ("site", "member"):
-            if not np.array_equal(dataset[coordinate].values, read_back[coordinate].values):
-                raise ConversionError(f"{coordinate} did not round-trip through {partial}")
+        check_variables_read_back_bitwise(dataset, read_back, partial=partial)
+        check_variable_attributes_read_back(dataset, read_back, partial=partial)
+        check_coordinates_read_back(dataset, read_back, partial=partial)
+
+
+def check_variables_read_back_bitwise(
+    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
+) -> None:
+    """Every variable reads back bit for bit."""
+    for name in SOURCE.names:
+        if not np.array_equal(dataset[name].values, read_back[name].values, equal_nan=True):
+            raise IngestError(
+                f"{name} did not round-trip bit for bit through {partial}; inspect the kept "
+                "partial file."
+            )
+
+
+def check_variable_attributes_read_back(
+    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
+) -> None:
+    """Every variable's attributes read back unchanged."""
+    for name in SOURCE.names:
+        if dict(read_back[name].attrs) != dict(dataset[name].attrs):
+            raise IngestError(
+                f"{name}'s attributes changed on the way to disk through {partial}; inspect "
+                "the kept partial file."
+            )
+
+
+def check_coordinates_read_back(
+    dataset: xr.Dataset, read_back: xr.Dataset, *, partial: Path
+) -> None:
+    """The ``site`` and ``member`` coordinates read back unchanged."""
+    for coordinate in (SITE, RAW_MEMBER):
+        if not np.array_equal(dataset[coordinate].values, read_back[coordinate].values):
+            raise IngestError(
+                f"{coordinate} did not round-trip through {partial}; inspect the kept "
+                "partial file."
+            )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

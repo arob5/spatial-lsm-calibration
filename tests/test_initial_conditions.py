@@ -221,7 +221,7 @@ def raw(tree, tmp_path) -> Path:
     """The synthetic tree converted through the script, as a path."""
     out = tmp_path / "raw" / module.RAW_FILE
     sites_csv = _write_sites(tmp_path / "sites.csv")
-    assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(sites_csv), "--jobs", "1"]) == 0
+    assert convert.main(["--source-directory", str(tree), "--output", str(out), "--site-table", str(sites_csv), "--jobs", "1"]) == 0
     return out
 
 
@@ -672,15 +672,15 @@ def test_conversion_script_writes_a_raw_file_that_reads_back(raw):
 def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsys):
     site_table_path = _write_sites(tmp_path / "sites.csv")
     (tree / "notes.txt").write_text("x")
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
+    assert convert.main(["--source-directory", str(tree), "--output", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "not site directories" in capsys.readouterr().err
     (tree / "notes.txt").unlink()
     (tree / "1" / "README").write_text("x")
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
+    assert convert.main(["--source-directory", str(tree), "--output", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "IC_site" in capsys.readouterr().err
     (tree / "1" / "README").unlink()
     wrong = _write_sites(tmp_path / "wrong.csv", site_ids=[1, 2, 3, 4])
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(wrong), "--jobs", "1"]) == 1
+    assert convert.main(["--source-directory", str(tree), "--output", str(tmp_path / "o.nc"), "--site-table", str(wrong), "--jobs", "1"]) == 1
     assert "pool" in capsys.readouterr().err
     assert not (tmp_path / "o.nc").exists()
 
@@ -692,10 +692,10 @@ def test_a_failed_conversion_check_keeps_the_partial_and_prints_its_path(
     out = tmp_path / "o.nc"
 
     def refuse(dataset, partial):
-        raise convert.ConversionError("forced: the round trip failed")
+        raise convert.IngestError("forced: the round trip failed")
 
     monkeypatch.setattr(convert, "check_round_trip", refuse)
-    argv = ["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1"]
+    argv = ["--source-directory", str(tree), "--output", str(out), "--site-table", str(site_table_path), "--jobs", "1"]
     assert convert.main(argv) == 1
     err = capsys.readouterr().err
     partial = out.with_suffix(".nc.partial")
@@ -754,7 +754,7 @@ def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
 
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
     out = tmp_path / "processed" / module.PROCESSED_FILE
-    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
+    assert ingest.main(["--raw-file", str(raw), "--site-table", str(sites_csv), "--output", str(out)]) == 0
     assert not out.with_suffix(".nc.partial").exists()
     with load_initial_conditions(out) as processed, read_raw(raw) as raw_dataset:
         for spec in INITIAL_CONDITIONS:
@@ -776,7 +776,7 @@ def test_initial_condition_fields_coerces_sites_and_names_by_the_shared_rules(
     raw, sites_csv, tmp_path
 ):
     out = tmp_path / "processed" / module.PROCESSED_FILE
-    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
+    assert ingest.main(["--raw-file", str(raw), "--site-table", str(sites_csv), "--output", str(out)]) == 0
     with pytest.raises(ValueError, match="more than once"):
         initial_condition_fields(sites=[1, 1], path=out)
     for sites in ([1.5], [1.0], "3", 3, {1, 3}):
@@ -792,7 +792,7 @@ def test_ingest_checks_refuse_a_broken_wood_identity_or_member_gap(raw, sites_cs
     site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
         dataset = raw_dataset.load().copy()
-    ingest.check_raw(dataset, site_table)
+    ingest.check_raw_file_is_valid(dataset, site_table)
     broken = dataset.copy(deep=True)
     broken["wood_carbon_content"].values[0, 0] += 1e-12
     with pytest.raises(ingest.IngestError, match="identity"):
@@ -1408,7 +1408,7 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     if not SITES_CSV.exists():
         pytest.skip("the site table is not in this working copy")
     site_table = load_sites(SITES_CSV)
-    ingest.check_raw(tracked_raw, site_table)
+    ingest.check_raw_file_is_valid(tracked_raw, site_table)
     processed = build_initial_conditions(tracked_raw, site_table)
     assert processed["initial_soil_organic_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
     assert processed[SOURCE_INDEX].values[0] == 1 and processed[INITIAL_CONDITION_MEMBER].values[0] == 0
@@ -1447,7 +1447,7 @@ def test_ingest_main_reports_a_broken_identity_and_a_member_gap(raw, sites_csv, 
     out = tmp_path / "p.nc"
     for mutate, message in ((break_wood, "identity"), (gap, "1..2")):
         variant = _write_raw_variant(raw, tmp_path, mutate)
-        assert ingest.main(["--raw", str(variant), "--site-table", str(sites_csv), "--out", str(out)]) == 1
+        assert ingest.main(["--raw-file", str(variant), "--site-table", str(sites_csv), "--output", str(out)]) == 1
         assert message in capsys.readouterr().err
         assert not out.exists() and not out.with_suffix(".nc.partial").exists()
 
@@ -1616,7 +1616,7 @@ def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, 
     from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
     out = tmp_path / "processed.nc"
-    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
+    assert ingest.main(["--raw-file", str(raw), "--site-table", str(sites_csv), "--output", str(out)]) == 0
     field = initial_condition_fields(["initial_soil_organic_carbon"], path=out)[
         "initial_soil_organic_carbon"
     ]
@@ -1657,26 +1657,26 @@ def test_biomass_spec_is_not_fed_to_sipnet():
 def test_conversion_limit_sites_and_a_variable_absent_everywhere(tree, tmp_path, capsys):
     site_table_path = _write_sites(tmp_path / "sites.csv")
     out = tmp_path / "trial.nc"
-    assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "2"]) == 0
+    assert convert.main(["--source-directory", str(tree), "--output", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "2"]) == 0
     text = capsys.readouterr().out
     assert "pool check is skipped" in text and "SoilMoistFrac" in text
     with read_raw(out) as dataset:
         assert dataset.sizes[SITE] == 2
-    assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "0"]) == 1
+    assert convert.main(["--source-directory", str(tree), "--output", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "0"]) == 1
     assert "at least 1" in capsys.readouterr().err
     # a tree where no site carries soil moisture: the report prints dashes, exit 0
     values = {site: {m: {k: v for k, v in rec.items() if k != "SoilMoistFrac"} for m, rec in members.items()}
               for site, members in SYNTHETIC_VALUES.items()}
     dry = _write_tree(tmp_path / "dry", values)
-    assert convert.main(["--root", str(dry), "--out", str(tmp_path / "dry.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 0
+    assert convert.main(["--source-directory", str(dry), "--output", str(tmp_path / "dry.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 0
     assert "-            -" in capsys.readouterr().out
     processed = tmp_path / "dry_processed.nc"
-    assert ingest.main(["--raw", str(tmp_path / "dry.nc"), "--site-table", str(site_table_path), "--out", str(processed)]) == 0
+    assert ingest.main(["--raw-file", str(tmp_path / "dry.nc"), "--site-table", str(site_table_path), "--output", str(processed)]) == 0
     assert processed.exists()
 
 
 def test_conversion_refuses_a_named_site_table_that_is_absent(tree, tmp_path, capsys):
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(tmp_path / "nope.csv"), "--jobs", "1"]) == 1
+    assert convert.main(["--source-directory", str(tree), "--output", str(tmp_path / "o.nc"), "--site-table", str(tmp_path / "nope.csv"), "--jobs", "1"]) == 1
     assert "does not exist" in capsys.readouterr().err
 
 
@@ -1688,7 +1688,7 @@ def test_round_trip_checks_notice_a_file_that_differs(
         dataset = raw_dataset.load().copy(deep=True)
         processed = build_initial_conditions(raw_dataset, site_table)
     other = _write_raw_variant(raw, tmp_path, lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"] + 1))
-    with pytest.raises(convert.ConversionError, match="round-trip"):
+    with pytest.raises(convert.IngestError, match="round-trip"):
         convert.check_round_trip(dataset, other)
     changed = processed.copy(deep=True)
     changed["initial_wood_carbon"].values[0, 0] += 1
@@ -1700,7 +1700,7 @@ def test_round_trip_checks_notice_a_file_that_differs(
     monkeypatch.setattr(ingest, "check_round_trip", lambda d, p: (_ for _ in ()).throw(ingest.IngestError("boom")))
     out = tmp_path / "never.nc"
     capsys.readouterr()
-    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 1
+    assert ingest.main(["--raw-file", str(raw), "--site-table", str(sites_csv), "--output", str(out)]) == 1
     assert not out.exists() and out.with_suffix(".nc.partial").exists()
     assert str(out.with_suffix(".nc.partial")) in capsys.readouterr().err
 
