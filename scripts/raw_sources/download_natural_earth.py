@@ -115,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--output-directory",
@@ -151,7 +153,7 @@ def download(source: Source, output_directory: Path, *, check: bool) -> str:
         output_directory / source.file_name,
         write=fetch,
         check=(
-            (lambda partial: check_archive_md5_is_recorded(source, file_md5(partial)))
+            (lambda partial: check_archive_md5_matches_the_record(source, file_md5(partial)))
             if check
             else (lambda partial: None)
         ),
@@ -169,7 +171,7 @@ class IngestError(RuntimeError):
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_archive_md5_is_recorded(source: Source, digest: str) -> None:
+def check_archive_md5_matches_the_record(source: Source, digest: str) -> None:
     """A downloaded archive's md5 is the one :data:`SOURCES` records for it."""
     if digest != source.md5:
         raise IngestError(

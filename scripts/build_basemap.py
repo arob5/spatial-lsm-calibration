@@ -44,7 +44,9 @@ Usage
 from __future__ import annotations
 
 import argparse
+import struct
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -72,12 +74,10 @@ def main(argv: list[str] | None = None) -> int:
     """Build the basemap from the archives and write it, or report why not."""
     args = parse_args(argv)
     try:
-        parts, source_md5 = read_layers(args.raw_directory)
-        write_basemap_file(parts, source_md5, args.output)
-        print(describe_basemap(parts, args.output))
-    except (
-        IngestError, OSError, ValueError, LookupError, TypeError, shapefile.ShapefileException
-    ) as error:
+        parts_by_layer, source_md5_by_layer = read_layers(args.raw_directory)
+        write_basemap_file(parts_by_layer, source_md5_by_layer, args.output)
+        print(describe_basemap(parts_by_layer, args.output))
+    except (IngestError, OSError, ValueError, LookupError, TypeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
@@ -86,7 +86,9 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
         "--raw-directory",
@@ -98,7 +100,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output",
         type=Path,
         default=basemap_path(),
-        help="Where to write the basemap. Default: inside the package.",
+        help=f"Where to write the basemap. Default: {basemap_path()}.",
     )
     return parser.parse_args(argv)
 
@@ -107,46 +109,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def read_layers(raw_directory: Path) -> tuple[dict[str, list[np.ndarray]], dict[str, str]]:
-    """Every layer's drawable parts, and the md5 of the archive each came from."""
-    parts: dict[str, list[np.ndarray]] = {}
-    source_md5: dict[str, str] = {}
+    """Layer name -> its drawable parts, and layer name -> its archive's md5.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a layer's archive is missing.
+    IngestError
+        If pyshp cannot read an archive, a corrupt zip included.
+    """
+    parts_by_layer: dict[str, list[np.ndarray]] = {}
+    source_md5_by_layer: dict[str, str] = {}
     for name, layer in BASEMAP_LAYERS.items():
         archive = raw_directory / layer.source_file
         check_archive_exists(archive)
-        parts[name] = read_layer(archive)
-        source_md5[name] = file_md5(archive)
-    return parts, source_md5
-
-
-def read_layer(archive: Path) -> list[np.ndarray]:
-    """Each line (or polygon ring) of *archive*, clipped to the drawable region."""
-    kept: list[np.ndarray] = []
-    with shapefile.Reader(str(archive)) as reader:
-        for shape in reader.iterShapes():
-            if not shape.points:
-                continue
-            points = np.asarray(shape.points, dtype=float)
-            bounds = list(shape.parts) + [len(points)]
-            for start, stop in zip(bounds[:-1], bounds[1:]):
-                kept.extend(clip_to_drawable(points[start:stop, 0], points[start:stop, 1]))
-    return kept
+        parts_by_layer[name] = _read_layer(archive)
+        source_md5_by_layer[name] = file_md5(archive)
+    return parts_by_layer, source_md5_by_layer
 
 
 def write_basemap_file(
-    parts: dict[str, list[np.ndarray]], source_md5: dict[str, str], path: Path
+    parts_by_layer: dict[str, list[np.ndarray]],
+    source_md5_by_layer: dict[str, str],
+    path: Path,
 ) -> None:
     """Write through a ``.partial`` file, moved in once it reads back as the parts."""
     write_checked(
         path,
-        write=lambda partial: write_basemap(parts, source_md5, partial),
-        check=lambda partial: check_round_trip(parts, partial),
+        write=lambda partial: write_basemap(parts_by_layer, source_md5_by_layer, partial),
+        check=lambda partial: check_written_file_reads_back_identically(parts_by_layer, partial),
     )
 
 
-def describe_basemap(parts: dict[str, list[np.ndarray]], path: Path) -> str:
+def describe_basemap(parts_by_layer: dict[str, list[np.ndarray]], path: Path) -> str:
     """What was written, per layer, for the terminal."""
     lines = [f"wrote {path} ({path.stat().st_size:,} bytes)"]
-    for name, layer_parts in parts.items():
+    for name, layer_parts in parts_by_layer.items():
         vertices = sum(len(part) for part in layer_parts)
         lines.append(f"  {name:10s} {len(layer_parts):6,d} parts {vertices:9,d} vertices")
     return "\n".join(lines)
@@ -156,7 +154,27 @@ def describe_basemap(parts: dict[str, list[np.ndarray]], path: Path) -> str:
 
 
 class IngestError(RuntimeError):
-    """The written basemap is not what was built."""
+    """An archive could not be read, or the written basemap is not what was built."""
+
+
+def _read_layer(archive: Path) -> list[np.ndarray]:
+    """Each line (or polygon ring) of *archive*, clipped to the drawable region."""
+    kept: list[np.ndarray] = []
+    try:
+        with shapefile.Reader(str(archive)) as reader:
+            for shape in reader.iterShapes():
+                if not shape.points:
+                    continue
+                points = np.asarray(shape.points, dtype=float)
+                bounds = list(shape.parts) + [len(points)]
+                for start, stop in zip(bounds[:-1], bounds[1:]):
+                    kept.extend(clip_to_drawable(points[start:stop, 0], points[start:stop, 1]))
+    except (shapefile.ShapefileException, struct.error, zipfile.BadZipFile) as error:
+        raise IngestError(
+            f"{archive} could not be read as a zipped shapefile ({error}); fetch it again "
+            "with scripts/raw_sources/download_natural_earth.py."
+        ) from error
+    return kept
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
@@ -171,22 +189,40 @@ def check_archive_exists(archive: Path) -> None:
         )
 
 
-def check_round_trip(parts: dict[str, list[np.ndarray]], path: Path) -> None:
+def check_written_file_reads_back_identically(
+    parts_by_layer: dict[str, list[np.ndarray]], partial: Path
+) -> None:
     """The file reads back through the library loader as the parts written."""
+    loaded_by_layer = load_basemap(partial)
+    for name, layer_parts in parts_by_layer.items():
+        check_layer_keeps_its_part_count(layer_parts, loaded_by_layer[name], message_name=name)
+        check_layer_keeps_its_vertices(layer_parts, loaded_by_layer[name], message_name=name)
+
+
+def check_layer_keeps_its_part_count(
+    written: list[np.ndarray], read_back: list[np.ndarray], *, message_name: str
+) -> None:
+    """A layer reads back with as many parts as were written."""
+    if len(read_back) != len(written):
+        raise IngestError(
+            f"layer {message_name!r} read back with {len(read_back)} parts, not "
+            f"{len(written)}; inspect the kept partial file."
+        )
+
+
+def check_layer_keeps_its_vertices(
+    written: list[np.ndarray], read_back: list[np.ndarray], *, message_name: str
+) -> None:
+    """Every part of a layer reads back as written, to float32 precision."""
     # Vertices are stored as float32, so the comparison allows that rounding.
-    loaded = load_basemap(path)
-    for name, layer_parts in parts.items():
-        if len(loaded[name]) != len(layer_parts):
+    for one_written, one_read in zip(written, read_back):
+        if one_written.shape != one_read.shape or not np.allclose(
+            one_written, one_read, atol=1e-5
+        ):
             raise IngestError(
-                f"layer {name!r} read back with a different number of parts; inspect the "
-                "kept partial file."
+                f"layer {message_name!r} did not read back as written; inspect the kept "
+                "partial file."
             )
-        for written, read in zip(layer_parts, loaded[name]):
-            if written.shape != read.shape or not np.allclose(written, read, atol=1e-5):
-                raise IngestError(
-                    f"layer {name!r} did not read back as written; inspect the kept "
-                    "partial file."
-                )
 
 
 if __name__ == "__main__":

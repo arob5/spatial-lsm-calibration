@@ -75,7 +75,7 @@ def test_the_archives_are_the_ones_the_download_script_records():
 def test_the_download_refuses_an_archive_with_the_wrong_md5():
     download = load_script("scripts/raw_sources/download_natural_earth.py")
     with pytest.raises(download.IngestError, match="new release"):
-        download.check_archive_md5_is_recorded(download.SOURCES[0], "0" * 32)
+        download.check_archive_md5_matches_the_record(download.SOURCES[0], "0" * 32)
 
 
 def test_a_failed_basemap_check_keeps_the_partial_and_prints_its_path(
@@ -88,12 +88,23 @@ def test_a_failed_basemap_check_keeps_the_partial_and_prints_its_path(
     def refuse(parts, path):
         raise build.IngestError("forced: did not read back")
 
-    monkeypatch.setattr(build, "check_round_trip", refuse)
+    monkeypatch.setattr(build, "check_written_file_reads_back_identically", refuse)
     out = tmp_path / "basemap.npz"
     assert build.main(["--raw-directory", str(RAW_DIR), "--output", str(out)]) == 1
     err = capsys.readouterr().err
     partial = out.with_name(out.name + ".partial")
     assert not out.exists() and partial.exists() and str(partial) in err
+
+
+def test_a_corrupt_archive_is_a_message_naming_it(tmp_path, capsys):
+    """zipfile.BadZipFile was a traceback."""
+    build = load_script("scripts/build_basemap.py")
+    for layer in BASEMAP_LAYERS.values():
+        (tmp_path / layer.source_file).write_bytes(b"not a zip archive")
+    assert build.main(["--raw-directory", str(tmp_path), "--output", str(tmp_path / "b.npz")]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ") and "could not be read" in err
+    assert str(tmp_path / next(iter(BASEMAP_LAYERS.values())).source_file) in err
 
 
 def test_the_build_finds_the_tracked_archives_from_the_repository():
