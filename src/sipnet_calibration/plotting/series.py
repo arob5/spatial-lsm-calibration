@@ -48,10 +48,10 @@ import xarray as xr
 from matplotlib.axes import Axes
 
 from sipnet_calibration.conventions import SITE, SPATIAL_DIM_NAMES, TIME
-from sipnet_calibration.fields import batch_dims, validate_field
+from sipnet_calibration.fields import batch_dims, message_name, validate_field
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.style import CURVE_COLORS, axis_label, role_style
-from sipnet_calibration.validation import as_positive_integer
+from sipnet_calibration.validation import as_positive_integer, truncated
 
 __all__ = ["SHOW_OPTIONS", "plot_time_series"]
 
@@ -102,9 +102,9 @@ def plot_time_series(
     ax:
         The axes to draw on.
     show:
-        One of :data:`SHOW_OPTIONS`. ``"auto"`` draws quantile bands when *field*
-        has a sample dimension and a single curve when it does not. Asking for
-        ``"line"`` or ``"points"`` when there is a sample dimension, or for
+        One of :data:`SHOW_OPTIONS`. ``"auto"`` draws quantile bands when
+        *field* has a batch dim and a single curve when it does not. Asking
+        for ``"line"`` or ``"points"`` when there is a batch dim, or for
         ``"fan"`` or ``"spaghetti"`` when there is not, is an error rather
         than a silent reduction.
     role:
@@ -137,23 +137,25 @@ def plot_time_series(
     Returns
     -------
     matplotlib.axes.Axes
-        *ax*, drawn on. Its y label
-        is set from :func:`.style.axis_label`; the x axis and the title are
-        left alone, a panel title being the grid's to set.
+        *ax*, drawn on. Its y label is set from :func:`.style.axis_label`;
+        the x axis and the title are left alone, a panel title being the
+        grid's to set.
 
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray`` or *ax* is not an ``Axes``.
+        If *field*, *variance* or *standard_deviation* is not a
+        ``DataArray``, or *ax* is not an ``Axes``.
+    KeyError
+        If *role* is not a key of :data:`.style.ROLES`.
     ValueError
-        If *field* is not a field, has no ``time`` dimension, or has a spatial
-        dim (a ``site`` dim among them); if *show* is
-        not in :data:`SHOW_OPTIONS` or does not suit the dimensions; if
-        *label_by* is given without ``show="spaghetti"`` or names a coordinate
-        that is not on a batch dim; if both *variance* and
-        *standard_deviation* are given, either is given without
-        ``show="points"``, either does not align with *field*, or a variance is
-        negative; or if *n_sigma* is not finite and positive.
+        If *field* is not a field, has no ``time`` dim, has a spatial dim, or
+        has no ``long_name``; if *show* is not in :data:`SHOW_OPTIONS` or
+        does not suit the batch dims; if *label_by* is given without
+        ``show="spaghetti"`` or names no coordinate on the batch dims; if
+        both *variance* and *standard_deviation* are given, either is given
+        without ``show="points"`` or does not align with *field*, or a
+        variance is negative; or if *n_sigma* is not finite and positive.
 
     Notes
     -----
@@ -166,25 +168,26 @@ def plot_time_series(
     ``show="fan"`` also draws the median as a curve, and the legend entry goes
     on that curve rather than on a band.
 
-    Quantiles ignore missing values and are taken over all batch dims at once,
-    so a field with two is summarized over the whole set of curves rather than in
-    two stages.
+    Quantiles ignore missing values and are taken over all batch dims at
+    once, so a field with two is summarized over the whole set of curves
+    rather than in two stages.
     """
     validate_field(field)
     primitives.check_ax_is_an_axes(ax)
-    check_field_is_a_time_series(field)
+    name = message_name(field)
+    check_field_is_a_time_series(field, message_name=name)
     batch = batch_dims(field)
-    show = _resolved_show(show, batch)
-    _check_label_by(label_by, show, field, batch)
+    check_show_is_an_option(show)
+    show = _show_for_the_batch(show, batch)
+    check_show_suits_the_batch(show, batch, message_name=name)
+    if label_by is not None:
+        check_label_by_names_the_curves(label_by, show, field, batch, message_name=name)
     yerr = _error_bar_lengths(field, variance, standard_deviation, n_sigma, show)
+    y_label = axis_label(field)
 
     if label is None:
         label = role
-    x = (
-        field.coords[TIME].values
-        if TIME in field.coords
-        else np.arange(field.sizes[TIME])
-    )
+    x = field[TIME].values
 
     if show == "line":
         primitives.line(
@@ -203,7 +206,7 @@ def plot_time_series(
         curves = _curves_over_the_batch(field, batch)
         if show == "spaghetti" and label_by is not None:
             _draw_labeled_curves(
-                ax, x, curves, field, batch, label_by, n_max, style
+                ax, x, curves, _curve_labels(field, batch, label_by), n_max, style
             )
         elif show == "spaghetti":
             primitives.spaghetti(
@@ -226,31 +229,18 @@ def plot_time_series(
                 **role_style(role, "line", **style),
             )
 
-    ax.set_ylabel(axis_label(field))
+    ax.set_ylabel(y_label)
     return ax
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── private helpers ───────────────────────────────────────────────────────────
 
 
-def _resolved_show(show: str, batch: tuple[str, ...]) -> str:
-    """*show* with ``"auto"`` resolved, raising if it does not suit the field."""
-    if show not in SHOW_OPTIONS:
-        raise ValueError(f"show must be one of {list(SHOW_OPTIONS)}, got {show!r}")
-    if show == "auto":
-        return "fan" if batch else "line"
-    if show in ("fan", "spaghetti") and not batch:
-        raise ValueError(
-            f"show={show!r} summarizes several curves, but the field has only "
-            f"{TIME!r}. Use show='line' or show='points'."
-        )
-    if show in ("line", "points") and batch:
-        raise ValueError(
-            f"show={show!r} draws one curve, but the field also has "
-            f"{list(batch)}. Select or reduce first, or use show='fan' "
-            "or show='spaghetti'."
-        )
-    return show
+def _show_for_the_batch(show: str, batch: tuple[str, ...]) -> str:
+    """*show*, with ``"auto"`` resolved from whether there is a batch dim."""
+    if show != "auto":
+        return show
+    return "fan" if batch else "line"
 
 
 def _curves_over_the_batch(
@@ -264,10 +254,10 @@ def _curves_over_the_batch(
 def _curve_labels(
     field: xr.DataArray, batch: tuple[str, ...], label_by: str
 ) -> list[str]:
-    """One label per stacked curve, from the *label_by* coordinate's values.
+    """One label per curve, from the *label_by* coordinate's values.
 
-    The order matches :func:`_curves_over_the_batch`, which flattens the batch dims
-    in the order they are given.
+    The order matches :func:`_curves_over_the_batch`, which flattens the
+    batch dims in the order they are given.
     """
     coordinate = field.coords[label_by]
     sizes = tuple(field.sizes[dim] for dim in batch)
@@ -283,10 +273,14 @@ def _curve_labels(
 
 
 def _draw_labeled_curves(
-    ax, x, curves, field, batch, label_by, n_max, style
-):
+    ax: Axes,
+    x: np.ndarray,
+    curves: np.ndarray,
+    labels: list[str],
+    n_max: int,
+    style: dict[str, Any],
+) -> None:
     """Draw each curve in its own color, labeled by a coordinate's value."""
-    labels = _curve_labels(field, batch, label_by)
     chosen = primitives.thinned_indices(
         len(curves), as_positive_integer(n_max, message_name="n_max")
     )
@@ -306,36 +300,26 @@ def _error_bar_lengths(
     show: str,
 ) -> np.ndarray | None:
     """Half-length of each error bar, or ``None`` when no error was given."""
-    given = [
-        (name, array)
+    given = {
+        name: array
         for name, array in (
             ("variance", variance),
             ("standard_deviation", standard_deviation),
         )
         if array is not None
-    ]
+    }
     if not given:
         return None
-    if len(given) == 2:
-        raise ValueError(
-            "pass variance or standard_deviation, not both; they are two ways "
-            "of stating the same error"
-        )
-    if show != "points":
-        raise ValueError(
-            f"error bars are drawn by show='points', not show={show!r}"
-        )
-    if not (np.isfinite(n_sigma) and n_sigma > 0):
-        raise ValueError(f"n_sigma must be finite and positive, got {n_sigma!r}")
-
-    name, error = given[0]
-    _check_aligned(field, error, name)
-    # show == "points" here, so the field has no batch dim and both
-    # arrays are one-dimensional over time; no reordering is possible.
+    check_error_is_given_once(given)
+    check_error_bars_are_drawn_as_points(show)
+    check_n_sigma_is_positive(n_sigma)
+    ((name, error),) = given.items()
+    check_error_is_aligned_with_the_field(field, error, message_name=name)
+    # show == "points" here, so the field has no batch dim and both arrays
+    # are one-dimensional over time; no reordering is possible.
     values = error.values
     if name == "variance":
-        if np.any(values[np.isfinite(values)] < 0):
-            raise ValueError("a variance cannot be negative")
+        check_variance_is_not_negative(values)
         values = np.sqrt(values)
     return n_sigma * values
 
@@ -343,18 +327,24 @@ def _error_bar_lengths(
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_field_is_a_time_series(field: xr.DataArray) -> None:
-    """A field to plot as a series has ``time`` and no spatial dim.
+def check_field_is_a_time_series(field: xr.DataArray, *, message_name: str) -> None:
+    """A field to plot as a series has ``time`` and no spatial dim."""
+    check_field_has_time(field, message_name=message_name)
+    check_field_has_no_spatial_dim(field, message_name=message_name)
 
-    What a series needs beyond the field contract, which
-    :func:`~sipnet_calibration.fields.validate_field` checks first.
-    """
+
+def check_field_has_time(field: xr.DataArray, *, message_name: str) -> None:
+    """A field to plot against time has a ``time`` dim."""
     if TIME not in field.dims:
         raise ValueError(
-            f"the array has dimensions {list(field.dims)} and needs {TIME!r} "
-            "to be plotted against time. Select or aggregate first, or use a "
-            "spatial plot."
+            f"{message_name}: a time series needs {TIME!r} to plot against, and the "
+            f"field's dims are {list(field.dims)}; select or aggregate to a time axis "
+            "first, or draw a map with maps.plot_map."
         )
+
+
+def check_field_has_no_spatial_dim(field: xr.DataArray, *, message_name: str) -> None:
+    """A time series summarizes no spatial dim: sites are not replicates of one another."""
     spatial = [dim for dim in field.dims if dim in SPATIAL_DIM_NAMES]
     if spatial:
         advice = (
@@ -364,51 +354,135 @@ def check_field_is_a_time_series(field: xr.DataArray) -> None:
             else "select one location first"
         )
         raise ValueError(
-            f"the array has the spatial dim(s) {spatial}, which a time series does not "
-            f"summarize: sites are not replicates of one another. {advice[0].upper()}"
-            f"{advice[1:]}."
+            f"{message_name}: a time series does not summarize the spatial dim(s) "
+            f"{spatial}, since sites are not replicates of one another; {advice}."
         )
 
 
-def _check_label_by(
-    label_by: str | None,
+def check_show_is_an_option(show: str) -> None:
+    """*show* is one of :data:`SHOW_OPTIONS`."""
+    if show not in SHOW_OPTIONS:
+        raise ValueError(
+            f"show must be one of {list(SHOW_OPTIONS)}, got {show!r}; pass one of them."
+        )
+
+
+def check_show_suits_the_batch(show: str, batch: tuple[str, ...], *, message_name: str) -> None:
+    """A summary of several curves is drawn over batch dims, one curve without them."""
+    if show in ("fan", "spaghetti") and not batch:
+        raise ValueError(
+            f"{message_name}: show={show!r} summarizes several curves, and the field has "
+            f"only {TIME!r}; use show='line' or show='points'."
+        )
+    if show in ("line", "points") and batch:
+        raise ValueError(
+            f"{message_name}: show={show!r} draws one curve, and the field also has the "
+            f"batch dim(s) {list(batch)}; select or reduce them first, or use show='fan' "
+            "or show='spaghetti'."
+        )
+
+
+def check_label_by_names_the_curves(
+    label_by: str,
     show: str,
     field: xr.DataArray,
     batch: tuple[str, ...],
+    *,
+    message_name: str,
 ) -> None:
-    """Raise unless *label_by* names a coordinate that can label the curves."""
-    if label_by is None:
-        return
+    """*label_by* names a coordinate on the batch dims of a spaghetti plot."""
+    check_label_by_is_drawn_as_spaghetti(show)
+    check_label_by_is_a_coordinate(label_by, field, message_name=message_name)
+    check_label_by_is_on_the_batch_dims(label_by, field, batch, message_name=message_name)
+
+
+def check_label_by_is_drawn_as_spaghetti(show: str) -> None:
+    """Curves are labeled one by one only when drawn one by one."""
     if show != "spaghetti":
         raise ValueError(
-            f"label_by labels individual curves and needs show='spaghetti', "
-            f"not show={show!r}"
+            f"label_by labels individual curves, which only show='spaghetti' draws, not "
+            f"show={show!r}; pass show='spaghetti'."
         )
+
+
+def check_label_by_is_a_coordinate(
+    label_by: str, field: xr.DataArray, *, message_name: str
+) -> None:
+    """*label_by* is a coordinate of the field."""
     if label_by not in field.coords:
         raise ValueError(
-            f"label_by={label_by!r} is not a coordinate; the coordinates are "
-            f"{sorted(field.coords)}"
+            f"{message_name}: label_by={label_by!r} is not a coordinate of the field; pass "
+            f"one of {truncated(sorted(field.coords))}."
         )
+
+
+def check_label_by_is_on_the_batch_dims(
+    label_by: str, field: xr.DataArray, batch: tuple[str, ...], *, message_name: str
+) -> None:
+    """The *label_by* coordinate lies on the batch dims, so it can name a curve."""
     dims = field.coords[label_by].dims
     if not dims or not set(dims) <= set(batch):
         raise ValueError(
-            f"label_by={label_by!r} is on {list(dims)}, which is not among the "
-            f"batch dims {list(batch)}; it cannot name a curve"
+            f"{message_name}: label_by={label_by!r} is on {list(dims)}, which is not among "
+            f"the batch dims {list(batch)}, so it cannot name a curve; pass a coordinate "
+            "on the batch dims."
         )
 
 
-def _check_aligned(field: xr.DataArray, error: xr.DataArray, name: str) -> None:
-    """Raise unless the error array covers exactly the same points as *field*."""
+def check_error_is_given_once(given: dict[str, xr.DataArray]) -> None:
+    """At most one of the variance and the standard deviation is given."""
+    if len(given) > 1:
+        raise ValueError(
+            "variance and standard_deviation are two ways of stating the same error, and "
+            "both were given; pass variance or standard_deviation, not both."
+        )
+
+
+def check_error_bars_are_drawn_as_points(show: str) -> None:
+    """Error bars are drawn on scattered points."""
+    if show != "points":
+        raise ValueError(
+            f"error bars are drawn by show='points', not show={show!r}; pass "
+            "show='points' with an error."
+        )
+
+
+def check_n_sigma_is_positive(n_sigma: float) -> None:
+    """The error bar multiplier is finite and positive."""
+    if not (np.isfinite(n_sigma) and n_sigma > 0):
+        raise ValueError(
+            f"n_sigma must be finite and positive, got {n_sigma!r}; pass the number of "
+            "standard deviations each bar spans, such as 2."
+        )
+
+
+def check_error_is_aligned_with_the_field(
+    field: xr.DataArray, error: Any, *, message_name: str
+) -> None:
+    """The error is a ``DataArray`` on exactly the field's points."""
     if not isinstance(error, xr.DataArray):
-        raise ValueError(f"{name} must be an xarray.DataArray")
+        raise TypeError(
+            f"{message_name} must be an xarray.DataArray aligned with the field, got "
+            f"{type(error).__name__}; pass it labeled as the field is."
+        )
     if set(error.dims) != set(field.dims):
         raise ValueError(
-            f"{name} has dimensions {list(error.dims)} and the field has "
-            f"{list(field.dims)}; they must match"
+            f"{message_name} has dimensions {list(error.dims)} and the field has "
+            f"{list(field.dims)}; they must match, so select the error as the field was."
         )
     try:
         xr.align(field, error, join="exact")
     except ValueError as mismatch:
         raise ValueError(
-            f"{name} is not aligned with the field: {mismatch}"
+            f"{message_name} is not aligned with the field ({mismatch}); pass the error on "
+            "the field's own labels."
         ) from mismatch
+
+
+def check_variance_is_not_negative(values: np.ndarray) -> None:
+    """A variance is never negative."""
+    if np.any(values[np.isfinite(values)] < 0):
+        raise ValueError(
+            "variance: a variance cannot be negative; pass the square of a standard "
+            "deviation, or standard_deviation itself."
+        )

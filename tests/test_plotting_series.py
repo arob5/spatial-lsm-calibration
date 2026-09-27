@@ -415,6 +415,23 @@ def test_an_error_field_with_other_dims_is_rejected(ax, field_time, field_sample
         )
 
 
+def test_an_error_that_is_not_a_data_array_is_a_type_error(ax, field_time):
+    """An unlabeled error cannot be aligned with the field."""
+    with pytest.raises(TypeError, match="variance must be an xarray.DataArray"):
+        plot_time_series(
+            field_time, ax=ax, show="points", variance=np.ones(field_time.shape)
+        )
+
+
+def test_a_field_without_a_long_name_is_refused_before_anything_is_drawn(ax, field_time):
+    """The axis label is checked before drawing, so no half-drawn panel is left."""
+    unnamed = field_time.copy()
+    del unnamed.attrs["long_name"]
+    with pytest.raises(ValueError, match="has no 'long_name'"):
+        plot_time_series(unnamed, ax=ax)
+    assert not ax.lines and not ax.collections
+
+
 def test_a_negative_variance_is_rejected(ax, field_time):
     """A negative variance raises rather than producing a ``NaN`` bar."""
     variance = field_time.copy(data=np.full(field_time.shape, -1.0))
