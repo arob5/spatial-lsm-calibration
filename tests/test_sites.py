@@ -236,7 +236,7 @@ def ingested(tmp_path_factory):
     out = tmp_path_factory.mktemp("processed") / "sites" / "sites.csv"
     before = _digest_raw_inputs()
     status = ingest.main(
-        ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP), "--out", str(out)]
+        ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP), "--output", str(out)]
     )
     assert status == 0
     return {
@@ -497,7 +497,7 @@ class TestDbfNumerics:
 
     def test_a_non_integral_value_is_rejected(self):
         with pytest.raises(ingest.IngestError, match="non-integral"):
-            ingest.check_values_are_integral(np.array([1.0, 2.5]), name="cluster")
+            ingest.check_values_are_integral(np.array([1.0, 2.5]), message_name="cluster")
 
     def test_a_repeated_rank_is_rejected(self):
         with pytest.raises(ingest.IngestError, match="permutation"):
@@ -508,7 +508,7 @@ class TestShapeChecks:
     def test_every_shape_is_a_single_point(self, ingested):
         contents = ingest.read_shapefile(SHAPEFILE, encoding="utf-8")
         ingest.check_shapes_are_single_points(contents)
-        ingest.check_record_count(contents)
+        ingest.check_record_count_is_the_pool_size(contents)
         assert len(contents.points) == N_SITES
         assert all(len(points) == 1 for points in contents.points)
 
@@ -543,7 +543,18 @@ class TestShapeChecks:
             points=(((0.0, 0.0),),),
         )
         with pytest.raises(ingest.IngestError, match=f"expected {N_SITES} records"):
-            ingest.check_record_count(contents)
+            ingest.check_record_count_is_the_pool_size(contents)
+
+    def test_a_record_without_a_shape_is_rejected(self):
+        contents = ingest.ShapefileContents(
+            declared_encoding="utf-8",
+            field_names=("site_id",),
+            records=({"site_id": 1}, {"site_id": 2}),
+            shape_types=(int(shapefile.POINT),),
+            points=(((0.0, 0.0),),),
+        )
+        with pytest.raises(ingest.IngestError, match="1 shapes against 2 attribute records"):
+            ingest.check_every_record_has_one_shape(contents)
 
     def test_a_missing_dbf_field_is_rejected(self):
         contents = ingest.ShapefileContents(
@@ -767,22 +778,22 @@ class TestRoundTripCheckItself:
 
 
 class TestMainExitCodes:
-    def test_missing_shapefile_exits_two(self, tmp_path, capsys):
+    def test_missing_shapefile_exits_one(self, tmp_path, capsys):
         status = ingest.main(
             ["--shapefile", str(tmp_path / "absent.shp"),
              "--site-id-map", str(SITE_ID_MAP),
-             "--out", str(tmp_path / "out.csv")]
+             "--output", str(tmp_path / "out.csv")]
         )
-        assert status == 2
+        assert status == 1
         assert "is not a file" in capsys.readouterr().err
 
-    def test_missing_site_id_map_exits_two(self, tmp_path, capsys):
+    def test_missing_site_id_map_exits_one(self, tmp_path, capsys):
         status = ingest.main(
             ["--shapefile", str(SHAPEFILE),
              "--site-id-map", str(tmp_path / "absent.csv"),
-             "--out", str(tmp_path / "out.csv")]
+             "--output", str(tmp_path / "out.csv")]
         )
-        assert status == 2
+        assert status == 1
         assert "is not a file" in capsys.readouterr().err
 
     @pytest.mark.filterwarnings("ignore:Specified encoding:UserWarning")
@@ -793,7 +804,7 @@ class TestMainExitCodes:
             ["--shapefile", str(SHAPEFILE),
              "--site-id-map", str(SITE_ID_MAP),
              "--encoding", "latin-1",
-             "--out", str(tmp_path / "out.csv")]
+             "--output", str(tmp_path / "out.csv")]
         )
         assert status == 1
         err = capsys.readouterr().err
@@ -872,26 +883,26 @@ class TestIntegerCastsCannotWrap:
     def test_ingest_rejects_a_cluster_too_large_for_int8(self):
         with pytest.raises(ingest.IngestError, match="outside the range of int8"):
             ingest.check_values_fit_dtype(
-                np.array([1.0, 200.0]), name="cluster", dtype=np.int8
+                np.array([1.0, 200.0]), dtype=np.int8, message_name="cluster"
             )
 
     @pytest.mark.parametrize("value", [128.0, -129.0])
     def test_ingest_rejects_either_int8_boundary(self, value):
         with pytest.raises(ingest.IngestError, match="wrap silently"):
             ingest.check_values_fit_dtype(
-                np.array([value]), name="cluster", dtype=np.int8
+                np.array([value]), dtype=np.int8, message_name="cluster"
             )
 
     def test_ingest_accepts_the_real_ranges(self, ingested):
         for column in ("site_order", "cluster", "landcover", "lon_index", "lat_index"):
             values = ingested["table"][column].to_numpy().astype(np.float64)
             dtype = SITE_COLUMN_DTYPES[column]
-            ingest.check_values_fit_dtype(values, name=column, dtype=dtype)
+            ingest.check_values_fit_dtype(values, dtype=dtype, message_name=column)
 
     def test_ingest_catches_a_value_that_would_saturate_int64(self):
         # Integral and finite, so check_values_are_integral passes it.
         with pytest.raises(ingest.IngestError, match="outside the range"):
-            ingest._as_integer([1e300], name="cluster", dtype=np.int8)
+            ingest.as_integer_array([1e300], dtype=np.int8, message_name="cluster")
 
     def _one_row(self, tmp_path, **overrides):
         fields = {
@@ -1050,6 +1061,11 @@ class TestAmerifluxMapRows:
         with pytest.raises(ingest.IngestError, match="blank Site_ID"):
             ingest.read_ameriflux_map(path)
 
+    def test_a_map_without_its_columns_is_rejected(self, tmp_path):
+        path = self._map(tmp_path, "Site_ID,site\nUS-AAA,10\n")
+        with pytest.raises(ingest.IngestError, match=r"missing column\(s\) \['index'\]"):
+            ingest.read_ameriflux_map(path)
+
     def test_the_real_map_passes(self):
         assert len(ingest.read_ameriflux_map(SITE_ID_MAP)) == 185
 
@@ -1059,11 +1075,11 @@ class TestMainReportsRatherThanTracebacks:
     def test_an_unknown_encoding_is_a_message_not_a_traceback(self, tmp_path, capsys):
         status = ingest.main(
             ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP),
-             "--encoding", "not-a-codec", "--out", str(tmp_path / "o.csv")]
+             "--encoding", "not-a-codec", "--output", str(tmp_path / "o.csv")]
         )
         assert status == 1
         err = capsys.readouterr().err
-        assert "Traceback" not in err and "error: LookupError" in err
+        assert "Traceback" not in err and "error: unknown encoding" in err
 
     def test_an_unwritable_output_is_a_message_not_a_traceback(
         self, tmp_path, capsys
@@ -1072,7 +1088,7 @@ class TestMainReportsRatherThanTracebacks:
         directory.mkdir()
         status = ingest.main(
             ["--shapefile", str(SHAPEFILE), "--site-id-map", str(SITE_ID_MAP),
-             "--out", str(directory)]
+             "--output", str(directory)]
         )
         assert status == 1
         err = capsys.readouterr().err
@@ -1131,18 +1147,18 @@ class TestEmptyAmerifluxMap:
 class TestDefaultOutputAgreesWithTheLoader:
     def test_the_script_writes_where_the_loader_reads(self):
 
-        assert ingest.DEFAULT_OUT == default_sites_path()
+        assert ingest.DEFAULT_OUTPUT == default_sites_path()
 
     def test_both_follow_the_environment_variable(self, monkeypatch, tmp_path):
         # The script's default was hard-coded to the checkout, so with this set
         # a default run wrote one place and every consumer read another, and
-        # still reported success. DEFAULT_OUT is bound at import, so the module
+        # still reported success. DEFAULT_OUTPUT is bound at import, so the module
         # is re-executed here rather than reloaded.
 
         monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
         fresh = load_script("scripts/ingest_sites.py")
-        assert fresh.DEFAULT_OUT == default_sites_path()
-        assert str(tmp_path) in str(fresh.DEFAULT_OUT)
+        assert fresh.DEFAULT_OUTPUT == default_sites_path()
+        assert str(tmp_path) in str(fresh.DEFAULT_OUTPUT)
 
 
 @pytest.fixture(scope="module")
