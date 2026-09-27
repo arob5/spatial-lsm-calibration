@@ -751,14 +751,14 @@ class TestRoundTripCheckItself:
         table = self._table(ingested)
         path = tmp_path / "ok.csv"
         ingest.write_site_table(table, path)
-        ingest.check_csv_round_trip(table, path)  # must not raise
+        ingest.check_written_file_reads_back_identically(table, path)  # must not raise
 
     def test_it_catches_a_lossy_coordinate(self, ingested, tmp_path):
         table = self._table(ingested)
         path = tmp_path / "lossy.csv"
         table.to_csv(path, index=False, float_format="%.6f")
         with pytest.raises(ingest.IngestError, match="lon did not survive"):
-            ingest.check_csv_round_trip(table, path)
+            ingest.check_written_file_reads_back_identically(table, path)
 
     def test_it_catches_a_mangled_site_name(self, ingested, tmp_path):
         table = self._table(ingested)
@@ -767,14 +767,14 @@ class TestRoundTripCheckItself:
         corrupted.loc[0, "site_name"] = "not the real name"
         ingest.write_site_table(corrupted, path)
         with pytest.raises(ingest.IngestError, match="site_name did not survive"):
-            ingest.check_csv_round_trip(table, path)
+            ingest.check_written_file_reads_back_identically(table, path)
 
     def test_it_catches_a_dropped_row(self, ingested, tmp_path):
         table = self._table(ingested)
         path = tmp_path / "short.csv"
         ingest.write_site_table(table.head(19), path)
         with pytest.raises(ingest.IngestError, match="row count"):
-            ingest.check_csv_round_trip(table, path)
+            ingest.check_written_file_reads_back_identically(table, path)
 
 
 class TestMainExitCodes:
@@ -1095,6 +1095,41 @@ class TestMainReportsRatherThanTracebacks:
         assert "Traceback" not in err and err.startswith("Reading")
 
 
+    @pytest.mark.filterwarnings("ignore:Declared file size")
+    @pytest.mark.parametrize("suffix", [".dbf", ".shp"])
+    @pytest.mark.parametrize("keep", [0, 1000])
+    def test_a_damaged_shapefile_is_a_message_naming_it(self, tmp_path, capsys, suffix, keep):
+        """pyshp raises struct.error on a truncated or empty file; main reports it."""
+        copy = tmp_path / "copy"
+        copy.mkdir()
+        for path in RAW_SITES.glob("pts.*"):
+            (copy / path.name).write_bytes(path.read_bytes())
+        damaged = copy / f"pts{suffix}"
+        damaged.write_bytes(damaged.read_bytes()[:keep])
+        status = ingest.main(
+            ["--shapefile", str(copy / "pts.shp"), "--site-id-map", str(SITE_ID_MAP),
+             "--output", str(tmp_path / "o.csv")]
+        )
+        assert status == 1
+        err = capsys.readouterr().err
+        assert f"{copy / 'pts.shp'} could not be read" in err
+
+    @pytest.mark.parametrize(
+        "text", ["", "Site_ID,index\nUS-AAA,1\nUS-BBB", "Site_ID,index\nUS-AAA,one\n"],
+        ids=["empty", "truncated", "not-an-integer"],
+    )
+    def test_an_unreadable_site_id_map_is_a_message_naming_it(self, tmp_path, capsys, text):
+        site_id_map = tmp_path / "map.csv"
+        site_id_map.write_text(text)
+        status = ingest.main(
+            ["--shapefile", str(SHAPEFILE), "--site-id-map", str(site_id_map),
+             "--output", str(tmp_path / "o.csv")]
+        )
+        assert status == 1
+        err = capsys.readouterr().err
+        assert f"--site-id-map {site_id_map}" in err
+
+
 class TestNonFiniteCoordinates:
     """NaN defeated both of lonlat_to_index's guards and resolved to a real cell."""
 
@@ -1237,7 +1272,7 @@ class TestDbfNulls:
         table.loc[0, "site_name"] = ""
         path = tmp_path / "blank.csv"
         ingest.write_site_table(table, path)
-        ingest.check_csv_round_trip(table, path)
+        ingest.check_written_file_reads_back_identically(table, path)
         assert load_sites(path).loc[0, "site_name"] == ""
 
     def test_build_site_table_writes_an_empty_name_for_a_null(self):
