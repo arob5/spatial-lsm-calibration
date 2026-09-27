@@ -12,9 +12,9 @@ file, and **exit non-zero if one no longer holds**.
 
 Input data
 ----------
-``--path``, default ``data/raw/phenology/leaf_phenology_8k.csv`` under
+``--raw-file``, default ``raw/phenology/leaf_phenology_8k.csv`` under
 :func:`sipnet_calibration.conventions.data_root`
-    One row per site-year with the columns of :data:`COLUMNS`. ``leafonday``
+    One row per site-year with the columns of :data:`COLUMN_NAMES`. ``leafonday``
     and ``leafoffday`` are day-of-year or the literal ``NA``; the two ``_qa``
     columns are integers 0-3.
 
@@ -26,7 +26,7 @@ Input data
 
 Output data
 -----------
-A report to stdout and, with ``--out``, the same content as JSON. Nothing is
+A report to stdout and, with ``--output``, the same content as JSON. Nothing is
 written to ``data/``.
 
 The exit status is 0 when every recorded characteristic still holds, 1 when one
@@ -45,14 +45,15 @@ re-copied or regenerated file that changed is refused rather than absorbed.
 This is not part of the ingest pipeline: nothing is written under ``data/``,
 and no processed file is built from phenology yet.
 
-**The day columns invert on about one site-year in ninety, and the file is
-right to.** ``PEcAn.data.remote::extract_phenology_MODIS`` reads two MODIS bands
-that are days since 1970-01-01, guards against leaf-on falling after leaf-off on
-that scale, and only then converts each with ``lubridate::yday``, which discards
-the year. A leaf-off that falls in the following calendar year therefore comes
-back as a small day-of-year and the pair inverts, past a guard that was correct
-where it ran. The count is surveyed and recorded because anything that
-differences the two columns has to handle it.
+**The day columns invert on some site-years, and the file is right to**
+(:data:`RECORDED` holds how many). ``PEcAn.data.remote::extract_phenology_MODIS``
+reads two MODIS bands that are days since 1970-01-01, guards against leaf-on
+falling after leaf-off on that scale, and only then converts each with
+``lubridate::yday``, which discards the year. A leaf-off that falls in the
+following calendar year therefore comes back as a small day-of-year and the
+pair inverts, past a guard that was correct where it ran. The count is
+surveyed and recorded because anything that differences the two columns has to
+handle it.
 
 Usage
 -----
@@ -60,8 +61,8 @@ Usage
 
     uv run python scripts/survey_phenology.py
     uv run python scripts/survey_phenology.py \\
-        --path data/raw/phenology/leaf_phenology_neon.csv --no-site-table --no-check
-    uv run python scripts/survey_phenology.py --out phenology_survey.json
+        --raw-file data/raw/phenology/leaf_phenology_neon.csv --no-site-table --no-check
+    uv run python scripts/survey_phenology.py --output phenology_survey.json
 """
 
 from __future__ import annotations
@@ -77,6 +78,7 @@ import pandas as pd
 
 from sipnet_calibration.conventions import LAT, LON, SITE_ID, data_root
 from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.validation import truncated
 
 #: Each column of the file's header, in order, with the dtype it is read as.
 #: ``leafonday`` and ``leafoffday`` are floats because they hold ``NA``.
@@ -92,7 +94,10 @@ COLUMN_DTYPES = {
 }
 
 #: The file's header, in order. Any other header is a different data source.
-COLUMNS = tuple(COLUMN_DTYPES)
+COLUMN_NAMES = tuple(COLUMN_DTYPES)
+
+#: The file surveyed by default, under :func:`sipnet_calibration.conventions.data_root`.
+DEFAULT_RAW_FILE = Path("raw") / "phenology" / "leaf_phenology_8k.csv"
 
 #: The two day-of-year columns, each with the quality column that grades it.
 DAY_COLUMNS = {"leafonday": "leafon_qa", "leafoffday": "leafoff_qa"}
@@ -150,26 +155,26 @@ RECORDED: dict[str, dict[str, Any]] = {
 def main(argv: list[str] | None = None) -> int:
     """Survey one phenology file, report it, and compare it with :data:`RECORDED`."""
     args = parse_args(argv)
-    path = args.path or data_root() / "raw" / "phenology" / "leaf_phenology_8k.csv"
+    path = args.raw_file or data_root() / DEFAULT_RAW_FILE
     try:
         frame = read_phenology(path)
         site_table = (
             None if args.no_site_table else load_sites(args.site_table or default_sites_path())
         )
         report = build_report(frame, path, site_table)
-    except (OSError, ValueError, KeyError) as error:
+    except (OSError, ValueError, LookupError, TypeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
     print(format_report(report))
 
-    if args.out is not None:
+    if args.output is not None:
         try:
-            args.out.write_text(json.dumps(report, indent=2, default=str))
+            args.output.write_text(json.dumps(report, indent=2, default=str))
         except OSError as error:
-            print(f"error: could not write {args.out}: {error}", file=sys.stderr)
+            print(f"error: could not write {args.output}: {error}", file=sys.stderr)
             return 2
-        print(f"\nwrote {args.out}")
+        print(f"\nwrote {args.output}")
 
     if args.no_check:
         return 0
@@ -181,19 +186,21 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
-        "--path",
+        "--raw-file",
         type=Path,
         default=None,
-        help="The CSV to survey. Default: data/raw/phenology/leaf_phenology_8k.csv.",
+        help=f"The CSV to survey. Default: {data_root() / DEFAULT_RAW_FILE}.",
     )
     parser.add_argument(
         "--site-table",
         type=Path,
         default=None,
-        help="The site table. Default: data/processed/sites/sites.csv.",
+        help=f"The site table. Default: {default_sites_path()}.",
     )
     parser.add_argument(
         "--no-site-table",
@@ -207,7 +214,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Report without comparing against the recorded characteristics.",
     )
     parser.add_argument(
-        "--out", type=Path, default=None, help="Also write the report as JSON here."
+        "--output", type=Path, default=None, help="Also write the report as JSON here."
     )
     return parser.parse_args(argv)
 
@@ -223,16 +230,13 @@ def read_phenology(path: Path) -> pd.DataFrame:
     FileNotFoundError
         If *path* does not exist.
     ValueError
-        If the file cannot be parsed, its header is not :data:`COLUMNS`, or it
-        holds no rows.
+        If the file cannot be parsed, its header is not :data:`COLUMN_NAMES`,
+        or it holds no rows.
     """
     check_phenology_file_exists(path)
-    try:
-        frame = pd.read_csv(path, dtype=dict(COLUMN_DTYPES), index_col=False)
-    except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as error:
-        raise ValueError(f"{path}: could not be parsed as a phenology table: {error}") from error
-    check_header_is_the_phenology_header(frame, path)
-    check_phenology_table_has_rows(frame, path)
+    frame = _read_phenology_csv(path)
+    check_header_is_the_phenology_header(frame, message_name=str(path))
+    check_phenology_table_has_rows(frame, message_name=str(path))
     return frame
 
 
@@ -264,6 +268,90 @@ def build_report(
         ]
         report["sites_of_the_pool_absent"] = table["sites_of_the_pool_absent"]
     return report
+
+
+def format_report(report: dict[str, Any]) -> str:
+    """The measurements as readable lines."""
+    years = report["years"]
+    lines = [
+        f"{report['path']}",
+        f"  rows                  : {report['rows']}",
+        f"  sites                 : {report['sites']}",
+        f"  years                 : {years[0]}-{years[-1]} ({len(years)})",
+        f"  duplicate site-years  : {report['duplicate_site_years']}",
+        f"  complete rectangle    : {_yes_or_no(report['complete_rectangle'])}",
+        "",
+    ]
+    for day, quality in DAY_COLUMNS.items():
+        counts = report["quality_counts"][quality]
+        graded = ", ".join(
+            f"{value} ({QUALITY_MEANINGS.get(value, '?')}) {counts[value]}"
+            for value in sorted(counts)
+        )
+        low, high = report["day_range"][day]
+        lines += [
+            f"  {day}",
+            f"    quality             : {graded}",
+            f"    missing             : {report['missing_days'][day]}",
+            f"    day of year         : {low} to {high}, median "
+            f"{report['median_day'][day]}",
+            f"    sites with any      : {report['sites_with_any_day'][day]}",
+        ]
+    lines += [
+        "",
+        f"  quality 3 is exactly missing : {_yes_or_no(report['quality_three_is_exactly_missing'])}",
+        f"  quality values outside 0-3   : {report['quality_values_outside_0_3'] or 'none'}",
+        f"  rows with both days          : {report['rows_with_both_days']}",
+        f"  of those, leaf-on >= leaf-off: {report['inverted_rows']} rows over "
+        f"{report['inverted_sites']} sites, leaf-off day median "
+        f"{report['inverted_leafoffday_median']}",
+    ]
+    lines += _format_site_table_lines(report["site_table"])
+    return "\n".join(lines)
+
+
+def compare_with_recorded(report: dict[str, Any], file_name: str) -> list[str]:
+    """Which recorded characteristics no longer hold, as readable lines."""
+    recorded = RECORDED.get(file_name)
+    if recorded is None:
+        return [
+            f"no recorded characteristics for {file_name!r}; add an entry to RECORDED "
+            "and a paragraph to data/README.md, or pass --no-check"
+        ]
+    failures = []
+    for key, expected in recorded.items():
+        measured = report.get(key)
+        if isinstance(expected, dict):
+            # Recursively, because the int keys live in the per-quality-value
+            # counts one level down, and a report round-tripped through --output's
+            # JSON comes back with those keys as strings.
+            measured = _stringify_keys({} if measured is None else measured)
+            expected = _stringify_keys(expected)
+        if measured != expected:
+            failures.append(f"{key}: recorded {expected}, measured {measured}")
+    return failures
+
+
+def format_comparison(failures: list[str], file_name: str) -> str:
+    """The comparison against :data:`RECORDED`, as readable lines."""
+    if not failures:
+        return (
+            f"\nEvery characteristic data/README.md records for {file_name} still holds."
+        )
+    lines = [
+        f"\nerror: {len(failures)} characteristic(s) data/README.md records for "
+        f"{file_name} no longer hold:"
+    ]
+    lines += [f"  {failure}" for failure in failures]
+    lines.append(
+        "\nThe file has changed, or was re-copied from a different source. Establish "
+        "which, then update RECORDED in this script and the Leaf phenology section of "
+        "data/README.md together."
+    )
+    return "\n".join(lines)
+
+
+# ── supporting types and helpers ──────────────────────────────────────────────
 
 
 def survey_quality(frame: pd.DataFrame) -> dict[str, Any]:
@@ -347,94 +435,10 @@ def survey_against_site_table(
     }
 
 
-def format_report(report: dict[str, Any]) -> str:
-    """The measurements as readable lines."""
-    years = report["years"]
-    lines = [
-        f"{report['path']}",
-        f"  rows                  : {report['rows']}",
-        f"  sites                 : {report['sites']}",
-        f"  years                 : {years[0]}-{years[-1]} ({len(years)})",
-        f"  duplicate site-years  : {report['duplicate_site_years']}",
-        f"  complete rectangle    : {_yes_or_no(report['complete_rectangle'])}",
-        "",
-    ]
-    for day, quality in DAY_COLUMNS.items():
-        counts = report["quality_counts"][quality]
-        graded = ", ".join(
-            f"{value} ({QUALITY_MEANINGS.get(value, '?')}) {counts[value]}"
-            for value in sorted(counts)
-        )
-        low, high = report["day_range"][day]
-        lines += [
-            f"  {day}",
-            f"    quality             : {graded}",
-            f"    missing             : {report['missing_days'][day]}",
-            f"    day of year         : {low} to {high}, median "
-            f"{report['median_day'][day]}",
-            f"    sites with any      : {report['sites_with_any_day'][day]}",
-        ]
-    lines += [
-        "",
-        f"  quality 3 is exactly missing : {_yes_or_no(report['quality_three_is_exactly_missing'])}",
-        f"  quality values outside 0-3   : {report['quality_values_outside_0_3'] or 'none'}",
-        f"  rows with both days          : {report['rows_with_both_days']}",
-        f"  of those, leaf-on >= leaf-off: {report['inverted_rows']} rows over "
-        f"{report['inverted_sites']} sites, leaf-off day median "
-        f"{report['inverted_leafoffday_median']}",
-    ]
-    lines += _format_site_table_lines(report["site_table"])
-    return "\n".join(lines)
-
-
-def compare_with_recorded(report: dict[str, Any], file_name: str) -> list[str]:
-    """Which recorded characteristics no longer hold, as readable lines."""
-    recorded = RECORDED.get(file_name)
-    if recorded is None:
-        return [
-            f"no recorded characteristics for {file_name!r}; add an entry to RECORDED "
-            "and a paragraph to data/README.md, or pass --no-check"
-        ]
-    failures = []
-    for key, expected in recorded.items():
-        measured = report.get(key)
-        if isinstance(expected, dict):
-            # Recursively, because the int keys live in the per-quality-value
-            # counts one level down, and a report round-tripped through --out's
-            # JSON comes back with those keys as strings.
-            measured = _stringify_keys({} if measured is None else measured)
-            expected = _stringify_keys(expected)
-        if measured != expected:
-            failures.append(f"{key}: recorded {expected}, measured {measured}")
-    return failures
-
-
-def format_comparison(failures: list[str], file_name: str) -> str:
-    """The comparison against :data:`RECORDED`, as readable lines."""
-    if not failures:
-        return (
-            f"\nEvery characteristic data/README.md records for {file_name} still holds."
-        )
-    lines = [
-        f"\nerror: {len(failures)} characteristic(s) data/README.md records for "
-        f"{file_name} no longer hold:"
-    ]
-    lines += [f"  {failure}" for failure in failures]
-    lines.append(
-        "\nThe file has changed, or was re-copied from a different source. Establish "
-        "which, then update RECORDED in this script and the Leaf phenology section of "
-        "data/README.md together."
-    )
-    return "\n".join(lines)
-
-
-# ── supporting types and helpers ──────────────────────────────────────────────
-
-
 def _stringify_keys(value: Any) -> Any:
     """*value* with every mapping key a string, at every depth.
 
-    JSON has only string keys, so a report written by ``--out`` and read back
+    JSON has only string keys, so a report written by ``--output`` and read back
     compares equal to one measured in this process only after this.
     """
     if isinstance(value, dict):
@@ -442,6 +446,17 @@ def _stringify_keys(value: Any) -> Any:
     if isinstance(value, list):
         return [_stringify_keys(inner) for inner in value]
     return value
+
+
+def _read_phenology_csv(path: Path) -> pd.DataFrame:
+    """The CSV at *path* with :data:`COLUMN_DTYPES`, or a ``ValueError`` naming it."""
+    try:
+        return pd.read_csv(path, dtype=dict(COLUMN_DTYPES), index_col=False)
+    except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as error:
+        raise ValueError(
+            f"{path}: could not be parsed as a phenology table ({error}); re-copy it and "
+            "compare it with data/README.md, Leaf phenology."
+        ) from error
 
 
 def _format_site_table_lines(table: dict[str, Any]) -> list[str]:
@@ -485,19 +500,23 @@ def check_phenology_file_exists(path: Path) -> None:
         )
 
 
-def check_header_is_the_phenology_header(frame: pd.DataFrame, path: Path) -> None:
-    """The file's header is :data:`COLUMNS`, in order."""
-    if tuple(frame.columns) != COLUMNS:
+def check_header_is_the_phenology_header(frame: pd.DataFrame, *, message_name: str) -> None:
+    """The file's header is :data:`COLUMN_NAMES`, in order."""
+    if tuple(frame.columns) != COLUMN_NAMES:
         raise ValueError(
-            f"{path}: header is {tuple(frame.columns)}, expected {COLUMNS}; a file with "
-            "another header is a different data source."
+            f"{message_name}: header is {truncated(frame.columns.tolist())}, expected "
+            f"{list(COLUMN_NAMES)}; a file with another header is a different data "
+            "source, so re-copy it and compare it with data/README.md, Leaf phenology."
         )
 
 
-def check_phenology_table_has_rows(frame: pd.DataFrame, path: Path) -> None:
+def check_phenology_table_has_rows(frame: pd.DataFrame, *, message_name: str) -> None:
     """The file holds at least one row."""
     if frame.empty:
-        raise ValueError(f"{path}: holds no rows; check which file was copied.")
+        raise ValueError(
+            f"{message_name}: holds no rows; re-copy it and compare it with "
+            "data/README.md, Leaf phenology."
+        )
 
 
 if __name__ == "__main__":

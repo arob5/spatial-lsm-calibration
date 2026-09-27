@@ -12,7 +12,7 @@ holds**.
 
 Input data
 ----------
-``--root``, default ``data/raw/soil_texture`` under
+``--raw-directory``, default ``raw/soil_texture`` under
 :func:`sipnet_calibration.conventions.data_root`
     A directory laid out as ``<site>/Soil_params_0-<site>_<member>.nc``. Each
     file is a netCDF with a single ``depth`` dimension whose values are **layer
@@ -20,7 +20,7 @@ Input data
 
 Output data
 -----------
-A report to stdout and, with ``--out``, the same content as JSON. Nothing is
+A report to stdout and, with ``--output``, the same content as JSON. Nothing is
 written to ``data/``.
 
 The exit status is 0 when every recorded characteristic still holds, 1 when one
@@ -38,17 +38,17 @@ This is not part of the ingest pipeline: nothing is written under ``data/``,
 and no processed file is built from soil texture yet.
 
 **Coverage and content are surveyed separately, because their costs differ by
-four orders of magnitude.** Which sites and members exist is a directory
-listing over some 770,000 files and takes seconds; opening each to read its
+orders of magnitude.** Which sites and members exist is a directory listing,
+which takes seconds over the whole ensemble; opening each file to read its
 variables does not. So the coverage pass always runs over everything, and the
 content pass runs over ``--sample`` sites chosen deterministically, or over all
 of them with ``--all``. Only the coverage characteristics are recorded, since
 they are the ones a partial local copy cannot establish and the SCC can.
 
-**Only the coverage pass means anything off the SCC.** Locally the repository
-holds three members of two sites, so the survey reports a coverage far short of
-the recorded one. ``--no-check`` is how to run it there without the comparison
-failing for that reason.
+**Only the coverage pass means anything off the SCC.** A local copy holds a
+few members of a few sites (CLAUDE.md's Data section says which), so the survey
+reports a coverage far short of the recorded one. ``--no-check`` is how to run
+it there without the comparison failing for that reason.
 
 **The ``soilWHC`` computed here is PEcAn's, reproduced to show the magnitude,
 not a processed file.** ``write.configs.SIPNET.R`` takes layer thickness as
@@ -62,9 +62,10 @@ Usage
 -----
 ::
 
-    uv run python scripts/survey_soil_texture.py --no-check            # a partial local copy
-    uv run python scripts/survey_soil_texture.py --root /path/on/scc   # the real thing
-    uv run python scripts/survey_soil_texture.py --root ... --all --out soil_survey.json
+    uv run python scripts/survey_soil_texture.py --no-check     # a partial copy
+    uv run python scripts/survey_soil_texture.py --raw-directory /path/on/scc
+    uv run python scripts/survey_soil_texture.py --raw-directory ... --all \\
+        --output soil_survey.json
 """
 
 from __future__ import annotations
@@ -74,6 +75,7 @@ import json
 import re
 import sys
 from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -87,24 +89,27 @@ from sipnet_calibration.sites import N_SITES
 #: PEcAn's input identifier and is constant across the ensemble.
 FILE_PATTERN = re.compile(r"^Soil_params_0-(\d+)_(\d+)\.nc$")
 
-#: Layer bottoms in meters. A file on another set of depths is a different
+#: The layer bottoms, in meters. A file on another set of depths is a different
 #: data source, and ``soilWHC`` would integrate over a different profile.
-DEPTHS_METERS = (0.05, 0.15, 0.3, 0.6, 1.0, 2.0)
+DEPTHS = (0.05, 0.15, 0.3, 0.6, 1.0, 2.0)
 
 #: The variable PEcAn integrates to get ``soilWHC``.
-POROSITY = "volume_fraction_of_water_in_soil_at_saturation"
+POROSITY_NAME = "volume_fraction_of_water_in_soil_at_saturation"
 
 #: The three fractions that partition the mineral soil, which must sum to one.
-TEXTURE_FRACTIONS = (
+TEXTURE_FRACTION_NAMES = (
     "fraction_of_sand_in_soil",
     "fraction_of_silt_in_soil",
     "fraction_of_clay_in_soil",
 )
 
+#: The directory surveyed by default, under
+#: :func:`sipnet_calibration.conventions.data_root`.
+DEFAULT_RAW_DIRECTORY = Path("raw") / "soil_texture"
+
 #: The characteristics ``data/README.md`` records. Measured on 2026-09-21 over
-#: the SCC copy named in the README's `Soil texture` section; the local copy is
-#: three members of two sites and cannot reach them, which is what ``--no-check``
-#: is for. A disagreement is a changed ensemble, not a changed threshold:
+#: the SCC copy named in the README's `Soil texture` section; a partial local
+#: copy cannot reach them, which is what ``--no-check`` is for. A disagreement is a changed ensemble, not a changed threshold:
 #: re-survey, then update the README and this table together.
 RECORDED: dict[str, Any] = {
     "sites_with_a_directory": 7693,
@@ -128,25 +133,25 @@ RECORDED: dict[str, Any] = {
 def main(argv: list[str] | None = None) -> int:
     """Survey the soil texture root, report it, and compare it with :data:`RECORDED`."""
     args = parse_args(argv)
-    root = args.root or data_root() / "raw" / "soil_texture"
+    root = args.raw_directory or data_root() / DEFAULT_RAW_DIRECTORY
     try:
         coverage = survey_coverage(root)
-        content = survey_content(root, coverage["sites"], args.sample, args.all)
-    except (OSError, ValueError, KeyError) as error:
+        content = survey_content(root, coverage["members_by_site"], args.sample, args.all)
+    except (OSError, ValueError, LookupError, TypeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
 
     report = {"root": str(root), **coverage, **content}
-    report.pop("sites")
+    report.pop("members_by_site")
     print(format_report(report))
 
-    if args.out is not None:
+    if args.output is not None:
         try:
-            args.out.write_text(json.dumps(report, indent=2, default=str))
+            args.output.write_text(json.dumps(report, indent=2, default=str))
         except OSError as error:
-            print(f"error: could not write {args.out}: {error}", file=sys.stderr)
+            print(f"error: could not write {args.output}: {error}", file=sys.stderr)
             return 2
-        print(f"\nwrote {args.out}")
+        print(f"\nwrote {args.output}")
 
     if args.no_check:
         return 0
@@ -158,13 +163,16 @@ def main(argv: list[str] | None = None) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        allow_abbrev=False,
     )
     parser.add_argument(
-        "--root",
+        "--raw-directory",
         type=Path,
         default=None,
-        help="Directory of per-site subdirectories. Default: data/raw/soil_texture.",
+        help="Directory of per-site subdirectories. Default: "
+        f"{data_root() / DEFAULT_RAW_DIRECTORY}.",
     )
     parser.add_argument(
         "--sample",
@@ -183,7 +191,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "on a partial local copy, which cannot reach the recorded coverage.",
     )
     parser.add_argument(
-        "--out", type=Path, default=None, help="Also write the report as JSON here."
+        "--output", type=Path, default=None, help="Also write the report as JSON here."
     )
     return parser.parse_args(argv)
 
@@ -201,148 +209,61 @@ def survey_coverage(root: Path) -> dict[str, Any]:
     ValueError
         If it holds no site directory, or none of them a file on the template.
     """
-    check_soil_root_is_a_directory(root)
-    sites, off_template = _members_by_site(root)
-    check_root_holds_site_directories(root, sites)
-    counts = sorted({len(members) for members in sites.values()})
-    all_members = sorted({member for members in sites.values() for member in members})
-    check_site_directories_hold_files(root, sites, all_members)
+    check_soil_root_is_a_directory(root, message_name="--raw-directory")
+    members_by_site, off_template = _members_by_site(root)
+    check_root_holds_site_directories(members_by_site, message_name=str(root))
+    counts = sorted({len(members) for members in members_by_site.values()})
+    all_members = sorted({member for members in members_by_site.values() for member in members})
+    check_site_directories_hold_files(members_by_site, all_members, message_name=str(root))
+    pool = set(range(1, N_SITES + 1))
     return {
-        "sites": sites,
-        "sites_with_a_directory": len(sites),
-        "sites_of_the_pool_absent": N_SITES - len(set(sites) & set(range(1, N_SITES + 1))),
-        "sites_outside_the_pool": sorted(set(sites) - set(range(1, N_SITES + 1)))[:5],
+        "members_by_site": members_by_site,
+        "sites_with_a_directory": len(members_by_site),
+        "sites_of_the_pool_absent": N_SITES - len(set(members_by_site) & pool),
+        "sites_outside_the_pool": sorted(set(members_by_site) - pool)[:5],
         "members_per_site": counts,
         "member_range": [all_members[0], all_members[-1]],
         "members_are_contiguous": all_members == list(range(all_members[0], all_members[-1] + 1)),
         "file_names_off_template": len(off_template),
         "first_off_template": off_template[:5],
-        "total_files": sum(len(members) for members in sites.values()),
+        "total_files": sum(len(members) for members in members_by_site.values()),
     }
 
 
 def survey_content(
-    root: Path, sites: dict[int, list[int]], sample: int, every: bool
+    root: Path, members_by_site: dict[int, list[int]], sample: int, every: bool
 ) -> dict[str, Any]:
     """What the files hold, over every file or an evenly spaced sample of sites."""
-    chosen = sorted(sites) if every else _evenly_spaced_subset(sorted(sites), sample)
-    variables: Counter[tuple[str, ...]] = Counter()
-    depth_sets: set[tuple[float, ...]] = set()
-    units: dict[str, set[str]] = {}
-    water_capacities: list[float] = []
-    fraction_residuals: list[float] = []
-    unreadable: list[str] = []
-    opened = 0
-
+    chosen = (
+        sorted(members_by_site)
+        if every
+        else _evenly_spaced_subset(sorted(members_by_site), sample)
+    )
+    tally = _ContentTally()
     for site in chosen:
-        for member in sites[site]:
+        for member in members_by_site[site]:
             path = root / str(site) / f"Soil_params_0-{site}_{member}.nc"
             try:
                 with xr.open_dataset(path, decode_times=False) as dataset:
-                    opened += 1
-                    variables[tuple(sorted(dataset.data_vars))] += 1
-                    depth_sets.add(tuple(float(value) for value in dataset["depth"].values))
-                    for name, array in dataset.data_vars.items():
-                        units.setdefault(name, set()).add(
-                            str(array.attrs.get("units", ""))
-                        )
-                    if POROSITY in dataset.data_vars:
-                        water_capacities.append(soil_water_holding_capacity(dataset))
-                    if all(name in dataset.data_vars for name in TEXTURE_FRACTIONS):
-                        total = sum(
-                            dataset[name].values.astype(np.float64)
-                            for name in TEXTURE_FRACTIONS
-                        )
-                        fraction_residuals.append(float(np.nanmax(np.abs(total - 1.0))))
+                    tally.add(dataset)
             except (OSError, KeyError, ValueError) as error:
-                unreadable.append(f"{path.name}: {error}")
-
-    finite = [value for value in water_capacities if np.isfinite(value)]
-    return {
-        "sites_opened": len(chosen),
-        "files_opened": opened,
-        "depths_are_the_expected_profile": bool(
-            depth_sets and depth_sets == {tuple(float(d) for d in DEPTHS_METERS)}
-        ),
-        "files_with_missing_porosity": len(water_capacities) - len(finite),
-        "variable_sets": [
-            {"variables": list(names), "files": count}
-            for names, count in variables.most_common()
-        ],
-        "depth_sets": sorted(depth_sets),
-        "units": {name: sorted(seen) for name, seen in sorted(units.items())},
-        "soil_water_holding_capacity_cm": _extremes(finite),
-        "max_texture_fraction_residual": max(fraction_residuals, default=None),
-        "unreadable_files": len(unreadable),
-        "first_unreadable": unreadable[:5],
-    }
-
-
-def soil_water_holding_capacity(dataset: xr.Dataset) -> float:
-    """``soilWHC`` in cm, by the formula ``write.configs.SIPNET.R`` uses.
-
-    Layer thickness is ``c(depth[1], diff(depth))``, taking the depth values as
-    layer bottoms with the first layer's top at the surface; ``soilWHC`` is
-    porosity times thickness, summed over the profile and converted to
-    centimeters.
-
-    Returns ``nan`` where any layer's porosity is missing, which is what PEcAn
-    does: its ``sum`` takes the default ``na.rm = FALSE``, so one absent layer
-    makes the whole parameter ``NA``. Skipping the layer instead would return a
-    partial-profile integral that cannot be told from a genuinely dry profile.
-    """
-    depths = dataset["depth"].values
-    thickness = np.concatenate([[depths[0]], np.diff(depths)])
-    return float(np.sum(dataset[POROSITY].values * thickness) * 100.0)
+                tally.unreadable.append(f"{path.name}: {error}")
+    return {"sites_opened": len(chosen), **tally.report()}
 
 
 def format_report(report: dict[str, Any]) -> str:
     """The measurements as readable lines."""
-    lines = [
-        f"{report['root']}",
-        f"  sites with a directory   : {report['sites_with_a_directory']}",
-        f"  pool sites absent        : {report['sites_of_the_pool_absent']} of {N_SITES}",
-        f"  members per site         : {report['members_per_site']}",
-        f"  member range             : {report['member_range'][0]}-{report['member_range'][1]}"
-        f", contiguous {_yes_or_no(report['members_are_contiguous'])}",
-        f"  files on the template    : {report['total_files']}",
-        f"  file names off template  : {report['file_names_off_template']}"
-        + (f" (first {report['first_off_template']})" if report["first_off_template"] else ""),
-    ]
-    if report["sites_outside_the_pool"]:
-        lines.append(f"  sites outside the pool   : {report['sites_outside_the_pool']}")
-    lines += [
-        "",
-        f"  files opened             : {report['files_opened']} over "
-        f"{report['sites_opened']} sites",
-        f"  distinct variable sets   : {len(report['variable_sets'])}",
-        f"  distinct depth sets      : {[list(one) for one in report['depth_sets']]}",
-        f"  unreadable files         : {report['unreadable_files']}"
-        + (f" (first {report['first_unreadable']})" if report["first_unreadable"] else ""),
-        f"  depths as expected       : {_yes_or_no(report['depths_are_the_expected_profile'])}",
-        f"  files missing a porosity : {report['files_with_missing_porosity']}",
-    ]
-    lines += _format_variable_sets(report["variable_sets"])
-    capacity = report["soil_water_holding_capacity_cm"]
-    if capacity is not None:
-        lines.append(
-            f"  soilWHC over 2 m, cm     : {capacity['min']:.1f} to {capacity['max']:.1f}, "
-            f"median {capacity['median']:.1f}  (SIPNET's template default is 12)"
-        )
-    residual = report["max_texture_fraction_residual"]
-    if residual is not None:
-        lines.append(f"  max |sand+silt+clay - 1| : {residual:.3g}")
-    if report["units"]:
-        lines.append("")
-        width = max(len(name) for name in report["units"])
-        lines.append("  variables and units:")
-        lines += [
-            f"    {name:<{width}} : "
-            + " | ".join(unit or "(none)" for unit in seen)
-            + ("   <- DISAGREES ACROSS FILES" if len(seen) > 1 else "")
-            for name, seen in report["units"].items()
+    return "\n".join(
+        [
+            f"{report['root']}",
+            *_format_coverage_lines(report),
+            "",
+            *_format_content_lines(report),
+            *_format_variable_sets(report["variable_sets"]),
+            *_format_derived_lines(report),
+            *_format_units_lines(report["units"]),
         ]
-    return "\n".join(lines)
+    )
 
 
 def compare_with_recorded(report: dict[str, Any]) -> list[str]:
@@ -377,9 +298,139 @@ def format_comparison(failures: list[str]) -> str:
 # ── supporting types and helpers ──────────────────────────────────────────────
 
 
+def soil_water_holding_capacity(dataset: xr.Dataset) -> float:
+    """``soilWHC`` in cm, by the formula ``write.configs.SIPNET.R`` uses.
+
+    Layer thickness is ``c(depth[1], diff(depth))``, taking the depth values as
+    layer bottoms with the first layer's top at the surface; ``soilWHC`` is
+    porosity times thickness, summed over the profile and converted to
+    centimeters.
+
+    Returns ``nan`` where any layer's porosity is missing, which is what PEcAn
+    does: its ``sum`` takes the default ``na.rm = FALSE``, so one absent layer
+    makes the whole parameter ``NA``. Skipping the layer instead would return a
+    partial-profile integral that cannot be told from a genuinely dry profile.
+    """
+    depths = dataset["depth"].values
+    thickness = np.concatenate([[depths[0]], np.diff(depths)])
+    return float(np.sum(dataset[POROSITY_NAME].values * thickness) * 100.0)
+
+
+@dataclass
+class _ContentTally:
+    """What the content pass has found so far, file by file."""
+
+    variables: Counter[tuple[str, ...]] = field(default_factory=Counter)
+    depth_sets: set[tuple[float, ...]] = field(default_factory=set)
+    units: dict[str, set[str]] = field(default_factory=dict)
+    water_capacities: list[float] = field(default_factory=list)
+    fraction_residuals: list[float] = field(default_factory=list)
+    unreadable: list[str] = field(default_factory=list)
+    opened: int = 0
+
+    def add(self, dataset: xr.Dataset) -> None:
+        """Count one opened file."""
+        self.opened += 1
+        self.variables[tuple(sorted(dataset.data_vars))] += 1
+        self.depth_sets.add(tuple(float(value) for value in dataset["depth"].values))
+        for name, array in dataset.data_vars.items():
+            self.units.setdefault(name, set()).add(str(array.attrs.get("units", "")))
+        if POROSITY_NAME in dataset.data_vars:
+            self.water_capacities.append(soil_water_holding_capacity(dataset))
+        if all(name in dataset.data_vars for name in TEXTURE_FRACTION_NAMES):
+            total = sum(
+                dataset[name].values.astype(np.float64) for name in TEXTURE_FRACTION_NAMES
+            )
+            self.fraction_residuals.append(float(np.nanmax(np.abs(total - 1.0))))
+
+    def report(self) -> dict[str, Any]:
+        """The content pass's part of the report."""
+        finite = [value for value in self.water_capacities if np.isfinite(value)]
+        return {
+            "files_opened": self.opened,
+            "depths_are_the_expected_profile": bool(
+                self.depth_sets and self.depth_sets == {tuple(float(d) for d in DEPTHS)}
+            ),
+            "files_with_missing_porosity": len(self.water_capacities) - len(finite),
+            "variable_sets": [
+                {"variables": list(names), "files": count}
+                for names, count in self.variables.most_common()
+            ],
+            "depth_sets": sorted(self.depth_sets),
+            "units": {name: sorted(seen) for name, seen in sorted(self.units.items())},
+            "soil_water_holding_capacity_cm": _extremes(finite),
+            "max_texture_fraction_residual": max(self.fraction_residuals, default=None),
+            "unreadable_files": len(self.unreadable),
+            "first_unreadable": self.unreadable[:5],
+        }
+
+
+def _format_coverage_lines(report: dict[str, Any]) -> list[str]:
+    """The coverage pass, as report lines."""
+    lines = [
+        f"  sites with a directory   : {report['sites_with_a_directory']}",
+        f"  pool sites absent        : {report['sites_of_the_pool_absent']} of {N_SITES}",
+        f"  members per site         : {report['members_per_site']}",
+        f"  member range             : {report['member_range'][0]}-{report['member_range'][1]}"
+        f", contiguous {_yes_or_no(report['members_are_contiguous'])}",
+        f"  files on the template    : {report['total_files']}",
+        f"  file names off template  : {report['file_names_off_template']}"
+        + (f" (first {report['first_off_template']})" if report["first_off_template"] else ""),
+    ]
+    if report["sites_outside_the_pool"]:
+        lines.append(f"  sites outside the pool   : {report['sites_outside_the_pool']}")
+    return lines
+
+
+def _format_content_lines(report: dict[str, Any]) -> list[str]:
+    """The content pass's counts, as report lines."""
+    return [
+        f"  files opened             : {report['files_opened']} over "
+        f"{report['sites_opened']} sites",
+        f"  distinct variable sets   : {len(report['variable_sets'])}",
+        f"  distinct depth sets      : {[list(one) for one in report['depth_sets']]}",
+        f"  unreadable files         : {report['unreadable_files']}"
+        + (f" (first {report['first_unreadable']})" if report["first_unreadable"] else ""),
+        f"  depths as expected       : {_yes_or_no(report['depths_are_the_expected_profile'])}",
+        f"  files missing a porosity : {report['files_with_missing_porosity']}",
+    ]
+
+
+def _format_derived_lines(report: dict[str, Any]) -> list[str]:
+    """``soilWHC`` and the texture-fraction residual, as report lines."""
+    lines = []
+    capacity = report["soil_water_holding_capacity_cm"]
+    if capacity is not None:
+        lines.append(
+            f"  soilWHC over 2 m, cm     : {capacity['min']:.1f} to {capacity['max']:.1f}, "
+            f"median {capacity['median']:.1f}  (SIPNET's template default is 12)"
+        )
+    residual = report["max_texture_fraction_residual"]
+    if residual is not None:
+        lines.append(f"  max |sand+silt+clay - 1| : {residual:.3g}")
+    return lines
+
+
+def _format_units_lines(units: dict[str, list[str]]) -> list[str]:
+    """Each variable's units across the files opened, as report lines."""
+    if not units:
+        return []
+    width = max(len(name) for name in units)
+    return [
+        "",
+        "  variables and units:",
+        *(
+            f"    {name:<{width}} : "
+            + " | ".join(unit or "(none)" for unit in seen)
+            + ("   <- DISAGREES ACROSS FILES" if len(seen) > 1 else "")
+            for name, seen in units.items()
+        ),
+    ]
+
+
 def _members_by_site(root: Path) -> tuple[dict[int, list[int]], list[str]]:
     """Site id -> its members on the template, and every entry off the template."""
-    sites: dict[int, list[int]] = {}
+    members_by_site: dict[int, list[int]] = {}
     off_template: list[str] = []
     for entry in sorted(root.iterdir()):
         if not entry.is_dir():
@@ -400,8 +451,8 @@ def _members_by_site(root: Path) -> tuple[dict[int, list[int]], list[str]]:
                 off_template.append(f"{entry.name}/{file.name}")
                 continue
             members.append(int(match.group(2)))
-        sites[site] = sorted(members)
-    return sites, off_template
+        members_by_site[site] = sorted(members)
+    return members_by_site, off_template
 
 
 def _format_variable_sets(sets: list[dict[str, Any]]) -> list[str]:
@@ -458,32 +509,34 @@ def _yes_or_no(value: bool) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_soil_root_is_a_directory(root: Path) -> None:
+def check_soil_root_is_a_directory(root: Path, *, message_name: str) -> None:
     """The soil texture root is a directory."""
     if not root.is_dir():
         raise FileNotFoundError(
-            f"{root} is not a directory; data/README.md, Soil texture, says where the "
-            "ensemble is."
+            f"{message_name} {root} is not a directory; data/README.md, Soil texture, "
+            "says where the ensemble is."
         )
 
 
-def check_root_holds_site_directories(root: Path, sites: dict[int, list[int]]) -> None:
+def check_root_holds_site_directories(
+    members_by_site: dict[int, list[int]], *, message_name: str
+) -> None:
     """The soil texture root holds at least one site directory on the template."""
-    if not sites:
+    if not members_by_site:
         raise ValueError(
-            f"{root}: holds no site directories on the template; pass the soil texture "
-            "root with --root."
+            f"{message_name}: holds no site directories on the template; pass the soil "
+            "texture root with --raw-directory."
         )
 
 
 def check_site_directories_hold_files(
-    root: Path, sites: dict[int, list[int]], members: list[int]
+    members_by_site: dict[int, list[int]], members: list[int], *, message_name: str
 ) -> None:
     """Some site directory holds a file on the template."""
     if not members:
         raise ValueError(
-            f"{root}: {len(sites)} site directories, none holding a file on the "
-            "template, which is what an interrupted copy looks like; copy it again."
+            f"{message_name}: {len(members_by_site)} site directories, none holding a file "
+            "on the template, which is what an interrupted copy looks like; copy it again."
         )
 
 

@@ -4,9 +4,9 @@ Two of them, the phenology and soil texture surveys, assert what
 ``data/README.md`` records. They are diagnostics, but they are also the
 mechanism that keeps the coverage numbers in the README from going stale: each
 carries a ``RECORDED`` table, compares its measurements against it, and exits
-non-zero when one no longer holds. That makes the comparison itself worth testing, because a checker
-that cannot fail is worse than no checker -- it reports success over a changed
-file.
+non-zero when one no longer holds. That makes the comparison itself worth
+testing, because a checker that cannot fail is worse than no checker -- it
+reports success over a changed file.
 
 So the cases here are mostly about the *checker*: that a changed measurement is
 caught, that a report round-tripped through the JSON output still compares
@@ -49,7 +49,7 @@ drivers_survey = load_script("scripts/survey_drivers.py")
 def _write_phenology(path: Path, rows: list[dict]) -> Path:
     """A phenology CSV with the real header and ``NA`` for a missing day."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    frame = pd.DataFrame(rows, columns=list(phenology.COLUMNS))
+    frame = pd.DataFrame(rows, columns=list(phenology.COLUMN_NAMES))
     frame.to_csv(path, index=False, na_rep="NA")
     return path
 
@@ -72,7 +72,7 @@ def _phenology_rows(sites=(1, 2), years=(2012, 2013)) -> list[dict]:
     ]
 
 
-def _write_soil_file(path: Path, porosity=None, depths=soil.DEPTHS_METERS) -> Path:
+def _write_soil_file(path: Path, porosity=None, depths=soil.DEPTHS) -> Path:
     """One soil texture netCDF with the real variable names and depths."""
     path.parent.mkdir(parents=True, exist_ok=True)
     n = len(depths)
@@ -80,8 +80,8 @@ def _write_soil_file(path: Path, porosity=None, depths=soil.DEPTHS_METERS) -> Pa
     third = np.full(n, 1.0 / 3.0, dtype=np.float32)
     dataset = xr.Dataset(
         {
-            soil.POROSITY: ("depth", porosity.astype(np.float32)),
-            **{name: ("depth", third) for name in soil.TEXTURE_FRACTIONS},
+            soil.POROSITY_NAME: ("depth", porosity.astype(np.float32)),
+            **{name: ("depth", third) for name in soil.TEXTURE_FRACTION_NAMES},
         },
         coords={"depth": np.asarray(depths, dtype=np.float64)},
     )
@@ -286,7 +286,7 @@ def test_a_file_with_a_missing_porosity_is_counted_and_left_out_of_the_range(tmp
     porosity[0] = np.nan
     _write_soil_file(root / "1" / "Soil_params_0-1_2.nc", porosity=porosity)
     coverage = soil.survey_coverage(root)
-    content = soil.survey_content(root, coverage["sites"], sample=10, every=True)
+    content = soil.survey_content(root, coverage["members_by_site"], sample=10, every=True)
     assert content["files_with_missing_porosity"] == 1
     # The finite file is a uniform 0.45 over 2 m, so 90 cm; the NaN one is left
     # out of the range rather than dragging it down with a partial integral.
@@ -301,7 +301,7 @@ def test_a_different_depth_profile_is_caught(tmp_path):
         root / "1" / "Soil_params_0-1_1.nc", depths=(0.05, 0.15, 0.3, 0.6, 1.0, 3.0)
     )
     coverage = soil.survey_coverage(root)
-    content = soil.survey_content(root, coverage["sites"], sample=10, every=True)
+    content = soil.survey_content(root, coverage["members_by_site"], sample=10, every=True)
     assert content["depths_are_the_expected_profile"] is False
     assert soil.compare_with_recorded({**coverage, **content})
 
@@ -312,11 +312,11 @@ def test_units_disagreeing_between_files_are_all_reported(tmp_path):
     _write_soil_file(path)
     with xr.open_dataset(path) as dataset:
         changed = dataset.load()
-    changed[soil.POROSITY].attrs["units"] = "WRONG"
+    changed[soil.POROSITY_NAME].attrs["units"] = "WRONG"
     changed.to_netcdf(path)
     coverage = soil.survey_coverage(root)
-    content = soil.survey_content(root, coverage["sites"], sample=10, every=True)
-    assert len(content["units"][soil.POROSITY]) == 2
+    content = soil.survey_content(root, coverage["members_by_site"], sample=10, every=True)
+    assert len(content["units"][soil.POROSITY_NAME]) == 2
 
 
 def test_the_sample_is_deterministic_and_bounded():
@@ -389,7 +389,7 @@ def test_the_local_soil_texture_files_are_on_the_template_and_readable():
     if not SOIL_TEXTURE_DIR.exists():
         pytest.skip("soil texture files not available in this working copy")
     coverage = soil.survey_coverage(SOIL_TEXTURE_DIR)
-    content = soil.survey_content(SOIL_TEXTURE_DIR, coverage["sites"], 10, True)
+    content = soil.survey_content(SOIL_TEXTURE_DIR, coverage["members_by_site"], 10, True)
     assert coverage["file_names_off_template"] == 0
     assert content["unreadable_files"] == 0
     assert content["depths_are_the_expected_profile"] is True
@@ -429,3 +429,14 @@ def test_the_driver_survey_names_the_check_a_file_fails(tmp_path):
     negative.loc[7, "par"] = -0.01
     facts = drivers_survey.survey_driver_directory(_driver_pair(tmp_path / "b", negative))
     assert facts.failed_check == "negative_excursions"
+
+
+def test_an_unwritable_driver_report_is_a_reported_error(tmp_path, capsys):
+    """Writing the JSON report raised PermissionError, a traceback."""
+    from test_drivers import synthetic_rows
+
+    root = tmp_path / "drivers"
+    _driver_pair(root, synthetic_rows())
+    unwritable = tmp_path / "no_such_directory" / "report.json"
+    assert drivers_survey.main(["--raw-directory", str(root), "--output", str(unwritable)]) == 1
+    assert f"could not write {unwritable}" in capsys.readouterr().err

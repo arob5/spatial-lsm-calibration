@@ -151,7 +151,7 @@ processing, and it writes a JSON summary rather than any processed file. It
 is not part of the ingest pipeline.
 
 ```bash
-python scripts/survey_drivers.py --root <drivers root> --jobs 16 --out drivers_survey.json
+python scripts/survey_drivers.py --raw-directory <drivers root> --jobs 16 --output drivers_survey.json
 ```
 
 *Does the driver directory template cover every site and member, and does every
