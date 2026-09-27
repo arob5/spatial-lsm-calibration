@@ -12,7 +12,7 @@ import pytest
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
-from conftest import site_table_of
+from conftest import located, site_table_of
 from sipnet_calibration.conventions import (
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -110,7 +110,7 @@ class TestReduceWindowsRefusals:
     def test_duplicate_timestamps_are_refused(self, niwot):
         array = niwot["wood_carbon"]
         doubled = xr.concat([array, array], dim="time")
-        with pytest.raises(ValueError, match="do not increase|duplicates"):
+        with pytest.raises(ValueError, match="not strictly increasing"):
             reduce_windows(doubled, _daily_windows(array), "last")
 
     def test_wrong_label_count_is_refused(self, niwot):
@@ -168,7 +168,9 @@ class TestReduceWindowsSemantics:
 
     def test_other_dimensions_are_carried_through(self, niwot):
         array = niwot["wood_carbon"]
-        stacked = xr.concat([array.assign_coords(site=1), (array * 2).assign_coords(site=2)], dim="site")
+        stacked = located(
+            xr.concat([array.assign_coords(site=1), (array * 2).assign_coords(site=2)], dim="site")
+        )
         stacked.attrs = array.attrs
         reduced = reduce_windows(stacked, _daily_windows(array), "last")
         assert reduced.dims == ("site", "time")
@@ -233,7 +235,7 @@ class TestSelectTimestepAt:
         assert "contains the label" in picked.attrs["time_reference"]
 
     def test_an_array_without_interval_coordinates_is_refused(self):
-        array = xr.DataArray([1.0, 2.0], dims="time", coords={"time": pd.DatetimeIndex(["2000-01-01", "2000-01-02"])}, attrs={"kind": "timestep_end_state"})
+        array = xr.DataArray([1.0, 2.0], dims="time", coords={"time": pd.DatetimeIndex(["2000-01-01", "2000-01-02"])}, attrs={"kind": "timestep_end_state", "units": "g m-2"})
         with pytest.raises(ValueError, match="carries no"):
             select_timestep_at(array, pd.DatetimeIndex(["2000-01-01"]))
 
@@ -251,7 +253,9 @@ class TestSelectTimestepAt:
 
     def test_other_dimensions_are_carried_through(self, niwot):
         array = niwot["wood_carbon"]
-        stacked = xr.concat([array.assign_coords(site=1), (array * 2).assign_coords(site=2)], dim="site")
+        stacked = located(
+            xr.concat([array.assign_coords(site=1), (array * 2).assign_coords(site=2)], dim="site")
+        )
         stacked.attrs = array.attrs
         picked = select_timestep_at(stacked, pd.DatetimeIndex(array["time"].values[[2, 9]]))
         assert picked.dims == ("site", "time")
@@ -260,7 +264,7 @@ class TestSelectTimestepAt:
 
 class TestWindowBuilders:
     def test_windows_from_observed_values(self):
-        observed = xr.DataArray(
+        observed = located(xr.DataArray(
             [[1.0, 2.0]],
             dims=("site", "time"),
             coords={
@@ -269,14 +273,15 @@ class TestWindowBuilders:
                 WINDOW_START: ("time", pd.DatetimeIndex(["2012-01-01", "2013-01-01"])),
                 WINDOW_END: ("time", pd.DatetimeIndex(["2013-01-01", "2014-01-01"])),
             },
-        )
+            attrs={"units": "Mg ha-1"},
+        ))
         windows = windows_from_observed_values(observed)
         assert windows.closed == "right"
         assert list(windows.left) == list(pd.DatetimeIndex(["2012-01-01", "2013-01-01"]))
         assert list(windows.right) == list(pd.DatetimeIndex(["2013-01-01", "2014-01-01"]))
 
     def test_an_array_without_windows_is_refused(self):
-        observed = xr.DataArray([[1.0]], dims=("site", "time"), coords={"site": [1], "time": pd.DatetimeIndex(["2012-07-15"])})
+        observed = located(xr.DataArray([[1.0]], dims=("site", "time"), coords={"site": [1], "time": pd.DatetimeIndex(["2012-07-15"])}, attrs={"units": "Mg ha-1"}))
         with pytest.raises(ValueError, match="documents no interval"):
             windows_from_observed_values(observed)
 
@@ -444,7 +449,7 @@ class TestPaddedStacks:
         full = niwot["wood_carbon"].assign_coords(site=1)
         short = niwot["wood_carbon"].isel(time=slice(0, 40)).assign_coords(site=2)
         stacked = xr.concat([full, short], dim="site", join="outer", coords="different", compat="equals", combine_attrs="override")
-        return stacked
+        return located(stacked)
 
     def test_reduce_windows_ignores_the_padding_of_a_selected_site(self, padded, niwot):
         array = niwot["wood_carbon"]
@@ -478,7 +483,7 @@ class TestWindowOrientation:
         assert (coords[WINDOW_END].values > coords[WINDOW_START].values).all()
 
     def test_reversed_windows_are_refused(self):
-        observed = xr.DataArray(
+        observed = located(xr.DataArray(
             [[1.0]],
             dims=("site", "time"),
             coords={
@@ -487,7 +492,8 @@ class TestWindowOrientation:
                 WINDOW_START: ("time", pd.DatetimeIndex(["2013-01-01"])),
                 WINDOW_END: ("time", pd.DatetimeIndex(["2012-01-01"])),
             },
-        )
+            attrs={"units": "Mg ha-1"},
+        ))
         with pytest.raises(ValueError, match="must follow its window_start"):
             windows_from_observed_values(observed)
 
@@ -501,7 +507,7 @@ class TestEveryFunctionChecksTheStack:
         short = niwot["wood_carbon"].isel(time=slice(0, 40)).assign_coords(site=2)
         stacked = xr.concat([full, short], dim="site", join="outer", coords="different", compat="equals", combine_attrs="override")
         assert stacked[TIMESTEP_START].dims == ("site", "time")
-        return stacked
+        return located(stacked)
 
     def test_run_window_refuses_it(self, per_site):
         with pytest.raises(ValueError, match="different time axes"):
@@ -553,7 +559,7 @@ class TestCombinedLengthsAreExact:
 class TestWindowAndLabelRefusals:
     @staticmethod
     def bounded(start, end):
-        return xr.DataArray(
+        return located(xr.DataArray(
             [[1.0]],
             dims=("site", "time"),
             coords={
@@ -563,7 +569,8 @@ class TestWindowAndLabelRefusals:
                 WINDOW_END: ("time", end),
             },
             name="annual",
-        )
+            attrs={"units": "Mg ha-1"},
+        ))
 
     def test_a_missing_window_edge_is_refused(self):
         with pytest.raises(ValueError, match="'annual': a window edge is missing"):
@@ -603,7 +610,7 @@ class TestWindowAndLabelRefusals:
     def test_a_missing_timestamp_on_the_axis_is_refused(self, niwot):
         array = niwot["wood_carbon"]
         broken = array.assign_coords(time=np.where(np.arange(array.sizes["time"]) == 3, np.datetime64("NaT"), array["time"].values))
-        with pytest.raises(ValueError, match=r"missing timestamp \(NaT\)"):
+        with pytest.raises(ValueError, match="holds NaT"):
             aggregate_time(broken, "1D")
 
     def test_a_zero_frequency_is_refused(self, niwot):
@@ -611,7 +618,7 @@ class TestWindowAndLabelRefusals:
             aggregate_time(niwot["wood_carbon"], "0D")
 
     def test_a_dataset_is_a_type_error(self, niwot):
-        with pytest.raises(TypeError, match="align one at a time"):
+        with pytest.raises(TypeError, match="got Dataset; pass one variable"):
             aggregate_time(niwot, "1D")
 
 
@@ -619,7 +626,7 @@ class TestOwnCadenceAndExtremes:
     def test_aggregating_at_the_fields_own_cadence_is_the_field(self):
         daily = xr.DataArray(
             np.arange(10.0), dims="time", coords={"time": pd.date_range("2000-01-02", periods=10, freq="D")},
-            attrs={"kind": "timestep_total"}, name="x",
+            attrs={"kind": "timestep_total", "units": "g m-2"}, name="x",
         )
         again = aggregate_time(daily, "1D")
         np.testing.assert_array_equal(again.values, daily.values)
@@ -789,3 +796,26 @@ class TestWindowEdgesAndLabels:
         overlapping = array.assign_coords({TIMESTEP_START: ("time", start)})
         with pytest.raises(ValueError, match="overlap"):
             select_timestep_at(overlapping, pd.DatetimeIndex(array["time"].values[[5]]))
+
+
+@pytest.mark.parametrize("given", [np.zeros(3), None, xr.Dataset()], ids=["numpy", "none", "dataset"])
+def test_windows_from_what_is_not_a_dataarray_is_a_type_error(given):
+    """message_name ran first and raised AttributeError."""
+    from sipnet_calibration.observation import windows_from_observed_values
+
+    with pytest.raises(TypeError, match="DataArray"):
+        windows_from_observed_values(given)
+
+
+def test_windows_from_observed_values_refuses_what_is_not_a_field():
+    from conftest import dated_observed_values
+    from sipnet_calibration.observation import windows_from_observed_values
+
+    ends = pd.date_range("2012-01-02", periods=3, freq="D")
+    observed = dated_observed_values([1], ends).assign_coords(
+        window_start=("time", ends - pd.Timedelta("1D")), window_end=("time", ends)
+    )
+    windows_from_observed_values(observed)  # a field: accepted
+    observed.attrs.pop("units")
+    with pytest.raises(ValueError, match="units"):
+        windows_from_observed_values(observed)

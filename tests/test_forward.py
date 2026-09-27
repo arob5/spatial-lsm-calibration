@@ -5,6 +5,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import jax
 import numpy as np
@@ -15,19 +16,22 @@ from pyens import LocalBackend, SequentialBackend
 from pysipnet import niwot_reference_output
 from pysipnet.climate import ClimateDrivers
 from pysipnet.model import SIPNETModel
-from pysipnet.parameters.model import ModelFlags
+from pysipnet.parameters.model import ModelFlags, parameter_dataarray
 from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunner
 
 from conftest import (
     BLOW_UP,
+    DIES_BAND,
     INVALID,
     NAN_BAND,
     SOIL_REFERENCE,
     TIMEOUT_BAND,
-    ScaledNiwot,
+    ScaledNiwotRunner,
+    located,
     scaled_niwot_model,
     site_table_of,
+    with_parameter_value,
 )
 from sipnet_calibration.compute import scc_backend
 from sipnet_calibration.forward import ForwardEvaluation, ForwardModel
@@ -38,6 +42,8 @@ from sipnet_calibration.observation import (
     ReduceOverRun,
     SelectTimestep,
     aggregate_time,
+    extract_sipnet_parameter_at_coords,
+    restrict_to_observed_sites,
     select_timestep_at,
 )
 from sipnet_calibration.parameter_vector import example_parameter_vector
@@ -60,13 +66,59 @@ class Foreign:
             super().__init__(detail)
 
 
-class ForeignNiwot(ScaledNiwot):
+class ForeignNiwotRunner(ScaledNiwotRunner):
     """The stand-in, with the machinery failure raised as :class:`Foreign.TimeoutExpired`."""
 
-    def __call__(self, *, climate=None, events=None, **overrides):
-        if INVALID < float(overrides["max_photosynthesis_rate"]) < 0:
+    def run(self, parameters, climate, *, events=None, **keywords):
+        if float(parameters.dataarray("max_photosynthesis_rate")) > DIES_BAND:
             raise Foreign.TimeoutExpired(detail="the node died")
-        return super().__call__(climate=climate, events=events, **overrides)
+        return super().run(parameters, climate, events=events, **keywords)
+
+
+#: What :class:`OwnLeafCarbonRunner` multiplies the run's leaf_carbon_per_area by.
+OWN_LEAF_CARBON_FACTOR = 2.0
+
+
+class OwnLeafCarbonRunner(ScaledNiwotRunner):
+    """The stand-in, whose run used another leaf_carbon_per_area than it was given.
+
+    So the run's own ``SIPNETResult.parameters`` differ from the base set with
+    the overrides applied, and an operator reading the base set would be
+    caught.
+    """
+
+    def run(self, parameters, climate, *, events=None, **keywords):
+        result = super().run(parameters, climate, events=events, **keywords)
+        leaf = float(parameters.dataarray("leaf_carbon_per_area"))
+        return SimpleNamespace(
+            outputs=result.outputs,
+            parameters=with_parameter_value(
+                parameters, "leaf_carbon_per_area", OWN_LEAF_CARBON_FACTOR * leaf
+            ),
+        )
+
+
+class NoParametersRunner(ScaledNiwotRunner):
+    """The stand-in, whose result carries no parameters."""
+
+    def run(self, parameters, climate, *, events=None, **keywords):
+        return SimpleNamespace(outputs=super().run(parameters, climate).outputs)
+
+
+@dataclass(frozen=True)
+class ReadsSoilCarbon:
+    """An operator whose prediction is the run's ``soil_carbon`` parameter itself."""
+
+    output_variable_names = ("wood_carbon",)
+    sipnet_parameter_names_read = ("soil_carbon",)
+
+    def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
+        wood = restrict_to_observed_sites(model_output["wood_carbon"], observed_values)
+        picked = select_timestep_at(wood, observed_values["time"])
+        soil = extract_sipnet_parameter_at_coords(sipnet_parameter_fields, "soil_carbon", picked)
+        result = picked * 0.0 + soil
+        result.attrs = dict(soil.attrs)
+        return result
 
 
 def _expected_wood(sipnet_parameter_fields, sample, site, n_steps=None):
@@ -102,24 +154,24 @@ def files(tmp_path_factory):
 
 @pytest.fixture(scope="module")
 def observation_vector():
-    wood = xr.DataArray(
+    wood = located(xr.DataArray(
         [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
         dims=("site", "time"),
         coords={"site": list(SITES), "time": LABELS},
         attrs={"units": "Mg ha-1", "constituent": "C"},
         name="landtrendr_aboveground_biomass",
-    )
-    lai = xr.DataArray(
+    ), site_table=SITE_TABLE)
+    lai = located(xr.DataArray(
         [[3.0, 2.0, np.nan], [np.nan, 1.0, 1.5]],
         dims=("site", "time"),
         coords={"site": list(SITES), "time": LABELS},
         attrs={"units": "m2 m-2"},
         name="modis_leaf_area_index",
-    )
+    ), site_table=SITE_TABLE)
     return ObservationVector(
-        [
-            ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-            ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+        observation_sources=[
+            ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon")),
+            ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
         ]
     )
 
@@ -150,7 +202,8 @@ def _hooked(parameter_vector, rates):
         for (sample, site_position), rate in rates.items():
             if sample < values.shape[0]:  # the init-time probe has one sample
                 values[sample, site_position] = rate
-        return sipnet_parameter_fields.assign(max_photosynthesis_rate=(("sample", "site"), values))
+        rate = sipnet_parameter_fields["max_photosynthesis_rate"].copy(data=values)
+        return sipnet_parameter_fields.assign(max_photosynthesis_rate=rate)
 
     return hook
 
@@ -181,6 +234,46 @@ class TestEvaluate:
         assert evaluation.valid.all() and evaluation.failures.empty
         assert evaluation.model_output is None
 
+    def test_an_operator_reads_the_sipnet_parameters_the_run_used(
+        self, parameter_vector, climate, theta
+    ):
+        """The worker's SIPNET parameter fields are the run's own, per sample and site."""
+        observed = located(
+            xr.DataArray(
+                [[1.0, np.nan, 1.0], [1.0, 1.0, np.nan]],
+                dims=("site", "time"),
+                coords={"site": list(SITES), "time": LABELS},
+                attrs={"units": "g m-2", "constituent": "C"},
+                name="soil",
+            ),
+            site_table=SITE_TABLE,
+        )
+        observation_vector = ObservationVector(
+            observation_sources=[
+                ObservationSource(
+                    observation_source_name="soil",
+                    observed_values=observed,
+                    operator=ReadsSoilCarbon(),
+                )
+            ]
+        )
+        forward = ForwardModel(
+            scaled_niwot_model(),
+            parameter_vector,
+            climate=climate,
+            backend=SequentialBackend(),
+            observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        predicted = observation_vector.fields(forward(theta))["soil"]
+        expected = parameter_vector.sipnet_parameter_fields(theta)["soil_carbon"]
+        for sample in range(len(theta)):
+            for site in SITES:
+                row = predicted.sel(sample=sample, site=site).values
+                np.testing.assert_allclose(
+                    row[np.isfinite(row)], float(expected.sel(sample=sample, site=site))
+                )
+
     def test_a_single_theta_gives_one_row(self, forward, theta, observation_vector):
         assert forward(theta[0]).shape == (observation_vector.dimension,)
         assert forward(theta).shape == (3, observation_vector.dimension)
@@ -188,19 +281,79 @@ class TestEvaluate:
         assert forward.output_dimension == observation_vector.dimension
         assert forward.input_dimension == theta.shape[1]
 
-    def test_the_lai_operator_reads_the_base_leaf_carbon_per_area(
+    def test_the_lai_operator_reads_the_runs_own_leaf_carbon_per_area(
         self, forward, observation_vector, theta
     ):
-        assert forward.sipnet_parameter_names == forward.parameter_vector.sipnet_parameter_names
-        assert set(forward._base_values) == {"leaf_carbon_per_area"}
+        """The vector leaves it to the base parameter set, which the run used."""
+        assert forward.sipnet_parameter_names_written == forward.parameter_vector.sipnet_parameter_names_written
+        assert "leaf_carbon_per_area" not in forward.sipnet_parameter_names_written
         predictions = forward(theta)
         lai = observation_vector.fields(predictions)["modis_leaf_area_index"]
         leaf = select_timestep_at(REFERENCE.select(["leaf_carbon"])["leaf_carbon"], LABELS).values
-        expected = leaf / forward._base_values["leaf_carbon_per_area"]
+        base = float(forward.model.base_params.dataarray("leaf_carbon_per_area"))
+        expected = leaf / base
         observed = observation_vector["modis_leaf_area_index"].observed_values.sel(site=1).notnull().values
         np.testing.assert_allclose(
             lai.sel(sample=0, site=1).values[observed], expected[observed], rtol=1e-12
         )
+
+    def test_the_operators_read_the_runs_own_parameters_not_the_base_set(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """A stand-in whose run used another leaf_carbon_per_area than base plus overrides."""
+        forward = ForwardModel(
+            scaled_niwot_model(OwnLeafCarbonRunner), parameter_vector, climate=climate,
+            backend=SequentialBackend(), observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        lai = observation_vector.fields(forward(theta))["modis_leaf_area_index"]
+        leaf = select_timestep_at(REFERENCE.select(["leaf_carbon"])["leaf_carbon"], LABELS).values
+        base = float(forward.model.base_params.dataarray("leaf_carbon_per_area"))
+        expected = leaf / (OWN_LEAF_CARBON_FACTOR * base)
+        observed = observation_vector["modis_leaf_area_index"].observed_values.sel(site=1).notnull().values
+        np.testing.assert_allclose(
+            lai.sel(sample=0, site=1).values[observed], expected[observed], rtol=1e-12
+        )
+
+    def test_a_read_parameter_the_base_set_leaves_unset_is_refused_when_built(
+        self, parameter_vector, climate
+    ):
+        """It was refused only after every run of the batch had run."""
+
+        @dataclass(frozen=True)
+        class ReadsLeafWater:
+            output_variable_names = ("wood_carbon",)
+            sipnet_parameter_names_read = ("leaf_water_pool_depth",)
+
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
+                return select_timestep_at(
+                    restrict_to_observed_sites(model_output["wood_carbon"], observed_values),
+                    observed_values["time"],
+                )
+
+        wood = located(xr.DataArray(
+            [[100.0, 110.0, 120.0]], dims=("site", "time"),
+            coords={"site": [1], "time": LABELS}, attrs={"units": "g m-2", "constituent": "C"},
+        ), site_table=SITE_TABLE)
+        vector = ObservationVector(observation_sources=[
+            ObservationSource(observation_source_name="wood", observed_values=wood, operator=ReadsLeafWater())
+        ])
+        with pytest.raises(ValueError, match="'leaf_water_pool_depth'.*leaves unset"):
+            ForwardModel(
+                scaled_niwot_model(), parameter_vector, climate=climate,
+                backend=SequentialBackend(), observation_vector=vector, site_table=SITE_TABLE,
+            )
+
+    def test_a_result_without_parameters_is_named_at_the_first_run(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        forward = ForwardModel(
+            scaled_niwot_model(NoParametersRunner), parameter_vector, climate=climate,
+            backend=SequentialBackend(), observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        with pytest.raises(RuntimeError, match="carries no SIPNETParameters as .parameters"):
+            forward.evaluate(theta[:1])
 
     def test_an_observation_vector_over_fewer_sites_than_are_run(
         self, parameter_vector, climate, observation_vector, theta
@@ -219,6 +372,22 @@ class TestEvaluate:
         assert evaluation.run_succeeded.shape == (3, 2) and bool(evaluation.run_succeeded.all())
         assert np.isfinite(evaluation.predictions).all()
 
+    def test_a_bare_site_id_vectors_sipnet_parameter_fields_are_located_from_the_site_table(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """The strict validator refuses them unlocated; the model has the locations."""
+        from sipnet_calibration.fields import validate_sipnet_parameter_fields
+
+        assert "lon" not in parameter_vector.sipnet_parameter_fields(theta).coords
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate,
+            backend=SequentialBackend(), observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+        )
+        fields = forward.evaluate(theta).sipnet_parameter_fields
+        validate_sipnet_parameter_fields(fields)
+        np.testing.assert_array_equal(fields["lon"].values, SITE_TABLE["lon"].values)
+
     def test_an_observation_source_with_a_site_it_never_observes(
         self, parameter_vector, climate, observation_vector, theta
     ):
@@ -226,9 +395,9 @@ class TestEvaluate:
         wood = observation_vector["landtrendr_aboveground_biomass"].observed_values.copy()
         wood.loc[{"site": 27}] = np.nan
         sparse = ObservationVector(
-            [ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
+            observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
-        assert sparse.positions(site=27).size == 0 and sparse.sites == (1,)
+        assert 27 not in sparse.sites and sparse.sites == (1,)
         forward = ForwardModel(
             scaled_niwot_model(),
             parameter_vector,
@@ -259,7 +428,7 @@ class TestEvaluate:
         """A run's segment is placed at positions(site=), which needs a site-major vector."""
         sites = [1, 27, 40]
         times = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, 30, 50]])
-        wood = xr.DataArray(
+        wood = located(xr.DataArray(
             [
                 [100.0, np.nan, 120.0, 130.0],
                 [np.nan, 115.0, np.nan, np.nan],
@@ -269,26 +438,26 @@ class TestEvaluate:
             coords={"site": sites, "time": times},
             attrs={"units": "Mg ha-1", "constituent": "C"},
             name="landtrendr_aboveground_biomass",
-        )
-        lai = xr.DataArray(
+        ))
+        lai = located(xr.DataArray(
             [[np.nan, 2.0, 2.5, np.nan], [1.0, np.nan, 1.5, 1.2], [np.nan] * 4],
             dims=("site", "time"),
             coords={"site": sites, "time": times},
             attrs={"units": "m2 m-2"},
             name="modis_leaf_area_index",
-        )
-        soil = xr.DataArray(
+        ))
+        soil = located(xr.DataArray(
             [np.nan, 5000.0, 4000.0],
             dims="site",
             coords={"site": sites},
             attrs={"units": "g m-2", "constituent": "C"},
             name="soil",
-        )
+        ))
         observation_vector = ObservationVector(
-            [
-                ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon")),
-                ObservationSource("modis_leaf_area_index", lai, DEFAULT_OBS_OPS["modis_leaf_area_index"]),
-                ObservationSource("soil", soil, ReduceOverRun("soil_carbon", "mean")),
+            observation_sources=[
+                ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon")),
+                ObservationSource(observation_source_name="modis_leaf_area_index", observed_values=lai, operator=DEFAULT_OBS_OPS["modis_leaf_area_index"]),
+                ObservationSource(observation_source_name="soil", observed_values=soil, operator=ReduceOverRun("soil_carbon", "mean")),
             ]
         )
         assert observation_vector.sites == tuple(sites)
@@ -303,15 +472,15 @@ class TestEvaluate:
         """Site 27's drivers end before a label only site 1 is observed at."""
         late = SHORT_STEPS + 10
         labels = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, late]])
-        wood = xr.DataArray(
+        wood = located(xr.DataArray(
             [[100.0, np.nan, 120.0], [110.0, 115.0, np.nan]],
             dims=("site", "time"),
             coords={"site": list(SITES), "time": labels},
             attrs={"units": "Mg ha-1", "constituent": "C"},
             name="landtrendr_aboveground_biomass",
-        )
+        ), site_table=SITE_TABLE)
         observed = ObservationVector(
-            [ObservationSource("landtrendr_aboveground_biomass", wood, SelectTimestep("wood_carbon"))]
+            observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=SelectTimestep("wood_carbon"))]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -373,7 +542,7 @@ class TestFailures:
         evaluation = forward.evaluate(theta)
         assert evaluation.valid.tolist() == [True, False, True]
         assert np.isnan(evaluation.predictions[1]).all()
-        assert np.isfinite(evaluation.predictions[[0, 2]]).all()
+        assert np.isfinite(np.asarray(evaluation.predictions)[[0, 2]]).all()
         assert not bool(evaluation.run_succeeded.sel(sample=1, site=1))
         assert bool(evaluation.run_succeeded.sel(sample=1, site=27))
         assert evaluation.failures["error"].tolist() == ["SIPNETRunError"]
@@ -394,7 +563,7 @@ class TestFailures:
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._forward_with(
-            parameter_vector, climate, observation_vector, {(2, 1): -1.0, (0, 0): 1.5 * BLOW_UP}
+            parameter_vector, climate, observation_vector, {(2, 1): 1.5 * DIES_BAND, (0, 0): 1.5 * BLOW_UP}
         )
         with pytest.raises(RuntimeError, match="machinery") as raised:
             forward.evaluate(theta)
@@ -425,23 +594,23 @@ class TestFailures:
         @dataclass(frozen=True)
         class Infinite:
             output_variable_names = ("wood_carbon",)
-            sipnet_parameter_names = ()
+            sipnet_parameter_names_read = ()
 
-            def __call__(self, model_output, observed_values, *, sipnet_parameters=None):
+            def __call__(self, model_output, observed_values, *, sipnet_parameter_fields=None):
                 out = select_timestep_at(model_output["wood_carbon"], observed_values["time"])
                 out = out / 0.0
                 out.attrs = {"units": "g m-2", "constituent": "C"}
                 return out
 
-        wood = xr.DataArray(
+        wood = located(xr.DataArray(
             [[100.0, 110.0, 120.0]],
             dims=("site", "time"),
             coords={"site": [1], "time": LABELS},
             attrs={"units": "Mg ha-1", "constituent": "C"},
             name="landtrendr_aboveground_biomass",
-        )
+        ), site_table=SITE_TABLE)
         infinite = ObservationVector(
-            [ObservationSource("landtrendr_aboveground_biomass", wood, Infinite())]
+            observation_sources=[ObservationSource(observation_source_name="landtrendr_aboveground_biomass", observed_values=wood, operator=Infinite())]
         )
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -471,7 +640,7 @@ class TestFailures:
             parameter_vector,
             files,
             observation_vector,
-            {(0, 1): -1.0},
+            {(0, 1): 1.5 * DIES_BAND},
             backend=LocalBackend(n_workers=1),
         )
         with pytest.raises(RuntimeError, match="machinery"):
@@ -482,13 +651,13 @@ class TestFailures:
     ):
         """PyEns names it in full, which is not subprocess.TimeoutExpired."""
         forward = ForwardModel(
-            scaled_niwot_model(ForeignNiwot),
+            scaled_niwot_model(ForeignNiwotRunner),
             parameter_vector,
             climate=files,
             backend=LocalBackend(n_workers=1),
             observation_vector=observation_vector,
             site_table=SITE_TABLE,
-            to_sipnet_parameter_fields=_hooked(parameter_vector, {(0, 1): -1.0}),
+            to_sipnet_parameter_fields=_hooked(parameter_vector, {(0, 1): 1.5 * DIES_BAND}),
         )
         with pytest.raises(RuntimeError, match="machinery") as raised:
             forward.evaluate(theta[:1])
@@ -784,7 +953,9 @@ class TestRefusals:
     ):
         forward = self._build(parameter_vector, climate, observation_vector)
         forward._to_sipnet_parameter_fields = lambda t: parameter_vector.sipnet_parameter_fields(t).assign(
-            leaf_carbon_per_area=lambda d: d["soil_carbon"] * 0 + 50.0
+            leaf_carbon_per_area=lambda d: parameter_dataarray(
+                "leaf_carbon_per_area", d["soil_carbon"] * 0 + 50.0
+            )
         )
         with pytest.raises(ValueError, match="free inputs are fixed"):
             forward.evaluate(theta)
@@ -821,7 +992,7 @@ class TestRefusals:
     def test_sipnet_parameter_fields_hook_that_sets_an_unknown_parameter(
         self, parameter_vector, climate, observation_vector
     ):
-        with pytest.raises(ValueError, match="not a pySIPNET parameter"):
+        with pytest.raises(KeyError, match="not a pySIPNET parameter"):
             self._build(
                 parameter_vector,
                 climate,
@@ -835,7 +1006,7 @@ class TestRefusals:
         self, parameter_vector, climate, observation_vector, theta
     ):
         forward = self._build(parameter_vector, climate, observation_vector)
-        names = list(forward.sipnet_parameter_names)
+        names = list(forward.sipnet_parameter_names_written)
         forward._to_sipnet_parameter_fields = lambda t: parameter_vector.sipnet_parameter_fields(t)[names[::-1]]
         assert forward(theta[:1]).shape == (1, observation_vector.dimension)
 
@@ -914,7 +1085,7 @@ class TestRealSipnet:
         if find_binary() is None:
             pytest.skip(missing_binary_message())
         from conftest import niwot_parameters
-        from sipnet_calibration.fields import label_run
+        from sipnet_calibration.fields import to_model_output
         from sipnet_calibration.parameter_vector import sipnet_overrides
 
         model = SIPNETModel(
@@ -935,17 +1106,18 @@ class TestRealSipnet:
         # One run's predictions, recomputed by hand: the same run and the same operators, on the driver.
         sample, site = 1, 27
         overrides = sipnet_overrides(evaluation.sipnet_parameter_fields, batch={"sample": sample}, site=site)
-        direct = label_run(
-            model(climate=files[site], **overrides).outputs.select(
-                list(observation_vector.output_variable_names)
-            ),
+        run = model(climate=files[site], **overrides)
+        direct = to_model_output(
+            run.outputs.select(list(observation_vector.output_variable_names)),
             site=site,
             site_table=SITE_TABLE,
         )
         one_site = observation_vector.select(sites=[site])
-        expected = one_site.flat(
-            one_site.predict(direct, sipnet_parameters={**forward._base_values, **overrides})
+        run_parameters = xr.Dataset(
+            {name: run.parameters.dataarray(name) for name in one_site.sipnet_parameter_names_read},
+            coords={name: direct[name] for name in ("site", "lon", "lat")},
         )
+        expected = one_site.flat(one_site.predict(direct, sipnet_parameter_fields=run_parameters))
         np.testing.assert_allclose(
             evaluation.predictions[sample, observation_vector.positions(site=site)], expected
         )
@@ -1055,7 +1227,8 @@ class TestTheBatchDimIsNamedOnce:
             values = sipnet_parameter_fields["max_photosynthesis_rate"].values.copy()
             if values.shape[0] > 1:
                 values[1, 0] = 1.5 * BLOW_UP
-            return sipnet_parameter_fields.assign(max_photosynthesis_rate=(("draw", "site"), values))
+            rate = sipnet_parameter_fields["max_photosynthesis_rate"].copy(data=values)
+            return sipnet_parameter_fields.assign(max_photosynthesis_rate=rate)
 
         forward = ForwardModel(
             scaled_niwot_model(),
@@ -1226,6 +1399,163 @@ class TestTheBatchDimIsNamedOnce:
         assert forward.batch_dim == "sample"
         with pytest.raises(AttributeError):
             forward.batch_dim = "draw"
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "model", "parameter_vector", "observation_vector", "backend", "freq", "climate",
+            "sites", "site_table", "output_variable_names", "sipnet_parameter_names_written",
+        ],
+    )
+    def test_what_it_was_built_from_is_read_only(self, forward, name):
+        with pytest.raises(AttributeError):
+            setattr(forward, name, getattr(forward, name))
+
+    def test_the_climate_and_site_table_it_hands_out_cannot_change_it(self, forward):
+        with pytest.raises(TypeError):
+            forward.climate[1] = None
+        table = forward.site_table
+        table.loc[table.index[0], "lon"] = 0.0
+        assert forward.site_table["lon"].iloc[0] != 0.0
+
+    def test_flat_is_jax(self, forward, theta):
+        evaluation = forward.evaluate(theta.tolist())
+        for array in (evaluation.theta, evaluation.predictions, evaluation.valid):
+            assert isinstance(array, jax.Array)
+        assert isinstance(forward(jax.numpy.asarray(theta[0])), jax.Array)
+
+    def test_flat_is_jax_on_the_prior_predictive_path(self, parameter_vector, climate, theta):
+        prior = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            output_variable_names=("wood_carbon",), site_table=SITE_TABLE,
+        )
+        assert isinstance(prior.evaluate(theta).valid, jax.Array)
+
+    def test_flat_is_jax_in_what_a_machinery_failure_carries(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            observation_vector=observation_vector, site_table=SITE_TABLE,
+            to_sipnet_parameter_fields=_hooked(parameter_vector, {(1, 0): 1.5 * DIES_BAND}),
+        )
+        with pytest.raises(RuntimeError, match="machinery") as raised:
+            forward.evaluate(theta)
+        evaluation = raised.value.evaluation
+        assert isinstance(evaluation.theta, jax.Array) and isinstance(evaluation.valid, jax.Array)
+
+    def test_a_hook_that_writes_more_than_the_vector_runs(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """The free inputs are the hook's, learned when built, not the vector's."""
+
+        def hook(t):
+            fields = parameter_vector.sipnet_parameter_fields(t)
+            return fields.assign(
+                leaf_carbon_per_area=parameter_dataarray(
+                    "leaf_carbon_per_area", fields["soil_carbon"] * 0 + 50.0
+                )
+            )
+
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            observation_vector=observation_vector, site_table=SITE_TABLE,
+            to_sipnet_parameter_fields=hook,
+        )
+        assert "leaf_carbon_per_area" in forward.sipnet_parameter_names_written
+        assert "leaf_carbon_per_area" not in parameter_vector.sipnet_parameter_names_written
+        assert forward(theta).shape == (len(theta), observation_vector.dimension)
+
+    def test_nothing_read_from_an_evaluation_changes_it(
+        self, parameter_vector, climate, theta
+    ):
+        """run_succeeded's and model_output's values could be written, failures edited."""
+        prior = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate,
+            backend=SequentialBackend(), output_variable_names=("wood_carbon",),
+            site_table=SITE_TABLE,
+        )
+        evaluation = prior.evaluate(theta)
+        with pytest.raises(ValueError, match="read-only"):
+            evaluation.run_succeeded.values[0, 0] = False
+        with pytest.raises(ValueError, match="read-only"):
+            evaluation.model_output["wood_carbon"].values[0, 0, 0] = 0.0
+        with pytest.raises(ValueError, match="read-only"):
+            evaluation.sipnet_parameter_fields["soil_carbon"].values[0, 0] = 0.0
+        evaluation.failures.loc[0] = [0, 1, "x", "y"]
+        assert evaluation.failures.empty
+        evaluation.run_succeeded.attrs["long_name"] = "x"
+        assert evaluation.run_succeeded.attrs["long_name"] == "Whether the run succeeded"
+        with pytest.raises(TypeError):
+            ForwardEvaluation(*[None] * 7)
+
+    def test_what_the_hook_returns_stays_writeable_in_its_hands(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        """The evaluation froze the Dataset the hook returned, which the hook may keep."""
+        returned = []
+
+        def hook(t):
+            returned.append(parameter_vector.sipnet_parameter_fields(t).copy(deep=True))
+            return returned[-1]
+
+        forward = ForwardModel(
+            scaled_niwot_model(), parameter_vector, climate=climate, backend=SequentialBackend(),
+            observation_vector=observation_vector, site_table=SITE_TABLE,
+            to_sipnet_parameter_fields=hook,
+        )
+        evaluation = forward.evaluate(theta)
+        evaluation.sipnet_parameter_fields
+        returned[-1]["soil_carbon"].values[0, 0] = 0.0
+        assert evaluation.sipnet_parameter_fields["soil_carbon"].values[0, 0] != 0.0
+
+    def test_an_evaluation_built_from_the_callers_arrays_leaves_them_writeable(self):
+        run_succeeded = xr.DataArray(np.ones((1, 1), dtype=bool), dims=("sample", "site"))
+        failures = pd.DataFrame({"sample": [0]})
+        evaluation = ForwardEvaluation(
+            theta=jax.numpy.zeros((1, 1)), sipnet_parameter_fields=xr.Dataset(),
+            model_output=None, predictions=None, run_succeeded=run_succeeded,
+            failures=failures, valid=jax.numpy.ones(1, dtype=bool),
+        )
+        evaluation.run_succeeded, evaluation.failures
+        run_succeeded.values[0, 0] = False
+        assert bool(evaluation.run_succeeded.values[0, 0])
+
+    def test_a_vector_located_by_another_site_table_is_refused(self, climate):
+        """Its SIPNET parameter fields kept its own lon/lat, beside runs labeled from another."""
+        located = example_parameter_vector(
+            site_table=SITE_TABLE, pft=("temperate.deciduous", "boreal.coniferous")
+        )
+        elsewhere = site_table_of(*SITES, lon=[-100.0, -60.0], lat=[40.0, 45.0])
+        with pytest.raises(ValueError, match="other lon values than the model's site table"):
+            ForwardModel(
+                scaled_niwot_model(), located, climate=climate, backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",), site_table=elsewhere,
+            )
+        ForwardModel(
+            scaled_niwot_model(), located, climate=climate, backend=SequentialBackend(),
+            output_variable_names=("wood_carbon",), site_table=SITE_TABLE,
+        )
+
+    def test_a_crossed_batch_is_refused_with_the_advice_to_give_theta_its_rows(
+        self, parameter_vector, climate, observation_vector
+    ):
+        def crossed(theta):
+            fields = parameter_vector.sipnet_parameter_fields(theta)
+            return fields.expand_dims(initial_condition_member=np.arange(2)).transpose(
+                "sample", "initial_condition_member", "site"
+            )
+
+        with pytest.raises(ValueError, match=r"one row per combination.*stack_batch_dims"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                to_sipnet_parameter_fields=crossed,
+            )
 
     def test_a_hook_labeling_rows_with_floats_is_refused(
         self, parameter_vector, climate, observation_vector

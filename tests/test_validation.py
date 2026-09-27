@@ -18,6 +18,8 @@ from sipnet_calibration.conventions import (
     LON_ATTRIBUTES,
     SITE_ATTRIBUTES,
     FrozenMapping,
+    ReadOnlyCopies,
+    read_only_copy,
 )
 from sipnet_calibration.validation import (
     as_batched_flat,
@@ -33,6 +35,8 @@ from sipnet_calibration.validation import (
     as_site_ids,
     check_integers_are_in_range,
     check_site_ids_are_in_range,
+    check_sites_are_the_vectors,
+    check_the_restriction_keeps_a_site,
     is_one_vector,
     range_summary,
     truncated,
@@ -472,6 +476,66 @@ class TestFrozenMapping:
         assert "extra" not in SITE_ATTRIBUTES
 
 
+class TestReadOnlyCopies:
+    """It kept what it was assigned, so the first read froze the caller's arrays."""
+
+    @staticmethod
+    def record_type():
+        from dataclasses import dataclass
+
+        @dataclass(frozen=True, eq=False)
+        class Record:
+            array: xr.DataArray = ReadOnlyCopies()
+            dataset: xr.Dataset = ReadOnlyCopies()
+            table: pd.DataFrame = ReadOnlyCopies()
+
+        return Record
+
+    @staticmethod
+    def given():
+        array = xr.DataArray(
+            [1.0, 2.0], dims="site", coords={"site": [1, 27], "lon": ("site", [-105.0, -70.0])}
+        )
+        return array, array.to_dataset(name="x"), pd.DataFrame({"a": [1.0]})
+
+    def test_what_the_caller_holds_stays_writeable(self):
+        array, dataset, table = self.given()
+        record = self.record_type()(array, dataset, table)
+        for _ in range(2):
+            record.array, record.dataset, record.table
+        array.values[0] = 5.0
+        array["lon"].values[0] = 0.0
+        dataset["x"].values[0] = 5.0
+        table.loc[0, "a"] = 5.0
+        assert record.array.values.tolist() == [1.0, 2.0]
+        assert record.array["lon"].values.tolist() == [-105.0, -70.0]
+        assert record.dataset["x"].values.tolist() == [1.0, 2.0]
+        assert record.table["a"].tolist() == [1.0]
+
+    def test_what_it_hands_out_cannot_change_it(self):
+        record = self.record_type()(*self.given())
+        with pytest.raises(ValueError, match="read-only"):
+            record.array.values[0] = 5.0
+        with pytest.raises(ValueError, match="read-only"):
+            record.dataset["lon"].values[0] = 0.0
+        record.array.attrs["units"] = "m"
+        record.table.loc[0, "a"] = 5.0
+        assert "units" not in record.array.attrs and record.table["a"].tolist() == [1.0]
+
+    def test_a_deep_copy_hands_out_read_only_arrays(self):
+        record = copy.deepcopy(self.record_type()(*self.given()))
+        with pytest.raises(ValueError, match="read-only"):
+            record.array.values[0] = 5.0
+
+    def test_read_only_copy_has_its_own_attributes_and_frozen_arrays(self):
+        array = xr.DataArray([1.0], dims="site", coords={"site": [1]})
+        frozen = read_only_copy(array)
+        frozen.attrs["units"] = "m"
+        assert array.attrs == {}
+        with pytest.raises(ValueError, match="read-only"):
+            frozen.values[0] = 2.0
+
+
 class TestChecks:
     def test_site_ids_in_range(self):
         check_site_ids_are_in_range(np.array([1, 2**31 - 1]), message_name="ids")
@@ -491,6 +555,14 @@ class TestChecks:
         check_integers_are_in_range(np.array([1, 3]), minimum=1, maximum=3, message_name="k")
         with pytest.raises(ValueError, match="from 1 to 3"):
             check_integers_are_in_range(np.array([4]), minimum=1, maximum=3, message_name="k")
+
+    def test_the_site_selection_checks_name_their_subject(self):
+        check_sites_are_the_vectors([27], (1, 27), message_name="the vector")
+        with pytest.raises(KeyError, match=r"the vector has no site\(s\) \[2\]"):
+            check_sites_are_the_vectors([2, 27], (1, 27), message_name="the vector")
+        check_the_restriction_keeps_a_site([1], message_name="the vector")
+        with pytest.raises(ValueError, match="none of the vector's sites"):
+            check_the_restriction_keeps_a_site([], message_name="the vector")
 
 
 def test_truncated_shows_at_most_the_limit_and_counts_the_rest():

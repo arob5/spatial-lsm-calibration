@@ -170,7 +170,7 @@ def plot_time_series(
     two stages.
     """
     validate_field(field)
-    _check_plottable(field)
+    check_field_is_a_time_series(field)
     batch = batch_dims(field)
     show = _resolved_show(show, batch)
     _check_label_by(label_by, show, field, batch)
@@ -343,8 +343,12 @@ def _error_bar_lengths(
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def _check_plottable(field: xr.DataArray) -> None:
-    """Raise unless the field has ``time`` and no spatial dim, which a series needs."""
+def check_field_is_a_time_series(field: xr.DataArray) -> None:
+    """A field to plot as a series has ``time`` and no spatial dim.
+
+    What a series needs beyond the field contract, which
+    :func:`~sipnet_calibration.fields.validate_field` checks first.
+    """
     if TIME not in field.dims:
         raise ValueError(
             f"the array has dimensions {list(field.dims)} and needs {TIME!r} "

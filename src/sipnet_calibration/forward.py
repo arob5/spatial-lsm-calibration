@@ -38,27 +38,25 @@ Data model
 produced for a batch of ``J`` rows of ``theta``:
 
 ``theta``
-    ``(J, D)`` float64, coerced from what was received; a ``(D,)`` input is
-    one row.
+    ``(J, D)`` float64 ``jax.Array``, coerced from what was received (any
+    array-like); a ``(D,)`` input is one row.
 ``sipnet_parameter_fields``
-    The SIPNET parameter fields that were run, an ``xr.Dataset`` whose every variable is
-    on ``(sample, site)``, with ``sample`` labeled ``0`` to ``J - 1`` in the
-    order of ``theta``'s rows and ``site`` in the parameter vector's order.
-    ``sample`` is the model's ``batch_dim``, the name every output below
-    carries too.
+    The :data:`~sipnet_calibration.fields.SIPNETParameterFields` that were
+    run, every variable on ``(sample, site)``, ``sample`` labeled ``0`` to
+    ``J - 1`` in ``theta``'s row order and ``site`` in the parameter vector's
+    order, located from the model's site table. ``sample`` is the model's
+    ``batch_dim``, the name every output below carries too.
 ``model_output``
-    ``xr.Dataset`` on ``(sample, site, time)`` of the output variables, as
-    :func:`~sipnet_calibration.fields.stack_model_outputs` builds it: every
-    variable a field, so without ``time_bounds`` or SIPNET's
-    ``year``/``day_of_year``/``hour_of_day`` row labels, and ``NaN`` where a
+    The :data:`~sipnet_calibration.fields.ModelOutput` of the runs on
+    ``(sample, site, time)``, from
+    :func:`~sipnet_calibration.fields.stack_model_outputs`, ``NaN`` where a
     run failed. Its attributes are the first run's; with ``freq`` they gain
-    pySIPNET's ``resampling_frequency`` and ``time_step_length_source``, as
-    ``pysipnet.resample.resample`` sets them. ``None`` when an observation
-    vector was given.
+    pySIPNET's ``resampling_frequency`` and ``time_step_length_source``.
+    ``None`` when an observation vector was given.
 ``predictions``
-    ``(J, N)`` float64 in the observation vector's order, ``NaN`` in every
-    entry of a sample with a failed run; ``None`` without an observation
-    vector.
+    ``(J, N)`` float64 ``jax.Array`` in the observation vector's order,
+    ``NaN`` in every entry of a sample with a failed run; ``None`` without an
+    observation vector.
 ``run_succeeded``
     bool ``xr.DataArray`` on ``(sample, site)``, a field: ``int64``
     ``sample`` with its attributes, ``int32`` ``site`` with its ``lon``/``lat``,
@@ -68,8 +66,8 @@ produced for a batch of ``J`` rows of ``theta``:
     name of the exception the run raised) and ``message``, one row per run
     that failed at its parameters.
 ``valid``
-    bool ``(J,)``: every run of the sample succeeded and, where there are
-    predictions, they are finite.
+    bool ``(J,)`` ``jax.Array``: every run of the sample succeeded and, where
+    there are predictions, they are finite.
 
 A run **fails at its parameters** when pySIPNET refuses them
 (``pydantic.ValidationError``), SIPNET exits non-zero or writes nothing
@@ -90,7 +88,8 @@ Functions
 ---------
 :class:`ForwardModel`
     ``evaluate(theta) -> ForwardEvaluation``; ``__call__(theta)`` returns
-    ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input.
+    ``evaluate(theta).predictions``, ``(N,)`` for a ``(D,)`` input. What it
+    was built from and derived are read-only properties.
 :class:`ForwardEvaluation`
     The record above.
 :data:`MODEL_FAILURES`, :class:`ModelOutputNotFiniteError`
@@ -98,15 +97,23 @@ Functions
 
 Notes
 -----
+**Flat is JAX.** ``theta``, the predictions and ``valid`` are ``jax.Array``\\ s,
+as the parameter and observation vectors' Flat is; every method accepts any
+array-like. The runs themselves are placed in NumPy and converted on return.
+
+**One batch dim.** A run is one row of ``theta``: SIPNET parameter fields on
+another batch dim beside the model's (an ``initial_condition_member`` crossed
+with ``sample``) are refused, with the advice to give ``theta`` one row per
+combination and select each row's member in the hook.
+
 **The ``PartialSpec`` is built once.** Its fixed inputs (the climate, the
 site id and the site's slice of the observation vector, all along one site
 axis) and its free inputs (the SIPNET parameter names the vector sets) hold
 for the model's lifetime, and on every call the PyEns grid of SIPNET
-parameter values is zipped with that site axis. The free names are learned by mapping one prior draw through
-``sipnet_parameter_fields`` in ``__init__``, which fails fast, before
-anything is queued, on a hook that does not return SIPNET parameter fields on
-``(sample, site)`` over the vector's sites in pySIPNET's flat parameter
-names.
+parameter values is zipped with that site axis. The free names are learned
+by mapping one prior draw through ``sipnet_parameter_fields`` in
+``__init__``, which fails fast, before anything is queued, on a hook that
+does not return SIPNET parameter fields for the batch.
 
 **Samples are labeled by row.** The SIPNET-parameter-fields hook must label
 its batch dim ``0`` to ``J - 1`` in the order of ``theta``'s rows, although a
@@ -136,10 +143,16 @@ shorter records are ``NaN``-padded and the interval coordinates gain a
 ``site`` or ``sample`` dimension; select one site before aggregating such
 a stack, as :func:`~sipnet_calibration.observation.aggregate_time` asks.
 
-**Parameters an operator reads but the vector does not set** (a fixed
-SIPNET parameter, say ``leaf_carbon_per_area`` for the LAI operator) are
-taken from the model's base parameter set once, in ``__init__``, and handed
-to every run's operators beside the run's own overrides.
+**The SIPNET parameters an operator reads** (``leaf_carbon_per_area`` for
+the LAI operator) are read off the run's own ``SIPNETResult.parameters``, the
+complete set the run used, whether the parameter vector set them or the base
+parameter set supplied them: the worker builds one run's zero-dimensional
+SIPNET parameter fields from ``SIPNETParameters.dataarray(name)`` for every
+name the operators read, and hands them to its site's slice of the
+observation vector. Only a run shows whether a model's result carries
+``.parameters``, so a model whose result does not fails every run in the
+machinery, raised once the batch is collected; nothing runs at
+construction.
 
 Usage
 -----
@@ -172,6 +185,7 @@ from functools import partial
 from typing import Any
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -190,19 +204,33 @@ from pyens.backends import Backend
 from pyens.xarray import fields_from_dataset
 from pysipnet.climate import ClimateDrivers
 from pysipnet.model import SIPNETModel
-from pysipnet.parameters.model import resolve_parameter_name
+from pysipnet.parameters.model import SIPNETParameters
 from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, LAT, LON, SAMPLE, SITE, SITE_DTYPE
+from sipnet_calibration.conventions import (
+    BATCH_LABEL_DTYPE,
+    LAT,
+    LON,
+    SAMPLE,
+    SITE,
+    SITE_DTYPE,
+    FrozenMapping,
+    ReadOnlyCopies,
+)
 from sipnet_calibration.fields import (
+    Field,
+    ModelOutput,
+    SIPNETParameterFields,
     batch_coordinate,
     check_batch_dim_name_is_not_a_model_output_name,
     check_batch_dim_name_is_not_reserved,
-    label_run,
+    check_sipnet_parameter_fields_are_a_dataset,
+    to_model_output,
     resolve_output_variable_names,
     stack_model_outputs,
+    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.observation import (
     DEFAULT_METHOD_FOR_KIND,
@@ -250,11 +278,16 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
 )
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True, eq=False, kw_only=True)
 class ForwardEvaluation:
     """What one evaluation of a :class:`ForwardModel` produced.
 
-    The fields are described in the module docstring's Data model.
+    The fields are described in the module docstring's Data model. Nothing
+    read from it changes it: ``theta``, ``predictions`` and ``valid`` are
+    ``jax.Array``\\ s, which cannot be written to; ``sipnet_parameter_fields``,
+    ``model_output`` and ``run_succeeded`` are read-only copies and
+    ``failures`` a copy, on every read
+    (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`).
 
     Notes
     -----
@@ -263,13 +296,13 @@ class ForwardEvaluation:
     truth value is ambiguous, and a generated hash would fail on them.
     """
 
-    theta: np.ndarray
-    sipnet_parameter_fields: xr.Dataset
-    model_output: xr.Dataset | None
-    predictions: np.ndarray | None
-    run_succeeded: xr.DataArray
-    failures: pd.DataFrame
-    valid: np.ndarray
+    theta: jax.Array
+    sipnet_parameter_fields: SIPNETParameterFields = ReadOnlyCopies()
+    model_output: ModelOutput | None = ReadOnlyCopies()
+    predictions: jax.Array | None
+    run_succeeded: Field = ReadOnlyCopies()
+    failures: pd.DataFrame = ReadOnlyCopies()
+    valid: jax.Array
 
 
 class ForwardModel:
@@ -290,7 +323,8 @@ class ForwardModel:
     observation_vector:
         The observation vector whose operators reduce each run on the worker
         and whose order the predictions take. Its sites must be among the
-        parameter vector's; ``select`` it first otherwise.
+        parameter vector's; ``restrict_to_sites(parameter_vector.sites)`` it
+        first otherwise.
     output_variable_names:
         Without an observation vector, which pySIPNET output variables each
         run returns. With one, defaults to the names its operators read.
@@ -319,42 +353,21 @@ class ForwardModel:
     batch_dim:
         The name of the batch dim of ``theta``'s rows, which the SIPNET
         parameter fields, ``model_output``, ``run_succeeded`` and the
-        ``failures`` column all carry; ``sample`` by default. Whatever
-        *to_sipnet_parameter_fields* is, it may not be a name the parameter
-        vector refuses
-        (:func:`~sipnet_calibration.parameter_vector.check_batch_dim_name_is_not_taken`:
-        a reserved name, a data source's member name, ``shared``,
-        ``site_id``, a site-labels name, a SIPNET parameter, calibration
-        parameter or Fields variable name), a name the model output uses (an
-        output variable or a pySIPNET alias of one, or one of
-        :data:`~sipnet_calibration.fields.MODEL_OUTPUT_COORDINATE_NAMES`), or
-        an observation source name of the observation vector or a
-        coordinate of one's observed values. Each is refused here, before
-        anything runs. Read-only
-        once the model is built, since the default hook is bound to it.
+        ``failures`` column all carry; ``sample`` by default. It may take no
+        name the parameter vector, the model output or the observation
+        vector's sources use, whatever *to_sipnet_parameter_fields* is.
 
     Raises
     ------
     TypeError
-        If *model* is not a ``SIPNETModel``, *backend* not a PyEns
-        ``Backend``, a site's drivers not ``ClimateDrivers``,
-        *to_sipnet_parameter_fields* returns something other than an
-        ``xr.Dataset``, or
-        *batch_dim* is not a string.
+        If an argument, or what *to_sipnet_parameter_fields* returns, has the
+        wrong type.
     ValueError
-        If *batch_dim* is a name it may not be (above); if neither
-        *output_variable_names* nor *observation_vector* is given; *freq* is
-        given with an observation vector or is not a pandas offset alias; a
-        site has no drivers, or in-memory drivers under a process backend; the
-        observation vector observes a site the parameter vector does not run;
-        the output variables do not cover the operators, or one is switched off
-        by the model's flags, or (with *freq*) has a kind no method keeps; the
-        site table lacks ``lon``/``lat`` or lists a site twice; or
-        *to_sipnet_parameter_fields* does not return SIPNET parameter fields
-        for the batch.
+        If the arguments cannot make one forward model, which is checked
+        before anything runs; the message names the rule.
     KeyError
-        If an output variable name is not a pySIPNET output variable, or a
-        site of the parameter vector is not in the given site table.
+        If an output variable, a site of the parameter vector in the site
+        table, or a SIPNET parameter the hook sets is unknown.
     """
 
     def __init__(
@@ -382,21 +395,21 @@ class ForwardModel:
             freq=freq,
             site_table=site_table,
         )
-        self.model = model
-        self.parameter_vector = parameter_vector
-        self.sites: tuple[int, ...] = parameter_vector.sites
-        self.backend = backend
-        self.observation_vector = observation_vector
-        self.freq = freq
+        self._model = model
+        self._parameter_vector = parameter_vector
+        self._sites: tuple[int, ...] = parameter_vector.sites
+        self._backend = backend
+        self._observation_vector = observation_vector
+        self._freq = freq
         check_batch_dim_name_is_not_taken(parameter_vector, batch_dim)
         self._batch_dim = batch_dim
-        self.climate = {site: climate[site] for site in self.sites}
-        self.output_variable_names = _output_variable_names(
+        self._climate = FrozenMapping({site: climate[site] for site in self._sites})
+        self._output_variable_names = _output_variable_names(
             output_variable_names, observation_vector
         )
-        check_output_variables_can_be_returned(self.output_variable_names, model, freq)
+        check_output_variables_can_be_returned(self._output_variable_names, model, freq)
         check_batch_dim_name_is_not_a_model_output_name(
-            batch_dim, self.output_variable_names, message_name="batch_dim"
+            batch_dim, self._output_variable_names, message_name="batch_dim"
         )
         if observation_vector is not None:
             check_batch_dim_is_not_an_observation_source_name(
@@ -405,30 +418,80 @@ class ForwardModel:
         chosen_site_table = _chosen_site_table(site_table, parameter_vector)
         # site_locations checks the table locates the sites, once, before
         # the lookup below relies on it.
-        self._site_locations = site_locations(self.sites, chosen_site_table)
-        self.site_table = site_lookup(chosen_site_table).loc[list(self.sites)]
+        self._site_locations = site_locations(self._sites, chosen_site_table)
+        self._site_table = site_lookup(chosen_site_table).loc[list(self._sites)]
         self._to_sipnet_parameter_fields = to_sipnet_parameter_fields or partial(
             parameter_vector.sipnet_parameter_fields, batch_dim=batch_dim
         )
-        self.sipnet_parameter_names = self._probe_sipnet_parameter_names()
-        self._base_values = _base_values_for(
-            model,
-            () if observation_vector is None else observation_vector.sipnet_parameter_names,
-            self.sipnet_parameter_names,
-        )
-        self._site_axis = Axis(SITE, labels=list(self.sites))
+        self._sipnet_parameter_names_written = self._probe_sipnet_parameter_names()
+        if observation_vector is not None:
+            check_base_parameters_set_what_the_operators_read(
+                model,
+                observation_vector.sipnet_parameter_names_read,
+                self._sipnet_parameter_names_written,
+            )
+        self._site_axis = Axis(SITE, labels=list(self._sites))
         self._site_slices, self._site_positions = _site_segments(observation_vector)
         self._partial = self._build_partial()
         self._run = _Run(
             model=model,
-            output_variable_names=self.output_variable_names,
+            output_variable_names=self._output_variable_names,
             returns_model_output=observation_vector is None,
             freq=freq,
-            base_values=self._base_values,
-            site_table=self.site_table,
+            site_table=self._site_table,
         )
 
     # ── identity ──────────────────────────────────────────────────────────────
+
+    @property
+    def model(self) -> SIPNETModel:
+        """The ``SIPNETModel`` every run goes through."""
+        return self._model
+
+    @property
+    def parameter_vector(self) -> ParameterVector:
+        """The calibration vector; its sites are the sites run."""
+        return self._parameter_vector
+
+    @property
+    def observation_vector(self) -> ObservationVector | None:
+        """The observation vector the predictions follow, or ``None``."""
+        return self._observation_vector
+
+    @property
+    def backend(self) -> Backend:
+        """The PyEns backend the runs execute on."""
+        return self._backend
+
+    @property
+    def freq(self) -> str | None:
+        """The prior-predictive aggregation frequency, or ``None``."""
+        return self._freq
+
+    @property
+    def climate(self) -> Mapping[int, ClimateDrivers]:
+        """``{site id: ClimateDrivers}`` for the sites run, read-only."""
+        return self._climate
+
+    @property
+    def sites(self) -> tuple[int, ...]:
+        """The sites run: the parameter vector's, in its order."""
+        return self._sites
+
+    @property
+    def site_table(self) -> pd.DataFrame:
+        """The site table the runs are labeled from, one row per site run; a copy."""
+        return self._site_table.copy()
+
+    @property
+    def output_variable_names(self) -> tuple[str, ...]:
+        """The pySIPNET output variables each run returns."""
+        return self._output_variable_names
+
+    @property
+    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
+        """The SIPNET parameters the hook writes, fixed at construction."""
+        return self._sipnet_parameter_names_written
 
     @property
     def batch_dim(self) -> str:
@@ -493,8 +556,9 @@ class ForwardModel:
             pySIPNET's flat parameter name, or other SIPNET parameters than the
             model was built for).
         RuntimeError
-            If a run failed in the machinery rather than at its parameters,
-            or, on the prior-predictive path, if every run failed at its
+            If a run failed in the machinery rather than at its parameters
+            (a model whose result carries no ``.parameters`` among them), or,
+            on the prior-predictive path, if every run failed at its
             parameters. The error's ``evaluation`` attribute is a
             :class:`ForwardEvaluation` of what was collected, with no
             predictions or model output.
@@ -503,13 +567,9 @@ class ForwardModel:
         check_theta_has_a_row(theta)
         check_theta_is_finite(theta)
         n_samples = len(theta)
-        sipnet_parameter_fields = self._to_sipnet_parameter_fields(theta)
-        check_sipnet_parameter_fields_are_for_the_batch(
-            sipnet_parameter_fields,
-            self.sites,
-            n_samples=n_samples,
-            batch_dim=self.batch_dim,
-            expected_sipnet_parameter_names=self.sipnet_parameter_names,
+        sipnet_parameter_fields = self._sipnet_parameter_fields_for(theta)
+        check_sipnet_parameter_fields_set_the_parameters_built_for(
+            sipnet_parameter_fields, self.sipnet_parameter_names_written
         )
         grids = fields_from_dataset(sipnet_parameter_fields, axes={SITE: self._site_axis})
         spec = self._partial(**grids)
@@ -519,7 +579,7 @@ class ForwardModel:
             ensemble_result, n_samples, self.sites, self.batch_dim
         )
         collected = ForwardEvaluation(
-            theta=theta,
+            theta=jnp.asarray(theta),
             sipnet_parameter_fields=sipnet_parameter_fields,
             model_output=None,
             predictions=None,
@@ -531,7 +591,7 @@ class ForwardModel:
                 site_locations=self._site_locations,
             ),
             failures=failures,
-            valid=np.zeros(n_samples, dtype=bool),
+            valid=jnp.zeros(n_samples, dtype=bool),
         )
         check_no_run_failed_in_the_machinery(machinery_failures, collected)
         sample_succeeded = succeeded.all(axis=1)
@@ -542,18 +602,22 @@ class ForwardModel:
                 n_samples,
                 self.sites,
                 batch_dim=self.batch_dim,
-                site_table=self.site_table,
+                site_table=self._site_table,
                 site_locations=self._site_locations,
             )
-            return replace(collected, model_output=model_output, valid=sample_succeeded)
+            return replace(
+                collected, model_output=model_output, valid=jnp.asarray(sample_succeeded)
+            )
         predictions = self._placed_predictions(run_outputs_by_sample_site, n_samples)
         # A sample with any failed run is invalid as a whole: pyEKI updates
         # per row, so a row that is partly a prediction cannot be used.
         predictions[~sample_succeeded] = np.nan
         valid = sample_succeeded & np.isfinite(predictions).all(axis=1)
-        return replace(collected, predictions=predictions, valid=valid)
+        return replace(
+            collected, predictions=jnp.asarray(predictions), valid=jnp.asarray(valid)
+        )
 
-    def __call__(self, theta: Any) -> np.ndarray:
+    def __call__(self, theta: Any) -> jax.Array:
         """``evaluate(theta).predictions``: ``(J, N)``, or ``(N,)`` for a ``(D,)`` theta.
 
         Raises
@@ -581,11 +645,29 @@ class ForwardModel:
     def _probe_sipnet_parameter_names(self) -> tuple[str, ...]:
         """The SIPNET parameter names the hook sets, learned from one prior draw."""
         draw = self.parameter_vector.sample(jax.random.key(0), 1)
-        sipnet_parameter_fields = self._to_sipnet_parameter_fields(draw)
-        check_sipnet_parameter_fields_are_for_the_batch(
-            sipnet_parameter_fields, self.sites, n_samples=1, batch_dim=self.batch_dim
-        )
+        sipnet_parameter_fields = self._sipnet_parameter_fields_for(np.asarray(draw))
         return tuple(str(name) for name in sipnet_parameter_fields.data_vars)
+
+    def _sipnet_parameter_fields_for(self, theta: np.ndarray) -> xr.Dataset:
+        """The hook's SIPNET parameter fields for *theta*, checked for the batch.
+
+        SIPNET parameter fields that carry neither ``lon`` nor ``lat``, as a
+        parameter vector built from bare site ids gives them, are located from
+        this model's site table before they are validated.
+        """
+        sipnet_parameter_fields = self._to_sipnet_parameter_fields(theta)
+        check_sipnet_parameter_fields_are_for_the_batch(
+            sipnet_parameter_fields, self.sites, n_samples=len(theta), batch_dim=self.batch_dim
+        )
+        check_sipnet_parameter_fields_are_located_as_the_site_table(
+            sipnet_parameter_fields, self._site_locations
+        )
+        if LON not in sipnet_parameter_fields.coords and LAT not in sipnet_parameter_fields.coords:
+            sipnet_parameter_fields = sipnet_parameter_fields.assign_coords(self._site_locations)
+        validate_sipnet_parameter_fields(
+            sipnet_parameter_fields, message_name="what to_sipnet_parameter_fields returns"
+        )
+        return sipnet_parameter_fields
 
     def _build_partial(self) -> PartialSpec:
         climate = Grid({s: self.climate[s] for s in self.sites}, along=self._site_axis)
@@ -595,7 +677,7 @@ class ForwardModel:
         )
         placeholders = {
             name: Grid([0.0] * len(self.sites), along=self._site_axis)
-            for name in self.sipnet_parameter_names
+            for name in self.sipnet_parameter_names_written
         }
         spec = EnsembleSpec(
             inputs={
@@ -605,7 +687,7 @@ class ForwardModel:
                 **placeholders,
             }
         )
-        return spec.freeze(free=list(self.sipnet_parameter_names))
+        return spec.freeze(free=list(self.sipnet_parameter_names_written))
 
     def _placed_predictions(
         self, run_outputs_by_sample_site: Mapping[tuple[int, int], _RunOutput], n_samples: int
@@ -642,14 +724,15 @@ class _Run:
     run sends back its (aggregated, with ``freq``) output. Otherwise it sends
     back its site's predictions when it receives the site's slice of the
     observation vector as ``site_observation_vector``, and nothing when it
-    receives ``None``, at a site no observation source observes.
+    receives ``None``, at a site no observation source observes. The SIPNET
+    parameters the operators read are taken from the run's own
+    ``SIPNETResult.parameters``, the complete set it ran with.
     """
 
     model: SIPNETModel
     output_variable_names: tuple[str, ...]
     returns_model_output: bool
     freq: str | None
-    base_values: dict[str, float]
     site_table: pd.DataFrame
 
     def __call__(
@@ -658,27 +741,29 @@ class _Run:
         climate: ClimateDrivers,
         site: int,
         site_observation_vector: ObservationVector | None = None,
-        **sipnet_parameters: Any,
+        **sipnet_overrides: Any,
     ) -> _RunOutput:
         site = int(site)
-        sipnet_result = self.model(climate=climate, **sipnet_parameters)
+        sipnet_result = self.model(climate=climate, **sipnet_overrides)
         dataset = sipnet_result.outputs.select(list(self.output_variable_names))
         check_output_is_finite(dataset, site)
         if not self.returns_model_output and site_observation_vector is None:
             return _RunOutput(model_output=None, predictions=None)
-        model_output = label_run(dataset, site=site, site_table=self.site_table)
+        model_output = to_model_output(dataset, site=site, site_table=self.site_table)
         if self.returns_model_output:
             if self.freq is not None:
                 model_output = _aggregated(model_output, self.freq)
             return _RunOutput(model_output=model_output, predictions=None)
-        sipnet_parameter_values = {
-            **self.base_values,
-            **{name: float(value) for name, value in sipnet_parameters.items()},
-        }
-        predicted = site_observation_vector.predict(
-            model_output, sipnet_parameters=sipnet_parameter_values
+        sipnet_parameter_fields = _run_sipnet_parameter_fields(
+            getattr(sipnet_result, "parameters", None),
+            site_observation_vector.sipnet_parameter_names_read,
+            model_output,
         )
-        return _RunOutput(model_output=None, predictions=site_observation_vector.flat(predicted))
+        predicted = site_observation_vector.predict(
+            model_output, sipnet_parameter_fields=sipnet_parameter_fields
+        )
+        predictions = np.asarray(site_observation_vector.flat(predicted), dtype=np.float64)
+        return _RunOutput(model_output=None, predictions=predictions)
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
@@ -707,16 +792,22 @@ def _chosen_site_table(
     return own if {LON, LAT} <= set(own.columns) else load_sites()
 
 
-def _base_values_for(
-    model: SIPNETModel, read: Sequence[str], set_by_vector: Sequence[str]
-) -> dict[str, float]:
-    """The base value of each SIPNET parameter an operator reads and the vector does not set."""
-    values: dict[str, float] = {}
-    for name in read:
-        sipnet_name = resolve_parameter_name(name)
-        if sipnet_name not in set_by_vector:
-            values[sipnet_name] = float(model.base_params.dataarray(sipnet_name))
-    return values
+def _run_sipnet_parameter_fields(
+    sipnet_parameters: SIPNETParameters, names: Sequence[str], model_output: xr.Dataset
+) -> xr.Dataset | None:
+    """One run's SIPNET parameter fields: *names* from its own parameters, 0-d.
+
+    Each variable is pySIPNET's ``SIPNETParameters.dataarray(name)``, labeled
+    with the run's scalar ``site`` and its ``lon``/``lat`` from
+    *model_output*; ``None`` when no parameter is read.
+    """
+    if not names:
+        return None
+    check_run_result_carries_its_parameters(sipnet_parameters)
+    location = {name: model_output[name] for name in (SITE, LON, LAT) if name in model_output.coords}
+    return xr.Dataset(
+        {name: sipnet_parameters.dataarray(name) for name in names}, coords=location
+    )
 
 
 def _aggregated(model_output: xr.Dataset, freq: str) -> xr.Dataset:
@@ -906,6 +997,36 @@ def check_forward_model_arguments(
         check_observation_sites_are_run(observation_vector, sites)
 
 
+def check_base_parameters_set_what_the_operators_read(
+    model: SIPNETModel, read: Sequence[str], written: Sequence[str]
+) -> None:
+    """The base parameter set holds a value for every SIPNET parameter the
+    operators read and the SIPNET parameter fields do not write."""
+    for name in read:
+        if name in written:
+            continue
+        try:
+            model.base_params.dataarray(name)
+        except ValueError as error:
+            raise ValueError(
+                f"the observation operators read {name!r}, which the parameter vector does "
+                f"not write and the model's base parameter set leaves unset ({error}); every "
+                "run would fail after SIPNET ran. Set it in the base parameter set, or have "
+                "the parameter vector fix or calibrate it."
+            ) from None
+
+
+def check_run_result_carries_its_parameters(sipnet_parameters: Any) -> None:
+    """A run's result carries the parameters it ran with, as ``.parameters``."""
+    if not isinstance(sipnet_parameters, SIPNETParameters):
+        raise TypeError(
+            "the model's result carries no SIPNETParameters as .parameters, got "
+            f"{type(sipnet_parameters).__name__}; the operators read SIPNET parameters "
+            "from the run's own result, so use a SIPNETModel whose runner returns a "
+            "SIPNETResult."
+        )
+
+
 def check_theta_has_a_row(theta: np.ndarray) -> None:
     """``theta`` holds at least one row, since an evaluation of none runs nothing."""
     if theta.shape[0] == 0:
@@ -960,7 +1081,7 @@ def check_climate_covers_the_sites(climate: Mapping[int, Any], sites: Sequence[i
     missing = [s for s in sites if s not in climate]
     if missing:
         raise ValueError(
-            f"climate has no drivers for site(s) {missing[:10]} of the parameter vector; "
+            f"climate has no drivers for site(s) {truncated(missing)} of the parameter vector; "
             "every site run needs its drivers."
         )
     for site in sites:
@@ -979,7 +1100,7 @@ def check_climate_is_file_backed(
     in_memory = [s for s in sites if climate[s].source_path is None]
     if in_memory:
         raise ValueError(
-            f"the drivers of site(s) {in_memory[:10]} are held in memory, and under "
+            f"the drivers of site(s) {truncated(in_memory)} are held in memory, and under "
             f"{type(backend).__name__} every run would carry a copy of them. Write them "
             "with ClimateDrivers.to_file and open them with ClimateDrivers.from_path."
         )
@@ -991,9 +1112,9 @@ def check_observation_sites_are_run(
     extra = sorted(set(observation_vector.sites) - set(sites))
     if extra:
         raise ValueError(
-            f"the observation vector observes site(s) {extra[:10]} that the parameter vector "
-            "does not run; select the observation vector to the parameter vector's sites "
-            "first (observation_vector.select(sites=...))."
+            f"the observation vector observes site(s) {truncated(extra)} that the parameter vector "
+            "does not run; restrict the observation vector to the parameter vector's sites "
+            "first (observation_vector.restrict_to_sites(parameter_vector.sites))."
         )
 
 
@@ -1051,29 +1172,44 @@ def check_sipnet_parameter_fields_are_for_the_batch(
     *,
     n_samples: int,
     batch_dim: str = SAMPLE,
-    expected_sipnet_parameter_names: Sequence[str] | None = None,
 ) -> None:
-    """*sipnet_parameter_fields* are for a batch of *n_samples* over *sites*."""
-    if not isinstance(sipnet_parameter_fields, xr.Dataset):
-        raise TypeError(
-            "to_sipnet_parameter_fields must return an xr.Dataset, got "
-            f"{type(sipnet_parameter_fields).__name__}."
-        )
+    """The SIPNET parameter fields are a Dataset for *n_samples* rows over *sites*."""
+    check_sipnet_parameter_fields_are_a_dataset(
+        sipnet_parameter_fields, "what to_sipnet_parameter_fields returns"
+    )
     check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(sipnet_parameter_fields, batch_dim)
     check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta(
         sipnet_parameter_fields, n_samples, batch_dim
     )
+    check_sipnet_parameter_fields_are_on_the_vectors_sites(sipnet_parameter_fields, sites)
+
+
+def check_sipnet_parameter_fields_are_on_the_vectors_sites(
+    sipnet_parameter_fields: xr.Dataset, sites: Sequence[int]
+) -> None:
+    """The SIPNET parameter fields' sites are the parameter vector's, in its order."""
     if sipnet_parameter_fields[SITE].values.tolist() != list(sites):
         raise ValueError(
             "the SIPNET parameter fields' sites are not the parameter vector's sites, in "
             "order; keep their site dimension as parameter_vector.sipnet_parameter_fields "
             "gives it."
         )
-    check_sipnet_parameter_fields_use_flat_names(sipnet_parameter_fields)
-    if expected_sipnet_parameter_names is not None:
-        check_sipnet_parameter_fields_set_the_parameters_built_for(
-            sipnet_parameter_fields, expected_sipnet_parameter_names
-        )
+
+
+def check_sipnet_parameter_fields_are_located_as_the_site_table(
+    sipnet_parameter_fields: xr.Dataset, site_locations: Mapping[str, xr.DataArray]
+) -> None:
+    """SIPNET parameter fields that carry ``lon``/``lat`` carry the site table's."""
+    for name, location in site_locations.items():
+        if name in sipnet_parameter_fields.coords and not np.array_equal(
+            sipnet_parameter_fields[name].values, location.values
+        ):
+            raise ValueError(
+                f"the SIPNET parameter fields put the sites at other {name} values than the "
+                "model's site table does; a site has one location, so build the parameter "
+                "vector from the site table the runs are labeled from, or pass that table as "
+                "site_table=."
+            )
 
 
 def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(
@@ -1085,7 +1221,13 @@ def check_sipnet_parameter_fields_are_on_the_batch_dim_and_site(
         raise ValueError(
             f"SIPNET parameter fields for a batch have dims exactly ({batch_dim}, site), got "
             f"{tuple(sipnet_parameter_fields.dims)}; reduce or select any other dimension in "
-            f"the hook, and name the batch dim {batch_dim!r}, the model's batch_dim."
+            f"the hook, and name the batch dim {batch_dim!r}, the model's batch_dim. One run "
+            f"is one row of theta, so a batch crossed with a data source's ensemble (a "
+            "sample and an initial_condition_member, say) is run by giving theta one row "
+            "per combination, each sample's row repeated once per member, and selecting "
+            "each row's member in the hook. (fields.stack_batch_dims(field, new_batch_dim='run') is "
+            "how such crossed fields reach a vector's Flat; a run still needs one row of "
+            "theta, which the hook maps to its own SIPNET parameters.)"
         )
     for name, variable in sipnet_parameter_fields.data_vars.items():
         if set(variable.dims) != {batch_dim, SITE}:
@@ -1106,28 +1248,10 @@ def check_sipnet_parameter_fields_batch_labels_are_the_rows_of_theta(
     if dtype.kind not in "iu" or labels != list(range(n_samples)):
         raise ValueError(
             f"the SIPNET parameter fields' {batch_dim} labels must be the integers 0 to "
-            f"{n_samples - 1}, in the order of theta's {n_samples} rows, got {labels[:10]} "
+            f"{n_samples - 1}, in the order of theta's {n_samples} rows, got {truncated(labels)} "
             f"({dtype}); the forward model places each run in the row of theta its label "
             "names."
         )
-
-
-def check_sipnet_parameter_fields_use_flat_names(sipnet_parameter_fields: xr.Dataset) -> None:
-    for name in map(str, sipnet_parameter_fields.data_vars):
-        try:
-            sipnet_name = resolve_parameter_name(name)
-        except KeyError as error:
-            raise ValueError(
-                f"the SIPNET parameter fields set {name!r}, which is not a pySIPNET "
-                f"parameter: {error}"
-            ) from None
-        if sipnet_name != name:
-            raise ValueError(
-                f"the SIPNET parameter fields set {name!r}, an alias of pySIPNET's "
-                f"{sipnet_name!r}; "
-                "SIPNETModel takes only the flat names, so every run would fail. Rename it "
-                f"to {sipnet_name!r} in the hook."
-            )
 
 
 def check_sipnet_parameter_fields_set_the_parameters_built_for(

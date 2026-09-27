@@ -16,8 +16,9 @@ The in-memory builders make what several test files need: a site table
 (:func:`site_table_of`, and the :func:`site_table` fixture that hands it
 out), a stack of Niwot runs (:func:`niwot_stack_of`), observed values that are
 dated, static or attributed to windows (:func:`dated_observed_values`,
-:func:`static_observed_values`, :func:`windowed_observed_values`), and a stand-in
-SIPNET model (:class:`ScaledNiwot`). :func:`load_script` imports a script, and
+:func:`static_observed_values`, :func:`windowed_observed_values`), each a
+field whose sites :func:`located` gives ``lon``/``lat``, and a stand-in SIPNET
+model (:func:`scaled_niwot_model`, a real ``SIPNETModel`` on :class:`ScaledNiwotRunner`). :func:`load_script` imports a script, and
 every figure a test makes is closed after it (:func:`close_figures`).
 
 The real-data fixtures read the driver files, the site table and the
@@ -53,9 +54,8 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 import pytest  # noqa: E402
 import xarray as xr  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
 from pysipnet.model import SIPNETModel  # noqa: E402
-from pysipnet.runner import SIPNETRunError  # noqa: E402
+from pysipnet.runner import SIPNETRunError, SIPNETRunner  # noqa: E402
 
 from sipnet_calibration import conventions  # noqa: E402
 
@@ -349,7 +349,7 @@ def real_site_table():
     """The real site table, or a skip when the ingest has not been run here.
 
     Anything that labels a field with a ``site`` reaches for this, directly or
-    through :func:`~sipnet_calibration.fields.stack_sipnet_outputs`, so the
+    through :func:`~sipnet_calibration.fields.stack_model_outputs`, so the
     guard belongs in one place rather than in each module that happens to.
     """
     from sipnet_calibration.sites import load_sites
@@ -586,6 +586,28 @@ def _scaled_keeping_attributes(variable: xr.DataArray, *, factor: float) -> xr.D
 # ── observed values ───────────────────────────────────────────────────────────
 
 
+def located(array: xr.DataArray, *, site_table: pd.DataFrame | None = None) -> xr.DataArray:
+    """*array* with the site coordinates a field carries: ``int32`` ids and ``lon``/``lat``.
+
+    Parameters
+    ----------
+    array:
+        An array with a ``site`` dim, or a scalar ``site`` coordinate, of
+        integer site ids.
+    site_table:
+        Where to look the sites up; :func:`site_table_of` of them by default,
+        which gives each site its own coordinates.
+    """
+    from sipnet_calibration.sites import site_coordinates
+
+    ids = [int(site) for site in np.atleast_1d(array[conventions.SITE].values)]
+    table = site_table if site_table is not None else site_table_of(*ids)
+    coords = site_coordinates(ids, table)
+    if conventions.SITE in array.dims:
+        return array.assign_coords(coords)
+    return array.assign_coords({name: c.isel({conventions.SITE: 0}) for name, c in coords.items()})
+
+
 def dated_observed_values(
     sites: Sequence[int],
     times: Sequence,
@@ -595,15 +617,20 @@ def dated_observed_values(
     constituent: str = "",
     name: str = "modis_leaf_area_index",
 ) -> xr.DataArray:
-    """Observed values on ``(site, time)``: ones, unless *values* are given."""
+    """Observed values on ``(site, time)``: ones, unless *values* are given.
+
+    A field, located by :func:`located`.
+    """
     times = pd.DatetimeIndex(times)
     data = np.ones((len(sites), len(times))) if values is None else np.asarray(values, float)
-    return xr.DataArray(
-        data,
-        dims=(conventions.SITE, conventions.TIME),
-        coords={conventions.SITE: list(sites), conventions.TIME: times},
-        attrs=_observed_values_attributes(units, constituent),
-        name=name,
+    return located(
+        xr.DataArray(
+            data,
+            dims=(conventions.SITE, conventions.TIME),
+            coords={conventions.SITE: list(sites), conventions.TIME: times},
+            attrs=_observed_values_attributes(units, constituent),
+            name=name,
+        )
     )
 
 
@@ -615,14 +642,19 @@ def static_observed_values(
     constituent: str = "C",
     name: str = "soilgrids_soil_organic_carbon",
 ) -> xr.DataArray:
-    """Observed values on ``(site,)``, with no time: ones, unless *values* are given."""
+    """Observed values on ``(site,)``, with no time: ones, unless *values* are given.
+
+    A field, located by :func:`located`.
+    """
     data = np.ones(len(sites)) if values is None else np.asarray(values, float)
-    return xr.DataArray(
-        data,
-        dims=conventions.SITE,
-        coords={conventions.SITE: list(sites)},
-        attrs=_observed_values_attributes(units, constituent),
-        name=name,
+    return located(
+        xr.DataArray(
+            data,
+            dims=conventions.SITE,
+            coords={conventions.SITE: list(sites)},
+            attrs=_observed_values_attributes(units, constituent),
+            name=name,
+        )
     )
 
 
@@ -650,6 +682,58 @@ def windowed_observed_values(
     )
 
 
+def one_run_sipnet_parameter_fields(*, site: int = 1, **values: float) -> xr.Dataset:
+    """One run's zero-dimensional SIPNET parameter fields, labeled by pySIPNET.
+
+    Each keyword is a SIPNET parameter's flat name; each variable is
+    :func:`pysipnet.parameters.model.parameter_dataarray` of its value, with
+    the run's scalar *site* and its ``lon``/``lat`` (:func:`site_table_of`),
+    as the forward model's worker builds them from
+    ``SIPNETParameters.dataarray``.
+    """
+    from pysipnet.parameters.model import parameter_dataarray
+
+    dataset = xr.Dataset(
+        {name: parameter_dataarray(name, value) for name, value in values.items()},
+        coords={conventions.SITE: conventions.SITE_DTYPE(site)},
+    )
+    return _located_dataset(dataset)
+
+
+def as_sipnet_parameter_fields(dataset: xr.Dataset) -> xr.Dataset:
+    """*dataset* as SIPNET parameter fields: pySIPNET's attributes, located ``int32`` sites.
+
+    Each variable is relabeled by
+    :func:`pysipnet.parameters.model.parameter_dataarray`, and a ``site``
+    coordinate is cast to the site ids' dtype and given ``lon``/``lat``
+    (:func:`site_table_of`) when it carries neither.
+    """
+    from pysipnet.parameters.model import parameter_dataarray
+
+    if conventions.SITE in dataset.coords:
+        sites = dataset[conventions.SITE].astype(conventions.SITE_DTYPE)
+        dataset = _located_dataset(dataset.assign_coords({conventions.SITE: sites}))
+    return xr.Dataset(
+        {str(name): parameter_dataarray(str(name), variable) for name, variable in dataset.data_vars.items()},
+        attrs=dataset.attrs,
+    )
+
+
+def _located_dataset(dataset: xr.Dataset) -> xr.Dataset:
+    """*dataset* with ``lon``/``lat`` on its ``site``, a dim or a scalar, when it has neither."""
+    if conventions.LON in dataset.coords or conventions.LAT in dataset.coords:
+        return dataset
+    from sipnet_calibration.sites import site_coordinates
+
+    ids = [int(site) for site in np.atleast_1d(dataset[conventions.SITE].values)]
+    coords = site_coordinates(ids, site_table_of(*ids))
+    if conventions.SITE in dataset.dims:
+        return dataset.assign_coords({name: c for name, c in coords.items() if name != conventions.SITE})
+    return dataset.assign_coords(
+        {name: c.isel({conventions.SITE: 0}) for name, c in coords.items() if name != conventions.SITE}
+    )
+
+
 def _observed_values_attributes(units: str, constituent: str) -> dict[str, str]:
     attrs = {"units": units}
     if constituent:
@@ -659,45 +743,41 @@ def _observed_values_attributes(units: str, constituent: str) -> dict[str, str]:
 
 # ── a stand-in SIPNET model ───────────────────────────────────────────────────
 
-#: The ``soil_carbon`` at which :class:`ScaledNiwot` leaves wood carbon as the
-#: Niwot output has it.
+#: The ``soil_carbon`` at which :class:`ScaledNiwotRunner` leaves wood carbon
+#: as the Niwot output has it.
 SOIL_REFERENCE = 1.0e4
 
-#: :class:`ScaledNiwot` "fails at its parameters" past this rate, writes NaN
-#: in a band above it, times out in a band above that, has its parameters
-#: refused by pydantic at or below :data:`INVALID`, and "fails in the
-#: machinery" between :data:`INVALID` and zero.
+#: :class:`ScaledNiwotRunner` "fails at its parameters" past this rate, writes
+#: NaN in a band above it, times out in a band above that, and "fails in the
+#: machinery" above :data:`DIES_BAND`. A rate at or below zero, such as
+#: :data:`INVALID`, is refused by pySIPNET's own validation before the run.
 BLOW_UP = 1e6
 NAN_BAND = 2e6
 TIMEOUT_BAND = 3e6
+DIES_BAND = 1e7
 INVALID = -BLOW_UP
 
 
-class _PositiveRate(BaseModel):
-    """Stands in for pySIPNET's validation of a parameter's domain."""
-
-    rate: float = Field(gt=0)
-
-
-class ScaledNiwot(SIPNETModel):
-    """A SIPNETModel whose run is the Niwot output scaled by two parameters.
+class ScaledNiwotRunner(SIPNETRunner):
+    """A SIPNET runner whose run is the Niwot output scaled by two parameters.
 
     ``wood_carbon`` is multiplied by ``max_photosynthesis_rate / 10`` (which
     the example vector shares across sites) and by ``soil_carbon /
     SOIL_REFERENCE`` (which it varies by site), so which parameter values
     reached which run can be read off the result, site by site. The run is as
     long as its drivers, so which drivers reached which run shows too. The
-    rate also selects a failure, by the bands of :data:`BLOW_UP`. Defined at
-    module level so PyEns can pickle it.
+    rate also selects a failure, by the bands of :data:`BLOW_UP`. It runs
+    under a real ``SIPNETModel``, which applies and validates the overrides
+    and hands the complete parameter set to :meth:`run`, whose result carries
+    it as ``parameters``, as a real ``SIPNETResult`` does. Defined at module
+    level so PyEns can pickle it.
     """
 
-    def __call__(self, *, climate=None, events=None, **overrides):
+    def run(self, parameters, climate, *, events=None, **keywords):
         from pysipnet.output import SIPNETOutput
 
-        rate = float(overrides["max_photosynthesis_rate"])
-        if rate <= INVALID:
-            _PositiveRate(rate=rate)
-        if rate < 0:
+        rate = float(parameters.dataarray("max_photosynthesis_rate"))
+        if rate > DIES_BAND:
             raise RuntimeError("the node died")
         if rate > TIMEOUT_BAND:
             raise subprocess.TimeoutExpired(cmd="sipnet", timeout=0.001)
@@ -707,22 +787,35 @@ class ScaledNiwot(SIPNETModel):
             )
         n = climate.n_timesteps
         frame = niwot_reference().pandas.iloc[:n].copy()
-        frame["wood_carbon"] = (
-            frame["wood_carbon"]
-            * (rate / 10.0)
-            * (float(overrides["soil_carbon"]) / SOIL_REFERENCE)
-        )
+        soil = float(parameters.dataarray("soil_carbon"))
+        frame["wood_carbon"] = frame["wood_carbon"] * (rate / 10.0) * (soil / SOIL_REFERENCE)
         if rate > NAN_BAND:
             frame.loc[frame.index[-5:], "wood_carbon"] = np.nan
-        return SimpleNamespace(outputs=SIPNETOutput.from_dataframe(frame, climate=climate))
+        return SimpleNamespace(
+            outputs=SIPNETOutput.from_dataframe(frame, climate=climate),
+            parameters=parameters,
+        )
 
 
-def scaled_niwot_model(model_class: type[ScaledNiwot] = ScaledNiwot) -> ScaledNiwot:
-    """*model_class* over the Niwot parameters, on a runner that needs no binary."""
+def scaled_niwot_model(runner_class: type[SIPNETRunner] = ScaledNiwotRunner) -> SIPNETModel:
+    """A real ``SIPNETModel`` over the Niwot parameters, on a *runner_class* that needs no binary."""
     from pysipnet.parameters.model import ModelFlags
-    from pysipnet.runner import SIPNETRunner
 
-    return model_class(
-        SIPNETRunner(flags=ModelFlags.standard(), verify_binary=False),
+    return SIPNETModel(
+        runner_class(flags=ModelFlags.standard(), verify_binary=False),
         base_params=niwot_parameters(),
     )
+
+
+def with_parameter_value(sipnet_parameters, name: str, value: float):
+    """*sipnet_parameters* with SIPNET parameter *name* set to *value*, validated again.
+
+    Through pydantic's public ``model_dump`` and ``model_validate``, with the
+    parameter's group read off ``PARAMETER_SPECS``.
+    """
+    from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
+
+    group = next(path.split(".", 1)[0] for path in PARAMETER_SPECS if path.split(".", 1)[1] == name)
+    values = sipnet_parameters.model_dump()
+    values[group][name] = value
+    return SIPNETParameters.model_validate(values)

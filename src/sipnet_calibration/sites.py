@@ -944,28 +944,15 @@ def _draw_n_random(
 
 
 def check_site_table_locates_the_sites(site_table: Any, site_ids: Iterable[int]) -> None:
-    """The site table gives one ``lon`` and ``lat`` for each of *site_ids*.
-
-    The group every ``lon``/``lat`` lookup makes, in order:
-    :func:`check_site_table_is_keyed_on_site_ids`,
-    :func:`check_site_table_has_locations` and
-    :func:`check_site_table_lists_the_sites`. *site_table* is as
-    :func:`load_sites` returns it, or keyed by :func:`site_lookup`.
-    """
+    """The site table, as :func:`load_sites` or :func:`site_lookup` gives it, locates
+    each of *site_ids* once."""
     check_site_table_is_keyed_on_site_ids(site_table)
     check_site_table_has_locations(site_table)
     check_site_table_lists_the_sites(site_table, site_ids)
 
 
 def check_site_table_is_keyed_on_site_ids(site_table: Any) -> None:
-    """The site table is a ``DataFrame`` of sites each listed once by an integer ``site_id``.
-
-    The group of :func:`check_site_table_is_a_dataframe`,
-    :func:`check_site_table_has_site_ids`,
-    :func:`check_site_table_site_ids_are_integers` and
-    :func:`check_site_table_lists_each_site_once`, for a table that need not
-    carry ``lon``/``lat``.
-    """
+    """The site table is a ``DataFrame`` whose integer ``site_id`` lists each site once."""
     check_site_table_is_a_dataframe(site_table)
     check_site_table_has_site_ids(site_table)
     check_site_table_site_ids_are_integers(site_table)

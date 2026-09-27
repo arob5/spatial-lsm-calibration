@@ -17,11 +17,8 @@ script writes a processed file for them::
 
     SIPNETRunner / SIPNETModel  ->  SIPNETResult.outputs (SIPNETOutput)
 
-    one run    -> from_sipnet_output()   -> dict[str, DataArray] on (time,)
-               -> label_run()            -> Dataset on (time,), labeled
-    many runs  -> stack_sipnet_outputs() -> dict[str, DataArray]
-                                              on (*batch, site, time)
-               -> stack_model_outputs()  -> Dataset on (*batch, site, time)
+    one run    -> to_model_output()      -> ModelOutput on (time,), labeled
+    many runs  -> stack_model_outputs()  -> ModelOutput on (*batch, site, time)
 
 with ``data/processed/sites/sites.csv`` joined on for ``lon``/``lat``, read
 through :func:`sipnet_calibration.sites.load_sites`. The dependency runs one
@@ -32,90 +29,90 @@ What it reads
 -------------
 :class:`pysipnet.result.SIPNETResult` or :class:`pysipnet.output.SIPNETOutput`
     One SIPNET run. Only the variables asked for are read from it, so a
-    file-backed output holds one column per variable rather than the whole
-    frame.
+    file-backed output holds one column per variable rather than every
+    column SIPNET wrote.
 ``xarray.Dataset``
     One run's chosen variables, as ``SIPNETOutput.select(names)`` returns
-    them: what :func:`label_run` labels and :func:`stack_model_outputs`
-    stacks.
+    them. :func:`to_model_output` labels any of these forms and
+    :func:`stack_model_outputs` stacks them.
 :func:`sipnet_calibration.sites.load_sites`
     The site table, for the ``lon``/``lat`` of a site id. Read only when a
     ``site`` label is given.
 
 The field contract
 ------------------
-A **field** is an ``xarray.DataArray`` holding one variable. What
+A **field** is an ``xarray.DataArray`` holding one variable, which
 :func:`validate_field` checks:
 
-* **dims** ``(*batch, space, time)``: zero or more batch dims, then at most
-  one spatial dim, then ``time`` if present. No other dim is allowed: a
-  structural axis (variable, component, quantile, bounds, a PFT class) is
-  split into a ``dict`` or ``Dataset`` of fields instead. Every dim has an
-  index coordinate.
-* **the spatial dim** one of ``site`` (site ids of the site table in use),
-  ``point`` (arbitrary locations, integer labels) or a raster pair ``lat``,
-  ``lon`` (or projected ``y``, ``x``); these names
-  (:data:`~sipnet_calibration.conventions.SPATIAL_DIM_NAMES`) are never batch
-  dims. ``site`` and ``point`` carry ``float64`` ``lon``/``lat`` coordinates on
-  that dim, and a scalar ``site`` or ``point`` (a field of one location)
-  carries them as ``float64`` scalars; ``lon``/``lat`` are never on a batch
-  dim or ``time``.
-* **a batch dim** every other dim whose index coordinate holds integers, any
-  distinct ones, of any integer dtype: an axis of independent replicates. A
-  dim with string or float labels, or none, is refused, which is what keeps a
-  ``variable``, ``quantile``, ``pft`` or ``bounds`` dim off a field.
-* ``site`` ``int32`` site ids, unique; ``time`` naive ``datetime64`` of any
-  unit (pandas and xarray make microseconds), strictly increasing, no
-  ``NaT``, with pySIPNET's timestep coordinates and an observation's window
-  coordinates, where present, on ``time`` alone (scalars once one time is
-  selected).
-* ``units`` in ``attrs``, valid by pySIPNET's ``validate_units``, unless the
-  field is categorical (:func:`is_categorical`): CF ``flag_values`` or
-  ``flag_meanings``, or values that are strings, bytes or booleans (an object
-  array only when every element is a string or missing).
+* **dims** ``(*batch, space, time)``, each with an index coordinate: batch
+  dims, then at most one spatial dim, then ``time``. A structural axis
+  (variable, component, quantile, bounds, a class) is never a dim; it splits
+  into a ``dict`` or ``Dataset`` of fields.
+* **the spatial dim** is one of
+  :data:`~sipnet_calibration.conventions.SPATIAL_DIM_NAMES`: ``site`` or
+  ``point`` (integer labels), which carry ``float64`` ``lon``/``lat`` on that
+  dim (scalars beside a scalar ``site`` or ``point``), or a raster pair.
+  ``lon``/``lat`` are never on a batch dim or on ``time``.
+* **a batch dim** is any other dim whose labels are distinct integers of any
+  dtype that fits ``int64`` (:func:`batch_dims`); a dim with other labels, or
+  none, is refused, and no name of
+  :data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES` is one.
+* **labels**: ``site`` holds unique site ids of
+  :data:`~sipnet_calibration.conventions.SITE_DTYPE`; ``time`` is naive
+  ``datetime64`` of any unit, strictly increasing, with no ``NaT`` (a time
+  zone aware axis is refused). The timestep and window coordinates
+  (:data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`,
+  ``window_start``/``window_end``) are on ``time`` alone, or scalars once one
+  time is selected.
+* **units** in ``attrs``, valid by pySIPNET, unless the field is categorical
+  (:func:`is_categorical`).
 
-Conventions a creator follows, which :func:`validate_field` does not check:
-batch labels are created ``int64``
-(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`, which
-:func:`batch_coordinate` gives), though any integer dtype is accepted, so that
-an ``int16`` or unsigned label read from a file is still a batch label;
-``long_name`` in ``attrs``, and ``constituent`` and ``kind`` where pySIPNET's
-apply; the CF attributes of ``lon``/``lat``
-(:func:`sipnet_calibration.sites.site_locations` makes them).
+A creator also gives ``long_name``, ``constituent`` and ``kind`` where they
+apply, the CF attributes of ``lon``/``lat``
+(:func:`sipnet_calibration.sites.site_locations`) and ``int64`` batch labels
+(:func:`batch_coordinate`); :func:`validate_field` checks none of these.
 
 A **scalar** coordinate is not a dim: a field whose batch dim was selected
 away with ``.isel(sample=k)`` has no batch dim, and its scalar label is
-metadata (:func:`scalar_batch_labels` finds such labels).
+metadata (:func:`scalar_batch_labels`).
 
 **Two batch dims with the same name are the same index; different names are
-different indices.** xarray aligns two ``sample`` dims by label and PyEns
-zips them, while a ``sample`` and an ``initial_condition_member`` cross. The
-batch dim made from batched Flat is named
-:data:`~sipnet_calibration.conventions.SAMPLE` by default, with labels ``0``
-to ``n_samples - 1`` in row order; a data source's own ensemble is named for
-its source (``initial_condition_member``, ``driver_member``). Batch labels
-are created ``int64``
-(:data:`~sipnet_calibration.conventions.BATCH_LABEL_DTYPE`); any integer
-dtype is accepted.
+different indices.** xarray aligns two ``sample`` dims by label and PyEns zips
+them, while a ``sample`` and an ``initial_condition_member`` cross. The batch
+dim made from batched Flat is :data:`~sipnet_calibration.conventions.SAMPLE`
+unless a creator's ``batch_dim=`` names it otherwise, labeled ``0`` to
+``n_samples - 1`` in row order; a data source's own ensemble is named for its
+source (:data:`~sipnet_calibration.conventions.DATA_SOURCE_MEMBER_NAMES`),
+with its file index beside it as
+:data:`~sipnet_calibration.conventions.SOURCE_INDEX` and labeled as
+:data:`~sipnet_calibration.conventions.DATA_SOURCE_MEMBER_ATTRIBUTES` says.
 
-Which dims are present depends on the quantity. A single deterministic run is
-``(time,)``, an initial condition ensemble is
-``(initial_condition_member, site)``, and runs over samples and sites are
-``(sample, site, time)``. Calibration parameters are ``(sample, site)`` for a
-batch and ``(site,)`` for one value:
-:meth:`sipnet_calibration.parameter_vector.ParameterVector.fields` returns
-one per scalar component. Their names are ``<parameter>`` or
-``<parameter>.<component>``, the calibration vector's own, not registry
-names.
+Variables that share one grid are one ``xarray.Dataset`` (a model output, a
+parameter vector's Fields); variables that do not are a
+``dict[str, DataArray]`` (the constraints). ``dict(model_output.data_vars)``
+is a model output's dict form.
 
-One array holds one variable. Variables that share one grid are held together
-as an ``xarray.Dataset``: one run's output from :func:`label_run`, a stack of
-runs from :func:`stack_model_outputs`, and the calibration parameters' fields.
-Variables that do not share one are a ``dict[str, DataArray]`` keyed by name,
-as the constraints are, being annual, dated or static by constraint. The field
-adapters here return such a dict too, one field per variable asked for, as the
-readers in :mod:`sipnet_calibration.drivers` and
-:mod:`sipnet_calibration.constraints` do.
+The data model
+--------------
+Three aliases name the forms this module owns, each checked by one validator:
+
+:data:`Field` (``xr.DataArray``)
+    One variable under the field contract above; :func:`validate_field`.
+:data:`ModelOutput` (``xr.Dataset``)
+    SIPNET's output under pySIPNET's variable names, every variable a field on
+    one shared ``time`` axis; :func:`validate_model_output`. One run's
+    carries a scalar ``site`` and scalar batch labels, a stack a ``site`` dim
+    and batch dims. It carries no ``time_bounds``, ``bounds`` dim or
+    attribute, and none of SIPNET's row labels
+    (:data:`~sipnet_calibration.conventions.SIPNET_ROW_LABEL_NAMES`).
+:data:`SIPNETParameterFields` (``xr.Dataset``)
+    SIPNET parameter values, the model's input beside its output: one field
+    per parameter under pySIPNET's flat name, each with a ``site``, as a dim
+    or a scalar coordinate, and no ``time``, on batch dims of its own:
+    ``(*batch, site)``, or ``(*batch,)`` with a scalar ``site``;
+    :func:`validate_sipnet_parameter_fields`. A parameter vector's are on
+    ``(*batch, site)``; one run's, as the forward model's worker builds
+    them, are zero-dimensional with a scalar ``site``.
 
 Identifiers
 -----------
@@ -143,8 +140,8 @@ a batch dim
 
 Model output
 ------------
-:func:`from_sipnet_output` is a thin wrapper over ``SIPNETOutput.select``. It
-adds the identifiers above and nothing else: **every name, unit, kind and
+:func:`to_model_output` is a thin wrapper over ``SIPNETOutput.select``. It adds
+the identifiers above and nothing else: **every name, unit, kind and
 description is pySIPNET's**, carried through as attributes and never restated
 here. pySIPNET's registry names are already
 ``lower_case_with_underscores`` (``net_ecosystem_exchange``, ``wood_carbon``),
@@ -179,10 +176,16 @@ rather than recomputed.
 
 Functions
 ---------
-:func:`validate_field`
-    Check that an array is a field, raising on the first rule it breaks.
+:func:`validate_field`, :func:`validate_model_output`
+    Check that an array is a field, or a Dataset a model output, raising on
+    the first rule it breaks.
+:func:`validate_sipnet_parameter_fields`
+    The same for SIPNET parameter fields.
 :func:`batch_dims`
     A field's batch dims, in its dim order.
+:func:`in_field_layout`
+    An array's values in the field layout: dims ``(*batch, space, time)``,
+    a scalar ``site`` made a dim.
 :func:`stack_batch_dims`, :func:`unstack_batch_dims`
     Several batch dims stacked into one new batch dim, labeled ``0`` to
     ``n - 1`` with the original labels kept beside it, and back.
@@ -191,18 +194,14 @@ Functions
     coordinates of a field that are batch labels.
 :func:`is_categorical`
     Whether a field holds classes, which need no ``units``.
-:func:`from_sipnet_output`
-    One run's chosen variables as fields, optionally labeled with a site and
-    batch labels.
-:func:`label_run`
-    One run's output ``Dataset`` labeled with its site and batch labels: the
-    ``model_output`` the observation operators read.
-:func:`stack_sipnet_outputs`
-    Many runs, each keyed by its labels in ``key_dims`` order, stacked into
-    ``(*batch, site, time)`` fields.
+:func:`to_model_output`
+    One run's output, a pySIPNET ``SIPNETOutput`` or its ``Dataset``,
+    labeled with its site and batch labels: the model output the observation
+    operators read.
 :func:`stack_model_outputs`
-    Many runs' output ``Dataset`` objects, keyed the same way, stacked into
-    one ``Dataset`` on ``(*batch, site, time)``.
+    Many runs' outputs, in either form, each keyed by its labels in
+    ``key_dims`` order, stacked into one model output on
+    ``(*batch, site, time)``.
 :func:`resolve_output_variable_names`
     Requested output variable names as pySIPNET registry names, in order,
     without repeats.
@@ -217,13 +216,18 @@ Functions
 :func:`without_stale_time_attributes`
     ``time`` attributes less
     :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
+The ``check_*`` functions of ``__all__``
+    The parts of the contracts other modules run on their own, such as the
+    names a batch dim may not take.
 
 The drivers, the constraints and the initial conditions have readers of their
 own that already produce the form above
 (:func:`sipnet_calibration.drivers.driver_fields`,
 :func:`sipnet_calibration.constraints.constraint_fields`,
 :func:`sipnet_calibration.initial_conditions.initial_condition_fields`), and a
-batch of predictions is unstacked by ``ObservationVector.fields``.
+``(J, N)`` batch of predictions is unstacked by
+:meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns
+the index the batch was flattened with.
 
 Notes
 -----
@@ -258,32 +262,31 @@ already knows which runs it left out; their entries of the stack read
 ``NaN``. This differs from :func:`sipnet_calibration.drivers.load_drivers`,
 which discovers absence on disk and therefore has to report it.
 
-A ``(J, N)`` batch of predictions is unstacked by
-:meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns the
-``(site, observation_source, time)`` index the batch was flattened with, so the two
-cannot mislabel against each other. The traps of the observation and
-initial-condition sources are in ``CLAUDE.md``'s Data section, where they
-apply to the readers that already exist as well.
+The traps of the observation and initial-condition sources are in
+``CLAUDE.md``'s Data section, where they apply to the readers that already
+exist as well.
 
 Usage
 -----
 One run, no site pool involved::
 
-    from sipnet_calibration.fields import from_sipnet_output
+    from sipnet_calibration.fields import to_model_output
 
-    fields = from_sipnet_output(result, ["nee", "wood_carbon"])
-    fields["net_ecosystem_exchange"].dims          # ('time',)
-    fields["net_ecosystem_exchange"].attrs["kind"] # 'timestep_total'
+    model_output = to_model_output(result, output_variable_names=["nee", "wood_carbon"])
+    model_output["net_ecosystem_exchange"].dims          # ('time',)
+    model_output["net_ecosystem_exchange"].attrs["kind"] # 'timestep_total'
+    fields_by_name = dict(model_output.data_vars)        # the same, as a dict
 
 An ensemble over samples and sites, keyed by the ``(sample, site)`` each run
 stands for::
 
-    from sipnet_calibration.fields import stack_sipnet_outputs, validate_field
+    from sipnet_calibration.fields import stack_model_outputs, validate_field
     from sipnet_calibration.observation.time_alignment import aggregate_time
     from sipnet_calibration.plotting import plot_time_series
 
     runs = {(0, 1): first, (1, 1): second, (0, 27): third, (1, 27): fourth}
-    nee = stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"]
+    stack = stack_model_outputs(runs, output_variable_names=["nee"])
+    nee = stack["net_ecosystem_exchange"]
     nee.dims                                       # ('sample', 'site', 'time')
     validate_field(nee)                            # None: it is a field
 
@@ -294,7 +297,7 @@ Two batch dims, stacked into one for Flat and back::
     from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
     wood.dims            # ('sample', 'initial_condition_member', 'site')
-    stacked = stack_batch_dims(wood, into="run")     # ('run', 'site'), 0..n-1
+    stacked = stack_batch_dims(wood, new_batch_dim="run")  # ('run', 'site'), 0..n-1
     stacked["initial_condition_member_label"]        # the labels, on run
     unstack_batch_dims(stacked).dims
     # ('sample', 'initial_condition_member', 'site')
@@ -304,7 +307,8 @@ labeled ``run`` ``0..n-1`` and nothing else, and ``labels_from`` copies the
 rest from the stacked field::
 
     stacked = {
-        name: stack_batch_dims(array, into="run") for name, array in predicted.items()
+        name: stack_batch_dims(array, new_batch_dim="run")
+        for name, array in predicted.items()
     }
     y = observation_vector.flat(stacked)
     made = observation_vector.fields(y, batch_dim="run")
@@ -314,19 +318,21 @@ rest from the stacked field::
     }
 
 For a Dataset, such as a parameter vector's Fields,
-``fields_dataset.map(lambda field: stack_batch_dims(field, into="run"))``.
-The round trip needs fields (``int32`` ``site`` with ``lon``/``lat``): a
-vector built from bare site ids gives arrays without them, which are not
-fields yet and are refused.
+``fields_dataset.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))``.
+The round trip needs fields (``int32`` ``site`` with ``lon``/``lat``): the
+observation vector's always are, and a parameter vector's are when it was
+built from a site table; one built from bare site ids gives Fields without
+``lon``/``lat``, which the stack refuses.
 
-Adapting run after run, with the site table read once::
+Labeling run after run, with the site table read once::
 
     from sipnet_calibration.sites import load_sites, site_lookup
 
     site_table = site_lookup(load_sites())
     for site, sample, run in ensemble:
-        fields = from_sipnet_output(
-            run, ["nee"], site=site, batch={"sample": sample}, site_table=site_table
+        model_output = to_model_output(
+            run, output_variable_names=["nee"], site=site, batch={"sample": sample},
+            site_table=site_table,
         )
 """
 
@@ -334,11 +340,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from pysipnet.output import SIPNETOutput
+from pysipnet.parameters.model import resolve_parameter_name
+from pysipnet.result import SIPNETResult
 from pysipnet.units import validate_units
 from pysipnet.variables import resolve_output_variable
 from pysipnet.variables import (
@@ -377,16 +386,14 @@ from sipnet_calibration.sites import (
     load_sites,
     site_coordinates,
     site_locations,
-    site_lookup,
 )
 from sipnet_calibration.validation import as_batch_label, as_names, as_site_id
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from pysipnet.output import SIPNETOutput
-    from pysipnet.result import SIPNETResult
-
 __all__ = [
     "MODEL_OUTPUT_COORDINATE_NAMES",
+    "Field",
+    "ModelOutput",
+    "SIPNETParameterFields",
     "STACKED_COMPANIONS_ATTRIBUTE",
     "STACKED_DIMS_ATTRIBUTE",
     "STACKED_LABEL_SUFFIX",
@@ -399,10 +406,14 @@ __all__ = [
     "check_batch_labels_are_a_mapping",
     "check_dims_are_batch_spatial_or_time",
     "check_labeled_dims_are_batch_spatial_or_time",
+    "check_model_output_is_a_dataset",
+    "check_parameter_variable_has_a_site",
+    "check_parameter_variable_is_off_time",
+    "check_sipnet_parameter_fields_are_a_dataset",
+    "check_sipnet_parameter_name_is_a_flat_name",
     "coordinate_labels",
-    "from_sipnet_output",
+    "in_field_layout",
     "is_categorical",
-    "label_run",
     "message_name",
     "missing_labels",
     "recorded_stacked_dims",
@@ -410,11 +421,25 @@ __all__ = [
     "scalar_batch_labels",
     "stack_batch_dims",
     "stack_model_outputs",
-    "stack_sipnet_outputs",
+    "to_model_output",
     "unstack_batch_dims",
     "validate_field",
+    "validate_model_output",
+    "validate_sipnet_parameter_fields",
     "without_stale_time_attributes",
 ]
+
+#: One variable under the field contract of this module's docstring, checked
+#: by :func:`validate_field`.
+type Field = xr.DataArray
+
+#: SIPNET's output as a labeled Dataset, as this module's data model has it;
+#: checked by :func:`validate_model_output`.
+type ModelOutput = xr.Dataset
+
+#: SIPNET parameter values, as this module's data model has them; checked by
+#: :func:`validate_sipnet_parameter_fields`.
+type SIPNETParameterFields = xr.Dataset
 
 #: The suffix of the coordinates :func:`stack_batch_dims` keeps each stacked
 #: dim's labels in: stacking ``initial_condition_member`` keeps its labels as
@@ -453,14 +478,7 @@ MODEL_OUTPUT_COORDINATE_NAMES: tuple[str, ...] = (
 def validate_field(field: Any, *, message_name: str | None = None) -> None:
     """Check that *field* is a field, raising on the first rule it breaks.
 
-    Runs the checks of the field contract (this module's docstring) in
-    order: :func:`check_field_is_a_dataarray`,
-    :func:`check_field_dims_are_field_dims`,
-    :func:`check_field_site_holds_site_ids`,
-    :func:`check_field_locations_are_on_the_spatial_dim`,
-    :func:`check_field_time_is_a_time_axis`,
-    :func:`check_field_interval_coordinates_are_on_time` and
-    :func:`check_field_units_are_valid`.
+    The rules are the field contract of this module's docstring.
 
     Parameters
     ----------
@@ -475,25 +493,7 @@ def validate_field(field: Any, *, message_name: str | None = None) -> None:
     TypeError
         If *field* is not an ``xr.DataArray``.
     ValueError
-        Naming the first rule broken: a dim that is neither a batch dim, a
-        spatial dim nor ``time``, or dims out of the ``(*batch, space, time)``
-        order; more than one spatial dim; a dim without an index coordinate;
-        ``point`` labels that are not integers; repeated batch labels; ``site``
-        labels that are not unique ``int32`` site ids; ``lon``/``lat``
-        missing from, or not ``float64`` on, a ``site`` or ``point`` dim,
-        not ``float64`` scalars beside a scalar ``site`` or ``point``, or on a
-        batch dim or ``time``; ``time`` labels that are not naive
-        ``datetime64`` (a time zone aware axis included), strictly increasing
-        and free of ``NaT``; a timestep or window coordinate on a dim other
-        than ``time`` (or not a scalar once ``time`` is selected away); or
-        ``units`` missing or refused by pySIPNET's ``validate_units``, the
-        message naming the field.
-
-    Notes
-    -----
-    It does not check ``long_name``, ``constituent``, ``kind`` or the CF
-    attributes of ``lon``/``lat``, which are conventions a creator follows,
-    nor that batch labels are ``int64``: any integer dtype is a batch label.
+        If it breaks a rule of the contract, naming the rule and the field.
     """
     check_field_is_a_dataarray(field, message_name)
     name = message_name if message_name is not None else _message_name(field)
@@ -503,6 +503,115 @@ def validate_field(field: Any, *, message_name: str | None = None) -> None:
     check_field_time_is_a_time_axis(field, name)
     check_field_interval_coordinates_are_on_time(field, name)
     check_field_units_are_valid(field, name)
+
+
+def validate_model_output(model_output: Any, *, message_name: str | None = None) -> None:
+    """Check that *model_output* is a model output (:data:`ModelOutput`).
+
+    Parameters
+    ----------
+    model_output:
+        The Dataset to check.
+    message_name:
+        What an error message calls it; ``"the model output"`` when omitted.
+
+    Raises
+    ------
+    TypeError
+        If *model_output* is not an ``xr.Dataset``.
+    ValueError
+        If it is not a model output; the message names the variable and the
+        rule.
+    """
+    name = "the model output" if message_name is None else message_name
+    check_model_output_is_a_dataset(model_output, name)
+    check_model_output_has_a_variable(model_output, name)
+    check_model_output_carries_no_bounds_or_row_labels(model_output, name)
+    for variable_name, variable in model_output.data_vars.items():
+        variable_message_name = f"{variable_name!r} of {name}"
+        validate_field(variable, message_name=variable_message_name)
+        check_model_output_variable_is_on_time(variable, variable_message_name)
+
+
+def validate_sipnet_parameter_fields(
+    sipnet_parameter_fields: Any, *, message_name: str | None = None
+) -> None:
+    """Check that *sipnet_parameter_fields* are :data:`SIPNETParameterFields`.
+
+    Parameters
+    ----------
+    sipnet_parameter_fields:
+        The Dataset to check.
+    message_name:
+        What an error message calls it; ``"the SIPNET parameter fields"`` when
+        omitted.
+
+    Raises
+    ------
+    TypeError
+        If *sipnet_parameter_fields* is not an ``xr.Dataset``, or a variable's
+        name is not a string.
+    KeyError
+        If a variable is named by no pySIPNET parameter.
+    ValueError
+        If it is not SIPNET parameter fields; the message names the variable
+        and the rule.
+
+    Notes
+    -----
+    A variable may have batch dims of its own, so a parameter vector's
+    (``sample``) merged with an initial condition ensemble's
+    (``initial_condition_member``) are SIPNET parameter fields.
+    """
+    name = "the SIPNET parameter fields" if message_name is None else message_name
+    check_sipnet_parameter_fields_are_a_dataset(sipnet_parameter_fields, name)
+    for variable_name, variable in sipnet_parameter_fields.data_vars.items():
+        check_sipnet_parameter_name_is_a_flat_name(variable_name, name)
+        variable_message_name = f"{str(variable_name)!r} of {name}"
+        validate_field(variable, message_name=variable_message_name)
+        check_parameter_variable_has_a_site(variable, variable_message_name)
+        check_parameter_variable_is_off_time(variable, variable_message_name)
+
+
+def in_field_layout(array: xr.DataArray) -> xr.DataArray:
+    """*array* laid out as a field: ``(*batch, space, time)``, a scalar ``site`` a dim.
+
+    What an observation operator returns may be in any dim order, and one
+    run's may carry ``site`` as a scalar; this is the same values in the
+    layout the field contract fixes, so that :func:`validate_field` can check
+    it. Nothing else changes.
+
+    Parameters
+    ----------
+    array:
+        An array whose dims are batch dims, a spatial dim and ``time``, in
+        any order; ``site`` a dim or a scalar coordinate.
+
+    Returns
+    -------
+    xarray.DataArray
+        The batch dims first, in *array*'s order, then the spatial dim, then
+        ``time``. A scalar ``site`` becomes a dim of length one, first after
+        the batch dims, with its scalar ``lon``/``lat`` moved onto it.
+    """
+    if SITE not in array.dims and SITE in array.coords and array[SITE].ndim == 0:
+        array = array.expand_dims(SITE)
+    if SITE in array.dims:
+        # A scalar location beside a site dim of one, as expand_dims leaves it.
+        scalar = {
+            name: array[name]
+            for name in (LON, LAT)
+            if name in array.coords and array[name].ndim == 0 and array.sizes[SITE] == 1
+        }
+        array = array.assign_coords(
+            {
+                name: (SITE, np.atleast_1d(coordinate.values), coordinate.attrs)
+                for name, coordinate in scalar.items()
+            }
+        )
+    rest = [d for d in (*SPATIAL_DIM_NAMES, TIME) if d in array.dims]
+    others = [d for d in array.dims if d not in rest]
+    return array.transpose(*others, *rest)
 
 
 def batch_dims(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:
@@ -565,30 +674,10 @@ def scalar_batch_labels(field: xr.DataArray | xr.Dataset) -> tuple[str, ...]:
 
 
 def is_categorical(field: xr.DataArray) -> bool:
-    """Whether *field* holds classes rather than a quantity with units.
-
-    Parameters
-    ----------
-    field:
-        The array to look at.
-
-    Returns
-    -------
-    bool
-        ``True`` when *field* carries CF ``flag_values`` or ``flag_meanings``,
-        or holds strings, bytes or booleans; an object array counts when every
-        element is a string or missing (``None`` or ``NaN``) and one at least
-        is a string. A categorical field needs no ``units``.
-    """
-    if {"flag_values", "flag_meanings"} & set(field.attrs) or field.dtype.kind in "USb":
-        return True
-    if field.dtype.kind != "O":
-        return False
-    values = np.asarray(field.values).ravel()
-    strings = [isinstance(value, str) for value in values]
-    return any(strings) and all(
-        is_string or _is_missing(value) for is_string, value in zip(strings, values)
-    )
+    """Whether *field* holds classes, not a quantity: CF-coded classes (it
+    carries ``flag_values``) or a boolean mask. A categorical field needs no
+    ``units``."""
+    return "flag_values" in field.attrs or field.dtype.kind == "b"
 
 
 def batch_coordinate(dim: str, labels: Any) -> xr.DataArray:
@@ -630,14 +719,14 @@ def batch_coordinate(dim: str, labels: Any) -> xr.DataArray:
     return xr.DataArray(np.asarray(values, dtype=BATCH_LABEL_DTYPE), dims=(dim,), attrs=attributes)
 
 
-def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
+def stack_batch_dims(field: xr.DataArray, *, new_batch_dim: str) -> xr.DataArray:
     """A field's batch dims stacked into one new batch dim, so it can be flattened.
 
     Parameters
     ----------
     field:
         A field with at least one batch dim.
-    into:
+    new_batch_dim:
         The name of the stacked dim, first in the result's dims. It is a new
         index, so it takes a new name: none of the dims stacked, not
         *field*'s own name, no coordinate of *field*, no ``<dim>_label``
@@ -649,27 +738,29 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
     Returns
     -------
     xarray.DataArray
-        *field* on ``(into, space, time)``: *into* is labeled ``0`` to
-        ``n - 1`` (``int64``) in C order over the batch dims as *field* has
-        them, the last varying fastest, and its coordinate records them in
-        :data:`STACKED_DIMS_ATTRIBUTE`. Each stacked dim's labels are kept,
-        with their attributes, as a non-dim coordinate on *into* named
-        ``<dim>_label`` (:data:`STACKED_LABEL_SUFFIX`); a coordinate that was
-        on stacked dims alone, such as ``source_index``, is on *into* too and
-        recorded in :data:`STACKED_COMPANIONS_ATTRIBUTE`. That is what
+        *field* on ``(new_batch_dim, space, time)``: *new_batch_dim* is
+        labeled ``0`` to ``n - 1`` (``int64``) in C order over the batch dims
+        as *field* has them, the last varying fastest, and its coordinate
+        records them in :data:`STACKED_DIMS_ATTRIBUTE`. Each stacked dim's
+        labels are kept, with their attributes, as a non-dim coordinate on
+        *new_batch_dim* named ``<dim>_label`` (:data:`STACKED_LABEL_SUFFIX`);
+        a coordinate that was
+        on stacked dims alone, such as ``source_index``, is on
+        *new_batch_dim* too and recorded in
+        :data:`STACKED_COMPANIONS_ATTRIBUTE`. That is what
         :func:`unstack_batch_dims` reverses it by. The result is checked to
         be a field (:func:`validate_field`).
 
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray`` or *into* is not a string.
+        If *field* is not a ``DataArray`` or *new_batch_dim* is not a string.
     ValueError
         If *field* is not a field (:func:`validate_field`) or has no batch
-        dim; if *into* is a reserved name, a data source's member name, one
-        of the dims stacked, *field*'s own name, a coordinate of *field*, or
-        one of the ``<dim>_label`` names the stack creates; or if *field*
-        carries one of those names already.
+        dim; if *new_batch_dim* is a reserved name, a data source's member
+        name, one of the dims stacked, *field*'s own name, a coordinate of
+        *field*, or one of the ``<dim>_label`` names the stack creates; or if
+        *field* carries one of those names already.
 
     Notes
     -----
@@ -682,18 +773,18 @@ def stack_batch_dims(field: xr.DataArray, *, into: str) -> xr.DataArray:
     dims = batch_dims(field)
     check_field_has_a_batch_dim(dims, message_name(field))
     label_names = {dim: f"{dim}{STACKED_LABEL_SUFFIX}" for dim in dims}
-    check_stack_names_are_free(field, into, dims, tuple(label_names.values()))
+    check_stack_names_are_free(field, new_batch_dim, dims, tuple(label_names.values()))
     companions = _companion_coordinates(field, dims)
     rest = [str(d) for d in field.dims if d not in dims]
-    stacked = field.transpose(*dims, *rest).stack({into: list(dims)}, create_index=False)
+    stacked = field.transpose(*dims, *rest).stack({new_batch_dim: list(dims)}, create_index=False)
     stacked = stacked.rename(label_names)
-    coordinate = batch_coordinate(into, np.arange(stacked.sizes[into]))
+    coordinate = batch_coordinate(new_batch_dim, np.arange(stacked.sizes[new_batch_dim]))
     coordinate.attrs[STACKED_DIMS_ATTRIBUTE] = json.dumps(list(dims))
     if companions:
         coordinate.attrs[STACKED_COMPANIONS_ATTRIBUTE] = json.dumps(
             {name: list(on) for name, on in companions.items()}
         )
-    stacked = stacked.assign_coords({into: coordinate}).transpose(into, *rest)
+    stacked = stacked.assign_coords({new_batch_dim: coordinate}).transpose(new_batch_dim, *rest)
     validate_field(stacked)
     return stacked
 
@@ -712,10 +803,10 @@ def unstack_batch_dims(
         same batch dim without them, such as one of the arrays a vector's
         ``fields(flat_values, batch_dim=<the stacked dim>)`` makes from Flat.
     labels_from:
-        The stacked field, or its stacked coordinate (``stacked[into]``), to
-        copy the record and the label and companion coordinates from, when
-        *field* lacks them. Its rows must be *field*'s: the same labels in
-        the same order.
+        The stacked field, or its stacked coordinate
+        (``stacked[new_batch_dim]``), to copy the record and the label and
+        companion coordinates from, when *field* lacks them. Its rows must
+        be *field*'s: the same labels in the same order.
 
     Returns
     -------
@@ -788,29 +879,32 @@ def unstack_batch_dims(
 # ── labeling and stacking runs ────────────────────────────────────────────────
 
 
-def label_run(
-    dataset: xr.Dataset,
+def to_model_output(
+    run_output: SIPNETResult | SIPNETOutput | xr.Dataset,
     *,
+    output_variable_names: Sequence[str] | None = None,
     site: int | None = None,
     batch: Mapping[str, int] | None = None,
     site_table: pd.DataFrame | None = None,
-) -> xr.Dataset:
-    """A run's output dataset labeled with the site and batch labels it was.
+) -> ModelOutput:
+    """One run's pySIPNET output as a model output, with its site and batch labels.
 
-    pySIPNET's ``SIPNETOutput.select(names)`` gives one run's variables as a
-    CF Dataset on ``(time,)``; what it cannot know is which site of the pool
-    and which sample (or member of a data source) the run was. This adds
-    those as scalar coordinates, ``site`` with its ``lon``/``lat`` from the
-    site table and one per batch label, and changes nothing else: every
-    variable, coordinate (``time_bounds`` included) and attribute is
-    pySIPNET's. The result is the ``model_output`` the observation operators
-    read.
+    The site (with its ``lon``/``lat`` from the site table) and each batch
+    label become scalar coordinates, and what a model output does not carry
+    (:data:`ModelOutput`) is dropped. Every variable, its values and its
+    attributes are pySIPNET's.
 
     Parameters
     ----------
-    dataset:
-        The run's variables, from ``result.outputs.select(names)`` or
-        ``result.outputs[[...]]``.
+    run_output:
+        The run: a :class:`pysipnet.result.SIPNETResult`, the
+        :class:`pysipnet.output.SIPNETOutput` inside one, or its variables as
+        a Dataset, from ``result.outputs.select(names)``.
+    output_variable_names:
+        The variables to take: pySIPNET's names or aliases (``"nee"``), in
+        the order wanted, repeats dropped. Required for a ``SIPNETResult`` or
+        a ``SIPNETOutput``, which is read only for these columns; for a
+        Dataset, every variable when omitted.
     site:
         The site id this run is for, or ``None`` when the run is not at a
         site of the site table.
@@ -819,7 +913,7 @@ def label_run(
         ``{"sample": 3}``, or ``None``. Each label is an integer that fits
         ``int64``; each dim name a string that is not reserved
         (:func:`check_batch_dim_name_is_not_reserved`) and is no variable,
-        dim or coordinate of *dataset*.
+        dim or coordinate of the run's output.
     site_table:
         The site table, as :func:`sipnet_calibration.sites.load_sites` returns
         it, read from disk when omitted and a *site* is given; pass it when
@@ -827,98 +921,28 @@ def label_run(
 
     Returns
     -------
-    xarray.Dataset
-        *dataset* with a scalar ``site`` (``int32``) and its scalar
-        ``lon``/``lat`` when *site* is given, and a scalar ``int64``
-        coordinate per entry of *batch*; *dataset* itself when neither is.
+    ModelOutput
+        The variables on ``(time,)``, keyed by pySIPNET registry name, with
+        pySIPNET's timestep coordinates
+        (:data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`), a scalar
+        ``site`` (``int32``) and its scalar ``lon``/``lat`` when *site* is
+        given, and a scalar ``int64`` coordinate per entry of *batch*; a
+        scalar batch label the run carried already is kept. Checked to be a
+        model output (:func:`validate_model_output`).
 
     Raises
     ------
     TypeError
-        If *dataset* is not an ``xr.Dataset``; *site* or a batch label is a
-        boolean, a float or not an integer; *batch* is not a mapping or a
-        dim name is not a string; or *site_table* is not a ``DataFrame``.
+        If an argument has the wrong type: *run_output* none of the three
+        forms, a ``SIPNETResult`` or ``SIPNETOutput`` without
+        *output_variable_names*, a label that is not an integer.
     ValueError
-        If *dataset* has no timesteps, which is what a failed run leaves;
-        if *site* is out of range, or a batch label does not fit ``int64``; if
-        a batch dim name is reserved or is a variable, dim or coordinate of
-        *dataset* (``time_step_length``, ``time_bounds``, ``bounds``, a
-        variable's name); or if the site table lists a site twice or has no
-        ``lon`` and ``lat`` columns.
+        If the run has no timesteps (a failed run), a name or label is out of
+        range or reserved or taken by the run's output, the site table cannot
+        locate *site*, or the result is not a model output.
     KeyError
-        If *site* is not in the site table.
-    FileNotFoundError
-        If *site* is given, *site_table* is not, and the site table is absent.
-    """
-    check_is_a_dataset(dataset)
-    check_run_has_rows(dataset)
-    if batch is not None:
-        check_batch_labels_are_a_mapping(batch)
-        for dim in batch:
-            check_batch_dim_name_is_not_reserved(dim, message_name="batch")
-            check_batch_name_is_not_the_model_outputs(dataset, dim)
-    labels = _run_label_coords(site=site, batch=batch, site_table=site_table)
-    return dataset.assign_coords(labels) if labels else dataset
-
-
-def from_sipnet_output(
-    output: SIPNETResult | SIPNETOutput,
-    output_variable_names: Sequence[str],
-    *,
-    site: int | None = None,
-    batch: Mapping[str, int] | None = None,
-    site_table: pd.DataFrame | None = None,
-) -> dict[str, xr.DataArray]:
-    """The named variables of one SIPNET run, as fields.
-
-    Parameters
-    ----------
-    output:
-        A :class:`pysipnet.result.SIPNETResult` or the
-        :class:`pysipnet.output.SIPNETOutput` inside one.
-    output_variable_names:
-        A sequence of names. pySIPNET's names and aliases are both accepted
-        (``"nee"``, ``"NEE"`` and ``"net_ecosystem_exchange"`` are the same
-        variable); the keys of the result are always the registry name.
-        Repeats are dropped and the requested order is kept.
-    site:
-        The site id this run is for, or ``None`` when the run is not at a
-        site of the site table. When given, it becomes a scalar ``site``
-        coordinate and ``lon``/``lat`` are looked up beside it.
-    batch:
-        ``{batch dim: label}`` for the run, as :func:`label_run` takes it; each
-        becomes a scalar coordinate.
-    site_table:
-        The site table to look ``site`` up in, as
-        :func:`sipnet_calibration.sites.load_sites` returns it. Read from disk
-        when omitted and a *site* is given; pass it when adapting many runs so
-        the table is read once.
-
-    Returns
-    -------
-    dict
-        Keyed by pySIPNET registry name, in the order requested. Each value is
-        a ``DataArray`` with dimension ``time``, the ``time`` coordinates of
-        :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`, scalar
-        ``site``/``lon``/``lat`` and batch-label coordinates for the labels
-        that were given, and pySIPNET's variable attributes unchanged.
-
-    Raises
-    ------
-    KeyError
-        If a variable is not a SIPNET output variable or alias, or if *site* is
-        not in the site table.
-    ValueError
-        If *output_variable_names* is empty; if the run wrote no rows, which
-        is what a failed run leaves; if *site* is out of range or a batch
-        label does not fit ``int64``; if a batch dim name is reserved or a
-        variable, dim or coordinate of the run's output; or if the site table
-        lists a site twice or has no ``lon`` and ``lat`` columns.
-    TypeError
-        If *output* is neither a ``SIPNETResult`` nor a ``SIPNETOutput``; if
-        *output_variable_names* is one string, a set, is not iterable, or
-        holds a name that is not a string; or if *site* or a batch label is a
-        boolean, a float or not an integer.
+        If a variable is not a pySIPNET output variable or not in the run, or
+        *site* is not in the site table.
     FileNotFoundError
         If *site* is given, *site_table* is not, and the site table is absent.
 
@@ -927,103 +951,48 @@ def from_sipnet_output(
     Only the columns named are read from a file-backed output; see this
     module's Notes for why ``.xarray`` and ``.pandas`` are never touched.
     """
-    sipnet_output = _output_of(output)
-    names = resolve_output_variable_names(output_variable_names)
-    dataset = label_run(
-        sipnet_output.select(names), site=site, batch=batch, site_table=site_table
-    )
-    dataset = _with_field_coords(dataset, tuple(batch or ()))
-    return {name: dataset[name] for name in names}
-
-
-def stack_sipnet_outputs(
-    runs: Mapping[tuple[int, ...], SIPNETResult | SIPNETOutput],
-    output_variable_names: Sequence[str],
-    *,
-    key_dims: Sequence[str] = (SAMPLE, SITE),
-    site_table: pd.DataFrame | None = None,
-) -> dict[str, xr.DataArray]:
-    """Many SIPNET runs, keyed by their labels, as ``(*batch, site, time)`` fields.
-
-    Parameters
-    ----------
-    runs:
-        A mapping from each run's labels, a tuple in *key_dims* order, to the
-        run. With the default *key_dims*, ``(sample, site)``. The keys need not
-        form a full rectangle; a combination left out reads as ``NaN``.
-    output_variable_names:
-        As for :func:`from_sipnet_output`.
-    key_dims:
-        What each position of a key labels, as for
-        :func:`stack_model_outputs`.
-    site_table:
-        The site table. Read once from disk when omitted.
-
-    Returns
-    -------
-    dict
-        Keyed by pySIPNET registry name, in the order requested. Each value is
-        a ``DataArray`` with dims ``(*batch, site, time)``, the batch dims in
-        *key_dims* order, ascending in every label, with ``lon``/``lat`` on
-        ``site`` and the ``time`` coordinates of
-        :data:`~sipnet_calibration.conventions.TIME_COORD_NAMES`.
-
-    Raises
-    ------
-    TypeError
-        If *runs* is not a mapping; if a value is neither a ``SIPNETResult``
-        nor a ``SIPNETOutput``; if *output_variable_names* or *key_dims* is not
-        an ordered sequence of names; if a key is not a tuple, or a label in
-        one is a boolean, a float or not an integer; or if *site_table* is not a
-        ``DataFrame``.
-    ValueError
-        If *runs* is empty, or a key does not hold one label per key dim; and
-        for any refusal of :func:`stack_model_outputs`.
-    KeyError
-        If a variable or a site identifier is unknown.
-
-    Notes
-    -----
-    Runs whose time axes differ are aligned by an outer join, so a site
-    covering a shorter record is ``NaN`` outside it. Where every run shares one
-    axis -- the usual case, one driver period across the site pool --
-    ``time_step_start`` and ``time_step_length`` stay one-dimensional on
-    ``time``; where they do not, xarray gives them the dimensions over which
-    they differ, and the result is no longer a field until one site is
-    selected.
-
-    Each run is read and reduced to the variables asked for before the next is
-    touched, so what is held is one column per run and variable, never a run's
-    whole frame.
-    """
-    check_is_a_nonempty_mapping(runs, "runs")
-    names = resolve_output_variable_names(output_variable_names)
-    dims = _as_key_dims(key_dims)
-    table = site_lookup(site_table if site_table is not None else load_sites())
-    model_outputs = {
-        _run_key(key, dims): _output_of(run).select(names) for key, run in runs.items()
-    }
-    stacked = stack_model_outputs(model_outputs, key_dims=dims, site_table=table)
-    return {name: stacked[name] for name in names}
+    run_variables = _run_output_dataset(run_output, output_variable_names)
+    check_run_has_rows(run_variables)
+    if batch is not None:
+        check_batch_labels_are_a_mapping(batch)
+        for dim in batch:
+            check_batch_dim_name_is_not_reserved(dim, message_name="batch")
+            check_batch_name_is_not_the_model_outputs(run_variables, dim)
+    labels = _run_label_coords(site=site, batch=batch, site_table=site_table)
+    kept = (*scalar_batch_labels(run_variables), *labels)
+    model_output = _with_field_coords(run_variables, tuple(kept))
+    if labels:
+        model_output = model_output.assign_coords(labels)
+    validate_model_output(model_output)
+    return model_output
 
 
 def stack_model_outputs(
-    model_outputs: Mapping[tuple[int, ...], xr.Dataset],
+    model_outputs: Mapping[tuple[int, ...], SIPNETResult | SIPNETOutput | xr.Dataset],
     *,
+    output_variable_names: Sequence[str] | None = None,
     key_dims: Sequence[str] = (SAMPLE, SITE),
     site_table: pd.DataFrame | None = None,
 ) -> xr.Dataset:
-    """Many runs' output Datasets, keyed by their labels, as one Dataset.
+    """Many runs' outputs, keyed by their labels, as one Dataset: a model output
+    when the runs share one time axis.
 
     Parameters
     ----------
     model_outputs:
-        A mapping from each run's labels, a tuple in *key_dims* order, to that
-        run's output ``Dataset``, from ``result.outputs.select(names)`` or
-        :func:`label_run`, every run carrying the same variables with the same
-        ``units``, ``constituent`` and ``kind``. A run already labeled by
-        :func:`label_run` must carry the labels of its key. The keys need not
-        form a full rectangle; a combination left out reads as ``NaN``.
+        A mapping from each run's labels, a tuple in *key_dims* order, to
+        that run's output: a ``SIPNETResult`` or ``SIPNETOutput``, or its
+        variables as a Dataset, from ``result.outputs.select(names)`` or
+        :func:`to_model_output`, every run carrying the same variables with
+        the same ``units``, ``constituent`` and ``kind``. A run already
+        labeled by :func:`to_model_output` must carry the labels of its key.
+        The keys need not form a full rectangle; a combination left out reads
+        as ``NaN``.
+    output_variable_names:
+        The variables to take from each run, as :func:`to_model_output` takes
+        them: required when a run is a ``SIPNETResult`` or ``SIPNETOutput``,
+        which is read one run at a time for these columns only; every
+        variable of each Dataset when omitted.
     key_dims:
         What each position of a key labels: ``site`` once, and a batch dim
         name for every other position, such as ``("sample", "site")`` or
@@ -1046,40 +1015,41 @@ def stack_model_outputs(
         carry, and SIPNET's
         ``year``/``day_of_year``/``hour_of_day`` row labels -- is dropped, as
         is the ``bounds`` attribute of ``time``, so each variable of the
-        result is a field.
+        result is a field when the runs share one time axis (see Notes).
 
     Raises
     ------
     TypeError
-        If *model_outputs* is not a mapping, or a value is not an
-        ``xr.Dataset``; if *key_dims* is not an ordered sequence of names; if
-        a key is not a tuple, or a label in one is a boolean, a float or not
-        an integer; or if *site_table* is not a ``DataFrame``.
+        If an argument has the wrong type.
     ValueError
-        If *model_outputs* is empty; if *key_dims* does not name ``site``
-        exactly once, repeats a name, or names a reserved name or a
-        variable, dim or coordinate of a run; if a key does not hold one
-        label per key dim, a site id is out of range or a batch label does
-        not fit ``int64``; if a run has no timesteps; if a run's own label
-        disagrees with its key, or it carries a batch label *key_dims* does
-        not name; if two runs carry different variables, or
-        describe one with different ``units``, ``constituent`` or ``kind``; or
-        if the site table lists a site twice or has no ``lon`` and ``lat``
-        columns.
+        If the runs, their keys and *key_dims* do not make one stack as the
+        Parameters describe, the site table cannot locate the sites, or the
+        runs share one time axis and the result is not a model output.
     KeyError
-        If a site identifier is not in the site table.
+        If a variable or a site is unknown.
 
     Notes
     -----
     Runs whose time axes differ are aligned by an outer join, so a site
     covering a shorter record is ``NaN`` outside it. Where every run shares one
-    axis ``time_step_start`` and ``time_step_length`` stay one-dimensional on
-    ``time``; where they do not, xarray gives them the dimensions over which
-    they differ.
+    axis -- the usual case, one driver period across the site pool --
+    ``time_step_start`` and ``time_step_length`` stay one-dimensional on
+    ``time`` and the result is a model output, checked with
+    :func:`validate_model_output`; where they do not, xarray gives them the
+    dimensions over which they differ, and the result is not one until one
+    site is selected.
+
+    Each run is read and reduced to the variables asked for before the next is
+    touched, so what is held is one column per run and variable, never every
+    column a run wrote.
     """
     check_is_a_nonempty_mapping(model_outputs, "model_outputs")
     dims = _as_key_dims(key_dims)
-    by_key = _model_outputs_by_key(model_outputs, dims)
+    datasets = {
+        key: _run_output_dataset(run_output, output_variable_names)
+        for key, run_output in model_outputs.items()
+    }
+    by_key = _model_outputs_by_key(datasets, dims)
     table = site_table if site_table is not None else load_sites()
     site_position = dims.index(SITE)
     # Checked before stacking, so a site the table lacks fails before the work.
@@ -1100,7 +1070,10 @@ def stack_model_outputs(
     # would otherwise keep them scalar and break the convention. They are
     # looked up for the stack's own sites, in its order, since they assign
     # by position.
-    return stacked.assign_coords(site_locations(stacked[SITE].values.tolist(), table))
+    stacked = stacked.assign_coords(site_locations(stacked[SITE].values.tolist(), table))
+    if all(stacked[name].dims == (TIME,) for name in _INTERVAL_COORD_NAMES if name in stacked.coords):
+        validate_model_output(stacked)
+    return stacked
 
 
 def resolve_output_variable_names(output_variable_names: Iterable[str]) -> list[str]:
@@ -1233,7 +1206,7 @@ def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
 
 # ── supporting helpers ────────────────────────────────────────────────────────
 
-#: The scalar location coordinates :func:`label_run` adds beside ``site``.
+#: The scalar location coordinates :func:`to_model_output` adds beside ``site``.
 _LOCATION_COORD_NAMES: tuple[str, ...] = (SITE, LON, LAT)
 
 #: The attributes that say what quantity a variable is, which every stacked
@@ -1268,11 +1241,6 @@ def _is_batch_dim(field: xr.DataArray | xr.Dataset, dim: str) -> bool:
     if dim in NON_BATCH_DIM_NAMES or dim not in field.indexes:
         return False
     return field.indexes[dim].dtype.kind in "iu"
-
-
-def _is_missing(value: Any) -> bool:
-    """Whether one element of an object array is a missing value, ``None`` or ``NaN``."""
-    return value is None or (isinstance(value, float) and np.isnan(value))
 
 
 def _dim_rank(field: xr.DataArray, dim: str) -> int | None:
@@ -1387,15 +1355,32 @@ def _output_of(output: SIPNETResult | SIPNETOutput) -> SIPNETOutput:
         return resolved
     if resolved is output:
         raise TypeError(
-            "expected a pysipnet SIPNETResult or SIPNETOutput, got "
-            f"{type(output).__name__}, which has neither .outputs nor .select; pass "
-            "the result SIPNETModel or SIPNETRunner returned, or its .outputs."
+            "expected a pysipnet SIPNETResult or SIPNETOutput, or a run's output as an "
+            f"xarray Dataset, got {type(output).__name__}, which has neither .outputs nor "
+            ".select; pass the result SIPNETModel or SIPNETRunner returned, its .outputs, "
+            "or result.outputs.select(names)."
         )
     raise TypeError(
         f"expected a pysipnet SIPNETResult, got {type(output).__name__} whose "
         f".outputs is {type(resolved).__name__} rather than a SIPNETOutput; pass "
         "the result SIPNETModel or SIPNETRunner returned."
     )
+
+
+def _run_output_dataset(
+    run_output: Any, output_variable_names: Sequence[str] | None
+) -> xr.Dataset:
+    """A run's variables as a Dataset: from a ``SIPNETOutput``, or the Dataset given.
+
+    A Dataset is narrowed to *output_variable_names* when they are given.
+    """
+    if isinstance(run_output, xr.Dataset):
+        if output_variable_names is None:
+            return run_output
+        return run_output[resolve_output_variable_names(output_variable_names)]
+    sipnet_output = _output_of(run_output)
+    check_output_variable_names_are_given_for_a_sipnet_output(output_variable_names)
+    return sipnet_output.select(resolve_output_variable_names(output_variable_names))
 
 
 def _run_label_coords(
@@ -1543,6 +1528,125 @@ def _key_label(key_dims: tuple[str, ...], key: tuple[int, ...]) -> str:
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
+def check_model_output_is_a_dataset(model_output: Any, message_name: str) -> None:
+    """*model_output* is an ``xr.Dataset``."""
+    if not isinstance(model_output, xr.Dataset):
+        raise TypeError(
+            f"{message_name} must be an xarray Dataset of pySIPNET variables, got "
+            f"{type(model_output).__name__}; make a run's output a model output with fields.to_model_output."
+        )
+
+
+def check_model_output_has_a_variable(model_output: xr.Dataset, message_name: str) -> None:
+    """A model output holds at least one variable."""
+    if not model_output.data_vars:
+        raise ValueError(
+            f"{message_name} holds no variable; select the variables to read from the run, "
+            "with fields.to_model_output(output_variable_names=...)."
+        )
+
+
+def check_model_output_carries_no_bounds_or_row_labels(
+    model_output: xr.Dataset, message_name: str
+) -> None:
+    """A model output carries no ``time_bounds``, ``bounds`` or SIPNET row labels."""
+    carried = [
+        name
+        for name in (TIME_BOUNDS, *SIPNET_ROW_LABEL_NAMES)
+        if name in model_output.variables
+    ]
+    if BOUNDS in model_output.dims:
+        carried.append(f"the {BOUNDS!r} dim")
+    if TIME in model_output.coords:
+        carried += [
+            f"time's {name!r} attribute"
+            for name in STALE_TIME_ATTRIBUTE_NAMES
+            if name in model_output[TIME].attrs
+        ]
+    if carried:
+        raise ValueError(
+            f"{message_name} carries {carried}, which a model output does not: time_bounds "
+            "is not a field and SIPNET's row labels repeat time_step_start. Label the run "
+            "with fields.to_model_output, which drops them."
+        )
+
+
+def check_model_output_variable_is_on_time(variable: xr.DataArray, message_name: str) -> None:
+    """A model output's variable is on its ``time`` axis."""
+    if TIME not in variable.dims:
+        raise ValueError(
+            f"{message_name} has no {TIME!r} dim; a model output's variables share its time "
+            "axis, so keep the variable on it (aggregate it with aggregate_time rather than "
+            "reducing time away)."
+        )
+
+
+def check_sipnet_parameter_fields_are_a_dataset(
+    sipnet_parameter_fields: Any, message_name: str
+) -> None:
+    """SIPNET parameter fields are an ``xr.Dataset``."""
+    if not isinstance(sipnet_parameter_fields, xr.Dataset):
+        raise TypeError(
+            f"{message_name} must be an xarray Dataset of SIPNET parameters, got "
+            f"{type(sipnet_parameter_fields).__name__}; build them with "
+            "ParameterVector.sipnet_parameter_fields, or, for one run, a Dataset of "
+            "pysipnet's SIPNETParameters.dataarray(name) with the run's scalar site."
+        )
+
+
+def check_sipnet_parameter_name_is_a_flat_name(name: Any, message_name: str) -> None:
+    """*name* is pySIPNET's flat name of a SIPNET parameter, not an alias."""
+    if not isinstance(name, str):
+        raise TypeError(
+            f"{message_name} name a SIPNET parameter by {name!r}, which is not a string; "
+            "name it by pySIPNET's flat parameter name, such as 'leaf_carbon_per_area'."
+        )
+    try:
+        flat_name = resolve_parameter_name(name)
+    except KeyError as error:
+        raise KeyError(
+            f"{message_name} name {name!r}, which is not a pySIPNET parameter ({error}); "
+            "use a flat name of pysipnet.parameters.model.PARAMETER_SPECS, such as "
+            "'max_photosynthesis_rate'."
+        ) from None
+    if flat_name != name:
+        raise ValueError(
+            f"{message_name} name {name!r}, an alias of pySIPNET's {flat_name!r}; "
+            "SIPNETModel, the model output and SIPNET parameter fields carry only the flat "
+            f"names, so rename it to {flat_name!r}."
+        )
+
+
+def check_parameter_variable_has_a_site(variable: xr.DataArray, message_name: str) -> None:
+    """A parameter's variable says which site it is for: a ``site`` dim or scalar."""
+    if SITE not in variable.coords:
+        raise ValueError(
+            f"{message_name} has no {SITE!r}, as a dim or a scalar coordinate; a parameter "
+            "value is for a site, so keep the site dim, or select one site with "
+            ".sel(site=...), which keeps it as a scalar."
+        )
+
+
+def check_parameter_variable_is_off_time(variable: xr.DataArray, message_name: str) -> None:
+    """A parameter's variable has no ``time`` dim: a parameter holds over the run."""
+    if TIME in variable.dims:
+        raise ValueError(
+            f"{message_name} has a {TIME!r} dim; a parameter holds for the whole run, so "
+            "select one time, or keep a time-varying input among the drivers."
+        )
+
+
+def check_output_variable_names_are_given_for_a_sipnet_output(
+    output_variable_names: Sequence[str] | None,
+) -> None:
+    """A ``SIPNETOutput`` is read for named variables only."""
+    if output_variable_names is None:
+        raise TypeError(
+            "a pySIPNET SIPNETOutput is read one column per variable asked for, and none "
+            "were; pass output_variable_names=, such as ['nee', 'wood_carbon']."
+        )
+
+
 def check_field_is_a_dataarray(field: Any, message_name: str | None = None) -> None:
     """*field* is an ``xr.DataArray``."""
     if not isinstance(field, xr.DataArray):
@@ -1554,15 +1658,7 @@ def check_field_is_a_dataarray(field: Any, message_name: str | None = None) -> N
 
 
 def check_field_dims_are_field_dims(field: xr.DataArray, message_name: str) -> None:
-    """Every dim is a batch dim, a spatial dim or ``time``, in that order, one space.
-
-    Runs :func:`check_dims_are_batch_spatial_or_time`,
-    :func:`check_field_point_labels_are_integers`,
-    :func:`check_field_has_at_most_one_spatial_dim`,
-    :func:`check_field_dims_are_in_order`,
-    :func:`check_field_batch_labels_are_distinct` and
-    :func:`check_field_batch_labels_fit_int64`, in that order.
-    """
+    """Every dim is a batch dim, a spatial dim or ``time``, in that order, one space."""
     check_dims_are_batch_spatial_or_time(field, message_name=message_name)
     check_field_point_labels_are_integers(field, message_name)
     check_field_has_at_most_one_spatial_dim(field, message_name)
@@ -1572,11 +1668,7 @@ def check_field_dims_are_field_dims(field: xr.DataArray, message_name: str) -> N
 
 
 def check_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message_name: str) -> None:
-    """Every dim of *field* is labeled and is a batch dim, a spatial dim or ``time``.
-
-    Runs :func:`check_dims_are_labeled` and
-    :func:`check_labeled_dims_are_batch_spatial_or_time`, in that order.
-    """
+    """Every dim of *field* is labeled and is a batch dim, a spatial dim or ``time``."""
     # The part of the field contract that holds in any dim order, which the
     # vectors' flat and parameter_vector.sipnet_overrides apply to what they
     # read.
@@ -1681,13 +1773,7 @@ def check_field_site_holds_site_ids(field: xr.DataArray, message_name: str) -> N
 
 
 def check_field_locations_are_on_the_spatial_dim(field: xr.DataArray, message_name: str) -> None:
-    """``lon``/``lat`` are ``float64`` on a ``site`` or ``point`` dim, or scalars beside one.
-
-    Runs :func:`check_field_location_is_on_the_dim` for a ``site`` or
-    ``point`` dim, :func:`check_field_location_is_a_scalar` for a scalar
-    ``site`` or ``point``, and :func:`check_field_locations_are_off_batch_and_time`
-    when there is neither.
-    """
+    """``lon``/``lat`` are ``float64``, on a ``site`` or ``point`` dim or scalars."""
     for dim in (SITE, POINT):
         if dim in field.dims:
             for name in (LON, LAT):
@@ -1817,60 +1903,55 @@ def check_field_has_a_batch_dim(dims: tuple[str, ...], message_name: str) -> Non
 
 
 def check_stack_names_are_free(
-    field: xr.DataArray, into: Any, dims: tuple[str, ...], label_names: tuple[str, ...]
+    field: xr.DataArray, new_batch_dim: Any, dims: tuple[str, ...], label_names: tuple[str, ...]
 ) -> None:
-    """The stacked dim's name is new, and its label coordinates' names are free on *field*.
-
-    Runs :func:`check_batch_dim_name_is_not_reserved`,
-    :func:`check_batch_dim_name_is_not_a_data_source_member`,
-    :func:`check_stack_name_is_not_a_stacked_dim`,
-    :func:`check_stack_name_is_not_a_label_name`,
-    :func:`check_stack_name_is_not_the_fields_name`,
-    :func:`check_stack_name_is_not_a_coordinate` and
-    :func:`check_stack_label_names_are_free`, in that order.
-    """
-    check_batch_dim_name_is_not_reserved(into, message_name="into")
-    check_batch_dim_name_is_not_a_data_source_member(into, message_name="into")
-    check_stack_name_is_not_a_stacked_dim(into, dims)
-    check_stack_name_is_not_a_label_name(into, label_names)
-    check_stack_name_is_not_the_fields_name(field, into)
-    check_stack_name_is_not_a_coordinate(field, into)
+    """The stacked dim's name is new, and its label coordinates' names are free."""
+    check_batch_dim_name_is_not_reserved(new_batch_dim, message_name="new_batch_dim")
+    check_batch_dim_name_is_not_a_data_source_member(new_batch_dim, message_name="new_batch_dim")
+    check_stack_name_is_not_a_stacked_dim(new_batch_dim, dims)
+    check_stack_name_is_not_a_label_name(new_batch_dim, label_names)
+    check_stack_name_is_not_the_fields_name(field, new_batch_dim)
+    check_stack_name_is_not_a_coordinate(field, new_batch_dim)
     check_stack_label_names_are_free(field, label_names)
 
 
-def check_stack_name_is_not_a_stacked_dim(into: str, dims: tuple[str, ...]) -> None:
+def check_stack_name_is_not_a_stacked_dim(new_batch_dim: str, dims: tuple[str, ...]) -> None:
     """The stacked dim is not named for one of the dims stacked into it."""
-    if into in dims:
+    if new_batch_dim in dims:
         raise ValueError(
-            f"into={into!r} is one of the dims stacked ({list(dims)}); a stacked dim is a new "
-            "index, labeled 0 to n - 1, so it takes a new name, such as 'run'."
+            f"new_batch_dim={new_batch_dim!r} is one of the dims stacked ({list(dims)}); a "
+            "stacked dim is a new index, labeled 0 to n - 1, so it takes a new name, such as "
+            "'run'."
         )
 
 
-def check_stack_name_is_not_a_label_name(into: str, label_names: tuple[str, ...]) -> None:
+def check_stack_name_is_not_a_label_name(
+    new_batch_dim: str, label_names: tuple[str, ...]
+) -> None:
     """The stacked dim is not named like a label coordinate the stack creates."""
-    if into in label_names:
+    if new_batch_dim in label_names:
         raise ValueError(
-            f"into={into!r} is one of the names the stacked labels would take "
+            f"new_batch_dim={new_batch_dim!r} is one of the names the stacked labels would take "
             f"({list(label_names)}); stack into another name, such as 'run'."
         )
 
 
-def check_stack_name_is_not_the_fields_name(field: xr.DataArray, into: str) -> None:
+def check_stack_name_is_not_the_fields_name(field: xr.DataArray, new_batch_dim: str) -> None:
     """The stacked dim is not named like the field itself."""
-    if field.name == into:
+    if field.name == new_batch_dim:
         raise ValueError(
-            f"into={into!r} is the field's own name, which a dim of it cannot share (xarray "
-            "refuses the Dataset); stack into another name, or rename the field."
+            f"new_batch_dim={new_batch_dim!r} is the field's own name, which a dim of it "
+            "cannot share (xarray refuses the Dataset); stack into another name, or rename "
+            "the field."
         )
 
 
-def check_stack_name_is_not_a_coordinate(field: xr.DataArray, into: str) -> None:
+def check_stack_name_is_not_a_coordinate(field: xr.DataArray, new_batch_dim: str) -> None:
     """The stacked dim is not named like a coordinate *field* carries."""
-    if into in field.coords:
+    if new_batch_dim in field.coords:
         raise ValueError(
-            f"into={into!r} is a coordinate of the field already; drop it, or stack into "
-            "another name."
+            f"new_batch_dim={new_batch_dim!r} is a coordinate of the field already; drop it, "
+            "or stack into another name."
         )
 
 
@@ -2044,8 +2125,8 @@ def check_at_most_one_batch_dim(dims: Sequence[str], *, message_name: str) -> No
         raise ValueError(
             f"{message_name} carries the batch dims {list(dims)}, and Flat has one row axis; "
             "reduce all but one, or stack them into a new dim with "
-            "fields.stack_batch_dims(field, into='run'): for a Dataset, "
-            "dataset.map(lambda field: stack_batch_dims(field, into='run')), and for a "
+            "fields.stack_batch_dims(field, new_batch_dim='run'): for a Dataset, "
+            "dataset.map(lambda field: stack_batch_dims(field, new_batch_dim='run')), and for a "
             "dict, one call per entry."
         )
 
