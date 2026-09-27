@@ -502,9 +502,11 @@ These apply to the library and the scripts alike.
   and so do the plotting package and `projection.py`, where an unknown key of
   a registry (a role, a renderer, an extent, a basemap layer) is a `KeyError`,
   an unknown option string (`show=`, `share=`, `scale=`) a `ValueError`, and
-  a key or option that is not a string a `TypeError`; a number argument takes
-  any real scalar, a zero-dimensional NumPy, xarray or JAX array included
-  (`style.as_real_number`).
+  a key or option that is not a string a `TypeError`. A real-number argument
+  (a length, a spacing, `n_sigma`, `interval`, `vmin`/`vmax`/`center`, a
+  quantile or a level) takes any real scalar, a zero-dimensional NumPy,
+  xarray or JAX array included, through `style.as_real_number`; a count
+  (`ncol`, `n_max`, `pixels`) is an integer by `validation`'s rule.
 - **Messages** start lowercase, name the invariant that broke, then `;` and
   what to do about it; name the subject through a `message_name` argument,
   passed last; and truncate a list to ten items with one helper,

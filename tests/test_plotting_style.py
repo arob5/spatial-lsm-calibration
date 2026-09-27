@@ -190,3 +190,26 @@ def test_an_unhashable_role_is_a_type_error():
     """It raised Python's own 'unhashable type'."""
     with pytest.raises(TypeError, match=r"a role is named by a string, got list \['prior'\]"):
         role_style(["prior"])
+
+
+@pytest.mark.parametrize("role", [1, None, b"prior"])
+def test_a_role_that_is_not_a_string_is_a_type_error(role):
+    """They were KeyErrors, while an unhashable one was a TypeError."""
+    with pytest.raises(TypeError, match="a role is named by a string"):
+        role_style(role)
+
+
+def test_a_number_no_float_holds_and_an_array_are_refused_in_our_words():
+    from decimal import Decimal
+
+    import numpy as np
+    import xarray as xr
+
+    from sipnet_calibration.plotting.style import as_real_number
+
+    for value in (Decimal("sNaN"), 10**400):
+        with pytest.raises(ValueError, match="x must be a number a float can hold"):
+            as_real_number(value, message_name="x")
+    with pytest.raises(TypeError, match=r"got DataArray of shape \(1,\); pass one\.$"):
+        as_real_number(xr.DataArray([2.0], dims="d"), message_name="x")
+    assert as_real_number(np.array(2.0), message_name="x") == 2.0

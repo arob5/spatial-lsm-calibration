@@ -6,13 +6,16 @@ from functools import partial
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 
+from conftest import make_field
 from sipnet_calibration.plotting.facet import (
     SHARE_OPTIONS,
     build_plot_grid,
     plot_by_site,
     plot_by_variable,
+    plot_map_by,
 )
 from sipnet_calibration.plotting.series import plot_time_series
 
@@ -392,8 +395,6 @@ def test_plot_by_variable_falls_back_to_the_variable_name(field_time):
 
 def test_plot_by_variable_accepts_fields_on_different_time_axes(field_time):
     """Two variables on different time axes in one call."""
-    from conftest import make_field
-
     fields = {"a": field_time, "b": make_field(("time",), n_time=7)}
     _, axes = plot_by_variable(fields, ncol=2)
     assert len(axes[0].lines[0].get_ydata()) != len(axes[1].lines[0].get_ydata())
@@ -403,3 +404,79 @@ def test_plot_by_variable_rejects_an_empty_mapping():
     """An empty mapping raises, naming the form it is keyed by (variable names, not titles)."""
     with pytest.raises(ValueError, match=r"nothing to draw; pass \{name: field\}"):
         plot_by_variable({})
+
+
+# ── plot_map_by: labels asked for by value, and their titles ──────────────────
+
+
+def _hourly_map():
+    """``(site, time)``, 3-hourly from 2012-01-01."""
+    return make_field(("site", "time"), n_time=3)
+
+
+@pytest.mark.parametrize("values, match", [(5, "got int 5"), ("ab", "one string"), ({1, 2}, "a set")])
+def test_plot_map_by_refuses_values_that_are_not_a_sequence(values, match):
+    with pytest.raises(TypeError, match=match):
+        plot_map_by(make_field(("sample", "site")), "sample", values=values)
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        lambda t: [t.to_datetime64().astype("datetime64[ns]")],
+        lambda t: [t.to_datetime64().astype("datetime64[s]")],
+        lambda t: [t],
+        lambda t: [t.to_pydatetime()],
+        lambda t: np.array([t.to_datetime64()], dtype="datetime64[ns]"),
+        lambda t: (label for label in [t]),
+    ],
+    ids=["datetime64[ns] list", "datetime64[s] list", "Timestamp list", "datetime list",
+         "datetime64 array", "generator"],
+)
+def test_plot_map_by_finds_time_labels_given_in_any_form(form):
+    """A list of datetime64[ns] labels was turned into integers and not found; a
+    Timestamp was titled 'time 2012-01-01 03:00:00' where the default path titles
+    the same label '2012-01-01 03:00'."""
+    field = _hourly_map()
+    figure, axes = plot_map_by(field, "time", values=form(pd.Timestamp(field.time.values[1])))
+    assert [ax.get_title() for ax in axes] == ["2012-01-01 03:00"]
+
+
+def test_plot_map_by_takes_time_labels_as_a_data_array():
+    field = _hourly_map()
+    figure, axes = plot_map_by(field, "time", values=field.time[::2])
+    assert [ax.get_title() for ax in axes] == ["2012-01-01", "2012-01-01 06:00"]
+
+
+def test_plot_map_by_titles_a_float_label_as_the_integer_it_selects():
+    """[2.0] on an integer coordinate was titled 'sample 2.0', unlike the default 'sample 2'."""
+    figure, axes = plot_map_by(make_field(("sample", "site")), "sample", values=[2.0])
+    assert [ax.get_title() for ax in axes] == ["sample 2"]
+
+
+def test_plot_map_by_titles_sub_minute_labels_to_the_second():
+    """They fell back to 'time 2012-01-01T00:00:10.000000'."""
+    field = _hourly_map().assign_coords(
+        time=pd.DatetimeIndex(["2012-01-01 00:00:10", "2012-01-01 00:00:20", "2012-01-01 00:01"])
+    )
+    figure, axes = plot_map_by(field, "time")
+    assert [ax.get_title() for ax in axes] == [
+        "2012-01-01 00:00:10", "2012-01-01 00:00:20", "2012-01-01 00:01"
+    ]
+    figure, axes = plot_map_by(field, "time", values=list(field.time.to_index()[:2]))
+    assert [ax.get_title() for ax in axes] == ["2012-01-01 00:00:10", "2012-01-01 00:00:20"]
+
+
+def test_plot_map_by_finds_integer_labels_and_names_a_missing_one_as_held():
+    figure, axes = plot_map_by(make_field(("sample", "site")), "sample", values=[2, 0])
+    assert [ax.get_title() for ax in axes] == ["sample 2", "sample 0"]
+    # A string is not a time label; the message shows the field's own labels.
+    with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[np.str_\('2012-02'\)\]; "
+                       r"it holds 3, \[Timestamp\('2012-01-01"):
+        plot_map_by(_hourly_map(), "time", values=["2012-02"])
+
+
+def test_plot_map_by_names_a_missing_time_label_as_the_field_holds_it():
+    """Held ns labels were printed as integers, so a label read as missing and held at once."""
+    with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[Timestamp\('2013"):
+        plot_map_by(_hourly_map(), "time", values=[np.datetime64("2013-01-01", "ns")])

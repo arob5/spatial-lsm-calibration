@@ -942,3 +942,18 @@ class TestExtents:
         assert len(select_sites(site_table, bbox=EXTENTS["NORTH_AMERICA"])) == len(site_table)
         assert len(select_sites(site_table, bbox=EXTENTS["CONUS"])) == 3640
         assert 0 < len(select_sites(site_table, bbox=EXTENTS["ALASKA"])) < len(site_table)
+
+
+class TestCoordinatesNoFloatHolds:
+    def test_a_huge_or_signaling_value_is_refused_in_our_words(self):
+        from decimal import Decimal
+
+        for lon in ([10**400, -90.0], [Decimal("sNaN")]):
+            with pytest.raises(ValueError, match="lon must be numbers a float can hold"):
+                SITE_PROJECTION.forward(lon, [40.0] * len(lon))
+        with pytest.raises(ValueError, match="lon_0 must be numbers a float can hold"):
+            Projection(name="x", lat_0=50.0, lon_0=10**400)
+
+    def test_an_empty_array_of_strings_is_refused_plainly(self):
+        with pytest.raises(TypeError, match="it holds no numbers, being an empty array of strings"):
+            SITE_PROJECTION.forward(np.array([], dtype=str), np.array([], dtype=float))

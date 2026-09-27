@@ -126,6 +126,7 @@ Usage
 from __future__ import annotations
 
 import functools
+import numbers
 import textwrap
 from dataclasses import dataclass
 from typing import Any, Mapping, NamedTuple, Protocol, Sequence
@@ -410,6 +411,7 @@ def animate_map(
     milliseconds = round(interval * 1e3)
     check_interval_is_a_millisecond_or_more(interval, milliseconds)
     validate_field(field)
+    check_ax_is_not_a_dim_name(ax)
     primitives.check_ax_is_an_axes(ax)
     name = message_name(field)
     check_field_has_the_dim(field, dim, message_name=name)
@@ -526,7 +528,9 @@ class Cells:
     interpolates = False
 
     def __post_init__(self) -> None:
-        radius = as_positive_number(self.radius, fix='pass a radius in projected meters, such as 50e3', message_name="radius")
+        radius = as_positive_number(
+            self.radius, fix="pass a radius in projected meters, such as 50e3", message_name="radius"
+        )
         object.__setattr__(self, "radius", radius)
         as_positive_integer(self.pixels, message_name="pixels")
 
@@ -562,7 +566,10 @@ class Triangles:
 
     def __post_init__(self) -> None:
         max_edge = as_positive_number(
-            self.max_edge, finite=False, fix="pass a length in projected meters, such as 150e3, or float('inf') to mask none", message_name="max_edge"
+            self.max_edge,
+            finite=False,
+            fix="pass a length in projected meters, such as 150e3, or float('inf') to mask none",
+            message_name="max_edge",
         )
         object.__setattr__(self, "max_edge", max_edge)
 
@@ -723,6 +730,10 @@ def color_scale(
         disagree on their classes; if *colors* names an unknown class; if
         *log* is combined with *center* or meets a nonpositive value.
     """
+    vmin, vmax, center = (
+        _as_color_limit(limit, name)
+        for limit, name in ((vmin, "vmin"), (vmax, "vmax"), (center, "center"))
+    )
     categorical = [is_categorical(field) for field in fields]
     check_fields_are_all_categorical_or_all_continuous(categorical)
     if all(categorical) and fields:
@@ -751,10 +762,17 @@ def quantile_label(quantile: float) -> str:
 
 
 def coordinate_label(dim: str, value: Any) -> str:
-    """A panel or frame title for one value of *dim*: a date, or ``"sample 3"``."""
+    """A panel or frame title for one value of *dim*: a date, or ``"sample 3"``.
+
+    A time is given to the day, the minute or the second, as far as it needs.
+    """
     if np.issubdtype(np.asarray(value).dtype, np.datetime64):
         stamp = pd.Timestamp(value)
-        return stamp.strftime("%Y-%m-%d") if stamp == stamp.normalize() else stamp.strftime("%Y-%m-%d %H:%M")
+        if stamp == stamp.normalize():
+            return stamp.strftime("%Y-%m-%d")
+        if stamp.second == 0 and stamp.microsecond == 0 and stamp.nanosecond == 0:
+            return stamp.strftime("%Y-%m-%d %H:%M")
+        return f"{stamp:%Y-%m-%d %H:%M:%S}" if stamp.microsecond == 0 else str(stamp)
     return f"{dim} {value}"
 
 
@@ -889,10 +907,22 @@ def _draw_map(
     return artist, renderer
 
 
+def _as_color_limit(value: Any, name: str) -> float | None:
+    """A color limit or center as a finite ``float``, or ``None`` for one taken from the values."""
+    if value is None:
+        return None
+    limit = as_real_number(
+        value, fix="pass a number in the field's units, or None", message_name=name
+    )
+    check_color_limit_is_finite(limit, message_name=name)
+    return limit
+
+
 def _basemap_layer_names(basemap: bool | Sequence[str]) -> tuple[str, ...]:
     """The basemap layers ``basemap=`` asks for: all, none, or the names given."""
     if isinstance(basemap, (bool, np.bool_)):
         return DEFAULT_LAYER_NAMES if basemap else ()
+    check_basemap_is_a_bool_or_names(basemap)
     return as_layer_names(basemap, message_name="basemap")
 
 
@@ -1252,8 +1282,8 @@ def check_quantile_is_in_range(quantile: float, *, message_name: str) -> None:
     """A quantile lies in (0, 1)."""
     if not 0.0 < quantile < 1.0:
         raise ValueError(
-            f"{message_name} must be a quantile in (0, 1), got {quantile!r}; pass one such "
-            "as 0.05."
+            f"{message_name} must lie in (0, 1), got {quantile!r}; pass a quantile such as "
+            "0.05."
         )
 
 
@@ -1400,4 +1430,32 @@ def check_interval_is_a_millisecond_or_more(interval: float, milliseconds: int) 
         raise ValueError(
             f"interval is in seconds, and {interval!r} s rounds to no milliseconds between "
             "frames; pass at least 0.001."
+        )
+
+
+def check_basemap_is_a_bool_or_names(basemap: Any) -> None:
+    """``basemap=`` is a boolean or a sequence of layer names, not ``None`` or a number."""
+    if basemap is None or isinstance(basemap, numbers.Number) or not hasattr(basemap, "__iter__"):
+        raise TypeError(
+            f"basemap must be True, False or layer names, got {type(basemap).__name__} "
+            f"{basemap!r}; pass True, False, or layer names such as "
+            f"{tuple(DEFAULT_LAYER_NAMES[:2])!r}, from {list(DEFAULT_LAYER_NAMES)}."
+        )
+
+
+def check_ax_is_not_a_dim_name(ax: Any) -> None:
+    """An animation is given its Axes second, as ``animate_map(field, ax, dim)``."""
+    if isinstance(ax, str):
+        raise TypeError(
+            f"animate_map takes (field, ax, dim=...), and got the string {ax!r} where the "
+            f"Axes goes; pass animate_map(field, ax, {ax!r})."
+        )
+
+
+def check_color_limit_is_finite(value: float, *, message_name: str) -> None:
+    """A color limit or center is finite."""
+    if not np.isfinite(value):
+        raise ValueError(
+            f"{message_name} must be finite, got {value!r}; pass a number in the field's "
+            "units, or None to take it from the values in the frame."
         )

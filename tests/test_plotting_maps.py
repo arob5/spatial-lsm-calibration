@@ -875,18 +875,6 @@ def test_an_animation_refuses_an_interval_that_is_not_seconds(ax, dense, interva
 # ── sequence arguments, and what is refused before drawing ───────────────────
 
 
-@pytest.mark.parametrize("values, match", [(5, "got int 5"), ("ab", "one string"), ({1, 2}, "a set")])
-def test_plot_map_by_refuses_values_that_are_not_a_sequence(ensemble, values, match):
-    with pytest.raises(TypeError, match=match):
-        plot_map_by(ensemble, "sample", values=values)
-
-
-def test_plot_map_by_takes_time_labels_as_an_array(dense):
-    field = frames(dense)
-    figure, axes = plot_map_by(field, "time", values=field.time[::2])
-    assert [ax.get_title() for ax in axes] == ["2012-01-01", "2012-03-01"]
-
-
 def test_plot_map_quantiles_refuses_quantiles_that_are_not_a_sequence(ensemble):
     with pytest.raises(TypeError, match="quantiles must be a sequence"):
         plot_map_quantiles(ensemble, 0.5)
@@ -894,7 +882,7 @@ def test_plot_map_quantiles_refuses_quantiles_that_are_not_a_sequence(ensemble):
 
 def test_plot_map_quantiles_names_its_own_argument_for_a_quantile_out_of_range(ensemble):
     """The message named summarize_batch's stat, which the caller never passed."""
-    with pytest.raises(ValueError, match=r"quantiles must be a quantile in \(0, 1\), got 1.5"):
+    with pytest.raises(ValueError, match=r"quantiles must lie in \(0, 1\), got 1.5"):
         plot_map_quantiles(ensemble, (1.5,))
 
 
@@ -924,50 +912,6 @@ def test_animate_map_takes_its_axes_second_like_the_other_plotters(ax, dense):
     """animate_map(field, ax, dim), as plot_map(field, ax) and plot_time_series(field, ax)."""
     animation = animate_map(frames(dense), ax, "time")
     assert animation._fig is ax.figure
-
-
-# ── labels asked for by value, in every form a caller has them ───────────────
-
-
-@pytest.mark.parametrize(
-    "form",
-    [
-        lambda t: [t.to_datetime64().astype("datetime64[ns]")],
-        lambda t: [t.to_datetime64().astype("datetime64[D]")],
-        lambda t: [t],
-        lambda t: [t.to_pydatetime()],
-        lambda t: np.array([t.to_datetime64()], dtype="datetime64[ns]"),
-        lambda t: (label for label in [t]),
-    ],
-    ids=["datetime64[ns] list", "datetime64[D] list", "Timestamp list", "datetime list",
-         "datetime64 array", "generator"],
-)
-def test_plot_map_by_finds_time_labels_given_in_any_form(dense, form):
-    """A list of datetime64[ns] labels was turned into integers and not found."""
-    import pandas as pd
-
-    field = frames(dense)
-    second = pd.Timestamp(field.time.values[1])
-    figure, axes = plot_map_by(field, "time", values=form(second))
-    assert [ax.get_title() for ax in axes] == ["2012-02-01"]
-
-
-def test_plot_map_by_finds_integer_labels_and_names_a_missing_one_as_held(ensemble, dense):
-    figure, axes = plot_map_by(ensemble, "sample", values=[3, 7])
-    assert [ax.get_title() for ax in axes] == ["sample 3", "sample 7"]
-    # A string is not a time label; the message shows the field's own labels.
-    with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[np.str_\('2012-02'\)\]; "
-                       r"it holds 3, \[Timestamp\('2012-01-01"):
-        plot_map_by(frames(dense), "time", values=["2012-02"])
-
-
-def test_plot_map_by_names_a_missing_time_label_as_the_field_holds_it(dense):
-    """Held ns labels were printed as integers, so a label read as missing and held at once."""
-    import pandas as pd
-
-    with pytest.raises(KeyError, match=r"no such time label\(s\) in the field: \[Timestamp\('2013"):
-        plot_map_by(frames(dense), "time", values=[np.datetime64("2013-01-01", "ns")])
-    del pd
 
 
 # ── numbers in every form a caller has them ───────────────────────────────────
@@ -1047,3 +991,33 @@ def test_plot_map_grid_names_a_list_briefly(dense):
 def test_basemap_takes_numpy_booleans(ax, dense, basemap, drawn):
     plot_map(dense, ax, basemap=basemap, graticule=False)
     assert len([c for c in ax.collections if c.zorder >= BASEMAP_ZORDER]) == drawn
+
+
+# ── color limits, basemap values and the animation's argument order ──────────
+
+
+@pytest.mark.parametrize("keyword", ["vmin", "vmax", "center"])
+@pytest.mark.parametrize("value, error", [("0.5", TypeError), (True, TypeError), (float("nan"), ValueError)])
+def test_a_color_limit_that_is_not_a_finite_number_is_refused(ax, dense, keyword, value, error):
+    """vmin='0.5', True and nan were taken; center='0.5' failed in Python's words."""
+    with pytest.raises(error, match=f"{keyword} must be"):
+        plot_map(dense, ax, **{keyword: value})
+    assert not ax.collections
+
+
+def test_a_color_limit_takes_a_zero_dimensional_array(ax, dense):
+    plot_map(dense, ax, center=np.array(0.0), vmin=xr.DataArray(5.0))
+    norm = data_artist(ax).norm
+    assert norm.vmin == -norm.vmax
+
+
+@pytest.mark.parametrize("basemap", [None, 0, 1])
+def test_basemap_none_or_a_number_is_refused_naming_the_layers(ax, dense, basemap):
+    """validation's advice read "pass a sequence such as ['a', 'b']"."""
+    with pytest.raises(TypeError, match=r"pass True, False, or layer names such as \('coastline', 'lakes'\)"):
+        plot_map(dense, ax, basemap=basemap)
+
+
+def test_animate_map_given_the_dim_where_the_axes_go_names_the_order(dense):
+    with pytest.raises(TypeError, match=r"animate_map takes \(field, ax, dim=...\).*pass animate_map\(field, ax, 'time'\)"):
+        animate_map(frames(dense), "time")

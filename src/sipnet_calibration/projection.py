@@ -706,6 +706,7 @@ def _as_coordinates(lon: Any, lat: Any) -> tuple[np.ndarray, np.ndarray, bool]:
     for values, name in ((lon, "lon"), (lat, "lat")):
         check_coordinates_form_an_array(values, message_name=name)
         check_coordinates_are_numbers(values, message_name=name)
+        check_values_fit_floats(values, message_name=name)
     longitude = _as_float_array(lon)
     latitude = _as_float_array(lat)
     check_coordinates_are_finite(longitude, latitude)
@@ -731,6 +732,10 @@ def _as_float_array(values: Any) -> np.ndarray:
 #: The fields of :class:`Projection` that are numbers.
 _NUMERIC_PARAMETER_NAMES: tuple[str, ...] = ("lat_0", "lon_0", "false_easting", "false_northing")
 
+#: What an array of each non-numeric dtype kind holds, as a message says it.
+_KIND_NAMES = {"U": "strings", "S": "bytes", "b": "booleans", "c": "complex numbers",
+               "M": "datetimes", "m": "timedeltas", "O": "objects", "V": "records"}
+
 #: What :func:`_first_value_that_is_not_a_coordinate` returns when every value is one.
 _NO_VALUE = object()
 
@@ -750,6 +755,7 @@ def _as_parameter(value: Any, name: str) -> float:
     if hasattr(value, "__array__") and not isinstance(value, (str, bytes)) and np.ndim(value) == 0:
         value = np.asarray(value).item()
     check_parameter_is_a_real_number(value, name)
+    check_values_fit_floats(value, message_name=name)
     return float(value)
 
 
@@ -978,11 +984,17 @@ def check_bbox_excludes_the_antipode(
 
 def check_coordinates_are_numbers(values: Any, *, message_name: str) -> None:
     """Coordinates are real numbers, or an array of them; ``None`` is a missing one."""
-    offending = _first_value_that_is_not_a_coordinate(np.asarray(np.ma.getdata(values)))
+    array = np.asarray(np.ma.getdata(values))
+    offending = _first_value_that_is_not_a_coordinate(array)
     if offending is not _NO_VALUE:
+        held = (
+            f"{type(offending).__name__} {offending!r}"
+            if array.size
+            else f"no numbers, being an empty array of {_KIND_NAMES.get(array.dtype.kind, 'values')}"
+        )
         raise TypeError(
-            f"{message_name} must be real numbers in degrees, and it holds "
-            f"{type(offending).__name__} {offending!r}; pass numbers, or an array of them."
+            f"{message_name} must be real numbers in degrees, and it holds {held}; pass "
+            "numbers, or an array of them."
         )
 
 
@@ -1049,6 +1061,17 @@ def check_stem_is_a_file_name(stem: str) -> None:
             f"stem must be a bare file name, not a path, got {stem!r}; pass the directory "
             "as directory=."
         )
+
+
+def check_values_fit_floats(values: Any, *, message_name: str) -> None:
+    """Real numbers convert to floats: none is ``10**400`` or a signaling NaN."""
+    try:
+        _as_float_array(values)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(
+            f"{message_name} must be numbers a float can hold, and one is not ({error}); "
+            "pass numbers in degrees or meters."
+        ) from None
 
 
 # ── the project's projection ──────────────────────────────────────────────────

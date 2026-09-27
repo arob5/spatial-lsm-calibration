@@ -76,6 +76,7 @@ from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import xarray as xr
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
@@ -371,7 +372,9 @@ def plot_map_grid(
         for a panel, every panel checked before any is drawn.
     """
     check_fields_are_a_mapping(fields_by_title, message_name="fields_by_title")
-    check_fields_are_given(fields_by_title, example="{title: field}", message_name="fields_by_title")
+    check_fields_are_given(
+        fields_by_title, example="{title: field}", message_name="fields_by_title"
+    )
     check_option_is_known(scale, SCALE_OPTIONS, message_name="scale")
     panel_fields = list(fields_by_title.values())
     # Every panel is checked before the frame and a shared scale read their
@@ -465,7 +468,7 @@ def plot_map_by(
     selected = [field.sel({dim: value}) for value in chosen]
     panels = {maps.coordinate_label(dim, panel[dim].values): panel for panel in selected}
     if len(panels) < len(selected):
-        panels = {f"{dim} {panel[dim].values}": panel for panel in selected}
+        panels = {_full_title(dim, panel[dim].values): panel for panel in selected}
     return plot_map_grid(panels, scale=scale, **grid_kwargs)
 
 
@@ -561,6 +564,13 @@ def _labels_asked_for(values: Any) -> np.ndarray:
     if not hasattr(values, "__array__"):
         values = tuple(values)
     return np.asarray(getattr(values, "values", values))
+
+
+def _full_title(dim: str, label: Any) -> str:
+    """A panel title giving *label* in full, for labels a shorter title does not tell apart."""
+    if np.issubdtype(np.asarray(label).dtype, np.datetime64):
+        return f"{dim} {pd.Timestamp(label)}"
+    return f"{dim} {label}"
 
 
 def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:

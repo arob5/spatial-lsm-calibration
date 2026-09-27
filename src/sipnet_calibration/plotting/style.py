@@ -261,9 +261,12 @@ def as_real_number(value: Any, *, fix: str = "pass one", message_name: str) -> f
     ------
     TypeError
         If *value* is a boolean, or not a real number.
+    ValueError
+        If it is a real number no ``float`` holds, such as ``10**400``.
     """
     number = _scalar_of(value)
     check_value_is_a_real_number(number, fix=fix, message_name=message_name)
+    check_real_number_fits_a_float(number, fix=fix, message_name=message_name)
     return float(number)
 
 
@@ -307,6 +310,14 @@ def _scalar_of(value: Any) -> Any:
     if hasattr(value, "__array__") and not isinstance(value, (str, bytes)) and np.ndim(value) == 0:
         return np.asarray(value).item()
     return value
+
+
+def _described(value: Any) -> str:
+    """*value* as a message shows it: an array by its type and shape, not its repr."""
+    if hasattr(value, "__array__") and not isinstance(value, (str, bytes)):
+        return f"{type(value).__name__} of shape {np.shape(value)}"
+    return f"{type(value).__name__} {value!r}"
+
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
@@ -373,22 +384,25 @@ def check_key_is_known(
     message_name: str | None = None,
 ) -> None:
     """*key* names a *what* of *registry*; *message_name*, where given, the argument's subject."""
-    check_key_is_hashable(key, what=what, message_name=message_name)
+    check_key_is_a_name(key, registry, what=what, message_name=message_name)
     check_key_is_in_the_registry(
         key, registry, what=what, alternatives=alternatives, message_name=message_name
     )
 
 
-def check_key_is_hashable(key: Any, *, what: str, message_name: str | None) -> None:
-    """A key looked up by name is hashable, as a name is."""
+def check_key_is_a_name(key: Any, registry: Collection[Any], *, what: str, message_name: str | None) -> None:
+    """A key looked up by name is a string where the registry's keys are, and hashable."""
+    names_are_strings = all(isinstance(entry, str) for entry in registry)
     try:
         hash(key)
+        is_a_name = isinstance(key, str) or not names_are_strings
     except TypeError:
+        is_a_name = False
+    if not is_a_name:
         prefix = f"{message_name}: " if message_name else ""
         raise TypeError(
-            f"{prefix}a {what} is named by a string, got {type(key).__name__} {key!r}; pass "
-            "one name."
-        ) from None
+            f"{prefix}a {what} is named by a string, got {_described(key)}; pass one name."
+        )
 
 
 def check_key_is_in_the_registry(
@@ -421,10 +435,18 @@ def check_value_is_a_real_number(value: Any, *, fix: str, message_name: str) -> 
     """*value* is a real number (a ``Fraction`` and a ``Decimal`` are), not a boolean."""
     is_complex = isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real)
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, numbers.Number) or is_complex:
-        raise TypeError(
-            f"{message_name} must be a real number, got {type(value).__name__} {value!r}; "
-            f"{fix}."
-        )
+        raise TypeError(f"{message_name} must be a real number, got {_described(value)}; {fix}.")
+
+
+def check_real_number_fits_a_float(value: Any, *, fix: str, message_name: str) -> None:
+    """A real number converts to a ``float``: not ``10**400``, not a signaling NaN."""
+    try:
+        float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(
+            f"{message_name} must be a number a float can hold, got {type(value).__name__} "
+            f"{value!r} ({error}); {fix}."
+        ) from None
 
 
 def check_number_is_positive(value: float, *, fix: str, message_name: str) -> None:
