@@ -27,16 +27,28 @@ Arguments beyond the item being plotted are bound with ``functools.partial``
 rather than passed through this module::
 
     from functools import partial
-    plot_by_site(tair, partial(plot_time_series, show="spaghetti"))
+    plot_by_site(air_temperature, partial(plot_time_series, show="spaghetti"))
 
 Usage
 -----
 ::
 
-    from sipnet_calibration.plotting import build_plot_grid, plot_by_site
+    from sipnet_calibration.drivers import driver_fields, load_drivers
+    from sipnet_calibration.initial_conditions import initial_condition_fields
+    from sipnet_calibration.plotting import (
+        build_plot_grid,
+        plot_by_site,
+        plot_map_grid,
+        plot_map_quantiles,
+        plot_time_series,
+        summarize_batch,
+    )
+
+    air_temperature = driver_fields(load_drivers([1, 27]))["air_temperature"]
+    wood = initial_condition_fields(["initial_wood_carbon"])["initial_wood_carbon"]
 
     # One panel per site, each a driver ensemble, on one y scale.
-    figure, axes = plot_by_site(air_temperature, sites=six_sites, share="y")
+    figure, axes = plot_by_site(air_temperature, sites=[27, 1], share="y")
 
     # One map per quantile over the initial conditions' members, on one scale.
     batch_dim = "initial_condition_member"
@@ -50,8 +62,8 @@ Usage
 
     # The general form.
     figure, axes = build_plot_grid(
-        six_sites,
-        lambda ax, site: plot_time_series(field.sel(site=site), ax=ax),
+        [1, 27],
+        lambda ax, site: plot_time_series(air_temperature.sel(site=site), ax),
         labels=lambda site: f"site {site}",
     )
 """

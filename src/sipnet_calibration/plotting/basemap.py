@@ -83,8 +83,8 @@ well inside that radius. The same rule crops the graticule.
 cell that extends past a coast is still read against the coastline. The
 graticule is drawn below it, at :data:`GRATICULE_ZORDER`.
 
-**There is no north arrow**: projected north rotates by about 150 degrees
-across the domain (:meth:`~sipnet_calibration.projection.Projection.factors`),
+**There is no north arrow**: projected north rotates by well over a hundred
+degrees across the domain (:meth:`~sipnet_calibration.projection.Projection.factors`),
 so the graticule is the honest orientation cue.
 
 Usage

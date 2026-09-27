@@ -775,7 +775,7 @@ src/sipnet_calibration/
                           # EXTENTS (named lon/lat boxes), N_SITES; site_lookup(),
                           # site_locations(), site_coordinates(), the site-table
                           # and pool checks
-  projection.py           # SITE_PROJECTION (LAEA 50 N, 100 W) over pyproj:
+  projection.py           # SITE_PROJECTION (the display LAEA) over pyproj:
                           # forward(), projected_bounds(), factors()
   projections/            # the stored definition, generated from the dataclass
   constraints.py          # ConstraintSpec + CONSTRAINTS, one per raw file;
@@ -1047,12 +1047,12 @@ plotting code. The load-bearing rules:
   colored by class position so a class keeps its
   color across figures; an optional `flag_display_names`
   tuple (ours, not CF's) is what the legend shows, and `site_labels_field`
-  sets it from the spec's `display_names`. Sites are 8000 **irregular points**
-  spanning 7-82 deg N, so a real projection is required and CONUS-only
-  assumptions are wrong.
-- **The display projection is settled**: a Lambert Azimuthal Equal Area
-  centered at 50 N, 100 W on WGS 84, held as `SITE_PROJECTION` in
-  `sipnet_calibration.projection`, which provides `forward()`,
+  sets it from the spec's `display_names`. Sites are **irregular points**
+  spanning the tropics to the high Arctic, so a real projection is required
+  and CONUS-only assumptions are wrong.
+- **The display projection is settled**: `SITE_PROJECTION` in
+  `sipnet_calibration.projection`, a Lambert Azimuthal Equal Area whose
+  parameters are written once, where it is defined; the module provides `forward()`,
   `projected_bounds()` for axes limits, `factors()` for local distortion, and
   the PROJJSON and PROJ string that PROJ serializes from it under
   `src/sipnet_calibration/projections/`. Plotting code projects through
@@ -1070,7 +1070,8 @@ plotting code. The load-bearing rules:
   formula. `Projection.factors()` exposes PROJ's own distortion measures,
   which is how a caller converts the long-edge mask threshold between a
   projected length and a ground distance, and how it learns that projected
-  north rotates by about 150 degrees across the domain. Maps are plain `Axes`
+  north rotates by about 146 degrees across the site pool, which
+  `tests/test_projection.py` pins. Maps are plain `Axes`
   in projected meters, with limits from `projected_bounds`, never cartopy's
   `set_extent`, which gives a badly wrong frame on this projection. The
   basemap is Natural Earth 1:50m, clipped to 100 degrees of arc around the

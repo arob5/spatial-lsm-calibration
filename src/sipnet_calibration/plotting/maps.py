@@ -277,21 +277,16 @@ def plot_map(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``, *ax* is not an ``Axes``, *render*
-        is neither a renderer name nor a :class:`SiteRenderer`, or *basemap*
-        is one layer name rather than a sequence of them.
+        If an argument is of the wrong type: *field* not a ``DataArray``, *ax*
+        not an ``Axes``, *render* not a renderer, *extent* or *basemap* none of
+        the forms above.
     KeyError
-        If *render* or *extent* is a name that is not a key of
-        :data:`RENDERERS` or :data:`~sipnet_calibration.sites.EXTENTS`, or
-        *basemap* names a layer that is not in
-        :data:`~sipnet_calibration.plotting.basemap.BASEMAP_LAYERS`.
+        If *render*, *extent*, *basemap* or *colors* names a renderer, extent,
+        layer or class that is not there.
     ValueError
-        If *field* is not a field or holds the data of none of the maps above
-        -- in particular if it has a batch dim or a ``time`` dimension, where
-        the message names the functions that draw those; if *render* is given
-        for a raster, or interpolates a categorical field; if *extent* is not
-        a valid box; or if *log* is asked for with a nonpositive value in the
-        frame.
+        If *field* is none of the maps above, or the color keywords do not suit
+        its values; each message says which, and for a batch or ``time`` dim
+        names the functions that draw it.
     """
     _draw_map(
         field, ax, render=render, extent=extent,
@@ -328,7 +323,8 @@ def summarize_batch(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``.
+        If *field* is not a ``DataArray``, or *stat* is neither a name nor a
+        number.
     ValueError
         If *field* is not a field, *batch_dim* is not one of its batch dims,
         *field* is categorical, or *stat* is not one of the above.
@@ -395,11 +391,12 @@ def animate_map(
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray`` or *ax* is not an ``Axes``.
+        If *field* is not a ``DataArray``, *ax* is not an ``Axes``, *interval*
+        is not a number, or a retired keyword is passed.
     ValueError
-        If *field* is not a field; if it has no *dim*, a *dim* of length zero,
-        or a batch dim other than *dim*; or if a single step of it is not a
-        map (:func:`check_field_is_a_map`), checked before any frame is drawn.
+        If a step of *field* along *dim* is not one map, or *interval* is not
+        a positive number of seconds; every step is checked before any frame
+        is drawn.
     """
     check_keywords_are_not_retired(
         map_kwargs, {"interval_ms": "interval=, in seconds"}, message_name="animate_map"

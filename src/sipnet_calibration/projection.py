@@ -51,20 +51,9 @@ is therefore a test failure, not a way to change the projection.
 
 Data model
 ----------
-:class:`Projection` is a projected CRS, as the parameters EPSG names for it:
-
-======================== ============= ======================================
-Field                    Type          Meaning
-======================== ============= ======================================
-``name``                 ``str``       CRS name, as written to the files
-``lat_0``, ``lon_0``     ``float``     latitude/longitude of natural origin
-``false_easting``        ``float``     meters added to x
-``false_northing``       ``float``     meters added to y
-``base_crs``             ``str``       CRS of the input coordinates
-======================== ============= ======================================
-
-:data:`SITE_PROJECTION` is the project's projection: a Lambert Azimuthal Equal
-Area centered at 50 N, 100 W on WGS 84, in meters, with no false origin.
+:class:`Projection` is a projected CRS, its fields the parameters EPSG names
+for it (the class says what each is). :data:`SITE_PROJECTION` is the project's
+projection, its parameters written once, where it is defined.
 
 The method is not a field. Only Lambert Azimuthal Equal Area is expressible
 here, named by :data:`LAEA_METHOD` and :data:`LAEA_METHOD_CODE`, because that is
@@ -139,7 +128,7 @@ extent is 16,000 km across, so the shift is under a thousandth of a pixel at any
 figure size anyone would render.
 
 **North is not up, and not by a little.** Over the site pool the rotation of
-projected north spreads over about 150 degrees, from the Chukchi coast to
+projected north spreads over about 146 degrees, from the Chukchi coast to
 northeast Greenland, and across the whole ``NORTH_AMERICA`` extent the two
 extremes are the northwest and *northeast* corners rather than opposite ends
 of a diagonal. A single north arrow is therefore not merely imprecise but
@@ -154,13 +143,10 @@ PROJ has one, so adding it is a two-line method the day something wants to
 report an axes position back in longitude and latitude, label the parallel that
 leaves the left spine, or drive a raster renderer.
 
-**A point outside the projection's domain raises**, rather than coming back as
-``inf``. PROJ's default is to return infinity, which propagates into an axes
-limit or into a triangulation as a silently dropped point, so the transform is
-run with ``errcheck=True`` and the error is re-raised as a ``ValueError`` naming
-what was wrong. The only such point here is the antipode of the center, at
-:attr:`Projection.antipode`, far from every site: ``tests/test_projection.py``
-asserts how far the farthest site is from the center.
+**A point outside the projection's domain raises** (:meth:`Projection.forward`
+says why). The only such point is the antipode of the center, far from every
+site: ``tests/test_projection.py`` asserts how far the farthest site is from
+the center.
 
 **A longitude/latitude box does not project to a rectangle**, so axes limits
 come from :meth:`Projection.projected_bounds` rather than from projecting the
@@ -265,6 +251,14 @@ class Projection:
         The CRS the input coordinates are on, in any form
         :meth:`pyproj.CRS.from_user_input` accepts. Must be a geographic CRS,
         since :meth:`forward` takes degrees.
+
+    Raises
+    ------
+    TypeError
+        If a parameter is not a number, or *base_crs* is unhashable.
+    ValueError
+        If the origin is out of range, the false origin is not finite, or
+        *base_crs* is not a geographic CRS PROJ recognizes.
 
     Notes
     -----
@@ -1023,8 +1017,7 @@ def check_stem_is_a_file_name(stem: str) -> None:
 #
 # Last, because building it runs the checks above.
 
-#: The project's display projection: Lambert Azimuthal Equal Area centered at
-#: 50 N, 100 W, on WGS 84, in meters, with no false origin.
+#: The project's display projection, its parameters the arguments below.
 #:
 #: Chosen over the ESRI:102003 Albers of the published reanalysis figures, and
 #: over the other candidates, on measured distortion across the real site pool;

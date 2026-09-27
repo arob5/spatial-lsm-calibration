@@ -153,27 +153,16 @@ def plot_time_series(
     Raises
     ------
     TypeError
-        If *field*, *variance* or *standard_deviation* is not a
-        ``DataArray``, or *ax* is not an ``Axes``.
+        If an argument is of the wrong type: *field* or an error not a
+        ``DataArray``, *ax* not an ``Axes``, *n_sigma* not a number.
     KeyError
-        If *role* is not a key of :data:`.style.ROLES`.
+        If *role* or *label_by* names something that is not there.
     ValueError
-        If *field* is not a field, has no ``time`` dim, has a spatial dim, or
-        has no ``long_name``; if *show* is not in :data:`SHOW_OPTIONS` or
-        does not suit the batch dims; if *label_by* is given without
-        ``show="spaghetti"`` or names no coordinate on the batch dims; if
-        both *variance* and *standard_deviation* are given, either is given
-        without ``show="points"`` or does not align with *field*, or a
-        variance is negative; or if *n_sigma* is not finite and positive.
+        If *field* is not a field or not a time series with a label, or an
+        argument does not suit it; each message says which, and what to do.
 
     Notes
     -----
-    Only batch dims are summarized, and the field contract refuses any dim
-    that is not a batch dim, a spatial dim or ``time``: an array that stacks
-    several variables along a ``variable`` dim would otherwise draw quantile
-    bands across variables with different units -- a plausible-looking figure
-    of nothing.
-
     ``show="fan"`` also draws the median as a curve, and the legend entry goes
     on that curve rather than on a band.
 

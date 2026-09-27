@@ -108,7 +108,7 @@ CURVE_COLORS: tuple[str, ...] = (
 #: Colors for the classes of a categorical map, by class position. Up to eight
 #: classes take Okabe-Ito, as :data:`CURVE_COLORS` plus black; more take
 #: matplotlib's ``tab20``, which is not safe under color vision deficiency but
-#: has enough distinct entries for the 16-class site labels.
+#: has enough distinct entries for the site-labels data sources' classes.
 CATEGORY_COLORS: tuple[str, ...] = CURVE_COLORS + ("#000000",)
 
 #: Opacity of the widest and of the narrowest band of a fan. Intermediate

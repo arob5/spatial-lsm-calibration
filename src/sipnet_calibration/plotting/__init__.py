@@ -16,13 +16,17 @@ rather than in terms of matplotlib.
 :mod:`style`        roles, colors and matplotlib settings
 ==================  ==================================================
 
-Every plotting function draws onto an ``Axes`` it is given and returns it.
-Only :mod:`facet` creates a figure, and nothing here calls ``show`` or
-``savefig``: saving is the job of the report that wanted the figure, in
-``experiments/<task>/plots.py``, which is also where anything that knows an
-experiment's name belongs. Nothing here accepts a ``SIPNETResult``, a
-``DataFrame`` or a path; turning those into arrays is the job of an adapter in
-:mod:`sipnet_calibration.fields`.
+The panel functions (:func:`plot_time_series`, :func:`plot_map`) draw onto an
+``Axes`` they are given and return it; :func:`animate_map` draws onto one too
+and returns the animation. Only :mod:`facet` creates a figure, returning it
+with its axes, and nothing here calls ``show`` or ``savefig``: saving is the
+job of the report that wanted the figure, in ``experiments/<task>/plots.py``,
+which is also where anything that knows an experiment's name belongs. Nothing
+here accepts a ``SIPNETResult``, a ``DataFrame`` or a path; turning those into
+fields is the job of the module that owns the data:
+:func:`sipnet_calibration.fields.to_model_output` for model output, and the
+data-source modules' readers (``driver_fields``, ``constraint_fields``,
+``site_labels_field``, ``initial_condition_fields``) for the rest.
 
 Two conventions run across the package. Curves and bands keep ``NaN``, so gaps
 in the data show as gaps in the figure, while scattered points drop it. Style

@@ -290,7 +290,7 @@ stands for::
     nee.dims                                       # ('sample', 'site', 'time')
     validate_field(nee)                            # None: it is a field
 
-    plot_time_series(aggregate_time(nee, "1D").sel(site=1))
+    plot_time_series(aggregate_time(nee, "1D").sel(site=1), ax)    # an Axes of yours
 
 Two batch dims, stacked into one for Flat and back::
 
