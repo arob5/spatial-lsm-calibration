@@ -17,6 +17,7 @@ import pandas as pd
 import pytest
 import shapefile
 import xarray as xr
+from frozendict import frozendict
 
 import sipnet_calibration.sites as sites_module
 from conftest import REPOSITORY, load_script, site_table_of
@@ -25,7 +26,6 @@ from sipnet_calibration.conventions import (
     LAT_ATTRIBUTES,
     LON_ATTRIBUTES,
     SITE_ATTRIBUTES,
-    FrozenMapping,
 )
 from sipnet_calibration.sites import (
     N_SITES,
@@ -825,7 +825,7 @@ class TestSchemaIsPinnedToALiteral:
         )
 
     def test_column_dtypes(self):
-        # A FrozenMapping is a dict, so this is a plain schema assertion.
+        # A frozendict is a dict, so this is a plain schema assertion.
         assert SITE_COLUMN_DTYPES == {
             "site_id": np.int32,
             "lon": np.float64,
@@ -842,7 +842,7 @@ class TestSchemaIsPinnedToALiteral:
     def test_dtypes_cannot_be_mutated(self):
         """The schema is read-only: a caller that reassigned a dtype would
         change what every later read of the table produces."""
-        assert isinstance(SITE_COLUMN_DTYPES, FrozenMapping)
+        assert isinstance(SITE_COLUMN_DTYPES, frozendict)
         with pytest.raises(TypeError):
             SITE_COLUMN_DTYPES["site_id"] = str  # type: ignore[index]
 

@@ -1733,10 +1733,10 @@ def test_a_batch_dim_may_not_take_a_reserved_or_taken_name(example, theta, name)
 
 
 @pytest.mark.parametrize(
-    "name", ["time_step_start", "time_step_length", "year", "hour_of_day", "window_end"]
+    "name", ["timestep_start", "timestep_length", "year", "hour_of_day", "window_end"]
 )
 def test_a_batch_dim_may_not_take_a_model_output_or_window_coordinate_name(example, theta, name):
-    """Fields on ``time_step_length`` were made, and validate_field refused them."""
+    """Fields on ``timestep_length`` were made, and validate_field refused them."""
     with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
         example.fields(theta, batch_dim=name)
     with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):

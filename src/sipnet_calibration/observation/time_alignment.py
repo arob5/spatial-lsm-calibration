@@ -65,15 +65,15 @@ daily-mean-of-quantile, and which one is wanted is a modeling choice.
 Steps, cells and windows
 ------------------------
 A model field carries pySIPNET's interval coordinates: ``time`` is the end of
-each step, ``time_step_start`` its start and ``time_step_length`` its declared
+each step, ``timestep_start`` its start and ``timestep_length`` its declared
 length. Every function here reads the interval, not only the label. A step
 belongs to the calendar cell or the window that contains its **end**; a
 window edge that falls inside a step moves that whole step to the side its
-end is on, and the result's ``time_step_length``, the sum of the steps
-combined, shows it. A mean is weighted by ``time_step_length``. A cell or
+end is on, and the result's ``timestep_length``, the sum of the steps
+combined, shows it. A mean is weighted by ``timestep_length``. A cell or
 window holding a ``NaN`` is ``NaN`` for every method, and the counts
 functions say how many values went in. :func:`select_timestep_at` reads the
-step whose interval ``(time_step_start, time]`` contains the label: for a
+step whose interval ``(timestep_start, time]`` contains the label: for a
 pool, the state at the end of that step; for a step mean or a rate, the mean
 over it. A label exactly at a step end reads that step.
 
@@ -97,6 +97,7 @@ from typing import Any, get_args
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from pysipnet.arithmetic import step_length
 from pysipnet.resample import STEP_LENGTH_RESAMPLED, check_resampling_method, resample
 from pysipnet.variables import (
@@ -116,7 +117,6 @@ from sipnet_calibration.conventions import (
     TIMESTEP_START,
     WINDOW_END,
     WINDOW_START,
-    FrozenMapping,
 )
 from sipnet_calibration import fields
 from sipnet_calibration.fields import without_stale_time_attributes
@@ -156,7 +156,7 @@ SELECTED_STEP_COORD = "selected_timestep_end"
 #: per kind that leaves a variable the kind it already is, read off pySIPNET's
 #: ``RESAMPLED_KIND`` rather than written down. That exactly one method
 #: preserves each kind is checked against pySIPNET's table by the tests.
-DEFAULT_METHOD_FOR_KIND: Mapping[VariableKind, str] = FrozenMapping(
+DEFAULT_METHOD_FOR_KIND: Mapping[VariableKind, str] = frozendict(
     {kind: method for (kind, method), resulting in RESAMPLED_KIND.items() if resulting == kind}
 )
 
@@ -355,7 +355,7 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
     """For each label, the value of the model timestep whose interval contains it.
 
     The instant reading of a model field: the step with
-    ``time_step_start < t <= time`` is the one that was running at ``t``, and
+    ``timestep_start < t <= time`` is the one that was running at ``t``, and
     its value is the state at the end of that step (for a pool), or the mean
     over it (for a step mean or a rate). A label exactly at a step end reads
     that step, so a snapshot at ``00:00`` reads the step ending at midnight.
@@ -416,7 +416,7 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
                 attrs={
                     "long_name": "End of the model timestep that was read",
                     "comment": (
-                        "The step whose (time_step_start, time] interval contains the label."
+                        "The step whose (timestep_start, time] interval contains the label."
                     ),
                 },
             ),
@@ -472,7 +472,7 @@ def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIn
 def run_window(field: xr.DataArray) -> pd.IntervalIndex:
     """One right-closed window spanning a model field's whole record.
 
-    From the first step's ``time_step_start`` to the last step's ``time``, so
+    From the first step's ``timestep_start`` to the last step's ``time``, so
     that every step belongs to it. For a static observation source, which documents no
     time at all, this is the window an operator reduces over.
 
@@ -598,7 +598,7 @@ _LEVEL_KINDS: frozenset[VariableKind] = frozenset(
 
 #: The CF ``cell_methods`` of a pool's window extreme or leading edge, which a
 #: value at a step end makes literally true.
-_CELL_METHODS_OF_A_READING: Mapping[str, str] = FrozenMapping(
+_CELL_METHODS_OF_A_READING: Mapping[str, str] = frozendict(
     {
         "min": "time: minimum",
         "max": "time: maximum",
@@ -608,7 +608,7 @@ _CELL_METHODS_OF_A_READING: Mapping[str, str] = FrozenMapping(
 
 #: How the steps a cell or window combines are summarized in its interval
 #: coordinates: the earliest start, the latest end and the summed length.
-_SPAN_OF_STEPS: Mapping[str, str] = FrozenMapping(
+_SPAN_OF_STEPS: Mapping[str, str] = frozendict(
     {
         TIMESTEP_START: "min",
         TIME: "max",
@@ -776,7 +776,7 @@ def _time_index(field: xr.DataArray) -> pd.DatetimeIndex:
 
 
 def _start_index(field: xr.DataArray) -> pd.DatetimeIndex:
-    """The field's ``time_step_start`` coordinate as a pandas index."""
+    """The field's ``timestep_start`` coordinate as a pandas index."""
     return pd.DatetimeIndex(field[TIMESTEP_START].to_index())
 
 
@@ -786,7 +786,7 @@ def _step_spacing_ns(field: xr.DataArray) -> np.ndarray:
 
 
 def _step_intervals(field: xr.DataArray) -> pd.IntervalIndex:
-    """Each step's ``(time_step_start, time]``, in nanoseconds."""
+    """Each step's ``(timestep_start, time]``, in nanoseconds."""
     return pd.IntervalIndex.from_arrays(
         _start_index(field).as_unit("ns"), _time_index(field).as_unit("ns"), closed="right"
     )
@@ -933,7 +933,7 @@ def _selected_attrs(attrs: Mapping[str, Any], kind: VariableKind | None) -> dict
             "contains the label"
         )
     out["selection"] = (
-        "the model timestep whose (time_step_start, time] interval contains the label"
+        "the model timestep whose (timestep_start, time] interval contains the label"
     )
     return out
 
@@ -1004,7 +1004,7 @@ def _window_interval_coords(
         _steps_frame(field)[inside]
         .groupby(codes[inside])
         # A plain dict: pandas rebuilds the mapping it is given as its own type
-        # and fills it in place, which a FrozenMapping refuses.
+        # and fills it in place, which a frozendict refuses.
         .agg(dict(_SPAN_OF_STEPS))
         .reindex(np.arange(len(windows)))
     )
@@ -1449,10 +1449,10 @@ def check_same_clock(
 
 
 def check_steps_do_not_overlap(field: xr.DataArray, steps: pd.IntervalIndex) -> None:
-    """No two steps' ``(time_step_start, time]`` intervals share an instant."""
+    """No two steps' ``(timestep_start, time]`` intervals share an instant."""
     if steps.is_overlapping:
         raise ValueError(
-            f"{fields.message_name(field)} has steps whose (time_step_start, time] intervals "
+            f"{fields.message_name(field)} has steps whose (timestep_start, time] intervals "
             "overlap, so a label could lie in two of them. pySIPNET's own axes never "
             "overlap; rebuild the interval coordinates from the step ends."
         )
@@ -1464,13 +1464,13 @@ def check_every_label_is_in_a_step(
     position: np.ndarray,
     steps: pd.IntervalIndex,
 ) -> None:
-    """Every label lies inside one step's ``(time_step_start, time]``."""
+    """Every label lies inside one step's ``(timestep_start, time]``."""
     outside = position < 0
     if outside.any():
         bad = labels[outside]
         raise ValueError(
             f"{len(bad)} label(s) fall in no timestep of {fields.message_name(field)}, the first "
             f"being {bad[0]}: the record covers ({steps.left[0]}, {steps.right[-1]}], and "
-            "a label must lie inside one step's (time_step_start, time] interval. Select "
+            "a label must lie inside one step's (timestep_start, time] interval. Select "
             "the observations within the run, or run the model over the observed period."
         )

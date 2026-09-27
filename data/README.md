@@ -1563,7 +1563,7 @@ Every variable also carries a `units_provenance` sentence: the units are what
 the `.clim` format documents and SIPNET assumes, not units the producer has
 confirmed. The time coordinates are pySIPNET's, the same ones a SIPNET run on
 the file has for its output: `time` at the end of each step, with
-`time_step_start`, `time_step_length` and CF `time_bounds`, and `time_zone`
+`timestep_start`, `timestep_length` and CF `time_bounds`, and `time_zone`
 `"undeclared"` unless the caller declares the clock. Those are the semantics of
 SIPNET's format; the ERA5 files depart from them as Note 16 says. A requested
 `(site, source index)` pair with no file is an error unless

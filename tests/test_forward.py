@@ -760,16 +760,16 @@ class TestPriorPredictive:
             site_table=SITE_TABLE,
         )
         output = forward.evaluate(theta[:1]).model_output
-        assert {"time_step_start", "time_step_length"} <= set(output.coords)
+        assert {"timestep_start", "timestep_length"} <= set(output.coords)
         expected = aggregate_time(
             REFERENCE.select(["net_ecosystem_exchange"])["net_ecosystem_exchange"], "1D"
         )
         got = output.sel(sample=0, site=1).dropna("time")
         np.testing.assert_array_equal(
-            got["time_step_length"].values, expected["time_step_length"].values
+            got["timestep_length"].values, expected["timestep_length"].values
         )
         np.testing.assert_array_equal(
-            got["time_step_start"].values, expected["time_step_start"].values
+            got["timestep_start"].values, expected["timestep_start"].values
         )
 
     def test_every_run_failing_is_raised_with_what_was_collected(
@@ -809,7 +809,7 @@ class TestPriorPredictive:
             output = forward.evaluate(theta[:1]).model_output
         assert output.attrs["Conventions"] == "CF-1.11"
         assert output.attrs["resampling_frequency"] == "1D"
-        assert output.attrs["time_step_length_source"] == STEP_LENGTH_RESAMPLED
+        assert output.attrs["timestep_length_source"] == STEP_LENGTH_RESAMPLED
         assert not {"units", "constituent", "sign_convention", "kind"} & set(output.attrs)
         assert output["net_ecosystem_exchange"].attrs["units"] == "g m-2"
 
@@ -1347,7 +1347,7 @@ class TestTheBatchDimIsNamedOnce:
 
     @pytest.mark.parametrize(
         "name",
-        ["time_step_length", "time_step_start", "time_bounds", "bounds", "year", "day_of_year"],
+        ["timestep_length", "timestep_start", "time_bounds", "bounds", "year", "day_of_year"],
     )
     @pytest.mark.parametrize("freq", [None, "1D"])
     def test_a_name_the_model_output_uses_is_refused_up_front(

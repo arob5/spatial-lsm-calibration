@@ -22,7 +22,7 @@ Contents
 :func:`as_sequence`, :func:`as_names`
     An ordered sequence of any items, and of names, as a tuple.
 :func:`as_frozen_mapping`
-    A mapping as a :class:`~sipnet_calibration.conventions.FrozenMapping`.
+    A mapping as a ``frozendict``.
 :func:`truncated`, :func:`range_summary`
     A list shortened for an error message, and the range of some values for
     a report.
@@ -85,8 +85,9 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from frozendict import frozendict
 
-from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, SITE_DTYPE, FrozenMapping
+from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, SITE_DTYPE
 
 __all__ = [
     "as_batch_label",
@@ -495,19 +496,19 @@ def as_names(values: Any, *, message_name: str) -> tuple[str, ...]:
     return names
 
 
-def as_frozen_mapping(value: Any, *, message_name: str) -> FrozenMapping:
-    """A mapping as a :class:`~sipnet_calibration.conventions.FrozenMapping`.
+def as_frozen_mapping(value: Any, *, message_name: str) -> frozendict:
+    """A mapping as a ``frozendict``.
 
     Parameters
     ----------
     value:
-        Any mapping; a ``FrozenMapping`` is returned as it is.
+        Any mapping; a ``frozendict`` is returned as it is.
     message_name:
         What the argument is called in an error message.
 
     Returns
     -------
-    FrozenMapping
+    frozendict
         The same keys and values, in the same order, as a copy that cannot
         change.
 
@@ -516,10 +517,10 @@ def as_frozen_mapping(value: Any, *, message_name: str) -> FrozenMapping:
     TypeError
         If *value* is not a mapping.
     """
-    if isinstance(value, FrozenMapping):
+    if isinstance(value, frozendict):
         return value
     check_value_is_a_mapping(value, message_name=message_name)
-    return FrozenMapping(value)
+    return frozendict(value)
 
 
 # ── messages and reports ──────────────────────────────────────────────────────

@@ -76,10 +76,10 @@ class TestAggregateTimeAgainstPysipnet:
         assert np.allclose(daily.values, reference.values)
         assert np.array_equal(daily["time"].values, reference["time"].values)
         assert np.array_equal(
-            daily["time_step_start"].values, reference["time_step_start"].values
+            daily["timestep_start"].values, reference["timestep_start"].values
         )
         assert np.array_equal(
-            daily["time_step_length"].values, reference["time_step_length"].values
+            daily["timestep_length"].values, reference["timestep_length"].values
         )
         assert daily.attrs == reference.attrs
 
@@ -138,12 +138,12 @@ class TestAggregateTimeChoosesTheMethod:
         averaged = aggregate_time(field, "1D", how="mean")
         assert averaged.attrs["kind"] == "timestep_mean"
         assert averaged.attrs["cell_methods"] == "time: mean"
-        assert "weighted by time_step_length" in averaged.attrs["resampling"]
+        assert "weighted by timestep_length" in averaged.attrs["resampling"]
 
     def test_a_mean_is_weighted_by_the_step_length(self, niwot_output):
         """Niwot's steps alternate day and night, so the weighting is visible."""
         field = to_model_output(niwot_output, output_variable_names=["soil_water"])["soil_water"]
-        days = field["time_step_length"].values.astype("timedelta64[s]").astype(float) / 86400
+        days = field["timestep_length"].values.astype("timedelta64[s]").astype(float) / 86400
         assert days.min() < days.max()
 
         raw = pd.DataFrame(
@@ -176,7 +176,7 @@ class TestAggregateTimeChoosesTheMethod:
         # interval coordinates needs one even when told how.
         with pytest.raises(ValueError, match="interval coordinates but no 'kind'"):
             aggregate_time(anonymous, "1D", how="sum")
-        observed = anonymous.drop_vars(["time_step_start", "time_step_length"])
+        observed = anonymous.drop_vars(["timestep_start", "timestep_length"])
         assert aggregate_time(observed, "1D", how="sum").sizes["time"] > 0
 
     def test_a_nonsense_kind_is_refused(self, niwot_output):
@@ -217,9 +217,9 @@ class TestAggregateTimeOnThreeHourlyOutput:
     def test_a_day_of_steps_covers_twenty_four_hours(self, site_1_result):
         field = to_model_output(site_1_result, output_variable_names=["nee"], site=1)["net_ecosystem_exchange"]
         daily = aggregate_time(field, "1D")
-        lengths = daily["time_step_length"].values
+        lengths = daily["timestep_length"].values
         assert (lengths == np.timedelta64(24, "h")).all()
-        spans = daily["time"].values - daily["time_step_start"].values
+        spans = daily["time"].values - daily["timestep_start"].values
         assert (spans == np.timedelta64(24, "h")).all()
 
     def test_the_site_label_and_its_coordinates_survive(self, site_1_result):
@@ -323,7 +323,7 @@ class TestAggregateTimeOnDrivers:
         expected = resample(own, "1D", how={"precipitation": "sum"})["precipitation"]
         daily = aggregate_time(site_1_member_1(real_drivers, "precipitation"), "1D")
         np.testing.assert_allclose(daily.values, expected.values)
-        for name in ("time", "time_step_start", "time_step_length"):
+        for name in ("time", "timestep_start", "timestep_length"):
             np.testing.assert_array_equal(daily[name].values, expected[name].values)
         assert daily.attrs["kind"] == expected.attrs["kind"]
         assert daily.attrs["cell_methods"] == expected.attrs["cell_methods"]
@@ -391,7 +391,7 @@ class TestAggregatedTimeCoordinateDescribesItself:
         daily = aggregate_time(field, "1D")
         assert daily["time"].attrs["long_name"] == "End of timestep"
         assert daily["time"].attrs["standard_name"] == "time"
-        assert daily["time_step_length"].attrs["source"].startswith("sum of the declared")
+        assert daily["timestep_length"].attrs["source"].startswith("sum of the declared")
 
     def test_nothing_points_at_a_bounds_variable_that_cannot_be_carried(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
@@ -466,8 +466,8 @@ class TestAggregateTimeDropsAlignmentPadding:
             dims="time",
             coords={
                 "time": times,
-                "time_step_start": ("time", (times - pd.Timedelta("3h")).values),
-                "time_step_length": ("time", lengths),
+                "timestep_start": ("time", (times - pd.Timedelta("3h")).values),
+                "timestep_length": ("time", lengths),
             },
             name="net_ecosystem_exchange",
             attrs={"kind": "timestep_total", "units": "g m-2", "long_name": "NEE"},
@@ -477,8 +477,8 @@ class TestAggregateTimeDropsAlignmentPadding:
         """A NaT length casts to the int64 sentinel, not to a missing value."""
         daily = aggregate_time(self.with_a_missing_length(np.nan), "1D")
         assert float(daily.sum()) == pytest.approx(28.0 - 3.0)
-        assert (daily["time_step_length"].values > np.timedelta64(0)).all()
-        assert float(daily["time_step_length"].sum() / np.timedelta64(1, "h")) == 21.0
+        assert (daily["timestep_length"].values > np.timedelta64(0)).all()
+        assert float(daily["timestep_length"].sum() / np.timedelta64(1, "h")) == 21.0
 
     def test_a_row_with_a_value_and_no_length_is_refused_not_dropped(self):
         with pytest.raises(ValueError, match="these are not padding"):
@@ -523,7 +523,7 @@ class TestAggregateTimeLabelsCells:
         ends = pd.DatetimeIndex(daily["time"].values)
         assert (ends == ends.normalize()).all()
         np.testing.assert_array_equal(
-            daily["time_step_start"].values, (ends - pd.Timedelta(days=1)).to_numpy()
+            daily["timestep_start"].values, (ends - pd.Timedelta(days=1)).to_numpy()
         )
 
     def test_a_model_cell_is_labeled_at_the_last_step_end_it_holds(self, niwot_output):

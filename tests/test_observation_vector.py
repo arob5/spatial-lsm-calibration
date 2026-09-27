@@ -953,10 +953,10 @@ class TestFieldsNeverLetAnObservationSourceCoordinateTakeTheBatchDim:
             vector.fields(np.zeros((2, vector.dimension)), batch_dim="source_index")
 
     @pytest.mark.parametrize(
-        "name", ["window_start", "window_end", "time_step_length", "year"]
+        "name", ["window_start", "window_end", "timestep_length", "year"]
     )
     def test_a_model_output_or_window_coordinate_name_is_refused(self, vector, name):
-        """Fields on ``time_step_length`` were made, and validate_field refused them."""
+        """Fields on ``timestep_length`` were made, and validate_field refused them."""
         with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
             vector.fields(np.zeros((2, vector.dimension)), batch_dim=name)
 
@@ -1147,7 +1147,7 @@ class TestTheVectorConventions:
 
     @pytest.mark.parametrize(
         "name",
-        ["sample", "site", "lon", "time", "window_start", "time_step_start", "point", "x", "y"],
+        ["sample", "site", "lon", "time", "window_start", "timestep_start", "point", "x", "y"],
     )
     def test_a_source_named_like_a_coordinate_is_refused(self, lai, name):
         with pytest.raises(ValueError, match=f"observation_source_name '{name}' is reserved"):

@@ -77,12 +77,12 @@ class TestToModelOutputReadsASipnetOutput:
 
     def test_the_time_axis_is_pysipnets_step_end_with_its_bounds_pair(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
-        assert set(field.coords) == {"time", "time_step_start", "time_step_length"}
+        assert set(field.coords) == {"time", "timestep_start", "timestep_length"}
         assert set(field.coords) == set(TIME_COORD_NAMES)
         assert field["time"].attrs["long_name"] == "End of timestep"
-        starts = field["time_step_start"].values
-        lengths = field["time_step_length"].values
-        # [time_step_start, time] is the pair pySIPNET writes as time_bounds.
+        starts = field["timestep_start"].values
+        lengths = field["timestep_length"].values
+        # [timestep_start, time] is the pair pySIPNET writes as time_bounds.
         assert (field["time"].values >= starts).all()
         assert ((field["time"].values - starts) <= lengths + np.timedelta64(60, "s")).all()
 
@@ -250,7 +250,7 @@ class TestStackModelOutputsReadsSipnetOutputs:
         assert np.isnan(field.sel(site=27, sample=0).values[-1])
         # The interval coordinates then describe each site separately, which is
         # what aggregate_time refuses rather than guess a cell's length from.
-        assert set(field["time_step_length"].dims) == {"site", "time"}
+        assert set(field["timestep_length"].dims) == {"site", "time"}
 
     def test_not_a_mapping_is_refused(self, niwot_output):
         with pytest.raises(TypeError, match="must be a mapping"):
@@ -455,10 +455,10 @@ class TestToModelOutput:
 
 class TestBatchNamesAreNotTheModelOutputsOwn:
     """A batch name that is a variable, coordinate or dim of the run replaced it
-    silently (``time_step_length``, which aggregate_time weights by) or gave a
+    silently (``timestep_length``, which aggregate_time weights by) or gave a
     raw xarray error."""
 
-    NAMES = ("net_ecosystem_exchange", "time_step_length", "time_step_start", "time_bounds", "bounds")
+    NAMES = ("net_ecosystem_exchange", "timestep_length", "timestep_start", "time_bounds", "bounds")
 
     @pytest.mark.parametrize("name", NAMES)
     def test_to_model_output_refuses_it_in_either_form(self, niwot_output, name):
@@ -777,7 +777,7 @@ class TestLabelHelpers:
         from sipnet_calibration.conventions import TIME, TIMESTEP_LENGTH, TIMESTEP_START
 
         assert TIME_COORD_NAMES == (TIME, TIMESTEP_START, TIMESTEP_LENGTH)
-        assert (TIMESTEP_START, TIMESTEP_LENGTH) == ("time_step_start", "time_step_length")
+        assert (TIMESTEP_START, TIMESTEP_LENGTH) == ("timestep_start", "timestep_length")
 
 
 class TestResolveOutputVariableNamesDelegates:
@@ -1001,8 +1001,8 @@ class TestValidateField:
         start = xr.DataArray(
             np.broadcast_to(field["time"].values, (2, 4)), dims=("site", "time")
         )
-        with pytest.raises(ValueError, match="'time_step_start' is on"):
-            validate_field(field.assign_coords(time_step_start=start))
+        with pytest.raises(ValueError, match="'timestep_start' is on"):
+            validate_field(field.assign_coords(timestep_start=start))
 
     def test_units_are_required_and_checked_by_pysipnet(self):
         from sipnet_calibration.fields import validate_field
@@ -1063,9 +1063,9 @@ class TestValidateField:
         from sipnet_calibration.fields import validate_field
 
         field = _field(("site", "time"), n_time=3).assign_coords(
-            time_step_start=np.datetime64("2012-01-01")
+            timestep_start=np.datetime64("2012-01-01")
         )
-        with pytest.raises(ValueError, match="'time_step_start' is on \\(\\)"):
+        with pytest.raises(ValueError, match="'timestep_start' is on \\(\\)"):
             validate_field(field)
 
     def test_a_time_zone_aware_time_is_refused_as_not_naive(self):
@@ -1605,7 +1605,7 @@ class TestScalarBatchLabels:
 #: The names beyond NON_BATCH_DIM_NAMES that no batch dim takes: pySIPNET's
 #: output's coordinates and dims, and an observation's window edges.
 COORDINATE_NAMES_NO_BATCH_DIM_TAKES = [
-    "time_step_start", "time_step_length", "time_bounds", "bounds",
+    "timestep_start", "timestep_length", "time_bounds", "bounds",
     "year", "day_of_year", "hour_of_day", "window_start", "window_end",
 ]
 
@@ -1626,7 +1626,7 @@ class TestBatchDimNames:
 
     @pytest.mark.parametrize("name", COORDINATE_NAMES_NO_BATCH_DIM_TAKES)
     def test_a_model_output_or_window_coordinate_name_is_refused(self, name):
-        """A batch dim ``time_step_length`` made a field validate_field refused."""
+        """A batch dim ``timestep_length`` made a field validate_field refused."""
         from sipnet_calibration.fields import check_batch_dim_name_is_not_reserved
 
         with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
@@ -1642,7 +1642,7 @@ class TestBatchDimNames:
     @pytest.mark.parametrize(
         "name",
         [
-            "time_step_start", "time_step_length", "time_bounds", "bounds",
+            "timestep_start", "timestep_length", "time_bounds", "bounds",
             "year", "day_of_year", "hour_of_day", "net_ecosystem_exchange",
         ],
     )

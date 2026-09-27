@@ -206,7 +206,7 @@ contrary are wrong.
 ```
 src/sipnet_calibration/
   conventions.py          # every name, attribute and setting two modules share;
-                          # FrozenMapping; data_root()
+                          # read_only_copy(); data_root()
   validation.py           # argument coercion: as_site_ids(), as_names(), ...
   io.py                   # write_checked(): the .partial protocol; file_md5()
   sites.py                # SITE_GRID, load_sites(), select_sites(ids=, bbox=, where=, ...),

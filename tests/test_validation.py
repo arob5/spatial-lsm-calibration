@@ -12,12 +12,12 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
+from frozendict import frozendict
 
 from sipnet_calibration.conventions import (
     LAT_ATTRIBUTES,
     LON_ATTRIBUTES,
     SITE_ATTRIBUTES,
-    FrozenMapping,
     ReadOnlyCopies,
     read_only_copy,
 )
@@ -383,41 +383,20 @@ class TestAsSequence:
             as_sequence(values, message_name="classes")
 
 
-class TestFrozenMapping:
+class TestReadOnlyMappings:
     def test_is_a_dict_that_cannot_change(self):
         frozen = as_frozen_mapping({"b": 1, "a": 2}, message_name="value")
-        assert isinstance(frozen, dict)
-        assert list(frozen) == ["b", "a"] and frozen["a"] == 2 and len(frozen) == 2
-        assert frozen == {"b": 1, "a": 2}
-        for change in (
-            lambda: frozen.__setitem__("a", 3),
-            lambda: frozen.__delitem__("a"),
-            lambda: frozen.update(a=3),
-            lambda: frozen.pop("a"),
-            lambda: frozen.popitem(),
-            lambda: frozen.setdefault("c", 3),
-            lambda: frozen.clear(),
+        assert isinstance(frozen, frozendict)
+        assert list(frozen) == ["b", "a"] and frozen == {"b": 1, "a": 2}
+        for change, error in (
+            (lambda: frozen.__setitem__("a", 3), TypeError),
+            (lambda: frozen.__delitem__("a"), TypeError),
+            (lambda: frozen.update(a=3), AttributeError),
+            (lambda: frozen.clear(), AttributeError),
         ):
-            with pytest.raises(TypeError, match="cannot be changed"):
+            with pytest.raises(error):
                 change()
-        with pytest.raises(AttributeError):
-            frozen.extra = {}
         assert frozen == {"b": 1, "a": 2}
-
-    def test_calling_init_again_is_refused_and_changes_nothing(self):
-        frozen = FrozenMapping({"a": 1})
-        with pytest.raises(TypeError, match="cannot be changed"):
-            frozen.__init__({"q": 9})
-        assert frozen == {"a": 1}
-
-    def test_fromkeys_builds_a_frozen_mapping(self):
-        built = FrozenMapping.fromkeys(["a", "b"], 0)
-        assert type(built) is FrozenMapping and built == {"a": 0, "b": 0}
-        assert FrozenMapping.fromkeys(["a"]) == {"a": None}
-
-    def test_is_built_from_pairs_or_nothing(self):
-        assert FrozenMapping([("a", 1)]) == {"a": 1}
-        assert FrozenMapping() == {}
 
     @pytest.mark.parametrize(
         ("module", "name"),
@@ -434,25 +413,24 @@ class TestFrozenMapping:
         import importlib
 
         constant = getattr(importlib.import_module(module), name)
-        assert isinstance(constant, FrozenMapping)
+        assert isinstance(constant, frozendict)
         for value in constant.values():
-            assert not isinstance(value, dict) or isinstance(value, FrozenMapping)
+            assert not isinstance(value, dict) or isinstance(value, frozendict)
 
     def test_pandas_and_json_read_it_as_a_dict(self):
-        frozen = FrozenMapping({"a": (1, 2), "b": (3, 4)})
+        frozen = frozendict({"a": (1, 2), "b": (3, 4)})
         assert pd.DataFrame(frozen).shape == (2, 2)
-        assert json.loads(json.dumps(FrozenMapping({"a": 1}))) == {"a": 1}
+        assert json.loads(json.dumps(frozendict({"a": 1}))) == {"a": 1}
 
     def test_pickles_copies_and_hashes(self):
-        frozen = FrozenMapping({1: "conifer", 2: "grass"})
+        frozen = frozendict({1: "conifer", 2: "grass"})
         for copied in (
             pickle.loads(pickle.dumps(frozen)),
             copy.copy(frozen),
             copy.deepcopy(frozen),
         ):
-            assert copied == frozen and isinstance(copied, FrozenMapping)
-        assert hash(frozen) == hash(FrozenMapping({2: "grass", 1: "conifer"}))
-        assert type(frozen.copy()) is dict
+            assert copied == frozen and isinstance(copied, frozendict)
+        assert hash(frozen) == hash(frozendict({2: "grass", 1: "conifer"}))
 
     def test_copies_what_it_is_given(self):
         source = {"a": 1}

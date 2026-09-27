@@ -157,13 +157,13 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 
 from sipnet_calibration.conventions import (
     NAME_PATTERN,
     SITE,
     SITE_DTYPE,
     SITE_ID,
-    FrozenMapping,
     data_root,
 )
 from sipnet_calibration.sites import N_SITES, load_sites, site_coordinates
@@ -203,7 +203,7 @@ SITE_LABELS_COLUMNS = (SITE_ID, LABEL_COLUMN)
 #:
 #: Read-only: this is the schema, and a caller that mutated it would change what
 #: every later read of site labels produces.
-SITE_LABELS_COLUMN_DTYPES = FrozenMapping({SITE_ID: SITE_DTYPE})
+SITE_LABELS_COLUMN_DTYPES = frozendict({SITE_ID: SITE_DTYPE})
 
 
 @dataclass(frozen=True)
@@ -215,10 +215,8 @@ class SiteLabelsSpec:
 
     Notes
     -----
-    The two mappings are stored as
-    :class:`~sipnet_calibration.conventions.FrozenMapping` copies, so a spec
-    cannot change after its checks, and hashes and pickles like the other
-    specs.
+    The two mappings are stored as ``frozendict`` copies, so a spec cannot
+    change after its checks, and hashes and pickles like the other specs.
     """
 
     name: str
@@ -370,7 +368,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         label_column="pft",
         expected_rows=N_SITES,
         covers_pool=True,
-        landcover_mapping=FrozenMapping(
+        landcover_mapping=frozendict(
             {
                 1: "boreal.coniferous",
                 2: "boreal.coniferous",
@@ -463,7 +461,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         # different land cover product refined by clustering, so no exact
         # relation holds and none is asserted.
         landcover_mapping=None,
-        display_names=FrozenMapping(
+        display_names=frozendict(
             {
                 "Evergreen_Needleleaf_Forest__P1": "Open Cold-seasonal ENF",
                 "Evergreen_Needleleaf_Forest__P2": "Closed Long-season ENF",

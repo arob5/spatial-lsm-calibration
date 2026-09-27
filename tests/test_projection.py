@@ -35,8 +35,8 @@ from pathlib import Path
 import numpy as np
 import pyproj
 import pytest
+from frozendict import frozendict
 
-from sipnet_calibration.conventions import FrozenMapping
 from sipnet_calibration.projection import (
     DEFINITION_STEM,
     LAEA_METHOD,
@@ -878,7 +878,7 @@ class TestExtents:
     def test_extents_cannot_be_mutated(self):
         """A figure and the site subset it plots are supposed to agree on what a
         region means, so a caller must not be able to reassign an entry."""
-        assert isinstance(EXTENTS, FrozenMapping)
+        assert isinstance(EXTENTS, frozendict)
         with pytest.raises(TypeError):
             EXTENTS["CONUS"] = (0.0, 0.0, 1.0, 1.0)  # type: ignore[index]
         with pytest.raises(TypeError):

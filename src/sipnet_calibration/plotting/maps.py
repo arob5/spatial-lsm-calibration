@@ -131,13 +131,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 from matplotlib.animation import FuncAnimation
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 from matplotlib.colors import BoundaryNorm, Colormap, ListedColormap, LogNorm, Normalize
 from matplotlib.patches import Patch
 
-from sipnet_calibration.conventions import LAT, LON, SAMPLE, SITE, TIME, FrozenMapping
+from sipnet_calibration.conventions import LAT, LON, SAMPLE, SITE, TIME
 from sipnet_calibration.fields import batch_dims, is_categorical, validate_field
 from sipnet_calibration.plotting import primitives
 from sipnet_calibration.plotting.basemap import (
@@ -300,7 +301,7 @@ class Triangles:
 
 
 #: The renderers a string ``render`` names.
-RENDERERS: Mapping[str, SiteRenderer] = FrozenMapping(
+RENDERERS: Mapping[str, SiteRenderer] = frozendict(
     {
         "points": Points(),
         "cells": Cells(),

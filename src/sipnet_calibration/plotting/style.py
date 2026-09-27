@@ -46,8 +46,8 @@ from typing import Any
 
 import matplotlib
 import xarray as xr
+from frozendict import frozendict
 
-from sipnet_calibration.conventions import FrozenMapping
 
 __all__ = [
     "BAND_ALPHAS",
@@ -65,11 +65,11 @@ __all__ = [
 #: asked for; :func:`role_style` selects from a value the part that applies to
 #: a given element. No two roles share a line style and marker, so
 #: they stay apart in grayscale as well as in color.
-ROLES: FrozenMapping = FrozenMapping(
+ROLES: frozendict = frozendict(
     {
-        "prior": FrozenMapping({"color": "#999999", "linestyle": "--", "linewidth": 1.0}),
-        "posterior": FrozenMapping({"color": "#0072B2", "linestyle": "-", "linewidth": 1.2}),
-        "observation": FrozenMapping(
+        "prior": frozendict({"color": "#999999", "linestyle": "--", "linewidth": 1.0}),
+        "posterior": frozendict({"color": "#0072B2", "linestyle": "-", "linewidth": 1.2}),
+        "observation": frozendict(
             {
                 "color": "#000000",
                 "linestyle": "none",
@@ -77,7 +77,7 @@ ROLES: FrozenMapping = FrozenMapping(
                 "markersize": 3.5,
             }
         ),
-        "truth": FrozenMapping({"color": "#D55E00", "linestyle": "-.", "linewidth": 1.4}),
+        "truth": frozendict({"color": "#D55E00", "linestyle": "-.", "linewidth": 1.4}),
     }
 )
 
@@ -106,7 +106,7 @@ CATEGORY_COLORS: tuple[str, ...] = CURVE_COLORS + ("#000000",)
 BAND_ALPHAS: tuple[float, float] = (0.12, 0.35)
 
 #: The project's matplotlib settings, applied by :func:`use_project_style`.
-RC_PARAMS: FrozenMapping = FrozenMapping(
+RC_PARAMS: frozendict = frozendict(
     {
         "figure.constrained_layout.use": True,
         "figure.dpi": 110,
@@ -261,7 +261,7 @@ def axis_label(field: xr.DataArray) -> str:
 
 #: Which of a role's keywords apply to each element. ``points`` also has
 #: ``linestyle`` forced to ``"none"``, which is not taken from the role.
-_ELEMENT_KEYWORDS = FrozenMapping(
+_ELEMENT_KEYWORDS = frozendict(
     {
         "line": ("color", "linestyle", "linewidth"),
         "band": ("color",),
