@@ -7,7 +7,8 @@ observation operators are written with them, and a caller aggregates a field
 with the same :func:`aggregate_time` before plotting it, so a
 predictive-check figure cannot disagree with what the likelihood consumed.
 Combining by calendar cells is pySIPNET's :func:`pysipnet.resample.resample`;
-this module adds a default method, windows and instants.
+this module adds a default method, a ``last`` that is missing in a cell holding
+a gap anywhere, windows and instants.
 
 Provided:
 
@@ -76,6 +77,7 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 from pysipnet.arithmetic import step_length
+from pysipnet.dataset import STEP_TOLERANCE
 from pysipnet.resample import (
     STEP_LENGTH_RESAMPLED,
     check_frequency,
@@ -167,19 +169,27 @@ def aggregate_time(
     xarray.DataArray
         :func:`pysipnet.resample.resample`'s result, with no SIPNET row labels
         the field did not carry, and with ``last`` ``NaN`` in a cell holding
-        a ``NaN`` anywhere, as ``sum`` and ``mean`` already are. A field that
-        declares no kind keeps its own attributes, less ``output_decimals``,
-        and gains a ``resampling`` attribute.
+        a ``NaN`` anywhere, as ``sum`` and ``mean`` already are.
+
+        A field with neither a kind nor interval coordinates keeps its own
+        attributes, less ``output_decimals``, and its ``time`` keeps the
+        input's attributes; a ``resampling`` attribute says how the values
+        were made. Its time labels are then the right edges of right-closed
+        calendar cells of *freq*, which the input's ``time`` attributes do not
+        describe: a label means the cell ending at it.
 
     Raises
     ------
     TypeError
-        If *field* is not a ``DataArray``, or *freq* is not a string.
+        If *field* is not a ``DataArray``, or *freq* or *how* is not a
+        string.
     ValueError
-        If *field* is not a field with a ``time`` dim or has no steps once
-        its padding is dropped; if *how* is omitted and the kind is unknown
-        or has no default; or if pySIPNET's ``resample`` refuses the field,
-        *freq* or *how*.
+        If *field* is not a field with a ``time`` dim, carries one of
+        pySIPNET's interval coordinates without the other, holds a value at a
+        time label with no interval, or has no steps once its padding is
+        dropped; if *how* is omitted and the kind is unknown or has no
+        default; or if pySIPNET's ``resample`` refuses the field, *freq* or
+        *how*.
 
     Notes
     -----
@@ -197,7 +207,7 @@ def aggregate_time(
     check_frequency_is_an_offset_alias(freq)
     kind = variable_kind(field, default=None)
     method = _resampling_method_for(field, kind, how)
-    if kind is None and not _has_interval_coords(field):
+    if _is_described_by_itself(field, kind):
         result = _resample_without_a_kind(field, freq, method)
     else:
         result = resample(field, freq, how=method)
@@ -323,7 +333,7 @@ def select_timestep_at(field: xr.DataArray, times: Any) -> xr.DataArray:
     """
     field = _as_steps(field)
     message_name = fields.message_name(field)
-    check_field_has_interval_coords(field, message_name="select_timestep_at")
+    check_field_has_interval_coords(field, "select_timestep_at", message_name=message_name)
     kind = variable_kind(field, default=None)
     check_kind_has_an_instant_value(kind, message_name=message_name)
     labels, label_attrs = _as_instants(times, message_name="times")
@@ -390,6 +400,7 @@ def windows_from_observed_values(observed_values: xr.DataArray) -> pd.IntervalIn
     fields.validate_field(observed_values)
     message_name = fields.message_name(observed_values, "the observation source")
     check_observed_values_have_windows(observed_values, message_name=message_name)
+    check_window_edges_are_datetimes(observed_values, message_name=message_name)
     start = pd.DatetimeIndex(observed_values[WINDOW_START].values)
     end = pd.DatetimeIndex(observed_values[WINDOW_END].values)
     check_window_edges_are_present(start, end, message_name=message_name)
@@ -423,7 +434,9 @@ def run_window(field: xr.DataArray) -> pd.IntervalIndex:
         interval coordinates.
     """
     field = _as_steps(field)
-    check_field_has_interval_coords(field, message_name="run_window")
+    check_field_has_interval_coords(
+        field, "run_window", message_name=fields.message_name(field)
+    )
     start = _start_index(field)
     end = _time_index(field)
     return pd.IntervalIndex.from_arrays([start.min()], [end.max()], closed="right")
@@ -456,6 +469,8 @@ def aggregation_counts(field: xr.DataArray, freq: str) -> xr.DataArray:
     field = _as_steps(field)
     check_frequency_is_an_offset_alias(freq)
     counts = _steps_per_cell(field, field.notnull(), freq).astype(np.int64)
+    if _is_described_by_itself(field, variable_kind(field, default=None)):
+        counts[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
     counts.name = None
     counts.attrs = {}
     return counts
@@ -537,28 +552,54 @@ _SPAN_OF_STEPS: Mapping[str, str] = frozendict(
 
 
 def _as_steps(field: Any) -> xr.DataArray:
-    """*field*, checked to be a field on a time axis, without its padding.
-
-    The field, and so its time axis, is checked before the padding can be
-    found, and only once the padding is gone can the steps left be counted.
-    """
+    """*field*, checked to be a field of timesteps on a time axis, without its padding."""
+    # The field, and so its time axis, is checked before the padding can be
+    # found. Padding that holds a value and a record of padding alone are
+    # refused here, in this module's words, before pySIPNET's drop_padding
+    # refuses them in words written for resample.
     check_field_is_on_a_time_axis(field)
-    field = drop_padding(field)
-    check_field_has_a_timestep(field, message_name=fields.message_name(field))
-    return field
+    message_name = fields.message_name(field)
+    check_field_has_both_interval_coords_or_neither(field, message_name=message_name)
+    padding = _padding_mask(field)
+    check_padding_holds_no_value(field, padding, message_name=message_name)
+    check_field_has_a_timestep(int((~padding).sum()), message_name=message_name)
+    return drop_padding(field)
+
+
+def _is_described_by_itself(field: xr.DataArray, kind: VariableKind | None) -> bool:
+    """Whether *field* has neither a kind nor interval coordinates, and so keeps its attributes."""
+    return kind is None and not _has_interval_coords(field)
+
+
+def _padding_mask(field: xr.DataArray) -> np.ndarray:
+    """Which time labels have a ``NaT`` start or length, as one boolean per label."""
+    mask = np.zeros(field.sizes[TIME], dtype=bool)
+    for name in (TIMESTEP_START, TIMESTEP_LENGTH):
+        if name in field.coords:
+            mask |= np.isnat(field[name].values)
+    return mask
+
+
+def _without_output_decimals(attrs: Mapping[str, Any]) -> dict[str, Any]:
+    """*attrs* less ``output_decimals``, for a value pySIPNET's ``resampled_attributes`` cannot take.
+
+    The same rule as pySIPNET's: SIPNET's printf precision does not describe
+    a combined value. It is applied here where there is no kind, or the
+    reduction is not one of pySIPNET's.
+    """
+    return {key: value for key, value in attrs.items() if key != "output_decimals"}
 
 
 def _resample_without_a_kind(field: xr.DataArray, freq: str, method: str) -> xr.DataArray:
-    """*field*, which declares no kind and has no interval coordinates, on calendar cells.
-
-    pySIPNET's ``resample`` checks a method against the kind, so it is lent
-    the kind *method* leaves unchanged, and the result keeps *field*'s own
-    attributes, which say nothing of a kind.
-    """
+    """*field*, which declares no kind and has no interval coordinates, on calendar cells."""
+    # pySIPNET's resample checks a method against the kind, so the field is
+    # lent the kind the method leaves unchanged; the result keeps the field's
+    # own attributes and its time's, which say nothing pySIPNET's would.
     stand_in = field.assign_attrs(kind=_STAND_IN_KIND_FOR_METHOD[method].value)
     result = resample(stand_in, freq, how=method)
-    result.attrs = {key: value for key, value in field.attrs.items() if key != "output_decimals"}
+    result.attrs = _without_output_decimals(field.attrs)
     result.attrs["resampling"] = f"{method} over {freq}"
+    result[TIME].attrs = without_stale_time_attributes(field[TIME].attrs)
     return result
 
 
@@ -580,10 +621,14 @@ def _resampling_method_for(
     """The method :func:`aggregate_time` applies: *how* checked, or the kind's default."""
     message_name = fields.message_name(field)
     if how is None:
-        check_kind_is_known(kind, message_name=message_name)
+        if kind is None:
+            variable_kind(field)  # raises pySIPNET's refusal of an unknown kind
         check_kind_has_a_default_method(kind, message_name=message_name)
         return DEFAULT_METHOD_FOR_KIND[kind]
+    check_how_is_a_string(how, choices=RESAMPLING_METHODS, message_name=message_name)
     if kind is None:
+        # pySIPNET's check_resampling_method needs a kind; without one only
+        # the method's name can be checked.
         check_how_is_a_resampling_method(how, message_name=message_name)
     else:
         check_resampling_method(kind, how, name=fields.message_name(field, quoted=False))
@@ -592,7 +637,7 @@ def _resampling_method_for(
 
 def _window_reduction_for(field: xr.DataArray, kind: VariableKind | None, how: Any) -> str:
     """*how* checked against :data:`WINDOW_REDUCTIONS` and the variable's kind."""
-    check_how_is_a_window_reduction(how, fields.message_name(field))
+    check_how_is_a_window_reduction(how, message_name=fields.message_name(field))
     if how in RESAMPLING_METHODS:
         return _resampling_method_for(field, kind, how)
     check_kind_has_a_level(kind, how, message_name=fields.message_name(field))
@@ -668,7 +713,7 @@ def _window_reduction_attrs(
     if kind is not None and how in RESAMPLING_METHODS:
         out = resampled_attributes(attrs, kind, how, name=name)
     else:
-        out = {key: value for key, value in attrs.items() if key != "output_decimals"}
+        out = _without_output_decimals(attrs)
     if how not in RESAMPLING_METHODS:
         if kind is not None:
             out["time_reference"] = f"the {how} of the {kind.value} values over the window"
@@ -727,7 +772,7 @@ def _reduce_by_window(
     # already propagate it; first, last, min and max skip missing values. An
     # empty window's "all" is NaN, and its value NaN already.
     complete = by_window(bare.notnull()).all() == 1
-    return _drop_bin_labels(reduced.where(complete), bare.dims)
+    return _bins_to_unlabeled_time_in_dim_order(reduced.where(complete), bare.dims)
 
 
 def _count_by_window(bare: xr.DataArray, windows: pd.IntervalIndex) -> xr.DataArray:
@@ -735,14 +780,14 @@ def _count_by_window(bare: xr.DataArray, windows: pd.IntervalIndex) -> xr.DataAr
     if not (_window_codes(bare, windows) >= 0).any():
         return _windows_filled_with(bare, len(windows), 0, np.int64)
     counts = bare.notnull().groupby_bins(TIME, windows).sum()
-    counts = _drop_bin_labels(counts, bare.dims).fillna(0).astype(np.int64)
+    counts = _bins_to_unlabeled_time_in_dim_order(counts, bare.dims).fillna(0).astype(np.int64)
     counts.name = None
     counts.attrs = {}
     return counts
 
 
-def _drop_bin_labels(reduced: xr.DataArray, dims: Any) -> xr.DataArray:
-    """A ``groupby_bins`` result put on ``time``, one entry per window, without labels."""
+def _bins_to_unlabeled_time_in_dim_order(reduced: xr.DataArray, dims: Any) -> xr.DataArray:
+    """A ``groupby_bins`` result with its bins renamed to ``time``, unlabeled, dims in *dims*' order."""
     bins = f"{TIME}_bins"
     return reduced.rename({bins: TIME}).drop_vars(TIME).transpose(*dims)
 
@@ -795,12 +840,10 @@ def _window_interval_coords(
 
 
 def _as_windows(windows: Any, stamps: pd.DatetimeIndex) -> pd.IntervalIndex:
-    """*windows* checked, and put in the datetime resolution of *stamps*.
-
-    pandas refuses to index one datetime resolution with another, and the two
-    routinely differ: pySIPNET's axis is nanoseconds where a window built from
-    dates is microseconds.
-    """
+    """*windows* checked, and put in the datetime resolution of *stamps*."""
+    # pandas refuses to index one datetime resolution with another, and the
+    # two routinely differ: pySIPNET's axis is nanoseconds where a window
+    # built from dates is microseconds.
     check_windows_are_valid(windows, stamps)
     left, right = pd.DatetimeIndex(windows.left), pd.DatetimeIndex(windows.right)
     unit = stamps.unit
@@ -841,26 +884,21 @@ def _as_instants(times: Any, *, message_name: str) -> tuple[pd.DatetimeIndex, di
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_run_spans_the_windows(
-    field: xr.DataArray, windows: pd.IntervalIndex, message_name: str
-) -> None:
-    """Each window lies within the model field's record, less up to a step at either end."""
+def check_run_spans_the_windows(field: xr.DataArray, windows: pd.IntervalIndex, reader: str) -> None:
+    """Each window *reader* (an operator, say) reads lies within the field's record, less a step."""
     field = _as_steps(field)
-    check_field_has_interval_coords(field, message_name=message_name)
+    message_name = fields.message_name(field)
+    check_field_has_interval_coords(field, reader, message_name=message_name)
     ends = _time_index(field)
     check_windows_lie_within_the_record(
-        _as_windows(windows, ends), _start_index(field), ends, message_name=message_name
+        _as_windows(windows, ends), _start_index(field), ends, reader, message_name=message_name
     )
 
 
-def check_how_is_a_window_reduction(how: Any, message_name: str | None = None) -> None:
+def check_how_is_a_window_reduction(how: Any, *, message_name: str | None = None) -> None:
     """*how* is one of :data:`WINDOW_REDUCTIONS`."""
     for_what = f" for {message_name}" if message_name else ""
-    if not isinstance(how, str):
-        raise TypeError(
-            f"how must be a string, one of {list(WINDOW_REDUCTIONS)}{for_what}, got "
-            f"{type(how).__name__}; pass one of them."
-        )
+    check_how_is_a_string(how, choices=WINDOW_REDUCTIONS, message_name=message_name)
     if how not in WINDOW_REDUCTIONS:
         raise ValueError(
             f"how must be one of {list(WINDOW_REDUCTIONS)}{for_what}, got {how!r}; write a "
@@ -883,27 +921,24 @@ def check_frequency_is_a_string(freq: Any) -> None:
         )
 
 
-def check_how_is_a_resampling_method(how: Any, *, message_name: str) -> None:
-    """*how* is one of :data:`RESAMPLING_METHODS`, for a variable of no known kind."""
+def check_how_is_a_string(
+    how: Any, *, choices: tuple[str, ...], message_name: str | None
+) -> None:
+    """*how* is a string, as the name of a method is."""
     if not isinstance(how, str):
+        for_what = f", for {message_name}" if message_name else ""
         raise TypeError(
-            f"how must be a string, one of {list(RESAMPLING_METHODS)}, for {message_name}, got "
+            f"how must be a string, one of {list(choices)}{for_what}, got "
             f"{type(how).__name__}; pass one of them."
         )
+
+
+def check_how_is_a_resampling_method(how: str, *, message_name: str) -> None:
+    """*how* is one of :data:`RESAMPLING_METHODS`, for a variable of no known kind."""
     if how not in RESAMPLING_METHODS:
         raise ValueError(
             f"unknown resampling method {how!r} for {message_name}; choose from "
             f"{list(RESAMPLING_METHODS)}."
-        )
-
-
-def check_kind_is_known(kind: VariableKind | None, *, message_name: str) -> None:
-    """The variable's kind is known, so a default method can be taken from it."""
-    if kind is None:
-        raise ValueError(
-            f"{message_name} carries no 'kind' attribute and is not a SIPNET output or "
-            "climate variable, so there is no default method to take from it; pass "
-            "how='sum', 'mean' or 'last'."
         )
 
 
@@ -944,19 +979,56 @@ def check_field_has_a_time_dim(field: xr.DataArray, *, message_name: str) -> Non
         )
 
 
-def check_field_has_a_timestep(field: xr.DataArray, *, message_name: str) -> None:
+def check_field_has_a_timestep(n_timesteps: int, *, message_name: str) -> None:
     """At least one timestep is left once the padding is dropped."""
-    if field[TIME].values.size == 0:
+    if n_timesteps == 0:
         raise ValueError(
-            f"{message_name} has no timesteps left to aggregate, as a selection that matched "
-            "nothing leaves it; select a period or a site the record covers."
+            f"{message_name} has no timesteps left to read once its padding is dropped, as "
+            "a selection that matched nothing, or a site of a stack with no record of its "
+            "own, leaves it; select a period or a site the record covers."
+        )
+
+
+def check_field_has_both_interval_coords_or_neither(
+    field: xr.DataArray, *, message_name: str
+) -> None:
+    """*field* carries both of pySIPNET's interval coordinates, or neither of them."""
+    present = [c for c in (TIMESTEP_START, TIMESTEP_LENGTH) if c in field.coords]
+    if len(present) == 1:
+        missing = TIMESTEP_LENGTH if present == [TIMESTEP_START] else TIMESTEP_START
+        raise ValueError(
+            f"a field carries both of pySIPNET's interval coordinates or neither, and "
+            f"{message_name} carries {present[0]!r} without {missing!r}; attach the missing "
+            "one, or drop both to combine the values by their labels alone."
+        )
+
+
+def check_padding_holds_no_value(
+    field: xr.DataArray, padding: np.ndarray, *, message_name: str
+) -> None:
+    """No time label whose interval is ``NaT`` holds a value, as padding holds none."""
+    if not padding.any():
+        return
+    without_interval = field.isel({TIME: padding})
+    others = [dim for dim in without_interval.dims if dim != TIME]
+    present = without_interval.notnull()
+    valued = np.asarray(present.any(others).values if others else present.values)
+    if valued.any():
+        first = without_interval[TIME].values[int(np.flatnonzero(valued)[0])]
+        raise ValueError(
+            f"{message_name} has values at {int(valued.sum())} time label(s) whose "
+            f"{TIMESTEP_START} or {TIMESTEP_LENGTH} is NaT, the first at {first}, so which "
+            "step those values cover is unknown, and pure padding (NaT interval, every value "
+            "missing) is dropped but these are not padding; give those time labels their "
+            "interval, or drop them."
         )
 
 
 def check_steps_are_equally_spaced(field: xr.DataArray, *, message_name: str) -> None:
-    """A field with no declared step lengths can be averaged only with equal weights."""
+    """The time labels are equally spaced, to within pySIPNET's ``STEP_TOLERANCE``."""
     spacing = _step_spacing(field)
-    if spacing.size and (spacing != spacing[0]).any():
+    tolerance = int(pd.Timedelta(STEP_TOLERANCE).value)
+    if spacing.size and int(spacing.max() - spacing.min()) > tolerance:
         raise ValueError(
             f"a mean over steps with no {TIMESTEP_LENGTH!r} weighs them equally, and the "
             f"steps of {message_name} are not all the same length; attach the step lengths, "
@@ -964,21 +1036,23 @@ def check_steps_are_equally_spaced(field: xr.DataArray, *, message_name: str) ->
         )
 
 
-def check_field_has_interval_coords(field: xr.DataArray, *, message_name: str) -> None:
-    """*field* carries pySIPNET's step start and length, which the reader *message_name* reads."""
+def check_field_has_interval_coords(
+    field: xr.DataArray, reader: str, *, message_name: str
+) -> None:
+    """*field* carries pySIPNET's step start and length, which *reader* reads."""
     missing = [c for c in (TIMESTEP_START, TIMESTEP_LENGTH) if c not in field.coords]
     if missing:
         raise ValueError(
-            f"{message_name} reads the interval each step covers, and "
-            f"{fields.message_name(field)} carries no {missing} coordinate; pass model output "
-            "from pySIPNET, which carries both, not observed values."
+            f"{reader} reads the interval each step covers, and {message_name} carries no "
+            f"{missing} coordinate; pass model output from pySIPNET, which carries both, not "
+            "observed values."
         )
 
 
 def check_observed_values_have_windows(
     observed_values: xr.DataArray, *, message_name: str
 ) -> None:
-    """*observed_values* carries both window coordinates, as datetimes."""
+    """*observed_values* carries both window coordinates."""
     missing = [c for c in (WINDOW_START, WINDOW_END) if c not in observed_values.coords]
     if missing:
         raise ValueError(
@@ -986,10 +1060,14 @@ def check_observed_values_have_windows(
             "to reduce the model over; for a dated or static constraint, read an instant "
             "with select_timestep_at or the whole run with run_window."
         )
+
+
+def check_window_edges_are_datetimes(observed_values: xr.DataArray, *, message_name: str) -> None:
+    """Both window coordinates of some observed values hold datetimes."""
     for name in (WINDOW_START, WINDOW_END):
         dtype = observed_values[name].dtype
         if not pd.api.types.is_datetime64_any_dtype(dtype):
-            raise ValueError(
+            raise TypeError(
                 f"{message_name}: {name} must hold datetimes, got dtype {dtype}; convert "
                 "it with pandas.to_datetime."
             )
@@ -1048,7 +1126,7 @@ def check_windows_are_not_empty(windows: pd.IntervalIndex) -> None:
 def check_windows_hold_datetimes(windows: pd.IntervalIndex) -> None:
     """The windows are intervals of datetimes."""
     if not pd.api.types.is_datetime64_any_dtype(windows.left.dtype):
-        raise ValueError(
+        raise TypeError(
             f"windows must be intervals of datetimes, got {windows.left.dtype}; build "
             "them from timestamps."
         )
@@ -1101,10 +1179,11 @@ def check_windows_lie_within_the_record(
     windows: pd.IntervalIndex,
     starts: pd.DatetimeIndex,
     ends: pd.DatetimeIndex,
+    reader: str,
     *,
     message_name: str,
 ) -> None:
-    """No window reaches a whole step or more beyond the record at either end."""
+    """No window *reader* reads reaches a whole step or more beyond the record at either end."""
     first_step, last_step = ends[0] - starts[0], ends[-1] - starts[-1]
     before = (starts[0] - windows.left) >= first_step
     after = (windows.right - ends[-1]) >= last_step
@@ -1112,7 +1191,7 @@ def check_windows_lie_within_the_record(
     if short.size:
         window = windows[int(short[0])]
         raise ValueError(
-            f"{message_name}: the window {window} reaches beyond the model record "
+            f"{reader}: the window {window} reaches beyond the model record of {message_name} "
             f"({starts[0]} to {ends[-1]}) by a step or more, so a reduction over it "
             f"would cover only part of it ({short.size} of {len(windows)} windows); run "
             "the model over every observed window, or select the observations to the "
@@ -1143,7 +1222,7 @@ def check_kind_has_an_instant_value(kind: VariableKind | None, *, message_name: 
 def check_labels_are_timestamps(values: np.ndarray, *, message_name: str) -> None:
     """The labels are timestamps, not numbers pandas would read as nanoseconds."""
     if values.dtype.kind in "iufb":
-        raise ValueError(
+        raise TypeError(
             f"{message_name} must be timestamps, got dtype {values.dtype}, which would be "
             "read as nanoseconds since 1970; convert them with pandas.to_datetime first."
         )

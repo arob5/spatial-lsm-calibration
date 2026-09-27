@@ -23,6 +23,7 @@ from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, Vari
 
 from conftest import SITE_1_DRIVERS, niwot_stack_of, site_table_of
 from sipnet_calibration.conventions import (
+    SIPNET_ROW_LABEL_NAMES,
     STALE_TIME_ATTRIBUTE_NAMES,
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -345,9 +346,9 @@ class TestAggregateTimeOnDrivers:
         """pySIPNET's rule: a record has both interval coordinates or neither."""
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
         field.attrs["kind"] = {"sum": "timestep_total", "mean": "timestep_mean"}[how]
-        with pytest.raises(ValueError, match="lacks the pySIPNET time coordinates"):
+        with pytest.raises(ValueError, match="both of pySIPNET's interval coordinates or neither"):
             aggregate_time(field.drop_vars([TIMESTEP_LENGTH]), "1D", how=how)
-        with pytest.raises(ValueError, match="lacks the pySIPNET time coordinates"):
+        with pytest.raises(ValueError, match="both of pySIPNET's interval coordinates or neither"):
             aggregation_counts(field.drop_vars([TIMESTEP_LENGTH]), "1D")
 
 
@@ -520,7 +521,7 @@ class TestAggregateTimeRefusesUnusableTime:
 
     def test_an_empty_time_dimension_is_refused(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
-        with pytest.raises(ValueError, match="no timesteps left to aggregate"):
+        with pytest.raises(ValueError, match="no timesteps left to read"):
             aggregate_time(field.isel(time=slice(0, 0)), "1D")
 
 
@@ -752,3 +753,68 @@ def test_a_frequency_that_is_not_a_string_is_a_type_error(niwot_output):
     field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
     with pytest.raises(TypeError, match="freq must be a pandas offset alias"):
         aggregate_time(field, 3)
+
+
+class TestAKindlessFieldKeepsItsOwnDescription:
+    def test_time_keeps_the_inputs_attributes_as_the_variable_does(self, real_constraint_fields):
+        observed = real_constraint_fields[0]["landtrendr_aboveground_biomass"].isel(site=slice(0, 50))
+        assert "kind" not in observed.attrs
+        yearly = aggregate_time(observed, "YS", how="last")
+        assert yearly["time"].attrs == {
+            key: value for key, value in observed["time"].attrs.items()
+            if key not in STALE_TIME_ATTRIBUTE_NAMES
+        }
+        assert yearly.attrs["resampling"] == "last over YS"
+        assert aggregation_counts(observed, "YS")["time"].attrs == yearly["time"].attrs
+
+    def test_no_time_attribute_the_input_lacked_is_added(self):
+        observed = _daily_observed_values()
+        del observed.attrs["kind"]
+        assert observed["time"].attrs == {}
+        assert aggregate_time(observed, "1D", how="mean")["time"].attrs == {}
+
+
+class TestPaddingThatHoldsAValueIsNamed:
+    """Only the time labels that hold a value are counted, and the first is named."""
+
+    @staticmethod
+    def one_valued_padding_label(niwot_output):
+        stacked = TestAggregateTimeDropsAlignmentPadding.stacked(niwot_output)
+        short = stacked.sel(site=1, sample=0)
+        padding = np.flatnonzero(np.isnat(short[TIMESTEP_START].values))
+        assert padding.size > 1
+        values = short.values.copy()
+        values[padding[0]] = 1.0
+        return short.copy(data=values), short["time"].values[padding[0]]
+
+    def test_the_count_and_the_first_label_are_the_valued_ones(self, niwot_output):
+        valued, first = self.one_valued_padding_label(niwot_output)
+        with pytest.raises(ValueError, match="these are not padding") as raised:
+            aggregate_time(valued, "1D")
+        assert "at 1 time label(s)" in str(raised.value)
+        assert str(pd.Timestamp(first).to_datetime64()) in str(raised.value)
+
+
+class TestTypesAreCheckedBeforeTheKind:
+    @pytest.mark.parametrize("kind", [None, "timestep_total"])
+    def test_a_how_that_is_not_a_string_is_a_type_error_whatever_the_kind(self, kind):
+        observed = _daily_observed_values()
+        observed.attrs.pop("kind")
+        if kind is not None:
+            observed.attrs["kind"] = kind
+        with pytest.raises(TypeError, match="how must be a string"):
+            aggregate_time(observed, "1D", how=3)
+
+
+class TestTheLastGapRuleOnModelOutput:
+    def test_pysipnets_last_reads_past_a_gap_where_ours_is_missing(self, niwot_output):
+        """The intended difference from pySIPNET, on the interval path."""
+        field = to_model_output(niwot_output, output_variable_names=["wood_carbon"])["wood_carbon"]
+        day = pd.DatetimeIndex(field["time"].values).ceil("D")
+        second_day = np.flatnonzero(day == day.unique()[1])
+        gappy = field.copy(data=field.values.copy())
+        gappy[second_day[0]] = np.nan
+        ours = aggregate_time(gappy, "1D")
+        theirs = resample(gappy, "1D", how="last").drop_vars(list(SIPNET_ROW_LABEL_NAMES))
+        assert np.isfinite(theirs.values[1]) and np.isnan(ours.values[1])
+        xr.testing.assert_identical(ours.drop_isel(time=1), theirs.drop_isel(time=1))
