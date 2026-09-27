@@ -20,6 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import xarray as xr
 
 from conftest import REPOSITORY, load_script, write_site_table_csv
 from sipnet_calibration.conventions import (
@@ -240,6 +241,20 @@ def test_rows_are_sorted_by_site_whatever_the_raw_order(tmp_path):
     frame = read_raw(SYNTHETIC_SPEC, raw_root)
     site_labels = build_site_labels(SYNTHETIC_SPEC, frame)
     assert site_labels[SITE_ID].tolist() == SYNTHETIC_SITES
+    # Each class stays with its own site through the sort.
+    expected = {row["site"]: row["klass"] for row in SYNTHETIC_ROWS}
+    assert dict(zip(site_labels[SITE_ID], site_labels[LABEL_COLUMN], strict=True)) == expected
+
+
+def test_site_labels_field_locates_each_site_whatever_the_table_order(synthetic):
+    raw_root, site_table, out_dir = synthetic
+    ingest.ingest(SYNTHETIC_SPEC, raw_root, site_table, out_dir)
+    path = site_labels_path(SYNTHETIC_SPEC, out_dir)
+    expected = site_labels_field(SYNTHETIC_SPEC, site_table=site_table, path=path)
+    reordered = site_labels_field(
+        SYNTHETIC_SPEC, site_table=site_table.iloc[::-1].reset_index(drop=True), path=path
+    )
+    xr.testing.assert_identical(reordered, expected)
 
 
 def test_a_class_literally_named_na_survives_the_read(tmp_path):

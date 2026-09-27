@@ -440,6 +440,22 @@ def test_a_malformed_date_is_refused(raw_root, site_table, tmp_path):
     _refused(DATED, rows, raw_root, site_table, tmp_path, "ISO date")
 
 
+@pytest.mark.parametrize("spec, rows", [(ANNUAL, ANNUAL_ROWS), (DATED, DATED_ROWS), (STATIC, STATIC_ROWS)])
+def test_build_constraint_places_values_by_site_whatever_the_row_and_table_order(
+    raw_root, site_table, spec, rows
+):
+    """Rows and site-table rows are matched by site id, never by position."""
+    _write_raw(raw_root, spec, rows)
+    frame = read_raw(spec, raw_root)
+    expected = build_constraint(spec, frame, site_table)
+    reordered = build_constraint(
+        spec, frame.iloc[::-1].reset_index(drop=True), site_table.iloc[::-1].reset_index(drop=True)
+    )
+    for dataset in (expected, reordered):
+        dataset.attrs.pop("created")
+    xr.testing.assert_identical(reordered, expected)
+
+
 def test_build_constraint_refuses_a_duplicate_site_time_key_itself(site_table):
     frame = pd.DataFrame(ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)])
     with pytest.raises(ValueError, match="share a"):

@@ -754,6 +754,15 @@ def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
         build_initial_conditions(raw_dataset, more)
 
 
+def test_build_initial_conditions_refuses_raw_sites_out_of_order(raw, sites_csv):
+    """Its values are taken in raw order and labeled in pool order, so a reordered
+    raw Dataset would put every value under the wrong site."""
+    with read_raw(raw) as raw_dataset:
+        reversed_sites = raw_dataset.load().isel(site=slice(None, None, -1))
+    with pytest.raises(ValueError, match="not in ascending site id order"):
+        build_initial_conditions(reversed_sites, load_sites(sites_csv))
+
+
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
     out = tmp_path / "processed" / module.PROCESSED_FILE
     assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
