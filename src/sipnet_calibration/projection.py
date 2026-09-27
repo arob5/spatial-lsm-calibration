@@ -274,6 +274,10 @@ class Projection:
     base_crs: str = "EPSG:4326"
 
     def __post_init__(self) -> None:
+        # A NumPy, xarray or JAX scalar is stored as the float it holds, so the
+        # projection stays hashable and its definition files read the same.
+        for name in _NUMERIC_PARAMETER_NAMES:
+            object.__setattr__(self, name, _as_parameter(getattr(self, name), name))
         check_projection_is_valid(self)
 
     # ── the transform ────────────────────────────────────────────────────────
@@ -724,6 +728,43 @@ def _as_float_array(values: Any) -> np.ndarray:
     return np.asarray(values, dtype=float)
 
 
+#: The fields of :class:`Projection` that are numbers.
+_NUMERIC_PARAMETER_NAMES: tuple[str, ...] = ("lat_0", "lon_0", "false_easting", "false_northing")
+
+#: What :func:`_first_value_that_is_not_a_coordinate` returns when every value is one.
+_NO_VALUE = object()
+
+
+def _is_a_real_number(value: Any) -> bool:
+    """Whether *value* is a real number (a ``Fraction``, a ``Decimal``), not a boolean."""
+    is_complex = isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real)
+    return (
+        isinstance(value, numbers.Number)
+        and not isinstance(value, (bool, np.bool_))
+        and not is_complex
+    )
+
+
+def _as_parameter(value: Any, name: str) -> float:
+    """A numeric parameter as a ``float``, a zero-dimensional array-like unwrapped."""
+    if hasattr(value, "__array__") and not isinstance(value, (str, bytes)) and np.ndim(value) == 0:
+        value = np.asarray(value).item()
+    check_parameter_is_a_real_number(value, name)
+    return float(value)
+
+
+def _first_value_that_is_not_a_coordinate(array: np.ndarray) -> Any:
+    """The first value of *array* that is neither a real number nor ``None``, or ``_NO_VALUE``."""
+    if array.dtype.kind in "iuf":
+        return _NO_VALUE
+    if array.dtype.kind == "O":
+        for value in array.flat:
+            if value is not None and not _is_a_real_number(value):
+                return value
+        return _NO_VALUE
+    return array.flat[0] if array.size else array.dtype
+
+
 def _definition_contents(projection: Projection) -> dict[str, str]:
     """The text of each interchange file, keyed as :func:`definition_paths` keys them."""
     return {
@@ -829,7 +870,6 @@ def check_definition_file_matches(path: Path, expected: str, projection: Project
 
 def check_projection_is_valid(projection: Projection) -> None:
     """A projection's parameters are numbers in range, on a geographic base CRS."""
-    check_projection_parameters_are_numbers(projection)
     check_latitude_of_origin_is_in_range(projection)
     check_longitude_of_origin_is_in_range(projection)
     check_false_origin_is_finite(projection)
@@ -838,15 +878,13 @@ def check_projection_is_valid(projection: Projection) -> None:
     check_base_crs_is_geographic(projection.base_crs)
 
 
-def check_projection_parameters_are_numbers(projection: Projection) -> None:
-    """The origin and the false origin are real numbers, not booleans."""
-    for name in ("lat_0", "lon_0", "false_easting", "false_northing"):
-        value = getattr(projection, name)
-        if isinstance(value, bool) or not isinstance(value, numbers.Real):
-            raise TypeError(
-                f"{name} must be a number, got {type(value).__name__} {value!r}; pass it "
-                "in degrees (lat_0, lon_0) or meters (the false origin)."
-            )
+def check_parameter_is_a_real_number(value: Any, name: str) -> None:
+    """A numeric parameter of a projection is a real number, not a boolean."""
+    if not _is_a_real_number(value):
+        raise TypeError(
+            f"{name} must be a real number, got {type(value).__name__} {value!r}; pass it "
+            "in degrees (lat_0, lon_0) or meters (the false origin)."
+        )
 
 
 def check_latitude_of_origin_is_in_range(projection: Projection) -> None:
@@ -939,12 +977,12 @@ def check_bbox_excludes_the_antipode(
 
 
 def check_coordinates_are_numbers(values: Any, *, message_name: str) -> None:
-    """Coordinates are real numbers, or an array of them: not booleans, not strings."""
-    kind = np.asarray(np.ma.getdata(values)).dtype.kind
-    if kind not in "iuf":
+    """Coordinates are real numbers, or an array of them; ``None`` is a missing one."""
+    offending = _first_value_that_is_not_a_coordinate(np.asarray(np.ma.getdata(values)))
+    if offending is not _NO_VALUE:
         raise TypeError(
-            f"{message_name} must be numbers in degrees, got {type(values).__name__} of "
-            f"dtype kind {kind!r}; pass a number or an array of them."
+            f"{message_name} must be real numbers in degrees, and it holds "
+            f"{type(offending).__name__} {offending!r}; pass numbers, or an array of them."
         )
 
 

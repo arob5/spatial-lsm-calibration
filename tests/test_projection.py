@@ -175,10 +175,19 @@ class TestTheProjectionThatWasChosen:
                 Projection(name="bad", lat_0=50.0, lon_0=-100.0, false_northing=bad)
 
     def test_rejects_a_parameter_that_is_not_a_number_as_a_type_error(self):
-        with pytest.raises(TypeError, match="lat_0 must be a number"):
+        with pytest.raises(TypeError, match="lat_0 must be a real number"):
             Projection(name="bad", lat_0=True, lon_0=-100.0)
-        with pytest.raises(TypeError, match="false_easting must be a number"):
+        with pytest.raises(TypeError, match="false_easting must be a real number"):
             Projection(name="bad", lat_0=50.0, lon_0=-100.0, false_easting="0")
+
+    def test_takes_a_zero_dimensional_or_jax_parameter_as_a_float(self):
+        """A JAX scalar was refused as not a number, and is unhashable as it stands."""
+        import jax.numpy as jnp
+
+        built = Projection(name="x", lat_0=jnp.float32(50), lon_0=np.array(-100.0))
+        assert (built.lat_0, built.lon_0) == (50.0, -100.0)
+        assert type(built.lat_0) is float
+        hash(built)
 
     def test_is_immutable(self):
         with pytest.raises(dataclasses.FrozenInstanceError):
@@ -336,15 +345,29 @@ class TestForward:
             )
 
     def test_rejects_a_coordinate_that_is_not_a_number_as_a_type_error(self):
-        with pytest.raises(TypeError, match="lon must be numbers in degrees"):
+        with pytest.raises(TypeError, match="lon must be real numbers in degrees"):
             SITE_PROJECTION.forward("west", 50.0)
-        with pytest.raises(TypeError, match="lat must be numbers in degrees"):
+        with pytest.raises(TypeError, match="lat must be real numbers in degrees"):
             SITE_PROJECTION.angular_distance(-100.0, [object()])
         # A boolean and a numeric string were read as 1.0 and -100.0.
-        with pytest.raises(TypeError, match="lon must be numbers in degrees"):
+        with pytest.raises(TypeError, match="lon must be real numbers in degrees"):
             SITE_PROJECTION.forward(True, 50.0)
-        with pytest.raises(TypeError, match="lon must be numbers in degrees"):
+        with pytest.raises(TypeError, match="lon must be real numbers in degrees"):
             SITE_PROJECTION.forward("-100", 50.0)
+
+    def test_projects_an_object_array_of_real_numbers(self):
+        """An object column of floats, Fractions and Decimals projected on main, and a
+        missing value (None) was reported as not finite."""
+        from decimal import Decimal
+        from fractions import Fraction
+
+        expected = SITE_PROJECTION.forward(-100.0, 40.0)
+        for lon in (np.array([-100.0], dtype=object), [Fraction(-100)], [Decimal("-100")]):
+            assert SITE_PROJECTION.forward(lon, [40.0])[0][0] == pytest.approx(expected[0])
+        with pytest.raises(ValueError, match="1 longitude"):
+            SITE_PROJECTION.forward([-100.0, None], [40.0, 41.0])
+        with pytest.raises(TypeError, match="it holds str 'west'"):
+            SITE_PROJECTION.forward(np.array([-100.0, "west"], dtype=object), [40.0, 41.0])
 
     def test_rejects_ragged_coordinates_as_ragged(self):
         """They were reported as not being numbers."""
