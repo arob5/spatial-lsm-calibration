@@ -81,7 +81,7 @@ def test_the_halves_rejoin_to_the_source():
     split.check_the_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
 
 
-def test_the_rejoin_check_catches_a_changed_cell():
+def test_the_rejoin_check_catches_a_changed_value():
     source = _source()
     site_labels, covariates = split.split(source)
     covariates = covariates.copy()
@@ -202,7 +202,7 @@ def test_main_reports_and_exits_zero(tmp_path, capsys):
         ]
     )
     assert code == 0
-    assert "re-join to the source cell for cell" in capsys.readouterr().out
+    assert "re-join to the source value for value" in capsys.readouterr().out
 
 
 def test_main_reports_an_error_rather_than_a_traceback(tmp_path, capsys):

@@ -28,19 +28,19 @@ def _refuse(partial):
 
 class TestWriteChecked:
     def test_a_passing_check_moves_the_file_into_place_and_leaves_no_partial(self, tmp_path):
-        out = tmp_path / "nested" / "product.csv"
+        out = tmp_path / "nested" / "processed.csv"
         assert write_checked(out, _write("new\n"), lambda partial: None) == out
         assert out.read_text() == "new\n"
         assert not partial_path(out).exists()
 
     def test_the_check_reads_the_partial_file_not_the_destination(self, tmp_path):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         seen = []
         write_checked(out, _write("new\n"), lambda partial: seen.append(partial.read_text()))
         assert seen == ["new\n"]
 
     def test_a_failed_check_keeps_the_partial_and_prints_its_path(self, tmp_path, capsys):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         out.write_text("previous\n")
         with pytest.raises(ValueError, match="the check failed"):
             write_checked(out, _write("new\n"), _refuse)
@@ -49,7 +49,7 @@ class TestWriteChecked:
         assert str(partial_path(out)) in capsys.readouterr().err
 
     def test_a_failed_write_keeps_what_it_wrote(self, tmp_path, capsys):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
 
         def half_write(partial):
             partial.write_text("half")
@@ -65,11 +65,11 @@ class TestWriteChecked:
             raise OSError("no space")
 
         with pytest.raises(OSError):
-            write_checked(tmp_path / "product.csv", no_write, lambda partial: None)
+            write_checked(tmp_path / "processed.csv", no_write, lambda partial: None)
         assert capsys.readouterr().err == ""
 
     def test_a_rerun_overwrites_a_kept_partial(self, tmp_path):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         with pytest.raises(ValueError):
             write_checked(out, _write("bad\n"), _refuse)
         write_checked(out, _write("good\n"), lambda partial: None)
@@ -80,7 +80,7 @@ class TestWriteChecked:
     ):
         """A rerun that fails before it writes must not report the last run's
         file as its own."""
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         partial_path(out).write_text("STALE FROM LAST WEEK")
 
         def fails_first(partial):
@@ -92,7 +92,7 @@ class TestWriteChecked:
         assert capsys.readouterr().err == ""
 
     def test_a_check_never_sees_a_stale_partial(self, tmp_path):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         partial_path(out).write_text("stale")
         seen = []
         with pytest.raises(FileNotFoundError, match="did not write"):
@@ -102,10 +102,10 @@ class TestWriteChecked:
     def test_a_write_that_writes_the_destination_is_caught_and_reported_truthfully(
         self, tmp_path, capsys
     ):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         out.write_text("previous\n")
         seen = []
-        with pytest.raises(ValueError, match="changed .*product.csv; a write writes only"):
+        with pytest.raises(ValueError, match="changed .*processed.csv; a write writes only"):
             write_checked(out, lambda partial: out.write_text("direct\n"), seen.append)
         assert seen == []
         err = capsys.readouterr().err
@@ -115,7 +115,7 @@ class TestWriteChecked:
     def test_a_write_that_writes_both_is_not_reported_as_leaving_the_destination(
         self, tmp_path, capsys
     ):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
         out.write_text("previous\n")
 
         def both(partial):
@@ -128,7 +128,7 @@ class TestWriteChecked:
         assert str(partial_path(out)) in err and "unchanged" not in err
 
     def test_a_failed_run_leaves_no_directory_it_made_empty(self, tmp_path):
-        out = tmp_path / "new" / "nested" / "product.csv"
+        out = tmp_path / "new" / "nested" / "processed.csv"
 
         def no_write(partial):
             raise OSError("no space")
@@ -138,13 +138,13 @@ class TestWriteChecked:
         assert not (tmp_path / "new").exists()
 
     def test_a_failed_check_keeps_the_directory_holding_the_partial(self, tmp_path):
-        out = tmp_path / "new" / "product.csv"
+        out = tmp_path / "new" / "processed.csv"
         with pytest.raises(ValueError):
             write_checked(out, _write("bad\n"), _refuse)
         assert partial_path(out).read_text() == "bad\n"
 
     def test_an_interrupt_keeps_the_partial_and_prints_its_path(self, tmp_path, capsys):
-        out = tmp_path / "product.csv"
+        out = tmp_path / "processed.csv"
 
         def interrupted(partial):
             partial.write_text("half")

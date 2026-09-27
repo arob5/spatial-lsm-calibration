@@ -1,18 +1,18 @@
-"""Tests for the constraint specs, the products they describe, and the ingest.
+"""Tests for the constraint specs, the processed files they describe, and the ingest.
 
 Three layers. The specs are checked for internal consistency and against the
 real raw files' headers. The conversion is exercised on small synthetic raw
-tables, one per time structure, where the expected product can be written out
+tables, one per time structure, where the expected processed file can be written out
 by hand and every refusal can be provoked. Finally the real files are built
-and the results compared against the assembled product the reanalysis used,
-``processed/constraints_annual.nc``, which the new products must reproduce
+and the results compared against the assembled file the reanalysis used,
+``processed/constraints_annual.nc``, which the new processed files must reproduce
 exactly under the assembler's own rules: those rules -- the July 15 selection
 for LAI with its 30-day window and earlier-date tie-break, the 0.66 floor on
 the LAI standard deviation, the factor of ten on soil carbon -- live in this
-file and nowhere in the products.
+file and nowhere in the processed files.
 
 The real-data cases skip when the raw files, the site table or the assembled
-product are absent from the working copy.
+file are absent from the working copy.
 """
 
 from __future__ import annotations
@@ -83,16 +83,16 @@ def _write_raw(root: Path, spec: ConstraintSpec, rows: list[dict]) -> Path:
     """Write rows as the raw files are written: gzipped CSV, ``NA``, ``%.17g``."""
     lines = [",".join(spec.raw_columns)]
     for row in rows:
-        cells = []
+        csv_fields = []
         for column in spec.raw_columns:
-            cell = row[column]
-            if cell is None or (isinstance(cell, float) and np.isnan(cell)):
-                cells.append("NA")
-            elif isinstance(cell, float):
-                cells.append(f"{cell:.17g}")
+            value = row[column]
+            if value is None or (isinstance(value, float) and np.isnan(value)):
+                csv_fields.append("NA")
+            elif isinstance(value, float):
+                csv_fields.append(f"{value:.17g}")
             else:
-                cells.append(str(cell))
-        lines.append(",".join(cells))
+                csv_fields.append(str(value))
+        lines.append(",".join(csv_fields))
     root.mkdir(parents=True, exist_ok=True)
     path = root / spec.raw_file
     with gzip.open(path, "wt") as handle:
@@ -108,7 +108,7 @@ def _spec(**overrides) -> ConstraintSpec:
         units="Mg ha-1",
         constituent="C",
         description="A synthetic annual constraint.",
-        product="test",
+        upstream_product="test",
         time_structure=TimeStructure.ANNUAL,
         raw_file="test_annual.csv.gz",
         raw_columns=("site_id", "year", "mean", "sd"),
@@ -167,7 +167,7 @@ STATIC_ROWS = [
 
 
 @pytest.fixture
-def sites(tmp_path) -> pd.DataFrame:
+def site_table(tmp_path) -> pd.DataFrame:
     return load_sites(_write_sites(tmp_path / "sites" / "sites.csv"))
 
 
@@ -176,9 +176,9 @@ def raw_root(tmp_path) -> Path:
     return tmp_path / "raw"
 
 
-def _ingest(spec, rows, raw_root, sites, out_dir) -> xr.Dataset:
+def _ingest(spec, rows, raw_root, site_table, out_dir) -> xr.Dataset:
     _write_raw(raw_root, spec, rows)
-    return ingest.ingest(spec, raw_root, sites, out_dir)
+    return ingest.ingest(spec, raw_root, site_table, out_dir)
 
 
 def _dates(*days: str) -> np.ndarray:
@@ -237,33 +237,33 @@ def test_xarray_attributes_carry_the_spec():
     assert "constituent" not in resolve_constraint("modis_leaf_area_index").xarray_attributes()
 
 
-def test_the_product_carries_exactly_the_documented_attributes(raw_root, sites, tmp_path):
+def test_the_processed_file_carries_exactly_the_documented_attributes(raw_root, site_table, tmp_path):
     """The data model's attribute lists, as written, with no extras and none missing."""
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out")
-    assert set(product[VALUE].attrs) == {
-        "units", "constituent", "long_name", "description", "product", "source_file",
+    processed = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out")
+    assert set(processed[VALUE].attrs) == {
+        "units", "constituent", "long_name", "description", "upstream_product", "source_file",
         "source_column", "time_reference", "units_provenance",
     }
-    assert set(product[STANDARD_DEVIATION].attrs) == {
+    assert set(processed[STANDARD_DEVIATION].attrs) == {
         "units", "constituent", "long_name", "description", "source_file", "source_column",
     }
-    assert set(product.attrs) == {
-        "Conventions", "title", "constraint", "product", "source_file", "time_structure",
+    assert set(processed.attrs) == {
+        "Conventions", "title", "constraint", "upstream_product", "source_file", "time_structure",
         "rows_read", "rows_dropped_by_quality_flag", "rows_collapsed_as_copies", "history",
         "created",
     }
-    assert product.attrs["time_structure"] == "annual"
-    assert product["time"].attrs["standard_name"] == "time"
-    assert product["time"].attrs["axis"] == "T"
-    assert product["lon"].attrs == {
+    assert processed.attrs["time_structure"] == "annual"
+    assert processed["time"].attrs["standard_name"] == "time"
+    assert processed["time"].attrs["axis"] == "T"
+    assert processed["lon"].attrs == {
         "standard_name": "longitude", "long_name": "Longitude", "units": "degrees_east"
     }
-    assert product["lat"].attrs["standard_name"] == "latitude"
-    assert product["lat"].attrs["units"] == "degrees_north"
-    assert product[VALUE].attrs["product"] == "test"
-    assert "calendar year" in product[VALUE].attrs["time_reference"]
+    assert processed["lat"].attrs["standard_name"] == "latitude"
+    assert processed["lat"].attrs["units"] == "degrees_north"
+    assert processed[VALUE].attrs["upstream_product"] == "test"
+    assert "calendar year" in processed[VALUE].attrs["time_reference"]
 
-    dated = _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out")
+    dated = _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out")
     assert "constituent" not in dated[VALUE].attrs
     assert dated.attrs["time_structure"] == "dated"
 
@@ -278,78 +278,78 @@ def test_describe_names_the_file_the_columns_and_the_filter():
 # ── the conversion, on synthetic tables ───────────────────────────────────────
 
 
-def test_an_annual_table_becomes_a_dense_product_with_calendar_year_bounds(
-    raw_root, sites, tmp_path
+def test_an_annual_table_becomes_a_dense_dataset_with_calendar_year_bounds(
+    raw_root, site_table, tmp_path
 ):
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out")
+    processed = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out")
 
-    assert product[VALUE].dims == ("site", "time")
-    assert product["site"].values.tolist() == SYNTHETIC_SITES
-    assert product["site"].dtype == np.int32
-    assert np.array_equal(product["time"].values, _dates("2012-01-01", "2013-01-01"))
-    assert product["time"].attrs["bounds"] == "time_bounds"
-    assert product["time_bounds"].dims == ("time", "bounds")
-    assert np.array_equal(product["time_bounds"].values[0], _dates("2012-01-01", "2013-01-01"))
-    assert np.array_equal(product["time_bounds"].values[1], _dates("2013-01-01", "2014-01-01"))
+    assert processed[VALUE].dims == ("site", "time")
+    assert processed["site"].values.tolist() == SYNTHETIC_SITES
+    assert processed["site"].dtype == np.int32
+    assert np.array_equal(processed["time"].values, _dates("2012-01-01", "2013-01-01"))
+    assert processed["time"].attrs["bounds"] == "time_bounds"
+    assert processed["time_bounds"].dims == ("time", "bounds")
+    assert np.array_equal(processed["time_bounds"].values[0], _dates("2012-01-01", "2013-01-01"))
+    assert np.array_equal(processed["time_bounds"].values[1], _dates("2013-01-01", "2014-01-01"))
 
-    value = product[VALUE].values
+    value = processed[VALUE].values
     assert value[0].tolist() == [10.0, 11.0]  # site 1
     assert value[1, 0] == 0.1 and np.isnan(value[1, 1])  # site 2: 0.1 exact, then NA
     assert np.isnan(value[2]).all()  # site 3 never observed
     assert np.isnan(value[3, 0]) and value[3, 1] == 40.0
-    assert product[STANDARD_DEVIATION].values[0, 1] == 0.0  # written through
-    assert product["lon"].values.tolist() == [-100.0, -101.0, -102.0, -103.0]
+    assert processed[STANDARD_DEVIATION].values[0, 1] == 0.0  # written through
+    assert processed["lon"].values.tolist() == [-100.0, -101.0, -102.0, -103.0]
 
-    assert product.attrs["Conventions"] == "CF-1.11" == CF_CONVENTIONS
-    assert product.attrs["rows_read"] == 5
-    assert product.attrs["rows_dropped_by_quality_flag"] == 0
-    assert product.attrs["rows_collapsed_as_copies"] == 0
-    assert product[VALUE].attrs["units"] == "Mg ha-1"
+    assert processed.attrs["Conventions"] == "CF-1.11" == CF_CONVENTIONS
+    assert processed.attrs["rows_read"] == 5
+    assert processed.attrs["rows_dropped_by_quality_flag"] == 0
+    assert processed.attrs["rows_collapsed_as_copies"] == 0
+    assert processed[VALUE].attrs["units"] == "Mg ha-1"
 
 
-def test_a_dated_table_drops_the_flagged_rows_and_counts_them(raw_root, sites, tmp_path):
-    product = _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out")
+def test_a_dated_table_drops_the_flagged_rows_and_counts_them(raw_root, site_table, tmp_path):
+    processed = _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out")
 
-    assert product[VALUE].dims == ("site", "time")
-    assert "time_bounds" not in product.coords
-    assert "bounds" not in product["time"].attrs
+    assert processed[VALUE].dims == ("site", "time")
+    assert "time_bounds" not in processed.coords
+    assert "bounds" not in processed["time"].attrs
     assert np.array_equal(
-        product["time"].values, _dates("2012-07-11", "2012-07-15", "2013-07-16")
+        processed["time"].values, _dates("2012-07-11", "2012-07-15", "2013-07-16")
     )
-    value = product[VALUE].values
+    value = processed[VALUE].values
     assert value[0].tolist()[:1] == [1.5] and np.isnan(value[0, 1])  # flagged row gone
     assert value[1, 1] == 2.5 and value[1, 2] == 2.7
-    assert product.attrs["rows_dropped_by_quality_flag"] == 1
-    assert product.attrs["rows_read"] == 4
+    assert processed.attrs["rows_dropped_by_quality_flag"] == 1
+    assert processed.attrs["rows_read"] == 4
 
 
-def test_a_static_table_collapses_to_one_value_per_site(raw_root, sites, tmp_path):
-    product = _ingest(STATIC, STATIC_ROWS, raw_root, sites, tmp_path / "out")
+def test_a_static_table_collapses_to_one_value_per_site(raw_root, site_table, tmp_path):
+    processed = _ingest(STATIC, STATIC_ROWS, raw_root, site_table, tmp_path / "out")
 
-    assert product[VALUE].dims == ("site",)
-    assert "time" not in product.coords
-    assert product[VALUE].values[0] == 742.8590087890625
-    assert product[STANDARD_DEVIATION].values[2] == 10.25
-    assert np.isnan(product[VALUE].values[1]) and np.isnan(product[VALUE].values[3])
-    assert "collapsed" in product.attrs["history"]
-    assert product.attrs["rows_collapsed_as_copies"] == 3
+    assert processed[VALUE].dims == ("site",)
+    assert "time" not in processed.coords
+    assert processed[VALUE].values[0] == 742.8590087890625
+    assert processed[STANDARD_DEVIATION].values[2] == 10.25
+    assert np.isnan(processed[VALUE].values[1]) and np.isnan(processed[VALUE].values[3])
+    assert "collapsed" in processed.attrs["history"]
+    assert processed.attrs["rows_collapsed_as_copies"] == 3
 
 
 def test_the_written_file_reads_back_through_the_loader_identically(
-    raw_root, sites, tmp_path
+    raw_root, site_table, tmp_path
 ):
     out_dir = tmp_path / "out"
-    built = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    built = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     with load_constraint(ANNUAL, constraint_path(ANNUAL, out_dir)) as read:
         read = read.load()
     assert read.identical(built)
     assert not (out_dir / f"{ANNUAL.name}.nc.partial").exists()
 
 
-def test_no_coordinate_is_encoded_with_a_fill_value(raw_root, sites, tmp_path):
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out")
-    encoding = netcdf_encoding(product)
-    for coordinate in product.coords:
+def test_no_coordinate_is_encoded_with_a_fill_value(raw_root, site_table, tmp_path):
+    processed = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out")
+    encoding = netcdf_encoding(processed)
+    for coordinate in processed.coords:
         assert encoding[str(coordinate)]["_FillValue"] is None
     assert np.isnan(encoding[VALUE]["_FillValue"])
 
@@ -395,76 +395,76 @@ def test_read_raw_names_the_missing_file(raw_root):
 # ── the refusals ──────────────────────────────────────────────────────────────
 
 
-def _refused(spec, rows, raw_root, sites, tmp_path, message):
+def _refused(spec, rows, raw_root, site_table, tmp_path, message):
     with pytest.raises((ingest.IngestError, ValueError, KeyError), match=message):
-        _ingest(spec, rows, raw_root, sites, tmp_path / "out")
+        _ingest(spec, rows, raw_root, site_table, tmp_path / "out")
 
 
-def test_a_duplicate_key_is_refused(raw_root, sites, tmp_path):
+def test_a_duplicate_key_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "repeat")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "repeat")
 
 
-def test_a_site_outside_the_pool_is_refused(raw_root, sites, tmp_path):
+def test_a_site_outside_the_pool_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=9, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, r"site\(s\) \[9\] are not in the site table")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, r"site\(s\) \[9\] are not in the site table")
 
 
-def test_a_site_id_below_one_is_refused(raw_root, sites, tmp_path):
+def test_a_site_id_below_one_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=0, year=2012, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "must be integer site ids from 1 to")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "must be integer site ids from 1 to")
 
 
-def test_coordinates_disagreeing_with_the_site_table_are_refused(raw_root, sites, tmp_path):
+def test_coordinates_disagreeing_with_the_site_table_are_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["lat"] = 82.5  # site 1 of the other pool
-    _refused(DATED, rows, raw_root, sites, tmp_path, "disagrees with the site table")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "disagrees with the site table")
 
 
-def test_a_value_without_a_standard_deviation_is_refused(raw_root, sites, tmp_path):
+def test_a_value_without_a_standard_deviation_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=2012, mean=5.0, sd=np.nan)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "missing in different places")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "missing in different places")
 
 
-def test_a_negative_standard_deviation_is_refused(raw_root, sites, tmp_path):
+def test_a_negative_standard_deviation_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=2012, mean=5.0, sd=-1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "negative")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "negative")
 
 
-def test_a_static_table_whose_copies_differ_is_refused(raw_root, sites, tmp_path):
+def test_a_static_table_whose_copies_differ_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in STATIC_ROWS]
     rows[1]["soc"] = 743.0
-    _refused(STATIC, rows, raw_root, sites, tmp_path, "Either the source changed")
+    _refused(STATIC, rows, raw_root, site_table, tmp_path, "Either the source changed")
     frame = read_raw(STATIC, raw_root)
     with pytest.raises(ValueError, match="static"):
-        build_constraint(STATIC, frame, sites)
+        build_constraint(STATIC, frame, site_table)
 
 
-def test_a_quality_column_where_nothing_passes_is_refused(raw_root, sites, tmp_path):
+def test_a_quality_column_where_nothing_passes_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row, qc="001") for row in DATED_ROWS]
-    _refused(DATED, rows, raw_root, sites, tmp_path, "no row has")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "no row has")
 
 
-def test_a_malformed_date_is_refused(raw_root, sites, tmp_path):
+def test_a_malformed_date_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["date"] = "2012-13-01"
-    _refused(DATED, rows, raw_root, sites, tmp_path, "ISO date")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "ISO date")
 
 
-def test_build_constraint_refuses_a_duplicate_cell_itself(sites):
+def test_build_constraint_refuses_a_duplicate_site_time_key_itself(site_table):
     frame = pd.DataFrame(ANNUAL_ROWS + [dict(site_id=1, year=2012, mean=99.0, sd=1.0)])
     with pytest.raises(ValueError, match="share a"):
-        build_constraint(ANNUAL, frame, sites)
+        build_constraint(ANNUAL, frame, site_table)
 
 
 # ── the readers ───────────────────────────────────────────────────────────────
 
 
 def test_constraint_fields_and_sds_select_sites_in_the_order_given(
-    raw_root, sites, tmp_path, monkeypatch
+    raw_root, site_table, tmp_path, monkeypatch
 ):
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     # The registry does not know the synthetic spec, so resolve it for the test.
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
@@ -480,16 +480,16 @@ def test_constraint_fields_and_sds_select_sites_in_the_order_given(
     assert sds.values.tolist() == [[2.0, 0.0]]
     assert "standard deviation" in sds.attrs["long_name"]
 
-    with pytest.raises(KeyError, match=r"site\(s\) \[7\] are not in the product"):
+    with pytest.raises(KeyError, match=r"site\(s\) \[7\] are not in the processed file"):
         constraint_fields(sites=[1, 7], directory=out_dir)
 
 
 def test_constraint_fields_refuses_one_string_of_sites_rather_than_reading_its_characters(
-    raw_root, sites, tmp_path, monkeypatch
+    raw_root, site_table, tmp_path, monkeypatch
 ):
     """``sites="14"`` once read as sites 1 and 4, one character per site."""
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
 
@@ -507,12 +507,12 @@ def test_constraint_fields_refuses_one_string_of_sites_rather_than_reading_its_c
         constraint_fields(ANNUAL.name, directory=out_dir)
 
 
-def test_constraint_fields_takes_sites_as_any_array_like(raw_root, sites, tmp_path, monkeypatch):
+def test_constraint_fields_takes_sites_as_any_array_like(raw_root, site_table, tmp_path, monkeypatch):
     """A field's own site coordinate, or a JAX array, is a sequence of site ids."""
     import jax.numpy as jnp
 
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
 
@@ -522,14 +522,14 @@ def test_constraint_fields_takes_sites_as_any_array_like(raw_root, sites, tmp_pa
         assert again["site"].values.tolist() == [4, 1]
 
 
-def test_a_missing_product_names_the_command_that_builds_it(tmp_path):
+def test_a_missing_processed_file_names_the_command_that_builds_it(tmp_path):
     with pytest.raises(FileNotFoundError, match="ingest_constraints.py --constraint"):
         load_constraint("smap_soil_moisture", tmp_path / "absent.nc")
 
 
-def test_the_loader_refuses_a_file_written_for_another_constraint(raw_root, sites, tmp_path):
+def test_the_loader_refuses_a_file_written_for_another_constraint(raw_root, site_table, tmp_path):
     out_dir = tmp_path / "out"
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     other = _spec(name="test_other", raw_file="test_other.csv.gz")
     with pytest.raises(ValueError, match="written for constraint"):
         load_constraint(other, constraint_path(ANNUAL, out_dir))
@@ -579,33 +579,33 @@ def _perturbations():
         pytest.param(drop_bounds, "time_bounds absent", id="missing-bounds"),
         pytest.param(reversed_site, "site is empty or not strictly ascending", id="site-order"),
         pytest.param(reversed_time, "time is empty or not strictly ascending", id="time-order"),
-        pytest.param(orphan_sd, "missing in different cells", id="nan-mismatch"),
+        pytest.param(orphan_sd, "missing at different elements", id="nan-mismatch"),
     ]
 
 
 @pytest.mark.parametrize("perturb, message", _perturbations())
-def test_the_loader_refuses_a_product_that_departs_from_the_data_model(
-    raw_root, sites, tmp_path, perturb, message
+def test_the_loader_refuses_a_processed_file_that_departs_from_the_data_model(
+    raw_root, site_table, tmp_path, perturb, message
 ):
-    product = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, tmp_path / "out").load()
-    broken = perturb(product.copy(deep=True))
+    processed = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, tmp_path / "out").load()
+    broken = perturb(processed.copy(deep=True))
     path = tmp_path / "broken.nc"
     broken.to_netcdf(path, engine="h5netcdf", encoding={"time": {"units": module.TIME_UNITS}})
     with pytest.raises(ValueError, match=message):
         load_constraint(ANNUAL, path)
 
 
-def test_a_dated_product_with_bounds_is_refused(raw_root, sites, tmp_path):
-    product = _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out").load()
-    bounds = np.stack([product["time"].values, product["time"].values], axis=1)
+def test_a_dated_processed_file_with_bounds_is_refused(raw_root, site_table, tmp_path):
+    processed = _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out").load()
+    bounds = np.stack([processed["time"].values, processed["time"].values], axis=1)
     path = tmp_path / "broken.nc"
-    product.assign_coords(time_bounds=(("time", "bounds"), bounds)).to_netcdf(path)
+    processed.assign_coords(time_bounds=(("time", "bounds"), bounds)).to_netcdf(path)
     with pytest.raises(ValueError, match="time_bounds present"):
         load_constraint(DATED, path)
 
 
-def test_a_failed_constraint_round_trip_keeps_the_partial_and_never_writes_the_product(
-    raw_root, sites, tmp_path, monkeypatch, capsys
+def test_a_failed_constraint_round_trip_keeps_the_partial_and_never_writes_the_processed_file(
+    raw_root, site_table, tmp_path, monkeypatch, capsys
 ):
     """The .partial design: a check that fails after the write must not rename."""
     out_dir = tmp_path / "out"
@@ -617,24 +617,24 @@ def test_a_failed_constraint_round_trip_keeps_the_partial_and_never_writes_the_p
 
     monkeypatch.setattr(ingest, "load_constraint", read_back_differently)
     with pytest.raises(ingest.IngestError, match="does not read back identical"):
-        _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+        _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     assert not constraint_path(ANNUAL, out_dir).exists()
     assert (out_dir / f"{ANNUAL.name}.nc.partial").exists()
     assert f"{ANNUAL.name}.nc.partial" in capsys.readouterr().err
 
 
-def test_a_time_label_that_is_not_a_whole_day_is_refused(raw_root, sites, tmp_path, monkeypatch):
+def test_a_time_label_that_is_not_a_whole_day_is_refused(raw_root, site_table, tmp_path, monkeypatch):
     """xarray would silently switch the on-disk units to hours."""
     original = module.build_constraint
 
-    def shift_labels(spec, frame, sites):
-        product = original(spec, frame, sites)
-        return product.assign_coords(time=product["time"] + np.timedelta64(12, "h"))
+    def shift_labels(spec, frame, site_table):
+        processed = original(spec, frame, site_table)
+        return processed.assign_coords(time=processed["time"] + np.timedelta64(12, "h"))
 
     monkeypatch.setattr(ingest, "build_constraint", shift_labels)
     with pytest.warns(UserWarning, match="hours since"):
         with pytest.raises(ingest.IngestError, match="not a whole day"):
-            _ingest(DATED, DATED_ROWS, raw_root, sites, tmp_path / "out")
+            _ingest(DATED, DATED_ROWS, raw_root, site_table, tmp_path / "out")
 
 
 # ── the parser's guards ───────────────────────────────────────────────────────
@@ -676,51 +676,51 @@ def test_a_missing_year_names_the_file(raw_root):
 # ── the remaining refusals ────────────────────────────────────────────────────
 
 
-def test_an_empty_date_is_refused(raw_root, sites, tmp_path):
+def test_an_empty_date_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["date"] = ""
-    _refused(DATED, rows, raw_root, sites, tmp_path, "not dates")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "not dates")
 
 
-def test_a_year_outside_the_plausible_range_is_refused(raw_root, sites, tmp_path):
+def test_a_year_outside_the_plausible_range_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=20120, mean=1.0, sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "does not hold years")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "does not hold years")
 
 
-def test_an_infinite_value_is_refused(raw_root, sites, tmp_path):
+def test_an_infinite_value_is_refused(raw_root, site_table, tmp_path):
     rows = ANNUAL_ROWS + [dict(site_id=3, year=2012, mean=float("inf"), sd=1.0)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "infinite")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "infinite")
 
 
-def test_a_missing_coordinate_is_refused(raw_root, sites, tmp_path):
+def test_a_missing_coordinate_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in DATED_ROWS]
     rows[0]["lat"] = np.nan
-    _refused(DATED, rows, raw_root, sites, tmp_path, "missing or not finite")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "missing or not finite")
 
 
-def test_a_quality_column_of_nothing_but_na_is_refused_cleanly(raw_root, sites, tmp_path):
+def test_a_quality_column_of_nothing_but_na_is_refused_cleanly(raw_root, site_table, tmp_path):
     rows = [dict(row, qc=None) for row in DATED_ROWS]
-    _refused(DATED, rows, raw_root, sites, tmp_path, "no row has")
+    _refused(DATED, rows, raw_root, site_table, tmp_path, "no row has")
 
 
-def test_a_file_with_no_observed_rows_leaves_the_existing_product_alone(
-    raw_root, sites, tmp_path
+def test_a_file_with_no_observed_rows_leaves_the_existing_processed_file_alone(
+    raw_root, site_table, tmp_path
 ):
     out_dir = tmp_path / "out"
-    good = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
+    good = _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
     before = constraint_path(ANNUAL, out_dir).stat().st_mtime_ns
     rows = [dict(site_id=1, year=2012, mean=np.nan, sd=np.nan)]
-    _refused(ANNUAL, rows, raw_root, sites, tmp_path, "no row carries an observed value")
+    _refused(ANNUAL, rows, raw_root, site_table, tmp_path, "no row carries an observed value")
     assert constraint_path(ANNUAL, out_dir).stat().st_mtime_ns == before
     with load_constraint(ANNUAL, constraint_path(ANNUAL, out_dir)) as kept:
         assert kept.load().identical(good)
 
 
-def test_the_report_counts_what_was_written(raw_root, sites, tmp_path):
+def test_the_report_counts_what_was_written(raw_root, site_table, tmp_path):
     out_dir = tmp_path / "out"
-    product = _ingest(DATED, DATED_ROWS, raw_root, sites, out_dir)
-    report = ingest.describe_product(product, constraint_path(DATED, out_dir))
-    assert "observed 3 of 12 cells" in report
+    processed = _ingest(DATED, DATED_ROWS, raw_root, site_table, out_dir)
+    report = ingest.describe_processed_file(processed, constraint_path(DATED, out_dir))
+    assert "observed 3 of 12 elements" in report
     assert "dropped by quality flag 1" in report
     assert "standard deviations of zero: 1" in report
     assert "2012-07-11 .. 2013-07-16" in report
@@ -735,9 +735,9 @@ def test_describe_exits_zero_without_touching_data(capsys):
 
 
 def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys):
-    sites_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
     code = ingest.main(
-        ["--raw-root", str(tmp_path / "absent"), "--sites", str(sites_path),
+        ["--raw-root", str(tmp_path / "absent"), "--site-table", str(site_table_path),
          "--out-dir", str(tmp_path / "out"), "--constraint", "smap_soil_moisture"]
     )
     assert code == 1
@@ -747,26 +747,26 @@ def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys
 
 
 def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch, capsys):
-    sites_path = _write_sites(tmp_path / "sites" / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
     _write_raw(raw_root, ANNUAL, ANNUAL_ROWS)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL,))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
     monkeypatch.setattr(ingest, "CONSTRAINT_NAMES", (ANNUAL.name,))
     code = ingest.main(
-        ["--raw-root", str(raw_root), "--sites", str(sites_path), "--out-dir", str(tmp_path / "out")]
+        ["--raw-root", str(raw_root), "--site-table", str(site_table_path), "--out-dir", str(tmp_path / "out")]
     )
     assert code == 0
-    assert "observed 4 of 8 cells" in capsys.readouterr().out
+    assert "observed 4 of 8 elements" in capsys.readouterr().out
     assert constraint_path(ANNUAL, tmp_path / "out").exists()
 
 
 def test_constraint_fields_keeps_the_order_of_names_given(
-    raw_root, sites, tmp_path, monkeypatch
+    raw_root, site_table, tmp_path, monkeypatch
 ):
     out_dir = tmp_path / "out"
     other = _spec(name="test_other", raw_file="test_other.csv.gz")
-    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, sites, out_dir)
-    _ingest(other, ANNUAL_ROWS[:2], raw_root, sites, out_dir)
+    _ingest(ANNUAL, ANNUAL_ROWS, raw_root, site_table, out_dir)
+    _ingest(other, ANNUAL_ROWS[:2], raw_root, site_table, out_dir)
     monkeypatch.setattr(module, "CONSTRAINTS", (ANNUAL, other))
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name, other.name))
 
@@ -800,51 +800,51 @@ def test_each_real_file_has_the_header_its_spec_declares(spec):
 
 
 @pytest.fixture(scope="session")
-def real_products(tmp_path_factory) -> dict[str, xr.Dataset]:
+def real_processed_constraints(tmp_path_factory) -> dict[str, xr.Dataset]:
     """Every constraint built from the real files into a temporary directory."""
     if not _real_files_present():
         pytest.skip("raw constraint files or site table absent")
     out_dir = tmp_path_factory.mktemp("constraints")
-    sites = load_sites()
+    site_table = load_sites()
     return {
-        spec.name: ingest.ingest(spec, RAW_DIR, sites, out_dir).load() for spec in CONSTRAINTS
+        spec.name: ingest.ingest(spec, RAW_DIR, site_table, out_dir).load() for spec in CONSTRAINTS
     }
 
 
 @pytest.mark.slow
 @needs_real_files
-def test_every_real_product_is_dense_over_the_pool(real_products):
-    for name, product in real_products.items():
-        assert product.sizes["site"] == N_SITES, name
-        observed = np.isfinite(product[VALUE].values)
+def test_every_real_constraint_is_dense_over_the_pool(real_processed_constraints):
+    for name, processed in real_processed_constraints.items():
+        assert processed.sizes["site"] == N_SITES, name
+        observed = np.isfinite(processed[VALUE].values)
         assert observed.any(), name
-        assert np.array_equal(observed, np.isfinite(product[STANDARD_DEVIATION].values)), name
-        assert product.attrs["constraint"] == name
+        assert np.array_equal(observed, np.isfinite(processed[STANDARD_DEVIATION].values)), name
+        assert processed.attrs["constraint"] == name
 
 
 @pytest.mark.slow
 @needs_real_files
-def test_the_modis_product_has_no_flagged_rows_left(real_products):
-    product = real_products["modis_leaf_area_index"]
-    assert product.attrs["rows_dropped_by_quality_flag"] > 0
-    sd = product[STANDARD_DEVIATION].values
+def test_the_modis_constraint_has_no_flagged_rows_left(real_processed_constraints):
+    processed = real_processed_constraints["modis_leaf_area_index"]
+    assert processed.attrs["rows_dropped_by_quality_flag"] > 0
+    sd = processed[STANDARD_DEVIATION].values
     assert np.nanmax(sd) <= 20.0
-    assert np.nanmin(product[VALUE].values) > 0.0
+    assert np.nanmin(processed[VALUE].values) > 0.0
 
 
-# ── reproduction of the assembled product ─────────────────────────────────────
+# ── reproduction of the assembled file ────────────────────────────────────────
 
 
 @pytest.fixture(scope="session")
 def assembled() -> xr.Dataset:
-    """The obsolete assembled product, as the reference the new ones must match."""
+    """The obsolete assembled file, as the reference the new ones must match."""
     if not ASSEMBLED.exists():
         pytest.skip("the assembled constraints_annual.nc is not in this working copy")
     with xr.open_dataset(ASSEMBLED, engine="h5netcdf") as dataset:
         return dataset.load()
 
 
-def _assembled_cells(assembled: xr.Dataset, old_name: str) -> tuple[pd.DataFrame, pd.Series]:
+def _assembled_records(assembled: xr.Dataset, old_name: str) -> tuple[pd.DataFrame, pd.Series]:
     mean = assembled["observation_mean"].sel(variable=old_name).to_series().dropna()
     variance = assembled["observation_variance"].sel(variable=old_name).to_series()
     frame = mean.rename("mean").reset_index()
@@ -852,10 +852,10 @@ def _assembled_cells(assembled: xr.Dataset, old_name: str) -> tuple[pd.DataFrame
     return frame, variance
 
 
-def _product_cells(product: xr.Dataset) -> pd.DataFrame:
-    frame = product[VALUE].to_series().dropna().rename("value").reset_index()
-    frame[STANDARD_DEVIATION] = product[STANDARD_DEVIATION].to_series().loc[
-        pd.MultiIndex.from_frame(frame[list(product[VALUE].dims)])
+def _observed_records(processed: xr.Dataset) -> pd.DataFrame:
+    frame = processed[VALUE].to_series().dropna().rename("value").reset_index()
+    frame[STANDARD_DEVIATION] = processed[STANDARD_DEVIATION].to_series().loc[
+        pd.MultiIndex.from_frame(frame[list(processed[VALUE].dims)])
     ].to_numpy()
     if "time" in frame:
         frame["year"] = frame["time"].dt.year
@@ -868,14 +868,14 @@ def _product_cells(product: xr.Dataset) -> pd.DataFrame:
     "old_name, scale",
     [("aboveground_wood_carbon", 1.0), ("soil_moisture_percent", 1.0)],
 )
-def test_annual_and_snapshot_products_reproduce_the_assembled_values(
-    real_products, assembled, old_name, scale
+def test_annual_and_snapshot_constraints_reproduce_the_assembled_values(
+    real_processed_constraints, assembled, old_name, scale
 ):
-    reference, variance = _assembled_cells(assembled, old_name)
-    ours = _product_cells(real_products[ASSEMBLED_NAMES[old_name]])
+    reference, variance = _assembled_records(assembled, old_name)
+    ours = _observed_records(real_processed_constraints[ASSEMBLED_NAMES[old_name]])
     merged = reference.merge(ours, on=["site", "year"], how="left", validate="one_to_one")
-    assert merged["value"].notna().all(), "an assembled cell has no counterpart"
-    assert len(ours) == len(reference), "the product carries cells the assembler did not"
+    assert merged["value"].notna().all(), "an assembled observation has no counterpart"
+    assert len(ours) == len(reference), "the processed file carries observations the assembler did not"
     np.testing.assert_array_equal(merged["value"] * scale, merged["mean"])
     expected_sd = np.sqrt(
         variance.loc[list(zip(merged["site"], merged["time_x"], strict=True))].to_numpy()
@@ -885,39 +885,39 @@ def test_annual_and_snapshot_products_reproduce_the_assembled_values(
 
 @pytest.mark.slow
 @needs_real_files
-def test_the_static_soil_carbon_is_the_assembled_value_times_ten(real_products, assembled):
-    reference, variance = _assembled_cells(assembled, "total_soil_carbon")
-    product = real_products["soilgrids_soil_organic_carbon"]
+def test_the_static_soil_carbon_is_the_assembled_value_times_ten(real_processed_constraints, assembled):
+    reference, variance = _assembled_records(assembled, "total_soil_carbon")
+    processed = real_processed_constraints["soilgrids_soil_organic_carbon"]
     per_site = reference.groupby("site")["mean"].agg(["nunique", "first"])
     assert (per_site["nunique"] == 1).all(), "the assembled values were not constant in time"
-    ours = product[VALUE].to_series().dropna()
+    ours = processed[VALUE].to_series().dropna()
     assert sorted(ours.index) == sorted(per_site.index)
     np.testing.assert_allclose(ours.loc[per_site.index] / 10.0, per_site["first"], rtol=0, atol=1e-12)
 
 
 @pytest.mark.slow
 @needs_real_files
-def test_the_lai_selection_rule_reproduces_the_assembled_product(real_products, assembled):
+def test_the_lai_selection_rule_reproduces_the_assembled_file(real_processed_constraints, assembled):
     """Nearest passing composite to July 15 within 30 days, earlier date on a tie.
 
     The assembler's rule, reverse-engineered and verified on 2026-09-17: it
     reproduces every assembled mean, and ``max(sd, 0.66)`` every assembled
     variance. The later-date tie-break does not. The rule lives here and in
-    the observation layer, never in the product.
+    the observation layer, never in the processed file.
     """
-    product = real_products["modis_leaf_area_index"]
-    cells = _product_cells(product)
-    cells = cells[cells["year"] >= 2012]
-    key = pd.to_datetime(cells["year"].astype(str) + "-07-15")
-    cells = cells.assign(distance=(cells["time"] - key).dt.days.abs())
-    cells = cells[cells["distance"] <= 30]
+    processed = real_processed_constraints["modis_leaf_area_index"]
+    records = _observed_records(processed)
+    records = records[records["year"] >= 2012]
+    key = pd.to_datetime(records["year"].astype(str) + "-07-15")
+    records = records.assign(distance=(records["time"] - key).dt.days.abs())
+    records = records[records["distance"] <= 30]
     selected = (
-        cells.sort_values(["site", "year", "distance", "time"])
+        records.sort_values(["site", "year", "distance", "time"])
         .drop_duplicates(["site", "year"])
         .set_index(["site", "year"])
     )
 
-    reference, variance = _assembled_cells(assembled, "lai")
+    reference, variance = _assembled_records(assembled, "lai")
     reference = reference.set_index(["site", "year"])
     assert set(selected.index) == set(reference.index)
     aligned = selected.loc[reference.index]

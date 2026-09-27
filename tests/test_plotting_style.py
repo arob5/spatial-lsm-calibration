@@ -23,24 +23,24 @@ from sipnet_calibration.plotting.style import (
 
 
 def test_role_style_line_takes_only_line_keywords():
-    """``kind="line"`` returns color, line style and width, and no marker."""
-    style = role_style("obs", "line")
+    """``element="line"`` returns color, line style and width, and no marker."""
+    style = role_style("observation", "line")
     assert set(style) <= {"color", "linestyle", "linewidth"}
-    assert style["color"] == ROLES["obs"]["color"]
+    assert style["color"] == ROLES["observation"]["color"]
     assert "marker" not in style
 
 
 def test_role_style_band_takes_only_the_color():
-    """``kind="band"`` returns the color alone; a fan owns its own opacity."""
+    """``element="band"`` returns the color alone; a fan owns its own opacity."""
     assert role_style("posterior", "band") == {"color": ROLES["posterior"]["color"]}
 
 
 def test_role_style_points_forces_no_line():
-    """``kind="points"`` returns the marker and ``linestyle="none"``."""
-    style = role_style("obs", "points")
+    """``element="points"`` returns the marker and ``linestyle="none"``."""
+    style = role_style("observation", "points")
     assert style["linestyle"] == "none"
-    assert style["marker"] == ROLES["obs"]["marker"]
-    assert style["markersize"] == ROLES["obs"]["markersize"]
+    assert style["marker"] == ROLES["observation"]["marker"]
+    assert style["markersize"] == ROLES["observation"]["markersize"]
 
 
 def test_role_style_points_forces_no_line_even_for_a_line_role():
@@ -70,9 +70,9 @@ def test_role_style_rejects_an_unknown_role():
     assert "posterior" in str(raised.value)
 
 
-def test_role_style_rejects_an_unknown_kind():
-    """An unknown element kind raises, and the message lists the valid kinds."""
-    with pytest.raises(ValueError, match="unknown kind") as raised:
+def test_role_style_rejects_an_unknown_element():
+    """An unknown element raises, and the message lists the valid elements."""
+    with pytest.raises(ValueError, match="unknown element") as raised:
         role_style("prior", "surface")
     assert "band" in str(raised.value)
 

@@ -3,19 +3,21 @@
 Two abstractions and a handful of functions:
 
 * :class:`ObservationOperator` (a protocol) and the shipped operators
-  :class:`SelectTimestep`, :class:`ReduceOverTimeBounds`,
+  :class:`SelectTimestep`, :class:`ReduceOverWindows`,
   :class:`ReduceOverRun`, :class:`ComputeLeafAreaIndex`, with
-  :data:`DEFAULT_OBS_OPS` binding a product to its default operator where the
-  construction is established from a primary source. An operator is written
-  with :func:`select_observed_sites`, which restricts the model output to the
-  observed sites, and :func:`extract_sipnet_parameter_at_coords`, which lines
-  a SIPNET parameter's values up with it; :func:`check_operator` checks one
+  :data:`DEFAULT_OBS_OPS` binding an observation source to its default
+  operator where the construction is established from a primary source. An
+  operator is written with :func:`restrict_to_observed_sites`, which restricts
+  the model output to the observed sites, and
+  :func:`extract_sipnet_parameter_at_coords`, which lines a SIPNET parameter's
+  values up with it; :func:`check_operator` checks one
   against the contract, through the same checks the vector applies
   (:func:`check_operator_declares_names`,
   :func:`check_model_output_carries_what_is_read`,
   :func:`check_result_is_on_the_observation_grid`).
-* :class:`Observation` and :class:`ObservationVector`: the observed cells of
-  an experiment in a fixed order, with Fields and Flat representations,
+* :class:`ObservationSource` and :class:`ObservationVector`: the
+  observations of an experiment in a fixed order, with Fields and Flat
+  representations,
   ``y``, ``index`` (levels :data:`INDEX_LEVELS`), ``positions`` and
   ``predict``.
 
@@ -39,14 +41,14 @@ from sipnet_calibration.observation.operators import (
     ComputeLeafAreaIndex,
     ObservationOperator,
     ReduceOverRun,
-    ReduceOverTimeBounds,
+    ReduceOverWindows,
     SelectTimestep,
     check_model_output_carries_what_is_read,
     check_operator,
     check_operator_declares_names,
     check_result_is_on_the_observation_grid,
     extract_sipnet_parameter_at_coords,
-    select_observed_sites,
+    restrict_to_observed_sites,
 )
 from sipnet_calibration.observation.time_alignment import (
     DEFAULT_METHOD_FOR_KIND,
@@ -58,13 +60,13 @@ from sipnet_calibration.observation.time_alignment import (
     run_window,
     select_timestep_at,
     window_counts,
-    windows_from_time_bounds,
+    windows_from_observed_values,
 )
 from sipnet_calibration.observation.vector import (
     INDEX_LEVELS,
-    Observation,
+    ObservationSource,
     ObservationVector,
-    check_batch_dim_is_not_an_observation_name,
+    check_batch_dim_is_not_an_observation_source_name,
 )
 
 __all__ = [
@@ -74,24 +76,24 @@ __all__ = [
     "RESAMPLING_METHODS",
     "WINDOW_REDUCTIONS",
     "ComputeLeafAreaIndex",
-    "Observation",
     "ObservationOperator",
+    "ObservationSource",
     "ObservationVector",
     "ReduceOverRun",
-    "ReduceOverTimeBounds",
+    "ReduceOverWindows",
     "SelectTimestep",
     "aggregate_time",
     "aggregation_counts",
-    "check_batch_dim_is_not_an_observation_name",
+    "check_batch_dim_is_not_an_observation_source_name",
     "check_model_output_carries_what_is_read",
     "check_operator",
     "check_operator_declares_names",
     "check_result_is_on_the_observation_grid",
     "extract_sipnet_parameter_at_coords",
     "reduce_windows",
+    "restrict_to_observed_sites",
     "run_window",
-    "select_observed_sites",
     "select_timestep_at",
     "window_counts",
-    "windows_from_time_bounds",
+    "windows_from_observed_values",
 ]

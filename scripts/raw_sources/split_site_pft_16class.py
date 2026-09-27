@@ -19,7 +19,7 @@ Neither output can be compared against the upstream md5 once the columns are
 cut, so what stands in for that check is this script plus the assertions it
 makes: that the two column sets partition the source exactly, that both are
 keyed on the same complete site set, and that re-joining them reproduces the
-source cell for cell.
+source value for value.
 
 Input data
 ----------
@@ -50,7 +50,7 @@ file is new.
 Notes
 -----
 **Nothing is converted, renamed, reordered or rounded.** The two halves carry
-the producer's column names and the source's own text for every cell: the
+the producer's column names and the source's own text for every CSV field: the
 source is re-read with ``dtype=str`` and ``keep_default_na=False``, so a float
 is written back as the exact characters it arrived as and no precision question
 arises. ``check_the_rejoined_halves_reproduce_the_source`` compares the
@@ -190,7 +190,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def read_source(path: Path) -> pd.DataFrame:
-    """The producer's table, every cell as the text the file holds.
+    """The producer's table, every CSV field as the text the file holds.
 
     Reading as text is what lets the split be verbatim: no float is parsed, so
     none can be written back at a different precision, and no empty field
@@ -283,7 +283,7 @@ def report(
         "",
         f"columns: {len(site_labels.columns)} + {len(covariates.columns)} - 1 shared key "
         f"= {len(source.columns)}",
-        "         the halves re-join to the source cell for cell",
+        "         the halves re-join to the source value for value",
     ]
     return "\n".join(lines)
 
@@ -359,7 +359,7 @@ def check_the_label_column_is_complete(site_labels: pd.DataFrame) -> None:
 def check_the_rejoined_halves_reproduce_the_source(
     source: pd.DataFrame, site_labels: pd.DataFrame, covariates: pd.DataFrame
 ) -> None:
-    """Re-joining the halves gives the source back, cell for cell.
+    """Re-joining the halves gives the source back, value for value.
 
     This is what stands in for the md5 comparison a verbatim copy would get:
     the split cannot be compared against the upstream file once the columns are

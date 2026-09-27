@@ -6,7 +6,7 @@ pySIPNET's ``InitialConditions`` fields. The parser, the conversion and the
 ingest are exercised on a small synthetic tree written in PEcAn's exact
 format -- netCDF-3 classic, the ``[year]`` template on ``time``, the
 ``_FillValue`` triple on every variable -- where every refusal can be
-provoked and the expected product written out by hand. Finally the three real
+provoked and the expected processed file written out by hand. Finally the three real
 files in a local checkout and the tracked raw file are read, when present, and
 the properties the ingest relies on are checked on them.
 
@@ -35,7 +35,7 @@ from sipnet_calibration.conventions import (
     data_root,
 )
 from sipnet_calibration.initial_conditions import (
-    CONVERTED_SIPNET_FIELDS,
+    CONVERTED_SIPNET_PARAMETER_NAMES,
     INITIAL_CONDITION_NAMES,
     INITIAL_CONDITIONS,
     RAW_MEMBER,
@@ -219,7 +219,7 @@ def raw(tree, tmp_path) -> Path:
     """The synthetic tree converted through the script, as a path."""
     out = tmp_path / "raw" / module.RAW_FILE
     sites_csv = _write_sites(tmp_path / "sites.csv")
-    assert convert.main(["--root", str(tree), "--out", str(out), "--sites", str(sites_csv), "--jobs", "1"]) == 0
+    assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(sites_csv), "--jobs", "1"]) == 0
     return out
 
 
@@ -340,12 +340,12 @@ def test_read_source_file_refuses_a_path_that_is_not_a_regular_file(tmp_path):
 # ── the attribute contract, against literals rather than against the writer ──
 
 VARIABLE_ATTRIBUTES = (
-    "units", "long_name", "description", "product", "source_name", "source_units",
-    "source_long_name", "sipnet_initial_condition", "pecan_conversion",
+    "units", "long_name", "description", "upstream_product", "source_name", "source_units",
+    "source_long_name", "sipnet_parameter_name", "pecan_conversion",
     "units_provenance",
 )
-PRODUCT_ATTRIBUTES = (
-    "Conventions", "title", "product", "source_file", "source_root", "source_script",
+DATASET_ATTRIBUTES = (
+    "Conventions", "title", "upstream_product", "source_file", "source_root", "source_script",
     "source_script_note", "nominal_date", "nominal_date_provenance",
     "source_time_units", "source_time_long_name", "source_time_value",
     "n_sites", "n_initial_condition_members", "history", "created",
@@ -358,19 +358,19 @@ RAW_ATTRIBUTES = (
 )
 
 
-def test_product_attributes_are_the_documented_set(raw, sites_csv):
+def test_processed_attributes_are_the_documented_set(raw, sites_csv):
     """Asserting the file against spec.xarray_attributes() compares the writer
     to itself; these literals are what the package docstring promises."""
-    product = build_initial_conditions(read_raw(raw), load_sites(sites_csv))
-    assert tuple(product.attrs) == PRODUCT_ATTRIBUTES
+    processed = build_initial_conditions(read_raw(raw), load_sites(sites_csv))
+    assert tuple(processed.attrs) == DATASET_ATTRIBUTES
     for spec in INITIAL_CONDITIONS:
         expected = VARIABLE_ATTRIBUTES + (("constituent",) if spec.constituent else ())
         expected += ("comment",) if spec.comment else ()
-        assert set(product[spec.name].attrs) == set(expected), spec.name
-    assert set(product["lon"].attrs) == {"standard_name", "long_name", "units"}
-    assert product["lon"].attrs["standard_name"] == "longitude"
-    assert product["lat"].attrs["standard_name"] == "latitude"
-    assert set(product[SITE].attrs) == {"long_name", "comment"}
+        assert set(processed[spec.name].attrs) == set(expected), spec.name
+    assert set(processed["lon"].attrs) == {"standard_name", "long_name", "units"}
+    assert processed["lon"].attrs["standard_name"] == "longitude"
+    assert processed["lat"].attrs["standard_name"] == "latitude"
+    assert set(processed[SITE].attrs) == {"long_name", "comment"}
 
 
 def test_raw_attributes_are_the_documented_set(raw):
@@ -384,7 +384,7 @@ def test_raw_attributes_are_the_documented_set(raw):
         assert raw[name].attrs["source_fill_value"] == -999.0
 
 
-def test_product_declares_the_shared_cf_version():
+def test_processed_file_declares_the_shared_cf_version():
     assert CF_CONVENTIONS == "CF-1.11"
 
 
@@ -402,15 +402,15 @@ def test_readers_refuse_a_variable_present_for_some_members_only(raw, sites_csv,
     with pytest.raises(ValueError, match="property of the site"):
         read_raw(path)
 
-    product = build_initial_conditions(dataset, load_sites(sites_csv))
-    product["initial_soil_moisture_saturation"].values[0, 0] = np.nan
-    out = tmp_path / "product.nc"
-    product.to_netcdf(out, engine="h5netcdf", encoding=netcdf_encoding(product))
+    processed = build_initial_conditions(dataset, load_sites(sites_csv))
+    processed["initial_soil_moisture_saturation"].values[0, 0] = np.nan
+    out = tmp_path / "processed.nc"
+    processed.to_netcdf(out, engine="h5netcdf", encoding=netcdf_encoding(processed))
     with pytest.raises(ValueError, match="property of the site"):
         load_initial_conditions(out)
 
 
-def test_product_reader_refuses_infinities_and_misplaced_coordinates(raw, sites_csv, tmp_path):
+def test_processed_reader_refuses_infinities_and_misplaced_coordinates(raw, sites_csv, tmp_path):
     base = build_initial_conditions(read_raw(raw), load_sites(sites_csv))
 
     def refused(mutate, message):
@@ -466,13 +466,13 @@ def test_default_paths_sit_beside_the_package_not_inside_it(monkeypatch):
     monkeypatch.delenv(DATA_ROOT_ENV_VAR, raising=False)
     root = Path(sipnet_calibration.__file__).resolve().parents[2] / "data"
 
-    assert module.default_product_path() == root / "processed" / module.PRODUCT_FILE
+    assert module.default_processed_path() == root / "processed" / module.PROCESSED_FILE
     assert module.default_raw_dir() == root / "raw" / "initial_conditions"
     assert module.raw_path() == root / "raw" / "initial_conditions" / module.RAW_FILE
     assert module.default_source_root() == root / "raw" / "initial_conditions" / "files"
 
 
-def test_every_product_reads_the_same_data_root(monkeypatch, tmp_path):
+def test_every_data_source_reads_the_same_data_root(monkeypatch, tmp_path):
     """The root lives in sipnet_calibration.conventions so that one setting
     moves all of them. Four modules used to spell it out separately, and the
     spelling broke here the moment a module moved a directory deeper."""
@@ -498,7 +498,7 @@ def test_every_product_reads_the_same_data_root(monkeypatch, tmp_path):
 
 def test_default_paths_follow_the_data_root_environment_variable(monkeypatch, tmp_path):
     monkeypatch.setenv(DATA_ROOT_ENV_VAR, str(tmp_path))
-    assert module.default_product_path() == tmp_path / "processed" / module.PRODUCT_FILE
+    assert module.default_processed_path() == tmp_path / "processed" / module.PROCESSED_FILE
     assert module.default_source_root() == tmp_path / "raw" / "initial_conditions" / "files"
 
 
@@ -513,7 +513,7 @@ def test_specs_are_one_per_source_variable_with_distinct_names():
 
 def test_specs_name_real_sipnet_initial_conditions():
     fields = set(InitialConditions.model_fields)
-    used = {spec.sipnet_initial_condition for spec in INITIAL_CONDITIONS} - {""}
+    used = {spec.sipnet_parameter_name for spec in INITIAL_CONDITIONS} - {""}
     assert used <= fields
     assert {"total_wood_carbon", "leaf_area_index", "soil_carbon", "soil_wetness_fraction"} == used
 
@@ -524,7 +524,7 @@ def test_spec_attributes_carry_the_source_strings():
     assert attrs["units"] == "percent"
     assert attrs["source_units"] == "(-)"
     assert attrs["source_long_name"] == "Average Layer Fraction of Saturation"
-    assert attrs["sipnet_initial_condition"] == "soil_wetness_fraction"
+    assert attrs["sipnet_parameter_name"] == "soil_wetness_fraction"
     assert "constituent" not in attrs
     wood = resolve_initial_condition("initial_wood_carbon").xarray_attributes()
     assert wood["constituent"] == "C"
@@ -539,8 +539,8 @@ def test_spec_refuses_a_bad_name_unit_source_or_sipnet_field():
         units="kg m-2",
         constituent="C",
         description="d",
-        product="p",
-        sipnet_initial_condition="",
+        upstream_product="p",
+        sipnet_parameter_name="",
         pecan_conversion="c",
         units_provenance="u",
     )
@@ -552,11 +552,11 @@ def test_spec_refuses_a_bad_name_unit_source_or_sipnet_field():
     with pytest.raises(ValueError, match="source_name"):
         InitialConditionSpec(**{**good, "source_name": "TotSoilCarb"})
     with pytest.raises(ValueError, match="InitialConditions"):
-        InitialConditionSpec(**{**good, "sipnet_initial_condition": "plantWoodInit"})
+        InitialConditionSpec(**{**good, "sipnet_parameter_name": "plantWoodInit"})
     with pytest.raises(ValueError, match="pecan_conversion"):
         InitialConditionSpec(**{**good, "pecan_conversion": ""})
-    for empty in ("description", "long_label", "product"):
-        with pytest.raises(ValueError, match="description, long_label and product"):
+    for empty in ("description", "long_label", "upstream_product"):
+        with pytest.raises(ValueError, match="description, long_label and upstream_product"):
             InitialConditionSpec(**{**good, empty: ""})
 
 
@@ -668,17 +668,17 @@ def test_conversion_script_writes_a_raw_file_that_reads_back(raw):
 
 
 def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsys):
-    sites = _write_sites(tmp_path / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites.csv")
     (tree / "notes.txt").write_text("x")
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--sites", str(sites), "--jobs", "1"]) == 1
+    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "not site directories" in capsys.readouterr().err
     (tree / "notes.txt").unlink()
     (tree / "1" / "README").write_text("x")
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--sites", str(sites), "--jobs", "1"]) == 1
+    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 1
     assert "IC_site" in capsys.readouterr().err
     (tree / "1" / "README").unlink()
     wrong = _write_sites(tmp_path / "wrong.csv", site_ids=[1, 2, 3, 4])
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--sites", str(wrong), "--jobs", "1"]) == 1
+    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(wrong), "--jobs", "1"]) == 1
     assert "pool" in capsys.readouterr().err
     assert not (tmp_path / "o.nc").exists()
 
@@ -686,14 +686,14 @@ def test_conversion_script_refuses_strays_and_a_wrong_pool(tree, tmp_path, capsy
 def test_a_failed_conversion_check_keeps_the_partial_and_prints_its_path(
     tree, tmp_path, capsys, monkeypatch
 ):
-    sites = _write_sites(tmp_path / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites.csv")
     out = tmp_path / "o.nc"
 
     def refuse(dataset, partial):
         raise convert.ConversionError("forced: the round trip failed")
 
     monkeypatch.setattr(convert, "check_round_trip", refuse)
-    argv = ["--root", str(tree), "--out", str(out), "--sites", str(sites), "--jobs", "1"]
+    argv = ["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1"]
     assert convert.main(argv) == 1
     err = capsys.readouterr().err
     partial = out.with_suffix(".nc.partial")
@@ -721,45 +721,45 @@ def test_read_raw_refuses_a_file_off_the_schema(raw, tmp_path):
 
 
 def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
-    assert set(product.data_vars) == set(INITIAL_CONDITION_NAMES)
+        processed = build_initial_conditions(raw_dataset, site_table)
+    assert set(processed.data_vars) == set(INITIAL_CONDITION_NAMES)
     for name in INITIAL_CONDITION_NAMES:
-        assert product[name].dims == (INITIAL_CONDITION_MEMBER, SITE)
-        assert product[name].dtype == np.float64
-    assert product[INITIAL_CONDITION_MEMBER].values.tolist() == [0, 1]
-    assert product[SOURCE_INDEX].values.tolist() == [1, 2]
-    assert product[SITE].values.tolist() == SYNTHETIC_SITES
-    assert product["lon"].sel(site=2).item() == -101.0 and product["lat"].sel(site=3).item() == 42.0
+        assert processed[name].dims == (INITIAL_CONDITION_MEMBER, SITE)
+        assert processed[name].dtype == np.float64
+    assert processed[INITIAL_CONDITION_MEMBER].values.tolist() == [0, 1]
+    assert processed[SOURCE_INDEX].values.tolist() == [1, 2]
+    assert processed[SITE].values.tolist() == SYNTHETIC_SITES
+    assert processed["lon"].sel(site=2).item() == -101.0 and processed["lat"].sel(site=3).item() == 42.0
     # values are the raw ones, transposed, negatives included
-    assert product["initial_wood_carbon"].sel(initial_condition_member=1, site=1).item() == -0.5
-    assert np.isnan(product["initial_leaf_carbon"].sel(site=2).values).all()
-    assert product["initial_soil_moisture_saturation"].attrs["units"] == "percent"
-    assert product.attrs["Conventions"] == CF_CONVENTIONS
-    assert product.attrs["nominal_date"] == module.NOMINAL_DATE
-    assert "member_source" not in product.attrs and "member_correspondence" not in product.attrs
-    assert product[INITIAL_CONDITION_MEMBER].dtype == np.int64
-    assert product[SOURCE_INDEX].dtype == np.int64
-    assert product.attrs["n_initial_condition_members"] == 2 and product.attrs["n_sites"] == 3
+    assert processed["initial_wood_carbon"].sel(initial_condition_member=1, site=1).item() == -0.5
+    assert np.isnan(processed["initial_leaf_carbon"].sel(site=2).values).all()
+    assert processed["initial_soil_moisture_saturation"].attrs["units"] == "percent"
+    assert processed.attrs["Conventions"] == CF_CONVENTIONS
+    assert processed.attrs["nominal_date"] == module.NOMINAL_DATE
+    assert "member_source" not in processed.attrs and "member_correspondence" not in processed.attrs
+    assert processed[INITIAL_CONDITION_MEMBER].dtype == np.int64
+    assert processed[SOURCE_INDEX].dtype == np.int64
+    assert processed.attrs["n_initial_condition_members"] == 2 and processed.attrs["n_sites"] == 3
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
-    sites = load_sites(_write_sites(tmp_path / "s.csv", site_ids=[1, 2]))
+    site_table = load_sites(_write_sites(tmp_path / "s.csv", site_ids=[1, 2]))
     with read_raw(raw) as raw_dataset, pytest.raises(ValueError, match="pool"):
-        build_initial_conditions(raw_dataset, sites)
+        build_initial_conditions(raw_dataset, site_table)
 
 
 def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_path):
-    out = tmp_path / "processed" / module.PRODUCT_FILE
-    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 0
+    out = tmp_path / "processed" / module.PROCESSED_FILE
+    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
     assert not out.with_suffix(".nc.partial").exists()
-    with load_initial_conditions(out) as product, read_raw(raw) as raw_dataset:
+    with load_initial_conditions(out) as processed, read_raw(raw) as raw_dataset:
         for spec in INITIAL_CONDITIONS:
             assert np.array_equal(
-                product[spec.name].values, raw_dataset[spec.source_name].values.T, equal_nan=True
+                processed[spec.name].values, raw_dataset[spec.source_name].values.T, equal_nan=True
             )
-            assert product[spec.name].attrs == spec.xarray_attributes()
+            assert processed[spec.name].attrs == spec.xarray_attributes()
     fields = initial_condition_fields(["initial_soil_organic_carbon"], sites=[3, 1], path=out)
     field = fields["initial_soil_organic_carbon"]
     assert field.dims == (INITIAL_CONDITION_MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
@@ -773,8 +773,8 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
 def test_initial_condition_fields_coerces_sites_and_names_by_the_shared_rules(
     raw, sites_csv, tmp_path
 ):
-    out = tmp_path / "processed" / module.PRODUCT_FILE
-    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 0
+    out = tmp_path / "processed" / module.PROCESSED_FILE
+    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
     with pytest.raises(ValueError, match="more than once"):
         initial_condition_fields(sites=[1, 1], path=out)
     for sites in ([1.5], [1.0], "3", 3, {1, 3}):
@@ -787,10 +787,10 @@ def test_initial_condition_fields_coerces_sites_and_names_by_the_shared_rules(
 
 
 def test_ingest_checks_refuse_a_broken_wood_identity_or_member_gap(raw, sites_csv):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
         dataset = raw_dataset.load().copy()
-    ingest.check_raw(dataset, sites)
+    ingest.check_raw(dataset, site_table)
     broken = dataset.copy(deep=True)
     broken["wood_carbon_content"].values[0, 0] += 1e-12
     with pytest.raises(ingest.IngestError, match="identity"):
@@ -800,15 +800,15 @@ def test_ingest_checks_refuse_a_broken_wood_identity_or_member_gap(raw, sites_cs
         ingest.check_members_are_contiguous_from_one(gapped)
 
 
-def test_load_refuses_a_product_off_the_data_model(raw, sites_csv, tmp_path):
-    sites = load_sites(sites_csv)
+def test_load_refuses_a_processed_file_off_the_data_model(raw, sites_csv, tmp_path):
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        processed = build_initial_conditions(raw_dataset, site_table)
     path = tmp_path / "p.nc"
-    product.drop_vars("initial_leaf_carbon").to_netcdf(path, engine="h5netcdf")
+    processed.drop_vars("initial_leaf_carbon").to_netcdf(path, engine="h5netcdf")
     with pytest.raises(ValueError, match="variables"):
         load_initial_conditions(path)
-    wrong = product.copy()
+    wrong = processed.copy()
     wrong["initial_wood_carbon"].attrs["units"] = "g m-2"
     wrong.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(wrong))
     with pytest.raises(ValueError, match="units"):
@@ -834,7 +834,7 @@ VALID_PARAMETERS = dict(
 
 
 def ensemble_state(leaf=(0.12, 0.13)):
-    """A two-member, two-site state with the product's units on every variable."""
+    """A two-member, two-site state with the processed file's units on every variable."""
 
     def field(name, values):
         spec = resolve_initial_condition(name)
@@ -846,7 +846,7 @@ def ensemble_state(leaf=(0.12, 0.13)):
         )
 
     return {
-        # The product carries this one too, and the conversion never reads it.
+        # The processed file carries this one too, and the conversion never reads it.
         "initial_aboveground_biomass_carbon": field(
             "initial_aboveground_biomass_carbon", [[0.17, 6.13], [0.19, 7.13]]
         ),
@@ -903,12 +903,12 @@ def test_conversion_takes_a_pool_of_zero(name):
 
 
 def test_converted_fields_are_the_ones_the_specs_name():
-    assert set(CONVERTED_SIPNET_FIELDS) <= set(InitialConditions.model_fields)
-    named = {spec.sipnet_initial_condition for spec in INITIAL_CONDITIONS} - {""}
-    assert named < set(CONVERTED_SIPNET_FIELDS)
-    assert set(CONVERTED_SIPNET_FIELDS) - named == {"fine_root_fraction", "coarse_root_fraction"}
+    assert set(CONVERTED_SIPNET_PARAMETER_NAMES) <= set(InitialConditions.model_fields)
+    named = {spec.sipnet_parameter_name for spec in INITIAL_CONDITIONS} - {""}
+    assert named < set(CONVERTED_SIPNET_PARAMETER_NAMES)
+    assert set(CONVERTED_SIPNET_PARAMETER_NAMES) - named == {"fine_root_fraction", "coarse_root_fraction"}
     # The order is the class's own, and the table's columns follow it.
-    assert CONVERTED_SIPNET_FIELDS == (
+    assert CONVERTED_SIPNET_PARAMETER_NAMES == (
         "total_wood_carbon",
         "leaf_area_index",
         "soil_carbon",
@@ -916,8 +916,8 @@ def test_converted_fields_are_the_ones_the_specs_name():
         "fine_root_fraction",
         "coarse_root_fraction",
     )
-    assert list(CONVERTED_SIPNET_FIELDS) == [
-        field for field in InitialConditions.model_fields if field in CONVERTED_SIPNET_FIELDS
+    assert list(CONVERTED_SIPNET_PARAMETER_NAMES) == [
+        field for field in InitialConditions.model_fields if field in CONVERTED_SIPNET_PARAMETER_NAMES
     ]
 
 
@@ -1012,7 +1012,7 @@ def test_conversion_refuses_a_leaf_carbon_per_area_below_sipnets_floor(bad):
 
 
 def test_conversion_refuses_soil_moisture_above_one_hundred():
-    """The product is a percent of saturation over 0 to 100; dividing by 100 is
+    """The processed file holds a percent of saturation over 0 to 100; dividing by 100 is
     what makes soilWFracInit a fraction."""
     with pytest.raises(ValueError, match="initial_soil_moisture_saturation is above 100"):
         to_sipnet_initial_conditions(
@@ -1031,7 +1031,7 @@ def test_conversion_refuses_a_deciduous_flag_that_is_not_boolean(bad):
         to_sipnet_initial_conditions(**VALID_STATE, **{**VALID_PARAMETERS, "deciduous": bad})
 
 
-def test_conversion_table_is_the_single_member_form_cell_by_cell():
+def test_conversion_table_is_the_single_member_form_element_by_element():
     state = ensemble_state()
     leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=INITIAL_CONDITION_MEMBER, coords={INITIAL_CONDITION_MEMBER: [0, 1]})
     deciduous = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})
@@ -1044,7 +1044,7 @@ def test_conversion_table_is_the_single_member_form_cell_by_cell():
         deciduous=deciduous,
     )
 
-    assert list(table.columns) == list(CONVERTED_SIPNET_FIELDS)
+    assert list(table.columns) == list(CONVERTED_SIPNET_PARAMETER_NAMES)
     assert table.index.names == [INITIAL_CONDITION_MEMBER, SITE]
     assert len(table) == 4
     for member in (0, 1):
@@ -1112,7 +1112,7 @@ def test_conversion_refuses_inputs_selected_for_different_members():
 
 
 def test_conversion_table_refuses_a_value_pysipnet_would_refuse():
-    """The table never builds an InitialConditions, so it checks the products
+    """The table never builds an InitialConditions, so it checks the converted values
     itself; otherwise a row could carry an inf the single-member form rejects."""
     state = ensemble_state()
     state["initial_soil_organic_carbon"][0, 0] = 1e308
@@ -1126,7 +1126,7 @@ def test_conversion_table_refuses_a_value_pysipnet_would_refuse():
 
 def test_conversion_table_rows_are_member_then_site():
     """Member ids and site ids overlap, so an index that came back (site,
-    member) would make .loc[(5, 42)] silently return a different cell."""
+    member) would make .loc[(5, 42)] silently return a different row."""
     state = ensemble_state()
     # A pool held per site only, which is what would set the broadcast order.
     state["initial_soil_organic_carbon"] = xr.DataArray(
@@ -1144,8 +1144,8 @@ def test_conversion_table_rows_are_member_then_site():
 
 
 def test_conversion_does_not_compute_the_branch_the_deciduous_rule_discards():
-    """A deciduous cell's leaf carbon is never validated, so it must never be
-    evaluated either: under np.seterr(all="raise") one such cell would abort
+    """A deciduous element's leaf carbon is never validated, so it must never be
+    evaluated either: under np.seterr(all="raise") one such element would abort
     the conversion of every other."""
     old = np.seterr(all="raise")
     try:
@@ -1176,11 +1176,11 @@ def test_conversion_table_of_scalars_is_one_unlabeled_row():
         {name: xr.DataArray(value) for name, value in VALID_STATE.items()}, **VALID_PARAMETERS
     )
     assert len(table) == 1
-    assert list(table.columns) == list(CONVERTED_SIPNET_FIELDS)
+    assert list(table.columns) == list(CONVERTED_SIPNET_PARAMETER_NAMES)
     assert InitialConditions(**table.iloc[0]) == to_sipnet_initial_conditions(
         **VALID_STATE, **VALID_PARAMETERS
     )
-    # With no cells to name, a refusal falls back to the offending value.
+    # With no elements to name, a refusal falls back to the offending value.
     with pytest.raises(ValueError, match=r"\(value -1.0\)"):
         to_sipnet_initial_conditions_table(
             {
@@ -1224,7 +1224,7 @@ def test_conversion_table_takes_a_dataset_and_one_site():
     assert one_site.loc[0].to_dict() == both.loc[(0, 1)].to_dict()
 
 
-def test_conversion_table_refuses_a_bad_state_naming_the_cells():
+def test_conversion_table_refuses_a_bad_state_naming_the_elements():
     state = ensemble_state(leaf=(0.12, np.nan))
     parameters = dict(
         leaf_carbon_per_area=32.0, fine_root_fraction=0.2, coarse_root_fraction=0.25
@@ -1239,15 +1239,15 @@ def test_conversion_table_refuses_a_bad_state_naming_the_cells():
     negative = ensemble_state()
     negative["initial_wood_carbon"][1, 0] = -0.3
     with pytest.raises(
-        ValueError, match=r"initial_wood_carbon.*1 of 4 cells.*for example \[\(1, 1\)\]\."
+        ValueError, match=r"initial_wood_carbon.*1 of 4 elements.*for example \[\(1, 1\)\]\."
     ):
         to_sipnet_initial_conditions_table(negative, deciduous=False, **parameters)
 
-    # The leaf carbon is checked over the evergreen cells only, so the count it
+    # The leaf carbon is checked over the evergreen elements only, so the count it
     # reports has to say so rather than claim to be the whole ensemble.
     half = ensemble_state(leaf=(np.nan, 0.13))
     deciduous_at_27 = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})
-    with pytest.raises(ValueError, match=r"2 of 2 cells whose PFT keeps its leaves"):
+    with pytest.raises(ValueError, match=r"2 of 2 elements whose PFT keeps its leaves"):
         to_sipnet_initial_conditions_table(half, deciduous=deciduous_at_27, **parameters)
 
     del state["initial_soil_organic_carbon"]
@@ -1263,7 +1263,7 @@ def test_conversion_table_refuses_wrong_units_dims_and_unaligned_parameters():
 
     converted = ensemble_state()
     converted["initial_soil_organic_carbon"].attrs["units"] = "g m-2"
-    with pytest.raises(ValueError, match="units 'g m-2', not the product's 'kg m-2'"):
+    with pytest.raises(ValueError, match="units 'g m-2', not the processed file's 'kg m-2'"):
         to_sipnet_initial_conditions_table(converted, **parameters)
 
     over_time = ensemble_state()
@@ -1273,7 +1273,7 @@ def test_conversion_table_refuses_wrong_units_dims_and_unaligned_parameters():
             **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="time")},
         )
 
-    # An unlabeled source_index raised a raw IndexError from the cell index.
+    # An unlabeled source_index raised a raw IndexError from the element index.
     with pytest.raises(ValueError, match=r"\[.source_index.\] is neither"):
         to_sipnet_initial_conditions_table(
             ensemble_state(),
@@ -1344,18 +1344,18 @@ def test_tracked_raw_file_holds_the_pecan_identities(tracked_raw):
 def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     if not SITES_CSV.exists():
         pytest.skip("the site table is not in this working copy")
-    sites = load_sites(SITES_CSV)
-    ingest.check_raw(tracked_raw, sites)
-    product = build_initial_conditions(tracked_raw, sites)
-    assert product["initial_soil_organic_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
-    assert product[SOURCE_INDEX].values[0] == 1 and product[INITIAL_CONDITION_MEMBER].values[0] == 0
+    site_table = load_sites(SITES_CSV)
+    ingest.check_raw(tracked_raw, site_table)
+    processed = build_initial_conditions(tracked_raw, site_table)
+    assert processed["initial_soil_organic_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
+    assert processed[SOURCE_INDEX].values[0] == 1 and processed[INITIAL_CONDITION_MEMBER].values[0] == 0
     np.testing.assert_array_equal(
-        product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
+        processed[INITIAL_CONDITION_MEMBER].values, processed[SOURCE_INDEX].values - 1
     )
     # The real ensemble crossed with samples survives the Flat round trip.
     from sipnet_calibration.fields import batch_coordinate, stack_batch_dims, unstack_batch_dims
 
-    field = product["initial_soil_organic_carbon"].isel(site=[0, 26, 864])
+    field = processed["initial_soil_organic_carbon"].isel(site=[0, 26, 864])
     crossed = field.expand_dims(sample=2).assign_coords(sample=batch_coordinate("sample", [0, 1]))
     restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
     xr.testing.assert_identical(restored, crossed)
@@ -1384,7 +1384,7 @@ def test_ingest_main_reports_a_broken_identity_and_a_member_gap(raw, sites_csv, 
     out = tmp_path / "p.nc"
     for mutate, message in ((break_wood, "identity"), (gap, "1..2")):
         variant = _write_raw_variant(raw, tmp_path, mutate)
-        assert ingest.main(["--raw", str(variant), "--sites", str(sites_csv), "--out", str(out)]) == 1
+        assert ingest.main(["--raw", str(variant), "--site-table", str(sites_csv), "--out", str(out)]) == 1
         assert message in capsys.readouterr().err
         assert not out.exists() and not out.with_suffix(".nc.partial").exists()
 
@@ -1485,13 +1485,13 @@ def _without_attr(dataset, key):
 
 
 def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        processed = build_initial_conditions(raw_dataset, site_table)
     path = tmp_path / "p.nc"
 
     def refused(mutate, message, encode=True):
-        variant = mutate(product.copy(deep=True))
+        variant = mutate(processed.copy(deep=True))
         variant.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(variant) if encode else None)
         with pytest.raises(ValueError, match=message):
             load_initial_conditions(path)
@@ -1522,15 +1522,15 @@ def test_the_member_coordinates_carry_their_attributes(raw, sites_csv):
     )
 
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, load_sites(sites_csv))
-    assert dict(product[INITIAL_CONDITION_MEMBER].attrs) == dict(DATA_SOURCE_MEMBER_ATTRIBUTES)
-    assert dict(product[SOURCE_INDEX].attrs) == dict(SOURCE_INDEX_ATTRIBUTES)
+        processed = build_initial_conditions(raw_dataset, load_sites(sites_csv))
+    assert dict(processed[INITIAL_CONDITION_MEMBER].attrs) == dict(DATA_SOURCE_MEMBER_ATTRIBUTES)
+    assert dict(processed[SOURCE_INDEX].attrs) == dict(SOURCE_INDEX_ATTRIBUTES)
 
 
-def test_a_product_without_source_index_is_refused_by_name(raw, sites_csv, tmp_path):
+def test_a_processed_file_without_source_index_is_refused_by_name(raw, sites_csv, tmp_path):
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, load_sites(sites_csv))
-    variant = product.drop_vars(SOURCE_INDEX)
+        processed = build_initial_conditions(raw_dataset, load_sites(sites_csv))
+    variant = processed.drop_vars(SOURCE_INDEX)
     path = tmp_path / "p.nc"
     variant.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(variant))
     with pytest.raises(ValueError, match="missing the 'source_index' coordinate"):
@@ -1538,22 +1538,22 @@ def test_a_product_without_source_index_is_refused_by_name(raw, sites_csv, tmp_p
 
 
 def test_a_member_label_is_its_source_index_less_one(raw, sites_csv):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        processed = build_initial_conditions(raw_dataset, site_table)
     np.testing.assert_array_equal(
-        product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
+        processed[INITIAL_CONDITION_MEMBER].values, processed[SOURCE_INDEX].values - 1
     )
-    assert "n_members" not in product.attrs
+    assert "n_members" not in processed.attrs
 
 
 def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, sites_csv, tmp_path):
-    """The real product's source_index and attributes survive the Flat round trip."""
+    """The real processed file's source_index and attributes survive the Flat round trip."""
     from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
     from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
 
-    out = tmp_path / "product.nc"
-    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 0
+    out = tmp_path / "processed.nc"
+    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 0
     field = initial_condition_fields(["initial_soil_organic_carbon"], path=out)[
         "initial_soil_organic_carbon"
     ]
@@ -1573,11 +1573,11 @@ def _rename_attr(dataset, variable, key, value):
 def test_coordinates_carry_no_fill_value_on_disk(raw, sites_csv, tmp_path):
     import h5netcdf
 
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
-        product = build_initial_conditions(raw_dataset, sites)
+        processed = build_initial_conditions(raw_dataset, site_table)
     path = tmp_path / "p.nc"
-    product.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(product))
+    processed.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(processed))
     for written in (path, raw):
         with h5netcdf.File(written, "r") as handle:
             for name in (SITE, RAW_MEMBER, INITIAL_CONDITION_MEMBER, SOURCE_INDEX, "lon", "lat"):
@@ -1587,56 +1587,56 @@ def test_coordinates_carry_no_fill_value_on_disk(raw, sites_csv, tmp_path):
 
 def test_biomass_spec_is_not_fed_to_sipnet():
     spec = resolve_initial_condition("initial_aboveground_biomass_carbon")
-    assert spec.sipnet_initial_condition == ""
-    assert spec.xarray_attributes()["sipnet_initial_condition"] == "none"
+    assert spec.sipnet_parameter_name == ""
+    assert spec.xarray_attributes()["sipnet_parameter_name"] == "none"
 
 
 def test_conversion_limit_sites_and_a_variable_absent_everywhere(tree, tmp_path, capsys):
-    sites = _write_sites(tmp_path / "sites.csv")
+    site_table_path = _write_sites(tmp_path / "sites.csv")
     out = tmp_path / "trial.nc"
-    assert convert.main(["--root", str(tree), "--out", str(out), "--sites", str(sites), "--jobs", "1", "--limit-sites", "2"]) == 0
+    assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "2"]) == 0
     text = capsys.readouterr().out
     assert "pool check is skipped" in text and "SoilMoistFrac" in text
     with read_raw(out) as dataset:
         assert dataset.sizes[SITE] == 2
-    assert convert.main(["--root", str(tree), "--out", str(out), "--sites", str(sites), "--jobs", "1", "--limit-sites", "0"]) == 1
+    assert convert.main(["--root", str(tree), "--out", str(out), "--site-table", str(site_table_path), "--jobs", "1", "--limit-sites", "0"]) == 1
     assert "at least 1" in capsys.readouterr().err
     # a tree where no site carries soil moisture: the report prints dashes, exit 0
     values = {site: {m: {k: v for k, v in rec.items() if k != "SoilMoistFrac"} for m, rec in members.items()}
               for site, members in SYNTHETIC_VALUES.items()}
     dry = _write_tree(tmp_path / "dry", values)
-    assert convert.main(["--root", str(dry), "--out", str(tmp_path / "dry.nc"), "--sites", str(sites), "--jobs", "1"]) == 0
+    assert convert.main(["--root", str(dry), "--out", str(tmp_path / "dry.nc"), "--site-table", str(site_table_path), "--jobs", "1"]) == 0
     assert "-            -" in capsys.readouterr().out
-    product = tmp_path / "dry_product.nc"
-    assert ingest.main(["--raw", str(tmp_path / "dry.nc"), "--sites", str(sites), "--out", str(product)]) == 0
-    assert product.exists()
+    processed = tmp_path / "dry_processed.nc"
+    assert ingest.main(["--raw", str(tmp_path / "dry.nc"), "--site-table", str(site_table_path), "--out", str(processed)]) == 0
+    assert processed.exists()
 
 
 def test_conversion_refuses_a_named_site_table_that_is_absent(tree, tmp_path, capsys):
-    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--sites", str(tmp_path / "nope.csv"), "--jobs", "1"]) == 1
+    assert convert.main(["--root", str(tree), "--out", str(tmp_path / "o.nc"), "--site-table", str(tmp_path / "nope.csv"), "--jobs", "1"]) == 1
     assert "does not exist" in capsys.readouterr().err
 
 
 def test_round_trip_checks_notice_a_file_that_differs(
     raw, sites_csv, tmp_path, monkeypatch, capsys
 ):
-    sites = load_sites(sites_csv)
+    site_table = load_sites(sites_csv)
     with read_raw(raw) as raw_dataset:
         dataset = raw_dataset.load().copy(deep=True)
-        product = build_initial_conditions(raw_dataset, sites)
+        processed = build_initial_conditions(raw_dataset, site_table)
     other = _write_raw_variant(raw, tmp_path, lambda d: d.assign(AbvGrndWood=d["AbvGrndWood"] + 1))
     with pytest.raises(convert.ConversionError, match="round-trip"):
         convert.check_round_trip(dataset, other)
-    changed = product.copy(deep=True)
+    changed = processed.copy(deep=True)
     changed["initial_wood_carbon"].values[0, 0] += 1
     path = tmp_path / "changed.nc"
     changed.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(changed))
     with pytest.raises(ingest.IngestError, match="round-trip"):
-        ingest.check_round_trip(product, path)
+        ingest.check_round_trip(processed, path)
     # a failing round trip keeps the .partial for inspection and says where it is
     monkeypatch.setattr(ingest, "check_round_trip", lambda d, p: (_ for _ in ()).throw(ingest.IngestError("boom")))
     out = tmp_path / "never.nc"
     capsys.readouterr()
-    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 1
+    assert ingest.main(["--raw", str(raw), "--site-table", str(sites_csv), "--out", str(out)]) == 1
     assert not out.exists() and out.with_suffix(".nc.partial").exists()
     assert str(out.with_suffix(".nc.partial")) in capsys.readouterr().err

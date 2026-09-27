@@ -18,7 +18,7 @@ holds a file to.
 
 :data:`SOURCE_SCRIPT`, :data:`SOURCE_SCRIPT_NOTE` and :data:`NOMINAL_DATE` are
 provenance rather than format: they say how PEcAn drew the ensemble, are copied
-into the processed product's attributes, and are checked against nothing.
+into the processed file's attributes, and are checked against nothing.
 
 :func:`read_source_file` parses one file, :func:`read_source_directory` one
 site's directory, and :func:`site_member_from_file_name` decodes a file name.
@@ -163,7 +163,7 @@ SOURCE_SCRIPT_NOTE = (
     "record. Open question 24 in data/README.md."
 )
 
-#: The date the PEcAn script sampled the source products at, from its own code
+#: The date the PEcAn script sampled the upstream products at, from its own code
 #: (``time_poimt <- as.Date("2011-07-15")``, the variable name spelled as the
 #: script spells it). The files carry no date.
 NOMINAL_DATE = "2011-07-15"

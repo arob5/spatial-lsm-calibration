@@ -17,7 +17,7 @@ from matplotlib.container import ErrorbarContainer
 
 from conftest import make_field
 from sipnet_calibration.plotting.primitives import nanquantile
-from sipnet_calibration.plotting.series import SHOW_KINDS, plot_time_series
+from sipnet_calibration.plotting.series import SHOW_OPTIONS, plot_time_series
 from sipnet_calibration.plotting.style import CURVE_COLORS, ROLES, axis_label
 
 
@@ -191,7 +191,7 @@ def test_show_spaghetti_honors_n_max(ax, field_sample_time):
 
 def test_show_points_draws_scattered_observations(ax, field_time):
     """``show="points"`` gives an ``ErrorbarContainer`` and no curve."""
-    plot_time_series(field_time, ax=ax, role="obs", show="points")
+    plot_time_series(field_time, ax=ax, role="observation", show="points")
     assert len(ax.containers) == 1
     assert isinstance(ax.containers[0], ErrorbarContainer)
 
@@ -203,17 +203,17 @@ def test_points_are_drawn_with_a_marker(ax, field_time):
     and no marker, and the observations disappear from the figure while the
     error bars remain.
     """
-    plot_time_series(field_time, ax=ax, role="obs", show="points")
+    plot_time_series(field_time, ax=ax, role="observation", show="points")
     marker = ax.containers[0][0]
-    assert marker.get_marker() == ROLES["obs"]["marker"]
-    assert marker.get_markersize() == ROLES["obs"]["markersize"]
+    assert marker.get_marker() == ROLES["observation"]["marker"]
+    assert marker.get_markersize() == ROLES["observation"]["markersize"]
 
 
 def test_an_unknown_show_is_rejected(ax, field_time):
-    """The message lists :data:`SHOW_KINDS`."""
+    """The message lists :data:`SHOW_OPTIONS`."""
     with pytest.raises(ValueError, match="show must be one of") as raised:
         plot_time_series(field_time, ax=ax, show="violin")
-    assert all(kind in str(raised.value) for kind in SHOW_KINDS)
+    assert all(option in str(raised.value) for option in SHOW_OPTIONS)
 
 
 # ── the fan's median ──────────────────────────────────────────────────────────
@@ -465,7 +465,7 @@ def test_a_fan_summarizes_a_partly_missing_timestep(ax, field_with_gaps):
 def test_points_drop_missing_observations(ax, field_with_gaps):
     """``show="points"`` draws only the observed timesteps."""
     one = field_with_gaps.isel(sample=0)
-    plot_time_series(one, ax=ax, role="obs", show="points")
+    plot_time_series(one, ax=ax, role="observation", show="points")
     drawn = ax.containers[0][0].get_ydata()
     assert len(drawn) == int(one.notnull().sum())
     assert np.isfinite(drawn).all()
@@ -536,10 +536,10 @@ def test_an_overlay_adds_to_the_existing_artists(ax, field_sample_time, field_ti
     """A second call onto the same axes keeps the first call's artists."""
     plot_time_series(field_sample_time, ax=ax, role="posterior")
     lines_after_first = len(ax.lines)
-    plot_time_series(field_time, ax=ax, role="obs", show="points")
+    plot_time_series(field_time, ax=ax, role="observation", show="points")
     assert len(ax.lines) >= lines_after_first
     assert len(ax.collections) == 2
-    assert ax.get_legend_handles_labels()[1] == ["posterior", "obs"]
+    assert ax.get_legend_handles_labels()[1] == ["posterior", "observation"]
 
 
 def test_label_by_a_scalar_coordinate_is_refused(ax):

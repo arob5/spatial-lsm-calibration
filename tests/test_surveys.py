@@ -370,7 +370,7 @@ def test_the_real_phenology_files_match_what_the_readme_records(name):
         failure
         for failure in phenology.compare_with_recorded(report, name)
         # These two need the site table, which the NEON file cannot join to;
-        # the run with --sites covers them.
+        # the run with --site-table covers them.
         if not failure.startswith(("identifiers_not_in_", "sites_of_the_pool_absent"))
     ]
     assert failures == []

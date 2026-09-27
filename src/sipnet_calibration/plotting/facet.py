@@ -77,9 +77,9 @@ from sipnet_calibration.plotting.style import axis_label
 from sipnet_calibration.validation import as_positive_integer, as_site_ids, truncated
 
 __all__ = [
-    "LEGEND_MODES",
-    "SCALE_MODES",
-    "SHARE_MODES",
+    "LEGEND_OPTIONS",
+    "SCALE_OPTIONS",
+    "SHARE_OPTIONS",
     "build_plot_grid",
     "plot_by_site",
     "plot_by_variable",
@@ -89,14 +89,14 @@ __all__ = [
 ]
 
 #: What ``share`` may be, matching ``pyplot.subplots``' ``sharex``/``sharey``.
-SHARE_MODES: tuple[str, ...] = ("none", "x", "y", "both")
+SHARE_OPTIONS: tuple[str, ...] = ("none", "x", "y", "both")
 
 #: What ``legend`` may be.
-LEGEND_MODES: tuple[str, ...] = ("dedup", "each", "none")
+LEGEND_OPTIONS: tuple[str, ...] = ("dedup", "each", "none")
 
 #: What ``scale`` may be for a grid of maps: one color scale for every panel,
 #: or one per panel.
-SCALE_MODES: tuple[str, ...] = ("shared", "each")
+SCALE_OPTIONS: tuple[str, ...] = ("shared", "each")
 
 
 def build_plot_grid(
@@ -124,7 +124,7 @@ def build_plot_grid(
         Panels per row. The number of rows follows from ``len(items)``, and
         the unused axes of the last row are hidden.
     share:
-        One of :data:`SHARE_MODES`, passed to ``pyplot.subplots`` as
+        One of :data:`SHARE_OPTIONS`, passed to ``pyplot.subplots`` as
         ``sharex`` and ``sharey``. ``"y"`` puts every panel on one y scale.
     labels:
         Panel titles: a sequence as long as *items*, a callable applied to
@@ -151,7 +151,7 @@ def build_plot_grid(
         If *ncol* is a boolean or not an integer.
     ValueError
         If *items* is empty; if *ncol* is less than 1; if *share*
-        is not in :data:`SHARE_MODES`; if *legend* is not ``"dedup"``,
+        is not in :data:`SHARE_OPTIONS`; if *legend* is not ``"dedup"``,
         ``"each"`` or ``"none"``; or if *labels* is a sequence of a different
         length from *items*.
     """
@@ -159,10 +159,10 @@ def build_plot_grid(
     if not items:
         raise ValueError("items is empty; there is nothing to draw")
     ncol = as_positive_integer(ncol, message_name="ncol")
-    if share not in SHARE_MODES:
-        raise ValueError(f"share must be one of {list(SHARE_MODES)}, got {share!r}")
-    if legend not in LEGEND_MODES:
-        raise ValueError(f"legend must be one of {list(LEGEND_MODES)}, got {legend!r}")
+    if share not in SHARE_OPTIONS:
+        raise ValueError(f"share must be one of {list(SHARE_OPTIONS)}, got {share!r}")
+    if legend not in LEGEND_OPTIONS:
+        raise ValueError(f"legend must be one of {list(LEGEND_OPTIONS)}, got {legend!r}")
     titles = _panel_titles(items, labels)
 
     ncol = min(ncol, len(items))
@@ -233,25 +233,25 @@ def _add_legend(figure: Figure, axes: np.ndarray, legend: str) -> None:
 
 
 def plot_by_site(
-    data: xr.DataArray,
+    field: xr.DataArray,
     panel_fn: Callable[..., Any] | None = None,
     *,
     sites: Sequence[int] | None = None,
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One panel per site, each drawing that site's slice of *data*.
+    """One panel per site, each drawing that site's slice of *field*.
 
     Parameters
     ----------
-    data:
-        A ``DataArray`` with a ``site`` dimension.
+    field:
+        A field with a ``site`` dimension.
     panel_fn:
-        Called as ``panel_fn(data.sel(site=s), ax=ax)`` for each site.
+        Called as ``panel_fn(field.sel(site=s), ax=ax)`` for each site.
         ``None`` uses
         :func:`sipnet_calibration.plotting.series.plot_time_series`.
     sites:
         The site ids to draw, a sequence, in that order, each once. ``None``
-        draws every site in *data*, which for a whole-pool field is a panel
+        draws every site in *field*, which for a whole-pool field is a panel
         per site of the pool.
     **grid_kwargs:
         Passed to :func:`build_plot_grid`. ``labels`` defaults to
@@ -265,43 +265,43 @@ def plot_by_site(
     Raises
     ------
     TypeError
-        If *data* is not a ``DataArray`` (a Dataset is split into fields
+        If *field* is not a ``DataArray`` (a Dataset is split into fields
         first); if *sites* is one id, a string or a set, or holds a boolean, a
         float or a value that is not a number.
     ValueError
-        If *data* is not a field
+        If *field* is not a field
         (:func:`sipnet_calibration.fields.validate_field`) or has no ``site``
         dimension, or *sites* names a site twice or holds a value that is not
         a site id.
     KeyError
-        If *sites* names a site that is not in *data*.
+        If *sites* names a site that is not in *field*.
     """
-    validate_field(data)
-    check_data_has_a_site_dimension(data)
-    check_data_has_a_site_coordinate(data)
-    available = data.coords[SITE].values.tolist()
+    validate_field(field)
+    check_field_has_a_site_dimension(field)
+    check_field_has_a_site_coordinate(field)
+    available = field.coords[SITE].values.tolist()
     chosen = available if sites is None else list(as_site_ids(sites, message_name="sites"))
-    check_data_holds_the_sites(available, chosen)
+    check_field_holds_the_sites(available, chosen)
 
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     grid_kwargs.setdefault("labels", lambda site: f"site {site}")
     return build_plot_grid(
         chosen,
-        lambda ax, site: panel_fn(data.sel({SITE: site}), ax=ax),
+        lambda ax, site: panel_fn(field.sel({SITE: site}), ax=ax),
         **grid_kwargs,
     )
 
 
 def plot_by_variable(
-    data: dict[str, xr.DataArray],
+    fields_by_name: dict[str, xr.DataArray],
     panel_fn: Callable[..., Any] | None = None,
     **grid_kwargs: Any,
 ) -> tuple[Figure, np.ndarray]:
-    """One panel per variable, in the order *data* gives them.
+    """One panel per variable, in the order *fields_by_name* gives them.
 
     Parameters
     ----------
-    data:
+    fields_by_name:
         Variable name to ``DataArray``, as
         :func:`sipnet_calibration.drivers.driver_fields` and
         :func:`sipnet_calibration.constraints.constraint_fields` return. The
@@ -322,17 +322,17 @@ def plot_by_variable(
     Raises
     ------
     ValueError
-        If *data* is empty.
+        If *fields_by_name* is empty.
     """
-    if not data:
-        raise ValueError("data is empty; there is nothing to draw")
+    if not fields_by_name:
+        raise ValueError("fields_by_name is empty; there is nothing to draw")
     panel_fn = plot_time_series if panel_fn is None else panel_fn
-    names = list(data)
+    names = list(fields_by_name)
     grid_kwargs.setdefault(
-        "labels", [data[name].attrs.get("long_name", name) for name in names]
+        "labels", [fields_by_name[name].attrs.get("long_name", name) for name in names]
     )
     return build_plot_grid(
-        names, lambda ax, name: panel_fn(data[name], ax=ax), **grid_kwargs
+        names, lambda ax, name: panel_fn(fields_by_name[name], ax=ax), **grid_kwargs
     )
 
 
@@ -381,12 +381,12 @@ def plot_map_grid(
     Raises
     ------
     ValueError
-        If *fields* is empty or *scale* is not in :data:`SCALE_MODES`, and
+        If *fields* is empty or *scale* is not in :data:`SCALE_OPTIONS`, and
         whatever :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map`
         raises for a panel, every panel checked before any is drawn.
     """
     check_map_grid_has_a_field(fields)
-    check_scale_mode_is_known(scale)
+    check_scale_option_is_known(scale)
     arrays = list(fields.values())
     # Every panel is checked before the frame and a shared scale read their
     # values, which a panel that is not a map would break with a raw error.
@@ -560,10 +560,10 @@ def check_map_grid_has_a_field(fields: Mapping[str, Any]) -> None:
         raise ValueError("fields is empty; there is nothing to draw. Pass {title: field}.")
 
 
-def check_scale_mode_is_known(scale: str) -> None:
-    """The scale mode of a map grid is one of :data:`SCALE_MODES`."""
-    if scale not in SCALE_MODES:
-        raise ValueError(f"scale must be one of {list(SCALE_MODES)}, got {scale!r}")
+def check_scale_option_is_known(scale: str) -> None:
+    """The scale option of a grid of maps is one of :data:`SCALE_OPTIONS`."""
+    if scale not in SCALE_OPTIONS:
+        raise ValueError(f"scale must be one of {list(SCALE_OPTIONS)}, got {scale!r}")
 
 
 def check_field_has_the_dim_to_split(field: xr.DataArray, dim: str) -> None:
@@ -625,30 +625,30 @@ def check_quantile_grid_keywords_are_not_retired(grid_kwargs: Mapping[str, Any])
         )
 
 
-def check_data_has_a_site_dimension(data: xr.DataArray) -> None:
+def check_field_has_a_site_dimension(field: xr.DataArray) -> None:
     """The array has a ``site`` dimension to split by."""
-    if SITE not in data.dims:
+    if SITE not in field.dims:
         raise ValueError(
-            f"the array has dimensions {list(data.dims)} and needs {SITE!r} "
+            f"the array has dimensions {list(field.dims)} and needs {SITE!r} "
             "to be split by site"
         )
 
 
-def check_data_has_a_site_coordinate(data: xr.DataArray) -> None:
+def check_field_has_a_site_coordinate(field: xr.DataArray) -> None:
     """The array's ``site`` dimension has a coordinate to name and select its panels by."""
-    if SITE not in data.coords:
+    if SITE not in field.coords:
         raise ValueError(
             f"the array has a {SITE!r} dimension but no {SITE!r} "
             "coordinate, so its panels cannot be named or selected"
         )
 
 
-def check_data_holds_the_sites(available: list[int], chosen: list[int]) -> None:
-    """Every site asked for is on the data's ``site`` coordinate."""
+def check_field_holds_the_sites(available: list[int], chosen: list[int]) -> None:
+    """Every site asked for is on the field's ``site`` coordinate."""
     held = set(available)
     missing = [site for site in chosen if site not in held]
     if missing:
         raise KeyError(
-            f"no such site(s) in the data: {truncated(missing)}; it holds "
+            f"no such site(s) in the field: {truncated(missing)}; it holds "
             f"{len(available)} site(s), starting {available[:5]}, so ask for those."
         )

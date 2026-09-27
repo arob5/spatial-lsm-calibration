@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from sipnet_calibration.plotting.facet import (
-    SHARE_MODES,
+    SHARE_OPTIONS,
     build_plot_grid,
     plot_by_site,
     plot_by_variable,
@@ -100,10 +100,10 @@ def test_share_none_leaves_the_limits_independent():
 
 
 def test_an_unknown_share_is_rejected():
-    """The message lists :data:`SHARE_MODES`."""
+    """The message lists :data:`SHARE_OPTIONS`."""
     with pytest.raises(ValueError, match="share must be one of") as raised:
         build_plot_grid([1], draw_nothing, share="diagonal")
-    assert all(mode in str(raised.value) for mode in SHARE_MODES)
+    assert all(option in str(raised.value) for option in SHARE_OPTIONS)
 
 
 # ── titles ────────────────────────────────────────────────────────────────────
@@ -147,7 +147,7 @@ def test_a_labels_sequence_of_the_wrong_length_is_rejected():
 def two_roles(ax, item, field):
     """Draw the same two roles onto every panel."""
     plot_time_series(field, ax=ax, role="prior")
-    plot_time_series(field, ax=ax, role="obs", show="points")
+    plot_time_series(field, ax=ax, role="observation", show="points")
 
 
 def test_dedup_keeps_one_entry_per_label(field_time):
@@ -156,7 +156,7 @@ def test_dedup_keeps_one_entry_per_label(field_time):
         build_plot_grid([1, 2, 3], partial(two_roles, field=field_time))
     )
     assert len(figure.legends) == 1
-    assert [t.get_text() for t in figure.legends[0].get_texts()] == ["prior", "obs"]
+    assert [t.get_text() for t in figure.legends[0].get_texts()] == ["prior", "observation"]
 
 
 def test_dedup_keeps_first_seen_order():
@@ -223,7 +223,7 @@ def test_nothing_labeled_means_no_legend():
 
 
 def test_an_unknown_legend_is_rejected():
-    """An unrecognized legend mode raises."""
+    """An unrecognized legend option raises."""
     with pytest.raises(ValueError, match="legend must be one of"):
         build_plot_grid([1], draw_nothing, legend="footnote")
 

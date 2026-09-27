@@ -78,7 +78,7 @@ import pandas as pd
 from sipnet_calibration.conventions import TIMESTEP_LENGTH, TIMESTEP_START
 from sipnet_calibration.drivers import (
     DRIVER_FILE_GLOB,
-    DRIVER_VARIABLES,
+    DRIVER_VARIABLE_NAMES,
     read_driver_file,
 )
 
@@ -194,7 +194,7 @@ def survey_one_file(directory: Path) -> FileFacts:
         np.ascontiguousarray(axis[TIMESTEP_START].values.astype("int64")).tobytes()
         + np.ascontiguousarray(axis[TIMESTEP_LENGTH].values.astype("int64")).tobytes()
     ).hexdigest()
-    for name in DRIVER_VARIABLES:
+    for name in DRIVER_VARIABLE_NAMES:
         values = frame[name].to_numpy()
         facts.stats[name] = {
             "min": float(values.min()),
@@ -224,7 +224,7 @@ def build_report(results: list[FileFacts], off_template: list[str]) -> dict[str,
 
     parsed = [r for r in results if r.n_rows is not None]
     stats: dict[str, dict[str, float | int]] = {}
-    for column in DRIVER_VARIABLES:
+    for column in DRIVER_VARIABLE_NAMES:
         per = [r.stats[column] for r in parsed if column in r.stats]
         if per:
             stats[column] = {

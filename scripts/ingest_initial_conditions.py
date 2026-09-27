@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the processed initial condition product from the tracked raw file.
+"""Build the processed initial condition file from the tracked raw file.
 
 Overview
 --------
@@ -8,10 +8,10 @@ it, rename the source variables to the spec names and the ``member`` dim to
 ``initial_condition_member``, renumber the members, place the sites on the site
 pool and write ``data/processed/initial_conditions.nc``. Every decision about
 what a variable is -- its unit, its provenance, the SIPNET parameter it feeds
--- is a field of its ``InitialConditionSpec`` in the library; this script is
+-- is set in its ``InitialConditionSpec`` in the library; this script is
 the orchestration and the checks, and its round-trip check reads the file back
 with ``sipnet_calibration.initial_conditions.load_initial_conditions``, the
-same function every reader of the product uses.
+same function every reader of the processed file uses.
 
 Input data
 ----------
@@ -21,8 +21,8 @@ Input data
     and read exactly by
     ``read_raw``.
 
-``--sites``, default ``data/processed/sites/sites.csv``
-    The site table: the pool the product is on, and the ``lon``/``lat``
+``--site-table``, default ``data/processed/sites/sites.csv``
+    The site table: the pool the processed file is on, and the ``lon``/``lat``
     coordinates.
 
 Output data
@@ -89,7 +89,7 @@ from sipnet_calibration.initial_conditions import (
     RAW_MEMBER,
     SOURCE,
     build_initial_conditions,
-    default_product_path,
+    default_processed_path,
     describe,
     load_initial_conditions,
     netcdf_encoding,
@@ -119,16 +119,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     raw = args.raw if args.raw is not None else raw_path()
-    out = args.out if args.out is not None else default_product_path()
-    sites_path = args.sites if args.sites is not None else default_sites_path()
+    out = args.out if args.out is not None else default_processed_path()
+    site_table_path = args.site_table or default_sites_path()
 
     try:
-        sites = load_sites(sites_path)
+        site_table = load_sites(site_table_path)
         with read_raw(raw) as raw_dataset:
-            check_raw(raw_dataset, sites)
-            dataset = build_initial_conditions(raw_dataset, sites)
-        write_product(dataset, out)
-        print(describe_product(dataset, out))
+            check_raw(raw_dataset, site_table)
+            dataset = build_initial_conditions(raw_dataset, site_table)
+        write_processed_file(dataset, out)
+        print(describe_processed_file(dataset, out))
     except (IngestError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -150,7 +150,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "pecan_pool_initial_conditions.nc.",
     )
     parser.add_argument(
-        "--sites",
+        "--site-table",
         type=Path,
         default=None,
         help="The site table. Default: data/processed/sites/sites.csv.",
@@ -167,17 +167,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the ingest steps, in the order main calls them ────────────────────────────
 
 
-def check_raw(raw: xr.Dataset, sites: pd.DataFrame) -> None:
+def check_raw(raw: xr.Dataset, site_table: pd.DataFrame) -> None:
     """Every check on the raw file beyond the schema ``read_raw`` enforces."""
     check_every_source_variable_has_a_spec()
     check_sites_are_the_site_table(
-        sites, raw[SITE].values.tolist(), message_name="the raw file's sites"
+        site_table, raw[SITE].values.tolist(), message_name="the raw file's sites"
     )
     check_members_are_contiguous_from_one(raw)
     check_wood_is_biomass_minus_leaf(raw)
 
 
-def write_product(dataset: xr.Dataset, out: Path) -> None:
+def write_processed_file(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
     write_checked(
         out,
@@ -188,7 +188,7 @@ def write_product(dataset: xr.Dataset, out: Path) -> None:
     )
 
 
-def describe_product(dataset: xr.Dataset, out: Path) -> str:
+def describe_processed_file(dataset: xr.Dataset, out: Path) -> str:
     """A short report of what was written, for the run log."""
     lines = [
         f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB)",
@@ -239,15 +239,18 @@ def check_wood_is_biomass_minus_leaf(raw: xr.Dataset) -> None:
     has_leaf = np.isfinite(leaf)
     both = np.isfinite(biomass) & np.isfinite(wood)
     if not both.all():
-        raise IngestError("AbvGrndWood and wood_carbon_content are not present at every cell")
+        raise IngestError(
+            "AbvGrndWood and wood_carbon_content are not present at every site and member"
+        )
     expected = np.where(has_leaf, biomass - leaf, biomass)
     mismatch = wood != expected
     if mismatch.any():
         raise IngestError(
             f"wood_carbon_content differs from AbvGrndWood - leaf_carbon_content (or "
-            f"AbvGrndWood where leaf is absent) at {int(mismatch.sum())} cells, first at "
-            f"site {raw[SITE].values[np.argwhere(mismatch)[0][0]]}. That identity is how the "
-            "PEcAn built the wood pool; a break means the source changed."
+            f"AbvGrndWood where leaf is absent) at {int(mismatch.sum())} (site, member) "
+            f"pairs, first at site {raw[SITE].values[np.argwhere(mismatch)[0][0]]}. That "
+            "identity is how the PEcAn built the wood pool; a break means the source "
+            "changed."
         )
 
 

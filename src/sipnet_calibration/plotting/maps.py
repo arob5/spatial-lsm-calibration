@@ -9,16 +9,16 @@ longitude/latitude grid.
 :func:`plot_map` is the one-panel function. Like
 :func:`~sipnet_calibration.plotting.series.plot_time_series`, it draws onto an
 ``Axes`` it is given and returns it. Grids of maps -- one per batch label,
-per quantile, per time step -- are built by
+per quantile, per timestep -- are built by
 :mod:`sipnet_calibration.plotting.facet`, and :func:`animate_map` plays a map
 through time.
 
 What it draws
 -------------
-The kind of map follows from the data, never from a mode keyword:
+What map is drawn follows from the data, never from a mode keyword:
 
 ====================  ===================  =====================================
-Kind                  Dimensions           Recognized by
+Map                   Dimensions           Recognized by
 ====================  ===================  =====================================
 values at sites       ``(site,)``          ``site`` dim, numeric values
 classes at sites      ``(site,)``          :func:`~sipnet_calibration.fields.is_categorical`:
@@ -38,7 +38,7 @@ space-separated ``flag_meanings`` naming each code's class. An optional
 ``flag_display_names``, a tuple aligned with ``flag_meanings``, is what the
 legend shows in their place; it is this project's attribute, not CF's.
 :func:`sipnet_calibration.site_labels.site_labels_field` makes one from a
-site-labels product. A class keeps its color in every map of the same product,
+site-labels data source. A class keeps its color in every map of the same source,
 because colors are keyed by the class's position in ``flag_meanings`` and not
 by which classes a map happens to show. Without ``flag_meanings`` the classes
 are the ``flag_values`` codes, ``false`` and ``true`` for a boolean field
@@ -366,9 +366,9 @@ def plot_map(
     Parameters
     ----------
     field:
-        An ``xarray.DataArray`` of one of the kinds in the module docstring:
-        values or classes on ``(site,)`` with ``lon``/``lat`` on ``site``, or a
-        raster on ``(lat, lon)``.
+        An ``xarray.DataArray`` holding the data of one of the maps in the
+        module docstring: values or classes on ``(site,)`` with ``lon``/``lat``
+        on ``site``, or a raster on ``(lat, lon)``.
     ax:
         The axes to draw on. If ``None``, a figure and axes are created.
     render:
@@ -423,12 +423,12 @@ def plot_map(
     TypeError
         If *field* is not a ``DataArray``.
     ValueError
-        If *field* is not a field or not one of the kinds above -- in
-        particular if it has a batch dim or a ``time`` dimension, where the
-        message names the functions that draw those; if *render* is unknown,
-        is given for a raster, or interpolates a categorical field; if
-        *extent* is not a known name or a valid box; or if *log* is asked for
-        with a nonpositive value in the frame.
+        If *field* is not a field or holds the data of none of the maps above --
+        in particular if it has a batch dim or a ``time`` dimension, where the
+        message names the functions that draw those; if *render* is unknown, is
+        given for a raster, or interpolates a categorical field; if *extent* is
+        not a known name or a valid box; or if *log* is asked for with a
+        nonpositive value in the frame.
     """
     ax, _, _ = _draw_map(
         field, ax, render=render, extent=extent,

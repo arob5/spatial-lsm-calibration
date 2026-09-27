@@ -668,7 +668,7 @@ class TestAggregateTimeReadsAnAliasedName:
         assert rate.attrs["derivation"] in str(raised.value)
 
 
-def _daily_observation(n=8, freq="12h"):
+def _daily_observed_values(n=8, freq="12h"):
     """An observation field with no interval coordinates, which takes the calendar path."""
     return xr.DataArray(
         np.arange(1.0, n + 1), dims="time",
@@ -680,17 +680,17 @@ def _daily_observation(n=8, freq="12h"):
 class TestAggregateTimeOnCalendarCells:
     def test_upsampling_is_refused(self):
         with pytest.raises(ValueError, match="interpolate"):
-            aggregate_time(_daily_observation(freq="1D"), "1h", how="mean")
+            aggregate_time(_daily_observed_values(freq="1D"), "1h", how="mean")
 
     def test_a_bad_frequency_is_refused_with_pandas_reason(self):
         with pytest.raises(ValueError, match="pandas offset alias"):
-            aggregate_time(_daily_observation(), "bogus", how="mean")
+            aggregate_time(_daily_observed_values(), "bogus", how="mean")
         with pytest.raises(ValueError, match="'ME'"):
-            aggregate_time(_daily_observation(), "M", how="mean")
+            aggregate_time(_daily_observed_values(), "M", how="mean")
 
     @pytest.mark.parametrize("how", ["last", "mean", "sum"])
     def test_a_cell_holding_a_nan_is_nan(self, how):
-        observed = _daily_observation(freq="6h")
+        observed = _daily_observed_values(freq="6h")
         observed.attrs["kind"] = {"last": "timestep_end_state", "mean": "timestep_mean", "sum": "timestep_total"}[how]
         observed[1] = np.nan  # 2012-01-01 18:00, not the last value of (01-01, 01-02]
         daily = aggregate_time(observed, "1D", how=how)
@@ -698,7 +698,7 @@ class TestAggregateTimeOnCalendarCells:
         assert np.isfinite(daily.sel(time="2012-01-03").values).all()
 
     def test_the_attributes_say_what_the_values_now_are(self):
-        daily = aggregate_time(_daily_observation(), "1D")
+        daily = aggregate_time(_daily_observed_values(), "1D")
         assert daily.attrs["resampling"] == "mean of timestep_mean values over 1D"
         assert daily.attrs["kind"] == "timestep_mean" and "time_reference" in daily.attrs
         assert daily.attrs["units"] == "g m-2"

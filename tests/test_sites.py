@@ -271,13 +271,13 @@ class TestIngestScript:
 
     def test_there_is_no_pft_column(self, ingested):
         # A PFT class is an experimental choice and must not be baked into
-        # the shared key; it is its own product keyed on site_id.
+        # the shared key; it is its own data source keyed on site_id.
         assert "pft" not in ingested["table"].columns
 
 
 class TestSiteIdentifiers:
     def test_site_id_is_one_to_eight_thousand_in_record_order(self, ingested):
-        # Every other product joins on this and the identifiers are not ours to
+        # Every other data source joins on this and the identifiers are not ours to
         # renumber, so a permutation would be as much a failure as a gap.
         assert np.array_equal(
             ingested["table"]["site_id"].to_numpy(), np.arange(1, N_SITES + 1)
@@ -675,40 +675,40 @@ class TestSelectSites:
         with pytest.raises(ValueError, match="shape"):
             select_sites(ingested["table"], where=lambda t: np.array([True, False]))
 
-    def test_sample_is_reproducible_under_a_seed(self, ingested):
-        first = select_sites(ingested["table"], sample=20, seed=0)
-        second = select_sites(ingested["table"], sample=20, seed=0)
+    def test_n_random_is_reproducible_under_a_seed(self, ingested):
+        first = select_sites(ingested["table"], n_random=20, seed=0)
+        second = select_sites(ingested["table"], n_random=20, seed=0)
         assert first["site_id"].tolist() == second["site_id"].tolist()
         assert len(first) == 20
 
-    def test_a_different_seed_gives_a_different_sample(self, ingested):
-        first = select_sites(ingested["table"], sample=50, seed=0)
-        second = select_sites(ingested["table"], sample=50, seed=1)
+    def test_a_different_seed_gives_a_different_draw(self, ingested):
+        first = select_sites(ingested["table"], n_random=50, seed=0)
+        second = select_sites(ingested["table"], n_random=50, seed=1)
         assert first["site_id"].tolist() != second["site_id"].tolist()
 
-    def test_sample_is_in_ascending_site_id_order(self, ingested):
-        drawn = select_sites(ingested["table"], sample=100, seed=3)
+    def test_n_random_is_in_ascending_site_id_order(self, ingested):
+        drawn = select_sites(ingested["table"], n_random=100, seed=3)
         assert drawn["site_id"].is_monotonic_increasing
 
-    def test_sample_draws_without_replacement(self, ingested):
-        drawn = select_sites(ingested["table"], sample=200, seed=4)
+    def test_n_random_draws_without_replacement(self, ingested):
+        drawn = select_sites(ingested["table"], n_random=200, seed=4)
         assert drawn["site_id"].nunique() == 200
 
-    def test_an_oversized_sample_raises_rather_than_truncating(self, ingested):
-        with pytest.raises(ValueError, match=f"sample must be from 0 to {N_SITES}"):
-            select_sites(ingested["table"], sample=N_SITES + 1)
+    def test_an_oversized_n_random_raises_rather_than_truncating(self, ingested):
+        with pytest.raises(ValueError, match=f"n_random must be from 0 to {N_SITES}"):
+            select_sites(ingested["table"], n_random=N_SITES + 1)
 
-    @pytest.mark.parametrize("sample", [1.5, 2.0, True])
-    def test_a_sample_that_is_not_an_integer_is_a_type_error(self, ingested, sample):
-        with pytest.raises(TypeError, match="^sample must be an integer"):
-            select_sites(ingested["table"], sample=sample)
+    @pytest.mark.parametrize("n_random", [1.5, 2.0, True])
+    def test_an_n_random_that_is_not_an_integer_is_a_type_error(self, ingested, n_random):
+        with pytest.raises(TypeError, match="^n_random must be an integer"):
+            select_sites(ingested["table"], n_random=n_random)
 
-    def test_filters_compose_with_sample_applied_last(self, ingested):
+    def test_filters_compose_with_n_random_applied_last(self, ingested):
         chosen = select_sites(
             ingested["table"],
             bbox=(-125, 24, -66, 50),
             where=lambda t: t["ameriflux_site_id"] != "",
-            sample=20,
+            n_random=20,
             seed=0,
         )
         assert len(chosen) == 20
@@ -721,7 +721,7 @@ class TestSelectSites:
         # and a schema change would go unnoticed.
         table = ingested["table"].copy()
         before = table.copy()
-        select_sites(table, bbox=(-125, 24, -66, 50), sample=10, seed=0)
+        select_sites(table, bbox=(-125, 24, -66, 50), n_random=10, seed=0)
         pd.testing.assert_frame_equal(table, before)
         assert list(table.columns) == list(before.columns)
 

@@ -37,8 +37,8 @@ FIELD_DIMS = ("sample", "site", "time")
 def rescaled(output, factor: float):
     """A second run's worth of output, differing from *output* by a known factor.
 
-    Real output kept real: only the values are scaled, so a stacked field's
-    cells can be told apart by which run they came from.
+    Real output kept real: only the values are scaled, so each (sample, site)
+    element of a stacked field can be told apart by the run it came from.
     """
     from pysipnet.output import SIPNETOutput
 
@@ -153,7 +153,7 @@ class TestFromSipnetOutput:
 
     def test_a_site_outside_the_table_is_refused(self, niwot_output, real_site_table):
         with pytest.raises(KeyError, match="not in the site table"):
-            from_sipnet_output(niwot_output, ["nee"], site=99999, sites=real_site_table)
+            from_sipnet_output(niwot_output, ["nee"], site=99999, site_table=real_site_table)
 
     def test_a_batch_label_may_be_any_integer(self, niwot_output):
         for label in (-1, 40000):
@@ -184,7 +184,7 @@ def runs(niwot_output):
 
 class TestStackSipnetOutputs:
     def test_the_dims_are_the_field_order_and_ascending(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.dims == FIELD_DIMS
@@ -193,7 +193,7 @@ class TestStackSipnetOutputs:
         assert field["sample"].dtype == np.int64
 
     def test_lon_and_lat_are_on_site(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field["lon"].dims == ("site",)
@@ -201,8 +201,8 @@ class TestStackSipnetOutputs:
         expected = real_site_table.set_index("site_id").loc[[1, 27]]
         assert field["lon"].values == pytest.approx(expected["lon"].to_numpy())
 
-    def test_each_cell_holds_the_run_it_was_labeled_with(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+    def test_each_sample_and_site_holds_the_run_it_was_labeled_with(self, runs, real_site_table):
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         for (sample, site), run in runs.items():
@@ -212,7 +212,7 @@ class TestStackSipnetOutputs:
             )
 
     def test_one_run_still_has_both_sample_dims(self, niwot_output, real_site_table):
-        field = stack_sipnet_outputs({(0, 1): niwot_output}, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs({(0, 1): niwot_output}, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.dims == FIELD_DIMS
@@ -221,7 +221,7 @@ class TestStackSipnetOutputs:
 
     def test_a_pair_that_was_not_supplied_is_missing(self, niwot_output, real_site_table):
         runs = {(0, 1): niwot_output, (1, 27): niwot_output}
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.sizes["sample"] == 2 and field.sizes["site"] == 2
@@ -229,7 +229,7 @@ class TestStackSipnetOutputs:
         assert np.isfinite(field.sel(site=27, sample=1).values).all()
 
     def test_the_attributes_are_still_pysipnets(self, runs, real_site_table):
-        field = stack_sipnet_outputs(runs, ["nee"], sites=real_site_table)[
+        field = stack_sipnet_outputs(runs, ["nee"], site_table=real_site_table)[
             "net_ecosystem_exchange"
         ]
         assert field.attrs == runs[(0, 1)]["nee"].attrs
@@ -241,7 +241,7 @@ class TestStackSipnetOutputs:
             niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
         field = stack_sipnet_outputs(
-            {(0, 1): niwot_output, (0, 27): short}, ["nee"], sites=real_site_table
+            {(0, 1): niwot_output, (0, 27): short}, ["nee"], site_table=real_site_table
         )["net_ecosystem_exchange"]
         # The axes are unioned, so each site is finite over its own record and
         # missing outside it. They are not nested: a truncated run's last step
@@ -265,14 +265,14 @@ class TestStackSipnetOutputs:
 
     def test_a_key_that_is_not_a_tuple_is_refused(self, niwot_output, real_site_table):
         with pytest.raises(TypeError, match=r"tuple of labels in key_dims order"):
-            stack_sipnet_outputs({1: niwot_output}, ["nee"], sites=real_site_table)
+            stack_sipnet_outputs({1: niwot_output}, ["nee"], site_table=real_site_table)
 
 
 class TestTheAdaptersTakeAKeyedSiteTable:
     def test_the_adapter_accepts_either_form(self, niwot_output, real_site_table):
-        plain = from_sipnet_output(niwot_output, ["nee"], site=27, sites=real_site_table)
+        plain = from_sipnet_output(niwot_output, ["nee"], site=27, site_table=real_site_table)
         keyed = from_sipnet_output(
-            niwot_output, ["nee"], site=27, sites=site_lookup(real_site_table)
+            niwot_output, ["nee"], site=27, site_table=site_lookup(real_site_table)
         )
         xr.testing.assert_identical(
             plain["net_ecosystem_exchange"], keyed["net_ecosystem_exchange"]
@@ -291,11 +291,11 @@ class TestFromSipnetOutputRefusesBadInput:
     def test_a_float_site_is_refused_even_a_whole_one(self, niwot_output, real_site_table):
         for site in (1.5, 27.0):
             with pytest.raises(TypeError, match="float"):
-                from_sipnet_output(niwot_output, ["nee"], site=site, sites=real_site_table)
+                from_sipnet_output(niwot_output, ["nee"], site=site, site_table=real_site_table)
 
     def test_a_boolean_is_not_an_identifier(self, niwot_output, real_site_table):
         with pytest.raises(TypeError, match="bool"):
-            from_sipnet_output(niwot_output, ["nee"], site=True, sites=real_site_table)
+            from_sipnet_output(niwot_output, ["nee"], site=True, site_table=real_site_table)
         with pytest.raises(TypeError, match="boolean"):
             from_sipnet_output(niwot_output, ["nee"], batch={"sample": False})
 
@@ -347,19 +347,19 @@ class TestFromSipnetOutputRefusesBadInput:
     ):
         keyed = real_site_table.set_index("site_id")
         with pytest.raises(KeyError, match="not in the site table"):
-            from_sipnet_output(niwot_output, ["nee"], site=99999, sites=keyed)
+            from_sipnet_output(niwot_output, ["nee"], site=99999, site_table=keyed)
 
 
 class TestStackSipnetOutputsRefusesBadKeys:
     def test_a_key_of_the_wrong_arity_names_the_contract(self, niwot_output, real_site_table):
         with pytest.raises(ValueError, match=r"key_dims order \('sample', 'site'\)"):
-            stack_sipnet_outputs({(1, 0, 7): niwot_output}, ["nee"], sites=real_site_table)
+            stack_sipnet_outputs({(1, 0, 7): niwot_output}, ["nee"], site_table=real_site_table)
 
     def test_key_dims_must_name_the_site_once(self, niwot_output, real_site_table):
         for key_dims in (("sample",), ("site", "site"), ("sample", "sample", "site")):
             with pytest.raises(ValueError, match="must name 'site' once"):
                 stack_sipnet_outputs(
-                    {(0,): niwot_output}, ["nee"], key_dims=key_dims, sites=real_site_table
+                    {(0,): niwot_output}, ["nee"], key_dims=key_dims, site_table=real_site_table
                 )
 
 
@@ -489,7 +489,7 @@ class TestStackModelOutputs:
 
         datasets = {key: run.select(["nee", "wood_carbon"]) for key, run in runs.items()}
         stacked = stack_model_outputs(datasets, site_table=self._table())
-        fields = stack_sipnet_outputs(runs, ["nee", "wood_carbon"], sites=self._table())
+        fields = stack_sipnet_outputs(runs, ["nee", "wood_carbon"], site_table=self._table())
         assert isinstance(stacked, xr.Dataset)
         assert stacked["net_ecosystem_exchange"].dims == FIELD_DIMS
         for name, field in fields.items():
@@ -608,14 +608,14 @@ class TestResolveOutputVariableNames:
             resolve_output_variable_names(["nee", 3])
 
 
-class TestFieldLabel:
+class TestMessageName:
     def test_a_name_then_a_derivation_then_the_default(self):
-        from sipnet_calibration.fields import field_label
+        from sipnet_calibration.fields import message_name
 
-        assert field_label(xr.DataArray(0.0, name="wood_carbon")) == "'wood_carbon'"
-        assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"})) == "'a / b'"
-        assert field_label(xr.DataArray(0.0)) == "the field"
-        assert field_label(xr.DataArray(0.0), "the observation") == "the observation"
+        assert message_name(xr.DataArray(0.0, name="wood_carbon")) == "'wood_carbon'"
+        assert message_name(xr.DataArray(0.0, attrs={"derivation": "a / b"})) == "'a / b'"
+        assert message_name(xr.DataArray(0.0)) == "the field"
+        assert message_name(xr.DataArray(0.0), "the observed values") == "the observed values"
 
 
 def stack_model_outputs_of(niwot_output, sites=(1, 27), n_samples=2):
@@ -710,12 +710,12 @@ class TestLabelHelpers:
         assert coordinate_labels(xr.DataArray([0, 0], dims="site", coords={"site": [3, 1]})["site"]) == [3, 1]
         assert coordinate_labels(xr.Dataset(coords={"site": 5})["site"]) == [5]
 
-    def test_field_label_unquoted(self):
-        from sipnet_calibration.fields import field_label
+    def test_message_name_unquoted(self):
+        from sipnet_calibration.fields import message_name
 
-        assert field_label(xr.DataArray(0.0, name="wood_carbon"), quoted=False) == "wood_carbon"
-        assert field_label(xr.DataArray(0.0, attrs={"derivation": "a / b"}), quoted=False) == "a / b"
-        assert field_label(xr.DataArray(0.0), "the observation", quoted=False) == "the observation"
+        assert message_name(xr.DataArray(0.0, name="wood_carbon"), quoted=False) == "wood_carbon"
+        assert message_name(xr.DataArray(0.0, attrs={"derivation": "a / b"}), quoted=False) == "a / b"
+        assert message_name(xr.DataArray(0.0), "the observed values", quoted=False) == "the observed values"
 
     def test_without_stale_time_attributes(self):
         from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES
@@ -906,8 +906,8 @@ class TestValidateField:
         validate_field(field.isel(time=-1))
         validate_field(field.sel(time=field["time"].values[3]))
         windowed = _field(("site", "time"), n_time=3).assign_coords(
-            time_bounds_start=("time", pd.date_range("2011-01-01", periods=3, freq="D")),
-            time_bounds_end=("time", pd.date_range("2011-01-02", periods=3, freq="D")),
+            window_start=("time", pd.date_range("2011-01-01", periods=3, freq="D")),
+            window_end=("time", pd.date_range("2011-01-02", periods=3, freq="D")),
         )
         validate_field(windowed.isel(time=0))
 
@@ -1446,7 +1446,7 @@ class TestScalarBatchLabels:
 #: output's coordinates and dims, and an observation's window edges.
 COORDINATE_NAMES_NO_BATCH_DIM_TAKES = [
     "time_step_start", "time_step_length", "time_bounds", "bounds",
-    "year", "day_of_year", "hour_of_day", "time_bounds_start", "time_bounds_end",
+    "year", "day_of_year", "hour_of_day", "window_start", "window_end",
 ]
 
 
