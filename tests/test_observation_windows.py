@@ -427,7 +427,7 @@ class TestLabelClockAndFrequencyRefusals:
             aggregate_time(array, "daily")
         with pytest.raises(ValueError, match="shorter than the shortest step"):
             aggregate_time(array, "1h")
-        with pytest.raises(ValueError, match="offset alias"):
+        with pytest.raises(TypeError, match="offset alias"):
             aggregation_counts(array, 3)
 
     def test_a_finer_label_is_not_truncated_onto_the_axis(self, niwot):

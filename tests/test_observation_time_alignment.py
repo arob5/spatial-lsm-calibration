@@ -22,7 +22,11 @@ from pysipnet.resample import resample
 from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, VariableKind
 
 from conftest import SITE_1_DRIVERS, site_table_of
-from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES, TIMESTEP_LENGTH
+from sipnet_calibration.conventions import (
+    STALE_TIME_ATTRIBUTE_NAMES,
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+)
 from sipnet_calibration.drivers import driver_fields, read_driver_file
 from sipnet_calibration.fields import to_model_output, stack_model_outputs
 from sipnet_calibration.observation.time_alignment import (
@@ -174,10 +178,21 @@ class TestAggregateTimeChoosesTheMethod:
             aggregate_time(anonymous, "1D")
         # pySIPNET checks a method against the kind, so a field with its
         # interval coordinates needs one even when told how.
-        with pytest.raises(ValueError, match="interval coordinates but no 'kind'"):
+        with pytest.raises(ValueError, match="Cannot tell what kind of quantity 'observed_thing'"):
             aggregate_time(anonymous, "1D", how="sum")
-        observed = anonymous.drop_vars(["timestep_start", "timestep_length"])
-        assert aggregate_time(observed, "1D", how="sum").sizes["time"] > 0
+
+    def test_a_field_with_no_kind_and_no_intervals_is_combined_as_told(self, niwot_output):
+        """Observed values declare no kind: told how, they keep their own attributes."""
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        observed = field.rename("observed_thing").drop_vars(["timestep_start", "timestep_length"])
+        observed.attrs = {"units": "g m-2", "long_name": "Something observed", "output_decimals": 3}
+        daily = aggregate_time(observed, "1D", how="sum")
+        reference = resample(observed.assign_attrs(kind="timestep_total"), "1D", how="sum")
+        np.testing.assert_array_equal(daily.values, reference.values)
+        np.testing.assert_array_equal(daily["time"].values, reference["time"].values)
+        assert daily.attrs == {
+            "units": "g m-2", "long_name": "Something observed", "resampling": "sum over 1D"
+        }
 
     def test_a_nonsense_kind_is_refused(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
@@ -330,9 +345,19 @@ class TestAggregateTimeOnDrivers:
 
     def test_unequal_steps_without_declared_lengths_refuse_a_mean(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["soil_water"])["soil_water"]
-        bare = field.drop_vars([TIMESTEP_LENGTH])
-        with pytest.raises(ValueError, match="not all the same length"):
+        bare = field.drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
+        with pytest.raises(ValueError, match="not equally spaced"):
             aggregate_time(bare, "1D", how="mean")
+
+    @pytest.mark.parametrize("how", ["sum", "mean"])
+    def test_only_some_interval_coordinates_are_refused(self, niwot_output, how):
+        """pySIPNET's rule: a record has both interval coordinates or neither."""
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field.attrs["kind"] = {"sum": "timestep_total", "mean": "timestep_mean"}[how]
+        with pytest.raises(ValueError, match="lacks the pySIPNET time coordinates"):
+            aggregate_time(field.drop_vars([TIMESTEP_LENGTH]), "1D", how=how)
+        with pytest.raises(ValueError, match="lacks the pySIPNET time coordinates"):
+            aggregation_counts(field.drop_vars([TIMESTEP_LENGTH]), "1D")
 
 
 class TestAggregateTimeKeepsGapsAndCells:
@@ -686,7 +711,7 @@ def _daily_observed_values(n=8, freq="12h"):
 
 class TestAggregateTimeOnCalendarCells:
     def test_upsampling_is_refused(self):
-        with pytest.raises(ValueError, match="interpolate"):
+        with pytest.raises(ValueError, match="shorter than the shortest step"):
             aggregate_time(_daily_observed_values(freq="1D"), "1h", how="mean")
 
     def test_a_bad_frequency_is_refused_with_pandas_reason(self):
@@ -706,9 +731,29 @@ class TestAggregateTimeOnCalendarCells:
 
     def test_the_attributes_say_what_the_values_now_are(self):
         daily = aggregate_time(_daily_observed_values(), "1D")
-        assert daily.attrs["resampling"] == "mean of timestep_mean values over 1D"
+        assert daily.attrs["resampling"].startswith("mean of timestep_mean values over calendar cells of 1D")
         assert daily.attrs["kind"] == "timestep_mean" and "time_reference" in daily.attrs
         assert daily.attrs["units"] == "g m-2"
+        assert daily["time"].attrs["long_name"] == "End of calendar cell"
+
+    def test_the_result_is_pysipnets_resample_but_for_last(self):
+        observed = _daily_observed_values(freq="6h")
+        reference = resample(observed, "1D", how="mean")
+        xr.testing.assert_identical(aggregate_time(observed, "1D"), reference)
+
+    def test_last_is_missing_where_pysipnets_reads_past_a_gap(self):
+        """The one intended difference from pySIPNET: its last reads only the last value."""
+        observed = _daily_observed_values(freq="6h")
+        observed.attrs["kind"] = "timestep_end_state"
+        observed[1] = np.nan  # 2012-01-01 18:00, before the last value of (01-01, 01-02]
+        ours = aggregate_time(observed, "1D")
+        theirs = resample(observed, "1D", how="last")
+        np.testing.assert_array_equal(ours["time"].values, theirs["time"].values)
+        assert np.isfinite(theirs.sel(time="2012-01-02").values)
+        assert np.isnan(ours.sel(time="2012-01-02").values)
+        xr.testing.assert_identical(
+            ours.sel(time="2012-01-03"), theirs.sel(time="2012-01-03")
+        )
 
 
 def test_a_frequency_that_is_not_a_string_is_a_type_error(niwot_output):
