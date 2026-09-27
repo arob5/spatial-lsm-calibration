@@ -50,7 +50,7 @@ def test_the_tracked_file_is_what_the_tracked_archives_build_to():
     if not all((RAW_DIR / layer.source_file).is_file() for layer in BASEMAP_LAYERS.values()):
         pytest.skip("the Natural Earth archives are not in this working copy")
     build = load_script("scripts/build_basemap.py")
-    parts, source_md5 = build.build(RAW_DIR)
+    parts, source_md5 = build.read_layers(RAW_DIR)
     stored = load_basemap()
     for name in BASEMAP_LAYERS:
         assert len(parts[name]) == len(stored[name])
@@ -74,8 +74,8 @@ def test_the_archives_are_the_ones_the_download_script_records():
 
 def test_the_download_refuses_an_archive_with_the_wrong_md5():
     download = load_script("scripts/raw_sources/download_natural_earth.py")
-    with pytest.raises(download.DownloadError, match="new release"):
-        download.check_md5_matches(download.SOURCES[0], "0" * 32)
+    with pytest.raises(download.IngestError, match="new release"):
+        download.check_archive_md5_is_recorded(download.SOURCES[0], "0" * 32)
 
 
 def test_a_failed_basemap_check_keeps_the_partial_and_prints_its_path(
@@ -86,11 +86,11 @@ def test_a_failed_basemap_check_keeps_the_partial_and_prints_its_path(
     build = load_script("scripts/build_basemap.py")
 
     def refuse(parts, path):
-        raise build.BuildError("forced: did not read back")
+        raise build.IngestError("forced: did not read back")
 
     monkeypatch.setattr(build, "check_round_trip", refuse)
     out = tmp_path / "basemap.npz"
-    assert build.main(["--raw-dir", str(RAW_DIR), "--out", str(out)]) == 1
+    assert build.main(["--raw-directory", str(RAW_DIR), "--output", str(out)]) == 1
     err = capsys.readouterr().err
     partial = out.with_name(out.name + ".partial")
     assert not out.exists() and partial.exists() and str(partial) in err
@@ -98,7 +98,7 @@ def test_a_failed_basemap_check_keeps_the_partial_and_prints_its_path(
 
 def test_the_build_finds_the_tracked_archives_from_the_repository():
     build = load_script("scripts/build_basemap.py")
-    assert build.DEFAULT_RAW_DIR == RAW_DIR
+    assert build.DEFAULT_RAW_DIRECTORY == RAW_DIR
 
 
 class _Response:
@@ -122,7 +122,7 @@ def test_a_download_with_the_wrong_md5_keeps_the_partial_and_prints_its_path(
     monkeypatch.setattr(
         download.urllib.request, "urlopen", lambda *a, **k: _Response(b"a new release")
     )
-    assert download.main(["--out-dir", str(tmp_path)]) == 1
+    assert download.main(["--output-directory", str(tmp_path)]) == 1
     err = capsys.readouterr().err
     partial = tmp_path / (download.SOURCES[0].file_name + ".partial")
     assert partial.read_bytes() == b"a new release" and str(partial) in err
@@ -140,7 +140,7 @@ def test_a_download_that_fails_early_does_not_report_a_stale_partial(
         raise OSError("network is unreachable")
 
     monkeypatch.setattr(download.urllib.request, "urlopen", offline)
-    assert download.main(["--out-dir", str(tmp_path)]) == 1
+    assert download.main(["--output-directory", str(tmp_path)]) == 1
     err = capsys.readouterr().err
     assert "network is unreachable" in err and "kept the partial" not in err
     assert not stale.exists()

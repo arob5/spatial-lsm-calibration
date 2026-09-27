@@ -9,12 +9,6 @@ come from Natural Earth's 1:50m vectors, which this script downloads from
 Natural Earth's own CDN into ``data/raw/natural_earth/``, checking each archive
 against the md5 recorded in :data:`SOURCES`.
 
-Like the other scripts in ``raw_sources/``, this **creates** a tracked raw input
-rather than processing one, and a normal working copy never runs it: the
-archives are tracked, so a checkout already has them. It exists so that where
-they came from is code rather than prose, and so that fetching them again is
-one command.
-
 Input data
 ----------
 The four archives named in :data:`SOURCES`, over HTTPS from
@@ -22,15 +16,17 @@ The four archives named in :data:`SOURCES`, over HTTPS from
 
 Output data
 -----------
-``--out-dir``, default the repository's ``data/raw/natural_earth/``
-    One ``.zip`` per layer, byte for byte as served. Each is written to a
-    ``.partial`` path and renamed only once its md5 has been checked, so a
-    failed or interrupted download cannot leave a corrupt archive where a
-    tracked one belongs; the ``.partial`` file is kept for inspection and its
-    path printed.
+``--output-directory``, default the repository's ``data/raw/natural_earth/``
+    One ``.zip`` per layer, byte for byte as served.
 
 Notes
 -----
+**Not part of the ingest pipeline.** Like the other scripts in
+``raw_sources/``, this *creates* a tracked raw input rather than processing
+one, and a normal working copy never runs it: the archives are tracked, so a
+checkout already has them. It exists so that where they came from is code
+rather than prose, and so that fetching them again is one command.
+
 **Nothing is unpacked, clipped or converted here.** The archives are the raw
 input. ``scripts/build_basemap.py`` reads them and writes the clipped
 polylines the plotting layer loads.
@@ -41,6 +37,9 @@ is what says the bytes are the ones the tracked basemap was built from. To
 adopt a new release deliberately, run with ``--no-check``, record the new md5s
 in :data:`SOURCES` and ``data/raw/natural_earth/provenance.md``, and rebuild
 the basemap.
+
+Each archive is written through :func:`sipnet_calibration.io.write_checked`,
+and its check compares its md5 with the recorded one.
 
 Natural Earth is in the public domain; see
 https://www.naturalearthdata.com/about/terms-of-use/.
@@ -70,7 +69,7 @@ BASE_URL = "https://naciscdn.org/naturalearth/50m"
 #: Where the tracked archives go: this repository's ``data/raw/natural_earth/``,
 #: whatever ``$SIPNET_CALIBRATION_DATA`` says, since a tracked input lives in
 #: the checkout.
-DEFAULT_OUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw" / "natural_earth"
+DEFAULT_OUTPUT_DIRECTORY = Path(__file__).resolve().parents[2] / "data" / "raw" / "natural_earth"
 
 
 @dataclass(frozen=True)
@@ -83,6 +82,7 @@ class Source:
 
     @property
     def url(self) -> str:
+        """Where Natural Earth serves the archive."""
         return f"{BASE_URL}/{self.theme}/{self.file_name}"
 
 
@@ -100,27 +100,28 @@ SOURCES: tuple[Source, ...] = (
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Download every archive of :data:`SOURCES`, or report why one failed."""
     args = parse_args(argv)
     try:
-        args.out_dir.mkdir(parents=True, exist_ok=True)
         for source in SOURCES:
-            digest = download(source, args.out_dir, check=not args.no_check)
+            digest = download(source, args.output_directory, check=not args.no_check)
             print(f"{source.file_name}  md5 {digest}  <- {source.url}")
-    except (DownloadError, OSError) as error:
+    except (IngestError, OSError, ValueError, LookupError, TypeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--out-dir",
+        "--output-directory",
         type=Path,
-        default=DEFAULT_OUT_DIR,
-        help=f"Where the archives go. Default: {DEFAULT_OUT_DIR}.",
+        default=DEFAULT_OUTPUT_DIRECTORY,
+        help=f"Where the archives go. Default: {DEFAULT_OUTPUT_DIRECTORY}.",
     )
     parser.add_argument(
         "--no-check",
@@ -133,41 +134,52 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the steps, in the order main calls them ───────────────────────────────────
 
 
-def download(source: Source, out_dir: Path, *, check: bool) -> str:
-    """Fetch one archive into *out_dir*, returning its md5."""
+def download(source: Source, output_directory: Path, *, check: bool) -> str:
+    """Fetch one archive into *output_directory*; its md5.
+
+    With *check* false, an archive whose md5 differs from the recorded one is
+    kept rather than refused.
+    """
     request = urllib.request.Request(source.url, headers={"User-Agent": "sipnet-calibration"})
 
     def fetch(partial: Path) -> None:
+        """Write the archive, as served, to *partial*."""
         with urllib.request.urlopen(request, timeout=60) as response:
             partial.write_bytes(response.read())
 
-    def check_digest(partial: Path) -> None:
-        if check:
-            check_md5_matches(source, file_md5(partial))
-
-    return file_md5(write_checked(out_dir / source.file_name, write=fetch, check=check_digest))
+    written = write_checked(
+        output_directory / source.file_name,
+        write=fetch,
+        check=(
+            (lambda partial: check_archive_md5_is_recorded(source, file_md5(partial)))
+            if check
+            else (lambda partial: None)
+        ),
+    )
+    return file_md5(written)
 
 
 # ── supporting types and helpers ──────────────────────────────────────────────
 
 
-class DownloadError(RuntimeError):
+class IngestError(RuntimeError):
     """An archive was not what :data:`SOURCES` records."""
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_md5_matches(source: Source, digest: str) -> None:
+def check_archive_md5_is_recorded(source: Source, digest: str) -> None:
+    """A downloaded archive's md5 is the one :data:`SOURCES` records for it."""
     if digest != source.md5:
-        raise DownloadError(
-            f"{source.file_name} from {source.url} has md5 {digest}, but {source.md5} "
-            "is recorded. Natural Earth has probably issued a new release. To adopt "
-            "it, re-run with --no-check, record the new md5 in SOURCES and in "
+        raise IngestError(
+            f"{source.file_name} from {source.url} has md5 {digest}, but {source.md5} is "
+            "recorded, so Natural Earth has probably issued a new release; to adopt it, "
+            "re-run with --no-check, record the new md5 in SOURCES and in "
             "data/raw/natural_earth/provenance.md, and rebuild the basemap with "
             "scripts/build_basemap.py."
         )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

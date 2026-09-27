@@ -3,15 +3,15 @@
 
 Overview
 --------
-Reads each Natural Earth layer named in
+Read each Natural Earth layer named in
 :data:`sipnet_calibration.plotting.basemap.BASEMAP_LAYERS` from
-``data/raw/natural_earth/``, keeps the parts near enough the projection center
-to be drawn, and writes them into the package as the file
+``data/raw/natural_earth/``, keep the parts near enough the projection center
+to be drawn, and write them into the package as the file
 :func:`~sipnet_calibration.plotting.basemap.load_basemap` reads.
 
 Input data
 ----------
-``--raw-dir``, default the repository's ``data/raw/natural_earth/``
+``--raw-directory``, default the repository's ``data/raw/natural_earth/``
     The zipped Natural Earth 1:50m shapefiles that
     ``scripts/raw_sources/download_natural_earth.py`` downloads, read in place
     with ``pyshp``. Polyline layers are read as lines and the lakes' polygons as
@@ -19,14 +19,16 @@ Input data
 
 Output data
 -----------
-``--out``, default :func:`~sipnet_calibration.plotting.basemap.basemap_path`
+``--output``, default :func:`~sipnet_calibration.plotting.basemap.basemap_path`
     The basemap, in the layout of :mod:`sipnet_calibration.plotting.basemap`'s
-    data model, tracked in git. Written to a ``.partial`` path, read back
-    through the library loader, and renamed only if that round trip matches;
-    a failed check keeps the ``.partial`` file and prints its path.
+    data model, tracked in git.
 
 Notes
 -----
+The file is written through :func:`sipnet_calibration.io.write_checked`, and
+its check reads it back with
+:func:`~sipnet_calibration.plotting.basemap.load_basemap`.
+
 **The output is not byte-reproducible**, because ``numpy.savez`` stamps each
 member with the time it was written. Its *arrays* are: ``tests/test_basemap.py``
 rebuilds from the tracked archives and compares them with the tracked file, so
@@ -60,36 +62,40 @@ from sipnet_calibration.plotting.basemap import (
 #: Where the tracked Natural Earth archives are: in this repository, whatever
 #: ``$SIPNET_CALIBRATION_DATA`` says, since a tracked input is found from the
 #: checkout rather than from the storage-backed data root.
-DEFAULT_RAW_DIR = Path(__file__).resolve().parents[1] / "data" / "raw" / "natural_earth"
+DEFAULT_RAW_DIRECTORY = Path(__file__).resolve().parents[1] / "data" / "raw" / "natural_earth"
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Build the basemap from the archives and write it, or report why not."""
     args = parse_args(argv)
     try:
-        parts, source_md5 = build(args.raw_dir)
-        write(parts, source_md5, args.out)
-        print(report(parts, args.out))
-    except (BuildError, OSError, ValueError, shapefile.ShapefileException) as error:
+        parts, source_md5 = read_layers(args.raw_directory)
+        write_basemap_file(parts, source_md5, args.output)
+        print(describe_basemap(parts, args.output))
+    except (
+        IngestError, OSError, ValueError, LookupError, TypeError, shapefile.ShapefileException
+    ) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
     return 0
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, as the module docstring's Usage describes it."""
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--raw-dir",
+        "--raw-directory",
         type=Path,
-        default=DEFAULT_RAW_DIR,
-        help=f"Where the Natural Earth archives are. Default: {DEFAULT_RAW_DIR}.",
+        default=DEFAULT_RAW_DIRECTORY,
+        help=f"Where the Natural Earth archives are. Default: {DEFAULT_RAW_DIRECTORY}.",
     )
     parser.add_argument(
-        "--out",
+        "--output",
         type=Path,
         default=basemap_path(),
         help="Where to write the basemap. Default: inside the package.",
@@ -100,12 +106,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 # ── the steps, in the order main calls them ───────────────────────────────────
 
 
-def build(raw_dir: Path) -> tuple[dict[str, list[np.ndarray]], dict[str, str]]:
+def read_layers(raw_directory: Path) -> tuple[dict[str, list[np.ndarray]], dict[str, str]]:
     """Every layer's drawable parts, and the md5 of the archive each came from."""
     parts: dict[str, list[np.ndarray]] = {}
     source_md5: dict[str, str] = {}
     for name, layer in BASEMAP_LAYERS.items():
-        archive = raw_dir / layer.source_file
+        archive = raw_directory / layer.source_file
         check_archive_exists(archive)
         parts[name] = read_layer(archive)
         source_md5[name] = file_md5(archive)
@@ -126,17 +132,20 @@ def read_layer(archive: Path) -> list[np.ndarray]:
     return kept
 
 
-def write(parts: dict[str, list[np.ndarray]], source_md5: dict[str, str], out: Path) -> None:
-    """Write through a partial path, and rename only once the file reads back."""
+def write_basemap_file(
+    parts: dict[str, list[np.ndarray]], source_md5: dict[str, str], path: Path
+) -> None:
+    """Write through a ``.partial`` file, moved in once it reads back as the parts."""
     write_checked(
-        out,
+        path,
         write=lambda partial: write_basemap(parts, source_md5, partial),
         check=lambda partial: check_round_trip(parts, partial),
     )
 
 
-def report(parts: dict[str, list[np.ndarray]], out: Path) -> str:
-    lines = [f"wrote {out} ({out.stat().st_size:,} bytes)"]
+def describe_basemap(parts: dict[str, list[np.ndarray]], path: Path) -> str:
+    """What was written, per layer, for the terminal."""
+    lines = [f"wrote {path} ({path.stat().st_size:,} bytes)"]
     for name, layer_parts in parts.items():
         vertices = sum(len(part) for part in layer_parts)
         lines.append(f"  {name:10s} {len(layer_parts):6,d} parts {vertices:9,d} vertices")
@@ -146,34 +155,39 @@ def report(parts: dict[str, list[np.ndarray]], out: Path) -> str:
 # ── supporting types and helpers ──────────────────────────────────────────────
 
 
-class BuildError(RuntimeError):
-    """The inputs or the output were not what the basemap needs."""
+class IngestError(RuntimeError):
+    """The written basemap is not what was built."""
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
 def check_archive_exists(archive: Path) -> None:
+    """A layer's Natural Earth archive exists."""
     if not archive.is_file():
-        raise BuildError(
-            f"{archive} does not exist. The archives are tracked; if one is missing, "
+        raise FileNotFoundError(
+            f"{archive} does not exist; the archives are tracked, so if one is missing, "
             "fetch it with scripts/raw_sources/download_natural_earth.py."
         )
 
 
 def check_round_trip(parts: dict[str, list[np.ndarray]], path: Path) -> None:
-    """The file reads back through the library loader as the parts written.
-
-    Vertices are stored as float32, so the comparison allows that rounding.
-    """
+    """The file reads back through the library loader as the parts written."""
+    # Vertices are stored as float32, so the comparison allows that rounding.
     loaded = load_basemap(path)
     for name, layer_parts in parts.items():
         if len(loaded[name]) != len(layer_parts):
-            raise BuildError(f"layer {name!r} read back with a different number of parts")
+            raise IngestError(
+                f"layer {name!r} read back with a different number of parts; inspect the "
+                "kept partial file."
+            )
         for written, read in zip(layer_parts, loaded[name]):
             if written.shape != read.shape or not np.allclose(written, read, atol=1e-5):
-                raise BuildError(f"layer {name!r} did not read back as written")
+                raise IngestError(
+                    f"layer {name!r} did not read back as written; inspect the kept "
+                    "partial file."
+                )
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
