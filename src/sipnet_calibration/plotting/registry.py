@@ -13,9 +13,10 @@ about aggregation belongs here.
 
 Two fields are correctness, not cosmetics:
 
-* ``units`` -- the unit a field of this variable is expected to be in, for
-  ``validate_field()`` to check ``attrs["units"]`` against. Nothing converts on
-  the way in: a model field keeps pySIPNET's units and an observation product
+* ``units`` -- the unit a field of this variable is expected to be in.
+  ``validate_field()`` does not read this registry: it checks only that
+  ``attrs["units"]`` is a unit pySIPNET accepts. Nothing converts on the way
+  in: a model field keeps pySIPNET's units and an observation product
   keeps its source's, and the **observation operator** is what converts one to
   the other. This is the guard against plotting model NEE (a per-timestep
   total) against observed NEE (a rate) on one axis, which fails by orders of

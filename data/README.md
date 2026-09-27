@@ -113,7 +113,7 @@ data/
 
 The drivers have no processed form. SIPNET reads the raw `.clim` files itself,
 so `sipnet_calibration.drivers.load_drivers` produces the canonical
-`(member, site, time)` form from `raw/drivers/` on demand instead; see
+`(driver_member, site, time)` form from `raw/drivers/` on demand instead; see
 [Meteorological drivers](#meteorological-drivers) and
 [Processed format](#processed-format).
 
@@ -581,11 +581,13 @@ none of them (see [Processed format](#processed-format)). A third,
 `soilWFracInit`, takes no proposed parameter but is a fraction of a water
 holding capacity the calibration also proposes, so its meaning moves as well.
 `sipnet_calibration.initial_conditions.to_sipnet_initial_conditions` applies
-the mapping to one `(member, site)` cell for one proposed parameter vector, and
-`to_sipnet_initial_conditions_table` does it over a whole `(member, site)`
-ensemble. Both write the leaf row with SIPNET's own `leafCSpWt` rather than
-PEcAn's SLA draw, and both guard `fineRootFrac + coarseRootFrac < 1`, which
-pySIPNET does not check and SIPNET runs to completion without.
+the mapping to one member at one site for one proposed parameter vector, and
+`to_sipnet_initial_conditions_table` does it over a whole
+`(initial_condition_member, site)` ensemble, crossed with any other batch dim
+a parameter carries (a `sample` drawn by the calibration). Both write the leaf
+row with SIPNET's own `leafCSpWt` rather than PEcAn's SLA draw, and both guard
+`fineRootFrac + coarseRootFrac < 1`, which pySIPNET does not check and SIPNET
+runs to completion without.
 
 > **Note 5.** The `time` units attribute is the unsubstituted template
 > `days since [year]-01-01 00:00:00 UTC`, which no calendar library can parse,
@@ -1340,16 +1342,16 @@ Conversions applied during ingest rather than downstream:
   (2016) and 7167 (2015 and 2016), all with a mean of 1.0. Flooring them is a
   modeling decision that would be hidden if an ingest script made it. See open
   question 14.
-- **Initial conditions.** None to the values. The conversion is a re-layout
-  in the source files' names and units strings; the ingest renames the
-  variables to the spec names, renumbers `member` from their 1-based index to
-  the project's 0-based one keeping the original as `source_member`, and drops
-  the degenerate `time`. No state-to-parameter conversion and no unit
-  conversion: three of the four SIPNET initial parameters depend on parameters
-  the calibration proposes (see [Initial conditions](#initial-conditions)), so
-  the mapping is evaluated per proposed parameter vector in the experiment
-  layer. Negative wood and leaf draws pass through and are counted in the run
-  report.
+- **Initial conditions.** None to the values. The conversion is a re-layout in
+  the source files' names and units strings; the ingest renames the variables
+  to the spec names, renames `member` to `initial_condition_member` and
+  renumbers it from the 1-based index to a 0-based one, keeping the original as
+  `source_index`, and drops the degenerate `time`. No state-to-parameter
+  conversion and no unit conversion: three of the four SIPNET initial
+  parameters depend on parameters the calibration proposes (see [Initial
+  conditions](#initial-conditions)), so the mapping is evaluated per proposed
+  parameter vector in the experiment layer. Negative wood and leaf draws pass
+  through and are counted in the run report.
 - **Site labels.** None to the class names: they are the join key to the
   reanalysis's per-PFT trait tables, so they are written exactly as the producer
   wrote them, abbreviations and dots included. What changes is the column names,
@@ -1376,19 +1378,22 @@ implemented; the rest of this section records the intended output of scripts
 not yet written.
 
 The processed form is also the form used throughout the rest of the project, so it
-is chosen to load directly as such: an `xarray.DataArray` per variable, with
-dimensions drawn from `member`, `site` and `time`, longitude and latitude as
-non-dimension coordinates on `site`, and units recorded in the array's attributes.
-Formats are chosen according to the shape of each product.
+is chosen to load directly as such: an `xarray.DataArray` per variable -- a
+field, as `sipnet_calibration.fields.validate_field` checks it -- with
+dimensions `(*batch, site, time)`, a product's own ensemble being a batch dim
+named for the product (`initial_condition_member`, `driver_member`,
+`nee_member`), longitude and latitude as non-dimension coordinates on `site`,
+and units recorded in the array's attributes. Formats are chosen according to
+the shape of each product.
 
 | Product | Format | Dimensions | Approximate size |
 |---|---|---|---|
 | `sites/sites.csv` | CSV | table | ~1 MB |
 | `site_labels/<name>.csv` | CSV, one per product | table | ~0.2 MB each |
 | `constraints/<name>.nc` | netCDF, one per constraint | `(site, time)`, or `(site,)` for the static soil carbon | 0.2 to 4.8 MB each |
-| `initial_conditions.nc` | netCDF | `(member, site)` | 26 MB compressed |
-| `nee.zarr` | Zarr, chunked on `site` | `(member, site, time)` | 630 MB dense, about 55% missing |
-| drivers | no file; `load_drivers()` over `raw/drivers/` | `(member, site, time)` | about 2.4 MB per site-member in memory |
+| `initial_conditions.nc` | netCDF | `(initial_condition_member, site)` | 26 MB compressed |
+| `nee.zarr` | Zarr, chunked on `site` | `(nee_member, site, time)` | 630 MB dense, about 55% missing |
+| drivers | no file; `load_drivers()` over `raw/drivers/` | `(driver_member, site, time)` | about 2.4 MB per site-member in memory |
 
 Zarr is used for the arrays indexed by member, site and time because it maps
 directly onto the in-memory representation: `xarray.open_zarr(...).sel(site=...)`
@@ -1521,9 +1526,10 @@ says which, in a sentence. See open question 9.
 The **drivers** are served by `sipnet_calibration.drivers.load_drivers(sites,
 ...)`, which reads the raw `.clim` files for the named sites through pySIPNET's
 `ClimateDrivers` and returns an `xarray.Dataset` with one `float64` variable
-per value column on `(member, site, time)`, `lon` and `lat` on `site`, and a
-`source_member_index` coordinate on `member` holding the 1-based index from the
-directory name. The names, units, kinds and every other variable attribute are
+per value column on `(driver_member, site, time)`, `lon` and `lat` on `site`,
+and a `source_index` coordinate on `driver_member` holding the 1-based index
+from the directory name; `load_drivers(source_indices=...)` selects by that
+index. The names, units, kinds and every other variable attribute are
 pySIPNET's climate registry's:
 
 | Source | Name | Unit | Aggregation |
@@ -1544,12 +1550,15 @@ the file has for its output: `time` at the end of each step, with
 `time_step_start`, `time_step_length` and CF `time_bounds`, and `time_zone`
 `"undeclared"` unless the caller declares the clock. Those are the semantics of
 SIPNET's format; the ERA5 files depart from them as Note 16 says. A requested
-`(site, member)` pair with no file is an error unless `allow_missing=True`,
-which fills it with `NaN` and adds a boolean `driver_present(member, site)`. The three local files are such a case:
-site 1 has members 1 and 2, site 27 has member 5.
+`(site, source index)` pair with no file is an error unless
+`allow_missing=True`, which fills it with `NaN` and adds a boolean
+`driver_present(driver_member, site)`. The three local files are such a case:
+site 1 has members 1 and 2, site 27 has member 5. `driver_member` is
+`source_index - 1`, the member's identity, whatever members a call loads, so
+two loads align member for member.
 
 `initial_conditions.nc` carries the initial condition ensemble on
-`(member, site)`, in the source files' units, read through
+`(initial_condition_member, site)`, in the source files' units, read through
 `sipnet_calibration.initial_conditions.load_initial_conditions` and split into
 fields by `initial_condition_fields`:
 
@@ -1561,8 +1570,10 @@ fields by `initial_condition_fields`:
 | `initial_soil_organic_carbon` | `soil_organic_carbon_content` | `kg m-2`, constituent `C` |
 | `initial_soil_moisture_saturation` | `SoilMoistFrac` | `percent` |
 
-`site` is the whole pool with `lon`/`lat`; `member` is 0-based with
-`source_member` carrying the source files' 1-based index; there is no `time`,
+`site` is the whole pool with `lon`/`lat`; `initial_condition_member` is
+0-based (`int64`), `source_index - 1`, with `source_index` carrying the source
+files' 1-based index (the raw file holds members 1 to 100 contiguously, which
+the ingest checks, so the labels are 0 to 99); there is no `time`,
 and what the source's degenerate one claimed is kept in the `source_time_*`
 attributes. `NaN` has one meaning, that no source file for the site carries
 the variable, uniform over the site's members and asserted on load. Each variable
@@ -1572,8 +1583,11 @@ carries its spec's fields as attributes: `units`, `long_name`, `description`,
 PEcAn fed it into), `pecan_conversion`, `units_provenance` and, where set,
 `constituent` and `comment`. The dataset records the PEcAn preparation script
 and its caveat as `source_script` and `source_script_note`, the nominal date
-2011-07-15 with where it comes from, `member_source =
-"ic"` and `member_correspondence` (Note 12). The names carry `initial_` because
+2011-07-15 with where it comes from. The member dim's name says which
+ensemble it is (Note 12). The dataset's member count is
+`n_initial_condition_members`. A file written before the dim was renamed from
+`member`, or the attribute from `n_members`, is refused on load and re-made
+by `scripts/ingest_initial_conditions.py`. The names carry `initial_` because
 the product is the model's starting state -- PEcAn calls the format
 `pool_initial_conditions` -- and so that no name collides with a constraint
 product's; `biomass` rather than the file's `woody` because the Spawn and
@@ -1583,7 +1597,13 @@ The following conventions apply to every product.
 
 - `site` is the integer identifier 1-8000, never renumbered. The Ameriflux
   identifier is a non-dimension coordinate on `site`, absent where unknown.
-- `member` is a zero-based integer index, meaningful only within a single source.
+- A product's own ensemble is a batch dim named for the product
+  (`initial_condition_member`, `driver_member`), a zero-based `int64` index
+  meaningful only within that product, with the source's 1-based file index
+  beside it as `source_index`. The label is the member's identity,
+  `source_index - 1`, whatever subset is loaded, so a member keeps its label
+  in every load. The tracked raw initial condition file keeps its own
+  `member`, the 1-based index, since raw data is never edited.
 - Time is stored as a datetime index. For the drivers and SIPNET output it is
   pySIPNET's axis, built by pySIPNET from SIPNET's `year`, `day` and `time`
   labels and the drivers' step lengths, so a run and its drivers share one
@@ -1599,9 +1619,11 @@ The following conventions apply to every product.
 
 > **Note 12.** Whether ensemble member *i* of one source corresponds to member
 > *i* of another is not established, though the net ecosystem exchange members are
-> known to derive from a driver ensemble. Every product with a `member`
-> dimension records `member_source` and `member_correspondence` attributes
-> saying so, because xarray aligns integer member labels silently.
+> known to derive from a driver ensemble. So every product's ensemble dim is
+> named for the product, and no two share a name: xarray aligns two dims of one
+> name by label and PyEns zips them, while dims of different names cross, every
+> member of one meeting every member of the other. Pairing two ensembles, if
+> question 12 is ever answered yes, is spelled by giving their dims one name.
 
 > **Note 13.** Whether the processed form should carry an additional
 > spatially-ordered site coordinate is undecided.
@@ -1757,11 +1779,13 @@ the reanalysis's per-PFT trait posteriors map onto the sixteen.
 **12. Correspondence of ensemble members across sources.** Whether driver member
 *i*, initial condition member *i* and the calibration ensemble were drawn jointly
 or independently determines whether arithmetic that pairs them is meaningful.
-Because xarray aligns on coordinate values automatically, an incorrect assumption
-here would combine unrelated members without any error being raised. One
-connection is known: the members of [GAPFILL] are gap-filled series driven by
-successive members of a driver ensemble, so if that is the same ensemble used here,
-net ecosystem exchange member *i* and driver member *i* would share a realization.
+The ensembles' dims carry distinct names, so xarray and PyEns cross them rather
+than pair them; the risk left is in deliberately giving two of them one name,
+which pairs them label by label, and that is to be done only once this
+question is answered yes. One connection is known: the members of [GAPFILL]
+are gap-filled series driven by successive members of a driver ensemble, so if
+that is the same ensemble used here, net ecosystem exchange member *i* and
+driver member *i* would share a realization.
 Whether it is the same ensemble has not been established.
 
 **13. Site ordering in the processed form.** The 1-8000 identifiers are fixed, but

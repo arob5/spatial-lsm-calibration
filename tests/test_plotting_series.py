@@ -1,8 +1,9 @@
 """Tests for :mod:`sipnet_calibration.plotting.series`.
 
-The sample-dimension rule -- ``time`` is the x axis and every other dimension
-is a sample dimension -- is what most of this file exists to protect, since it
-is the branch a future change is most likely to break silently.
+The batch-dim rule -- ``time`` is the x axis and every batch dim is
+summarized, while a spatial dim is refused -- is what most of this file exists
+to protect, since it is the branch a future change is most likely to break
+silently.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ import pytest
 import xarray as xr
 from matplotlib.container import ErrorbarContainer
 
+from conftest import make_field
 from sipnet_calibration.plotting.primitives import nanquantile
 from sipnet_calibration.plotting.series import SHOW_KINDS, plot_time_series
 from sipnet_calibration.plotting.style import CURVE_COLORS, ROLES, axis_label
@@ -27,7 +29,7 @@ def band_bounds(ax):
     return vertices[:, 1].min(), vertices[:, 1].max()
 
 
-# ── the sample-dimension rule ─────────────────────────────────────────────────
+# ── the batch-dim rule ────────────────────────────────────────────────────────
 
 
 def test_a_time_only_field_draws_one_line(ax, field_time):
@@ -38,124 +40,132 @@ def test_a_time_only_field_draws_one_line(ax, field_time):
     np.testing.assert_array_equal(ax.lines[0].get_ydata(), field_time.values)
 
 
-def test_a_member_field_draws_a_fan(ax, field_member_time):
-    """``(member, time)`` under ``show="auto"`` gives bands over the members."""
-    plot_time_series(field_member_time, ax=ax, levels=(0.5,))
+def test_a_batch_field_draws_a_fan(ax, field_sample_time):
+    """``(sample, time)`` under ``show="auto"`` gives bands over the samples."""
+    plot_time_series(field_sample_time, ax=ax, levels=(0.5,))
     (drawn,) = ax.collections
     vertices = drawn.get_paths()[0].vertices
     assert vertices[:, 1].min() == pytest.approx(
-        np.percentile(field_member_time.values, 25, axis=0).min()
+        np.percentile(field_sample_time.values, 25, axis=0).min()
     )
     np.testing.assert_allclose(
-        ax.lines[0].get_ydata(), np.median(field_member_time.values, axis=0)
+        ax.lines[0].get_ydata(), np.median(field_sample_time.values, axis=0)
     )
 
 
-def test_a_site_field_draws_a_fan_over_sites(ax, field_site_time):
-    """``(site, time)`` fans over ``site``: the rule is not about ``member``."""
-    plot_time_series(field_site_time, ax=ax)
-    assert len(ax.collections) == 2
-    expected = nanquantile(field_site_time.values, 0.5)
-    np.testing.assert_allclose(ax.lines[0].get_ydata(), expected)
+def test_a_site_dim_is_refused_with_advice(ax, field_site_time, field_sample_site_time):
+    """Sites are not replicates: ``(site, time)`` is refused, not fanned over."""
+    for field in (field_site_time, field_sample_site_time):
+        with pytest.raises(ValueError, match=r"spatial dim\(s\) \['site'\].*plot_by_site"):
+            plot_time_series(field, ax=ax)
 
 
-def test_two_sample_dims_are_stacked(ax, field_member_site_time):
-    """``(member, site, time)`` takes quantiles over member and site at once.
+def test_one_site_selected_is_drawn(ax, field_sample_site_time):
+    """A scalar ``site`` left by ``.sel`` is metadata, not a dim."""
+    plot_time_series(field_sample_site_time.sel(site=27), ax=ax, levels=(0.5,))
+    np.testing.assert_allclose(
+        ax.lines[0].get_ydata(), np.median(field_sample_site_time.sel(site=27).values, axis=0)
+    )
 
-    The bounds are the quantiles of the six stacked curves, not the quantiles
-    of per-site quantiles: a quantile of quantiles is not a quantile.
+
+def test_a_batch_dim_of_any_name_draws_a_fan(ax):
+    """The rule is not about a name: ``driver_member`` fans like ``sample``."""
+    field = make_field(("driver_member", "time"))
+    plot_time_series(field, ax=ax, levels=(0.5,))
+    np.testing.assert_allclose(ax.lines[0].get_ydata(), np.median(field.values, axis=0))
+
+
+def two_batch_dims():
+    """``(sample, driver_member, time)``, nine curves."""
+    return make_field(("sample", "driver_member", "time"))
+
+
+def test_two_batch_dims_are_stacked(ax):
+    """``(sample, driver_member, time)`` takes quantiles over both at once.
+
+    The bounds are the quantiles of the nine stacked curves, not the
+    quantiles of per-member quantiles: a quantile of quantiles is not a
+    quantile.
     """
-    plot_time_series(field_member_site_time, ax=ax, levels=(0.9,))
-    stacked = field_member_site_time.transpose("member", "site", "time").values
-    stacked = stacked.reshape(-1, field_member_site_time.sizes["time"])
-    assert stacked.shape[0] == 6
+    field = two_batch_dims()
+    plot_time_series(field, ax=ax, levels=(0.9,))
+    stacked = field.values.reshape(-1, field.sizes["time"])
+    assert stacked.shape[0] == 9
     lower, upper = band_bounds(ax)
     assert lower == pytest.approx(nanquantile(stacked, 0.05).min())
     assert upper == pytest.approx(nanquantile(stacked, 0.95).max())
 
 
-def test_stacking_is_not_a_quantile_of_quantiles(ax, field_member_site_time):
-    """The stacked bounds differ from summarizing each site and then pooling."""
-    plot_time_series(field_member_site_time, ax=ax, levels=(0.5,))
-    stacked_low = nanquantile(
-        field_member_site_time.transpose("member", "site", "time").values.reshape(
-            -1, field_member_site_time.sizes["time"]
-        ),
-        0.25,
-    )
-    per_site = field_member_site_time.quantile(0.25, dim="member")
-    pooled_low = per_site.quantile(0.25, dim="site").values
+def test_stacking_is_not_a_quantile_of_quantiles(ax):
+    """The stacked bounds differ from summarizing one dim and then the other."""
+    field = two_batch_dims()
+    plot_time_series(field, ax=ax, levels=(0.5,))
+    stacked_low = nanquantile(field.values.reshape(-1, field.sizes["time"]), 0.25)
+    per_member = field.quantile(0.25, dim="sample")
+    pooled_low = per_member.quantile(0.25, dim="driver_member").values
     assert not np.allclose(stacked_low, pooled_low)
     assert band_bounds(ax)[0] == pytest.approx(stacked_low.min())
 
 
-def test_the_stored_dimension_order_does_not_matter(ax):
-    """A field stored as ``(time, member)`` still gives one curve per member.
+def test_a_field_stored_out_of_order_is_refused(ax, field_sample_time):
+    """A field stored as ``(time, sample)`` is not a field, and says so.
 
-    Nothing upstream promises the field dimension order, and reshaping without
-    transposing first scrambles members across timesteps: it produces a
-    plausible figure of the wrong data. Written because removing the transpose
-    in ``_stacked_samples`` left every other test passing.
+    Reshaping without transposing would scramble samples across timesteps: a
+    plausible figure of the wrong data. The field contract fixes the order,
+    so the plotter refuses the array rather than guessing.
     """
-    values = np.arange(12.0).reshape(4, 3)
-    data = xr.DataArray(
-        values,
-        dims=("time", "member"),
-        coords={"time": np.arange(4), "member": np.arange(3)},
-        attrs={"units": "u", "long_name": "L"},
-    )
-    plot_time_series(data, ax=ax, show="spaghetti")
-    assert len(ax.lines) == 3
-    for member, drawn in enumerate(ax.lines):
-        np.testing.assert_array_equal(drawn.get_ydata(), values[:, member])
+    with pytest.raises(ValueError, match="not in the order"):
+        plot_time_series(field_sample_time.transpose("time", "sample"), ax=ax, show="spaghetti")
 
 
-def test_an_explicit_color_overrides_the_per_curve_palette(ax, field_site_time):
+def labeled_samples(n_sample, n_time=4):
+    """``(sample, time)`` whose values say which sample they are, labeled 1..n."""
+    values = np.arange(n_sample * n_time, dtype=float).reshape(n_sample, n_time)
+    field = make_field(("sample", "time"), n_sample=n_sample, n_time=n_time)
+    return field.copy(data=values).assign_coords(sample=np.arange(1, n_sample + 1))
+
+
+def test_an_explicit_color_overrides_the_per_curve_palette(ax):
     """``color=`` with ``label_by`` wins, as the style precedence says."""
-    plot_time_series(
-        field_site_time, ax=ax, show="spaghetti", label_by="site", color="#123456"
-    )
+    data = labeled_samples(2)
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="sample", color="#123456")
     assert {line.get_color() for line in ax.lines} == {"#123456"}
-    assert len(ax.get_legend_handles_labels()[1]) == field_site_time.sizes["site"]
+    assert len(ax.get_legend_handles_labels()[1]) == data.sizes["sample"]
 
 
-def test_a_field_without_time_is_rejected(ax, field_member_site):
-    """``(member, site)`` raises, and the message names the dims it found."""
+def test_a_field_without_time_is_rejected(ax, field_sample_site):
+    """``(sample, site)`` raises, and the message names the dims it found."""
     with pytest.raises(ValueError, match="needs 'time'") as raised:
-        plot_time_series(field_member_site, ax=ax)
-    assert "member" in str(raised.value)
+        plot_time_series(field_sample_site, ax=ax)
+    assert "sample" in str(raised.value)
 
 
-def test_a_dim_outside_the_field_convention_is_rejected(ax):
-    """A ``variable`` dim raises rather than being fanned over."""
-    data = xr.DataArray(
-        np.zeros((3, 4)),
-        dims=("variable", "time"),
-        attrs={"units": "u", "long_name": "L"},
-    )
-    with pytest.raises(ValueError, match="unexpected dimension"):
+def test_a_dim_outside_the_field_convention_is_rejected(ax, field_sample_time):
+    """A ``variable`` dim, labeled with strings, raises rather than being fanned over."""
+    data = field_sample_time.rename(sample="variable").assign_coords(variable=["a", "b", "c"])
+    with pytest.raises(ValueError, match="neither a batch dim"):
         plot_time_series(data, ax=ax)
 
 
 def test_something_other_than_a_data_array_is_rejected(ax):
     """A path or a frame is an adapter's input, not a plotter's."""
-    with pytest.raises(ValueError, match="DataArray"):
+    with pytest.raises(TypeError, match="DataArray"):
         plot_time_series("data/processed/constraints/modis_leaf_area_index.nc", ax=ax)
 
 
 # ── show ──────────────────────────────────────────────────────────────────────
 
 
-def test_show_line_on_an_ensemble_is_rejected(ax, field_member_time):
+def test_show_line_on_an_ensemble_is_rejected(ax, field_sample_time):
     """``show="line"`` with a sample dim raises, not reduces silently."""
     with pytest.raises(ValueError, match="one curve"):
-        plot_time_series(field_member_time, ax=ax, show="line")
+        plot_time_series(field_sample_time, ax=ax, show="line")
 
 
-def test_show_points_on_an_ensemble_is_rejected(ax, field_member_time):
+def test_show_points_on_an_ensemble_is_rejected(ax, field_sample_time):
     """``show="points"`` draws one series, so a sample dim is an error too."""
     with pytest.raises(ValueError, match="one curve"):
-        plot_time_series(field_member_time, ax=ax, show="points")
+        plot_time_series(field_sample_time, ax=ax, show="points")
 
 
 @pytest.mark.parametrize("show", ["fan", "spaghetti"])
@@ -165,17 +175,17 @@ def test_summarizing_without_a_sample_dim_is_rejected(ax, field_time, show):
         plot_time_series(field_time, ax=ax, show=show)
 
 
-def test_show_spaghetti_draws_one_curve_per_sample(ax, field_member_time):
+def test_show_spaghetti_draws_one_curve_per_sample(ax, field_sample_time):
     """The curves' data equal the members, in order."""
-    plot_time_series(field_member_time, ax=ax, show="spaghetti")
-    assert len(ax.lines) == field_member_time.sizes["member"]
-    for artist, expected in zip(ax.lines, field_member_time.values):
+    plot_time_series(field_sample_time, ax=ax, show="spaghetti")
+    assert len(ax.lines) == field_sample_time.sizes["sample"]
+    for artist, expected in zip(ax.lines, field_sample_time.values):
         np.testing.assert_array_equal(artist.get_ydata(), expected)
 
 
-def test_show_spaghetti_honors_n_max(ax, field_member_time):
+def test_show_spaghetti_honors_n_max(ax, field_sample_time):
     """``n_max`` reaches the drawing function."""
-    plot_time_series(field_member_time, ax=ax, show="spaghetti", n_max=2)
+    plot_time_series(field_sample_time, ax=ax, show="spaghetti", n_max=2)
     assert len(ax.lines) == 2
 
 
@@ -209,31 +219,31 @@ def test_an_unknown_show_is_rejected(ax, field_time):
 # ── the fan's median ──────────────────────────────────────────────────────────
 
 
-def test_a_fan_also_draws_the_median(ax, field_member_time):
+def test_a_fan_also_draws_the_median(ax, field_sample_time):
     """``show="fan"`` draws a curve whose data are the median of the samples."""
-    plot_time_series(field_member_time, ax=ax, show="fan")
+    plot_time_series(field_sample_time, ax=ax, show="fan")
     assert len(ax.lines) == 1
     np.testing.assert_allclose(
-        ax.lines[0].get_ydata(), np.median(field_member_time.values, axis=0)
+        ax.lines[0].get_ydata(), np.median(field_sample_time.values, axis=0)
     )
 
 
-def test_a_fan_takes_only_the_color_from_the_role(ax, field_member_time):
+def test_a_fan_takes_only_the_color_from_the_role(ax, field_sample_time):
     """Bands get the role's color and not its line width.
 
     Passing the line keywords to ``fill_between`` instead draws a visible
     edge around every band.
     """
-    plot_time_series(field_member_time, ax=ax, role="posterior")
+    plot_time_series(field_sample_time, ax=ax, role="posterior")
     default = matplotlib.rcParams["patch.linewidth"]
     assert default != ROLES["posterior"]["linewidth"]
     for collection in ax.collections:
         assert collection.get_linewidth()[0] == pytest.approx(default)
 
 
-def test_the_fan_legend_entry_is_on_the_median(ax, field_member_time):
+def test_the_fan_legend_entry_is_on_the_median(ax, field_sample_time):
     """Exactly one labeled artist, and it is the median curve."""
-    plot_time_series(field_member_time, ax=ax, role="posterior")
+    plot_time_series(field_sample_time, ax=ax, role="posterior")
     handles, labels = ax.get_legend_handles_labels()
     assert labels == ["posterior"]
     assert handles[0] is ax.lines[0]
@@ -268,16 +278,17 @@ def test_the_label_can_be_suppressed(ax, field_time):
     assert ax.get_legend_handles_labels()[1] == []
 
 
-def test_label_by_labels_and_colors_each_curve(ax, field_site_time):
-    """``label_by="site"`` labels the curves with the site ids.
+def test_label_by_labels_and_colors_each_curve(ax):
+    """``label_by="sample"`` labels the curves with the sample labels.
 
     Each curve takes a distinct color from :data:`CURVE_COLORS` rather than
-    the role's single color, which is what makes one panel with a curve per
-    site readable.
+    the role's single color, which is what makes a panel of a few labeled
+    curves readable.
     """
-    plot_time_series(field_site_time, ax=ax, show="spaghetti", label_by="site")
+    data = labeled_samples(2)
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="sample")
     labels = ax.get_legend_handles_labels()[1]
-    assert labels == [f"site {site}" for site in field_site_time["site"].values]
+    assert labels == [f"sample {label}" for label in data["sample"].values]
     colors = [artist.get_color() for artist in ax.lines]
     assert colors == list(CURVE_COLORS[: len(colors)])
 
@@ -285,75 +296,54 @@ def test_label_by_labels_and_colors_each_curve(ax, field_site_time):
 def test_label_by_pairs_labels_and_colors_with_the_curves_it_draws(ax):
     """With thinning and colour cycling, each curve keeps its own label.
 
-    ``field_site_time`` has two curves, which is below both ``n_max`` and the
-    length of the palette, so it cannot catch a label taken by drawing
-    position rather than by sample index.
+    Two curves are below both ``n_max`` and the length of the palette, so
+    they cannot catch a label taken by drawing position rather than by batch
+    index; twelve can.
     """
-    n_site = 12
-    values = np.arange(n_site * 4, dtype=float).reshape(n_site, 4)
-    data = xr.DataArray(
-        values,
-        dims=("site", "time"),
-        coords={
-            "site": np.arange(1, n_site + 1),
-            "time": np.arange(4),
-            "lon": ("site", np.zeros(n_site)),
-            "lat": ("site", np.zeros(n_site)),
-        },
-        attrs={"units": "u", "long_name": "L"},
-    )
-    plot_time_series(data, ax=ax, show="spaghetti", label_by="site", n_max=5)
+    data = labeled_samples(12)
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="sample", n_max=5)
 
     drawn = ax.lines
     assert len(drawn) == 5
     for artist in drawn:
-        site = int(artist.get_label().removeprefix("site "))
-        np.testing.assert_array_equal(artist.get_ydata(), values[site - 1])
+        label = int(artist.get_label().removeprefix("sample "))
+        np.testing.assert_array_equal(artist.get_ydata(), data.values[label - 1])
     assert [a.get_color() for a in drawn] == list(CURVE_COLORS[:5])
 
 
 def test_label_by_cycles_the_palette_when_curves_outnumber_it(ax):
     """More curves than colors reuses the palette from the start."""
-    n_site = len(CURVE_COLORS) + 2
-    data = xr.DataArray(
-        np.zeros((n_site, 3)),
-        dims=("site", "time"),
-        coords={
-            "site": np.arange(1, n_site + 1),
-            "time": np.arange(3),
-            "lon": ("site", np.zeros(n_site)),
-            "lat": ("site", np.zeros(n_site)),
-        },
-        attrs={"units": "u", "long_name": "L"},
-    )
-    plot_time_series(data, ax=ax, show="spaghetti", label_by="site", n_max=n_site)
+    n_sample = len(CURVE_COLORS) + 2
+    data = labeled_samples(n_sample, n_time=3)
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="sample", n_max=n_sample)
     colors = [a.get_color() for a in ax.lines]
     assert colors[: len(CURVE_COLORS)] == list(CURVE_COLORS)
     assert colors[len(CURVE_COLORS) :] == list(CURVE_COLORS[:2])
 
 
-def test_label_by_requires_spaghetti(ax, field_site_time):
+def test_label_by_requires_spaghetti(ax, field_sample_time):
     """``label_by`` with ``show="fan"`` raises."""
     with pytest.raises(ValueError, match="spaghetti"):
-        plot_time_series(field_site_time, ax=ax, show="fan", label_by="site")
+        plot_time_series(field_sample_time, ax=ax, show="fan", label_by="sample")
 
 
-def test_label_by_rejects_an_unknown_coordinate(ax, field_site_time):
+def test_label_by_rejects_an_unknown_coordinate(ax, field_sample_time):
     """Naming a coordinate that is not there raises."""
     with pytest.raises(ValueError, match="not a coordinate"):
-        plot_time_series(field_site_time, ax=ax, show="spaghetti", label_by="pft")
+        plot_time_series(field_sample_time, ax=ax, show="spaghetti", label_by="pft")
 
 
-def test_label_by_rejects_a_coordinate_not_on_a_sample_dim(ax, field_site_time):
+def test_label_by_rejects_a_coordinate_not_on_a_batch_dim(ax, field_sample_time):
     """Naming ``time`` raises: it cannot tell one curve from another."""
-    with pytest.raises(ValueError, match="sample dimension"):
-        plot_time_series(field_site_time, ax=ax, show="spaghetti", label_by="time")
+    with pytest.raises(ValueError, match="batch dims"):
+        plot_time_series(field_sample_time, ax=ax, show="spaghetti", label_by="time")
 
 
-def test_label_by_accepts_a_non_dimension_coordinate(ax, field_site_time):
-    """``lon`` is on ``site``, so it can name a curve."""
-    plot_time_series(field_site_time, ax=ax, show="spaghetti", label_by="lon")
-    assert all("lon" in label for label in ax.get_legend_handles_labels()[1])
+def test_label_by_accepts_a_non_dimension_coordinate(ax, field_sample_time):
+    """A coordinate on ``sample`` that is not its index can name a curve."""
+    data = field_sample_time.assign_coords(chain=("sample", [0, 0, 1]))
+    plot_time_series(data, ax=ax, show="spaghetti", label_by="chain")
+    assert all("chain" in label for label in ax.get_legend_handles_labels()[1])
 
 
 # ── observation error ─────────────────────────────────────────────────────────
@@ -417,11 +407,11 @@ def test_a_misaligned_error_field_is_rejected(ax, field_time):
         plot_time_series(field_time, ax=ax, show="points", variance=other)
 
 
-def test_an_error_field_with_other_dims_is_rejected(ax, field_time, field_member_time):
+def test_an_error_field_with_other_dims_is_rejected(ax, field_time, field_sample_time):
     """An error field of a different shape raises."""
     with pytest.raises(ValueError, match="dimensions"):
         plot_time_series(
-            field_time, ax=ax, show="points", variance=field_member_time
+            field_time, ax=ax, show="points", variance=field_sample_time
         )
 
 
@@ -451,12 +441,12 @@ def test_a_bad_n_sigma_is_rejected(ax, field_time, n_sigma):
 
 def test_a_line_gaps_at_a_missing_timestep(ax, field_with_gaps):
     """``NaN`` reaches the drawing, so the curve breaks rather than bridging."""
-    plot_time_series(field_with_gaps.isel(member=0), ax=ax)
+    plot_time_series(field_with_gaps.isel(sample=0), ax=ax)
     assert np.isnan(ax.lines[0].get_ydata()[5])
     assert len(ax.lines[0].get_ydata()) == field_with_gaps.sizes["time"]
 
 
-def test_a_fan_gaps_where_every_member_is_missing(ax, field_with_gaps):
+def test_a_fan_gaps_where_every_sample_is_missing(ax, field_with_gaps):
     """The all-missing timestep splits the bands."""
     plot_time_series(field_with_gaps, ax=ax, levels=(0.5,))
     assert len(ax.collections[0].get_paths()) == 2
@@ -464,7 +454,7 @@ def test_a_fan_gaps_where_every_member_is_missing(ax, field_with_gaps):
 
 
 def test_a_fan_summarizes_a_partly_missing_timestep(ax, field_with_gaps):
-    """A timestep missing in one member is summarized over the others."""
+    """A timestep missing in one sample is summarized over the others."""
     plot_time_series(field_with_gaps, ax=ax, levels=(0.5,))
     median = ax.lines[0].get_ydata()
     assert np.isfinite(median[9])
@@ -474,7 +464,7 @@ def test_a_fan_summarizes_a_partly_missing_timestep(ax, field_with_gaps):
 
 def test_points_drop_missing_observations(ax, field_with_gaps):
     """``show="points"`` draws only the observed timesteps."""
-    one = field_with_gaps.isel(member=0)
+    one = field_with_gaps.isel(sample=0)
     plot_time_series(one, ax=ax, role="obs", show="points")
     drawn = ax.containers[0][0].get_ydata()
     assert len(drawn) == int(one.notnull().sum())
@@ -518,13 +508,13 @@ def test_the_panel_never_shows_or_saves(ax, field_time, monkeypatch):
     plot_time_series(field_time, ax=ax)
 
 
-def test_a_time_dim_without_a_coordinate_uses_positions(ax):
-    """With no ``time`` coordinate the x axis is 0, 1, 2, ..."""
+def test_a_time_dim_without_a_coordinate_is_refused(ax):
+    """A field labels its ``time``; an unlabeled one is not a field."""
     data = xr.DataArray(
-        np.arange(4.0), dims=("time",), attrs={"units": "u", "long_name": "L"}
+        np.arange(4.0), dims=("time",), attrs={"units": "1", "long_name": "L"}
     )
-    plot_time_series(data, ax=ax)
-    np.testing.assert_array_equal(ax.lines[0].get_xdata(), np.arange(4))
+    with pytest.raises(ValueError, match="carry no coordinate"):
+        plot_time_series(data, ax=ax)
 
 
 def test_the_y_label_comes_from_the_attributes(ax, field_time):
@@ -542,11 +532,17 @@ def test_the_panel_sets_no_title(ax, field_time):
     assert ax.get_title() == ""
 
 
-def test_an_overlay_adds_to_the_existing_artists(ax, field_member_time, field_time):
+def test_an_overlay_adds_to_the_existing_artists(ax, field_sample_time, field_time):
     """A second call onto the same axes keeps the first call's artists."""
-    plot_time_series(field_member_time, ax=ax, role="posterior")
+    plot_time_series(field_sample_time, ax=ax, role="posterior")
     lines_after_first = len(ax.lines)
     plot_time_series(field_time, ax=ax, role="obs", show="points")
     assert len(ax.lines) >= lines_after_first
     assert len(ax.collections) == 2
     assert ax.get_legend_handles_labels()[1] == ["posterior", "obs"]
+
+
+def test_label_by_a_scalar_coordinate_is_refused(ax):
+    field = make_field(("sample", "time")).assign_coords(run=7)
+    with pytest.raises(ValueError, match="not among the batch dims"):
+        plot_time_series(field, show="spaghetti", label_by="run", ax=ax)

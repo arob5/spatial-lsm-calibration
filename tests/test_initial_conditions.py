@@ -29,16 +29,17 @@ from sipnet_calibration import initial_conditions as module
 from sipnet_calibration.conventions import (
     CF_CONVENTIONS,
     DATA_ROOT_ENV_VAR,
+    INITIAL_CONDITION_MEMBER,
     SITE,
+    SOURCE_INDEX,
     data_root,
 )
 from sipnet_calibration.initial_conditions import (
     CONVERTED_SIPNET_FIELDS,
     INITIAL_CONDITION_NAMES,
     INITIAL_CONDITIONS,
-    MEMBER,
+    RAW_MEMBER,
     SOURCE,
-    SOURCE_MEMBER,
     InitialConditionSpec,
     SourceFile,
     SourceVariable,
@@ -347,8 +348,7 @@ PRODUCT_ATTRIBUTES = (
     "Conventions", "title", "product", "source_file", "source_root", "source_script",
     "source_script_note", "nominal_date", "nominal_date_provenance",
     "source_time_units", "source_time_long_name", "source_time_value",
-    "member_source", "member_correspondence", "n_sites", "n_members", "history",
-    "created",
+    "n_sites", "n_initial_condition_members", "history", "created",
 )
 RAW_ATTRIBUTES = (
     "title", "source_root", "source_layout", "source_format", "source_fill_value",
@@ -379,7 +379,7 @@ def test_raw_attributes_are_the_documented_set(raw):
     assert raw.attrs["source_fill_value"] == -999.0
     assert raw.attrs["source_layout"] == "{site}/IC_site_{site}_{member}.nc"
     assert raw.attrs["n_sites"] == raw.sizes[SITE]
-    assert raw.attrs["n_members"] == raw.sizes[MEMBER]
+    assert raw.attrs["n_members"] == raw.sizes[RAW_MEMBER]
     for name in SOURCE.names:
         assert raw[name].attrs["source_fill_value"] == -999.0
 
@@ -426,10 +426,11 @@ def test_product_reader_refuses_infinities_and_misplaced_coordinates(raw, sites_
         return dataset
 
     refused(infinite, "infinite value")
-    refused(lambda d: d.assign_coords(lon=(MEMBER, d["lon"].values[: d.sizes[MEMBER]])),
+    member = INITIAL_CONDITION_MEMBER
+    refused(lambda d: d.assign_coords(lon=(member, d["lon"].values[: d.sizes[member]])),
             "must be on site")
-    refused(lambda d: d.assign_coords(source_member=(SITE, d[SITE].values.astype(np.int16))),
-            "source_member must be on member")
+    refused(lambda d: d.assign_coords(source_index=(SITE, d[SITE].values.astype(np.int64))),
+            "source_index must be on initial_condition_member")
 
 
 @pytest.mark.parametrize("site", [1.5, float("nan")], ids=["fraction", "nan"])
@@ -633,10 +634,10 @@ def test_read_source_file_refuses_fills_unknown_variables_and_empty_files(tmp_pa
 
 def test_build_raw_lays_values_on_site_member_with_nan_for_absent_variables():
     raw = build_raw(_records(), source_root="here", conversion_script="test")
-    assert raw["AbvGrndWood"].dims == (SITE, MEMBER)
+    assert raw["AbvGrndWood"].dims == (SITE, RAW_MEMBER)
     assert raw[SITE].values.tolist() == SYNTHETIC_SITES
-    assert raw[SITE].dtype == np.int32 and raw[MEMBER].dtype == np.int16
-    assert raw[MEMBER].values.tolist() == [1, 2]
+    assert raw[SITE].dtype == np.int32 and raw[RAW_MEMBER].dtype == np.int16
+    assert raw[RAW_MEMBER].values.tolist() == [1, 2]
     leaf = raw["leaf_carbon_content"].values
     assert np.isnan(leaf[1]).all() and np.isfinite(leaf[[0, 2]]).all()
     assert raw["wood_carbon_content"].sel(site=1, member=2).item() == -0.5
@@ -725,20 +726,22 @@ def test_build_initial_conditions_is_the_data_model(raw, sites_csv):
         product = build_initial_conditions(raw_dataset, sites)
     assert set(product.data_vars) == set(INITIAL_CONDITION_NAMES)
     for name in INITIAL_CONDITION_NAMES:
-        assert product[name].dims == (MEMBER, SITE)
+        assert product[name].dims == (INITIAL_CONDITION_MEMBER, SITE)
         assert product[name].dtype == np.float64
-    assert product[MEMBER].values.tolist() == [0, 1]
-    assert product[SOURCE_MEMBER].values.tolist() == [1, 2]
+    assert product[INITIAL_CONDITION_MEMBER].values.tolist() == [0, 1]
+    assert product[SOURCE_INDEX].values.tolist() == [1, 2]
     assert product[SITE].values.tolist() == SYNTHETIC_SITES
     assert product["lon"].sel(site=2).item() == -101.0 and product["lat"].sel(site=3).item() == 42.0
     # values are the raw ones, transposed, negatives included
-    assert product["initial_wood_carbon"].sel(member=1, site=1).item() == -0.5
+    assert product["initial_wood_carbon"].sel(initial_condition_member=1, site=1).item() == -0.5
     assert np.isnan(product["initial_leaf_carbon"].sel(site=2).values).all()
     assert product["initial_soil_moisture_saturation"].attrs["units"] == "percent"
     assert product.attrs["Conventions"] == CF_CONVENTIONS
     assert product.attrs["nominal_date"] == module.NOMINAL_DATE
-    assert product.attrs["member_source"] == "ic"
-    assert product.attrs["n_members"] == 2 and product.attrs["n_sites"] == 3
+    assert "member_source" not in product.attrs and "member_correspondence" not in product.attrs
+    assert product[INITIAL_CONDITION_MEMBER].dtype == np.int64
+    assert product[SOURCE_INDEX].dtype == np.int64
+    assert product.attrs["n_initial_condition_members"] == 2 and product.attrs["n_sites"] == 3
 
 
 def test_build_initial_conditions_refuses_a_different_pool(raw, tmp_path):
@@ -759,7 +762,7 @@ def test_ingest_script_round_trips_and_fields_select_sites(raw, sites_csv, tmp_p
             assert product[spec.name].attrs == spec.xarray_attributes()
     fields = initial_condition_fields(["initial_soil_organic_carbon"], sites=[3, 1], path=out)
     field = fields["initial_soil_organic_carbon"]
-    assert field.dims == (MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
+    assert field.dims == (INITIAL_CONDITION_MEMBER, SITE) and field[SITE].values.tolist() == [3, 1]
     assert "lon" in field.coords and field.attrs["units"] == "kg m-2"
     with pytest.raises(KeyError, match=r"site\(s\) \[9\] are not in the initial condition"):
         initial_condition_fields(sites=[9], path=out)
@@ -837,8 +840,8 @@ def ensemble_state(leaf=(0.12, 0.13)):
         spec = resolve_initial_condition(name)
         return xr.DataArray(
             np.asarray(values, dtype=float),
-            dims=(MEMBER, SITE),
-            coords={MEMBER: [0, 1], SITE: [1, 27]},
+            dims=(INITIAL_CONDITION_MEMBER, SITE),
+            coords={INITIAL_CONDITION_MEMBER: [0, 1], SITE: [1, 27]},
             attrs={"units": spec.units},
         )
 
@@ -1030,7 +1033,7 @@ def test_conversion_refuses_a_deciduous_flag_that_is_not_boolean(bad):
 
 def test_conversion_table_is_the_single_member_form_cell_by_cell():
     state = ensemble_state()
-    leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=MEMBER, coords={MEMBER: [0, 1]})
+    leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=INITIAL_CONDITION_MEMBER, coords={INITIAL_CONDITION_MEMBER: [0, 1]})
     deciduous = xr.DataArray([False, True], dims=SITE, coords={SITE: [1, 27]})
 
     table = to_sipnet_initial_conditions_table(
@@ -1042,16 +1045,16 @@ def test_conversion_table_is_the_single_member_form_cell_by_cell():
     )
 
     assert list(table.columns) == list(CONVERTED_SIPNET_FIELDS)
-    assert table.index.names == [MEMBER, SITE]
+    assert table.index.names == [INITIAL_CONDITION_MEMBER, SITE]
     assert len(table) == 4
     for member in (0, 1):
         for site in (1, 27):
             one = to_sipnet_initial_conditions(
                 **{
-                    name: float(state[name].sel({MEMBER: member, SITE: site}))
+                    name: float(state[name].sel({INITIAL_CONDITION_MEMBER: member, SITE: site}))
                     for name in VALID_STATE
                 },
-                leaf_carbon_per_area=float(leaf_carbon_per_area.sel({MEMBER: member})),
+                leaf_carbon_per_area=float(leaf_carbon_per_area.sel({INITIAL_CONDITION_MEMBER: member})),
                 fine_root_fraction=0.2,
                 coarse_root_fraction=0.25,
                 deciduous=bool(deciduous.sel({SITE: site})),
@@ -1063,6 +1066,26 @@ def test_conversion_table_is_the_single_member_form_cell_by_cell():
     assert table.loc[(0, 1), "leaf_area_index"] != table.loc[(1, 1), "leaf_area_index"]
 
 
+def test_conversion_table_crosses_a_parameter_drawn_per_sample_with_the_members():
+    """A sample and an initial-condition member are different indices, so a
+    parameter drawn per sample meets every member rather than pairing with
+    the member of the same label."""
+    state = ensemble_state()
+    leaf_carbon_per_area = xr.DataArray(
+        [32.0, 40.0, 48.0], dims="sample", coords={"sample": np.arange(3, dtype=np.int64)}
+    )
+    table = to_sipnet_initial_conditions_table(
+        state,
+        leaf_carbon_per_area=leaf_carbon_per_area,
+        fine_root_fraction=0.2,
+        coarse_root_fraction=0.25,
+        deciduous=False,
+    )
+    assert set(table.index.names) == {INITIAL_CONDITION_MEMBER, "sample", SITE}
+    assert table.index.names[-1] == SITE
+    assert len(table) == 2 * 2 * 3
+
+
 def test_conversion_refuses_inputs_selected_for_different_members():
     """`.sel` leaves the member as a scalar coordinate, which alignment ignores.
 
@@ -1071,18 +1094,18 @@ def test_conversion_refuses_inputs_selected_for_different_members():
     no member level left to notice it in.
     """
     state = ensemble_state()
-    leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=MEMBER, coords={MEMBER: [0, 1]})
+    leaf_carbon_per_area = xr.DataArray([32.0, 40.0], dims=INITIAL_CONDITION_MEMBER, coords={INITIAL_CONDITION_MEMBER: [0, 1]})
     parameters = dict(fine_root_fraction=0.2, coarse_root_fraction=0.25, deciduous=False)
 
-    with pytest.raises(ValueError, match="for member 0 and leaf_carbon_per_area for member 1"):
+    with pytest.raises(ValueError, match="for initial_condition_member 0 and leaf_carbon_per_area for initial_condition_member 1"):
         to_sipnet_initial_conditions_table(
-            {name: field.sel({MEMBER: 0}) for name, field in state.items()},
-            leaf_carbon_per_area=leaf_carbon_per_area.sel({MEMBER: 1}),
+            {name: field.sel({INITIAL_CONDITION_MEMBER: 0}) for name, field in state.items()},
+            leaf_carbon_per_area=leaf_carbon_per_area.sel({INITIAL_CONDITION_MEMBER: 1}),
             **parameters,
         )
     matched = to_sipnet_initial_conditions_table(
-        {name: field.sel({MEMBER: 0}) for name, field in state.items()},
-        leaf_carbon_per_area=leaf_carbon_per_area.sel({MEMBER: 0}),
+        {name: field.sel({INITIAL_CONDITION_MEMBER: 0}) for name, field in state.items()},
+        leaf_carbon_per_area=leaf_carbon_per_area.sel({INITIAL_CONDITION_MEMBER: 0}),
         **parameters,
     )
     assert matched.index.tolist() == [1, 27]
@@ -1116,7 +1139,7 @@ def test_conversion_table_rows_are_member_then_site():
         state, leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
         coarse_root_fraction=0.25, deciduous=False,
     )
-    assert table.index.names == [MEMBER, SITE]
+    assert table.index.names == [INITIAL_CONDITION_MEMBER, SITE]
     assert table.loc[(1, 27), "soil_carbon"] == pytest.approx(20000.0)
 
 
@@ -1173,7 +1196,7 @@ def test_conversion_table_labels_an_unindexed_dim_by_position():
     then reports positions. Documented, and pinned here so it cannot drift into
     looking like site ids without anyone noticing."""
     state = {
-        name: xr.DataArray(field.values, dims=(MEMBER, SITE), attrs=field.attrs)
+        name: xr.DataArray(field.values, dims=(INITIAL_CONDITION_MEMBER, SITE), attrs=field.attrs)
         for name, field in ensemble_state().items()
     }
     table = to_sipnet_initial_conditions_table(
@@ -1196,7 +1219,7 @@ def test_conversion_table_takes_a_dataset_and_one_site():
         dataset.sel({SITE: 1}), leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
         coarse_root_fraction=0.25, deciduous=False,
     )
-    assert one_site.index.name == MEMBER
+    assert one_site.index.name == INITIAL_CONDITION_MEMBER
     assert one_site.index.tolist() == [0, 1]
     assert one_site.loc[0].to_dict() == both.loc[(0, 1)].to_dict()
 
@@ -1244,10 +1267,17 @@ def test_conversion_table_refuses_wrong_units_dims_and_unaligned_parameters():
         to_sipnet_initial_conditions_table(converted, **parameters)
 
     over_time = ensemble_state()
-    with pytest.raises(ValueError, match=r"\['time'\] is not among them"):
+    with pytest.raises(ValueError, match=r"\[.time.\] is neither"):
         to_sipnet_initial_conditions_table(
             over_time,
             **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="time")},
+        )
+
+    # An unlabeled source_index raised a raw IndexError from the cell index.
+    with pytest.raises(ValueError, match=r"\[.source_index.\] is neither"):
+        to_sipnet_initial_conditions_table(
+            ensemble_state(),
+            **{**parameters, "fine_root_fraction": xr.DataArray([0.2, 0.3], dims="source_index")},
         )
 
     with pytest.raises(ValueError, match="cannot align|conflicting|not equal"):
@@ -1290,9 +1320,9 @@ def tracked_raw() -> xr.Dataset:
 
 
 def test_tracked_raw_file_is_the_full_ensemble(tracked_raw):
-    assert tracked_raw.sizes == {SITE: N_SITES, MEMBER: 100}
+    assert tracked_raw.sizes == {SITE: N_SITES, RAW_MEMBER: 100}
     assert tracked_raw[SITE].values.tolist() == list(range(1, 8001))
-    assert tracked_raw[MEMBER].values.tolist() == list(range(1, 101))
+    assert tracked_raw[RAW_MEMBER].values.tolist() == list(range(1, 101))
     assert tracked_raw.attrs["n_source_files"] == 800000
     for name in ("AbvGrndWood", "wood_carbon_content", "soil_organic_carbon_content"):
         assert np.isfinite(tracked_raw[name].values).all()
@@ -1317,8 +1347,18 @@ def test_tracked_raw_file_ingests_onto_the_site_pool(tracked_raw):
     sites = load_sites(SITES_CSV)
     ingest.check_raw(tracked_raw, sites)
     product = build_initial_conditions(tracked_raw, sites)
-    assert product["initial_soil_organic_carbon"].dims == (MEMBER, SITE)
-    assert product[SOURCE_MEMBER].values[0] == 1 and product[MEMBER].values[0] == 0
+    assert product["initial_soil_organic_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
+    assert product[SOURCE_INDEX].values[0] == 1 and product[INITIAL_CONDITION_MEMBER].values[0] == 0
+    np.testing.assert_array_equal(
+        product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
+    )
+    # The real ensemble crossed with samples survives the Flat round trip.
+    from sipnet_calibration.fields import batch_coordinate, stack_batch_dims, unstack_batch_dims
+
+    field = product["initial_soil_organic_carbon"].isel(site=[0, 26, 864])
+    crossed = field.expand_dims(sample=2).assign_coords(sample=batch_coordinate("sample", [0, 1]))
+    restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
+    xr.testing.assert_identical(restored, crossed)
 
 
 # ── the gaps mutation testing found ───────────────────────────────────────────
@@ -1456,10 +1496,10 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
         with pytest.raises(ValueError, match=message):
             load_initial_conditions(path)
 
-    refused(lambda d: d.assign_coords(member=np.array([1, 2], dtype=np.int16)), "0..n-1")
-    refused(lambda d: d.assign_coords(source_member=(MEMBER, np.array([1, 1], dtype=np.int16))), "source_member")
-    refused(lambda d: d.assign_coords(source_member=(MEMBER, np.array([0, 1], dtype=np.int16))), "source_member")
-    refused(lambda d: d.transpose(SITE, MEMBER), "dims")
+    refused(lambda d: d.assign_coords(initial_condition_member=np.array([1, 2], dtype=np.int64)), "0..n-1")
+    refused(lambda d: d.assign_coords(source_index=(INITIAL_CONDITION_MEMBER, np.array([1, 1], dtype=np.int64))), "source_index")
+    refused(lambda d: d.assign_coords(source_index=(INITIAL_CONDITION_MEMBER, np.array([0, 1], dtype=np.int64))), "source_index")
+    refused(lambda d: d.transpose(SITE, INITIAL_CONDITION_MEMBER), "dims")
     refused(lambda d: d.assign_coords(lon=(SITE, d["lat"].values * 5)), "geographic")
     refused(lambda d: d.assign_coords(lat=(SITE, np.array([np.nan, 1.0, 2.0]))), "non-finite")
     refused(lambda d: d.drop_vars("lat"), "coordinate")
@@ -1467,6 +1507,62 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
     refused(lambda d: _rename_attr(d, "initial_wood_carbon", "long_name", ""), "long_name")
     refused(lambda d: d.assign_attrs(Conventions="CF-1.6"), "Conventions")
     refused(lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending")
+    refused(
+        lambda d: d.assign_coords(source_index=(INITIAL_CONDITION_MEMBER, np.array([1, 3], dtype=np.int64))),
+        "source_index - 1",
+    )
+    refused(lambda d: d.assign_attrs(n_initial_condition_members=5), "n_initial_condition_members")
+    refused(lambda d: _without_attr(d, "n_initial_condition_members"), "renamed from n_members")
+
+
+def test_the_member_coordinates_carry_their_attributes(raw, sites_csv):
+    from sipnet_calibration.conventions import (
+        DATA_SOURCE_MEMBER_ATTRIBUTES,
+        SOURCE_INDEX_ATTRIBUTES,
+    )
+
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, load_sites(sites_csv))
+    assert dict(product[INITIAL_CONDITION_MEMBER].attrs) == dict(DATA_SOURCE_MEMBER_ATTRIBUTES)
+    assert dict(product[SOURCE_INDEX].attrs) == dict(SOURCE_INDEX_ATTRIBUTES)
+
+
+def test_a_product_without_source_index_is_refused_by_name(raw, sites_csv, tmp_path):
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, load_sites(sites_csv))
+    variant = product.drop_vars(SOURCE_INDEX)
+    path = tmp_path / "p.nc"
+    variant.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(variant))
+    with pytest.raises(ValueError, match="missing the 'source_index' coordinate"):
+        load_initial_conditions(path)
+
+
+def test_a_member_label_is_its_source_index_less_one(raw, sites_csv):
+    sites = load_sites(sites_csv)
+    with read_raw(raw) as raw_dataset:
+        product = build_initial_conditions(raw_dataset, sites)
+    np.testing.assert_array_equal(
+        product[INITIAL_CONDITION_MEMBER].values, product[SOURCE_INDEX].values - 1
+    )
+    assert "n_members" not in product.attrs
+
+
+def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, sites_csv, tmp_path):
+    """The real product's source_index and attributes survive the Flat round trip."""
+    from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
+    from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
+
+    out = tmp_path / "product.nc"
+    assert ingest.main(["--raw", str(raw), "--sites", str(sites_csv), "--out", str(out)]) == 0
+    field = initial_condition_fields(["initial_soil_organic_carbon"], path=out)[
+        "initial_soil_organic_carbon"
+    ]
+    crossed = field.expand_dims(sample=np.arange(3, dtype=np.int64)).assign_coords(
+        sample=("sample", np.arange(3, dtype=np.int64), dict(SAMPLE_ATTRIBUTES))
+    )
+    restored = unstack_batch_dims(stack_batch_dims(crossed, into="run"))
+    xr.testing.assert_identical(restored, crossed)
+    assert restored.equals(crossed)
 
 
 def _rename_attr(dataset, variable, key, value):
@@ -1484,7 +1580,7 @@ def test_coordinates_carry_no_fill_value_on_disk(raw, sites_csv, tmp_path):
     product.to_netcdf(path, engine="h5netcdf", encoding=netcdf_encoding(product))
     for written in (path, raw):
         with h5netcdf.File(written, "r") as handle:
-            for name in (SITE, MEMBER, SOURCE_MEMBER, "lon", "lat"):
+            for name in (SITE, RAW_MEMBER, INITIAL_CONDITION_MEMBER, SOURCE_INDEX, "lon", "lat"):
                 if name in handle.variables:
                     assert "_FillValue" not in handle.variables[name].attrs, (written, name)
 

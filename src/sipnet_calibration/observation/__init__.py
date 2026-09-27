@@ -64,6 +64,7 @@ from sipnet_calibration.observation.vector import (
     INDEX_LEVELS,
     Observation,
     ObservationVector,
+    check_batch_dim_is_not_an_observation_name,
 )
 
 __all__ = [
@@ -81,6 +82,7 @@ __all__ = [
     "SelectTimestep",
     "aggregate_time",
     "aggregation_counts",
+    "check_batch_dim_is_not_an_observation_name",
     "check_model_output_carries_what_is_read",
     "check_operator",
     "check_operator_declares_names",

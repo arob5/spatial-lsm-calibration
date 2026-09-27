@@ -246,46 +246,46 @@ def test_a_non_positive_ncol_is_rejected():
 # ── plot_by_site ──────────────────────────────────────────────────────────────
 
 
-def test_plot_by_site_draws_one_panel_per_site(field_member_site_time):
+def test_plot_by_site_draws_one_panel_per_site(field_sample_site_time):
     """One panel per site, and each panel's data are that site's slice."""
-    _, axes = plot_by_site(field_member_site_time, ncol=2)
-    assert len(axes) == field_member_site_time.sizes["site"]
-    for ax, site in zip(axes, field_member_site_time["site"].values):
-        expected = field_member_site_time.sel(site=site).median("member").values
+    _, axes = plot_by_site(field_sample_site_time, ncol=2)
+    assert len(axes) == field_sample_site_time.sizes["site"]
+    for ax, site in zip(axes, field_sample_site_time["site"].values):
+        expected = field_sample_site_time.sel(site=site).median("sample").values
         np.testing.assert_allclose(ax.lines[0].get_ydata(), expected)
 
 
 def test_plot_by_site_titles_the_panels_with_the_site_ids(
-    field_member_site_time
+    field_sample_site_time
 ):
     """The default labels name the site."""
-    _, axes = plot_by_site(field_member_site_time, ncol=2)
+    _, axes = plot_by_site(field_sample_site_time, ncol=2)
     assert [a.get_title() for a in axes] == [
-        f"site {site}" for site in field_member_site_time["site"].values
+        f"site {site}" for site in field_sample_site_time["site"].values
     ]
 
 
 def test_plot_by_site_selects_and_orders_by_the_sites_given(
-    field_member_site_time
+    field_sample_site_time
 ):
     """``sites=`` picks a subset, in the order given."""
-    sites = list(field_member_site_time["site"].values)[::-1]
-    _, axes = plot_by_site(field_member_site_time, sites=sites, ncol=2)
+    sites = list(field_sample_site_time["site"].values)[::-1]
+    _, axes = plot_by_site(field_sample_site_time, sites=sites, ncol=2)
     assert [a.get_title() for a in axes] == [f"site {site}" for site in sites]
 
 
 def test_plot_by_site_accepts_a_bound_plotting_function(
-    field_member_site_time
+    field_sample_site_time
 ):
     """A partial of ``plot_time_series`` reaches the panel with its keywords."""
     _, axes = (
         plot_by_site(
-            field_member_site_time,
+            field_sample_site_time,
             partial(plot_time_series, show="spaghetti"),
             ncol=2,
         )
     )
-    assert len(axes[0].lines) == field_member_site_time.sizes["member"]
+    assert len(axes[0].lines) == field_sample_site_time.sizes["sample"]
 
 
 def test_a_failing_callback_does_not_leak_a_figure():
@@ -311,34 +311,34 @@ def test_plot_by_site_rejects_a_site_dim_without_a_site_coordinate():
         coords={"time": np.arange(4)},
         attrs={"units": "u", "long_name": "L"},
     )
-    with pytest.raises(ValueError, match="no 'site' coordinate"):
+    with pytest.raises(ValueError, match="carry no coordinate"):
         plot_by_site(data)
 
 
-def test_plot_by_site_rejects_a_bare_site_id(field_member_site_time):
+def test_plot_by_site_rejects_a_bare_site_id(field_sample_site_time):
     """``sites=1``, a string or a set raises rather than failing on iteration."""
     for sites in (1, "1", {1}):
         with pytest.raises(TypeError, match="sites"):
-            plot_by_site(field_member_site_time, sites=sites)
+            plot_by_site(field_sample_site_time, sites=sites)
 
 
-def test_plot_by_site_refuses_a_repeated_site(field_member_site_time):
+def test_plot_by_site_refuses_a_repeated_site(field_sample_site_time):
     with pytest.raises(ValueError, match="more than once"):
-        plot_by_site(field_member_site_time, sites=[1, 1])
+        plot_by_site(field_sample_site_time, sites=[1, 1])
 
 
-def test_plot_by_site_rejects_a_field_without_a_site_dim(field_member_time):
+def test_plot_by_site_rejects_a_field_without_a_site_dim(field_sample_time):
     """A field with no ``site`` dimension raises."""
     with pytest.raises(ValueError, match="needs 'site'"):
-        plot_by_site(field_member_time)
+        plot_by_site(field_sample_time)
 
 
 def test_plot_by_site_rejects_a_site_that_is_not_on_the_field(
-    field_member_site_time,
+    field_sample_site_time,
 ):
     """An unknown site id raises rather than yielding an empty panel."""
     with pytest.raises(KeyError, match="no such site"):
-        plot_by_site(field_member_site_time, sites=[9999])
+        plot_by_site(field_sample_site_time, sites=[9999])
 
 
 # ── plot_by_variable ──────────────────────────────────────────────────────────

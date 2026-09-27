@@ -36,8 +36,8 @@ from sipnet_calibration.observation.time_alignment import (
 
 
 def site_1_member_1(real_drivers, name):
-    """One variable of the site-1, member-1 drivers, on ``time`` alone."""
-    return driver_fields(real_drivers)[name].sel(site=1, source_member_index=1)
+    """One variable of the site-1 drivers of source index 1, on ``time`` alone."""
+    return driver_fields(real_drivers)[name].sel(site=1, driver_member=0)
 
 
 class TestDefaultMethodForKind:
@@ -188,9 +188,9 @@ class TestAggregateTimeChoosesTheMethod:
         with pytest.raises(ValueError, match="which is not one of"):
             aggregate_time(field, "1D")
 
-    def test_a_field_without_time_is_refused(self, field_member_site):
+    def test_a_field_without_time_is_refused(self, field_sample_site):
         with pytest.raises(ValueError, match="needs a 'time' dimension"):
-            aggregate_time(field_member_site, "1D", how="sum")
+            aggregate_time(field_sample_site, "1D", how="sum")
 
 
 class TestAggregateTimeOnThreeHourlyOutput:
@@ -234,19 +234,41 @@ class TestAggregateTimeOnThreeHourlyOutput:
 
 class TestAggregateTimeOnEnsembles:
     def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, real_site_table):
-        runs = {(site, member): niwot_output for site in (1, 27) for member in (0, 1)}
+        runs = {(sample, site): niwot_output for site in (1, 27) for sample in (0, 1)}
         stacked = stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"]
         daily = aggregate_time(stacked, "1D")
-        assert daily.dims == ("member", "site", "time")
+        assert daily.dims == ("sample", "site", "time")
         one = aggregate_time(
             from_sipnet_output(niwot_output, ["nee"])["net_ecosystem_exchange"], "1D"
         )
         for site in (1, 27):
-            for member in (0, 1):
-                assert np.allclose(daily.sel(site=site, member=member).values, one.values)
+            for sample in (0, 1):
+                assert np.allclose(daily.sel(site=site, sample=sample).values, one.values)
+
+    def test_two_batch_dims_pass_through_aggregation(self, niwot_output):
+        from sipnet_calibration.fields import stack_model_outputs, validate_field
+
+        table = site_table_of(1, 27, lon=[0.0, 1.0], lat=[0.0, 1.0])
+        run = niwot_output.select(["nee"])
+        runs = {
+            (sample, member, site): run * (1 + sample + 10 * member)
+            for sample in (0, 1)
+            for member in (0, 1, 2)
+            for site in (1, 27)
+        }
+        stacked = stack_model_outputs(
+            runs, key_dims=("sample", "initial_condition_member", "site"), site_table=table
+        )["net_ecosystem_exchange"]
+        daily = aggregate_time(stacked, "1D")
+        assert daily.dims == ("sample", "initial_condition_member", "site", "time")
+        validate_field(daily)
+        np.testing.assert_allclose(
+            daily.sel(sample=1, initial_condition_member=2).values,
+            22 * daily.sel(sample=0, initial_condition_member=0).values,
+        )
 
     def test_lon_and_lat_survive_on_site(self, niwot_output, real_site_table):
-        runs = {(site, 0): niwot_output for site in (1, 27)}
+        runs = {(0, site): niwot_output for site in (1, 27)}
         daily = aggregate_time(
             stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"], "1D"
         )
@@ -258,7 +280,7 @@ class TestAggregateTimeOnEnsembles:
         short = SIPNETOutput.from_dataframe(
             niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
-        stacked = stack_sipnet_outputs({(1, 0): niwot_output, (27, 0): short}, ["nee"])[
+        stacked = stack_sipnet_outputs({(0, 1): niwot_output, (0, 27): short}, ["nee"])[
             "net_ecosystem_exchange"
         ]
         with pytest.raises(ValueError, match="different\ntime axes|different time axes"):
@@ -360,7 +382,7 @@ class TestAggregatedFieldsPlot:
 
     def test_an_aggregated_ensemble_fans(self, ax, niwot_output, real_site_table):
         plotting = pytest.importorskip("sipnet_calibration.plotting")
-        runs = {(1, member): niwot_output for member in (0, 1, 2)}
+        runs = {(sample, 1): niwot_output for sample in (0, 1, 2)}
         stacked = stack_sipnet_outputs(runs, ["nee"])["net_ecosystem_exchange"]
         plotting.plot_time_series(aggregate_time(stacked, "1D").sel(site=1), ax=ax)
         assert len(ax.collections) == 2
@@ -407,7 +429,7 @@ class TestAggregateTimeDropsAlignmentPadding:
         short = SIPNETOutput.from_dataframe(
             niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
         )
-        return stack_sipnet_outputs({(1, 0): short, (27, 0): niwot_output}, ["nee"])[
+        return stack_sipnet_outputs({(0, 1): short, (0, 27): niwot_output}, ["nee"])[
             "net_ecosystem_exchange"
         ]
 
@@ -582,12 +604,12 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
 
         table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
         run = niwot_output.select(["wood_carbon"])
-        stacked = stack_model_outputs({(1, 0): run, (2, 0): run}, site_table=table)["wood_carbon"]
+        stacked = stack_model_outputs({(0, 1): run, (0, 2): run}, site_table=table)["wood_carbon"]
         values = stacked.values.copy()
-        values[0, 1, self.second_day(stacked)[0]] = np.nan  # member 0, site 2
+        values[0, 1, self.second_day(stacked)[0]] = np.nan  # sample 0, site 2
         daily = aggregate_time(stacked.copy(data=values), "1D")
-        assert np.isnan(daily.sel(site=2, member=0).values[1])
-        assert np.isfinite(daily.sel(site=1, member=0).values).all()
+        assert np.isnan(daily.sel(site=2, sample=0).values[1])
+        assert np.isfinite(daily.sel(site=1, sample=0).values).all()
 
     def test_the_stated_default_is_what_is_masked(self, niwot_output):
         """A pool's default is last, so omitting how is the case that matters."""

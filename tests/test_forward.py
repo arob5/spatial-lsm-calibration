@@ -69,10 +69,10 @@ class ForeignNiwot(ScaledNiwot):
         return super().__call__(climate=climate, events=events, **overrides)
 
 
-def _expected_wood(table, member, site, n_steps=None):
-    """What the stand-in writes for wood carbon at this member and site, in Mg ha-1."""
-    rate = float(table["max_photosynthesis_rate"].sel(member=member, site=site))
-    soil = float(table["soil_carbon"].sel(member=member, site=site))
+def _expected_wood(table, sample, site, n_steps=None):
+    """What the stand-in writes for wood carbon at this sample and site, in Mg ha-1."""
+    rate = float(table["max_photosynthesis_rate"].sel(sample=sample, site=site))
+    soil = float(table["soil_carbon"].sel(sample=sample, site=site))
     wood = REFERENCE_WOOD if n_steps is None else REFERENCE_WOOD.isel(time=slice(0, n_steps))
     return select_timestep_at(wood, LABELS).values * (rate / 10.0) * (soil / SOIL_REFERENCE) * 0.01
 
@@ -142,15 +142,15 @@ def theta(parameter_vector):
 
 
 def _hooked(parameter_vector, rates):
-    """A to_sipnet_table hook setting max_photosynthesis_rate at (member, site position)."""
+    """A to_sipnet_table hook setting max_photosynthesis_rate at (sample, site position)."""
 
     def hook(theta):
         table = parameter_vector.sipnet_table(theta)
         values = table["max_photosynthesis_rate"].values.copy()
-        for (member, site_position), rate in rates.items():
-            if member < values.shape[0]:  # the init-time probe has one member
-                values[member, site_position] = rate
-        return table.assign(max_photosynthesis_rate=(("member", "site"), values))
+        for (sample, site_position), rate in rates.items():
+            if sample < values.shape[0]:  # the init-time probe has one sample
+                values[sample, site_position] = rate
+        return table.assign(max_photosynthesis_rate=(("sample", "site"), values))
 
     return hook
 
@@ -164,7 +164,7 @@ class TestEvaluate:
         table = parameter_vector.sipnet_table(theta)
         assert not np.allclose(table["soil_carbon"].sel(site=1), table["soil_carbon"].sel(site=27))
         fields = observation_vector.fields(evaluation.predictions)["landtrendr_aboveground_biomass"]
-        for member in range(3):
+        for sample in range(3):
             for site in SITES:
                 observed = (
                     observation_vector["landtrendr_aboveground_biomass"]
@@ -172,9 +172,9 @@ class TestEvaluate:
                     .notnull()
                     .values
                 )
-                expected = _expected_wood(table, member, site)
+                expected = _expected_wood(table, sample, site)
                 np.testing.assert_allclose(
-                    fields.sel(member=member, site=site).values[observed],
+                    fields.sel(sample=sample, site=site).values[observed],
                     expected[observed],
                     rtol=1e-12,
                 )
@@ -199,7 +199,7 @@ class TestEvaluate:
         expected = leaf / forward._base_values["leaf_carbon_per_area"]
         observed = observation_vector["modis_leaf_area_index"].values.sel(site=1).notnull().values
         np.testing.assert_allclose(
-            lai.sel(member=0, site=1).values[observed], expected[observed], rtol=1e-12
+            lai.sel(sample=0, site=1).values[observed], expected[observed], rtol=1e-12
         )
 
     def test_an_observation_vector_over_fewer_sites_than_are_run(
@@ -345,7 +345,7 @@ class TestEvaluate:
             site_table=SITE_TABLE,
         )
         assert not forward._run.returns_model_output
-        overrides = sipnet_overrides(parameter_vector.sipnet_table(theta), member=0, site=27)
+        overrides = sipnet_overrides(parameter_vector.sipnet_table(theta), batch={"sample": 0}, site=27)
         output = forward._run(
             climate=climate[27], site=27, site_observation_vector=None, **overrides
         )
@@ -374,8 +374,8 @@ class TestFailures:
         assert evaluation.valid.tolist() == [True, False, True]
         assert np.isnan(evaluation.predictions[1]).all()
         assert np.isfinite(evaluation.predictions[[0, 2]]).all()
-        assert not bool(evaluation.run_succeeded.sel(member=1, site=1))
-        assert bool(evaluation.run_succeeded.sel(member=1, site=27))
+        assert not bool(evaluation.run_succeeded.sel(sample=1, site=1))
+        assert bool(evaluation.run_succeeded.sel(sample=1, site=27))
         assert evaluation.failures["error"].tolist() == ["SIPNETRunError"]
         assert evaluation.failures["site"].tolist() == [1]
         assert "SIPNET blew up" in evaluation.failures["message"].iloc[0]
@@ -401,7 +401,7 @@ class TestFailures:
         partial = raised.value.evaluation
         assert partial.predictions is None and partial.model_output is None
         assert partial.failures["error"].tolist() == ["SIPNETRunError"]
-        assert bool(partial.run_succeeded.sel(member=1).all())
+        assert bool(partial.run_succeeded.sel(sample=1).all())
         assert not partial.valid.any()
 
     def test_a_timeout_that_crosses_a_process_boundary_is_a_nan_row(
@@ -496,7 +496,7 @@ class TestFailures:
 
 
 class TestPriorPredictive:
-    def test_model_output_is_stacked_over_member_and_site(self, parameter_vector, climate, theta):
+    def test_model_output_is_stacked_over_sample_and_site(self, parameter_vector, climate, theta):
         forward = ForwardModel(
             scaled_niwot_model(),
             parameter_vector,
@@ -509,14 +509,14 @@ class TestPriorPredictive:
         output = evaluation.model_output
         assert evaluation.predictions is None
         assert set(output.data_vars) == {"net_ecosystem_exchange", "wood_carbon"}
-        assert output["wood_carbon"].dims == ("member", "site", "time")
+        assert output["wood_carbon"].dims == ("sample", "site", "time")
         assert output["lon"].values.tolist() == [-105.0, -70.0]
         table = parameter_vector.sipnet_table(theta)
         for site, n_steps in ((1, REFERENCE_WOOD.sizes["time"]), (27, SHORT_STEPS)):
-            wood = output["wood_carbon"].sel(member=2, site=site).dropna("time")
+            wood = output["wood_carbon"].sel(sample=2, site=site).dropna("time")
             assert wood.sizes["time"] == n_steps  # the shorter drivers make a shorter run
-            rate = float(table["max_photosynthesis_rate"].sel(member=2, site=site))
-            soil = float(table["soil_carbon"].sel(member=2, site=site))
+            rate = float(table["max_photosynthesis_rate"].sel(sample=2, site=site))
+            soil = float(table["soil_carbon"].sel(sample=2, site=site))
             np.testing.assert_allclose(
                 wood.values, REFERENCE_WOOD.values[:n_steps] * rate / 10.0 * soil / SOIL_REFERENCE
             )
@@ -539,11 +539,11 @@ class TestPriorPredictive:
         expected = aggregate_time(
             REFERENCE.select(["net_ecosystem_exchange"])["net_ecosystem_exchange"], "1D"
         )
-        got = output["net_ecosystem_exchange"].sel(member=0, site=1).dropna("time")
+        got = output["net_ecosystem_exchange"].sel(sample=0, site=1).dropna("time")
         np.testing.assert_allclose(got.values, expected.values)
         assert output["net_ecosystem_exchange"].attrs["kind"] == "timestep_total"
 
-    def test_a_member_failing_at_every_site_keeps_its_slot(self, parameter_vector, climate, theta):
+    def test_a_sample_failing_at_every_site_keeps_its_slot(self, parameter_vector, climate, theta):
         forward = ForwardModel(
             scaled_niwot_model(),
             parameter_vector,
@@ -557,10 +557,12 @@ class TestPriorPredictive:
         )
         evaluation = forward.evaluate(theta)
         output = evaluation.model_output
-        assert output["member"].values.tolist() == [0, 1, 2]
-        assert bool(output["net_ecosystem_exchange"].sel(member=1).isnull().all())
+        assert output["sample"].values.tolist() == [0, 1, 2]
+        # The reindex that restores the slot keeps the labels int64.
+        assert output["sample"].dtype == np.int64
+        assert bool(output["net_ecosystem_exchange"].sel(sample=1).isnull().all())
         assert (
-            int(output["net_ecosystem_exchange"].sel(member=0, site=1).notnull().sum())
+            int(output["net_ecosystem_exchange"].sel(sample=0, site=1).notnull().sum())
             == REFERENCE_WOOD.sizes["time"]
         )
         assert evaluation.valid.tolist() == [True, False, True]
@@ -593,7 +595,7 @@ class TestPriorPredictive:
         expected = aggregate_time(
             REFERENCE.select(["net_ecosystem_exchange"])["net_ecosystem_exchange"], "1D"
         )
-        got = output.sel(member=0, site=1).dropna("time")
+        got = output.sel(sample=0, site=1).dropna("time")
         np.testing.assert_array_equal(
             got["time_step_length"].values, expected["time_step_length"].values
         )
@@ -604,7 +606,7 @@ class TestPriorPredictive:
     def test_every_run_failing_is_raised_with_what_was_collected(
         self, parameter_vector, climate, theta
     ):
-        rates = {(member, position): 1.5 * BLOW_UP for member in range(3) for position in range(2)}
+        rates = {(sample, position): 1.5 * BLOW_UP for sample in range(3) for position in range(2)}
         forward = ForwardModel(
             scaled_niwot_model(),
             parameter_vector,
@@ -645,7 +647,7 @@ class TestPriorPredictive:
     def test_a_site_where_every_run_failed_keeps_its_location(
         self, parameter_vector, climate, theta
     ):
-        rates = {(member, 1): 1.5 * BLOW_UP for member in range(3)}
+        rates = {(sample, 1): 1.5 * BLOW_UP for sample in range(3)}
         forward = ForwardModel(
             scaled_niwot_model(),
             parameter_vector,
@@ -803,17 +805,17 @@ class TestRefusals:
                 ),
             )
 
-    def test_a_table_hook_whose_variables_are_not_on_member(
+    def test_a_table_hook_whose_variables_are_not_on_the_batch_dim(
         self, parameter_vector, climate, observation_vector
     ):
-        """With only a member coordinate, PyEns would build one run per site, not J x S."""
+        """With only a sample coordinate, PyEns would build one run per site, not J x S."""
 
         def site_only(theta):
             sipnet_table = parameter_vector.sipnet_table(theta)
-            n_members = sipnet_table.sizes["member"]
-            return sipnet_table.isel(member=0, drop=True).assign_coords(member=np.arange(n_members))
+            n_samples = sipnet_table.sizes["sample"]
+            return sipnet_table.isel(sample=0, drop=True).assign_coords(sample=np.arange(n_samples))
 
-        with pytest.raises(ValueError, match="on both member and site"):
+        with pytest.raises(ValueError, match="on both sample and site"):
             self._build(parameter_vector, climate, observation_vector, to_sipnet_table=site_only)
 
     def test_a_table_hook_that_sets_an_unknown_parameter(
@@ -874,22 +876,22 @@ class TestRefusals:
         ("make_hook", "match"),
         [
             (
-                lambda v: lambda t: v.sipnet_table(t).isel(member=slice(None, None, -1)),
-                "members must be 0 to 2",
+                lambda v: lambda t: v.sipnet_table(t).isel(sample=slice(None, None, -1)),
+                "sample labels must be the integers 0 to 2",
             ),
             (
                 lambda v: (
-                    lambda t: v.sipnet_table(t).isel(member=slice(0, max(1, np.shape(t)[0] - 1)))
+                    lambda t: v.sipnet_table(t).isel(sample=slice(0, max(1, np.shape(t)[0] - 1)))
                 ),
-                "members must be 0 to 2",
+                "sample labels must be the integers 0 to 2",
             ),
             (
                 lambda v: lambda t: v.sipnet_table(t).expand_dims(extra=[0, 1]),
-                r"exactly \(member, site\)",
+                r"exactly \(sample, site\)",
             ),
             (lambda v: lambda t: v.sipnet_table(t).isel(site=[1, 0]), "sites, in order"),
         ],
-        ids=["members reversed", "a member dropped", "an extra dimension", "sites reordered"],
+        ids=["samples reversed", "a sample dropped", "an extra dimension", "sites reordered"],
     )
     def test_a_table_hook_that_does_not_fit_the_batch(
         self, parameter_vector, climate, observation_vector, theta, make_hook, match
@@ -904,7 +906,7 @@ class TestRefusals:
 
 
 class TestRealSipnet:
-    def test_two_members_two_sites_under_a_process_backend(
+    def test_two_samples_two_sites_under_a_process_backend(
         self, parameter_vector, observation_vector, files, theta
     ):
         from pysipnet.build import find_binary, missing_binary_message
@@ -931,8 +933,8 @@ class TestRealSipnet:
         assert np.isfinite(evaluation.predictions).all() and evaluation.valid.all()
 
         # One cell, recomputed by hand: the same run and the same operators, on the driver.
-        member, site = 1, 27
-        overrides = sipnet_overrides(evaluation.sipnet_table, member=member, site=site)
+        sample, site = 1, 27
+        overrides = sipnet_overrides(evaluation.sipnet_table, batch={"sample": sample}, site=site)
         direct = label_run(
             model(climate=files[site], **overrides).outputs.select(
                 list(observation_vector.output_variable_names)
@@ -945,7 +947,7 @@ class TestRealSipnet:
             one_site.predict(direct, sipnet_parameters={**forward._base_values, **overrides})
         )
         np.testing.assert_allclose(
-            evaluation.predictions[member, observation_vector.positions(site=site)], expected
+            evaluation.predictions[sample, observation_vector.positions(site=site)], expected
         )
 
 
@@ -1035,10 +1037,234 @@ def test_an_evaluation_compares_and_hashes_by_identity():
         sipnet_table=xr.Dataset(),
         model_output=None,
         predictions=np.zeros((2, 4)),
-        run_succeeded=xr.DataArray(np.ones((2, 1), dtype=bool), dims=("member", "site")),
+        run_succeeded=xr.DataArray(np.ones((2, 1), dtype=bool), dims=("sample", "site")),
         failures=pd.DataFrame(),
         valid=np.ones(2, dtype=bool),
     )
     copy = dataclasses.replace(evaluation)
     assert evaluation == evaluation and evaluation != copy
     assert len({evaluation, copy}) == 2
+
+
+class TestTheBatchDimIsNamedOnce:
+    """``batch_dim=`` names the table's dim, PyEns's axis, and every output."""
+
+    def test_every_output_carries_the_named_batch_dim(self, parameter_vector, climate, theta):
+        def blow_up_one(theta):
+            table = parameter_vector.sipnet_table(theta, batch_dim="draw")
+            values = table["max_photosynthesis_rate"].values.copy()
+            if values.shape[0] > 1:
+                values[1, 0] = 1.5 * BLOW_UP
+            return table.assign(max_photosynthesis_rate=(("draw", "site"), values))
+
+        forward = ForwardModel(
+            scaled_niwot_model(),
+            parameter_vector,
+            climate=climate,
+            backend=SequentialBackend(),
+            output_variable_names=("wood_carbon",),
+            site_table=SITE_TABLE,
+            to_sipnet_table=blow_up_one,
+            batch_dim="draw",
+        )
+        evaluation = forward.evaluate(theta)
+        assert evaluation.sipnet_table["soil_carbon"].dims == ("draw", "site")
+        assert evaluation.model_output["wood_carbon"].dims == ("draw", "site", "time")
+        assert evaluation.model_output["draw"].values.tolist() == [0, 1, 2]
+        assert evaluation.run_succeeded.dims == ("draw", "site")
+        assert list(evaluation.failures.columns) == ["draw", "site", "error", "message"]
+        assert evaluation.failures["draw"].tolist() == [1]
+        assert evaluation.valid.tolist() == [True, False, True]
+
+    def test_the_default_table_takes_the_named_batch_dim(
+        self, parameter_vector, climate, observation_vector, theta
+    ):
+        forward = ForwardModel(
+            scaled_niwot_model(),
+            parameter_vector,
+            climate=climate,
+            backend=SequentialBackend(),
+            observation_vector=observation_vector,
+            site_table=SITE_TABLE,
+            batch_dim="draw",
+        )
+        evaluation = forward.evaluate(theta)
+        assert evaluation.sipnet_table["soil_carbon"].dims == ("draw", "site")
+        np.testing.assert_allclose(
+            evaluation.predictions,
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+            )(theta),
+        )
+
+    def test_a_hook_whose_batch_dim_is_named_otherwise_is_refused(
+        self, parameter_vector, climate, observation_vector
+    ):
+        with pytest.raises(ValueError, match="name the batch dim 'draw'"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                batch_dim="draw",
+                to_sipnet_table=parameter_vector.sipnet_table,
+            )
+
+    def test_a_reserved_name_is_refused(self, parameter_vector, climate, observation_vector):
+        with pytest.raises(ValueError, match="cannot name a batch dim"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                batch_dim="site",
+            )
+
+    @pytest.mark.parametrize("name", ["soil_carbon", "pft", "allocation.leaf_allocation"])
+    def test_a_name_the_vector_refuses_is_refused_up_front(
+        self, parameter_vector, climate, observation_vector, name
+    ):
+        """Even with a custom hook, which the vector's check never ran for."""
+        for hook in (None, parameter_vector.sipnet_table):
+            with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
+                ForwardModel(
+                    scaled_niwot_model(),
+                    parameter_vector,
+                    climate=climate,
+                    backend=SequentialBackend(),
+                    observation_vector=observation_vector,
+                    site_table=SITE_TABLE,
+                    batch_dim=name,
+                    to_sipnet_table=hook,
+                )
+
+    def test_an_output_variable_name_is_refused_up_front(self, parameter_vector, climate):
+        with pytest.raises(ValueError, match="'wood_carbon' is an output variable"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",),
+                site_table=SITE_TABLE,
+                batch_dim="wood_carbon",
+            )
+
+    def test_an_output_variable_alias_is_refused_up_front(self, parameter_vector, climate):
+        """``nee`` was accepted, though the output selection resolves it to
+        ``net_ecosystem_exchange``."""
+        with pytest.raises(ValueError, match="'nee' is an alias of the output variable"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("net_ecosystem_exchange",),
+                site_table=SITE_TABLE,
+                batch_dim="nee",
+            )
+
+    @pytest.mark.parametrize(
+        "name",
+        ["time_step_length", "time_step_start", "time_bounds", "bounds", "year", "day_of_year"],
+    )
+    @pytest.mark.parametrize("freq", [None, "1D"])
+    def test_a_name_the_model_output_uses_is_refused_up_front(
+        self, parameter_vector, climate, name, freq
+    ):
+        """It was refused only at stacking, after every run had completed."""
+        with pytest.raises(ValueError, match=f"{name!r} cannot name a batch dim; it is a coordinate"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",),
+                freq=freq,
+                site_table=SITE_TABLE,
+                batch_dim=name,
+            )
+
+    @pytest.mark.parametrize("name", ["driver_member", "initial_condition_member"])
+    def test_a_data_source_member_name_is_refused(self, parameter_vector, climate, name):
+        """Theta's rows named ``driver_member`` were stamped as driver members."""
+        with pytest.raises(ValueError, match="a data source's member dim"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                output_variable_names=("wood_carbon",),
+                site_table=SITE_TABLE,
+                batch_dim=name,
+            )
+
+    def test_an_observation_source_name_is_refused_up_front(
+        self, parameter_vector, climate, observation_vector
+    ):
+        """It was accepted, and the vector's fields() then refused the predictions."""
+        with pytest.raises(ValueError, match="is a product name"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                batch_dim="landtrendr_aboveground_biomass",
+            )
+
+    def test_the_batch_dim_is_read_only(self, forward):
+        assert forward.batch_dim == "sample"
+        with pytest.raises(AttributeError):
+            forward.batch_dim = "draw"
+
+    def test_a_hook_labeling_rows_with_floats_is_refused(
+        self, parameter_vector, climate, observation_vector
+    ):
+        def floats(theta):
+            table = parameter_vector.sipnet_table(theta)
+            return table.assign_coords(sample=table["sample"].values.astype(float))
+
+        with pytest.raises(ValueError, match="integer"):
+            ForwardModel(
+                scaled_niwot_model(),
+                parameter_vector,
+                climate=climate,
+                backend=SequentialBackend(),
+                observation_vector=observation_vector,
+                site_table=SITE_TABLE,
+                to_sipnet_table=floats,
+            )
+
+
+class TestRunSucceededIsAField:
+    def test_run_succeeded_validates_as_a_field(self, forward, theta):
+        from sipnet_calibration.fields import validate_field
+
+        evaluation = forward.evaluate(theta)
+        validate_field(evaluation.run_succeeded)
+        assert evaluation.run_succeeded["site"].dtype == np.int32
+        assert evaluation.run_succeeded["lon"].values.tolist() == [-105.0, -70.0]
+        assert evaluation.run_succeeded["sample"].attrs["long_name"] == "Sample"
+
+    def test_run_succeeded_is_mapped(self, forward, theta):
+        """It validated as a field and was refused by the map for want of units."""
+        import matplotlib.pyplot as plt
+
+        from sipnet_calibration.plotting import plot_map
+
+        evaluation = forward.evaluate(theta)
+        figure, ax = plt.subplots()
+        try:
+            plot_map(evaluation.run_succeeded.isel(sample=0), ax=ax)
+        finally:
+            plt.close(figure)

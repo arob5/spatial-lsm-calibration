@@ -51,8 +51,8 @@ from sipnet_calibration.plotting.maps import (
     Points,
     Triangles,
     animate_map,
-    member_summary,
     plot_map,
+    summarize_batch,
 )
 from sipnet_calibration.plotting.primitives import band, fan, line, points, spaghetti
 from sipnet_calibration.plotting.series import plot_time_series
@@ -80,7 +80,6 @@ __all__ = [
     "build_plot_grid",
     "fan",
     "line",
-    "member_summary",
     "plot_by_site",
     "plot_by_variable",
     "plot_map",
@@ -91,5 +90,6 @@ __all__ = [
     "points",
     "role_style",
     "spaghetti",
+    "summarize_batch",
     "use_project_style",
 ]

@@ -3,14 +3,21 @@
 Contents
 --------
 Dimensions
-    :data:`SITE`, :data:`TIME`, :data:`SAMPLE`, and the reserved spatial
+    :data:`SITE`, :data:`TIME`, :data:`SAMPLE`; the data sources' ensemble
+    dims :data:`INITIAL_CONDITION_MEMBER` and :data:`DRIVER_MEMBER`,
+    collected in :data:`DATA_SOURCE_MEMBER_NAMES`; and the reserved spatial
     names :data:`POINT`, :data:`LAT`, :data:`LON`, :data:`Y`, :data:`X`,
-    collected in :data:`SPATIAL_DIM_NAMES`.
+    collected in :data:`SPATIAL_DIM_NAMES`; :data:`NON_BATCH_DIM_NAMES`, the
+    names no batch dim takes; :data:`BOUNDS`, the second dim of
+    :data:`TIME_BOUNDS`.
 Coordinates
+    :data:`SOURCE_INDEX`, the 1-based file index beside a data source's
+    own ensemble dim;
     :data:`LON` and :data:`LAT` on a site or a point; pySIPNET's timestep
     coordinates :data:`TIMESTEP_START` and :data:`TIMESTEP_LENGTH`, with
     ``time`` collected in :data:`TIME_COORD_NAMES`; an observation's window
-    edges :data:`WINDOW_START` and :data:`WINDOW_END`.
+    edges :data:`WINDOW_START` and :data:`WINDOW_END`; SIPNET's row labels,
+    :data:`SIPNET_ROW_LABEL_NAMES`.
 Columns
     :data:`SITE_ID`, the site table's key.
 Variables
@@ -18,11 +25,14 @@ Variables
     or pySIPNET's output stores.
 Attributes
     :data:`SITE_ATTRIBUTES`, :data:`LON_ATTRIBUTES`, :data:`LAT_ATTRIBUTES`,
-    the CF attributes of those coordinates, one wording each;
+    :data:`SAMPLE_ATTRIBUTES`, :data:`DATA_SOURCE_MEMBER_ATTRIBUTES` and
+    :data:`SOURCE_INDEX_ATTRIBUTES`, the attributes of those coordinates,
+    one wording each;
     :data:`STALE_TIME_ATTRIBUTE_NAMES`, the ``time`` attributes a field drops.
 Dtypes and patterns
-    :data:`SITE_DTYPE`, the dtype of a site id; :data:`NAME_PATTERN`, what a
-    processed name looks like.
+    :data:`SITE_DTYPE`, the dtype of a site id; :data:`BATCH_LABEL_DTYPE`, the
+    dtype of a batch dim's labels; :data:`NAME_PATTERN`, what a processed name
+    looks like.
 Settings
     :data:`CF_CONVENTIONS`, the ``Conventions`` attribute the netCDF files
     declare; :data:`DATA_ROOT_ENV_VAR` and :func:`data_root`, where the
@@ -53,22 +63,33 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import numpy as np
-from pysipnet.dataset import TIME_DIMENSION
+from pysipnet.dataset import BOUNDS_DIMENSION, TIME_DIMENSION
 
 __all__ = [
+    "BATCH_LABEL_DTYPE",
+    "BOUNDS",
     "CF_CONVENTIONS",
     "DATA_ROOT_ENV_VAR",
+    "DATA_SOURCE_MEMBER_ATTRIBUTES",
+    "DATA_SOURCE_MEMBER_NAMES",
+    "DRIVER_MEMBER",
+    "INITIAL_CONDITION_MEMBER",
     "LAT",
     "LAT_ATTRIBUTES",
     "LON",
     "LON_ATTRIBUTES",
     "NAME_PATTERN",
+    "NON_BATCH_DIM_NAMES",
     "POINT",
     "SAMPLE",
+    "SAMPLE_ATTRIBUTES",
+    "SIPNET_ROW_LABEL_NAMES",
     "SITE",
     "SITE_ATTRIBUTES",
     "SITE_DTYPE",
     "SITE_ID",
+    "SOURCE_INDEX",
+    "SOURCE_INDEX_ATTRIBUTES",
     "SPATIAL_DIM_NAMES",
     "STALE_TIME_ATTRIBUTE_NAMES",
     "TIME",
@@ -93,9 +114,22 @@ SITE = "site"
 #: The time dimension, pySIPNET's own name for it.
 TIME = TIME_DIMENSION
 
-#: The batch dimension created from the rows of batched Flat: one row of
-#: ``theta`` is one sample.
+#: The default name of the batch dimension created from the rows of batched
+#: Flat: one row of ``theta`` is one sample. Every function that creates one
+#: takes ``batch_dim=`` to name it otherwise, and all default to this, so the
+#: Fields of the two vectors align on one dim.
 SAMPLE = "sample"
+
+#: The batch dimension of PEcAn's initial condition ensemble, in the
+#: processed file and every field made from it.
+INITIAL_CONDITION_MEMBER = "initial_condition_member"
+
+#: The batch dimension of the ERA5 driver ensemble.
+DRIVER_MEMBER = "driver_member"
+
+#: The batch dimensions of the data sources' own ensembles, each named for its
+#: source so that two of them never pair by accident.
+DATA_SOURCE_MEMBER_NAMES: tuple[str, ...] = (INITIAL_CONDITION_MEMBER, DRIVER_MEMBER)
 
 #: The spatial dimension of locations that are not sites, such as spatial
 #: prediction targets: integer labels with no meaning beyond the field, and
@@ -157,6 +191,25 @@ WINDOW_START = "time_bounds_start"
 WINDOW_END = "time_bounds_end"
 
 
+#: The coordinate beside a data source's own ensemble dim (such as
+#: ``initial_condition_member`` or ``driver_member``) holding each member's
+#: 1-based index in the source's file names, so a file can always be found
+#: from a member. One name for every data source.
+SOURCE_INDEX = "source_index"
+
+#: The names that are never a batch dimension, whatever their labels, and
+#: that no batch dimension may take: the spatial names, ``time``, and
+#: :data:`SOURCE_INDEX`, which sits beside a data source's member dim as a
+#: coordinate of it.
+NON_BATCH_DIM_NAMES: tuple[str, ...] = (*SPATIAL_DIM_NAMES, TIME, SOURCE_INDEX)
+
+#: SIPNET's own row labels, the start of each step, which pySIPNET's output
+#: carries as integer or float coordinates on ``time``. A field drops them,
+#: since ``time_step_start`` is the same instant; they are neither batch
+#: labels nor names a batch dimension may take.
+SIPNET_ROW_LABEL_NAMES: tuple[str, ...] = ("year", "day_of_year", "hour_of_day")
+
+
 # ── variables ─────────────────────────────────────────────────────────────────
 
 #: The CF bounds variable of ``time``, ``(time, bounds)``, that a processed
@@ -164,6 +217,11 @@ WINDOW_END = "time_bounds_end"
 #: stores for its timesteps. Its second dimension is pySIPNET's
 #: ``pysipnet.dataset.BOUNDS_DIMENSION``.
 TIME_BOUNDS = "time_bounds"
+
+#: The second dimension of :data:`TIME_BOUNDS`, pySIPNET's
+#: ``pysipnet.dataset.BOUNDS_DIMENSION``: the two edges of each interval. It
+#: has no coordinate, so it is never a dimension of a field.
+BOUNDS = BOUNDS_DIMENSION
 
 
 # ── columns ───────────────────────────────────────────────────────────────────
@@ -265,6 +323,39 @@ LAT_ATTRIBUTES = FrozenMapping(
     {"standard_name": "latitude", "long_name": "Latitude", "units": "degrees_north"}
 )
 
+#: The attributes of a ``sample`` coordinate. Read-only, as
+#: :data:`SITE_ATTRIBUTES`.
+SAMPLE_ATTRIBUTES = FrozenMapping(
+    {
+        "long_name": "Sample",
+        "comment": "Label of the row of batched Flat the value was computed from.",
+    }
+)
+
+#: The attributes of a data source's own ensemble dim, such as
+#: ``initial_condition_member``, whose label is its member's identity: its
+#: :data:`SOURCE_INDEX` less one, whatever subset of the members is loaded.
+#: Read-only, as :data:`SITE_ATTRIBUTES`.
+DATA_SOURCE_MEMBER_ATTRIBUTES = FrozenMapping(
+    {
+        "long_name": "Ensemble member of the data source",
+        "comment": (
+            "0-based: source_index - 1, the member's 1-based index in the source's file "
+            "names less one, whatever members are loaded; meaningful only within this "
+            "data source."
+        ),
+    }
+)
+
+#: The attributes of a :data:`SOURCE_INDEX` coordinate. Read-only, as
+#: :data:`SITE_ATTRIBUTES`.
+SOURCE_INDEX_ATTRIBUTES = FrozenMapping(
+    {
+        "long_name": "Member index in the data source's file names",
+        "comment": "1-based, as the data source numbers its files.",
+    }
+)
+
 #: ``time`` attributes a field does not keep. ``bounds`` names pySIPNET's
 #: two-dimensional ``time_bounds`` variable, which a field cannot carry and
 #: which describes the source's timesteps, not a coarser one's.
@@ -275,6 +366,10 @@ STALE_TIME_ATTRIBUTE_NAMES: tuple[str, ...] = ("bounds",)
 
 #: The dtype of a site id, on a ``site`` coordinate and in the site table.
 SITE_DTYPE = np.int32
+
+#: The dtype of a batch dim's labels, which may be any distinct integers. The
+#: labels a batched Flat is given are ``0`` to ``n_samples - 1``.
+BATCH_LABEL_DTYPE = np.int64
 
 #: What a processed name looks like: lower-case words of letters and digits,
 #: joined by single underscores.
