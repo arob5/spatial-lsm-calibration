@@ -182,5 +182,11 @@ def test_axis_label_refuses_something_that_is_not_a_data_array():
     """It raised numpy's AttributeError."""
     import numpy as np
 
-    with pytest.raises(TypeError, match="a field is an xarray DataArray"):
+    with pytest.raises(TypeError, match="an axis label is read from a field"):
         axis_label(np.ones(2))
+
+
+def test_an_unhashable_role_is_a_type_error():
+    """It raised Python's own 'unhashable type'."""
+    with pytest.raises(TypeError, match=r"a role is named by a string, got list \['prior'\]"):
+        role_style(["prior"])

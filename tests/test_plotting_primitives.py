@@ -284,10 +284,10 @@ def test_fan_honors_an_explicit_alpha(ax, x, samples):
 
 def test_fan_rejects_a_single_number_for_levels(ax, x, samples):
     """A bare number is a TypeError rather than a failure on iteration."""
-    with pytest.raises(TypeError, match="levels must be a sequence"):
+    with pytest.raises(TypeError, match=r"the one number 0.5; pass widths in \(0, 1\), such as \(0.5,\)"):
         fan(ax, x, samples, levels=0.5)
-    # A NumPy number was iterated and failed in numpy's words.
-    with pytest.raises(TypeError, match="levels must be a sequence"):
+    # A NumPy number was iterated and failed in numpy's words; 1 is no width to suggest.
+    with pytest.raises(TypeError, match=r"the one number 1; .*such as \(0.5, 0.9\)"):
         fan(ax, x, samples, levels=np.int64(1))
     with pytest.raises(TypeError, match="levels must be a real number"):
         fan(ax, x, samples, levels=("wide",))

@@ -270,7 +270,7 @@ def as_layer_names(layer_names: Any, *, message_name: str) -> tuple[str, ...]:
     """
     layer_names = as_names(layer_names, message_name=message_name)
     for name in layer_names:
-        check_key_is_known(name, BASEMAP_LAYERS, message_name="basemap layer")
+        check_key_is_known(name, BASEMAP_LAYERS, what="basemap layer")
     return layer_names
 
 

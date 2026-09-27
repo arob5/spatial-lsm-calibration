@@ -52,7 +52,7 @@ import numpy as np
 import xarray as xr
 from frozendict import frozendict
 
-from sipnet_calibration.fields import check_field_is_a_dataarray, message_name
+from sipnet_calibration.fields import message_name
 from sipnet_calibration.validation import as_bounded_integer, truncated
 
 __all__ = [
@@ -175,7 +175,7 @@ def role_style(role: str, element: str = "line", **overrides: Any) -> dict[str, 
     ValueError
         If *element* is not ``"line"``, ``"band"`` or ``"points"``.
     """
-    check_key_is_known(role, ROLES, message_name="role")
+    check_key_is_known(role, ROLES, what="role")
     check_option_is_known(element, tuple(_ELEMENT_KEYWORDS), message_name="element")
     style = {
         key: value
@@ -246,7 +246,7 @@ def axis_label(field: xr.DataArray) -> str:
     ValueError
         If ``long_name`` or ``units`` is missing from ``attrs``, naming which.
     """
-    check_field_is_a_dataarray(field)
+    check_field_is_a_dataarray_to_label(field)
     check_field_has_a_label(field, message_name=message_name(field))
     return f"{field.attrs['long_name']} ({field.attrs['units']})"
 
@@ -320,6 +320,15 @@ def check_classes_fit_a_palette(n: int) -> None:
         )
 
 
+def check_field_is_a_dataarray_to_label(field: Any) -> None:
+    """An axis label is read from a field, a ``DataArray``."""
+    if not isinstance(field, xr.DataArray):
+        raise TypeError(
+            f"an axis label is read from a field, an xarray.DataArray, got "
+            f"{type(field).__name__}; pass one variable, such as dataset[name]."
+        )
+
+
 def check_field_has_a_label(field: xr.DataArray, *, message_name: str) -> None:
     """*field* carries the ``long_name`` and ``units`` an axis label is made of."""
     missing = [name for name in ("long_name", "units") if not field.attrs.get(name)]
@@ -334,6 +343,21 @@ def check_field_has_a_label(field: xr.DataArray, *, message_name: str) -> None:
 
 def check_option_is_known(value: Any, options: Collection[str], *, message_name: str) -> None:
     """*value* is one of *options*, the strings an argument may be."""
+    check_option_is_a_string(value, options, message_name=message_name)
+    check_option_is_one_of(value, options, message_name=message_name)
+
+
+def check_option_is_a_string(value: Any, options: Collection[str], *, message_name: str) -> None:
+    """An option is given as a string."""
+    if not isinstance(value, str):
+        raise TypeError(
+            f"{message_name} must be one of the strings {list(options)}, got "
+            f"{type(value).__name__} {value!r}; pass one of them."
+        )
+
+
+def check_option_is_one_of(value: str, options: Collection[str], *, message_name: str) -> None:
+    """An option string is one of *options*."""
     if value not in options:
         raise ValueError(
             f"{message_name} must be one of {list(options)}, got {value!r}; pass one of them."
@@ -341,12 +365,45 @@ def check_option_is_known(value: Any, options: Collection[str], *, message_name:
 
 
 def check_key_is_known(
-    key: Any, registry: Collection[str], *, alternatives: str = "", message_name: str
+    key: Any,
+    registry: Collection[str],
+    *,
+    what: str,
+    alternatives: str = "",
+    message_name: str | None = None,
 ) -> None:
-    """*key* names an entry of *registry*; *message_name* says what kind of entry."""
+    """*key* names a *what* of *registry*; *message_name*, where given, the argument's subject."""
+    check_key_is_hashable(key, what=what, message_name=message_name)
+    check_key_is_in_the_registry(
+        key, registry, what=what, alternatives=alternatives, message_name=message_name
+    )
+
+
+def check_key_is_hashable(key: Any, *, what: str, message_name: str | None) -> None:
+    """A key looked up by name is hashable, as a name is."""
+    try:
+        hash(key)
+    except TypeError:
+        prefix = f"{message_name}: " if message_name else ""
+        raise TypeError(
+            f"{prefix}a {what} is named by a string, got {type(key).__name__} {key!r}; pass "
+            "one name."
+        ) from None
+
+
+def check_key_is_in_the_registry(
+    key: Any,
+    registry: Collection[str],
+    *,
+    what: str,
+    alternatives: str,
+    message_name: str | None,
+) -> None:
+    """A key names an entry of *registry*."""
     if key not in registry:
+        prefix = f"{message_name}: " if message_name else ""
         raise KeyError(
-            f"unknown {message_name} {key!r}; pass one of {truncated(list(registry))}"
+            f"{prefix}unknown {what} {key!r}; pass one of {truncated(list(registry))}"
             f"{alternatives}."
         )
 

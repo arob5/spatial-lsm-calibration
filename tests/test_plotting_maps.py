@@ -1027,3 +1027,23 @@ def test_a_length_refusal_keeps_its_units_and_advice():
         Cells(radius=-1)
     with pytest.raises(ValueError, match="max_edge must be positive.*float\\('inf'\\) to mask none"):
         Triangles(max_edge=0)
+
+
+def test_a_colors_class_is_refused_naming_the_field(ax, categorical):
+    with pytest.raises(KeyError, match="'wood_carbon', colors: unknown class 'shrub'"):
+        plot_map(categorical, ax, colors={"shrub": "red"})
+
+
+def test_plot_map_grid_names_a_list_briefly(dense):
+    """validation's mapping check printed the whole DataArray repr."""
+    with pytest.raises(TypeError) as raised:
+        plot_map_grid([dense])
+    message = str(raised.value)
+    assert "fields_by_title must be a mapping of panel title to field, got list" in message
+    assert "DataArray" not in message
+
+
+@pytest.mark.parametrize("basemap, drawn", [(np.True_, 4), (np.False_, 0)])
+def test_basemap_takes_numpy_booleans(ax, dense, basemap, drawn):
+    plot_map(dense, ax, basemap=basemap, graticule=False)
+    assert len([c for c in ax.collections if c.zorder >= BASEMAP_ZORDER]) == drawn

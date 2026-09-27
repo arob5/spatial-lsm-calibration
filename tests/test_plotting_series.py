@@ -583,3 +583,10 @@ def test_n_sigma_takes_a_zero_dimensional_array_and_keeps_its_advice(ax, field_t
         plot_time_series(
             field_time, ax=ax, show="points", standard_deviation=deviation, n_sigma=-1.0
         )
+
+
+def test_label_by_is_refused_naming_the_field_and_the_argument(ax, field_sample_time):
+    with pytest.raises(KeyError, match="'air_temperature', label_by: unknown coordinate 'nope'"):
+        plot_time_series(field_sample_time, ax=ax, show="spaghetti", label_by="nope")
+    with pytest.raises(TypeError, match="label_by: a coordinate is named by a string"):
+        plot_time_series(field_sample_time, ax=ax, show="spaghetti", label_by=["sample"])

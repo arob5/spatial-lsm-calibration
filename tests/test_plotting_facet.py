@@ -131,8 +131,15 @@ def test_no_labels_means_no_titles():
 
 def test_a_single_string_for_labels_is_rejected():
     """A bare string, where a sequence is wanted, would title the panels one character each."""
-    with pytest.raises(TypeError, match="labels must be a sequence of values, got the one string"):
+    with pytest.raises(TypeError, match="labels is the one string 'Site'.*one title per panel"):
         build_plot_grid([1, 2, 3, 4], draw_nothing, labels="Site")
+
+
+@pytest.mark.parametrize("share", [True, np.array(["x"]), np.array(["x", "y"]), None])
+def test_an_option_that_is_not_a_string_is_a_type_error(share):
+    """True was a ValueError, a one-string array was taken, a two-string one raised numpy's error."""
+    with pytest.raises(TypeError, match="share must be one of the strings"):
+        build_plot_grid([1], draw_nothing, share=share)
 
 
 def test_a_set_of_labels_is_rejected():

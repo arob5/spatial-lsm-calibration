@@ -95,7 +95,6 @@ from sipnet_calibration.validation import (
     as_positive_integer,
     as_sequence,
     as_site_ids,
-    check_value_is_a_mapping,
     truncated,
 )
 
@@ -371,7 +370,7 @@ def plot_map_grid(
         :func:`~sipnet_calibration.plotting.maps.check_field_is_a_map` raises
         for a panel, every panel checked before any is drawn.
     """
-    check_value_is_a_mapping(fields_by_title, message_name="fields_by_title")
+    check_fields_are_a_mapping(fields_by_title, message_name="fields_by_title")
     check_fields_are_given(fields_by_title, example="{title: field}", message_name="fields_by_title")
     check_option_is_known(scale, SCALE_OPTIONS, message_name="scale")
     panel_fields = list(fields_by_title.values())
@@ -546,6 +545,7 @@ def _panel_titles(
         return None
     if callable(labels):
         return [str(labels(item)) for item in items]
+    check_labels_are_not_one_string(labels)
     titles = [str(title) for title in as_sequence(labels, message_name="labels")]
     check_labels_match_the_items(titles, items)
     return titles
@@ -625,6 +625,24 @@ def check_labels_match_the_items(titles: list[str], items: list[Any]) -> None:
         raise ValueError(
             f"labels has {len(titles)} entries and there are {len(items)} panels; they "
             "must match, one title per panel."
+        )
+
+
+def check_fields_are_a_mapping(fields: Any, *, message_name: str) -> None:
+    """A grid of maps is given a mapping of panel title to field."""
+    if not isinstance(fields, Mapping):
+        raise TypeError(
+            f"{message_name} must be a mapping of panel title to field, got "
+            f"{type(fields).__name__}; pass {{title: field}}."
+        )
+
+
+def check_labels_are_not_one_string(labels: Any) -> None:
+    """Panel titles are a sequence or a callable, not one string read a character at a time."""
+    if isinstance(labels, str):
+        raise TypeError(
+            f"labels is the one string {labels!r}, which would title the panels a character "
+            "each; pass one title per panel, or a callable."
         )
 
 

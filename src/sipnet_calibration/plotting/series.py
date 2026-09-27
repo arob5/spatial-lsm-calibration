@@ -329,11 +329,11 @@ def _error_bar_lengths(
 
 def check_field_is_a_time_series(field: xr.DataArray, *, message_name: str) -> None:
     """A field to plot as a series has ``time`` and no spatial dim."""
-    check_field_has_a_time_dim(field, message_name=message_name)
+    check_series_has_a_time_dim(field, message_name=message_name)
     check_field_has_no_spatial_dim(field, message_name=message_name)
 
 
-def check_field_has_a_time_dim(field: xr.DataArray, *, message_name: str) -> None:
+def check_series_has_a_time_dim(field: xr.DataArray, *, message_name: str) -> None:
     """A field to plot against time has a ``time`` dim."""
     if TIME not in field.dims:
         raise ValueError(
@@ -384,7 +384,9 @@ def check_label_by_names_the_curves(
 ) -> None:
     """*label_by* names a coordinate on the batch dims of a spaghetti plot."""
     check_label_by_is_drawn_as_spaghetti(show)
-    check_key_is_known(label_by, field.coords, message_name="coordinate")
+    check_key_is_known(
+        label_by, field.coords, what="coordinate", message_name=f"{message_name}, label_by"
+    )
     check_label_by_is_on_the_batch_dims(label_by, field, batch, message_name=message_name)
 
 

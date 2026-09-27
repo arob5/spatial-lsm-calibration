@@ -635,6 +635,7 @@ def _is_present(values: np.ndarray) -> np.ndarray:
 
 def _as_levels(levels: Any) -> tuple[float, ...]:
     """*levels* as a tuple of interval widths, each within ``(0, 1)``."""
+    check_levels_are_not_one_number(levels)
     levels = as_sequence(levels, message_name="levels")
     levels = tuple(
         as_real_number(level, fix="pass interval widths in (0, 1)", message_name="levels")
@@ -709,6 +710,17 @@ def check_samples_match_x(x: np.ndarray, samples: np.ndarray) -> None:
         raise ValueError(
             f"samples: each sample has one value per entry of x, and a sample has "
             f"{samples.shape[1]} values and x {x.size}; they must match."
+        )
+
+
+def check_levels_are_not_one_number(levels: Any) -> None:
+    """Interval widths are a sequence, not one number."""
+    if not isinstance(levels, str) and np.ndim(levels) == 0:
+        number = np.asarray(levels).item() if hasattr(levels, "__array__") else levels
+        example = f"({number},)" if isinstance(number, float) and 0 < number < 1 else "(0.5, 0.9)"
+        raise TypeError(
+            f"levels: the interval widths are a sequence, got the one number {number!r}; pass "
+            f"widths in (0, 1), such as {example}."
         )
 
 

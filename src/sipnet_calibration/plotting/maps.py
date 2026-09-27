@@ -281,9 +281,10 @@ def plot_map(
         If *render*, *extent*, *basemap* or *colors* names a renderer, extent,
         layer or class that is not there.
     ValueError
-        If *field* is none of the maps above, or the color keywords do not suit
-        its values; each message says which, and for a batch or ``time`` dim
-        names the functions that draw it.
+        If *field* is none of the maps above, *extent* is not a valid box,
+        *render* is given for a raster or interpolates classes, or the color
+        keywords do not suit the values; each message says which, and for a
+        batch or ``time`` dim names the functions that draw it.
     """
     _draw_map(
         field, ax, render=render, extent=extent,
@@ -668,7 +669,7 @@ def map_bounds(
         return extent
     if isinstance(extent, str):
         check_key_is_known(
-            extent, EXTENTS, alternatives=_EXTENT_ALTERNATIVES, message_name="extent"
+            extent, EXTENTS, what="extent", alternatives=_EXTENT_ALTERNATIVES
         )
         return ProjectedBounds(*SITE_PROJECTION.projected_bounds(EXTENTS[extent]))
     if extent is not None:
@@ -890,10 +891,8 @@ def _draw_map(
 
 def _basemap_layer_names(basemap: bool | Sequence[str]) -> tuple[str, ...]:
     """The basemap layers ``basemap=`` asks for: all, none, or the names given."""
-    if basemap is True:
-        return DEFAULT_LAYER_NAMES
-    if basemap is False:
-        return ()
+    if isinstance(basemap, (bool, np.bool_)):
+        return DEFAULT_LAYER_NAMES if basemap else ()
     return as_layer_names(basemap, message_name="basemap")
 
 
@@ -903,7 +902,7 @@ def _renderer_for(render: str | SiteRenderer | None) -> SiteRenderer:
         return RENDERERS["points"]
     if isinstance(render, str):
         check_key_is_known(
-            render, RENDERERS, alternatives=", or a SiteRenderer", message_name="renderer"
+            render, RENDERERS, what="renderer", alternatives=", or a SiteRenderer"
         )
         return RENDERERS[render]
     check_render_is_a_renderer(render)
@@ -1045,8 +1044,9 @@ def _categorical_scale(
             display_names, _display_names_of(field, class_names)
         )
     palette = category_colors(len(class_names)) if len(class_names) else []
+    name = f"{message_name(fields[0])}, colors"
     for class_name, class_color in (colors or {}).items():
-        check_key_is_known(class_name, class_names, message_name="class")
+        check_key_is_known(class_name, class_names, what="class", message_name=name)
         palette[class_names.index(class_name)] = class_color
     cmap = ListedColormap(palette) if palette else ListedColormap(["#999999"])
     count = max(len(class_names), 1)
