@@ -49,10 +49,10 @@ which site-labels data source it is.
 Column        Dtype              Meaning
 ============= ================== ==============================================
 ``site_id``   ``int32``          site identifier, the ``site_id`` of the pool
-``label``     ``category``       the class, categories being ``spec.labels``
+``label``     ``category``       the class, categories being ``spec.class_names``
 ============= ================== ==============================================
 
-The categorical's categories are :attr:`SiteLabelsSpec.labels`, **in the spec's
+The categorical's categories are :attr:`SiteLabelsSpec.class_names`, **in the spec's
 order and always all of them**, whether or not every class is used. A class the
 spec does not declare is an error on read, never a silently admitted new
 category.
@@ -239,7 +239,7 @@ class SiteLabelsSpec:
     class_noun: str
     """What the classes are, as a noun phrase: ``"plant functional type"``."""
 
-    labels: tuple[str, ...]
+    class_names: tuple[str, ...]
     """The classes, verbatim from the producer, in the order they are indexed in.
 
     The order is the source's categorical order, so it is what a hierarchical
@@ -276,7 +276,7 @@ class SiteLabelsSpec:
 
     ``None`` where the classes are not a function of ``landcover``, and the
     check is then skipped. Where set, it must be total over the ``landcover``
-    values the pool actually uses and its values must all be in *labels*.
+    values the pool actually uses and its values must all be in *class_names*.
     """
 
     display_names: Mapping[str, str] | None = None
@@ -339,12 +339,12 @@ def site_labels_path(
 
 
 def label_dtype(spec: SiteLabelsSpec) -> pd.CategoricalDtype:
-    """The ``label`` column's dtype: *spec.labels* as unordered categories.
+    """The ``label`` column's dtype: *spec.class_names* as unordered categories.
 
     Unordered because the classes have no ranking; the *order of the
     categories* is still the spec's, which is what fixes a class axis.
     """
-    return pd.CategoricalDtype(categories=list(spec.labels), ordered=False)
+    return pd.CategoricalDtype(categories=list(spec.class_names), ordered=False)
 
 
 def load_site_labels(
@@ -363,7 +363,7 @@ def load_site_labels(
     -------
     pandas.DataFrame
         The columns of :data:`SITE_LABELS_COLUMNS`, in ascending ``site_id``
-        order, with ``label`` a categorical over ``spec.labels``.
+        order, with ``label`` a categorical over ``spec.class_names``.
 
     Raises
     ------
@@ -446,13 +446,13 @@ def site_labels_field(
     check_classes_are_flag_meanings(spec)
     attrs = {
         "long_name": f"{spec.class_noun[:1].upper()}{spec.class_noun[1:]} ({spec.name})",
-        "flag_values": np.arange(len(spec.labels), dtype=np.int8),
-        "flag_meanings": " ".join(spec.labels),
+        "flag_values": np.arange(len(spec.class_names), dtype=np.int8),
+        "flag_meanings": " ".join(spec.class_names),
     }
     if spec.display_names is not None:
         # A tuple, since a display name may contain spaces and flag_meanings
         # is space-separated.
-        attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.labels)
+        attrs["flag_display_names"] = tuple(spec.display_names[label] for label in spec.class_names)
     return xr.DataArray(
         labels[LABEL_COLUMN].cat.codes.to_numpy(np.int8),
         dims=SITE,
@@ -521,7 +521,7 @@ def build_site_labels(spec: SiteLabelsSpec, frame: pd.DataFrame) -> pd.DataFrame
     -------
     pandas.DataFrame
         The columns of :data:`SITE_LABELS_COLUMNS`, in ascending ``site_id``
-        order, with ``label`` a categorical over ``spec.labels``.
+        order, with ``label`` a categorical over ``spec.class_names``.
 
     Raises
     ------
@@ -553,16 +553,16 @@ def describe(spec: SiteLabelsSpec) -> str:
     """A spec as readable prose, for a script's log."""
     lines = [
         f"{spec.name}: {spec.long_label}",
-        f"  {spec.class_noun}, {len(spec.labels)} classes: {', '.join(spec.labels)}",
+        f"  {spec.class_noun}, {len(spec.class_names)} classes: {', '.join(spec.class_names)}",
         f"  upstream product: {spec.upstream_product}, raw/site_labels/{spec.raw_file}, "
         f"{spec.expected_rows} rows",
         f"  {spec.description}",
     ]
     if spec.display_names is not None:
-        width = max(len(label) for label in spec.labels)
+        width = max(len(label) for label in spec.class_names)
         lines.append("  display names:")
         lines += [
-            f"    {label:<{width}} : {spec.display_names[label]}" for label in spec.labels
+            f"    {label:<{width}} : {spec.display_names[label]}" for label in spec.class_names
         ]
     if spec.comment:
         lines.append(f"  comment: {spec.comment}")
@@ -620,8 +620,8 @@ def check_site_labels_spec_is_valid(spec: SiteLabelsSpec) -> None:
     check_site_labels_name_is_a_processed_name(spec)
     check_site_labels_spec_is_described(spec)
     check_site_labels_spec_has_a_class_noun(spec)
-    check_site_labels_have_two_classes(spec)
-    check_names_are_unique(spec.labels, message_name=f"site labels {spec.name!r}: labels")
+    check_site_labels_have_at_least_two_classes(spec)
+    check_names_are_unique(spec.class_names, message_name=f"site labels {spec.name!r}: class_names")
     check_class_names_are_not_empty(spec)
     check_names_are_unique(
         spec.raw_columns, message_name=f"site labels {spec.name!r}: raw_columns"
@@ -681,18 +681,18 @@ def check_site_labels_spec_has_a_class_noun(spec: SiteLabelsSpec) -> None:
         )
 
 
-def check_site_labels_have_two_classes(spec: SiteLabelsSpec) -> None:
+def check_site_labels_have_at_least_two_classes(spec: SiteLabelsSpec) -> None:
     """A site-labels data source has at least two classes."""
-    if len(spec.labels) < 2:
+    if len(spec.class_names) < 2:
         raise ValueError(
             f"site labels {spec.name!r}: a source needs at least two classes, got "
-            f"{truncated(spec.labels)}; declare every class it uses."
+            f"{truncated(spec.class_names)}; declare every class it uses."
         )
 
 
 def check_class_names_are_not_empty(spec: SiteLabelsSpec) -> None:
     """No class of a site-labels spec is the empty string."""
-    if any(not label for label in spec.labels):
+    if any(not label for label in spec.class_names):
         raise ValueError(
             f"site labels {spec.name!r}: a class name is empty; name every class as the "
             "producer does."
@@ -722,7 +722,7 @@ def check_display_names_are_classes(spec: SiteLabelsSpec) -> None:
     """Every class *display_names* names is a class of the spec."""
     if spec.display_names is None:
         return
-    unknown = sorted(set(spec.display_names) - set(spec.labels))
+    unknown = sorted(set(spec.display_names) - set(spec.class_names))
     if unknown:
         raise ValueError(
             f"site labels {spec.name!r}: display_names names {truncated(unknown)}, which are not classes "
@@ -734,7 +734,7 @@ def check_display_names_cover_every_class(spec: SiteLabelsSpec) -> None:
     """*display_names*, where given, has an entry for every class."""
     if spec.display_names is None:
         return
-    absent = [label for label in spec.labels if label not in spec.display_names]
+    absent = [label for label in spec.class_names if label not in spec.display_names]
     if absent:
         raise ValueError(
             f"site labels {spec.name!r}: display_names has no entry for {truncated(absent)}; give every "
@@ -746,12 +746,12 @@ def check_landcover_mapping_sends_to_classes(spec: SiteLabelsSpec) -> None:
     """Every class a *landcover_mapping* sends a cover class to is one of the spec's."""
     if spec.landcover_mapping is None:
         return
-    unknown = sorted(set(spec.landcover_mapping.values()) - set(spec.labels))
+    unknown = sorted(set(spec.landcover_mapping.values()) - set(spec.class_names))
     if unknown:
         raise ValueError(
             f"site labels {spec.name!r}: landcover_mapping sends cover classes to "
             f"{truncated(unknown)}, "
-            f"which are not in labels {truncated(spec.labels)}; map onto declared classes."
+            f"which are not in class_names {truncated(spec.class_names)}; map onto declared classes."
         )
 
 
@@ -831,18 +831,18 @@ def check_classes_are_declared(
     label: pd.Series, spec: SiteLabelsSpec, *, message_name: str
 ) -> None:
     """Every class of site labels is one the spec declares."""
-    unknown = sorted(set(label.unique()) - set(spec.labels))
+    unknown = sorted(set(label.unique()) - set(spec.class_names))
     if unknown:
         raise ValueError(
             f"{message_name}: holds classes {truncated(unknown)} that {spec.name!r} does not "
-            f"declare (declared: {truncated(spec.labels)}); a new class is a spec change, not a "
+            f"declare (declared: {truncated(spec.class_names)}); a new class is a spec change, not a "
             "new row."
         )
 
 
 def check_classes_are_flag_meanings(spec: SiteLabelsSpec) -> None:
     """No class name holds whitespace, which a CF ``flag_meanings`` entry cannot."""
-    spaced = [label for label in spec.labels if re.search(r"\s", label)]
+    spaced = [label for label in spec.class_names if re.search(r"\s", label)]
     if spaced:
         raise ValueError(
             f"class name(s) {truncated(spaced)} of {spec.name!r} contain whitespace, which a CF "
@@ -864,7 +864,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         class_noun="plant functional type",
         # Ordered by the landcover classes they aggregate, which is the order
         # the classes are generated in, rather than by how many sites each has.
-        labels=(
+        class_names=(
             "boreal.coniferous",
             "temperate.deciduous.HPDA",
             "semiarid.grassland_HPDA",
@@ -921,7 +921,7 @@ SITE_LABELS: tuple[SiteLabelsSpec, ...] = (
         # Ordered by cover type -- needleleaf, broadleaf, mixed, shrub, open,
         # cropland, wetland -- rather than by site count, so that neighboring
         # classes in a prior's class axis are ecologically neighboring too.
-        labels=(
+        class_names=(
             "Evergreen_Needleleaf_Forest__P1",
             "Evergreen_Needleleaf_Forest__P2",
             "Evergreen_Broadleaf_Forest",

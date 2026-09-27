@@ -65,7 +65,7 @@ SYNTHETIC_SPEC = SiteLabelsSpec(
     name="synthetic_3class",
     long_label="Synthetic three-class site labels",
     class_noun="plant functional type",
-    labels=("conifer", "broadleaf", "grass"),
+    class_names=("conifer", "broadleaf", "grass"),
     description="Site labels that exist only in these tests.",
     upstream_product="test fixture",
     raw_file="synthetic_site_class.csv",
@@ -143,7 +143,7 @@ def test_spec_raw_columns_are_the_real_files_header(spec):
 def test_landcover_mapping_sends_every_cover_class_to_a_declared_label(spec):
     if spec.landcover_mapping is None:
         pytest.skip("no landcover relation declared")
-    assert set(spec.landcover_mapping.values()) <= set(spec.labels)
+    assert set(spec.landcover_mapping.values()) <= set(spec.class_names)
 
 
 def test_describe_names_the_classes_and_the_relation():
@@ -156,8 +156,8 @@ def test_describe_names_the_classes_and_the_relation():
     ("field", "value", "match"),
     [
         ("name", "Reanalysis3PFT", "lower_case_with_underscores"),
-        ("labels", ("only_one",), "at least two classes"),
-        ("labels", ("a", "a", "b"), r"labels names \['a'\] more than once"),
+        ("class_names", ("only_one",), "at least two classes"),
+        ("class_names", ("a", "a", "b"), r"class_names names \['a'\] more than once"),
         ("raw_columns", ("site", "site"), r"raw_columns names \['site'\] more than once"),
         ("site_column", "absent", "is not in raw_columns"),
         ("expected_rows", 0, "expected_rows must be at least 1"),
@@ -170,7 +170,7 @@ def test_spec_refuses_an_inconsistent_field(field, value, match):
         "name": "ok_name",
         "long_label": "Fine",
         "class_noun": "plant functional type",
-        "labels": ("a", "b"),
+        "class_names": ("a", "b"),
         "description": "Fine.",
         "upstream_product": "test",
         "raw_file": "f.csv",
@@ -185,12 +185,12 @@ def test_spec_refuses_an_inconsistent_field(field, value, match):
 
 
 def test_spec_refuses_a_landcover_mapping_onto_an_undeclared_class():
-    with pytest.raises(ValueError, match="not in labels"):
+    with pytest.raises(ValueError, match="not in class_names"):
         SiteLabelsSpec(
             name="ok_name",
             long_label="Fine",
             class_noun="plant functional type",
-            labels=("a", "b"),
+            class_names=("a", "b"),
             description="Fine.",
             upstream_product="test",
             raw_file="f.csv",
@@ -222,10 +222,10 @@ def test_label_is_a_categorical_over_the_specs_classes_in_order(synthetic):
     written = load_site_labels(SYNTHETIC_SPEC, site_labels_path(SYNTHETIC_SPEC, out_dir))
 
     assert written[LABEL_COLUMN].dtype == pd.CategoricalDtype(
-        list(SYNTHETIC_SPEC.labels), ordered=False
+        list(SYNTHETIC_SPEC.class_names), ordered=False
     )
     # Every class, in the spec's order, whether or not the file uses them all.
-    assert list(written[LABEL_COLUMN].cat.categories) == list(SYNTHETIC_SPEC.labels)
+    assert list(written[LABEL_COLUMN].cat.categories) == list(SYNTHETIC_SPEC.class_names)
 
 
 def test_the_written_file_reads_back_as_what_was_built(synthetic):
@@ -263,7 +263,7 @@ def test_a_class_literally_named_na_survives_the_read(tmp_path):
         name="na_class",
         long_label="Site labels with a class named NA",
         class_noun="cover class",
-        labels=("NA", "other"),
+        class_names=("NA", "other"),
         description="Exists to prove the null handling.",
         upstream_product="test",
         raw_file="na.csv",
@@ -442,12 +442,12 @@ def test_the_real_site_labels_are_exactly_the_landcover_aggregation(real_site_la
     expected = joined["landcover"].map(dict(spec.landcover_mapping))
     assert (expected == joined[LABEL_COLUMN].astype(str)).all()
     # And the relation is onto: every class is reached from some cover class.
-    assert set(expected) == set(spec.labels)
+    assert set(expected) == set(spec.class_names)
 
 
 def test_every_declared_class_is_used_by_the_real_site_labels(real_site_labels):
     spec = resolve_site_labels("reanalysis_3pft")
-    assert set(real_site_labels[LABEL_COLUMN].unique()) == set(spec.labels)
+    assert set(real_site_labels[LABEL_COLUMN].unique()) == set(spec.class_names)
 
 
 def test_the_real_raw_file_has_the_specs_row_count(real_site_table):
@@ -464,7 +464,7 @@ def test_the_real_raw_file_has_the_specs_row_count(real_site_table):
 def test_display_names_cover_exactly_the_classes(spec):
     if spec.display_names is None:
         pytest.skip("no display names declared")
-    assert set(spec.display_names) == set(spec.labels)
+    assert set(spec.display_names) == set(spec.class_names)
 
 
 def test_the_16class_spec_declares_no_landcover_relation():
@@ -477,7 +477,7 @@ def test_display_names_must_cover_every_class():
         name="ok_name",
         long_label="Fine",
         class_noun="plant functional type",
-        labels=("a", "b"),
+        class_names=("a", "b"),
         description="Fine.",
         upstream_product="test",
         raw_file="f.csv",
@@ -503,7 +503,7 @@ def real_16class(real_site_table, tmp_path_factory) -> pd.DataFrame:
 def test_the_16class_site_labels_cover_the_pool_with_all_sixteen(real_16class, real_site_table):
     spec = resolve_site_labels("pft_16class")
     assert len(real_16class) == len(real_site_table)
-    assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.labels)
+    assert set(real_16class[LABEL_COLUMN].unique()) == set(spec.class_names)
 
 
 def test_the_two_site_labels_data_sources_do_not_nest(real_site_labels, real_16class):
@@ -687,7 +687,7 @@ def test_main_reports_an_error_and_exits_one(tmp_path, capsys):
     # main resolves by name, so drive it through the registry's own spec with a
     # raw file of the wrong length.
     spec = resolve_site_labels("reanalysis_3pft")
-    _write_raw(raw_root, spec, [{"site": 1, "pft": spec.labels[0]}])
+    _write_raw(raw_root, spec, [{"site": 1, "pft": spec.class_names[0]}])
     code = ingest.main(
         [
             "--site-labels", spec.name,
@@ -723,7 +723,7 @@ def test_describe_processed_file_reports_the_pool_the_right_way_round(synthetic)
         SYNTHETIC_SPEC, site_labels, site_table, site_labels_path(SYNTHETIC_SPEC, out_dir)
     )
     assert f"{len(site_labels)} of {len(site_table)} in the pool" in text
-    for label in SYNTHETIC_SPEC.labels:
+    for label in SYNTHETIC_SPEC.class_names:
         assert label in text
 
 
@@ -807,7 +807,7 @@ def test_a_class_named_na_survives_the_processed_file_round_trip(tmp_path):
     spec = dataclasses.replace(
         SYNTHETIC_SPEC,
         name="na_labels",
-        labels=("NA", "other"),
+        class_names=("NA", "other"),
         expected_rows=2,
         landcover_mapping=None,
     )
@@ -836,12 +836,12 @@ def test_the_site_labels_index_is_reset_after_sorting(tmp_path):
 
 def test_the_registry_class_orders_are_what_was_run_against():
     """`labels` is a prior's class axis; reordering it silently would move it."""
-    assert resolve_site_labels("reanalysis_3pft").labels == (
+    assert resolve_site_labels("reanalysis_3pft").class_names == (
         "boreal.coniferous",
         "temperate.deciduous.HPDA",
         "semiarid.grassland_HPDA",
     )
-    sixteen = resolve_site_labels("pft_16class").labels
+    sixteen = resolve_site_labels("pft_16class").class_names
     assert sixteen[0] == "Evergreen_Needleleaf_Forest__P1"
     assert sixteen[-1] == "Permanent_Wetlands"
     assert len(sixteen) == 16
@@ -870,7 +870,7 @@ def test_a_spec_cannot_be_mutated_after_construction():
     [
         ("long_label", "", "needs a description"),
         ("upstream_product", "", "needs a description"),
-        ("labels", ("a", ""), "class name is empty"),
+        ("class_names", ("a", ""), "class name is empty"),
         ("label_column", "absent", "is not in raw_columns"),
         ("site_column", "klass", "are the same"),
         ("name", "ok_name!!", "lower_case_with_underscores"),
@@ -881,7 +881,7 @@ def test_more_inconsistent_spec_fields_are_refused(field, value, match):
         "name": "ok_name",
         "long_label": "Fine",
         "class_noun": "plant functional type",
-        "labels": ("a", "b"),
+        "class_names": ("a", "b"),
         "description": "Fine.",
         "upstream_product": "test",
         "raw_file": "f.csv",
@@ -938,9 +938,9 @@ def test_the_16class_field_labels_every_site_with_readable_names(real_16class, r
     real_16class.to_csv(path, index=False)
     field = site_labels_field(spec, site_table=real_site_table, path=path)
     assert field.sizes["site"] == len(real_site_table)
-    assert field.attrs["flag_meanings"].split() == list(spec.labels)
-    assert field.attrs["flag_display_names"] == tuple(spec.display_names[label] for label in spec.labels)
-    assert sorted(np.unique(field.values).tolist()) == list(range(len(spec.labels)))
+    assert field.attrs["flag_meanings"].split() == list(spec.class_names)
+    assert field.attrs["flag_display_names"] == tuple(spec.display_names[label] for label in spec.class_names)
+    assert sorted(np.unique(field.values).tolist()) == list(range(len(spec.class_names)))
 
 
 def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):
@@ -954,7 +954,7 @@ def test_site_labels_field_refuses_a_labeled_site_the_table_lacks(synthetic):
 
 def test_a_class_name_with_whitespace_cannot_be_a_flag_meaning():
     spaced = dataclasses.replace(
-        SYNTHETIC_SPEC, labels=("conifer", "broad leaf", "grass"),
+        SYNTHETIC_SPEC, class_names=("conifer", "broad leaf", "grass"),
         landcover_mapping={1: "conifer", 2: "conifer", 3: "broad leaf", 5: "grass"},
     )
     with pytest.raises(ValueError, match="whitespace"):
@@ -996,8 +996,8 @@ def test_a_registered_spec_hashes_pickles_and_cannot_change(spec):
 
 
 def test_a_spec_keeps_its_own_copy_of_the_mappings_it_was_given():
-    display_names = {label: label.title() for label in SYNTHETIC_SPEC.labels}
+    display_names = {label: label.title() for label in SYNTHETIC_SPEC.class_names}
     spec = dataclasses.replace(SYNTHETIC_SPEC, display_names=display_names)
-    display_names[SYNTHETIC_SPEC.labels[0]] = "changed"
-    assert spec.display_names[SYNTHETIC_SPEC.labels[0]] == SYNTHETIC_SPEC.labels[0].title()
+    display_names[SYNTHETIC_SPEC.class_names[0]] = "changed"
+    assert spec.display_names[SYNTHETIC_SPEC.class_names[0]] == SYNTHETIC_SPEC.class_names[0].title()
     assert hash(spec) == hash(dataclasses.replace(spec))

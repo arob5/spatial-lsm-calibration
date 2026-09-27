@@ -218,8 +218,8 @@ def describe_processed_file(
     spec: SiteLabelsSpec, site_labels: pd.DataFrame, site_table: pd.DataFrame, path: Path
 ) -> str:
     """A short report of what was written, for the run log."""
-    counts = site_labels[LABEL_COLUMN].value_counts().reindex(list(spec.labels), fill_value=0)
-    width = max(len(label) for label in spec.labels)
+    counts = site_labels[LABEL_COLUMN].value_counts().reindex(list(spec.class_names), fill_value=0)
+    width = max(len(label) for label in spec.class_names)
     latitude = (
         site_labels.assign(
             **{LAT: site_lookup(site_table).loc[site_labels[SITE_ID], LAT].to_numpy()}
@@ -231,9 +231,9 @@ def describe_processed_file(
         f"{path}",
         f"  site labels           : {spec.name} ({spec.class_noun})",
         f"  sites labeled         : {len(site_labels)} of {len(site_table)} in the pool",
-        f"  classes               : {len(spec.labels)}",
+        f"  classes               : {len(spec.class_names)}",
     ]
-    for label in spec.labels:
+    for label in spec.class_names:
         row = latitude.loc[label]
         lines.append(
             f"    {label:<{width}} : {counts[label]:>5} sites, "
@@ -285,7 +285,7 @@ def check_labels_are_the_declared_set(spec: SiteLabelsSpec, site_labels: pd.Data
     spec and the file have drifted apart.
     """
     used = set(site_labels[LABEL_COLUMN].unique())
-    missing = [label for label in spec.labels if label not in used]
+    missing = [label for label in spec.class_names if label not in used]
     if missing:
         raise IngestError(
             f"{spec.raw_file}: declares classes {missing} that no site has. "

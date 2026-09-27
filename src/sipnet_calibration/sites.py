@@ -312,8 +312,8 @@ class Grid:
         return self.south + self.n_lat / self.cells_per_degree
 
     @property
-    def step_arcsec(self) -> float:
-        """Cell width in arcseconds."""
+    def resolution(self) -> float:
+        """Cell width in arcseconds: 30 for :data:`SITE_GRID`."""
         return 3600.0 / self.cells_per_degree
 
     @property
@@ -359,19 +359,19 @@ class Grid:
             return float(lon), float(lat)
         return lon, lat
 
-    def lonlat_to_index(self, lon, lat, *, tol: float = 1e-4):
+    def lonlat_to_index(self, lon, lat, *, tolerance: float = 1e-4):
         """Indices of the cells whose centers the given coordinates sit at.
 
         The coordinates are expected to *be* cell centers, not arbitrary points:
         this is a lookup, not a binning operation. Coordinates that are further
-        than *tol* from any center raise rather than being snapped, since a point
+        than *tolerance* from any center raise rather than being snapped, since a point
         that is not on the grid usually means the wrong grid or the wrong CRS.
 
         Parameters
         ----------
         lon, lat:
             Degrees, scalar or array-like. Broadcast against each other.
-        tol:
+        tolerance:
             Largest accepted departure from a cell center, in degrees. The
             default of 1e-4 (about 11 m) is loose enough for coordinates that
             have passed through 32-bit storage and tight enough to reject a point
@@ -385,7 +385,7 @@ class Grid:
         Raises
         ------
         ValueError
-            If any coordinate is not finite, lies further than *tol* from a cell
+            If any coordinate is not finite, lies further than *tolerance* from a cell
             center, or resolves to an index outside the grid.
         """
         lon_degrees = np.asarray(lon, dtype=float)
@@ -400,7 +400,7 @@ class Grid:
         k = np.rint(kf).astype(np.int64)
 
         departure = np.maximum(np.abs(jf - j), np.abs(kf - k)) / self.cells_per_degree
-        check_coordinates_are_cell_centers(departure, tolerance=tol)
+        check_coordinates_are_cell_centers(departure, tolerance=tolerance)
         check_grid_indices_are_inside(
             j, size=self.n_lon, extent=f"{self.west} to {self.east}", message_name="longitude"
         )

@@ -539,7 +539,7 @@ class TestLoadDrivers:
         with pytest.raises(KeyError, match="not in the site table"):
             load_drivers([11], root=root, site_table=site_table)
 
-    def test_rejects_a_directory_member_that_disagrees_with_thedriver_file_name(self, root, site_table):
+    def test_rejects_a_directory_member_that_disagrees_with_the_driver_file_name(self, root, site_table):
         path = driver_file(root, 3, 2)
         path.rename(path.with_name(path.name.replace("ERA5.2.", "ERA5.4.")))
         with pytest.raises(ValueError, match="file name says member 4, the directory says member 2"):

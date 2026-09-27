@@ -1594,8 +1594,8 @@ def test_load_refuses_the_rest_of_the_data_model(raw, sites_csv, tmp_path):
     refused(lambda d: d.assign_coords(lon=(SITE, d["lat"].values * 5)), "geographic")
     refused(lambda d: d.assign_coords(lat=(SITE, np.array([np.nan, 1.0, 2.0]))), "non-finite")
     refused(lambda d: d.drop_vars("lat"), "coordinate")
-    refused(lambda d: _with_attribute_set(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
-    refused(lambda d: _with_attribute_set(d, "initial_wood_carbon", "long_name", ""), "long_name")
+    refused(lambda d: _set_attribute(d, "initial_wood_carbon", "source_name", "AbvGrndWood"), "written from")
+    refused(lambda d: _set_attribute(d, "initial_wood_carbon", "long_name", ""), "long_name")
     refused(lambda d: d.assign_attrs(Conventions="CF-1.6"), "Conventions")
     refused(lambda d: d.assign_coords(site=np.array([3, 2, 1], dtype=np.int32)), "ascending")
     refused(
@@ -1656,7 +1656,7 @@ def test_a_crossed_initial_condition_field_stacks_and_unstacks_identically(raw, 
     assert restored.equals(crossed)
 
 
-def _with_attribute_set(dataset, variable, key, value):
+def _set_attribute(dataset, variable, key, value):
     dataset[variable].attrs[key] = value
     return dataset
 

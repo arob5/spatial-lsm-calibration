@@ -207,9 +207,9 @@ Usage
         resolve_initial_condition,
     )
 
-    ic = load_initial_conditions()          # Dataset, (initial_condition_member, site)
-    ic["initial_soil_organic_carbon"].sel(site=4102)     # one site's 100 members
-    ic["initial_wood_carbon"].mean("initial_condition_member")  # a map
+    initial_conditions = load_initial_conditions()    # (initial_condition_member, site)
+    initial_conditions["initial_soil_organic_carbon"].sel(site=4102)   # one site's members
+    initial_conditions["initial_wood_carbon"].mean("initial_condition_member")  # a map
 
     fields = initial_condition_fields(sites=[4102, 4113])
     fields["initial_leaf_carbon"].dims      # ('initial_condition_member', 'site')

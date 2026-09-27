@@ -69,7 +69,7 @@ class TestGridGeometry:
         assert SITE_GRID.shape == (9360, 19080)
 
     def test_step_is_thirty_arcseconds(self):
-        assert SITE_GRID.step_arcsec == pytest.approx(30.0)
+        assert SITE_GRID.resolution == pytest.approx(30.0)
         assert SITE_GRID.step == pytest.approx(1 / 120)
 
     def test_extent_is_consistent_with_dimensions(self):
@@ -166,7 +166,7 @@ class TestLonLatToIndex:
         nudged = lon + 5e-4
         with pytest.raises(ValueError, match="not on the grid"):
             SITE_GRID.lonlat_to_index(nudged, lat)
-        assert SITE_GRID.lonlat_to_index(nudged, lat, tol=1e-3) == (100, 100)
+        assert SITE_GRID.lonlat_to_index(nudged, lat, tolerance=1e-3) == (100, 100)
 
     def test_rejects_coordinates_outside_the_grid(self):
         lon, lat = SITE_GRID.index_to_lonlat(0, 0)

@@ -1896,7 +1896,7 @@ def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels()
         site_table, labels = load_sites(), load_site_labels("pft_16class")
     except FileNotFoundError as error:
         pytest.skip(f"processed site table or site labels not available in this working copy: {error}")
-    classes = resolve_site_labels("pft_16class").labels
+    classes = resolve_site_labels("pft_16class").class_names
     vector = ParameterVector(
         parameters=(rate(varies_by="pft"),),
         fixed=(FixedParameter(

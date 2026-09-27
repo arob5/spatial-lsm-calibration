@@ -597,7 +597,7 @@ def read_raw(spec: ConstraintSpec, raw_directory: Path | str | None = None) -> p
     path = directory / spec.raw_file
     check_raw_constraint_exists(path)
     frame = _parsed_raw_file(path, spec)
-    check_raw_header_is_the_specs(frame, spec.raw_columns, message_name=str(path))
+    check_raw_header_is_the_spec_header(frame, spec.raw_columns, message_name=str(path))
     check_raw_file_holds_rows(frame, message_name=str(path))
     return frame
 
@@ -1060,7 +1060,7 @@ def check_raw_constraint_exists(path: Path) -> None:
         )
 
 
-def check_raw_header_is_the_specs(
+def check_raw_header_is_the_spec_header(
     frame: pd.DataFrame, raw_columns: tuple[str, ...], *, message_name: str
 ) -> None:
     """A raw file's header is the one its spec declares, in order."""
