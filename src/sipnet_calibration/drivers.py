@@ -257,8 +257,10 @@ from sipnet_calibration.validation import (
 )
 
 __all__ = [
+    "DRIVER_DIRECTORY_PATTERN",
     "DRIVER_DIRECTORY_TEMPLATE",
     "DRIVER_FILE_GLOB",
+    "DRIVER_FILE_PATTERN",
     "DRIVER_PRESENT",
     "DRIVER_VARIABLE_NAMES",
     "NEGATIVE_TOLERANCE",
@@ -315,6 +317,16 @@ DRIVER_DIRECTORY_TEMPLATE = "ERA5_{site}_{member}"
 #: the mismatch it is rather than as a missing file; the reader checks both
 #: against the directory and the data.
 DRIVER_FILE_GLOB = "ERA5.*.clim"
+
+#: A :data:`DRIVER_DIRECTORY_TEMPLATE` name, exactly: group 1 is the site id and
+#: group 2 the source index.
+DRIVER_DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
+
+#: A driver file's name, exactly: group 1 is the source index, and groups 2 and
+#: 3 the ``<start>`` and ``<end>`` dates, as ``YYYY-MM-DD``.
+DRIVER_FILE_PATTERN = re.compile(
+    r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$"
+)
 
 #: How far below zero photosynthetically active radiation and precipitation may
 #: go before a file is refused. The source holds excursions of order 1e-5 and
@@ -581,10 +593,6 @@ def driver_fields(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
 
 # ── private helpers ───────────────────────────────────────────────────────────
 
-#: A driver directory's name and a driver file's name, as regular expressions.
-_DIRECTORY_PATTERN = re.compile(r"^ERA5_(\d+)_(\d+)$")
-_FILE_PATTERN = re.compile(r"^ERA5\.(\d+)\.(\d{4}-\d{2}-\d{2})\.(\d{4}-\d{2}-\d{2})\.clim$")
-
 #: Variables whose values below zero are counted, into ``n_values_below_zero``.
 _NAMES_COUNTED_BELOW_ZERO = ("photosynthetically_active_radiation", "precipitation")
 
@@ -613,7 +621,7 @@ def _climate_drivers_of_file(path: Path, *, time_zone: str | None) -> ClimateDri
 
 def _site_and_source_index_of_directory(name: str) -> tuple[int, int] | None:
     """``(site, source index)`` from an ``ERA5_<site>_<member>`` name, else ``None``."""
-    match = _DIRECTORY_PATTERN.match(name)
+    match = DRIVER_DIRECTORY_PATTERN.match(name)
     if match is None:
         return None
     return int(match.group(1)), int(match.group(2))
@@ -621,7 +629,7 @@ def _site_and_source_index_of_directory(name: str) -> tuple[int, int] | None:
 
 def _dates_of_file_name(path: Path) -> tuple[pd.Timestamp, pd.Timestamp]:
     """The ``<start>`` and ``<end>`` dates of a file name that follows the template."""
-    match = _FILE_PATTERN.match(path.name)
+    match = DRIVER_FILE_PATTERN.match(path.name)
     try:
         return pd.Timestamp(match.group(2)), pd.Timestamp(match.group(3))
     except ValueError as error:
@@ -895,7 +903,7 @@ def check_radiation_and_precipitation_are_not_below_zero(
 
 def check_driver_file_name_follows_the_template(path: Path) -> None:
     """A driver file is named ``ERA5.<member>.<start>.<end>.clim``."""
-    if _FILE_PATTERN.match(path.name) is None:
+    if DRIVER_FILE_PATTERN.match(path.name) is None:
         raise ValueError(
             f"{path}: file name does not follow ERA5.<member>.<start>.<end>.clim; rename it."
         )
@@ -903,7 +911,7 @@ def check_driver_file_name_follows_the_template(path: Path) -> None:
 
 def check_driver_file_name_agrees_with_its_directory(path: Path, *, source_index: int) -> None:
     """A driver file's name and its directory's give the same source index."""
-    named = int(_FILE_PATTERN.match(path.name).group(1))
+    named = int(DRIVER_FILE_PATTERN.match(path.name).group(1))
     if named != source_index:
         raise ValueError(
             f"{path}: the file name says member {named}, the directory says member "
