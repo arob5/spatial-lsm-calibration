@@ -1250,8 +1250,8 @@ def check_fields_share_the_classes(
     if other != class_names:
         raise ValueError(
             "categorical fields sharing a color scale must have the same classes, in the "
-            f"same order, and they have {class_names} and {other}; map them on separate "
-            "scales (scale='each')."
+            f"same order, and they have {truncated(class_names)} and {truncated(other)}; "
+            "map them on separate scales (scale='each')."
         )
 
 
@@ -1262,8 +1262,8 @@ def check_fields_share_the_display_names(
     if other != display_names:
         raise ValueError(
             "categorical fields sharing a color scale must have the same "
-            f"flag_display_names, and they have {display_names} and {other}; map them on "
-            "separate scales (scale='each')."
+            f"flag_display_names, and they have {truncated(display_names or ())} and "
+            f"{truncated(other or ())}; map them on separate scales (scale='each')."
         )
 
 
@@ -1272,7 +1272,7 @@ def check_color_names_a_class(class_name: str, class_names: tuple[str, ...]) -> 
     if class_name not in class_names:
         raise ValueError(
             f"colors names {class_name!r}, which is not a class; key colors by the classes "
-            f"{class_names}."
+            f"{truncated(class_names)}."
         )
 
 

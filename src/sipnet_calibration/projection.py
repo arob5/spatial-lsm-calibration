@@ -203,12 +203,14 @@ Regenerate the tracked interchange files after changing a parameter::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import json
 import math
 import numbers
 import warnings
 from dataclasses import dataclass
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -330,10 +332,8 @@ class Projection:
         # so a definition that will not build would otherwise be re-raised as a
         # complaint about an input point that was fine.
         transformer = _transformer(self)
-        try:
+        with _points_outside_the_domain_refused(self):
             x, y = transformer.transform(longitude, latitude, errcheck=True)
-        except pyproj.exceptions.ProjError as error:
-            raise ValueError(_outside_domain_message(self, error)) from error
         if scalar:
             return float(x), float(y)
         return np.asarray(x), np.asarray(y)
@@ -386,10 +386,8 @@ class Projection:
         # input, which is both false and a different exception type from
         # everything else this module raises.
         check_coordinates_are_not_empty(longitude)
-        try:
+        with _points_outside_the_domain_refused(self):
             return _proj(self).get_factors(longitude, latitude, radians=False, errcheck=True)
-        except pyproj.exceptions.ProjError as error:
-            raise ValueError(_outside_domain_message(self, error)) from error
 
     def angular_distance(self, lon, lat):
         """Great-circle angle from the projection center, in degrees.
@@ -684,14 +682,19 @@ def _proj(projection: Projection) -> pyproj.Proj:
     return pyproj.Proj(_crs(projection))
 
 
-def _outside_domain_message(projection: Projection, error: Exception) -> str:
-    """What to tell a caller whose point PROJ would not take."""
-    antipode_lon, antipode_lat = projection.antipode
-    return (
-        f"{error}. This projection is undefined at the antipode of its center, "
-        f"({antipode_lon}, {antipode_lat}); distortion factors are unavailable for "
-        "about a degree around it, though the transform itself is not"
-    )
+@contextlib.contextmanager
+def _points_outside_the_domain_refused(projection: Projection) -> Iterator[None]:
+    """Re-raise PROJ's error for a point it would not take as a ``ValueError``
+    saying where the projection is undefined."""
+    try:
+        yield
+    except pyproj.exceptions.ProjError as error:
+        antipode_lon, antipode_lat = projection.antipode
+        raise ValueError(
+            f"{error}. This projection is undefined at the antipode of its center, "
+            f"({antipode_lon}, {antipode_lat}); distortion factors are unavailable for "
+            "about a degree around it, though the transform itself is not"
+        ) from error
 
 
 def _as_coordinates(lon: Any, lat: Any) -> tuple[np.ndarray, np.ndarray, bool]:

@@ -498,9 +498,10 @@ These apply to the library and the scripts alike.
   number is wanted and one string where a sequence is; `ValueError` for a
   wrong value; `KeyError` for a name or label that is not there (an unknown
   parameter, source, site or site-table row); `FileNotFoundError` for a
-  missing file. The coercers of `validation.py` raise by this rule already;
-  plotting and projection, which still raise `ValueError` for some wrong
-  types, are brought into line by the module cleanups.
+  missing file. The coercers of `validation.py` raise by this rule already,
+  and so do the plotting package and `projection.py`, where an unknown key of
+  a registry (a role, a renderer, an extent, a basemap layer) is a `KeyError`
+  and an unknown option string (`show=`, `share=`, `scale=`) a `ValueError`.
 - **Messages** start lowercase, name the invariant that broke, then `;` and
   what to do about it; name the subject through a `message_name` argument,
   passed last; and truncate a list to ten items with one helper,
