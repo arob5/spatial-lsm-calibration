@@ -254,7 +254,7 @@ def plot_by_site(
         if sites is None
         else list(as_site_ids(sites, message_name="sites"))
     )
-    check_field_holds_the_sites(field, chosen, message_name=name)
+    check_field_holds_the_labels(field, SITE, chosen, message_name=name)
 
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     grid_kwargs.setdefault("labels", lambda site: f"site {site}")
@@ -297,7 +297,7 @@ def plot_by_variable(
     ValueError
         If *fields_by_name* is empty.
     """
-    check_fields_are_given(fields_by_name, message_name="fields_by_name")
+    check_fields_are_given(fields_by_name, example="{name: field}", message_name="fields_by_name")
     panel_fn = plot_time_series if panel_fn is None else panel_fn
     names = list(fields_by_name)
     grid_kwargs.setdefault(
@@ -360,7 +360,7 @@ def plot_map_grid(
         for a panel, every panel checked before any is drawn.
     """
     check_value_is_a_mapping(fields_by_title, message_name="fields_by_title")
-    check_fields_are_given(fields_by_title, message_name="fields_by_title")
+    check_fields_are_given(fields_by_title, example="{title: field}", message_name="fields_by_title")
     check_option_is_known(scale, SCALE_OPTIONS, message_name="scale")
     panel_fields = list(fields_by_title.values())
     # Every panel is checked before the frame and a shared scale read their
@@ -609,11 +609,11 @@ def check_labels_match_the_items(titles: list[str], items: list[Any]) -> None:
         )
 
 
-def check_fields_are_given(fields: Mapping[str, Any], *, message_name: str) -> None:
-    """A grid of fields is given at least one."""
+def check_fields_are_given(fields: Mapping[str, Any], *, example: str, message_name: str) -> None:
+    """A grid of fields is given at least one; *example* is the mapping's form."""
     if not fields:
         raise ValueError(
-            f"{message_name} is empty, so there is nothing to draw; pass {{title: field}}."
+            f"{message_name} is empty, so there is nothing to draw; pass {example}."
         )
 
 
@@ -626,28 +626,16 @@ def check_field_has_a_site_dim(field: xr.DataArray, *, message_name: str) -> Non
         )
 
 
-def check_field_holds_the_sites(
-    field: xr.DataArray, site_ids: Sequence[int], *, message_name: str
-) -> None:
-    """Every site asked for is on the field's ``site`` coordinate."""
-    missing = missing_labels(field, SITE, site_ids)
-    if missing:
-        held = field.coords[SITE].values.tolist()
-        raise KeyError(
-            f"{message_name}: no such site(s) in the field: {truncated(missing)}; it holds "
-            f"{len(held)} site(s), starting {held[:5]}, so ask for those."
-        )
-
-
 def check_field_holds_the_labels(
     field: xr.DataArray, dim: str, labels: Sequence[Any], *, message_name: str
 ) -> None:
     """Every label asked for is on the field's *dim* coordinate."""
     missing = missing_labels(field, dim, labels)
     if missing:
+        held = field.coords[dim].values.tolist()
         raise KeyError(
-            f"{message_name}: no such {dim} label(s) in the field: {truncated(missing)}; "
-            f"pass values= from the field's {dim} labels."
+            f"{message_name}: no such {dim} label(s) in the field: {truncated(missing)}; it "
+            f"holds {len(held)}, {truncated(held)}, so ask for those."
         )
 
 

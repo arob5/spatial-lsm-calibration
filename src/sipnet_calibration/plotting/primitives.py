@@ -77,7 +77,7 @@ from sipnet_calibration.plotting.style import (
     check_number_is_positive,
     check_value_is_a_number,
 )
-from sipnet_calibration.validation import as_positive_integer, as_sequence
+from sipnet_calibration.validation import as_positive_integer, as_sequence, truncated
 
 __all__ = [
     "band",
@@ -640,7 +640,9 @@ def _as_levels(levels: Any) -> tuple[float, ...]:
     for level in levels:
         check_value_is_a_number(level, message_name="levels")
     levels = tuple(float(level) for level in levels)
-    check_levels_are_widths(levels)
+    check_levels_are_given(levels)
+    check_levels_are_distinct(levels)
+    check_levels_lie_within_zero_and_one(levels)
     return levels
 
 
@@ -710,21 +712,29 @@ def check_samples_match_x(x: np.ndarray, samples: np.ndarray) -> None:
         )
 
 
-def check_levels_are_widths(levels: tuple[float, ...]) -> None:
-    """*levels* names at least one width, none twice, each within ``(0, 1)``."""
+def check_levels_are_given(levels: tuple[float, ...]) -> None:
+    """A fan is asked for at least one interval width."""
     if not levels:
         raise ValueError(
             "levels: a fan draws at least one interval width; pass one, such as (0.9,)."
         )
+
+
+def check_levels_are_distinct(levels: tuple[float, ...]) -> None:
+    """No interval width is asked for twice."""
     if len(set(levels)) != len(levels):
         raise ValueError(
             f"levels: each interval width is drawn once, and {levels} repeats one; drop it."
         )
+
+
+def check_levels_lie_within_zero_and_one(levels: tuple[float, ...]) -> None:
+    """Every interval width lies within (0, 1)."""
     outside = [level for level in levels if not 0.0 < level < 1.0]
     if outside:
         raise ValueError(
-            f"levels: every level lies within (0, 1), and {outside} do not; pass interval "
-            "widths such as 0.5 for the central half."
+            f"levels: every level lies within (0, 1), and {truncated(outside)} do not; pass "
+            "interval widths such as 0.5 for the central half."
         )
 
 

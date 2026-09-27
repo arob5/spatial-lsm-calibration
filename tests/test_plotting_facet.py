@@ -393,6 +393,6 @@ def test_plot_by_variable_accepts_fields_on_different_time_axes(field_time):
 
 
 def test_plot_by_variable_rejects_an_empty_mapping():
-    """An empty mapping raises."""
-    with pytest.raises(ValueError, match="nothing to draw"):
+    """An empty mapping raises, naming the form it is keyed by (variable names, not titles)."""
+    with pytest.raises(ValueError, match=r"nothing to draw; pass \{name: field\}"):
         plot_by_variable({})

@@ -228,7 +228,6 @@ __all__ = [
     "LAEA_METHOD_CODE",
     "SITE_PROJECTION",
     "Projection",
-    "check_definition_file_reads_back",
     "check_definition_files_match_the_projection",
     "default_definition_dir",
     "definition_paths",
@@ -332,7 +331,7 @@ class Projection:
         # so a definition that will not build would otherwise be re-raised as a
         # complaint about an input point that was fine.
         transformer = _transformer(self)
-        with _refuse_points_outside_the_domain(self):
+        with _refuse_points_outside_the_domain(self, what="the projection is undefined at"):
             x, y = transformer.transform(longitude, latitude, errcheck=True)
         if scalar:
             return float(x), float(y)
@@ -386,7 +385,9 @@ class Projection:
         # input, which is both false and a different exception type from
         # everything else this module raises.
         check_coordinates_are_not_empty(longitude)
-        with _refuse_points_outside_the_domain(self):
+        with _refuse_points_outside_the_domain(
+            self, what="distortion factors are undefined within about a degree of"
+        ):
             return _proj(self).get_factors(longitude, latitude, radians=False, errcheck=True)
 
     def angular_distance(self, lon, lat):
@@ -683,17 +684,16 @@ def _proj(projection: Projection) -> pyproj.Proj:
 
 
 @contextlib.contextmanager
-def _refuse_points_outside_the_domain(projection: Projection) -> Iterator[None]:
-    """Re-raise PROJ's error for a point it would not take as a ``ValueError``
-    saying where the projection is undefined."""
+def _refuse_points_outside_the_domain(projection: Projection, *, what: str) -> Iterator[None]:
+    """Re-raise PROJ's error for a point it would not take as a ``ValueError`` saying
+    *what* is undefined near the antipode."""
     try:
         yield
     except pyproj.exceptions.ProjError as error:
         antipode_lon, antipode_lat = projection.antipode
         raise ValueError(
-            f"{error}. This projection is undefined at the antipode of its center, "
-            f"({antipode_lon}, {antipode_lat}); distortion factors are unavailable for "
-            "about a degree around it, though the transform itself is not"
+            f"{what} the antipode of its center, ({antipode_lon}, {antipode_lat}); leave "
+            f"such points out (PROJ: {error})."
         ) from error
 
 
@@ -801,8 +801,7 @@ def check_definition_files_match_the_projection(
     projection: Projection | None = None,
     stem: str = DEFINITION_STEM,
 ) -> None:
-    """The stored interchange files match what *projection*, by default
-    :data:`SITE_PROJECTION`, serializes to."""
+    """The stored interchange files match what *projection* serializes to."""
     # The anti-drift device: the parameters live in the dataclass, the files
     # are generated, and the test suite calls this, so a parameter change that
     # skips the regeneration fails. It also catches a PROJ upgrade that
@@ -837,9 +836,11 @@ def check_definition_file_matches(path: Path, expected: str, projection: Project
 def check_projection_is_valid(projection: Projection) -> None:
     """A projection's parameters are numbers in range, on a geographic base CRS."""
     check_projection_parameters_are_numbers(projection)
-    check_origin_is_in_range(projection)
+    check_latitude_of_origin_is_in_range(projection)
+    check_longitude_of_origin_is_in_range(projection)
     check_false_origin_is_finite(projection)
     check_base_crs_is_hashable(projection.base_crs)
+    check_base_crs_is_recognized(projection.base_crs)
     check_base_crs_is_geographic(projection.base_crs)
 
 
@@ -854,12 +855,16 @@ def check_projection_parameters_are_numbers(projection: Projection) -> None:
             )
 
 
-def check_origin_is_in_range(projection: Projection) -> None:
-    """The natural origin is a latitude in [-90, 90] and a longitude in [-360, 360]."""
+def check_latitude_of_origin_is_in_range(projection: Projection) -> None:
+    """The natural origin's latitude is in [-90, 90]."""
     if not -90.0 <= projection.lat_0 <= 90.0:
         raise ValueError(
             f"lat_0 must be in [-90, 90], got {projection.lat_0}; pass a latitude in degrees."
         )
+
+
+def check_longitude_of_origin_is_in_range(projection: Projection) -> None:
+    """The natural origin's longitude is in [-360, 360]."""
     if not -360.0 <= projection.lon_0 <= 360.0:
         raise ValueError(
             f"lon_0 must be in [-360, 360], got {projection.lon_0}; pass a longitude in "
@@ -894,17 +899,22 @@ def check_base_crs_is_hashable(base_crs: Any) -> None:
         ) from error
 
 
-def check_base_crs_is_geographic(base_crs: Any) -> None:
-    """The base CRS is one PROJ recognizes, and geographic, since ``forward`` takes degrees."""
-    # Checked at construction: a projected base CRS would otherwise fail
-    # inside PROJ with several kilobytes of JSON that never name the field.
+def check_base_crs_is_recognized(base_crs: Any) -> None:
+    """The base CRS is one PROJ recognizes."""
     try:
-        base = pyproj.CRS.from_user_input(base_crs)
+        pyproj.CRS.from_user_input(base_crs)
     except pyproj.exceptions.CRSError as error:
         raise ValueError(
             f"base_crs is not a CRS PROJ recognizes: {error}; pass an EPSG code such as "
             "'EPSG:4326'."
         ) from error
+
+
+def check_base_crs_is_geographic(base_crs: Any) -> None:
+    """The base CRS is geographic, since ``forward`` takes degrees."""
+    # Checked at construction: a projected base CRS would otherwise fail
+    # inside PROJ with several kilobytes of JSON that never name the field.
+    base = pyproj.CRS.from_user_input(base_crs)
     if not base.is_geographic:
         raise ValueError(
             f"base_crs must be geographic, since forward() takes degrees, and {base_crs} "

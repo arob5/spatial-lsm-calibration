@@ -340,11 +340,11 @@ def _error_bar_lengths(
 
 def check_field_is_a_time_series(field: xr.DataArray, *, message_name: str) -> None:
     """A field to plot as a series has ``time`` and no spatial dim."""
-    check_field_has_time(field, message_name=message_name)
+    check_field_has_a_time_dim(field, message_name=message_name)
     check_field_has_no_spatial_dim(field, message_name=message_name)
 
 
-def check_field_has_time(field: xr.DataArray, *, message_name: str) -> None:
+def check_field_has_a_time_dim(field: xr.DataArray, *, message_name: str) -> None:
     """A field to plot against time has a ``time`` dim."""
     if TIME not in field.dims:
         raise ValueError(
@@ -443,16 +443,35 @@ def check_error_is_aligned_with_the_field(
     field: xr.DataArray, error: Any, *, message_name: str
 ) -> None:
     """The error is a ``DataArray`` on exactly the field's points."""
+    check_error_is_a_dataarray(error, message_name=message_name)
+    check_error_has_the_fields_dims(field, error, message_name=message_name)
+    check_error_has_the_fields_labels(field, error, message_name=message_name)
+
+
+def check_error_is_a_dataarray(error: Any, *, message_name: str) -> None:
+    """The error is labeled: a ``DataArray``."""
     if not isinstance(error, xr.DataArray):
         raise TypeError(
             f"{message_name} must be an xarray.DataArray aligned with the field, got "
             f"{type(error).__name__}; pass it labeled as the field is."
         )
+
+
+def check_error_has_the_fields_dims(
+    field: xr.DataArray, error: xr.DataArray, *, message_name: str
+) -> None:
+    """The error has the field's dims."""
     if set(error.dims) != set(field.dims):
         raise ValueError(
             f"{message_name} has dimensions {list(error.dims)} and the field has "
             f"{list(field.dims)}; they must match, so select the error as the field was."
         )
+
+
+def check_error_has_the_fields_labels(
+    field: xr.DataArray, error: xr.DataArray, *, message_name: str
+) -> None:
+    """The error has exactly the field's labels on each dim."""
     try:
         xr.align(field, error, join="exact")
     except ValueError as mismatch:

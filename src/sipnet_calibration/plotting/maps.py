@@ -119,7 +119,7 @@ Usage
              ax, render="cells")                                    # a mosaic
     plot_map(residual, ax, center=0.0, extent=(-90, 35, -75, 45))   # a region
 
-    animation = animate_map(monthly_nee, "time", ax=ax, center=0.0)
+    animation = animate_map(monthly_nee, ax, "time", center=0.0)
     animation.save("nee.gif", writer="pillow")
 """
 
@@ -362,9 +362,9 @@ def summarize_batch(
 
 def animate_map(
     field: xr.DataArray,
+    ax: Axes,
     dim: str = TIME,
     *,
-    ax: Axes,
     interval: float = 0.25,
     **map_kwargs: Any,
 ) -> FuncAnimation:
@@ -375,10 +375,10 @@ def animate_map(
     field:
         A field that is a map, in the sense of :func:`plot_map`, at each value
         of *dim*.
-    dim:
-        The dimension to play through.
     ax:
         The axes to draw on, whose figure the animation plays in.
+    dim:
+        The dimension to play through.
     interval:
         Seconds between frames, at most a minute.
     **map_kwargs:
@@ -962,7 +962,7 @@ def _plotted_values(field: xr.DataArray, scale: ColorScale | None) -> np.ndarray
         )
         values = _class_positions(field, class_names)
     if SITE not in field.dims:
-        values = np.where(_raster_drawable(field), values, np.nan)
+        values = np.where(_drawable_cell_mask(field), values, np.nan)
     return values
 
 
@@ -977,7 +977,7 @@ def _raster_geometry(field: xr.DataArray, values: np.ndarray) -> _Geometry:
     return _Geometry(x, y, values, x_corners, y_corners)
 
 
-def _raster_drawable(field: xr.DataArray) -> np.ndarray:
+def _drawable_cell_mask(field: xr.DataArray) -> np.ndarray:
     """Which cells of a ``(lat, lon)`` raster are near enough the center to draw."""
     lon_centers, lat_centers = np.meshgrid(field[LON].values, field[LAT].values)
     return SITE_PROJECTION.angular_distance(lon_centers, lat_centers) <= MAX_ANGULAR_DISTANCE
@@ -1152,7 +1152,7 @@ def check_map_has_only_its_spatial_dims(field: xr.DataArray, *, message_name: st
         advice.append(
             "for 'time', select a step with field.sel(time=...), aggregate with "
             "observation.time_alignment.aggregate_time, draw panels with "
-            "facet.plot_map_by(field, 'time'), or play it with maps.animate_map(field, ax=ax)"
+            "facet.plot_map_by(field, 'time'), or play it with maps.animate_map(field, ax)"
         )
     raise ValueError(
         f"{message_name}: a map draws one value per {' and '.join(sorted(allowed))}, and the "
@@ -1281,9 +1281,9 @@ def check_renderer_draws_only_site_values(renderer: SiteRenderer) -> None:
         )
 
 
-def check_frame_has_something_to_fit(x: np.ndarray) -> None:
-    """A fitted frame has at least one site or raster cell to fit around."""
-    if x.size == 0:
+def check_frame_has_something_to_fit(positions: np.ndarray) -> None:
+    """A fitted frame has at least one site or raster cell, at *positions*, to fit around."""
+    if positions.size == 0:
         raise ValueError("there is nothing to fit a frame to; pass extent.")
 
 
@@ -1377,7 +1377,8 @@ def check_codes_are_declared(
     if undeclared.any():
         raise ValueError(
             f"{message_name}: code(s) {truncated(sorted(set(values[undeclared].tolist())))} "
-            f"are not among flag_values {codes.tolist()}; declare every code the field holds."
+            f"are not among flag_values {truncated(codes.tolist())}; declare every code the "
+            "field holds."
         )
 
 

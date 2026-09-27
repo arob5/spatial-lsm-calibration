@@ -742,7 +742,7 @@ def test_a_shared_map_grid_checks_every_panel_first(ensemble):
 def test_animating_a_batch_dim_of_a_field_with_time_is_refused(ax, ensemble):
     moving = ensemble.expand_dims(time=pd_dates(2)).transpose("sample", "site", "time")
     with pytest.raises(ValueError, match="for 'time'"):
-        animate_map(moving, "sample", ax=ax)
+        animate_map(moving, ax, "sample")
 
 
 def test_animating_a_zero_length_dim_is_refused_in_the_modules_words(ax, dense):
@@ -918,3 +918,9 @@ def test_basemap_layers_are_checked_before_anything_is_drawn(ax, dense, basemap,
     with pytest.raises(error):
         plot_map(dense, ax, basemap=basemap)
     assert not ax.collections and not ax.texts
+
+
+def test_animate_map_takes_its_axes_second_like_the_other_plotters(ax, dense):
+    """animate_map(field, ax, dim), as plot_map(field, ax) and plot_time_series(field, ax)."""
+    animation = animate_map(frames(dense), ax, "time")
+    assert animation._fig is ax.figure

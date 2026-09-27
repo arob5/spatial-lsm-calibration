@@ -388,9 +388,9 @@ class TestFactors:
         ``300e3 * tissot_semimajor.max()`` into ``inf``, and a long-edge mask
         into one that masks nothing."""
         antipode_lon, antipode_lat = SITE_PROJECTION.antipode
-        with pytest.raises(ValueError, match="undefined at the antipode"):
+        with pytest.raises(ValueError, match="undefined within about a degree of the antipode"):
             SITE_PROJECTION.factors(antipode_lon, antipode_lat + 0.001)
-        with pytest.raises(ValueError, match="undefined at the antipode"):
+        with pytest.raises(ValueError, match="undefined within about a degree of the antipode"):
             SITE_PROJECTION.factors(
                 np.array([-100.0, antipode_lon]), np.array([50.0, antipode_lat + 0.001])
             )
