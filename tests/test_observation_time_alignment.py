@@ -6,8 +6,8 @@ synthetic fields would only show that it agrees with a fixture this project
 wrote. The load-bearing tests are the ones that compare it with
 ``pysipnet.resample.resample`` -- values, time coordinates, attributes and
 refusal message alike -- because the two are meant to be the same operation,
-differing only in that one supplies a default method and reduces over the
-other dimensions a field may have.
+differing only in that one supplies a default method and makes ``last``
+missing in a cell holding a gap anywhere.
 """
 
 from __future__ import annotations
@@ -21,8 +21,13 @@ import xarray as xr
 from pysipnet.resample import resample
 from pysipnet.variables import RESAMPLED_KIND, RESAMPLING_METHODS_FOR_KIND, VariableKind
 
-from conftest import SITE_1_DRIVERS, site_table_of
-from sipnet_calibration.conventions import STALE_TIME_ATTRIBUTE_NAMES, TIMESTEP_LENGTH
+from conftest import SITE_1_DRIVERS, niwot_stack_of, site_table_of
+from sipnet_calibration.conventions import (
+    SIPNET_ROW_LABEL_NAMES,
+    STALE_TIME_ATTRIBUTE_NAMES,
+    TIMESTEP_LENGTH,
+    TIMESTEP_START,
+)
 from sipnet_calibration.drivers import driver_fields, read_driver_file
 from sipnet_calibration.fields import to_model_output, stack_model_outputs
 from sipnet_calibration.observation.time_alignment import (
@@ -32,7 +37,7 @@ from sipnet_calibration.observation.time_alignment import (
 )
 
 
-def site_1_member_1(real_drivers, name):
+def _site_1_first_driver_member(real_drivers, name):
     """One variable of the site-1 drivers of source index 1, on ``time`` alone."""
     return driver_fields(real_drivers)[name].sel(site=1, driver_member=0)
 
@@ -174,10 +179,21 @@ class TestAggregateTimeChoosesTheMethod:
             aggregate_time(anonymous, "1D")
         # pySIPNET checks a method against the kind, so a field with its
         # interval coordinates needs one even when told how.
-        with pytest.raises(ValueError, match="interval coordinates but no 'kind'"):
+        with pytest.raises(ValueError, match="Cannot tell what kind of quantity 'observed_thing'"):
             aggregate_time(anonymous, "1D", how="sum")
-        observed = anonymous.drop_vars(["timestep_start", "timestep_length"])
-        assert aggregate_time(observed, "1D", how="sum").sizes["time"] > 0
+
+    def test_a_field_with_no_kind_and_no_intervals_is_combined_as_told(self, niwot_output):
+        """Observed values declare no kind: told how, they keep their own attributes."""
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        observed = field.rename("observed_thing").drop_vars(["timestep_start", "timestep_length"])
+        observed.attrs = {"units": "g m-2", "long_name": "Something observed", "output_decimals": 3}
+        daily = aggregate_time(observed, "1D", how="sum")
+        reference = resample(observed.assign_attrs(kind="timestep_total"), "1D", how="sum")
+        np.testing.assert_array_equal(daily.values, reference.values)
+        np.testing.assert_array_equal(daily["time"].values, reference["time"].values)
+        assert daily.attrs == {
+            "units": "g m-2", "long_name": "Something observed", "resampling": "sum over 1D"
+        }
 
     def test_a_nonsense_kind_is_refused(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
@@ -230,17 +246,14 @@ class TestAggregateTimeOnThreeHourlyOutput:
 
 
 class TestAggregateTimeOnEnsembles:
-    def test_a_stacked_field_aggregates_slice_by_slice(self, niwot_output, real_site_table):
-        runs = {(sample, site): niwot_output for site in (1, 27) for sample in (0, 1)}
-        stacked = stack_model_outputs(runs, output_variable_names=["nee"])["net_ecosystem_exchange"]
+    def test_a_stacked_field_aggregates_slice_by_slice(self):
+        stacked = niwot_stack_of(["nee"], sites=(1, 27))["net_ecosystem_exchange"]
         daily = aggregate_time(stacked, "1D")
         assert daily.dims == ("sample", "site", "time")
-        one = aggregate_time(
-            to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"], "1D"
-        )
         for site in (1, 27):
             for sample in (0, 1):
-                assert np.allclose(daily.sel(site=site, sample=sample).values, one.values)
+                one = aggregate_time(stacked.sel(site=site, sample=sample), "1D")
+                np.testing.assert_allclose(daily.sel(site=site, sample=sample).values, one.values)
 
     def test_two_batch_dims_pass_through_aggregation(self, niwot_output):
         from sipnet_calibration.fields import stack_model_outputs, validate_field
@@ -264,22 +277,16 @@ class TestAggregateTimeOnEnsembles:
             22 * daily.sel(sample=0, initial_condition_member=0).values,
         )
 
-    def test_lon_and_lat_survive_on_site(self, niwot_output, real_site_table):
-        runs = {(0, site): niwot_output for site in (1, 27)}
-        daily = aggregate_time(
-            stack_model_outputs(runs, output_variable_names=["nee"])["net_ecosystem_exchange"], "1D"
-        )
-        assert daily["lon"].dims == ("site",)
+    def test_lon_and_lat_survive_on_site(self):
+        stacked = niwot_stack_of(["nee"], sites=(1, 27), n_samples=1)["net_ecosystem_exchange"]
+        assert aggregate_time(stacked, "1D")["lon"].dims == ("site",)
 
-    def test_per_site_interval_coordinates_are_refused(self, niwot_output, real_site_table):
-        from pysipnet.output import SIPNETOutput
-
-        short = SIPNETOutput.from_dataframe(
-            niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
-        )
-        stacked = stack_model_outputs({(0, 1): niwot_output, (0, 27): short}, output_variable_names=["nee"])[
-            "net_ecosystem_exchange"
-        ]
+    def test_per_site_interval_coordinates_are_refused(self, niwot_output):
+        stacked = stack_model_outputs(
+            {(0, 1): niwot_output, (0, 27): _truncated(niwot_output, 20)},
+            output_variable_names=["nee"],
+            site_table=site_table_of(1, 27),
+        )["net_ecosystem_exchange"]
         with pytest.raises(ValueError, match="different\ntime axes|different time axes"):
             aggregate_time(stacked, "1D")
         # Selecting one site is what the message says to do, and it works.
@@ -296,7 +303,7 @@ class TestAggregateTimeOnDrivers:
         )
 
     def test_a_daily_total_is_its_eight_three_hourly_values(self, real_drivers):
-        par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
+        par = _site_1_first_driver_member(real_drivers, "photosynthetically_active_radiation")
         daily = aggregate_time(par, "1D")
         raw = pd.Series(par.values, index=pd.DatetimeIndex(par["time"].values))
         cells = raw.groupby(raw.index.ceil("D"))
@@ -304,7 +311,7 @@ class TestAggregateTimeOnDrivers:
         assert (cells.size().to_numpy() == 8).all()
 
     def test_a_driver_mean_is_weighted_by_its_declared_step_lengths(self, real_drivers):
-        tair = site_1_member_1(real_drivers, "air_temperature")
+        tair = _site_1_first_driver_member(real_drivers, "air_temperature")
         assert TIMESTEP_LENGTH in tair.coords
         daily = aggregate_time(tair, "1D")
         assert "weighted by" in daily.attrs["resampling"]
@@ -321,7 +328,7 @@ class TestAggregateTimeOnDrivers:
             warnings.simplefilter("ignore")
             own = read_driver_file(regular_drivers_root / SITE_1_DRIVERS).xarray
         expected = resample(own, "1D", how={"precipitation": "sum"})["precipitation"]
-        daily = aggregate_time(site_1_member_1(real_drivers, "precipitation"), "1D")
+        daily = aggregate_time(_site_1_first_driver_member(real_drivers, "precipitation"), "1D")
         np.testing.assert_allclose(daily.values, expected.values)
         for name in ("time", "timestep_start", "timestep_length"):
             np.testing.assert_array_equal(daily[name].values, expected[name].values)
@@ -330,9 +337,19 @@ class TestAggregateTimeOnDrivers:
 
     def test_unequal_steps_without_declared_lengths_refuse_a_mean(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["soil_water"])["soil_water"]
-        bare = field.drop_vars([TIMESTEP_LENGTH])
-        with pytest.raises(ValueError, match="not all the same length"):
+        bare = field.drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
+        with pytest.raises(ValueError, match="not equally spaced"):
             aggregate_time(bare, "1D", how="mean")
+
+    @pytest.mark.parametrize("how", ["sum", "mean"])
+    def test_only_some_interval_coordinates_are_refused(self, niwot_output, how):
+        """pySIPNET's rule: a record has both interval coordinates or neither."""
+        field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        field.attrs["kind"] = {"sum": "timestep_total", "mean": "timestep_mean"}[how]
+        with pytest.raises(ValueError, match="both of pySIPNET's interval coordinates or neither"):
+            aggregate_time(field.drop_vars([TIMESTEP_LENGTH]), "1D", how=how)
+        with pytest.raises(ValueError, match="both of pySIPNET's interval coordinates or neither"):
+            aggregation_counts(field.drop_vars([TIMESTEP_LENGTH]), "1D")
 
 
 class TestAggregateTimeKeepsGapsAndCells:
@@ -377,10 +394,9 @@ class TestAggregatedFieldsPlot:
         assert ax.get_ylabel() == "Net ecosystem exchange (g m-2)"
         assert np.allclose(ax.lines[0].get_ydata(), daily.values)
 
-    def test_an_aggregated_ensemble_fans(self, ax, niwot_output, real_site_table):
+    def test_an_aggregated_ensemble_fans(self, ax):
         plotting = pytest.importorskip("sipnet_calibration.plotting")
-        runs = {(sample, 1): niwot_output for sample in (0, 1, 2)}
-        stacked = stack_model_outputs(runs, output_variable_names=["nee"])["net_ecosystem_exchange"]
+        stacked = niwot_stack_of(["nee"], sites=(1,), n_samples=3)["net_ecosystem_exchange"]
         plotting.plot_time_series(aggregate_time(stacked, "1D").sel(site=1), ax=ax)
         assert len(ax.collections) == 2
 
@@ -399,7 +415,7 @@ class TestAggregatedTimeCoordinateDescribesItself:
         assert "bounds" not in aggregate_time(field, "1D")["time"].attrs
 
     def test_a_driver_axis_is_rebuilt_in_pysipnets_words_too(self, real_drivers):
-        tair = site_1_member_1(real_drivers, "air_temperature")
+        tair = _site_1_first_driver_member(real_drivers, "air_temperature")
         daily = aggregate_time(tair, "1D")
         assert daily["time"].attrs["long_name"] == "End of timestep"
         assert daily["time"].attrs["time_zone"] == tair["time"].attrs["time_zone"]
@@ -428,18 +444,13 @@ class TestAggregateTimeDropsAlignmentPadding:
 
     @staticmethod
     def stacked(niwot_output):
-        from pysipnet.output import SIPNETOutput
+        return stack_model_outputs(
+            {(0, 1): _truncated(niwot_output, 20), (0, 27): niwot_output},
+            output_variable_names=["nee"],
+            site_table=site_table_of(1, 27),
+        )["net_ecosystem_exchange"]
 
-        short = SIPNETOutput.from_dataframe(
-            niwot_output.pandas.iloc[:20].copy(), climate=niwot_output.climate.head(20)
-        )
-        return stack_model_outputs({(0, 1): short, (0, 27): niwot_output}, output_variable_names=["nee"])[
-            "net_ecosystem_exchange"
-        ]
-
-    def test_a_padded_timestamp_does_not_empty_the_cell_it_falls_in(
-        self, niwot_output, real_site_table
-    ):
+    def test_a_padded_timestamp_does_not_empty_the_cell_it_falls_in(self, niwot_output):
         alone = aggregate_time(
             to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"], "1D"
         )
@@ -448,7 +459,7 @@ class TestAggregateTimeDropsAlignmentPadding:
         assert np.allclose(together.values, alone.values)
         assert np.array_equal(together["time"].values, alone["time"].values)
 
-    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output, real_site_table):
+    def test_the_shorter_record_keeps_only_its_own_cells(self, niwot_output):
         short_side = aggregate_time(self.stacked(niwot_output).sel(site=1), "1D")
         assert not np.isnan(short_side.values).any()
         assert short_side.sizes["time"] < 30
@@ -510,7 +521,7 @@ class TestAggregateTimeRefusesUnusableTime:
 
     def test_an_empty_time_dimension_is_refused(self, niwot_output):
         field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
-        with pytest.raises(ValueError, match="no timesteps left to aggregate"):
+        with pytest.raises(ValueError, match="no timesteps left to read"):
             aggregate_time(field.isel(time=slice(0, 0)), "1D")
 
 
@@ -518,7 +529,7 @@ class TestAggregateTimeLabelsCells:
     """A cell is labeled at the last step end it holds, as pySIPNET labels it."""
 
     def test_a_daily_driver_cell_is_labeled_at_midnight_ending_it(self, real_drivers):
-        par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
+        par = _site_1_first_driver_member(real_drivers, "photosynthetically_active_radiation")
         daily = aggregate_time(par, "1D")
         ends = pd.DatetimeIndex(daily["time"].values)
         assert (ends == ends.normalize()).all()
@@ -579,7 +590,7 @@ class TestAggregateTimeKeepsTheVariablesIdentity:
         assert np.allclose(daily.values, aggregate_time(field, "1D").values)
 
     def test_a_driver_name_resolves_through_the_climate_registry(self, real_drivers):
-        par = site_1_member_1(real_drivers, "photosynthetically_active_radiation")
+        par = _site_1_first_driver_member(real_drivers, "photosynthetically_active_radiation")
         stripped = par.copy()
         stripped.attrs = {"units": par.attrs["units"]}
         assert aggregate_time(stripped, "1D").attrs["kind"] == "timestep_total"
@@ -606,12 +617,8 @@ class TestAggregateTimeLastSeesAGapAnywhereInTheCell:
         assert np.isnan(daily.values[1])
         np.testing.assert_array_equal(np.delete(daily.values, 1), np.delete(clean.values, 1))
 
-    def test_on_a_stack_only_the_gapped_site_is_missing(self, niwot_output):
-        from sipnet_calibration.fields import stack_model_outputs
-
-        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
-        run = niwot_output.select(["wood_carbon"])
-        stacked = stack_model_outputs({(0, 1): run, (0, 2): run}, site_table=table)["wood_carbon"]
+    def test_on_a_stack_only_the_gapped_site_is_missing(self):
+        stacked = niwot_stack_of(["wood_carbon"], sites=(1, 2), n_samples=1)["wood_carbon"]
         values = stacked.values.copy()
         values[0, 1, self.second_day(stacked)[0]] = np.nan  # sample 0, site 2
         daily = aggregate_time(stacked.copy(data=values), "1D")
@@ -644,11 +651,8 @@ class TestAggregationCountsLabelCellsAsTheAggregateDoes:
         assert counts.dtype == np.int64 and counts.name is None and counts.attrs == {}
 
     def test_an_observation_field_is_counted_on_its_calendar_cells(self):
-        observed = xr.DataArray(
-            [1.0, np.nan, 3.0, 4.0], dims="time",
-            coords={"time": pd.date_range("2012-01-01 12:00", periods=4, freq="12h")},
-            attrs={"units": "g m-2", "kind": "timestep_mean"}, name="x",
-        )
+        observed = _daily_observed_values(n=4)
+        observed[1] = np.nan
         daily = aggregate_time(observed, "1D", how="mean")
         counts = aggregation_counts(observed, "1D")
         np.testing.assert_array_equal(counts["time"].values, daily["time"].values)
@@ -675,6 +679,20 @@ class TestAggregateTimeReadsAnAliasedName:
         assert rate.attrs["derivation"] in str(raised.value)
 
 
+def _truncated(niwot_output, n_steps):
+    """The Niwot run's first *n_steps* as a run of its own, on its own time axis.
+
+    pySIPNET snaps each interior step's end onto the next step's start, but a
+    truncated run's last end is its start plus the declared length, so the
+    record ends a moment off the full run's axis.
+    """
+    from pysipnet.output import SIPNETOutput
+
+    return SIPNETOutput.from_dataframe(
+        niwot_output.pandas.iloc[:n_steps].copy(), climate=niwot_output.climate.head(n_steps)
+    )
+
+
 def _daily_observed_values(n=8, freq="12h"):
     """An observation field with no interval coordinates, which takes the calendar path."""
     return xr.DataArray(
@@ -686,7 +704,7 @@ def _daily_observed_values(n=8, freq="12h"):
 
 class TestAggregateTimeOnCalendarCells:
     def test_upsampling_is_refused(self):
-        with pytest.raises(ValueError, match="interpolate"):
+        with pytest.raises(ValueError, match="shorter than the shortest step"):
             aggregate_time(_daily_observed_values(freq="1D"), "1h", how="mean")
 
     def test_a_bad_frequency_is_refused_with_pandas_reason(self):
@@ -706,12 +724,132 @@ class TestAggregateTimeOnCalendarCells:
 
     def test_the_attributes_say_what_the_values_now_are(self):
         daily = aggregate_time(_daily_observed_values(), "1D")
-        assert daily.attrs["resampling"] == "mean of timestep_mean values over 1D"
+        assert daily.attrs["resampling"].startswith("mean of timestep_mean values over calendar cells of 1D")
         assert daily.attrs["kind"] == "timestep_mean" and "time_reference" in daily.attrs
         assert daily.attrs["units"] == "g m-2"
+        assert daily["time"].attrs["long_name"] == "End of calendar cell"
+
+    def test_the_result_is_pysipnets_resample_but_for_last(self):
+        observed = _daily_observed_values(freq="6h")
+        reference = resample(observed, "1D", how="mean")
+        xr.testing.assert_identical(aggregate_time(observed, "1D"), reference)
+
+    def test_last_is_missing_where_pysipnets_reads_past_a_gap(self):
+        """The one intended difference from pySIPNET: its last reads only the last value."""
+        observed = _daily_observed_values(freq="6h")
+        observed.attrs["kind"] = "timestep_end_state"
+        observed[1] = np.nan  # 2012-01-01 18:00, before the last value of (01-01, 01-02]
+        ours = aggregate_time(observed, "1D")
+        theirs = resample(observed, "1D", how="last")
+        np.testing.assert_array_equal(ours["time"].values, theirs["time"].values)
+        assert np.isfinite(theirs.sel(time="2012-01-02").values)
+        assert np.isnan(ours.sel(time="2012-01-02").values)
+        xr.testing.assert_identical(
+            ours.sel(time="2012-01-03"), theirs.sel(time="2012-01-03")
+        )
 
 
 def test_a_frequency_that_is_not_a_string_is_a_type_error(niwot_output):
     field = to_model_output(niwot_output, output_variable_names=["nee"])["net_ecosystem_exchange"]
     with pytest.raises(TypeError, match="freq must be a pandas offset alias"):
         aggregate_time(field, 3)
+
+
+class TestAKindlessFieldKeepsItsOwnDescription:
+    def test_time_keeps_the_inputs_attributes_as_the_variable_does(self, real_constraint_fields):
+        observed = real_constraint_fields[0]["landtrendr_aboveground_biomass"].isel(site=slice(0, 50))
+        assert "kind" not in observed.attrs
+        yearly = aggregate_time(observed, "YS", how="last")
+        assert yearly["time"].attrs == {
+            key: value for key, value in observed["time"].attrs.items()
+            if key not in STALE_TIME_ATTRIBUTE_NAMES
+        }
+        assert yearly.attrs["resampling"] == "last over YS"
+        assert aggregation_counts(observed, "YS")["time"].attrs == yearly["time"].attrs
+
+    def test_no_time_attribute_the_input_lacked_is_added(self):
+        observed = _daily_observed_values()
+        del observed.attrs["kind"]
+        assert observed["time"].attrs == {}
+        assert aggregate_time(observed, "1D", how="mean")["time"].attrs == {}
+
+
+class TestPaddingThatHoldsAValueIsNamed:
+    """Only the time labels that hold a value are counted, and the first is named."""
+
+    @staticmethod
+    def one_valued_padding_label(niwot_output):
+        stacked = TestAggregateTimeDropsAlignmentPadding.stacked(niwot_output)
+        short = stacked.sel(site=1, sample=0)
+        padding = np.flatnonzero(np.isnat(short[TIMESTEP_START].values))
+        assert padding.size > 1
+        values = short.values.copy()
+        values[padding[0]] = 1.0
+        return short.copy(data=values), short["time"].values[padding[0]]
+
+    def test_the_count_and_the_first_label_are_the_valued_ones(self, niwot_output):
+        valued, first = self.one_valued_padding_label(niwot_output)
+        with pytest.raises(ValueError, match="these are not padding") as raised:
+            aggregate_time(valued, "1D")
+        assert "at 1 time label(s)" in str(raised.value)
+        assert str(pd.Timestamp(first).to_datetime64()) in str(raised.value)
+
+
+class TestTypesAreCheckedBeforeTheKind:
+    @pytest.mark.parametrize("kind", [None, "timestep_total"])
+    def test_a_how_that_is_not_a_string_is_a_type_error_whatever_the_kind(self, kind):
+        observed = _daily_observed_values()
+        observed.attrs.pop("kind")
+        if kind is not None:
+            observed.attrs["kind"] = kind
+        with pytest.raises(TypeError, match="how must be a string"):
+            aggregate_time(observed, "1D", how=3)
+
+
+class TestTheLastGapRuleOnModelOutput:
+    def test_pysipnets_last_reads_past_a_gap_where_ours_is_missing(self, niwot_output):
+        """The intended difference from pySIPNET, on the interval path."""
+        field = to_model_output(niwot_output, output_variable_names=["wood_carbon"])["wood_carbon"]
+        day = pd.DatetimeIndex(field["time"].values).ceil("D")
+        second_day = np.flatnonzero(day == day.unique()[1])
+        gappy = field.copy(data=field.values.copy())
+        gappy[second_day[0]] = np.nan
+        ours = aggregate_time(gappy, "1D")
+        theirs = resample(gappy, "1D", how="last").drop_vars(list(SIPNET_ROW_LABEL_NAMES))
+        assert np.isfinite(theirs.values[1]) and np.isnan(ours.values[1])
+        xr.testing.assert_identical(ours.drop_isel(time=1), theirs.drop_isel(time=1))
+
+
+class TestAFieldOfNoKind:
+    def test_an_unknown_method_is_refused_in_words(self):
+        observed = _daily_observed_values()
+        del observed.attrs["kind"]
+        with pytest.raises(ValueError, match="unknown resampling method 'median' for 'x'"):
+            aggregate_time(observed, "1D", how="median")
+
+    def test_a_kind_no_method_preserves_needs_how(self):
+        coordinate = _daily_observed_values()
+        coordinate.attrs["kind"] = "timestep_start_coordinate"
+        with pytest.raises(ValueError, match="which no method leaves unchanged"):
+            aggregate_time(coordinate, "1D")
+
+
+class TestAFieldOfNoKindIsToldToPassHow:
+    def test_the_advice_is_to_pass_how(self):
+        observed = _daily_observed_values()
+        del observed.attrs["kind"]
+        with pytest.raises(ValueError, match=r"^'x' carries no 'kind' attribute .*; pass how='sum', 'mean' or 'last'"):
+            aggregate_time(observed, "1D")
+
+
+class TestPaddingIsCountedAcrossBatchDims:
+    def test_a_time_label_valued_in_any_sample_counts_once(self):
+        stacked = niwot_stack_of(["wood_carbon"], sites=(1, 2), n_samples=3, lengths={2: 40})
+        short = stacked["wood_carbon"].sel(site=2)
+        padding = np.flatnonzero(np.isnat(short[TIMESTEP_START].values))
+        assert padding.size >= 2
+        values = short.values.copy()
+        values[0, padding[0]] = 1.0  # sample 0 only
+        values[1, padding[1]] = 1.0  # sample 1 only
+        with pytest.raises(ValueError, match=r"at 2 time label\(s\)"):
+            aggregate_time(short.copy(data=values), "1D")

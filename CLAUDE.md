@@ -937,14 +937,23 @@ plotting code. The load-bearing rules:
   weights means by step length and refuses a method the kind does not support
   (a pool is not additive; a per-step total is not averaged until it is a
   rate). `observation.time_alignment.aggregate_time(field, freq, how=None)`
-  is that operation for a field: a field carrying pySIPNET's interval
-  coordinates goes through `resample` itself, which keeps batch and `site`
-  dims (pySIPNET PR #49), and one without them, such as observed values, is
-  combined on the same calendar cells here. It adds one thing: with no
-  `how` it takes **the method that leaves the variable the kind it already
-  is**, read off pySIPNET's `RESAMPLED_KIND` rather than written down. A
-  total sums, a step mean or a rate means, a pool or a running total takes
-  its last value.
+  is that operation for a field, through `resample` itself: a field carrying
+  pySIPNET's interval coordinates is combined by its steps, keeping batch and
+  `site` dims (pySIPNET PR #49), and one without them, such as observed
+  values, on calendar cells alone (PR #51), and the module applies
+  pySIPNET's public rules (`drop_padding`, `check_frequency`,
+  `check_resampling_method`, `resampled_attributes`, `variable_kind`)
+  wherever their inputs allow. With no `how` it takes **the method that
+  leaves the variable the kind it already is**, read off pySIPNET's
+  `RESAMPLED_KIND` rather than written down: a total sums, a step mean or a
+  rate means, a pool or a running total takes its last value. Kept
+  deliberately beside pySIPNET's: `last` is `NaN` in a cell holding a gap
+  anywhere, where pySIPNET's reads only the cell's last value; a field with
+  neither a kind nor interval coordinates is combined as told through a
+  stand-in kind, keeping its own attributes and its `time`'s; the window
+  mean's equal-spacing check, with pySIPNET's `STEP_TOLERANCE`; and the
+  padding and empty-record checks, worded for every reader rather than for
+  `resample`.
   SIPNET's `net_ecosystem_exchange` is `g m-2` of C per timestep, so 3-hourly
   to daily is a **sum**, and a mean is wrong by 8x while looking plausible;
   the default is there so that omission cannot reach that error, and `how=` is

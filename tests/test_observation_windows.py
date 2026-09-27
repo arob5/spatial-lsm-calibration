@@ -12,7 +12,7 @@ import pytest
 import xarray as xr
 from pysipnet.arithmetic import divide_with_units, multiply_with_units, step_length
 
-from conftest import located, site_table_of
+from conftest import located, niwot_stack_of
 from sipnet_calibration.conventions import (
     TIMESTEP_LENGTH,
     TIMESTEP_START,
@@ -427,7 +427,7 @@ class TestLabelClockAndFrequencyRefusals:
             aggregate_time(array, "daily")
         with pytest.raises(ValueError, match="shorter than the shortest step"):
             aggregate_time(array, "1h")
-        with pytest.raises(ValueError, match="offset alias"):
+        with pytest.raises(TypeError, match="offset alias"):
             aggregation_counts(array, 3)
 
     def test_a_finer_label_is_not_truncated_onto_the_axis(self, niwot):
@@ -576,8 +576,8 @@ class TestWindowAndLabelRefusals:
         with pytest.raises(ValueError, match="'annual': a window edge is missing"):
             windows_from_observed_values(self.bounded(pd.DatetimeIndex([pd.NaT]), pd.DatetimeIndex(["2013-01-01"])))
 
-    def test_window_edges_that_are_not_datetimes_are_refused(self):
-        with pytest.raises(ValueError, match="must hold datetimes"):
+    def test_window_edges_that_are_not_datetimes_are_a_type_error(self):
+        with pytest.raises(TypeError, match="must hold datetimes"):
             windows_from_observed_values(self.bounded([2012], pd.DatetimeIndex(["2013-01-01"])))
 
     def test_decreasing_windows_are_refused(self, niwot):
@@ -595,13 +595,17 @@ class TestWindowAndLabelRefusals:
         with pytest.raises(ValueError, match="missing edge"):
             reduce_windows(niwot["wood_carbon"], windows, "last")
 
-    def test_numeric_windows_are_refused(self, niwot):
-        with pytest.raises(ValueError, match="intervals of datetimes"):
+    def test_numeric_windows_are_a_type_error(self, niwot):
+        with pytest.raises(TypeError, match="intervals of datetimes"):
             reduce_windows(niwot["wood_carbon"], pd.IntervalIndex.from_breaks([0, 1, 2]), "last")
 
-    def test_integer_labels_are_refused(self, niwot):
-        with pytest.raises(ValueError, match="must be timestamps"):
+    def test_integer_labels_are_a_type_error(self, niwot):
+        with pytest.raises(TypeError, match="must be timestamps, got dtype int64"):
             select_timestep_at(niwot["wood_carbon"], np.array([1, 2]))
+
+    def test_boolean_labels_are_a_type_error(self, niwot):
+        with pytest.raises(TypeError, match="must be timestamps, got dtype bool"):
+            select_timestep_at(niwot["wood_carbon"], np.array([True]))
 
     def test_no_labels_are_refused(self, niwot):
         with pytest.raises(ValueError, match="no labels were given"):
@@ -716,11 +720,7 @@ class TestValuedTimeLabelsWithoutAnIntervalAreRefused:
 
 class TestCheckRunSpansTheWindows:
     def test_a_window_beyond_a_selected_sites_shorter_record_is_refused(self, niwot):
-        from sipnet_calibration.fields import stack_model_outputs
-
-        run = niwot[["wood_carbon"]]
-        table = site_table_of(1, 2, lon=[0.0, 1.0], lat=[0.0, 1.0])
-        stacked = stack_model_outputs({(0, 1): run, (0, 2): run.isel(time=slice(0, 40))}, site_table=table)
+        stacked = niwot_stack_of(["wood_carbon"], sites=(1, 2), n_samples=1, lengths={2: 40})
         one = stacked.sel(site=2, sample=0)["wood_carbon"]
         assert np.isnat(one[TIMESTEP_START].values).any()
         start, end = (
@@ -728,7 +728,7 @@ class TestCheckRunSpansTheWindows:
             pd.Timestamp(niwot["time"].values[50]),
         )
         windows = pd.IntervalIndex.from_arrays([start], [end], closed="right")
-        with pytest.raises(ValueError, match="reaches beyond the model record"):
+        with pytest.raises(ValueError, match="reaches beyond the model record of 'wood_carbon'"):
             check_run_spans_the_windows(one, windows, "x")
         check_run_spans_the_windows(one, pd.IntervalIndex.from_arrays([start], [pd.Timestamp(niwot["time"].values[39])], closed="right"), "x")
 
@@ -819,3 +819,160 @@ def test_windows_from_observed_values_refuses_what_is_not_a_field():
     observed.attrs.pop("units")
     with pytest.raises(ValueError, match="units"):
         windows_from_observed_values(observed)
+
+
+class TestEveryReaderRefusesTheSameThings:
+    """One rule, and one message, for every public reader."""
+
+    @staticmethod
+    def readers(field):
+        windows = _daily_windows(field) if TIMESTEP_START in field.coords else pd.IntervalIndex.from_arrays(
+            [pd.Timestamp(field["time"].values[0]) - pd.Timedelta("1D")],
+            [pd.Timestamp(field["time"].values[-1])],
+            closed="right",
+        )
+        return {
+            "aggregate_time": lambda: aggregate_time(field, "1D"),
+            "aggregation_counts": lambda: aggregation_counts(field, "1D"),
+            "reduce_windows": lambda: reduce_windows(field, windows, "last"),
+            "window_counts": lambda: window_counts(field, windows),
+        }
+
+    @pytest.mark.parametrize("dropped", [TIMESTEP_START, TIMESTEP_LENGTH])
+    def test_one_interval_coordinate_without_the_other_is_refused(self, niwot, dropped):
+        half = niwot["wood_carbon"].drop_vars([dropped])
+        for name, read in self.readers(half).items():
+            with pytest.raises(ValueError, match="both of pySIPNET's interval coordinates or neither"):
+                read()
+
+    def test_a_record_of_padding_alone_has_no_timesteps(self, niwot):
+        pool = niwot["wood_carbon"]
+        padding = pool.assign_coords(
+            {TIMESTEP_START: ("time", np.full(pool.sizes["time"], np.datetime64("NaT", "ns")), pool[TIMESTEP_START].attrs)}
+        ).copy(data=np.full(pool.shape, np.nan))
+        windows = _daily_windows(pool)
+        labels = pd.DatetimeIndex(pool["time"].values[[3]])
+        for read in (
+            lambda: aggregate_time(padding, "1D"),
+            lambda: reduce_windows(padding, windows, "last"),
+            lambda: window_counts(padding, windows),
+            lambda: run_window(padding),
+            lambda: select_timestep_at(padding, labels),
+        ):
+            with pytest.raises(ValueError, match="no timesteps left"):
+                read()
+
+
+class TestEqualSpacingHasPysipnetsTolerance:
+    """Only the last label moves, so the spread of the spacing is exactly the shift."""
+
+    @staticmethod
+    def nearly_regular(shift):
+        times = pd.date_range("2012-01-01 12:00", periods=6, freq="12h").as_unit("ns").to_numpy().copy()
+        times[-1] -= np.timedelta64(pd.Timedelta(shift))
+        return xr.DataArray(
+            np.arange(1.0, 7.0), dims="time", coords={"time": times},
+            attrs={"units": "g m-2", "kind": "timestep_mean"}, name="x",
+        )
+
+    def test_a_spread_of_the_tolerance_still_means(self):
+        from pysipnet.dataset import STEP_TOLERANCE
+
+        field = self.nearly_regular(pd.Timedelta(STEP_TOLERANCE))
+        windows = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["2012-01-01", "2012-01-02"]), pd.DatetimeIndex(["2012-01-02", "2012-01-04"]), closed="right"
+        )
+        np.testing.assert_allclose(reduce_windows(field, windows, "mean").values, [1.5, 4.5])
+        assert aggregate_time(field, "1D", how="mean").sizes["time"] == 3
+
+    def test_a_spread_just_over_the_tolerance_is_refused_by_both(self):
+        from pysipnet.dataset import STEP_TOLERANCE
+
+        field = self.nearly_regular(pd.Timedelta(STEP_TOLERANCE) + pd.Timedelta("1s"))
+        windows = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["2012-01-01"]), pd.DatetimeIndex(["2012-01-04"]), closed="right"
+        )
+        with pytest.raises(ValueError, match="not all the same length to within"):
+            reduce_windows(field, windows, "mean")
+        with pytest.raises(ValueError, match="not equally spaced"):
+            aggregate_time(field, "1D", how="mean")
+
+
+class TestCountsIgnoreTheKind:
+    def test_window_counts_and_aggregation_counts_both_ignore_an_invalid_kind(self, niwot):
+        pool = niwot["wood_carbon"].assign_attrs(kind="bogus")
+        assert window_counts(pool, run_window(pool)).values[0] == pool.sizes["time"]
+        assert aggregation_counts(pool, "1D").sum() == pool.sizes["time"]
+
+
+class TestMessagesNameTheReaderAndTheSubject:
+    def test_a_reader_of_intervals_names_itself_and_the_field(self, niwot):
+        bare = niwot["wood_carbon"].drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
+        with pytest.raises(ValueError, match=r"^run_window reads the interval each step covers, and 'wood_carbon' carries no"):
+            run_window(bare)
+
+    def test_the_span_check_names_the_reader_and_the_field(self, niwot):
+        wood = niwot["wood_carbon"]
+        start = pd.Timestamp(wood[TIMESTEP_START].values[0]) - pd.Timedelta("30D")
+        windows = pd.IntervalIndex.from_arrays([start], [pd.Timestamp(wood["time"].values[-1])], closed="right")
+        with pytest.raises(ValueError, match=r"^R: the window .* reaches beyond the model record of 'wood_carbon'"):
+            check_run_spans_the_windows(wood, windows, "R")
+
+    def test_the_window_reduction_check_takes_the_name_as_a_keyword(self):
+        from sipnet_calibration.observation.time_alignment import check_how_is_a_window_reduction
+
+        with pytest.raises(TypeError):
+            check_how_is_a_window_reduction("median", "R")
+        with pytest.raises(ValueError, match="how must be one of .* for R, got 'median'"):
+            check_how_is_a_window_reduction("median", message_name="R")
+
+
+class TestWhatEachReductionAdmits:
+    def test_a_running_total_takes_its_last_value_over_a_window(self, niwot):
+        running = niwot["cumulative_net_ecosystem_exchange"]
+        reduced = reduce_windows(running, run_window(running), "last")
+        np.testing.assert_allclose(reduced.values, running.values[-1:])
+        assert reduced.attrs["kind"] == "cumulative"
+
+    @pytest.mark.parametrize("how, expected", [("min", [1.0, 3.0]), ("max", [2.0, 4.0]), ("first", [1.0, 3.0])])
+    def test_a_field_of_no_kind_takes_an_extreme_or_first_reading(self, how, expected):
+        observed = xr.DataArray(
+            [1.0, 2.0, 3.0, 4.0], dims="time",
+            coords={"time": pd.date_range("2012-01-01 12:00", periods=4, freq="12h")},
+            attrs={"units": "g m-2"}, name="x",
+        )
+        windows = pd.IntervalIndex.from_breaks(pd.DatetimeIndex(["2012-01-01", "2012-01-02", "2012-01-03"]), closed="right")
+        np.testing.assert_array_equal(reduce_windows(observed, windows, how).values, expected)
+
+    @pytest.mark.parametrize("gaps_in_hours", [[12, 6, 6], [6, 12, 12]])
+    def test_a_mean_over_unequally_spaced_labels_without_lengths_is_refused(self, gaps_in_hours):
+        times = pd.Timestamp("2012-01-01 06:00") + pd.to_timedelta(np.cumsum([0, *gaps_in_hours]), unit="h")
+        observed = xr.DataArray(
+            [1.0, 2.0, 3.0, 4.0], dims="time", coords={"time": times},
+            attrs={"units": "g m-2", "kind": "timestep_mean"}, name="x",
+        )
+        windows = pd.IntervalIndex.from_arrays(
+            pd.DatetimeIndex(["2012-01-01"]), pd.DatetimeIndex(["2012-01-03"]), closed="right"
+        )
+        with pytest.raises(ValueError, match="not all the same length"):
+            reduce_windows(observed, windows, "mean")
+
+    def test_a_windows_length_says_it_is_a_sum_as_pysipnets_cells_do(self, niwot):
+        from pysipnet.resample import STEP_LENGTH_RESAMPLED
+
+        pool = niwot["wood_carbon"]
+        reduced = reduce_windows(pool, run_window(pool), "last")
+        assert reduced[TIMESTEP_LENGTH].attrs["source"] == STEP_LENGTH_RESAMPLED
+        assert aggregate_time(pool, "1D")[TIMESTEP_LENGTH].attrs["source"] == STEP_LENGTH_RESAMPLED
+
+
+class TestWhatAnInstantReadRefuses:
+    def test_a_time_coordinate_is_not_read_at_an_instant(self, niwot):
+        coordinate = niwot["wood_carbon"].assign_attrs(kind="timestep_start_coordinate")
+        with pytest.raises(ValueError, match="is a time coordinate, not a variable to read"):
+            select_timestep_at(coordinate, niwot["time"].values[:1])
+
+    def test_run_window_refuses_observed_values_naming_itself(self, niwot):
+        observed = niwot["wood_carbon"].drop_vars([TIMESTEP_START, TIMESTEP_LENGTH])
+        with pytest.raises(ValueError, match="run_window reads the interval each step covers"):
+            run_window(observed)

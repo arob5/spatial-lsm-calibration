@@ -245,7 +245,7 @@ class ReduceOverWindows:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_variable_name", _output_name(self.output_variable_name))
-        check_how_is_a_window_reduction(self.how, type(self).__name__)
+        check_how_is_a_window_reduction(self.how, message_name=type(self).__name__)
 
     @property
     def output_variable_names(self) -> tuple[str, ...]:
@@ -299,7 +299,7 @@ class ReduceOverRun:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "output_variable_name", _output_name(self.output_variable_name))
-        check_how_is_a_window_reduction(self.how, type(self).__name__)
+        check_how_is_a_window_reduction(self.how, message_name=type(self).__name__)
 
     @property
     def output_variable_names(self) -> tuple[str, ...]:
