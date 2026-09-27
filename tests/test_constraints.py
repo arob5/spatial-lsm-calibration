@@ -434,7 +434,7 @@ def test_a_negative_standard_deviation_is_refused(raw_root, site_table, tmp_path
 def test_a_static_table_whose_copies_differ_is_refused(raw_root, site_table, tmp_path):
     rows = [dict(row) for row in STATIC_ROWS]
     rows[1]["soc"] = 743.0
-    _refused(STATIC, rows, raw_root, site_table, tmp_path, "Either the source changed")
+    _refused(STATIC, rows, raw_root, site_table, tmp_path, "either the source changed")
     frame = read_raw(STATIC, raw_root)
     with pytest.raises(ValueError, match="static"):
         build_constraint(STATIC, frame, site_table)
@@ -730,15 +730,15 @@ def test_the_report_counts_what_was_written(raw_root, site_table, tmp_path):
 
 
 def test_describe_exits_zero_without_touching_data(capsys):
-    assert ingest.main(["--describe", "--raw-root", "/nonexistent"]) == 0
+    assert ingest.main(["--describe", "--raw-directory", "/nonexistent"]) == 0
     assert "modis_leaf_area_index.csv.gz" in capsys.readouterr().out
 
 
-def test_a_missing_raw_root_is_a_reported_error_not_a_traceback(tmp_path, capsys):
+def test_a_missing_raw_directory_is_a_reported_error_not_a_traceback(tmp_path, capsys):
     site_table_path = _write_sites(tmp_path / "sites" / "sites.csv")
     code = ingest.main(
-        ["--raw-root", str(tmp_path / "absent"), "--site-table", str(site_table_path),
-         "--out-dir", str(tmp_path / "out"), "--constraint", "smap_soil_moisture"]
+        ["--raw-directory", str(tmp_path / "absent"), "--site-table", str(site_table_path),
+         "--output-directory", str(tmp_path / "out"), "--constraint", "smap_soil_moisture"]
     )
     assert code == 1
     captured = capsys.readouterr()
@@ -753,7 +753,7 @@ def test_a_successful_run_exits_zero_and_reports(raw_root, tmp_path, monkeypatch
     monkeypatch.setattr(module, "CONSTRAINT_NAMES", (ANNUAL.name,))
     monkeypatch.setattr(ingest, "CONSTRAINT_NAMES", (ANNUAL.name,))
     code = ingest.main(
-        ["--raw-root", str(raw_root), "--site-table", str(site_table_path), "--out-dir", str(tmp_path / "out")]
+        ["--raw-directory", str(raw_root), "--site-table", str(site_table_path), "--output-directory", str(tmp_path / "out")]
     )
     assert code == 0
     assert "observed 4 of 8 elements" in capsys.readouterr().out
