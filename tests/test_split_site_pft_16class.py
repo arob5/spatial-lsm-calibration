@@ -30,9 +30,9 @@ split = load_script("scripts/raw_sources/split_site_pft_16class.py")
 
 def _source(rows: int = 4) -> pd.DataFrame:
     """A miniature of the producer's table: the site-labels columns plus covariates."""
-    frame = pd.DataFrame({column: ["x"] * rows for column in split.SITE_LABELS_COLUMNS})
+    frame = pd.DataFrame({column: ["x"] * rows for column in split.SITE_LABELS_COLUMN_NAMES})
     frame[split.KEY_COLUMN] = [str(site) for site in range(1, rows + 1)]
-    frame[split.LABEL_COLUMN] = ["Permanent_Wetlands"] * rows
+    frame[split.CLASS_COLUMN] = ["Permanent_Wetlands"] * rows
     frame["MAT"] = ["1.5"] * rows
     frame["BIOME_NAME"] = ["Tundra"] * rows
     return frame
@@ -53,8 +53,8 @@ def test_the_default_destinations_are_the_repositorys_whatever_the_working_direc
     """The halves are tracked raw inputs, found from the checkout, not from the cwd."""
     monkeypatch.chdir(tmp_path)
     args = split.parse_args([])
-    assert args.site_labels_dir == REPOSITORY / "data" / "raw" / "site_labels"
-    assert args.covariates_dir == REPOSITORY / "data" / "raw" / "covariates"
+    assert args.site_labels_directory == REPOSITORY / "data" / "raw" / "site_labels"
+    assert args.covariates_directory == REPOSITORY / "data" / "raw" / "covariates"
 
 
 # ── the split itself ──────────────────────────────────────────────────────────
@@ -62,14 +62,14 @@ def test_the_default_destinations_are_the_repositorys_whatever_the_working_direc
 
 def test_the_halves_partition_the_source():
     source = _source()
-    site_labels, covariates = split.split(source)
+    site_labels, covariates = split.split_source(source)
     assert set(site_labels.columns) | set(covariates.columns) == set(source.columns)
     assert set(site_labels.columns) & set(covariates.columns) == {split.KEY_COLUMN}
 
 
 def test_both_halves_keep_the_sources_column_order():
     source = _source()
-    site_labels, covariates = split.split(source)
+    site_labels, covariates = split.split_source(source)
     for half in (site_labels, covariates):
         order = [column for column in source.columns if column in set(half.columns)]
         assert list(half.columns) == order
@@ -77,63 +77,63 @@ def test_both_halves_keep_the_sources_column_order():
 
 def test_the_halves_rejoin_to_the_source():
     source = _source()
-    site_labels, covariates = split.split(source)
-    split.check_the_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
+    site_labels, covariates = split.split_source(source)
+    split.check_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
 
 
 def test_the_rejoin_check_catches_a_changed_value():
     source = _source()
-    site_labels, covariates = split.split(source)
+    site_labels, covariates = split.split_source(source)
     covariates = covariates.copy()
     covariates.loc[0, "MAT"] = "999"
-    with pytest.raises(split.SplitError, match="do not re-join"):
-        split.check_the_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
+    with pytest.raises(split.IngestError, match="do not re-join"):
+        split.check_rejoined_halves_reproduce_the_source(source, site_labels, covariates)
 
 
 def test_the_rejoin_check_catches_a_dropped_row():
     source = _source()
-    site_labels, covariates = split.split(source)
-    with pytest.raises(split.SplitError, match="re-joining gives"):
-        split.check_the_rejoined_halves_reproduce_the_source(
+    site_labels, covariates = split.split_source(source)
+    with pytest.raises(split.IngestError, match="re-joining gives"):
+        split.check_rejoined_halves_reproduce_the_source(
             source, site_labels.iloc[:-1], covariates
         )
 
 
 def test_a_source_missing_a_declared_column_is_refused():
     source = _source().drop(columns=["distance_margin"])
-    with pytest.raises(split.SplitError, match="does not carry"):
-        split.split(source)
+    with pytest.raises(split.IngestError, match="does not carry"):
+        split.split_source(source)
 
 
 def test_a_column_in_both_halves_is_refused():
     source = _source()
-    site_labels, covariates = split.split(source)
-    covariates = covariates.join(site_labels[[split.LABEL_COLUMN]])
-    with pytest.raises(split.SplitError, match="should share only"):
-        split.check_the_columns_partition_the_source(source, site_labels, covariates)
+    site_labels, covariates = split.split_source(source)
+    covariates = covariates.join(site_labels[[split.CLASS_COLUMN]])
+    with pytest.raises(split.IngestError, match="should share only"):
+        split.check_columns_partition_the_source(source, site_labels, covariates)
 
 
 def test_a_half_that_is_not_the_whole_pool_is_refused():
     source = _source()
-    site_labels, covariates = split.split(source)
-    with pytest.raises(split.SplitError, match="not the whole site pool"):
+    site_labels, covariates = split.split_source(source)
+    with pytest.raises(split.IngestError, match="not the whole site pool"):
         split.check_both_halves_are_keyed_on_the_whole_pool(site_labels.iloc[:-1], covariates)
 
 
 def test_a_duplicated_site_is_refused():
     source = _source()
-    site_labels, covariates = split.split(source)
+    site_labels, covariates = split.split_source(source)
     doubled = pd.concat([site_labels.iloc[:1], site_labels.iloc[:-1]], ignore_index=True)
-    with pytest.raises(split.SplitError, match="repeats"):
+    with pytest.raises(split.IngestError, match="repeats"):
         split.check_both_halves_are_keyed_on_the_whole_pool(doubled, covariates)
 
 
 def test_an_empty_class_is_refused():
     source = _source()
-    source.loc[1, split.LABEL_COLUMN] = ""
-    site_labels, _ = split.split(source)
-    with pytest.raises(split.SplitError, match="empty final_pft"):
-        split.check_the_label_column_is_complete(site_labels)
+    source.loc[1, split.CLASS_COLUMN] = ""
+    site_labels, _ = split.split_source(source)
+    with pytest.raises(split.IngestError, match="empty final_pft"):
+        split.check_class_column_is_complete(site_labels)
 
 
 def test_an_absent_source_points_at_the_provenance_record(tmp_path):
@@ -151,7 +151,7 @@ def test_the_source_is_read_as_text_so_no_float_is_reparsed(tmp_path):
 
 def test_writing_both_halves_round_trips(tmp_path):
     source = _source()
-    site_labels, covariates = split.split(source)
+    site_labels, covariates = split.split_source(source)
     written = split.write_halves(site_labels, covariates, tmp_path / "l", tmp_path / "c")
     assert set(written) == {split.SITE_LABELS_FILE, split.COVARIATES_FILE}
     for name, path in written.items():
@@ -166,22 +166,22 @@ def test_a_failed_second_check_moves_neither_half_and_keeps_both_partials(
     """The halves are written together: the covariates half failing its round
     trip leaves the site-labels half as it was, not new beside an old other."""
     source = _source()
-    site_labels, covariates = split.split(source)
+    site_labels, covariates = split.split_source(source)
     written = split.write_halves(site_labels, covariates, tmp_path / "l", tmp_path / "c")
     before = {name: path.read_text() for name, path in written.items()}
 
     changed = source.copy()
-    changed.loc[0, split.LABEL_COLUMN] = "grass"
-    changed_labels, changed_covariates = split.split(changed)
-    real_check = split.check_the_written_file_reads_back
+    changed.loc[0, split.CLASS_COLUMN] = "grass"
+    changed_labels, changed_covariates = split.split_source(changed)
+    real_check = split.check_written_file_reads_back
 
     def fail_on_covariates(frame, partial):
         if partial.name.startswith(split.COVARIATES_FILE):
-            raise split.SplitError("forced: covariates misread")
+            raise split.IngestError("forced: covariates misread")
         real_check(frame, partial)
 
-    monkeypatch.setattr(split, "check_the_written_file_reads_back", fail_on_covariates)
-    with pytest.raises(split.SplitError, match="forced"):
+    monkeypatch.setattr(split, "check_written_file_reads_back", fail_on_covariates)
+    with pytest.raises(split.IngestError, match="forced"):
         split.write_halves(changed_labels, changed_covariates, tmp_path / "l", tmp_path / "c")
 
     assert {name: path.read_text() for name, path in written.items()} == before
@@ -197,8 +197,8 @@ def test_main_reports_and_exits_zero(tmp_path, capsys):
     code = split.main(
         [
             "--source", str(path),
-            "--site-labels-dir", str(tmp_path / "l"),
-            "--covariates-dir", str(tmp_path / "c"),
+            "--site-labels-directory", str(tmp_path / "l"),
+            "--covariates-directory", str(tmp_path / "c"),
         ]
     )
     assert code == 0
@@ -231,7 +231,7 @@ def test_the_committed_halves_rejoin_losslessly(monkeypatch):
         for path in SOURCE_HALVES
     )
     split.check_both_halves_are_keyed_on_the_whole_pool(site_labels, covariates)
-    split.check_the_label_column_is_complete(site_labels)
+    split.check_class_column_is_complete(site_labels)
     assert set(site_labels.columns) & set(covariates.columns) == {split.KEY_COLUMN}
     assert len(site_labels.columns) + len(covariates.columns) - 1 == 60
 
