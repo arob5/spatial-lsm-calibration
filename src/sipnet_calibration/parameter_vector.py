@@ -688,7 +688,7 @@ class ParameterVector:
         for p in self.parameters:
             values = jnp.asarray(natural_values[p.name], dtype=jnp.float64)
             lead = values.shape[: values.ndim - len(self.value_shape(p.name))]
-            pieces.append(p.bijector.inverse(values).reshape(lead + (-1,)))
+            pieces.append(p.bijector.inverse(values).reshape(lead + (self._sizes[p.name],)))
         return jnp.concatenate(pieces, axis=-1)
 
     def at_sites(self, natural_values: NaturalValues) -> NaturalValues:
@@ -792,7 +792,7 @@ class ParameterVector:
         for p in self.parameters:
             values = jnp.asarray(self._natural_values_of(p, parameter_dataset, batch))
             check_values_are_in_the_support(p, values)
-            pieces.append(p.bijector.inverse(values).reshape(values.shape[: len(batch)] + (-1,)))
+            pieces.append(p.bijector.inverse(values).reshape(values.shape[: len(batch)] + (self._sizes[p.name],)))
         return jnp.concatenate(pieces, axis=-1)
 
     def site_fields(self, parameter_dataset: ParameterDataset) -> xr.Dataset:

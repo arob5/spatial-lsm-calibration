@@ -913,3 +913,9 @@ def test_a_non_pointwise_vector_reads_its_own_dim_labels_in_any_order():
 def test_derived_values_need_the_inputs(pooled):
     with pytest.raises(KeyError, match="computed from \\['spread', 'standardized'\\], which the natural values lack"):
         pooled.derived_values({"mean": jnp.zeros(2)})
+
+
+def test_zero_draws_round_trip(vector):
+    empty = jnp.zeros((0, vector.dimension))
+    assert vector.to_unconstrained(vector.to_natural(empty)).shape == (0, vector.dimension)
+    assert vector.flat(vector.dataset(empty)).shape == (0, vector.dimension)
