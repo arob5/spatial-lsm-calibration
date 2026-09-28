@@ -1,7 +1,7 @@
 """Tests for the SIPNET parameter map.
 
 The map reproduces the SIPNET parameter fields of the implementation it
-replaced, to 1e-12, from the same natural values (``tests/data``), and
+replaced, to 1e-12, from the same natural values (``conftest.EXAMPLE_REFERENCE``), and
 ``ComputeInitialConditions`` reproduces the initial-condition conversion.
 External inputs broadcast by dim name: zip on ``site`` and the batch dim,
 cross on any other. Every check is provoked once.
@@ -9,15 +9,20 @@ cross on any other. Every check is provoked once.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import xarray as xr
 from pysipnet.parameters.base import ParameterDomain
 
-from conftest import site_table_of
+from conftest import (
+    EXAMPLE_REFERENCE_PFT,
+    EXAMPLE_REFERENCE_SITES,
+    example_reference,
+    example_reference_natural_values,
+    site_table_of,
+)
+from sipnet_calibration.calibration import example_calibration
 from sipnet_calibration.fields import validate_sipnet_parameter_fields
 from sipnet_calibration.initial_conditions import to_sipnet_initial_condition_fields
 from sipnet_calibration.sites import site_coordinates
@@ -37,7 +42,6 @@ from sipnet_calibration.sipnet_parameter_map import (
     ComputeInitialConditions,
     ComputePhotosynthesisRates,
     Copy,
-    CopySimplex,
     Fixed,
     SIPNETParameterMap,
     ValueRequirement,
@@ -46,70 +50,22 @@ from sipnet_calibration.sipnet_parameter_map import (
     validate_external_inputs,
 )
 
-REFERENCE = Path(__file__).parent / "data" / "example_parameter_vector_reference.nc"
-SITES = (1, 27, 4711)
-PFT = ("deciduous", "conifer", "deciduous")
+SITES = EXAMPLE_REFERENCE_SITES
+PFT = EXAMPLE_REFERENCE_PFT
 ALLOCATION = ("leaf", "wood", "fine_root", "coarse_root")
 
 
 def example_vector() -> ParameterVector:
-    return ParameterVector(
-        parameters=[
-            Parameter(name="photosynthetic_capacity", support=POSITIVE, units="nmol g-1 s-1"),
-            Parameter(name="respiration_share", support=OPEN_UNIT_INTERVAL, units="1"),
-            Parameter(name="allocation", support=SIMPLEX, units="1", dim="pft", natural_names=ALLOCATION),
-            Parameter(name="base_soil_respiration", support=POSITIVE, units="yr-1", dim="pft"),
-            Parameter(name="leaf_fall_fraction", support=OPEN_UNIT_INTERVAL, units="1"),
-            Parameter(name="initial_soil_carbon", support=POSITIVE, units="g m-2", dim="site"),
-        ],
-        site_table=site_table_of(*SITES),
-        site_labels={"pft": PFT},
-    )
+    return example_calibration(site_table_of(*SITES), PFT)[0]
 
 
 def example_map() -> SIPNETParameterMap:
-    return SIPNETParameterMap(
-        rules=[
-            ComputePhotosynthesisRates(
-                capacity_value_name="photosynthetic_capacity", respiration_share_value_name="respiration_share"
-            ),
-            CopySimplex(value_name="allocation", sipnet_parameter_names=(
-                "leaf_allocation", "wood_allocation", "fine_root_allocation")),
-            Copy(value_name="base_soil_respiration", sipnet_parameter_name="base_soil_respiration_rate"),
-            Copy(value_name="leaf_fall_fraction", sipnet_parameter_name="leaf_off_fall_fraction"),
-            Copy(value_name="initial_soil_carbon", sipnet_parameter_name="soil_carbon"),
-        ],
-        fixed=[
-            Fixed(sipnet_parameter_name="daily_mean_photosynthesis_fraction", value=0.76, provenance="t"),
-            Fixed(sipnet_parameter_name="leaf_carbon_fraction", dim="pft", provenance="t",
-                  value={"deciduous": 0.466, "conifer": 0.466, "grass": 0.483}),
-            Fixed(sipnet_parameter_name="vapor_pressure_deficit_exponent", value=2.0, provenance="t"),
-        ],
-    )
+    return example_calibration(site_table_of(*SITES), PFT)[2]
 
 
 @pytest.fixture(scope="module")
 def reference() -> xr.Dataset:
-    with xr.open_dataset(REFERENCE, engine="h5netcdf") as dataset:
-        return dataset.load()
-
-
-def natural_values_of(reference: xr.Dataset, vector: ParameterVector) -> dict:
-    """The reference's per-site natural values, read at each dim label."""
-    first_site = {label: PFT.index(label) for label in vector.dim_index("pft")}
-    pft = list(first_site.values())
-
-    def at(name: str) -> np.ndarray:
-        return reference[f"natural:{name}"].values
-
-    return {
-        "photosynthetic_capacity": at("photosynthesis.capacity")[:, 0],
-        "respiration_share": at("photosynthesis.respiration_share")[:, 0],
-        "allocation": np.stack([at(f"allocation.{n}_allocation")[:, pft] for n in ALLOCATION], axis=-1),
-        "base_soil_respiration": at("base_soil_respiration")[:, pft],
-        "leaf_fall_fraction": at("leaf_fall_fraction")[:, 0],
-        "initial_soil_carbon": at("initial_soil_carbon"),
-    }
+    return example_reference()
 
 
 @pytest.fixture(scope="module")
@@ -124,7 +80,7 @@ def sipnet_map() -> SIPNETParameterMap:
 
 @pytest.fixture(scope="module")
 def theta(vector, reference):
-    return vector.to_unconstrained(natural_values_of(reference, vector))
+    return vector.to_unconstrained(example_reference_natural_values(reference, vector))
 
 
 # ── equivalence ───────────────────────────────────────────────────────────────
