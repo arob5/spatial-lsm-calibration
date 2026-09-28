@@ -200,8 +200,10 @@ them.
 | **dim** / **dim label** | the one xarray dim a parameter varies over, `site` or a site-labels name, and one value of its index (`vector.dim_index(dim)`); a site-labels dim's dim labels are the classes some site carries | "group", "copy", `varies_by`, `group_dim` |
 | **natural** / **unconstrained size and names** | `k` and `e`, the numbers of one dim label's value in natural and unconstrained space, and their names; they differ only on the simplex | "component", "element" |
 | **support** | the open set a natural value lies in; its bijector is the default transform `T` | |
-| **prior term** | the prior of one parameter, a `PriorTerm` | |
-| **site covariate** | a `float64` column of the vector's site table, named in `site_covariate_names`, readable by prior functions and SIPNET rules | |
+| **prior term** | the prior of one parameter, or of several on one dim jointly (a **joint term**, keyed by a tuple of names), possibly **given** other parameters or derived parameters; a `PriorTerm` | |
+| **derived parameter** | a deterministic function of the parameters, `y = f(x)`, a `DerivedParameter`: a dim, units and optionally a support like a parameter's, but no entries of theta and no prior; computed by `to_natural`, read by SIPNET rules by name. **Pointwise** when its value at each dim label depends only on its inputs there | |
+| **dependent set** | parameters linked by a term covering both or a `given`, directly or through a derived parameter; one block of `Prior.gaussian()` | |
+| **site covariate** | a `float64` column of the vector's site table, named in `site_covariate_names`, readable by prior functions, derived parameters and SIPNET rules | |
 | **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
 
 **Representations.**
@@ -307,7 +309,7 @@ elsewhere calls `parameter_vector.check_parameter_vectors_share_a_layout`.
 | Size | `dimension` (D or N) |
 | Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, dim, dim_label, unconstrained_name)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` |
 | Sites | `sites` (ids, ascending, refused if unsorted on input; an observation source's values are sorted by site and time as a normalization, since their order carries nothing), `site_table` on both (the parameter vector's `site_id`, `lon`, `lat`, its named site covariates and a categorical column per site-labels name; the observation vector's from its observed values' `lon`/`lat`, which its sources must agree on) |
-| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused (`validation.as_site_ids`, `validation.check_names_are_unique`); the observation vector's `restrict_to_sites(sites)` is the intersecting form, which the forward model's advice uses |
+| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused (`validation.as_site_ids`, `validation.check_names_are_unique`); the parameter vector keeps a derived parameter whose inputs are kept, and `Prior.select` refuses to drop what a kept term covers or is given; the observation vector's `restrict_to_sites(sites)` is the intersecting form, which the forward model's advice uses |
 | Representations | the parameter vector: `to_natural`/`to_unconstrained`/`at_sites` on theta, and `dataset(theta) -> ParameterDataset`, `flat(dataset) -> theta`, `site_fields(dataset)`; the observation vector: `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
 | Flat's array type | JAX everywhere: both vectors, the prior and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package |
 | Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line. `calibration.describe_calibration(vector, prior, sipnet_map)` joins the three objects' descriptions, the record written beside a run |
@@ -840,21 +842,26 @@ src/sipnet_calibration/
                           # load_site_labels(), site_labels_field() -> CF flags
   parameter_vector.py     # ParameterVector: what is calibrated. Parameter (a
                           # Support, whose bijector is the default T; units; at
-                          # most one dim; natural names), Support and REAL,
+                          # most one dim; natural names), DerivedParameter
+                          # (y = f(x): pointwise, support), Support and REAL,
                           # POSITIVE, OPEN_UNIT_INTERVAL, OpenInterval, SIMPLEX;
                           # index (parameter, dim, dim_label,
                           # unconstrained_name), positions(), select();
-                          # to_natural()/to_unconstrained()/at_sites();
-                          # dataset() <-> flat() (ParameterDataset, on each
-                          # parameter's own dim), site_fields(); probe_points();
+                          # to_natural()/derived_values()/to_unconstrained()/
+                          # at_sites(); dataset() <-> flat() (ParameterDataset,
+                          # on each parameter's own dim), site_fields();
+                          # site_positions(), dim_label_positions();
+                          # probe_points(), joint_probe_points();
                           # check_parameter_vectors_share_a_layout
   prior.py                # Prior: what is believed beforehand. PriorTerm per
-                          # parameter; sample(), log_prob() (base density or
-                          # change of variables), gaussian() (declared Gaussians
+                          # parameter or joint term, with given=; sample() in
+                          # topological order of the given links, log_prob()
+                          # (base density or change of variables), gaussian()
+                          # (one block per dependent set: declared Gaussians
                           # exact, others moment-matched); iid_over_dim,
-                          # independent_over_dim; log_normal, logit_normal
-                          # (support=) and their _from_* forms,
-                          # softmax_normal
+                          # independent_over_dim, gaussian_copula; log_normal,
+                          # logit_normal (support=) and their _from_* forms,
+                          # softmax_normal; DeclaresGaussian; term_name
   sipnet_parameter_map.py # SIPNETParameterMap: how a value reaches SIPNET.
                           # Rules (Copy, CopySimplex, ComputePhotosynthesisRates,
                           # ComputeInitialConditions) reading values by name with
