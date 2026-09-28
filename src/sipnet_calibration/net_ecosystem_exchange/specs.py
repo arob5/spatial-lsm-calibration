@@ -238,8 +238,9 @@ _SIGN = (
 )
 
 _TIME_REFERENCE = (
-    "mean rate over the step (time_bounds[0], time], UTC; the source's local-standard-time "
-    "stamps shifted by the tower's utc_offset"
+    "mean rate over the step from its time_bounds start to time, UTC, the interval a field "
+    "carries as (window_start, window_end]; the source's local-standard-time stamps shifted "
+    "by the tower's utc_offset"
 )
 
 _UNITS_PROVENANCE = (

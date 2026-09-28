@@ -27,6 +27,7 @@ The path functions
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -105,7 +106,7 @@ class Resolution:
         """Every step start of the processed axis, UTC, naive."""
         return pd.date_range(PROCESSED_START, PROCESSED_END - self.step, freq=self.step)
 
-    def raw_offset_of_processed_start(self, utc_offset_hours: float) -> int:
+    def raw_offset_of_processed_start(self, utc_offset: float) -> int:
         """The raw index of the processed axis's first step, for a tower on this offset.
 
         A tower's standard-time stamp is UTC plus its offset, so the first
@@ -114,19 +115,20 @@ class Resolution:
 
         Parameters
         ----------
-        utc_offset_hours:
+        utc_offset:
             The tower's local standard time minus UTC, in hours.
 
         Raises
         ------
         ValueError
-            If the offset is not a whole number of steps, or puts the
-            processed axis outside the raw axis.
+            If the offset is not finite, not a whole number of steps, or puts
+            the processed axis outside the raw axis.
         """
-        steps = (PROCESSED_START - RAW_START + pd.Timedelta(hours=utc_offset_hours)) / self.step
-        check_offset_is_whole_steps(utc_offset_hours, steps, self)
+        check_offset_is_finite(utc_offset)
+        steps = (PROCESSED_START - RAW_START + pd.Timedelta(hours=utc_offset)) / self.step
+        check_offset_is_whole_steps(utc_offset, steps, self)
         start = int(steps)
-        check_offset_keeps_the_processed_axis_inside_the_raw_axis(utc_offset_hours, start, self)
+        check_offset_keeps_the_processed_axis_inside_the_raw_axis(utc_offset, start, self)
         return start
 
 
@@ -220,24 +222,33 @@ def check_resolution_is_known(name: str) -> None:
         raise KeyError(f"no resolution named {name!r}; pass one of {truncated(RESOLUTIONS)}.")
 
 
-def check_offset_is_whole_steps(utc_offset_hours: float, steps: float, resolution: Resolution) -> None:
+def check_offset_is_finite(utc_offset: float) -> None:
+    """A tower's UTC offset is a finite number of hours."""
+    if not math.isfinite(utc_offset):
+        raise ValueError(
+            f"a UTC offset of {utc_offset} h is not a clock; a tower with no recovered offset "
+            "is excluded in the tower table."
+        )
+
+
+def check_offset_is_whole_steps(utc_offset: float, steps: float, resolution: Resolution) -> None:
     """A tower's UTC offset moves its stamps by a whole number of steps."""
     if steps != int(steps):
         raise ValueError(
-            f"a UTC offset of {utc_offset_hours} h is not a whole number of {resolution.name} "
+            f"a UTC offset of {utc_offset} h is not a whole number of {resolution.name} "
             "steps, so the tower's stamps cannot be moved onto the UTC axis without splitting "
             "a step; exclude the tower in the tower table."
         )
 
 
 def check_offset_keeps_the_processed_axis_inside_the_raw_axis(
-    utc_offset_hours: float, start: int, resolution: Resolution
+    utc_offset: float, start: int, resolution: Resolution
 ) -> None:
     """A tower's UTC offset keeps the whole processed axis within the raw axis."""
     n_processed = len(resolution.processed_step_starts())
     if start < 0 or start + n_processed > len(resolution.raw_step_starts()):
         raise ValueError(
-            f"a UTC offset of {utc_offset_hours} h puts the processed axis outside the "
+            f"a UTC offset of {utc_offset} h puts the processed axis outside the "
             f"{resolution.name} raw axis; an offset beyond a day is not a clock, so correct "
             "the tower table."
         )

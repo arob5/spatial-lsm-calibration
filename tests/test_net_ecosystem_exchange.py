@@ -799,8 +799,47 @@ class TestBuildProcessed:
     def test_a_tower_that_is_not_primary_is_refused(self, pipeline):
         spec = resolve_net_ecosystem_exchange("ameriflux_nee_half_hourly_ustar_variable")
         table = read_tower_table(pipeline["towers"])
-        with pytest.raises(KeyError, match="not primary"):
+        with pytest.raises(ValueError, match="not primary"):
             build_net_ecosystem_exchange(spec, self._series(["US-Ddd"], [-5.0]), table, load_sites(pipeline["sites"]))
+
+    def test_a_tower_not_in_the_table_is_refused(self, pipeline):
+        spec = resolve_net_ecosystem_exchange("ameriflux_nee_half_hourly_ustar_variable")
+        table = read_tower_table(pipeline["towers"])
+        with pytest.raises(KeyError, match="not in the tower table"):
+            build_net_ecosystem_exchange(spec, self._series(["US-Zzz"], [-5.0]), table, load_sites(pipeline["sites"]))
+
+
+class TestOffsetOnTheAxes:
+    def test_a_missing_offset_is_refused_by_name(self):
+        with pytest.raises(ValueError, match="not a clock"):
+            HALF_HOURLY.raw_offset_of_processed_start(float("nan"))
+
+    def test_an_offset_between_steps_is_refused(self):
+        with pytest.raises(ValueError, match="not a whole number"):
+            HOURLY.raw_offset_of_processed_start(-3.5)
+
+    def test_an_offset_beyond_the_margin_is_refused(self):
+        with pytest.raises(ValueError, match="outside"):
+            HALF_HOURLY.raw_offset_of_processed_start(30.0)
+
+    def test_an_offset_that_fills_the_margin_exactly_fits(self):
+        # The raw axis has a day of margin each side of the processed one.
+        assert HALF_HOURLY.raw_offset_of_processed_start(24.0) == 96
+        assert HALF_HOURLY.raw_offset_of_processed_start(-24.0) == 0
+        with pytest.raises(ValueError, match="outside"):
+            HALF_HOURLY.raw_offset_of_processed_start(24.5)
+
+    def test_the_first_processed_step_is_the_offset_on_the_raw_axis(self):
+        # UTC 2012-01-01 00:00 is 19:00 local on UTC-5, 5 h before the raw axis's second midnight.
+        assert HALF_HOURLY.raw_offset_of_processed_start(-5.0) == 48 - 10
+
+
+def test_a_listed_tower_without_coordinates_is_a_value_error():
+    from sipnet_calibration.net_ecosystem_exchange.towers import check_listed_towers_have_coordinates
+
+    listing = pd.DataFrame({"tower": ["US-X"], "tower_lat": [np.nan], "tower_lon": [-80.0]}).set_index("tower")
+    with pytest.raises(ValueError, match="no coordinates"):
+        check_listed_towers_have_coordinates(["US-X"], listing)
 
 
 class TestRawReaderRefusals:
@@ -819,3 +858,39 @@ class TestRawReaderRefusals:
 def test_cell_of_refuses_a_point_east_of_the_grid():
     with pytest.raises(ValueError, match="longitude outside"):
         SITE_GRID.cell_of(SITE_GRID.east + 1e-9, 40.0)
+
+
+def test_two_primaries_at_one_site_are_valid_only_at_different_resolutions():
+    from sipnet_calibration.net_ecosystem_exchange.towers import (
+        check_tower_table_has_one_primary_per_site_and_resolution,
+    )
+
+    cell = _tower_lonlat("US-Ccc")
+    table = _build(
+        [_summary("US-Hhh", minutes=30), _summary("US-Rrr", minutes=60, offset=-6.0)],
+        {"US-Hhh": cell, "US-Rrr": cell},
+    ).reset_index()
+    check_tower_table_has_one_primary_per_site_and_resolution(table, message_name="table")
+    table.loc[table.tower == "US-Rrr", "resolution_minutes"] = 30
+    with pytest.raises(ValueError, match="two primary towers at one resolution"):
+        check_tower_table_has_one_primary_per_site_and_resolution(table, message_name="table")
+
+
+def test_a_raw_file_whose_step_disagrees_with_its_resolution_is_refused(pipeline, tmp_path):
+    from sipnet_calibration.net_ecosystem_exchange import raw_encoding
+
+    with read_raw(raw_path(HOURLY, pipeline["raw_dir"])) as raw:
+        dataset = raw.load()
+    dataset.attrs["resolution_minutes"] = 30
+    path = tmp_path / "bad.nc"
+    dataset.to_netcdf(path, engine="h5netcdf", encoding=raw_encoding(dataset))
+    with pytest.raises(ValueError, match="resolution_minutes does not match"):
+        read_raw(path)
+
+
+def test_thirty_days_of_measured_shortwave_are_enough_to_check_the_clock():
+    starts = pd.date_range("2013-06-01", periods=30 * 48, freq="30min")
+    potential = _top_of_atmosphere_shortwave(pd.DatetimeIndex(starts + pd.Timedelta(hours=5)), 45.0, -80.0)
+    flag = np.zeros(len(starts), dtype=np.int8)
+    assert shortwave_lag_steps(starts, HALF_HOUR, 0.7 * potential, flag, potential) == 0
+    assert shortwave_lag_steps(starts[1:], HALF_HOUR, 0.7 * potential[1:], flag[1:], potential[1:]) is None

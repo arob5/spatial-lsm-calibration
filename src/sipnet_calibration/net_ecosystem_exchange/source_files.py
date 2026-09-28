@@ -207,15 +207,17 @@ def read_source_file(path: Path | str) -> SourceFile:
     path = Path(path)
     tower, resolution, first_year, last_year, version = parse_file_name(path.name)
     header = _read_header(path)
-    check_source_header_is_the_format(header, path)
+    check_source_header_is_the_format(header, message_name=path.name)
     absent = _absent_optional_columns(header)
     frame = _parsed_source_file(path, [name for name in SOURCE.names if name not in absent])
     start = _stamps_of(frame, "TIMESTAMP_START", path)
     end = _stamps_of(frame, "TIMESTAMP_END", path)
-    check_source_stamps_tile_the_declared_years(start, end, resolution, first_year, last_year, path)
+    check_source_stamps_tile_the_declared_years(
+        start, end, resolution, first_year, last_year, message_name=path.name
+    )
 
     values = _values_on_the_raw_axis(frame, start, resolution, absent, path)
-    check_source_values_are_present_where_flagged(values, absent, path)
+    check_source_values_are_present_where_flagged(values, absent, message_name=path.name)
     return SourceFile(
         tower=tower,
         resolution=resolution,
@@ -303,16 +305,16 @@ def _values_on_the_raw_axis(
 
 def _physical_values(array: np.ndarray, name: str, path: Path) -> np.ndarray:
     """A value column with the fill value as ``NaN``."""
-    check_source_values_are_finite(array, name, path)
-    check_source_fill_is_the_fill_value(array, name, path)
+    check_source_values_are_finite(array, name, message_name=path.name)
+    check_source_fill_is_the_fill_value(array, name, message_name=path.name)
     return np.where(array == SOURCE.fill_value, np.nan, array)
 
 
 def _flag_values(array: np.ndarray, column: SourceColumn, path: Path) -> np.ndarray:
     """A flag column as ``int8``, with the fill value as ``-1``."""
     real = array[array != SOURCE.fill_value]
-    check_source_flags_are_whole(real, column, path)
-    check_source_flags_are_in_the_vocabulary(real, column, path)
+    check_source_flags_are_whole(real, column, message_name=path.name)
+    check_source_flags_are_in_the_vocabulary(real, column, message_name=path.name)
     return np.where(array == SOURCE.fill_value, -1, array).astype(np.int8)
 
 
@@ -389,26 +391,42 @@ def check_source_files_are_one_per_tower(paths: list[Path]) -> None:
         towers[tower] = path.name
 
 
-def check_source_header_is_the_format(header: list[str], path: Path) -> None:
-    """A file's header starts with the stamps and carries every kept column the format requires."""
+def check_source_header_is_the_format(header: list[str], *, message_name: str) -> None:
+    """A file's header carries the stamps and the kept columns the format requires."""
+    check_source_header_starts_with_the_stamps(header, message_name=message_name)
+    check_source_header_has_the_required_columns(header, message_name=message_name)
+    check_source_optional_columns_are_whole(header, message_name=message_name)
+
+
+def check_source_header_starts_with_the_stamps(header: list[str], *, message_name: str) -> None:
+    """A file's first two columns are ``TIMESTAMP_START`` and ``TIMESTAMP_END``."""
     if header[:2] != list(_TIMESTAMP_COLUMNS):
         raise ValueError(
-            f"{path.name}: the first two columns are {header[:2]}, not the stamps; the file is not "
-            "a FULLSET file as downloaded."
+            f"{message_name}: the first two columns are {header[:2]}, not the stamps; the file is "
+            "not a FULLSET file as downloaded."
         )
-    missing = [name for name in SOURCE.names if name not in header]
-    required_missing = [name for name in missing if name not in SOURCE.optional_columns]
-    if required_missing:
+
+
+def check_source_header_has_the_required_columns(header: list[str], *, message_name: str) -> None:
+    """A file carries every kept column that is not optional."""
+    missing = [
+        name for name in SOURCE.names if name not in header and name not in SOURCE.optional_columns
+    ]
+    if missing:
         raise ValueError(
-            f"{path.name}: missing required columns {truncated(required_missing)}; the file is not "
-            "a FULLSET file as downloaded."
+            f"{message_name}: missing required columns {truncated(missing)}; the file is not a "
+            "FULLSET file as downloaded."
         )
-    optional_missing = frozenset(missing)
-    if optional_missing and optional_missing != SOURCE.optional_columns:
+
+
+def check_source_optional_columns_are_whole(header: list[str], *, message_name: str) -> None:
+    """A file carries the optional columns all together or not at all."""
+    missing = sorted(name for name in SOURCE.optional_columns if name not in header)
+    if missing and set(missing) != SOURCE.optional_columns:
         raise ValueError(
-            f"{path.name}: carries some constant-u*-threshold columns and not others, missing "
-            f"{truncated(sorted(optional_missing))}; the group is present whole or not at all, "
-            "so the file is damaged."
+            f"{message_name}: carries some constant-u*-threshold columns and not others, missing "
+            f"{truncated(missing)}; the group is present whole or not at all, so the file is "
+            "damaged."
         )
 
 
@@ -418,65 +436,98 @@ def check_source_stamps_tile_the_declared_years(
     resolution: Resolution,
     first_year: int,
     last_year: int,
-    path: Path,
+    *,
+    message_name: str,
 ) -> None:
     """A file's steps are one step long, contiguous, and tile the whole years its name declares."""
+    check_source_holds_rows(start, message_name=message_name)
+    check_source_steps_are_one_step_long(start, end, resolution, message_name=message_name)
+    check_source_steps_are_contiguous(start, resolution, message_name=message_name)
+    check_source_record_is_the_declared_years(start, end, first_year, last_year, message_name=message_name)
+
+
+def check_source_holds_rows(start: pd.DatetimeIndex, *, message_name: str) -> None:
+    """A file holds at least one row."""
     if len(start) == 0:
-        raise ValueError(f"{path.name}: no rows; the file is damaged.")
+        raise ValueError(f"{message_name}: no rows; the file is damaged.")
+
+
+def check_source_steps_are_one_step_long(
+    start: pd.DatetimeIndex, end: pd.DatetimeIndex, resolution: Resolution, *, message_name: str
+) -> None:
+    """Every row of a file spans one step of its resolution."""
     if not ((end - start) == resolution.step).all():
         raise ValueError(
-            f"{path.name}: TIMESTAMP_END - TIMESTAMP_START is not one {resolution.name} step in "
+            f"{message_name}: TIMESTAMP_END - TIMESTAMP_START is not one {resolution.name} step in "
             "every row; the file is not at the resolution its name declares."
         )
+
+
+def check_source_steps_are_contiguous(
+    start: pd.DatetimeIndex, resolution: Resolution, *, message_name: str
+) -> None:
+    """A file's steps follow one another with no gap, repeat or reversal."""
     if len(start) > 1 and not (np.diff(start.values) == resolution.step.to_timedelta64()).all():
         raise ValueError(
-            f"{path.name}: the steps are not contiguous; a stamp is repeated, skipped or out of "
+            f"{message_name}: the steps are not contiguous; a stamp is repeated, skipped or out of "
             "order, which a zone-aware writer would cause, so the file is not as downloaded."
         )
+
+
+def check_source_record_is_the_declared_years(
+    start: pd.DatetimeIndex, end: pd.DatetimeIndex, first_year: int, last_year: int, *, message_name: str
+) -> None:
+    """A file's record runs from the start of its first declared year to the end of its last."""
     expected_first = pd.Timestamp(year=first_year, month=1, day=1)
     expected_end = pd.Timestamp(year=last_year + 1, month=1, day=1)
     if start[0] != expected_first or end[-1] != expected_end:
         raise ValueError(
-            f"{path.name}: the record runs {start[0]} to {end[-1]}, not the whole years "
+            f"{message_name}: the record runs {start[0]} to {end[-1]}, not the whole years "
             f"{first_year}-{last_year} its name declares; the file is damaged."
         )
 
 
-def check_source_values_are_finite(array: np.ndarray, name: str, path: Path) -> None:
+def check_source_values_are_finite(array: np.ndarray, name: str, *, message_name: str) -> None:
     """A value column holds no non-finite value; missing is the fill value."""
     if not np.isfinite(array).all():
-        raise ValueError(f"{path.name}: {name} holds a non-finite value; the source marks missing with {SOURCE.fill_value}.")
+        raise ValueError(
+            f"{message_name}: {name} holds a non-finite value; the source marks missing with "
+            f"{SOURCE.fill_value}."
+        )
 
 
-def check_source_fill_is_the_fill_value(array: np.ndarray, name: str, path: Path) -> None:
+def check_source_fill_is_the_fill_value(array: np.ndarray, name: str, *, message_name: str) -> None:
     """A value column holds no fill-like number other than the fill value."""
     fill_like = (array <= -9990) & (array != SOURCE.fill_value)
     if fill_like.any():
         raise ValueError(
-            f"{path.name}: {name} holds {array[fill_like][0]!r}, a fill-like value other than "
+            f"{message_name}: {name} holds {array[fill_like][0]!r}, a fill-like value other than "
             f"{SOURCE.fill_value}; a second fill convention would be read as data."
         )
 
 
-def check_source_flags_are_whole(real: np.ndarray, column: SourceColumn, path: Path) -> None:
+def check_source_flags_are_whole(real: np.ndarray, column: SourceColumn, *, message_name: str) -> None:
     """A flag column's reported values are whole numbers."""
     if real.size and (not np.isfinite(real).all() or (real != np.floor(real)).any()):
-        raise ValueError(f"{path.name}: {column.name} holds a value that is not a whole number; a flag is an integer.")
+        raise ValueError(
+            f"{message_name}: {column.name} holds a value that is not a whole number; a flag is an "
+            "integer."
+        )
 
 
-def check_source_flags_are_in_the_vocabulary(real: np.ndarray, column: SourceColumn, path: Path) -> None:
+def check_source_flags_are_in_the_vocabulary(real: np.ndarray, column: SourceColumn, *, message_name: str) -> None:
     """A flag column's reported values are in its vocabulary."""
     outside = ~np.isin(real, column.flag_values)
     if outside.any():
         raise ValueError(
-            f"{path.name}: {column.name} holds {truncated(sorted(set(real[outside].tolist())))}, "
+            f"{message_name}: {column.name} holds {truncated(sorted(set(real[outside].tolist())))}, "
             f"outside its vocabulary {list(column.flag_values)}; extend the format only on the "
             "producer's word."
         )
 
 
 def check_source_values_are_present_where_flagged(
-    values: Mapping[str, np.ndarray], absent: frozenset[str], path: Path
+    values: Mapping[str, np.ndarray], absent: frozenset[str], *, message_name: str
 ) -> None:
     """An NEE estimate has a value wherever its quality flag is set."""
     for name, column in SOURCE.columns.items():
@@ -488,7 +539,7 @@ def check_source_values_are_present_where_flagged(
         orphaned = (flag >= 0) & np.isnan(values[name])
         if orphaned.any():
             raise ValueError(
-                f"{path.name}: {name} is missing at {int(orphaned.sum())} steps where "
+                f"{message_name}: {name} is missing at {int(orphaned.sum())} steps where "
                 f"{name}_QC is set; a flag without a value cannot be told from a fill."
             )
 

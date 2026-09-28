@@ -166,10 +166,10 @@ def build_net_ecosystem_exchange(
     Raises
     ------
     KeyError
-        If a tower of the series is not a primary tower of the table, or its
-        site is not in the site table.
+        If a tower of the series is not in the tower table, or its site is not
+        in the site table.
     ValueError
-        If two towers of the series share a site.
+        If a tower of the series is not primary, or two share a site.
 
     Notes
     -----
@@ -177,6 +177,7 @@ def build_net_ecosystem_exchange(
     """
     towers = [str(tower) for tower in tower_series[TOWER].values]
     rows = tower_table.set_index("tower")
+    check_towers_are_in_the_tower_table(towers, rows)
     check_towers_are_primary(towers, rows)
     site_ids = rows.loc[towers, SITE_ID].astype(np.int64).to_numpy()
     check_towers_have_distinct_sites(site_ids)
@@ -509,11 +510,21 @@ def _dataset_attributes(
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_towers_are_primary(towers: list[str], rows: pd.DataFrame) -> None:
-    """Every tower of a series is a primary tower of the tower table; *rows* is indexed on tower."""
-    unknown = [tower for tower in towers if tower not in rows.index or not rows.at[tower, "primary"]]
+def check_towers_are_in_the_tower_table(towers: list[str], rows: pd.DataFrame) -> None:
+    """Every tower of a series is in the tower table; *rows* is indexed on tower."""
+    unknown = [tower for tower in towers if tower not in rows.index]
     if unknown:
         raise KeyError(
+            f"tower(s) {truncated(unknown)} are not in the tower table; rebuild it with "
+            "scripts/raw_sources/build_ameriflux_towers.py."
+        )
+
+
+def check_towers_are_primary(towers: list[str], rows: pd.DataFrame) -> None:
+    """Every tower of a series is a primary tower of the tower table; *rows* is indexed on tower."""
+    unknown = [tower for tower in towers if not rows.at[tower, "primary"]]
+    if unknown:
+        raise ValueError(
             f"tower(s) {truncated(unknown)} are not primary in the tower table; read the series "
             "with its source's reader, which keeps only primary towers."
         )
@@ -552,7 +563,9 @@ def check_processed_net_ecosystem_exchange_is_valid(
 ) -> None:
     """A processed NEE file follows the data model for its spec."""
     check_processed_net_ecosystem_exchange_is_for_the_spec(dataset, spec, message_name=message_name)
-    check_processed_net_ecosystem_exchange_has_the_variables(dataset, message_name=message_name)
+    check_processed_net_ecosystem_exchange_has_a_value(dataset, message_name=message_name)
+    check_processed_net_ecosystem_exchange_holds_only_its_variables(dataset, message_name=message_name)
+    check_processed_net_ecosystem_exchange_variables_are_on_site_and_time(dataset, message_name=message_name)
     check_processed_net_ecosystem_exchange_value_has_the_spec_attributes(dataset, spec, message_name=message_name)
     check_processed_file_has_the_coordinates(
         dataset,
@@ -580,13 +593,25 @@ def check_processed_net_ecosystem_exchange_is_for_the_spec(
         )
 
 
-def check_processed_net_ecosystem_exchange_has_the_variables(dataset: xr.Dataset, *, message_name: str) -> None:
-    """A processed NEE file holds ``value`` on ``(site, time)``, and nothing it should not."""
+def check_processed_net_ecosystem_exchange_has_a_value(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed NEE file holds ``value``."""
     if VALUE not in dataset.data_vars:
         raise ValueError(f"{message_name}: no {VALUE!r} variable; {_REMAKE}.")
+
+
+def check_processed_net_ecosystem_exchange_holds_only_its_variables(
+    dataset: xr.Dataset, *, message_name: str
+) -> None:
+    """A processed NEE file holds no variable the data model does not name."""
     unexpected = sorted(set(dataset.data_vars) - set(_VARIABLE_NAMES))
     if unexpected:
         raise ValueError(f"{message_name}: unexpected variables {truncated(unexpected)}; {_REMAKE}.")
+
+
+def check_processed_net_ecosystem_exchange_variables_are_on_site_and_time(
+    dataset: xr.Dataset, *, message_name: str
+) -> None:
+    """Every variable of a processed NEE file is on ``(site, time)``."""
     for name in dataset.data_vars:
         if dataset[name].dims != (SITE, TIME):
             raise ValueError(f"{message_name}: {name} has dims {dataset[name].dims}, expected (site, time); {_REMAKE}.")

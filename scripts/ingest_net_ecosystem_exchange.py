@@ -93,6 +93,7 @@ from sipnet_calibration.net_ecosystem_exchange import (
     tower_table_path,
 )
 from sipnet_calibration.sites import default_site_table_path, load_sites
+from sipnet_calibration.validation import truncated
 
 
 class IngestError(Exception):
@@ -225,8 +226,8 @@ def check_every_raw_tower_is_in_the_tower_table(raw: xr.Dataset, tower_table: pd
     missing = sorted(set(raw[TOWER].values.tolist()) - set(tower_table["tower"]))
     if missing:
         raise IngestError(
-            f"towers of {raw.attrs.get('resolution')} raw file not in the tower table: {missing[:10]}. "
-            "Rebuild the table with scripts/raw_sources/build_ameriflux_towers.py."
+            f"towers of the {raw.attrs.get('resolution')} raw file are not in the tower table: "
+            f"{truncated(missing)}; rebuild the table with scripts/raw_sources/build_ameriflux_towers.py."
         )
 
 
@@ -237,7 +238,8 @@ def check_every_primary_tower_is_in_its_raw_file(raw: xr.Dataset, tower_table: p
     if missing:
         raise IngestError(
             f"primary towers of the tower table are not in the {raw.attrs.get('resolution')} raw file: "
-            f"{missing[:10]}. The table and the raw files are from different runs."
+            f"{truncated(missing)}; the table and the raw files are from different runs, so rebuild "
+            "the table from these raw files."
         )
 
 
@@ -246,7 +248,10 @@ def check_resolutions_agree(raw: xr.Dataset, tower_table: pd.DataFrame) -> None:
     rows = tower_table.set_index("tower").loc[raw[TOWER].values.tolist()]
     wrong = rows.index[rows["resolution_minutes"] != raw.attrs["resolution_minutes"]].tolist()
     if wrong:
-        raise IngestError(f"the tower table gives {wrong[:10]} another resolution than their raw file")
+        raise IngestError(
+            f"the tower table gives {truncated(wrong)} another resolution than their raw file; rebuild "
+            "the table from these raw files."
+        )
 
 
 def check_the_series_has_sites(dataset: xr.Dataset, spec: NetEcosystemExchangeSpec) -> None:

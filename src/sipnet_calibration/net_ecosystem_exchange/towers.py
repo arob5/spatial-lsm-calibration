@@ -3,8 +3,8 @@
 ``data/raw/net_ecosystem_exchange/ameriflux_towers.csv`` has one row per
 downloaded tower. It records the tower's pool site and how that match was
 made, whether the tower is the one whose series the processed files carry for
-that site at its resolution, the tower's UTC offset and how it was established, and why a tower is
-left out. It is the one place those decisions are written down, and it is
+that site at its resolution, the tower's UTC offset and how it was established,
+and why a tower is left out. It is the one place those decisions are written down, and it is
 tracked, so a change to any of them shows in a diff.
 
 ``scripts/raw_sources/build_ameriflux_towers.py`` writes it from the raw files,
@@ -64,8 +64,10 @@ bases, tried in order, and never by distance:
 match one site, the processed files of that resolution carry one: the earliest
 basis in :data:`MATCH_BASES`, then the longer record in time, then the
 identifier. A half-hourly and an hourly tower at one site are each primary, one
-in each resolution's files, since those files never meet. A tower whose clock
-fails its check is never primary.
+in each resolution's files, and each names the other in ``primary_reason``; an
+experiment that reads both resolutions sees such a site through two towers,
+which the files' ``ameriflux_site_id`` says. A tower whose clock fails its
+check is never primary.
 
 **The clock.** A tower's offset is recovered from its own ``SW_IN_POT``, which
 ONEFlux computes from the site's coordinates and the offset in its metadata, on
@@ -475,14 +477,16 @@ def summarize_raw(raw: xr.Dataset, site_list: pd.DataFrame) -> pd.DataFrame:
     Raises
     ------
     KeyError
-        If a tower of the raw file is not in the site listing, or has no
-        coordinates there.
+        If a tower of the raw file is not in the site listing.
+    ValueError
+        If a listed tower has no coordinates there.
     """
     resolution = resolve_resolution(raw.attrs["resolution"])
     starts = resolution.raw_step_starts()
     coordinates = site_list.set_index("tower")
     towers = raw[TOWER].values.tolist()
     check_towers_are_in_the_site_list(towers, coordinates)
+    check_listed_towers_have_coordinates(towers, coordinates)
     rows = []
     for tower in towers:
         one = raw.sel({TOWER: tower})
@@ -537,29 +541,32 @@ def build_tower_table(
     Raises
     ------
     ValueError
-        If a tower appears twice in *summaries*.
+        If a tower appears twice in *summaries*, or has no coordinates in the
+        site listing.
     KeyError
         If a tower of *summaries* is not in the site listing.
     """
     check_towers_are_listed_once(summaries, message_name="the raw files' summaries")
     check_towers_are_in_the_site_list(summaries["tower"].tolist(), site_list.set_index("tower"))
+    check_listed_towers_have_coordinates(summaries["tower"].tolist(), site_list.set_index("tower"))
     table = summaries.merge(site_list, on="tower", how="left", validate="one_to_one")
     matched = match_towers(table[["tower", "tower_lon", "tower_lat"]], site_table, pool_input_list)
     table = table.merge(matched, on="tower", how="left", validate="one_to_one")
     table["utc_offset_source"] = np.where(table["utc_offset_hours"].notna(), UTC_OFFSET_RECOVERED, "")
+    steps = [pd.Timedelta(minutes=int(minutes)) for minutes in table["resolution_minutes"]]
     table["excluded_reason"] = [
-        existing or _clock_reason(offset, separation, lag, minutes)
-        for existing, offset, separation, lag, minutes in zip(
+        existing or _clock_reason(offset, separation, lag, step)
+        for existing, offset, separation, lag, step in zip(
             table["excluded_reason"],
             table["utc_offset_hours"],
             table["utc_offset_separation"],
             table["shortwave_lag_steps"],
-            table["resolution_minutes"],
+            steps,
         )
     ]
     table["comment"] = [
-        _joined(comment, _lag_note(lag, minutes))
-        for comment, lag, minutes in zip(table["comment"], table["shortwave_lag_steps"], table["resolution_minutes"])
+        _joined(comment, _lag_note(lag, step))
+        for comment, lag, step in zip(table["comment"], table["shortwave_lag_steps"], steps)
     ]
     table = _choose_primaries(table)
     table = table.sort_values("tower", ignore_index=True)[list(TOWER_COLUMNS)]
@@ -644,32 +651,33 @@ def _unmatched_reason(cell: tuple[int, int] | None, comment: str) -> str:
     return "no pool site: no site names the tower and its cell holds no pool point"
 
 
-def _clock_reason(offset: float, separation: float, lag, step_minutes: int) -> str:
-    """Why a tower's clock excludes it, or ``""``; *step_minutes* is the table's column."""
-    maximum_lag_minutes = _whole_minutes(MAXIMUM_SHORTWAVE_LAG)
+def _clock_reason(offset: float, separation: float, lag, step: pd.Timedelta) -> str:
+    """Why a tower's clock excludes it, or ``""``; *offset* in hours, *lag* in steps."""
     if not np.isfinite(offset):
         return "clock: no SW_IN_POT in 2012-2024 to recover the offset from"
-    if (offset * 60) % step_minutes != 0:
-        return f"clock: a {offset} h offset is not a whole number of {step_minutes}-minute steps"
+    if pd.Timedelta(hours=offset) % step != pd.Timedelta(0):
+        return (
+            f"clock: a {offset} h offset is not a whole number of "
+            f"{_whole_minutes(step)}-minute steps"
+        )
     if not separation >= MINIMUM_OFFSET_SEPARATION:
         return f"clock: the UTC offset is not clearly recovered (separation {separation:.2f})"
     if lag is pd.NA or lag is None:
         return "clock: too little measured shortwave to check the offset against"
-    if abs(int(lag)) * step_minutes > maximum_lag_minutes:
-        return f"clock: measured shortwave sits {int(lag) * step_minutes} minutes from SW_IN_POT"
+    if abs(int(lag)) * step > MAXIMUM_SHORTWAVE_LAG:
+        return f"clock: measured shortwave sits {_whole_minutes(int(lag) * step)} minutes from SW_IN_POT"
     return ""
 
 
-def _lag_note(lag, step_minutes: int) -> str:
+def _lag_note(lag, step: pd.Timedelta) -> str:
     """A note for a lag the check allows but that is not zero; excluded lags have a reason instead."""
-    maximum_lag_minutes = _whole_minutes(MAXIMUM_SHORTWAVE_LAG)
     if lag is pd.NA or lag is None or int(lag) == 0:
         return ""
-    if abs(int(lag)) * step_minutes > maximum_lag_minutes:
+    if abs(int(lag)) * step > MAXIMUM_SHORTWAVE_LAG:
         return ""
     return (
-        f"measured shortwave sits {int(lag) * step_minutes} minutes from SW_IN_POT, within "
-        f"the check's tolerance of {maximum_lag_minutes} minutes"
+        f"measured shortwave sits {_whole_minutes(int(lag) * step)} minutes from SW_IN_POT, "
+        f"within the check's tolerance of {_whole_minutes(MAXIMUM_SHORTWAVE_LAG)} minutes"
     )
 
 
@@ -829,8 +837,10 @@ def check_tower_table_is_valid(table: pd.DataFrame, *, message_name: str) -> Non
     check_tower_table_towers_ascend(table, message_name=message_name)
     check_tower_table_sites_are_pool_sites(table, message_name=message_name)
     check_tower_table_match_bases_are_known(table, message_name=message_name)
+    check_tower_table_unmatched_towers_have_no_basis(table, message_name=message_name)
     check_tower_table_unmatched_towers_are_excluded(table, message_name=message_name)
     check_tower_table_primary_towers_are_matched_and_kept(table, message_name=message_name)
+    check_tower_table_primary_towers_have_offsets(table, message_name=message_name)
     check_tower_table_has_one_primary_per_site_and_resolution(table, message_name=message_name)
     check_tower_table_offsets_are_whole_half_hours(table, message_name=message_name)
     check_tower_table_resolutions_are_known(table, message_name=message_name)
@@ -851,13 +861,17 @@ def check_tower_table_sites_are_pool_sites(table: pd.DataFrame, *, message_name:
 
 
 def check_tower_table_match_bases_are_known(table: pd.DataFrame, *, message_name: str) -> None:
-    """A matched tower's basis is one of :data:`MATCH_BASES`, and an unmatched tower has none."""
+    """A matched tower's basis is one of :data:`MATCH_BASES`."""
     matched = table[SITE_ID].notna()
     if not table.loc[matched, "match_basis"].isin(MATCH_BASES).all():
         raise ValueError(
             f"{message_name}: a matched tower has a match_basis outside {MATCH_BASES}; {_REBUILD}."
         )
-    if (table.loc[~matched, "match_basis"] != "").any():
+
+
+def check_tower_table_unmatched_towers_have_no_basis(table: pd.DataFrame, *, message_name: str) -> None:
+    """A tower with no pool site has no match basis."""
+    if (table.loc[table[SITE_ID].isna(), "match_basis"] != "").any():
         raise ValueError(f"{message_name}: an unmatched tower has a match_basis; {_REBUILD}.")
 
 
@@ -868,11 +882,15 @@ def check_tower_table_unmatched_towers_are_excluded(table: pd.DataFrame, *, mess
 
 
 def check_tower_table_primary_towers_are_matched_and_kept(table: pd.DataFrame, *, message_name: str) -> None:
-    """A primary tower has a pool site and an offset, and is not excluded."""
+    """A primary tower has a pool site and is not excluded."""
     primary = table[table["primary"]]
     if primary[SITE_ID].isna().any() or (primary["excluded_reason"] != "").any():
         raise ValueError(f"{message_name}: a primary tower is unmatched or excluded; {_REBUILD}.")
-    if primary["utc_offset_hours"].isna().any():
+
+
+def check_tower_table_primary_towers_have_offsets(table: pd.DataFrame, *, message_name: str) -> None:
+    """A primary tower has a UTC offset."""
+    if table.loc[table["primary"], "utc_offset_hours"].isna().any():
         raise ValueError(f"{message_name}: a primary tower has no utc_offset_hours; {_REBUILD}.")
 
 
@@ -952,17 +970,21 @@ def check_pool_input_list_is_in_order(listing: pd.DataFrame, *, message_name: st
 
 
 def check_towers_are_in_the_site_list(towers: list[str], site_list: pd.DataFrame) -> None:
-    """Every tower is in AmeriFlux's site listing, with coordinates; *site_list* is indexed on tower."""
+    """Every tower is in AmeriFlux's site listing; *site_list* is indexed on tower."""
     missing = [tower for tower in towers if tower not in site_list.index]
     if missing:
         raise KeyError(
             f"tower(s) {truncated(missing)} are not in AmeriFlux's site listing; download the "
             "listing again beside the FLUXNET files."
         )
+
+
+def check_listed_towers_have_coordinates(towers: list[str], site_list: pd.DataFrame) -> None:
+    """Every tower has coordinates in AmeriFlux's site listing; *site_list* is indexed on tower."""
     rows = site_list.loc[towers, ["tower_lat", "tower_lon"]]
     unlocated = rows.index[~np.isfinite(rows.to_numpy(np.float64)).all(axis=1)].tolist()
     if unlocated:
-        raise KeyError(
+        raise ValueError(
             f"tower(s) {truncated(unlocated)} have no coordinates in AmeriFlux's site listing; "
             "the table cannot match them without."
         )
