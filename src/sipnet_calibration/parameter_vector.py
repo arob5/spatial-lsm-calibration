@@ -1,392 +1,148 @@
-"""The parameter vector: which SIPNET parameters are calibrated, under what
-prior, over which sites, and the three forms its values take.
+"""The parameter vector: the unknowns of a calibration, the sites they are
+defined over, and the coordinates a sampler moves in.
 
 Where this sits
 ---------------
-pySIPNET owns the physical SIPNET parameters, their units and their domains.
-pyEKI takes a Gaussian prior on unconstrained ``R^D``, an initial ``(J, D)``
-ensemble drawn from it, and a callable forward model, and leaves transforms,
-constraints and priors to the caller. PyEns runs an ensemble declared as
-``Grid``\\ s over ``Axis``\\ es, built from SIPNET parameter fields by
-``pyens.xarray.fields_from_dataset``. This module is what sits between
-them, and the dependency runs one way::
+::
 
-    pysipnet.parameters.model.PARAMETER_SPECS   (names, domains, units)
-    pyeki.gauss / pyeki.linalg                  (Gaussian, PSDBlockDiag, ...)
-    tensorflow_probability.substrates.jax       (distributions, bijectors)
-      -> this module
-      -> experiments/<task>/config.py           (builds a ParameterVector)
+    sites.select_sites, site_labels.load_site_labels    (the site table, the dim labels)
+      -> parameter_vector.ParameterVector               (what is calibrated)
+      -> prior.Prior                                    (what is believed beforehand)
+      -> sipnet_parameter_map, forward                  (how a value reaches SIPNET)
+
+This module imports NumPy, pandas, xarray, JAX and TFP's bijectors, and
+neither pySIPNET, pyEKI nor TFP's distributions: a prior over the vector
+lives in :mod:`sipnet_calibration.prior`, and the map to SIPNET parameters
+in :mod:`sipnet_calibration.sipnet_parameter_map`.
 
 What it reads
 -------------
-Nothing from disk. A :class:`ParameterVector` is built over sites and site
-labels the caller has already loaded:
-
-``sites`` or ``site_table``
-    Plain site ids (``sites=``), or a site table from
-    :func:`sipnet_calibration.sites.select_sites` in ascending ``site_id``
-    order (``site_table=``), whose ``lon``/``lat`` are then carried onto every
-    dataset the vector produces.
-``site_labels``
-    For each site-labels name used as a ``varies_by``, a site-labels table
-    from :func:`sipnet_calibration.site_labels.load_site_labels`, a pandas
-    categorical, or one label per site as a plain sequence.
-
-The object
-----------
-A :class:`ParameterVector` is a named random vector ``theta`` in ``R^D``. It
-is built from :class:`CalibrationParameter`\\ s, each with a prior in natural
-space, a rule for how it varies over the sites (``varies_by``: shared, one
-copy per site, or one copy per class of a site-labels data source) and a
-:class:`SIPNETMap` saying which SIPNET parameters it sets; and from
-:class:`FixedParameter`\\ s, SIPNET parameters held at a value. For each
-calibration parameter ``c``::
-
-    theta_c  --T_c-->  vartheta_c  --M_c(., fixed)-->  {SIPNET parameter: value}
-
-``T_c`` is the prior's bijector from unconstrained to natural space and is
-invertible. ``M_c`` is the calibration parameter's SIPNET map and in general
-is not, because it folds in fixed SIPNET parameters.
-
-Vocabulary
-----------
-calibration parameter
-    One named piece of ``theta``, ``photosynthesis``; a scalar or a short
-    vector per copy.
-SIPNET parameter
-    One of pySIPNET's flat parameter names, ``max_photosynthesis_rate``: the
-    keyword ``SIPNETModel(**overrides)`` takes.
-natural space, unconstrained space
-    Natural space is where a prior is named and a person reads a value: a
-    rate in yr-1, a fraction, a point on the simplex. Unconstrained space is
-    ``R^D``, where a sampler moves.
-group
-    One copy of a calibration parameter: the one copy of a shared parameter,
-    one per site, or one per class of a site-labels data source.
-component, element
-    A component is one entry of a copy's natural-space value; an element is
-    one entry of its unconstrained value. They differ only for the simplex,
-    whose four components have three elements.
-site labels
-    A site-labels data source assigns one class to every site. A vector names the
-    sources it uses in ``site_labels={site_labels_name: ...}``, and a
-    calibration parameter's ``varies_by`` names one of them.
-entry label
-    The name of one of the ``D`` entries of ``theta``, from
-    :attr:`Layout.entry_labels`.
+Nothing from disk. A :class:`ParameterVector` is built over a site table the
+caller has loaded (:func:`sipnet_calibration.sites.select_sites`) and, for
+each site-labels data source a parameter varies over, its site labels
+(:func:`sipnet_calibration.site_labels.load_site_labels`).
 
 Data model
 ----------
-A value of the vector, or an ensemble of ``J`` of them, has three
-representations. Every public function says which one it takes and returns.
+The vector holds parameters :math:`x_1, \\dots, x_P`. Parameter :math:`p`
+varies over at most one **dim** :math:`d_p`, with :math:`n_p` **dim
+labels**: ``"site"``, whose dim labels are the site ids, or a site-labels
+name, whose dim labels are the classes some site carries. It has a
+:class:`Support` :math:`A_p`, a natural size :math:`k_p` (numbers per dim
+label), an unconstrained size :math:`e_p` (the dimension of :math:`A_p`) and
+a bijection :math:`T_p : \\mathbb{R}^{e_p} \\to A_p`.
 
-**Flat.** A float64 ``jax.Array``, ``(D,)`` for one value and ``(J, D)`` for
-an ensemble, always in unconstrained space: a natural-space flat vector is
-not defined, since the simplex has one more component than it has elements.
-Entries follow :class:`Layout`: calibration parameters in declaration order;
-within one, groups in group order; within a group, elements in order. Flat is
-what :meth:`ParameterVector.sample` returns and what
-:meth:`ParameterVector.log_prior` and pyEKI consume. NaN is never produced
-and :meth:`ParameterVector.flat` refuses it.
+A value takes three forms:
 
-**Fields** (:data:`CalibrationFields`, checked by
-:func:`validate_calibration_fields`). An ``xarray.Dataset`` of fields (see
-:mod:`sipnet_calibration.fields`), every variable on every dim of the
-Dataset, never on ``time``:
+**theta** (Flat). ``float64``, ``(D,)`` or ``(J, D)``, with
+:math:`D = \\sum_p n_p e_p` and :math:`\\theta_p = T_p^{-1}(x_p)`: parameters
+in declaration order; within one, dim labels in :meth:`~ParameterVector.dim_index`
+order; within a dim label, unconstrained names in order.
+:attr:`ParameterVector.index` names every entry.
 
-============ ========================================================
-dims         a batch dim for a batch only, ``sample`` unless
-             ``batch_dim=`` names it otherwise (``int64``: 0 to J-1
-             when built from Flat); ``site`` (``int32`` site ids,
-             ascending), or a scalar ``site`` for one site's
-variables    one float64 variable per scalar component in natural
-             space, or per element in unconstrained space, on
-             ``(sample, site)`` or ``(site,)``: ``<parameter>`` when
-             there is one (``initial_soil_carbon``),
-             ``<parameter>.<component>`` or ``<parameter>.<element>``
-             when there are several (``allocation.leaf_allocation``,
-             ``allocation.alr(leaf_allocation:coarse_root_allocation)``)
-variable     ``parameter`` (the calibration parameter's name),
-attributes   ``component`` (the component or element label, only when
-             there are several), ``varies_by``
-             (``"shared"``, ``"site"`` or a site-labels name),
-             ``space``, ``long_name``, ``units`` (the component's in
-             natural space, ``"1"`` in unconstrained space) and
-             ``sipnet_parameters`` (what the calibration parameter
-             writes, comma-separated)
-coordinates  ``site``; ``lon``/``lat`` (float64) on ``site`` when the
-             vector was built from a site table. A vector built from
-             bare site ids has none, so its Fields are not fields,
-             and :func:`validate_calibration_fields`, a plotter and
-             ``stack_batch_dims`` refuse them; only that vector's
-             own ``flat`` and ``sipnet_parameter_fields`` read
-             them. One coordinate per site-labels name on ``site``,
-             holding the class
-attributes   ``representation = "calibration_parameters"``;
-             ``space = "natural"`` or ``"unconstrained"``, mandatory
-missing      impossible: a shared copy is repeated at every site and a
-             per-class copy at every site of the class
-============ ========================================================
+**Natural values** (:data:`NaturalValues`). ``{parameter name: array}``,
+each ``(..., *value_shape)``, in the parameter's units and support:
 
-``fields.filter_by_attrs(parameter="allocation")`` selects a whole
-calibration parameter.
+=========================== ============ ============= =========== ============
+                            no dim,      no dim,       dim,        dim,
+                            scalar       vector        scalar      vector
+=========================== ============ ============= =========== ============
+natural value (value shape) ``()``       ``(k,)``      ``(n,)``    ``(n, k)``
+unconstrained value         ``()``       ``(e,)``      ``(n,)``    ``(n, e)``
+entries of theta            1            ``e``         ``n``       ``n e``
+at sites                    ``(S,)``     ``(S, k)``    ``(S,)``    ``(S, k)``
+=========================== ============ ============= =========== ============
 
-**SIPNET parameter fields**
-(:data:`~sipnet_calibration.fields.SIPNETParameterFields`, which
-:mod:`sipnet_calibration.fields` defines). A vector's are on the same dims and
-coordinates as its Fields, with one float64 variable per SIPNET parameter it
-writes, calibrated and fixed alike, in ``PARAMETER_SPECS`` order. Built from
-Fields, they keep the Fields' batch dim and labels. Each variable carries
-pySIPNET's ``ParameterSpec.xarray_attributes()`` and ``set_by``
-(``"parameter <name>"`` or ``"fixed"``); the dataset carries
-``representation = "sipnet_parameter_fields"``. A SIPNET parameter the vector
-neither calibrates nor fixes is absent, never NaN
-(:attr:`ParameterVector.unset_sipnet_parameter_names`); the run's base
-parameter set supplies it.
+**The labeled form** (:data:`ParameterDataset`, checked by
+:func:`validate_parameter_dataset`), an ``xr.Dataset``:
 
-**SIPNET overrides** (:data:`SIPNETOverrides`, checked by
-:func:`validate_sipnet_overrides`). One run's ``{flat name: float}``, the
-keywords ``SIPNETModel`` takes, from :func:`sipnet_overrides`.
+============ ===============================================================
+dims         a batch dim (``sample`` unless ``batch_dim=`` says otherwise)
+             when built from ``(J, D)``; ``site`` when a parameter varies
+             over it; one dim per site-labels name a parameter varies over
+coordinates  the batch dim, ``int64`` ``0`` to ``J - 1``; ``site``, ``int32``
+             site ids with ``lon``/``lat``; a site-labels dim, its dim labels
+             (strings); each with the attributes of
+             :mod:`sipnet_calibration.conventions`
+variables    one ``float64`` variable per natural name of every parameter:
+             ``<name>`` for a scalar, ``<name>.<natural name>`` for a vector,
+             on ``(batch?, dim?)``
+attributes   ``parameter``; ``natural_name`` (a vector's); ``units``
+             (omitted when ``None``); ``support``
+missing      never
+============ ===============================================================
 
-**The index**: :attr:`ParameterVector.index`, a ``pandas.MultiIndex`` with
-levels :data:`INDEX_LEVELS`, ``(parameter, group, element)``, one row per
-entry of Flat, in layout order; :meth:`ParameterVector.positions` says where
-entries sit.
-
-Conversions
------------
-===================== ================== ====================================== ==========
-from                  to                 call                                   lossless
-===================== ================== ====================================== ==========
-Flat                  Fields             ``vector.fields(theta, space=)``       yes
-Fields (either space) Flat               ``vector.flat(fields)``                yes [1]_
-Flat or Fields        SIPNET parameter   ``vector.sipnet_parameter_fields(x)``  no
-                      fields
-SIPNET parameter      SIPNET overrides   :func:`sipnet_overrides`               selection
-fields                (one run's kwargs)
-SIPNET parameter      PyEns grids        ``pyens.xarray.fields_from_dataset``   values
-fields
-===================== ================== ====================================== ==========
-
-:meth:`~ParameterVector.flat` checks that its input is Fields
-(:func:`validate_calibration_fields`, every variable), reads the variables
-and sites the vector needs (a larger vector's Fields project onto a smaller
-one), and refuses what no Flat vector represents: a non-finite value, a
-group's value differing between its sites, a natural value outside the
-image of its bijector. Nothing converts SIPNET parameter fields back.
-
-.. [1] Up to float64 rounding, which near a logit bound grows: the inverse
-   of a fraction within about ``1e-12`` of 0 or 1 loses digits, and one that
-   rounds to exactly 0 or 1 is refused.
+Its index of a site-labels dim equals :meth:`ParameterVector.dim_index`. It is
+not a collection of fields: a site-labels dim is not a field dim.
+:meth:`ParameterVector.site_fields` is the per-site view, which is.
 
 Functions and classes
 ---------------------
-Prior helpers, each returning a TFP distribution in natural space whose
-``.distribution`` is Gaussian and whose ``.bijector`` is ``T_c``:
-:func:`log_normal`, :func:`log_normal_from_interval`,
-:func:`log_normal_from_samples`, :func:`logit_normal`,
-:func:`logit_normal_from_interval`, :func:`logit_normal_from_samples`,
-:func:`softmax_normal`, :func:`product_transformed_gaussian_prior`.
-
-SIPNET maps: the :class:`SIPNETMap` protocol, :class:`Identity`,
-:class:`SimplexMap`, :class:`PhotosynthesisMap`, and the instances
-:data:`ALLOCATION` and :data:`PHOTOSYNTHESIS`.
-
-:class:`CalibrationParameter`, :class:`FixedParameter`, :class:`Layout`,
-:class:`ParameterVector`; :func:`sipnet_overrides`;
-:func:`example_parameter_vector`, the worked example and test fixture.
-
-The representations' aliases and validators: :data:`CalibrationFields` and
-:func:`validate_calibration_fields`, :data:`SIPNETOverrides` and
-:func:`validate_sipnet_overrides`. SIPNET parameter fields' are in
-:mod:`sipnet_calibration.fields`.
-
-Constants: :data:`REQUIRED_SIPNET_PARAMETER_NAMES`; :data:`INDEX_LEVELS`;
-:data:`NATURAL`, :data:`UNCONSTRAINED` and :data:`SPACES`, the values of ``space``;
-:data:`FIELDS_REPRESENTATION` and :data:`SIPNET_PARAMETER_FIELDS_REPRESENTATION`, the
-``representation`` attribute of each dataset.
+:class:`ParameterVector`
+    Identity, selection, the coordinate maps (``to_natural``,
+    ``to_unconstrained``, ``at_sites``) and the labeled form (``dataset``,
+    ``flat``, ``site_fields``).
+:class:`Parameter`, :class:`Support`
+    One unknown, and the open set it lives in: :data:`REAL`,
+    :data:`POSITIVE`, :data:`OPEN_UNIT_INTERVAL`, :data:`SIMPLEX` and
+    :func:`OpenInterval`.
+:func:`probe_points`
+    The fixed points in theta at which bijectors and priors are probed.
+:data:`NaturalValues`, :data:`ParameterDataset`
+    The aliases, with :func:`validate_natural_values` and
+    :func:`validate_parameter_dataset`.
+:func:`check_parameter_vectors_share_a_layout`
+    Whether two vectors give theta one meaning.
 
 Notes
 -----
-**One prior per calibration parameter, stored in natural space.** TFP's
-``LogNormal``, ``LogitNormal`` and every ``TransformedDistribution`` expose
-``.distribution`` (the unconstrained base) and ``.bijector``, so the density
-of ``theta_c``, its samples and its moments are all read off the one object.
-TFP does not push moments through a non-affine bijector, which is why
-:meth:`ParameterVector.gaussian_prior` consults the base.
+**Nothing ships a vector to a worker.** The forward model sends each run its
+SIPNET parameter values, never the vector, so a vector holding a custom
+bijector need not pickle.
 
-**Two prior shapes.** A prior is either *independent copies*, batch shape
-``()`` (one prior shared by every group) or ``(n_groups,)`` (one per group)
-with the event of one copy, or *joint over groups*, batch shape ``()`` and
-event ``(n_groups,)``, one distribution over every copy of a scalar
-calibration parameter. The second is how a Gaussian process over per-site
-copies enters; which shape a prior has is read off its event shape against
-the number of components its SIPNET map names. A joint prior for a
-vector-valued calibration parameter is not supported.
-
-**Parameter-major layout.** Each calibration parameter's copies form one
-contiguous segment of ``theta``, whose covariance is the block a covariance
-operator wants: :meth:`ParameterVector.gaussian_prior` builds one block per
-calibration parameter, and a spatial covariance over the per-site copies of
-one of them replaces that block and nothing else.
-
-**Groups of a site-labels data source.** With a site-labels table from
-:func:`~sipnet_calibration.site_labels.load_site_labels`, a calibration
-parameter's groups are the source's declared classes that some site of the
-vector carries, in the source's order. A per-class prior or fixed value may
-be written over every declared class and is restricted to those present, so
-a vector over the whole pool and one over a handful of sites are written the
-same way. With a plain sequence the groups are its sorted distinct labels and
-coverage must be exact.
-
-**SIPNET parameter fields hold arrays, not ``SIPNETParameters``.** Building
-``J x S`` validated Pydantic models would dominate a run that is otherwise a
-subprocess. ``SIPNETModel`` validates each run before invoking the binary,
-and the checks a vector runs when it is built (the ``check_*`` helpers at
-the bottom of this module) are what keep a prior draw from reaching that
-failure.
-
-**What crosses a process boundary.** A ``ParameterVector`` holds live TFP
-objects. Everything the vector itself holds pickles -- its mappings are
-``frozendict``\\ s and its arrays plain NumPy -- so a vector whose priors
-are ``LogNormal`` or ``LogitNormal`` round-trips through ``pickle`` and
-``copy.deepcopy``. A prior built from
-``TransformedDistribution`` or ``Blockwise`` (the simplex, the product
-prior, and so :func:`example_parameter_vector`) pickles but fails
-``pickle.loads`` with this TFP build, and so does a vector holding one. Ship
-the SIPNET parameter fields, or the ``Grid``\\ s of plain floats
-``pyens.xarray.fields_from_dataset`` makes from them, never the vector.
-
-The vector computes in float64: importing the package sets
-``jax_enable_x64``, as ``import pyeki`` does, so an MCMC baseline that never
-imports pyEKI still gets it (see :mod:`sipnet_calibration`). The setting is
-per process, and a worker that imports the package, as unpickling anything
-of it does, gets it too; only a worker that computes with JAX without
-importing the package needs ``JAX_ENABLE_X64=1`` in its environment.
+The vector computes in ``float64``: importing the package turns on JAX's
+64-bit mode.
 
 Usage
 -----
-Build a vector for three sites of the reanalysis's three-PFT site labels,
-look at it, subset it, draw from it, and take the draws to SIPNET::
+::
 
-    import jax
-    from pyens import EnsembleSpec
-    from pyens.xarray import fields_from_dataset
+    import jax.numpy as jnp
     from sipnet_calibration.parameter_vector import (
-        ALLOCATION, PHOTOSYNTHESIS, CalibrationParameter, FixedParameter,
-        ParameterVector, log_normal, log_normal_from_interval, logit_normal,
-        product_transformed_gaussian_prior, sipnet_overrides, softmax_normal,
-    )
-    from sipnet_calibration.site_labels import load_site_labels
-    from sipnet_calibration.sites import load_sites, select_sites
-
-    # Build it for a site set and a site-labels data source.
-    site_table = select_sites(load_sites(), site_ids=(620, 865, 1037))  # DataFrame: site_id, lon, lat
-    pft = load_site_labels("reanalysis_3pft")                  # DataFrame: site_id, label
-    vector = ParameterVector(                                  # ParameterVector, D = 13
-        parameters=(
-            CalibrationParameter(
-                name="photosynthesis",
-                prior=product_transformed_gaussian_prior(
-                    capacity=log_normal(median=115.0, geometric_sd=1.75),
-                    respiration_share=logit_normal(median=0.18, logit_sd=0.35),
-                ),
-                sipnet_map=PHOTOSYNTHESIS, provenance="...",
-            ),
-            CalibrationParameter(
-                name="allocation",
-                prior=softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5),
-                sipnet_map=ALLOCATION, varies_by="pft", provenance="...",
-            ),
-            CalibrationParameter(
-                name="base_soil_respiration",
-                prior=log_normal_from_interval(lower=0.004, upper=0.020),
-                sipnet_map="base_soil_respiration_rate", varies_by="pft",
-                provenance="...",
-            ),
-            CalibrationParameter(
-                name="initial_soil_carbon",
-                prior=log_normal(median=[30_000.0] * 3, geometric_sd=2.0),
-                sipnet_map="soil_carbon", varies_by="site", provenance="...",
-            ),
-        ),
-        fixed=(
-            FixedParameter(
-                name="daily_mean_photosynthesis_fraction", value=0.76, provenance="...",
-            ),
-            FixedParameter(                    # keyed on all three classes; the
-                name="leaf_carbon_fraction",   # grassland value is dropped, since
-                varies_by="pft",               # no site here is grassland
-                value={
-                    "boreal.coniferous": 0.506,
-                    "temperate.deciduous.HPDA": 0.466,
-                    "semiarid.grassland_HPDA": 0.483,
-                },
-                provenance="...",
-            ),
-        ),
-        site_table=site_table,
-        site_labels={"pft": pft},
+        OPEN_UNIT_INTERVAL, POSITIVE, SIMPLEX, Parameter, ParameterVector,
     )
 
-    # Print it.
-    vector                                             # ParameterVector(D=13, parameters=[...], sites=3)
-    print(vector.summary())
-    # ParameterVector  D = 13  |  3 sites  |  site labels: pft {boreal.coniferous, temperate.deciduous.HPDA}
-    #   parameter              varies by  groups  size  prior                             -> SIPNET parameters
-    #   photosynthesis         shared          1     2  product of transformed Gaussians  max_photosynthesis_rate, foliar_respiration_fraction
-    #   allocation             pft             2     3  softmax-normal                    leaf_allocation, wood_allocation, fine_root_allocation
-    #   base_soil_respiration  pft             2     1  log-normal                        base_soil_respiration_rate
-    #   initial_soil_carbon    site            3     1  log-normal                        soil_carbon
-    #   fixed: daily_mean_photosynthesis_fraction (shared), leaf_carbon_fraction (pft)
-    #   unset: 39 required SIPNET parameters, taken from the run's base parameter set
-    vector.dimension                                   # int: 13
-    vector.layout.entry_labels[:2]                     # ('photosynthesis[log(capacity)]', ...)
-    vector.index[:2]                                   # MultiIndex (parameter, group, element)
-    vector.positions(parameter_name="allocation")      # int64 positions in theta
-    vector["allocation"].component_names               # ('leaf_allocation', ..., 'coarse_root_allocation')
-    list(vector), len(vector), "allocation" in vector  # the calibration parameters
-    vector.describe()                                  # DataFrame: one row per calibration parameter
-    vector.describe_entries()                          # DataFrame: one row per entry of theta
-    vector.site_table                                  # DataFrame: site_id, lon, lat, pft
+    vector = ParameterVector(
+        parameters=[
+            Parameter(name="respiration_share", support=OPEN_UNIT_INTERVAL, units="1"),
+            Parameter(name="allocation", support=SIMPLEX, units="1", dim="pft",
+                      natural_names=("leaf", "wood", "fine_root", "coarse_root")),
+            Parameter(name="initial_soil_carbon", support=POSITIVE, units="g m-2",
+                      dim="site"),
+        ],
+        site_table=select_sites(load_sites(), site_ids=[620, 865, 1037]),
+        site_labels={"pft": load_site_labels("reanalysis_3pft")},
+    )
+    vector.dimension                         # 1 + 2 * 3 + 3 = 10 with two PFTs present
+    vector.index[:2]                         # (parameter, dim, dim_label, unconstrained_name)
+    vector.positions(parameter_name="allocation", dim="pft", dim_label="boreal.coniferous")
 
-    # Subset it.
-    conifer = vector.select(labels={"pft": ["boreal.coniferous"]})         # ParameterVector, D = 8
-    two = vector.select(parameter_names=("allocation", "initial_soil_carbon"))  # D = 9
-
-    # Sample it and evaluate its density.
-    theta = vector.sample(jax.random.key(0), n=50)     # Flat: jax.Array (50, 13), unconstrained
-    vector.log_prior(theta)                            # jax.Array (50,)
-    gaussian = vector.gaussian_prior()                 # pyeki.gauss.Gaussian over Flat
-
-    # Look at the prior draws, one calibration parameter at a time.
-    fields = vector.fields(theta)                      # Fields: Dataset (sample, site), natural space
-    fields.filter_by_attrs(parameter="allocation")     # Fields: the four allocation components
-    soil = fields["initial_soil_carbon"]               # DataArray (sample, site); lon, lat, pft on site
-    fields["allocation.coarse_root_allocation"].sel(site=865)    # DataArray (sample,): the conifer copy
-    fields["allocation.leaf_allocation"].groupby("pft").first()  # DataArray (sample, pft): one per class
-    soil.quantile([0.05, 0.5, 0.95], dim="sample")     # DataArray (quantile, site)
-
-    # Convert to SIPNET parameters, for one run and for a PyEns spec.
-    sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # Dataset (sample, site)
-    kwargs = sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=865)
-    grids = fields_from_dataset(sipnet_parameter_fields)  # dict[str, Grid] along [sample, site]
-    spec = EnsembleSpec(inputs=grids)                  # 150 runs; add a climate Grid on the site axis
-
-    # Back from a pyEKI result, and across vectors.
-    posterior = vector.fields(eki.state.ensemble)      # Fields, natural space; eki: a pyeki EKIResult
-    theta_again = vector.flat(fields)                  # Flat (50, 13): theta again, to 1e-10
-    conifer.flat(fields)                               # Flat (50, 8): the same draws, projected
+    theta = jnp.zeros((4, vector.dimension))
+    natural_values = vector.to_natural(theta)       # {"allocation": (4, 2, 4), ...}
+    vector.at_sites(natural_values)["allocation"]   # (4, 3, 4)
+    parameter_dataset = vector.dataset(theta)       # Dataset on (sample, pft) and (sample, site)
+    vector.flat(parameter_dataset)                  # theta again
+    vector.site_fields(parameter_dataset)           # fields on (sample, site)
+    vector.select(dim_labels={"pft": ["boreal.coniferous"]})
 """
 
 from __future__ import annotations
 
-import dataclasses
-import itertools
-from collections.abc import Callable, Iterator, Mapping, Sequence
+import keyword
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field
 from functools import cached_property
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal
 
 import jax
 import jax.numpy as jnp
@@ -394,16 +150,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from frozendict import frozendict
-from pyeki.gauss import Gaussian
-from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp
-from pysipnet.parameters.base import ParameterDomain, ParameterSpec
-from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
 
-# SITE, the site dimension's name, is also the reserved ``varies_by`` value
-# meaning one copy per site. Calibration parameter names match NAME_PATTERN.
 from sipnet_calibration.conventions import (
-    BATCH_LABEL_DTYPE,
     DATA_SOURCE_MEMBER_NAMES,
     LAT,
     LON,
@@ -411,25 +160,14 @@ from sipnet_calibration.conventions import (
     NON_BATCH_DIM_NAMES,
     SAMPLE,
     SITE,
-    SITE_ATTRIBUTES,
     SITE_DTYPE,
     SITE_ID,
 )
 from sipnet_calibration.fields import (
-    SIPNETParameterFields,
     batch_coordinate,
     batch_dims,
     check_at_most_one_batch_dim,
-    check_batch_dim_name_is_not_a_data_source_member,
     check_batch_dim_name_is_not_reserved,
-    check_batch_labels_are_a_mapping,
-    check_parameter_variable_has_a_site,
-    check_parameter_variable_is_off_time,
-    check_sipnet_parameter_fields_are_a_dataset,
-    check_sipnet_parameter_name_is_a_flat_name,
-    in_field_layout,
-    validate_field,
-    validate_sipnet_parameter_fields,
 )
 from sipnet_calibration.site_labels import LABEL_COLUMN
 from sipnet_calibration.sites import (
@@ -440,1279 +178,292 @@ from sipnet_calibration.sites import (
 )
 from sipnet_calibration.validation import (
     as_batched_flat,
-    as_bounded_integer,
-    as_frozen_mapping,
     as_names,
     as_sequence,
-    as_batch_label,
-    as_site_id,
     as_site_ids,
     check_names_are_unique,
     check_sites_are_the_vectors,
-    check_the_restriction_keeps_a_site,
     is_one_vector,
     truncated,
 )
 
 __all__ = [
-    "ALLOCATION",
-    "DOMAIN_CHECK_CORNERS",
-    "FIELDS_REPRESENTATION",
-    "INDEX_LEVELS",
-    "NATURAL",
-    "PHOTOSYNTHESIS",
-    "REQUIRED_SIPNET_PARAMETER_NAMES",
-    "RESERVED_PARAMETER_NAMES",
-    "RESERVED_SITE_LABELS_NAMES",
-    "SHARED",
-    "SIPNET_PARAMETER_FIELDS_REPRESENTATION",
-    "SPACES",
-    "UNCONSTRAINED",
-    "CalibrationFields",
-    "CalibrationParameter",
-    "FixedParameter",
-    "Identity",
-    "Layout",
+    "INDEX_LEVEL_NAMES",
+    "NO_DIM",
+    "OPEN_UNIT_INTERVAL",
+    "POSITIVE",
+    "REAL",
+    "RESERVED_NAMES",
+    "SIMPLEX",
+    "NaturalValues",
+    "OpenInterval",
+    "Parameter",
+    "ParameterDataset",
     "ParameterVector",
-    "PhotosynthesisMap",
-    "SIPNETMap",
-    "SIPNETOverrides",
-    "SimplexMap",
+    "Support",
     "check_batch_dim_name_is_not_taken",
     "check_parameter_vector_is_valid",
-    "check_parameter_vector_pieces_are_valid",
-    "example_parameter_vector",
-    "log_normal",
-    "log_normal_from_interval",
-    "log_normal_from_samples",
-    "logit_normal",
-    "logit_normal_from_interval",
-    "logit_normal_from_samples",
-    "product_transformed_gaussian_prior",
-    "sipnet_overrides",
-    "softmax_normal",
-    "validate_calibration_fields",
-    "validate_sipnet_overrides",
+    "check_parameter_vectors_share_a_layout",
+    "probe_points",
+    "validate_natural_values",
+    "validate_parameter_dataset",
 ]
 
-tfd = tfp.distributions
 tfb = tfp.bijectors
 
 Array = jax.Array
 
-# ── prior helpers ─────────────────────────────────────────────────────────────
+#: The levels of :attr:`ParameterVector.index`, in order.
+INDEX_LEVEL_NAMES: tuple[str, ...] = ("parameter", "dim", "dim_label", "unconstrained_name")
 
+#: The ``dim`` and ``dim_label`` of an entry of a parameter without a dim.
+NO_DIM = ""
 
-def log_normal(*, median: Any, geometric_sd: Any) -> tfd.LogNormal:
-    """Log-normal with the given median and geometric standard deviation.
+#: Names no parameter, site-labels source or site covariate may take, since a
+#: labeled form's variable or dim of that name would collide with a
+#: coordinate: ``sample``, the names that are never batch dims, the data
+#: sources' member dims and the site table's ``site_id``.
+RESERVED_NAMES = frozenset({SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES, SITE_ID})
 
-    ``log x ~ Normal(log median, log geometric_sd)``. The central 95%
-    interval is ``median * geometric_sd ** (-1.96, 1.96)``, so "about 0.01,
-    within a factor of 3" is ``log_normal(median=0.01, geometric_sd=3)``.
 
-    Parameters
-    ----------
-    median:
-        Positive scalar, or an array of one median per group.
-    geometric_sd:
-        Greater than 1; scalar or one per group.
-
-    Examples
-    --------
-    >>> prior = log_normal(median=0.01, geometric_sd=2.0)
-    >>> round(float(prior.quantile(0.5)), 6)
-    0.01
-    """
-    median = _positive_array("log_normal median", median)
-    geometric_sd = _positive_array("log_normal geometric_sd", geometric_sd)
-    if not bool(jnp.all(geometric_sd > 1.0)):
-        raise ValueError("log_normal: geometric_sd must exceed 1 (it multiplies).")
-    return tfd.LogNormal(loc=jnp.log(median), scale=jnp.log(geometric_sd))
-
-
-def log_normal_from_interval(*, lower: Any, upper: Any, mass: float = 0.95) -> tfd.LogNormal:
-    """The log-normal whose central *mass* interval is ``[lower, upper]``.
-
-    Two quantiles determine the two parameters exactly: the median is the
-    geometric midpoint and the log-scale sd is set so that the interval
-    carries *mass*.
-
-    Examples
-    --------
-    >>> prior = log_normal_from_interval(lower=0.004, upper=0.020)
-    >>> round(float(prior.quantile(0.975)), 3)
-    0.02
-    """
-    lower = _positive_array("log_normal_from_interval lower", lower)
-    upper = _positive_array("log_normal_from_interval upper", upper)
-    loc, scale = _normal_from_interval(jnp.log(lower), jnp.log(upper), mass)
-    return tfd.LogNormal(loc=loc, scale=scale)
-
-
-def log_normal_from_samples(x: Any) -> tfd.LogNormal:
-    """Maximum-likelihood log-normal fit to strictly positive samples.
-
-    Refuses NaN or non-positive values rather than dropping them, so the
-    caller counts what it excludes.
-    """
-    logs = jnp.log(_samples_in_support("log_normal_from_samples", x, lambda v: v > 0))
-    return tfd.LogNormal(loc=jnp.mean(logs), scale=_positive_std(logs, "log_normal_from_samples"))
-
-
-def logit_normal(*, median: Any, logit_sd: Any) -> tfd.LogitNormal:
-    """Logit-normal on ``(0, 1)`` with the given median and logit-scale sd.
-
-    ``logit x ~ Normal(logit median, logit_sd)``. ``logit_sd`` around 1.7 is
-    close to flat on ``(0, 1)``.
-
-    Notes
-    -----
-    The spread is stated on the logit scale because this family has no
-    closed-form natural-space moments, so no natural-space spread statistic
-    would be exact.
-    """
-    median = _unit_interval_array("logit_normal median", median)
-    logit_sd = _positive_array("logit_normal logit_sd", logit_sd)
-    return tfd.LogitNormal(loc=_logit(median), scale=logit_sd)
-
-
-def logit_normal_from_interval(
-    *, lower: Any, upper: Any, mass: float = 0.95
-) -> tfd.LogitNormal:
-    """The logit-normal whose central *mass* interval is ``[lower, upper]``."""
-    lower = _unit_interval_array("logit_normal_from_interval lower", lower)
-    upper = _unit_interval_array("logit_normal_from_interval upper", upper)
-    loc, scale = _normal_from_interval(_logit(lower), _logit(upper), mass)
-    return tfd.LogitNormal(loc=loc, scale=scale)
-
-
-def logit_normal_from_samples(x: Any) -> tfd.LogitNormal:
-    """Maximum-likelihood logit-normal fit to samples in ``(0, 1)``.
-
-    Refuses NaN and values outside the open interval rather than dropping
-    them.
-    """
-    logits = _logit(
-        _samples_in_support("logit_normal_from_samples", x, lambda v: (v > 0) & (v < 1))
-    )
-    return tfd.LogitNormal(
-        loc=jnp.mean(logits), scale=_positive_std(logits, "logit_normal_from_samples")
-    )
-
-
-def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution:
-    """A Normal on ``R^(k-1)`` pushed through ``SoftmaxCentered`` onto the
-    interior of the ``k``-simplex.
-
-    Parameters
-    ----------
-    center:
-        Length-``k`` vector of positive fractions summing to 1, or
-        ``(n_groups, k)`` for one center per group. The base is a
-        ``MultivariateNormalDiag`` located at the additive log-ratios
-        ``log(center[:-1] / center[-1])``, so ``bijector.forward(base.loc)``
-        is *center*.
-    logit_sd:
-        Scale of the base: a scalar, or one value per unconstrained element
-        (``k - 1`` of them). Any other shape is refused.
-
-    Returns
-    -------
-    tfd.TransformedDistribution
-        Event shape ``(k,)``; every draw has ``k`` strictly positive
-        components summing to 1.
-
-    Notes
-    -----
-    Aitchison's name for this family is the logistic-normal; the logit-normal
-    is its ``k = 2`` case. It is called softmax-normal here to keep the two
-    apart.
-    """
-    center = jnp.asarray(center, dtype=jnp.float64)
-    if center.ndim not in (1, 2) or center.shape[-1] < 2:
-        raise ValueError("softmax_normal: center must be (k,) or (n_groups, k) with k >= 2.")
-    if not bool(jnp.all(center > 0)):
-        raise ValueError("softmax_normal: every component of center must be positive.")
-    if not bool(jnp.allclose(center.sum(axis=-1), 1.0, atol=1e-8)):
-        raise ValueError("softmax_normal: center must sum to 1 along its last axis.")
-    logit_sd = _positive_array("softmax_normal logit_sd", logit_sd)
-    loc = jnp.log(center[..., :-1] / center[..., -1:])
-    if logit_sd.shape not in ((), loc.shape[-1:]):
-        raise ValueError(
-            "softmax_normal: logit_sd must be a scalar or one value per unconstrained "
-            f"element, shape {loc.shape[-1:]}; got shape {logit_sd.shape}."
-        )
-    scale = jnp.broadcast_to(logit_sd, loc.shape)
-    return tfd.TransformedDistribution(
-        tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale), tfb.SoftmaxCentered()
-    )
-
-
-def product_transformed_gaussian_prior(
-    **components: tfd.TransformedDistribution,
-) -> tfd.TransformedDistribution:
-    """The product of independent scalar priors as one vector-valued prior.
-
-    Each component must be a ``TransformedDistribution`` with a scalar
-    ``Normal`` base — every scalar helper in this module returns one — because
-    the product is realized as a single ``MultivariateNormalDiag`` base under
-    a ``Blockwise`` of the components' bijectors, which gives the
-    calibration parameter one unconstrained Gaussian density with analytic
-    moments. A component with any other base, a vector event, or a batch
-    shape is refused.
-
-    Keyword order is component order; it must match the ``component_names`` of
-    the calibration parameter's :class:`SIPNETMap`.
-
-    Examples
-    --------
-    >>> prior = product_transformed_gaussian_prior(
-    ...     capacity=log_normal(median=115.0, geometric_sd=1.75),
-    ...     respiration_share=logit_normal(median=0.18, logit_sd=0.35),
-    ... )
-    >>> prior.event_shape
-    TensorShape([2])
-    """
-    if len(components) < 2:
-        raise ValueError("product_transformed_gaussian_prior: give at least two components.")
-    locs, scales, bijectors = [], [], []
-    for name, component in components.items():
-        base = getattr(component, "distribution", None)
-        if not isinstance(component, tfd.TransformedDistribution) or not isinstance(
-            base, tfd.Normal
-        ):
-            raise TypeError(
-                f"product_transformed_gaussian_prior: component {name!r} must be a "
-                "TransformedDistribution with a Normal base, e.g. from log_normal() or "
-                f"logit_normal(); got {type(component).__name__}."
-            )
-        if component.event_shape != () or component.batch_shape != ():
-            raise ValueError(
-                f"product_transformed_gaussian_prior: component {name!r} must be a scalar "
-                f"with no batch shape; got event {component.event_shape}, batch "
-                f"{component.batch_shape}."
-            )
-        locs.append(base.loc)
-        scales.append(base.scale)
-        bijectors.append(component.bijector)
-    base = tfd.MultivariateNormalDiag(loc=jnp.stack(locs), scale_diag=jnp.stack(scales))
-    return tfd.TransformedDistribution(base, tfb.Blockwise(bijectors, block_sizes=[1] * len(locs)))
-
-
-# ── SIPNET maps ───────────────────────────────────────────────────────────────
-
-
-@runtime_checkable
-class SIPNETMap(Protocol):
-    """``M_c``: a calibration parameter's natural-space value to SIPNET
-    parameter values.
-
-    Attributes
-    ----------
-    sipnet_parameter_names_written:
-        SIPNET parameters this SIPNET map sets.
-    sipnet_parameter_names_read:
-        Fixed SIPNET parameters it needs; ``()`` for most.
-    component_names:
-        Names of the ``k`` components of the natural-space value, in order.
-    component_units:
-        UDUNITS units of each component, in the same order.
-    """
-
-    sipnet_parameter_names_written: tuple[str, ...]
-    sipnet_parameter_names_read: tuple[str, ...]
-    component_names: tuple[str, ...]
-    component_units: tuple[str, ...]
-
-    def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
-        """*natural* has shape ``(..., k)``; each returned array has shape
-        ``(...)``. Values in *fixed* broadcast against ``(...)``."""
-
-
-@dataclass(frozen=True)
-class Identity:
-    """One scalar component to one SIPNET parameter; what a SIPNET parameter
-    name passed as ``sipnet_map`` stands for."""
-
-    parameter: str
-
-    @property
-    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
-        return (self.parameter,)
-
-    @property
-    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def component_names(self) -> tuple[str, ...]:
-        return (self.parameter,)
-
-    @property
-    def component_units(self) -> tuple[str, ...]:
-        return (_FLAT_SPECS[self.parameter].units,)
-
-    def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
-        return {self.parameter: natural[..., 0]}
-
-
-@dataclass(frozen=True)
-class SimplexMap:
-    """A point on the ``k``-simplex to ``k - 1`` SIPNET parameters.
-
-    The first ``k - 1`` components are written; the last is a residual SIPNET
-    recomputes itself and has no parameter for. :data:`ALLOCATION` says why
-    the residual is nonetheless part of the calibration parameter.
-
-    Parameters
-    ----------
-    sipnet_parameter_names_written:
-        SIPNET parameters for the first ``k - 1`` components, in order.
-    residual:
-        Name of the last component; it names a Fields variable and is
-        written to no SIPNET parameter.
-    """
-
-    sipnet_parameter_names_written: tuple[str, ...]
-    residual: str
-
-    @property
-    def sipnet_parameter_names_read(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def component_names(self) -> tuple[str, ...]:
-        return (*self.sipnet_parameter_names_written, self.residual)
-
-    @property
-    def component_units(self) -> tuple[str, ...]:
-        return ("1",) * len(self.component_names)
-
-    def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
-        names = self.sipnet_parameter_names_written
-        return {name: natural[..., i] for i, name in enumerate(names)}
-
-
-@dataclass(frozen=True)
-class PhotosynthesisMap:
-    """The identifiable photosynthesis pair, replacing four parameters by two.
-
-    ``aMax``, ``aMaxFrac``, ``baseFolRespFrac`` and ``cFracLeaf`` enter SIPNET
-    only through two quantities (``sipnet.c:614, 617, 633``), leaving a
-    two-dimensional exactly flat direction. With ``aMaxFrac`` and
-    ``cFracLeaf`` fixed, the calibration parameter is
-
-    .. math::
-
-        P = \\frac{\\texttt{aMax}\\,(\\texttt{aMaxFrac} + \\texttt{baseFolRespFrac})}
-                  {\\texttt{cFracLeaf}},
-        \\qquad
-        \\rho = \\frac{\\texttt{baseFolRespFrac}}
-                      {\\texttt{aMaxFrac} + \\texttt{baseFolRespFrac}},
-
-    and this SIPNET map inverts it. With ``S = aMaxFrac + baseFolRespFrac``,
-    ``rho = baseFolRespFrac / S`` gives ``S = aMaxFrac / (1 - rho)``, so
-
-    .. math::
-
-        \\texttt{baseFolRespFrac} = \\frac{\\rho\\,\\texttt{aMaxFrac}}{1 - \\rho},
-        \\qquad
-        \\texttt{aMax} = \\frac{P\\,\\texttt{cFracLeaf}\\,(1 - \\rho)}{\\texttt{aMaxFrac}}.
-
-    ``component_names = ("capacity", "respiration_share")``, in that order.
-    ``capacity`` is nmol CO2 per gram of leaf carbon per second: its unit
-    string is ``max_photosynthesis_rate``'s, whose gram is of leaf dry
-    mass, since ``cFracLeaf`` converts one to the other and has unit
-    ``"1"``. ``respiration_share`` is dimensionless.
-
-    Notes
-    -----
-    Both outputs are positive for every ``P > 0``, ``rho in (0, 1)`` and
-    ``aMaxFrac in (0, 1)``, so a log-normal on ``P`` and a logit-normal on
-    ``rho`` produce values pySIPNET accepts, up to float64: the sigmoid
-    saturates to exactly 1 beyond ``logit rho`` of about 37, dozens of prior
-    standard deviations out. ``P`` reads as canopy assimilation capacity per
-    unit leaf carbon and ``rho`` as the share of it spent on basal foliar
-    respiration. ``phi`` is reserved for hyperparameters in this project,
-    hence ``rho`` for the share.
-    """
-
-    sipnet_parameter_names_written: tuple[str, ...] = (
-        "max_photosynthesis_rate",
-        "foliar_respiration_fraction",
-    )
-    sipnet_parameter_names_read: tuple[str, ...] = (
-        "daily_mean_photosynthesis_fraction",
-        "leaf_carbon_fraction",
-    )
-    component_names: tuple[str, ...] = ("capacity", "respiration_share")
-
-    @property
-    def component_units(self) -> tuple[str, ...]:
-        return (_FLAT_SPECS["max_photosynthesis_rate"].units, "1")
-
-    def __call__(self, natural: Array, fixed: Mapping[str, Array]) -> dict[str, Array]:
-        capacity, share = natural[..., 0], natural[..., 1]
-        a_max_frac = fixed["daily_mean_photosynthesis_fraction"]
-        c_frac_leaf = fixed["leaf_carbon_fraction"]
-        return {
-            "max_photosynthesis_rate": capacity * c_frac_leaf * (1.0 - share) / a_max_frac,
-            "foliar_respiration_fraction": share * a_max_frac / (1.0 - share),
-        }
-
-
-ALLOCATION = SimplexMap(
-    sipnet_parameter_names_written=("leaf_allocation", "wood_allocation", "fine_root_allocation"),
-    residual="coarse_root_allocation",
-)
-"""The allocation simplex: the 4-vector (leaf, wood, fine root, coarse root)
-to ``leaf_allocation``, ``wood_allocation`` and ``fine_root_allocation``.
-
-Notes
------
-Coarse root is not written because SIPNET has no parameter for it: it
-recomputes exactly ``1 - (leaf + wood + fine root)`` at
-``sipnet.c:1113-1115`` and calls ``exit()`` if that is not positive
-(``sipnet.c:1117-1122``; pySIPNET's ``SIPNETParameters`` validator enforces
-the same ``sum < 1`` first). Keeping coarse root in the calibration parameter
-is what puts every draw strictly inside the simplex, so no ``theta`` the
-prior can produce reaches that exit.
-"""
-
-PHOTOSYNTHESIS = PhotosynthesisMap()
-"""``(P, rho)`` to ``aMax`` and ``baseFolRespFrac``, reading the fixed
-``aMaxFrac`` and ``cFracLeaf``. See :class:`PhotosynthesisMap`."""
-
-
-# ── the representations and their validators ──────────────────────────────────
-
-#: A parameter vector's Fields, as this module's data model has them; checked
-#: by :func:`validate_calibration_fields`.
-type CalibrationFields = xr.Dataset
-
-#: One run's SIPNET overrides, the keywords ``SIPNETModel`` takes: pySIPNET
-#: flat parameter names to numbers; checked by
-#: :func:`validate_sipnet_overrides`.
-type SIPNETOverrides = Mapping[str, float]
-
-
-def validate_calibration_fields(
-    calibration_fields: Any, *, message_name: str | None = None
-) -> None:
-    """Check that *calibration_fields* are :data:`CalibrationFields`.
-
-    Parameters
-    ----------
-    calibration_fields:
-        The Dataset to check, such as :meth:`ParameterVector.fields` returns.
-    message_name:
-        What an error message calls it; ``"Fields"`` when omitted.
-
-    Raises
-    ------
-    TypeError
-        If *calibration_fields* is not an ``xr.Dataset``.
-    ValueError
-        If it is not Fields; the message names the variable and the rule.
-
-    Notes
-    -----
-    Fields of a vector built from bare site ids carry no ``lon``/``lat``, so
-    this refuses them; that vector's own :meth:`ParameterVector.flat` and
-    :meth:`ParameterVector.sipnet_parameter_fields` accept them.
-    """
-    name = "Fields" if message_name is None else message_name
-    check_calibration_fields_are_a_dataset(calibration_fields, name)
-    check_calibration_fields_space_is_given(calibration_fields, name)
-    for variable_name, variable in calibration_fields.data_vars.items():
-        variable_message_name = f"{name} variable {str(variable_name)!r}"
-        validate_field(variable, message_name=variable_message_name)
-        check_parameter_variable_has_a_site(variable, variable_message_name)
-        check_parameter_variable_is_off_time(variable, variable_message_name)
-    check_calibration_fields_variables_share_the_dims(calibration_fields, name)
-
-
-def validate_sipnet_overrides(sipnet_overrides: Any, *, message_name: str | None = None) -> None:
-    """Check that *sipnet_overrides* are :data:`SIPNETOverrides`.
-
-    Parameters
-    ----------
-    sipnet_overrides:
-        The mapping to check, such as :func:`sipnet_overrides` returns.
-    message_name:
-        What an error message calls it; ``"the SIPNET overrides"`` when
-        omitted.
-
-    Raises
-    ------
-    TypeError
-        If *sipnet_overrides* is not a mapping, or a key is not a string or a
-        value not a number (a boolean included).
-    KeyError
-        If a key is no pySIPNET parameter.
-    ValueError
-        If a key is an alias of pySIPNET's flat name.
-    """
-    name = "the SIPNET overrides" if message_name is None else message_name
-    check_sipnet_overrides_are_a_mapping(sipnet_overrides, name)
-    for key, value in sipnet_overrides.items():
-        check_sipnet_parameter_name_is_a_flat_name(key, name)
-        check_sipnet_override_is_a_number(key, value, name)
-
-
-# ── the specs ─────────────────────────────────────────────────────────────────
-
-SHARED = "shared"
-"""Group label, and ``varies_by`` attribute value, of a calibration parameter
-that does not vary."""
-
-RESERVED_PARAMETER_NAMES = frozenset({SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES})
-"""Names a calibration parameter cannot take, because a Fields variable of
-that name would collide with a coordinate, or with a dimension name reserved
-for one: ``sample``, the names that are never batch dims
-(:data:`~sipnet_calibration.conventions.NON_BATCH_DIM_NAMES`) and the data
-sources' member dims."""
-
-RESERVED_SITE_LABELS_NAMES = frozenset({*RESERVED_PARAMETER_NAMES, SHARED, SITE_ID})
-"""Names a site-labels data source cannot take in a vector, because they are
-dimension or coordinate names already, or reserved for one: those of
-:data:`RESERVED_PARAMETER_NAMES`, the group label ``shared`` and the site
-table's ``site_id``. It may not be named like a calibration parameter or a
-SIPNET parameter either."""
-
-REQUIRED_SIPNET_PARAMETER_NAMES: tuple[str, ...] = tuple(
-    name
-    for group in SIPNETParameters.model_fields.values()
-    for name, field_info in group.annotation.model_fields.items()
-    if field_info.is_required()
-)
-"""The SIPNET parameters pySIPNET requires a value for, in declaration order:
-every parameter without a default. Flag-dependent and zero-defaulted
-parameters are not required and are not listed."""
-
-DOMAIN_CHECK_CORNERS = (-12.0, 0.0, 12.0)
-"""Corners of the unconstrained cube at which
-:func:`check_sipnet_map_image_is_in_domain` evaluates a calibration
-parameter. +-12 spans ten orders of magnitude on a log scale and reaches
-``1 - 6e-6`` on a logit scale while staying inside float64; the check is
-about support, not plausibility."""
-
-
-@dataclass(frozen=True, eq=False, kw_only=True)
-class CalibrationParameter:
-    """One named piece of ``theta``: a prior in natural space, how it varies
-    over sites, and how it reaches SIPNET.
-
-    Parameters
-    ----------
-    name:
-        ``lower_case_with_underscores``, unique within a vector. Names the
-        calibration parameter, not a SIPNET parameter: ``photosynthesis``,
-        not ``max_photosynthesis_rate``.
-    prior:
-        A TFP distribution in natural space, normally from a prior helper,
-        whose ``.bijector`` is ``T_c`` and whose ``.distribution`` is the
-        density of ``theta_c``. Either *independent copies*: batch shape
-        ``()`` for one prior shared by every group or ``(n_groups,)`` for one
-        per group, and the event of one copy, ``()`` or ``(k,)``. Or, for a
-        scalar calibration parameter, *joint over groups*: batch shape ``()``
-        and event ``(n_groups,)``, one distribution over every copy, with an
-        elementwise bijector. Any TFP distribution is accepted with its
-        default event-space bijector; one without analytic unconstrained
-        moments is then moment matched by
-        :meth:`ParameterVector.gaussian_prior` when that is given ``key=``
-        and ``n_moment_samples=``.
-    sipnet_map:
-        A :class:`SIPNETMap`, or a SIPNET parameter name as shorthand for
-        :class:`Identity`.
-    varies_by:
-        ``None`` (shared), ``"site"``, or a site-labels name the
-        :class:`ParameterVector` supplies.
-    provenance:
-        Where the prior came from, in words, with the citation. A placeholder
-        says it is one.
-
-    Raises
-    ------
-    TypeError
-        If *prior* is not a TFP distribution or *sipnet_map* is neither a
-        :class:`SIPNETMap` nor a SIPNET parameter name.
-    ValueError
-        For a malformed or reserved name, an empty provenance, SIPNET
-        parameters that do not exist, a prior that is not ``float64``, of the
-        wrong batch or event rank, or without a default event-space bijector,
-        or a SIPNET map whose ``component_names`` do not match the prior's event.
-
-    Examples
-    --------
-    >>> soil = CalibrationParameter(
-    ...     name="base_soil_respiration",
-    ...     prior=log_normal_from_interval(lower=0.004, upper=0.020),
-    ...     sipnet_map="base_soil_respiration_rate",
-    ...     varies_by="pft",
-    ...     provenance="BETY som_respiration_rate posterior, 2.5-97.5% quantiles.",
-    ... )
-    >>> soil.size, soil.element_labels
-    (1, ('log(base_soil_respiration_rate)',))
-    """
-
-    name: str
-    prior: tfd.Distribution
-    sipnet_map: SIPNETMap | str
-    varies_by: str | None = None
-    provenance: str
-
-    def __post_init__(self) -> None:
-        if isinstance(self.sipnet_map, str):
-            object.__setattr__(self, "sipnet_map", Identity(self.sipnet_map))
-        check_calibration_parameter_is_valid(self)
-
-    # ── identity ──────────────────────────────────────────────────────────────
-
-    @property
-    def bijector(self) -> tfb.Bijector | None:
-        """``T_c``, unconstrained to natural space: the prior's own bijector
-        when it is a ``TransformedDistribution`` (or ``LogNormal``,
-        ``LogitNormal``), else its default event-space bijector; ``None``
-        when it has neither."""
-        if _carries_its_bijector(self.prior):
-            return self.prior.bijector
-        try:
-            return self.prior.experimental_default_event_space_bijector()
-        except NotImplementedError:
-            return None
-
-    @property
-    def unconstrained_prior(self) -> tfd.Distribution:
-        """The density of ``theta_c``."""
-        if _carries_its_bijector(self.prior):
-            return self.prior.distribution
-        if isinstance(self.bijector, tfb.Identity):
-            return self.prior
-        return tfd.TransformedDistribution(self.prior, tfb.Invert(self.bijector))
-
-    @property
-    def component_names(self) -> tuple[str, ...]:
-        """Natural-space component names, from the SIPNET map."""
-        return tuple(self.sipnet_map.component_names)
-
-    @property
-    def component_units(self) -> tuple[str, ...]:
-        """Units of each natural-space component, from the SIPNET map."""
-        return tuple(self.sipnet_map.component_units)
-
-    @property
-    def natural_size(self) -> int:
-        """``k``, the number of natural-space components of one copy."""
-        return len(self.component_names)
-
-    @property
-    def is_scalar(self) -> bool:
-        """Whether one copy's natural value is a scalar (``k == 1``)."""
-        return self.natural_size == 1
-
-    @property
-    def is_joint(self) -> bool:
-        """Whether the prior is one distribution over every copy."""
-        return len(tuple(self.prior.event_shape)) == (1 if self.is_scalar else 2)
-
-    @property
-    def joint_groups(self) -> int | None:
-        """The number of copies a joint prior is over; ``None`` otherwise."""
-        return int(self.prior.event_shape[0]) if self.is_joint else None
-
-    @property
-    def size(self) -> int:
-        """The number of entries of ``theta`` per group."""
-        if self.is_scalar:
-            return 1
-        shape = self.bijector.inverse_event_shape(self.prior.event_shape)
-        return int(shape[-1])
-
-    @property
-    def element_labels(self) -> tuple[str, ...]:
-        """Unconstrained element names: ``log(x)``, ``logit(x)``,
-        ``alr(a:residual)``, ``logit(x in (low, high))``, derived from the
-        bijector. None contains ``/``, so every Fields variable name is a
-        legal netCDF name."""
-        return _unconstrained_labels(self.bijector, self.component_names)
-
-    @property
-    def distribution_name(self) -> str:
-        """A short name for :meth:`ParameterVector.describe`."""
-        return _distribution_name(self.prior)
-
-    @property
-    def has_analytic_moments(self) -> bool:
-        """Whether ``unconstrained_prior`` answers ``mean()`` and
-        ``variance()``/``covariance()`` without sampling."""
-        try:
-            self.unconstrained_prior.mean()
-            if self.is_scalar and not self.is_joint:
-                self.unconstrained_prior.variance()
-            else:
-                self.unconstrained_prior.covariance()
-        except NotImplementedError:
-            return False
-        return True
-
-
-@dataclass(frozen=True, eq=False, kw_only=True)
-class FixedParameter:
-    """A SIPNET parameter held at a value.
-
-    Parameters
-    ----------
-    name:
-        SIPNET parameter name, checked against ``PARAMETER_SPECS``.
-    value:
-        A float when *varies_by* is ``None``; otherwise a mapping from group
-        to float, covering every group of the vector. Each value is checked
-        against the SIPNET parameter's ``ParameterDomain``, so a fixed value
-        can never be one pySIPNET refuses.
-    varies_by:
-        As for :class:`CalibrationParameter`.
-    provenance:
-        Where the value came from. A ``template.param`` value says so and
-        says why nothing better covers it.
-
-    Examples
-    --------
-    >>> FixedParameter(
-    ...     name="vapor_pressure_deficit_exponent", value=2.0,
-    ...     provenance="Braswell et al. (2005) fix the exponent at 2.",
-    ... ).value
-    2.0
-
-    Notes
-    -----
-    A mapping *value* is stored as a ``frozendict``, so it cannot be changed
-    after the checks and the parameter pickles. Compared and hashed
-    by identity (``eq=False``), as :class:`CalibrationParameter` is.
-    """
-
-    name: str
-    value: float | Mapping[Any, float]
-    varies_by: str | None = None
-    provenance: str
-
-    def __post_init__(self) -> None:
-        if isinstance(self.value, Mapping):
-            object.__setattr__(
-                self, "value", as_frozen_mapping(self.value, message_name="value")
-            )
-        check_fixed_parameter_is_valid(self)
-
-    # ── identity ──────────────────────────────────────────────────────────────
-
-    def values(self) -> tuple[float, ...]:
-        """Every value, in mapping order (one value when shared)."""
-        if isinstance(self.value, Mapping):
-            return tuple(float(v) for v in self.value.values())
-        return (float(self.value),)
-
-
-# ── the layout ────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, eq=False)
-class Layout:
-    """Where each calibration parameter lives in Flat ``theta``, by name.
-
-    Calibration parameters in declaration order; within one, groups in group
-    order; within a group, elements in order. Built by
-    :class:`ParameterVector`; consumers call :meth:`unpack`, :meth:`pack` and
-    :meth:`positions` rather than computing offsets. Its mappings are
-    read-only (``frozendict``).
-
-    Attributes
-    ----------
-    parameter_names:
-        Calibration parameter names in layout order.
-    sizes:
-        Entries per group, per calibration parameter.
-    groups:
-        Group labels per calibration parameter, in the order they occupy
-        ``theta``.
-    dims:
-        The group dimension per calibration parameter: ``"shared"``,
-        ``"site"``, or a site-labels name.
-    element_labels:
-        Unconstrained element labels per calibration parameter.
-
-    Examples
-    --------
-    With ``vector`` a :class:`ParameterVector` and ``theta`` from
-    ``vector.sample``::
-
-        layout = vector.layout
-        layout.dimension == theta.shape[-1]                # True
-        parts = layout.unpack(theta)                       # {name: (..., n_groups, size)}
-        layout.pack(parts)                                 # theta again
-        layout.positions("allocation", group="conifer")    # array([2, 3, 4])
-    """
-
-    parameter_names: tuple[str, ...]
-    sizes: Mapping[str, int]
-    groups: Mapping[str, tuple[Any, ...]]
-    dims: Mapping[str, str]
-    element_labels: Mapping[str, tuple[str, ...]]
-
-    def __post_init__(self) -> None:
-        # Read-only, so that no write to what a vector's layout hands out
-        # changes its dimension or its index behind the machinery built on it.
-        object.__setattr__(self, "parameter_names", tuple(self.parameter_names))
-        for name in ("sizes", "dims"):
-            object.__setattr__(self, name, frozendict(getattr(self, name)))
-        for name in ("groups", "element_labels"):
-            frozen = {key: tuple(value) for key, value in getattr(self, name).items()}
-            object.__setattr__(self, name, frozendict(frozen))
-
-    @cached_property
-    def slices(self) -> Mapping[str, slice]:
-        """The contiguous slice of ``theta`` each calibration parameter owns."""
-        out, start = {}, 0
-        for name in self.parameter_names:
-            width = len(self.groups[name]) * self.sizes[name]
-            out[name] = slice(start, start + width)
-            start += width
-        return frozendict(out)
-
-    @property
-    def dimension(self) -> int:
-        """``D``."""
-        return sum(len(self.groups[n]) * self.sizes[n] for n in self.parameter_names)
-
-    @cached_property
-    def entry_labels(self) -> tuple[str, ...]:
-        """``D`` strings: ``"c"``, ``"c[group]"``, ``"c[element]"`` or
-        ``"c[group][element]"`` as the calibration parameter needs."""
-        out = []
-        for name in self.parameter_names:
-            groups, elements = self.groups[name], self.element_labels[name]
-            for group in groups:
-                for element in elements:
-                    label = name
-                    if len(groups) > 1:
-                        label += f"[{group}]"
-                    if len(elements) > 1:
-                        label += f"[{element}]"
-                    out.append(label)
-        return tuple(out)
-
-    def slice(self, parameter: str) -> slice:
-        """The entries of ``theta`` a calibration parameter owns."""
-        return self.slices[self._known(parameter)]
-
-    def positions(
-        self, parameter_name: str, group: Any = None, element: str | None = None
-    ) -> np.ndarray:
-        """Entry positions (``int64``, ascending) of a calibration parameter,
-        narrowed by group and element label."""
-        name = self._known(parameter_name)
-        n_groups, size = len(self.groups[name]), self.sizes[name]
-        idx = np.arange(self.slices[name].start, self.slices[name].stop).reshape(n_groups, size)
-        if group is not None:
-            idx = idx[[_position(self.groups[name], group, f"a group of {name!r}")]]
-        if element is not None:
-            idx = idx[:, [_position(self.element_labels[name], element, f"an element of {name!r}")]]
-        return idx.ravel().astype(np.int64)
-
-    def unpack(self, theta: Array) -> dict[str, Array]:
-        """Flat ``(..., D)`` to ``{calibration parameter: (..., n_groups, size)}``."""
-        theta = _as_theta(theta, self.dimension)
-        lead = theta.shape[:-1]
-        return {
-            name: theta[..., self.slices[name]].reshape(
-                (*lead, len(self.groups[name]), self.sizes[name])
-            )
-            for name in self.parameter_names
-        }
-
-    def pack(self, parts: Mapping[str, Array]) -> Array:
-        """Inverse of :meth:`unpack`; refuses a missing or extra calibration
-        parameter."""
-        if set(parts) != set(self.parameter_names):
-            raise ValueError(
-                "Layout.pack: expected exactly the calibration parameters "
-                f"{list(self.parameter_names)}, got {sorted(parts)}."
-            )
-        pieces = []
-        for name in self.parameter_names:
-            part = jnp.asarray(parts[name], dtype=jnp.float64)
-            expected = (len(self.groups[name]), self.sizes[name])
-            if part.shape[-2:] != expected:
-                raise ValueError(
-                    f"Layout.pack: {name} must end in (n_groups, size) = {expected}, "
-                    f"got shape {part.shape}."
-                )
-            pieces.append(part.reshape((*part.shape[:-2], expected[0] * expected[1])))
-        try:
-            return jnp.concatenate(pieces, axis=-1)
-        except (TypeError, ValueError) as error:
-            raise ValueError(
-                "the parts' leading dimensions disagree, got "
-                f"{[tuple(p.shape[:-1]) for p in pieces]}; give every part one leading shape."
-            ) from error
-
-    def _known(self, parameter: str) -> str:
-        if parameter not in self.slices:
-            raise KeyError(
-                f"the layout has no calibration parameter {parameter!r}; name one of "
-                f"{truncated(list(self.parameter_names))}."
-            )
-        return parameter
-
-
-# ── the parameter vector ──────────────────────────────────────────────────────
-
-NATURAL = "natural"
-"""The ``space`` of a Fields dataset holding natural-space components."""
-
-UNCONSTRAINED = "unconstrained"
-"""The ``space`` of a Fields dataset holding unconstrained elements."""
-
-SPACES = (NATURAL, UNCONSTRAINED)
-"""The values ``space`` takes."""
-
-INDEX_LEVELS: tuple[str, ...] = ("parameter", "group", "element")
-"""The levels of :attr:`ParameterVector.index`, in order."""
-
-FIELDS_REPRESENTATION = "calibration_parameters"
-"""The ``representation`` attribute of a Fields dataset."""
-
-SIPNET_PARAMETER_FIELDS_REPRESENTATION = "sipnet_parameter_fields"
-"""The ``representation`` attribute of SIPNET parameter fields."""
+# ── the vector ────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True, eq=False, kw_only=True, repr=False)
 class ParameterVector:
-    """A named random vector: which SIPNET parameters are calibrated, as what
-    calibration parameters, under what prior, over which sites, with what
-    held fixed.
-
-    Its values have three representations, Flat, Fields and SIPNET
-    parameter fields, which the module docstring's data model defines.
+    """The unknowns of a calibration, over a set of sites.
 
     Parameters
     ----------
     parameters:
-        The :class:`CalibrationParameter`\\ s, in the order they occupy
-        ``theta``.
-    fixed:
-        The SIPNET parameters held at a value. Every SIPNET parameter any
-        SIPNET map reads (``sipnet_parameter_names_read``) must appear here.
-    sites:
-        The sites the vector is defined over, as site ids, ascending. The ids
-        are the site table's; ids of a shared pool are never renumbered.
+        The :class:`Parameter`\\ s, in the order they occupy theta.
     site_table:
-        The sites the vector is defined over, as a site table with a
-        ``site_id`` column in ascending order, such as
-        :func:`sipnet_calibration.sites.select_sites` returns, whose
-        ``lon``/``lat`` are then carried onto Fields and the SIPNET parameter
-        fields. The table is read, not kept: :attr:`site_table` is the
-        vector's own.
-
-        Give *sites* or *site_table*; giving neither is refused. Both may be
-        given only when *sites* are the table's site ids in its order, and the
-        table is then what is read, so ``dataclasses.replace(vector)``, which
-        passes both, keeps the vector's ``lon``/``lat``.
+        The sites, one row each in ascending ``site_id``, with ``lon`` and
+        ``lat``, such as :func:`sipnet_calibration.sites.select_sites`
+        returns. Read, not kept: :attr:`site_table` is the vector's own.
     site_labels:
-        ``{site_labels_name: labels}`` for every ``varies_by`` other than
-        ``None`` and ``"site"``: a site-labels table with ``site_id`` and
-        ``label`` columns (:data:`~sipnet_calibration.site_labels.LABEL_COLUMN`),
-        such as
-        :func:`sipnet_calibration.site_labels.load_site_labels` returns, which
-        must label every site here; a pandas categorical; or one label per
-        site, in site order.
-        The module Notes say how each decides the groups.
-    require_complete:
-        Refuse a vector that leaves any :data:`REQUIRED_SIPNET_PARAMETER_NAMES`
-        neither calibrated nor fixed. Off by default, so a partial vector can
-        run on top of a base parameter set.
-
-    Attributes
-    ----------
-    dimension : int
-        ``D``.
-    layout : Layout
-        Which entries of ``theta`` belong to which calibration parameter,
-        group and element.
-    parameter_names : tuple[str, ...]
-        Calibration parameter names in layout order.
-    sites : tuple[int, ...]
-        The site ids the vector covers, in the order of its site axis.
-    site_labels : Mapping[str, tuple]
-        The class of every site, per site-labels name, in site order.
-    site_table : pandas.DataFrame
-        ``site_id``, ``lon``/``lat`` when known, and one column per
-        site-labels name.
-    index : pandas.MultiIndex
-        One row per entry of ``theta``: ``(parameter, group, element)``.
-    sipnet_parameter_names_written, unset_sipnet_parameter_names : tuple[str, ...]
-        What the vector writes, calibrated and fixed, and the required SIPNET
-        parameters it leaves to a run's base parameter set, which is then
-        part of the calibration's specification.
+        ``{site_labels_name: site labels}`` for every site-labels name a
+        parameter varies over, and any other a prior function or SIPNET rule
+        reads: a site-labels table (``site_id`` and ``label``) such as
+        :func:`sipnet_calibration.site_labels.load_site_labels` returns,
+        which labels every site; a pandas categorical; or one label per site,
+        in site order. Labels are strings. The dim labels are the classes
+        some site carries, in the categories' order, or sorted for plain
+        labels.
+    site_covariate_names:
+        The columns of *site_table* a prior function or SIPNET rule may read,
+        each ``float64`` and finite. No other column is kept.
 
     Raises
     ------
     TypeError
-        If an argument, a piece or a site label has the wrong type, or
-        neither *sites* nor *site_table* is given.
+        If a site label, or a named site covariate, has the wrong type.
+    KeyError
+        If a named site covariate is not a column of *site_table*.
     ValueError
-        If the pieces, sites and site labels do not make one vector SIPNET
-        can run; the message names the rule.
-
-    Examples
-    --------
-    >>> vector = example_parameter_vector(sites=(1, 27), pft=("deciduous", "conifer"))
-    >>> vector.dimension
-    13
-    >>> theta = vector.sample(jax.random.key(0), n=4)
-    >>> sipnet_parameter_fields = vector.sipnet_parameter_fields(theta)  # (sample, site)
-    >>> sorted(sipnet_overrides(sipnet_parameter_fields, batch={"sample": 0}, site=27))[:2]
-    ['base_soil_respiration_rate', 'daily_mean_photosynthesis_fraction']
+        If the parameters, sites and site labels do not make one vector; the
+        message names the rule.
     """
 
-    parameters: tuple[CalibrationParameter, ...]
-    fixed: tuple[FixedParameter, ...] = ()
-    sites: Sequence[int] | None = None
+    parameters: Sequence[Parameter]
     # A keyword only: the attribute of the same name is the property attached
-    # below the class, so the dataclass reads None, not it, as the default.
-    site_table: InitVar[pd.DataFrame | None] = None
-    site_labels: Mapping[str, Any] = field(default_factory=dict)
-    require_complete: bool = False
-    _declared_classes: Mapping[str, tuple[Any, ...]] = field(init=False, default=None)
-    _lon_lat: tuple[np.ndarray, np.ndarray] | None = field(init=False, default=None)
+    # below the class, so the dataclass must not read it as a default.
+    site_table: InitVar[pd.DataFrame]
+    site_labels: Mapping[str, Any] = field(default_factory=frozendict)
+    site_covariate_names: Sequence[str] = ()
+    _table: pd.DataFrame = field(init=False, repr=False)
+    _declared_dim_labels: Mapping[str, tuple[str, ...]] = field(init=False, repr=False)
 
-    def __post_init__(self, site_table: pd.DataFrame | None) -> None:
-        sites, lon_lat = _normalized_sites(self.sites, site_table)
-        object.__setattr__(self, "sites", sites)
-        object.__setattr__(self, "_lon_lat", lon_lat)
-        labels, declared = {}, {}
-        for name, value in dict(self.site_labels).items():
-            labels[name], declared[name] = _normalized_site_labels(name, value, self.sites)
-        object.__setattr__(self, "site_labels", frozendict(labels))
-        object.__setattr__(self, "_declared_classes", frozendict(declared))
+    def __post_init__(self, site_table: pd.DataFrame) -> None:
         object.__setattr__(self, "parameters", tuple(self.parameters))
-        object.__setattr__(self, "fixed", tuple(self.fixed))
-        check_parameter_vector_pieces_are_valid(self)
-        # Priors and fixed values written over every declared class are
-        # restricted to the classes present, which the checks below need.
         object.__setattr__(
-            self, "parameters", tuple(self._prior_restricted_to_groups(p) for p in self.parameters)
+            self,
+            "site_covariate_names",
+            as_names(self.site_covariate_names, message_name="site_covariate_names"),
         )
-        object.__setattr__(
-            self, "fixed", tuple(self._fixed_restricted_to_groups(f) for f in self.fixed)
-        )
+        table = _normalized_site_table(site_table, self.site_covariate_names)
+        declared = {}
+        for name, value in dict(self.site_labels).items():
+            table[name], declared[name] = _site_labels_column(name, value, table[SITE_ID])
+        object.__setattr__(self, "site_labels", frozendict(self.site_labels))
+        object.__setattr__(self, "_table", table)
+        object.__setattr__(self, "_declared_dim_labels", frozendict(declared))
         check_parameter_vector_is_valid(self)
 
     # ── identity ──────────────────────────────────────────────────────────────
 
-    def __getitem__(self, name: str) -> CalibrationParameter:
-        """The calibration parameter called *name*; a fixed parameter is not one
-        (:attr:`fixed_parameters`)."""
+    def __getitem__(self, name: str) -> Parameter:
+        """The parameter called *name*; ``KeyError`` for any other."""
         check_parameter_names_are_held([name], self)
         return self.parameters[self.parameter_names.index(name)]
 
     def __contains__(self, name: object) -> bool:
-        """Whether *name* is a calibration parameter of the vector."""
         return name in self.parameter_names
 
     def __iter__(self) -> Iterator[str]:
-        """The calibration parameter names, in layout order."""
         return iter(self.parameter_names)
 
     def __reversed__(self) -> Iterator[str]:
-        """The calibration parameter names, in reverse layout order."""
         return reversed(self.parameter_names)
 
     def __len__(self) -> int:
-        """The number of calibration parameters."""
         return len(self.parameters)
 
     def __repr__(self) -> str:
-        """One line; :meth:`summary` and :meth:`describe` are the tables."""
         return (
             f"ParameterVector(D={self.dimension}, parameters={list(self.parameter_names)}, "
-            f"sites={len(self.sites)})"
+            f"sites={self.n_sites})"
         )
 
-    def summary(self) -> str:
-        """The vector as text: one line per calibration parameter, then the
-        fixed and unset SIPNET parameters."""
-        return _summary(self)
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        """The parameter names, in declaration order."""
+        return tuple(p.name for p in self.parameters)
+
+    @property
+    def dimension(self) -> int:
+        """``D``, the number of entries of theta."""
+        return sum(self._sizes.values())
+
+    @property
+    def sites(self) -> tuple[int, ...]:
+        """The site ids, ascending."""
+        return tuple(int(s) for s in self._table[SITE_ID])
+
+    @property
+    def n_sites(self) -> int:
+        """``S``, the number of sites."""
+        return len(self._table)
+
+    @property
+    def dim_names(self) -> tuple[str, ...]:
+        """The dims the parameters vary over, in the order they first appear."""
+        return tuple(dict.fromkeys(p.dim for p in self.parameters if p.dim is not None))
+
+    def dim_index(self, dim_name: str) -> pd.Index:
+        """The dim labels of ``"site"`` (the site ids) or of a site-labels name.
+
+        Raises
+        ------
+        KeyError
+            For a name that is neither ``"site"`` nor one of the vector's
+            site-labels names.
+        """
+        if dim_name == SITE:
+            return pd.Index(self._table[SITE_ID].to_numpy(SITE_DTYPE), name=SITE)
+        check_dim_is_the_vectors(dim_name, self)
+        return pd.Index(list(self._table[dim_name].cat.categories), name=dim_name)
+
+    def value_shape(self, parameter_name: str) -> tuple[int, ...]:
+        """The shape of one natural value of a parameter: ``(n?, k?)``."""
+        parameter = self[parameter_name]
+        return self._dim_shape(parameter) + parameter.natural_shape
+
+    def unconstrained_shape(self, parameter_name: str) -> tuple[int, ...]:
+        """The shape of one unconstrained value of a parameter: ``(n?, e?)``."""
+        parameter = self[parameter_name]
+        return self._dim_shape(parameter) + parameter.unconstrained_shape
+
+    @cached_property
+    def index(self) -> pd.MultiIndex:
+        """One row per entry of theta, levels :data:`INDEX_LEVEL_NAMES`.
+
+        A parameter without a dim has ``dim`` and ``dim_label`` both
+        :data:`NO_DIM`. A site's dim label is its integer site id.
+        """
+        rows = [
+            (p.name, p.dim or NO_DIM, label, name)
+            for p in self.parameters
+            for label in (self.dim_index(p.dim) if p.dim else (NO_DIM,))
+            for name in p.unconstrained_names
+        ]
+        return pd.MultiIndex.from_tuples(rows, names=INDEX_LEVEL_NAMES)
+
+    @cached_property
+    def entry_names(self) -> tuple[str, ...]:
+        """``D`` strings: ``name``, ``name[dim label]``, ``name[unconstrained
+        name]`` or ``name[dim label][unconstrained name]``, as the parameter
+        needs."""
+        out = []
+        for name, dim, label, unconstrained_name in self.index:
+            entry = name
+            if dim != NO_DIM:
+                entry += f"[{label}]"
+            if self[name].natural_names is not None:
+                entry += f"[{unconstrained_name}]"
+            out.append(entry)
+        return tuple(out)
+
+    def positions(
+        self,
+        *,
+        parameter_name: str | None = None,
+        dim: str | None = None,
+        dim_label: Any = None,
+        unconstrained_name: str | None = None,
+    ) -> np.ndarray:
+        """Where in theta the entries matching every selector given sit.
+
+        Parameters
+        ----------
+        parameter_name, dim, unconstrained_name:
+            Values of the index levels of those names.
+        dim_label:
+            A dim label, compared with the dim's own labels, so a site is
+            ``620``, never ``"620"``. Requires *dim* or *parameter_name*,
+            since labels of two dims may coincide.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``int64`` positions, ascending; possibly none.
+
+        Raises
+        ------
+        ValueError
+            If *dim_label* is given without *dim* or *parameter_name*.
+        KeyError
+            For a selector no entry has, :data:`NO_DIM` included.
+        """
+        check_dim_label_has_a_dim(dim_label, dim, parameter_name)
+        check_selector_is_not_no_dim(dim, dim_label)
+        mask = np.ones(self.dimension, dtype=bool)
+        if parameter_name is not None:
+            check_parameter_names_are_held([parameter_name], self)
+            mask &= self.index.get_level_values("parameter") == parameter_name
+        for level, value in (("dim", dim), ("unconstrained_name", unconstrained_name)):
+            if value is not None:
+                values = self.index.get_level_values(level)
+                check_selector_is_in_the_index(level, value, values)
+                mask &= values == value
+        if dim_label is not None:
+            label_dim = dim if dim is not None else self[parameter_name].dim
+            labels = list(self.dim_index(label_dim)) if label_dim is not None else []
+            check_dim_label_is_the_dims(dim_label, labels, label_dim)
+            mask &= np.asarray(
+                [_same_label(label, dim_label) for label in self.index.get_level_values("dim_label")]
+            )
+        return np.flatnonzero(mask).astype(np.int64)
 
     def describe(self) -> pd.DataFrame:
-        """One row per calibration parameter, indexed by ``parameter``.
-
-        Columns: ``varies_by``, ``groups`` (their number), ``size`` (entries
-        per group), ``entries`` (of Flat), ``distribution``,
-        ``joint_over_groups``, ``sipnet_parameter_names_written`` (comma
-        separated) and ``provenance``. :meth:`describe_entries` is one row per
-        entry, :meth:`summary` the same as text.
-        """
+        """One row per parameter, indexed by ``parameter``: ``dim``,
+        ``dim_labels`` (their number), ``support``, ``bijector``, ``units``,
+        ``natural_size``, ``unconstrained_size`` and ``entries`` (of theta)."""
         rows = [
             {
                 "parameter": p.name,
-                "varies_by": p.varies_by or SHARED,
-                "groups": self.n_groups(p.varies_by),
-                "size": p.size,
-                "entries": self.n_groups(p.varies_by) * p.size,
-                "distribution": p.distribution_name,
-                "joint_over_groups": p.is_joint,
-                "sipnet_parameter_names_written": ", ".join(
-                    p.sipnet_map.sipnet_parameter_names_written
-                ),
-                "provenance": p.provenance,
+                "dim": p.dim or NO_DIM,
+                "dim_labels": self._dim_shape(p)[0] if p.dim else 1,
+                "support": p.support.name,
+                "bijector": p.bijector.name,
+                "units": p.units,
+                "natural_size": p.natural_size,
+                "unconstrained_size": p.unconstrained_size,
+                "entries": self._sizes[p.name],
             }
             for p in self.parameters
         ]
         return pd.DataFrame(rows).set_index("parameter")
-
-    def describe_entries(self) -> pd.DataFrame:
-        """One row per entry of ``theta``, on :attr:`index`, with the prior's moments.
-
-        Columns: ``sipnet_parameter_names_written``, ``distribution``, ``theta_mean``,
-        ``theta_sd``, ``natural_median``, ``natural_2.5``, ``natural_97.5``,
-        ``theta_moments`` (``"analytic"`` or ``"monte_carlo"``) and
-        ``provenance``. Natural quantiles are NaN for a vector-valued or
-        joint prior, where a marginal quantile would misrepresent a simplex
-        or is not available from TFP.
-        """
-        rows = []
-        for parameter in self.parameters:
-            groups = self.group_labels(parameter.varies_by)
-            moments = self._describe_moments(parameter)
-            quantiles = self._describe_quantiles(parameter)
-            for g, group in enumerate(groups):
-                for e, element in enumerate(parameter.element_labels):
-                    rows.append(
-                        {
-                            "parameter": parameter.name,
-                            "group": group,
-                            "element": element,
-                            "sipnet_parameter_names_written": ", ".join(
-                                parameter.sipnet_map.sipnet_parameter_names_written
-                            ),
-                            "distribution": parameter.distribution_name,
-                            "theta_mean": moments[0][g, e],
-                            "theta_sd": moments[1][g, e],
-                            "natural_median": quantiles[0][g],
-                            "natural_2.5": quantiles[1][g],
-                            "natural_97.5": quantiles[2][g],
-                            "theta_moments": (
-                                "analytic" if parameter.has_analytic_moments else "monte_carlo"
-                            ),
-                            "provenance": parameter.provenance,
-                        }
-                    )
-        return pd.DataFrame(rows, index=self.index).drop(columns=list(INDEX_LEVELS))
-
-    @property
-    def parameter_names(self) -> tuple[str, ...]:
-        """Calibration parameter names in layout order."""
-        return tuple(p.name for p in self.parameters)
-
-    @property
-    def fixed_parameters(self) -> tuple[FixedParameter, ...]:
-        """The fixed parameters, which are not pieces of the vector: ``theta``
-        holds none of them. The same tuple as :attr:`fixed`."""
-        return self.fixed
-
-    @property
-    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
-        """Every SIPNET parameter this vector writes, calibrated and fixed, in
-        pySIPNET's declaration order."""
-        written = {
-            n for p in self.parameters for n in p.sipnet_map.sipnet_parameter_names_written
-        }
-        written |= {f.name for f in self.fixed}
-        return tuple(n for n in _FLAT_SPECS if n in written)
-
-    @property
-    def unset_sipnet_parameter_names(self) -> tuple[str, ...]:
-        """The :data:`REQUIRED_SIPNET_PARAMETER_NAMES` this vector leaves to the
-        base parameter set."""
-        written = set(self.sipnet_parameter_names_written)
-        return tuple(n for n in REQUIRED_SIPNET_PARAMETER_NAMES if n not in written)
-
-    @property
-    def dimension(self) -> int:
-        """``D``."""
-        return self.layout.dimension
-
-    @cached_property
-    def layout(self) -> Layout:
-        """Where each calibration parameter lives in ``theta``; see
-        :class:`Layout`."""
-        return Layout(
-            parameter_names=self.parameter_names,
-            sizes={p.name: p.size for p in self.parameters},
-            groups={p.name: self.group_labels(p.varies_by) for p in self.parameters},
-            dims={p.name: p.varies_by or SHARED for p in self.parameters},
-            element_labels={p.name: p.element_labels for p in self.parameters},
-        )
-
-    @property
-    def index(self) -> pd.MultiIndex:
-        """One row per entry of Flat: levels :data:`INDEX_LEVELS`,
-        ``(parameter, group, element)``, in layout order; a copy, so setting
-        its names changes nothing of the vector."""
-        return self._index.copy()
-
-    @cached_property
-    def _index(self) -> pd.MultiIndex:
-        rows = [
-            (name, group, element)
-            for name in self.layout.parameter_names
-            for group in self.layout.groups[name]
-            for element in self.layout.element_labels[name]
-        ]
-        return pd.MultiIndex.from_tuples(rows, names=INDEX_LEVELS)
-
-    def _site_table(self) -> pd.DataFrame:
-        """``site_id`` (``int32``), ``lon``/``lat`` when known, and one
-        categorical column per site-labels name, one row per site."""
-        frame = pd.DataFrame({SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE)})
-        if self._lon_lat is not None:
-            frame[LON], frame[LAT] = self._lon_lat
-        for name, labels in self.site_labels.items():
-            frame[name] = pd.Categorical(labels, categories=self.group_labels(name))
-        return frame
-
-    def group_labels(self, varies_by: str | None) -> tuple[Any, ...]:
-        """The groups of a ``varies_by`` value, in the order they occupy
-        ``theta``: ``("shared",)``, the sites, or the classes of a
-        site-labels data source that some site here carries."""
-        if varies_by is None:
-            return (SHARED,)
-        if varies_by == SITE:
-            return self.sites
-        check_site_labels_are_held(varies_by, self)
-        present = set(self.site_labels[varies_by])
-        return tuple(c for c in self._declared_classes[varies_by] if c in present)
-
-    def n_groups(self, varies_by: str | None) -> int:
-        """The number of copies a calibration parameter with this
-        ``varies_by`` has."""
-        return len(self.group_labels(varies_by))
-
-    def sites_with(self, site_labels_name: str, label: Any) -> tuple[int, ...]:
-        """The sites carrying *label* under the site-labels data source
-        *site_labels_name*: ``()`` for a declared class no site here carries,
-        ``KeyError`` for a label that is not a declared class."""
-        if site_labels_name not in self.site_labels:
-            raise KeyError(
-                f"no site labels {site_labels_name!r}; have {sorted(self.site_labels)}."
-            )
-        if label not in self._declared_classes[site_labels_name]:
-            raise KeyError(
-                f"{label!r} is not a class of site labels {site_labels_name!r}; have "
-                f"{list(self._declared_classes[site_labels_name])}."
-            )
-        labels = self.site_labels[site_labels_name]
-        return tuple(s for s, lab in zip(self.sites, labels, strict=True) if lab == label)
 
     # ── selection ─────────────────────────────────────────────────────────────
 
@@ -1721,2207 +472,1228 @@ class ParameterVector:
         *,
         parameter_names: Sequence[str] | None = None,
         sites: Sequence[int] | None = None,
-        labels: Mapping[str, Any] | None = None,
+        dim_labels: Mapping[str, Sequence[str]] | None = None,
     ) -> ParameterVector:
-        """A smaller vector: some of the calibration parameters, over some of
-        the sites.
+        """A smaller vector: some parameters, over some sites.
 
         Parameters
         ----------
         parameter_names:
-            Calibration parameter names to keep, a sequence, each named once;
-            ``None`` keeps all. They keep this vector's layout order, whatever
-            the order asked for. Fixed parameters are always kept.
+            The parameters to keep; they keep this vector's order.
         sites:
-            Site ids to keep, a sequence, each one of :attr:`sites` and named
-            once; ``None`` keeps all. The result keeps this vector's site
-            order.
-        labels:
-            ``{site_labels_name: classes}``, each a sequence of class names:
-            keeps the sites carrying one of those classes. Composes with
-            *sites* by intersection. :meth:`restrict_to_sites` is the form
-            that ignores a site the vector does not have.
+            The site ids to keep.
+        dim_labels:
+            ``{site_labels_name: [dim label, ...]}``: keep the sites carrying
+            one of those dim labels, intersected with *sites*.
 
         Returns
         -------
         ParameterVector
-            With its own layout and dimension. A per-site prior is sliced to
-            the kept sites (a joint one marginalized, exactly); a per-class
-            prior, and a per-class or per-site fixed value, to the groups the
-            kept sites still have. ``lon``/``lat`` and the site labels are
-            carried.
+            Over the kept sites, whose dim indexes are recomputed from them;
+            the site covariates and site labels are carried.
 
         Raises
         ------
         TypeError
-            If *parameter_names*, *sites* or a *labels* value is one value, a
-            string or a set; if a name or class is not a string; or if a site
-            id is a boolean, a float or not a number.
+            If an argument is one value rather than a sequence.
         KeyError
-            For an unknown calibration parameter, site, site-labels name or
-            class.
+            For an unknown parameter, site, site-labels name or dim label.
         ValueError
-            If a name or a site is given twice, a site is not a site id,
-            *sites* is a two-dimensional array, or no site remains.
-
-        Notes
-        -----
-        The smaller vector's Flat values are not this one's. To move an
-        ensemble across, go through Fields, where the correspondence is by
-        site and by variable: ``small.flat(big.fields(theta))``.
+            If a name or site is given twice, or no site remains.
         """
-        names = self._selected_parameter_names(parameter_names)
-        kept = self._selected_sites(sites, labels)
-        positions = np.asarray([self.sites.index(s) for s in kept])
+        names = self.parameter_names
+        if parameter_names is not None:
+            wanted = as_names(parameter_names, message_name="parameter_names")
+            check_names_are_unique(wanted, message_name="parameter_names")
+            check_parameter_names_are_held(wanted, self)
+            names = tuple(n for n in names if n in wanted)
+        kept = self._selected_site_mask(sites, dim_labels)
+        table = self._table[kept]
         site_labels = {
-            name: pd.Categorical([labels_[i] for i in positions], categories=self.group_labels(name))
-            for name, labels_ in self.site_labels.items()
+            name: pd.Categorical(table[name].astype(str), categories=self._declared_dim_labels[name])
+            for name in self._declared_dim_labels
         }
         return ParameterVector(
-            parameters=tuple(self._prior_restricted_to_sites(self[n], positions) for n in names),
-            fixed=tuple(self._fixed_restricted_to_sites(f, kept) for f in self.fixed),
-            **self._site_keywords(positions),
+            parameters=[self[n] for n in names],
+            site_table=table[[SITE_ID, LON, LAT, *self.site_covariate_names]],
             site_labels=site_labels,
-            require_complete=self.require_complete,
+            site_covariate_names=self.site_covariate_names,
         )
 
-    def restrict_to_sites(self, sites: Sequence[int]) -> ParameterVector:
-        """The vector over its sites among *sites*; the others are ignored.
+    # ── coordinates ───────────────────────────────────────────────────────────
 
-        The intersecting form of ``select(sites=)``.
+    def to_natural(self, theta: Any) -> NaturalValues:
+        """Theta to natural values: :math:`x_p = T_p(\\theta_p)` for every parameter.
 
-        Parameters
-        ----------
-        sites:
-            A sequence of site ids, each named once.
-
-        Returns
-        -------
-        ParameterVector
-            ``select(sites=[s for s in self.sites if s in sites])``.
-
-        Raises
-        ------
-        TypeError, ValueError
-            As ``select(sites=)`` raises them for *sites*; ``ValueError`` too
-            if none of the vector's sites is among them.
-        """
-        wanted = set(as_site_ids(sites, message_name="sites"))
-        kept = [site for site in self.sites if site in wanted]
-        check_the_restriction_keeps_a_site(kept, message_name="the vector")
-        return self.select(sites=kept)
-
-    def positions(
-        self, *, parameter_name: str | None = None, group: Any = None, element: str | None = None
-    ) -> np.ndarray:
-        """Where in Flat the entries of a calibration parameter, group or element sit.
+        :math:`\\theta_p` is theta at ``positions(parameter_name=p)``, shaped
+        ``(..., *unconstrained_shape(p))``, and :math:`T_p` is
+        ``parameter.bijector``, applied per dim label. Traceable under
+        ``jax.jit``, ``jax.grad`` and ``jax.vmap``.
 
         Parameters
         ----------
-        parameter_name:
-            A calibration parameter the vector holds, or ``None`` for every
-            one.
-        group:
-            A group label (``"shared"``, a site id, or a class), or ``None``
-            for every group.
-        element:
-            An element label, as :attr:`CalibrationParameter.element_labels`
-            gives them, or ``None`` for every element.
+        theta:
+            ``(..., D)``.
 
         Returns
         -------
-        numpy.ndarray
-            The ascending ``int64`` positions in Flat of the entries matching
-            all three, which may be none when a group and an element are
-            each some calibration parameter's but never one entry's.
+        NaturalValues
+            ``{name: (..., *value_shape(name))}``, ``float64``.
 
         Raises
         ------
-        TypeError
-            If *group* is a boolean or a float: a site group is a site id.
-        KeyError
-            If *parameter_name* is not held; if *group* or *element* is not
-            one of that calibration parameter's, or, without
-            *parameter_name*, not one of any calibration parameter's.
-        """
-        check_group_label_is_not_a_bool_or_a_float(group)
-        if parameter_name is not None:
-            check_parameter_names_are_held([parameter_name], self)
-            check_label_is_the_parameters(
-                group, self.layout.groups[parameter_name], "a group", parameter_name
-            )
-            check_label_is_the_parameters(
-                element, self.layout.element_labels[parameter_name], "an element", parameter_name
-            )
-            return self.layout.positions(parameter_name, group=group, element=element)
-        mask = np.ones(self.dimension, dtype=bool)
-        if group is not None:
-            groups = self._index.get_level_values("group")
-            check_label_is_the_vectors(group, groups, "a group")
-            mask &= _labels_equal(groups, group)
-        if element is not None:
-            elements = self._index.get_level_values("element")
-            check_label_is_the_vectors(element, elements, "an element")
-            mask &= _labels_equal(elements, element)
-        return np.flatnonzero(mask).astype(np.int64)
-
-    # ── representations ───────────────────────────────────────────────────────
-
-    def fields(
-        self, flat_values: Any, *, space: str = NATURAL, batch_dim: str = SAMPLE
-    ) -> CalibrationFields:
-        """Flat to Fields.
-
-        Parameters
-        ----------
-        flat_values:
-            Flat ``theta``, ``(D,)`` or ``(J, D)``: any array-like of real
-            numbers (JAX, NumPy, a nested list).
-        space:
-            ``"natural"`` applies each calibration parameter's bijector, and
-            the variables are natural-space components; ``"unconstrained"``
-            leaves ``theta`` as it is, and the variables are unconstrained
-            elements.
-        batch_dim:
-            The name of the batch dim a ``(J, D)`` *flat_values* is given,
-            labeled ``0`` to ``J - 1`` in row order: any name
-            :func:`check_batch_dim_name_is_not_taken` allows.
-
-        Returns
-        -------
-        CalibrationFields
-            Fields in *space* (the module's data model), on
-            ``(batch_dim, site)``, or ``(site,)`` for one value. A vector
-            built from bare site ids gives them without ``lon``/``lat``,
-            which only its own methods read.
-
-        Raises
-        ------
-        TypeError
-            If *space* or *batch_dim* is not a string, or *flat_values* is not
-            an array of real numbers.
         ValueError
-            If *space* is unknown; if *batch_dim* is a name it may not be; or
-            if *flat_values* is not ``(D,)`` or ``(J, D)``.
+            If the last axis of *theta* is not ``D`` long.
         """
-        check_space_is_known(space)
-        check_batch_dim_name_is_not_taken(self, batch_dim)
-        theta = _as_theta(flat_values, self.dimension)
-        parts = self._natural_parts(theta) if space == NATURAL else self.layout.unpack(theta)
-        dims = (batch_dim, SITE) if theta.ndim == 2 else (SITE,)
-        variables = {}
-        for parameter in self.parameters:
-            on_sites = np.asarray(self._group_values_onto_sites(parameter, parts[parameter.name]))
-            labels = _space_labels(parameter, space)
-            for i, variable in enumerate(_fields_variable_names(parameter, space)):
-                attributes = _fields_attributes(parameter, labels, i, space)
-                variables[variable] = (dims, on_sites[..., i], attributes)
-        attributes = {"representation": FIELDS_REPRESENTATION, "space": space}
-        coords = self._coordinates(theta, batch_dim)
-        return xr.Dataset(variables, coords=coords, attrs=attributes)
+        theta = jnp.asarray(theta, dtype=jnp.float64)
+        check_theta_ends_in_the_dimension(theta.shape, self.dimension)
+        lead = theta.shape[:-1]
+        # Derived parameters, computed from these, will be added here.
+        return {
+            p.name: p.bijector.forward(
+                theta[..., self._slices[p.name]].reshape(lead + self.unconstrained_shape(p.name))
+            )
+            for p in self.parameters
+        }
 
-    def flat(self, fields: CalibrationFields) -> Array:
-        """Fields to Flat: the inverse of :meth:`fields`, in either space.
+    def to_unconstrained(self, natural_values: NaturalValues) -> Array:
+        """Natural values to theta: :math:`\\theta_p = T_p^{-1}(x_p)`, flattened
+        in theta's order.
 
         Parameters
         ----------
-        fields:
-            Fields (:data:`CalibrationFields`) in any dim order, with at most
-            one batch dim, whose rows become Flat's rows in its order; a scalar
-            batch label or ``site`` is not a dim. Only the variables and sites
-            this vector needs are read, so a larger vector's Fields project
-            onto this one. A vector built from bare site ids takes its own
-            Fields, which carry no ``lon``/``lat``.
+        natural_values:
+            :data:`NaturalValues` with one leading shape; keys that are not
+            parameters are ignored.
 
         Returns
         -------
         jax.Array
-            Flat, ``(J, D)`` when *fields* has a batch dim and ``(D,)``
-            otherwise.
+            ``(..., D)``. An entry outside its support maps to a non-finite
+            value, which is not an error.
 
         Raises
         ------
-        TypeError
-            If *fields* is not an ``xr.Dataset``.
-        ValueError
-            If *fields* are not Fields; if they have more than one batch dim
-            (stack them into a new one first,
-            :func:`sipnet_calibration.fields.stack_batch_dims`); if a needed
-            variable or site is absent; or if no Flat vector holds the values:
-            one is not finite, a group's value differs between its sites, or a
-            natural value is outside its bijector's image.
+        TypeError, KeyError, ValueError
+            As :func:`validate_natural_values`.
         """
-        fields = self._checked_fields(fields)
-        space = fields.attrs["space"]
-        check_fields_hold_the_sites(fields, self.sites)
-        fields = fields.sel({SITE: list(self.sites)})
-        batch = batch_dims(fields)
-        check_at_most_one_batch_dim(batch, message_name="Fields")
-        dims = (*batch, SITE)
-        parts = {}
-        for parameter in self.parameters:
-            names = _fields_variable_names(parameter, space)
-            check_fields_hold_the_variables(fields, names, parameter.name)
-            check_fields_variables_are_in_the_space(fields, names, space)
-            on_sites = np.stack(
-                [np.asarray(fields[n].transpose(*dims).values, dtype=np.float64) for n in names],
-                axis=-1,
-            )
-            check_fields_values_are_finite(on_sites, parameter.name)
-            groups = self._site_group_index(parameter.varies_by)
-            first = np.asarray(
-                [np.flatnonzero(groups == g)[0] for g in range(self.n_groups(parameter.varies_by))]
-            )
-            group_values = on_sites[..., first, :]
-            check_group_values_agree_across_sites(
-                self, parameter, on_sites, group_values[..., groups, :]
-            )
-            group_values = jnp.asarray(group_values, dtype=jnp.float64)
-            if space == NATURAL:
-                unconstrained = self._to_unconstrained(parameter, group_values)
-                check_natural_values_are_in_the_support(parameter, group_values, unconstrained)
-                group_values = unconstrained
-            parts[parameter.name] = group_values
-        return self.layout.pack(parts)
+        validate_natural_values(natural_values, self)
+        pieces = []
+        for p in self.parameters:
+            values = jnp.asarray(natural_values[p.name], dtype=jnp.float64)
+            lead = values.shape[: values.ndim - len(self.value_shape(p.name))]
+            pieces.append(p.bijector.inverse(values).reshape(lead + (-1,)))
+        return jnp.concatenate(pieces, axis=-1)
 
-    def sipnet_parameter_fields(
-        self, flat_values_or_fields: Any, *, batch_dim: str = SAMPLE
-    ) -> SIPNETParameterFields:
-        """Flat or Fields to SIPNET parameter fields.
+    def at_sites(self, natural_values: NaturalValues) -> NaturalValues:
+        """Every value read at every site: :math:`x_p^{(s)} = x_p[\\ell_{d_p}(s)]`,
+        or :math:`x_p` for a parameter without a dim.
 
         Parameters
         ----------
-        flat_values_or_fields:
-            Flat, ``(D,)`` or ``(J, D)``, any array-like, whose rows are labeled 0 to
-            ``J - 1`` on *batch_dim*; or Fields in either space, whose batch
-            dim, its name and its labels, is kept.
+        natural_values:
+            :data:`NaturalValues` with one leading shape.
+
+        Returns
+        -------
+        NaturalValues
+            The same keys, each ``(..., S)`` or ``(..., S, k)``.
+
+        Raises
+        ------
+        TypeError, KeyError, ValueError
+            As :func:`validate_natural_values`.
+        """
+        validate_natural_values(natural_values, self)
+        return {p.name: self._at_sites(p, natural_values[p.name]) for p in self.parameters}
+
+    # ── the labeled form ──────────────────────────────────────────────────────
+
+    def dataset(self, theta: Any, *, batch_dim: str = SAMPLE) -> ParameterDataset:
+        """Theta to the labeled form.
+
+        Parameters
+        ----------
+        theta:
+            ``(D,)``, or ``(J, D)``, whose rows are labeled ``0`` to ``J - 1``
+            on *batch_dim*.
         batch_dim:
-            The name of the batch dim a ``(J, D)`` Flat is given; ignored for
-            Fields, which keep their own. It may not be a name
-            :meth:`fields` refuses.
+            The batch dim's name.
 
         Returns
         -------
-        SIPNETParameterFields
-            One float64 variable per SIPNET parameter this vector writes
-            (:attr:`sipnet_parameter_names_written`) on ``(batch_dim, site)``
-            or ``(site,)``, as the module docstring's data model describes.
+        ParameterDataset
+            As the module's data model describes it.
 
         Raises
         ------
         TypeError
-            If *batch_dim* is not a string, or Flat is not an array of real
-            numbers.
+            If *theta* is not an array of real numbers, or *batch_dim* not a
+            string.
         ValueError
-            If Flat is given and *batch_dim* is a name :meth:`fields`
-            refuses; if Flat is not ``(D,)`` or ``(J, D)``; and for Fields,
-            whatever :meth:`flat` refuses, and a batch dim named as
-            :meth:`fields` refuses a *batch_dim*.
-
-        Notes
-        -----
-        Not invertible: the SIPNET maps are many-to-one once the fixed
-        parameters are folded in.
+            If *theta* is not ``(D,)`` or ``(J, D)``, or *batch_dim* is a
+            reserved name or one of the vector's.
         """
-        labels = None
-        if isinstance(flat_values_or_fields, xr.Dataset):
-            theta = self.flat(flat_values_or_fields)
-            batch = batch_dims(flat_values_or_fields)
-            if batch:
-                batch_dim, labels = batch[0], flat_values_or_fields[batch[0]].values
-                check_batch_dim_name_is_not_taken(self, batch_dim)
-        else:
-            check_batch_dim_name_is_not_taken(self, batch_dim)
-            theta = _as_theta(flat_values_or_fields, self.dimension)
-        natural = self._natural_parts(theta)
-        lead = theta.shape[:-1]
-        values_and_writers: dict[str, tuple[Array, str]] = {}
-        for parameter in self.parameters:
-            on_sites = self._group_values_onto_sites(parameter, natural[parameter.name])
-            for name, values in parameter.sipnet_map(on_sites, self._fixed_table).items():
-                values_and_writers[name] = (values, f"parameter {parameter.name}")
-        for parameter in self.fixed:
-            values = jnp.broadcast_to(self._fixed_table[parameter.name], (*lead, len(self.sites)))
-            values_and_writers[parameter.name] = (values, "fixed")
-        dims = (batch_dim, SITE) if theta.ndim == 2 else (SITE,)
-        variables = {
-            name: (dims, np.asarray(values, dtype=np.float64), _sipnet_attributes(name, set_by))
-            for name, (values, set_by) in sorted(
-                values_and_writers.items(), key=lambda kv: _SPEC_ORDER[kv[0]]
-            )
-        }
-        attributes = {"representation": SIPNET_PARAMETER_FIELDS_REPRESENTATION}
-        coords = self._coordinates(theta, batch_dim, batch_labels=labels)
-        return xr.Dataset(variables, coords=coords, attrs=attributes)
+        check_batch_dim_name_is_not_taken(self, batch_dim)
+        batched = jnp.asarray(as_batched_flat(theta, self.dimension, message_name="theta"))
+        one = is_one_vector(theta)
+        natural_values = self.to_natural(batched[0] if one else batched)
+        variables = {}
+        for p in self.parameters:
+            dims = ((batch_dim,) if not one else ()) + ((p.dim,) if p.dim else ())
+            values = np.asarray(natural_values[p.name], dtype=np.float64)
+            for i, (variable_name, attributes) in enumerate(_dataset_variables(p)):
+                variable_values = values[..., i] if p.natural_names is not None else values
+                variables[variable_name] = (dims, variable_values, attributes)
+        return xr.Dataset(variables, coords=self._coordinates(None if one else len(batched), batch_dim))
 
-    # ── evaluation ────────────────────────────────────────────────────────────
-
-    def sample(self, key: Array, n: int) -> Array:
-        """``n`` prior draws as Flat, ``(n, D)``.
-
-        One key split per calibration parameter, so, with JAX's default
-        partitionable key splitting, appending one to a vector leaves the
-        earlier ones' draws unchanged.
-
-        Raises
-        ------
-        TypeError
-            If *n* is a boolean, a float or not an integer.
-        ValueError
-            If *n* is negative.
-        """
-        n = as_bounded_integer(n, minimum=0, message_name="n")
-        parts = {}
-        for parameter, subkey in zip(
-            self.parameters, jax.random.split(key, len(self.parameters)), strict=True
-        ):
-            if parameter.is_joint:
-                draw = parameter.unconstrained_prior.sample((n,), seed=subkey)
-            else:
-                draw = self._broadcast_unconstrained(parameter).sample((n,), seed=subkey)
-            n_groups = self.n_groups(parameter.varies_by)
-            parts[parameter.name] = jnp.reshape(draw, (n, n_groups, parameter.size))
-        return self.layout.pack(parts)
-
-    def log_prior(self, theta: Array) -> Array:
-        """Log prior density of Flat *theta*: ``(J,)`` for ``(J, D)``, a
-        scalar for ``(D,)``.
-
-        Notes
-        -----
-        The Jacobian of ``T_c`` is included by construction: the summand is
-        ``prior.distribution.log_prob(theta_c)``, which equals
-        ``prior.log_prob(T_c(theta_c)) + T_c.forward_log_det_jacobian(theta_c)``.
-        The finite-difference test asserts that identity. ``jit``-able and
-        differentiable; the entry point an MCMC baseline uses.
-        """
-        parts = self.layout.unpack(theta)
-        total = jnp.zeros(parts[self.parameters[0].name].shape[:-2], dtype=jnp.float64)
-        for parameter in self.parameters:
-            part = parts[parameter.name]
-            if parameter.is_joint:
-                total = total + parameter.unconstrained_prior.log_prob(part[..., 0])
-                continue
-            if parameter.is_scalar:
-                part = part[..., 0]
-            prior = self._broadcast_unconstrained(parameter)
-            total = total + prior.log_prob(part).sum(axis=-1)
-        return total
-
-    def gaussian_prior(
-        self, *, key: Array | None = None, n_moment_samples: int = 0
-    ) -> Gaussian:
-        """The prior over Flat as a ``pyeki.gauss.Gaussian``.
+    def flat(self, parameter_dataset: ParameterDataset) -> Array:
+        """The labeled form to theta: the inverse of :meth:`dataset`.
 
         Parameters
         ----------
-        key, n_moment_samples:
-            Used only for a calibration parameter without analytic
-            unconstrained moments (a hand-built prior that is not a
-            ``TransformedDistribution``): it is moment matched from
-            *n_moment_samples* draws (at least 2) with its own split of
-            *key*. Left at their defaults, such a calibration parameter
-            raises instead.
+        parameter_dataset:
+            A :data:`ParameterDataset` holding a variable for every natural
+            name of every parameter, with every dim label of this vector:
+            a larger vector's projects onto this one. Its rows keep their
+            order.
 
         Returns
         -------
-        pyeki.gauss.Gaussian
-            Mean of length ``D``. Covariance a ``PSDBlockDiag`` with one
-            block per calibration parameter in layout order: a
-            ``PSDDiagonal`` over groups for a scalar one, a ``PSDBlockDiag``
-            of one ``DensePSD`` per group for a vector-valued one, and one
-            ``DensePSD`` over every group for a joint prior.
+        jax.Array
+            ``(J, D)`` when it has a batch dim, ``(D,)`` otherwise.
 
         Raises
         ------
-        NotImplementedError
-            If a calibration parameter lacks analytic moments and no *key*
-            was given.
-
-        Notes
-        -----
-        EKI consults the prior once, through ``EKIState.from_prior``, so this
-        object only has to be sampled. For every prior the helpers build the
-        match is exact, because the prior is Gaussian in ``theta`` by
-        construction.
+        TypeError, ValueError
+            As :func:`validate_parameter_dataset`; ``ValueError`` too for a
+            variable on other dims than its parameter, or a value outside
+            its support.
+        KeyError
+            For a missing variable or dim label.
         """
-        means, blocks = [], []
-        keys = (
-            jax.random.split(key, len(self.parameters))
-            if key is not None
-            else (None,) * len(self.parameters)
-        )
-        for parameter, subkey in zip(self.parameters, keys, strict=True):
-            mean, block = self._moment_block(parameter, subkey, n_moment_samples)
-            means.append(mean)
-            blocks.append(block)
-        return Gaussian(mean=jnp.concatenate(means), cov=PSDBlockDiag(tuple(blocks)))
+        validate_parameter_dataset(parameter_dataset)
+        batch = batch_dims(parameter_dataset)
+        pieces = []
+        for p in self.parameters:
+            values = jnp.asarray(self._natural_values_of(p, parameter_dataset, batch))
+            check_values_are_in_the_support(p, values)
+            pieces.append(p.bijector.inverse(values).reshape(values.shape[: len(batch)] + (-1,)))
+        return jnp.concatenate(pieces, axis=-1)
 
-    # ── supporting methods: groups and sites ──────────────────────────────────
+    def site_fields(self, parameter_dataset: ParameterDataset) -> xr.Dataset:
+        """The labeled form read at every site: one field per variable, on
+        ``(batch?, site)``, carrying the variable's attributes, with ``units``
+        ``"1"`` for a parameter without physical units. Not invertible.
 
-    def _checked_fields(self, calibration_fields: Any) -> xr.Dataset:
-        """*calibration_fields* laid out as fields and checked to be Fields.
-
-        Each variable is put in the field layout
-        (:func:`~sipnet_calibration.fields.in_field_layout`: any dim order, a
-        scalar ``site`` made a dim) before :func:`validate_calibration_fields`
-        checks it. A vector built from bare site ids has no locations, so its
-        own Fields carry none, and they are checked with placeholder
-        ``lon``/``lat`` standing in when they carry neither.
+        Raises
+        ------
+        TypeError, KeyError, ValueError
+            As :meth:`flat`.
         """
-        check_calibration_fields_are_a_dataset(calibration_fields, "Fields")
-        laid_out = xr.Dataset(
-            {name: in_field_layout(variable) for name, variable in calibration_fields.data_vars.items()},
-            attrs=calibration_fields.attrs,
-        )
-        if self._lon_lat is None:
-            laid_out = _with_placeholder_locations(laid_out)
-        validate_calibration_fields(laid_out)
-        return laid_out
+        validate_parameter_dataset(parameter_dataset)
+        batch = batch_dims(parameter_dataset)
+        coordinates = site_coordinates(self.sites, self._table)
+        if batch:
+            coordinates[batch[0]] = parameter_dataset[batch[0]]
+        variables = {}
+        for p in self.parameters:
+            values = self._natural_values_of(p, parameter_dataset, batch)
+            check_values_are_in_the_support(p, jnp.asarray(values))
+            on_sites = np.asarray(self._at_sites(p, values))
+            for i, (variable_name, _) in enumerate(_dataset_variables(p)):
+                variable_values = on_sites[..., i] if p.natural_names is not None else on_sites
+                attributes = {"units": "1", **parameter_dataset[variable_name].attrs}
+                variables[variable_name] = ((*batch, SITE), variable_values, attributes)
+        return xr.Dataset(variables, coords=coordinates)
 
-    def _prior_restricted_to_groups(self, parameter: CalibrationParameter) -> CalibrationParameter:
-        """A per-class prior written over every declared class, sliced to the
-        classes some site here carries."""
-        if parameter.varies_by in (None, SITE):
-            return parameter
-        groups = self.group_labels(parameter.varies_by)
-        declared = self._declared_classes[parameter.varies_by]
-        if len(groups) == len(declared):
-            return parameter
-        positions = np.asarray([declared.index(g) for g in groups])
-        if parameter.is_joint and parameter.joint_groups == len(declared):
-            return _restricted(parameter, _joint_marginal(parameter, positions), positions)
-        if not parameter.is_joint and tuple(parameter.prior.batch_shape) == (len(declared),):
-            return _restricted(parameter, _prior_for_groups(parameter, positions), positions)
-        return parameter
+    # ── supporting methods ────────────────────────────────────────────────────
 
-    def _fixed_restricted_to_groups(self, parameter: FixedParameter) -> FixedParameter:
-        """A per-class fixed value keyed on declared classes, restricted to
-        the ones present; left alone when a key is not a declared class, so
-        the coverage check names it."""
-        if not isinstance(parameter.value, Mapping) or parameter.varies_by in (None, SITE):
-            return parameter
-        # Declared classes no site carries are dropped; a key that is not a
-        # declared class is kept, so the coverage check names it.
-        declared = set(self._declared_classes[parameter.varies_by])
-        groups = set(self.group_labels(parameter.varies_by))
-        kept = {k: v for k, v in parameter.value.items() if k in groups or k not in declared}
-        if len(kept) == len(parameter.value):
-            return parameter
-        return dataclasses.replace(parameter, value=kept)
-
-    def _prior_restricted_to_sites(
-        self, parameter: CalibrationParameter, positions: np.ndarray
-    ) -> CalibrationParameter:
-        if parameter.varies_by != SITE or len(positions) == len(self.sites):
-            return parameter
-        if parameter.is_joint:
-            return _restricted(parameter, _joint_marginal(parameter, positions), positions)
-        if tuple(parameter.prior.batch_shape) == (len(self.sites),):
-            return _restricted(parameter, _prior_for_groups(parameter, positions), positions)
-        return parameter
-
-    def _fixed_restricted_to_sites(
-        self, parameter: FixedParameter, kept: Sequence[int]
-    ) -> FixedParameter:
-        if parameter.varies_by != SITE or not isinstance(parameter.value, Mapping):
-            return parameter
-        return dataclasses.replace(parameter, value={s: parameter.value[s] for s in kept})
-
-    def _selected_parameter_names(
-        self, parameter_names: Sequence[str] | None
-    ) -> tuple[str, ...]:
-        if parameter_names is None:
-            return self.parameter_names
-        wanted = as_names(parameter_names, message_name="parameter_names")
-        check_names_are_unique(wanted, message_name="parameter_names")
-        check_parameter_names_are_held(wanted, self)
-        return tuple(n for n in self.parameter_names if n in wanted)
-
-    def _selected_sites(
-        self, sites: Sequence[int] | None, labels: Mapping[str, Any] | None
-    ) -> list[int]:
-        kept = list(self.sites)
-        if sites is not None:
-            requested = as_site_ids(sites, message_name="sites")
-            check_sites_are_the_vectors(requested, self.sites, message_name="the vector")
-            kept = [s for s in kept if s in set(requested)]
-        if labels is not None:
-            check_labels_are_a_mapping(labels)
-            for name, classes in labels.items():
-                check_site_labels_are_held(name, self)
-                wanted = as_sequence(classes, message_name=f"labels[{name!r}]")
-                check_names_are_unique(wanted, message_name=f"labels[{name!r}]")
-                check_classes_are_declared(name, wanted, self._declared_classes[name])
-                carrying = {
-                    s for s, lab in zip(self.sites, self.site_labels[name]) if lab in wanted
-                }
-                kept = [s for s in kept if s in carrying]
-        check_the_selection_keeps_a_site(kept)
-        return kept
-
-    def _site_keywords(self, positions: np.ndarray) -> dict[str, Any]:
-        """``sites=`` or ``site_table=`` for a vector over the sites at *positions*."""
-        ids = [self.sites[i] for i in positions]
-        if self._lon_lat is None:
-            return {"sites": tuple(ids)}
-        lon, lat = self._lon_lat
-        return {
-            "site_table": pd.DataFrame({SITE_ID: ids, LON: lon[positions], LAT: lat[positions]})
-        }
-
-    def _coordinates(
-        self, theta: Array, batch_dim: str, batch_labels: np.ndarray | None = None
-    ) -> dict[str, Any]:
-        """The coordinates Fields and the SIPNET parameter fields share; *batch_labels*
-        labels the batch dim, 0 to J-1 when ``None``."""
-        if self._lon_lat is None:
-            coords: dict[str, Any] = {
-                SITE: xr.DataArray(
-                    np.asarray(self.sites, dtype=SITE_DTYPE), dims=SITE, attrs=SITE_ATTRIBUTES
-                )
-            }
-        else:
-            # New arrays, so the Dataset handed out is writable and a write
-            # to it never reaches the vector's own read-only ones.
-            located = site_coordinates(self.sites, self._located_site_table())
-            coords = {name: coordinate.copy(deep=True) for name, coordinate in located.items()}
-        for name, labels in self.site_labels.items():
-            coords[name] = (SITE, list(labels))
-        if theta.ndim == 2:
-            values = (
-                _batch_labels(theta.shape[0])
-                if batch_labels is None
-                else _as_batch_labels(batch_labels)
-            )
-            coords[batch_dim] = batch_coordinate(batch_dim, values)
-        return coords
-
-    def _located_site_table(self) -> pd.DataFrame:
-        """``site_id``, ``lon`` and ``lat`` of a vector with locations."""
-        lon, lat = self._lon_lat
-        return pd.DataFrame(
-            {SITE_ID: np.asarray(self.sites, dtype=SITE_DTYPE), LON: lon.copy(), LAT: lat.copy()}
+    @cached_property
+    def _sizes(self) -> Mapping[str, int]:
+        return frozendict(
+            {p.name: int(np.prod(self.unconstrained_shape(p.name), dtype=int)) for p in self.parameters}
         )
 
     @cached_property
-    def _fixed_table(self) -> dict[str, Array]:
-        """Every fixed parameter as an ``(S,)`` array on the site axis."""
-        table = {}
-        for parameter in self.fixed:
-            groups = self.group_labels(parameter.varies_by)
-            if isinstance(parameter.value, Mapping):
-                per_group = jnp.asarray([parameter.value[g] for g in groups], dtype=jnp.float64)
+    def _slices(self) -> Mapping[str, slice]:
+        out, start = {}, 0
+        for p in self.parameters:
+            out[p.name] = slice(start, start + self._sizes[p.name])
+            start += self._sizes[p.name]
+        return frozendict(out)
+
+    def _dim_shape(self, parameter: Parameter) -> tuple[int, ...]:
+        return (len(self.dim_index(parameter.dim)),) if parameter.dim else ()
+
+    def _at_sites(self, parameter: Parameter, values: Any) -> Array:
+        """One parameter's natural values, ``(..., *value_shape)``, at every site."""
+        values = jnp.asarray(values)
+        lead_ndim = values.ndim - len(self.value_shape(parameter.name))
+        if parameter.dim is not None:
+            return jnp.take(values, self._site_positions(parameter.dim), axis=lead_ndim)
+        values = jnp.expand_dims(values, lead_ndim)
+        shape = values.shape[:lead_ndim] + (self.n_sites,) + parameter.natural_shape
+        return jnp.broadcast_to(values, shape)
+
+    def _site_positions(self, dim_name: str) -> np.ndarray:
+        """``(S,)``: each site's position along ``dim_index(dim_name)``."""
+        # A public, tested form of this is the planned site_positions helper.
+        if dim_name == SITE:
+            return np.arange(self.n_sites)
+        return self._table[dim_name].cat.codes.to_numpy(np.int64)
+
+    def _selected_site_mask(
+        self, sites: Sequence[int] | None, dim_labels: Mapping[str, Sequence[str]] | None
+    ) -> np.ndarray:
+        kept = np.ones(self.n_sites, dtype=bool)
+        if sites is not None:
+            requested = as_site_ids(sites, message_name="sites")
+            check_sites_are_the_vectors(requested, self.sites, message_name="the vector")
+            kept &= self._table[SITE_ID].isin(requested).to_numpy()
+        for name, labels in (dim_labels or {}).items():
+            check_dim_labels_select_a_site_labels_dim(name, self)
+            wanted = as_sequence(labels, message_name=f"dim_labels[{name!r}]")
+            check_names_are_unique(wanted, message_name=f"dim_labels[{name!r}]")
+            for label in wanted:
+                check_dim_label_is_the_dims(label, self._declared_dim_labels[name], name)
+            kept &= self._table[name].astype(str).isin(wanted).to_numpy()
+        check_selection_keeps_a_site(kept)
+        return kept
+
+    def _coordinates(self, n_samples: int | None, batch_dim: str) -> dict[str, Any]:
+        """The coordinates of the labeled form: the batch dim when *n_samples*
+        is given, and the dims the parameters vary over."""
+        coordinates: dict[str, Any] = {}
+        if n_samples is not None:
+            coordinates[batch_dim] = batch_coordinate(batch_dim, np.arange(n_samples))
+        for dim_name in self.dim_names:
+            if dim_name == SITE:
+                coordinates.update(site_coordinates(self.sites, self._table))
             else:
-                per_group = jnp.asarray([parameter.value], dtype=jnp.float64)
-            table[parameter.name] = per_group[self._site_group_index(parameter.varies_by)]
-        return table
+                labels = np.asarray(self.dim_index(dim_name), dtype=str)
+                coordinates[dim_name] = xr.DataArray(
+                    labels,
+                    dims=dim_name,
+                    attrs={"long_name": f"dim labels of the site labels {dim_name!r}"},
+                )
+        return coordinates
 
-    def _site_group_index(self, varies_by: str | None) -> np.ndarray:
-        """For each site, the index of the group it reads, ``(S,)``."""
-        if varies_by is None:
-            return np.zeros(len(self.sites), dtype=int)
-        if varies_by == SITE:
-            return np.arange(len(self.sites))
-        position = {group: i for i, group in enumerate(self.group_labels(varies_by))}
-        return np.asarray([position[label] for label in self.site_labels[varies_by]])
-
-    def _group_values_onto_sites(self, parameter: CalibrationParameter, values: Array) -> Array:
-        """Each group's value copied to the sites that read it:
-        ``(..., n_groups, k)`` to ``(..., S, k)``."""
-        return values[..., self._site_group_index(parameter.varies_by), :]
-
-    # ── supporting methods: spaces and moments ────────────────────────────────
-
-    def _natural_parts(self, theta: Array) -> dict[str, Array]:
-        """Flat ``(..., D)`` to ``{calibration parameter: (..., n_groups, k)}``
-        in natural space."""
-        parts = self.layout.unpack(theta)
-        return {p.name: self._to_natural(p, parts[p.name]) for p in self.parameters}
-
-    @staticmethod
-    def _to_natural(parameter: CalibrationParameter, values: Array) -> Array:
-        # A scalar calibration parameter's bijector sees (..., n_groups), so a
-        # bijector with one parameter per group lines up with its groups.
-        if parameter.is_scalar:
-            return parameter.bijector.forward(values[..., 0])[..., None]
-        return parameter.bijector.forward(values)
-
-    @staticmethod
-    def _to_unconstrained(parameter: CalibrationParameter, values: Array) -> Array:
-        if parameter.is_scalar:
-            return parameter.bijector.inverse(values[..., 0])[..., None]
-        return parameter.bijector.inverse(values)
-
-    def _broadcast_unconstrained(self, parameter: CalibrationParameter) -> tfd.Distribution:
-        """An independent-copies unconstrained prior with batch shape
-        ``(n_groups,)``."""
-        prior = parameter.unconstrained_prior
-        n_groups = self.n_groups(parameter.varies_by)
-        if tuple(prior.batch_shape) == (n_groups,):
-            return prior
-        return tfd.BatchBroadcast(prior, to_shape=(n_groups,))
-
-    def _moment_block(
-        self, parameter: CalibrationParameter, key: Array | None, n_moment_samples: int
-    ) -> tuple[Array, PSDLinOp]:
-        prior = (
-            parameter.unconstrained_prior
-            if parameter.is_joint
-            else self._broadcast_unconstrained(parameter)
-        )
-        independent_scalar = parameter.is_scalar and not parameter.is_joint
-        if parameter.has_analytic_moments:
-            mean = prior.mean()
-            spread = prior.variance() if independent_scalar else prior.covariance()
-        elif key is not None:
-            mean, spread = _monte_carlo_moments(prior, key, n_moment_samples, independent_scalar)
-        else:
-            raise NotImplementedError(
-                f"calibration parameter {parameter.name!r}: its prior has no analytic "
-                "unconstrained moments. Build it with a prior helper (log_normal, "
-                "logit_normal, ...) or pass key= and n_moment_samples= to moment match by "
-                "Monte Carlo."
-            )
-        mean = jnp.asarray(mean, dtype=jnp.float64)
-        spread = jnp.asarray(spread, dtype=jnp.float64)
-        check_prior_spread_is_positive(parameter, spread)
-        if parameter.is_joint:
-            return jnp.ravel(mean), DensePSD(spread)
-        if independent_scalar:
-            return jnp.ravel(mean), PSDDiagonal(jnp.ravel(spread))
-        blocks = tuple(DensePSD(spread[g]) for g in range(spread.shape[0]))
-        return jnp.ravel(mean), PSDBlockDiag(blocks)
-
-    def _describe_moments(self, parameter: CalibrationParameter) -> tuple[np.ndarray, np.ndarray]:
-        shape = (self.n_groups(parameter.varies_by), parameter.size)
-        if not parameter.has_analytic_moments:
-            return np.full(shape, np.nan), np.full(shape, np.nan)
-        prior = (
-            parameter.unconstrained_prior
-            if parameter.is_joint
-            else self._broadcast_unconstrained(parameter)
-        )
-        return (
-            np.asarray(prior.mean()).reshape(shape),
-            np.asarray(prior.stddev()).reshape(shape),
-        )
-
-    def _describe_quantiles(self, parameter: CalibrationParameter) -> tuple[np.ndarray, ...]:
-        n_groups = self.n_groups(parameter.varies_by)
-        blank = np.full(n_groups, np.nan)
-        if not parameter.is_scalar or parameter.is_joint:
-            return blank, blank, blank
-        try:
-            return tuple(
-                np.broadcast_to(np.asarray(parameter.prior.quantile(q)), (n_groups,))
-                for q in (0.5, 0.025, 0.975)
-            )
-        except NotImplementedError:
-            return blank, blank, blank
+    def _natural_values_of(
+        self, parameter: Parameter, parameter_dataset: xr.Dataset, batch: tuple[str, ...]
+    ) -> np.ndarray:
+        """A parameter's natural values from the labeled form:
+        ``(batch?, n?, k?)``, at this vector's dim labels."""
+        dims = (*batch, parameter.dim) if parameter.dim else batch
+        columns = []
+        for variable_name, _ in _dataset_variables(parameter):
+            variable = parameter_dataset[variable_name]
+            check_variable_is_on_the_parameters_dims(variable, variable_name, dims)
+            if parameter.dim:
+                labels = list(self.dim_index(parameter.dim))
+                variable = variable.sel({parameter.dim: labels})
+            columns.append(np.asarray(variable.transpose(*dims).values, dtype=np.float64))
+        return np.stack(columns, axis=-1) if parameter.natural_names is not None else columns[0]
 
 
-# ``site_table`` is both a keyword of the constructor (an ``InitVar``) and
-# this read-only attribute. The property is attached after the dataclass is
-# made so that the dataclass takes ``None``, not the property, as the
-# keyword's default.
-ParameterVector.site_table = property(
-    ParameterVector._site_table, doc=ParameterVector._site_table.__doc__
-)
+# ``site_table`` is both a keyword of the constructor (an ``InitVar``) and this
+# read-only attribute, attached after the dataclass is made so that the
+# dataclass does not take the property for the keyword's default.
+def _site_table(self: ParameterVector) -> pd.DataFrame:
+    """A copy of the vector's site table: ``site_id`` (``int32``),
+    ``lon``, ``lat``, the site covariates (``float64``), and one categorical
+    column per site-labels name, whose categories are its dim labels."""
+    return self._table.copy()
 
 
-def sipnet_overrides(
-    sipnet_parameter_fields: SIPNETParameterFields,
-    *,
-    site: int,
-    batch: Mapping[str, int] | None = None,
-) -> SIPNETOverrides:
-    """One run's SIPNET overrides, the keyword arguments for ``SIPNETModel``.
+ParameterVector.site_table = property(_site_table)
 
-    Only the SIPNET parameters *sipnet_parameter_fields* hold are returned;
-    the model's base parameter set supplies the rest.
+
+# ── its pieces ────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class Parameter:
+    """One unknown of the calibration.
 
     Parameters
     ----------
-    sipnet_parameter_fields:
-        SIPNET parameter fields, from
-        :meth:`ParameterVector.sipnet_parameter_fields`.
-    site:
-        The site id.
-    batch:
-        ``{batch dim: label}`` for every batch dim of the SIPNET parameter
-        fields, such as ``{"sample": 3}``: ``0`` to ``J - 1`` for ones built
-        from Flat, or the Fields' own labels for ones built from Fields.
-        Required when they have a batch dim, and a dim they lack is
-        refused.
+    name:
+        ``lower_case_with_underscores``, not a Python keyword, and none of
+        :data:`RESERVED_NAMES`.
+    support:
+        The open set a natural value lies in, per dim label.
+    units:
+        UDUNITS units of the natural value, or ``None`` for a quantity
+        without physical units. Required.
+    dim:
+        ``"site"``, a site-labels name of the vector, or ``None``.
+    natural_names:
+        The names of one dim label's ``k`` natural numbers, or ``None`` for a
+        scalar. :data:`SIMPLEX` needs at least two.
+    bijector:
+        :math:`T_p : \\mathbb{R}^e \\to A_p`; ``None`` takes the support's
+        default, :meth:`Support.bijector`. A custom bijector must map onto
+        the support, which is checked at probe points in both directions.
+
+    Attributes
+    ----------
+    bijector : tfb.Bijector
+        :math:`T_p`, never ``None`` once built.
+    natural_size, unconstrained_size : int
+        ``k`` and ``e``.
+    natural_shape, unconstrained_shape : tuple
+        ``()`` for a scalar, ``(k,)`` and ``(e,)`` for a vector.
+    unconstrained_names : tuple of str
+        The names of one dim label's ``e`` unconstrained numbers:
+        :meth:`Support.unconstrained_names`, or ``<bijector name>_inverse(x)``
+        under a custom bijector.
+
+    Raises
+    ------
+    ValueError
+        For a malformed name or natural names, or a custom bijector that does
+        not map onto the support.
+    """
+
+    name: str
+    support: Support
+    units: str | None
+    dim: str | None = None
+    natural_names: tuple[str, ...] | None = None
+    bijector: tfb.Bijector | None = None
+    _custom_bijector: bool = field(init=False, repr=False, default=False)
+
+    def __post_init__(self) -> None:
+        if self.natural_names is not None:
+            object.__setattr__(
+                self,
+                "natural_names",
+                as_names(self.natural_names, message_name=f"{self.name!r} natural_names"),
+            )
+        object.__setattr__(self, "_custom_bijector", self.bijector is not None)
+        if self.bijector is None:
+            object.__setattr__(self, "bijector", self.support.bijector())
+        check_parameter_is_valid(self)
+
+    @property
+    def natural_size(self) -> int:
+        return 1 if self.natural_names is None else len(self.natural_names)
+
+    @property
+    def unconstrained_size(self) -> int:
+        return self.support.unconstrained_size(self.natural_size)
+
+    @property
+    def natural_shape(self) -> tuple[int, ...]:
+        return () if self.natural_names is None else (self.natural_size,)
+
+    @property
+    def unconstrained_shape(self) -> tuple[int, ...]:
+        return () if self.natural_names is None else (self.unconstrained_size,)
+
+    @property
+    def unconstrained_names(self) -> tuple[str, ...]:
+        natural_names = (self.name,) if self.natural_names is None else self.natural_names
+        if not self._custom_bijector:
+            return self.support.unconstrained_names(natural_names)
+        return tuple(
+            f"{self.bijector.name}_inverse({x})" for x in natural_names[: self.unconstrained_size]
+        )
+
+
+@dataclass(frozen=True)
+class Support:
+    """An open set a natural value lies in, and its default bijection from
+    :math:`\\mathbb{R}^e`.
+
+    ========================= =========================================== ========= ==========================
+    support                   default :math:`T_A`                         :math:`e` unconstrained names
+    ========================= =========================================== ========= ==========================
+    ``real``                  identity                                    :math:`k` ``x``
+    ``positive``              :math:`\\exp`                                :math:`k` ``log(x)``
+    ``interval`` (0, 1)       :math:`\\sigma(t) = 1 / (1 + e^{-t})`        :math:`k` ``logit(x)``
+    ``interval`` (a, b)       :math:`a + (b - a)\\,\\sigma(t)`               :math:`k` ``logit(x in (a, b))``
+    ``simplex``               :math:`x_i = e^{t_i} / (1 + \\sum_j e^{t_j})`, :math:`k-1` ``alr(x:last)``
+                              :math:`x_k = 1 / (1 + \\sum_j e^{t_j})`
+    ========================= =========================================== ========= ==========================
+
+    The simplex's default is TFP's ``SoftmaxCentered``, the inverse of the
+    additive log-ratio :math:`t_i = \\log(x_i / x_k)`. Every support is open:
+    it is the image of a bijection from :math:`\\mathbb{R}^e`.
+
+    Parameters
+    ----------
+    kind:
+        ``"real"``, ``"positive"``, ``"interval"`` or ``"simplex"``.
+    low, high:
+        The ends of an interval, finite, ``low < high``; ``None`` otherwise.
+
+    Raises
+    ------
+    ValueError
+        For an unknown kind, or ends that do not fit it.
+    """
+
+    kind: Literal["real", "positive", "interval", "simplex"]
+    low: float | None = None
+    high: float | None = None
+
+    def __post_init__(self) -> None:
+        check_support_is_valid(self)
+
+    @property
+    def name(self) -> str:
+        """``real``, ``positive``, ``(a, b)`` or ``simplex``."""
+        if self.kind == "interval":
+            return f"({self.low:g}, {self.high:g})"
+        return self.kind
+
+    def bijector(self) -> tfb.Bijector:
+        """The default :math:`T_A` of the table above."""
+        if self.kind == "real":
+            return tfb.Identity()
+        if self.kind == "positive":
+            return tfb.Exp()
+        if self.kind == "simplex":
+            return tfb.SoftmaxCentered()
+        if (self.low, self.high) == (0.0, 1.0):
+            return tfb.Sigmoid()
+        return tfb.Sigmoid(low=jnp.float64(self.low), high=jnp.float64(self.high))
+
+    def unconstrained_size(self, natural_size: int) -> int:
+        """``e``: ``k - 1`` for the simplex, ``k`` otherwise."""
+        return natural_size - 1 if self.kind == "simplex" else natural_size
+
+    def unconstrained_names(self, natural_names: tuple[str, ...]) -> tuple[str, ...]:
+        """The names of the unconstrained numbers, as the table above has them."""
+        if self.kind == "simplex":
+            return tuple(f"alr({x}:{natural_names[-1]})" for x in natural_names[:-1])
+        if self.kind == "positive":
+            return tuple(f"log({x})" for x in natural_names)
+        if self.kind == "interval" and (self.low, self.high) == (0.0, 1.0):
+            return tuple(f"logit({x})" for x in natural_names)
+        if self.kind == "interval":
+            return tuple(f"logit({x} in {self.name})" for x in natural_names)
+        return tuple(natural_names)
+
+    def contains(self, values: Any) -> Array:
+        """Whether each value lies in the support, finite values only.
+
+        Elementwise for ``real``, ``positive`` and ``interval``; over the
+        last axis for the simplex, ``(..., k) -> (...)``, whose values must
+        be positive and sum to 1 within ``1e-10``.
+        """
+        values = jnp.asarray(values, dtype=jnp.float64)
+        finite = jnp.isfinite(values)
+        if self.kind == "real":
+            return finite
+        if self.kind == "positive":
+            return finite & (values > 0)
+        if self.kind == "interval":
+            return finite & (values > self.low) & (values < self.high)
+        inside = jnp.all(finite & (values > 0), axis=-1)
+        return inside & (jnp.abs(values.sum(axis=-1) - 1.0) <= _SIMPLEX_SUM_TOLERANCE)
+
+    def log_jacobian(self, transform: tfb.Bijector, theta: Any) -> Array:
+        """:math:`\\log J(\\theta)`, the log absolute Jacobian determinant of
+        *transform* against this support's reference measure.
+
+        For an elementwise support the measure is Lebesgue measure and
+        :math:`\\log J = \\log |T'(\\theta)|`, elementwise, the shape of
+        *theta*. For the simplex it is Lebesgue measure on the first
+        :math:`k - 1` coordinates, which is Dirichlet's convention, and
+
+        .. math::
+
+            \\log J(\\theta) = \\log \\left| \\det
+                \\frac{\\partial (x_1, \\dots, x_{k-1})}{\\partial \\theta} \\right|,
+            \\qquad x = T(\\theta),
+
+        computed by automatic differentiation over the last axis,
+        ``(..., k - 1) -> (...)``, whatever the bijector.
+        """
+        theta = jnp.asarray(theta, dtype=jnp.float64)
+        if self.kind != "simplex":
+            return transform.forward_log_det_jacobian(theta, event_ndims=0)
+
+        def log_determinant(t: Array) -> Array:
+            jacobian = jax.jacfwd(lambda u: transform.forward(u)[:-1])(t)
+            return jnp.linalg.slogdet(jacobian)[1]
+
+        flat = theta.reshape((-1, theta.shape[-1]))
+        return jax.vmap(log_determinant)(flat).reshape(theta.shape[:-1])
+
+
+def OpenInterval(low: float, high: float) -> Support:  # noqa: N802 - reads as a constant
+    """The open interval :math:`(\\mathrm{low}, \\mathrm{high})`, whose bijector
+    is ``tfb.Sigmoid(low=low, high=high)``.
+
+    Raises
+    ------
+    ValueError
+        If an end is not finite or ``low >= high``.
+    """
+    return Support("interval", float(low), float(high))
+
+
+# ── functions ─────────────────────────────────────────────────────────────────
+
+
+def probe_points(unconstrained_shape: tuple[int, ...], *, unconstrained_size: int) -> np.ndarray:
+    """The fixed points of theta at which bijectors and priors are probed.
+
+    For one unconstrained value of shape *unconstrained_shape*, whose first
+    dim label holds its first *unconstrained_size* numbers (``e``):
+    :math:`\\theta = 0`; :math:`\\pm c \\mathbf 1` for
+    :math:`c \\in \\{3, 10, 20\\}`; :math:`\\pm c\\, e_i` along each
+    unconstrained number :math:`i` of the first dim label, for
+    :math:`c \\in \\{10, 20\\}`; and four fixed-seed random directions of
+    norm 10.
 
     Returns
     -------
-    SIPNETOverrides
-        ``{SIPNET parameter: value}``, Python floats, a ``dict``; checked by
-        :func:`validate_sipnet_overrides`.
+    numpy.ndarray
+        ``float64``, ``(n_probes, *unconstrained_shape)``.
+
+    Notes
+    -----
+    They stop at 20: :math:`e^{20} \\approx 4.9 \\times 10^8` is beyond any
+    plausible magnitude, and the logistic at 20 is within
+    :math:`2 \\times 10^{-9}` of its bound, while it rounds to exactly 1
+    only near 37. A probe test is not a proof: a support that differs only
+    beyond the probes passes it.
+    """
+    shape = tuple(unconstrained_shape)
+    size = int(np.prod(shape, dtype=int))
+    points = [np.zeros(size)]
+    points += [sign * c * np.ones(size) for c in (3.0, 10.0, 20.0) for sign in (1.0, -1.0)]
+    for i in range(min(unconstrained_size, size)):
+        for c in (10.0, 20.0):
+            for sign in (1.0, -1.0):
+                point = np.zeros(size)
+                point[i] = sign * c
+                points.append(point)
+    directions = np.random.default_rng(_PROBE_SEED).standard_normal((4, size))
+    points += list(10.0 * directions / np.linalg.norm(directions, axis=1, keepdims=True))
+    return np.asarray(points, dtype=np.float64).reshape((len(points), *shape))
+
+
+# ── the aliases and their validators ──────────────────────────────────────────
+
+#: Natural values, ``{parameter name: (..., *value_shape)}``, as the module's
+#: data model has them; checked by :func:`validate_natural_values`.
+type NaturalValues = Mapping[str, Array]
+
+#: The labeled form of theta, as the module's data model has it; checked by
+#: :func:`validate_parameter_dataset`.
+type ParameterDataset = xr.Dataset
+
+
+def validate_natural_values(
+    natural_values: Any, parameter_vector: ParameterVector, *, at_sites: bool = False
+) -> None:
+    """Check that *natural_values* are :data:`NaturalValues` of the vector:
+    a value for every parameter, of its value shape (its shape at sites
+    when *at_sites*), with one leading shape.
 
     Raises
     ------
     TypeError
-        If *sipnet_parameter_fields* is not an ``xr.Dataset``; if *site* or a
-        batch label is a boolean, a float or not an integer, or *batch* is not
-        a mapping.
-    ValueError
-        If *sipnet_parameter_fields* are not SIPNET parameter fields
-        (:func:`~sipnet_calibration.fields.validate_sipnet_parameter_fields`,
-        its location rule apart: see Notes); if there is no ``site`` dim, the
-        SIPNET parameter fields having been selected to one site; or if
-        *batch* does not name exactly their batch dims.
+        If *natural_values* is not a mapping.
     KeyError
-        If *site*, or a batch label, is not in the SIPNET parameter fields,
-        naming it, or a variable is named by no pySIPNET parameter.
-
-    Notes
-    -----
-    This is the one public function that relaxes the strict validators: SIPNET
-    parameter fields that carry neither ``lon`` nor ``lat``, as those of a
-    vector built from bare site ids do, are accepted, since one run's
-    overrides read no location and such a vector could not run otherwise.
-    Every other rule of the contract is checked.
-
-    Examples
-    --------
-    With ``model`` a ``SIPNETModel``::
-
-        model(**sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=27))
+        If a parameter has no value.
+    ValueError
+        If a value's trailing shape is not its parameter's, or the leading
+        shapes differ.
     """
-    site_id = as_site_id(site, message_name="site")
-    requested = _requested_batch_labels(batch)
-    check_sipnet_parameter_fields_are_a_dataset(
-        sipnet_parameter_fields, "the SIPNET parameter fields"
-    )
-    # One run's overrides read no location, so SIPNET parameter fields of a
-    # vector built from bare site ids, which carry none, are run too.
-    validate_sipnet_parameter_fields(_with_placeholder_locations(sipnet_parameter_fields))
-    check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields)
-    check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, SITE, site_id)
-    selected = sipnet_parameter_fields.sel({SITE: site_id})
-    check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
-        batch_dims(selected), requested
-    )
-    for dim, label in requested.items():
-        check_batch_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, dim, label)
-    if requested:
-        selected = selected.sel(requested)
-    overrides = {str(name): float(value) for name, value in selected.data_vars.items()}
-    validate_sipnet_overrides(overrides)
-    return overrides
+    check_natural_values_are_a_mapping(natural_values)
+    leads = []
+    for p in parameter_vector.parameters:
+        expected = (
+            (parameter_vector.n_sites, *p.natural_shape)
+            if at_sites
+            else parameter_vector.value_shape(p.name)
+        )
+        shape = tuple(jnp.shape(natural_values[p.name]))
+        check_natural_value_ends_in_the_shape(p.name, shape, expected)
+        leads.append((p.name, shape[: len(shape) - len(expected)]))
+    check_natural_values_share_a_leading_shape(leads)
 
 
-# ── the example ───────────────────────────────────────────────────────────────
-
-
-def example_parameter_vector(
-    sites: Sequence[int] | None = None,
-    *,
-    site_table: pd.DataFrame | None = None,
-    pft: Sequence[str] | pd.DataFrame,
-) -> ParameterVector:
-    """A small example vector with a shared, a per-class and a per-site
-    calibration parameter of each kind of prior. **Not the calibration
-    vector, and not a reviewed prior.**
-
-    This module's worked example and test fixture. Each center either traces
-    to the BETY reanalysis trait posteriors or another named source, or says
-    it is a placeholder, and every provenance string says what the value is
-    not. Nothing comes from ``template.param``. The vector is partial:
-    :attr:`ParameterVector.unset_sipnet_parameter_names` lists what a run takes
-    from its base parameter set.
-
-    Parameters
-    ----------
-    sites:
-        Site ids, ascending.
-    site_table:
-        A site table in ascending ``site_id`` order, whose ``lon``/``lat``
-        the vector carries. Give this or *sites*; both only when *sites* are
-        its site ids in its order, as :class:`ParameterVector` takes them.
-    pft:
-        One PFT label per site, or a site-labels table; named ``"pft"`` in
-        the vector.
-
-    Returns
-    -------
-    ParameterVector
-        With calibration parameters ``photosynthesis`` (shared, size 2,
-        :data:`PHOTOSYNTHESIS`), ``allocation`` (by ``"pft"``, size 3,
-        :data:`ALLOCATION`), ``base_soil_respiration`` (by ``"pft"``,
-        log-normal), ``leaf_fall_fraction`` (shared, logit-normal) and
-        ``initial_soil_carbon`` (by ``"site"``, log-normal, one prior per
-        site); fixed ``daily_mean_photosynthesis_fraction`` (shared),
-        ``leaf_carbon_fraction`` (by ``"pft"``) and
-        ``vapor_pressure_deficit_exponent`` (shared).
+def validate_parameter_dataset(parameter_dataset: Any) -> None:
+    """Check that *parameter_dataset* is a :data:`ParameterDataset` a vector
+    can read: at most one batch dim, and every variable finite.
 
     Raises
     ------
-    TypeError, ValueError
-        As :class:`ParameterVector` does, for *sites* and *site_table*.
+    TypeError
+        If it is not an ``xr.Dataset``.
+    ValueError
+        If it has more than one batch dim, or a variable holds a missing or
+        non-finite value.
     """
-    check_sites_or_site_table_is_given(sites, site_table)
-    n_sites = len(sites) if site_table is None else len(site_table)
-    labels = _declared_classes_of("pft", pft)
-    fixture = "Example fixture, not a reviewed prior. "
-
-    # Temperate-deciduous BETY medians and 2.5-97.5% quantiles, with aMaxFrac
-    # 0.76 and cFracLeaf 0.466 held fixed:
-    # P = aMax (aMaxFrac + baseFolRespFrac) / cFracLeaf and
-    # rho = baseFolRespFrac / (aMaxFrac + baseFolRespFrac).
-    a_max_frac, c_frac_leaf = 0.76, 0.466
-    a_max, fol_resp = 58.0, 0.17
-    fol_resp_lower, fol_resp_upper = 0.10, 0.39
-    photosynthesis = CalibrationParameter(
-        name="photosynthesis",
-        prior=product_transformed_gaussian_prior(
-            capacity=log_normal(
-                median=a_max * (a_max_frac + fol_resp) / c_frac_leaf, geometric_sd=1.75
-            ),
-            respiration_share=logit_normal_from_interval(
-                lower=fol_resp_lower / (a_max_frac + fol_resp_lower),
-                upper=fol_resp_upper / (a_max_frac + fol_resp_upper),
-            ),
-        ),
-        sipnet_map=PHOTOSYNTHESIS,
-        provenance=fixture
-        + "Capacity median from the temperate-deciduous BETY posterior medians aMax 58 "
-        "nmol g-1 s-1 and baseFolRespFrac 0.17, with aMaxFrac 0.76 and cFracLeaf 0.466 "
-        "(BETY leafC). Geometric sd 1.75 is about twice, on the log scale, the 1.32 the "
-        "BETY aMax 2.5-97.5% range 28-83 implies: a meta-analysis prior is to be "
-        "widened, by a factor not yet decided. Respiration share interval from the "
-        "baseFolRespFrac 2.5-97.5% range 0.10-0.39 at fixed aMaxFrac. Deciduous values "
-        "applied to every PFT here.",
-    )
-    allocation = CalibrationParameter(
-        name="allocation",
-        prior=softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5),
-        sipnet_map=ALLOCATION,
-        varies_by="pft",
-        provenance=fixture
-        + "Center is the temperate-deciduous BETY allocation posterior medians, leaf "
-        "0.18, wood 0.40, fine root 0.07, coarse root the 0.35 remainder; logit sd 0.5 "
-        "is a placeholder. One copy per PFT, all with this prior.",
-    )
-    base_soil_respiration = CalibrationParameter(
-        name="base_soil_respiration",
-        prior=log_normal_from_interval(lower=0.004, upper=0.020),
-        sipnet_map="base_soil_respiration_rate",
-        varies_by="pft",
-        provenance=fixture
-        + "BETY som_respiration_rate posterior, 2.5-97.5% quantiles 0.004-0.020 yr-1; "
-        "BETY has one prior for every PFT, so every PFT copy uses this interval.",
-    )
-    leaf_fall_fraction = CalibrationParameter(
-        name="leaf_fall_fraction",
-        prior=logit_normal(median=0.5, logit_sd=1.7),
-        sipnet_map="leaf_off_fall_fraction",
-        provenance=fixture
-        + "No elicited value: a near-flat logit-normal on (0, 1), median 0.5, logit sd "
-        "1.7. A placeholder until a prior is fitted to BETY fracLeafFall.",
-    )
-    initial_soil_carbon = CalibrationParameter(
-        name="initial_soil_carbon",
-        prior=log_normal(median=np.full(n_sites, 30_000.0), geometric_sd=2.0),
-        sipnet_map="soil_carbon",
-        varies_by="site",
-        provenance=fixture
-        + "One prior per site, identical here: median 30 kg C m-2 (30000 g m-2 in "
-        "pySIPNET's units) is the center of the 12-75 kg C m-2 that the ISCN-derived "
-        "initial soil carbon spans at the first test sites; geometric sd 2 spans "
-        "roughly 7.7-117 at 95%. The real per-site priors are fitted to the initial "
-        "condition ensemble; this is a placeholder until they are.",
-    )
-    fixed = (
-        FixedParameter(
-            name="daily_mean_photosynthesis_fraction",
-            value=a_max_frac,
-            provenance=fixture
-            + "0.76, within the BETY per-PFT posterior median range 0.75-0.86. Fixed "
-            "because aMaxFrac spans one of the two exactly degenerate photosynthesis "
-            "directions (sipnet.c:614, 617, 633).",
-        ),
-        FixedParameter(
-            name="leaf_carbon_fraction",
-            value={label: c_frac_leaf for label in labels},
-            varies_by="pft",
-            provenance=fixture
-            + "BETY leafC posterior median for temperate deciduous, 0.466, applied to "
-            "every PFT label here; BETY gives boreal conifer 0.506 and grassland 0.483. "
-            "Fixed for the same reason as aMaxFrac.",
-        ),
-        FixedParameter(
-            name="vapor_pressure_deficit_exponent",
-            value=2.0,
-            provenance="Braswell et al. (2005) fix the exponent at 2; the BETY draws of "
-            "1.0-2.9 would add a near-degeneracy with dVpdSlope for nothing.",
-        ),
-    )
-    return ParameterVector(
-        parameters=(
-            photosynthesis,
-            allocation,
-            base_soil_respiration,
-            leaf_fall_fraction,
-            initial_soil_carbon,
-        ),
-        fixed=fixed,
-        sites=sites,
-        site_table=site_table,
-        site_labels={"pft": pft},
-    )
+    check_parameter_dataset_is_a_dataset(parameter_dataset)
+    check_at_most_one_batch_dim(batch_dims(parameter_dataset), message_name="the parameter dataset")
+    for name, variable in parameter_dataset.data_vars.items():
+        check_parameter_dataset_variable_is_finite(str(name), variable)
 
 
+# ── private helpers ───────────────────────────────────────────────────────────
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+#: How far a simplex value's sum may be from 1: float64 rounding of a
+#: ``SoftmaxCentered`` image is about ``1e-16`` per number.
+_SIMPLEX_SUM_TOLERANCE = 1e-10
 
-_FLAT_SPECS: Mapping[str, ParameterSpec] = frozendict(
-    {path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()}
-)
-_SPEC_ORDER: Mapping[str, int] = frozendict({name: i for i, name in enumerate(_FLAT_SPECS)})
-
-
-def _with_placeholder_locations(dataset: xr.Dataset) -> xr.Dataset:
-    """*dataset* with ``NaN`` ``lon``/``lat`` on its ``site`` when it carries neither.
-
-    For a vector with no locations, whose own datasets carry none: every other
-    rule of the field contract is then checked on them.
-    """
-    if SITE not in dataset.coords or LON in dataset.coords or LAT in dataset.coords:
-        return dataset
-    site = dataset[SITE]
-    placeholder = xr.DataArray(np.full(site.shape, np.nan), dims=site.dims)
-    return dataset.assign_coords({LON: placeholder, LAT: placeholder})
+#: The seed of :func:`probe_points`' random directions.
+_PROBE_SEED = 20260926
 
 
-def _labels_equal(labels: pd.Index, label: Any) -> np.ndarray:
-    """Which of *labels*, an index level of mixed types, equal *label*."""
-    return np.asarray([value == label for value in labels], dtype=bool)
-
-
-def _requested_batch_labels(batch: Any) -> dict[str, int]:
-    """*batch* as ``{dim: label}`` with plain-integer labels, or empty for ``None``."""
-    if batch is None:
-        return {}
-    check_batch_labels_are_a_mapping(batch)
-    return {
-        dim: as_batch_label(label, message_name=f"batch[{dim!r}]") for dim, label in batch.items()
-    }
-
-
-def _as_theta(theta: Any, dimension: int) -> Array:
-    """*theta* as a JAX ``float64`` array, ``(D,)`` or ``(J, D)`` as given."""
-    batched = as_batched_flat(theta, dimension, message_name="theta")
-    return jnp.asarray(batched[0] if is_one_vector(theta) else batched)
-
-
-def _positive_array(what: str, value: Any) -> Array:
-    array = jnp.asarray(value, dtype=jnp.float64)
-    if not bool(jnp.all(jnp.isfinite(array)) and jnp.all(array > 0)):
-        raise ValueError(f"{what} must be finite and positive; got {value!r}.")
-    return array
-
-
-def _unit_interval_array(what: str, value: Any) -> Array:
-    array = jnp.asarray(value, dtype=jnp.float64)
-    if not bool(jnp.all((array > 0) & (array < 1))):
-        raise ValueError(f"{what} must lie strictly inside (0, 1); got {value!r}.")
-    return array
-
-
-def _logit(p: Array) -> Array:
-    return jnp.log(p) - jnp.log1p(-p)
-
-
-def _normal_from_interval(lower: Array, upper: Array, mass: float) -> tuple[Array, Array]:
-    """The Normal whose central *mass* interval is ``[lower, upper]``."""
-    if not 0.0 < mass < 1.0:
-        raise ValueError(f"mass must lie in (0, 1); got {mass}.")
-    if not bool(jnp.all(upper > lower)):
-        raise ValueError("upper must exceed lower.")
-    z = tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)).quantile(jnp.float64(0.5 + mass / 2))
-    return (lower + upper) / 2.0, (upper - lower) / (2.0 * z)
-
-
-def _samples_in_support(what: str, x: Any, in_support: Callable[[Array], Array]) -> Array:
-    array = jnp.asarray(x, dtype=jnp.float64).ravel()
-    if array.size < 2:
-        raise ValueError(f"{what}: need at least two samples; got {array.size}.")
-    bad = ~(jnp.isfinite(array) & in_support(array))
-    if bool(jnp.any(bad)):
-        raise ValueError(
-            f"{what}: {int(bad.sum())} of {array.size} samples are NaN or outside the "
-            "support. Exclude and count them before fitting; this function does not."
+def _bijectors_agree(first: Parameter, second: Parameter) -> bool:
+    probes = jnp.asarray(probe_points(first.unconstrained_shape, unconstrained_size=first.unconstrained_size))
+    return bool(
+        np.allclose(
+            first.bijector.forward(probes), second.bijector.forward(jnp.array(probes)), rtol=1e-12
         )
-    return array
+    )
 
 
-def _positive_std(values: Array, what: str) -> Array:
-    std = jnp.std(values)
-    if not bool(std > 0):
-        raise ValueError(f"{what}: samples are all equal; no scale can be fitted.")
-    return std
+def _in_closure(support: Support, values: Array) -> Array:
+    """Whether finite *values* lie in the closure of *support*, as
+    :meth:`Support.contains` reads them."""
+    finite = jnp.isfinite(values)
+    if support.kind == "real":
+        return finite
+    if support.kind == "positive":
+        return finite & (values >= 0)
+    if support.kind == "interval":
+        return finite & (values >= support.low) & (values <= support.high)
+    inside = jnp.all(finite & (values >= 0), axis=-1)
+    return inside & (jnp.abs(values.sum(axis=-1) - 1.0) <= _SIMPLEX_SUM_TOLERANCE)
 
 
-def _as_labels(name: str, labels: Any) -> tuple[Any, ...]:
-    """Site labels as a tuple of one label per site; refuses a string or a mapping."""
-    if isinstance(labels, (str, bytes, Mapping)):
-        raise TypeError(
-            f"site labels {name!r} must be a sequence of one label per site, not "
-            f"{type(labels).__name__}."
-        )
-    if hasattr(labels, "tolist"):  # numpy, jax, pandas
-        labels = labels.tolist()
-    return tuple(labels)
+def _same_label(label: Any, wanted: Any) -> bool:
+    """Whether dim label *label* is *wanted*: strings match strings, and
+    integers (site ids) match integers, never a boolean."""
+    if isinstance(label, str):
+        return isinstance(wanted, str) and label == wanted
+    return isinstance(wanted, (int, np.integer)) and not isinstance(wanted, bool) and label == wanted
 
 
-def _position(labels: Sequence[Any], label: Any, what: str) -> int:
-    try:
-        return list(labels).index(label)
-    except ValueError:
-        raise KeyError(
-            f"{label!r} is not {what}; name one of {truncated(list(labels))}."
-        ) from None
+def _dataset_variables(parameter: Parameter) -> list[tuple[str, dict[str, Any]]]:
+    """``(variable name, attributes)`` for each natural name of *parameter*."""
+    names = (None,) if parameter.natural_names is None else parameter.natural_names
+    out = []
+    for natural_name in names:
+        attributes: dict[str, Any] = {"parameter": parameter.name}
+        if natural_name is not None:
+            attributes["natural_name"] = natural_name
+        if parameter.units is not None:
+            attributes["units"] = parameter.units
+        attributes["support"] = parameter.support.name
+        variable_name = parameter.name if natural_name is None else f"{parameter.name}.{natural_name}"
+        out.append((variable_name, attributes))
+    return out
 
 
-def _unconstrained_labels(bijector: tfb.Bijector, components: tuple[str, ...]) -> tuple[str, ...]:
-    if isinstance(bijector, tfb.SoftmaxCentered):
-        return tuple(f"alr({c}:{components[-1]})" for c in components[:-1])
-    if isinstance(bijector, tfb.Blockwise) and len(bijector.bijectors) == len(components):
-        return tuple(
-            _scalar_unconstrained_label(b, c) for b, c in zip(bijector.bijectors, components)
-        )
-    if len(components) == 1:
-        return (_scalar_unconstrained_label(bijector, components[0]),)
-    return tuple(f"{type(bijector).__name__}^-1({c})" for c in components)
-
-
-def _scalar_unconstrained_label(bijector: tfb.Bijector, component: str) -> str:
-    if isinstance(bijector, tfb.Exp):
-        return f"log({component})"
-    if isinstance(bijector, tfb.Sigmoid):
-        if bijector.low is None:
-            return f"logit({component})"
-        low, high = float(bijector.low), float(bijector.high)
-        return f"logit({component} in ({low:g}, {high:g}))"
-    if isinstance(bijector, tfb.Identity):
-        return component
-    return f"{type(bijector).__name__}^-1({component})"
-
-
-def _distribution_name(prior: tfd.Distribution) -> str:
-    if isinstance(prior, tfd.LogNormal):
-        return "log-normal"
-    if isinstance(prior, tfd.LogitNormal):
-        return "logit-normal"
-    if type(prior) is tfd.TransformedDistribution:
-        if isinstance(prior.bijector, tfb.SoftmaxCentered):
-            return "softmax-normal"
-        if isinstance(prior.bijector, tfb.Blockwise):
-            return "product of transformed Gaussians"
-        return f"{type(prior.distribution).__name__} through {type(prior.bijector).__name__}"
-    return type(prior).__name__
-
-
-def _sipnet_attributes(name: str, set_by: str) -> dict[str, Any]:
-    """pySIPNET's attributes of SIPNET parameter *name*, and which piece set it."""
-    return {**_FLAT_SPECS[name].xarray_attributes(), "set_by": set_by}
-
-
-def _in_domain(domain: ParameterDomain, values: Array) -> bool:
-    values = jnp.asarray(values)
-    finite = jnp.all(jnp.isfinite(values))
-    if domain is ParameterDomain.REAL:
-        inside = True
-    elif domain is ParameterDomain.POSITIVE:
-        inside = jnp.all(values > 0)
-    elif domain is ParameterDomain.NON_NEGATIVE:
-        inside = jnp.all(values >= 0)
-    elif domain is ParameterDomain.UNIT_INTERVAL:
-        inside = jnp.all((values >= 0) & (values <= 1))
-    elif domain is ParameterDomain.OPEN_UNIT_INTERVAL:
-        inside = jnp.all((values > 0) & (values < 1))
-    else:  # pragma: no cover - a new pySIPNET domain
-        raise NotImplementedError(f"no domain predicate for {domain!r}.")
-    return bool(finite & inside)
-
-
-def _normalized_sites(
-    sites: Any, site_table: Any
-) -> tuple[tuple[int, ...], tuple[np.ndarray, np.ndarray] | None]:
-    """Site ids, and ``lon``/``lat`` when a site table that has them is given.
-
-    With both, the ids must be the table's, in its order, and the table is
-    what is read.
-    """
-    check_sites_or_site_table_is_given(sites, site_table)
-    if sites is not None:
-        check_sites_are_not_a_site_table(sites)
-    if site_table is None:
-        return as_site_ids(sites, message_name="sites"), None
+def _normalized_site_table(site_table: Any, site_covariate_names: tuple[str, ...]) -> pd.DataFrame:
+    """``site_id`` (``int32``), ``lon``, ``lat`` and the named covariates of
+    *site_table*, in its row order, after the site-table checks."""
     check_site_table_is_keyed_on_site_ids(site_table)
-    table = site_lookup(site_table)
-    ids = as_site_ids(table.index, message_name="the site table's site_id")
-    check_site_table_is_in_site_order(ids)
-    if sites is not None:
-        check_sites_are_the_site_tables(as_site_ids(sites, message_name="sites"), ids)
-    if {LON, LAT} & set(table.columns):
-        check_site_table_has_locations(table)
-        check_site_table_positions_are_finite(table)
-        return ids, (_read_only_float64_array(table[LON]), _read_only_float64_array(table[LAT]))
-    return ids, None
+    check_site_table_has_locations(site_table)
+    table = site_table if SITE_ID in site_table.columns else site_table.reset_index()
+    check_site_ids_are_ascending(table[SITE_ID].to_numpy())
+    for name in site_covariate_names:
+        check_site_covariate_is_a_column(name, table)
+        check_site_covariate_is_float64(name, table[name])
+    out = pd.DataFrame(
+        {
+            SITE_ID: table[SITE_ID].to_numpy(SITE_DTYPE),
+            LON: table[LON].to_numpy(np.float64),
+            LAT: table[LAT].to_numpy(np.float64),
+            **{name: table[name].to_numpy(np.float64, copy=True) for name in site_covariate_names},
+        }
+    )
+    check_site_table_values_are_finite(out, (LON, LAT, *site_covariate_names))
+    return out
 
 
-def _read_only_float64_array(column: pd.Series) -> np.ndarray:
-    """*column* as a ``float64`` array of its own, which cannot be written."""
-    array = column.to_numpy(np.float64, copy=True)
-    array.flags.writeable = False
-    return array
-
-
-def _normalized_site_labels(
-    name: str, value: Any, sites: tuple[int, ...]
-) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
-    """One site-labels argument as (the class of each site, in site order;
-    the declared classes, in their order)."""
+def _site_labels_column(
+    name: str, value: Any, site_ids: pd.Series
+) -> tuple[pd.Categorical, tuple[str, ...]]:
+    """One site-labels argument as (each site's label, a categorical whose
+    categories are the labels present in declared order; the declared
+    labels)."""
     if isinstance(value, pd.DataFrame):
-        check_site_labels_table_has_columns(name, value)
+        check_site_labels_table_has_the_columns(name, value)
         indexed = site_lookup(value)[LABEL_COLUMN]
-        check_site_labels_table_labels_every_site(name, indexed, sites)
-        labels = tuple(indexed.loc[list(sites)].tolist())
-        check_site_labels_are_present(name, labels)
-        return labels, _declared_classes_of(name, value)
-    if isinstance(value, pd.Categorical) or isinstance(
-        getattr(value, "dtype", None), pd.CategoricalDtype
+        check_site_labels_label_every_site(name, indexed.index, site_ids)
+        labels = indexed.loc[site_ids.tolist()]
+        declared = _declared_labels(indexed)
+        labels = labels.tolist()
+    elif isinstance(getattr(value, "dtype", None), pd.CategoricalDtype) or isinstance(
+        value, pd.Categorical
     ):
         categorical = pd.Categorical(value)
-        check_site_labels_are_declared(name, categorical)
-        return tuple(categorical.tolist()), tuple(categorical.categories.tolist())
-    labels = _as_labels(name, value)
-    check_site_labels_are_present(name, labels)
-    return labels, _sorted_classes(name, labels)
+        labels, declared = categorical.tolist(), tuple(categorical.categories.tolist())
+    else:
+        labels = list(as_sequence(value, message_name=f"site_labels[{name!r}]"))
+        declared = None
+    check_site_labels_are_one_per_site(name, labels, len(site_ids))
+    check_site_labels_are_strings(name, labels)
+    if declared is None:
+        declared = tuple(sorted(set(labels)))
+    present = set(labels)
+    categories = [label for label in declared if label in present]
+    return pd.Categorical(labels, categories=categories), tuple(declared)
 
 
-def _declared_classes_of(name: str, value: Any) -> tuple[Any, ...]:
-    """The classes a site-labels argument declares: a site-labels table's categories,
-    else its sorted distinct labels."""
-    if isinstance(value, pd.DataFrame):
-        check_site_labels_table_has_columns(name, value)
-        value = value[LABEL_COLUMN]
-    if isinstance(value, pd.Categorical) or isinstance(
-        getattr(value, "dtype", None), pd.CategoricalDtype
-    ):
-        return tuple(pd.Categorical(value).categories.tolist())
-    labels = _as_labels(name, value)
-    return _sorted_classes(name, tuple(label for label in labels if not pd.isna(label)))
-
-
-def _sorted_classes(name: str, labels: Sequence[Any]) -> tuple[Any, ...]:
-    """The distinct labels in sorted order, the order plain labels give."""
-    try:
-        return tuple(sorted(set(labels)))
-    except TypeError:
-        raise ValueError(
-            f"site labels {name!r} mix types that cannot be ordered, so their classes have "
-            "no group order; pass a site-labels table or a pandas categorical, whose "
-            "categories give the order."
-        ) from None
-
-
-def _carries_its_bijector(prior: tfd.Distribution) -> bool:
-    """Whether *prior* is built as a base and a bijector this module reads.
-
-    TFP implements several distributions (``MultivariateNormalTriL``,
-    ``Weibull``, ``Gumbel``, ...) as ``TransformedDistribution`` subclasses
-    over an internal reparameterization, which is not an unconstrained space,
-    so only the exact class and the two helpers' families count.
-    """
-    return type(prior) in (tfd.TransformedDistribution, tfd.LogNormal, tfd.LogitNormal)
-
-
-def _restricted(
-    parameter: CalibrationParameter, prior: tfd.Distribution, positions: np.ndarray
-) -> CalibrationParameter:
-    """*parameter* with *prior*, its restriction to the groups at
-    *positions*, after checking the restriction is one."""
-    restricted = dataclasses.replace(parameter, prior=prior)
-    check_restriction_keeps_the_kept_groups(parameter, restricted, positions)
-    return restricted
-
-
-def _prior_for_groups(parameter: CalibrationParameter, positions: np.ndarray) -> tfd.Distribution:
-    """An independent-copies prior, one group per entry of its TFP batch
-    shape, restricted to the groups at *positions*."""
-    prior = parameter.prior
-    if type(prior) in (tfd.LogNormal, tfd.LogitNormal):
-        batch = tuple(prior.batch_shape)
-        return type(prior)(
-            loc=jnp.broadcast_to(prior.loc, batch)[positions],
-            scale=jnp.broadcast_to(prior.scale, batch)[positions],
-        )
-    if type(prior) is tfd.TransformedDistribution and type(
-        prior.distribution
-    ) is tfd.MultivariateNormalDiag:
-        # TFP's own slicing of a MultivariateNormalDiag fails for two or more
-        # indices, so the softmax-normal base is rebuilt from its moments.
-        base = prior.distribution
-        rebuilt = tfd.MultivariateNormalDiag(
-            loc=base.mean()[positions], scale_diag=base.stddev()[positions]
-        )
-        return tfd.TransformedDistribution(rebuilt, prior.bijector)
-    try:
-        return prior[positions]
-    except Exception as error:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: TFP cannot restrict its "
-            f"{type(prior).__name__} prior to fewer groups; give its TFP batch shape one "
-            "entry per group the vector has."
-        ) from error
-
-
-def _joint_marginal(parameter: CalibrationParameter, positions: np.ndarray) -> tfd.Distribution:
-    """A joint prior restricted to the groups at *positions*: the Gaussian
-    marginal of its base, exactly, under the same bijector."""
-    if not parameter.has_analytic_moments:
-        raise NotImplementedError(
-            f"calibration parameter {parameter.name!r}: a joint prior without analytic "
-            "unconstrained moments cannot be restricted to fewer groups."
-        )
-    base = parameter.unconstrained_prior
-    mean = jnp.asarray(base.mean(), dtype=jnp.float64)[positions]
-    covariance = jnp.asarray(base.covariance(), dtype=jnp.float64)[positions][:, positions]
-    marginal = tfd.MultivariateNormalTriL(loc=mean, scale_tril=jnp.linalg.cholesky(covariance))
-    return tfd.TransformedDistribution(marginal, parameter.bijector)
-
-
-def _monte_carlo_moments(
-    prior: tfd.Distribution, key: Array, n_moment_samples: int, independent_scalar: bool
-) -> tuple[Array, Array]:
-    """Mean and variance (independent scalar) or covariance from draws."""
-    if n_moment_samples < 2:
-        raise ValueError(
-            "n_moment_samples must be at least 2 for Monte Carlo moment matching; "
-            f"got {n_moment_samples}."
-        )
-    draws = prior.sample((n_moment_samples,), seed=key)
-    mean = draws.mean(axis=0)
-    if independent_scalar:
-        return mean, draws.var(axis=0, ddof=1)
-    centered = draws - mean
-    subscripts = "ni,nj->ij" if draws.ndim == 2 else "ngi,ngj->gij"
-    return mean, jnp.einsum(subscripts, centered, centered) / (n_moment_samples - 1)
-
-
-def _batch_labels(n_samples: int) -> np.ndarray:
-    """The labels of a batch made from Flat: ``0`` to ``n_samples - 1``, ``int64``."""
-    return np.arange(n_samples, dtype=BATCH_LABEL_DTYPE)
-
-
-def _as_batch_labels(values: Any) -> np.ndarray:
-    """Batch labels carried from Fields, which their validation found distinct
-    integers, as ``int64``."""
-    return np.asarray(values).astype(BATCH_LABEL_DTYPE)
-
-
-def _space_labels(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
-    """Component names in natural space, element labels in unconstrained."""
-    return parameter.component_names if space == NATURAL else parameter.element_labels
-
-
-def _fields_variable_names(parameter: CalibrationParameter, space: str) -> tuple[str, ...]:
-    """The Fields variables a calibration parameter occupies in *space*."""
-    labels = _space_labels(parameter, space)
-    if len(labels) == 1:
-        return (parameter.name,)
-    return tuple(f"{parameter.name}.{label}" for label in labels)
-
-
-def _fields_attributes(
-    parameter: CalibrationParameter, labels: tuple[str, ...], index: int, space: str
-) -> dict[str, str]:
-    label = labels[index]
-    attributes = {"parameter": parameter.name}
-    if len(labels) > 1:
-        attributes["component"] = label
-    attributes.update(
-        varies_by=parameter.varies_by or SHARED,
-        space=space,
-        long_name=f"{parameter.name}: {label}",
-        units=parameter.component_units[index] if space == NATURAL else "1",
-        sipnet_parameters=", ".join(parameter.sipnet_map.sipnet_parameter_names_written),
-    )
-    return attributes
-
-
-def _summary(vector: ParameterVector) -> str:
-    """The text of :meth:`ParameterVector.summary`."""
-    site_count = len(vector.sites)
-    labels = "; ".join(
-        f"{name} {{{', '.join(map(str, vector.group_labels(name)))}}}"
-        for name in vector.site_labels
-    )
-    lines = [
-        f"ParameterVector  D = {vector.dimension}  |  {site_count} site"
-        f"{'' if site_count == 1 else 's'}  |  site labels: {labels or 'none'}"
-    ]
-    rows = [("parameter", "varies by", "groups", "size", "prior", "-> SIPNET parameters")]
-    for p in vector.parameters:
-        prior = p.distribution_name + (", joint over groups" if p.is_joint else "")
-        rows.append(
-            (
-                p.name,
-                p.varies_by or SHARED,
-                str(vector.n_groups(p.varies_by)),
-                str(p.size),
-                prior,
-                ", ".join(p.sipnet_map.sipnet_parameter_names_written),
-            )
-        )
-    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]) - 1)]
-    for row in rows:
-        padded = [
-            text.rjust(width) if i in (2, 3) else text.ljust(width)
-            for i, (text, width) in enumerate(zip(row, widths))
-        ]
-        lines.append("  " + "  ".join(padded) + "  " + row[-1])
-    fixed = ", ".join(f"{f.name} ({f.varies_by or SHARED})" for f in vector.fixed)
-    lines.append(f"  fixed: {fixed or 'none'}")
-    unset = len(vector.unset_sipnet_parameter_names)
-    lines.append(
-        f"  unset: {unset} required SIPNET parameters, taken from the run's base parameter set"
-        if unset
-        else "  unset: none; every required SIPNET parameter is calibrated or fixed"
-    )
-    return "\n".join(lines)
+def _declared_labels(labels: pd.Series) -> tuple[str, ...] | None:
+    """A categorical's categories; ``None`` for plain labels."""
+    if isinstance(labels.dtype, pd.CategoricalDtype):
+        return tuple(labels.cat.categories.tolist())
+    return None
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
-def check_calibration_parameter_is_valid(parameter: CalibrationParameter) -> None:
-    """A calibration parameter's name, provenance, prior and SIPNET map fit together."""
-    check_parameter_name(parameter.name)
-    check_provenance_is_given(parameter.name, parameter.provenance)
-    check_prior_is_a_distribution(parameter)
-    check_sipnet_map_is_a_sipnet_map(parameter)
-    check_sipnet_parameters_exist(
-        (
-            *parameter.sipnet_map.sipnet_parameter_names_written,
-            *parameter.sipnet_map.sipnet_parameter_names_read,
-        ),
-        f"calibration parameter {parameter.name}",
-    )
-    check_prior_is_float64(parameter)
-    check_prior_event_rank(parameter)
-    check_prior_batch_rank(parameter)
-    check_prior_has_a_bijector(parameter)
-    check_components_match_prior(parameter)
+def check_parameter_vector_is_valid(parameter_vector: ParameterVector) -> None:
+    """The parameters, site table and site labels make one vector."""
+    check_vector_has_a_parameter(parameter_vector.parameters)
+    check_parameter_names_are_unique(parameter_vector.parameter_names)
+    names = {
+        "site covariate": parameter_vector.site_covariate_names,
+        "site-labels name": tuple(parameter_vector.site_labels),
+    }
+    for what, taken in names.items():
+        check_names_are_not_reserved(taken, what)
+    check_names_are_distinct(parameter_vector.parameter_names, names)
+    for parameter in parameter_vector.parameters:
+        check_parameter_dim_is_the_vectors(parameter, parameter_vector)
 
 
-def check_fixed_parameter_is_valid(parameter: FixedParameter) -> None:
-    """A fixed parameter names a SIPNET parameter and holds values in its domain."""
-    check_sipnet_parameters_exist((parameter.name,), f"fixed parameter {parameter.name}")
-    check_provenance_is_given(parameter.name, parameter.provenance)
-    check_fixed_value_shape(parameter)
-    check_fixed_values_are_numbers(parameter)
-    for value in parameter.values():
-        check_fixed_value_is_in_domain(parameter.name, value)
+def check_parameter_is_valid(parameter: Parameter) -> None:
+    """A parameter's name, natural names and bijector are usable."""
+    check_name_is_usable(parameter.name, "a parameter")
+    if parameter.natural_names is not None:
+        for natural_name in parameter.natural_names:
+            check_name_is_usable(natural_name, f"a natural name of {parameter.name!r}", reserved=False)
+        check_names_are_unique(parameter.natural_names, message_name=f"{parameter.name!r} natural_names")
+    check_simplex_has_two_natural_names(parameter)
+    if parameter._custom_bijector:
+        check_bijector_maps_onto_the_support(parameter)
 
 
-def check_parameter_vector_pieces_are_valid(vector: ParameterVector) -> None:
-    """A vector's sites, pieces and site labels are what it can be built from."""
-    check_vector_has_a_site(vector.sites)
-    check_sites_are_ascending(vector.sites)
-    check_parameters_have_their_types(vector.parameters, vector.fixed)
-    check_vector_has_a_calibration_parameter(vector.parameters)
-    check_names_are_unique(
-        [p.name for p in vector.parameters], message_name="parameters"
-    )
-    check_site_labels_cover_sites(vector)
-
-
-def check_parameter_vector_is_valid(vector: ParameterVector) -> None:
-    """A vector, its priors restricted to its groups, is one SIPNET can run."""
-    check_each_sipnet_parameter_has_one_writer(vector.parameters, vector.fixed)
-    check_reads_are_fixed(vector.parameters, vector.fixed)
-    for parameter in vector.parameters:
-        check_prior_shape_matches_groups(parameter, vector.n_groups(parameter.varies_by))
-    for parameter in vector.fixed:
-        check_fixed_value_covers_groups(parameter, vector.group_labels(parameter.varies_by))
-    for parameter in vector.parameters:
-        check_sipnet_map_image_is_in_domain(vector, parameter)
-    if vector.require_complete:
-        check_every_required_parameter_is_set(vector)
-
-
-def check_parameter_names_are_held(names: Sequence[str], vector: ParameterVector) -> None:
-    """Every name asked for is a calibration parameter of the vector."""
-    unknown = [name for name in names if name not in vector.parameter_names]
-    if unknown:
-        what = repr(unknown[0]) if len(unknown) == 1 else str(unknown)
-        raise KeyError(
-            f"no calibration parameter {what}; the vector holds {list(vector.parameter_names)}. "
-            "A fixed parameter is not one: read vector.fixed_parameters."
-        )
-
-
-def check_group_label_is_not_a_bool_or_a_float(group: Any) -> None:
-    """A group label asked for is not a boolean or a float, which no site id is."""
-    if isinstance(group, (bool, np.bool_, float, np.floating)):
-        raise TypeError(
-            f"group must be 'shared', a site id or a class, got {type(group).__name__} "
-            f"{group!r}; pass a site id as an int, such as int(27)."
-        )
-
-
-def check_label_is_the_parameters(
-    label: Any, labels: Sequence[Any], what: str, parameter_name: str
-) -> None:
-    """A group or element label asked for, if any, is the calibration parameter's."""
-    if label is not None and not _labels_equal(list(labels), label).any():
-        raise KeyError(
-            f"{label!r} is not {what} of calibration parameter {parameter_name!r}; it has "
-            f"{truncated(list(labels))}."
-        )
-
-
-def check_label_is_the_vectors(label: Any, labels: Sequence[Any], what: str) -> None:
-    """A group or element label asked for is some calibration parameter's."""
-    if not _labels_equal(list(labels), label).any():
-        raise KeyError(
-            f"{label!r} is not {what} of any calibration parameter; the vector has "
-            f"{truncated(list(dict.fromkeys(labels)))}."
-        )
-
-
-def check_labels_are_a_mapping(labels: Any) -> None:
-    """``labels=`` maps site-labels names to the classes kept."""
-    if not isinstance(labels, Mapping):
-        raise TypeError(
-            f"labels must map a site-labels name to the classes to keep, got "
-            f"{type(labels).__name__} {labels!r}; pass labels={{'pft': ['boreal.coniferous']}}."
-        )
-
-
-def check_site_labels_are_held(name: Any, vector: ParameterVector) -> None:
-    """A site-labels name asked for is one of the vector's."""
-    if name not in vector.site_labels:
-        raise KeyError(
-            f"no site labels {name!r}; the vector has {sorted(vector.site_labels)}. Select by "
-            "a site-labels name the vector was built with."
-        )
-
-
-def check_classes_are_declared(
-    name: str, classes: Sequence[Any], declared: Sequence[Any]
-) -> None:
-    """Every class asked for is a declared class of the site labels."""
-    undeclared = [c for c in classes if c not in declared]
-    if undeclared:
-        raise KeyError(
-            f"{truncated(undeclared)} are not classes of site labels {name!r}; its classes are "
-            f"{truncated(list(declared))}."
-        )
-
-
-def check_the_selection_keeps_a_site(kept: Sequence[int]) -> None:
-    """A selection keeps at least one site."""
-    if not kept:
-        raise ValueError(
-            "no site of this vector satisfies every condition given; select sites or "
-            "classes the vector has."
-        )
-
-
-def check_parameter_name(name: str) -> None:
-    if not NAME_PATTERN.match(name):
-        raise ValueError(
-            f"calibration parameter name {name!r} is not lower_case_with_underscores; see "
-            "NAME_PATTERN."
-        )
-    if name in RESERVED_PARAMETER_NAMES:
-        raise ValueError(
-            f"calibration parameter name {name!r} is reserved: a Fields variable of that name "
-            f"would collide with a coordinate ({sorted(RESERVED_PARAMETER_NAMES)})."
-        )
-
-
-def check_provenance_is_given(name: str, provenance: str) -> None:
-    if not isinstance(provenance, str) or not provenance.strip():
-        raise ValueError(
-            f"{name}: provenance is empty. Say where the value came from; a placeholder "
-            "says it is one."
-        )
-
-
-def check_sipnet_parameters_exist(names: Sequence[str], context: str) -> None:
-    unknown = [n for n in names if n not in _FLAT_SPECS]
-    if unknown:
-        raise ValueError(
-            f"{context}: {unknown} are not pySIPNET parameter names. Use the flat parameter "
-            "names of pysipnet.parameters.model.PARAMETER_SPECS, e.g. "
-            "'max_photosynthesis_rate', not 'aMax'."
-        )
-
-
-def check_prior_is_a_distribution(parameter: CalibrationParameter) -> None:
-    if not isinstance(parameter.prior, tfd.Distribution):
-        raise TypeError(
-            f"calibration parameter {parameter.name!r}: prior must be a TFP distribution "
-            f"(tensorflow_probability.substrates.jax.distributions); got "
-            f"{type(parameter.prior).__name__}."
-        )
-
-
-def check_sipnet_map_is_a_sipnet_map(parameter: CalibrationParameter) -> None:
-    if not isinstance(parameter.sipnet_map, SIPNETMap):
-        raise TypeError(
-            f"calibration parameter {parameter.name!r}: sipnet_map must be a SIPNETMap "
-            "(with sipnet_parameter_names_written, sipnet_parameter_names_read, "
-            "component_names, component_units and __call__) or a SIPNET "
-            f"parameter name; got {type(parameter.sipnet_map).__name__}."
-        )
-
-
-def check_prior_is_float64(parameter: CalibrationParameter) -> None:
-    dtype = parameter.prior.dtype
-    try:
-        is_float64 = jnp.dtype(dtype) == jnp.dtype(jnp.float64)
-    except TypeError:  # a structured dtype, as a joint distribution has
-        is_float64 = False
-    if not is_float64:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: prior dtype is {dtype}, not float64. "
-            "TFP builds float32 from Python floats and lists; pass jnp.float64 values or use "
-            "the prior helpers."
-        )
-
-
-def check_prior_event_rank(parameter: CalibrationParameter) -> None:
-    event = tuple(parameter.prior.event_shape)
-    k = parameter.natural_size
-    if k == 1 and len(event) > 1:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: prior event shape {event} has rank "
-            "above 1; a scalar calibration parameter's prior has event () for independent "
-            "copies or (n_groups,) for one joint prior over its groups."
-        )
-    if k > 1 and len(event) == 2:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: prior event shape {event} would be a "
-            "joint prior over the groups of a vector-valued calibration parameter, which is "
-            f"not supported; give each copy event ({k},)."
-        )
-    if len(event) > 2:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: prior event shape {event} has rank "
-            "above 1; one copy is a scalar or a vector."
-        )
-
-
-def check_prior_has_a_bijector(parameter: CalibrationParameter) -> None:
-    if parameter.bijector is None:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: {type(parameter.prior).__name__} has "
-            "no default event-space bijector. Give the prior as a TransformedDistribution "
-            "with an explicit bijector, e.g. TransformedDistribution(prior, Exp())."
-        )
-
-
-def check_prior_batch_rank(parameter: CalibrationParameter) -> None:
-    batch = tuple(parameter.prior.batch_shape)
-    if parameter.is_joint and batch:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: a joint prior over groups has batch "
-            f"shape (), not {batch}."
-        )
-    if len(batch) > 1:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: prior batch shape {batch} has rank "
-            "above 1; it must be () or (n_groups,)."
-        )
-
-
-def check_components_match_prior(parameter: CalibrationParameter) -> None:
-    event = tuple(parameter.prior.event_shape)
-    if parameter.is_joint:
-        unconstrained = tuple(parameter.bijector.inverse_event_shape(parameter.prior.event_shape))
-        if unconstrained != event:
+def check_parameter_vectors_share_a_layout(first: ParameterVector, second: ParameterVector) -> None:
+    """Two vectors give theta one meaning: the same index, sites, dim indexes,
+    supports, and transforms that agree at the probe points. Derived
+    parameters and site covariates are not compared."""
+    differences = [
+        ("index", lambda: first.index.equals(second.index)),
+        ("sites", lambda: first.sites == second.sites),
+        ("dim indexes", lambda: all(
+            first.dim_index(d).equals(second.dim_index(d)) for d in first.dim_names
+        )),
+        ("supports", lambda: all(
+            p.support == q.support for p, q in zip(first.parameters, second.parameters)
+        )),
+        ("transforms", lambda: all(
+            _bijectors_agree(p, q) for p, q in zip(first.parameters, second.parameters)
+        )),
+    ]
+    for what, same in differences:
+        if not same():
             raise ValueError(
-                f"calibration parameter {parameter.name!r}: a joint prior over groups needs an "
-                f"elementwise bijector, but {type(parameter.bijector).__name__} changes the "
-                f"event shape from {event} to {unconstrained}. If the prior is one "
-                f"vector-valued copy, its SIPNET map must name {event[0]} components."
-            )
-        return
-    natural = 1 if event == () else event[0]
-    if natural != parameter.natural_size:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: the SIPNET map names "
-            f"{parameter.natural_size} components {parameter.component_names} but the "
-            f"prior's natural value has {natural}. Match the prior "
-            "(product_transformed_gaussian_prior keyword order, softmax_normal center "
-            "length) to the SIPNET map."
-        )
-
-
-def check_fixed_value_shape(parameter: FixedParameter) -> None:
-    if parameter.varies_by is None and isinstance(parameter.value, Mapping):
-        raise ValueError(
-            f"fixed parameter {parameter.name!r}: a shared value must be a float, not a "
-            "mapping; set varies_by to key it on groups."
-        )
-    if parameter.varies_by is not None and not isinstance(parameter.value, Mapping):
-        raise ValueError(
-            f"fixed parameter {parameter.name!r} varies by {parameter.varies_by!r}; its value "
-            "must be a mapping from every group to a float."
-        )
-
-
-def check_fixed_value_is_in_domain(name: str, value: float) -> None:
-    domain = _FLAT_SPECS[name].domain
-    if not _in_domain(domain, jnp.asarray(value, dtype=jnp.float64)):
-        raise ValueError(
-            f"fixed parameter {name!r} = {value!r} is outside its pySIPNET domain "
-            f"{domain.value!r}; pySIPNET would refuse it."
-        )
-
-
-def check_fixed_value_covers_groups(parameter: FixedParameter, groups: tuple[Any, ...]) -> None:
-    if not isinstance(parameter.value, Mapping):
-        return
-    missing = [g for g in groups if g not in parameter.value]
-    extra = [g for g in parameter.value if g not in groups]
-    if missing or extra:
-        raise ValueError(
-            f"fixed parameter {parameter.name!r} by {parameter.varies_by!r}: values must be "
-            f"keyed on exactly the groups {list(groups)}; missing {missing}, extra {extra}."
-        )
-
-
-def check_vector_has_a_site(sites: tuple[int, ...]) -> None:
-    """The vector has at least one site."""
-    if not sites:
-        raise ValueError("a ParameterVector needs at least one site.")
-
-
-def check_sites_are_ascending(sites: tuple[int, ...]) -> None:
-    """The vector's sites are strictly ascending, so each is listed once."""
-    if list(sites) != sorted(set(sites)):
-        raise ValueError("sites must be strictly ascending with no repeats.")
-
-
-def check_site_labels_table_has_columns(name: str, frame: pd.DataFrame) -> None:
-    missing = sorted({SITE_ID, LABEL_COLUMN} - set(frame.columns))
-    if missing:
-        raise ValueError(
-            f"site labels {name!r}: a site-labels table needs {SITE_ID!r} and "
-            f"{LABEL_COLUMN!r} columns, as sipnet_calibration.site_labels.load_site_labels "
-            f"returns; missing {missing}."
-        )
-
-
-def check_site_labels_table_labels_every_site(
-    name: str, labels: pd.Series, sites: tuple[int, ...]
-) -> None:
-    if not labels.index.is_unique:
-        raise ValueError(f"site labels {name!r}: the table repeats a site_id.")
-    missing = [s for s in sites if s not in labels.index]
-    if missing:
-        raise ValueError(
-            f"site labels {name!r} do not label sites {missing}; a site-labels table must "
-            "label every site of the vector."
-        )
-
-
-def check_site_labels_are_declared(name: str, labels: pd.Categorical) -> None:
-    if (labels.codes < 0).any():
-        raise ValueError(
-            f"site labels {name!r}: some sites carry no declared class (a missing value, or "
-            "a label outside the categorical's categories)."
-        )
-
-
-def check_vector_has_a_calibration_parameter(parameters: tuple[CalibrationParameter, ...]) -> None:
-    """A vector has at least one calibration parameter."""
-    if not parameters:
-        raise ValueError(
-            "a ParameterVector needs at least one calibration parameter; pass "
-            "parameters=(CalibrationParameter(...), ...)."
-        )
-
-
-def check_site_labels_cover_sites(vector: ParameterVector) -> None:
-    reserved = RESERVED_SITE_LABELS_NAMES & set(vector.site_labels)
-    if reserved:
-        raise ValueError(f"site-labels names {sorted(reserved)} are reserved dimension names.")
-    malformed = sorted(n for n in vector.site_labels if not NAME_PATTERN.match(str(n)))
-    if malformed:
-        raise ValueError(
-            f"site-labels names {malformed} are not lower_case_with_underscores; each becomes a "
-            "coordinate of the datasets this module builds."
-        )
-    for name, labels in vector.site_labels.items():
-        if len(labels) != len(vector.sites):
-            raise ValueError(
-                f"site labels {name!r} have {len(labels)} labels for {len(vector.sites)} "
-                "sites; give one label per site, in site order."
-            )
-    taken = set(vector.parameter_names) | set(_FLAT_SPECS)
-    colliding = sorted(taken & set(vector.site_labels))
-    if colliding:
-        raise ValueError(
-            f"site-labels names {colliding} collide with a calibration parameter or SIPNET "
-            "parameter name; both become variables or coordinates of the datasets this "
-            "module builds."
-        )
-    used = {p.varies_by for p in vector.parameters} | {f.varies_by for f in vector.fixed}
-    missing = sorted(v for v in used if v not in (None, SITE) and v not in vector.site_labels)
-    if missing:
-        raise ValueError(
-            f"varies_by names {missing} have no site labels; pass site_labels={{name: labels}}."
-        )
-
-
-def check_each_sipnet_parameter_has_one_writer(
-    parameters: tuple[CalibrationParameter, ...], fixed: tuple[FixedParameter, ...]
-) -> None:
-    writers: dict[str, list[str]] = {}
-    for parameter in parameters:
-        for name in parameter.sipnet_map.sipnet_parameter_names_written:
-            writers.setdefault(name, []).append(f"calibration parameter {parameter.name}")
-    for parameter in fixed:
-        writers.setdefault(parameter.name, []).append("fixed")
-    clashes = {name: who for name, who in writers.items() if len(who) > 1}
-    if clashes:
-        raise ValueError(
-            f"SIPNET parameters set more than once: {clashes}. Each SIPNET parameter has "
-            "exactly one writer, a calibration parameter or a fixed value."
-        )
-
-
-def check_reads_are_fixed(
-    parameters: tuple[CalibrationParameter, ...], fixed: tuple[FixedParameter, ...]
-) -> None:
-    fixed_names = {f.name for f in fixed}
-    for parameter in parameters:
-        read = parameter.sipnet_map.sipnet_parameter_names_read
-        missing = [n for n in read if n not in fixed_names]
-        if missing:
-            raise ValueError(
-                f"calibration parameter {parameter.name!r} reads {missing}, which are not "
-                "fixed. Add a FixedParameter for each."
+                f"the two parameter vectors differ in their {what}, so theta means different "
+                "things under them; pair a prior and a forward model built on the same "
+                "vector, as prior.parameter_vector."
             )
 
 
-def check_prior_shape_matches_groups(parameter: CalibrationParameter, n_groups: int) -> None:
-    if parameter.is_joint:
-        if parameter.joint_groups != n_groups:
-            raise ValueError(
-                f"calibration parameter {parameter.name!r} varies by {parameter.varies_by!r} "
-                f"with {n_groups} groups, but its joint prior is over {parameter.joint_groups}."
-            )
-        return
-    batch = tuple(parameter.prior.batch_shape)
-    if batch not in ((), (n_groups,)):
-        raise ValueError(
-            f"calibration parameter {parameter.name!r} varies by {parameter.varies_by!r} with "
-            f"{n_groups} groups, but its prior has batch shape {batch}; use () for one prior "
-            f"shared by every group or ({n_groups},) for one per group."
-        )
-
-
-def check_prior_spread_is_positive(parameter: CalibrationParameter, spread: Array) -> None:
-    diagonal = spread if spread.ndim == 1 else jnp.diagonal(spread, axis1=-2, axis2=-1)
-    if not bool(jnp.all(jnp.isfinite(spread)) and jnp.all(diagonal > 0)):
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: its unconstrained prior has a zero, "
-            "negative or non-finite variance, which pyEKI cannot whiten. Give every element a "
-            "positive spread (geometric_sd above 1, logit_sd above 0)."
-        )
-
-
-def check_every_required_parameter_is_set(vector: ParameterVector) -> None:
-    unset = vector.unset_sipnet_parameter_names
-    if unset:
-        raise ValueError(
-            f"require_complete: {len(unset)} required SIPNET parameters are neither "
-            f"calibrated nor fixed: {list(unset)}. Add a CalibrationParameter or a "
-            "FixedParameter for each, or build with require_complete=False to take them from "
-            "the base set."
-        )
-
-
-def check_sipnet_map_image_is_in_domain(
-    vector: ParameterVector, parameter: CalibrationParameter
-) -> None:
-    """Evaluate ``M_c(T_c(theta))`` at the corners of the unconstrained cube
-    (:data:`DOMAIN_CHECK_CORNERS`) for every group, and test each SIPNET
-    parameter written against its ``ParameterDomain``.
-
-    Exhaustive for the shipped SIPNET maps and bijectors, whose outputs are
-    monotone in each unconstrained element, so an excursion shows at a
-    corner. A hand-written SIPNET map that is not monotone can leave a domain
-    between the corners and is not caught here.
-    """
-    n_groups = vector.n_groups(parameter.varies_by)
-    corners = jnp.asarray(
-        list(itertools.product(DOMAIN_CHECK_CORNERS, repeat=parameter.size)), dtype=jnp.float64
-    )
-    theta_c = jnp.broadcast_to(corners[:, None, :], (corners.shape[0], n_groups, parameter.size))
-    natural = ParameterVector._to_natural(parameter, theta_c)
-    on_sites = vector._group_values_onto_sites(parameter, natural)
-    written = parameter.sipnet_map(on_sites, vector._fixed_table)
-    check_sipnet_map_returns_what_it_writes(parameter, written)
-    for name, values in written.items():
-        domain = _FLAT_SPECS[name].domain
-        if not _in_domain(domain, values):
-            raise ValueError(
-                f"calibration parameter {parameter.name!r} can write {name!r} outside its "
-                f"pySIPNET domain {domain.value!r} (checked at theta in {DOMAIN_CHECK_CORNERS}). "
-                "Use a prior whose bijector maps onto the domain: log_normal for a positive "
-                "parameter, logit_normal for a fraction, softmax_normal for a simplex."
-            )
-
-
-def check_space_is_known(space: Any) -> None:
-    """*space* is one of :data:`SPACES`."""
-    if not isinstance(space, str):
-        raise TypeError(
-            f"space must be a string, one of {SPACES}; got {type(space).__name__} {space!r}."
-        )
-    if space not in SPACES:
-        raise ValueError(f"space must be one of {SPACES}; got {space!r}.")
-
-
-def check_fields_hold_the_sites(fields: xr.Dataset, sites: tuple[int, ...]) -> None:
-    if SITE not in fields.coords:
-        raise ValueError("Fields must have a 'site' coordinate.")
-    present = set(np.atleast_1d(np.asarray(fields[SITE].values)).tolist())
-    missing = [s for s in sites if s not in present]
-    if missing:
-        raise ValueError(f"Fields lack sites {missing} of this vector.")
-
-
-def check_fields_hold_the_variables(
-    fields: xr.Dataset, names: tuple[str, ...], parameter: str
-) -> None:
-    missing = [n for n in names if n not in fields.data_vars]
-    if missing:
-        raise ValueError(
-            f"Fields lack variables {missing} of calibration parameter {parameter!r}; in "
-            f"{fields.attrs['space']} space it occupies {list(names)}."
-        )
-
-
-def check_fields_values_are_finite(values: np.ndarray, parameter: str) -> None:
-    if not np.isfinite(values).all():
-        raise ValueError(
-            f"Fields values of calibration parameter {parameter!r} are not all finite; no "
-            "Flat vector holds NaN or infinity."
-        )
-
-
-def check_group_values_agree_across_sites(
-    vector: ParameterVector,
-    parameter: CalibrationParameter,
-    on_sites: np.ndarray,
-    expected: np.ndarray,
-) -> None:
-    if np.array_equal(on_sites, expected):
-        return
-    site_axis = on_sites.ndim - 2
-    other_axes = tuple(i for i in range(on_sites.ndim) if i != site_axis)
-    differing = np.flatnonzero(np.any(on_sites != expected, axis=other_axes))
-    index = vector._site_group_index(parameter.varies_by)
-    group = index[differing[0]]
-    members = [vector.sites[i] for i in np.flatnonzero(index == group)]
-    raise ValueError(
-        f"calibration parameter {parameter.name!r} varies by "
-        f"{parameter.varies_by or SHARED!r}, but its values differ between the sites of group "
-        f"{vector.group_labels(parameter.varies_by)[group]!r} ({members}). Fields must hold one "
-        "value per group, repeated at every site of the group."
-    )
-
-
-def check_parameters_have_their_types(
-    parameters: tuple[Any, ...], fixed: tuple[Any, ...]
-) -> None:
-    wrong = [type(p).__name__ for p in parameters if not isinstance(p, CalibrationParameter)]
-    if wrong:
-        raise TypeError(f"parameters= takes CalibrationParameters; got {wrong}.")
-    wrong = [type(f).__name__ for f in fixed if not isinstance(f, FixedParameter)]
-    if wrong:
-        raise TypeError(f"fixed= takes FixedParameters; got {wrong}.")
-
-
-def check_fixed_values_are_numbers(parameter: FixedParameter) -> None:
-    values = parameter.value.values() if isinstance(parameter.value, Mapping) else [parameter.value]
-    wrong = [v for v in values if isinstance(v, bool) or not isinstance(v, (int, float, np.number))]
-    if wrong:
-        raise TypeError(f"fixed parameter {parameter.name!r}: values must be numbers; got {wrong}.")
-
-
-def check_sites_or_site_table_is_given(sites: Any, site_table: Any) -> None:
-    """At least one of ``sites=`` and ``site_table=`` is given."""
-    if sites is None and site_table is None:
-        raise TypeError(
-            "give the vector's sites as sites= (site ids) or site_table= (a site "
-            "table); got neither."
-        )
-
-
-def check_sites_are_the_site_tables(
-    sites: tuple[int, ...], table_ids: tuple[int, ...]
-) -> None:
-    """``sites=`` given beside ``site_table=`` are the table's site ids, in order."""
-    if tuple(sites) == tuple(table_ids):
-        return
-    pairs = zip(sites, table_ids)
-    where = next((k for k, (a, b) in enumerate(pairs) if a != b), None)
-    detail = (
-        f"{len(sites)} site ids against the table's {len(table_ids)}"
-        if where is None
-        else f"at position {where}, {sites[where]} against {table_ids[where]}"
-    )
-    raise ValueError(
-        f"sites= and the site table's site_id disagree ({detail}); give only one of "
-        "sites= and site_table=, or the table's own ids in its order."
-    )
-
-
-def check_sites_are_not_a_site_table(sites: Any) -> None:
-    """``sites=`` holds site ids, not a site table."""
-    if isinstance(sites, pd.DataFrame):
-        raise TypeError(
-            "sites= takes site ids, and got a DataFrame; pass a site table as "
-            "site_table=, which also carries its lon/lat onto the vector's fields."
-        )
-
-
-def check_site_table_is_in_site_order(ids: tuple[int, ...]) -> None:
-    """A site table given as ``site_table=`` lists its sites ascending, each once."""
-    if list(ids) != sorted(set(ids)):
-        raise ValueError(
-            "a site table passed as site_table= must be in ascending site_id order with no "
-            "repeats, because a per-site prior and site labels given as a plain sequence are "
-            "read in site order; sort it with .sort_values('site_id')."
-        )
-
-
-def check_site_table_positions_are_finite(table: pd.DataFrame) -> None:
-    """A ``site_table=`` table has a finite ``lon`` and ``lat`` for every site."""
-    if not np.isfinite(table[[LON, LAT]].to_numpy(np.float64)).all():
-        raise ValueError(
-            "a site table passed as site_table= has missing or non-finite lon/lat; give every "
-            "site its coordinates, or pass a table without lon and lat."
-        )
-
-
-def check_site_labels_are_present(name: str, labels: Sequence[Any]) -> None:
-    missing = [i for i, label in enumerate(labels) if pd.isna(label)]
-    if missing:
-        raise ValueError(
-            f"site labels {name!r} give no class for {len(missing)} of the vector's sites "
-            f"(positions {missing[:5]}); every site needs a class."
-        )
-
-
-def check_sipnet_map_returns_what_it_writes(
-    parameter: CalibrationParameter, written: Mapping[str, Any]
-) -> None:
-    declared = set(parameter.sipnet_map.sipnet_parameter_names_written)
-    if set(written) != declared:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: its SIPNET map declares it writes "
-            f"{sorted(declared)} but returns {sorted(written)}; they must be the same."
-        )
-
-
-def check_restriction_keeps_the_kept_groups(
-    parameter: CalibrationParameter, restricted: CalibrationParameter, positions: np.ndarray
-) -> None:
-    """The restricted prior's bijector and base agree with the original's at
-    the kept groups; a bijector with a parameter per group, which TFP cannot
-    always slice, fails here rather than silently mapping the wrong groups."""
-    n_groups = parameter.joint_groups or int(parameter.prior.batch_shape[0])
-    probe = jnp.linspace(-1.5, 1.5, n_groups * parameter.size).reshape(n_groups, parameter.size)
-    try:
-        expected = ParameterVector._to_natural(parameter, probe)[positions]
-        actual = ParameterVector._to_natural(restricted, probe[positions])
-        agrees = actual.shape == expected.shape and bool(jnp.allclose(actual, expected, rtol=1e-12))
-        if agrees and parameter.has_analytic_moments and restricted.has_analytic_moments:
-            full = jnp.broadcast_to(
-                parameter.unconstrained_prior.mean(),
-                (n_groups, *parameter.unconstrained_prior.event_shape[parameter.is_joint:]),
-            )
-            agrees = bool(jnp.allclose(restricted.unconstrained_prior.mean(), full[positions]))
-    except Exception:  # a shape error from a bijector parameterized per group
-        agrees = False
-    if not agrees:
-        raise ValueError(
-            f"calibration parameter {parameter.name!r}: its prior cannot be restricted to the "
-            "groups the vector has, most likely because its bijector has a parameter per "
-            "group; give it one copy per group the vector has."
-        )
-
-
-def check_fields_variables_are_in_the_space(
-    fields: xr.Dataset, names: tuple[str, ...], space: str
-) -> None:
-    other = [n for n in names if fields[n].attrs.get("space", space) != space]
-    if other:
-        raise ValueError(
-            f"Fields variables {other} say they are not in {space} space, the dataset's "
-            "attrs['space']; a dataset holds one space."
-        )
-
-
-def check_natural_values_are_in_the_support(
-    parameter: CalibrationParameter, natural: Array, unconstrained: Array
-) -> None:
-    # A fresh copy, since TFP bijectors cache forward/inverse pairs and would
-    # hand the input back unchanged.
-    back = ParameterVector._to_natural(parameter, jnp.array(unconstrained, copy=True))
-    inside = bool(jnp.all(jnp.isfinite(unconstrained))) and bool(
-        jnp.allclose(back, natural, rtol=1e-9, atol=1e-12)
-    )
-    if not inside:
-        raise ValueError(
-            f"Fields values of calibration parameter {parameter.name!r} are outside the image "
-            "of its bijector: a value outside its prior's support (a negative rate, a "
-            "fraction at or beyond 0 or 1) or simplex components that do not sum to 1. No "
-            "Flat vector maps to them."
-        )
-
-
-def check_batch_dim_name_is_not_taken(vector: ParameterVector, batch_dim: Any) -> None:
-    """*batch_dim* can name a batch dim of the Fields and SIPNET parameter fields."""
+def check_batch_dim_name_is_not_taken(parameter_vector: ParameterVector, batch_dim: Any) -> None:
+    """*batch_dim* can name the labeled form's batch dim: no reserved name,
+    and none of the vector's dims or variables, which it would collide with."""
     check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
-    check_batch_dim_name_is_not_a_data_source_member(batch_dim, message_name="batch_dim")
-    check_batch_dim_name_is_not_a_reserved_vector_name(batch_dim)
-    check_batch_dim_name_is_not_a_vector_name(vector, batch_dim)
-
-
-def check_batch_dim_name_is_not_a_reserved_vector_name(batch_dim: str) -> None:
-    """*batch_dim* is none of the names a vector reserves, ``sample`` apart."""
-    if batch_dim in RESERVED_SITE_LABELS_NAMES - {SAMPLE}:
-        raise ValueError(
-            f"batch_dim={batch_dim!r} is a reserved name of this vector; name the batch dim "
-            "otherwise, such as 'sample'."
-        )
-
-
-def check_batch_dim_name_is_not_a_vector_name(vector: ParameterVector, batch_dim: str) -> None:
-    """*batch_dim* is no site-labels, SIPNET parameter, Fields variable or parameter name."""
-    taken = {**dict.fromkeys(vector.site_labels, "a site-labels name")}
-    taken.update(dict.fromkeys(vector.sipnet_parameter_names_written, "a SIPNET parameter name"))
-    for parameter in vector.parameters:
-        for space in SPACES:
-            taken.update(
-                dict.fromkeys(_fields_variable_names(parameter, space), "a Fields variable name")
-            )
-    taken.update(dict.fromkeys(vector.parameter_names, "a calibration parameter name"))
+    taken = {
+        *parameter_vector.site_labels,
+        *(name for p in parameter_vector.parameters for name, _ in _dataset_variables(p)),
+    }
     if batch_dim in taken:
         raise ValueError(
-            f"batch_dim={batch_dim!r} is {taken[batch_dim]} of this vector; name the batch dim "
-            "otherwise, such as 'sample'."
+            f"batch_dim {batch_dim!r} is a dim or variable of the vector's labeled form; name "
+            "the batch dim for what it indexes, such as 'sample'."
         )
 
 
-def check_batch_labels_name_the_sipnet_parameter_fields_batch_dims(
-    batch_dim_names: tuple[str, ...], requested: Mapping[str, Any]
-) -> None:
-    """*batch* names exactly the SIPNET parameter fields' batch dims."""
-    missing = [d for d in batch_dim_names if d not in requested]
-    extra = [d for d in requested if d not in batch_dim_names]
-    if missing or extra:
+def check_vector_has_a_parameter(parameters: tuple[Parameter, ...]) -> None:
+    """A vector holds at least one parameter."""
+    if not parameters:
+        raise ValueError("a parameter vector needs at least one parameter; give parameters=[...].")
+
+
+def check_parameter_names_are_unique(names: tuple[str, ...]) -> None:
+    """Every parameter has its own name, which keys theta's segments."""
+    check_names_are_unique(names, message_name="the parameter names")
+
+
+def check_name_is_usable(name: Any, what: str, *, reserved: bool = True) -> None:
+    """*name* is ``lower_case_with_underscores`` and not a Python keyword,
+    which values are passed by; and, when *reserved*, none of
+    :data:`RESERVED_NAMES`, which the labeled form's coordinates take."""
+    if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name) or keyword.iskeyword(name):
         raise ValueError(
-            f"the SIPNET parameter fields have the batch dims {list(batch_dim_names)} and "
-            f"batch= names {list(requested)}; pass batch={{dim: label}} for each of their "
-            "batch dims and no other."
+            f"{what} is named {name!r}; a name is lower_case_with_underscores and not a Python "
+            "keyword, such as 'base_soil_respiration'."
         )
-
-
-def check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields: xr.Dataset) -> None:
-    """The SIPNET parameter fields have a ``site`` dim for :func:`sipnet_overrides`."""
-    if SITE in sipnet_parameter_fields.dims:
-        return
-    if SITE in sipnet_parameter_fields.coords and sipnet_parameter_fields[SITE].ndim == 0:
-        site = sipnet_parameter_fields[SITE].values.item()
+    if reserved and name in RESERVED_NAMES:
         raise ValueError(
-            f"the SIPNET parameter fields were selected to site {site!r} "
-            "alone; sipnet_overrides selects the site itself, so pass them on their site "
-            "dim, as ParameterVector.sipnet_parameter_fields returns them."
-        )
-    raise ValueError(
-        "the SIPNET parameter fields have no site dim; pass them on their site dim, as "
-        "ParameterVector.sipnet_parameter_fields returns them."
-    )
-
-
-def check_batch_label_is_in_the_sipnet_parameter_fields(
-    sipnet_parameter_fields: xr.Dataset, dim: str, label: Any
-) -> None:
-    """The label asked for, a batch label or a site id, is one of theirs on *dim*."""
-    labels = np.asarray(sipnet_parameter_fields[dim].values).tolist()
-    if label not in labels:
-        raise KeyError(
-            f"{dim} {label!r} is not one of the SIPNET parameter fields' {dim} labels "
-            f"({labels[:5]}{', ...' if len(labels) > 5 else ''})."
+            f"{what} is named {name!r}, which a coordinate of the labeled form takes; choose "
+            f"a name other than {sorted(RESERVED_NAMES)}."
         )
 
 
-def check_calibration_fields_are_a_dataset(calibration_fields: Any, message_name: str) -> None:
-    """Fields are an ``xr.Dataset``."""
-    if not isinstance(calibration_fields, xr.Dataset):
-        raise TypeError(
-            f"{message_name} must be an xarray Dataset, got {type(calibration_fields).__name__}; "
-            "pass what ParameterVector.fields returns."
-        )
-
-
-def check_calibration_fields_space_is_given(calibration_fields: xr.Dataset, message_name: str) -> None:
-    """Fields say which space their values are in."""
-    space = calibration_fields.attrs.get("space")
-    if space not in SPACES:
-        raise ValueError(
-            f"{message_name} must carry attrs['space'] in {SPACES}; got {space!r}. Build Fields "
-            "with ParameterVector.fields, or set the attribute to say which space the values "
-            "are in."
-        )
-
-
-def check_calibration_fields_variables_share_the_dims(
-    calibration_fields: xr.Dataset, message_name: str
-) -> None:
-    """Every variable of Fields is on every dim of the Dataset: one grid."""
-    dims = set(map(str, calibration_fields.dims))
-    for name, variable in calibration_fields.data_vars.items():
-        if set(map(str, variable.dims)) != dims:
+def check_names_are_not_reserved(names: Sequence[str], what: str) -> None:
+    """No site covariate or site-labels name is one of :data:`RESERVED_NAMES`,
+    which the labeled form's coordinates take."""
+    for name in names:
+        if name in RESERVED_NAMES:
             raise ValueError(
-                f"{message_name} variable {str(name)!r} has dims {variable.dims}; every variable "
-                f"of Fields is on the Dataset's dims {tuple(calibration_fields.dims)}, so "
-                "broadcast it, or build the Fields with ParameterVector.fields."
+                f"the {what} {name!r} is a reserved name; rename it to something other than "
+                f"{sorted(RESERVED_NAMES)}."
             )
 
 
-def check_sipnet_overrides_are_a_mapping(sipnet_overrides: Any, message_name: str) -> None:
-    """SIPNET overrides are a mapping."""
-    if not isinstance(sipnet_overrides, Mapping):
-        raise TypeError(
-            f"{message_name} must be a mapping from SIPNET parameter name to value, got "
-            f"{type(sipnet_overrides).__name__}; pass what sipnet_overrides returns."
+def check_names_are_distinct(
+    parameter_names: tuple[str, ...], other_names: Mapping[str, Sequence[str]]
+) -> None:
+    """No parameter shares a name with a site covariate or site-labels name,
+    nor those with each other, since all are read by name."""
+    seen = {name: "parameter" for name in parameter_names}
+    for what, names in other_names.items():
+        for name in names:
+            if name in seen:
+                raise ValueError(
+                    f"{name!r} is both a {seen[name]} and a {what}; they are read by name, so "
+                    "rename one."
+                )
+            seen[name] = what
+
+
+def check_parameter_dim_is_the_vectors(parameter: Parameter, parameter_vector: ParameterVector) -> None:
+    """A parameter's dim is ``"site"`` or a site-labels name of the vector."""
+    if parameter.dim is not None and parameter.dim != SITE and parameter.dim not in parameter_vector.site_labels:
+        raise ValueError(
+            f"parameter {parameter.name!r} varies over {parameter.dim!r}, which is neither "
+            f"'site' nor a site-labels name of the vector ({sorted(parameter_vector.site_labels)}); "
+            "give its site labels as site_labels={...}."
         )
 
 
-def check_sipnet_override_is_a_number(name: str, value: Any, message_name: str) -> None:
-    """One SIPNET override is a number, not a boolean."""
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
-        raise TypeError(
-            f"{message_name}[{name!r}] must be a number, got {type(value).__name__}; one run "
-            "takes one value per SIPNET parameter."
+def check_simplex_has_two_natural_names(parameter: Parameter) -> None:
+    """A simplex parameter names at least two natural numbers."""
+    if parameter.support.kind == "simplex" and parameter.natural_size < 2:
+        raise ValueError(
+            f"parameter {parameter.name!r} is on the simplex, which needs at least two natural "
+            "numbers; give natural_names=(...) with two or more names."
         )
+
+
+def check_bijector_maps_onto_the_support(parameter: Parameter) -> None:
+    """A custom bijector maps the probe points into the support's closure,
+    and the support's default image of them back to finite theta that it maps
+    there again."""
+    probes = jnp.asarray(
+        probe_points(parameter.unconstrained_shape, unconstrained_size=parameter.unconstrained_size)
+    )
+    support = parameter.support
+    # The closure: a bijector may round onto the boundary at the outer probes
+    # (IteratedSigmoidCentered does at 20), which is float64, not a wrong map.
+    into = _in_closure(support, parameter.bijector.forward(probes))
+    targets = support.bijector().forward(jnp.array(probes))
+    back = parameter.bijector.inverse(targets)
+    # A fresh copy: TFP caches the pair, and would hand targets back unchanged.
+    again = parameter.bijector.forward(jnp.array(np.asarray(back)))
+    if not (
+        bool(jnp.all(into))
+        and bool(jnp.all(jnp.isfinite(back)))
+        and np.allclose(again, targets, rtol=1e-6, atol=1e-9)
+    ):
+        raise ValueError(
+            f"parameter {parameter.name!r}: its bijector {parameter.bijector.name!r} does not map "
+            f"theta onto the support {support.name!r} at the probe points; give a bijector from "
+            "R^e onto the support, or omit bijector= to take the support's own."
+        )
+
+
+def check_support_is_valid(support: Support) -> None:
+    """A support is a known kind, with finite ``low < high`` exactly when it
+    is an interval."""
+    if support.kind not in ("real", "positive", "interval", "simplex"):
+        raise ValueError(
+            f"a support is 'real', 'positive', 'interval' or 'simplex', got {support.kind!r}; "
+            "use REAL, POSITIVE, OPEN_UNIT_INTERVAL, OpenInterval(low, high) or SIMPLEX."
+        )
+    ends = (support.low, support.high)
+    if support.kind != "interval":
+        if ends != (None, None):
+            raise ValueError(f"a {support.kind} support has no ends, got {ends}; drop them.")
+        return
+    if (
+        None in ends
+        or not np.isfinite(ends).all()
+        or not support.low < support.high
+    ):
+        raise ValueError(
+            f"an interval support needs finite ends with low < high, got {ends}; use "
+            "OpenInterval(low, high)."
+        )
+
+
+def check_theta_ends_in_the_dimension(shape: tuple[int, ...], dimension: int) -> None:
+    """Theta's last axis has ``D`` entries."""
+    if not shape or shape[-1] != dimension:
+        raise ValueError(
+            f"theta must end in the vector's dimension {dimension}, got shape {shape}; pass "
+            "(..., D)."
+        )
+
+
+def check_parameter_names_are_held(names: Sequence[str], parameter_vector: ParameterVector) -> None:
+    """Every name is one of the vector's parameters."""
+    for name in names:
+        if name not in parameter_vector.parameter_names:
+            raise KeyError(
+                f"the vector has no parameter {name!r}; name one of "
+                f"{truncated(list(parameter_vector.parameter_names))}."
+            )
+
+
+def check_dim_is_the_vectors(dim_name: Any, parameter_vector: ParameterVector) -> None:
+    """*dim_name* is ``"site"`` or one of the vector's site-labels names."""
+    if dim_name not in parameter_vector.site_labels:
+        raise KeyError(
+            f"the vector has no dim {dim_name!r}; name 'site' or one of its site-labels names "
+            f"{sorted(parameter_vector.site_labels)}."
+        )
+
+
+def check_dim_label_has_a_dim(dim_label: Any, dim: Any, parameter_name: Any) -> None:
+    """A dim label is selected together with its dim or its parameter, since
+    labels of two dims may coincide."""
+    if dim_label is not None and dim is None and parameter_name is None:
+        raise ValueError(
+            f"dim_label={dim_label!r} needs dim= or parameter_name=, since two dims may share a "
+            "label."
+        )
+
+
+def check_selector_is_in_the_index(level: str, value: Any, values: pd.Index) -> None:
+    """A selector names a value of its index level."""
+    if value not in set(values):
+        raise KeyError(
+            f"no entry of theta has {level} {value!r}; name one of {truncated(sorted(set(values), key=str))}."
+        )
+
+
+def check_dim_label_is_the_dims(dim_label: Any, labels: Sequence[Any], dim: str | None) -> None:
+    """A dim label is one of its dim's, compared with the dim's own type, so a
+    site id is never matched by a string."""
+    if not any(_same_label(label, dim_label) for label in labels):
+        raise KeyError(
+            f"{dim_label!r} is not a dim label of {dim!r}; name one of {truncated(list(labels))}."
+        )
+
+
+def check_selector_is_not_no_dim(dim: Any, dim_label: Any) -> None:
+    """``NO_DIM`` marks entries without a dim and selects nothing."""
+    if NO_DIM in (dim, dim_label):
+        raise KeyError(
+            "NO_DIM marks the entries of parameters without a dim and is not a selector; "
+            "select them with parameter_name=."
+        )
+
+
+def check_dim_labels_select_a_site_labels_dim(name: Any, parameter_vector: ParameterVector) -> None:
+    """``dim_labels=`` names a site-labels dim; sites are selected with
+    ``sites=``."""
+    if name not in parameter_vector.site_labels:
+        raise KeyError(
+            f"dim_labels names {name!r}, which is not a site-labels name of the vector "
+            f"({sorted(parameter_vector.site_labels)}); select sites with sites=."
+        )
+
+
+def check_selection_keeps_a_site(kept: np.ndarray) -> None:
+    """A selection keeps at least one site."""
+    if not kept.any():
+        raise ValueError("the selection keeps no site; widen sites= or dim_labels=.")
+
+
+def check_site_ids_are_ascending(site_ids: np.ndarray) -> None:
+    """The site table lists its sites in ascending ``site_id``, which is the
+    ``site`` dim's order."""
+    if np.any(np.diff(site_ids) <= 0):
+        raise ValueError(
+            "the site table's site_id must be ascending; sort it with "
+            "site_table.sort_values('site_id')."
+        )
+
+
+def check_site_covariate_is_a_column(name: str, table: pd.DataFrame) -> None:
+    """A named site covariate is a column of the site table."""
+    if name not in table.columns:
+        raise KeyError(
+            f"site covariate {name!r} is not a column of the site table; join it on first, or "
+            "drop it from site_covariate_names."
+        )
+
+
+def check_site_covariate_is_float64(name: str, column: pd.Series) -> None:
+    """A named site covariate is ``float64``: a code or a string is no
+    covariate until it is deliberately converted."""
+    if column.dtype != np.float64:
+        raise TypeError(
+            f"site covariate {name!r} is {column.dtype}, not float64; convert it deliberately "
+            "(a class code is not a quantity), or drop it from site_covariate_names."
+        )
+
+
+def check_site_table_values_are_finite(table: pd.DataFrame, names: Sequence[str]) -> None:
+    """``lon``, ``lat`` and every site covariate are finite at every site."""
+    for name in names:
+        values = table[name].to_numpy()
+        if not np.isfinite(values).all():
+            sites = table[SITE_ID].to_numpy()[~np.isfinite(values)].tolist()
+            raise ValueError(
+                f"the site table's {name!r} is not finite at site(s) {truncated(sites)}; drop "
+                "those sites or fill the column first."
+            )
+
+
+def check_site_labels_table_has_the_columns(name: str, table: pd.DataFrame) -> None:
+    """A site-labels table has ``site_id`` and ``label``."""
+    missing = [c for c in (SITE_ID, LABEL_COLUMN) if c not in table.columns]
+    if missing:
+        raise ValueError(
+            f"site labels {name!r} lack the column(s) {missing}; pass the table "
+            "load_site_labels() returns."
+        )
+
+
+def check_site_labels_label_every_site(name: str, labeled: pd.Index, site_ids: pd.Series) -> None:
+    """A site-labels table labels every site of the vector."""
+    missing = sorted(set(site_ids.tolist()) - set(labeled.tolist()))
+    if missing:
+        raise ValueError(
+            f"site labels {name!r} give no label for site(s) {truncated(missing)}; select sites "
+            "the site labels cover."
+        )
+
+
+def check_site_labels_are_one_per_site(name: str, labels: Sequence[Any], n_sites: int) -> None:
+    """Plain site labels are one per site."""
+    if len(labels) != n_sites:
+        raise ValueError(
+            f"site labels {name!r} hold {len(labels)} labels for {n_sites} sites; give one per "
+            "site, in site order."
+        )
+
+
+def check_site_labels_are_strings(name: str, labels: Sequence[Any]) -> None:
+    """Every site's label is a string: a missing label leaves a site on no
+    dim label, and a number would be read as a site id."""
+    bad = [label for label in labels if not isinstance(label, str)]
+    if bad:
+        raise TypeError(
+            f"site labels {name!r} hold labels that are not strings, such as {bad[0]!r}; every "
+            "site needs a string label."
+        )
+
+
+def check_values_are_in_the_support(parameter: Parameter, values: Array) -> None:
+    """Natural values read from the labeled form lie in their support."""
+    inside = parameter.support.contains(values)
+    if not bool(jnp.all(inside)):
+        raise ValueError(
+            f"parameter {parameter.name!r} holds values outside its support "
+            f"{parameter.support.name!r}; no theta maps to them."
+        )
+
+
+def check_variable_is_on_the_parameters_dims(
+    variable: xr.DataArray, name: str, dims: tuple[str, ...]
+) -> None:
+    """A variable is on exactly its parameter's batch and dim, which would
+    otherwise be broadcast or dropped silently."""
+    if set(variable.dims) != set(dims):
+        raise ValueError(
+            f"the parameter dataset's {name!r} is on {variable.dims}, but its parameter is on "
+            f"{dims}; the two vectors do not define the parameter alike."
+        )
+
+
+def check_natural_values_are_a_mapping(natural_values: Any) -> None:
+    if not isinstance(natural_values, Mapping):
+        raise TypeError(
+            f"natural values are a mapping of parameter names to arrays, got "
+            f"{type(natural_values).__name__}."
+        )
+
+
+def check_natural_value_ends_in_the_shape(
+    name: str, shape: tuple[int, ...], expected: tuple[int, ...]
+) -> None:
+    """A natural value ends in its parameter's shape, which would otherwise
+    broadcast silently."""
+    if len(shape) < len(expected) or shape[len(shape) - len(expected):] != expected:
+        raise ValueError(
+            f"the natural value of {name!r} has shape {shape}, which does not end in the "
+            f"parameter's {expected}."
+        )
+
+
+def check_natural_values_share_a_leading_shape(leads: Sequence[tuple[str, tuple[int, ...]]]) -> None:
+    """Every natural value has one leading shape, one per draw."""
+    shapes = {lead for _, lead in leads}
+    if len(shapes) > 1:
+        raise ValueError(
+            f"the natural values have different leading shapes {dict(leads)}; give every "
+            "parameter the same draws."
+        )
+
+
+def check_parameter_dataset_is_a_dataset(parameter_dataset: Any) -> None:
+    if not isinstance(parameter_dataset, xr.Dataset):
+        raise TypeError(
+            f"a parameter dataset is an xarray Dataset, got {type(parameter_dataset).__name__}; "
+            "build it with ParameterVector.dataset."
+        )
+
+
+def check_parameter_dataset_variable_is_finite(name: str, variable: xr.DataArray) -> None:
+    """A labeled form's variable holds no missing or non-finite value."""
+    values = np.asarray(variable.values, dtype=np.float64)
+    if not np.isfinite(values).all():
+        raise ValueError(
+            f"the parameter dataset's {name!r} holds a missing or non-finite value, and no theta "
+            "does; drop or fill those draws first."
+        )
+
+
+# ── the supports ──────────────────────────────────────────────────────────────
+# Last, since building a Support runs its check, defined above.
+
+#: The real line, per number; its bijector is the identity.
+REAL = Support("real")
+
+#: :math:`(0, \\infty)`; its bijector is :math:`\\exp`.
+POSITIVE = Support("positive")
+
+#: :math:`(0, 1)`, open, as pySIPNET's ``ParameterDomain.OPEN_UNIT_INTERVAL``
+#: is; its bijector is ``tfb.Sigmoid()``.
+OPEN_UNIT_INTERVAL = Support("interval", 0.0, 1.0)
+
+#: The open simplex: ``k`` positive numbers summing to 1; its bijector is
+#: ``tfb.SoftmaxCentered()``.
+SIMPLEX = Support("simplex")

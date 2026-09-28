@@ -1,25 +1,12 @@
 """Tests for the parameter vector.
 
-The prior helpers are checked against the quantities they claim to set
-(median, interval, refusal of bad samples). The bijectors and the log prior
-are checked by round trips and against a finite-difference Jacobian,
-calibration parameter by calibration parameter, so the identity
-``log_prior`` rests on is verified rather than trusted. Each construction
-check is provoked once. The three value representations are checked against
-their data models and each other: Fields and Flat round trip in both spaces,
-``flat`` refuses what no Flat vector can be, and the SIPNET parameter fields agree with
-Fields. The example vector is pushed through pySIPNET: prior draws land in
-every domain, one draw assembles into a validated ``SIPNETParameters``, and
-one draw runs the bundled Niwot fixture when the binary is present. The
-module docstring's worked session is executed against the real site table
-and site labels when they are present.
+The shapes of every form are checked against the module's table, theta
+round trips through natural values and the labeled form, a smaller vector
+reads a larger one's labeled form, and the per-site view is a collection of
+fields. Each construction and entry-point check is provoked once.
 """
 
 from __future__ import annotations
-
-import dataclasses
-import itertools
-import warnings
 
 import jax
 import jax.numpy as jnp
@@ -27,2370 +14,539 @@ import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from pysipnet.build import find_binary, missing_binary_message
-from pysipnet.parameters.base import ParameterDomain
-from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import as_sipnet_parameter_fields, niwot_parameters, site_table_of
-from sipnet_calibration import parameter_vector as module
-from sipnet_calibration.conventions import LAT_ATTRIBUTES, LON_ATTRIBUTES
-from sipnet_calibration.fields import validate_sipnet_parameter_fields
+from conftest import site_table_of
+from sipnet_calibration.fields import validate_field
 from sipnet_calibration.parameter_vector import (
-    ALLOCATION,
-    DOMAIN_CHECK_CORNERS,
-    PHOTOSYNTHESIS,
-    CalibrationParameter,
-    FixedParameter,
-    Identity,
+    NO_DIM,
+    OPEN_UNIT_INTERVAL,
+    POSITIVE,
+    REAL,
+    SIMPLEX,
+    OpenInterval,
+    Parameter,
     ParameterVector,
-    PhotosynthesisMap,
-    SimplexMap,
-    example_parameter_vector,
-    log_normal,
-    log_normal_from_interval,
-    log_normal_from_samples,
-    logit_normal,
-    logit_normal_from_interval,
-    logit_normal_from_samples,
-    product_transformed_gaussian_prior,
-    sipnet_overrides,
-    validate_calibration_fields,
-    softmax_normal,
+    Support,
+    check_parameter_vectors_share_a_layout,
+    probe_points,
+    validate_natural_values,
+    validate_parameter_dataset,
 )
 
-tfd, tfb = tfp.distributions, tfp.bijectors
-
-
-
+tfb = tfp.bijectors
 
 SITES = (1, 27, 4711)
 PFT = ("deciduous", "conifer", "deciduous")
-FLAT_SPECS = {path.split(".", 1)[1]: spec for path, spec in PARAMETER_SPECS.items()}
+ALLOCATION_NAMES = ("leaf", "wood", "fine_root", "coarse_root")
+
+
+def parameters() -> list[Parameter]:
+    return [
+        Parameter(name="capacity", support=POSITIVE, units="nmol g-1 s-1"),
+        Parameter(name="share", support=OPEN_UNIT_INTERVAL, units="1"),
+        Parameter(
+            name="allocation", support=SIMPLEX, units="1", dim="pft", natural_names=ALLOCATION_NAMES
+        ),
+        Parameter(name="soil_carbon", support=POSITIVE, units="g m-2", dim="site"),
+        Parameter(name="q10", support=OpenInterval(1.0, 5.0), units="1", dim="pft"),
+        Parameter(name="offsets", support=REAL, units=None, natural_names=("a", "b")),
+    ]
+
+
+def site_table(**covariates: list[float]) -> pd.DataFrame:
+    return site_table_of(*SITES).assign(**covariates)
 
 
 @pytest.fixture(scope="module")
-def example() -> ParameterVector:
-    return example_parameter_vector(sites=SITES, pft=PFT)
+def vector() -> ParameterVector:
+    return ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": PFT})
 
 
 @pytest.fixture(scope="module")
-def theta(example) -> jax.Array:
-    return example.sample(jax.random.key(0), n=8)
+def theta(vector) -> jax.Array:
+    return jax.random.normal(jax.random.key(0), (5, vector.dimension))
 
 
-def in_domain(domain: ParameterDomain, values: np.ndarray) -> bool:
-    return module._in_domain(domain, jnp.asarray(values))
+# ── shapes and the index ──────────────────────────────────────────────────────
 
 
-# ── x64 ──────────────────────────────────────────────────────────────────────
-
-
-def test_import_enables_float64():
-    assert jax.config.jax_enable_x64
-    assert log_normal(median=1.0, geometric_sd=2.0).sample(seed=jax.random.key(0)).dtype == jnp.float64
-
-
-# ── prior helpers ────────────────────────────────────────────────────────────
-
-
-def test_log_normal_median_and_geometric_sd_are_what_they_say():
-    prior = log_normal(median=0.01, geometric_sd=3.0)
-    assert float(prior.quantile(0.5)) == pytest.approx(0.01)
-    z = float(tfd.Normal(0.0, 1.0).quantile(0.975))
-    assert float(prior.quantile(0.975)) == pytest.approx(0.01 * 3.0**z)
-    assert isinstance(prior.distribution, tfd.Normal)
-    assert isinstance(prior.bijector, tfb.Exp)
-
-
-def test_log_normal_refuses_non_multiplying_spread():
-    with pytest.raises(ValueError, match="exceed 1"):
-        log_normal(median=1.0, geometric_sd=0.5)
-    with pytest.raises(ValueError, match="positive"):
-        log_normal(median=-1.0, geometric_sd=2.0)
-
-
-def test_log_normal_from_interval_hits_the_interval_exactly():
-    prior = log_normal_from_interval(lower=0.004, upper=0.020)
-    assert float(prior.quantile(0.025)) == pytest.approx(0.004)
-    assert float(prior.quantile(0.975)) == pytest.approx(0.020)
-    assert float(prior.quantile(0.5)) == pytest.approx(np.sqrt(0.004 * 0.020))
-
-
-def test_log_normal_from_samples_fits_and_refuses_bad_values():
-    rng = np.random.default_rng(0)
-    x = np.exp(rng.normal(-2.0, 0.5, size=20_000))
-    prior = log_normal_from_samples(x)
-    assert float(prior.distribution.loc) == pytest.approx(-2.0, abs=0.02)
-    assert float(prior.distribution.scale) == pytest.approx(0.5, abs=0.02)
-    with pytest.raises(ValueError, match="2 of 5 samples"):
-        log_normal_from_samples([1.0, 2.0, -3.0, np.nan, 4.0])
-
-
-def test_logit_normal_median_and_interval():
-    prior = logit_normal(median=0.3, logit_sd=0.7)
-    assert float(prior.quantile(0.5)) == pytest.approx(0.3)
-    assert isinstance(prior, tfd.LogitNormal)
-    prior = logit_normal_from_interval(lower=0.1, upper=0.4, mass=0.9)
-    assert float(prior.quantile(0.05)) == pytest.approx(0.1)
-    assert float(prior.quantile(0.95)) == pytest.approx(0.4)
-    with pytest.raises(ValueError, match="inside \\(0, 1\\)"):
-        logit_normal(median=1.0, logit_sd=1.0)
-
-
-def test_logit_normal_from_samples_refuses_the_boundary():
-    with pytest.raises(ValueError, match="outside the support"):
-        logit_normal_from_samples([0.2, 0.5, 1.0])
-    rng = np.random.default_rng(1)
-    x = 1 / (1 + np.exp(-rng.normal(-0.8, 0.4, size=20_000)))
-    prior = logit_normal_from_samples(x)
-    assert float(prior.distribution.loc) == pytest.approx(-0.8, abs=0.02)
-    assert float(prior.distribution.scale) == pytest.approx(0.4, abs=0.02)
-
-
-def test_softmax_normal_is_centered_and_on_the_simplex():
-    center = np.array([0.18, 0.40, 0.07, 0.35])
-    prior = softmax_normal(center=center, logit_sd=0.5)
-    assert tuple(prior.event_shape) == (4,)
-    np.testing.assert_allclose(prior.bijector.forward(prior.distribution.loc), center, rtol=1e-12)
-    draws = np.asarray(prior.sample(1000, seed=jax.random.key(2)))
-    assert (draws > 0).all()
-    np.testing.assert_allclose(draws.sum(axis=-1), 1.0, atol=1e-12)
-    with pytest.raises(ValueError, match="sum to 1"):
-        softmax_normal(center=[0.5, 0.6], logit_sd=1.0)
-
-
-def test_softmax_normal_accepts_one_center_per_group():
-    prior = softmax_normal(center=[[0.2, 0.3, 0.5], [0.6, 0.3, 0.1]], logit_sd=0.5)
-    assert tuple(prior.batch_shape) == (2,)
-    assert tuple(prior.event_shape) == (3,)
-    np.testing.assert_allclose(prior.distribution.stddev(), 0.5)
-    per_element = softmax_normal(center=[0.25] * 4, logit_sd=[0.1, 0.2, 0.3])
-    np.testing.assert_allclose(per_element.distribution.stddev(), [0.1, 0.2, 0.3])
-    with pytest.raises(ValueError, match="one value per unconstrained element"):
-        softmax_normal(center=[0.25] * 4, logit_sd=[0.1, 0.2])
-
-
-def test_product_prior_is_independent_with_a_gaussian_base():
-    a = log_normal(median=100.0, geometric_sd=1.5)
-    b = logit_normal(median=0.2, logit_sd=0.4)
-    prior = product_transformed_gaussian_prior(capacity=a, share=b)
-    assert isinstance(prior.distribution, tfd.MultivariateNormalDiag)
-    assert tuple(prior.event_shape) == (2,)
-    x = jnp.array([120.0, 0.25])
-    assert float(prior.log_prob(x)) == pytest.approx(float(a.log_prob(x[0]) + b.log_prob(x[1])))
-    with pytest.raises(TypeError, match="Normal base"):
-        product_transformed_gaussian_prior(a=a, b=tfd.Beta(2.0, 3.0))
-    with pytest.raises(ValueError, match="at least two"):
-        product_transformed_gaussian_prior(a=a)
-
-
-# ── SIPNET maps ─────────────────────────────────────────────
-
-
-def test_photosynthesis_map_inverts_the_identifiable_pair():
-    a_max, a_max_frac, fol_resp, c_frac_leaf = 58.0, 0.76, 0.17, 0.466
-    capacity = a_max * (a_max_frac + fol_resp) / c_frac_leaf
-    share = fol_resp / (a_max_frac + fol_resp)
-    out = PHOTOSYNTHESIS(
-        jnp.array([capacity, share]),
-        {
-            "daily_mean_photosynthesis_fraction": jnp.float64(a_max_frac),
-            "leaf_carbon_fraction": jnp.float64(c_frac_leaf),
-        },
-    )
-    assert float(out["max_photosynthesis_rate"]) == pytest.approx(a_max)
-    assert float(out["foliar_respiration_fraction"]) == pytest.approx(fol_resp)
-    assert PHOTOSYNTHESIS.component_names == ("capacity", "respiration_share")
-    assert set(PHOTOSYNTHESIS.sipnet_parameter_names_read) == set(PhotosynthesisMap().sipnet_parameter_names_read)
-
-
-def test_simplex_map_writes_all_but_the_residual():
-    out = ALLOCATION(jnp.array([0.1, 0.2, 0.3, 0.4]), {})
-    assert set(out) == {"leaf_allocation", "wood_allocation", "fine_root_allocation"}
-    assert ALLOCATION.component_names[-1] == "coarse_root_allocation"
-    assert isinstance(ALLOCATION, SimplexMap) and ALLOCATION.sipnet_parameter_names_read == ()
-
-
-def test_identity_map_shorthand():
-    parameter = CalibrationParameter(
-        name="w", prior=log_normal(median=1.0, geometric_sd=2.0),
-        sipnet_map="wood_turnover_rate", provenance="test",
-    )
-    assert isinstance(parameter.sipnet_map, Identity)
-    assert parameter.sipnet_map.sipnet_parameter_names_written == ("wood_turnover_rate",)
-    assert parameter.element_labels == ("log(wood_turnover_rate)",)
-    scaled = CalibrationParameter(
-        name="t", prior=tfd.Uniform(jnp.float64(1.0), jnp.float64(5.0)),
-        sipnet_map="optimum_photosynthesis_temperature", provenance="x",
-    )
-    assert scaled.element_labels == ("logit(optimum_photosynthesis_temperature in (1, 5))",)
-
-
-# ── the specs and their checks ───────────────────────────────────────────────
-
-
-def test_calibration_parameter_refuses_bad_name_parameter_and_provenance():
-    prior = log_normal(median=1.0, geometric_sd=2.0)
-    with pytest.raises(ValueError, match="lower_case_with_underscores"):
-        CalibrationParameter(name="BadName", prior=prior, sipnet_map="wood_turnover_rate", provenance="x")
-    with pytest.raises(ValueError, match="not pySIPNET parameter names"):
-        CalibrationParameter(name="a", prior=prior, sipnet_map="aMax", provenance="x")
-    with pytest.raises(ValueError, match="provenance is empty"):
-        CalibrationParameter(name="a", prior=prior, sipnet_map="wood_turnover_rate", provenance="  ")
-
-
-def test_calibration_parameter_refuses_component_count_mismatch():
-    with pytest.raises(ValueError, match="names 4 components"):
-        CalibrationParameter(
-            name="a", prior=softmax_normal(center=[0.5, 0.5], logit_sd=1.0),
-            sipnet_map=ALLOCATION, provenance="x",
-        )
-
-
-def test_fixed_parameter_checks_domain_and_shape():
-    with pytest.raises(ValueError, match="outside its pySIPNET domain"):
-        FixedParameter(name="leaf_carbon_fraction", value=1.5, provenance="x")
-    with pytest.raises(ValueError, match="must be a float"):
-        FixedParameter(name="leaf_carbon_fraction", value={"a": 0.4}, provenance="x")
-    with pytest.raises(ValueError, match="must be a mapping"):
-        FixedParameter(name="leaf_carbon_fraction", value=0.4, varies_by="pft", provenance="x")
-    with pytest.raises(ValueError, match="not pySIPNET parameter names"):
-        FixedParameter(name="cFracLeaf", value=0.4, provenance="x")
-
-
-def build(parameters, fixed=(), sites=SITES, site_labels=None, site_table=None):
-    return ParameterVector(
-        parameters=parameters, fixed=fixed, sites=sites, site_table=site_table,
-        site_labels={"pft": PFT} if site_labels is None else site_labels,
-    )
-
-
-def distinct_groups() -> ParameterVector:
-    """A vector whose groups can be told apart: one prior per site and per
-    PFT with distinct medians and spreads, and a per-PFT fixed value."""
-    return ParameterVector(
-        parameters=(
-            CalibrationParameter(
-                name="soil", prior=log_normal(median=[100.0, 200.0, 300.0], geometric_sd=[1.5, 2.0, 2.5]),
-                sipnet_map="soil_carbon", varies_by="site", provenance="test",
-            ),
-            CalibrationParameter(
-                name="turnover", prior=log_normal(median=[0.01, 0.02], geometric_sd=[1.2, 1.3]),
-                sipnet_map="wood_turnover_rate", varies_by="pft", provenance="test",
-            ),
-            CalibrationParameter(
-                name="allocation",
-                prior=softmax_normal(center=[[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]], logit_sd=[0.3, 0.6, 0.9]),
-                sipnet_map=ALLOCATION, varies_by="pft", provenance="test",
-            ),
-        ),
-        fixed=(FixedParameter(
-            name="leaf_carbon_fraction", value={"a": 0.4, "b": 0.5}, varies_by="pft", provenance="test",
-        ),),
-        sites=SITES, site_labels={"pft": ("a", "b", "a")},   # site 27 is "b", the second group
-    )
-
-
-def rate(name="r", parameter="wood_turnover_rate", **kwargs):
-    return CalibrationParameter(
-        name=name, prior=log_normal(median=0.01, geometric_sd=2.0),
-        sipnet_map=parameter, provenance="test", **kwargs,
-    )
-
-
-def test_parameter_vector_refuses_duplicate_names_and_writers():
-    with pytest.raises(ValueError, match="parameters names .* more than once"):
-        build((rate(), rate()))
-    with pytest.raises(ValueError, match="set more than once"):
-        build((rate("a"), rate("b")))
-    with pytest.raises(ValueError, match="set more than once"):
-        build((rate(),), fixed=(FixedParameter(name="wood_turnover_rate", value=0.01, provenance="x"),))
-
-
-def test_parameter_vector_refuses_unfixed_reads_and_missing_site_labels():
-    pair = CalibrationParameter(
-        name="p",
-        prior=product_transformed_gaussian_prior(
-            c=log_normal(median=100.0, geometric_sd=1.5), s=logit_normal(median=0.2, logit_sd=0.4)
-        ),
-        sipnet_map=PHOTOSYNTHESIS, provenance="x",
-    )
-    with pytest.raises(ValueError, match="which are not fixed"):
-        build((pair,))
-    with pytest.raises(ValueError, match="have no site labels"):
-        build((rate(varies_by="landcover"),))
-    with pytest.raises(ValueError, match="one label per site"):
-        build((rate(varies_by="pft"),), site_labels={"pft": ("a", "b")})
-    with pytest.raises(ValueError, match="reserved"):
-        build((rate(),), site_labels={"sample": PFT})
-
-
-def test_calibration_parameter_refuses_unusable_priors_and_sipnet_maps():
-    prior = log_normal(median=1.0, geometric_sd=2.0)
-    with pytest.raises(ValueError, match="rank above 1"):
-        CalibrationParameter(
-            name="a", prior=log_normal(median=np.ones((2, 2)), geometric_sd=2.0),
-            sipnet_map="wood_turnover_rate", provenance="x",
-        )
-    with pytest.raises(ValueError, match="event shape .* rank above 1"):
-        CalibrationParameter(
-            name="a", prior=tfd.Independent(tfd.Normal(jnp.zeros((2, 3)), jnp.float64(1.0)), 2),
-            sipnet_map="optimum_photosynthesis_temperature", provenance="x",
-        )
-    with pytest.raises(ValueError, match="not float64"):
-        CalibrationParameter(name="a", prior=tfd.LogNormal(0.0, 1.0), sipnet_map="wood_turnover_rate", provenance="x")
-    with pytest.raises(TypeError, match="must be a TFP distribution"):
-        CalibrationParameter(name="a", prior=tfb.Exp(), sipnet_map="wood_turnover_rate", provenance="x")
-    with pytest.raises(TypeError, match="must be a SIPNETMap"):
-        CalibrationParameter(name="a", prior=prior, sipnet_map={"writes": ()}, provenance="x")
-    mixture = tfd.MixtureSameFamily(
-        tfd.Categorical(probs=jnp.array([0.5, 0.5])), tfd.LogNormal(jnp.array([0.0, 1.0]), jnp.float64(1.0))
-    )
-    with pytest.raises(ValueError, match="no default event-space bijector"):
-        CalibrationParameter(name="a", prior=mixture, sipnet_map="soil_carbon", provenance="x")
-    # ... whereas wrapping it in an explicit bijector is accepted.
-    wrapped = CalibrationParameter(
-        name="a", prior=tfd.TransformedDistribution(mixture, tfb.Identity()),
-        sipnet_map="soil_carbon", provenance="x",
-    )
-    assert wrapped.bijector is not None
-
-
-def test_parameter_vector_refuses_bad_sites_and_site_labels():
-    with pytest.raises(TypeError, match="float"):
-        build((rate(),), sites=(1.5, 27.0, 4711.0))
-    with pytest.raises(TypeError, match="float"):
-        build((rate(),), sites=np.array([1.0, 27.0, 4711.0]))
-    with pytest.raises(TypeError, match="must be an integer"):
-        build((rate(),), sites=("1", 27, 4711))
-    assert build((rate(),), sites=np.array([1, 27, 4711])).sites == SITES
-    assert build((rate(),), sites=jnp.array([1, 27, 4711])).sites == SITES
-    assert build((rate(),), sites=xr.DataArray([1, 27, 4711], dims="site")).sites == SITES
-    with pytest.raises(TypeError, match="sequence of one label per site"):
-        build((rate(varies_by="pft"),), site_labels={"pft": "abc"})
-    assert build((rate(varies_by="pft"),), site_labels={"pft": np.array(PFT)}).group_labels("pft") == ("conifer", "deciduous")
-    with pytest.raises(ValueError, match="collide with a calibration parameter or SIPNET parameter"):
-        build((rate(),), site_labels={"pft": PFT, "wood_turnover_rate": (1, 2, 3)})
-    with pytest.raises(ValueError, match="collide"):
-        build((rate(name="landcover"),), site_labels={"pft": PFT, "landcover": (1, 2, 3)})
-
-
-def test_parameter_vector_refuses_wrong_prior_batch_and_fixed_coverage():
-    per_site = CalibrationParameter(
-        name="s", prior=log_normal(median=np.ones(2), geometric_sd=2.0),
-        sipnet_map="soil_carbon", varies_by="site", provenance="x",
-    )
-    with pytest.raises(ValueError, match="batch shape \\(2,\\)"):
-        build((per_site,))
-    with pytest.raises(ValueError, match="missing \\['deciduous'\\]"):
-        build(
-            (rate(),),
-            fixed=(FixedParameter(
-                name="leaf_carbon_fraction", value={"conifer": 0.5}, varies_by="pft", provenance="x",
-            ),),
-        )
-    with pytest.raises(ValueError, match="ascending"):
-        build((rate(),), sites=(27, 1, 4711))
-
-
-def test_parameter_vector_refuses_a_transform_that_leaves_the_domain():
-    # A Normal is not a TransformedDistribution: its default bijector is the
-    # identity, so theta = -12 writes a negative rate.
-    normal = CalibrationParameter(
-        name="n", prior=tfd.Normal(jnp.float64(0.01), jnp.float64(0.005)),
-        sipnet_map="wood_turnover_rate", provenance="x",
-    )
-    with pytest.raises(ValueError, match="outside its pySIPNET domain 'positive'"):
-        build((normal,))
-    # Whereas the same Normal on a real-domain parameter is fine, and has no
-    # analytic moments through the identity? It does: the base is itself.
-    fine = CalibrationParameter(
-        name="n", prior=tfd.Normal(jnp.float64(20.0), jnp.float64(5.0)),
-        sipnet_map="optimum_photosynthesis_temperature", provenance="x",
-    )
-    p = build((fine,))
-    assert p.dimension == 1
-
-
-def test_domain_check_corners_are_far_but_finite():
-    assert DOMAIN_CHECK_CORNERS == (-12.0, 0.0, 12.0)
-    assert np.isfinite(np.exp(12.0)) and 0 < 1 / (1 + np.exp(12.0)) < 1e-5
-
-
-def test_domain_check_looks_at_the_corners_not_only_the_center():
-    # In domain at theta = 0 (the value 0.5), out of it at theta = +-12.
-    inside_at_center = CalibrationParameter(
-        name="n", prior=tfd.Normal(jnp.float64(0.5), jnp.float64(0.1)),
-        sipnet_map="leaf_off_fall_fraction", provenance="x",
-    )
-    with pytest.raises(ValueError, match="outside its pySIPNET domain 'unit_interval'"):
-        build((inside_at_center,))
-
-
-def test_in_domain_predicates_at_the_boundaries():
-    D = ParameterDomain
-    assert in_domain(D.OPEN_UNIT_INTERVAL, np.array([0.5])) and not in_domain(D.OPEN_UNIT_INTERVAL, np.array([0.0]))
-    assert not in_domain(D.OPEN_UNIT_INTERVAL, np.array([1.0]))
-    assert in_domain(D.UNIT_INTERVAL, np.array([0.0, 1.0])) and not in_domain(D.UNIT_INTERVAL, np.array([1.0000001]))
-    assert in_domain(D.NON_NEGATIVE, np.array([0.0])) and not in_domain(D.POSITIVE, np.array([0.0]))
-    for domain in D:
-        assert not in_domain(domain, np.array([np.nan]))
-        assert not in_domain(domain, np.array([np.inf]))
-    with pytest.raises(ValueError, match="finite and positive"):
-        log_normal(median=np.inf, geometric_sd=2.0)
-    with pytest.raises(ValueError, match="more than once"):
-        build((rate(),), sites=(1, 1, 27), site_labels={"pft": PFT})
-
-
-# ── layout ───────────────────────────────────────────────────────────────────
-
-
-def test_layout_dimension_labels_and_slices(example):
-    layout = example.layout
-    assert layout.dimension == 2 + 3 * 2 + 1 * 2 + 1 + 1 * 3 == 14
-    assert layout.parameter_names == (
-        "photosynthesis", "allocation", "base_soil_respiration", "leaf_fall_fraction",
-        "initial_soil_carbon",
-    )
-    assert layout.groups["allocation"] == ("conifer", "deciduous")
-    assert layout.groups["initial_soil_carbon"] == SITES
-    assert layout.dims == {
-        "photosynthesis": "shared", "allocation": "pft", "base_soil_respiration": "pft",
-        "leaf_fall_fraction": "shared", "initial_soil_carbon": "site",
-    }
-    assert layout.entry_labels[0] == "photosynthesis[log(capacity)]"
-    assert layout.entry_labels[2] == "allocation[conifer][alr(leaf_allocation:coarse_root_allocation)]"
-    assert layout.entry_labels[-1] == "initial_soil_carbon[4711]"
-    assert len(layout.entry_labels) == 14
-    deciduous = [layout.entry_labels[i] for i in layout.positions("allocation", group="deciduous")]
-    assert deciduous == [
-        f"allocation[deciduous][{e}]" for e in layout.element_labels["allocation"]
-    ]
-    assert all("[conifer]" in layout.entry_labels[i] for i in layout.positions("allocation", group="conifer"))
-    stops = [layout.slice(c).stop for c in layout.parameter_names]
-    assert stops == [2, 8, 10, 11, 14]
-
-
-def test_layout_index_narrows_by_group_and_element(example):
-    layout = example.layout
-    np.testing.assert_array_equal(layout.positions("allocation", group="deciduous"), [5, 6, 7])
-    np.testing.assert_array_equal(
-        layout.positions("allocation", element="alr(wood_allocation:coarse_root_allocation)"), [3, 6]
-    )
-    np.testing.assert_array_equal(layout.positions("initial_soil_carbon", group=27), [12])
-    with pytest.raises(KeyError, match="not a group of 'allocation'"):
-        layout.positions("allocation", group="grassland")
-    with pytest.raises(KeyError, match="not an element of 'allocation'"):
-        layout.positions("allocation", element="nope")
-    with pytest.raises(KeyError, match="^\"the layout has no calibration parameter 'nope'"):
-        layout.slice("nope")
-
-
-def test_layout_pack_unpack_round_trip(example, theta):
-    parts = example.layout.unpack(theta)
-    assert parts["allocation"].shape == (8, 2, 3)
-    assert parts["initial_soil_carbon"].shape == (8, 3, 1)
-    np.testing.assert_array_equal(example.layout.pack(parts), theta)
-    single = example.layout.unpack(theta[0])
-    assert single["photosynthesis"].shape == (1, 2)
-    with pytest.raises(ValueError, match="exactly the calibration parameters"):
-        example.layout.pack({k: v for k, v in parts.items() if k != "allocation"})
-    with pytest.raises(ValueError, match="theta must be"):
-        example.layout.unpack(theta[:, :5])
-    mismatched = dict(parts)
-    mismatched["allocation"] = parts["allocation"][0]
-    with pytest.raises(ValueError, match="leading dimensions disagree"):
-        example.layout.pack(mismatched)
-
-
-# ── bijectors and the log prior ──────────────────────────────────────────────
-
-
-def test_fields_flat_round_trip_in_both_spaces(example, theta):
-    natural = example.fields(theta)
-    assert natural.attrs == {"representation": "calibration_parameters", "space": "natural"}
-    allocation = natural.filter_by_attrs(parameter="allocation")
-    assert list(allocation.data_vars) == [f"allocation.{c}" for c in ALLOCATION.component_names]
-    np.testing.assert_allclose(allocation.to_array().sum("variable"), 1.0, atol=1e-12)
-    assert (natural["initial_soil_carbon"] > 0).all()
-    np.testing.assert_allclose(example.flat(natural), theta, rtol=1e-10, atol=1e-10)
-    unconstrained = example.fields(theta, space="unconstrained")
-    np.testing.assert_array_equal(example.flat(unconstrained), theta)
-    one = example.fields(theta[0])
-    assert dict(one.sizes) == {"site": 3}
-    np.testing.assert_allclose(example.flat(one), theta[0], rtol=1e-10, atol=1e-10)
-    # A site reads its own class's copy through xarray's own selection.
-    conifer = natural["allocation.leaf_allocation"].sel(site=27)
-    np.testing.assert_array_equal(conifer, natural["allocation.leaf_allocation"].isel(site=1))
-    with pytest.raises(ValueError, match="space must be one of"):
-        example.fields(theta, space="physical")
-
-
-def finite_difference_log_det(forward, theta_c: np.ndarray, size: int, h: float = 1e-6) -> float:
-    """``0.5 * log det(J^T J)`` for the central-difference Jacobian ``J`` of
-    *forward*, the volume element of the map.
-
-    For a scalar or square bijector this is ``log |det J|``. For
-    ``SoftmaxCentered`` the Jacobian is ``k x (k - 1)`` and this is the
-    volume element of the embedded simplex, which is the measure TFP's
-    ``forward_log_det_jacobian`` uses; it differs from the "first ``k - 1``
-    components" convention by the constant ``0.5 * log k``.
-    """
-    columns = []
-    for i in range(size):
-        step = np.zeros(size)
-        step[i] = h
-        columns.append((forward(theta_c + step) - forward(theta_c - step)) / (2 * h))
-    jacobian = np.stack(columns, axis=-1)
-    return 0.5 * float(np.linalg.slogdet(jacobian.T @ jacobian)[1])
-
-
-def test_log_prior_includes_the_jacobian_parameter_by_parameter(example, theta):
-    """``prior.distribution.log_prob(theta_c)`` equals the natural-space log
-    density plus the finite-difference log Jacobian, for every calibration parameter
-    and group, at a sampled point."""
-    parts = example.layout.unpack(theta[0])
-    for parameter in example.parameters:
-        n_groups = example.n_groups(parameter.varies_by)
-        for g in range(n_groups):
-            theta_c = np.asarray(parts[parameter.name][g])
-            natural_prior, unconstrained_prior = parameter.prior, parameter.unconstrained_prior
-            if tuple(natural_prior.batch_shape) == (n_groups,):  # one prior per group
-                natural_prior, unconstrained_prior = natural_prior[g], unconstrained_prior[g]
-
-            def forward(t, parameter=parameter):
-                x = parameter.bijector.forward(jnp.asarray(t if parameter.size > 1 else t[0]))
-                return np.atleast_1d(np.asarray(x))
-
-            natural = forward(theta_c)
-            log_det = finite_difference_log_det(forward, theta_c, parameter.size)
-            natural_lp = float(natural_prior.log_prob(natural if parameter.size > 1 else natural[0]))
-            unconstrained_lp = float(
-                unconstrained_prior.log_prob(jnp.asarray(theta_c if parameter.size > 1 else theta_c[0]))
-            )
-            assert unconstrained_lp == pytest.approx(natural_lp + log_det, rel=1e-6, abs=1e-6), (
-                parameter.name
-            )
-
-
-def test_log_prior_and_unpack_take_a_list_of_tracers_under_jit(example, theta):
-    """One vector given as a list of JAX scalars is read as one vector under jit."""
-    one = theta[0]
-    as_list = lambda a: [a[i] for i in range(example.dimension)]  # noqa: E731
-    expected = example.log_prior(one)
-    np.testing.assert_allclose(jax.jit(lambda a: example.log_prior(as_list(a)))(one), expected)
-    assert jax.jit(lambda a: example.log_prior(as_list(a)))(one).shape == ()
-    unpacked = jax.jit(lambda a: example.layout.unpack(as_list(a)))(one)
-    assert all(part.ndim == 2 for part in unpacked.values())
-
-
-def test_fields_take_a_list_of_jax_scalars_as_one_vector(example, theta):
-    fields = example.fields([theta[0, i] for i in range(example.dimension)])
-    assert "member" not in fields.dims
-
-
-def test_log_prior_is_the_sum_over_parameters_and_jit_compiles(example, theta):
-    parts = example.layout.unpack(theta)
-    expected = np.zeros(8)
-    for parameter in example.parameters:
-        part = parts[parameter.name]
-        if parameter.is_scalar:
-            part = part[..., 0]
-        expected += np.asarray(
-            example._broadcast_unconstrained(parameter).log_prob(part).sum(axis=-1)
-        )
-    np.testing.assert_allclose(example.log_prior(theta), expected, rtol=1e-12)
-    assert example.log_prior(theta).shape == (8,)
-    assert example.log_prior(theta[0]).shape == ()
-    np.testing.assert_allclose(jax.jit(example.log_prior)(theta), expected, rtol=1e-12)
-    grad = jax.grad(example.log_prior)(theta[0])
-    assert grad.shape == (14,) and np.isfinite(grad).all()
-
-
-def test_sample_is_reproducible_and_per_parameter(example):
-    a = example.sample(jax.random.key(3), n=4)
-    b = example.sample(jax.random.key(3), n=4)
-    np.testing.assert_array_equal(a, b)
-    assert a.shape == (4, 14) and a.dtype == jnp.float64
-    # Per-site draws are independent, not one value broadcast over sites.
-    site_segment = a[:, example.layout.slice("initial_soil_carbon")]
-    assert not np.allclose(site_segment[:, 0], site_segment[:, 1])
-    # Calibration parameters get their own keys: standardized draws are neither
-    # identical nor correlated across them.
-    gaussian = example.gaussian_prior()
-    draws = np.asarray(example.sample(jax.random.key(7), n=20_000))
-    standardized = (draws - np.asarray(gaussian.mean)) / np.sqrt(np.diag(np.asarray(gaussian.cov.to_dense())))
-    correlation = np.corrcoef(standardized, rowvar=False)
-    off_block = np.abs(correlation - np.eye(14))
-    assert off_block.max() < 0.03
-    assert not np.allclose(standardized[:, 10], standardized[:, 8])  # leaf_fall vs base_soil_respiration
-
-
-# ── the Gaussian prior ───────────────────────────────────────────────────────────
-
-
-def test_gaussian_prior_matches_the_prior_moments(example):
-    gaussian = example.gaussian_prior()
-    assert gaussian.mean.shape == (14,)
-    assert gaussian.cov.shape == (14, 14)
-    assert gaussian.cov.block_shapes == ((2, 2), (6, 6), (2, 2), (1, 1), (3, 3))
-    draws = np.asarray(example.sample(jax.random.key(4), n=200_000))
-    np.testing.assert_allclose(gaussian.mean, draws.mean(axis=0), atol=0.02)
-    np.testing.assert_allclose(np.diag(gaussian.cov.to_dense()), draws.var(axis=0), rtol=0.03)
-    # Independent calibration parameters: no cross-block covariance.
-    dense = np.asarray(gaussian.cov.to_dense())
-    assert np.all(dense[:2, 2:] == 0) and np.all(dense[8:, :8] == 0)
-    # Exact where the prior is Gaussian in theta.
-    ln = example["base_soil_respiration"].prior
-    np.testing.assert_allclose(gaussian.mean[8:10], float(ln.distribution.loc))
-    np.testing.assert_allclose(dense[8, 8], float(ln.distribution.scale) ** 2)
-
-
-def test_gaussian_prior_equals_the_analytic_unconstrained_moments(example):
-    gaussian = example.gaussian_prior()
-    dense = np.asarray(gaussian.cov.to_dense())
-    for parameter in example.parameters:
-        prior = example._broadcast_unconstrained(parameter)
-        sl = example.layout.slice(parameter.name)
-        np.testing.assert_allclose(gaussian.mean[sl], np.ravel(prior.mean()), rtol=1e-12)
-        if parameter.is_scalar:
-            np.testing.assert_allclose(np.diag(dense)[sl], np.ravel(prior.variance()), rtol=1e-12)
-        else:
-            expected = np.asarray(prior.covariance())
-            block = dense[sl, sl]
-            for g in range(expected.shape[0]):
-                k = parameter.size
-                np.testing.assert_allclose(block[g * k:(g + 1) * k, g * k:(g + 1) * k], expected[g], rtol=1e-12)
-
-
-def test_gaussian_prior_refuses_a_zero_spread():
-    flat = CalibrationParameter(
-        name="z", prior=tfd.LogNormal(jnp.float64(0.0), jnp.float64(0.0)),
-        sipnet_map="wood_turnover_rate", provenance="x",
-    )
-    with pytest.raises(ValueError, match="zero, negative or non-finite variance"):
-        build((flat,)).gaussian_prior()
-
-
-def test_gaussian_prior_needs_a_key_for_non_analytic_moments():
-    beta = CalibrationParameter(
-        name="b", prior=tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
-        sipnet_map="leaf_off_fall_fraction", provenance="x",
-    )
-    assert not beta.has_analytic_moments
-    p = build((beta,))
-    with pytest.raises(NotImplementedError, match="no analytic unconstrained moments"):
-        p.gaussian_prior()
-    with pytest.raises(ValueError, match="at least 2"):
-        p.gaussian_prior(key=jax.random.key(0), n_moment_samples=1)
-    gaussian = p.gaussian_prior(key=jax.random.key(0), n_moment_samples=50_000)
-    draws = np.asarray(p.sample(jax.random.key(1), n=50_000))
-    assert float(gaussian.mean[0]) == pytest.approx(draws.mean(), abs=0.02)
-    assert gaussian.mean.dtype == jnp.float64
-    assert p.describe_entries()["theta_moments"].iloc[0] == "monte_carlo"
-    # Two Monte Carlo calibration parameters get different keys, so their estimates differ.
-    two = build((
-        beta,
-        CalibrationParameter(
-            name="c", prior=tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
-            sipnet_map="leaf_on_reallocation_fraction", provenance="x",
-        ),
-    ))
-    mean = two.gaussian_prior(key=jax.random.key(0), n_moment_samples=50).mean
-    assert float(mean[0]) != float(mean[1])
-
-
-# ── SIPNET parameter fields and pySIPNET ───────────────────────────────────
-
-
-def test_sipnet_parameter_fields_shape_names_and_attributes(example, theta):
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    assert isinstance(sipnet_parameter_fields, xr.Dataset)
-    assert dict(sipnet_parameter_fields.sizes) == {"sample": 8, "site": 3}
-    assert set(sipnet_parameter_fields.data_vars) == {
-        "max_photosynthesis_rate", "foliar_respiration_fraction", "leaf_allocation",
-        "wood_allocation", "fine_root_allocation", "base_soil_respiration_rate",
-        "leaf_off_fall_fraction", "soil_carbon", "daily_mean_photosynthesis_fraction",
-        "leaf_carbon_fraction", "vapor_pressure_deficit_exponent",
-    }
-    assert sipnet_parameter_fields["soil_carbon"].attrs == {
-        **PARAMETER_SPECS["initial_conditions.soil_carbon"].xarray_attributes(),
-        "set_by": "parameter initial_soil_carbon",
-    }
-    assert sipnet_parameter_fields["soil_carbon"].attrs["sipnet_name"] == "soilInit"
-    assert sipnet_parameter_fields["soil_carbon"].attrs["constituent"] == "C"
-    assert sipnet_parameter_fields["leaf_carbon_fraction"].attrs["set_by"] == "fixed"
-    assert sipnet_parameter_fields.attrs == {"representation": "sipnet_parameter_fields"}
-    assert list(sipnet_parameter_fields["pft"].values) == list(PFT)
-    assert sipnet_parameter_fields["site"].dtype == np.int32 and sipnet_parameter_fields["sample"].dtype == np.int64
-    # Shared and per-PFT values broadcast onto sites; the two deciduous sites agree.
-    a = sipnet_parameter_fields["leaf_allocation"]
-    np.testing.assert_array_equal(a.sel(site=1), a.sel(site=4711))
-    assert not np.allclose(a.sel(site=1), a.sel(site=27))
-    single = example.sipnet_parameter_fields(theta[0])
-    assert dict(single.sizes) == {"site": 3}
-
-
-def test_sipnet_parameter_fields_values_come_from_the_right_parameter_and_group(example, theta):
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    fields = example.fields(theta)
-    for sample in (0, 5):
-        for site in SITES:
-            row = sipnet_parameter_fields.isel(sample=sample).sel(site=site)
-            run_fields = fields.isel(sample=sample).sel(site=site)
-            for sipnet, variable in [
-                ("soil_carbon", "initial_soil_carbon"),
-                ("leaf_off_fall_fraction", "leaf_fall_fraction"),
-                ("base_soil_respiration_rate", "base_soil_respiration"),
-                ("leaf_allocation", "allocation.leaf_allocation"),
-                ("wood_allocation", "allocation.wood_allocation"),
-                ("fine_root_allocation", "allocation.fine_root_allocation"),
-            ]:
-                assert float(row[sipnet]) == float(run_fields[variable]), (sipnet, site)
-            capacity = float(run_fields["photosynthesis.capacity"])
-            share = float(run_fields["photosynthesis.respiration_share"])
-            assert float(row["max_photosynthesis_rate"]) == pytest.approx(capacity * 0.466 * (1 - share) / 0.76)
-    # A Fields input gives the same SIPNET parameter fields as the Flat one.
-    xr.testing.assert_allclose(example.sipnet_parameter_fields(fields), sipnet_parameter_fields, rtol=1e-12)
-
-
-def test_distinct_groups_are_gathered_onto_the_right_sites():
-    p = distinct_groups()
-    gaussian = p.gaussian_prior()
-    # The Gaussian mean is each prior's base location, so constraining it gives
-    # the medians (and the softmax centers) group by group, in group order.
-    np.testing.assert_allclose(gaussian.mean[p.layout.slice("soil")], np.log([100.0, 200.0, 300.0]))
-    np.testing.assert_allclose(gaussian.mean[p.layout.slice("turnover")], np.log([0.01, 0.02]))
-    dense = np.asarray(gaussian.cov.to_dense())
-    np.testing.assert_allclose(np.diag(dense)[p.layout.slice("soil")], np.log([1.5, 2.0, 2.5]) ** 2)
-    np.testing.assert_allclose(np.diag(dense)[p.layout.slice("turnover")], np.log([1.2, 1.3]) ** 2)
-    np.testing.assert_allclose(np.diag(dense)[p.layout.slice("allocation")], np.tile([0.3, 0.6, 0.9], 2) ** 2)
-    sipnet_parameter_fields = p.sipnet_parameter_fields(gaussian.mean)
-    np.testing.assert_allclose(sipnet_parameter_fields["soil_carbon"].values, [100.0, 200.0, 300.0])
-    np.testing.assert_allclose(sipnet_parameter_fields["wood_turnover_rate"].values, [0.01, 0.02, 0.01])
-    np.testing.assert_allclose(sipnet_parameter_fields["leaf_carbon_fraction"].values, [0.4, 0.5, 0.4])
-    np.testing.assert_allclose(sipnet_parameter_fields["leaf_allocation"].values, [0.1, 0.4, 0.1], rtol=1e-12)
-    np.testing.assert_allclose(sipnet_parameter_fields["fine_root_allocation"].values, [0.3, 0.2, 0.3], rtol=1e-12)
-    frame = p.describe_entries()
-    soil = frame.xs("soil", level="parameter")
-    np.testing.assert_allclose(soil["natural_median"], [100.0, 200.0, 300.0])
-    np.testing.assert_allclose(soil["theta_sd"], np.log([1.5, 2.0, 2.5]))
-    assert list(soil.index.get_level_values("group")) == list(SITES)
-
-
-def test_prior_draws_land_in_every_domain(example):
-    sipnet_parameter_fields = example.sipnet_parameter_fields(example.sample(jax.random.key(5), n=2000))
-    for name, values in sipnet_parameter_fields.data_vars.items():
-        assert in_domain(FLAT_SPECS[name].domain, values.values), name
-    triangle = sipnet_parameter_fields["leaf_allocation"] + sipnet_parameter_fields["wood_allocation"] + sipnet_parameter_fields["fine_root_allocation"]
-    assert float(triangle.max()) < 1.0
-
-
-def test_sipnet_overrides_gives_one_run_of_floats(example, theta):
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    kwargs = sipnet_overrides(sipnet_parameter_fields, batch={"sample": 2}, site=27)
-    assert set(kwargs) == set(sipnet_parameter_fields.data_vars)
-    assert all(type(v) is float for v in kwargs.values())
-    assert kwargs["soil_carbon"] == float(sipnet_parameter_fields["soil_carbon"].isel(sample=2).sel(site=27))
-    with pytest.raises(ValueError, match=r"have the batch dims \['sample'\] and batch= names \[\]"):
-        sipnet_overrides(sipnet_parameter_fields, site=27)
-    with pytest.raises(KeyError, match="not one of the SIPNET parameter fields' sample labels"):
-        sipnet_overrides(sipnet_parameter_fields, batch={"sample": -1}, site=27)
-    single = example.sipnet_parameter_fields(theta[0])
-    assert sipnet_overrides(single, site=1)["leaf_carbon_fraction"] == 0.466
-    with pytest.raises(ValueError, match=r"have the batch dims \[\] and batch= names \['sample'\]"):
-        sipnet_overrides(single, batch={"sample": 0}, site=1)
-
-
-def with_overrides(base: SIPNETParameters, overrides: dict[str, float]) -> SIPNETParameters:
-    dump = base.model_dump()
-    group_of = {path.split(".", 1)[1]: path.split(".", 1)[0] for path in PARAMETER_SPECS}
-    for name, value in overrides.items():
-        dump[group_of[name]][name] = value
-    return SIPNETParameters.model_validate(dump)
-
-
-def test_sipnet_parameter_fields_validates_through_sipnet_parameters(example, theta):
-    base = niwot_parameters()
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    for sample in range(8):
-        for site in SITES:
-            params = with_overrides(base, sipnet_overrides(sipnet_parameter_fields, batch={"sample": sample}, site=site))
-            assert params.photosynthesis.max_photosynthesis_rate > 0
-            assert params.initial_conditions.soil_carbon == pytest.approx(
-                float(sipnet_parameter_fields["soil_carbon"].isel(sample=sample).sel(site=site))
-            )
-
-
-@pytest.mark.slow
-def test_a_prior_draw_runs_the_niwot_fixture(example, theta):
-    from pysipnet import SIPNETModel, SIPNETRunner, niwot_reference_climate
-    from pysipnet.parameters.model import ModelFlags
-
-    if find_binary() is None:
-        pytest.skip(missing_binary_message())
-    runner = SIPNETRunner(flags=ModelFlags.standard())
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # the fixture has a few vpd <= 0 rows
-        climate = niwot_reference_climate().head(8 * 30)
-    model = SIPNETModel(runner, base_params=niwot_parameters(), base_climate=climate)
-
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    result = model(**sipnet_overrides(sipnet_parameter_fields, batch={"sample": 0}, site=27))
-    assert result.provenance.success, result.provenance.stderr
-    nee = result.outputs["net_ecosystem_exchange"]
-    assert nee.sizes["time"] == 8 * 30 and bool(np.isfinite(nee.values).all())
-
-
-# ── Fields ────────────────────────────────────────────────────────────
-
-
-def test_fields_data_model(example, theta):
-    natural = example.fields(theta)
-    assert list(natural.data_vars) == [
-        "photosynthesis.capacity", "photosynthesis.respiration_share",
-        *(f"allocation.{c}" for c in ALLOCATION.component_names),
-        "base_soil_respiration", "leaf_fall_fraction", "initial_soil_carbon",
-    ]
-    for variable in natural.data_vars.values():
-        assert variable.dims == ("sample", "site") and variable.dtype == np.float64
-    assert natural["site"].dtype == np.int32 and natural["sample"].dtype == np.int64
-    assert list(natural["pft"].values) == list(PFT)
-    assert "lon" not in natural.coords  # built from plain ids, so no positions
-    assert natural["allocation.coarse_root_allocation"].attrs == {
-        "parameter": "allocation", "component": "coarse_root_allocation", "varies_by": "pft",
-        "space": "natural", "long_name": "allocation: coarse_root_allocation", "units": "1",
-        "sipnet_parameters": "leaf_allocation, wood_allocation, fine_root_allocation",
-    }
-    soil = natural["initial_soil_carbon"].attrs
-    assert soil["units"] == "g m-2" and soil["varies_by"] == "site" and "component" not in soil
-    assert natural["photosynthesis.capacity"].attrs["units"] == "nmol g-1 s-1"
-    assert natural["leaf_fall_fraction"].attrs["varies_by"] == "shared"
-    unconstrained = example.fields(theta, space="unconstrained")
-    assert list(unconstrained.data_vars)[:2] == ["photosynthesis.log(capacity)", "photosynthesis.logit(respiration_share)"]
-    assert "allocation.alr(leaf_allocation:coarse_root_allocation)" in unconstrained
-    assert unconstrained["initial_soil_carbon"].attrs["units"] == "1"
-    np.testing.assert_array_equal(
-        unconstrained.filter_by_attrs(parameter="allocation").sel(site=1).to_array().transpose("sample", "variable"),
-        theta[:, 5:8],  # site 1 is deciduous, the second PFT group
-    )
-    # One copy per class, recovered with xarray's groupby.
-    per_pft = natural["allocation.leaf_allocation"].groupby("pft").first()
-    assert per_pft.dims == ("sample", "pft")
+def test_the_dimension_counts_every_entry(vector):
+    # 1 + 1 + 2 PFTs x 3 + 3 sites + 2 PFTs + 2
+    assert vector.dimension == 15
+    assert len(vector.index) == len(vector.entry_names) == 15
 
 
 @pytest.mark.parametrize(
-    "classes",
-    [[1, 2, 1], np.array([1, 2, 1]), pd.Categorical([1, 2, 1])],
-    ids=["list", "numpy", "categorical"],
+    "name, value_shape, unconstrained_shape",
+    [
+        ("capacity", (), ()),
+        ("offsets", (2,), (2,)),
+        ("soil_carbon", (3,), (3,)),
+        ("allocation", (2, 4), (2, 3)),
+    ],
 )
-def test_select_by_site_labels_takes_integer_classes(classes):
-    vector = example_parameter_vector(sites=[1, 27, 4000], pft=classes)
-    assert vector.select(labels={"pft": [1]}).sites == (1, 4000)
-    assert vector.select(labels={"pft": np.array([2])}).sites == (27,)
-    with pytest.raises(TypeError, match="one value 1"):
-        vector.select(labels={"pft": np.int64(1)})
+def test_shapes_follow_the_table(vector, theta, name, value_shape, unconstrained_shape):
+    assert vector.value_shape(name) == value_shape
+    assert vector.unconstrained_shape(name) == unconstrained_shape
+    assert vector.to_natural(theta)[name].shape == (5, *value_shape)
+    at_sites = vector.at_sites(vector.to_natural(theta))[name]
+    assert at_sites.shape == (5, 3) + vector[name].natural_shape
 
 
-@pytest.mark.parametrize("site_id", [0, -3, 2**31], ids=["zero", "negative", "past int32"])
-def test_a_site_table_whose_site_id_is_not_a_site_id_is_refused(site_id):
-    table = site_table_of(1, 27)
-    # Kept ascending, so the refusal is of the id itself, not of the order.
-    table["site_id"] = np.array([site_id, 27] if site_id < 1 else [1, site_id], dtype=np.int64)
-    with pytest.raises(ValueError, match=r"site_id\[\d\] must be a site id from 1 to 2147483647"):
-        example_parameter_vector(site_table=table, pft=PFT[:2])
-
-
-def test_fields_carry_lon_lat_from_a_site_table():
-    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
-    vector = example_parameter_vector(site_table=table, pft=PFT)
-    fields = vector.fields(vector.sample(jax.random.key(0), n=2))
-    np.testing.assert_allclose(fields["lon"], [-24.6, -78.6, -107.3])
-    assert fields["lat"].attrs == dict(LAT_ATTRIBUTES)
-    assert fields["lon"].attrs == dict(LON_ATTRIBUTES)
-    assert list(vector.site_table.columns) == ["site_id", "lon", "lat", "pft"]
-    assert list(vector.site_table["pft"].cat.categories) == ["conifer", "deciduous"]
-    np.testing.assert_allclose(vector.sipnet_parameter_fields(vector.sample(jax.random.key(1), n=2))["lat"], [82.5, 80.6, 44.0])
-    small = vector.select(sites=(27, 4711))
-    np.testing.assert_allclose(small.site_table["lon"], [-78.6, -107.3])
-    np.testing.assert_allclose(small.site_table["lat"], [80.6, 44.0])
-    # A table out of site order would misalign positional inputs, so it is refused.
-    with pytest.raises(ValueError, match="ascending site_id order"):
-        example_parameter_vector(site_table=table.iloc[[2, 0, 1]], pft=PFT)
-    with pytest.raises(ValueError, match=r"no \['lat'\] column"):
-        example_parameter_vector(site_table=table.drop(columns="lat"), pft=PFT)
-    with pytest.raises(ValueError, match="non-finite lon/lat"):
-        example_parameter_vector(site_table=table.assign(lon=[np.nan, 0.0, 0.0]), pft=PFT)
-    with pytest.raises(ValueError, match="no 'site_id' column or index"):
-        example_parameter_vector(site_table=table.drop(columns="site_id"), pft=PFT)
-    with pytest.raises(TypeError, match="site_id must hold integers"):
-        example_parameter_vector(site_table=table.astype({"site_id": float}), pft=PFT)
-    with pytest.raises(ValueError, match="more than once"):
-        example_parameter_vector(site_table=table.iloc[[0, 0, 1]], pft=PFT)
-    keyed = example_parameter_vector(site_table=table.set_index("site_id"), pft=PFT)
-    assert keyed.sites == SITES
-    only_ids = example_parameter_vector(site_table=table[["site_id"]], pft=PFT)
-    assert "lon" not in only_ids.site_table.columns
-
-
-def test_sites_or_site_table_is_given_and_both_must_agree():
-    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
-    with pytest.raises(TypeError, match="got neither"):
-        ParameterVector(parameters=(rate(),))
-    with pytest.raises(TypeError, match="pass a site table as site_table="):
-        build((rate(),), sites=table)
-    with pytest.raises(TypeError, match="pass a site table as site_table="):
-        build((rate(),), sites=table, site_table=table)
-    with pytest.raises(TypeError, match="got neither"):
-        example_parameter_vector(pft=PFT)
-    with pytest.raises(ValueError, match=r"disagree \(at position 1, 4711 against 27\)"):
-        build((rate(),), sites=(1, 4711, 27), site_table=table)
-    with pytest.raises(ValueError, match=r"disagree \(2 site ids against the table's 3\)"):
-        build((rate(),), sites=(1, 27), site_table=table)
-    with pytest.raises(ValueError, match="disagree"):
-        example_parameter_vector(sites=(1, 27), site_table=table, pft=PFT)
-    by_ids = build((rate(),))
-    by_table = build((rate(),), sites=None, site_table=table)
-    by_both = build((rate(),), sites=SITES, site_table=table)
-    assert by_ids.sites == by_table.sites == by_both.sites == SITES
-    assert "lon" not in by_ids.site_table.columns
-    np.testing.assert_allclose(by_table.site_table["lon"], [-24.6, -78.6, -107.3])
-    pd.testing.assert_frame_equal(by_both.site_table, by_table.site_table)
-    example = example_parameter_vector(sites=SITES, site_table=table, pft=PFT)
-    np.testing.assert_allclose(example.site_table["lat"], [82.5, 80.6, 44.0])
-
-
-@pytest.mark.parametrize("from_table", [False, True], ids=["site_ids", "site_table"])
-def test_dataclasses_replace_rebuilds_the_same_vector(from_table):
-    table = site_table_of(1, 27, 4711, lon=[-24.6, -78.6, -107.3], lat=[82.5, 80.6, 44.0])
-    keywords = {"site_table": table} if from_table else {"sites": SITES}
-    partial = example_parameter_vector(**keywords, pft=PFT)
-    filled = tuple(
-        FixedParameter(name=name, value=_in_domain_value(name), provenance="test")
-        for name in partial.unset_sipnet_parameter_names
+def test_the_index_has_a_dim_level_and_no_dim_marks_undimensioned_entries(vector):
+    first = vector.index[0]
+    assert first == ("capacity", NO_DIM, NO_DIM, "log(capacity)")
+    assert vector.index[vector.positions(parameter_name="soil_carbon")[1]] == (
+        "soil_carbon",
+        "site",
+        27,
+        "log(soil_carbon)",
     )
-    vector = dataclasses.replace(partial, fixed=partial.fixed + filled)
-    theta = vector.sample(jax.random.key(0), 2)
-    for copy in (dataclasses.replace(vector), dataclasses.replace(vector, require_complete=True)):
-        assert copy.sites == vector.sites
-        assert copy.layout.entry_labels == vector.layout.entry_labels
-        pd.testing.assert_frame_equal(copy.site_table, vector.site_table)
-        xr.testing.assert_identical(
-            copy.sipnet_parameter_fields(theta), vector.sipnet_parameter_fields(theta)
-        )
-    assert ("lon" in vector.site_table.columns) is from_table
-    assert dataclasses.replace(vector, require_complete=True).require_complete
 
 
-def test_flat_refuses_what_no_flat_vector_can_be(example, theta):
-    fields = example.fields(theta)
-    no_space = fields.copy()
-    no_space.attrs = {}
-    with pytest.raises(ValueError, match="attrs\\['space'\\]"):
-        example.flat(no_space)
-    with pytest.raises(ValueError, match="lack variables \\['initial_soil_carbon'\\]"):
-        example.flat(fields.drop_vars("initial_soil_carbon"))
-    with pytest.raises(ValueError, match="lack sites \\[4711\\]"):
-        example.flat(fields.sel(site=[1, 27]))
-    broken = fields.copy(deep=True)
-    broken["leaf_fall_fraction"][0, 0] = np.nan
-    with pytest.raises(ValueError, match="not all finite"):
-        example.flat(broken)
-    # Sites 1 and 4711 share the deciduous copy; making them disagree is refused.
-    disagree = fields.copy(deep=True)
-    disagree["base_soil_respiration"].loc[{"site": 4711}] = 0.5
-    with pytest.raises(ValueError, match="differ between the sites of group 'deciduous' \\(\\[1, 4711\\]\\)"):
-        example.flat(disagree)
-    with pytest.raises(ValueError, match="on the Dataset's dims"):
-        example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].isel(sample=0, drop=True)))
-    # Extra variables and sites are ignored.
-    extra = fields.assign(unrelated=fields["initial_soil_carbon"] * 2)
-    np.testing.assert_allclose(example.flat(extra), theta, rtol=1e-10, atol=1e-10)
+def test_theta_is_parameters_then_dim_labels_then_unconstrained_names(vector):
+    allocation = vector.positions(parameter_name="allocation")
+    labels = vector.index[allocation].get_level_values("dim_label")
+    assert list(labels) == ["conifer"] * 3 + ["deciduous"] * 3
+    assert vector.index[allocation[0]][3] == "alr(leaf:coarse_root)"
 
 
-def test_unset_parameters_and_require_complete(example):
-    from sipnet_calibration.parameter_vector import REQUIRED_SIPNET_PARAMETER_NAMES
-
-    # Required means "pySIPNET has no default": flag-dependent parameters and
-    # the zero-defaulted ones are not required.
-    assert "snow_melt_rate" not in REQUIRED_SIPNET_PARAMETER_NAMES
-    assert "litter_carbon" not in REQUIRED_SIPNET_PARAMETER_NAMES
-    assert "max_photosynthesis_rate" in REQUIRED_SIPNET_PARAMETER_NAMES
-    assert set(example.sipnet_parameter_names_written) == set(example.sipnet_parameter_fields(example.sample(jax.random.key(0), 1)).data_vars)
-    assert set(example.unset_sipnet_parameter_names) == set(REQUIRED_SIPNET_PARAMETER_NAMES) - set(example.sipnet_parameter_names_written)
-    assert "leaf_carbon_per_area" in example.unset_sipnet_parameter_names
-    assert not set(example.unset_sipnet_parameter_names) & set(example.sipnet_parameter_names_written)
-    with pytest.raises(ValueError, match="neither calibrated nor fixed: \\['total_wood_carbon'"):
-        ParameterVector(
-            parameters=example.parameters, fixed=example.fixed, sites=example.sites,
-            site_labels=example.site_labels, require_complete=True,
-        )
-    # A vector that fixes everything it does not calibrate is complete.
-    filled = tuple(
-        FixedParameter(name=name, value=_in_domain_value(name), provenance="test")
-        for name in example.unset_sipnet_parameter_names
-    )
-    complete = ParameterVector(
-        parameters=example.parameters, fixed=example.fixed + filled, sites=example.sites,
-        site_labels=example.site_labels, require_complete=True,
-    )
-    assert complete.unset_sipnet_parameter_names == ()
+def test_positions_select_by_dim_and_dim_label(vector):
+    assert list(vector.positions(dim="site", dim_label=27)) == [9]
+    assert len(vector.positions(dim="pft", dim_label="conifer")) == 4
+    assert list(vector.positions(parameter_name="q10", dim_label="deciduous")) == [12]
 
 
-def _in_domain_value(name: str) -> float:
-    return {
-        ParameterDomain.REAL: 1.0, ParameterDomain.POSITIVE: 1.0, ParameterDomain.NON_NEGATIVE: 1.0,
-        ParameterDomain.UNIT_INTERVAL: 0.5, ParameterDomain.OPEN_UNIT_INTERVAL: 0.5,
-    }[FLAT_SPECS[name].domain]
+def test_a_site_dim_label_is_compared_as_a_site_id(vector):
+    with pytest.raises(KeyError, match="not a dim label"):
+        vector.positions(dim="site", dim_label="27")
 
 
-def test_sites_with_and_parameter_lookup(example):
-    assert example.sites_with("pft", "deciduous") == (1, 4711)
-    with pytest.raises(KeyError, match="'grassland' is not a class of site labels 'pft'"):
-        example.sites_with("pft", "grassland")
-    assert example["allocation"].sipnet_map is ALLOCATION
-    assert example.parameter_names == example.layout.parameter_names
-    with pytest.raises(KeyError):
-        example.sites_with("landcover", 1)
-    with pytest.raises(KeyError, match="no calibration parameter 'nope'"):
-        example["nope"]
+def test_a_dim_label_needs_its_dim(vector):
+    with pytest.raises(ValueError, match="needs dim= or parameter_name="):
+        vector.positions(dim_label="conifer")
 
 
-def test_describe_has_one_row_per_column(example):
-    frame = example.describe_entries()
-    assert len(frame) == 14
-    parameters = frame.index.get_level_values("parameter")
-    assert list(parameters) == [example.layout.entry_labels[i].split("[")[0] for i in range(14)]
-    assert (frame["provenance"].str.len() > 0).all()
-    assert set(frame["distribution"]) == {
-        "product of transformed Gaussians", "softmax-normal", "log-normal", "logit-normal",
+def test_no_dim_is_not_a_selector(vector):
+    with pytest.raises(KeyError, match="NO_DIM"):
+        vector.positions(dim=NO_DIM)
+
+
+def test_an_unknown_selector_is_a_key_error(vector):
+    with pytest.raises(KeyError, match="no entry of theta has dim"):
+        vector.positions(dim="biome")
+    with pytest.raises(KeyError, match="no parameter"):
+        vector.positions(parameter_name="nothing")
+
+
+def test_describe_has_one_row_per_parameter(vector):
+    table = vector.describe()
+    assert list(table.index) == list(vector.parameter_names)
+    assert table.loc["allocation", "entries"] == 6
+    assert table.loc["q10", "support"] == "(1, 5)"
+
+
+# ── coordinates ───────────────────────────────────────────────────────────────
+
+
+def test_theta_round_trips_through_natural_values(vector, theta):
+    np.testing.assert_allclose(vector.to_unconstrained(vector.to_natural(theta)), theta, atol=1e-12)
+
+
+def test_natural_values_lie_in_their_supports(vector, theta):
+    natural_values = vector.to_natural(theta * 5)
+    for parameter in vector.parameters:
+        assert bool(jnp.all(parameter.support.contains(natural_values[parameter.name])))
+
+
+def test_to_natural_is_traceable(vector, theta):
+    jitted = jax.jit(lambda t: vector.to_natural(t)["q10"].sum())
+    assert jnp.isfinite(jax.grad(jitted)(theta[0])).all()
+
+
+def test_values_outside_the_support_map_to_non_finite_theta(vector, theta):
+    natural_values = dict(vector.to_natural(theta))
+    natural_values["capacity"] = -natural_values["capacity"]
+    assert not bool(jnp.isfinite(vector.to_unconstrained(natural_values)).all())
+
+
+def test_at_sites_reads_each_sites_dim_label(vector, theta):
+    natural_values = vector.to_natural(theta)
+    at_sites = vector.at_sites(natural_values)
+    conifer = list(vector.dim_index("pft")).index("conifer")
+    np.testing.assert_array_equal(at_sites["allocation"][:, 1], natural_values["allocation"][:, conifer])
+    np.testing.assert_array_equal(at_sites["capacity"][:, 2], natural_values["capacity"])
+
+
+def test_theta_must_end_in_the_dimension(vector):
+    with pytest.raises(ValueError, match="must end in the vector's dimension"):
+        vector.to_natural(jnp.zeros((2, 3)))
+
+
+def test_natural_values_are_validated(vector, theta):
+    natural_values = vector.to_natural(theta)
+    with pytest.raises(TypeError, match="mapping"):
+        validate_natural_values([1.0], vector)
+    wrong = {**natural_values, "allocation": natural_values["allocation"][..., :3]}
+    with pytest.raises(ValueError, match="does not end in"):
+        validate_natural_values(wrong, vector)
+    ragged = {**natural_values, "capacity": natural_values["capacity"][:2]}
+    with pytest.raises(ValueError, match="different leading shapes"):
+        validate_natural_values(ragged, vector)
+    validate_natural_values(vector.at_sites(natural_values), vector, at_sites=True)
+
+
+# ── the labeled form ──────────────────────────────────────────────────────────
+
+
+def test_the_dataset_follows_the_data_model(vector, theta):
+    dataset = vector.dataset(theta)
+    assert set(dataset.dims) == {"sample", "pft", "site"}
+    assert dataset["allocation.leaf"].dims == ("sample", "pft")
+    assert dataset["capacity"].dims == ("sample",)
+    assert dataset["soil_carbon"].attrs == {
+        "parameter": "soil_carbon",
+        "units": "g m-2",
+        "support": "positive",
     }
-    assert (frame["theta_moments"] == "analytic").all()
-    soil = frame.xs("base_soil_respiration", level="parameter").iloc[0]
-    assert soil["natural_2.5"] == pytest.approx(0.004) and soil["natural_97.5"] == pytest.approx(0.020)
-    ln = example["base_soil_respiration"].prior.distribution
-    assert soil["theta_mean"] == pytest.approx(float(ln.loc)) and soil["theta_sd"] == pytest.approx(float(ln.scale))
-    assert soil["sipnet_parameter_names_written"] == "base_soil_respiration_rate"
-    assert frame.index.equals(example.index)
-    assert np.isnan(frame.xs("allocation", level="parameter")["natural_median"]).all()
-    soil_carbon = frame.xs("initial_soil_carbon", level="parameter")
-    assert soil_carbon.index.get_level_values("group").tolist() == list(SITES)
+    assert "units" not in dataset["offsets.a"].attrs
+    assert dataset["offsets.a"].attrs["natural_name"] == "a"
+    assert dataset["site"].dtype == np.int32 and "lon" in dataset.coords
 
 
-def test_describe_has_one_row_per_calibration_parameter(example):
-    frame = example.describe()
-    assert list(frame.index) == list(example.parameter_names)
-    assert frame.loc["allocation", "varies_by"] == "pft"
-    assert frame.loc["allocation", "groups"] == 2 and frame.loc["allocation", "size"] == 3
-    assert frame["entries"].sum() == example.dimension
-    assert frame.loc["photosynthesis", "sipnet_parameter_names_written"] == (
-        "max_photosynthesis_rate, foliar_respiration_fraction"
-    )
+def test_the_dim_index_is_the_datasets_index(vector, theta):
+    dataset = vector.dataset(theta)
+    assert dataset.indexes["pft"].equals(vector.dim_index("pft"))
+    assert dataset.indexes["site"].equals(vector.dim_index("site"))
 
 
-# ── the summary and the module's usage session ───────────────────────────────
+def test_theta_round_trips_through_the_dataset(vector, theta):
+    np.testing.assert_allclose(vector.flat(vector.dataset(theta)), theta, atol=1e-12)
+    one = vector.dataset(theta[0])
+    assert "sample" not in one.dims
+    np.testing.assert_allclose(vector.flat(one), theta[0], atol=1e-12)
 
 
-def test_repr_is_one_line(example):
-    assert repr(example) == (
-        f"ParameterVector(D=14, parameters={list(example.parameter_names)}, sites=3)"
-    )
+def test_the_dataset_round_trips_through_netcdf(vector, theta, tmp_path):
+    path = tmp_path / "theta.nc"
+    vector.dataset(theta).to_netcdf(path)
+    with xr.open_dataset(path) as reloaded:
+        np.testing.assert_allclose(vector.flat(reloaded.load()), theta, atol=1e-12)
 
 
-def test_summary_tabulates_parameters_groups_and_what_is_fixed(example):
-    text = example.summary()
-    lines = text.splitlines()
-    assert lines[0] == "ParameterVector  D = 14  |  3 sites  |  site labels: pft {conifer, deciduous}"
-    assert lines[1].split()[:5] == ["parameter", "varies", "by", "groups", "size"]
-    rows = {line.split()[0]: line.split() for line in lines[2:7]}
-    assert list(rows) == list(example.parameter_names)
-    assert rows["allocation"][1:4] == ["pft", "2", "3"]
-    assert rows["initial_soil_carbon"][1:4] == ["site", "3", "1"]
-    assert lines[7].startswith("  fixed: daily_mean_photosynthesis_fraction (shared)")
-    assert lines[8] == (
-        f"  unset: {len(example.unset_sipnet_parameter_names)} required SIPNET parameters, taken "
-        "from the run's base parameter set"
-    )
-
-
-def _usage_session() -> str:
-    block = module.__doc__.split("Usage\n-----\n", 1)[1]
-    return "\n".join(line[4:] for line in block.splitlines() if line.startswith("    "))
-
-
-def test_the_module_usage_session_runs_and_prints_what_it_says():
-    """The module docstring's worked session, executed against the real site
-    table and site labels, with its printed summary compared line for line."""
-    from sipnet_calibration.site_labels import site_labels_path
-    from sipnet_calibration.sites import default_site_table_path
-
-    if not (default_site_table_path().exists() and site_labels_path("reanalysis_3pft").exists()):
-        pytest.skip("processed site table or site labels not available in this working copy")
-    namespace: dict = {}
-
-    class _EKIResult:  # stands in for a pyeki EKIResult
-        @property
-        def state(self):
-            return type("State", (), {"ensemble": namespace["theta"]})
-
-    namespace["eki"] = _EKIResult()
-    code = _usage_session()
-    exec(compile(code, "parameter_vector usage", "exec"), namespace)
-    vector = namespace["vector"]
-    after = code.split("print(vector.summary())\n", 1)[1].splitlines()
-    printed = [line[2:] for line in itertools.takewhile(lambda line: line.startswith("# "), after)]
-    assert printed == vector.summary().splitlines()
-    assert vector.dimension == 13
-    assert namespace["conifer"].dimension == 8 and namespace["two"].dimension == 9
-    assert namespace["spec"].n_runs == 150
-    np.testing.assert_allclose(namespace["theta_again"], namespace["theta"], atol=1e-10)
-
-
-# ── select ───────────────────────────────────────────────────────────────────
-
-
-def test_select_by_parameters_keeps_layout_order_and_the_fixed(example):
-    small = example.select(parameter_names=("initial_soil_carbon", "allocation"))
-    assert small.parameter_names == ("allocation", "initial_soil_carbon")
-    assert small.dimension == 3 * 2 + 3
-    assert [f.name for f in small.fixed] == [f.name for f in example.fixed]
-    assert small.select(parameter_names=["allocation"]).parameter_names == ("allocation",)
-    with pytest.raises(TypeError, match="one string 'allocation'"):
-        small.select(parameter_names="allocation")
-    with pytest.raises(KeyError, match="no calibration parameter 'nope'"):
-        example.select(parameter_names=("nope",))
-
-
-def test_select_by_sites_slices_per_site_priors_and_moves_draws_across():
-    vector = distinct_groups()
-    theta = vector.sample(jax.random.key(0), n=6)
-    small = vector.select(sites=(1, 4711))  # both "a": one PFT group remains
-    assert small.sites == (1, 4711)
-    assert small.group_labels("pft") == ("a",)
-    assert small.dimension == 2 + 1 + 3
+def test_a_smaller_vector_reads_a_larger_ones_dataset(vector, theta):
+    conifer = vector.select(dim_labels={"pft": ["conifer"]}, parameter_names=["allocation", "soil_carbon"])
+    projected = conifer.flat(vector.dataset(theta))
     np.testing.assert_allclose(
-        small.gaussian_prior().mean[small.layout.slice("soil")], np.log([100.0, 300.0])
+        projected[:, conifer.positions(parameter_name="allocation")],
+        theta[:, vector.positions(parameter_name="allocation", dim_label="conifer")],
+        atol=1e-12,
     )
-    np.testing.assert_allclose(small.gaussian_prior().mean[small.layout.slice("turnover")], np.log([0.01]))
-    assert small.fixed[0].value == {"a": 0.4}
-    projected = small.flat(vector.fields(theta))
-    np.testing.assert_array_equal(projected[:, small.layout.slice("soil")], theta[:, vector.layout.positions("soil", group=1).tolist() + vector.layout.positions("soil", group=4711).tolist()])
     np.testing.assert_allclose(
-        small.fields(projected)["turnover"], vector.fields(theta)["turnover"].sel(site=[1, 4711])
+        projected[:, conifer.positions(parameter_name="soil_carbon")],
+        theta[:, vector.positions(parameter_name="soil_carbon", dim_label=27)],
+        atol=1e-12,
     )
 
 
-def test_select_by_labels_intersects_with_sites_and_refuses_the_unknown(example):
-    deciduous = example.select(labels={"pft": ["deciduous"]})
-    assert deciduous.sites == (1, 4711)
-    assert deciduous.group_labels("pft") == ("deciduous",)
-    assert example.select(labels={"pft": ["conifer", "deciduous"]}).sites == example.sites
-    assert example.select(sites=(1, 27), labels={"pft": ["deciduous"]}).sites == (1,)
-    with pytest.raises(TypeError, match="one string 'deciduous'"):
-        example.select(labels={"pft": "deciduous"})
-    with pytest.raises(KeyError, match="not classes of site labels 'pft'"):
-        example.select(labels={"pft": ["grassland"]})
-    with pytest.raises(KeyError, match="no site labels 'landcover'"):
-        example.select(labels={"landcover": [1]})
-    with pytest.raises(KeyError, match="no site\\(s\\) \\[99\\]"):
-        example.select(sites=(1, 99))
-    with pytest.raises(ValueError, match="no site of this vector"):
-        example.select(sites=(27,), labels={"pft": ["deciduous"]})
+def test_flat_refuses_a_value_outside_the_support(vector, theta):
+    dataset = vector.dataset(theta)
+    dataset["capacity"] = -dataset["capacity"]
+    with pytest.raises(ValueError, match="outside its support"):
+        vector.flat(dataset)
 
 
-# ── site-labels tables ───────────────────────────────────────────────────────
+def test_flat_refuses_a_variable_on_other_dims(vector, theta):
+    dataset = vector.dataset(theta)
+    dataset["capacity"] = dataset["capacity"].expand_dims(pft=dataset["pft"].values).copy()
+    with pytest.raises(ValueError, match="does not define the parameter alike|do not define"):
+        vector.flat(dataset)
 
 
-def _site_labels_table(labels_by_site: dict[int, str], classes: tuple[str, ...]) -> pd.DataFrame:
-    return pd.DataFrame(
+def test_the_dataset_is_validated(vector, theta):
+    with pytest.raises(TypeError, match="xarray Dataset"):
+        validate_parameter_dataset({"capacity": 1.0})
+    dataset = vector.dataset(theta)
+    dataset["capacity"] = dataset["capacity"].where(dataset["sample"] != 0)
+    with pytest.raises(ValueError, match="missing or non-finite"):
+        validate_parameter_dataset(dataset)
+    crossed = vector.dataset(theta).expand_dims(run=[0, 1])
+    with pytest.raises(ValueError, match="batch dims"):
+        validate_parameter_dataset(crossed)
+
+
+def test_site_fields_are_fields(vector, theta):
+    site_fields = vector.site_fields(vector.dataset(theta))
+    for name, variable in site_fields.data_vars.items():
+        validate_field(variable, message_name=str(name))
+        assert variable.dims == ("sample", "site")
+    np.testing.assert_allclose(
+        site_fields["allocation.wood"].values,
+        np.asarray(vector.at_sites(vector.to_natural(theta))["allocation"][..., 1]),
+    )
+
+
+def test_a_batch_dim_may_not_take_a_vectors_name(vector, theta):
+    with pytest.raises(ValueError, match="dim or variable of the vector's labeled form"):
+        vector.dataset(theta, batch_dim="pft")
+    with pytest.raises(ValueError, match="cannot name a batch dim"):
+        vector.dataset(theta, batch_dim="site")
+
+
+# ── site labels, site covariates and selection ────────────────────────────────
+
+
+def test_dim_labels_are_the_classes_present_in_declared_order():
+    table = pd.DataFrame(
         {
-            "site_id": np.asarray(list(labels_by_site), dtype=np.int32),
-            "label": pd.Categorical(list(labels_by_site.values()), categories=classes),
+            "site_id": [1, 27, 4711, 9000],
+            "label": pd.Categorical(
+                ["temperate", "boreal", "temperate", "grass"],
+                categories=["grass", "temperate", "boreal"],
+            ),
         }
     )
-
-
-def test_a_site_labels_table_gives_its_declared_classes_in_order():
-    classes = ("needleleaf", "broadleaf", "grass")
-    labels_table = _site_labels_table({1: "grass", 27: "broadleaf", 4711: "grass", 5000: "needleleaf"}, classes)
-    turnover = CalibrationParameter(
-        name="turnover", prior=log_normal(median=[0.01, 0.02, 0.03], geometric_sd=[1.2, 1.3, 1.4]),
-        sipnet_map="wood_turnover_rate", varies_by="pft", provenance="test",
-    )
-    fixed = FixedParameter(
-        name="leaf_carbon_fraction", varies_by="pft", provenance="test",
-        value={"needleleaf": 0.50, "broadleaf": 0.46, "grass": 0.48},
-    )
     vector = ParameterVector(
-        parameters=(turnover,), fixed=(fixed,), sites=(1, 27, 4711), site_labels={"pft": labels_table}
+        parameters=[Parameter(name="rate", support=POSITIVE, units="1", dim="pft")],
+        site_table=site_table(),
+        site_labels={"pft": table},
     )
-    # Declared order, restricted to the classes present: needleleaf is dropped.
-    assert vector.group_labels("pft") == ("broadleaf", "grass")
-    np.testing.assert_allclose(vector.gaussian_prior().mean, np.log([0.02, 0.03]))
-    assert vector.fixed[0].value == {"broadleaf": 0.46, "grass": 0.48}
-    sipnet_parameter_fields = vector.sipnet_parameter_fields(vector.gaussian_prior().mean)
-    np.testing.assert_allclose(sipnet_parameter_fields["leaf_carbon_fraction"], [0.48, 0.46, 0.48])
-    np.testing.assert_allclose(sipnet_parameter_fields["wood_turnover_rate"], [0.03, 0.02, 0.03])
-    with pytest.raises(ValueError, match="extra \\[.*'shrub'\\]"):
+    assert list(vector.dim_index("pft")) == ["temperate", "boreal"]
+
+
+def test_site_labels_must_be_strings():
+    with pytest.raises(TypeError, match="not strings"):
+        ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": [1, 2, 1]})
+
+
+def test_site_labels_must_be_one_per_site():
+    with pytest.raises(ValueError, match="one per site"):
+        ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": ["a"]})
+
+
+def test_a_site_labels_table_must_label_every_site():
+    table = pd.DataFrame({"site_id": [1, 27], "label": ["a", "b"]})
+    with pytest.raises(ValueError, match="no label for site"):
+        ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": table})
+    with pytest.raises(ValueError, match="lack the column"):
         ParameterVector(
-            parameters=(turnover,),
-            fixed=(dataclasses.replace(fixed, value={**fixed.value, "shrub": 0.4}),),
-            sites=(1, 27, 4711), site_labels={"pft": labels_table},
-        )
-    with pytest.raises(ValueError, match="do not label sites \\[99\\]"):
-        ParameterVector(parameters=(turnover,), sites=(1, 99), site_labels={"pft": labels_table})
-    with pytest.raises(ValueError, match="needs 'site_id' and 'label' columns"):
-        ParameterVector(
-            parameters=(turnover,), sites=(1,), site_labels={"pft": labels_table.rename(columns={"label": "pft"})}
+            parameters=parameters(), site_table=site_table(), site_labels={"pft": table[["site_id"]]}
         )
 
 
-# ── joint priors over groups ─────────────────────────────────────────────────
-
-
-COVARIANCE = jnp.asarray([[0.30, 0.10, 0.02], [0.10, 0.25, 0.08], [0.02, 0.08, 0.40]])
-MEAN = jnp.log(jnp.asarray([100.0, 200.0, 300.0]))
-
-
-def joint_soil(covariance=COVARIANCE, mean=MEAN) -> CalibrationParameter:
-    base = tfd.MultivariateNormalTriL(loc=mean, scale_tril=jnp.linalg.cholesky(covariance))
-    return CalibrationParameter(
-        name="soil", prior=tfd.TransformedDistribution(base, tfb.Exp()),
-        sipnet_map="soil_carbon", varies_by="site", provenance="test",
-    )
-
-
-def joint_vector() -> ParameterVector:
-    return ParameterVector(parameters=(joint_soil(), rate(varies_by="pft")), sites=SITES, site_labels={"pft": PFT})
-
-
-def test_a_joint_prior_is_read_off_its_event_shape():
-    soil = joint_soil()
-    assert soil.is_joint and soil.joint_groups == 3 and soil.size == 1
-    assert not rate().is_joint
-    assert "joint over groups" in joint_vector().summary()
-    with pytest.raises(ValueError, match="joint prior is over 3"):
-        ParameterVector(parameters=(joint_soil(),), sites=(1, 27))
-    with pytest.raises(ValueError, match="needs an elementwise bijector"):
-        CalibrationParameter(
-            name="s", prior=softmax_normal(center=[0.5, 0.5], logit_sd=1.0),
-            sipnet_map="soil_carbon", provenance="x",
-        )
-    two_by_four = tfd.TransformedDistribution(
-        tfd.Independent(tfd.Normal(jnp.zeros((2, 3)), jnp.float64(1.0)), 2), tfb.SoftmaxCentered()
-    )
-    with pytest.raises(ValueError, match="vector-valued calibration parameter, which is not supported"):
-        CalibrationParameter(name="a", prior=two_by_four, sipnet_map=ALLOCATION, provenance="x")
-
-
-def test_a_joint_prior_samples_and_scores_as_one_distribution():
-    vector = joint_vector()
-    theta = vector.sample(jax.random.key(0), n=40_000)
-    segment = np.asarray(theta[:, vector.layout.slice("soil")])
-    np.testing.assert_allclose(np.cov(segment, rowvar=False), COVARIANCE, atol=0.01)
-    one = theta[:4]
-    natural = jnp.exp(one[:, vector.layout.slice("soil")])
-    expected = joint_soil().prior.log_prob(natural) + one[:, vector.layout.slice("soil")].sum(axis=-1)
-    expected = expected + vector._broadcast_unconstrained(vector["r"]).log_prob(one[:, vector.layout.slice("r")]).sum(axis=-1)
-    np.testing.assert_allclose(vector.log_prior(one), expected, rtol=1e-10)
-    np.testing.assert_allclose(jax.jit(vector.log_prior)(one), expected, rtol=1e-10)
-
-
-def test_a_joint_prior_is_one_dense_block_of_the_gaussian_and_converts_like_any_other():
-    vector = joint_vector()
-    gaussian = vector.gaussian_prior()
-    dense = np.asarray(gaussian.cov.to_dense())
-    np.testing.assert_allclose(dense[:3, :3], COVARIANCE, rtol=1e-12)
-    np.testing.assert_allclose(gaussian.mean[:3], MEAN, rtol=1e-12)
-    assert np.all(dense[:3, 3:] == 0)
-    theta = vector.sample(jax.random.key(1), n=5)
-    fields = vector.fields(theta)
-    np.testing.assert_allclose(fields["soil"], np.exp(theta[:, :3]), rtol=1e-12)
-    np.testing.assert_allclose(vector.flat(fields), theta, rtol=1e-10, atol=1e-10)
-    np.testing.assert_allclose(vector.sipnet_parameter_fields(theta)["soil_carbon"], np.exp(theta[:, :3]), rtol=1e-12)
-    frame = vector.describe_entries()
-    soil = frame.xs("soil", level="parameter")
-    np.testing.assert_allclose(soil["theta_sd"], np.sqrt(np.diag(COVARIANCE)))
-    assert soil["natural_median"].isna().all()
-
-
-def test_select_takes_the_exact_marginal_of_a_joint_prior():
-    small = joint_vector().select(sites=(1, 4711))
-    gaussian = small.gaussian_prior()
-    np.testing.assert_allclose(gaussian.mean[:2], np.asarray(MEAN)[[0, 2]], rtol=1e-12)
-    np.testing.assert_allclose(
-        np.asarray(gaussian.cov.to_dense())[:2, :2], np.asarray(COVARIANCE)[np.ix_([0, 2], [0, 2])], rtol=1e-12
-    )
-
-
-# ── SIPNET map units and reserved names ──────────────────────────────────────
-
-
-def test_sipnet_maps_declare_component_units():
-    assert Identity("soil_carbon").component_units == ("g m-2",)
-    assert ALLOCATION.component_units == ("1",) * 4
-    assert PHOTOSYNTHESIS.component_units == (FLAT_SPECS["max_photosynthesis_rate"].units, "1")
-    with pytest.raises(ValueError, match="is reserved"):
-        CalibrationParameter(
-            name="lat", prior=log_normal(median=1.0, geometric_sd=2.0),
-            sipnet_map="wood_turnover_rate", provenance="x",
-        )
-
-
-# ── regressions found in review ──────────────────────────────────────────────
-
-
-def test_a_per_class_simplex_prior_is_restricted_to_the_classes_present():
-    """TFP's own slicing of a batched softmax-normal fails for two or more
-    kept indices; the restriction rebuilds it instead."""
-    centers = [[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1], [0.25, 0.25, 0.25, 0.25]]
-    allocation = CalibrationParameter(
-        name="allocation", prior=softmax_normal(center=centers, logit_sd=[0.3, 0.6, 0.9]),
-        sipnet_map=ALLOCATION, varies_by="pft", provenance="test",
-    )
-    classes = ("a", "b", "c", "d")
-    # Two of four declared classes present, not adjacent: a and c.
-    labels_table = _site_labels_table({1: "a", 27: "c", 4711: "a"}, classes)
-    four = CalibrationParameter(
-        name="allocation",
-        prior=softmax_normal(center=[*centers, [0.7, 0.1, 0.1, 0.1]], logit_sd=0.5),
-        sipnet_map=ALLOCATION, varies_by="pft", provenance="test",
-    )
-    vector = ParameterVector(parameters=(four,), sites=SITES, site_labels={"pft": labels_table})
-    assert vector.group_labels("pft") == ("a", "c")
-    natural = vector.fields(vector.gaussian_prior().mean)
-    np.testing.assert_allclose(natural["allocation.leaf_allocation"], [0.1, 0.25, 0.1], rtol=1e-12)
-    # The same through select: three per-site copies, two kept.
-    per_site = dataclasses.replace(allocation, varies_by="site")
-    small = ParameterVector(parameters=(per_site,), sites=SITES).select(sites=(1, 4711))
-    np.testing.assert_allclose(
-        small.fields(small.gaussian_prior().mean)["allocation.coarse_root_allocation"], [0.4, 0.25], rtol=1e-12
-    )
-    np.testing.assert_allclose(np.diag(small.gaussian_prior().cov.to_dense()), np.tile([0.3, 0.6, 0.9], 2) ** 2)
-
-
-def test_a_scalar_bijector_with_a_parameter_per_group_lines_up_with_its_groups():
-    medians = jnp.log(jnp.asarray([0.01, 0.1, 1.0]))
-    prior = tfd.TransformedDistribution(
-        tfd.Normal(jnp.zeros(3), jnp.full(3, 0.1)), tfb.Chain([tfb.Exp(), tfb.Shift(medians)])
-    )
-    soil = CalibrationParameter(name="turnover", prior=prior, sipnet_map="wood_turnover_rate", varies_by="site", provenance="test")
-    vector = ParameterVector(parameters=(soil,), sites=SITES)
-    at_median = vector.fields(jnp.zeros(3))
-    np.testing.assert_allclose(at_median["turnover"], [0.01, 0.1, 1.0], rtol=1e-12)
-    theta = vector.sample(jax.random.key(0), n=4)
-    np.testing.assert_allclose(vector.flat(vector.fields(theta)), theta, rtol=1e-10, atol=1e-10)
-    # Restricting it either slices the bijector correctly or refuses; never
-    # maps a kept site through another site's shift.
-    try:
-        small = vector.select(sites=(4711,))
-    except ValueError as error:
-        assert "cannot be restricted" in str(error)
-    else:
-        np.testing.assert_allclose(small.fields(jnp.zeros(1))["turnover"], [1.0], rtol=1e-12)
-
-
-def test_a_joint_prior_with_a_per_group_bijector_is_not_restricted_silently():
-    base = tfd.MultivariateNormalTriL(loc=jnp.zeros(3), scale_tril=jnp.linalg.cholesky(COVARIANCE))
-    shifted = tfd.TransformedDistribution(base, tfb.Chain([tfb.Exp(), tfb.Shift(jnp.log(jnp.asarray([0.01, 0.1, 1.0])))]))
-    soil = CalibrationParameter(name="soil", prior=shifted, sipnet_map="soil_carbon", varies_by="site", provenance="test")
-    vector = ParameterVector(parameters=(soil,), sites=SITES)
-    np.testing.assert_allclose(vector.fields(jnp.zeros(3))["soil"], [0.01, 0.1, 1.0], rtol=1e-12)
-    for kept in ((4711,), (1, 4711)):
-        with pytest.raises(ValueError, match="cannot be restricted"):
-            vector.select(sites=kept)
-
-
-def test_tfp_distributions_that_subclass_transformed_distribution_use_their_default_bijector():
-    raw = tfd.MultivariateNormalTriL(loc=jnp.asarray([20.0, 22.0, 24.0]), scale_tril=jnp.linalg.cholesky(COVARIANCE))
-    temperature = CalibrationParameter(
-        name="optimum", prior=raw, sipnet_map="optimum_photosynthesis_temperature", varies_by="site", provenance="test",
-    )
-    assert isinstance(temperature.bijector, tfb.Identity) and temperature.unconstrained_prior is raw
-    assert temperature.has_analytic_moments
-    vector = ParameterVector(parameters=(temperature,), sites=SITES)
-    np.testing.assert_allclose(vector.fields(jnp.full(3, 5.0))["optimum"], [5.0, 5.0, 5.0])
-    np.testing.assert_allclose(np.asarray(vector.gaussian_prior().cov.to_dense()), COVARIANCE, rtol=1e-12)
-    np.testing.assert_allclose(vector.select(sites=(1, 4711)).gaussian_prior().mean, [20.0, 24.0])
-    weibull = CalibrationParameter(
-        name="w", prior=tfd.Weibull(jnp.float64(2.0), jnp.float64(0.01)),
-        sipnet_map="wood_turnover_rate", provenance="test",
-    )
-    assert ParameterVector(parameters=(weibull,), sites=(1,)).dimension == 1
-
-
-def test_flat_refuses_values_outside_the_image_of_the_bijector(example, theta):
-    fields = example.fields(theta)
-    for variable, value in [
-        ("base_soil_respiration", -0.01),
-        ("base_soil_respiration", 0.0),
-        ("leaf_fall_fraction", 1.5),
-        ("allocation.leaf_allocation", 0.9),  # the four no longer sum to 1
-    ]:
-        broken = fields.copy(deep=True)
-        broken[variable][:] = value
-        with pytest.raises(ValueError, match="outside the image of its bijector"):
-            example.flat(broken)
-        with pytest.raises(ValueError, match="outside the image of its bijector"):
-            example.sipnet_parameter_fields(broken)
-
-
-def test_flat_refuses_a_variable_from_the_other_space(example, theta):
-    natural = example.fields(theta)
-    unconstrained = example.fields(theta, space="unconstrained")
-    mixed = natural.assign(initial_soil_carbon=unconstrained["initial_soil_carbon"])
-    with pytest.raises(ValueError, match="not in natural space"):
-        example.flat(mixed)
-
-
-def test_flat_takes_fields_selected_to_one_site(example, theta):
-    one_site = example.select(sites=(27,))
-    np.testing.assert_allclose(
-        one_site.flat(example.fields(theta).sel(site=27)),
-        one_site.flat(example.fields(theta)), rtol=1e-12,
-    )
-
-
-def test_a_sipnet_map_must_return_exactly_what_it_writes():
-    @dataclasses.dataclass(frozen=True)
-    class Lying:
-        sipnet_parameter_names_written: tuple = ("soil_carbon", "base_soil_respiration_rate")
-        sipnet_parameter_names_read: tuple = ()
-        component_names: tuple = ("soil_carbon",)
-        component_units: tuple = ("g m-2",)
-
-        def __call__(self, natural, fixed):
-            return {"soil_carbon": natural[..., 0]}
-
-    liar = CalibrationParameter(name="soil", prior=log_normal(median=1.0, geometric_sd=2.0), sipnet_map=Lying(), provenance="x")
-    with pytest.raises(ValueError, match="declares it writes .* but returns"):
-        ParameterVector(parameters=(liar,), sites=(1,))
-
-
-def test_site_labels_with_missing_or_unorderable_classes_are_refused():
-    labels_table = pd.DataFrame({"site_id": [1, 27, 4711], "label": ["a", None, "b"]})
-    with pytest.raises(ValueError, match="give no class for 1"):
-        ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": labels_table})
-    # A missing class at a site outside the vector does not matter.
-    vector = ParameterVector(parameters=(rate(varies_by="pft"),), sites=(1, 4711), site_labels={"pft": labels_table})
-    assert vector.group_labels("pft") == ("a", "b")
-    with pytest.raises(ValueError, match="cannot be ordered"):
-        ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": ("a", 1, "a")})
-    with pytest.raises(ValueError, match="not lower_case_with_underscores"):
-        ParameterVector(parameters=(rate(),), sites=SITES, site_labels={"Plant.Type": PFT})
-
-
-def test_a_fixed_value_with_an_undeclared_class_names_only_that_class():
-    labels_table = _site_labels_table({1: "grass", 27: "broadleaf", 4711: "grass"}, ("needleleaf", "broadleaf", "grass"))
-    fixed = FixedParameter(
-        name="leaf_carbon_fraction", varies_by="pft", provenance="test",
-        value={"needleleaf": 0.5, "broadleaf": 0.46, "grass": 0.48, "tundra": 0.4},
-    )
-    with pytest.raises(ValueError, match="missing \\[\\], extra \\['tundra'\\]"):
-        ParameterVector(parameters=(rate(varies_by="pft"),), fixed=(fixed,), sites=SITES, site_labels={"pft": labels_table})
-
-
-def test_fixed_parameters_hold_numbers_and_their_own_mapping():
-    values = {"a": 0.4, "b": 0.5}
-    fixed = FixedParameter(name="leaf_carbon_fraction", varies_by="pft", value=values, provenance="test")
-    values["a"] = 7.0
-    assert fixed.value["a"] == 0.4
-    with pytest.raises(TypeError):
-        fixed.value["a"] = 7.0
-    with pytest.raises(TypeError, match="must be numbers"):
-        FixedParameter(name="leaf_carbon_fraction", value="0.4", provenance="test")
-    with pytest.raises(TypeError, match="takes CalibrationParameters"):
-        ParameterVector(parameters=(fixed,), sites=(1,))
-    with pytest.raises(TypeError, match="takes FixedParameters"):
-        ParameterVector(parameters=(rate(),), fixed=(rate(name="q"),), sites=(1,))
-
-
-def test_select_takes_array_like_sites_and_classes(example):
-    assert example.select(sites=np.array([27])).sites == (27,)
-    assert example.select(sites=jnp.array([4711, 1])).sites == (1, 4711)
-    theta = example.sample(jax.random.key(0), n=2)
-    assert example.select(sites=example.fields(theta)["site"][:2]).sites == (1, 27)
-    assert example.select(labels={"pft": np.array(["deciduous"])}).sites == (1, 4711)
-    assert example.select(labels={"pft": pd.Index(["conifer", "deciduous"])}).sites == SITES
-
-
-def test_select_refuses_what_is_not_a_sequence_of_distinct_site_ids(example):
-    with pytest.raises(ValueError, match="more than once"):
-        example.select(sites=(1, 1))
-    for sites in (27, np.int64(27), (27.5,), (27.0,), (True,), {1, 27}, "27"):
-        with pytest.raises(TypeError, match="sites"):
-            example.select(sites=sites)
-
-
-# ── coverage the mutation tests asked for ────────────────────────────────────
-
-
-def test_fields_attributes_follow_the_space_and_the_component(example, theta):
-    for variable in example.fields(theta, space="unconstrained").data_vars.values():
-        assert variable.attrs["space"] == "unconstrained" and variable.attrs["units"] == "1"
-    natural = example.fields(theta)
-    assert natural["photosynthesis.respiration_share"].attrs["units"] == "1"
-    assert natural["initial_soil_carbon"].attrs["long_name"] == "initial_soil_carbon: soil_carbon"
-    assert natural["initial_soil_carbon"].attrs["sipnet_parameters"] == "soil_carbon"
-
-
-def test_the_sipnet_parameter_fields_are_in_pysipnet_order_from_either_space(example, theta):
-    order = [n for n in FLAT_SPECS if n in example.sipnet_parameter_names_written]
-    assert list(example.sipnet_parameter_names_written) == order
-    assert list(example.sipnet_parameter_fields(theta).data_vars) == order
-    xr.testing.assert_allclose(
-        example.sipnet_parameter_fields(example.fields(theta, space="unconstrained")), example.sipnet_parameter_fields(theta), rtol=1e-12
-    )
-
-
-def test_flat_reads_sites_by_label_and_ignores_extras(example, theta):
-    fields = example.fields(theta)
-    np.testing.assert_allclose(example.flat(fields.isel(site=[2, 0, 1])), theta, rtol=1e-10, atol=1e-10)
-    extra = fields.isel(site=[0]).assign_coords(site=np.array([9999], dtype=np.int32))
-    np.testing.assert_allclose(example.flat(xr.concat([fields, extra], dim="site")), theta, rtol=1e-10, atol=1e-10)
-    with pytest.raises(ValueError, match=r"\['site'\] carry no coordinate"):
-        example.flat(fields.drop_vars(["site", "pft"]))
-    with pytest.raises(ValueError, match="carry no coordinate"):
-        example.flat(fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].expand_dims(time=2)))
-    timed = fields["initial_soil_carbon"].expand_dims(time=pd.date_range("2012-01-01", periods=2))
-    for order in (timed, timed.transpose(..., "time")):
-        with pytest.raises(ValueError, match="has a 'time' dim"):
-            example.flat(fields.assign(initial_soil_carbon=order))
-
-
-@pytest.mark.parametrize("located", [False, True])
-def test_flat_and_sipnet_parameter_fields_take_fields_in_any_dim_order(located, theta):
-    """Transposed Fields were refused by the field contract's dim order."""
-    vector = (
-        example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
-        if located
-        else example_parameter_vector(sites=SITES, pft=PFT)
-    )
-    fields = vector.fields(theta)
-    transposed = fields.transpose("site", "sample")
-    np.testing.assert_allclose(vector.flat(transposed), theta, rtol=1e-10, atol=1e-10)
-    xr.testing.assert_identical(
-        vector.sipnet_parameter_fields(transposed), vector.sipnet_parameter_fields(fields)
-    )
-
-
-def test_select_restricts_per_site_fixed_values_and_keeps_require_complete(example):
+def test_named_site_covariates_are_kept_and_others_dropped():
     vector = ParameterVector(
-        parameters=(rate(),),
-        fixed=(FixedParameter(name="leaf_carbon_fraction", varies_by="site", value={1: 0.4, 27: 0.45, 4711: 0.5}, provenance="t"),),
-        sites=SITES,
-    )
-    assert dict(vector.select(sites=(27, 4711)).fixed[0].value) == {27: 0.45, 4711: 0.5}
-    filled = tuple(
-        FixedParameter(name=n, value=_in_domain_value(n), provenance="t") for n in example.unset_sipnet_parameter_names
-    )
-    complete = ParameterVector(
-        parameters=example.parameters, fixed=example.fixed + filled, sites=example.sites,
-        site_labels=example.site_labels, require_complete=True,
-    )
-    assert complete.select(sites=(1,)).require_complete
-    assert complete.summary().splitlines()[-1] == "  unset: none; every required SIPNET parameter is calibrated or fixed"
-
-
-def test_a_joint_prior_over_classes_is_restricted_to_its_marginal():
-    base = tfd.MultivariateNormalTriL(loc=MEAN, scale_tril=jnp.linalg.cholesky(COVARIANCE))
-    joint = CalibrationParameter(
-        name="soil", prior=tfd.TransformedDistribution(base, tfb.Exp()),
-        sipnet_map="soil_carbon", varies_by="pft", provenance="t",
-    )
-    labels_table = _site_labels_table({1: "a", 27: "c", 4711: "a"}, ("a", "b", "c"))
-    vector = ParameterVector(parameters=(joint,), sites=SITES, site_labels={"pft": labels_table})
-    np.testing.assert_allclose(vector.gaussian_prior().mean, np.asarray(MEAN)[[0, 2]], rtol=1e-12)
-
-
-def test_a_site_labels_table_is_read_by_site_id_whatever_its_row_order():
-    labels_table = _site_labels_table({4711: "grass", 27: "broadleaf", 1: "needleleaf"}, ("needleleaf", "broadleaf", "grass"))
-    vector = ParameterVector(parameters=(rate(varies_by="pft"),), sites=SITES, site_labels={"pft": labels_table})
-    assert vector.site_labels["pft"] == ("needleleaf", "broadleaf", "grass")
-
-
-def test_construction_refusals_the_suite_did_not_reach():
-    with pytest.raises(ValueError, match="joint prior over groups has batch"):
-        CalibrationParameter(
-            name="s", prior=tfd.TransformedDistribution(
-                tfd.MultivariateNormalDiag(loc=jnp.zeros((2, 3)), scale_diag=jnp.ones((2, 3))), tfb.Exp()
-            ),
-            sipnet_map="soil_carbon", varies_by="site", provenance="t",
-        )
-    with pytest.raises(ValueError, match="one copy is a scalar or a vector"):
-        CalibrationParameter(
-            name="a", prior=tfd.Independent(tfd.Normal(jnp.zeros((4, 2, 2)), jnp.float64(1.0)), 3),
-            sipnet_map=ALLOCATION, provenance="t",
-        )
-    lognormals = CalibrationParameter(
-        name="soil", prior=tfd.Independent(tfd.LogNormal(jnp.zeros(3), jnp.ones(3)), 1),
-        sipnet_map="soil_carbon", varies_by="site", provenance="t",
-    )
-    assert not lognormals.has_analytic_moments
-    with pytest.raises(NotImplementedError, match="cannot be restricted"):
-        ParameterVector(parameters=(lognormals,), sites=SITES).select(sites=(1, 27))
-    with pytest.raises(ValueError, match="at least one calibration parameter"):
-        ParameterVector(parameters=(), sites=SITES)
-    with pytest.raises(ValueError, match="at least one site"):
-        ParameterVector(parameters=(rate(),), sites=())
-    with pytest.raises(ValueError, match="repeats a site_id"):
-        ParameterVector(
-            parameters=(rate(varies_by="pft"),), sites=(1, 27),
-            site_labels={"pft": pd.DataFrame({"site_id": [1, 1, 27], "label": ["a", "b", "a"]})},
-        )
-    with pytest.raises(ValueError, match="carry no declared class"):
-        ParameterVector(
-            parameters=(rate(varies_by="pft"),), sites=SITES,
-            site_labels={"pft": pd.Categorical(["a", "zzz", "a"], categories=["a", "b"])},
-        )
-    with pytest.raises(ValueError, match="have no site labels"):
-        ParameterVector(
-            parameters=(rate(),), sites=SITES,
-            fixed=(FixedParameter(name="leaf_carbon_fraction", varies_by="landcover", value={"x": 0.4}, provenance="t"),),
-        )
-    beyond_int16 = ParameterVector(parameters=(rate(),), sites=(1,)).fields(jnp.zeros((2**15 + 1, 1)))
-    assert beyond_int16.sizes["sample"] == 2**15 + 1
-    with pytest.raises(ValueError, match="is reserved"):
-        rate(name="site")
-    for name in ("lon", "lat", "site_id", "sample", "point", "x", "y"):
-        with pytest.raises(ValueError, match="reserved"):
-            ParameterVector(parameters=(rate(),), sites=SITES, site_labels={name: PFT})
-    for name in ("sample", "point", "x", "y", "lon", "lat"):
-        with pytest.raises(ValueError, match="is reserved"):
-            rate(name=name)
-
-
-@pytest.mark.parametrize("name", ["initial_condition_member", "driver_member", "source_index"])
-def test_a_data_source_member_dim_name_is_reserved(name):
-    """A parameter or site-labels name would collide where the IC conversion crosses them."""
-    with pytest.raises(ValueError, match="is reserved"):
-        rate(name=name)
-    with pytest.raises(ValueError, match="reserved"):
-        ParameterVector(parameters=(rate(),), sites=SITES, site_labels={name: PFT})
-
-
-def test_summary_of_a_one_site_vector_with_nothing_fixed():
-    lines = ParameterVector(parameters=(rate(),), sites=(1,)).summary().splitlines()
-    assert lines[0] == "ParameterVector  D = 1  |  1 site  |  site labels: none"
-    assert lines[-2] == "  fixed: none"
-
-
-# ── batch identity and netCDF names ──────────────────────────────────────────
-
-
-def test_sipnet_parameter_fields_from_fields_keep_the_samples_it_was_given(example, theta):
-    subset = example.fields(theta).sel(sample=[1, 3])
-    sipnet_parameter_fields = example.sipnet_parameter_fields(subset)
-    assert sipnet_parameter_fields["sample"].values.tolist() == [1, 3] and sipnet_parameter_fields["sample"].dtype == np.int64
-    full = example.sipnet_parameter_fields(theta)
-    assert sipnet_overrides(sipnet_parameter_fields, batch={"sample": 3}, site=27) == pytest.approx(
-        sipnet_overrides(full, batch={"sample": 3}, site=27)
-    )
-    with pytest.raises(KeyError, match="sample 0 is not one of the SIPNET parameter fields' sample labels"):
-        sipnet_overrides(sipnet_parameter_fields, batch={"sample": 0}, site=27)
-    from pyens.xarray import fields_from_dataset
-
-    grids = fields_from_dataset(sipnet_parameter_fields)
-    sample_axis, site_axis = grids["soil_carbon"].axes
-    assert list(sample_axis.labels) == [1, 3]
-    assert grids["soil_carbon"].value_at({sample_axis: 1, site_axis: 1}) == float(
-        full["soil_carbon"].sel(sample=3, site=27)
-    )
-    with pytest.raises(ValueError, match="distinct integers"):
-        example.sipnet_parameter_fields(example.fields(theta[:2]).assign_coords(sample=[0, 0]))
-
-
-def test_labels_beyond_int16_are_kept(example, theta):
-    fields = example.fields(theta[:2]).assign_coords(sample=[40000, -5])
-    sipnet_parameter_fields = example.sipnet_parameter_fields(fields)
-    assert sipnet_parameter_fields["sample"].values.tolist() == [40000, -5]
-
-
-def test_a_batch_of_more_than_32768_samples_is_labeled(example):
-    theta = np.zeros((32770, example.dimension))
-    fields = example.fields(theta, space="unconstrained")
-    assert fields.sizes["sample"] == 32770
-    assert fields["sample"].values[-1] == 32769 and fields["sample"].dtype == np.int64
-
-
-def test_the_batch_dim_may_be_named(example, theta):
-    fields = example.fields(theta, batch_dim="draw")
-    assert fields["initial_soil_carbon"].dims == ("draw", "site")
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta, batch_dim="draw")
-    assert sipnet_parameter_fields["soil_carbon"].dims == ("draw", "site")
-    np.testing.assert_allclose(example.flat(fields), theta, rtol=1e-10, atol=1e-10)
-    # Fields keep their own batch dim through the SIPNET parameter fields.
-    assert example.sipnet_parameter_fields(fields)["soil_carbon"].dims == ("draw", "site")
-
-
-@pytest.mark.parametrize("name", ["pft", "initial_soil_carbon", "site", "time", "lat", "site_id"])
-def test_a_batch_dim_may_not_take_a_reserved_or_taken_name(example, theta, name):
-    with pytest.raises(ValueError, match="batch"):
-        example.fields(theta, batch_dim=name)
-    with pytest.raises(ValueError, match="batch"):
-        example.sipnet_parameter_fields(theta, batch_dim=name)
-
-
-@pytest.mark.parametrize(
-    "name", ["timestep_start", "timestep_length", "year", "hour_of_day", "window_end"]
-)
-def test_a_batch_dim_may_not_take_a_model_output_or_window_coordinate_name(example, theta, name):
-    """Fields on ``timestep_length`` were made, and validate_field refused them."""
-    with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
-        example.fields(theta, batch_dim=name)
-    with pytest.raises(ValueError, match="cannot name a batch dim; it is a coordinate"):
-        example.sipnet_parameter_fields(theta, batch_dim=name)
-
-
-@pytest.mark.parametrize("name", ["driver_member", "initial_condition_member", "shared", "source_index"])
-def test_a_batch_dim_may_not_take_a_data_source_member_or_vector_name(example, theta, name):
-    """Theta's rows named ``driver_member`` were stamped as driver members."""
-    with pytest.raises(ValueError, match="batch_dim"):
-        example.fields(theta, batch_dim=name)
-    with pytest.raises(ValueError, match="batch_dim"):
-        example.sipnet_parameter_fields(theta, batch_dim=name)
-
-
-def test_the_reserved_names_are_built_from_the_shared_constants():
-    from sipnet_calibration.conventions import (
-        DATA_SOURCE_MEMBER_NAMES,
-        NON_BATCH_DIM_NAMES,
-        SAMPLE,
-        SITE_ID,
-    )
-    from sipnet_calibration.parameter_vector import (
-        RESERVED_PARAMETER_NAMES,
-        RESERVED_SITE_LABELS_NAMES,
-        SHARED,
-    )
-
-    assert RESERVED_PARAMETER_NAMES == {SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES}
-    assert RESERVED_SITE_LABELS_NAMES == RESERVED_PARAMETER_NAMES | {SHARED, SITE_ID}
-
-
-def test_the_fields_and_sipnet_parameter_fields_carry_the_attributes_of_their_batch_dim(example, theta):
-    from sipnet_calibration.conventions import SAMPLE_ATTRIBUTES
-
-    assert dict(example.fields(theta)["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
-    assert dict(example.sipnet_parameter_fields(theta)["sample"].attrs) == dict(SAMPLE_ATTRIBUTES)
-    assert dict(example.fields(theta, batch_dim="draw")["draw"].attrs) == {}
-
-
-def test_sipnet_overrides_names_a_site_the_sipnet_parameter_fields_lack(example, theta):
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    with pytest.raises(KeyError, match="site 2 is not one of the SIPNET parameter fields' site"):
-        sipnet_overrides(sipnet_parameter_fields, batch={"sample": 0}, site=2)
-
-
-def test_a_scalar_batch_coordinate_gives_one_vector(example, theta):
-    one = example.fields(theta).isel(sample=2)
-    assert int(one["sample"]) == 2
-    flat = example.flat(one)
-    assert flat.shape == (example.dimension,)
-    np.testing.assert_allclose(flat, theta[2], rtol=1e-10, atol=1e-10)
-
-
-def _located_example():
-    table = pd.DataFrame(
-        {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
-    )
-    return example_parameter_vector(site_table=table, pft=PFT)
-
-
-def test_two_batch_dims_are_refused_until_stacked(theta):
-    from sipnet_calibration.fields import stack_batch_dims
-
-    located = _located_example()
-    fields = located.fields(theta, space="unconstrained")
-    crossed = fields.expand_dims(initial_condition_member=[0, 1]).transpose(
-        "sample", "initial_condition_member", "site"
-    )
-    with pytest.raises(ValueError, match="stack_batch_dims") as refusal:
-        located.flat(crossed)
-    # The advice for a Dataset is the call that runs.
-    assert "dataset.map(lambda field: stack_batch_dims(field, new_batch_dim='run'))" in str(refusal.value)
-    stacked = crossed.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))
-    flat = located.flat(stacked)
-    assert flat.shape == (2 * len(theta), located.dimension)
-    np.testing.assert_allclose(flat[::2], theta, rtol=1e-10, atol=1e-10)
-
-
-def test_the_flat_round_trip_of_a_stack_unstacks(theta):
-    """Stacked Fields -> Flat -> fields(batch_dim=) -> unstacked, as documented."""
-    from sipnet_calibration.fields import stack_batch_dims, unstack_batch_dims
-
-    located = _located_example()
-    fields = located.fields(theta[:3], space="unconstrained")
-    crossed = fields.expand_dims(initial_condition_member=[4, 1]).transpose(
-        "sample", "initial_condition_member", "site"
-    )
-    stacked = crossed.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))
-    made = located.fields(located.flat(stacked), space="unconstrained", batch_dim="run")
-    restored = made.map(
-        lambda array: unstack_batch_dims(array, labels_from=stacked[array.name])
-    )
-    for name in crossed.data_vars:
-        xr.testing.assert_allclose(restored[name], crossed[name])
-        assert restored[name].dims == crossed[name].dims
-
-
-@pytest.mark.parametrize(
-    "name", ["soil_carbon", "leaf_carbon_fraction", "allocation.leaf_allocation", "allocation"]
-)
-def test_a_batch_dim_may_not_take_a_sipnet_parameter_or_fields_variable_name(
-    example, theta, name
-):
-    variables = set(example.fields(theta).data_vars) | set(example.sipnet_parameter_fields(theta).data_vars)
-    assert name in variables or name in example.parameter_names
-    with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
-        example.fields(theta, batch_dim=name)
-    with pytest.raises(ValueError, match=f"batch_dim={name!r} is"):
-        example.sipnet_parameter_fields(theta, batch_dim=name)
-
-
-def test_a_dim_without_integer_labels_is_refused_in_the_fields_words(example, theta):
-    fields = example.fields(theta)
-    for broken in (fields.drop_vars("sample"), fields.assign_coords(sample=np.arange(8.0))):
-        with pytest.raises(ValueError, match="neither a batch dim|carry no coordinate"):
-            example.flat(broken)
-        with pytest.raises(ValueError, match="neither a batch dim|carry no coordinate"):
-            example.sipnet_parameter_fields(broken)
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    with pytest.raises(ValueError, match="carry no coordinate"):
-        sipnet_overrides(sipnet_parameter_fields.drop_vars("sample"), batch={"sample": 0}, site=27)
-
-
-def test_sipnet_overrides_takes_integer_labels_only(example, theta):
-    sipnet_parameter_fields = example.sipnet_parameter_fields(theta)
-    for label in (1.0, True):
-        with pytest.raises(TypeError, match="integer"):
-            sipnet_overrides(sipnet_parameter_fields, batch={"sample": label}, site=27)
-    for site in (27.0, True):
-        with pytest.raises(TypeError, match="integer"):
-            sipnet_overrides(sipnet_parameter_fields, batch={"sample": 1}, site=site)
-    with pytest.raises(TypeError, match="batch must be a mapping"):
-        sipnet_overrides(sipnet_parameter_fields, batch=3, site=27)
-    assert sipnet_overrides(sipnet_parameter_fields, batch={"sample": np.int64(1)}, site=np.int32(27)) == (
-        sipnet_overrides(sipnet_parameter_fields, batch={"sample": 1}, site=27)
-    )
-
-
-def test_unconstrained_fields_write_to_netcdf_and_read_back(example, theta, tmp_path):
-    unconstrained = example.fields(theta, space="unconstrained")
-    assert not any("/" in name for name in unconstrained.data_vars)
-    path = tmp_path / "unconstrained.nc"
-    unconstrained.to_netcdf(path, engine="h5netcdf")
-    with xr.open_dataset(path, engine="h5netcdf") as back:
-        np.testing.assert_array_equal(example.flat(back.load()), theta)
-
-
-# ── the sixteen-class site labels ─────────────────────────────────────────────
-
-
-def test_a_vector_over_the_whole_pool_takes_its_groups_from_the_16class_labels():
-    from sipnet_calibration.site_labels import load_site_labels, resolve_site_labels
-    from sipnet_calibration.sites import load_sites
-
-    try:
-        site_table, labels = load_sites(), load_site_labels("pft_16class")
-    except FileNotFoundError as error:
-        pytest.skip(f"processed site table or site labels not available in this working copy: {error}")
-    classes = resolve_site_labels("pft_16class").class_names
-    vector = ParameterVector(
-        parameters=(rate(varies_by="pft"),),
-        fixed=(FixedParameter(
-            name="leaf_carbon_fraction", value={c: 0.4 + 0.01 * i for i, c in enumerate(classes)},
-            varies_by="pft", provenance="test",
-        ),),
-        site_table=site_table, site_labels={"pft": labels},
-    )
-    assert vector.group_labels("pft") == classes
-    assert vector.dimension == len(classes)
-
-    theta = vector.sample(jax.random.key(0), n=4)
-    turnover = vector.fields(theta)["r"]
-    by_site = labels.set_index("site_id")["label"].astype(str)
-    assert (turnover["pft"].to_series().astype(str) == by_site.reindex(turnover["site"].values).values).all()
-    # One draw per class, shared by every site of that class.
-    grouped = turnover.groupby("pft")
-    assert (grouped.max("site") == grouped.min("site")).all()
-
-    wetland = vector.select(labels={"pft": ["Permanent_Wetlands"]})
-    assert wetland.dimension == 1
-    assert set(wetland.sites) == set(by_site.index[by_site == "Permanent_Wetlands"])
-
-
-# ── the vector cannot change after its checks, and pickles ───────────────────
-
-
-def _frozen_candidate(sites=None, *, site_table=None) -> ParameterVector:
-    """A vector whose priors all round-trip through pickle, with a per-class
-    fixed value, the mapping that once made the vector unpicklable."""
-    return ParameterVector(
-        parameters=(rate(varies_by="pft"),),
-        fixed=(FixedParameter(
-            name="leaf_carbon_fraction", value={"conifer": 0.4, "deciduous": 0.5},
-            varies_by="pft", provenance="test",
-        ),),
-        sites=SITES if sites is None and site_table is None else sites,
-        site_table=site_table,
+        parameters=parameters(),
+        site_table=site_table(temperature=[1.0, 2.0, 3.0], cluster=[4, 5, 6]),
         site_labels={"pft": PFT},
+        site_covariate_names=["temperature"],
+    )
+    assert list(vector.site_table.columns) == ["site_id", "lon", "lat", "temperature", "pft"]
+    kept = vector.select(sites=[27, 4711])
+    assert list(kept.site_table["temperature"]) == [2.0, 3.0]
+
+
+def test_a_named_site_covariate_must_be_a_finite_float64_column():
+    table = site_table(cluster=[4, 5, 6], gap=[1.0, np.nan, 2.0])
+    with pytest.raises(KeyError, match="not a column"):
+        ParameterVector(parameters=parameters(), site_table=table, site_labels={"pft": PFT},
+                        site_covariate_names=["temperature"])
+    with pytest.raises(TypeError, match="not float64"):
+        ParameterVector(parameters=parameters(), site_table=table, site_labels={"pft": PFT},
+                        site_covariate_names=["cluster"])
+    with pytest.raises(ValueError, match="not finite"):
+        ParameterVector(parameters=parameters(), site_table=table, site_labels={"pft": PFT},
+                        site_covariate_names=["gap"])
+
+
+def test_the_site_table_must_be_ascending():
+    with pytest.raises(ValueError, match="ascending"):
+        ParameterVector(parameters=parameters(), site_table=site_table_of(27, 1), site_labels={"pft": PFT[:2]})
+
+
+def test_select_keeps_order_and_recomputes_dim_indexes(vector):
+    smaller = vector.select(parameter_names=["soil_carbon", "capacity"], sites=[1, 4711])
+    assert smaller.parameter_names == ("capacity", "soil_carbon")
+    assert smaller.sites == (1, 4711)
+    assert list(smaller.select(parameter_names=["capacity"]).dim_index("pft")) == ["deciduous"]
+
+
+def test_select_refuses_unknown_labels_and_empty_selections(vector):
+    with pytest.raises(KeyError, match="not a dim label"):
+        vector.select(dim_labels={"pft": ["grass"]})
+    with pytest.raises(KeyError, match="select sites with sites="):
+        vector.select(dim_labels={"site": [1]})
+    with pytest.raises(ValueError, match="keeps no site"):
+        vector.select(sites=[27], dim_labels={"pft": ["deciduous"]})
+
+
+def test_dim_index_is_only_for_the_vectors_dims(vector):
+    with pytest.raises(KeyError, match="no dim"):
+        vector.dim_index("biome")
+
+
+# ── construction checks ───────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", ["lambda", "class", "Rate", "two__underscores"])
+def test_a_name_must_be_usable(name):
+    with pytest.raises(ValueError, match="lower_case_with_underscores and not a Python keyword"):
+        Parameter(name=name, support=REAL, units=None)
+
+
+def test_a_name_may_not_be_reserved():
+    with pytest.raises(ValueError, match="coordinate of the labeled form"):
+        Parameter(name="sample", support=REAL, units=None)
+
+
+def test_a_vector_needs_a_parameter():
+    with pytest.raises(ValueError, match="at least one parameter"):
+        ParameterVector(parameters=[], site_table=site_table())
+
+
+def test_parameter_names_are_unique():
+    with pytest.raises(ValueError, match="parameter names"):
+        ParameterVector(
+            parameters=[Parameter(name="rate", support=REAL, units=None)] * 2, site_table=site_table()
+        )
+
+
+def test_names_are_distinct_across_parameters_covariates_and_site_labels():
+    with pytest.raises(ValueError, match="both a parameter and a site covariate"):
+        ParameterVector(
+            parameters=[Parameter(name="rate", support=REAL, units=None)],
+            site_table=site_table(rate=[1.0, 2.0, 3.0]),
+            site_covariate_names=["rate"],
+        )
+    with pytest.raises(ValueError, match="reserved name"):
+        ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"time": PFT})
+
+
+def test_a_dim_must_be_site_or_a_site_labels_name():
+    with pytest.raises(ValueError, match="neither 'site' nor a site-labels name"):
+        ParameterVector(
+            parameters=[Parameter(name="rate", support=REAL, units=None, dim="biome")],
+            site_table=site_table(),
+        )
+
+
+def test_the_simplex_needs_two_natural_names():
+    with pytest.raises(ValueError, match="at least two"):
+        Parameter(name="shares", support=SIMPLEX, units="1", natural_names=("only",))
+
+
+def test_natural_names_are_unique_and_usable():
+    with pytest.raises(ValueError, match="natural_names"):
+        Parameter(name="pair", support=REAL, units=None, natural_names=("a", "a"))
+    with pytest.raises(ValueError, match="natural name"):
+        Parameter(name="pair", support=REAL, units=None, natural_names=("a", "B"))
+
+
+@pytest.mark.parametrize(
+    "kind, low, high",
+    [("box", None, None), ("interval", 1.0, 1.0), ("interval", 0.0, np.inf), ("positive", 0.0, None)],
+)
+def test_a_support_is_checked(kind, low, high):
+    with pytest.raises(ValueError, match="support"):
+        Support(kind, low, high)
+
+
+def test_a_custom_bijector_onto_the_support_is_accepted():
+    parameter = Parameter(name="rate", support=POSITIVE, units="1", bijector=tfb.Softplus())
+    assert parameter.unconstrained_names == ("softplus_inverse(rate)",)
+    simplex = Parameter(
+        name="shares", support=SIMPLEX, units="1", natural_names=("a", "b", "c"),
+        bijector=tfb.IteratedSigmoidCentered(),
+    )
+    assert simplex.unconstrained_size == 2
+
+
+def test_a_custom_bijector_not_onto_the_support_is_refused():
+    with pytest.raises(ValueError, match="does not map theta onto the support"):
+        Parameter(name="share", support=OPEN_UNIT_INTERVAL, units="1", bijector=tfb.Exp())
+    with pytest.raises(ValueError, match="does not map theta onto the support"):
+        Parameter(name="rate", support=POSITIVE, units="1", bijector=tfb.Sigmoid())
+
+
+def test_the_default_bijector_is_the_supports(vector):
+    assert isinstance(vector["share"].bijector, tfb.Sigmoid)
+    assert isinstance(vector["allocation"].bijector, tfb.SoftmaxCentered)
+    assert float(vector["q10"].bijector.forward(jnp.float64(0.0))) == pytest.approx(3.0)
+
+
+# ── supports ──────────────────────────────────────────────────────────────────
+
+
+def test_the_elementwise_log_jacobian_matches_finite_differences():
+    theta = jnp.linspace(-4.0, 4.0, 9)
+    for support in (POSITIVE, OPEN_UNIT_INTERVAL, OpenInterval(-2.0, 3.0), REAL):
+        transform = support.bijector()
+        step = 1e-6
+        derivative = (transform.forward(theta + step) - transform.forward(theta - step)) / (2 * step)
+        np.testing.assert_allclose(
+            support.log_jacobian(transform, theta), np.log(np.abs(derivative)), atol=1e-6
+        )
+
+
+def test_the_simplex_log_jacobian_is_against_the_first_k_minus_1_coordinates():
+    # For the inverse additive log-ratio, |det d(x_1..x_{k-1})/d theta| is
+    # the product of all k fractions.
+    theta = jnp.asarray([[0.3, -1.2, 0.5], [2.0, 0.0, -3.0]])
+    x = tfb.SoftmaxCentered().forward(theta)
+    np.testing.assert_allclose(
+        SIMPLEX.log_jacobian(tfb.SoftmaxCentered(), theta), jnp.log(x).sum(axis=-1), atol=1e-12
     )
 
 
-def test_a_vector_with_a_per_class_fixed_value_pickles_and_round_trips():
-    import copy
-    import pickle
-
-    vector = _frozen_candidate()
-    theta = vector.sample(jax.random.key(0), n=3)
-    for restored in (pickle.loads(pickle.dumps(vector)), copy.deepcopy(vector)):
-        assert restored.fields(theta).identical(vector.fields(theta))
-        assert restored.sipnet_parameter_fields(theta).identical(vector.sipnet_parameter_fields(theta))
-        assert dict(restored.fixed[0].value) == {"conifer": 0.4, "deciduous": 0.5}
+def test_the_simplex_contains_positive_values_summing_to_one():
+    assert bool(SIMPLEX.contains(jnp.asarray([0.2, 0.3, 0.5])))
+    assert not bool(SIMPLEX.contains(jnp.asarray([0.2, 0.3, 0.6])))
+    assert not bool(SIMPLEX.contains(jnp.asarray([0.0, 0.5, 0.5])))
 
 
-def test_a_vector_with_a_transformed_distribution_prior_does_not_unpickle():
-    """What the module Notes say: the limit is TFP's, not the vector's."""
-    import pickle
-
-    vector = example_parameter_vector(SITES, pft=PFT)
-    with pytest.raises(TypeError):
-        pickle.loads(pickle.dumps(vector))
+def test_probe_points_cover_the_first_dim_labels_axes():
+    points = probe_points((2, 3), unconstrained_size=3)
+    assert points.shape == (1 + 6 + 3 * 4 + 4, 2, 3)
+    assert (np.abs(points).max(axis=(1, 2)) <= 20.0 + 1e-12).all()
 
 
-def test_site_labels_and_a_fixed_mapping_cannot_be_changed():
-    vector = _frozen_candidate()
-    with pytest.raises(TypeError):
-        vector.site_labels["pft"] = ("conifer",) * 3
-    with pytest.raises(TypeError):
-        vector.fixed[0].value["conifer"] = 0.9
-    assert vector.site_labels["pft"] == PFT
+# ── layout ────────────────────────────────────────────────────────────────────
 
 
-def test_the_vector_keeps_its_own_copy_of_the_site_tables_lon_lat():
-    table = pd.DataFrame(
-        {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
-    )
-    vector = _frozen_candidate(site_table=table)
-    table.loc[0, "lon"] = 0.0
-    table["lat"] = np.zeros(3)
-    np.testing.assert_array_equal(vector.site_table["lon"], [-24.6, -78.6, -107.3])
-    np.testing.assert_array_equal(vector.site_table["lat"], [82.5, 80.6, 44.0])
+def test_vectors_built_alike_share_a_layout(vector):
+    twin = ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": PFT})
+    check_parameter_vectors_share_a_layout(vector, twin)
 
 
-def test_the_kept_lon_lat_are_read_only_and_what_fields_hands_out_is_writable():
-    table = pd.DataFrame(
-        {"site_id": list(SITES), "lon": [-24.6, -78.6, -107.3], "lat": [82.5, 80.6, 44.0]}
-    )
-    vector = _frozen_candidate(site_table=table)
-    lon, lat = vector._lon_lat
-    assert not lon.flags.writeable and not lat.flags.writeable
-    with pytest.raises(ValueError):
-        lon[0] = 0.0
-    fields = vector.fields(vector.sample(jax.random.key(0), n=2))
-    fields["lon"].values[0] = 5.0
-    np.testing.assert_array_equal(vector.site_table["lon"], [-24.6, -78.6, -107.3])
+@pytest.mark.parametrize(
+    "change, what",
+    [
+        (lambda ps: ps[:-1], "index"),
+        (lambda ps: [*ps[:3], Parameter(name="soil_carbon", support=POSITIVE, units="g m-2",
+                                        dim="site", bijector=tfb.Softplus()), *ps[4:]], "index"),
+    ],
+)
+def test_vectors_that_differ_do_not_share_a_layout(vector, change, what):
+    other = ParameterVector(parameters=change(parameters()), site_table=site_table(), site_labels={"pft": PFT})
+    with pytest.raises(ValueError, match=f"differ in their {what}"):
+        check_parameter_vectors_share_a_layout(vector, other)
 
 
-def test_site_labels_is_a_dict_to_pandas():
-    vector = _frozen_candidate()
-    assert pd.DataFrame(vector.site_labels).shape == (len(SITES), 1)
-
-
-def test_a_per_class_fixed_parameter_compares_and_hashes_by_identity():
-    first = _frozen_candidate().fixed[0]
-    second = dataclasses.replace(first)
-    assert first == first and first != second
-    assert len({first, second}) == 2
-
-
-@pytest.mark.parametrize("site", [27, 1])
-def test_sipnet_overrides_refuses_sipnet_parameter_fields_selected_to_one_site_in_its_words(site):
-    """SIPNET parameter fields with a scalar ``site`` raised a raw TypeError from ``in``."""
-    sipnet_parameter_fields = as_sipnet_parameter_fields(xr.Dataset(
-        {"soil_carbon": (("sample", "site"), np.ones((2, 2)))},
-        coords={"sample": [0, 1], "site": np.array([1, 27], np.int32)},
-    ))
-    with pytest.raises(ValueError, match="selected to site 27 alone"):
-        sipnet_overrides(sipnet_parameter_fields.isel(site=1), site=site, batch={"sample": 1})
-
-
-def test_sipnet_overrides_refuses_sipnet_parameter_fields_without_sites_in_its_words():
-    sipnet_parameter_fields = as_sipnet_parameter_fields(
-        xr.Dataset({"soil_carbon": (("sample",), np.ones(2))}, coords={"sample": [0, 1]})
-    )
-    with pytest.raises(ValueError, match="has no 'site'"):
-        sipnet_overrides(sipnet_parameter_fields, site=1, batch={"sample": 1})
-
-
-# ── the representations' validators ──────────────────────────────────────────
-
-
-@pytest.fixture(scope="module")
-def located_example() -> ParameterVector:
-    return example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
-
-
-class TestTheRepresentationsValidators:
-    def test_a_located_vectors_outputs_pass(self, located_example, theta):
-        vector = located_example
-        validate_calibration_fields(vector.fields(theta))
-        validate_calibration_fields(vector.fields(theta[0], space="unconstrained"))
-        validate_sipnet_parameter_fields(vector.sipnet_parameter_fields(theta))
-        validate_sipnet_parameter_fields(vector.sipnet_parameter_fields(theta).isel(site=0))
-        module.validate_sipnet_overrides(
-            module.sipnet_overrides(
-                vector.sipnet_parameter_fields(theta), batch={"sample": 0}, site=SITES[0]
-            )
+def test_a_transform_that_differs_numerically_breaks_the_layout():
+    def with_shift(shift: float) -> ParameterVector:
+        capacity = Parameter(
+            name="capacity", support=POSITIVE, units="nmol g-1 s-1",
+            bijector=tfb.Chain([tfb.Exp(), tfb.Shift(jnp.float64(shift))]),
+        )
+        return ParameterVector(
+            parameters=[capacity, *parameters()[1:]], site_table=site_table(), site_labels={"pft": PFT}
         )
 
-    def test_the_validators_refuse_what_has_no_locations(self, example, theta):
-        """A Dataset with neither lon nor lat passed both validators, as a placeholder."""
-        with pytest.raises(ValueError, match="carries no 'lon'"):
-            validate_calibration_fields(example.fields(theta))
-        with pytest.raises(ValueError, match="carries no 'lon'"):
-            validate_sipnet_parameter_fields(example.sipnet_parameter_fields(theta))
-
-    def test_a_bare_site_id_vector_still_reads_and_runs_its_own(self, example, theta):
-        """Only the vector's own methods, and one run's overrides, need no locations."""
-        fields = example.fields(theta)
-        np.testing.assert_allclose(example.flat(fields), theta, rtol=1e-10, atol=1e-10)
-        example.sipnet_parameter_fields(fields)
-        module.sipnet_overrides(
-            example.sipnet_parameter_fields(theta), batch={"sample": 0}, site=SITES[0]
-        )
-
-    def test_a_located_vector_refuses_fields_without_locations(self, located_example, theta):
-        fields = located_example.fields(theta).drop_vars(["lon", "lat"])
-        with pytest.raises(ValueError, match="carries no 'lon'"):
-            located_example.flat(fields)
-
-    def test_the_validators_refuse_a_variable_without_a_site(self, located_example, theta):
-        fields = located_example.fields(theta)
-        with pytest.raises(ValueError, match="has no 'site'"):
-            validate_calibration_fields(fields.isel(site=0, drop=True))
-        sipnet_parameter_fields = located_example.sipnet_parameter_fields(theta)
-        with pytest.raises(ValueError, match="has no 'site'"):
-            validate_sipnet_parameter_fields(sipnet_parameter_fields.isel(site=0, drop=True))
-        with pytest.raises(ValueError, match="has no 'site'"):
-            validate_sipnet_parameter_fields(
-                sipnet_parameter_fields.isel(site=0, sample=0, drop=True)
-            )
-
-    def test_calibration_fields_need_a_dataset_and_a_space(self, located_example, theta):
-        fields = located_example.fields(theta)
-        with pytest.raises(TypeError, match="must be an xarray Dataset"):
-            validate_calibration_fields(dict(fields.data_vars))
-        with pytest.raises(ValueError, match=r"attrs\['space'\]"):
-            validate_calibration_fields(fields.drop_attrs())
-
-    def test_calibration_fields_are_fields(self, located_example, theta):
-        fields = located_example.fields(theta)
-        wide = fields.assign_coords(site=fields["site"].astype(np.int64))
-        with pytest.raises(ValueError, match="site ids are int32"):
-            validate_calibration_fields(wide)
-        unitless = fields.copy()
-        unitless["initial_soil_carbon"].attrs.pop("units")
-        with pytest.raises(ValueError, match="'initial_soil_carbon'.*units"):
-            validate_calibration_fields(unitless)
-        with pytest.raises(ValueError, match="on the Dataset's dims"):
-            validate_calibration_fields(
-                fields.assign(initial_soil_carbon=fields["initial_soil_carbon"].isel(sample=0, drop=True))
-            )
-
-    def test_sipnet_parameter_fields_are_named_by_flat_names_and_are_fields(
-        self, located_example, theta
-    ):
-        sipnet_parameter_fields = located_example.sipnet_parameter_fields(theta)
-        with pytest.raises(ValueError, match="an alias of pySIPNET's 'max_photosynthesis_rate'"):
-            validate_sipnet_parameter_fields(
-                sipnet_parameter_fields.rename(max_photosynthesis_rate="aMax")
-            )
-        with pytest.raises(KeyError, match="not a pySIPNET parameter"):
-            validate_sipnet_parameter_fields(
-                sipnet_parameter_fields.rename(soil_carbon="not_a_parameter")
-            )
-        with pytest.raises(TypeError, match="not a string"):
-            validate_sipnet_parameter_fields(sipnet_parameter_fields.rename(soil_carbon=3))
-        with pytest.raises(ValueError, match="has a 'time' dim"):
-            validate_sipnet_parameter_fields(
-                sipnet_parameter_fields.expand_dims(time=pd.date_range("2000-01-01", periods=2)).transpose(..., "time")
-            )
-        with pytest.raises(TypeError, match="must be an xarray Dataset"):
-            validate_sipnet_parameter_fields({"soil_carbon": 1.0})
-
-    def test_sipnet_overrides_are_numbers_under_flat_names(self):
-        module.validate_sipnet_overrides({"soil_carbon": 1.0, "max_photosynthesis_rate": 3})
-        with pytest.raises(TypeError, match="must be a number"):
-            module.validate_sipnet_overrides({"soil_carbon": True})
-        with pytest.raises(ValueError, match="an alias"):
-            module.validate_sipnet_overrides({"aMax": 1.0})
-        with pytest.raises(KeyError, match="not a pySIPNET parameter"):
-            module.validate_sipnet_overrides({"not_a_parameter": 1.0})
-        with pytest.raises(TypeError, match="not a string"):
-            module.validate_sipnet_overrides({3: 1.0})
-        with pytest.raises(TypeError, match="mapping"):
-            module.validate_sipnet_overrides([("soil_carbon", 1.0)])
+    with pytest.raises(ValueError, match="differ in their transforms"):
+        check_parameter_vectors_share_a_layout(with_shift(1.0), with_shift(2.0))
 
 
-# ── the vector conventions ───────────────────────────────────────────────────
-
-
-class TestTheVectorConventions:
-    def test_the_pieces_are_the_calibration_parameters(self, example):
-        assert list(example) == list(example.parameter_names)
-        assert len(example) == 5
-        assert "allocation" in example and "nothing" not in example and 0 not in example
-
-    def test_the_index_is_one_row_per_entry(self, example):
-        index = example.index
-        assert index.names == list(module.INDEX_LEVELS)
-        assert len(index) == example.dimension
-        assert index[0] == ("photosynthesis", "shared", "log(capacity)")
-        assert index.get_level_values("group")[-3:].tolist() == list(SITES)
-
-    def test_positions_select_by_parameter_group_and_element(self, example):
-        allocation = example.positions(parameter_name="allocation")
-        assert allocation.dtype == np.int64
-        np.testing.assert_array_equal(allocation, example.layout.positions("allocation"))
-        np.testing.assert_array_equal(
-            example.positions(parameter_name="allocation", group="deciduous"), [5, 6, 7]
-        )
-        np.testing.assert_array_equal(example.positions(group=27), [12])
-        assert example.positions().tolist() == list(range(example.dimension))
-        with pytest.raises(KeyError, match="no calibration parameter 'nothing'"):
-            example.positions(parameter_name="nothing")
-
-    def test_positions_of_an_unknown_label_is_a_key_error(self, example):
-        """An unknown group gave an empty array, as select would not."""
-        with pytest.raises(KeyError, match="not a group of any calibration parameter"):
-            example.positions(group="nothing")
-        with pytest.raises(KeyError, match="not an element of any calibration parameter"):
-            example.positions(element="nothing")
-        with pytest.raises(KeyError, match="not a group of calibration parameter 'allocation'"):
-            example.positions(parameter_name="allocation", group=27)
-        with pytest.raises(KeyError, match="no calibration parameter 'nothing'"):
-            example.positions(parameter_name="nothing")
-
-    @pytest.mark.parametrize("group", [True, 27.0, np.float64(27.0)])
-    def test_positions_refuses_a_bool_or_float_group(self, example, group):
-        """group=True read site 1's entry, and 27.0 was taken for site 27."""
-        with pytest.raises(TypeError, match="group must be"):
-            example.positions(group=group)
-        with pytest.raises(TypeError, match="group must be"):
-            example.positions(parameter_name="initial_soil_carbon", group=group)
-
-    def test_a_fixed_parameter_is_no_piece(self, example):
-        fixed = example.fixed_parameters[0].name
-        assert fixed not in example and fixed not in list(example)
-        with pytest.raises(KeyError, match="read vector.fixed_parameters"):
-            example[fixed]
-        assert example.fixed_parameters == example.fixed
-
-    def test_reversed_gives_the_names_in_reverse(self, example):
-        """reversed() fell back to integer indexing and raised KeyError."""
-        assert list(reversed(example)) == list(example.parameter_names)[::-1]
-        assert ([1] in example) is False
-
-    def test_select_refuses_a_repeated_class_and_labels_that_are_not_a_mapping(self, example):
-        with pytest.raises(ValueError, match="more than once"):
-            example.select(labels={"pft": ["conifer", "conifer"]})
-        for labels in (["pft"], "pft"):
-            with pytest.raises(TypeError, match="labels must map"):
-                example.select(labels=labels)
-
-    def test_select_refuses_a_repeated_name_and_keeps_the_vector_order(self, example):
-        with pytest.raises(ValueError, match="more than once"):
-            example.select(parameter_names=["allocation", "allocation"])
-        with pytest.raises(ValueError, match="more than once"):
-            example.select(sites=[1, 1])
-        small = example.select(parameter_names=["initial_soil_carbon", "allocation"])
-        assert small.parameter_names == ("allocation", "initial_soil_carbon")
-
-    def test_a_generator_of_sites_is_read_once(self, example, located_example):
-        for vector in (example, located_example):
-            assert vector.select(sites=(s for s in (27, 1))).sites == (1, 27)
-            assert vector.restrict_to_sites(s for s in (27, 99, 1)).sites == (1, 27)
-
-    def test_restrict_to_sites_ignores_sites_the_vector_does_not_have(self, example):
-        small = example.restrict_to_sites([27, 99, 1])
-        assert small.sites == (1, 27)
-        with pytest.raises(KeyError, match="use restrict_to_sites"):
-            example.select(sites=[27, 99])
-        with pytest.raises(ValueError, match="none of the vector's sites"):
-            example.restrict_to_sites([99])
-
-    def test_a_sample_by_member_batch_reaches_flat_through_a_stack(self, theta):
-        """Two batch dims are stacked into one new one, whose rows are Flat's."""
-        from sipnet_calibration.fields import stack_batch_dims
-
-        vector = example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
-        fields = vector.fields(theta)
-        crossed = fields.expand_dims(initial_condition_member=np.arange(2)).transpose(
-            "sample", "initial_condition_member", "site"
-        )
-        with pytest.raises(ValueError, match="stack_batch_dims"):
-            vector.flat(crossed)
-        stacked = crossed.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))
-        rows = vector.flat(stacked)
-        assert rows.shape == (2 * theta.shape[0], vector.dimension)
-        np.testing.assert_allclose(rows[::2], theta, rtol=1e-10, atol=1e-10)
-        np.testing.assert_allclose(rows[1::2], theta, rtol=1e-10, atol=1e-10)
-
-    def test_the_sipnet_parameter_names_written_are_named_for_their_direction(self, example):
-        assert not hasattr(example, "sipnet_parameter_names")
-        assert "soil_carbon" in example.sipnet_parameter_names_written
-
-
-class TestNothingReadFromAVectorChangesIt:
-    """Layout's dicts and the index were handed out and could be changed in place."""
-
-    def test_the_layout_is_read_only(self, example):
-        layout, dimension = example.layout, example.dimension
-        for mapping in (layout.sizes, layout.groups, layout.dims, layout.element_labels, layout.slices):
-            with pytest.raises(TypeError):
-                mapping[next(iter(mapping))] = 99
-        assert example.dimension == dimension
-
-    def test_the_index_is_a_copy(self, example):
-        example.index.names = ["a", "b", "c"]
-        assert list(example.index.names) == ["parameter", "group", "element"]
-        assert example.positions(group="deciduous").size > 0
-
-    def test_through_a_forward_model(self, example):
-        from conftest import scaled_niwot_model
-        from pyens import SequentialBackend
-        from pysipnet import niwot_reference_output
-
-        from sipnet_calibration.forward import ForwardModel
-
-        climate = {site: niwot_reference_output().climate for site in SITES}
-        forward = ForwardModel(
-            scaled_niwot_model(), example, climate=climate, backend=SequentialBackend(),
-            output_variable_names=("wood_carbon",), site_table=site_table_of(*SITES),
-        )
-        dimension = forward.input_dimension
-        with pytest.raises(TypeError):
-            forward.parameter_vector.layout.sizes["photosynthesis"] = 5
-        assert forward.input_dimension == dimension
-
-
-@pytest.mark.parametrize("located", [False, True])
-def test_an_empty_batch_is_the_same_on_every_path(located):
-    """Only sipnet_parameter_fields(Fields) refused J = 0, through a partial label check."""
-    vector = (
-        example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
-        if located
-        else example_parameter_vector(sites=SITES, pft=PFT)
-    )
-    empty = np.zeros((0, vector.dimension))
-    assert dict(vector.sipnet_parameter_fields(empty).sizes) == {"sample": 0, "site": 3}
-    assert vector.flat(vector.fields(empty)).shape == (0, vector.dimension)
-    assert dict(vector.sipnet_parameter_fields(vector.fields(empty)).sizes) == {
-        "sample": 0, "site": 3,
-    }
-
-
-def test_sipnet_parameter_fields_refuse_fields_whose_batch_dim_is_a_sipnet_parameter(example, theta):
-    """xarray's 'found in both data_vars and coords' surfaced instead."""
-    fields = example.fields(theta).rename(sample="soil_carbon")
-    with pytest.raises(ValueError, match="batch_dim='soil_carbon' is a SIPNET parameter name"):
-        example.sipnet_parameter_fields(fields)
-
-
-class TestWrongArgumentsInTheModulesWords:
-    def test_space_that_is_not_a_string(self, example, theta):
-        with pytest.raises(TypeError, match="space must be a string"):
-            example.fields(theta, space=3)
-
-    @pytest.mark.parametrize("n, error", [(True, TypeError), (2.0, TypeError), (-1, ValueError)])
-    def test_sample_takes_a_count(self, example, n, error):
-        """True drew one, 2.0 raised JAX's TypeError and -1 a raw ValueError."""
-        with pytest.raises(error, match="n "):
-            example.sample(jax.random.key(0), n)
-
-    def test_an_unknown_site_labels_name(self, example):
-        with pytest.raises(KeyError, match="no site labels 'nope'"):
-            example.group_labels("nope")
-
-
-def test_the_site_coordinate_carries_the_site_attributes(example, theta):
-    """PV built its site coordinate by hand, without SITE_ATTRIBUTES, unlike OV."""
-    from sipnet_calibration.conventions import SITE_ATTRIBUTES
-
-    located = example_parameter_vector(site_table=site_table_of(*SITES), pft=PFT)
-    for vector in (example, located):
-        assert vector.fields(theta)["site"].attrs == dict(SITE_ATTRIBUTES)
-        assert vector.sipnet_parameter_fields(theta)["site"].attrs == dict(SITE_ATTRIBUTES)
-
-
-class TestWhatTheValidatorsAndPositionsPin:
-    """Two sites, so that the positions below are those of a small, known layout."""
-
-    @pytest.fixture(scope="class")
-    def two(self):
-        return example_parameter_vector(sites=(1, 27), pft=("deciduous", "conifer"))
-
-    @pytest.fixture(scope="class")
-    def located_two(self):
-        return example_parameter_vector(site_table=site_table_of(1, 27), pft=("deciduous", "conifer"))
-
-    @pytest.fixture(scope="class")
-    def draws(self, two):
-        return two.sample(jax.random.key(0), n=3)
-
-    def test_fields_in_an_unknown_space_are_refused(self, two, draws):
-        """Without the check, 'natral' Fields would be read as unconstrained: a wrong theta."""
-        fields = two.fields(draws, space="unconstrained")
-        fields.attrs["space"] = "natral"
-        with pytest.raises(ValueError, match="space"):
-            validate_calibration_fields(fields)
-        with pytest.raises(ValueError, match="space"):
-            two.flat(fields)
-
-    def test_fields_located_by_lat_alone_are_refused(self, located_two, draws):
-        fields = located_two.fields(draws).drop_vars("lon")
-        with pytest.raises(ValueError, match="lon"):
-            validate_calibration_fields(fields)
-        with pytest.raises(ValueError, match="lon"):
-            located_two.flat(fields)
-
-    def test_locations_that_break_the_contract_are_refused(self, located_two, draws):
-        fields = located_two.fields(draws)
-        fields = fields.assign_coords(lon=fields["lon"].astype(np.float32))
-        with pytest.raises(ValueError, match="lon"):
-            validate_calibration_fields(fields)
-        sipnet_parameter_fields = located_two.sipnet_parameter_fields(draws)
-        sipnet_parameter_fields = sipnet_parameter_fields.assign_coords(
-            lat=sipnet_parameter_fields["lat"].astype(np.float32)
-        )
-        with pytest.raises(ValueError, match="lat"):
-            validate_sipnet_parameter_fields(sipnet_parameter_fields)
-
-    def test_a_sipnet_parameter_name_is_not_a_calibration_parameter(self, two):
-        assert "soil_carbon" in two.sipnet_parameter_names_written
-        assert "soil_carbon" not in two
-
-    def test_positions_narrow_by_element(self, two):
-        element = "alr(wood_allocation:coarse_root_allocation)"
-        np.testing.assert_array_equal(two.positions(element=element), [3, 6])
-        np.testing.assert_array_equal(two.positions(group="deciduous", element=element), [6])
-
-    def test_positions_of_a_parameter_narrow_by_element(self, two):
-        element = "alr(wood_allocation:coarse_root_allocation)"
-        np.testing.assert_array_equal(
-            two.positions(parameter_name="allocation", element=element), [3, 6]
-        )
-        with pytest.raises(KeyError):
-            two.positions(parameter_name="allocation", element="nothing")
-
-    def test_positions_across_parameters_are_int64(self, two):
-        assert two.positions(group=27).dtype == np.int64
-        assert two.positions().dtype == np.int64
-
-    def test_numpy_scalars_are_sipnet_override_numbers(self):
-        module.validate_sipnet_overrides(
-            {"soil_carbon": np.int64(5), "max_photosynthesis_rate": np.float32(3.0)}
-        )
+def test_other_sites_break_the_layout(vector):
+    with pytest.raises(ValueError, match="differ in their index"):
+        check_parameter_vectors_share_a_layout(vector, vector.select(sites=[1, 27]))
