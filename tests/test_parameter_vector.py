@@ -777,6 +777,19 @@ def test_a_derived_parameter_is_named_like_no_parameter():
         DerivedParameter(name="class", units=None, derived_from=("mean",), compute=lambda d, t, mean: mean)
 
 
+def test_derived_parameters_are_named_once_and_vary_over_the_vectors_dims():
+    twice = [
+        DerivedParameter(name="doubled", units=None, derived_from=("mean",), compute=lambda d, t, mean: 2 * mean)
+    ] * 2
+    parameters = [Parameter(name="mean", support=REAL, units=None)]
+    with pytest.raises(ValueError, match="the derived parameter names"):
+        ParameterVector(parameters=parameters, derived_parameters=twice, site_table=site_table())
+    on_biome = DerivedParameter(name="doubled", units=None, dim="biome", derived_from=("mean",),
+                                compute=lambda d, t, mean: 2 * mean)
+    with pytest.raises(ValueError, match="neither 'site' nor a site-labels name"):
+        ParameterVector(parameters=parameters, derived_parameters=[on_biome], site_table=site_table())
+
+
 def test_a_derived_parameter_must_compute_its_value_shape():
     with pytest.raises(ValueError, match="computes a value of shape"):
         pooled_vector(compute=lambda dim_index, site_table, mean, spread, standardized: spread)

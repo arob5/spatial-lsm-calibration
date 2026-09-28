@@ -1512,24 +1512,44 @@ def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: Parameter
     counted twice or left out."""
     owner: dict[str, str] = {}
     for key in terms:
-        if not (isinstance(key, str) or (isinstance(key, tuple) and all(isinstance(n, str) for n in key))):
-            raise TypeError(
-                f"a prior term is keyed by a parameter's name, or a tuple of names for a joint term, "
-                f"got {key!r}."
-            )
+        check_term_key_is_names(key)
         for name in _names_of(key):
-            if name not in vector:
-                raise KeyError(
-                    f"a prior term names {name!r}, which is no parameter of the vector; name one of "
-                    f"{truncated(list(vector.parameter_names))}."
-                )
-            if name in owner:
-                raise ValueError(
-                    f"parameter {name!r} is covered by the terms {owner[name]!r} and "
-                    f"{term_name(key)!r}; cover each parameter by one term."
-                )
+            check_term_covers_a_parameter_once(name, term_name(key), vector, owner)
             owner[name] = term_name(key)
         check_joint_term_shares_a_dim(key, vector)
+    check_every_parameter_has_a_term(owner, vector)
+
+
+def check_term_key_is_names(key: Any) -> None:
+    """A term is keyed by a parameter's name or a tuple of names, which is
+    how it is read."""
+    if not (isinstance(key, str) or (isinstance(key, tuple) and all(isinstance(n, str) for n in key))):
+        raise TypeError(
+            f"a prior term is keyed by a parameter's name, or a tuple of names for a joint term, "
+            f"got {key!r}."
+        )
+
+
+def check_term_covers_a_parameter_once(
+    name: str, term: str, vector: ParameterVector, owner: Mapping[str, str]
+) -> None:
+    """A term's name is a parameter of the vector that no other term covers,
+    whose density would otherwise be counted twice."""
+    if name not in vector:
+        raise KeyError(
+            f"a prior term names {name!r}, which is no parameter of the vector; name one of "
+            f"{truncated(list(vector.parameter_names))}."
+        )
+    if name in owner:
+        raise ValueError(
+            f"parameter {name!r} is covered by the terms {owner[name]!r} and {term!r}; cover each "
+            "parameter by one term."
+        )
+
+
+def check_every_parameter_has_a_term(owner: Mapping[str, str], vector: ParameterVector) -> None:
+    """Every parameter is covered by a term, whose density would otherwise be
+    left out."""
     missing = [name for name in vector.parameter_names if name not in owner]
     if missing:
         raise ValueError(f"the parameter(s) {truncated(missing)} have no prior term; give each one.")
@@ -1548,7 +1568,8 @@ def check_joint_term_shares_a_dim(key: TermKey, vector: ParameterVector) -> None
 
 
 def check_given_names_are_held(name: str, given: Sequence[str], vector: ParameterVector) -> None:
-    """What a term is given is a parameter or derived parameter of the vector."""
+    """What a term is given is a parameter or derived parameter of the
+    vector, which it would otherwise be passed no value for."""
     for given_name in given:
         if given_name not in vector and given_name not in vector.derived_parameter_names:
             raise KeyError(
@@ -1570,7 +1591,8 @@ def check_given_links_are_acyclic(cycle: Sequence[tuple[str, Any]] | None) -> No
 
 
 def check_term_given_others_is_a_function(built: _BuiltTerm) -> None:
-    """A term given others is a function of their values."""
+    """A term given others is a function of their values; a distribution
+    would ignore them."""
     if built.given and isinstance(built.source, tfd.Distribution):
         raise TypeError(
             f"the prior of {built.name!r} is given {list(built.given)} but is a distribution; give "
@@ -1663,7 +1685,9 @@ def check_prior_over_a_dim_has_a_dim(dim_index: Any, name: str) -> None:
 
 
 def check_prior_without_a_dim_has_none(dim_index: Any, name: str) -> None:
-    """A prior of parameters without a dim is not given parameters with one."""
+    """A prior of parameters without a dim is not given parameters with one,
+    whose draws would otherwise be refused for their shape, far from the
+    reason."""
     if dim_index is not None:
         raise TypeError(
             f"{name} is a prior of parameters without a dim, given parameters on "

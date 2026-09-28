@@ -1683,12 +1683,18 @@ def check_derived_parameter_fits_the_vector(
 
 def check_derived_parameter_is_valid(derived: DerivedParameter) -> None:
     """A derived parameter's name and natural names are usable, and it is
-    computed from something, which gives its values their draws."""
+    computed from something."""
     check_name_is_usable(derived.name, "a derived parameter")
     if derived.natural_names is not None:
         for natural_name in derived.natural_names:
             check_name_is_usable(natural_name, f"a natural name of {derived.name!r}", reserved=False)
         check_names_are_unique(derived.natural_names, message_name=f"{derived.name!r} natural_names")
+    check_derived_parameter_is_computed_from_something(derived)
+
+
+def check_derived_parameter_is_computed_from_something(derived: DerivedParameter) -> None:
+    """A derived parameter has inputs, whose draws give its values their
+    leading shape; a constant would not broadcast over the draws."""
     if not derived.derived_from:
         raise ValueError(
             f"derived parameter {derived.name!r} is computed from nothing; a value fixed across "
@@ -2161,7 +2167,8 @@ def check_site_labels_are_strings(name: str, labels: Sequence[Any]) -> None:
 
 
 def check_derived_parameter_names_are_held(names: Sequence[str], parameter_vector: ParameterVector) -> None:
-    """Every name is one of the vector's derived parameters."""
+    """Every name is one of the vector's derived parameters; any other would
+    be computed as nothing, and missed far from the request."""
     for name in names:
         if name not in parameter_vector.derived_parameter_names:
             raise KeyError(
