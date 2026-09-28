@@ -977,22 +977,26 @@ class Support:
             return tuple(f"logit({x} in {self.name})" for x in natural_names)
         return tuple(natural_names)
 
-    def contains(self, values: Any) -> Array:
-        """Whether each value lies in the support, finite values only.
+    def contains(self, values: Any, *, closure: bool = False) -> Array:
+        """Whether each value lies in the support, finite values only; in its
+        closure when *closure*.
 
         Elementwise for ``real``, ``positive`` and ``interval``; over the
         last axis for the simplex, ``(..., k) -> (...)``, whose values must
-        be positive and sum to 1 within ``1e-10``.
+        be positive (non-negative in the closure) and sum to 1 within
+        ``1e-10``.
         """
         values = jnp.asarray(values, dtype=jnp.float64)
         finite = jnp.isfinite(values)
+        above = jnp.greater_equal if closure else jnp.greater
+        below = jnp.less_equal if closure else jnp.less
         if self.kind == "real":
             return finite
         if self.kind == "positive":
-            return finite & (values > 0)
+            return finite & above(values, 0.0)
         if self.kind == "interval":
-            return finite & (values > self.low) & (values < self.high)
-        inside = jnp.all(finite & (values > 0), axis=-1)
+            return finite & above(values, self.low) & below(values, self.high)
+        inside = jnp.all(finite & above(values, 0.0), axis=-1)
         return inside & (jnp.abs(values.sum(axis=-1) - 1.0) <= _SIMPLEX_SUM_TOLERANCE)
 
     def log_jacobian(self, transform: tfb.Bijector, theta: Any) -> Array:
@@ -1156,20 +1160,6 @@ def _bijectors_agree(first: Parameter, second: Parameter) -> bool:
             first.bijector.forward(probes), second.bijector.forward(jnp.array(probes)), rtol=1e-12
         )
     )
-
-
-def _in_closure(support: Support, values: Array) -> Array:
-    """Whether finite *values* lie in the closure of *support*, as
-    :meth:`Support.contains` reads them."""
-    finite = jnp.isfinite(values)
-    if support.kind == "real":
-        return finite
-    if support.kind == "positive":
-        return finite & (values >= 0)
-    if support.kind == "interval":
-        return finite & (values >= support.low) & (values <= support.high)
-    inside = jnp.all(finite & (values >= 0), axis=-1)
-    return inside & (jnp.abs(values.sum(axis=-1) - 1.0) <= _SIMPLEX_SUM_TOLERANCE)
 
 
 def _same_label(label: Any, wanted: Any) -> bool:
@@ -1409,7 +1399,7 @@ def check_bijector_maps_onto_the_support(parameter: Parameter) -> None:
     support = parameter.support
     # The closure: a bijector may round onto the boundary at the outer probes
     # (IteratedSigmoidCentered does at 20), which is float64, not a wrong map.
-    into = _in_closure(support, parameter.bijector.forward(probes))
+    into = support.contains(parameter.bijector.forward(probes), closure=True)
     targets = support.bijector().forward(jnp.array(probes))
     back = parameter.bijector.inverse(targets)
     # A fresh copy: TFP caches the pair, and would hand targets back unchanged.
