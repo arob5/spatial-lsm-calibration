@@ -10,7 +10,7 @@ a choice.
 | File | What it does |
 |---|---|
 | `config.py` | the site, the driver member and its clock, the data sources read and left out, where the experiment writes |
-| `prepare_drivers.py` | writes the site's driver file with regular hour labels to `output/drivers/`, which the runs read |
+| `prepare_drivers.py` | writes the site's driver file, corrected for four known defects of the ERA5 driver files, to `output/drivers/`, which the runs read; its docstring says what each defect is and how it is corrected |
 | `inputs.py` | one loader per data source, restricted to the site; run it to check that every input is found |
 | `output/` | everything the experiment writes; untracked |
 
@@ -32,9 +32,18 @@ Each records what was chosen and why, so a result can be read against it.
 - **The site** is 4977, Harvard Forest, where two AmeriFlux towers stand:
   US-Ha1 (hourly) and the NEON tower US-xHA (half-hourly).
 - **One driver member**, so that the forward model is deterministic, as the
-  MCMC comparison needs. The drivers' hour labels are regularized, and their
-  clock is declared as start-of-step on UTC+03:00 (`data/README.md` Notes 15
-  and 16; `config.DRIVER_TIME_ZONE`).
+  MCMC comparison needs.
+- **The driver file is corrected before any run**, so that every row means
+  what SIPNET's format says: labeled with the UTC start of its three-hour
+  step, and every value a total or a mean over that step. The four
+  corrections, in `prepare_drivers.py`: the drifting hour labels are rebuilt
+  from position (`data/README.md` Note 15); every label moves back three hours,
+  since radiation and precipitation cover the three hours *ending* at the
+  label (Note 16); the snapshot columns (temperature, humidity, wind) become
+  the mean of their two edge values (Note 16); and soil temperature, which
+  PEcAn built with a filter that averages the *following* weeks of air
+  temperature, is recomputed with the same filter run forward in time. The
+  model's time axis is then UTC, the observed NEE's clock.
 - **NEE: US-Ha1 to calibrate, US-xHA to check.** US-Ha1 covers nine years of
   the drivers' record, US-xHA six, so the longer record calibrates. US-xHA's
   years after US-Ha1's record ends are then an out-of-sample check, by a tower

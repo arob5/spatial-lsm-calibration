@@ -4,13 +4,14 @@ The one source of truth for this experiment. Every script here reads its
 choices from this module and nothing else; change the site, the driver member
 or an observation source here, and every step follows.
 
-What is configured so far (step 1): the site, the driver member and the clock
-its labels are on, the data sources the calibration reads and the ones it
+What is configured so far (step 1): the site, the driver member and how its
+file is corrected, the data sources the calibration reads and the ones it
 leaves out, and where the experiment writes. The observation operators, the
 parameterization, the priors and the algorithm settings are added by later
 steps.
 """
 
+from datetime import timedelta
 from pathlib import Path
 
 from frozendict import frozendict
@@ -28,6 +29,7 @@ __all__ = [
     "PREPARED_DRIVERS_ROOT",
     "RAW_DRIVERS_ROOT",
     "SITE",
+    "SOIL_TEMPERATURE_TIMESCALE",
     "VALIDATION_NEE_PERIOD",
     "VALIDATION_NEE_SERIES",
 ]
@@ -45,14 +47,16 @@ SITE = 4977
 #: forward model deterministic, which the MCMC comparison needs.
 DRIVER_SOURCE_INDEX = 1
 
-#: The clock the driver files' labels are on, declared to pySIPNET. SIPNET
-#: reads a label as the start of its step; the ERA5 accumulations (radiation,
-#: precipitation) cover the three hours ending at the label, UTC
-#: (``data/README.md`` Note 16), which is start-of-step on a clock three hours
-#: ahead of UTC. pySIPNET records this as metadata only: it does not move
-#: ``time``, so the observation operators align the model with the UTC
-#: observations themselves.
-DRIVER_TIME_ZONE = "UTC+03:00"
+#: The clock the prepared driver file's labels are on, declared to pySIPNET.
+#: ``prepare_drivers.py`` relabels each row with the UTC start of the step its
+#: values describe, so the model's time axis is UTC, the observed NEE's clock.
+DRIVER_TIME_ZONE = "UTC"
+
+#: The timescale of the exponential filter of air temperature that
+#: ``prepare_drivers.py`` computes soil temperature with. It is PEcAn's
+#: ``met2model.SIPNET`` choice; there the filter averages the following weeks,
+#: here the preceding ones.
+SOIL_TEMPERATURE_TIMESCALE = timedelta(days=15)
 
 #: Where the raw driver files are: ``ERA5_<site>_<index>/`` directories of
 #: ``.clim`` files, as copied from the SCC. Never edited.
@@ -108,6 +112,7 @@ EXPERIMENT_DIRECTORY = Path(__file__).resolve().parent
 #: Everything the experiment writes, untracked.
 OUTPUT_DIRECTORY = EXPERIMENT_DIRECTORY / "output"
 
-#: The driver files the runs read: the raw files for :data:`SITE` with their
-#: hour labels regularized (``prepare_drivers.py``), laid out as the raw ones.
+#: The driver file the runs read: the raw file of :data:`SITE` and
+#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``prepare_drivers.py``, laid out
+#: as the raw ones.
 PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"
