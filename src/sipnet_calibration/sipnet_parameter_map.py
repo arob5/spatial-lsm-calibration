@@ -25,14 +25,16 @@ For run :math:`s`, the SIPNET parameters are
 
 .. math::
 
-    \\psi_s = M\\big(\\{x_p^{(s)}\\}, u_s, c_s\\big),
+    \\psi_s = M\\big(\\{x_p^{(s)}\\}, \\{y_q^{(s)}\\}, u_s, c_s\\big),
 
-with :math:`x_p^{(s)}` the parameters at the run's site
+with :math:`x_p^{(s)}` and :math:`y_q^{(s)}` the parameters and derived
+parameters at the run's site
 (:meth:`~sipnet_calibration.parameter_vector.ParameterVector.at_sites`),
 :math:`u_s` its external inputs and :math:`c_s` the :class:`Fixed` values.
 :math:`M` is a list of :class:`SIPNETRule`\\ s, applied in order. A rule
-reads values by name, whether a parameter's or an external input's, and
-declares what it requires of each (:class:`ValueRequirement`); it may read
+reads values by name, whether a parameter's, a derived parameter's or an
+external input's, and declares what it requires of each
+(:class:`ValueRequirement`); it may read
 SIPNET parameters that are fixed or written by an earlier rule. Each SIPNET
 parameter has one writer.
 
@@ -63,6 +65,12 @@ dims, site)``: a variable fed by theta alone is on ``(batch dim, site)``, one
 fed also by a crossed input on ``(batch dim, crossed dim, site)``, a fixed
 value on ``(site,)``. Each carries pySIPNET's
 ``ParameterSpec.xarray_attributes()`` and ``set_by``.
+
+A value's bounds are checked before anything runs where its support is
+known: a parameter's, and a derived parameter's that declares one
+(:func:`check_sipnet_parameter_map_fits`). A derived parameter without a
+declared support is checked at run time only, with every other value
+(:meth:`SIPNETParameterMap.out_of_domain`).
 
 Functions and classes
 ---------------------
@@ -141,7 +149,7 @@ from sipnet_calibration.fields import (
     check_sipnet_parameter_name_is_a_flat_name,
 )
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
-from sipnet_calibration.parameter_vector import Parameter, ParameterVector, Support
+from sipnet_calibration.parameter_vector import DerivedParameter, Parameter, ParameterVector, Support
 from sipnet_calibration.sites import site_coordinates
 from sipnet_calibration.validation import as_batched_flat, as_frozen_mapping, is_one_vector, truncated
 
@@ -293,8 +301,9 @@ class SIPNETParameterMap:
             If *theta* is not ``(D,)`` or ``(J, D)``, or *external_inputs*
             are not :data:`ExternalInputs` for *theta*.
         KeyError
-            If a value a rule reads is neither a parameter nor an external
-            input, or an external input lacks a site of the vector.
+            If a value a rule reads is neither a parameter, a derived
+            parameter nor an external input, or an external input lacks a
+            site of the vector.
         """
         check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
         batched = jnp.asarray(as_batched_flat(theta, parameter_vector.dimension, message_name="theta"))
@@ -458,7 +467,8 @@ class SIPNETRule(Protocol):
     Attributes
     ----------
     values_read:
-        ``{name: ValueRequirement}``: parameters or external inputs.
+        ``{name: ValueRequirement}``: parameters, derived parameters or
+        external inputs.
     sipnet_parameter_names_read:
         SIPNET parameters it reads, each fixed or written by an earlier rule.
     sipnet_parameter_names_written:
@@ -943,11 +953,14 @@ def check_sipnet_parameter_map_fits(
     require, and its per-dim-label values cover the vector's dim labels."""
     external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
     check_external_inputs_share_no_name_with_the_parameters(external_names, parameter_vector)
+    derived = dict(zip(parameter_vector.derived_parameter_names, parameter_vector.derived_parameters))
     for name, requirements in sipnet_parameter_map.values_read.items():
         check_value_is_held_once(name, parameter_vector, external_names)
         for requirement in requirements:
             if name in parameter_vector:
                 check_parameter_meets_the_requirement(parameter_vector[name], requirement)
+            elif name in derived:
+                check_parameter_meets_the_requirement(derived[name], requirement)
             else:
                 check_external_input_meets_the_requirement(name, external_inputs[name], requirement)
     for fixed in sipnet_parameter_map.fixed:
@@ -1041,23 +1054,26 @@ def check_sipnet_parameter_read_is_set_earlier(name: str, rule: Any, writers: Ma
 def check_external_inputs_share_no_name_with_the_parameters(
     external_names: Sequence[str], parameter_vector: ParameterVector
 ) -> None:
-    """No external input is named like a parameter, since values are read by
-    name."""
-    shared = [name for name in external_names if name in parameter_vector]
+    """No external input is named like a parameter or derived parameter,
+    since values are read by name."""
+    taken = {*parameter_vector.parameter_names, *parameter_vector.derived_parameter_names}
+    shared = [name for name in external_names if name in taken]
     if shared:
         raise ValueError(
-            f"the external inputs {truncated(shared)} are named like parameters of the vector; "
-            "values are read by name, so rename them."
+            f"the external inputs {truncated(shared)} are named like parameters or derived "
+            "parameters of the vector; values are read by name, so rename them."
         )
 
 
 def check_value_is_held_once(name: str, parameter_vector: ParameterVector, external_names: Sequence[str]) -> None:
-    """A value a rule reads is exactly one parameter or external input."""
-    held = (name in parameter_vector) + (name in external_names)
+    """A value a rule reads is exactly one parameter, derived parameter or
+    external input."""
+    in_vector = name in parameter_vector or name in parameter_vector.derived_parameter_names
+    held = in_vector + (name in external_names)
     if held == 0:
         raise KeyError(
-            f"the map reads {name!r}, which is neither a parameter nor an external input; add it "
-            "to one of them, or read a value that exists."
+            f"the map reads {name!r}, which is neither a parameter, a derived parameter nor an "
+            "external input; add it to one of them, or read a value that exists."
         )
     if held == 2:
         raise ValueError(
@@ -1065,9 +1081,12 @@ def check_value_is_held_once(name: str, parameter_vector: ParameterVector, exter
         )
 
 
-def check_parameter_meets_the_requirement(parameter: Parameter, requirement: ValueRequirement) -> None:
-    """A parameter read by a rule is in the units, natural size and bounds
-    the rule requires, its whole support lying within the bounds."""
+def check_parameter_meets_the_requirement(
+    parameter: Parameter | DerivedParameter, requirement: ValueRequirement
+) -> None:
+    """A parameter or derived parameter read by a rule is in the units and
+    natural size the rule requires, and its whole support, where known,
+    lies within the bounds."""
     if not _units_match(parameter.units, requirement.units):
         raise ValueError(
             f"parameter {parameter.name!r} is in {parameter.units!r}, but the rule reading it "
@@ -1078,7 +1097,11 @@ def check_parameter_meets_the_requirement(parameter: Parameter, requirement: Val
             f"parameter {parameter.name!r} has {parameter.natural_size} natural numbers, but the "
             f"rule reading it requires {requirement.natural_size}."
         )
-    if requirement.bounds is not None and not requirement.bounds.contains_support(parameter.support):
+    if (
+        requirement.bounds is not None
+        and parameter.support is not None
+        and not requirement.bounds.contains_support(parameter.support)
+    ):
         raise ValueError(
             f"parameter {parameter.name!r} has support {parameter.support.name!r}, which reaches "
             f"outside what the rule reading it requires ({requirement.bounds}); give it a support "

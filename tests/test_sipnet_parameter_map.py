@@ -4,7 +4,9 @@ The map reproduces the stored reference fields (``conftest.EXAMPLE_REFERENCE``)
 to 1e-12 from their natural values, and
 ``ComputeInitialConditions`` reproduces the initial-condition conversion.
 External inputs broadcast by dim name: zip on ``site`` and the batch dim,
-cross on any other. Every check is provoked once.
+cross on any other. A derived parameter is read by name like a parameter,
+its bounds checked up front when it declares a support. Every check is
+provoked once.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from sipnet_calibration.parameter_vector import (
     POSITIVE,
     REAL,
     SIMPLEX,
+    DerivedParameter,
     OpenInterval,
     Parameter,
     ParameterVector,
@@ -321,7 +324,7 @@ def test_a_fixed_value_is_in_its_domain_and_well_formed():
 
 def test_the_fit_check_needs_each_value_once(vector):
     sipnet_map = SIPNETParameterMap(rules=[Copy(value_name="missing", sipnet_parameter_name="soil_carbon")])
-    with pytest.raises(KeyError, match="neither a parameter nor an external input"):
+    with pytest.raises(KeyError, match="neither a parameter, a derived parameter nor an external input"):
         check_sipnet_parameter_map_fits(sipnet_map, vector)
     both = SIPNETParameterMap(rules=[Copy(value_name="initial_soil_carbon", sipnet_parameter_name="soil_carbon")])
     inputs = crossed_inputs().rename({"initial_soil_carbon_input": "initial_soil_carbon"})
@@ -464,3 +467,75 @@ def test_an_input_no_rule_reads_crosses_nothing(vector, theta):
     assert sipnet_map.crossed_dims(inputs) == ("initial_condition_member",)
     fields = sipnet_map.sipnet_parameter_fields(vector, theta, external_inputs=inputs)
     assert "driver_member" not in fields.dims
+
+
+# ── derived parameters ────────────────────────────────────────────────────────
+
+
+def respiration_vector(*, units: str = "yr-1", support=POSITIVE) -> ParameterVector:
+    """A base soil respiration rate regressed on a site covariate."""
+    return ParameterVector(
+        parameters=[
+            Parameter(name="intercept", support=REAL, units=None),
+            Parameter(name="slope", support=REAL, units="K-1"),
+        ],
+        derived_parameters=[
+            DerivedParameter(
+                name="respiration", units=units, dim="site", support=support,
+                derived_from=("intercept", "slope"),
+                compute=lambda dim_index, site_table, intercept, slope: jnp.exp(
+                    intercept + slope * site_table["temperature_anomaly"].to_numpy()
+                ),
+            )
+        ],
+        site_table=site_table_of(*SITES).assign(temperature_anomaly=[-1.0, 0.0, 2.0]),
+        site_covariate_names=["temperature_anomaly"],
+    )
+
+
+RESPIRATION_MAP = SIPNETParameterMap(
+    rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")]
+)
+
+
+def test_a_rule_reads_a_derived_parameter_by_name():
+    vector = respiration_vector()
+    check_sipnet_parameter_map_fits(RESPIRATION_MAP, vector)
+    theta = jnp.asarray([[np.log(0.01), 0.5], [np.log(0.02), -0.1]])
+    fields = RESPIRATION_MAP.sipnet_parameter_fields(vector, theta)
+    np.testing.assert_allclose(
+        fields["base_soil_respiration_rate"].values, vector.to_natural(theta)["respiration"], rtol=1e-12
+    )
+    assert fields["base_soil_respiration_rate"].dims == ("sample", "site")
+    assert RESPIRATION_MAP.out_of_domain(fields).empty
+
+
+def test_a_derived_parameter_must_meet_the_requirement():
+    with pytest.raises(ValueError, match="requires 'yr-1'"):
+        check_sipnet_parameter_map_fits(RESPIRATION_MAP, respiration_vector(units="d-1"))
+    with pytest.raises(ValueError, match="reaches outside"):
+        check_sipnet_parameter_map_fits(RESPIRATION_MAP, respiration_vector(support=REAL))
+
+
+def test_a_derived_parameter_without_a_support_is_checked_at_run_time():
+    vector = ParameterVector(
+        parameters=[Parameter(name="intercept", support=REAL, units=None)],
+        derived_parameters=[
+            DerivedParameter(name="respiration", units="yr-1", derived_from=("intercept",),
+                             compute=lambda dim_index, site_table, intercept: intercept)
+        ],
+        site_table=site_table_of(*SITES),
+    )
+    check_sipnet_parameter_map_fits(RESPIRATION_MAP, vector)
+    fields = RESPIRATION_MAP.sipnet_parameter_fields(vector, jnp.asarray([[0.01], [-0.01]]))
+    outside = RESPIRATION_MAP.out_of_domain(fields)
+    assert outside["sample"].tolist() == [1, 1, 1]
+    assert set(outside["sipnet_parameter"]) == {"base_soil_respiration_rate"}
+
+
+def test_an_external_input_may_not_be_named_like_a_derived_parameter():
+    vector = respiration_vector()
+    inputs = xr.Dataset({"respiration": (("site",), [0.01] * 3, {"units": "yr-1"})},
+                        coords={"site": np.asarray(SITES, dtype=np.int32)})
+    with pytest.raises(ValueError, match="named like parameters or derived parameters"):
+        check_sipnet_parameter_map_fits(RESPIRATION_MAP, vector, inputs)
