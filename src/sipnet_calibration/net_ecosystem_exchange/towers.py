@@ -2,8 +2,8 @@
 
 ``data/raw/net_ecosystem_exchange/ameriflux_towers.csv`` has one row per
 downloaded tower. It records the tower's pool site and how that match was
-made, whether the tower is the one whose series the products carry for that
-site, the tower's UTC offset and how it was established, and why a tower is
+made, whether the tower is the one whose series the processed files carry for
+that site at its resolution, the tower's UTC offset and how it was established, and why a tower is
 left out. It is the one place those decisions are written down, and it is
 tracked, so a change to any of them shows in a diff.
 
@@ -25,17 +25,17 @@ Column                     Dtype       Meaning
 ``tower``                  ``str``     AmeriFlux site identifier
 ``site_id``                ``Int32``   the pool site; ``<NA>`` if none
 ``match_basis``            ``str``     how the site was found (:data:`MATCH_BASES`), or ``""``
-``primary``                ``bool``    whether the products carry this tower's series
+``primary``                ``bool``    whether the processed files carry this tower's series
 ``primary_reason``         ``str``     why this tower is or is not primary, at a shared site
 ``excluded_reason``        ``str``     why the tower is left out, or ``""``
 ``tower_lon``, ``tower_lat`` ``float64`` AmeriFlux's coordinates
 ``lon_index``, ``lat_index`` ``Int32`` the tower's cell on the pool grid
-``distance_m``             ``float64`` tower to its site's center; a diagnostic only
-``utc_offset_hours``       ``float64`` the tower's standard-time offset from UTC
+``distance_m``             ``float64`` tower to its site's center, meters; a diagnostic only
+``utc_offset_hours``       ``float64`` the tower's standard-time offset from UTC, hours
 ``utc_offset_source``      ``str``     where the offset came from
 ``utc_offset_separation``  ``float64`` how clearly the offset was recovered
 ``shortwave_lag_steps``    ``Int32``   steps measured shortwave lags ``SW_IN_POT``; <NA> unchecked
-``resolution_minutes``     ``int16``   30 or 60
+``resolution_minutes``     ``int16``   the step, 30 or 60 minutes
 ``record_steps``           ``int32``   steps with an ``NEE_VUT_REF`` value in the raw file
 ``doi``                    ``str``     the site's AmeriFlux FLUXNET DOI
 ``site_version``           ``str``     the FULLSET version
@@ -60,16 +60,19 @@ bases, tried in order, and never by distance:
     The tower's AmeriFlux coordinates fall in the site's cell, on the pool
     raster's real edges (:meth:`sipnet_calibration.sites.Grid.cell_of`).
 
-**One tower per site.** Where several towers match one site, the products
-carry one: the earliest basis in :data:`MATCH_BASES`, then the longer record in
-time, then the identifier. A tower whose clock fails its check is never primary.
+**One tower per site and resolution.** Where several towers of one resolution
+match one site, the processed files of that resolution carry one: the earliest
+basis in :data:`MATCH_BASES`, then the longer record in time, then the
+identifier. A half-hourly and an hourly tower at one site are each primary, one
+in each resolution's files, since those files never meet. A tower whose clock
+fails its check is never primary.
 
 **The clock.** A tower's offset is recovered from its own ``SW_IN_POT``, which
 ONEFlux computes from the site's coordinates and the offset in its metadata, on
 the file's own stamps (:func:`recover_utc_offset`). The recovery must be clear,
 ``utc_offset_separation`` at least :data:`MINIMUM_OFFSET_SEPARATION`, and the
 tower's measured shortwave must peak where ``SW_IN_POT`` does, to within
-:data:`MAXIMUM_SHORTWAVE_LAG_MINUTES` (:func:`shortwave_lag_steps`); at hourly
+:data:`MAXIMUM_SHORTWAVE_LAG` (:func:`shortwave_lag_steps`); at hourly
 resolution that means no lag at all. A tower is also excluded when it has too
 little measured shortwave to check, no ``SW_IN_POT`` in 2012-2024, or an offset
 that is not a whole number of its steps. The reason is recorded; a lag within
@@ -93,6 +96,10 @@ Functions
 
 Notes
 -----
+**Why some columns carry a unit in their name.** The table is a CSV, which has
+no attribute to hold one, and its diff is read by people; ``utc_offset_hours``
+says what a bare ``utc_offset`` would leave to the docstring.
+
 **Why the offset is recovered rather than read.** It lives in each site's
 BADM (``UTC_OFFSET``), which AmeriFlux distributes only to account holders;
 the FULLSET files and AmeriFlux's public site listing do not carry it. The
@@ -107,12 +114,13 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from frozendict import frozendict
 
+from sipnet_calibration.conventions import LAT, LON, SITE_ID
 from sipnet_calibration.net_ecosystem_exchange.names import (
     TOWER,
     ameriflux_site_list_path,
@@ -120,11 +128,12 @@ from sipnet_calibration.net_ecosystem_exchange.names import (
     resolve_resolution,
     tower_table_path,
 )
-from sipnet_calibration.sites import SITE_GRID
+from sipnet_calibration.sites import N_SITES, SITE_GRID
+from sipnet_calibration.validation import truncated
 
 __all__ = [
     "MATCH_BASES",
-    "MAXIMUM_SHORTWAVE_LAG_MINUTES",
+    "MAXIMUM_SHORTWAVE_LAG",
     "MINIMUM_OFFSET_SEPARATION",
     "OffsetFit",
     "TOWER_COLUMNS",
@@ -153,21 +162,22 @@ MINIMUM_OFFSET_SEPARATION = 2.0
 #: The candidate offsets, in hours.
 _CANDIDATE_OFFSETS = np.arange(-12.0, 12.01, 0.5)
 
-#: The largest shift of measured shortwave from ``SW_IN_POT`` a tower may show,
-#: in minutes: one half-hour step, the resolution of the check at half-hourly
-#: towers. At hourly towers only a zero lag passes.
-MAXIMUM_SHORTWAVE_LAG_MINUTES = 30
+#: The largest shift of measured shortwave from ``SW_IN_POT`` a tower may show:
+#: one half-hour step, the resolution of the check at half-hourly towers. At
+#: hourly towers only a zero lag passes.
+MAXIMUM_SHORTWAVE_LAG = pd.Timedelta(minutes=30)
 
 #: The largest shift, in steps either way, the shortwave check looks for.
 _MAXIMUM_LAG_STEPS = 4
 
-#: The fewest measured shortwave steps the check needs, in days of steps.
-_MINIMUM_MEASURED_DAYS = 30
+#: The least measured shortwave the check needs, as a duration of steps.
+_MINIMUM_MEASURED_DURATION = pd.Timedelta(days=30)
 
-TOWER_COLUMN_DTYPES: Mapping[str, str] = MappingProxyType(
+#: The tower table's columns and their dtypes, in file order.
+TOWER_COLUMN_DTYPES: frozendict[str, str] = frozendict(
     {
         "tower": "str",
-        "site_id": "Int32",
+        SITE_ID: "Int32",
         "match_basis": "str",
         "primary": "bool",
         "primary_reason": "str",
@@ -199,10 +209,17 @@ TOWER_COLUMNS: tuple[str, ...] = tuple(TOWER_COLUMN_DTYPES)
 class OffsetFit:
     """The offset that best reproduces a tower's ``SW_IN_POT``, and its runner-up."""
 
-    offset_hours: float
+    offset: float
+    """The best candidate, hours of local standard time ahead of UTC."""
+
     rmse: float
-    runner_up_hours: float
+    """Its root mean square misfit to ``SW_IN_POT``, W m-2."""
+
+    runner_up: float
+    """The second-best candidate, hours."""
+
     runner_up_rmse: float
+    """Its misfit, W m-2."""
 
     @property
     def separation(self) -> float:
@@ -223,16 +240,11 @@ def read_tower_table(path: Path | str | None = None) -> pd.DataFrame:
         If the columns, dtypes or invariants are not the data model's.
     """
     path = Path(path) if path is not None else tower_table_path()
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"{path} is not a file. It is tracked; regenerate it with\n"
-            "  python scripts/raw_sources/build_ameriflux_towers.py"
-        )
+    check_tower_table_exists(path)
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
-    if tuple(frame.columns) != TOWER_COLUMNS:
-        raise ValueError(f"{path}: columns are {list(frame.columns)}, expected {list(TOWER_COLUMNS)}")
-    table = _typed(frame, path)
-    _check_tower_table(table, path)
+    check_tower_table_has_the_columns(frame, message_name=str(path))
+    table = _typed(frame, message_name=str(path))
+    check_tower_table_is_valid(table, message_name=str(path))
     return table
 
 
@@ -246,28 +258,13 @@ def read_ameriflux_site_list(path: Path | str | None = None) -> pd.DataFrame:
         per site, ascending.
     """
     path = Path(path) if path is not None else ameriflux_site_list_path()
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"{path} is not a file. It is not tracked, because it carries contact details; "
-            "copy it from beside the FLUXNET download (see "
-            "data/raw/net_ecosystem_exchange/provenance.md)."
-        )
+    check_ameriflux_site_list_exists(path)
     frame = pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False, encoding="utf-8")
-    columns = {
-        "Site ID": "tower",
-        "Latitude (degrees)": "tower_lat",
-        "Longitude (degrees)": "tower_lon",
-        "Vegetation Abbreviation (IGBP)": "igbp",
-        "AmeriFlux FLUXNET DOI": "doi",
-    }
-    missing = [name for name in columns if name not in frame.columns]
-    if missing:
-        raise ValueError(f"{path}: missing columns {missing}")
-    listing = frame[list(columns)].rename(columns=columns)
+    check_ameriflux_site_list_has_the_columns(frame, message_name=str(path))
+    listing = frame[list(_SITE_LIST_COLUMNS)].rename(columns=dict(_SITE_LIST_COLUMNS))
     for column in ("tower_lat", "tower_lon"):
         listing[column] = pd.to_numeric(listing[column].replace("", "nan"), errors="coerce")
-    if listing["tower"].duplicated().any():
-        raise ValueError(f"{path}: a site is listed twice")
+    check_towers_are_listed_once(listing, message_name=str(path))
     return listing.sort_values("tower", ignore_index=True)
 
 
@@ -281,16 +278,13 @@ def read_pool_input_list(path: Path | str | None = None) -> pd.DataFrame:
         ``input_lat`` and ``input_lon``, in list order.
     """
     path = Path(path) if path is not None else pool_input_list_path()
-    if not path.is_file():
-        raise FileNotFoundError(f"{path} is not a file; it is tracked, so restore it from git.")
-    # R's write.csv header: an empty name for the row labels, then R's
-    # make.names versions of AmeriFlux's column titles.
-    expected = ["", "Site.ID", "Latitude..degrees.", "Longitude..degrees.", "Elevation..m."]
+    check_pool_input_list_exists(path)
     with path.open() as handle:
         header = [name.strip('"') for name in handle.readline().strip().split(",")]
-    if header != expected:
-        raise ValueError(f"{path}: columns are {header}, expected {expected}")
-    frame = pd.read_csv(path, dtype=str, keep_default_na=False, header=0, names=["row", *expected[1:]])
+    check_pool_input_list_header_is_the_expected(header, message_name=str(path))
+    frame = pd.read_csv(
+        path, dtype=str, keep_default_na=False, header=0, names=["row", *_POOL_INPUT_LIST_HEADER[1:]]
+    )
     listing = pd.DataFrame(
         {
             "input_order": frame["row"].astype(np.int64),
@@ -299,10 +293,8 @@ def read_pool_input_list(path: Path | str | None = None) -> pd.DataFrame:
             "input_lon": frame["Longitude..degrees."].astype(np.float64),
         }
     )
-    if not (listing["input_order"].diff().dropna() > 0).all():
-        raise ValueError(f"{path}: the row labels are not strictly increasing")
-    if listing["tower"].duplicated().any():
-        raise ValueError(f"{path}: a tower is listed twice: {listing.loc[listing['tower'].duplicated(), 'tower'].tolist()}")
+    check_pool_input_list_is_in_order(listing, message_name=str(path))
+    check_towers_are_listed_once(listing, message_name=str(path))
     return listing
 
 
@@ -329,11 +321,11 @@ def match_towers(
     """
     site_of_cell = {
         (int(j), int(k)): int(site)
-        for site, j, k in site_table[["site_id", "lon_index", "lat_index"]].itertuples(index=False)
+        for site, j, k in site_table[[SITE_ID, "lon_index", "lat_index"]].itertuples(index=False)
     }
     named = _named_sites(site_table)
     input_owner = _pool_input_owners(pool_input_list, site_table, site_of_cell)
-    site_lonlat = site_table.set_index("site_id")[["lon", "lat"]]
+    site_lonlat = site_table.set_index(SITE_ID)[[LON, LAT]]
 
     rows = []
     for tower, lon, lat in towers[["tower", "tower_lon", "tower_lat"]].itertuples(index=False):
@@ -342,7 +334,7 @@ def match_towers(
         site, basis, comment = _match_one(tower, own_site, named, input_owner)
         distance = math.nan
         if site is not None:
-            distance = _haversine_m(lon, lat, *site_lonlat.loc[site])
+            distance = _great_circle_distance(lon, lat, *site_lonlat.loc[site])
             if own_site != site:
                 comment = (
                     f"AmeriFlux's coordinates fall {distance:.0f} m from the site's center, "
@@ -351,7 +343,7 @@ def match_towers(
         rows.append(
             {
                 "tower": tower,
-                "site_id": site,
+                SITE_ID: site,
                 "match_basis": basis,
                 "lon_index": cell[0] if cell else None,
                 "lat_index": cell[1] if cell else None,
@@ -361,14 +353,14 @@ def match_towers(
             }
         )
     matched = pd.DataFrame(rows)
-    for column in ("site_id", "lon_index", "lat_index"):
+    for column in (SITE_ID, "lon_index", "lat_index"):
         matched[column] = matched[column].astype("Int32")
     return matched
 
 
 def recover_utc_offset(
     step_starts: pd.DatetimeIndex,
-    step_minutes: int,
+    step: pd.Timedelta,
     potential_shortwave: np.ndarray,
     lat: float,
     lon: float,
@@ -384,7 +376,7 @@ def recover_utc_offset(
     ----------
     step_starts:
         The steps' starts in local standard time, naive.
-    step_minutes:
+    step:
         The step length.
     potential_shortwave:
         ``SW_IN_POT`` at those steps, ``NaN`` where missing.
@@ -403,9 +395,8 @@ def recover_utc_offset(
         If there is no ``SW_IN_POT`` value to fit.
     """
     keep = np.isfinite(potential_shortwave)
-    if not keep.any():
-        raise ValueError("no SW_IN_POT value to recover the offset from")
-    middle = step_starts[keep] + pd.Timedelta(minutes=step_minutes / 2)
+    check_potential_shortwave_is_present(keep)
+    middle = step_starts[keep] + step / 2
     target = potential_shortwave[keep]
     hours_since_epoch = (middle - pd.Timestamp("1970-01-01")) / pd.Timedelta(hours=1)
     scores = []
@@ -420,7 +411,7 @@ def recover_utc_offset(
 
 def shortwave_lag_steps(
     step_starts: pd.DatetimeIndex,
-    step_minutes: int,
+    step: pd.Timedelta,
     measured_shortwave: np.ndarray,
     measured_flag: np.ndarray,
     potential_shortwave: np.ndarray,
@@ -432,18 +423,27 @@ def shortwave_lag_steps(
     four steps either way. Zero means the data are on the clock ``SW_IN_POT``
     was computed for; a positive lag means the measured cycle comes later.
 
+    Parameters
+    ----------
+    step_starts:
+        The steps' starts in local standard time, naive.
+    step:
+        The step length.
+    measured_shortwave, measured_flag, potential_shortwave:
+        ``SW_IN_F``, ``SW_IN_F_QC`` and ``SW_IN_POT`` at those steps.
+
     Returns
     -------
     int or None
         The shift of highest correlation, or ``None`` if fewer than 30 days of
         measured steps exist.
     """
-    per_day = 1440 // step_minutes
+    per_day = int(pd.Timedelta(days=1) / step)
     keep = (measured_flag == 0) & np.isfinite(measured_shortwave) & np.isfinite(potential_shortwave)
-    if keep.sum() < _MINIMUM_MEASURED_DAYS * per_day:
+    if keep.sum() < _MINIMUM_MEASURED_DURATION / step:
         return None
-    minute_of_day = step_starts.hour * 60 + step_starts.minute
-    slot = np.asarray(minute_of_day // step_minutes)[keep]
+    time_of_day = step_starts - step_starts.normalize()
+    slot = np.asarray(time_of_day // step)[keep]
     counts = np.bincount(slot, minlength=per_day)
     if (counts == 0).any():
         return None
@@ -474,36 +474,35 @@ def summarize_raw(raw: xr.Dataset, site_list: pd.DataFrame) -> pd.DataFrame:
 
     Raises
     ------
-    ValueError
-        If a tower of the raw file is not in the site listing.
+    KeyError
+        If a tower of the raw file is not in the site listing, or has no
+        coordinates there.
     """
     resolution = resolve_resolution(raw.attrs["resolution"])
     starts = resolution.raw_step_starts()
     coordinates = site_list.set_index("tower")
+    towers = raw[TOWER].values.tolist()
+    check_towers_are_in_the_site_list(towers, coordinates)
     rows = []
-    for tower in raw[TOWER].values.tolist():
-        if tower not in coordinates.index:
-            raise ValueError(f"tower {tower} is not in AmeriFlux's site listing")
+    for tower in towers:
         one = raw.sel({TOWER: tower})
         potential = one["SW_IN_POT"].values
         lat, lon = coordinates.at[tower, "tower_lat"], coordinates.at[tower, "tower_lon"]
-        if not (np.isfinite(lat) and np.isfinite(lon)):
-            raise ValueError(f"tower {tower} has no coordinates in AmeriFlux's site listing")
         if np.isfinite(potential).any():
-            fit = recover_utc_offset(starts, resolution.minutes, potential, lat, lon)
+            fit = recover_utc_offset(starts, resolution.step, potential, lat, lon)
         else:  # no step of the file falls in the raw window
             fit = OffsetFit(math.nan, math.nan, math.nan, math.nan)
         lag = shortwave_lag_steps(
-            starts, resolution.minutes, one["SW_IN_F"].values, one["SW_IN_F_QC"].values, potential
+            starts, resolution.step, one["SW_IN_F"].values, one["SW_IN_F_QC"].values, potential
         )
         rows.append(
             {
                 "tower": tower,
-                "resolution_minutes": resolution.minutes,
+                "resolution_minutes": _whole_minutes(resolution.step),
                 "source_file": str(one["source_file"].values),
                 "site_version": str(one["site_version"].values),
                 "record_steps": int(np.isfinite(one["NEE_VUT_REF"].values).sum()),
-                "utc_offset_hours": fit.offset_hours,
+                "utc_offset_hours": fit.offset,
                 "utc_offset_separation": fit.separation,
                 "shortwave_lag_steps": lag,
             }
@@ -538,13 +537,13 @@ def build_tower_table(
     Raises
     ------
     ValueError
-        If a tower appears twice in *summaries* or is not in the site listing.
+        If a tower appears twice in *summaries*.
+    KeyError
+        If a tower of *summaries* is not in the site listing.
     """
-    if summaries["tower"].duplicated().any():
-        raise ValueError("a tower appears in more than one raw file")
+    check_towers_are_listed_once(summaries, message_name="the raw files' summaries")
+    check_towers_are_in_the_site_list(summaries["tower"].tolist(), site_list.set_index("tower"))
     table = summaries.merge(site_list, on="tower", how="left", validate="one_to_one")
-    if table["tower_lon"].isna().any():
-        raise ValueError(f"towers not in the site listing: {table.loc[table['tower_lon'].isna(), 'tower'].tolist()}")
     matched = match_towers(table[["tower", "tower_lon", "tower_lat"]], site_table, pool_input_list)
     table = table.merge(matched, on="tower", how="left", validate="one_to_one")
     table["utc_offset_source"] = np.where(table["utc_offset_hours"].notna(), UTC_OFFSET_RECOVERED, "")
@@ -564,10 +563,25 @@ def build_tower_table(
     ]
     table = _choose_primaries(table)
     table = table.sort_values("tower", ignore_index=True)[list(TOWER_COLUMNS)]
-    return _typed(table, None)
+    return _typed(table, message_name="the tower table")
 
 
-# ── supporting helpers ────────────────────────────────────────────────────────
+# ── private helpers ───────────────────────────────────────────────────────────
+
+#: AmeriFlux's site-listing columns the table reads, and their names in it.
+_SITE_LIST_COLUMNS = frozendict(
+    {
+        "Site ID": "tower",
+        "Latitude (degrees)": "tower_lat",
+        "Longitude (degrees)": "tower_lon",
+        "Vegetation Abbreviation (IGBP)": "igbp",
+        "AmeriFlux FLUXNET DOI": "doi",
+    }
+)
+
+#: The pool input list's header: R's ``write.csv`` gives an empty name to the
+#: row labels, then R's ``make.names`` versions of AmeriFlux's column titles.
+_POOL_INPUT_LIST_HEADER = ("", "Site.ID", "Latitude..degrees.", "Longitude..degrees.", "Elevation..m.")
 
 
 #: An AmeriFlux identifier in parentheses inside a pool site name.
@@ -577,7 +591,7 @@ _NAMED_IDENTIFIER = re.compile(r"\(([A-Za-z]{2}-[A-Za-z0-9]{3})\)")
 def _named_sites(site_table: pd.DataFrame) -> dict[str, list[int]]:
     """Tower identifier to the pool sites whose names embed it."""
     named: dict[str, list[int]] = {}
-    for site, name in site_table[["site_id", "site_name"]].itertuples(index=False):
+    for site, name in site_table[[SITE_ID, "site_name"]].itertuples(index=False):
         for identifier in _NAMED_IDENTIFIER.findall(name):
             tower = identifier[:2].upper() + identifier[2:]
             named.setdefault(tower, []).append(int(site))
@@ -588,7 +602,7 @@ def _pool_input_owners(
     pool_input_list: pd.DataFrame, site_table: pd.DataFrame, site_of_cell: Mapping
 ) -> dict[str, int]:
     """Tower to the ``ameriflux``-labeled site the pool's list placed it in."""
-    labeled = set(site_table.loc[site_table["site_name"] == "ameriflux", "site_id"].astype(int))
+    labeled = set(site_table.loc[site_table["site_name"] == "ameriflux", SITE_ID].astype(int))
     owners: dict[str, int] = {}
     seen_cells: set[tuple[int, int]] = set()
     for tower, lon, lat in pool_input_list[["tower", "input_lon", "input_lat"]].itertuples(index=False):
@@ -605,6 +619,7 @@ def _pool_input_owners(
 def _match_one(
     tower: str, own_site: int | None, named: Mapping, input_owner: Mapping
 ) -> tuple[int | None, str, str]:
+    """``(site, basis, note)`` for one tower under the matching rule."""
     candidates = named.get(tower, [])
     if len(candidates) == 1:
         return candidates[0], "named_in_pool", ""
@@ -620,7 +635,8 @@ def _match_one(
     return None, "", note
 
 
-def _unmatched_reason(cell, comment: str) -> str:
+def _unmatched_reason(cell: tuple[int, int] | None, comment: str) -> str:
+    """Why a tower has no pool site."""
     if cell is None:
         return "no pool site: the tower's coordinates are missing or outside the pool grid"
     if comment:
@@ -629,6 +645,8 @@ def _unmatched_reason(cell, comment: str) -> str:
 
 
 def _clock_reason(offset: float, separation: float, lag, step_minutes: int) -> str:
+    """Why a tower's clock excludes it, or ``""``; *step_minutes* is the table's column."""
+    maximum_lag_minutes = _whole_minutes(MAXIMUM_SHORTWAVE_LAG)
     if not np.isfinite(offset):
         return "clock: no SW_IN_POT in 2012-2024 to recover the offset from"
     if (offset * 60) % step_minutes != 0:
@@ -637,34 +655,37 @@ def _clock_reason(offset: float, separation: float, lag, step_minutes: int) -> s
         return f"clock: the UTC offset is not clearly recovered (separation {separation:.2f})"
     if lag is pd.NA or lag is None:
         return "clock: too little measured shortwave to check the offset against"
-    if abs(int(lag)) * step_minutes > MAXIMUM_SHORTWAVE_LAG_MINUTES:
+    if abs(int(lag)) * step_minutes > maximum_lag_minutes:
         return f"clock: measured shortwave sits {int(lag) * step_minutes} minutes from SW_IN_POT"
     return ""
 
 
 def _lag_note(lag, step_minutes: int) -> str:
     """A note for a lag the check allows but that is not zero; excluded lags have a reason instead."""
+    maximum_lag_minutes = _whole_minutes(MAXIMUM_SHORTWAVE_LAG)
     if lag is pd.NA or lag is None or int(lag) == 0:
         return ""
-    if abs(int(lag)) * step_minutes > MAXIMUM_SHORTWAVE_LAG_MINUTES:
+    if abs(int(lag)) * step_minutes > maximum_lag_minutes:
         return ""
     return (
         f"measured shortwave sits {int(lag) * step_minutes} minutes from SW_IN_POT, within "
-        f"the check's tolerance of {MAXIMUM_SHORTWAVE_LAG_MINUTES} minutes"
+        f"the check's tolerance of {maximum_lag_minutes} minutes"
     )
 
 
 def _joined(*parts: str) -> str:
+    """The non-empty *parts*, joined as one comment."""
     return "; ".join(part for part in parts if part)
 
 
 def _choose_primaries(table: pd.DataFrame) -> pd.DataFrame:
+    """*table* with ``primary`` and ``primary_reason`` set: one tower per site and resolution."""
     table = table.copy()
     table["primary"] = False
     table["primary_reason"] = ""
-    eligible = table[table["site_id"].notna() & (table["excluded_reason"] == "")]
+    eligible = table[table[SITE_ID].notna() & (table["excluded_reason"] == "")]
     rank = {basis: i for i, basis in enumerate(MATCH_BASES)}
-    for site, group in eligible.groupby("site_id"):
+    for _, group in eligible.groupby([SITE_ID, "resolution_minutes"]):
         ordered = group.assign(
             _rank=group["match_basis"].map(rank),
             _record_minutes=group["record_steps"].astype(np.int64) * group["resolution_minutes"].astype(np.int64),
@@ -680,20 +701,34 @@ def _choose_primaries(table: pd.DataFrame) -> pd.DataFrame:
                 else "the longer record" if first["_record_minutes"] != second["_record_minutes"]
                 else "the first identifier"
             )
-            table.loc[chosen, "primary_reason"] = f"{why}; also at this site: {others}"
+            table.loc[chosen, "primary_reason"] = f"{why}; also at this site and resolution: {others}"
             for other in ordered.index[1:]:
                 table.loc[other, "primary_reason"] = f"not primary: {table.loc[chosen, 'tower']} is"
+    primary = table[table["primary"]]
+    for site, group in primary.groupby(SITE_ID):
+        if len(group) < 2:
+            continue
+        for chosen in group.index:
+            elsewhere = ", ".join(
+                f"{row.tower} ({int(row.resolution_minutes)} min)"
+                for row in group.drop(index=chosen).itertuples()
+            )
+            table.loc[chosen, "primary_reason"] = _joined(
+                table.loc[chosen, "primary_reason"], f"primary at this site at another resolution: {elsewhere}"
+            )
     return table
 
 
 def _cell_or_none(lon: float, lat: float) -> tuple[int, int] | None:
+    """The site-grid cell holding a point, or ``None`` off the grid or with no coordinates."""
     try:
         return SITE_GRID.cell_of(lon, lat)
     except ValueError:
         return None
 
 
-def _haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+def _great_circle_distance(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    """The haversine distance between two points, meters, on the mean Earth radius."""
     radius = 6_371_008.8
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi, dlambda = phi2 - phi1, math.radians(lon2 - lon1)
@@ -702,6 +737,7 @@ def _haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
 
 
 def _top_of_atmosphere_shortwave(utc: pd.DatetimeIndex, lat: float, lon: float) -> np.ndarray:
+    """Top-of-atmosphere shortwave at *utc*, W m-2, by Spencer's (1971) series."""
     hour = np.asarray(utc.hour + utc.minute / 60 + utc.second / 3600, dtype=np.float64)
     day = np.asarray(utc.dayofyear, dtype=np.float64)
     gamma = 2 * np.pi / 365.0 * (day - 1 + (hour - 12) / 24)
@@ -725,9 +761,8 @@ def _top_of_atmosphere_shortwave(utc: pd.DatetimeIndex, lat: float, lon: float) 
     return np.maximum(0.0, 1361.0 * eccentricity * cosine_zenith)
 
 
-def _typed(frame: pd.DataFrame, path: Path | None) -> pd.DataFrame:
+def _typed(frame: pd.DataFrame, *, message_name: str) -> pd.DataFrame:
     """*frame*, all text, converted to :data:`TOWER_COLUMN_DTYPES`."""
-    where = f"{path}: " if path is not None else ""
     table = pd.DataFrame(index=frame.index)
     for column, dtype in TOWER_COLUMN_DTYPES.items():
         text = frame[column].astype(object).map(lambda value: "" if pd.isna(value) else str(value))
@@ -747,7 +782,10 @@ def _typed(frame: pd.DataFrame, path: Path | None) -> pd.DataFrame:
             else:
                 table[column] = np.array([_whole_number(value, dtype) for value in text], dtype=dtype)
         except (ValueError, TypeError) as error:
-            raise ValueError(f"{where}column {column!r} is not {dtype} ({error})") from error
+            raise ValueError(
+                f"{message_name}: column {column!r} is not {dtype} ({error}); rebuild the table "
+                "with scripts/raw_sources/build_ameriflux_towers.py."
+            ) from error
     return table
 
 
@@ -760,30 +798,177 @@ def _whole_number(text: str, dtype) -> int:
     return int(value)
 
 
-def _check_tower_table(table: pd.DataFrame, path: Path) -> None:
-    """Raise unless *table* holds the tower table's invariants."""
+def _whole_minutes(step: pd.Timedelta) -> int:
+    """A duration as a whole number of minutes, as the table's columns count it."""
+    return int(step / pd.Timedelta(minutes=1))
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+#: The advice a refusal of the tower table ends with.
+_REBUILD = "rebuild it with scripts/raw_sources/build_ameriflux_towers.py"
+
+
+def check_tower_table_exists(path: Path) -> None:
+    """The tower table exists."""
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} is not a file; it is tracked, so restore it from git or {_REBUILD}.")
+
+
+def check_tower_table_has_the_columns(frame: pd.DataFrame, *, message_name: str) -> None:
+    """The tower table's columns are :data:`TOWER_COLUMNS`, in order."""
+    if tuple(frame.columns) != TOWER_COLUMNS:
+        raise ValueError(
+            f"{message_name}: columns are {truncated(list(frame.columns))}, expected "
+            f"{truncated(list(TOWER_COLUMNS))}; {_REBUILD}."
+        )
+
+
+def check_tower_table_is_valid(table: pd.DataFrame, *, message_name: str) -> None:
+    """The tower table holds the invariants of its data model."""
+    check_tower_table_towers_ascend(table, message_name=message_name)
+    check_tower_table_sites_are_pool_sites(table, message_name=message_name)
+    check_tower_table_match_bases_are_known(table, message_name=message_name)
+    check_tower_table_unmatched_towers_are_excluded(table, message_name=message_name)
+    check_tower_table_primary_towers_are_matched_and_kept(table, message_name=message_name)
+    check_tower_table_has_one_primary_per_site_and_resolution(table, message_name=message_name)
+    check_tower_table_offsets_are_whole_half_hours(table, message_name=message_name)
+    check_tower_table_resolutions_are_known(table, message_name=message_name)
+
+
+def check_tower_table_towers_ascend(table: pd.DataFrame, *, message_name: str) -> None:
+    """The tower table lists each tower once, ascending."""
     towers = table["tower"].tolist()
     if towers != sorted(set(towers)):
-        raise ValueError(f"{path}: tower is repeated or not ascending")
-    matched = table["site_id"].notna()
-    if not table.loc[matched, "site_id"].between(1, 8000).all():
-        raise ValueError(f"{path}: a site_id is outside 1-8000")
+        raise ValueError(f"{message_name}: tower is repeated or not ascending; {_REBUILD}.")
+
+
+def check_tower_table_sites_are_pool_sites(table: pd.DataFrame, *, message_name: str) -> None:
+    """Every matched tower's site is a site id of the pool."""
+    matched = table[SITE_ID].notna()
+    if not table.loc[matched, SITE_ID].between(1, N_SITES).all():
+        raise ValueError(f"{message_name}: a site_id is outside 1-{N_SITES}; {_REBUILD}.")
+
+
+def check_tower_table_match_bases_are_known(table: pd.DataFrame, *, message_name: str) -> None:
+    """A matched tower's basis is one of :data:`MATCH_BASES`, and an unmatched tower has none."""
+    matched = table[SITE_ID].notna()
     if not table.loc[matched, "match_basis"].isin(MATCH_BASES).all():
-        raise ValueError(f"{path}: a matched tower has a match_basis outside {MATCH_BASES}")
+        raise ValueError(
+            f"{message_name}: a matched tower has a match_basis outside {MATCH_BASES}; {_REBUILD}."
+        )
     if (table.loc[~matched, "match_basis"] != "").any():
-        raise ValueError(f"{path}: an unmatched tower has a match_basis")
-    if (table.loc[~matched, "excluded_reason"] == "").any():
-        raise ValueError(f"{path}: an unmatched tower has no excluded_reason")
+        raise ValueError(f"{message_name}: an unmatched tower has a match_basis; {_REBUILD}.")
+
+
+def check_tower_table_unmatched_towers_are_excluded(table: pd.DataFrame, *, message_name: str) -> None:
+    """A tower with no pool site says why it is left out."""
+    if (table.loc[table[SITE_ID].isna(), "excluded_reason"] == "").any():
+        raise ValueError(f"{message_name}: an unmatched tower has no excluded_reason; {_REBUILD}.")
+
+
+def check_tower_table_primary_towers_are_matched_and_kept(table: pd.DataFrame, *, message_name: str) -> None:
+    """A primary tower has a pool site and an offset, and is not excluded."""
     primary = table[table["primary"]]
-    if primary["site_id"].isna().any() or (primary["excluded_reason"] != "").any():
-        raise ValueError(f"{path}: a primary tower is unmatched or excluded")
-    if primary["site_id"].duplicated().any():
-        raise ValueError(f"{path}: a site has two primary towers")
-    offsets = table["utc_offset_hours"]
-    if offsets[table["primary"]].isna().any():
-        raise ValueError(f"{path}: a primary tower has no utc_offset_hours")
-    known = offsets.dropna()
+    if primary[SITE_ID].isna().any() or (primary["excluded_reason"] != "").any():
+        raise ValueError(f"{message_name}: a primary tower is unmatched or excluded; {_REBUILD}.")
+    if primary["utc_offset_hours"].isna().any():
+        raise ValueError(f"{message_name}: a primary tower has no utc_offset_hours; {_REBUILD}.")
+
+
+def check_tower_table_has_one_primary_per_site_and_resolution(
+    table: pd.DataFrame, *, message_name: str
+) -> None:
+    """No site has two primary towers at one resolution."""
+    primary = table[table["primary"]]
+    if primary.duplicated([SITE_ID, "resolution_minutes"]).any():
+        raise ValueError(f"{message_name}: a site has two primary towers at one resolution; {_REBUILD}.")
+
+
+def check_tower_table_offsets_are_whole_half_hours(table: pd.DataFrame, *, message_name: str) -> None:
+    """Every known UTC offset is a finite whole number of half hours."""
+    known = table["utc_offset_hours"].dropna()
     if (~np.isfinite(known)).any() or ((known * 2) != np.round(known * 2)).any():
-        raise ValueError(f"{path}: a utc_offset_hours is not a whole number of half hours")
+        raise ValueError(
+            f"{message_name}: a utc_offset_hours is not a whole number of half hours; {_REBUILD}."
+        )
+
+
+def check_tower_table_resolutions_are_known(table: pd.DataFrame, *, message_name: str) -> None:
+    """Every tower's step is 30 or 60 minutes."""
     if not table["resolution_minutes"].isin([30, 60]).all():
-        raise ValueError(f"{path}: resolution_minutes is not 30 or 60")
+        raise ValueError(f"{message_name}: resolution_minutes is not 30 or 60; {_REBUILD}.")
+
+
+def check_ameriflux_site_list_exists(path: Path) -> None:
+    """AmeriFlux's site listing exists."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} is not a file; it is not tracked, because it carries contact details, so "
+            "copy it from beside the FLUXNET download (see "
+            "data/raw/net_ecosystem_exchange/provenance.md)."
+        )
+
+
+def check_ameriflux_site_list_has_the_columns(frame: pd.DataFrame, *, message_name: str) -> None:
+    """AmeriFlux's site listing carries every column the table reads."""
+    missing = [name for name in _SITE_LIST_COLUMNS if name not in frame.columns]
+    if missing:
+        raise ValueError(
+            f"{message_name}: missing columns {truncated(missing)}; AmeriFlux changed its "
+            "listing, so map the new names in _SITE_LIST_COLUMNS."
+        )
+
+
+def check_towers_are_listed_once(listing: pd.DataFrame, *, message_name: str) -> None:
+    """A listing names each tower once."""
+    repeated = listing.loc[listing["tower"].duplicated(), "tower"].tolist()
+    if repeated:
+        raise ValueError(f"{message_name}: tower(s) {truncated(repeated)} listed twice; list each once.")
+
+
+def check_pool_input_list_exists(path: Path) -> None:
+    """The pool input list exists."""
+    if not path.is_file():
+        raise FileNotFoundError(f"{path} is not a file; it is tracked, so restore it from git.")
+
+
+def check_pool_input_list_header_is_the_expected(header: list[str], *, message_name: str) -> None:
+    """The pool input list's header is the one R wrote."""
+    if tuple(header) != _POOL_INPUT_LIST_HEADER:
+        raise ValueError(
+            f"{message_name}: columns are {header}, expected {list(_POOL_INPUT_LIST_HEADER)}; "
+            "restore the tracked file."
+        )
+
+
+def check_pool_input_list_is_in_order(listing: pd.DataFrame, *, message_name: str) -> None:
+    """The pool input list's row labels increase, so its order is the reanalysis's."""
+    if not (listing["input_order"].diff().dropna() > 0).all():
+        raise ValueError(
+            f"{message_name}: the row labels are not strictly increasing, so the list's order, "
+            "which decides a shared cell's tower, is lost; restore the tracked file."
+        )
+
+
+def check_towers_are_in_the_site_list(towers: list[str], site_list: pd.DataFrame) -> None:
+    """Every tower is in AmeriFlux's site listing, with coordinates; *site_list* is indexed on tower."""
+    missing = [tower for tower in towers if tower not in site_list.index]
+    if missing:
+        raise KeyError(
+            f"tower(s) {truncated(missing)} are not in AmeriFlux's site listing; download the "
+            "listing again beside the FLUXNET files."
+        )
+    rows = site_list.loc[towers, ["tower_lat", "tower_lon"]]
+    unlocated = rows.index[~np.isfinite(rows.to_numpy(np.float64)).all(axis=1)].tolist()
+    if unlocated:
+        raise KeyError(
+            f"tower(s) {truncated(unlocated)} have no coordinates in AmeriFlux's site listing; "
+            "the table cannot match them without."
+        )
+
+
+def check_potential_shortwave_is_present(keep: np.ndarray) -> None:
+    """There is some ``SW_IN_POT`` to recover an offset from."""
+    if not keep.any():
+        raise ValueError("no SW_IN_POT value to recover the offset from; pass a tower's record.")

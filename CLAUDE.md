@@ -848,8 +848,9 @@ src/sipnet_calibration/
                           # to_sipnet_initial_condition_fields()
   net_ecosystem_exchange/ # observed NEE, laid out as initial_conditions/ is
     __init__.py           # curated exports + the processed files' data model
-    names.py              # the raw (local standard time) and processed (UTC)
-                          # axes per resolution, file names, path helpers
+    names.py              # the raw files' dims, the raw (local standard time)
+                          # and processed (UTC) axes per resolution, the raw
+                          # and tracked files' paths
     source_files.py       # SOURCE (the AmeriFlux FULLSET CSV), read_source_file()
     raw.py                # build_raw(), raw_encoding(), read_raw(): every tower on
                           # one local-standard-time axis per resolution
@@ -860,7 +861,8 @@ src/sipnet_calibration/
     specs.py              # NetEcosystemExchangeSpec + NET_ECOSYSTEM_EXCHANGE, one
                           # per series (ameriflux_nee_<resolution>_ustar_<variable|constant>)
     sources.py            # SOURCE_READERS: raw file -> (tower, time) UTC series
-    processed.py          # build_net_ecosystem_exchange(),
+    processed.py          # net_ecosystem_exchange_path(),
+                          # build_net_ecosystem_exchange(),
                           # load_net_ecosystem_exchange(),
                           # net_ecosystem_exchange_fields() and the companions
   drivers.py              # load_drivers(): raw .clim files read by pySIPNET's
@@ -917,7 +919,8 @@ src/sipnet_calibration/
                           # model output the observation operators read),
                           # stack_model_outputs() (runs to one on
                           # (*batch, site, time)), in_field_layout(),
-                          # resolve_output_variable_names(), message_name()
+                          # resolve_output_variable_names(), message_name(),
+                          # window_coordinates()
   observation/            # the observation side of the inverse problem
     __init__.py           # curated exports
     time_alignment.py     # aggregate_time, reduce_windows, select_timestep_at,
@@ -1091,10 +1094,14 @@ plotting code. The load-bearing rules:
   model only inside the kept sites' records.
 - **An annual constraint's field carries its windows**, read from the
   processed file's CF `time_bounds`, as the 1-D coordinates
-  `window_start`/`window_end` on `time` (`constraint_fields` adds them;
-  `conventions.WINDOW_START` and `WINDOW_END`), which is what
-  `ReduceOverWindows` reads; a dated or static constraint documents no
-  interval.
+  `window_start`/`window_end` on `time` (`constraint_fields` adds them,
+  through `fields.window_coordinates`; `conventions.WINDOW_START` and
+  `WINDOW_END`), which is what `ReduceOverWindows` reads; a dated or static
+  constraint documents no interval. An observed NEE field
+  (`net_ecosystem_exchange_fields`) carries each step's window the same way:
+  its values are mean rates over `(window_start, window_end]`, with `time` the
+  window's end, and it carries no `timestep_*` coordinate, a timestep being
+  SIPNET's.
 - **Model and driver fields carry pySIPNET's names, units, kinds and time axis
   unchanged.** `fields.to_model_output` adds `site`, batch labels and
   `lon`/`lat` to a run's output; `drivers.driver_fields` does the same for the

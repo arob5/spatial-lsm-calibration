@@ -471,12 +471,12 @@ class TestPaddedStacks:
 
 class TestWindowOrientation:
     def test_the_window_coordinates_are_start_then_end(self):
-        from sipnet_calibration.constraints import _window_coords
+        from sipnet_calibration.fields import window_coordinates
 
         times = pd.DatetimeIndex(["2012-01-01", "2013-01-01"])
         bounds = np.array([[t, t + pd.Timedelta("366D")] for t in times]).astype("datetime64[ns]")
         dataset = xr.Dataset(coords={"time": times, "time_bounds": (("time", "bounds"), bounds)})
-        coords = _window_coords(dataset)
+        coords = window_coordinates(dataset["time_bounds"])
         np.testing.assert_array_equal(
             coords[WINDOW_START].values, times.values.astype("datetime64[ns]")
         )

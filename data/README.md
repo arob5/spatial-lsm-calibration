@@ -686,7 +686,7 @@ The conversion keeps these columns, as the FULLSET table defines them:
 | `SW_IN_POT`, `SW_IN_F`, `SW_IN_F_QC` | potential and consolidated incoming shortwave (measured where `SW_IN_F_QC` is 0), for the clock checks below |
 
 53 of the 241 files carry no `NEE_CUT_*` columns at all; they are stored as
-missing, so the constant-threshold products cover fewer sites. The sign
+missing, so the constant-threshold series cover fewer sites. The sign
 convention is not stated in the FULLSET table; the values are positive at night
 and negative in summer daytime, so positive is taken to be release to the
 atmosphere, which is an inference from the data.
@@ -714,7 +714,8 @@ the resolution of the check and is recorded in the tower table's `comment`.
 `CA-Mtk`'s measured shortwave runs an hour after its `SW_IN_POT`, and it is
 excluded (open question 27).
 
-Checked on the `ameriflux_nee_half_hourly_ustar_variable` product, from the
+Checked on the `ameriflux_nee_half_hourly_ustar_variable` series (as first built,
+before site 4977 joined it), from the
 first harmonic of each site's mean diurnal cycle of measured (QC 0) values, at
 the 176 sites whose June-August cycle has an amplitude above 2 umol m-2 s-1:
 the phase of the minimum moves with longitude at -0.061 +/- 0.001 h per degree,
@@ -734,25 +735,34 @@ name embeds its identifier (60 towers); it is the tower the list placed in an
 `ameriflux`-labeled cell (116); or its AmeriFlux coordinates fall in the site's
 cell (47, mostly NEON `US-x*` towers in cells named for NEON sites). That
 matches 223 towers to 215 sites; 18 towers match none and are left out. Eight
-sites hold two towers; the one the pool was built from is primary and carries
-the site's series (Note 3). Three towers the pool names sit in a neighboring
+sites hold two towers. At seven the two share a resolution, and the one the
+pool was built from is primary and carries the site's series (Note 3). At
+site 4977 (Harvard Forest) they do not: the hourly `US-Ha1` and the half-hourly
+`US-xHA` are each primary, one in each resolution's files, since those files
+never meet. `US-xDS`, whose latitude is exactly 28.125, lies on a nominal cell
+edge; on the raster's real edges (`SITE_GRID.edge_shift_lat`) it falls in the
+row below, which holds no pool point, so it is left out rather than moved. Three towers the pool names sit in a neighboring
 cell by AmeriFlux's coordinates, 414-633 m from the site center (`CA-Cbo`,
 `US-Me2`, `US-MtB`); they are matched by name, with the disagreement in
 `comment` (open question 28). The matching agrees with the nearest-point matching
 behind `site_id_map.csv` on every tower both make.
 
-**The products.** One per series, at the source resolution, on 2012-2024 UTC:
+**The processed files.** One per series, at the source resolution, on
+2012-2024 UTC:
 
-| Product | Sites |
+| Series | Sites |
 |---|---|
-| `ameriflux_nee_half_hourly_ustar_variable` (`NEE_VUT_REF`) | 210 |
-| `ameriflux_nee_half_hourly_ustar_constant` (`NEE_CUT_USTAR50`) | 170 |
+| `ameriflux_nee_half_hourly_ustar_variable` (`NEE_VUT_REF`) | 211 |
+| `ameriflux_nee_half_hourly_ustar_constant` (`NEE_CUT_USTAR50`) | 171 |
 | `ameriflux_nee_hourly_ustar_variable` | 4 |
 | `ameriflux_nee_hourly_ustar_constant` | 4 |
 
-`sipnet_calibration.net_ecosystem_exchange` documents the data model. About
-half the site-steps of the half-hourly products hold a value, and about a third
-of those were measured rather than gap-filled.
+`sipnet_calibration.net_ecosystem_exchange` documents the data model:
+`time` is each step's UTC end with its CF `time_bounds`, which
+`net_ecosystem_exchange_fields` hands on as the right-closed windows
+`window_start`/`window_end`. About half the site-steps of the half-hourly
+series hold a value, and about a third of those were measured rather than
+gap-filled.
 
 **Earlier derivatives, superseded.** Before this ingest the project held Yang
 Gu's `Gap_fill/results/ens_ec_3h.csv` ([GAPFILL]; 209 towers, 25 members,
@@ -768,7 +778,10 @@ the site's own zone and is 5 h late in winter and 3 h in summer. Both were
 reproduced exactly from the FULLSET files. At 3-hourly resolution neither can
 be corrected: the true-UTC bins are out of phase with SIPNET's steps. The 25
 members of `ens_ec_3h.csv` are XGBoost fits to resamples of each site's measured
-half-hours (open question 8), not driver realizations.
+half-hours (open question 8), not driver realizations. The timestamp error was
+reported to its producer on 2026-09-28; nothing here reads either file, and a
+corrected ensemble would enter as a second source, one reader and one spec
+beside the AmeriFlux ones.
 
 ### Constraints
 
@@ -1506,8 +1519,8 @@ The processed form is also the form used throughout the rest of the project, so
 it is chosen to load directly as such: an `xarray.DataArray` per variable -- a
 field, as `sipnet_calibration.fields.validate_field` checks it -- with
 dimensions `(*batch, site, time)`, a data source's own ensemble being a batch
-dim named for the source (`initial_condition_member`, `driver_member`,
-`nee_member`), longitude and latitude as non-dimension coordinates on `site`,
+dim named for the source (`initial_condition_member`, `driver_member`),
+longitude and latitude as non-dimension coordinates on `site`,
 and units recorded in the array's attributes. Formats are chosen according to
 the shape of each data source.
 
@@ -1520,7 +1533,7 @@ the shape of each data source.
 | `net_ecosystem_exchange/<name>.nc` | netCDF, one per series, one chunk per site | `(site, time)` | about 250 MB half-hourly, 7 MB hourly |
 | drivers | no file; `load_drivers()` over `raw/drivers/` | `(driver_member, site, time)` | about 2.4 MB per site-member in memory |
 
-The time-series products are netCDF chunked one site at a time, so a lazy
+The time-series files are netCDF chunked one site at a time, so a lazy
 `.sel(site=...)` reads only the requested sites; Zarr, once planned for NEE,
 would buy nothing more. The site table is CSV instead because it is small,
 tabular and read by people as often as by code.
@@ -1795,9 +1808,9 @@ standard scheme. It names neither the eight classes nor anything about
 subsample of a roughly 1 km grid, so two eddy-covariance towers close together can
 fall in the same cell and resolve to one model site. *Settled for now:* the
 tower table matches every such tower to the site, and one of them is
-**primary**, the one whose series the products carry: the tower the pool was
-built from where the site's name or the reanalysis's tower list says which, then
-the longer record. The others stay in the table, with `primary_reason` naming
+**primary** at each resolution, the one whose series that resolution's
+processed files carry: the tower the pool was built from where the site's name
+or the reanalysis's tower list says which, then the longer record. The others stay in the table, with `primary_reason` naming
 the primary. Whether two series attached to one model prediction should both
 enter the likelihood, be averaged first, or share an error covariance remains a
 modeling question, open for when it matters.
@@ -1834,19 +1847,19 @@ not an ensemble mean but ONEFlux's own `NEE_CUT_USTAR50` averaged to 3 hours.
 Both it and the 25-member `ens_ec_3h.csv` carry timestamps converted to UTC
 through a time zone with daylight saving, so their values sit 3 to 5 hours
 (`eddy_cov_dat.csv`) or up to 4 hours (`ens_ec_3h.csv`) from their labels, and
-at 3-hourly resolution that cannot be undone. The products are now built from
-the AmeriFlux files they were derived from; see
+at 3-hourly resolution that cannot be undone. The processed files are now built
+from the AmeriFlux files they were derived from; see
 [Net ecosystem exchange](#net-ecosystem-exchange). The per-observation
 uncertainty the ensemble spread was meant to supply is better supplied by
-ONEFlux's own `RANDUNC` and `JOINTUNC`, which the products carry.
+ONEFlux's own `RANDUNC` and `JOINTUNC`, which the processed files carry.
 
 **8. Rows with identical ensemble members.** *Resolved, from the producer's
 code:* the 25 members of `ens_ec_3h.csv` are XGBoost fits to 95% resamples of
 each site's measured half-hours, not a driver ensemble. Measured half-hours
 (`NEE_CUT_USTAR50_QC` 0) are kept identical in every member and every other
 half-hour is refilled, so a 3-hour row has identical members exactly when all
-its half-hours were measured (verified at `US-UMB`, both ways). The products now
-carry ONEFlux's `quality_flag`, which says the same thing per step directly.
+its half-hours were measured (verified at `US-UMB`, both ways). The processed
+files now carry ONEFlux's `quality_flag`, which says the same thing per step directly.
 
 **9. Units of the constraints.** No unit is stated by any attribute
 in any of the five raw files. `Mg C ha-1` for LandTrendr biomass and `m2 m-2`

@@ -29,8 +29,8 @@ from sipnet_calibration.net_ecosystem_exchange import (
     SOURCE,
     build_net_ecosystem_exchange,
     load_net_ecosystem_exchange,
+    net_ecosystem_exchange_fields,
     net_ecosystem_exchange_quality_flags,
-    net_ecosystem_exchange_values,
     parse_file_name,
     raw_path,
     read_raw,
@@ -38,11 +38,17 @@ from sipnet_calibration.net_ecosystem_exchange import (
     read_tower_table,
     recover_utc_offset,
     resolve_net_ecosystem_exchange,
+    pool_input_list_path,
     shortwave_lag_steps,
+    tower_table_path,
 )
+from sipnet_calibration.conventions import WINDOW_END, WINDOW_START, tracked_data_root
 from sipnet_calibration.net_ecosystem_exchange.towers import _top_of_atmosphere_shortwave
-from sipnet_calibration.obs_ops import aggregate_time
+from sipnet_calibration.observation.source import validate_observed_values
+from sipnet_calibration.observation.time_alignment import aggregate_time, windows_from_observed_values
 from sipnet_calibration.sites import SITE_COLUMNS, SITE_GRID, load_sites
+
+HALF_HOUR = pd.Timedelta(minutes=30)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -217,10 +223,16 @@ def pipeline(tmp_path_factory):
     _write_pool_input_list(raw_dir / "Unmatched_Sites.csv")
     _write_site_table(sites)
 
+    towers = raw_dir / "ameriflux_towers.csv"
     assert convert.main(["--root", str(download), "--out-dir", str(raw_dir), "--jobs", "1"]) == 0
-    assert build_towers.main(["--raw-dir", str(raw_dir), "--sites", str(sites), "--out", str(raw_dir / "ameriflux_towers.csv")]) == 0
-    assert ingest.main(["--raw-dir", str(raw_dir), "--sites", str(sites), "--out-dir", str(out_dir)]) == 0
-    return {"download": download, "raw_dir": raw_dir, "out_dir": out_dir, "sites": sites}
+    assert build_towers.main(
+        ["--raw-dir", str(raw_dir), "--site-table", str(sites), "--out", str(towers),
+         "--pool-input-list", str(raw_dir / "Unmatched_Sites.csv")]
+    ) == 0
+    assert ingest.main(
+        ["--raw-dir", str(raw_dir), "--tower-table", str(towers), "--site-table", str(sites), "--out-dir", str(out_dir)]
+    ) == 0
+    return {"download": download, "raw_dir": raw_dir, "out_dir": out_dir, "sites": sites, "towers": towers}
 
 
 # ── the source files ──────────────────────────────────────────────────────────
@@ -313,7 +325,7 @@ class TestConversion:
 
 @pytest.fixture(scope="module")
 def table(pipeline):
-    return read_tower_table(pipeline["raw_dir"] / "ameriflux_towers.csv").set_index("tower")
+    return read_tower_table(pipeline["towers"]).set_index("tower")
 
 
 class TestTowerTable:
@@ -357,45 +369,46 @@ class TestClock:
         potential = _top_of_atmosphere_shortwave(
             pd.DatetimeIndex(starts + pd.Timedelta(minutes=15) - pd.Timedelta(hours=offset)), 45.0, -80.0
         )
-        fit = recover_utc_offset(starts, 30, potential, 45.0, -80.0)
-        assert fit.offset_hours == offset
+        fit = recover_utc_offset(starts, HALF_HOUR, potential, 45.0, -80.0)
+        assert fit.offset == offset
         assert fit.separation > 10
 
     def test_measured_shortwave_on_the_same_clock_has_no_lag(self):
         starts = pd.date_range("2013-01-01", "2013-12-31", freq="30min")
         potential = _top_of_atmosphere_shortwave(pd.DatetimeIndex(starts + pd.Timedelta(hours=5)), 45.0, -80.0)
         flag = np.zeros(len(starts), dtype=np.int8)
-        assert shortwave_lag_steps(starts, 30, 0.7 * potential, flag, potential) == 0
-        assert shortwave_lag_steps(starts, 30, 0.7 * np.roll(potential, 2), flag, potential) == 2
+        assert shortwave_lag_steps(starts, HALF_HOUR, 0.7 * potential, flag, potential) == 0
+        assert shortwave_lag_steps(starts, HALF_HOUR, 0.7 * np.roll(potential, 2), flag, potential) == 2
 
     def test_too_little_measured_shortwave_cannot_be_checked(self):
         starts = pd.date_range("2013-01-01", "2013-01-10", freq="30min")
         potential = np.ones(len(starts))
-        assert shortwave_lag_steps(starts, 30, potential, np.zeros(len(starts), np.int8), potential) is None
+        assert shortwave_lag_steps(starts, HALF_HOUR, potential, np.zeros(len(starts), np.int8), potential) is None
 
 
-# ── the products ──────────────────────────────────────────────────────────────
+# ── the processed files ───────────────────────────────────────────────────────
 
 
-class TestProducts:
-    def test_every_spec_has_a_product(self, pipeline):
+class TestProcessedFiles:
+    def test_every_spec_has_a_processed_file(self, pipeline):
         for name in NET_ECOSYSTEM_EXCHANGE_NAMES:
-            with load_net_ecosystem_exchange(name, pipeline["out_dir"] / f"{name}.nc") as product:
-                assert product.attrs["product_name"] == name
+            with load_net_ecosystem_exchange(name, pipeline["out_dir"] / f"{name}.nc") as processed:
+                assert processed.attrs["net_ecosystem_exchange"] == name
+                assert processed["value"].attrs["upstream_product"].startswith("AmeriFlux FLUXNET")
 
     def test_sites_are_the_primary_towers_carrying_the_series(self, pipeline):
-        values = net_ecosystem_exchange_values(
+        values = net_ecosystem_exchange_fields(
             ["ameriflux_nee_half_hourly_ustar_variable", "ameriflux_nee_half_hourly_ustar_constant"],
             directory=pipeline["out_dir"],
         )
         assert values["ameriflux_nee_half_hourly_ustar_variable"]["site"].values.tolist() == [101, 102]
-        # US-Bbb's file has no CUT columns, so site 102 is absent from the CUT product.
+        # US-Bbb's file has no CUT columns, so site 102 is absent from the CUT series.
         assert values["ameriflux_nee_half_hourly_ustar_constant"]["site"].values.tolist() == [101]
         assert values["ameriflux_nee_half_hourly_ustar_variable"]["ameriflux_site_id"].values.tolist() == ["US-Aaa", "US-Bbb"]
 
     def test_a_value_is_labeled_with_its_utc_step_end(self, pipeline):
         name = "ameriflux_nee_half_hourly_ustar_variable"
-        value = net_ecosystem_exchange_values(name, sites=102, directory=pipeline["out_dir"])[name]
+        value = net_ecosystem_exchange_fields([name], sites=[102], directory=pipeline["out_dir"])[name]
         frame = _fullset_frame("US-Bbb")
         # US-Bbb is on UTC-8: the step ending 2012-06-01 12:00 UTC ends at 04:00 local standard time.
         row = frame.loc[frame["TIMESTAMP_END"] == 201206010400].iloc[0]
@@ -403,25 +416,36 @@ class TestProducts:
 
     def test_no_step_is_lost_or_doubled_around_daylight_saving(self, pipeline):
         name = "ameriflux_nee_half_hourly_ustar_variable"
-        value = net_ecosystem_exchange_values(name, sites=101, directory=pipeline["out_dir"])[name]
+        value = net_ecosystem_exchange_fields([name], sites=[101], directory=pipeline["out_dir"])[name]
         frame = _fullset_frame("US-Aaa")
         source = frame["NEE_VUT_REF"].to_numpy()
         # Every source value inside the UTC window is present once; US-Aaa starts
         # 2012-01-01 00:00 local, which is 05:00 UTC, so nothing is cut at the start.
         assert int(np.isfinite(value.values).sum()) == int((source != -9999).sum())
 
-    def test_the_time_coordinates_are_pysipnet_s(self, pipeline):
+    def test_time_is_each_step_end_with_its_cf_bounds(self, pipeline):
         name = "ameriflux_nee_hourly_ustar_variable"
-        with load_net_ecosystem_exchange(name, pipeline["out_dir"] / f"{name}.nc") as product:
-            assert product["time"].values[0] == np.datetime64("2012-01-01T01:00")
-            assert (product["time_step_length"].values == np.timedelta64(60, "m")).all()
-            assert np.array_equal(product["time_bounds"].values[:, 1], product["time"].values)
-            assert product["value"].attrs["kind"] == "timestep_mean"
-            assert product["value"].attrs["units"] == "umol m-2 s-1"
+        with load_net_ecosystem_exchange(name, pipeline["out_dir"] / f"{name}.nc") as processed:
+            assert processed["time"].values[0] == np.datetime64("2012-01-01T01:00")
+            bounds = processed["time_bounds"].values
+            assert np.array_equal(bounds[:, 1], processed["time"].values)
+            assert (bounds[:, 1] - bounds[:, 0] == np.timedelta64(60, "m")).all()
+            assert "timestep_start" not in processed.coords
+            assert processed["value"].attrs["kind"] == "timestep_mean"
+            assert processed["value"].attrs["units"] == "umol m-2 s-1"
+
+    def test_a_field_is_observed_values_with_right_closed_windows(self, pipeline):
+        name = "ameriflux_nee_half_hourly_ustar_variable"
+        field = net_ecosystem_exchange_fields([name], directory=pipeline["out_dir"])[name]
+        validate_observed_values(field)
+        windows = windows_from_observed_values(field)
+        assert windows.closed == "right"
+        assert np.array_equal(field[WINDOW_END].values, field["time"].values)
+        assert (field[WINDOW_END].values - field[WINDOW_START].values == np.timedelta64(30, "m")).all()
 
     def test_aggregation_averages_onto_utc_three_hour_cells(self, pipeline):
         name = "ameriflux_nee_half_hourly_ustar_variable"
-        value = net_ecosystem_exchange_values(name, sites=101, directory=pipeline["out_dir"])[name]
+        value = net_ecosystem_exchange_fields([name], sites=[101], directory=pipeline["out_dir"])[name]
         # Whole cells only: aggregate_time labels a partly covered cell by the
         # last step end it holds. Step i ends (i + 1) half hours after midnight.
         three_hourly = aggregate_time(value.isel(time=slice(1998, 2598)), "3h")
@@ -431,33 +455,22 @@ class TestProducts:
 
     def test_quality_flags_come_with_the_values(self, pipeline):
         name = "ameriflux_nee_half_hourly_ustar_variable"
-        value = net_ecosystem_exchange_values(name, directory=pipeline["out_dir"])[name]
-        flag = net_ecosystem_exchange_quality_flags(name, directory=pipeline["out_dir"])[name]
+        value = net_ecosystem_exchange_fields([name], directory=pipeline["out_dir"])[name]
+        flag = net_ecosystem_exchange_quality_flags([name], directory=pipeline["out_dir"])[name]
         assert ((flag >= 0) == np.isfinite(value)).all()
 
-    def test_sites_must_be_whole_numbers_and_present(self, pipeline):
+    def test_sites_must_be_a_sequence_of_ids_present_in_the_file(self, pipeline):
         name = "ameriflux_nee_half_hourly_ustar_variable"
         with pytest.raises(TypeError):
-            net_ecosystem_exchange_values(name, sites="101", directory=pipeline["out_dir"])
-        with pytest.raises(ValueError, match="not in"):
-            net_ecosystem_exchange_values(name, sites=[105], directory=pipeline["out_dir"])
+            net_ecosystem_exchange_fields([name], sites=101, directory=pipeline["out_dir"])
+        with pytest.raises(KeyError, match="not in"):
+            net_ecosystem_exchange_fields([name], sites=[105], directory=pipeline["out_dir"])
 
-    def test_an_ensemble_source_passes_through_with_a_member_dimension(self, pipeline):
-        spec = resolve_net_ecosystem_exchange("ameriflux_nee_half_hourly_ustar_variable")
-        table = read_tower_table(pipeline["raw_dir"] / "ameriflux_towers.csv")
-        n = len(HALF_HOURLY.product_step_starts())
-        ends = HALF_HOURLY.product_step_starts() + HALF_HOURLY.step
-        series = xr.Dataset(
-            {"value": (("member", "tower", "time"), np.zeros((3, 2, n)))},
-            coords={
-                "member": np.arange(3),
-                "tower": ["US-Aaa", "US-Bbb"],
-                "time": ends.as_unit("ns").to_numpy(),
-                "utc_offset": ("tower", [-5.0, -8.0]),
-            },
-        )
-        product = build_net_ecosystem_exchange(spec, series, table, load_sites(pipeline["sites"]))
-        assert product["value"].dims == ("member", "site", "time")
+    def test_names_must_be_a_sequence_of_series(self, pipeline):
+        with pytest.raises(TypeError):
+            net_ecosystem_exchange_fields("ameriflux_nee_half_hourly_ustar_variable", directory=pipeline["out_dir"])
+        with pytest.raises(KeyError, match="no net ecosystem exchange series"):
+            net_ecosystem_exchange_fields(["ameriflux_nee_daily"], directory=pipeline["out_dir"])
 
 
 class TestSpecs:
@@ -509,14 +522,23 @@ def _build(summaries, towers):
 
 
 class TestTowerTableEdgeCases:
-    def test_the_longer_record_in_time_wins_across_resolutions(self):
+    def test_each_resolution_has_its_own_primary_at_a_shared_site(self):
         cell = _tower_lonlat("US-Ccc")
         table = _build(
             [_summary("US-Hhh", minutes=30, steps=17000), _summary("US-Rrr", minutes=60, steps=17000, offset=-6.0)],
             {"US-Hhh": cell, "US-Rrr": cell},
         )
-        # 17000 hours outlast 17000 half-hours.
-        assert table.at["US-Rrr", "primary"] and not table.at["US-Hhh", "primary"]
+        assert table.at["US-Hhh", "primary"] and table.at["US-Rrr", "primary"]
+        assert "US-Rrr (60 min)" in table.at["US-Hhh", "primary_reason"]
+        assert "US-Hhh (30 min)" in table.at["US-Rrr", "primary_reason"]
+
+    def test_the_longer_record_in_time_wins_within_a_resolution(self):
+        cell = _tower_lonlat("US-Ccc")
+        table = _build(
+            [_summary("US-Aye", minutes=60, steps=100), _summary("US-Bee", minutes=60, steps=200)],
+            {"US-Aye": cell, "US-Bee": cell},
+        )
+        assert table.at["US-Bee", "primary"] and not table.at["US-Aye", "primary"]
 
     def test_a_tower_with_no_potential_shortwave_is_excluded_not_fatal(self):
         table = _build(
@@ -551,14 +573,10 @@ class TestTowerTableEdgeCases:
 
 
 class TestScriptGuards:
-    def test_the_tower_table_is_written_beside_the_raw_files_by_default(self, pipeline, tmp_path):
-        raw = tmp_path / "raw"
-        raw.mkdir()
-        for path in pipeline["raw_dir"].iterdir():
-            if path.suffix in (".nc", ".tsv") or path.name == "Unmatched_Sites.csv":
-                (raw / path.name).symlink_to(path)
-        assert build_towers.main(["--raw-dir", str(raw), "--sites", str(pipeline["sites"])]) == 0
-        assert (raw / "ameriflux_towers.csv").is_file()
+    def test_the_tracked_inputs_are_found_in_the_checkout(self):
+        tracked = tracked_data_root() / "raw" / "net_ecosystem_exchange"
+        assert tower_table_path() == tracked / "ameriflux_towers.csv"
+        assert pool_input_list_path() == tracked / "Unmatched_Sites.csv"
 
     def test_another_download_needs_an_explicit_out_dir(self, pipeline):
         assert convert.main(["--root", str(pipeline["download"])]) == 1
@@ -569,8 +587,8 @@ class TestScriptGuards:
         table = tmp_path / "towers.csv"
         pd.concat([frame, ghost]).sort_values("tower").to_csv(table, index=False)
         status = ingest.main(
-            ["--raw-dir", str(pipeline["raw_dir"]), "--tower-table", str(table), "--sites", str(pipeline["sites"]),
-             "--out-dir", str(tmp_path / "out"), "--product", "ameriflux_nee_half_hourly_ustar_variable"]
+            ["--raw-dir", str(pipeline["raw_dir"]), "--tower-table", str(table), "--site-table", str(pipeline["sites"]),
+             "--out-dir", str(tmp_path / "out"), "--series", "ameriflux_nee_half_hourly_ustar_variable"]
         )
         assert status == 1
 
@@ -583,7 +601,7 @@ class TestReaderArguments:
     @pytest.mark.parametrize("sites", [True, [float("nan")], [None]])
     def test_sites_that_are_not_identifiers_are_refused(self, pipeline, sites):
         with pytest.raises(TypeError):
-            net_ecosystem_exchange_values("ameriflux_nee_half_hourly_ustar_variable", sites=sites, directory=pipeline["out_dir"])
+            net_ecosystem_exchange_fields(["ameriflux_nee_half_hourly_ustar_variable"], sites=sites, directory=pipeline["out_dir"])
 
     def test_cell_of_broadcasts(self):
         j, k = SITE_GRID.cell_of(np.array([-100.0, -90.0]), 40.0)
@@ -714,23 +732,23 @@ class TestSourceFileRefusals:
 
 
 class TestWritesArePublishedAtomically:
-    def test_the_ingest_leaves_nothing_behind_when_its_round_trip_fails(self, pipeline, tmp_path, monkeypatch):
+    def test_the_ingest_publishes_nothing_when_its_round_trip_fails(self, pipeline, tmp_path, monkeypatch):
         spec = resolve_net_ecosystem_exchange("ameriflux_nee_hourly_ustar_variable")
         dataset = load_net_ecosystem_exchange(spec.name, pipeline["out_dir"] / f"{spec.name}.nc").load()
         monkeypatch.setattr(ingest, "check_round_trip", lambda *a: (_ for _ in ()).throw(ingest.IngestError("no")))
         out = tmp_path / f"{spec.name}.nc"
         with pytest.raises(ingest.IngestError):
-            ingest.write_product(dataset, spec, out)
-        assert not out.exists() and not out.with_suffix(".nc.partial").exists()
+            ingest.write_processed_file(dataset, out, spec)
+        assert not out.exists()
 
-    def test_the_conversion_leaves_nothing_behind_when_its_round_trip_fails(self, pipeline, tmp_path, monkeypatch):
+    def test_the_conversion_publishes_nothing_when_its_round_trip_fails(self, pipeline, tmp_path, monkeypatch):
         with read_raw(raw_path(HOURLY, pipeline["raw_dir"])) as raw:
             dataset = raw.load()
         monkeypatch.setattr(convert, "check_round_trip", lambda *a: (_ for _ in ()).throw(convert.ConversionError("no")))
         out = tmp_path / "ameriflux_nee_hourly.nc"
         with pytest.raises(convert.ConversionError):
             convert.write_raw(dataset, out)
-        assert not out.exists() and not out.with_suffix(".nc.partial").exists()
+        assert not out.exists()
 
 
 class TestIngestRefusals:
@@ -738,8 +756,8 @@ class TestIngestRefusals:
         table = tmp_path / "towers.csv"
         frame.to_csv(table, index=False)
         return ingest.main(
-            ["--raw-dir", str(pipeline["raw_dir"]), "--tower-table", str(table), "--sites", str(pipeline["sites"]),
-             "--out-dir", str(tmp_path / "out"), "--product", "ameriflux_nee_half_hourly_ustar_variable"]
+            ["--raw-dir", str(pipeline["raw_dir"]), "--tower-table", str(table), "--site-table", str(pipeline["sites"]),
+             "--out-dir", str(tmp_path / "out"), "--series", "ameriflux_nee_half_hourly_ustar_variable"]
         )
 
     def test_a_raw_tower_missing_from_the_table_is_refused(self, pipeline, tmp_path, capsys):
@@ -758,13 +776,13 @@ class TestIngestRefusals:
         where = np.argwhere(np.isfinite(dataset["value"].values))[0]
         dataset["quality_flag"].values[tuple(where)] = -1
         with pytest.raises(ingest.IngestError, match="no quality flag"):
-            ingest.check_product(dataset, spec)
+            ingest.check_processed(dataset, spec)
 
 
-class TestBuildProduct:
+class TestBuildProcessed:
     def _series(self, towers, offsets):
-        n = len(HALF_HOURLY.product_step_starts())
-        ends = HALF_HOURLY.product_step_starts() + HALF_HOURLY.step
+        n = len(HALF_HOURLY.processed_step_starts())
+        ends = HALF_HOURLY.processed_step_starts() + HALF_HOURLY.step
         return xr.Dataset(
             {"value": (("tower", "time"), np.arange(len(towers) * n, dtype=float).reshape(len(towers), n))},
             coords={"tower": towers, "time": ends.as_unit("ns").to_numpy(), "utc_offset": ("tower", offsets)},
@@ -772,16 +790,16 @@ class TestBuildProduct:
 
     def test_sites_come_out_ascending_whatever_the_tower_order(self, pipeline):
         spec = resolve_net_ecosystem_exchange("ameriflux_nee_half_hourly_ustar_variable")
-        table = read_tower_table(pipeline["raw_dir"] / "ameriflux_towers.csv")
+        table = read_tower_table(pipeline["towers"])
         # US-Bbb (site 102) before US-Aaa (site 101).
-        product = build_net_ecosystem_exchange(spec, self._series(["US-Bbb", "US-Aaa"], [-8.0, -5.0]), table, load_sites(pipeline["sites"]))
-        assert product["site"].values.tolist() == [101, 102]
-        assert product["ameriflux_site_id"].values.tolist() == ["US-Aaa", "US-Bbb"]
+        processed = build_net_ecosystem_exchange(spec, self._series(["US-Bbb", "US-Aaa"], [-8.0, -5.0]), table, load_sites(pipeline["sites"]))
+        assert processed["site"].values.tolist() == [101, 102]
+        assert processed["ameriflux_site_id"].values.tolist() == ["US-Aaa", "US-Bbb"]
 
     def test_a_tower_that_is_not_primary_is_refused(self, pipeline):
         spec = resolve_net_ecosystem_exchange("ameriflux_nee_half_hourly_ustar_variable")
-        table = read_tower_table(pipeline["raw_dir"] / "ameriflux_towers.csv")
-        with pytest.raises(ValueError, match="not primary"):
+        table = read_tower_table(pipeline["towers"])
+        with pytest.raises(KeyError, match="not primary"):
             build_net_ecosystem_exchange(spec, self._series(["US-Ddd"], [-5.0]), table, load_sites(pipeline["sites"]))
 
 

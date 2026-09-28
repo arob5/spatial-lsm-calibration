@@ -44,6 +44,9 @@ The data sources, each a spec, a reader, a builder, a loader and a field view:
     The five constraint data sources.
 :mod:`~sipnet_calibration.initial_conditions`
     PEcAn's initial condition ensemble, and its conversion to SIPNET's.
+:mod:`~sipnet_calibration.net_ecosystem_exchange`
+    Observed net ecosystem exchange: AmeriFlux's towers, their pool sites and
+    clocks, and one processed file per series.
 :mod:`~sipnet_calibration.drivers`
     The ERA5 meteorological drivers, read from the raw ``.clim`` files.
 :mod:`~sipnet_calibration.site_labels`
@@ -77,17 +80,20 @@ Dependencies
 The dependency runs one way, from the foundations up::
 
     conventions  <-  validation  <-  sites
-        <-  fields, constraints, site_labels
-        <-  drivers, initial_conditions, parameter_vector
+        <-  fields, site_labels
+        <-  constraints, drivers, initial_conditions,
+            net_ecosystem_exchange, parameter_vector
         <-  observation, prior, sipnet_parameter_map
         <-  calibration, forward  <-  experiments
 
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
 and :mod:`~sipnet_calibration.projection` write through it;
-``parameter_vector`` reads ``site_labels``' column name. ``drivers``,
-``initial_conditions``, ``parameter_vector`` and ``observation`` depend on
-``fields`` (the field contract, its batch dims, and the SIPNET parameter
-fields alias and validator, which is why neither ``initial_conditions`` nor
+``parameter_vector`` reads ``site_labels``' column name. ``constraints``,
+``drivers``, ``initial_conditions``, ``net_ecosystem_exchange``,
+``parameter_vector`` and ``observation`` depend on ``fields`` (the field
+contract, its batch dims, the window coordinates of the two observation data
+sources, and the SIPNET parameter fields alias and validator, which is why
+neither ``initial_conditions`` nor
 ``observation`` imports ``parameter_vector``). ``prior`` depends on
 ``parameter_vector``; ``sipnet_parameter_map`` on ``parameter_vector``,
 ``fields`` and ``initial_conditions``, and is the one of the three that

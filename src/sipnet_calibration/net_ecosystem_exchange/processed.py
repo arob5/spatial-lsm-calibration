@@ -1,25 +1,27 @@
-"""The processed products: one series per file, on the site pool and a UTC axis.
+"""The processed files: one series per file, on the site pool and a UTC axis.
 
-``data/processed/net_ecosystem_exchange/<name>.nc`` holds one product: a tower
+``data/processed/net_ecosystem_exchange/<name>.nc`` holds one series: a tower
 series (:mod:`sipnet_calibration.net_ecosystem_exchange.sources`) placed on the
-sites of the primary towers, with the site table's coordinates, pySIPNET's
-time coordinates, and the spec's fields as attributes. The values are the
+sites of the primary towers, with the site table's coordinates, CF ``time``
+and ``time_bounds``, and the spec's fields as attributes. The values are the
 source's, unchanged.
 
 The package docstring gives the data model in full.
 
 Contents
 --------
+:func:`default_net_ecosystem_exchange_directory`, :func:`net_ecosystem_exchange_path`
+    Where the processed files are.
 :func:`build_net_ecosystem_exchange`
-    Tower series to product. Pure; ``scripts/ingest_net_ecosystem_exchange.py``
-    adds the checks and the write.
+    Tower series to processed Dataset. Pure;
+    ``scripts/ingest_net_ecosystem_exchange.py`` adds the checks and the write.
 :func:`netcdf_encoding`
     How it is stored.
 :func:`load_net_ecosystem_exchange`
-    Read one product and check it against its spec.
-:func:`net_ecosystem_exchange_values`, :func:`net_ecosystem_exchange_quality_flags`,
+    Read one processed file and check it against its spec.
+:func:`net_ecosystem_exchange_fields`, :func:`net_ecosystem_exchange_quality_flags`,
 :func:`net_ecosystem_exchange_random_uncertainties`, :func:`net_ecosystem_exchange_joint_uncertainties`
-    One variable of several products, one array per product.
+    One variable of several series, one field each.
 """
 
 from __future__ import annotations
@@ -32,45 +34,73 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from sipnet_calibration.conventions import CF_CONVENTIONS
-from sipnet_calibration.net_ecosystem_exchange.names import (
+from sipnet_calibration.conventions import (
     BOUNDS,
-    MEMBER,
+    CF_CONVENTIONS,
+    LAT,
+    LON,
     SITE,
+    SITE_ID,
     TIME,
     TIME_BOUNDS,
-    TIME_STEP_LENGTH,
-    TIME_STEP_START,
-    TOWER,
-    _LAT_ATTRS,
-    _LON_ATTRS,
-    _SITE_ATTRS,
-    _utc_timestamp,
-    product_path,
-    resolve_resolution,
+    data_root,
 )
+from sipnet_calibration.fields import window_coordinates
+from sipnet_calibration.io import utc_timestamp
+from sipnet_calibration.net_ecosystem_exchange.names import TOWER, resolve_resolution
 from sipnet_calibration.net_ecosystem_exchange.source_files import SOURCE
 from sipnet_calibration.net_ecosystem_exchange.specs import (
     NET_ECOSYSTEM_EXCHANGE_NAMES,
     NetEcosystemExchangeSpec,
     resolve_net_ecosystem_exchange,
 )
+from sipnet_calibration.sites import (
+    check_processed_file_has_the_coordinates,
+    check_processed_file_holds_sites,
+    check_processed_file_holds_the_sites,
+    check_processed_file_locations_are_on_site,
+    check_processed_file_sites_ascend,
+    check_site_table_lists_the_sites,
+    site_coordinates,
+)
+from sipnet_calibration.validation import as_names, as_site_ids, truncated
 
 __all__ = [
-    "SITE_COORDINATES",
+    "JOINT_UNCERTAINTY",
+    "NIGHT",
+    "QUALITY_FLAG",
+    "RANDOM_UNCERTAINTY",
+    "TOWER_SITE_COORDINATES",
+    "VALUE",
     "build_net_ecosystem_exchange",
+    "default_net_ecosystem_exchange_directory",
     "load_net_ecosystem_exchange",
+    "net_ecosystem_exchange_fields",
     "net_ecosystem_exchange_joint_uncertainties",
+    "net_ecosystem_exchange_path",
     "net_ecosystem_exchange_quality_flags",
     "net_ecosystem_exchange_random_uncertainties",
-    "net_ecosystem_exchange_values",
     "netcdf_encoding",
 ]
 
-#: The coordinates on ``site``, besides ``site`` itself.
-SITE_COORDINATES = (
-    "lon",
-    "lat",
+#: Name of the observed-values array in the processed file.
+VALUE = "value"
+
+#: Name of its quality flag.
+QUALITY_FLAG = "quality_flag"
+
+#: Name of its random uncertainty.
+RANDOM_UNCERTAINTY = "random_uncertainty"
+
+#: Name of its joint uncertainty.
+JOINT_UNCERTAINTY = "joint_uncertainty"
+
+#: Name of ONEFlux's nighttime flag.
+NIGHT = "night"
+
+#: The coordinates on ``site`` that describe its tower, besides ``site``,
+#: ``lon`` and ``lat``.
+TOWER_SITE_COORDINATES = (
     "ameriflux_site_id",
     "tower_lon",
     "tower_lat",
@@ -85,18 +115,39 @@ TIME_UNITS = "minutes since 2012-01-01 00:00:00"
 CALENDAR = "proleptic_gregorian"
 
 
+def default_net_ecosystem_exchange_directory() -> Path:
+    """Where the processed files are: ``data/processed/net_ecosystem_exchange/``.
+
+    ``$SIPNET_CALIBRATION_DATA`` replaces ``data/`` when set.
+    """
+    return data_root() / "processed" / "net_ecosystem_exchange"
+
+
+def net_ecosystem_exchange_path(
+    net_ecosystem_exchange: str | NetEcosystemExchangeSpec, directory: Path | str | None = None
+) -> Path:
+    """The processed file of a series: ``<directory>/<name>.nc``."""
+    name = (
+        net_ecosystem_exchange
+        if isinstance(net_ecosystem_exchange, str)
+        else net_ecosystem_exchange.name
+    )
+    base = Path(directory) if directory is not None else default_net_ecosystem_exchange_directory()
+    return base / f"{name}.nc"
+
+
 def build_net_ecosystem_exchange(
     spec: NetEcosystemExchangeSpec,
     tower_series: xr.Dataset,
     tower_table: pd.DataFrame,
     site_table: pd.DataFrame,
 ) -> xr.Dataset:
-    """Turn a tower series into the product the data model describes.
+    """Turn a tower series into the processed Dataset the data model describes.
 
     Parameters
     ----------
     spec:
-        The product.
+        The series.
     tower_series:
         As a reader of :data:`~sipnet_calibration.net_ecosystem_exchange.sources.SOURCE_READERS`
         returns it.
@@ -110,82 +161,43 @@ def build_net_ecosystem_exchange(
     Returns
     -------
     xarray.Dataset
-        The product, sites ascending.
+        The processed Dataset, sites ascending.
 
     Raises
     ------
+    KeyError
+        If a tower of the series is not a primary tower of the table, or its
+        site is not in the site table.
     ValueError
-        If a tower of the series is not a primary tower of the table, two
-        towers share a site, or a site is not in the site table.
+        If two towers of the series share a site.
 
     Notes
     -----
-    Pure and source-agnostic: it reads nothing but its arguments, and a
-    ``member`` dimension on the series passes through to the product.
+    Pure and source-agnostic: it reads nothing but its arguments.
     """
     towers = [str(tower) for tower in tower_series[TOWER].values]
     rows = tower_table.set_index("tower")
-    unknown = [tower for tower in towers if tower not in rows.index or not rows.at[tower, "primary"]]
-    if unknown:
-        raise ValueError(f"towers not primary in the tower table: {unknown[:10]}")
-    site_ids = rows.loc[towers, "site_id"].astype(np.int64).to_numpy()
-    if len(set(site_ids.tolist())) != len(site_ids):
-        raise ValueError("two towers of the series share a site")
-    pool = site_table.set_index("site_id")
-    missing = sorted(set(site_ids.tolist()) - set(pool.index.tolist()))
-    if missing:
-        raise ValueError(f"sites not in the site table: {missing[:10]}")
+    check_towers_are_primary(towers, rows)
+    site_ids = rows.loc[towers, SITE_ID].astype(np.int64).to_numpy()
+    check_towers_have_distinct_sites(site_ids)
+    check_site_table_lists_the_sites(site_table, site_ids.tolist(), message_name=f"{spec.name}: site(s)")
 
     order = np.argsort(site_ids, kind="stable")
-    series = tower_series.isel({TOWER: order})
-    sites = site_ids[order]
+    series = tower_series.isel({TOWER: order}).drop_vars("utc_offset")
+    sites = site_ids[order].tolist()
     ordered_towers = [towers[i] for i in order]
-    series = series.drop_vars("utc_offset").rename({TOWER: SITE}).assign_coords({SITE: sites.astype(np.int32)})
+    series = series.rename({TOWER: SITE}).drop_vars(SITE, errors="ignore")
 
-    data_vars = {}
-    for variable in series.data_vars:
-        array = series[variable]
-        dims = tuple(d for d in (MEMBER, SITE, TIME) if d in array.dims)
-        data_vars[variable] = (dims, array.transpose(*dims).values, _variable_attributes(spec, variable))
-    resolution = resolve_resolution(spec.resolution)
-    ends = pd.DatetimeIndex(series[TIME].values)
-    starts = ends - resolution.step
-    table = rows.loc[ordered_towers]
-    coords: dict[str, Any] = {
-        SITE: (SITE, sites.astype(np.int32), _SITE_ATTRS),
-        "lon": (SITE, pool.loc[sites, "lon"].to_numpy(np.float64), _LON_ATTRS),
-        "lat": (SITE, pool.loc[sites, "lat"].to_numpy(np.float64), _LAT_ATTRS),
-        "ameriflux_site_id": (SITE, np.array(ordered_towers, dtype=object), {"long_name": "AmeriFlux site identifier of the tower"}),
-        "tower_lon": (SITE, table["tower_lon"].to_numpy(np.float64), {"long_name": "Tower longitude, from AmeriFlux", "units": "degrees_east"}),
-        "tower_lat": (SITE, table["tower_lat"].to_numpy(np.float64), {"long_name": "Tower latitude, from AmeriFlux", "units": "degrees_north"}),
-        "match_basis": (SITE, table["match_basis"].to_numpy(object), {"long_name": "How the tower was matched to the site"}),
-        "utc_offset": (
-            SITE,
-            table["utc_offset_hours"].to_numpy(np.float64),
-            {
-                "long_name": "Tower's local standard time minus UTC",
-                "units": "hours",
-                "comment": "Recovered from the tower's SW_IN_POT; local standard time is time + utc_offset.",
-            },
-        ),
-        "doi": (SITE, table["doi"].to_numpy(object), {"long_name": "AmeriFlux FLUXNET DOI of the site's dataset"}),
-        "site_version": (SITE, table["site_version"].to_numpy(object), {"long_name": "FULLSET version"}),
-        TIME: (TIME, ends.as_unit("ns").to_numpy(), _time_attributes()),
-        TIME_STEP_START: (TIME, starts.as_unit("ns").to_numpy(), {"long_name": "Start of timestep"}),
-        TIME_STEP_LENGTH: (
-            TIME,
-            np.full(len(ends), resolution.step.to_timedelta64().astype("timedelta64[ns]")),
-            {"long_name": "Timestep length"},
-        ),
-        TIME_BOUNDS: (
-            (TIME, BOUNDS),
-            np.stack([starts.as_unit("ns").to_numpy(), ends.as_unit("ns").to_numpy()], axis=1),
-            {"long_name": "Timestep bounds", "comment": "The interval [time_step_start, time] each value covers."},
-        ),
+    data_vars = {
+        str(variable): ((SITE, TIME), series[variable].transpose(SITE, TIME).values, _variable_attributes(spec, str(variable)))
+        for variable in series.data_vars
     }
-    if MEMBER in series.dims:
-        coords[MEMBER] = (MEMBER, series[MEMBER].values)
-    return xr.Dataset(data_vars, coords=coords, attrs=_product_attributes(spec, tower_table, ordered_towers))
+    coords: dict[str, Any] = {
+        **site_coordinates(sites, site_table),
+        **_tower_coordinates(rows.loc[ordered_towers]),
+        **_time_coordinates(pd.DatetimeIndex(series[TIME].values), resolve_resolution(spec.resolution).step),
+    }
+    return xr.Dataset(data_vars, coords=coords, attrs=_dataset_attributes(spec, tower_table, ordered_towers))
 
 
 def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
@@ -194,26 +206,33 @@ def netcdf_encoding(dataset: xr.Dataset) -> dict[str, dict[str, Any]]:
     encoding: dict[str, dict[str, Any]] = {}
     for name, array in dataset.data_vars.items():
         fill = np.nan if array.dtype.kind == "f" else None
-        chunks = tuple(1 if d != TIME else array.sizes[TIME] for d in array.dims)
-        encoding[str(name)] = {"zlib": True, "complevel": 4, "_FillValue": fill, "chunksizes": chunks}
+        encoding[str(name)] = {
+            "zlib": True,
+            "complevel": 4,
+            "_FillValue": fill,
+            "chunksizes": (1, array.sizes[TIME]),
+        }
     for name in dataset.coords:
         encoding[str(name)] = {"_FillValue": None}
-    for name in (TIME, TIME_STEP_START, TIME_BOUNDS):
+    for name in (TIME, TIME_BOUNDS):
         encoding[name].update({"units": TIME_UNITS, "calendar": CALENDAR, "dtype": "int32"})
-    encoding[TIME_STEP_LENGTH].update({"units": "minutes", "dtype": "int32"})
     return encoding
 
 
-def load_net_ecosystem_exchange(product_name: str, path: Path | str | None = None) -> xr.Dataset:
-    """Read one product and check it against its spec.
+def load_net_ecosystem_exchange(
+    net_ecosystem_exchange: str | NetEcosystemExchangeSpec, path: Path | str | None = None
+) -> xr.Dataset:
+    """Read one processed file and check it against its spec.
 
     Parameters
     ----------
-    product_name:
-        A name in :data:`~sipnet_calibration.net_ecosystem_exchange.specs.NET_ECOSYSTEM_EXCHANGE_NAMES`.
+    net_ecosystem_exchange:
+        A name in
+        :data:`~sipnet_calibration.net_ecosystem_exchange.specs.NET_ECOSYSTEM_EXCHANGE_NAMES`,
+        or a spec.
     path:
         The netCDF to read. Defaults to
-        :func:`~sipnet_calibration.net_ecosystem_exchange.names.product_path`.
+        :func:`net_ecosystem_exchange_path`.
 
     Returns
     -------
@@ -223,197 +242,249 @@ def load_net_ecosystem_exchange(product_name: str, path: Path | str | None = Non
     Raises
     ------
     KeyError
-        If no product has that name.
+        If no series has that name.
     FileNotFoundError
         If the file is absent, with the command that produces it.
     ValueError
         If the file does not match the data model or the spec.
     """
-    spec = resolve_net_ecosystem_exchange(product_name)
-    path = Path(path) if path is not None else product_path(product_name)
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"{path} is not a file. Produce it with:\n"
-            f"  python scripts/ingest_net_ecosystem_exchange.py --product {product_name}"
-        )
+    spec = (
+        net_ecosystem_exchange
+        if isinstance(net_ecosystem_exchange, NetEcosystemExchangeSpec)
+        else resolve_net_ecosystem_exchange(net_ecosystem_exchange)
+    )
+    path = Path(path) if path is not None else net_ecosystem_exchange_path(spec)
+    check_processed_net_ecosystem_exchange_exists(path, spec)
+    dataset = _opened_netcdf(path)
     try:
-        dataset = xr.open_dataset(path, engine="h5netcdf")
-    except OSError as error:
-        raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error})") from error
-    try:
-        _check_product(dataset, spec, path)
+        check_processed_net_ecosystem_exchange_is_valid(dataset, spec, message_name=str(path))
     except Exception:
         dataset.close()
         raise
     return dataset
 
 
-def net_ecosystem_exchange_values(
-    product_names: Sequence[str] | str | None = None,
+def net_ecosystem_exchange_fields(
+    names: Sequence[str] | None = None,
     *,
-    sites: Iterable[int] | int | None = None,
+    sites: Iterable[int] | None = None,
     directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The ``value`` of several products, one array per product.
+    """The observed values of several series, one field each.
 
     Parameters
     ----------
-    product_names:
-        Product names, in the order the result should carry them, or one name
-        on its own. Defaults to every product.
+    names:
+        Series names, a sequence, in the order the result should carry them.
+        Defaults to every series in
+        :data:`~sipnet_calibration.net_ecosystem_exchange.specs.NET_ECOSYSTEM_EXCHANGE_NAMES`.
     sites:
-        Site ids to keep, in the order given, or one on its own. Each must be in
-        every product asked for. Defaults to all of each product's sites.
+        Site ids to keep, a sequence, in the order given, each once; each must
+        be in every series asked for. Defaults to all of each series' sites.
     directory:
-        Where the products are. Defaults to
-        :func:`~sipnet_calibration.net_ecosystem_exchange.names.default_product_dir`.
+        Where the processed files are. Defaults to
+        :func:`default_net_ecosystem_exchange_directory`.
 
     Returns
     -------
     dict
-        Product name to its ``([member,] site, time)`` array, named for the
-        product, with the spec's attributes, ``lon``/``lat`` and the other site
-        coordinates, and ``time_step_start``/``time_step_length`` on ``time``.
-        A dict because the half-hourly and hourly products do not share a time
-        axis.
+        Series name to its ``value`` array on ``(site, time)``, renamed to the
+        series, with the spec's attributes, ``lon``/``lat`` and the tower's
+        coordinates on ``site``, and each step's window, read from the CF
+        ``time_bounds``, as ``window_start`` and ``window_end`` on ``time``
+        (:data:`~sipnet_calibration.conventions.WINDOW_START`,
+        :data:`~sipnet_calibration.conventions.WINDOW_END`). A dict because
+        the half-hourly and hourly series do not share a time axis.
 
     Raises
     ------
     TypeError
-        If *sites* is a string, or holds a value that is not a whole number.
+        If *names* or *sites* is not a sequence of names or of site ids.
     ValueError
-        If a requested site is not in a product, or is asked for twice.
+        If a site id is not one, or is asked for twice.
+    KeyError
+        If a name is not a series, or a requested site is not in its
+        processed file.
     """
-    return _variable_by_product("value", product_names, sites, directory)
+    return _fields_of_variable(VALUE, names, sites, directory)
 
 
 def net_ecosystem_exchange_quality_flags(
-    product_names: Sequence[str] | str | None = None,
+    names: Sequence[str] | None = None,
     *,
-    sites: Iterable[int] | int | None = None,
+    sites: Iterable[int] | None = None,
     directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The ``quality_flag`` of several products; as :func:`net_ecosystem_exchange_values`."""
-    return _variable_by_product("quality_flag", product_names, sites, directory)
+    """The quality flags, as :func:`net_ecosystem_exchange_fields` gives values."""
+    return _fields_of_variable(QUALITY_FLAG, names, sites, directory)
 
 
 def net_ecosystem_exchange_random_uncertainties(
-    product_names: Sequence[str] | str | None = None,
+    names: Sequence[str] | None = None,
     *,
-    sites: Iterable[int] | int | None = None,
+    sites: Iterable[int] | None = None,
     directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The ``random_uncertainty`` of several products; as :func:`net_ecosystem_exchange_values`."""
-    return _variable_by_product("random_uncertainty", product_names, sites, directory)
+    """The random uncertainties, as :func:`net_ecosystem_exchange_fields` gives values."""
+    return _fields_of_variable(RANDOM_UNCERTAINTY, names, sites, directory)
 
 
 def net_ecosystem_exchange_joint_uncertainties(
-    product_names: Sequence[str] | str | None = None,
+    names: Sequence[str] | None = None,
     *,
-    sites: Iterable[int] | int | None = None,
+    sites: Iterable[int] | None = None,
     directory: Path | str | None = None,
 ) -> dict[str, xr.DataArray]:
-    """The ``joint_uncertainty`` of several products; as :func:`net_ecosystem_exchange_values`."""
-    return _variable_by_product("joint_uncertainty", product_names, sites, directory)
+    """The joint uncertainties, as :func:`net_ecosystem_exchange_fields` gives values."""
+    return _fields_of_variable(JOINT_UNCERTAINTY, names, sites, directory)
 
 
-def _variable_by_product(
-    variable: str,
-    product_names: Sequence[str] | str | None,
-    sites: Iterable[int] | int | None,
+# ── private helpers ───────────────────────────────────────────────────────────
+
+#: The advice a refusal of a processed file ends with.
+_REMAKE = "re-make it with scripts/ingest_net_ecosystem_exchange.py"
+
+#: Every variable a processed file may hold.
+_VARIABLE_NAMES = (VALUE, QUALITY_FLAG, RANDOM_UNCERTAINTY, JOINT_UNCERTAINTY, NIGHT)
+
+
+def _fields_of_variable(
+    variable_name: str,
+    names: Sequence[str] | None,
+    sites: Iterable[int] | None,
     directory: Path | str | None,
 ) -> dict[str, xr.DataArray]:
-    if isinstance(product_names, str):
-        product_names = [product_names]
-    names = list(product_names) if product_names is not None else list(NET_ECOSYSTEM_EXCHANGE_NAMES)
+    """One series' *variable_name* array per name, renamed to the series."""
+    names = NET_ECOSYSTEM_EXCHANGE_NAMES if names is None else as_names(names, message_name="names")
+    wanted = None if sites is None else list(as_site_ids(sites, message_name="sites"))
+    fields: dict[str, xr.DataArray] = {}
     for name in names:
-        resolve_net_ecosystem_exchange(name)
-    wanted = _site_ids(sites)
-    arrays = {}
-    for name in names:
-        dataset = load_net_ecosystem_exchange(name, product_path(name, directory))
-        if variable not in dataset:
-            raise ValueError(f"{name} has no {variable!r}")
-        if wanted is not None:
-            missing = sorted(set(wanted) - set(dataset[SITE].values.tolist()))
-            if missing:
-                raise ValueError(f"sites not in {name}: {missing[:10]}")
-            dataset = dataset.sel({SITE: wanted})
-        arrays[name] = dataset[variable].rename(name)
-    return arrays
-
-
-def _site_ids(sites: Iterable[int] | int | None) -> list[int] | None:
-    if sites is None:
-        return None
-    if isinstance(sites, str):
-        raise TypeError(
-            f"sites={sites!r} is a string, which would be read one character per site. "
-            "Pass an integer or a sequence of integers."
+        spec = resolve_net_ecosystem_exchange(name)
+        dataset = load_net_ecosystem_exchange(spec, net_ecosystem_exchange_path(spec, directory))
+        check_processed_net_ecosystem_exchange_holds_the_variable(
+            dataset, variable_name, message_name=f"the processed file of {name}"
         )
-    if np.ndim(sites) == 0:
-        sites = [sites]
-    wanted = []
-    for site in sites:
-        if isinstance(site, (bool, np.bool_)) or not isinstance(site, (int, float, np.integer, np.floating)):
-            raise TypeError(f"site {site!r} is not a site identifier")
-        if not np.isfinite(site) or int(site) != site:
-            raise TypeError(f"site {site!r} is not a whole number")
-        wanted.append(int(site))
-    if len(set(wanted)) != len(wanted):
-        raise ValueError(f"sites repeats {sorted({s for s in wanted if wanted.count(s) > 1})}")
-    return wanted
+        field = dataset[variable_name].rename(name).assign_coords(window_coordinates(dataset[TIME_BOUNDS]))
+        if wanted is not None:
+            check_processed_file_holds_the_sites(dataset, wanted, message_name=f"the processed file of {name}")
+            field = field.sel({SITE: wanted})
+        fields[name] = field
+    return fields
 
 
-def _variable_attributes(spec: NetEcosystemExchangeSpec, variable: str) -> dict[str, Any]:
-    if variable == "value":
-        return spec.xarray_attributes()
-    if variable == "quality_flag":
-        return spec.quality_flag_attributes()
-    if variable == "random_uncertainty":
-        return spec.random_uncertainty_attributes()
-    if variable == "joint_uncertainty":
-        return spec.joint_uncertainty_attributes()
-    if variable == "night":
-        column = SOURCE.columns["NIGHT"]
-        return {
-            "long_name": "Nighttime flag",
-            "flag_values": np.array(column.flag_values, dtype=np.int8),
-            "flag_meanings": column.flag_meanings,
-            "source_file": spec.raw_file,
-            "source_column": "NIGHT",
-            "comment": "ONEFlux's flag, from SW_IN_POT; -1 where the source reports none.",
-        }
-    raise ValueError(f"no attributes for a tower series variable {variable!r}")
+def _opened_netcdf(path: Path) -> xr.Dataset:
+    """*path* opened lazily; a file that is not netCDF-4 is a ``ValueError``."""
+    try:
+        return xr.open_dataset(path, engine="h5netcdf")
+    except OSError as error:
+        raise ValueError(f"{path}: not readable as netCDF-4/HDF5 ({error}); {_REMAKE}.") from error
 
 
-def _time_attributes() -> dict[str, Any]:
+def _tower_coordinates(rows: pd.DataFrame) -> dict[str, tuple]:
+    """The coordinates on ``site`` that describe each site's tower, in *rows*' order."""
     return {
-        "standard_name": "time",
-        "axis": "T",
-        "long_name": "End of timestep",
-        "bounds": TIME_BOUNDS,
-        "time_zone": "UTC",
-        "comment": (
-            "The end of each averaging interval, UTC; the source stamps are local standard "
-            "time, shifted per site by utc_offset."
+        "ameriflux_site_id": (
+            SITE,
+            rows.index.to_numpy(object),
+            {"long_name": "AmeriFlux site identifier of the tower"},
+        ),
+        "tower_lon": (
+            SITE,
+            rows["tower_lon"].to_numpy(np.float64),
+            {"long_name": "Tower longitude, from AmeriFlux", "units": "degrees_east"},
+        ),
+        "tower_lat": (
+            SITE,
+            rows["tower_lat"].to_numpy(np.float64),
+            {"long_name": "Tower latitude, from AmeriFlux", "units": "degrees_north"},
+        ),
+        "match_basis": (
+            SITE,
+            rows["match_basis"].to_numpy(object),
+            {"long_name": "How the tower was matched to the site"},
+        ),
+        "utc_offset": (
+            SITE,
+            rows["utc_offset_hours"].to_numpy(np.float64),
+            {
+                "long_name": "Tower's local standard time minus UTC",
+                "units": "hours",
+                "comment": "Recovered from the tower's SW_IN_POT; local standard time is time + utc_offset.",
+            },
+        ),
+        "doi": (SITE, rows["doi"].to_numpy(object), {"long_name": "AmeriFlux FLUXNET DOI of the site's dataset"}),
+        "site_version": (SITE, rows["site_version"].to_numpy(object), {"long_name": "FULLSET version"}),
+    }
+
+
+def _time_coordinates(ends: pd.DatetimeIndex, step: pd.Timedelta) -> dict[str, tuple]:
+    """CF ``time`` at each step's end and ``time_bounds`` around it."""
+    ends = ends.as_unit("ns")
+    starts = ends - step
+    return {
+        TIME: (
+            TIME,
+            ends.to_numpy(),
+            {
+                "standard_name": "time",
+                "axis": "T",
+                "long_name": "End of the averaging interval",
+                "bounds": TIME_BOUNDS,
+                "time_zone": "UTC",
+                "comment": (
+                    "The end of each averaging interval, UTC; the source stamps are local "
+                    "standard time, shifted per site by utc_offset."
+                ),
+            },
+        ),
+        TIME_BOUNDS: (
+            (TIME, BOUNDS),
+            np.stack([starts.to_numpy(), ends.to_numpy()], axis=1),
+            {
+                "long_name": "Averaging interval",
+                "comment": "The interval (start, time] each value is the mean rate over, in the CF bounds form.",
+            },
         ),
     }
 
 
-def _product_attributes(
+def _variable_attributes(spec: NetEcosystemExchangeSpec, variable_name: str) -> dict[str, Any]:
+    """The attributes of one processed variable, from the spec."""
+    if variable_name == VALUE:
+        return spec.xarray_attributes()
+    if variable_name == QUALITY_FLAG:
+        return spec.quality_flag_attributes()
+    if variable_name == RANDOM_UNCERTAINTY:
+        return spec.random_uncertainty_attributes()
+    if variable_name == JOINT_UNCERTAINTY:
+        return spec.joint_uncertainty_attributes()
+    check_tower_series_variable_is_known(variable_name)
+    column = SOURCE.columns["NIGHT"]
+    return {
+        "long_name": "Nighttime flag",
+        "flag_values": np.array(column.flag_values, dtype=np.int8),
+        "flag_meanings": column.flag_meanings,
+        "source_file": spec.raw_file,
+        "source_column": "NIGHT",
+        "comment": "ONEFlux's flag, from SW_IN_POT; -1 where the source reports none.",
+    }
+
+
+def _dataset_attributes(
     spec: NetEcosystemExchangeSpec, tower_table: pd.DataFrame, towers: list[str]
 ) -> dict[str, Any]:
+    """The processed file's dataset attributes."""
     resolution = resolve_resolution(spec.resolution)
-    of_resolution = tower_table[tower_table["resolution_minutes"] == resolution.minutes]
-    matched_not_primary = of_resolution[of_resolution["site_id"].notna() & ~of_resolution["primary"]]
+    minutes = int(resolution.step / pd.Timedelta(minutes=1))
+    of_resolution = tower_table[tower_table["resolution_minutes"] == minutes]
+    matched_not_primary = of_resolution[of_resolution[SITE_ID].notna() & ~of_resolution["primary"]]
     excluded = of_resolution[of_resolution["excluded_reason"] != ""]
     without_series = sorted(set(of_resolution.loc[of_resolution["primary"], "tower"]) - set(towers))
     return {
         "Conventions": CF_CONVENTIONS,
         "title": f"{spec.long_label}, {resolution.name}, on the site pool",
-        "product": spec.product,
-        "product_name": spec.name,
+        "net_ecosystem_exchange": spec.name,
+        "upstream_product": spec.upstream_product,
         "source_file": spec.raw_file,
         "resolution": resolution.name,
         "towers_not_primary": ", ".join(matched_not_primary["tower"]),
@@ -431,39 +502,132 @@ def _product_attributes(
             "its offset, placed it on its pool site with the site table's lon/lat, and wrote "
             "the spec's fields as attributes; values unchanged"
         ),
-        "created": _utc_timestamp(),
+        "created": utc_timestamp(),
     }
 
 
-def _check_product(dataset: xr.Dataset, spec: NetEcosystemExchangeSpec, path: Path) -> None:
-    """Raise unless *dataset* is the product the data model and *spec* describe."""
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_towers_are_primary(towers: list[str], rows: pd.DataFrame) -> None:
+    """Every tower of a series is a primary tower of the tower table; *rows* is indexed on tower."""
+    unknown = [tower for tower in towers if tower not in rows.index or not rows.at[tower, "primary"]]
+    if unknown:
+        raise KeyError(
+            f"tower(s) {truncated(unknown)} are not primary in the tower table; read the series "
+            "with its source's reader, which keeps only primary towers."
+        )
+
+
+def check_towers_have_distinct_sites(site_ids: np.ndarray) -> None:
+    """No two towers of a series share a site."""
+    repeated = sorted({site for site in site_ids.tolist() if (site_ids == site).sum() > 1})
+    if repeated:
+        raise ValueError(
+            f"two towers of the series share site(s) {truncated(repeated)}; the tower table "
+            "must name one primary tower per site and resolution."
+        )
+
+
+def check_tower_series_variable_is_known(variable_name: str) -> None:
+    """A tower series' variable is one a processed file may hold."""
+    if variable_name not in _VARIABLE_NAMES:
+        raise ValueError(
+            f"no attributes for a tower series variable {variable_name!r}; a reader returns only "
+            f"{truncated(_VARIABLE_NAMES)}."
+        )
+
+
+def check_processed_net_ecosystem_exchange_exists(path: Path, spec: NetEcosystemExchangeSpec) -> None:
+    """A series' processed file exists."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} is not a file; make it with "
+            f"python scripts/ingest_net_ecosystem_exchange.py --series {spec.name}"
+        )
+
+
+def check_processed_net_ecosystem_exchange_is_valid(
+    dataset: xr.Dataset, spec: NetEcosystemExchangeSpec, *, message_name: str
+) -> None:
+    """A processed NEE file follows the data model for its spec."""
+    check_processed_net_ecosystem_exchange_is_for_the_spec(dataset, spec, message_name=message_name)
+    check_processed_net_ecosystem_exchange_has_the_variables(dataset, message_name=message_name)
+    check_processed_net_ecosystem_exchange_value_has_the_spec_attributes(dataset, spec, message_name=message_name)
+    check_processed_file_has_the_coordinates(
+        dataset,
+        (SITE, LON, LAT, *TOWER_SITE_COORDINATES, TIME, TIME_BOUNDS),
+        remedy=_REMAKE,
+        message_name=message_name,
+    )
+    check_processed_file_locations_are_on_site(dataset, remedy=_REMAKE, message_name=message_name)
+    check_processed_file_holds_sites(dataset, remedy=_REMAKE, message_name=message_name)
+    check_processed_file_sites_ascend(dataset, remedy=_REMAKE, message_name=message_name)
+    check_processed_net_ecosystem_exchange_time_is_the_processed_axis(dataset, spec, message_name=message_name)
+    check_processed_net_ecosystem_exchange_bounds_end_at_time(dataset, spec, message_name=message_name)
+
+
+def check_processed_net_ecosystem_exchange_is_for_the_spec(
+    dataset: xr.Dataset, spec: NetEcosystemExchangeSpec, *, message_name: str
+) -> None:
+    """A processed NEE file is CF-1.11 and names its spec's series."""
     if dataset.attrs.get("Conventions") != CF_CONVENTIONS:
-        raise ValueError(f"{path}: Conventions is not {CF_CONVENTIONS!r}")
-    if dataset.attrs.get("product_name") != spec.name:
-        raise ValueError(f"{path}: product_name is {dataset.attrs.get('product_name')!r}, not {spec.name!r}")
-    if "value" not in dataset.data_vars:
-        raise ValueError(f"{path}: no 'value' variable")
-    unexpected = set(dataset.data_vars) - {"value", "quality_flag", "random_uncertainty", "joint_uncertainty", "night"}
+        raise ValueError(f"{message_name}: Conventions is not {CF_CONVENTIONS!r}; {_REMAKE}.")
+    if dataset.attrs.get("net_ecosystem_exchange") != spec.name:
+        raise ValueError(
+            f"{message_name}: holds {dataset.attrs.get('net_ecosystem_exchange')!r}, not "
+            f"{spec.name!r}; {_REMAKE}."
+        )
+
+
+def check_processed_net_ecosystem_exchange_has_the_variables(dataset: xr.Dataset, *, message_name: str) -> None:
+    """A processed NEE file holds ``value`` on ``(site, time)``, and nothing it should not."""
+    if VALUE not in dataset.data_vars:
+        raise ValueError(f"{message_name}: no {VALUE!r} variable; {_REMAKE}.")
+    unexpected = sorted(set(dataset.data_vars) - set(_VARIABLE_NAMES))
     if unexpected:
-        raise ValueError(f"{path}: unexpected variables {sorted(unexpected)}")
-    value = dataset["value"]
-    if value.dims[-2:] != (SITE, TIME):
-        raise ValueError(f"{path}: value has dims {value.dims}, expected ([member,] site, time)")
+        raise ValueError(f"{message_name}: unexpected variables {truncated(unexpected)}; {_REMAKE}.")
+    for name in dataset.data_vars:
+        if dataset[name].dims != (SITE, TIME):
+            raise ValueError(f"{message_name}: {name} has dims {dataset[name].dims}, expected (site, time); {_REMAKE}.")
+
+
+def check_processed_net_ecosystem_exchange_value_has_the_spec_attributes(
+    dataset: xr.Dataset, spec: NetEcosystemExchangeSpec, *, message_name: str
+) -> None:
+    """A processed NEE file's ``value`` carries its spec's units, column, kind and constituent."""
+    expected = spec.xarray_attributes()
     for key in ("units", "source_column", "kind", "constituent"):
-        if value.attrs.get(key) != spec.xarray_attributes()[key]:
-            raise ValueError(f"{path}: value's {key} is {value.attrs.get(key)!r}, the spec says {spec.xarray_attributes()[key]!r}")
-    for name in (SITE, TIME, TIME_STEP_START, TIME_STEP_LENGTH, TIME_BOUNDS, *SITE_COORDINATES):
-        if name not in dataset.coords:
-            raise ValueError(f"{path}: missing the {name!r} coordinate")
-    site = dataset[SITE].values
-    if site.size and np.any(np.diff(site) <= 0):
-        raise ValueError(f"{path}: site is not strictly ascending")
+        if dataset[VALUE].attrs.get(key) != expected[key]:
+            raise ValueError(
+                f"{message_name}: value's {key} is {dataset[VALUE].attrs.get(key)!r}, the spec "
+                f"says {expected[key]!r}; {_REMAKE}."
+            )
+
+
+def check_processed_net_ecosystem_exchange_holds_the_variable(
+    dataset: xr.Dataset, variable_name: str, *, message_name: str
+) -> None:
+    """A processed NEE file holds the variable asked of it."""
+    if variable_name not in dataset.data_vars:
+        raise KeyError(f"{message_name} has no {variable_name!r}; its source does not report one.")
+
+
+def check_processed_net_ecosystem_exchange_time_is_the_processed_axis(
+    dataset: xr.Dataset, spec: NetEcosystemExchangeSpec, *, message_name: str
+) -> None:
+    """A processed NEE file's ``time`` is the step ends of its resolution's processed axis."""
     resolution = resolve_resolution(spec.resolution)
-    expected = (resolution.product_step_starts() + resolution.step).as_unit("ns").to_numpy()
+    expected = (resolution.processed_step_starts() + resolution.step).as_unit("ns").to_numpy()
     if not np.array_equal(dataset[TIME].values, expected):
-        raise ValueError(f"{path}: time is not the {resolution.name} UTC axis")
-    starts = dataset[TIME_STEP_START].values
-    if not np.array_equal(dataset[TIME_BOUNDS].values[:, 0], starts) or not np.array_equal(
-        dataset[TIME_BOUNDS].values[:, 1], dataset[TIME].values
-    ):
-        raise ValueError(f"{path}: time_bounds is not [time_step_start, time]")
+        raise ValueError(f"{message_name}: time is not the {resolution.name} UTC axis; {_REMAKE}.")
+
+
+def check_processed_net_ecosystem_exchange_bounds_end_at_time(
+    dataset: xr.Dataset, spec: NetEcosystemExchangeSpec, *, message_name: str
+) -> None:
+    """A processed NEE file's ``time_bounds`` is one step ending at ``time``."""
+    step = resolve_resolution(spec.resolution).step.to_timedelta64()
+    bounds = dataset[TIME_BOUNDS].values
+    if not (np.array_equal(bounds[:, 1], dataset[TIME].values) and (bounds[:, 1] - bounds[:, 0] == step).all()):
+        raise ValueError(f"{message_name}: time_bounds is not one step ending at time; {_REMAKE}.")

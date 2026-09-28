@@ -444,19 +444,16 @@ class Grid:
             If any coordinate is not finite or lies outside the grid.
         """
         x, y = np.broadcast_arrays(np.asarray(lon, dtype=float), np.asarray(lat, dtype=float))
-        if not (np.all(np.isfinite(x)) and np.all(np.isfinite(y))):
-            raise ValueError("coordinates must be finite to be placed in a cell")
+        check_coordinates_are_finite(x, y)
         west, south = self.west + self.edge_shift_lon, self.south + self.edge_shift_lat
         j = np.floor((x - west) * self.cells_per_degree).astype(np.int64)
         k = np.floor((y - south) * self.cells_per_degree).astype(np.int64)
-        if np.any(j < 0) or np.any(j >= self.n_lon):
-            raise ValueError(
-                f"longitude outside the grid ({west!r} to {west + self.n_lon / self.cells_per_degree!r})"
-            )
-        if np.any(k < 0) or np.any(k >= self.n_lat):
-            raise ValueError(
-                f"latitude outside the grid ({south!r} to {south + self.n_lat / self.cells_per_degree!r})"
-            )
+        check_grid_indices_are_inside(
+            j, size=self.n_lon, extent=f"{west} to {self.east + self.edge_shift_lon}", message_name="longitude"
+        )
+        check_grid_indices_are_inside(
+            k, size=self.n_lat, extent=f"{south} to {self.north + self.edge_shift_lat}", message_name="latitude"
+        )
         if j.ndim == 0 and k.ndim == 0:
             return int(j), int(k)
         return j, k

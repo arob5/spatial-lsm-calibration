@@ -224,15 +224,20 @@ Functions
 :func:`without_stale_time_attributes`
     ``time`` attributes less
     :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
+:func:`window_coordinates`
+    A processed file's CF ``time_bounds`` as the two window coordinates a
+    field carries on ``time``.
 The ``check_*`` functions of ``__all__``
     The parts of the contracts other modules run on their own, such as the
     names a batch dim may not take.
 
-The drivers, the constraints and the initial conditions have readers of their
-own that already produce the form above
-(:func:`sipnet_calibration.drivers.driver_fields`,
+The drivers, the constraints, the initial conditions and observed net
+ecosystem exchange have readers of their own that already produce the form
+above (:func:`sipnet_calibration.drivers.driver_fields`,
 :func:`sipnet_calibration.constraints.constraint_fields`,
-:func:`sipnet_calibration.initial_conditions.initial_condition_fields`), and a
+:func:`sipnet_calibration.initial_conditions.initial_condition_fields`,
+:func:`sipnet_calibration.net_ecosystem_exchange.net_ecosystem_exchange_fields`),
+and a
 ``(J, N)`` batch of predictions is unstacked by
 :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns
 the index the batch was flattened with.
@@ -433,6 +438,7 @@ __all__ = [
     "validate_model_output",
     "validate_sipnet_overrides",
     "validate_sipnet_parameter_fields",
+    "window_coordinates",
     "without_stale_time_attributes",
 ]
 
@@ -1278,6 +1284,40 @@ def without_stale_time_attributes(attrs: Mapping[str, Any]) -> dict[str, Any]:
     Those are :data:`~sipnet_calibration.conventions.STALE_TIME_ATTRIBUTE_NAMES`.
     """
     return {key: value for key, value in attrs.items() if key not in STALE_TIME_ATTRIBUTE_NAMES}
+
+
+def window_coordinates(time_bounds: xr.DataArray) -> dict[str, xr.DataArray]:
+    """A CF ``time_bounds`` variable as the two window coordinates on ``time``.
+
+    A field cannot carry the ``(time, bounds)`` variable, ``bounds`` being no
+    field dimension, so its two edges ride along as the one-dimensional
+    :data:`~sipnet_calibration.conventions.WINDOW_START` and
+    :data:`~sipnet_calibration.conventions.WINDOW_END`, the way pySIPNET's
+    model output carries ``timestep_start`` beside ``time``.
+
+    Parameters
+    ----------
+    time_bounds:
+        A processed file's ``time_bounds``, on ``(time, bounds)``.
+
+    Returns
+    -------
+    dict
+        ``{"window_start": ..., "window_end": ...}``, each on ``time``.
+    """
+    comment = "One edge of the CF time_bounds of the value at this label."
+    return {
+        WINDOW_START: xr.DataArray(
+            time_bounds.isel({BOUNDS: 0}).values,
+            dims=TIME,
+            attrs={"long_name": "Start of the interval the value is attributed to", "comment": comment},
+        ),
+        WINDOW_END: xr.DataArray(
+            time_bounds.isel({BOUNDS: 1}).values,
+            dims=TIME,
+            attrs={"long_name": "End of the interval the value is attributed to", "comment": comment},
+        ),
+    }
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────

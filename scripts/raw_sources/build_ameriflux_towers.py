@@ -4,7 +4,7 @@
 **Not part of the raw-to-processed pipeline.** Like
 ``convert_ameriflux_nee.py`` beside it, this script *creates* a raw input: the
 tracked ``data/raw/net_ecosystem_exchange/ameriflux_towers.csv``, the one record
-of which pool site each tower is, which tower a site's products carry, each
+of which pool site each tower is, which tower a site's processed files carry, each
 tower's UTC offset, and why a tower is left out. It needs the raw NEE files,
 not the SCC, and is run again when they or the site pool change.
 
@@ -13,30 +13,30 @@ Overview
 For every tower of the raw files, recover its UTC offset from its
 ``SW_IN_POT`` and check its measured shortwave against it; match it to a pool
 site by the exact rule of ``sipnet_calibration.net_ecosystem_exchange.towers``;
-choose one tower per site; and write the table.
+choose one tower per site and resolution; and write the table.
 
 Input data
 ----------
 ``--raw-dir``, default ``data/raw/net_ecosystem_exchange/``
     ``ameriflux_nee_half_hourly.nc`` and ``ameriflux_nee_hourly.nc``, from
-    ``convert_ameriflux_nee.py``; ``read_raw`` checks them. Also where the two
-    lists below are looked for by default.
+    ``convert_ameriflux_nee.py``; ``read_raw`` checks them. Also where the site
+    listing below is looked for by default.
 
 ``--site-list``, default ``<raw dir>/ameri_sites.tsv``
     AmeriFlux's site listing, downloaded beside the FLUXNET files: each site's
     coordinates, IGBP class and FLUXNET DOI. Not tracked, because it carries
     contact details.
 
-``--pool-input-list``, default ``<raw dir>/Unmatched_Sites.csv``
+``--pool-input-list``, default ``data/raw/net_ecosystem_exchange/Unmatched_Sites.csv`` in the checkout
     The reanalysis's list of AmeriFlux towers added to the site pool, in the
     order they were placed; tracked.
 
-``--sites``, default ``data/processed/sites/sites.csv``
+``--site-table``, default ``data/processed/sites/sites.csv``
     The site table: the pool's names and cells.
 
 Output data
 -----------
-``--out``, default ``<raw dir>/ameriflux_towers.csv``
+``--out``, default ``data/raw/net_ecosystem_exchange/ameriflux_towers.csv`` in the checkout
     One row per tower, the columns of ``TOWER_COLUMNS``; ``read_tower_table``
     documents and checks them.
 
@@ -48,8 +48,9 @@ run log and for reviewing the diff of the table. Numbers are printed rather
 than asserted: they describe the download, and the invariants are
 ``read_tower_table``'s checks.
 
-Output is written to a ``.partial`` path and renamed only once it reads back
-through ``read_tower_table`` identical to what was built.
+Output is written through ``io.write_checked``: to a ``.partial`` path, renamed
+only once it reads back through ``read_tower_table`` identical to what was
+built.
 
 Usage
 -----
@@ -66,11 +67,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from sipnet_calibration.conventions import SITE_ID
+from sipnet_calibration.io import write_checked
 from sipnet_calibration.net_ecosystem_exchange import (
     MATCH_BASES,
     RESOLUTIONS,
     build_tower_table,
-    default_raw_dir,
+    default_raw_directory,
     raw_path,
     read_ameriflux_site_list,
     read_pool_input_list,
@@ -83,7 +86,7 @@ from sipnet_calibration.net_ecosystem_exchange.names import (
     ameriflux_site_list_path,
     pool_input_list_path,
 )
-from sipnet_calibration.sites import default_sites_path, load_sites
+from sipnet_calibration.sites import default_site_table_path, load_sites
 
 
 class BuildError(Exception):
@@ -95,12 +98,12 @@ class BuildError(Exception):
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    raw_dir = args.raw_dir if args.raw_dir is not None else default_raw_dir()
-    out = args.out if args.out is not None else tower_table_path(raw_dir)
+    raw_dir = args.raw_dir if args.raw_dir is not None else default_raw_directory()
+    out = args.out if args.out is not None else tower_table_path()
     try:
         site_list = read_ameriflux_site_list(args.site_list or ameriflux_site_list_path(raw_dir))
-        pool_input_list = read_pool_input_list(args.pool_input_list or pool_input_list_path(raw_dir))
-        site_table = load_sites(args.sites or default_sites_path())
+        pool_input_list = read_pool_input_list(args.pool_input_list or pool_input_list_path())
+        site_table = load_sites(args.site_table or default_site_table_path())
         summaries = summarize_every_raw_file(raw_dir, site_list)
         table = build_tower_table(summaries, site_list, pool_input_list, site_table)
         write_tower_table(table, out)
@@ -118,12 +121,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--raw-dir", type=Path, default=None, help="Default: data/raw/net_ecosystem_exchange.")
     parser.add_argument("--site-list", type=Path, default=None, help="Default: <raw dir>/ameri_sites.tsv.")
     parser.add_argument(
-        "--pool-input-list", type=Path, default=None, help="Default: <raw dir>/Unmatched_Sites.csv."
+        "--pool-input-list",
+        type=Path,
+        default=None,
+        help="Default: the tracked data/raw/net_ecosystem_exchange/Unmatched_Sites.csv.",
     )
-    parser.add_argument("--sites", type=Path, default=None, help="Default: data/processed/sites/sites.csv.")
+    parser.add_argument("--site-table", type=Path, default=None, help="Default: data/processed/sites/sites.csv.")
     parser.add_argument(
-        "--out", type=Path, default=None,
-        help="Where to write. Default: <raw dir>/ameriflux_towers.csv.",
+        "--out",
+        type=Path,
+        default=None,
+        help="Where to write. Default: the tracked data/raw/net_ecosystem_exchange/ameriflux_towers.csv.",
     )
     return parser.parse_args(argv)
 
@@ -149,24 +157,21 @@ def summarize_every_raw_file(raw_dir: Path, site_list: pd.DataFrame) -> pd.DataF
 
 def write_tower_table(table: pd.DataFrame, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    try:
-        table.to_csv(partial, index=False)
-        check_round_trip(table, partial)
-        partial.replace(out)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out,
+        write=lambda partial: table.to_csv(partial, index=False),
+        check=lambda partial: check_round_trip(table, partial),
+    )
 
 
 def describe_table(table: pd.DataFrame, out: Path) -> str:
     """The run report."""
-    matched = table[table["site_id"].notna()]
+    matched = table[table[SITE_ID].notna()]
     lines = [
-        f"wrote {out}: {len(table)} towers, {matched['site_id'].nunique()} pool sites, "
+        f"wrote {out}: {len(table)} towers, {matched[SITE_ID].nunique()} pool sites, "
         f"{int(table['primary'].sum())} primary",
         "matched by: " + ", ".join(f"{basis} {int((matched['match_basis'] == basis).sum())}" for basis in MATCH_BASES),
-        f"sites with more than one tower: {int(matched['site_id'].value_counts().gt(1).sum())}",
+        f"sites with more than one tower: {int(matched[SITE_ID].value_counts().gt(1).sum())}",
         f"offsets: {table['utc_offset_hours'].value_counts().sort_index().to_dict()}",
         "excluded:",
     ]
@@ -191,4 +196,4 @@ def check_round_trip(table: pd.DataFrame, partial: Path) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

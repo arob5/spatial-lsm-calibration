@@ -46,8 +46,8 @@ stored as missing and named in ``absent_columns``. The report printed at the
 end -- per resolution, the towers, their years and versions, and the md5 of
 each written file -- is what ``provenance.md`` records.
 
-Output is written to a ``.partial`` path and renamed only once it reads back
-bit-identical through ``read_raw``.
+Output is written through ``io.write_checked``: to a ``.partial`` path, renamed
+only once it reads back bit-identical through ``read_raw``.
 
 Usage
 -----
@@ -77,13 +77,14 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from sipnet_calibration.io import file_md5, write_checked
 from sipnet_calibration.net_ecosystem_exchange import (
     RESOLUTIONS,
     SOURCE,
     Resolution,
     SourceFile,
     build_raw,
-    default_raw_dir,
+    default_raw_directory,
     default_source_root,
     discover_source_files,
     parse_file_name,
@@ -106,12 +107,12 @@ class ConversionError(Exception):
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     root = args.root if args.root is not None else default_source_root()
-    out_dir = args.out_dir if args.out_dir is not None else default_raw_dir()
+    out_dir = args.out_dir if args.out_dir is not None else default_raw_directory()
     try:
         if args.root is not None and args.out_dir is None and root.resolve() != default_source_root().resolve():
             raise ConversionError(
                 "--root other than the default needs an explicit --out-dir, so that another "
-                f"download cannot overwrite the real raw files in {default_raw_dir()}"
+                f"download cannot overwrite the real raw files in {default_raw_directory()}"
             )
         paths = discover_source_files(root)
         if args.towers:
@@ -132,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             out = raw_path(resolution, out_dir)
             write_raw(dataset, out)
-            print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {_md5(out)})")
+            print(f"wrote {out}  ({out.stat().st_size / 1e6:.1f} MB, md5 {file_md5(out)})")
             print(describe_raw(resolution, of_resolution))
     except (ConversionError, OSError, ValueError, BrokenProcessPool, zipfile.BadZipFile) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -173,7 +174,7 @@ def select_towers(paths: list[Path], towers: list[str], *, out_dir_given: bool) 
     if not out_dir_given:
         raise ConversionError(
             "--towers needs an explicit --out-dir: its output is a subset of the download, "
-            f"and the default directory ({default_raw_dir()}) holds the real raw files."
+            f"and the default directory ({default_raw_directory()}) holds the real raw files."
         )
     chosen = [path for path in paths if parse_file_name(path.name)[0] in set(towers)]
     missing = sorted(set(towers) - {parse_file_name(path.name)[0] for path in chosen})
@@ -200,14 +201,11 @@ def read_all_files(paths: list[Path], *, jobs: int) -> list[SourceFile]:
 
 def write_raw(dataset: xr.Dataset, out: Path) -> None:
     """Write to a ``.partial`` path, verify the round trip, then rename."""
-    out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_suffix(out.suffix + ".partial")
-    try:
-        dataset.to_netcdf(partial, engine="h5netcdf", encoding=raw_encoding(dataset))
-        check_round_trip(dataset, partial)
-        partial.replace(out)
-    finally:
-        partial.unlink(missing_ok=True)
+    write_checked(
+        out,
+        write=lambda partial: dataset.to_netcdf(partial, engine="h5netcdf", encoding=raw_encoding(dataset)),
+        check=lambda partial: check_round_trip(dataset, partial),
+    )
 
 
 def describe_raw(resolution: Resolution, files: list[SourceFile]) -> str:
@@ -229,14 +227,6 @@ def describe_raw(resolution: Resolution, files: list[SourceFile]) -> str:
 
 
 # ── supporting helpers ────────────────────────────────────────────────────────
-
-
-def _md5(path: Path) -> str:
-    digest = hashlib.md5()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 22), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _fingerprint(path: Path) -> tuple[int, str]:
@@ -292,4 +282,4 @@ def check_round_trip(dataset: xr.Dataset, partial: Path) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
