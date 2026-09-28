@@ -1,101 +1,126 @@
 ---
 name: review-pr
-description: Adversarially review a pull request by dispatching several independent review agents in parallel, one per concern (correctness and numerics, bugs and edge cases, documentation, tests, the PR description), then consolidate their findings, apply the small fixes, and stop for the author's input on anything that is a real judgment call. Use when asked to review a PR, review the current branch, or check a change before merging.
+description: Adversarially review a pull request, sized to the change - a solo pass for small or non-central PRs, up to four parallel agents (code, targeted mutation testing, docs and description) for code that computes results - then verify the findings, apply the small fixes, and stop for the author on judgment calls. Use when asked to review a PR, review the current branch, or check a change before merging.
 ---
 
 # Adversarially review a pull request
 
-## What to review
+One review round, sized to the change. The cost of a review is mostly agents
+re-reading the repository and re-running the suite; this skill spends that
+only where a missed bug would change a result.
 
-`$ARGUMENTS` may name a PR number, a branch, or nothing. With nothing, review
-the PR for the current branch (`gh pr view`), or if there is none, the diff
-against `main`.
+## 1. Gather the ground truth once
 
-Establish the ground truth before dispatching anything:
+`$ARGUMENTS` may name a PR number, a branch, or nothing (then the current
+branch's PR, or failing that its diff against `origin/main`). Review in a
+checkout of the PR's head that has its own `.venv` (see CLAUDE.md); create a
+worktree if none exists.
+
+Diff against the PR's **base**, not `main`: PRs here are often stacked.
 
 ```bash
-gh pr view <n>                    # description
-gh pr view <n> --comments         # the thread, which is where staleness hides
-git diff main...HEAD --stat       # what actually changed
-git log --oneline main..HEAD
-uv run pytest -q                  # the real test count, not the claimed one
+gh pr view <n> --json number,title,body,baseRefName,headRefName,comments
+git fetch -q origin
+git diff --stat origin/<base>...HEAD
+git log --oneline origin/<base>..HEAD
 ```
 
-## Dispatch the agents
+Write the context to one directory under the session scratchpad,
+`$SCRATCH/review-<n>/`, so agents read it
+instead of each re-fetching it: `pr.json` (the view above), `diff.patch`
+(`git diff origin/<base>...HEAD`), `files.txt` (changed paths).
 
-Send them **in one message so they run concurrently**, in the background. Give
-each a **non-overlapping scope** and say so in its brief, so they do not
-duplicate each other or each other's findings.
+Start the full suite **in the background** now (`.venv/bin/python -m pytest -q`,
+`run_in_background`) and read its result during consolidation. It is the only
+full-suite run in the review, apart from the one after fixes.
 
-The standard scopes:
+## 2. Size the review
 
-1. **Correctness and numerics** — the mathematics, floating point, precision and
-   dtype choices, unit conversions, overflow, round-tripping, and any numerical
-   claim the code or its comments make.
-2. **Bugs and edge cases** — control flow, error paths, argument handling, empty
-   and malformed inputs, resource leaks, partial failures, and language-specific
-   traps (R's `$` partial matching, pandas dtype and NA surprises, path
-   handling).
-3. **Documentation** — docstrings lead with an overview and describe the public
-   API rather than the design reasoning behind it; nothing stale or redundant;
-   clear, precise, not wordy, not overly technical, and no "LLM jargon". Judge
-   against `CLAUDE.md`'s conventions, including whether the PR's own new files
-   follow the conventions they introduce.
-4. **Tests** — quality and coverage, found by **mutation testing** rather than
-   by reading: break the source deliberately, see whether anything fails, and
-   treat a silent pass as the finding.
-5. **The PR description** — is it accurate and current against the branch as it
-   now stands, given that it was probably written before the last few commits.
+Pick the smallest tier that fits; say which one you picked and why.
 
-Adjust the set to the change: drop numerics for a documentation-only PR, split a
-large scope in two, add a scope for anything unusual in the diff. Prefer more
-narrow agents over fewer broad ones.
+| Tier | When | Who reviews |
+|------|------|-------------|
+| **Solo** | Docs, config, renames, convention cleanups, or a small change to code that does not compute results | You alone: read the diff, run the tests of the touched modules, check the description. No agents. |
+| **Standard** | New or changed logic | Agents A, B and C below, in parallel |
+| **Deep** | Code that computes results (numerics, units, time alignment, data placement, likelihood, inference) *and* a large or subtle diff | A split into A1 correctness/numerics and A2 bugs/edge cases, plus B and C: four agents, never more |
 
-Every brief must include:
+When unsure between two tiers, take the smaller and escalate only a specific
+module whose diff turns out to warrant it. For a non-central PR, ask the author
+before going above Solo.
 
-- **"Your job is to find problems, not to praise."** Say it plainly; otherwise
-  agents report that everything looks good.
-- **Verify by running, not by reading.** Point them at
-  `.venv/bin/python`, `uv run python`, and `Rscript`, and tell them where the
-  real data is. Reading code finds typos; running it finds bugs.
-- **What is out of their scope**, naming the other agents' territory.
-- **Do not modify tracked files.** For the tests agent, which must mutate
-  source to do its job: restore with `git checkout --` and confirm
-  `git status` is clean before reporting. Never commit.
-- **A findings format**: file:line, what is wrong, the reproduction and its
-  output, and a severity. Ask them to state which checks they ran and found
-  *sound*, so the coverage of the review itself is visible.
-- **Lead with the most serious findings**, and no padding.
+The agents:
 
-## Consolidate
+- **A: code** (default model) — the mathematics, floating point and dtypes,
+  unit conversions, round-tripping, numerical claims in comments; control flow,
+  error paths, argument handling, empty and malformed inputs, partial failures,
+  pandas dtype/NA and R `$` partial-matching traps.
+- **B: tests** (`model: "sonnet"`) — test adequacy by **targeted mutation**:
+  break the changed logic, run the relevant test file, and report every
+  mutation that survives. At most ~10 mutations, aimed at the diff's new
+  checks, branches, boundary comparisons and arithmetic; not at unchanged code.
+- **C: docs and description** (`model: "sonnet"`) — docstrings and comments
+  against CLAUDE.md and the standing documentation rules (overview first,
+  length justified, math written out, design reasoning in Notes, nothing stale,
+  no vault references, American spelling); and whether the PR description is
+  accurate for the branch as it now stands, including its test count against
+  the suite result you pass it.
 
-When the agents report back:
+## 3. Brief the agents
 
-- **Deduplicate.** Several agents often find one underlying problem from
-  different directions. Merge those, and say so.
-- **Verify before acting.** Agents are confidently wrong sometimes. Reproduce
-  any finding you are going to act on. Discard the ones that do not hold, and
-  say which and why rather than silently dropping them.
+Send all briefs **in one message**, in the background. Each brief is short and
+carries:
+
+- **"Your job is to find problems, not to praise."**
+- **The scope, and what is out of it** by naming the other agents' scopes.
+- **Where the context is**: `$SCRATCH/review-<n>/`. Read `diff.patch` and the
+  changed files, and follow a call into unchanged code only when a finding
+  depends on it. Do not survey the repository. CLAUDE.md is already loaded.
+- **Verify by running, cheaply**: `.venv/bin/python -c` / a scratch script, or
+  `Rscript`, against the real data where it exists (CLAUDE.md, Data section).
+  Run single test files with `.venv/bin/python -m pytest <file> -x -q`, never the
+  full suite.
+- **Do not modify tracked files, and never commit.** Agent B instead works in
+  its own detached worktree, so its mutations cannot corrupt what the other
+  agents are running:
+
+  ```bash
+  git worktree add --detach $SCRATCH/review-<n>/mutation <head-sha>
+  cd $SCRATCH/review-<n>/mutation && uv sync -q
+  ```
+
+  symlinking any untracked `data/raw/<dir>` its tests need from the root, and
+  removing the worktree (`git worktree remove --force`) before reporting.
+- **The report**: at most ~10 findings, most serious first, each as
+  `file:line — what is wrong — a copy-pasteable reproduction and its output —
+  severity (bug / gap / nit)`. Then one line listing what was checked and found
+  sound. No preamble, no summary of the PR, under ~500 words. Report nits only
+  where they break a CLAUDE.md convention.
+
+## 4. Consolidate
+
+- **Deduplicate** findings reached from different directions, and say so.
+- **Verify what you will act on, by re-running the agent's reproduction**, not
+  by re-deriving it. A finding without a reproduction is "plausible" at best;
+  say so rather than acting on it. Discard what does not hold, and say which
+  and why.
 - **Sort into two piles:**
-  - **Small and unambiguous** — a wrong number, a stale reference, a dangling
-    cross-reference, a missing test for an existing check, a typo, wording that
-    is plainly worse. Fix these now.
-  - **A real judgment call** — anything changing the schema, an interface, a
-    design decision, the scope of the PR, or a documented convention; anything
-    where two defensible answers exist; anything you would have to guess the
-    author's preference to decide. **Stop and ask.** Do not decide these.
-- Re-run the suite after the fixes, and update the PR description or add a
-  comment recording what changed.
+  - **Small and unambiguous** — a wrong number, a stale reference, a missing
+    test for an existing check, a typo, plainly worse wording. Fix these now.
+  - **A judgment call** — anything changing a schema, an interface, a design
+    decision, the PR's scope or a documented convention; anything with two
+    defensible answers. **Stop and ask.** Do not decide these.
+- After the fixes, run the tests of the touched modules, then the full suite
+  once, and update the PR description or add a comment recording what changed.
 
-## Report
+**Do not start a second review round.** If the fixes changed behavior in code
+that computes results, say so and offer one, scoped to those fixes.
 
-Give the author:
+## 5. Report
 
-- The findings that mattered, grouped by severity, with what you did about each.
-- What you fixed, in one line each.
-- **The judgment calls, stated as questions with a recommendation and the
-  trade-off** — this is the part they act on, so put it last where it is easy to
-  find, and do not bury it in prose.
-- What the agents checked and found sound, briefly, so the review's coverage is
-  visible.
-- Anything an agent claimed that you could not reproduce.
+- What tier you ran, and why.
+- The findings that mattered, by severity, with what you did about each; what
+  you fixed, one line each.
+- What was checked and found sound, briefly.
+- Anything an agent claimed that did not reproduce.
+- **Last, the judgment calls as questions**, each with a recommendation and the
+  trade-off. This is what the author acts on; do not bury it.
