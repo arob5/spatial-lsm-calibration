@@ -325,8 +325,10 @@ def test_the_fit_check_needs_each_value_once(vector):
         check_sipnet_parameter_map_fits(sipnet_map, vector)
     both = SIPNETParameterMap(rules=[Copy(value_name="initial_soil_carbon", sipnet_parameter_name="soil_carbon")])
     inputs = crossed_inputs().rename({"initial_soil_carbon_input": "initial_soil_carbon"})
-    with pytest.raises(ValueError, match="both a parameter and an external input"):
+    with pytest.raises(ValueError, match="named like parameters"):
         check_sipnet_parameter_map_fits(both, vector, inputs)
+    with pytest.raises(ValueError, match="both a parameter and an external input"):
+        both.sipnet_parameter_fields(vector, jnp.zeros((1, vector.dimension)), external_inputs=inputs)
 
 
 @pytest.mark.parametrize(

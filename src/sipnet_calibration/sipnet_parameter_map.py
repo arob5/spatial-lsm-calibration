@@ -941,6 +941,7 @@ def check_sipnet_parameter_map_fits(
     """The map reads what the vector and external inputs hold, as its rules
     require, and its per-dim-label values cover the vector's dim labels."""
     external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
+    check_external_inputs_share_no_name_with_the_parameters(external_names, parameter_vector)
     for name, requirement in sipnet_parameter_map.values_read.items():
         check_value_is_held_once(name, parameter_vector, external_names)
         if name in parameter_vector:
@@ -1029,6 +1030,19 @@ def check_sipnet_parameter_read_is_set_earlier(name: str, rule: Any, writers: Ma
         raise ValueError(
             f"{_set_by(rule)} reads {name!r}, which is neither fixed nor written by an earlier "
             "rule; fix it, or move the rule that writes it before this one."
+        )
+
+
+def check_external_inputs_share_no_name_with_the_parameters(
+    external_names: Sequence[str], parameter_vector: ParameterVector
+) -> None:
+    """No external input is named like a parameter, since values are read by
+    name."""
+    shared = [name for name in external_names if name in parameter_vector]
+    if shared:
+        raise ValueError(
+            f"the external inputs {truncated(shared)} are named like parameters of the vector; "
+            "values are read by name, so rename them."
         )
 
 
