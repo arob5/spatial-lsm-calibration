@@ -3,10 +3,12 @@
 - The change of variables matches a finite-difference Jacobian.
 - Densities in theta integrate to one, by importance sampling, on the
   simplex under ``SoftmaxCentered`` and ``IteratedSigmoidCentered``.
-- Each builder's declared Gaussian agrees with ``log_prob`` on draws and
-  with the moments of 20 000 draws.
+- Joint terms, by base density and by change of variables, and a
+  centered hierarchy given its hyperparameters, integrate to one.
+- Each builder's declared Gaussian, the copula's included, agrees with
+  ``log_prob`` on draws and with the moments of 20 000 draws.
 - ``select`` gives the marginal, and a term's draws depend on its name
-  alone.
+  and what it is given alone, whatever the declaration order.
 - The support checks accept and refuse what they should.
 """
 
@@ -29,9 +31,11 @@ from sipnet_calibration.parameter_vector import (
     Parameter,
     ParameterVector,
 )
+from sipnet_calibration.parameter_vector import site_positions
 from sipnet_calibration.prior import (
     Prior,
     PriorTerm,
+    gaussian_copula,
     independent_over_dim,
     iid_over_dim,
     log_normal,
@@ -285,3 +289,99 @@ def test_an_oversized_monte_carlo_block_is_refused():
     with pytest.raises(ValueError, match="is singular"):
         prior.gaussian(key=jax.random.key(0), n_moment_samples=3)
     assert prior.gaussian(key=jax.random.key(0), n_moment_samples=4).mean.shape == (3,)
+
+
+# ── joint terms and terms given others ────────────────────────────────────────
+
+MEAN_BY_PFT = Parameter(name="mean", support=REAL, units=None, dim="pft")
+SPREAD = Parameter(name="spread", support=POSITIVE, units=None)
+CARBON_BY_SITE = Parameter(name="carbon", support=POSITIVE, units="1", dim="site")
+
+
+def carbon_given_pft(dim_index, site_table, mean, spread):
+    loc = mean[site_positions(site_table, "pft")]
+    return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(loc, spread), 1), tfb.Exp())
+
+
+def centered_terms() -> dict:
+    return {
+        "mean": PriorTerm(iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0))), provenance="t"),
+        "spread": PriorTerm(log_normal(median=1.0, geometric_sd=1.5), provenance="t"),
+        "carbon": PriorTerm(carbon_given_pft, given=("mean", "spread"), provenance="t"),
+    }
+
+
+def copula_term(order=("rate", "share")) -> PriorTerm:
+    marginals = {"rate": log_normal(median=2.0, geometric_sd=1.7), "share": logit_normal(median=0.3, logit_sd=0.8)}
+    return PriorTerm(
+        gaussian_copula({n: marginals[n] for n in order}, correlation=[[1.0, -0.5], [-0.5, 1.0]]),
+        provenance="t",
+    )
+
+
+def test_a_copula_integrates_to_one_in_theta():
+    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): copula_term()})
+    assert integral_by_importance_sampling(prior) == pytest.approx(1.0, abs=0.02)
+
+
+def test_a_joint_term_by_change_of_variables_integrates_to_one_in_theta():
+    joint = tfd.JointDistributionNamed({
+        "rate": tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)),
+        "share": tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
+    })
+    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): PriorTerm(joint, provenance="t")})
+    assert prior.describe().iloc[0]["evaluated_by"] == "change of variables"
+    assert integral_by_importance_sampling(prior) == pytest.approx(1.0, abs=0.02)
+
+
+def test_a_centered_hierarchy_integrates_to_one_in_theta():
+    prior = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
+    assert prior.parameter_vector.dimension == 6
+    assert integral_by_importance_sampling(prior, n=1_000_000, scale=2.0) == pytest.approx(1.0, abs=0.03)
+
+
+def test_a_given_terms_draws_depend_on_its_name_and_parents_alone():
+    key = jax.random.key(12)
+    first = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
+    reordered = Prior(vector_of(CARBON_BY_SITE, MEAN_BY_PFT, SPREAD), centered_terms())
+    appended = Prior(
+        vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE, OFFSET),
+        {**centered_terms(), "offset": PriorTerm(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)), provenance="t")},
+    )
+    draws = [prior.sample(key, 6) for prior in (first, reordered, appended)]
+    for name in ("mean", "spread", "carbon"):
+        wanted = [
+            theta[:, prior.parameter_vector.positions(parameter_name=name)]
+            for theta, prior in zip(draws, (first, reordered, appended))
+        ]
+        np.testing.assert_array_equal(wanted[0], wanted[1])
+        np.testing.assert_array_equal(wanted[0], wanted[2])
+
+
+def test_a_given_term_draws_from_its_conditional():
+    prior = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
+    vector = prior.parameter_vector
+    theta = np.asarray(prior.sample(jax.random.key(13), 40_000))
+    natural_values = vector.to_natural(theta)
+    pft = site_positions(vector.site_table, "pft")
+    standardized = (
+        theta[:, vector.positions(parameter_name="carbon")] - np.asarray(natural_values["mean"])[:, pft]
+    ) / np.asarray(natural_values["spread"])[:, None]
+    np.testing.assert_allclose(standardized.mean(axis=0), 0.0, atol=0.02)
+    np.testing.assert_allclose(standardized.std(axis=0), 1.0, atol=0.02)
+
+
+@pytest.mark.parametrize("order", [("rate", "share"), ("share", "rate")], ids=["key order", "other order"])
+def test_the_copulas_declaration_agrees_with_log_prob_and_the_moments_of_draws(order):
+    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): copula_term(order)})
+    assert prior.describe().iloc[0]["declared_gaussian"]
+    gaussian = prior.gaussian()
+    theta = prior.sample(jax.random.key(14), 20_000)
+    log_prob = prior.log_prob(theta[:200])
+    tolerance = 1e-10 * jnp.abs(log_prob) + 1e-12 * theta.shape[-1]
+    assert bool(jnp.all(jnp.abs(gaussian.log_density(theta[:200]) - log_prob) <= tolerance))
+    theta = np.asarray(theta)
+    covariance = np.asarray(gaussian.cov.to_dense())
+    standard_error = np.sqrt(np.diag(covariance) / len(theta))
+    np.testing.assert_array_less(np.abs(theta.mean(axis=0) - gaussian.mean), 5 * standard_error)
+    np.testing.assert_allclose(np.cov(theta.T), covariance, atol=0.05 * covariance.max())
