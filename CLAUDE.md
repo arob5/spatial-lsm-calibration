@@ -129,8 +129,9 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - The initial conditions' processed file is in the source files' units, negative
   wood and leaf draws included, and applies **no state-to-parameter mapping**:
   three of the four SIPNET initial parameters depend on calibrated parameters,
-  so the mapping is the experiment layer's, per proposed parameter vector. Each
-  spec's `pecan_conversion` says what PEcAn did.
+  so the mapping is applied per proposal, by the SIPNET parameter map's
+  `ComputeInitialConditions` rule. Each spec's `pecan_conversion` says what
+  PEcAn did.
 
 ## Code conventions
 
@@ -187,13 +188,28 @@ them.
 | **observation** | one entry of **y**: one observed value of one observation source at one site (and time) | "cell", "observed cell" |
 | **model output** | SIPNET's output as a labeled `xr.Dataset`, one run or a stack | `dataset` as a variable name for it |
 | **run** | one SIPNET execution: one site, one sample, and one member of each driving data source | "cell", "slot", "pair" |
+| **run index** | the rows of a forward evaluation: its `batch_dim` and any crossed dims of the external inputs, `ForwardEvaluation.run_index` | |
+
+**The calibration.** Three objects, one question each: `ParameterVector`
+(what is calibrated), `Prior` (what is believed beforehand),
+`SIPNETParameterMap` (how a value reaches SIPNET).
+
+| Word | Meaning | Retires |
+|---|---|---|
+| **parameter** | one unknown of the calibration, a `Parameter`; always distinct from a **SIPNET parameter**, which is always called by its full name | "calibration parameter" |
+| **dim** / **dim label** | the one xarray dim a parameter varies over, `site` or a site-labels name, and one value of its index (`vector.dim_index(dim)`); a site-labels dim's dim labels are the classes some site carries | "group", "copy", `varies_by`, `group_dim` |
+| **natural** / **unconstrained size and names** | `k` and `e`, the numbers of one dim label's value in natural and unconstrained space, and their names; they differ only on the simplex | "component", "element" |
+| **support** | the open set a natural value lies in; its bijector is the default transform `T` | |
+| **prior term** | the prior of one parameter, a `PriorTerm` | |
+| **site covariate** | a `float64` column of the vector's site table, named in `site_covariate_names`, readable by prior functions and SIPNET rules | |
+| **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
 
 **Representations.**
 
 | Word | Meaning | Retires |
 |---|---|---|
 | **field** | one `xr.DataArray` holding one variable under the field contract below | "canonical field", a Dataset called a field |
-| **Fields** (a representation) | a vector's labeled form: an `xr.Dataset` of fields for the parameter vector, a `dict[str, Field]` for the observation vector | |
+| **Fields** (a representation) | the observation vector's labeled form, a `dict[str, Field]` | Fields for the parameter vector, whose labeled form is a `ParameterDataset` on each parameter's own dim, and not a collection of fields; `site_fields()` is its per-site view |
 | **Flat** | a vector's unlabeled numeric form: one vector `(D,)`/`(N,)`, or a batch `(n_samples, D)`/`(n_samples, N)`, called "batched Flat" where the shape matters | "block" |
 | **entry** | one position of a Flat vector | "column" (parameter vector), "cell" (observation vector) |
 | **segment** | the contiguous entries of one site, or one piece, in Flat | "block" in `forward.py` |
@@ -210,7 +226,7 @@ them.
 | **sample** | the default name of the batch dim made from the rows of batched Flat; one row of theta is one sample (`conventions.SAMPLE`) | `member` for theta rows |
 | **J** (mathematics only) | the number of samples; in code `n_samples`, or `batch_size` for a batch dim of any name | `J`, `n_members` as identifiers |
 | **member** | one member of a data source's own ensemble, only inside a name that says which source: `initial_condition_member`, `driver_member` | bare `member` as a dim name |
-| **batch shape** | TFP's term, only in TFP code, always written "TFP batch shape"; prior groups are "groups" | "batch member" for a group |
+| **batch shape** | TFP's term, only in TFP code, always written "TFP batch shape" | "batch member" for a dim label |
 
 **Narrowed words.** *label*: an xarray coordinate label, text on a figure, or
 "site labels" the data source. *kind*: only pySIPNET's variable kind. *source*:
@@ -222,7 +238,7 @@ PyEns `Grid` (always "PyEns grid").
 **Notation.** `J` samples, `D` the dimension of theta
 (`ParameterVector.dimension`), `N` the dimension of y
 (`ObservationVector.dimension`), `S` sites (`n_sites`), `K` observation sources;
-`theta` Flat unconstrained calibration parameters, `y` Flat observations, `G`
+`theta` Flat unconstrained parameters, `y` Flat observations, `G`
 the forward map (`ForwardModel`), `M_s` SIPNET at site s, `H_k` the observation
 operator of source k, `T` the unconstrained-to-natural transform.
 "Predictions" is always a Flat `(N,)`/`(J, N)`; its labeled form is
@@ -260,54 +276,53 @@ form is stated in its home module's data model:
 | `ModelOutput` | `fields` | `validate_model_output` |
 | `ObservedValues` | `observation.source` | `validate_observed_values` |
 | `SIPNETParameterFields` | `fields` | `validate_sipnet_parameter_fields` |
-| `SIPNETOverrides` | `parameter_vector` | `validate_sipnet_overrides` |
-| `CalibrationFields` | `parameter_vector` | `validate_calibration_fields` |
+| `SIPNETOverrides` | `fields` | `validate_sipnet_overrides` |
+| `NaturalValues` | `parameter_vector` | `validate_natural_values` |
+| `ParameterDataset` | `parameter_vector` | `validate_parameter_dataset` |
+| `ExternalInputs` | `sipnet_parameter_map` | `validate_external_inputs` |
 
-The validators of the xarray forms are strict: each requires everything
+The validators of the field forms are strict: each requires everything
 `validate_field` does, `lon`/`lat` included; `validate_sipnet_overrides`
-checks a mapping of pySIPNET flat parameter names to numbers. The one
-exception is `parameter_vector.sipnet_overrides`, which reads no location and
-so takes SIPNET parameter fields without `lon`/`lat`, as a parameter vector
-built from bare site ids gives them; that vector's own `flat` and
-`sipnet_parameter_fields` read its Fields without them, and `ForwardModel`
-locates them from its site table. `SIPNETParameterFields` lives in `fields`
-beside `ModelOutput`, the model's input beside its output, so
-`initial_conditions` and `observation` never import `parameter_vector` (and
-with it TFP and pyEKI).
+checks a mapping of pySIPNET flat parameter names to numbers.
+`SIPNETParameterFields` and `SIPNETOverrides` live in `fields` beside
+`ModelOutput`, the model's input beside its output, so `initial_conditions`
+and `observation` never import `parameter_vector` (and with it TFP), nor
+`prior` (and with it pyEKI).
 
 ### Vector-like classes
 
 `ParameterVector`, `ObservationVector` and their pieces follow one convention.
-A parameter vector's pieces are its calibration parameters, what `theta`
-holds (`vector[name]`, `in`, `iter`, `len` and `describe()` cover them); its
-`FixedParameter`s are reached through `vector.fixed_parameters`. An
-observation vector's are its `ObservationSource`s. `CalibrationParameter`,
-`FixedParameter` and `ObservationSource` are built the same way:
+A parameter vector's pieces are its `Parameter`s, what theta holds
+(`vector[name]`, `in`, `iter`, `len` and `describe()` cover them); an
+observation vector's are its `ObservationSource`s. The prior and the SIPNET
+parameter map are separate objects over a vector (`prior.py`,
+`sipnet_parameter_map.py`), and a prior and a forward model are paired by
+passing `prior.parameter_vector` to both; a driver given two vectors from
+elsewhere calls `parameter_vector.check_parameter_vectors_share_a_layout`.
 
 | Aspect | Convention |
 |---|---|
-| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`, `check_calibration_parameter_is_valid`, `check_fixed_parameter_is_valid`; the parameter vector makes two grouped checks and no other, `check_parameter_vector_pieces_are_valid` and `check_parameter_vector_is_valid`, either side of restricting its priors to the groups present); nothing mutable reachable: mappings frozen (`frozendict`, which pickles and hashes), arrays copied and read-only (`conventions.ReadOnlyCopies` for xarray data) |
+| Construction | `@dataclass(frozen=True, eq=False, kw_only=True)`; validation in `__post_init__` through one grouped check (`check_observation_vector_is_valid`, `check_observation_source_is_valid`, `check_parameter_is_valid`, `check_parameter_vector_is_valid`); nothing mutable reachable: mappings frozen (`frozendict`, which pickles and hashes), arrays copied and read-only (`conventions.ReadOnlyCopies` for xarray data) |
 | Pieces | `vector[name]`, `name in vector` (`False` for anything else, an unhashable value included), `iter(vector)` and `reversed(vector)` (piece names), `len(vector)` (number of pieces), `<piece>_names` |
 | Size | `dimension` (D or N) |
-| Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, group, element)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` (`Layout.positions` beneath the parameter vector's) |
-| Sites | `sites` (ids, ascending, refused if unsorted on input; an observation source's values are sorted by site and time as a normalization, since their order carries nothing), `site_table` on both (the observation vector's from its observed values' `lon`/`lat`, which its sources must agree on) |
-| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused (`validation.as_site_ids`, `validation.check_names_are_unique`); `restrict_to_sites(sites)` is the intersecting form, which the forward model's advice uses; the site checks both vectors run are `validation`'s (`check_sites_are_the_vectors`, `check_the_restriction_keeps_a_site`) |
-| Representations | `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
-| Flat's array type | JAX everywhere: both vectors and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package (PR 1) |
-| Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line. The parameter vector adds `describe_entries()` (one row per entry, with the prior's moments) and `summary()` (the table as text) |
-| Directions | where a vector and its pieces list SIPNET parameter names, the name says which way: `sipnet_parameter_names_written`, `sipnet_parameter_names_read` |
-| Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──`, `# ── evaluation ──` |
+| Entries | `index`: a `pd.MultiIndex` over the entries (`(parameter, dim, dim_label, unconstrained_name)`; `(site, observation_source, time)`); `positions(**selectors) -> int64 array` on both, an unknown label a `KeyError` as in `select` |
+| Sites | `sites` (ids, ascending, refused if unsorted on input; an observation source's values are sorted by site and time as a normalization, since their order carries nothing), `site_table` on both (the parameter vector's `site_id`, `lon`, `lat`, its named site covariates and a categorical column per site-labels name; the observation vector's from its observed values' `lon`/`lat`, which its sources must agree on) |
+| Selection | `select(*, <piece>_names=None, sites=None, ...)`: an unknown label raises `KeyError`; the result keeps vector order whatever the request order, so Flat order never changes by selection; duplicates are refused (`validation.as_site_ids`, `validation.check_names_are_unique`); the observation vector's `restrict_to_sites(sites)` is the intersecting form, which the forward model's advice uses |
+| Representations | the parameter vector: `to_natural`/`to_unconstrained`/`at_sites` on theta, and `dataset(theta) -> ParameterDataset`, `flat(dataset) -> theta`, `site_fields(dataset)`; the observation vector: `flat(fields) -> Flat`, `fields(flat_values, *, batch_dim=SAMPLE) -> Fields` |
+| Flat's array type | JAX everywhere: both vectors, the prior and `ForwardModel` return `jax.Array` Flat and accept any array-like; internals that fill arrays in place work in NumPy and convert on return. 64-bit JAX is on for the whole package |
+| Description | `describe()`: one row per piece; `index`: one row per entry; `__repr__` one summary line. `calibration.describe_calibration(vector, prior, sipnet_map)` joins the three objects' descriptions, the record written beside a run |
+| Directions | where a map, a rule or an operator lists SIPNET parameter names, the name says which way: `sipnet_parameter_names_written`, `sipnet_parameter_names_read` |
+| Section comments | `# ── identity ──`, `# ── selection ──`, `# ── representations ──` or `# ── coordinates ──`, `# ── evaluation ──` |
 
 `ForwardModel` is a regular class with read-only properties (its arguments
 and what it derives from them, so the run machinery cannot go stale; its
-climate a `frozendict`, its site table a copy); `ForwardEvaluation` is
-`frozen, eq=False` with JAX `theta`, `predictions` and `valid`. A batch crossed
-with a data source's ensemble reaches Flat through `stack_batch_dims` into a
-new batch dim (the parameter vector's `flat` takes the stacked Fields), and
-reaches `ForwardModel` as rows of `theta`, one per combination: it refuses
-SIPNET parameter fields on a second batch dim, with that advice. No base class
-is shared by the vectors: they share an interface, not an implementation, and
-their shared coercion lives in `validation.py`.
+climate a `frozendict`, its external inputs a copy); `ForwardEvaluation` is
+`frozen, eq=False` with JAX `theta`, `predictions` and `valid`. A data
+source's ensemble enters as external inputs, crossed with theta's rows by
+PyEns when its dim is not `batch_dim`; `forward(theta)` refuses crossed dims,
+and the reduction over them is the experiment's. No base class is shared by
+the vectors: they share an interface, not an implementation, and their shared
+coercion lives in `validation.py`.
 
 ### Where shared things live
 
@@ -349,7 +364,8 @@ their shared coercion lives in `validation.py`.
   - **an integer** (a site id, a source index, a count) refuses a boolean, a
     missing value and a float, even an integral one ("cast it with int()");
   - **a site the data lacks** is a `KeyError` (the vectors' `select`
-    included; `restrict_to_sites` is their intersecting form).
+    included; the observation vector's `restrict_to_sites` is the
+    intersecting form).
   `as_batched_flat(values, dimension, *, message_name)` returns the 2-D
   batch alone, `float64`, JAX when given JAX; a caller that must know a
   one-vector input was given asks `is_one_vector(values)` (not
@@ -413,12 +429,13 @@ the ones most often broken.
   string. A module-level tuple of names is `*_NAMES` (`TIME_COORD_NAMES`,
   `SPATIAL_DIM_NAMES`).
 - **A variable holding one representation of a concept says which**, in the
-  glossary's words. The parameter vector's Flat is `theta`, its Fields is
-  `<thing>_fields`, its SIPNET parameter fields are `sipnet_parameter_fields`;
+  glossary's words. The parameter vector's Flat is `theta`, its labeled form
+  `parameter_dataset`, its values `natural_values`; SIPNET parameter fields
+  are `sipnet_parameter_fields`;
   the observation vector's Flat is `y`. A pySIPNET object is named for its class
   (`sipnet_result`, `sipnet_output`, `sipnet_parameters`); the labeled xarray of
   a run's output is `model_output`. Nobody should have to ask whether a value is
-  a `ParameterVector`, a `CalibrationParameter` or a SIPNET parameter.
+  a `ParameterVector`, a `Parameter` or a SIPNET parameter.
 - **`sipnet_` prefixes anything in pySIPNET's vocabulary**: names, values,
   objects. The bare word or `calibration_` is this repository's vocabulary.
   `pysipnet_` is not used: this repository reaches SIPNET only through
@@ -564,8 +581,8 @@ because these are what someone opens it to find out:
    and what missing means. State it plainly; do not make the reader infer it
    from the validation code. State it once, in its home module; another
    module that uses the form names it and points there, and states only what
-   it adds (as `parameter_vector` does for SIPNET parameter fields, whose form
-   `fields` owns).
+   it adds (as `sipnet_parameter_map` does for SIPNET parameter fields, whose
+   form `fields` owns).
 4. **The functions it provides** — the public entry points and what each one
    does with that model.
 
@@ -759,7 +776,8 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameter_vector.py`, `site_labels.py`, `forward.py`, `compute.py` and the
+`parameter_vector.py`, `prior.py`, `sipnet_parameter_map.py`,
+`calibration.py`, `site_labels.py`, `forward.py`, `compute.py` and the
 `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
@@ -820,22 +838,36 @@ src/sipnet_calibration/
                           # processed file per source; read_raw(),
                           # build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
-  parameter_vector.py     # ParameterVector: a named random vector over sites, built
-                          # from CalibrationParameters (TFP prior in natural space,
-                          # varies_by, SIPNETMap) and FixedParameters; select(),
-                          # sample/log_prior/gaussian_prior on Flat (J, D); three
-                          # value representations with named conversions:
-                          # fields() <-> flat() (Fields: Dataset of
-                          # fields on (sample, site), attrs["space"]), and
-                          # sipnet_parameter_fields() -> sipnet_overrides(), and
-                          # PyEns grids
-                          # through pyens.xarray.fields_from_dataset; the
-                          # CalibrationFields and SIPNETOverrides aliases and
-                          # their validators; example_parameter_vector()
-  forward.py              # ForwardModel: theta (J, D) -> predictions (J, N),
-                          # SIPNET once per (sample, site) through PyEns, the
-                          # observation operators applied on the worker;
-                          # ForwardEvaluation; the failure split
+  parameter_vector.py     # ParameterVector: what is calibrated. Parameter (a
+                          # Support, whose bijector is the default T; units; at
+                          # most one dim; natural names), Support and REAL,
+                          # POSITIVE, OPEN_UNIT_INTERVAL, OpenInterval, SIMPLEX;
+                          # index (parameter, dim, dim_label,
+                          # unconstrained_name), positions(), select();
+                          # to_natural()/to_unconstrained()/at_sites();
+                          # dataset() <-> flat() (ParameterDataset, on each
+                          # parameter's own dim), site_fields(); probe_points();
+                          # check_parameter_vectors_share_a_layout
+  prior.py                # Prior: what is believed beforehand. PriorTerm per
+                          # parameter; sample(), log_prob() (base density or
+                          # change of variables), gaussian() (declared Gaussians
+                          # exact, others moment-matched); iid_over_dim,
+                          # independent_over_dim; log_normal, logit_normal
+                          # (support=) and their _from_* forms,
+                          # softmax_normal
+  sipnet_parameter_map.py # SIPNETParameterMap: how a value reaches SIPNET.
+                          # Rules (Copy, CopySimplex, ComputePhotosynthesisRates,
+                          # ComputeInitialConditions) reading values by name with
+                          # a ValueRequirement (units, Bounds, natural size);
+                          # Fixed; ExternalInputs; sipnet_parameter_fields(),
+                          # out_of_domain(); the fit and corner checks
+  calibration.py          # describe_calibration() (the record of the three),
+                          # example_calibration()
+  forward.py              # ForwardModel: theta (J, D) and external inputs ->
+                          # predictions (R, N), SIPNET once per run through
+                          # PyEns, the observation operators applied on the
+                          # worker; ForwardEvaluation with its run index; the
+                          # failure split
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   fields.py               # the field contract: validate_field(), batch_dims(),
                           # stack_batch_dims()/unstack_batch_dims(),
@@ -970,25 +1002,28 @@ plotting code. The load-bearing rules:
   written with and the default binding. Which operator reads an observation
   source is a modeling decision an experiment writes in `config.py`.
 - **The forward model is one class over existing pieces.**
-  `forward.ForwardModel(model, parameter_vector, climate=, backend=,
-  observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its module docstring says
-  how the pieces compose. The rules a session can get wrong: the observation
+  `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
+  climate=, backend=, external_inputs=, out_of_domain=, observation_vector=)`
+  is pyEKI's `(J, D) -> (J, N)`; its module docstring says how the pieces
+  compose. The rules a session can get wrong: the observation
   operators run **on the worker**, each run receiving only its site's slice of
   the observation vector and returning that slice's Flat, which the calling
   process writes at `positions(site=)` (right because the vector is site-major,
   which `__init__` checks per site); a run at a site no observation source
   observes returns nothing, so an observation source costs nothing at the sites
-  it does not observe. The SIPNET parameter fields a
-  `to_sipnet_parameter_fields` hook returns must be on exactly `(batch_dim,
-  site)` (`sample` unless the model's `batch_dim=` says otherwise) with every
-  variable on both, labels `0` to `J - 1` in `theta`'s row order, sites in the
-  parameter vector's, and each variable named by pySIPNET's flat parameter name
-  (an alias such as `aMax` passes pySIPNET's lookup but `SIPNETModel` refuses it
-  on every run). A run that fails at its parameters (`SIPNETRunError`,
+  it does not observe. External inputs pair with theta by dim name: one on
+  `batch_dim` zips with theta's rows (labels `0` to `J - 1`), one on any other
+  batch dim is crossed, and PyEns enumerates the runs; each run's output is
+  placed by its coordinate on the run index `(batch_dim, *crossed dims)`, so
+  the row order is the repository's, not PyEns's. SIPNET parameters outside
+  pySIPNET's domains raise before anything runs, and the map is checked at the
+  corners of theta when the model is built; `out_of_domain="fail_row"` marks
+  their rows invalid instead, a truncation of the prior that `Prior` does not
+  know. A run that fails at its parameters (`SIPNETRunError`,
   pydantic's `ValidationError`, a timeout, or a non-finite value in a read
   variable, `ModelOutputNotFiniteError`; across a process boundary matched on
-  PyEns's fully qualified `RemoteError.type_name`) makes the **whole sample's**
-  row NaN, and anything else a worker returns is the machinery failing and is
+  PyEns's fully qualified `RemoteError.type_name`) makes its **whole row**
+  NaN, and anything else a worker returns is the machinery failing and is
   raised with the collected runs on the error's `evaluation`, as is a
   prior-predictive batch in which every run failed. The prior-predictive output
   is stacked by `fields.stack_model_outputs`, so it carries no `time_bounds` or
@@ -1176,38 +1211,47 @@ plotting code. The load-bearing rules:
 
 ### TensorFlow Probability (JAX substrate)
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
-  (the unconstrained base) and `.bijector`; `sipnet_calibration.parameter_vector` stores one
-  prior per calibration parameter and reads both off it.
+  (the base) and `.bijector`. The coordinates are the parameter's, never the prior's:
+  `Parameter.bijector` is its support's default unless overridden, and
+  `sipnet_calibration.prior` evaluates a term by its base density only when its
+  distribution's bijector agrees with the parameter's at the probe points, by change of
+  variables otherwise.
+- Bijectors are compared by their images, never by equality:
+  `tfb.Sigmoid() == tfb.Sigmoid(low=0., high=1.)` is `False`.
+- `LogNormal` and `LogitNormal` default to `Exp` and `Sigmoid` as their event-space
+  bijector, `Gamma` and `HalfNormal` to `Softplus`; `MixtureSameFamily` has none
+  (`None`), which is why the prior's support check also draws.
 - `tfd.GaussianProcess(kernel, index_points, mean_fn)` with a `tfp.math.psd_kernels` kernel is a
   multivariate normal over the index points (event `(S,)`, batch `()`, analytic `.mean()` and
-  `.covariance()`), so a GP prior needs no other package; `ParameterVector` admits it as a
-  *joint* prior over a scalar calibration parameter's groups (issue #33). Built without x64 it is
-  `float32`, which the vector refuses; importing `sipnet_calibration` turns x64 on for the
+  `.covariance()`), so a GP prior needs no other package (issue #33). Built without x64 it is
+  `float32`, which the prior refuses; importing `sipnet_calibration` turns x64 on for the
   process, the package's one import-time side effect.
-- Batch slicing by an **integer** index array (`prior[np.array([0, 2])]`) works for `LogNormal`
-  and `LogitNormal` but **fails for a batched `softmax_normal`** once two or more indices are kept
-  (TFP's slicing of the `MultivariateNormalDiag` base), so `parameter_vector` rebuilds that family
-  from its sliced moments. Slicing by a **boolean** mask silently returns the wrong shape. TFP does
-  not slice event dimensions, so a joint prior is restricted by taking the Gaussian marginal of
-  its base.
 - TFP bijectors **cache** forward/inverse pairs: `b.forward(b.inverse(x))` hands `x` back
   unchanged, so a check that an input lies in a bijector's image must re-apply `forward` to a
   fresh copy of the array.
 - Several TFP distributions (`MultivariateNormalTriL`, `Weibull`, `Gumbel`, ...) are
   `TransformedDistribution` subclasses over an internal reparameterization; their `.bijector` is
-  not a map from unconstrained space. `parameter_vector` reads `.distribution`/`.bijector` only
-  off an exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
-- With the pinned build, a distribution built from `TransformedDistribution` or
-  `Blockwise` (the simplex and product priors) pickles but fails `pickle.loads`;
-  `LogNormal` and `LogitNormal` round-trip. Send PyEns workers plain data
-  (SIPNET parameter fields through `pyens.xarray.fields_from_dataset`), never a
-  `ParameterVector`.
+  not a map from unconstrained space. The prior reads `.distribution`/`.bijector` only off an
+  exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
+- A prior over a dim puts the bijector outside the batch: `iid_over_dim` builds
+  `TransformedDistribution(Sample(base, n), b)`, whose base density is exact in theta.
+- With the pinned build, a distribution built from `TransformedDistribution` pickles but fails
+  `pickle.loads`; `LogNormal` and `LogitNormal` round-trip. Send PyEns workers plain data
+  (SIPNET parameter fields through `pyens.xarray.fields_from_dataset`), never a vector or prior.
 - Moments do **not** pass through a non-affine bijector: `TransformedDistribution(...).mean()`
   raises `NotImplementedError`. Take them from `.distribution`.
-- `SoftmaxCentered`'s density on the simplex is against the embedded volume element,
-  `0.5 * logdet(J^T J)`, which differs from `log|det J|` of the first `k - 1` rows by `0.5 log k`.
-- Sampling takes `seed=` a `jax.random` key; `BatchBroadcast(dist, to_shape=(n,))` batches a
-  shared prior over groups.
+- On the simplex, densities differ by their reference measure. `SoftmaxCentered`'s
+  `forward_log_det_jacobian` is against the embedded volume element, `0.5 * logdet(J^T J)`,
+  which differs from `log|det J|` of the first `k - 1` rows by `0.5 log k`; a `Dirichlet`'s
+  density is against Lebesgue measure on the first `k - 1` coordinates.
+  `Support.log_jacobian` takes the latter, by autodiff, whatever the bijector.
+- `IteratedSigmoidCentered` rounds a simplex coordinate to exactly 0 at `theta = 20 * 1` in
+  float64, so the probe checks accept a bijector's image in the support's closure and skip
+  probes that land on its boundary.
+- In float64, `Gamma(0.02)` draws exactly 0, whose log is `-inf`, about once in 10^4 draws,
+  depending on TFP's batch shape; the prior's draw-based support check catches it.
+- Sampling takes `seed=` a `jax.random` key; `jax.random.fold_in(key, zlib.crc32(name))` is
+  how the prior keys a term by its name.
 
 ### PyEns
 - `EnsembleRunner(model, LocalBackend(n_workers=N)).run(EnsembleSpec(inputs=...))` — `model` must be defined at module level (pickling)
@@ -1219,10 +1263,11 @@ plotting code. The load-bearing rules:
   `fields_from_dataset(dataset, *, along=None, axes=None)` and
   `dataset_as_field(dataset, *, along, axes=None)`. A dim with a coordinate
   becomes `Axis(dim, labels=[...])`, one without becomes `Axis(dim, size=n)`;
-  datetime labels become ISO strings; a 0-d variable becomes `Fixed`. On a
-  SIPNET parameter fields from `example_parameter_vector` the int32 `site` and
-  int64 `sample` coordinates become plain `int` labels, a non-dimension
-  coordinate such as `pft` is ignored, and a hand-built label-keyed
+  datetime labels become ISO strings; a 0-d variable becomes `Fixed`. On
+  SIPNET parameter fields from `SIPNETParameterMap.sipnet_parameter_fields`
+  the int32 `site` and int64 `sample` coordinates become plain `int` labels,
+  a variable is a grid along its own dims only (a fixed value on `(site,)`
+  along the site axis alone), and a hand-built label-keyed
   `Grid({site_id: drivers}, along=Axis("site", labels=[...]))` zips with the
   result.
 - **The pairing rule is the dim name.** PyEns makes one axis per dim, named for
@@ -1245,10 +1290,9 @@ plotting code. The load-bearing rules:
   predictions with `log_density(predictions)`, `(..., N) -> (...)`, by the symmetry of the
   density in point and mean. It equals
   `-pyeki.eki.misfits(y, predictions, noise_cov) - (logdet R + N log 2 pi) / 2` and requires
-  `noise_cov` to support `whiten` and `logdet`. Build `noise_cov` with
-  `DensePSD.from_matrix(R)`: `DensePSD(L)` takes the **lower** Cholesky factor and checks only
-  that it is square and finite, so passing `R` or an upper factor gives a wrong density
-  silently. Outside debug mode (`pyeki.linalg.set_debug_checks(True)` turns it on), a row
+  `noise_cov` to support `whiten` and `logdet`. Build `noise_cov` with `DensePSD(R)`, which
+  factorizes the matrix; a factor already computed is passed by keyword, `DensePSD(L=L)`,
+  and must be the **lower** Cholesky factor (`from_matrix` is gone). Outside debug mode (`pyeki.linalg.set_debug_checks(True)` turns it on), a row
   holding a NaN or an inf scores NaN, and so does every row when `noise_cov` is singular or
   holds a NaN; the caller maps that to `-inf`.
 

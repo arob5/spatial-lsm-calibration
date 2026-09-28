@@ -52,8 +52,14 @@ The data sources, each a spec, a reader, a builder, a loader and a field view:
 The inverse problem:
 
 :mod:`~sipnet_calibration.parameter_vector`
-    The calibration vector: priors, bijectors and the maps to SIPNET
-    parameters.
+    What is calibrated: the parameters, their supports and dims, and the
+    coordinates theta.
+:mod:`~sipnet_calibration.prior`
+    What is believed beforehand: the prior over a parameter vector.
+:mod:`~sipnet_calibration.sipnet_parameter_map`
+    How a value reaches SIPNET: rules, fixed values and external inputs.
+:mod:`~sipnet_calibration.calibration`
+    The three together: the record of a calibration, and an example.
 :mod:`~sipnet_calibration.observation`
     The observation vector, the observation operators and the time
     alignment they are written with.
@@ -73,8 +79,8 @@ The dependency runs one way, from the foundations up::
     conventions  <-  validation  <-  sites
         <-  fields, constraints, site_labels
         <-  drivers, initial_conditions, parameter_vector
-        <-  observation
-        <-  forward  <-  experiments
+        <-  observation, prior, sipnet_parameter_map
+        <-  calibration, forward  <-  experiments
 
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
 and :mod:`~sipnet_calibration.projection` write through it;
@@ -82,8 +88,12 @@ and :mod:`~sipnet_calibration.projection` write through it;
 ``initial_conditions``, ``parameter_vector`` and ``observation`` depend on
 ``fields`` (the field contract, its batch dims, and the SIPNET parameter
 fields alias and validator, which is why neither ``initial_conditions`` nor
-``observation`` imports ``parameter_vector``); and ``forward`` on ``fields``,
-``observation`` and ``parameter_vector``.
+``observation`` imports ``parameter_vector``). ``prior`` depends on
+``parameter_vector``; ``sipnet_parameter_map`` on ``parameter_vector``,
+``fields`` and ``initial_conditions``, and is the one of the three that
+imports pySIPNET; ``calibration`` on all three; and ``forward`` on
+``fields``, ``observation``, ``parameter_vector`` and
+``sipnet_parameter_map``.
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside

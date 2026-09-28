@@ -2099,7 +2099,7 @@ wheels = [
 [[package]]
 name = "pyeki"
 version = "0.1.0.dev0"
-source = { git = "https://github.com/TARPS-group/pyEKI.git?branch=main#a9fc6ac5d73b7e638e94e878fbdac09f240f9d0a" }
+source = { git = "https://github.com/TARPS-group/pyEKI.git?branch=main#1fec3ee849cdb200ae2401e07e56a8b04ace3bb9" }
 dependencies = [
     { name = "jax" },
     { name = "numpy" },
@@ -2108,7 +2108,7 @@ dependencies = [
 [[package]]
 name = "pyens"
 version = "0.1.0"
-source = { git = "https://github.com/arob5/PyEns.git?branch=main#6f02c6c2bc472b623874abf287da796c63e8bc41" }
+source = { git = "https://github.com/arob5/PyEns.git?branch=main#b1ed47805aa9f6e29d3d07a75828a46fc75f9ed8" }
 
 [package.optional-dependencies]
 xarray = [

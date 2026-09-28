@@ -922,3 +922,39 @@ def with_parameter_value(sipnet_parameters, name: str, value: float):
     values = sipnet_parameters.model_dump()
     values[group][name] = value
     return SIPNETParameters.model_validate(values)
+
+
+# ── the stored reference fields ───────────────────────────────────────────────
+
+#: Eight prior draws of the example calibration at sites 1, 27 and 4711 (PFT
+#: deciduous, conifer, deciduous): each draw's natural values, as variables
+#: ``natural:<name>`` per site, and the SIPNET parameter fields they map to,
+#: as the ParameterVector of commit eec9745 computed them.
+EXAMPLE_REFERENCE = Path(__file__).parent / "data" / "example_calibration_reference.nc"
+EXAMPLE_REFERENCE_SITES = (1, 27, 4711)
+EXAMPLE_REFERENCE_PFT = ("deciduous", "conifer", "deciduous")
+
+
+def example_reference() -> xr.Dataset:
+    """The reference fields, loaded."""
+    with xr.open_dataset(EXAMPLE_REFERENCE, engine="h5netcdf") as dataset:
+        return dataset.load()
+
+
+def example_reference_natural_values(reference: xr.Dataset, parameter_vector) -> dict:
+    """The reference's natural values, as the example calibration's
+    parameters hold them: per-site values read at each dim label."""
+    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.dim_index("pft")]
+    allocation = ("leaf", "wood", "fine_root", "coarse_root")
+
+    def at(name: str) -> np.ndarray:
+        return reference[f"natural:{name}"].values
+
+    return {
+        "photosynthetic_capacity": at("photosynthesis.capacity")[:, 0],
+        "respiration_share": at("photosynthesis.respiration_share")[:, 0],
+        "allocation": np.stack([at(f"allocation.{n}_allocation")[:, pft] for n in allocation], axis=-1),
+        "base_soil_respiration": at("base_soil_respiration")[:, pft],
+        "leaf_fall_fraction": at("leaf_fall_fraction")[:, 0],
+        "initial_soil_carbon": at("initial_soil_carbon"),
+    }

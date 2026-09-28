@@ -3,9 +3,11 @@
 The processed file stores the initial state in the source's own units because the
 SIPNET parameters it feeds depend on parameters the calibration proposes: the
 root fractions for ``plantWoodInit`` and the specific leaf weight for
-``laiInit``. The conversion is therefore a function of a state *and* a
-parameter vector, applied per proposal rather than once at ingest, and it
-lives here.
+``laiInit``. The conversion is therefore a function of a state *and* those
+SIPNET parameters, applied per proposal rather than once at ingest. It lives
+here; in a calibration,
+:class:`sipnet_calibration.sipnet_parameter_map.ComputeInitialConditions`
+applies the same formulas as a rule of the SIPNET parameter map.
 
 Contents
 --------
@@ -14,7 +16,7 @@ Contents
 :func:`to_sipnet_initial_condition_fields`
     A whole ensemble, over ``(initial_condition_member, site)`` and any other
     batch dim the parameters bring, to SIPNET parameter fields of the same
-    values, which merge into a parameter vector's.
+    values, which merge into a SIPNET parameter map's.
 :data:`CONVERTED_SIPNET_PARAMETER_NAMES`
     The SIPNET parameters both of them set.
 
@@ -103,7 +105,7 @@ def to_sipnet_initial_conditions(
         The member's surface soil moisture in the processed file's units, percent of
         saturation, so between 0 and 100.
     leaf_carbon_per_area:
-        ``leafCSpWt``, g C m-2 of leaf, from the same parameter vector. Must be
+        ``leafCSpWt``, g C m-2 of leaf, of the same run. Must be
         at least SIPNET's ``TINY`` of 1e-6, which it is silently floored at.
     fine_root_fraction, coarse_root_fraction:
         ``fineRootFrac`` and ``coarseRootFrac``, the shares of the total wood
@@ -237,11 +239,11 @@ def to_sipnet_initial_condition_fields(
     :func:`to_sipnet_initial_conditions` element by element: the same formulas
     and the same refusals, one value per element, as SIPNET parameter fields
     (:data:`~sipnet_calibration.fields.SIPNETParameterFields`), which merge
-    into a parameter vector's once the variables both set are dropped from one
-    (``xr.merge([vector.sipnet_parameter_fields(theta),
+    into a SIPNET parameter map's once the variables both set are dropped from
+    one (``xr.merge([sipnet_map.sipnet_parameter_fields(vector, theta),
     initial_condition_fields.drop_vars(both)])``, where ``both`` is
     ``soil_carbon`` for
-    :func:`~sipnet_calibration.parameter_vector.example_parameter_vector`).
+    :func:`~sipnet_calibration.calibration.example_calibration`).
 
     Parameters
     ----------

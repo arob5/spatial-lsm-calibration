@@ -1281,11 +1281,11 @@ def test_conversion_fields_refuse_an_unlabeled_site():
         )
 
 
-def test_conversion_fields_merge_into_a_parameter_vectors():
+def test_conversion_fields_merge_into_a_sipnet_parameter_maps():
     """The initial conditions' batch dim crosses the vector's sample."""
     import jax
 
-    from sipnet_calibration.parameter_vector import example_parameter_vector
+    from sipnet_calibration.calibration import example_calibration
 
     initial = to_sipnet_initial_condition_fields(
         ensemble_state(), leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
@@ -1294,11 +1294,14 @@ def test_conversion_fields_merge_into_a_parameter_vectors():
     site_table = pd.DataFrame(
         {"site_id": initial[SITE].values, "lon": initial["lon"].values, "lat": initial["lat"].values}
     )
-    vector = example_parameter_vector(site_table=site_table, pft=("a", "b"))
-    theta = vector.sample(jax.random.key(0), 3)
-    # The vector calibrates soil_carbon, which the conversion sets too: drop it
-    # from one of the two, as the conversion's docstring says.
-    merged = xr.merge([vector.sipnet_parameter_fields(theta), initial.drop_vars("soil_carbon")])
+    vector, prior, sipnet_map = example_calibration(site_table, pft=("a", "b"))
+    theta = prior.sample(jax.random.key(0), 3)
+    # The map writes soil_carbon, which the conversion sets too: drop it from
+    # one of the two, as the conversion's docstring says.
+    merged = xr.merge(
+        [sipnet_map.sipnet_parameter_fields(vector, theta), initial.drop_vars("soil_carbon")],
+        compat="no_conflicts", join="outer",
+    )
     validate_sipnet_parameter_fields(merged)
     assert merged["total_wood_carbon"].dims == (INITIAL_CONDITION_MEMBER, SITE)
     assert merged["max_photosynthesis_rate"].dims == ("sample", SITE)

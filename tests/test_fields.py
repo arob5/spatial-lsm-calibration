@@ -1709,3 +1709,80 @@ class TestInFieldLayout:
             },
         )
         assert in_field_layout(array)["lon"].ndim == 0
+
+
+# ── SIPNET overrides ──────────────────────────────────────────────────────────
+
+
+def mixed_sipnet_parameter_fields() -> xr.Dataset:
+    """SIPNET parameter fields whose variables are on different dims, as a map
+    writes them: one on (sample, initial_condition_member, site), one on
+    (sample, site), one on (site,)."""
+    from conftest import as_sipnet_parameter_fields
+
+    return as_sipnet_parameter_fields(
+        xr.Dataset(
+            {
+                "soil_carbon": (("sample", "initial_condition_member", "site"), np.arange(12.0).reshape(2, 3, 2) + 1),
+                "base_soil_respiration_rate": (("sample", "site"), [[0.01, 0.02], [0.03, 0.04]]),
+                "vapor_pressure_deficit_exponent": (("site",), [2.0, 2.0]),
+            },
+            coords={"sample": [0, 1], "initial_condition_member": [0, 4, 9], "site": [1, 27]},
+        )
+    )
+
+
+def test_sipnet_parameter_fields_may_hold_variables_on_different_dims():
+    from sipnet_calibration.fields import validate_sipnet_parameter_fields
+
+    validate_sipnet_parameter_fields(mixed_sipnet_parameter_fields())
+
+
+def test_sipnet_overrides_selects_one_run():
+    from sipnet_calibration.fields import sipnet_overrides
+
+    overrides = sipnet_overrides(
+        mixed_sipnet_parameter_fields(), site=27, batch={"sample": 1, "initial_condition_member": 4}
+    )
+    assert overrides == {
+        "soil_carbon": 10.0,
+        "base_soil_respiration_rate": 0.04,
+        "vapor_pressure_deficit_exponent": 2.0,
+    }
+    assert all(type(value) is float for value in overrides.values())
+
+
+def test_sipnet_overrides_needs_exactly_the_batch_dims_and_known_labels():
+    from sipnet_calibration.fields import sipnet_overrides
+
+    fields = mixed_sipnet_parameter_fields()
+    with pytest.raises(ValueError, match="batch= names"):
+        sipnet_overrides(fields, site=27, batch={"sample": 1})
+    with pytest.raises(KeyError, match="initial_condition_member 5"):
+        sipnet_overrides(fields, site=27, batch={"sample": 1, "initial_condition_member": 5})
+    with pytest.raises(KeyError, match="site 2 "):
+        sipnet_overrides(fields, site=2, batch={"sample": 1, "initial_condition_member": 4})
+    with pytest.raises(TypeError, match="mapping"):
+        sipnet_overrides(fields, site=27, batch=3)
+    with pytest.raises(ValueError, match="no site dim"):
+        sipnet_overrides(fields.isel(site=0), site=1, batch={"sample": 1, "initial_condition_member": 4})
+
+
+def test_sipnet_overrides_are_validated():
+    from sipnet_calibration.fields import validate_sipnet_overrides
+
+    validate_sipnet_overrides({"soil_carbon": 1.0})
+    with pytest.raises(TypeError, match="mapping"):
+        validate_sipnet_overrides([("soil_carbon", 1.0)])
+    with pytest.raises(TypeError, match="must be a number"):
+        validate_sipnet_overrides({"soil_carbon": True})
+    with pytest.raises(ValueError, match="alias"):
+        validate_sipnet_overrides({"aMax": 1.0})
+
+
+def test_a_parameter_datasets_label_dim_is_refused_with_advice():
+    from sipnet_calibration.fields import validate_field
+
+    array = xr.DataArray([0.1, 0.2], dims="pft", coords={"pft": ["a", "b"]}, attrs={"units": "1"})
+    with pytest.raises(ValueError, match="ParameterVector.site_fields"):
+        validate_field(array)

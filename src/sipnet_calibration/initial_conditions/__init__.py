@@ -150,7 +150,9 @@ variable, optionally for a subset of sites.
 **The conversion.** :func:`to_sipnet_initial_conditions` converts one
 member; :func:`to_sipnet_initial_condition_fields` converts a whole
 ``(initial_condition_member, site)`` ensemble to SIPNET parameter fields,
-which merge into a parameter vector's.
+which merge into a SIPNET parameter map's. In a calibration the map's
+:class:`~sipnet_calibration.sipnet_parameter_map.ComputeInitialConditions`
+rule applies the same formulas.
 
 **Paths and encodings.** :func:`default_source_root` and
 :func:`default_processed_path` say where the source tree and the processed
@@ -193,7 +195,7 @@ conversions read a parameter the calibration proposes -- the root fractions for
 applies none of them and the processed file holds the state in its own units. (A
 third, ``soilWFracInit``, takes no proposed parameter but is a fraction of a
 water holding capacity the calibration also proposes, so what it *means*
-moves too.) The conversion is a function of a state and a parameter vector,
+moves too.) The conversion is a function of a state and SIPNET parameters,
 :func:`to_sipnet_initial_conditions`, evaluated per proposal; each spec also
 records the formula PEcAn applied, in ``pecan_conversion``.
 
