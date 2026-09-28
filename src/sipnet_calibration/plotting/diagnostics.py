@@ -14,5 +14,7 @@ EKI hands back batched Flat that knows nothing about space or time: ``(J, D)``
 parameter ensembles and ``(J, N)`` predictions. A ``(J, N)`` batched Flat is unstacked
 by :meth:`sipnet_calibration.observation.ObservationVector.fields`, which owns
 the ``(site, observation_source, time)`` index it was flattened with; a ``(J, D)`` one
-by :meth:`sipnet_calibration.parameter_vector.ParameterVector.fields`.
+by :meth:`sipnet_calibration.parameter_vector.ParameterVector.dataset`, whose
+per-site view, :meth:`~sipnet_calibration.parameter_vector.ParameterVector.site_fields`,
+is what a map reads.
 """

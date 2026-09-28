@@ -6,7 +6,7 @@ Where this sits
 An operator reads what SIPNET wrote (through
 :func:`sipnet_calibration.fields.to_model_output`, a labeled ``xr.Dataset``) and,
 where needed, the SIPNET parameter values the run used (SIPNET parameter
-fields from :class:`~sipnet_calibration.parameter_vector.ParameterVector`),
+fields from :class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap`),
 and returns what the instrument would have read. The
 :class:`~sipnet_calibration.observation.vector.ObservationVector` calls it,
 converts the result into the observation source's units and checks it; a
@@ -799,7 +799,7 @@ def check_sipnet_parameter_fields_are_given(
     if sipnet_parameter_fields is None:
         raise ValueError(
             f"{message_name} read the SIPNET parameters {sipnet_parameter_names!r}; pass "
-            "sipnet_parameter_fields= (ParameterVector.sipnet_parameter_fields, or one run's "
+            "sipnet_parameter_fields= (SIPNETParameterMap.sipnet_parameter_fields, or one run's "
             "values from its SIPNETResult.parameters)."
         )
 
