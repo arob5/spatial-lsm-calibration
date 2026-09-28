@@ -182,7 +182,6 @@ from sipnet_calibration.validation import (
     as_sequence,
     as_site_ids,
     check_names_are_unique,
-    check_sites_are_the_vectors,
     is_one_vector,
     truncated,
 )
@@ -749,7 +748,7 @@ class ParameterVector:
         kept = np.ones(self.n_sites, dtype=bool)
         if sites is not None:
             requested = as_site_ids(sites, message_name="sites")
-            check_sites_are_the_vectors(requested, self.sites, message_name="the vector")
+            check_sites_are_held(requested, self)
             kept &= self._table[SITE_ID].isin(requested).to_numpy()
         for name, labels in (dim_labels or {}).items():
             check_dim_labels_select_a_site_labels_dim(name, self)
@@ -1511,6 +1510,16 @@ def check_dim_labels_select_a_site_labels_dim(name: Any, parameter_vector: Param
         raise KeyError(
             f"dim_labels names {name!r}, which is not a site-labels name of the vector "
             f"({sorted(parameter_vector.site_labels)}); select sites with sites=."
+        )
+
+
+def check_sites_are_held(sites: Sequence[int], parameter_vector: ParameterVector) -> None:
+    """Every site asked of ``select`` is one of the vector's."""
+    unknown = [site for site in sites if site not in set(parameter_vector.sites)]
+    if unknown:
+        raise KeyError(
+            f"the vector has no site(s) {truncated(unknown)}; select from its sites "
+            f"{truncated(list(parameter_vector.sites))}."
         )
 
 

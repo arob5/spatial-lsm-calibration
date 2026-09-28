@@ -379,6 +379,8 @@ def test_select_refuses_unknown_labels_and_empty_selections(vector):
         vector.select(dim_labels={"site": [1]})
     with pytest.raises(ValueError, match="keeps no site"):
         vector.select(sites=[27], dim_labels={"pft": ["deciduous"]})
+    with pytest.raises(KeyError, match=r"no site\(s\) \[2\]"):
+        vector.select(sites=[2])
 
 
 def test_dim_index_is_only_for_the_vectors_dims(vector):
