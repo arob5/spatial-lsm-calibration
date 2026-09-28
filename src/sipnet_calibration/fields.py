@@ -567,7 +567,6 @@ def validate_sipnet_parameter_fields(
     ValueError
         If it is not SIPNET parameter fields; the message names the variable
         and the rule.
-
     """
     name = "the SIPNET parameter fields" if message_name is None else message_name
     check_sipnet_parameter_fields_are_a_dataset(sipnet_parameter_fields, name)

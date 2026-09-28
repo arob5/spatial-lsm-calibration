@@ -129,8 +129,9 @@ Operational rules that follow from the data and are easy to get wrong in code:
 - The initial conditions' processed file is in the source files' units, negative
   wood and leaf draws included, and applies **no state-to-parameter mapping**:
   three of the four SIPNET initial parameters depend on calibrated parameters,
-  so the mapping is the experiment layer's, per proposed parameter vector. Each
-  spec's `pecan_conversion` says what PEcAn did.
+  so the mapping is applied per proposal, by the SIPNET parameter map's
+  `ComputeInitialConditions` rule. Each spec's `pecan_conversion` says what
+  PEcAn did.
 
 ## Code conventions
 
@@ -285,8 +286,8 @@ The validators of the field forms are strict: each requires everything
 checks a mapping of pySIPNET flat parameter names to numbers.
 `SIPNETParameterFields` and `SIPNETOverrides` live in `fields` beside
 `ModelOutput`, the model's input beside its output, so `initial_conditions`
-and `observation` never import `parameter_vector` (and with it TFP and
-pyEKI).
+and `observation` never import `parameter_vector` (and with it TFP), nor
+`prior` (and with it pyEKI).
 
 ### Vector-like classes
 
@@ -580,8 +581,8 @@ because these are what someone opens it to find out:
    and what missing means. State it plainly; do not make the reader infer it
    from the validation code. State it once, in its home module; another
    module that uses the form names it and points there, and states only what
-   it adds (as `parameter_vector` does for SIPNET parameter fields, whose form
-   `fields` owns).
+   it adds (as `sipnet_parameter_map` does for SIPNET parameter fields, whose
+   form `fields` owns).
 4. **The functions it provides** — the public entry points and what each one
    does with that model.
 
@@ -775,7 +776,8 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameter_vector.py`, `site_labels.py`, `forward.py`, `compute.py` and the
+`parameter_vector.py`, `prior.py`, `sipnet_parameter_map.py`,
+`calibration.py`, `site_labels.py`, `forward.py`, `compute.py` and the
 `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
@@ -851,7 +853,8 @@ src/sipnet_calibration/
                           # change of variables), gaussian() (declared Gaussians
                           # exact, others moment-matched); iid_over_dim,
                           # independent_over_dim; log_normal, logit_normal
-                          # (support=), softmax_normal and their _from_* forms
+                          # (support=) and their _from_* forms,
+                          # softmax_normal
   sipnet_parameter_map.py # SIPNETParameterMap: how a value reaches SIPNET.
                           # Rules (Copy, CopySimplex, ComputePhotosynthesisRates,
                           # ComputeInitialConditions) reading values by name with

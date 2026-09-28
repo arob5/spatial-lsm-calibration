@@ -924,13 +924,13 @@ def with_parameter_value(sipnet_parameters, name: str, value: float):
     return SIPNETParameters.model_validate(values)
 
 
-# ── the replaced parameter vector's reference fields ──────────────────────────
+# ── the stored reference fields ───────────────────────────────────────────────
 
 #: Eight prior draws of the example calibration at sites 1, 27 and 4711 (PFT
 #: deciduous, conifer, deciduous): each draw's natural values, as variables
 #: ``natural:<name>`` per site, and the SIPNET parameter fields they map to,
-#: as computed by the implementation the three calibration objects replaced.
-EXAMPLE_REFERENCE = Path(__file__).parent / "data" / "example_parameter_vector_reference.nc"
+#: as the ParameterVector of commit eec9745 computed them.
+EXAMPLE_REFERENCE = Path(__file__).parent / "data" / "example_calibration_reference.nc"
 EXAMPLE_REFERENCE_SITES = (1, 27, 4711)
 EXAMPLE_REFERENCE_PFT = ("deciduous", "conifer", "deciduous")
 

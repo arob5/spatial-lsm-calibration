@@ -697,6 +697,31 @@ class TestExternalInputs:
         assert list(evaluation.failures.columns) == ["sample", "initial_condition_member", "site", "error", "message"]
         assert set(evaluation.failures["initial_condition_member"]) == {1}
 
+    def test_unsorted_crossed_labels_keep_every_output_labeled_alike(
+        self, parameter_vector, sipnet_map, climate, observation_vector, theta
+    ):
+        crossed_rates = xr.Dataset(
+            {"rate_input": (("initial_condition_member",), [1.5 * BLOW_UP, 100.0], {"units": RATE_UNITS})},
+            coords={"initial_condition_member": [1, 0]},
+        )
+        crossed = SIPNETParameterMap(rules=[CopyRate(), *sipnet_map.rules[1:]], fixed=sipnet_map.fixed)
+        evaluation = build(parameter_vector, crossed, climate, output_variable_names=("wood_carbon",),
+                           external_inputs=crossed_rates).evaluate(theta[:2])
+        assert list(evaluation.run_index) == [(0, 1), (0, 0), (1, 1), (1, 0)]
+        assert evaluation.valid.tolist() == [False, True, False, True]
+        assert not bool(evaluation.run_succeeded.sel(initial_condition_member=1).any())
+        assert bool(evaluation.run_succeeded.sel(initial_condition_member=0).all())
+        output = evaluation.model_output["wood_carbon"]
+        assert output["initial_condition_member"].values.tolist() == [1, 0]
+        assert bool(output.sel(initial_condition_member=1).isnull().all())
+
+    def test_an_input_no_rule_reads_is_not_crossed(self, parameter_vector, soil_map, climate, observation_vector, theta):
+        inputs = crossed_soil().assign(unread=(("driver_member",), [1.0, 2.0, 3.0], {"units": "1"})).assign_coords(
+            driver_member=[0, 1, 2])
+        forward = build(parameter_vector, soil_map, climate, observation_vector, external_inputs=inputs)
+        assert forward.crossed_dims == ("initial_condition_member",) and forward.runs_per_sample == 4
+        assert forward.evaluate(theta[:1]).predictions.shape == (2, observation_vector.dimension)
+
     def test_call_refuses_crossed_dims(self, parameter_vector, soil_map, climate, observation_vector, theta):
         forward = build(parameter_vector, soil_map, climate, observation_vector, external_inputs=crossed_soil())
         with pytest.raises(ValueError, match="call evaluate\\(theta\\) and reduce"):

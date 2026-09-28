@@ -124,7 +124,7 @@ def test_a_site_dim_label_is_compared_as_a_site_id(vector):
 
 
 def test_a_dim_label_needs_its_dim(vector):
-    with pytest.raises(ValueError, match="needs dim= or parameter_name="):
+    with pytest.raises(ValueError, match="given without its dim"):
         vector.positions(dim_label="conifer")
 
 
@@ -270,7 +270,9 @@ def test_the_dataset_is_validated(vector, theta):
     dataset = vector.dataset(theta)
     dataset["capacity"] = dataset["capacity"].where(dataset["sample"] != 0)
     with pytest.raises(ValueError, match="missing or non-finite"):
-        validate_parameter_dataset(dataset)
+        vector.flat(dataset)
+    unread = vector.dataset(theta).assign(unrelated=("sample", [np.nan] * 5))
+    np.testing.assert_allclose(vector.flat(unread), theta, atol=1e-12)
     crossed = vector.dataset(theta).expand_dims(run=[0, 1])
     with pytest.raises(ValueError, match="batch dims"):
         validate_parameter_dataset(crossed)
@@ -315,6 +317,35 @@ def test_dim_labels_are_the_classes_present_in_declared_order():
     assert list(vector.dim_index("pft")) == ["temperate", "boreal"]
 
 
+def test_site_labels_given_as_a_series_are_read_by_site_id():
+    labels = pd.Series(["conifer", "deciduous", "deciduous"], index=[27, 1, 4711])
+    vector = ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": labels})
+    assert vector.site_labels["pft"] == ("deciduous", "conifer", "deciduous")
+    with pytest.raises(KeyError, match="no label for site"):
+        ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": labels.iloc[:2]})
+
+
+def test_the_site_labels_it_holds_cannot_be_changed_through_the_callers_table():
+    table = pd.DataFrame({"site_id": list(SITES), "label": list(PFT)})
+    vector = ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": table})
+    table.loc[0, "label"] = "grass"
+    assert vector.site_labels["pft"] == PFT
+
+
+def test_a_site_table_needs_a_site_with_an_id_in_range():
+    with pytest.raises(ValueError, match="no site"):
+        ParameterVector(parameters=[Parameter(name="rate", support=REAL, units=None)], site_table=site_table_of())
+    wrapped = site_table_of(1, 2).assign(site_id=np.asarray([1, 2**32 + 3], dtype=np.int64))
+    with pytest.raises(ValueError, match="site_id"):
+        ParameterVector(parameters=[Parameter(name="rate", support=REAL, units=None)], site_table=wrapped)
+
+
+def test_flat_refuses_a_dim_without_its_labels(vector, theta):
+    dataset = vector.dataset(theta).drop_vars(["site", "lon", "lat"])
+    with pytest.raises(ValueError, match="no 'site' coordinate"):
+        vector.select(sites=[1, 27]).flat(dataset)
+
+
 def test_site_labels_must_be_strings():
     with pytest.raises(TypeError, match="not strings"):
         ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": [1, 2, 1]})
@@ -327,9 +358,9 @@ def test_site_labels_must_be_one_per_site():
 
 def test_a_site_labels_table_must_label_every_site():
     table = pd.DataFrame({"site_id": [1, 27], "label": ["a", "b"]})
-    with pytest.raises(ValueError, match="no label for site"):
+    with pytest.raises(KeyError, match="no label for site"):
         ParameterVector(parameters=parameters(), site_table=site_table(), site_labels={"pft": table})
-    with pytest.raises(ValueError, match="lack the column"):
+    with pytest.raises(KeyError, match="lack the column"):
         ParameterVector(
             parameters=parameters(), site_table=site_table(), site_labels={"pft": table[["site_id"]]}
         )
@@ -462,6 +493,12 @@ def test_a_custom_bijector_onto_the_support_is_accepted():
         bijector=tfb.IteratedSigmoidCentered(),
     )
     assert simplex.unconstrained_size == 2
+
+
+def test_a_custom_bijector_must_act_per_number_on_an_elementwise_support():
+    coupling = tfb.ScaleMatvecTriL(scale_tril=jnp.asarray([[1.0, 0.0], [0.5, 1.0]]))
+    with pytest.raises(ValueError, match="must act on each number alone"):
+        Parameter(name="pair", support=REAL, units=None, natural_names=("a", "b"), bijector=coupling)
 
 
 def test_a_custom_bijector_not_onto_the_support_is_refused():

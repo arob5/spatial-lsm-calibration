@@ -10,8 +10,8 @@ Where this sits
       -> SIPNET parameter fields                   (fields.SIPNETParameterFields)
       -> forward.ForwardModel, one SIPNET run each
 
-It is the only one of the three calibration objects that imports pySIPNET,
-which owns every SIPNET parameter's name, units and domain.
+Of the three calibration objects it alone reads pySIPNET's parameter
+specs, which own every SIPNET parameter's name, units and domain.
 
 What it reads
 -------------
@@ -93,6 +93,8 @@ Usage
 -----
 ::
 
+    vector, prior, _ = example_calibration(site_table, pft)   # sipnet_calibration.calibration
+    theta = prior.sample(jax.random.key(0), 50)
     sipnet_map = SIPNETParameterMap(
         rules=[
             ComputePhotosynthesisRates(capacity_value_name="photosynthetic_capacity",
@@ -210,9 +212,26 @@ class SIPNETParameterMap:
         return tuple(name for name in _FLAT_SPECS if name in written)
 
     @property
-    def values_read(self) -> Mapping[str, ValueRequirement]:
-        """The values the rules read, each with its requirement."""
-        return frozendict({name: r for rule in self.rules for name, r in rule.values_read.items()})
+    def values_read(self) -> Mapping[str, tuple[ValueRequirement, ...]]:
+        """The values the rules read, each with every requirement a rule
+        places on it, in rule order."""
+        requirements: dict[str, tuple[ValueRequirement, ...]] = {}
+        for rule in self.rules:
+            for name, requirement in rule.values_read.items():
+                requirements[name] = (*requirements.get(name, ()), requirement)
+        return frozendict(requirements)
+
+    def crossed_dims(self, external_inputs: ExternalInputs | None, *, batch_dim: str = SAMPLE) -> tuple[str, ...]:
+        """The batch dims of the external inputs the rules read, other than
+        *batch_dim*, in the order they first appear: the dims crossed with
+        theta's rows."""
+        if external_inputs is None:
+            return ()
+        dims: dict[str, None] = {}
+        for name, variable in external_inputs.data_vars.items():
+            if name in self.values_read:
+                dims.update(dict.fromkeys(str(d) for d in variable.dims if d not in (SITE, batch_dim)))
+        return tuple(dims)
 
     @property
     def unset_sipnet_parameter_names(self) -> tuple[str, ...]:
@@ -287,9 +306,10 @@ class SIPNETParameterMap:
         at_sites = parameter_vector.at_sites(natural_values)
         theta_dims = (SITE,) if one else (batch_dim, SITE)
         values: dict[str, _Labeled] = {name: _Labeled(theta_dims, array) for name, array in at_sites.items()}
-        order = _dim_order(batch_dim, external_inputs)
+        order = (batch_dim, *self.crossed_dims(external_inputs, batch_dim=batch_dim), SITE)
         if external_inputs is not None:
-            values.update(_external_values(external_inputs, parameter_vector, order))
+            read = external_inputs[[name for name in external_inputs.data_vars if name in self.values_read]]
+            values.update(_external_values(read, parameter_vector, order))
         sizes = _dim_sizes(values)
         site_table = parameter_vector.site_table
         written: dict[str, tuple[_Labeled, str]] = {
@@ -310,7 +330,7 @@ class SIPNETParameterMap:
             )
             for name, array in output.items():
                 written[name] = (_Labeled(dims, array), _set_by(rule))
-        return self._dataset(parameter_vector, written, batched, one, batch_dim, external_inputs)
+        return self._dataset(parameter_vector, written, batched, one, order[:-1], external_inputs)
 
     def out_of_domain(self, sipnet_parameter_fields: SIPNETParameterFields) -> pd.DataFrame:
         """Where SIPNET parameter fields lie outside pySIPNET's domains.
@@ -325,20 +345,15 @@ class SIPNETParameterMap:
             its domain.
         """
         dims = list(sipnet_parameter_fields.dims)
-        frames = []
+        rows = []
         for name, variable in sipnet_parameter_fields.data_vars.items():
             values = np.asarray(variable.values, dtype=np.float64)
             outside = ~_FLAT_SPECS[str(name)].domain.contains(values) | ~np.isfinite(values)
-            if not outside.any():
-                continue
-            frame = variable.where(xr.DataArray(outside, dims=variable.dims)).to_dataframe(name="value")
-            frame = frame.reset_index().dropna(subset=["value"])
-            frame["sipnet_parameter"] = str(name)
-            frames.append(frame)
-        columns = [*dims, "sipnet_parameter", "value"]
-        if not frames:
-            return pd.DataFrame(columns=columns)
-        return pd.concat(frames, ignore_index=True).reindex(columns=columns)
+            labels = [variable[dim].values for dim in variable.dims]
+            for position in np.argwhere(outside):
+                row = {dim: labels[axis][i] for axis, (dim, i) in enumerate(zip(variable.dims, position))}
+                rows.append({**row, "sipnet_parameter": str(name), "value": values[tuple(position)]})
+        return pd.DataFrame(rows, columns=[*dims, "sipnet_parameter", "value"])
 
     # ── supporting methods ────────────────────────────────────────────────────
 
@@ -355,13 +370,16 @@ class SIPNETParameterMap:
         written: Mapping[str, tuple[_Labeled, str]],
         batched: Array,
         one: bool,
-        batch_dim: str,
+        batch_dims: tuple[str, ...],
         external_inputs: xr.Dataset | None,
     ) -> xr.Dataset:
+        """The SIPNET parameter fields; *batch_dims* are theta's batch dim,
+        then the crossed dims."""
+        batch_dim, *crossed = batch_dims
         coordinates: dict[str, Any] = dict(site_coordinates(parameter_vector.sites, parameter_vector.site_table))
         if not one:
             coordinates[batch_dim] = batch_coordinate(batch_dim, np.arange(len(batched)))
-        for dim in _crossed_dims(external_inputs, batch_dim):
+        for dim in crossed:
             coordinates[dim] = batch_coordinate(dim, external_inputs[dim].values)
         variables = {
             name: (
@@ -563,7 +581,7 @@ class CopySimplex:
 
     The last number is not written: SIPNET recomputes it as
     :math:`1 - \\sum_{i<k} x_i` (``sipnet.c:1113-1115``) and exits if that
-    is not positive (``sipnet.c:1117-1122``). Reading the whole simplex is
+    is negative (``sipnet.c:1117-1122``). Reading the whole simplex is
     what keeps every draw strictly inside it.
     """
 
@@ -746,9 +764,8 @@ type ExternalInputs = xr.Dataset
 
 
 def validate_external_inputs(external_inputs: Any, *, batch_dim: str = SAMPLE) -> None:
-    """Check that *external_inputs* are :data:`ExternalInputs`: ``float64``
-    variables with valid ``units``, on ``site``, *batch_dim* and other batch
-    dims.
+    """Check that *external_inputs* are :data:`ExternalInputs`, as the
+    module's docstring has them, *batch_dim* being theta's batch dim.
 
     Raises
     ------
@@ -765,7 +782,7 @@ def validate_external_inputs(external_inputs: Any, *, batch_dim: str = SAMPLE) -
         check_external_input_dim_is_site_or_a_batch_dim(str(dim), external_inputs)
 
 
-# ── constants ─────────────────────────────────────────────────────────────────
+# ── constants and the domain error ────────────────────────────────────────────
 
 #: The SIPNET parameters pySIPNET requires a value for, in declaration order:
 #: every parameter without a default.
@@ -847,21 +864,6 @@ def _intersection(bounds: Sequence[Bounds]) -> Bounds:
     )
 
 
-def _crossed_dims(external_inputs: xr.Dataset | None, batch_dim: str) -> tuple[str, ...]:
-    """The external inputs' batch dims other than *batch_dim*, in the order
-    they first appear."""
-    if external_inputs is None:
-        return ()
-    dims: dict[str, None] = {}
-    for variable in external_inputs.data_vars.values():
-        dims.update(dict.fromkeys(str(d) for d in variable.dims if d not in (SITE, batch_dim)))
-    return tuple(dims)
-
-
-def _dim_order(batch_dim: str, external_inputs: xr.Dataset | None) -> tuple[str, ...]:
-    return (batch_dim, *_crossed_dims(external_inputs, batch_dim), SITE)
-
-
 def _union(order: tuple[str, ...], labeled: Sequence[_Labeled]) -> tuple[str, ...]:
     """The dims of *labeled*, in *order*; always ``site``, since every value
     is read at the sites."""
@@ -917,8 +919,7 @@ def _units_match(units: str | None, required: str | None) -> bool:
 
 
 def check_sipnet_parameter_map_is_valid(sipnet_parameter_map: SIPNETParameterMap) -> None:
-    """The rules and fixed values make one map: pySIPNET names, one writer
-    each, reads fixed or written earlier, fixed values in their domains."""
+    """The rules and fixed values make one map pySIPNET can take."""
     writers: dict[str, str] = {}
     for fixed in sipnet_parameter_map.fixed:
         check_sipnet_parameter_name_is_a_flat_name(fixed.sipnet_parameter_name, "a fixed value's")
@@ -942,12 +943,13 @@ def check_sipnet_parameter_map_fits(
     require, and its per-dim-label values cover the vector's dim labels."""
     external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
     check_external_inputs_share_no_name_with_the_parameters(external_names, parameter_vector)
-    for name, requirement in sipnet_parameter_map.values_read.items():
+    for name, requirements in sipnet_parameter_map.values_read.items():
         check_value_is_held_once(name, parameter_vector, external_names)
-        if name in parameter_vector:
-            check_parameter_meets_the_requirement(parameter_vector[name], requirement)
-        else:
-            check_external_input_meets_the_requirement(name, external_inputs[name], requirement)
+        for requirement in requirements:
+            if name in parameter_vector:
+                check_parameter_meets_the_requirement(parameter_vector[name], requirement)
+            else:
+                check_external_input_meets_the_requirement(name, external_inputs[name], requirement)
     for fixed in sipnet_parameter_map.fixed:
         if fixed.dim is not None:
             check_keys_cover_the_dim_labels(
@@ -998,10 +1000,13 @@ def check_fixed_is_valid(fixed: Fixed) -> None:
     for value in (fixed.value.values() if isinstance(fixed.value, Mapping) else [fixed.value]):
         if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
             raise TypeError(
-                f"fixed {fixed.sipnet_parameter_name!r} holds {value!r}, which is not a number."
+                f"fixed {fixed.sipnet_parameter_name!r} holds {value!r}, which is not a number; "
+                "give numbers."
             )
     if not isinstance(fixed.provenance, str) or not fixed.provenance.strip():
-        raise ValueError(f"fixed {fixed.sipnet_parameter_name!r} needs a provenance.")
+        raise ValueError(
+            f"fixed {fixed.sipnet_parameter_name!r} has no provenance; say where the value came from."
+        )
 
 
 def check_fixed_values_are_in_the_domain(fixed: Fixed) -> None:
@@ -1049,11 +1054,14 @@ def check_external_inputs_share_no_name_with_the_parameters(
 def check_value_is_held_once(name: str, parameter_vector: ParameterVector, external_names: Sequence[str]) -> None:
     """A value a rule reads is exactly one parameter or external input."""
     held = (name in parameter_vector) + (name in external_names)
-    if held != 1:
-        raise (KeyError if held == 0 else ValueError)(
-            f"the map reads {name!r}, which is "
-            + ("neither a parameter nor an external input" if held == 0 else "both a parameter and an external input")
-            + "; name each value once."
+    if held == 0:
+        raise KeyError(
+            f"the map reads {name!r}, which is neither a parameter nor an external input; add it "
+            "to one of them, or read a value that exists."
+        )
+    if held == 2:
+        raise ValueError(
+            f"the map reads {name!r}, which is both a parameter and an external input; rename one."
         )
 
 
@@ -1126,9 +1134,10 @@ def check_deciduous_values_are_booleans(deciduous: Mapping[Any, Any]) -> None:
 
 
 def check_external_inputs_are_a_dataset(external_inputs: Any) -> None:
+    """External inputs are an ``xr.Dataset``, which is how they are read."""
     if not isinstance(external_inputs, xr.Dataset):
         raise TypeError(
-            f"external inputs are an xarray Dataset, got {type(external_inputs).__name__}."
+            f"external inputs are an xarray Dataset, got {type(external_inputs).__name__}; pass one."
         )
 
 
@@ -1136,15 +1145,14 @@ def check_external_input_is_float64_with_units(name: str, variable: xr.DataArray
     """An external input is ``float64`` and carries valid ``units``, which the
     fit check compares with what a rule requires."""
     units = variable.attrs.get("units")
-    if variable.dtype != np.float64 or not isinstance(units, str):
-        raise ValueError(
-            f"external input {name!r} must be float64 with a units attribute, got {variable.dtype} "
-            f"and units {units!r}."
-        )
+    if variable.dtype != np.float64:
+        raise TypeError(f"external input {name!r} is {variable.dtype}; convert it to float64.")
+    if not isinstance(units, str):
+        raise ValueError(f"external input {name!r} has no units attribute; set one, '1' if dimensionless.")
     try:
         validate_units(units)
     except ValueError as error:
-        raise ValueError(f"external input {name!r} has units pySIPNET refuses: {error}") from None
+        raise ValueError(f"external input {name!r} has units pySIPNET refuses ({error}); correct them.") from None
 
 
 def check_external_input_dim_is_site_or_a_batch_dim(dim: str, external_inputs: xr.Dataset) -> None:

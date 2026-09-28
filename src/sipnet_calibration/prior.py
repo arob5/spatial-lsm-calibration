@@ -126,6 +126,8 @@ from sipnet_calibration.parameter_vector import (
     Parameter,
     ParameterVector,
     Support,
+    bijectors_agree,
+    check_theta_ends_in_the_dimension,
     probe_points,
 )
 from sipnet_calibration.validation import as_bounded_integer, truncated
@@ -190,8 +192,6 @@ class Prior:
     def __post_init__(self) -> None:
         object.__setattr__(self, "terms", frozendict(self.terms))
         check_terms_cover_the_parameters(self.terms, self.parameter_vector)
-        # With a given graph the terms are built in its topological order;
-        # without one, every order is.
         built = {
             p.name: _BuiltTerm.build(p, self.terms[p.name], self.parameter_vector)
             for p in self.parameter_vector.parameters
@@ -262,7 +262,7 @@ class Prior:
         for name, built in self._built.items():
             theta = built.sample_theta(_term_key(key, name), n)
             check_draws_map_to_finite_theta(name, theta)
-            pieces.append(theta.reshape((n, -1)))
+            pieces.append(theta.reshape((n, built.size)))
         return jnp.concatenate(pieces, axis=-1)
 
     def log_prob(self, theta: Any) -> Array:
@@ -275,8 +275,9 @@ class Prior:
           parameter's bijector at the probe points:
           :math:`\\log \\mathrm{base}(\\theta_B)`, exactly;
         - by **change of variables** otherwise:
-          :math:`\\log \\pi_b(T(\\theta_B)) + \\sum \\log J(\\theta_B)`, with
-          :math:`\\log J` from
+          :math:`\\log \\pi_b(T(\\theta_B)) + \\sum_i \\log J(\\theta_B)_i`,
+          summed over the term's numbers (over its dim labels on the
+          simplex), with :math:`\\log J` from
           :meth:`~sipnet_calibration.parameter_vector.Support.log_jacobian`.
 
         Traceable under ``jax.jit``, ``jax.grad`` and ``jax.vmap``.
@@ -319,6 +320,7 @@ class Prior:
             entries: :math:`\\hat C` then has rank at most :math:`M - 1` and
             is singular.
         """
+        n_moment_samples = as_bounded_integer(n_moment_samples, minimum=0, message_name="n_moment_samples")
         means, blocks = [], []
         for name, built in self._built.items():
             if built.declared is not None:
@@ -411,8 +413,10 @@ def independent_over_dim(
         a ``Mapping`` or ``pd.Series`` keyed by dim label, read at the
         vector's dim labels (a superset is allowed) and passed as an array
         with one leading entry per dim label. A transformed family is built
-        with its bijector outside, as for :func:`iid_over_dim`, and a family
-        builder's declares its Gaussian, per dim label.
+        with its bijector outside, as for :func:`iid_over_dim`. Over a family
+        builder, with dim label :math:`\\ell`'s base Gaussian
+        :math:`(m_\\ell, C_\\ell)`, it declares
+        :math:`\\big((m_1, \\dots, m_n),\\ \\mathrm{blockdiag}(C_1, \\dots, C_n)\\big)`.
 
     Returns
     -------
@@ -558,8 +562,10 @@ def logit_normal_from_interval(
 
 
 def logit_normal_from_samples(samples: Any, *, support: Support = OPEN_UNIT_INTERVAL) -> tfd.Distribution:
-    """The maximum-likelihood logit-normal on *support* of samples inside
-    it, on the logit scale of :math:`(x - a)/(b - a)`.
+    """The maximum-likelihood logit-normal on *support*, :math:`(a, b)`, of
+    samples inside it: with :math:`t = \\operatorname{logit}((x - a)/(b - a))`,
+    :math:`\\mu = \\bar t` and :math:`\\sigma` the standard deviation of
+    :math:`t`.
 
     Raises
     ------
@@ -595,13 +601,16 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
         ``(k,)`` positive fractions summing to 1, ``k >= 2``, or ``(n, k)``
         for one per dim label.
     logit_sd:
-        A scalar, or one value per unconstrained number (``k - 1``).
+        A scalar; one value per unconstrained number, ``(k - 1,)``; or, with
+        an ``(n, k)`` center, one value per dim label, ``(n,)``, or one per
+        dim label and unconstrained number, ``(n, k - 1)``.
 
     Raises
     ------
     ValueError
         For a center that is not a point of the simplex, or a *logit_sd* of
-        another shape or not positive.
+        another shape, of an ``(n,)`` shape that could be read either way
+        (``n = k - 1``), or not positive.
 
     Notes
     -----
@@ -613,6 +622,8 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
     logit_sd = _positive_array("softmax_normal logit_sd", logit_sd)
     loc = jnp.log(center[..., :-1] / center[..., -1:])
     check_logit_sd_fits_the_center(logit_sd, loc)
+    if loc.ndim == 2 and logit_sd.shape == loc.shape[:1]:
+        logit_sd = logit_sd[:, None]  # one per dim label, across its numbers
     scale = jnp.broadcast_to(logit_sd, loc.shape)
     return tfd.TransformedDistribution(
         tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale), tfb.SoftmaxCentered()
@@ -677,7 +688,7 @@ class _BuiltTerm:
     def build(cls, parameter: Parameter, term: PriorTerm, vector: ParameterVector) -> _BuiltTerm:
         check_term_is_a_prior_term(parameter.name, term)
         distribution = _distribution_for(parameter, term, vector)
-        check_term_shape(parameter.name, distribution, vector.value_shape(parameter.name))
+        check_term_is_over_the_whole_value(parameter.name, distribution, vector.value_shape(parameter.name))
         shape = vector.unconstrained_shape(parameter.name)
         probes = jnp.asarray(probe_points(shape, unconstrained_size=parameter.unconstrained_size))
         by_base_density = _pushes_through(distribution, parameter.bijector, probes)
@@ -748,7 +759,7 @@ def _declaration(
     if declared is None:
         return None
     mean, covariance, assumed = declared
-    if not _bijectors_agree(assumed, parameter.bijector, probes):
+    if not bijectors_agree(assumed, parameter.bijector, probes):
         return None
     return mean, covariance
 
@@ -784,16 +795,8 @@ def _pushes_through(distribution: tfd.Distribution, bijector: tfb.Bijector, prob
     """Whether *distribution* is a pushforward through *bijector*: an exact
     ``TransformedDistribution``, ``LogNormal`` or ``LogitNormal`` whose own
     bijector agrees with it at the probe points."""
-    return type(distribution) in _CARRIES_ITS_BIJECTOR and _bijectors_agree(
+    return type(distribution) in _CARRIES_ITS_BIJECTOR and bijectors_agree(
         distribution.bijector, bijector, probes
-    )
-
-
-def _bijectors_agree(first: tfb.Bijector, second: tfb.Bijector, probes: Array) -> bool:
-    """Whether two bijectors map the probe points alike. Images are compared,
-    never bijectors: ``Sigmoid()`` and ``Sigmoid(0, 1)`` compare unequal."""
-    return bool(
-        np.allclose(first.forward(probes), second.forward(jnp.array(probes)), rtol=1e-10, atol=0.0)
     )
 
 
@@ -811,8 +814,8 @@ _SUPPORT_DRAWS, _SUPPORT_DRAW_BATCH = 10_000, 1_000
 #: The seed of the draw-based support check.
 _SUPPORT_SEED = 20260927
 
-#: The declaration check's tolerance: :math:`|\\log q - \\log p| \\le
-#: 10^{-10} |\\log p| + 10^{-12} D_b`.
+#: The declaration check's relative and absolute tolerances; see
+#: :func:`check_declaration_agrees_with_log_prob`.
 _DECLARATION_RELATIVE_TOLERANCE, _DECLARATION_ABSOLUTE_TOLERANCE = 1e-10, 1e-12
 
 
@@ -962,8 +965,8 @@ def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: Parameter
     for key in terms:
         if not isinstance(key, str):
             raise TypeError(
-                f"a prior term is keyed by a parameter name, got {key!r}; joint terms over "
-                "several parameters are not supported yet."
+                f"a prior term is keyed by one parameter's name, got {key!r}; give each "
+                "parameter its own term."
             )
         if key not in vector:
             raise KeyError(
@@ -976,6 +979,7 @@ def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: Parameter
 
 
 def check_term_is_held(name: Any, prior: Prior) -> None:
+    """The prior has a term for the name asked for."""
     if name not in prior.terms:
         raise KeyError(f"the prior has no term {name!r}; name one of {truncated(list(prior.terms))}.")
 
@@ -1018,7 +1022,7 @@ def check_prior_over_a_dim_has_a_dim(dim_index: Any, name: str) -> None:
         )
 
 
-def check_term_shape(name: str, distribution: Any, value_shape: tuple[int, ...]) -> None:
+def check_term_is_over_the_whole_value(name: str, distribution: Any, value_shape: tuple[int, ...]) -> None:
     """A term's distribution is ``float64`` over the parameter's whole value:
     event shape the value shape, batch shape ``()``."""
     if not isinstance(distribution, tfd.Distribution):
@@ -1086,8 +1090,10 @@ def check_priors_support_lies_in_the_declared(built: _BuiltTerm) -> None:
 def check_declaration_agrees_with_log_prob(
     name: str, declared: tuple[Array, PSDLinOp], built: _BuiltTerm, probes: Array
 ) -> None:
-    """A declared Gaussian's log density equals the term's at every probe
-    point, :math:`|\\log q - \\log p| \\le 10^{-10} |\\log p| + 10^{-12} D_b`."""
+    """A declared Gaussian's log density :math:`\\log q` equals the term's,
+    :math:`\\log p`, at every probe point, to
+    :math:`|\\log q - \\log p| \\le 10^{-10} |\\log p| + 10^{-12} D_b`, with
+    :math:`D_b` the term's number of entries of theta."""
     mean, covariance = declared
     flat = probes.reshape((len(probes), -1))
     declared_log_density = Gaussian(mean=mean, cov=covariance).log_density(flat)
@@ -1131,15 +1137,6 @@ def check_moment_matching_is_possible(
         )
 
 
-def check_theta_ends_in_the_dimension(shape: tuple[int, ...], dimension: int) -> None:
-    """Theta's last axis has ``D`` entries."""
-    if not shape or shape[-1] != dimension:
-        raise ValueError(
-            f"theta must end in the vector's dimension {dimension}, got shape {shape}; pass "
-            "(..., D)."
-        )
-
-
 def check_argument_covers_the_dim_labels(name: str, value: Mapping[Any, Any], dim_index: pd.Index) -> None:
     """A keyed argument has a value for every dim label."""
     missing = [label for label in dim_index if label not in value]
@@ -1148,6 +1145,11 @@ def check_argument_covers_the_dim_labels(name: str, value: Mapping[Any, Any], di
             f"independent_over_dim argument {name!r} has no value for dim label(s) "
             f"{truncated(missing)}; key it by every dim label."
         )
+
+
+def center_shape_of(loc: Array) -> tuple[int, ...]:
+    """The center's shape, from the base's location: one more number."""
+    return (*loc.shape[:-1], loc.shape[-1] + 1)
 
 
 def check_family_is_one_per_dim_label(distribution: Any, n_dim_labels: int) -> None:
@@ -1163,22 +1165,28 @@ def check_family_is_one_per_dim_label(distribution: Any, n_dim_labels: int) -> N
 
 
 def check_geometric_sd_exceeds_one(geometric_sd: Array) -> None:
+    """A geometric standard deviation exceeds 1, since its log is the scale."""
     if not bool(jnp.all(geometric_sd > 1.0)):
-        raise ValueError("log_normal: geometric_sd must exceed 1, since it multiplies.")
+        raise ValueError("log_normal: geometric_sd is at most 1, and it multiplies; give a value above 1.")
 
 
 def check_values_are_positive(what: str, array: Array, value: Any) -> None:
+    """A family builder's positive argument is finite and positive."""
     if not bool(jnp.all(jnp.isfinite(array)) and jnp.all(array > 0)):
-        raise ValueError(f"{what} must be finite and positive; got {value!r}.")
+        raise ValueError(f"{what} is {value!r}, which is not finite and positive; give a positive value.")
 
 
 def check_values_are_inside(what: str, fraction: Array, value: Any, support: Support) -> None:
+    """A logit-normal's median or end lies inside its support."""
     if not bool(jnp.all((fraction > 0) & (fraction < 1))):
-        raise ValueError(f"{what} must lie inside {support.name}; got {value!r}.")
+        raise ValueError(f"{what} is {value!r}, outside {support.name}; give a value inside it.")
 
 
 def check_support_is_an_interval(support: Any) -> None:
-    if not isinstance(support, Support) or support.kind != "interval":
+    """A logit-normal's support is an open interval."""
+    if not isinstance(support, Support):
+        raise TypeError(f"support must be a Support, got {type(support).__name__}; use OpenInterval(low, high).")
+    if support.kind != "interval":
         raise ValueError(
             f"a logit-normal is on an open interval, got support {support!r}; use "
             "OPEN_UNIT_INTERVAL or OpenInterval(low, high)."
@@ -1186,15 +1194,17 @@ def check_support_is_an_interval(support: Any) -> None:
 
 
 def check_interval_is_valid(lower: Array, upper: Array, mass: float) -> None:
+    """An interval's mass is in (0, 1) and its upper end exceeds its lower."""
     if not 0.0 < mass < 1.0:
-        raise ValueError(f"mass must lie in (0, 1); got {mass}.")
+        raise ValueError(f"mass is {mass}, outside (0, 1); give the central mass as a fraction.")
     if not bool(jnp.all(upper > lower)):
-        raise ValueError("upper must exceed lower.")
+        raise ValueError("upper does not exceed lower; give the interval's ends in order.")
 
 
 def check_samples_are_usable(what: str, array: Array, in_support: Callable[[Array], Array]) -> None:
+    """Samples to fit are at least two, finite and inside the support."""
     if array.size < 2:
-        raise ValueError(f"{what}: need at least two samples; got {array.size}.")
+        raise ValueError(f"{what}: {array.size} sample(s) cannot be fitted; give at least two.")
     bad = ~(jnp.isfinite(array) & in_support(array))
     if bool(jnp.any(bad)):
         raise ValueError(
@@ -1204,20 +1214,34 @@ def check_samples_are_usable(what: str, array: Array, in_support: Callable[[Arra
 
 
 def check_samples_vary(what: str, std: Array) -> None:
+    """Samples to fit are not all equal, or no scale can be fitted."""
     if not bool(std > 0):
-        raise ValueError(f"{what}: the samples are all equal; no scale can be fitted.")
+        raise ValueError(f"{what}: the samples are all equal, so no scale can be fitted; give samples that vary.")
 
 
 def check_center_is_on_the_simplex(center: Array) -> None:
+    """A softmax-normal's center is a point of the simplex, per dim label or shared."""
     if center.ndim not in (1, 2) or center.shape[-1] < 2:
-        raise ValueError("softmax_normal: center must be (k,) or (n, k) with k >= 2.")
+        raise ValueError(f"softmax_normal: center has shape {center.shape}; give (k,) or (n, k) with k >= 2.")
     if not bool(jnp.all(center > 0)) or not bool(jnp.allclose(center.sum(axis=-1), 1.0, atol=1e-8)):
-        raise ValueError("softmax_normal: center must be positive fractions summing to 1.")
+        raise ValueError("softmax_normal: center is not a point of the simplex; give positive fractions summing to 1.")
 
 
 def check_logit_sd_fits_the_center(logit_sd: Array, loc: Array) -> None:
-    if logit_sd.shape not in ((), loc.shape[-1:]):
+    """A ``logit_sd`` has a shape that reads one way against the center: an
+    ``(n,)`` one equal to ``(k - 1,)`` would be laid along the wrong axis."""
+    per_number, per_label = loc.shape[-1:], loc.shape[:-1]
+    allowed = {(), per_number} | ({per_label, loc.shape} if loc.ndim == 2 else set())
+    if logit_sd.shape not in allowed:
         raise ValueError(
-            "softmax_normal: logit_sd must be a scalar or one value per unconstrained number, "
-            f"shape {loc.shape[-1:]}; got shape {logit_sd.shape}."
+            f"softmax_normal: logit_sd has shape {logit_sd.shape}, which fits the center of shape "
+            f"{center_shape_of(loc)} as none of {sorted(allowed)}; give a scalar, one value per "
+            "unconstrained number, or, for a center per dim label, one per dim label or one per "
+            "dim label and number."
+        )
+    if loc.ndim == 2 and per_label == per_number and logit_sd.shape == per_number:
+        raise ValueError(
+            f"softmax_normal: logit_sd of shape {logit_sd.shape} could be one value per dim label "
+            "or one per unconstrained number, since there are as many of each; give it as "
+            f"{loc.shape}."
         )

@@ -10,10 +10,9 @@ Where this sits
       -> prior.Prior                                    (what is believed beforehand)
       -> sipnet_parameter_map, forward                  (how a value reaches SIPNET)
 
-This module imports NumPy, pandas, xarray, JAX and TFP's bijectors, and
-neither pySIPNET, pyEKI nor TFP's distributions: a prior over the vector
-lives in :mod:`sipnet_calibration.prior`, and the map to SIPNET parameters
-in :mod:`sipnet_calibration.sipnet_parameter_map`.
+It uses NumPy, pandas, xarray, JAX and TFP's bijectors. A prior over the
+vector lives in :mod:`sipnet_calibration.prior`, and the map to SIPNET
+parameters in :mod:`sipnet_calibration.sipnet_parameter_map`.
 
 What it reads
 -------------
@@ -61,9 +60,9 @@ dims         a batch dim (``sample`` unless ``batch_dim=`` says otherwise)
              when built from ``(J, D)``; ``site`` when a parameter varies
              over it; one dim per site-labels name a parameter varies over
 coordinates  the batch dim, ``int64`` ``0`` to ``J - 1``; ``site``, ``int32``
-             site ids with ``lon``/``lat``; a site-labels dim, its dim labels
-             (strings); each with the attributes of
-             :mod:`sipnet_calibration.conventions`
+             site ids with ``lon``/``lat``, with the attributes of
+             :mod:`sipnet_calibration.conventions`; a site-labels dim, its
+             dim labels (strings), with a ``long_name``
 variables    one ``float64`` variable per natural name of every parameter:
              ``<name>`` for a scalar, ``<name>.<natural name>`` for a vector,
              on ``(batch?, dim?)``
@@ -200,9 +199,11 @@ __all__ = [
     "ParameterDataset",
     "ParameterVector",
     "Support",
+    "bijectors_agree",
     "check_batch_dim_name_is_not_taken",
     "check_parameter_vector_is_valid",
     "check_parameter_vectors_share_a_layout",
+    "check_theta_ends_in_the_dimension",
     "probe_points",
     "validate_natural_values",
     "validate_parameter_dataset",
@@ -239,7 +240,8 @@ class ParameterVector:
     site_table:
         The sites, one row each in ascending ``site_id``, with ``lon`` and
         ``lat``, such as :func:`sipnet_calibration.sites.select_sites`
-        returns. Read, not kept: :attr:`site_table` is the vector's own.
+        returns. The vector keeps its own copy of what it reads
+        (:attr:`site_table`).
     site_labels:
         ``{site_labels_name: site labels}`` for every site-labels name a
         parameter varies over, and any other a prior function or SIPNET rule
@@ -284,7 +286,11 @@ class ParameterVector:
         declared = {}
         for name, value in dict(self.site_labels).items():
             table[name], declared[name] = _site_labels_column(name, value, table[SITE_ID])
-        object.__setattr__(self, "site_labels", frozendict(self.site_labels))
+        object.__setattr__(
+            self,
+            "site_labels",
+            frozendict({name: tuple(table[name].astype(str)) for name in declared}),
+        )
         object.__setattr__(self, "_table", table)
         object.__setattr__(self, "_declared_dim_labels", frozendict(declared))
         check_parameter_vector_is_valid(self)
@@ -547,7 +553,6 @@ class ParameterVector:
         theta = jnp.asarray(theta, dtype=jnp.float64)
         check_theta_ends_in_the_dimension(theta.shape, self.dimension)
         lead = theta.shape[:-1]
-        # Derived parameters, computed from these, will be added here.
         return {
             p.name: p.bijector.forward(
                 theta[..., self._slices[p.name]].reshape(lead + self.unconstrained_shape(p.name))
@@ -586,7 +591,9 @@ class ParameterVector:
 
     def at_sites(self, natural_values: NaturalValues) -> NaturalValues:
         """Every value read at every site: :math:`x_p^{(s)} = x_p[\\ell_{d_p}(s)]`,
-        or :math:`x_p` for a parameter without a dim.
+        with :math:`\\ell_{d_p}(s)` site :math:`s`'s dim label along the
+        parameter's dim :math:`d_p`, or :math:`x_p` for a parameter without a
+        dim.
 
         Parameters
         ----------
@@ -606,7 +613,7 @@ class ParameterVector:
         validate_natural_values(natural_values, self)
         return {p.name: self._at_sites(p, natural_values[p.name]) for p in self.parameters}
 
-    # ── the labeled form ──────────────────────────────────────────────────────
+    # ── representations ───────────────────────────────────────────────────────
 
     def dataset(self, theta: Any, *, batch_dim: str = SAMPLE) -> ParameterDataset:
         """Theta to the labeled form.
@@ -737,7 +744,6 @@ class ParameterVector:
 
     def _site_positions(self, dim_name: str) -> np.ndarray:
         """``(S,)``: each site's position along ``dim_index(dim_name)``."""
-        # A public, tested form of this is the planned site_positions helper.
         if dim_name == SITE:
             return np.arange(self.n_sites)
         return self._table[dim_name].cat.codes.to_numpy(np.int64)
@@ -789,9 +795,11 @@ class ParameterVector:
             variable = parameter_dataset[variable_name]
             check_variable_is_on_the_parameters_dims(variable, variable_name, dims)
             if parameter.dim:
-                labels = list(self.dim_index(parameter.dim))
-                variable = variable.sel({parameter.dim: labels})
-            columns.append(np.asarray(variable.transpose(*dims).values, dtype=np.float64))
+                check_dataset_dim_is_labeled(variable, variable_name, parameter.dim)
+                variable = variable.sel({parameter.dim: list(self.dim_index(parameter.dim))})
+            values = np.asarray(variable.transpose(*dims).values, dtype=np.float64)
+            check_parameter_dataset_variable_is_finite(variable_name, values)
+            columns.append(values)
         return np.stack(columns, axis=-1) if parameter.natural_names is not None else columns[0]
 
 
@@ -1043,6 +1051,16 @@ def OpenInterval(low: float, high: float) -> Support:  # noqa: N802 - reads as a
 # ── functions ─────────────────────────────────────────────────────────────────
 
 
+def bijectors_agree(first: tfb.Bijector, second: tfb.Bijector, probes: Any) -> bool:
+    """Whether two bijectors map *probes* alike, to a relative tolerance of
+    ``1e-10``. Images are compared, never bijectors: ``tfb.Sigmoid()`` and
+    ``tfb.Sigmoid(low=0., high=1.)`` compare unequal."""
+    probes = jnp.asarray(probes)
+    return bool(
+        np.allclose(first.forward(probes), second.forward(jnp.array(probes)), rtol=1e-10, atol=0.0)
+    )
+
+
 def probe_points(unconstrained_shape: tuple[int, ...], *, unconstrained_size: int) -> np.ndarray:
     """The fixed points of theta at which bijectors and priors are probed.
 
@@ -1096,9 +1114,8 @@ type ParameterDataset = xr.Dataset
 def validate_natural_values(
     natural_values: Any, parameter_vector: ParameterVector, *, at_sites: bool = False
 ) -> None:
-    """Check that *natural_values* are :data:`NaturalValues` of the vector:
-    a value for every parameter, of its value shape (its shape at sites
-    when *at_sites*), with one leading shape.
+    """Check that *natural_values* are :data:`NaturalValues` of the vector,
+    or its values at sites when *at_sites*.
 
     Raises
     ------
@@ -1126,20 +1143,18 @@ def validate_natural_values(
 
 def validate_parameter_dataset(parameter_dataset: Any) -> None:
     """Check that *parameter_dataset* is a :data:`ParameterDataset` a vector
-    can read: at most one batch dim, and every variable finite.
+    can read, as the module's data model has it. The values a vector reads
+    are checked finite as :meth:`ParameterVector.flat` reads them.
 
     Raises
     ------
     TypeError
         If it is not an ``xr.Dataset``.
     ValueError
-        If it has more than one batch dim, or a variable holds a missing or
-        non-finite value.
+        If it has more than one batch dim.
     """
     check_parameter_dataset_is_a_dataset(parameter_dataset)
     check_at_most_one_batch_dim(batch_dims(parameter_dataset), message_name="the parameter dataset")
-    for name, variable in parameter_dataset.data_vars.items():
-        check_parameter_dataset_variable_is_finite(str(name), variable)
 
 
 # ── private helpers ───────────────────────────────────────────────────────────
@@ -1150,15 +1165,6 @@ _SIMPLEX_SUM_TOLERANCE = 1e-10
 
 #: The seed of :func:`probe_points`' random directions.
 _PROBE_SEED = 20260926
-
-
-def _bijectors_agree(first: Parameter, second: Parameter) -> bool:
-    probes = jnp.asarray(probe_points(first.unconstrained_shape, unconstrained_size=first.unconstrained_size))
-    return bool(
-        np.allclose(
-            first.bijector.forward(probes), second.bijector.forward(jnp.array(probes)), rtol=1e-12
-        )
-    )
 
 
 def _same_label(label: Any, wanted: Any) -> bool:
@@ -1191,13 +1197,15 @@ def _normalized_site_table(site_table: Any, site_covariate_names: tuple[str, ...
     check_site_table_is_keyed_on_site_ids(site_table)
     check_site_table_has_locations(site_table)
     table = site_table if SITE_ID in site_table.columns else site_table.reset_index()
-    check_site_ids_are_ascending(table[SITE_ID].to_numpy())
+    site_ids = as_site_ids(table[SITE_ID].to_numpy(), message_name="the site table's site_id")
+    check_site_table_has_a_site(site_ids)
+    check_site_ids_are_ascending(np.asarray(site_ids))
     for name in site_covariate_names:
         check_site_covariate_is_a_column(name, table)
         check_site_covariate_is_float64(name, table[name])
     out = pd.DataFrame(
         {
-            SITE_ID: table[SITE_ID].to_numpy(SITE_DTYPE),
+            SITE_ID: np.asarray(site_ids, dtype=SITE_DTYPE),
             LON: table[LON].to_numpy(np.float64),
             LAT: table[LAT].to_numpy(np.float64),
             **{name: table[name].to_numpy(np.float64, copy=True) for name in site_covariate_names},
@@ -1213,13 +1221,15 @@ def _site_labels_column(
     """One site-labels argument as (each site's label, a categorical whose
     categories are the labels present in declared order; the declared
     labels)."""
-    if isinstance(value, pd.DataFrame):
-        check_site_labels_table_has_the_columns(name, value)
-        indexed = site_lookup(value)[LABEL_COLUMN]
+    if isinstance(value, (pd.DataFrame, pd.Series)):
+        if isinstance(value, pd.DataFrame):
+            check_site_labels_table_has_the_columns(name, value)
+            indexed = site_lookup(value)[LABEL_COLUMN]
+        else:
+            indexed = value  # keyed by its index, which holds site ids
         check_site_labels_label_every_site(name, indexed.index, site_ids)
-        labels = indexed.loc[site_ids.tolist()]
         declared = _declared_labels(indexed)
-        labels = labels.tolist()
+        labels = indexed.loc[site_ids.tolist()].tolist()
     elif isinstance(getattr(value, "dtype", None), pd.CategoricalDtype) or isinstance(
         value, pd.Categorical
     ):
@@ -1271,13 +1281,14 @@ def check_parameter_is_valid(parameter: Parameter) -> None:
         check_names_are_unique(parameter.natural_names, message_name=f"{parameter.name!r} natural_names")
     check_simplex_has_two_natural_names(parameter)
     if parameter._custom_bijector:
+        check_bijector_acts_per_number(parameter)
         check_bijector_maps_onto_the_support(parameter)
 
 
 def check_parameter_vectors_share_a_layout(first: ParameterVector, second: ParameterVector) -> None:
     """Two vectors give theta one meaning: the same index, sites, dim indexes,
-    supports, and transforms that agree at the probe points. Derived
-    parameters and site covariates are not compared."""
+    supports, and transforms that agree at the probe points; site covariates
+    are not compared."""
     differences = [
         ("index", lambda: first.index.equals(second.index)),
         ("sites", lambda: first.sites == second.sites),
@@ -1288,7 +1299,12 @@ def check_parameter_vectors_share_a_layout(first: ParameterVector, second: Param
             p.support == q.support for p, q in zip(first.parameters, second.parameters)
         )),
         ("transforms", lambda: all(
-            _bijectors_agree(p, q) for p, q in zip(first.parameters, second.parameters)
+            bijectors_agree(
+                p.bijector,
+                q.bijector,
+                probe_points(p.unconstrained_shape, unconstrained_size=p.unconstrained_size),
+            )
+            for p, q in zip(first.parameters, second.parameters)
         )),
     ]
     for what, same in differences:
@@ -1328,7 +1344,8 @@ def check_parameter_names_are_unique(names: tuple[str, ...]) -> None:
 
 def check_name_is_usable(name: Any, what: str, *, reserved: bool = True) -> None:
     """*name* is ``lower_case_with_underscores`` and not a Python keyword,
-    which values are passed by; and, when *reserved*, none of
+    since values are passed as keyword arguments named for it; and, when
+    *reserved*, none of
     :data:`RESERVED_NAMES`, which the labeled form's coordinates take."""
     if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name) or keyword.iskeyword(name):
         raise ValueError(
@@ -1415,6 +1432,18 @@ def check_bijector_maps_onto_the_support(parameter: Parameter) -> None:
         )
 
 
+def check_bijector_acts_per_number(parameter: Parameter) -> None:
+    """A custom bijector on an elementwise support acts on each number alone,
+    as its Jacobian is computed, and one on the simplex on a whole value."""
+    expected = 1 if parameter.support.kind == "simplex" else 0
+    if parameter.bijector.forward_min_event_ndims != expected:
+        raise ValueError(
+            f"parameter {parameter.name!r}: its bijector acts on {parameter.bijector.forward_min_event_ndims}"
+            f"-dimensional events, but on a {parameter.support.kind} support it must act on "
+            f"{'a whole simplex value' if expected else 'each number alone'}; give such a bijector."
+        )
+
+
 def check_support_is_valid(support: Support) -> None:
     """A support is a known kind, with finite ``low < high`` exactly when it
     is an interval."""
@@ -1472,8 +1501,8 @@ def check_dim_label_has_a_dim(dim_label: Any, dim: Any, parameter_name: Any) -> 
     labels of two dims may coincide."""
     if dim_label is not None and dim is None and parameter_name is None:
         raise ValueError(
-            f"dim_label={dim_label!r} needs dim= or parameter_name=, since two dims may share a "
-            "label."
+            f"dim_label={dim_label!r} is given without its dim, and two dims may share a label; "
+            "pass dim= or parameter_name= too."
         )
 
 
@@ -1515,11 +1544,29 @@ def check_dim_labels_select_a_site_labels_dim(name: Any, parameter_vector: Param
 
 def check_sites_are_held(sites: Sequence[int], parameter_vector: ParameterVector) -> None:
     """Every site asked of ``select`` is one of the vector's."""
-    unknown = [site for site in sites if site not in set(parameter_vector.sites)]
+    held = set(parameter_vector.sites)
+    unknown = [site for site in sites if site not in held]
     if unknown:
         raise KeyError(
             f"the vector has no site(s) {truncated(unknown)}; select from its sites "
             f"{truncated(list(parameter_vector.sites))}."
+        )
+
+
+def check_site_table_has_a_site(site_ids: Sequence[int]) -> None:
+    """The site table holds at least one site; an empty one makes an empty
+    vector, which fails far from its cause."""
+    if not site_ids:
+        raise ValueError("the site table holds no site; give at least one.")
+
+
+def check_dataset_dim_is_labeled(variable: xr.DataArray, name: str, dim: str) -> None:
+    """A labeled form's dim has its labels, since xarray would otherwise select
+    by position."""
+    if dim not in variable.indexes:
+        raise ValueError(
+            f"the parameter dataset's {name!r} has no {dim!r} coordinate, so its values cannot be "
+            f"matched to dim labels; give {dim!r} its labels."
         )
 
 
@@ -1574,7 +1621,7 @@ def check_site_labels_table_has_the_columns(name: str, table: pd.DataFrame) -> N
     """A site-labels table has ``site_id`` and ``label``."""
     missing = [c for c in (SITE_ID, LABEL_COLUMN) if c not in table.columns]
     if missing:
-        raise ValueError(
+        raise KeyError(
             f"site labels {name!r} lack the column(s) {missing}; pass the table "
             "load_site_labels() returns."
         )
@@ -1584,7 +1631,7 @@ def check_site_labels_label_every_site(name: str, labeled: pd.Index, site_ids: p
     """A site-labels table labels every site of the vector."""
     missing = sorted(set(site_ids.tolist()) - set(labeled.tolist()))
     if missing:
-        raise ValueError(
+        raise KeyError(
             f"site labels {name!r} give no label for site(s) {truncated(missing)}; select sites "
             "the site labels cover."
         )
@@ -1616,7 +1663,7 @@ def check_values_are_in_the_support(parameter: Parameter, values: Array) -> None
     if not bool(jnp.all(inside)):
         raise ValueError(
             f"parameter {parameter.name!r} holds values outside its support "
-            f"{parameter.support.name!r}; no theta maps to them."
+            f"{parameter.support.name!r}, which no theta maps to; give values inside it."
         )
 
 
@@ -1633,6 +1680,7 @@ def check_variable_is_on_the_parameters_dims(
 
 
 def check_natural_values_are_a_mapping(natural_values: Any) -> None:
+    """Natural values are a mapping by parameter name, which is how they are read."""
     if not isinstance(natural_values, Mapping):
         raise TypeError(
             f"natural values are a mapping of parameter names to arrays, got "
@@ -1663,6 +1711,7 @@ def check_natural_values_share_a_leading_shape(leads: Sequence[tuple[str, tuple[
 
 
 def check_parameter_dataset_is_a_dataset(parameter_dataset: Any) -> None:
+    """A labeled form is an ``xr.Dataset``, which is how it is read."""
     if not isinstance(parameter_dataset, xr.Dataset):
         raise TypeError(
             f"a parameter dataset is an xarray Dataset, got {type(parameter_dataset).__name__}; "
@@ -1670,9 +1719,9 @@ def check_parameter_dataset_is_a_dataset(parameter_dataset: Any) -> None:
         )
 
 
-def check_parameter_dataset_variable_is_finite(name: str, variable: xr.DataArray) -> None:
-    """A labeled form's variable holds no missing or non-finite value."""
-    values = np.asarray(variable.values, dtype=np.float64)
+def check_parameter_dataset_variable_is_finite(name: str, values: np.ndarray) -> None:
+    """The values read from a labeled form's variable are finite, as theta's
+    always are."""
     if not np.isfinite(values).all():
         raise ValueError(
             f"the parameter dataset's {name!r} holds a missing or non-finite value, and no theta "

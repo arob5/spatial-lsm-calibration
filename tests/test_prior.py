@@ -121,11 +121,11 @@ def test_softmax_normal_is_centered_on_its_center():
 @pytest.mark.parametrize(
     "build, message",
     [
-        (lambda: log_normal(median=-1.0, geometric_sd=2.0), "finite and positive"),
-        (lambda: log_normal(median=1.0, geometric_sd=0.5), "must exceed 1"),
-        (lambda: log_normal_from_interval(lower=2.0, upper=1.0), "upper must exceed lower"),
-        (lambda: log_normal_from_interval(lower=1.0, upper=2.0, mass=1.0), "mass must lie"),
-        (lambda: logit_normal(median=1.2, logit_sd=1.0), "must lie inside"),
+        (lambda: log_normal(median=-1.0, geometric_sd=2.0), "not finite and positive"),
+        (lambda: log_normal(median=1.0, geometric_sd=0.5), "give a value above 1"),
+        (lambda: log_normal_from_interval(lower=2.0, upper=1.0), "upper does not exceed lower"),
+        (lambda: log_normal_from_interval(lower=1.0, upper=2.0, mass=1.0), "outside \\(0, 1\\)"),
+        (lambda: logit_normal(median=1.2, logit_sd=1.0), "give a value inside it"),
         (lambda: logit_normal(median=0.5, logit_sd=1.0, support=POSITIVE), "open interval"),
         (lambda: log_normal_from_samples([1.0]), "at least two"),
         (lambda: log_normal_from_samples([1.0, -1.0]), "outside the support"),
@@ -133,6 +133,7 @@ def test_softmax_normal_is_centered_on_its_center():
         (lambda: softmax_normal(center=(0.5, 0.6), logit_sd=1.0), "summing to 1"),
         (lambda: softmax_normal(center=(1.0,), logit_sd=1.0), "k >= 2"),
         (lambda: softmax_normal(center=CENTER, logit_sd=(1.0, 1.0)), "one value per unconstrained"),
+        (lambda: softmax_normal(center=[CENTER[1:] + (0.18,)] * 3, logit_sd=(1.0, 1.0, 1.0)), "could be one value per dim label"),
     ],
 )
 def test_the_builders_refuse_bad_arguments(build, message):
@@ -156,6 +157,19 @@ def test_independent_over_dim_aligns_by_dim_label():
                                                                               geometric_sd=2.0))})
     base = prior._built["soil_carbon"].distribution.distribution.distribution
     np.testing.assert_allclose(np.exp(base.loc), [1e4, 2e4, 3e4])
+
+
+def test_a_logit_sd_per_dim_label_is_laid_along_the_dim_labels():
+    vector = vector_of(ALLOCATION)
+    prior = Prior(vector, {"allocation": term(independent_over_dim(
+        softmax_normal, center={"conifer": CENTER, "deciduous": (0.25, 0.25, 0.25, 0.25)},
+        logit_sd={"conifer": 0.1, "deciduous": 5.0},
+    ))})
+    np.testing.assert_allclose(prior.gaussian().cov.to_dense().diagonal(), [0.01] * 3 + [25.0] * 3)
+
+
+def test_sample_takes_zero_draws(prior):
+    assert prior.sample(jax.random.key(0), 0).shape == (0, prior.parameter_vector.dimension)
 
 
 def test_independent_over_dim_refuses_a_missing_dim_label():
@@ -248,7 +262,7 @@ def test_every_parameter_needs_one_term_keyed_by_its_name():
     with pytest.raises(KeyError, match="no parameter of the vector"):
         Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0)),
                                 "other": term(log_normal(median=1.0, geometric_sd=2.0))})
-    with pytest.raises(TypeError, match="joint terms"):
+    with pytest.raises(TypeError, match="give each parameter its own term"):
         Prior(vector, {("rate", "share"): term(log_normal(median=1.0, geometric_sd=2.0))})
 
 

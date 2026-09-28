@@ -1,7 +1,7 @@
 """Tests for the SIPNET parameter map.
 
-The map reproduces the SIPNET parameter fields of the implementation it
-replaced, to 1e-12, from the same natural values (``conftest.EXAMPLE_REFERENCE``), and
+The map reproduces the stored reference fields (``conftest.EXAMPLE_REFERENCE``)
+to 1e-12 from their natural values, and
 ``ComputeInitialConditions`` reproduces the initial-condition conversion.
 External inputs broadcast by dim name: zip on ``site`` and the batch dim,
 cross on any other. Every check is provoked once.
@@ -86,7 +86,7 @@ def theta(vector, reference):
 # ── equivalence ───────────────────────────────────────────────────────────────
 
 
-def test_the_map_reproduces_the_replaced_implementations_fields(vector, sipnet_map, theta, reference):
+def test_the_map_reproduces_the_stored_reference_fields(vector, sipnet_map, theta, reference):
     fields = sipnet_map.sipnet_parameter_fields(vector, theta)
     sipnet_names = [name for name in reference.data_vars if not name.startswith("natural:")]
     assert set(fields.data_vars) == set(sipnet_names)
@@ -315,7 +315,7 @@ def test_a_fixed_value_is_in_its_domain_and_well_formed():
         Fixed(sipnet_parameter_name="soil_carbon", value={"a": 1.0}, provenance="t")
     with pytest.raises(TypeError, match="not a number"):
         Fixed(sipnet_parameter_name="soil_carbon", value=True, provenance="t")
-    with pytest.raises(ValueError, match="needs a provenance"):
+    with pytest.raises(ValueError, match="no provenance"):
         Fixed(sipnet_parameter_name="soil_carbon", value=1.0, provenance="")
 
 
@@ -413,12 +413,18 @@ def test_the_deciduous_mask_is_read_from_the_site_table():
 def test_external_inputs_are_validated():
     with pytest.raises(TypeError, match="Dataset"):
         validate_external_inputs({"a": 1.0})
-    with pytest.raises(ValueError, match="float64 with a units"):
+    with pytest.raises(ValueError, match="no units attribute"):
         validate_external_inputs(xr.Dataset({"a": ("site", [1.0])}, coords={"site": [1]}))
     with pytest.raises(ValueError, match="refuses"):
         validate_external_inputs(xr.Dataset({"a": ("site", [1.0], {"units": "g C m-2"})}, coords={"site": [1]}))
     with pytest.raises(ValueError, match="neither 'site' nor a batch dim"):
         validate_external_inputs(xr.Dataset({"a": ("pft", [1.0], {"units": "1"})}, coords={"pft": ["x"]}))
+
+
+def test_an_external_input_must_be_float64():
+    with pytest.raises(TypeError, match="convert it to float64"):
+        validate_external_inputs(xr.Dataset({"a": ("site", np.asarray([1.0], dtype=np.float32), {"units": "1"})},
+                                            coords={"site": [1]}))
 
 
 def test_an_external_input_must_cover_the_sites(vector, theta):
@@ -429,3 +435,32 @@ def test_an_external_input_must_cover_the_sites(vector, theta):
 
 def test_value_requirement_defaults():
     assert ValueRequirement("1") == ValueRequirement("1", None, 1)
+
+
+def test_out_of_domain_reports_a_missing_value(vector, sipnet_map, theta):
+    fields = sipnet_map.sipnet_parameter_fields(vector, theta).copy(deep=True)
+    fields["soil_carbon"].values[0, 0] = np.nan
+    outside = sipnet_map.out_of_domain(fields)
+    assert len(outside) == 1 and np.isnan(outside.iloc[0]["value"])
+
+
+@pytest.mark.parametrize("order", [1, -1])
+def test_every_rule_reading_a_value_holds_it_to_its_requirement(order):
+    vector = ParameterVector(parameters=[Parameter(name="amount", support=POSITIVE, units="g m-2")],
+                             site_table=site_table_of(*SITES))
+    rules = [Copy(value_name="amount", sipnet_parameter_name="soil_carbon"),
+             Copy(value_name="amount", sipnet_parameter_name="base_soil_respiration_rate")][::order]
+    sipnet_map = SIPNETParameterMap(rules=rules)
+    assert len(sipnet_map.values_read["amount"]) == 2
+    with pytest.raises(ValueError, match="requires 'yr-1'"):
+        check_sipnet_parameter_map_fits(sipnet_map, vector)
+
+
+def test_an_input_no_rule_reads_crosses_nothing(vector, theta):
+    inputs = crossed_inputs().assign(
+        unread=(("driver_member",), [1.0, 2.0], {"units": "1"})
+    ).assign_coords(driver_member=[0, 1])
+    sipnet_map = crossing_map()
+    assert sipnet_map.crossed_dims(inputs) == ("initial_condition_member",)
+    fields = sipnet_map.sipnet_parameter_fields(vector, theta, external_inputs=inputs)
+    assert "driver_member" not in fields.dims

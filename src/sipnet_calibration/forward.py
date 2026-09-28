@@ -36,7 +36,8 @@ Data model
 model's ``batch_dim`` zips with theta's rows, and one on any other batch dim
 (a **crossed dim**) runs with every row. PyEns enumerates the runs, one per
 combination of a row, the crossed dims' labels and a site: ``J * prod(M_k) *
-S`` of them, :meth:`ForwardModel.runs_per_sample` ``* J``.
+S`` of them, with ``M_k`` the size of crossed dim ``k``, which is
+:attr:`ForwardModel.runs_per_sample` ``* J``.
 
 **The run index**, :attr:`ForwardEvaluation.run_index`, names the rows of an
 evaluation: ``batch_dim``, then the crossed dims in the order they first
@@ -210,72 +211,6 @@ __all__ = [
 ]
 
 
-class ModelOutputNotFiniteError(RuntimeError):
-    """A run completed but wrote a non-finite value in a variable that was read.
-
-    SIPNET exits 0 on a blow-up, so the failure shows only in the output; it
-    is a failure at the run's parameters, and pickles as a plain message.
-    """
-
-
-#: The exceptions that mean a run failed **at its parameters**: its row
-#: becomes NaN. Everything else a worker returns is the machinery failing and
-#: is raised.
-MODEL_FAILURES: tuple[type[BaseException], ...] = (
-    SIPNETRunError,
-    ValidationError,
-    subprocess.TimeoutExpired,
-    ModelOutputNotFiniteError,
-)
-
-
-@dataclass(frozen=True, eq=False, kw_only=True)
-class ForwardEvaluation:
-    """What one evaluation of a :class:`ForwardModel` produced.
-
-    The fields are described in the module docstring's Data model. Nothing
-    read from it changes it: the arrays are ``jax.Array``\\ s, and the
-    xarray and pandas members read-only copies, on every read
-    (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`). Compared and
-    hashed by identity (``eq=False``).
-    """
-
-    theta: jax.Array
-    sipnet_parameter_fields: SIPNETParameterFields = ReadOnlyCopies()
-    run_index: pd.Index
-    model_output: ModelOutput | None = ReadOnlyCopies()
-    predictions: jax.Array | None
-    run_succeeded: Field = ReadOnlyCopies()
-    failures: pd.DataFrame = ReadOnlyCopies()
-    valid: jax.Array
-    out_of_domain_fraction: float = 0.0
-    observation_vector: ObservationVector | None = None
-
-    def predicted_fields(self) -> dict[str, Field]:
-        """The predictions as the observation vector's Fields, each on
-        ``(batch_dim, *crossed dims, site[, time])``.
-
-        Raises
-        ------
-        ValueError
-            Without predictions.
-        """
-        check_evaluation_has_predictions(self)
-        run_dims = list(self.run_index.names)
-        if len(run_dims) == 1:
-            return self.observation_vector.fields(self.predictions, batch_dim=run_dims[0])
-        flat_fields = self.observation_vector.fields(self.predictions, batch_dim=_ROW)
-        out = {}
-        for name, field in flat_fields.items():
-            row_coordinates = xr.Coordinates.from_pandas_multiindex(self.run_index, _ROW)
-            unstacked = field.assign_coords(row_coordinates).unstack(_ROW)
-            unstacked = unstacked.transpose(*run_dims, *[d for d in field.dims if d != _ROW])
-            out[name] = unstacked.assign_coords(
-                {dim: batch_coordinate(dim, unstacked[dim].values) for dim in run_dims}
-            )
-        return out
-
-
 class ForwardModel:
     """The forward map :math:`G`: unconstrained parameters to predictions.
 
@@ -285,8 +220,8 @@ class ForwardModel:
         \\psi_s = M\\big(T(\\theta)^{(s)}, u_s, c_s\\big),
 
     with :math:`T` the vector's transform, :math:`M` the SIPNET parameter
-    map, :math:`u_s` a run's external inputs, and :math:`H_s` the
-    observation operators at the run's site.
+    map, :math:`u_s` a run's external inputs, :math:`c_s` its fixed SIPNET
+    parameters, and :math:`H_s` the observation operators at the run's site.
 
     Parameters
     ----------
@@ -383,7 +318,7 @@ class ForwardModel:
         self._observation_vector = observation_vector
         self._freq = freq
         self._batch_dim = batch_dim
-        self._crossed_dims = _crossed_dims(external_inputs, batch_dim)
+        self._crossed_dims = sipnet_parameter_map.crossed_dims(external_inputs, batch_dim=batch_dim)
         self._climate = frozendict({site: climate[site] for site in self._sites})
         self._output_variable_names = _output_variable_names(output_variable_names, observation_vector)
         check_output_variables_can_be_returned(self._output_variable_names, model, freq)
@@ -623,7 +558,7 @@ class ForwardModel:
             As :meth:`evaluate`.
         """
         self._observation_vector_for("__call__")
-        check_no_crossed_dims(self._crossed_dims)
+        check_external_inputs_cross_no_dims(self._crossed_dims)
         predictions = self.evaluate(theta).predictions
         return predictions[0] if is_one_vector(theta) else predictions
 
@@ -672,6 +607,75 @@ class ForwardModel:
             if run_output.predictions is not None:
                 predictions[row, self._site_positions[site]] = run_output.predictions
         return predictions
+
+
+# ── what an evaluation returns, and the failures ──────────────────────────────
+
+
+class ModelOutputNotFiniteError(RuntimeError):
+    """A run completed but wrote a non-finite value in a variable that was read.
+
+    SIPNET exits 0 on a blow-up, so the failure shows only in the output; it
+    is a failure at the run's parameters, and pickles as a plain message.
+    """
+
+
+#: The exceptions that mean a run failed **at its parameters**: its row
+#: becomes NaN. Everything else a worker returns is the machinery failing and
+#: is raised.
+MODEL_FAILURES: tuple[type[BaseException], ...] = (
+    SIPNETRunError,
+    ValidationError,
+    subprocess.TimeoutExpired,
+    ModelOutputNotFiniteError,
+)
+
+
+@dataclass(frozen=True, eq=False, kw_only=True)
+class ForwardEvaluation:
+    """What one evaluation of a :class:`ForwardModel` produced.
+
+    The fields are described in the module docstring's Data model. Nothing
+    read from it changes it: the arrays are ``jax.Array``\\ s, and the
+    xarray and pandas members read-only copies, on every read
+    (:class:`~sipnet_calibration.conventions.ReadOnlyCopies`). Compared and
+    hashed by identity (``eq=False``).
+    """
+
+    theta: jax.Array
+    sipnet_parameter_fields: SIPNETParameterFields = ReadOnlyCopies()
+    run_index: pd.Index
+    model_output: ModelOutput | None = ReadOnlyCopies()
+    predictions: jax.Array | None
+    run_succeeded: Field = ReadOnlyCopies()
+    failures: pd.DataFrame = ReadOnlyCopies()
+    valid: jax.Array
+    out_of_domain_fraction: float = 0.0
+    observation_vector: ObservationVector | None = None
+
+    def predicted_fields(self) -> dict[str, Field]:
+        """The predictions as the observation vector's Fields, each on
+        ``(batch_dim, *crossed dims, site[, time])``.
+
+        Raises
+        ------
+        ValueError
+            Without predictions.
+        """
+        check_evaluation_has_predictions(self)
+        run_dims = list(self.run_index.names)
+        if len(run_dims) == 1:
+            return self.observation_vector.fields(self.predictions, batch_dim=run_dims[0])
+        flat_fields = self.observation_vector.fields(self.predictions, batch_dim=_ROW)
+        out = {}
+        for name, field in flat_fields.items():
+            row_coordinates = xr.Coordinates.from_pandas_multiindex(self.run_index, _ROW)
+            unstacked = field.assign_coords(row_coordinates).unstack(_ROW)
+            unstacked = unstacked.transpose(*run_dims, *[d for d in field.dims if d != _ROW])
+            out[name] = unstacked.assign_coords(
+                {dim: batch_coordinate(dim, unstacked[dim].values) for dim in run_dims}
+            )
+        return out
 
 
 # ── the per-run callable ──────────────────────────────────────────────────────
@@ -733,16 +737,18 @@ class _Run:
 # ── private helpers ───────────────────────────────────────────────────────────
 
 #: The temporary name of the run index's rows while predictions are unstacked.
-_ROW = "row"
+_ROW = "__row__"
 
 
-def _crossed_dims(external_inputs: xr.Dataset | None, batch_dim: str) -> tuple[str, ...]:
-    if external_inputs is None:
-        return ()
-    dims: dict[str, None] = {}
-    for variable in external_inputs.data_vars.values():
-        dims.update(dict.fromkeys(str(d) for d in variable.dims if d not in (SITE, batch_dim)))
-    return tuple(dims)
+def _run_labels(run_index: pd.Index) -> list[np.ndarray]:
+    """Each level's labels in the run index's own order, which a
+    ``MultiIndex``'s sorted ``levels`` are not."""
+    if not isinstance(run_index, pd.MultiIndex):
+        return [np.asarray(run_index.values, dtype=BATCH_LABEL_DTYPE)]
+    return [
+        np.asarray(run_index.get_level_values(i).unique(), dtype=BATCH_LABEL_DTYPE)
+        for i in range(run_index.nlevels)
+    ]
 
 
 def _output_variable_names(
@@ -862,11 +868,9 @@ def _run_succeeded(
 ) -> xr.DataArray:
     """*succeeded*, ``(R, S)``, as a field on ``(batch_dim, *crossed dims, site)``."""
     names = list(run_index.names)
-    shape = [len(level) for level in getattr(run_index, "levels", [run_index])]
-    coords = {
-        name: batch_coordinate(name, np.asarray(level))
-        for name, level in zip(names, getattr(run_index, "levels", [run_index.values]))
-    }
+    labels = _run_labels(run_index)
+    shape = [len(level) for level in labels]
+    coords = {name: batch_coordinate(name, level) for name, level in zip(names, labels)}
     return xr.DataArray(
         succeeded.reshape(*shape, len(sites)),
         dims=(*names, SITE),
@@ -913,10 +917,9 @@ def _stacked_model_output(
     keys = [key if isinstance(key, tuple) else (key,) for key in run_index]
     by_key = {(*keys[row], site): output.model_output for (row, site), output in run_outputs.items()}
     stacked = stack_model_outputs(by_key, key_dims=(*names, SITE), site_table=site_table)
-    levels = getattr(run_index, "levels", [run_index.values])
     full = stacked.reindex(
         {
-            **{name: np.asarray(level, dtype=BATCH_LABEL_DTYPE) for name, level in zip(names, levels)},
+            **dict(zip(names, _run_labels(run_index))),
             SITE: np.asarray(sites, dtype=stacked[SITE].dtype),
         }
     )
@@ -980,7 +983,7 @@ def check_sipnet_parameters_are_in_the_domain(outside: pd.DataFrame) -> None:
     )
 
 
-def check_no_crossed_dims(crossed_dims: Sequence[str]) -> None:
+def check_external_inputs_cross_no_dims(crossed_dims: Sequence[str]) -> None:
     """``forward(theta)`` returns one row per row of theta, which crossed
     dims multiply."""
     if crossed_dims:
@@ -992,6 +995,7 @@ def check_no_crossed_dims(crossed_dims: Sequence[str]) -> None:
 
 
 def check_evaluation_has_predictions(evaluation: ForwardEvaluation) -> None:
+    """An evaluation has predictions, which only an observation vector gives."""
     if evaluation.predictions is None:
         raise ValueError("the evaluation has no predictions: its model was built without an observation vector.")
 
@@ -1046,11 +1050,13 @@ def check_theta_is_finite(theta: np.ndarray) -> None:
 
 
 def check_model_is_a_sipnet_model(model: Any) -> None:
+    """The model is a pySIPNET ``SIPNETModel``."""
     if not isinstance(model, SIPNETModel):
         raise TypeError(f"model must be a pysipnet SIPNETModel, got {type(model).__name__}.")
 
 
 def check_backend_is_a_pyens_backend(backend: Any) -> None:
+    """The backend is a PyEns ``Backend``."""
     if not isinstance(backend, Backend):
         raise TypeError(f"backend must be a pyens Backend, got {type(backend).__name__}.")
 
@@ -1058,6 +1064,7 @@ def check_backend_is_a_pyens_backend(backend: Any) -> None:
 def check_output_variables_are_named(
     output_variable_names: Sequence[str] | None, observation_vector: ObservationVector | None
 ) -> None:
+    """The runs' output variables are named, or an observation vector names them."""
     if output_variable_names is None and observation_vector is None:
         raise ValueError(
             "name the output variables each run returns (output_variable_names=), "
@@ -1066,6 +1073,7 @@ def check_output_variables_are_named(
 
 
 def check_freq_is_for_the_prior_predictive(freq: Any, observation_vector: ObservationVector | None) -> None:
+    """``freq`` is given only without an observation vector, whose operators align on their own."""
     if freq is not None and observation_vector is not None:
         raise ValueError(
             "freq= aggregates model output for the prior predictive; with an observation "
@@ -1075,6 +1083,7 @@ def check_freq_is_for_the_prior_predictive(freq: Any, observation_vector: Observ
 
 
 def check_climate_covers_the_sites(climate: Mapping[int, Any], sites: Sequence[int]) -> None:
+    """The climate has ``ClimateDrivers`` for every site run."""
     missing = [s for s in sites if s not in climate]
     if missing:
         raise ValueError(
@@ -1092,6 +1101,7 @@ def check_climate_covers_the_sites(climate: Mapping[int, Any], sites: Sequence[i
 def check_climate_is_file_backed(
     climate: Mapping[int, ClimateDrivers], sites: Sequence[int], backend: Backend
 ) -> None:
+    """Under a process backend every site's drivers are file-backed, so no run carries a copy."""
     if isinstance(backend, SequentialBackend):
         return
     in_memory = [s for s in sites if climate[s].source_path is None]
@@ -1104,6 +1114,7 @@ def check_climate_is_file_backed(
 
 
 def check_observation_sites_are_run(observation_vector: ObservationVector, sites: Sequence[int]) -> None:
+    """Every site the observation vector observes is run."""
     extra = sorted(set(observation_vector.sites) - set(sites))
     if extra:
         raise ValueError(
@@ -1116,6 +1127,7 @@ def check_observation_sites_are_run(observation_vector: ObservationVector, sites
 def check_output_variable_names_cover_the_operators(
     output_variable_names: Sequence[str], observation_vector: ObservationVector
 ) -> None:
+    """The output variables include every one the operators read."""
     missing = [n for n in observation_vector.output_variable_names if n not in output_variable_names]
     if missing:
         raise ValueError(
@@ -1151,6 +1163,7 @@ def check_output_variables_can_be_returned(
 def check_site_slice_is_the_site_segment(
     site_slice: ObservationVector, site_segment: pd.MultiIndex, site: int
 ) -> None:
+    """A site's slice of the observation vector is its segment of Flat, where its predictions are placed."""
     if not site_slice.index.equals(site_segment):
         raise ValueError(
             f"the observation vector's selection to site {site} is not that site's segment of "
@@ -1175,6 +1188,7 @@ def check_output_is_finite(dataset: xr.Dataset, site: int) -> None:
 def check_no_run_failed_in_the_machinery(
     machinery_failures: Sequence[tuple[dict, BaseException]], evaluation: ForwardEvaluation
 ) -> None:
+    """No run failed in the machinery, which says nothing of the parameters."""
     if not machinery_failures:
         return
     coordinate, error = machinery_failures[0]
@@ -1192,6 +1206,7 @@ def check_no_run_failed_in_the_machinery(
 
 
 def check_some_run_succeeded(evaluation: ForwardEvaluation) -> None:
+    """Some run succeeded, so there is model output to stack."""
     if not bool(evaluation.run_succeeded.any()):
         raise _with_evaluation(
             RuntimeError(
