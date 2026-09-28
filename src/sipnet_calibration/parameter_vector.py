@@ -2387,10 +2387,10 @@ class ParameterVector:
         spread = jnp.asarray(spread, dtype=jnp.float64)
         check_prior_spread_is_positive(parameter, spread)
         if parameter.is_joint:
-            return jnp.ravel(mean), DensePSD.from_matrix(spread)
+            return jnp.ravel(mean), DensePSD(spread)
         if independent_scalar:
             return jnp.ravel(mean), PSDDiagonal(jnp.ravel(spread))
-        blocks = tuple(DensePSD.from_matrix(spread[g]) for g in range(spread.shape[0]))
+        blocks = tuple(DensePSD(spread[g]) for g in range(spread.shape[0]))
         return jnp.ravel(mean), PSDBlockDiag(blocks)
 
     def _describe_moments(self, parameter: CalibrationParameter) -> tuple[np.ndarray, np.ndarray]:
