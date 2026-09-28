@@ -13,6 +13,7 @@ fixture.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
@@ -75,6 +76,7 @@ def describe_calibration(
         if name in parameter_vector.derived_parameter_names:
             rows[name] = {"term": "", "prior": "", "given": "", "provenance": ""}
         else:
+            check_prior_covers_the_parameter(name, covering)
             rows[name] = {"term": covering[name], **terms.loc[covering[name]].to_dict()}
     reached = {name: ([], []) for name in vector.index}
     for rule in sipnet_parameter_map.rules:
@@ -204,3 +206,15 @@ def example_calibration(
     )
     return vector, prior, sipnet_map
 
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_prior_covers_the_parameter(name: str, covering: Mapping[str, str]) -> None:
+    """The prior has a term for each of the vector's parameters: a prior over
+    another vector would describe the wrong parameters."""
+    if name not in covering:
+        raise KeyError(
+            f"the prior has no term for parameter {name!r}; describe a prior built on this vector, "
+            "prior.parameter_vector."
+        )

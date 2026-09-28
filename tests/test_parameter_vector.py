@@ -884,3 +884,32 @@ def test_joint_probe_points_are_probe_points_over_every_part():
     moved_first = (first != 0) & (np.abs(second).sum(axis=1) == 0)
     moved_second = (first == 0) & (np.abs(second[:, 0]) > 0) & (np.abs(second[:, 1:]).sum(axis=1) == 0)
     assert moved_first.sum() == 4 and moved_second.sum() == 4
+
+
+def test_a_scalar_derived_parameter_is_not_on_the_simplex():
+    with pytest.raises(ValueError, match="needs at least two natural"):
+        DerivedParameter(name="shares", units="1", dim="site", support=SIMPLEX, derived_from=("standardized",),
+                         compute=lambda d, t, standardized: jax.nn.softmax(standardized))
+
+
+def test_compute_runs_vmapped_at_construction():
+    def branching(dim_index, site_table, mean, spread, standardized):
+        return standardized if spread > 0.5 else 2.0 * standardized
+
+    with pytest.raises(jax.errors.TracerBoolConversionError):
+        pooled_vector(compute=branching)
+
+
+def test_a_non_pointwise_vector_reads_its_own_dim_labels_in_any_order():
+    def correlated(dim_index, site_table, mean, spread, standardized):
+        return jnp.exp(spread * jnp.cumsum(standardized))
+
+    vector = pooled_vector(compute=correlated, pointwise=False)
+    theta = jax.random.normal(jax.random.key(5), (2, vector.dimension))
+    permuted = vector.dataset(theta).isel(site=[2, 0, 1])
+    np.testing.assert_allclose(vector.flat(permuted), theta, atol=1e-12)
+
+
+def test_derived_values_need_the_inputs(pooled):
+    with pytest.raises(KeyError, match="computed from \\['spread', 'standardized'\\], which the natural values lack"):
+        pooled.derived_values({"mean": jnp.zeros(2)})

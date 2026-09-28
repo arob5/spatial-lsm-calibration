@@ -457,3 +457,43 @@ def test_a_copula_is_for_parameters_without_a_dim():
     with pytest.raises(TypeError, match="prior of parameters without a dim"):
         Prior(vector_of(by_site, SOIL_CARBON), {("rate", "soil_carbon"): copula(rate=RATE_MARGINAL,
                                                                                 soil_carbon=RATE_MARGINAL)})
+
+
+def test_zero_draws_of_a_prior_evaluated_by_change_of_variables(non_centered, centered):
+    assert non_centered.sample(jax.random.key(0), 0).shape == (0, non_centered.parameter_vector.dimension)
+    assert centered.sample(jax.random.key(0), 0).shape == (0, centered.parameter_vector.dimension)
+
+
+def test_a_joint_term_given_others_may_be_a_joint_distribution():
+    def pair_given_spread(dim_index, site_table, spread):
+        return tfd.JointDistributionNamedAutoBatched({
+            "rate": tfd.Gamma(jnp.float64(3.0), spread), "share": tfd.Beta(jnp.float64(2.0), spread),
+        })
+
+    prior = Prior(vector_of(RATE, SHARE, SPREAD), {
+        ("rate", "share"): term(pair_given_spread, given=("spread",)),
+        "spread": HYPERPRIORS["spread"],
+    })
+    theta = prior.sample(jax.random.key(8), 4)
+    natural_values = prior.parameter_vector.to_natural(theta)
+    spread = natural_values["spread"]
+    expected = (
+        tfd.Gamma(jnp.float64(3.0), spread).log_prob(natural_values["rate"]) + theta[:, 0]
+        + tfd.Beta(jnp.float64(2.0), spread).log_prob(natural_values["share"])
+        + jnp.log(natural_values["share"] * (1 - natural_values["share"]))
+        + prior._built["spread"].log_prob(theta[:, 2:], None)
+    )
+    np.testing.assert_allclose(jax.jit(prior.log_prob)(theta), expected, rtol=1e-10)
+
+
+@pytest.mark.parametrize("key", [("rate",), ()])
+def test_a_joint_term_is_keyed_by_two_or_more_names(key):
+    with pytest.raises(ValueError, match="a joint term covers two or more"):
+        Prior(vector_of(RATE), {key: term(RATE_MARGINAL)})
+
+
+def test_a_term_is_not_given_what_it_covers_or_a_name_twice():
+    with pytest.raises(ValueError, match="is given \\['rate'\\], which it covers"):
+        Prior(vector_of(RATE), {"rate": term(rate_given, given=("rate",))})
+    with pytest.raises(ValueError, match="given"):
+        PriorTerm(share_given, given=("rate", "rate"), provenance="test")

@@ -42,7 +42,8 @@ are pushforwards of a Gaussian through their support's default bijector.
 The density
 -----------
 With parameters :math:`x`, derived parameters :math:`y`, terms
-:math:`B_1, \\dots, B_m` and :math:`g(b)` what term :math:`b` is given,
+:math:`B_1, \\dots, B_m`, and :math:`x_{g(b)}` and :math:`y_{g(b)}` the
+parameters and derived parameters term :math:`b` is given,
 
 .. math::
 
@@ -177,7 +178,7 @@ from sipnet_calibration.parameter_vector import (
     check_theta_ends_in_the_dimension,
     joint_probe_points,
 )
-from sipnet_calibration.validation import as_bounded_integer, as_names, truncated
+from sipnet_calibration.validation import as_bounded_integer, as_names, check_names_are_unique, truncated
 
 __all__ = [
     "DeclaresGaussian",
@@ -256,6 +257,7 @@ class Prior:
         for key, term in self.terms.items():
             check_term_is_a_prior_term(term_name(key), term)
             check_given_names_are_held(term_name(key), term.given, self.parameter_vector)
+            check_term_is_not_given_what_it_covers(key, term.given)
         order = _draw_order(self.terms, self.parameter_vector)
         object.__setattr__(self, "_draw_order", order)
         object.__setattr__(self, "_built", frozendict(self._build_terms(order)))
@@ -538,7 +540,7 @@ class PriorTerm:
     TypeError
         If *given* is one string rather than a sequence of names.
     ValueError
-        If *provenance* is empty.
+        If *given* names something twice, or *provenance* is empty.
     """
 
     distribution: tfd.Distribution | PriorFunction
@@ -548,6 +550,7 @@ class PriorTerm:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "given", as_names(self.given, message_name="given"))
+        check_names_are_unique(self.given, message_name="given")
         check_provenance_is_given(self.provenance)
 
 
@@ -1154,6 +1157,8 @@ class _BuiltTerm:
         keys = jax.random.split(key, n)
         return jax.vmap(lambda k, v: self._draw(self.distribution_at(v), k, None))(keys, dict(given_values))
 
+    # ── supporting methods ────────────────────────────────────────────────────
+
     def _log_prob_under(self, distribution: tfd.Distribution, theta: Array) -> Array:
         if self.by_base_density:
             return distribution.distribution.log_prob(self._base_event(theta))
@@ -1174,7 +1179,10 @@ class _BuiltTerm:
             return draws.reshape(sample_shape + (self.size,))
         values = distribution.sample(sample_shape, seed=key)
         values = values if self.joint else {self.names[0]: values}
-        pieces = [p.bijector.inverse(values[p.name]).reshape(sample_shape + (-1,)) for p in self.parameters]
+        pieces = [
+            p.bijector.inverse(values[p.name]).reshape(sample_shape + (int(np.prod(shape, dtype=int)),))
+            for p, shape in zip(self.parameters, self.shapes)
+        ]
         return jnp.concatenate(pieces, axis=-1)
 
     def _base_event(self, theta: Array) -> Array:
@@ -1424,6 +1432,16 @@ def _distribution_name(distribution: tfd.Distribution | None) -> str:
     return kind.__name__
 
 
+def _structure_of(distribution: tfd.Distribution) -> Any:
+    """A distribution's pytree structure: its class, its parts' classes and
+    its static parameters; its class alone where TFP gives it no pytree
+    structure, as for a ``JointDistributionNamed``."""
+    try:
+        return jax.tree_util.tree_structure(distribution)
+    except (AttributeError, TypeError):
+        return type(distribution)
+
+
 def _shape_of(shape: Any) -> Any:
     """A TFP shape, or a dict of them for a joint distribution, as tuples."""
     if isinstance(shape, Mapping):
@@ -1521,12 +1539,18 @@ def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: Parameter
 
 
 def check_term_key_is_names(key: Any) -> None:
-    """A term is keyed by a parameter's name or a tuple of names, which is
-    how it is read."""
+    """A term is keyed by a parameter's name, or a joint term by a tuple of
+    two or more, which is how it is read; a shorter tuple would be taken for
+    a joint term and refused for its draws' shape."""
     if not (isinstance(key, str) or (isinstance(key, tuple) and all(isinstance(n, str) for n in key))):
         raise TypeError(
             f"a prior term is keyed by a parameter's name, or a tuple of names for a joint term, "
             f"got {key!r}."
+        )
+    if isinstance(key, tuple) and len(key) < 2:
+        raise ValueError(
+            f"the prior term {key!r} is a tuple of {len(key)} name(s), but a joint term covers two "
+            "or more; key one parameter's term by its name."
         )
 
 
@@ -1578,6 +1602,16 @@ def check_given_names_are_held(name: str, given: Sequence[str], vector: Paramete
             )
 
 
+def check_term_is_not_given_what_it_covers(key: TermKey, given: Sequence[str]) -> None:
+    """A term is not given a parameter it covers, whose density it is."""
+    covered = [name for name in given if name in _names_of(key)]
+    if covered:
+        raise ValueError(
+            f"the prior of {term_name(key)!r} is given {covered}, which it covers; a term is the "
+            "density of what it covers, so give it only other parameters."
+        )
+
+
 def check_given_links_are_acyclic(cycle: Sequence[tuple[str, Any]] | None) -> None:
     """The ``given`` links, through derived parameters, form no cycle, which
     no order of draws could satisfy; *cycle* is the one found, if any."""
@@ -1607,8 +1641,7 @@ def check_term_keeps_its_structure(variants: Sequence[_BuiltTerm]) -> None:
     first, *rest = variants
     for variant in rest:
         if (
-            jax.tree_util.tree_structure(variant.distribution)
-            != jax.tree_util.tree_structure(first.distribution)
+            _structure_of(variant.distribution) != _structure_of(first.distribution)
             or variant.by_base_density != first.by_base_density
         ):
             raise ValueError(

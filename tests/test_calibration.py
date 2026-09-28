@@ -118,3 +118,11 @@ def test_a_prior_draw_runs_the_niwot_fixture(sipnet_parameter_fields):
     result = model(**sipnet_overrides(sipnet_parameter_fields, site=27, batch={"sample": 0}))
     assert result.provenance.success, result.provenance.stderr
     assert result.outputs["net_ecosystem_exchange"].sizes["time"] == 8 * 30
+
+
+def test_describe_calibration_needs_a_prior_over_the_vector(example):
+    vector, _, sipnet_map = example
+    other = example_calibration(site_table_of(*EXAMPLE_REFERENCE_SITES), EXAMPLE_REFERENCE_PFT)[1]
+    smaller = other.select(parameter_names=["photosynthetic_capacity"])
+    with pytest.raises(KeyError, match="the prior has no term for parameter 'respiration_share'"):
+        describe_calibration(vector, smaller, sipnet_map)

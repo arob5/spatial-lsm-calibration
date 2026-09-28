@@ -658,6 +658,7 @@ class ParameterVector:
         out = {}
         for derived in self.derived_parameters:
             if derived.name in wanted:
+                check_natural_values_hold_the_inputs(derived, values)
                 out[derived.name] = values[derived.name] = self._computed(derived, values)
         return out
 
@@ -1668,40 +1669,6 @@ def check_parameter_vector_is_valid(parameter_vector: ParameterVector) -> None:
         check_derived_parameter_fits_the_vector(derived, parameter_vector)
 
 
-def check_derived_parameter_fits_the_vector(
-    derived: DerivedParameter, parameter_vector: ParameterVector
-) -> None:
-    """A derived parameter reads earlier names, and its value has its shape,
-    lies in its declared support, and is pointwise when it says so."""
-    check_derived_parameter_reads_earlier_names(derived, parameter_vector)
-    check_derived_parameter_has_its_value_shape(derived, parameter_vector)
-    if derived.support is not None:
-        check_derived_parameter_lies_in_its_support(derived, parameter_vector)
-    if derived.pointwise and derived.dim is not None:
-        check_derived_parameter_is_pointwise(derived, parameter_vector)
-
-
-def check_derived_parameter_is_valid(derived: DerivedParameter) -> None:
-    """A derived parameter's name and natural names are usable, and it is
-    computed from something."""
-    check_name_is_usable(derived.name, "a derived parameter")
-    if derived.natural_names is not None:
-        for natural_name in derived.natural_names:
-            check_name_is_usable(natural_name, f"a natural name of {derived.name!r}", reserved=False)
-        check_names_are_unique(derived.natural_names, message_name=f"{derived.name!r} natural_names")
-    check_derived_parameter_is_computed_from_something(derived)
-
-
-def check_derived_parameter_is_computed_from_something(derived: DerivedParameter) -> None:
-    """A derived parameter has inputs, whose draws give its values their
-    leading shape; a constant would not broadcast over the draws."""
-    if not derived.derived_from:
-        raise ValueError(
-            f"derived parameter {derived.name!r} is computed from nothing; a value fixed across "
-            "draws is a Fixed SIPNET parameter or an external input, not a derived parameter."
-        )
-
-
 def check_parameter_is_valid(parameter: Parameter) -> None:
     """A parameter's name, natural names and bijector are usable."""
     check_name_is_usable(parameter.name, "a parameter")
@@ -1830,6 +1797,41 @@ def check_parameter_dim_is_the_vectors(
         )
 
 
+def check_derived_parameter_fits_the_vector(
+    derived: DerivedParameter, parameter_vector: ParameterVector
+) -> None:
+    """A derived parameter reads earlier names, and its value has its shape,
+    lies in its declared support, and is pointwise when it says so."""
+    check_derived_parameter_reads_earlier_names(derived, parameter_vector)
+    check_derived_parameter_has_its_value_shape(derived, parameter_vector)
+    if derived.support is not None:
+        check_derived_parameter_lies_in_its_support(derived, parameter_vector)
+    if derived.pointwise and derived.dim is not None:
+        check_derived_parameter_is_pointwise(derived, parameter_vector)
+
+
+def check_derived_parameter_is_valid(derived: DerivedParameter) -> None:
+    """A derived parameter's name and natural names are usable, and it is
+    computed from something."""
+    check_name_is_usable(derived.name, "a derived parameter")
+    if derived.natural_names is not None:
+        for natural_name in derived.natural_names:
+            check_name_is_usable(natural_name, f"a natural name of {derived.name!r}", reserved=False)
+        check_names_are_unique(derived.natural_names, message_name=f"{derived.name!r} natural_names")
+    check_simplex_has_two_natural_names(derived)
+    check_derived_parameter_is_computed_from_something(derived)
+
+
+def check_derived_parameter_is_computed_from_something(derived: DerivedParameter) -> None:
+    """A derived parameter has inputs, whose draws give its values their
+    leading shape; a constant would not broadcast over the draws."""
+    if not derived.derived_from:
+        raise ValueError(
+            f"derived parameter {derived.name!r} is computed from nothing; a value fixed across "
+            "draws is a Fixed SIPNET parameter or an external input, not a derived parameter."
+        )
+
+
 def check_derived_parameter_reads_earlier_names(
     derived: DerivedParameter, parameter_vector: ParameterVector
 ) -> None:
@@ -1857,9 +1859,11 @@ def check_derived_parameter_has_its_value_shape(
 ) -> None:
     """A derived parameter's ``compute`` returns its value shape at theta = 0,
     which would otherwise broadcast or misalign against the sites."""
-    natural_values = parameter_vector._parameters_at(np.zeros(parameter_vector.dimension))
+    # One draw's worth of theta with a leading axis, so compute runs vmapped
+    # as it does at run time.
+    natural_values = parameter_vector._parameters_at(np.zeros((1, parameter_vector.dimension)))
     value = parameter_vector.derived_values(natural_values, derived_parameter_names=[derived.name])
-    shape, expected = tuple(jnp.shape(value[derived.name])), parameter_vector.value_shape(derived.name)
+    shape, expected = tuple(jnp.shape(value[derived.name]))[1:], parameter_vector.value_shape(derived.name)
     if shape != expected:
         raise ValueError(
             f"derived parameter {derived.name!r} computes a value of shape {shape}, but its dim and "
@@ -1905,9 +1909,10 @@ def check_derived_parameter_is_pointwise(derived: DerivedParameter, parameter_ve
             )
 
 
-def check_simplex_has_two_natural_names(parameter: Parameter) -> None:
-    """A simplex parameter names at least two natural numbers."""
-    if parameter.support.kind == "simplex" and parameter.natural_size < 2:
+def check_simplex_has_two_natural_names(parameter: Parameter | DerivedParameter) -> None:
+    """A value on the simplex names at least two natural numbers; a scalar's
+    support would otherwise be read across its dim labels."""
+    if parameter.support is not None and parameter.support.kind == "simplex" and parameter.natural_size < 2:
         raise ValueError(
             f"parameter {parameter.name!r} is on the simplex, which needs at least two natural "
             "numbers; give natural_names=(...) with two or more names."
@@ -2166,6 +2171,17 @@ def check_site_labels_are_strings(name: str, labels: Sequence[Any]) -> None:
         )
 
 
+def check_natural_values_hold_the_inputs(derived: DerivedParameter, natural_values: Mapping[str, Any]) -> None:
+    """The natural values hold everything a derived parameter is computed
+    from."""
+    missing = [name for name in derived.derived_from if name not in natural_values]
+    if missing:
+        raise KeyError(
+            f"derived parameter {derived.name!r} is computed from {missing}, which the natural "
+            "values lack; give every parameter it is computed from."
+        )
+
+
 def check_derived_parameter_names_are_held(names: Sequence[str], parameter_vector: ParameterVector) -> None:
     """Every name is one of the vector's derived parameters; any other would
     be computed as nothing, and missed far from the request."""
@@ -2185,7 +2201,8 @@ def check_dataset_can_project_onto_the_vector(parameter_dataset: xr.Dataset, par
         return
     for dim in parameter_vector.dim_names:
         held = parameter_dataset.indexes.get(dim)
-        if held is not None and not held.equals(parameter_vector.dim_index(dim)):
+        # flat and site_fields read by label, so the order does not matter.
+        if held is not None and set(held) != set(parameter_vector.dim_index(dim)):
             raise ValueError(
                 f"the parameter dataset's {dim!r} dim labels are not the vector's, and the vector has a "
                 "derived parameter that is not pointwise, whose values depend on every dim label "
