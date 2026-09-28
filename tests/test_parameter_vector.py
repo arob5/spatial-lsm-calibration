@@ -3,7 +3,9 @@
 The shapes of every form are checked against the module's table, theta
 round trips through natural values and the labeled form, a smaller vector
 reads a larger one's labeled form, and the per-site view is a collection of
-fields. Each construction and entry-point check is provoked once.
+fields. Derived parameters are computed, carried and selected, and their
+checks refuse what they should. Each construction and entry-point check is
+provoked once.
 """
 
 from __future__ import annotations
@@ -24,12 +26,16 @@ from sipnet_calibration.parameter_vector import (
     POSITIVE,
     REAL,
     SIMPLEX,
+    DerivedParameter,
     OpenInterval,
     Parameter,
     ParameterVector,
     Support,
     check_parameter_vectors_share_a_layout,
+    dim_label_positions,
+    joint_probe_points,
     probe_points,
+    site_positions,
     validate_natural_values,
     validate_parameter_dataset,
 )
@@ -589,3 +595,387 @@ def test_a_transform_that_differs_numerically_breaks_the_layout():
 def test_other_sites_break_the_layout(vector):
     with pytest.raises(ValueError, match="differ in their index"):
         check_parameter_vectors_share_a_layout(vector, vector.select(sites=[1, 27]))
+
+
+# ── derived parameters ────────────────────────────────────────────────────────
+
+BIOME = ("forest", "forest", "tundra")
+
+
+def pooled_vector(**derived_arguments) -> ParameterVector:
+    """Site-level soil carbon pooled within PFTs, non-centered: a PFT mean, a
+    shared spread and a standardized latent per site, and the site value
+    derived from them."""
+
+    def soil_carbon(dim_index, site_table, mean, spread, standardized):
+        return jnp.exp(mean[site_positions(site_table, "pft")] + spread * standardized)
+
+    derived = {
+        "name": "soil_carbon",
+        "units": "g m-2",
+        "dim": "site",
+        "derived_from": ("mean", "spread", "standardized"),
+        "compute": soil_carbon,
+    } | derived_arguments
+    return ParameterVector(
+        parameters=[
+            Parameter(name="mean", support=REAL, units=None, dim="pft"),
+            Parameter(name="spread", support=POSITIVE, units=None),
+            Parameter(name="standardized", support=REAL, units=None, dim="site"),
+        ],
+        derived_parameters=[DerivedParameter(**derived)],
+        site_table=site_table(),
+        site_labels={"pft": PFT, "biome": BIOME},
+    )
+
+
+@pytest.fixture(scope="module")
+def pooled() -> ParameterVector:
+    return pooled_vector(support=POSITIVE)
+
+
+def pooled_by_hand(pooled: ParameterVector, theta: jax.Array) -> np.ndarray:
+    natural_values = pooled.to_natural(theta)
+    labels = list(pooled.dim_index("pft"))
+    pft = np.asarray([labels.index(label) for label in pooled.site_table["pft"].astype(str)])
+    return np.exp(
+        np.asarray(natural_values["mean"])[..., pft]
+        + np.asarray(natural_values["spread"])[..., None] * np.asarray(natural_values["standardized"])
+    )
+
+
+def test_a_derived_parameter_is_computed_after_the_parameters(pooled):
+    theta = jax.random.normal(jax.random.key(1), (4, pooled.dimension))
+    natural_values = pooled.to_natural(theta)
+    assert list(natural_values) == ["mean", "spread", "standardized", "soil_carbon"]
+    assert pooled.dimension == 2 + 1 + 3
+    np.testing.assert_allclose(natural_values["soil_carbon"], pooled_by_hand(pooled, theta), rtol=1e-12)
+    assert pooled.to_natural(theta[0])["soil_carbon"].shape == (3,)
+    assert pooled.to_natural(theta.reshape((2, 2, -1)))["soil_carbon"].shape == (2, 2, 3)
+
+
+def test_a_derived_parameter_is_traceable(pooled):
+    gradient = jax.jit(jax.grad(lambda t: pooled.to_natural(t)["soil_carbon"].sum()))(jnp.zeros(pooled.dimension))
+    assert bool(jnp.isfinite(gradient).all())
+
+
+def test_derived_values_computes_what_the_named_ones_need():
+    def doubled(dim_index, site_table, rate):
+        return 2.0 * rate
+
+    def quadrupled(dim_index, site_table, doubled):
+        return 2.0 * doubled
+
+    vector = ParameterVector(
+        parameters=[Parameter(name="rate", support=POSITIVE, units="yr-1")],
+        derived_parameters=[
+            DerivedParameter(name="doubled", units="yr-1", derived_from=("rate",), compute=doubled),
+            DerivedParameter(name="quadrupled", units="yr-1", derived_from=("doubled",), compute=quadrupled),
+        ],
+        site_table=site_table(),
+    )
+    values = vector.derived_values({"rate": jnp.asarray([1.0, 2.0])}, derived_parameter_names=["quadrupled"])
+    assert list(values) == ["doubled", "quadrupled"]
+    np.testing.assert_allclose(values["quadrupled"], [4.0, 8.0])
+    with pytest.raises(KeyError, match="no derived parameter"):
+        vector.derived_values({"rate": 1.0}, derived_parameter_names=["rate"])
+
+
+def test_the_labeled_form_carries_a_derived_parameter(pooled):
+    theta = jax.random.normal(jax.random.key(2), (3, pooled.dimension))
+    dataset = pooled.dataset(theta)
+    assert dataset["soil_carbon"].dims == ("sample", "site")
+    assert dataset["soil_carbon"].attrs == {
+        "parameter": "soil_carbon",
+        "units": "g m-2",
+        "support": "positive",
+        "derived_from": "mean, spread, standardized",
+    }
+    np.testing.assert_allclose(pooled.flat(dataset), theta, atol=1e-12)
+    site_fields = pooled.site_fields(dataset)
+    validate_field(site_fields["soil_carbon"], message_name="soil_carbon")
+    np.testing.assert_allclose(site_fields["soil_carbon"].values, pooled_by_hand(pooled, theta), rtol=1e-12)
+
+
+def test_at_sites_reads_a_derived_parameter_on_another_dim():
+    def pft_rate(dim_index, site_table, rate):
+        return jnp.full(len(dim_index), rate)
+
+    vector = ParameterVector(
+        parameters=[Parameter(name="rate", support=POSITIVE, units="yr-1")],
+        derived_parameters=[
+            DerivedParameter(name="pft_rate", units="yr-1", dim="pft", derived_from=("rate",), compute=pft_rate)
+        ],
+        site_table=site_table(),
+        site_labels={"pft": PFT},
+    )
+    at_sites = vector.at_sites(vector.to_natural(jnp.zeros((2, 1))))
+    assert at_sites["pft_rate"].shape == (2, 3)
+
+
+def test_select_keeps_a_derived_parameter_whose_inputs_are_kept(pooled):
+    kept = pooled.select(sites=[1, 4711])
+    assert kept.derived_parameter_names == ("soil_carbon",)
+    theta = jax.random.normal(jax.random.key(3), (2, kept.dimension))
+    np.testing.assert_allclose(kept.to_natural(theta)["soil_carbon"], pooled_by_hand(kept, theta), rtol=1e-12)
+    assert pooled.select(parameter_names=["mean", "spread"]).derived_parameter_names == ()
+
+
+def test_describe_lists_derived_parameters_after_the_parameters(pooled):
+    table = pooled.describe()
+    assert list(table.index) == ["mean", "spread", "standardized", "soil_carbon"]
+    assert table.loc["soil_carbon", "entries"] == 0
+    assert table.loc["soil_carbon", "derived_from"] == "mean, spread, standardized"
+    assert table.loc["soil_carbon", "support"] == "positive"
+
+
+def test_a_covariate_regression_is_a_derived_parameter():
+    def respiration(dim_index, site_table, intercept, slope):
+        return jnp.exp(intercept + slope * site_table["temperature_anomaly"].to_numpy())
+
+    vector = ParameterVector(
+        parameters=[
+            Parameter(name="intercept", support=REAL, units=None),
+            Parameter(name="slope", support=REAL, units="K-1"),
+        ],
+        derived_parameters=[
+            DerivedParameter(
+                name="respiration", units="yr-1", dim="site", support=POSITIVE,
+                derived_from=("intercept", "slope"), compute=respiration,
+            )
+        ],
+        site_table=site_table(temperature_anomaly=[-1.0, 0.0, 2.0]),
+        site_covariate_names=["temperature_anomaly"],
+    )
+    values = vector.to_natural(jnp.asarray([np.log(0.01), 0.5]))
+    np.testing.assert_allclose(values["respiration"], 0.01 * np.exp(0.5 * np.asarray([-1.0, 0.0, 2.0])))
+    assert vector.select(sites=[27]).to_natural(jnp.asarray([0.0, 1.0]))["respiration"].tolist() == [1.0]
+
+
+def test_a_derived_parameter_must_be_computed_from_earlier_names():
+    later = DerivedParameter(name="later", units=None, derived_from=("mean",), compute=lambda d, t, mean: mean)
+    earlier = DerivedParameter(name="earlier", units=None, derived_from=("later",), compute=lambda d, t, later: later)
+    parameters = [Parameter(name="mean", support=REAL, units=None)]
+    with pytest.raises(ValueError, match="declared after it"):
+        ParameterVector(parameters=parameters, derived_parameters=[earlier, later], site_table=site_table())
+    unknown = DerivedParameter(name="doubled", units=None, derived_from=("nothing",), compute=lambda d, t, nothing: nothing)
+    with pytest.raises(KeyError, match="no parameter or derived parameter"):
+        ParameterVector(parameters=parameters, derived_parameters=[unknown], site_table=site_table())
+
+
+def test_a_derived_parameter_is_computed_from_something():
+    with pytest.raises(ValueError, match="computed from nothing"):
+        DerivedParameter(name="constant", units=None, derived_from=(), compute=lambda d, t: 1.0)
+
+
+def test_a_derived_parameter_is_named_like_no_parameter():
+    derived = DerivedParameter(name="mean", units=None, derived_from=("mean",), compute=lambda d, t, mean: mean)
+    with pytest.raises(ValueError, match="both a parameter and a derived parameter"):
+        ParameterVector(parameters=[Parameter(name="mean", support=REAL, units=None)],
+                        derived_parameters=[derived], site_table=site_table())
+    with pytest.raises(ValueError, match="lower_case_with_underscores"):
+        DerivedParameter(name="class", units=None, derived_from=("mean",), compute=lambda d, t, mean: mean)
+
+
+def test_derived_parameters_are_named_once_and_vary_over_the_vectors_dims():
+    twice = [
+        DerivedParameter(name="doubled", units=None, derived_from=("mean",), compute=lambda d, t, mean: 2 * mean)
+    ] * 2
+    parameters = [Parameter(name="mean", support=REAL, units=None)]
+    with pytest.raises(ValueError, match="the derived parameter names"):
+        ParameterVector(parameters=parameters, derived_parameters=twice, site_table=site_table())
+    on_biome = DerivedParameter(name="doubled", units=None, dim="biome", derived_from=("mean",),
+                                compute=lambda d, t, mean: 2 * mean)
+    with pytest.raises(ValueError, match="neither 'site' nor a site-labels name"):
+        ParameterVector(parameters=parameters, derived_parameters=[on_biome], site_table=site_table())
+
+
+def test_a_derived_parameter_must_compute_its_value_shape():
+    with pytest.raises(ValueError, match="computes a value of shape"):
+        pooled_vector(compute=lambda dim_index, site_table, mean, spread, standardized: spread)
+
+
+def test_a_derived_parameter_must_lie_in_its_declared_support():
+    with pytest.raises(ValueError, match="outside its declared support"):
+        pooled_vector(
+            support=POSITIVE,
+            compute=lambda dim_index, site_table, mean, spread, standardized: spread * standardized,
+        )
+
+
+def test_overflow_at_an_unbounded_end_is_not_outside_the_support(pooled):
+    # At theta = 20 * 1 the spread is e^20 and the value overflows to inf.
+    assert bool(jnp.isposinf(pooled.to_natural(jnp.full(pooled.dimension, 20.0))["soil_carbon"]).all())
+
+
+def test_a_nan_is_outside_every_support():
+    with pytest.raises(ValueError, match="outside its declared support"):
+        pooled_vector(
+            support=REAL,
+            compute=lambda dim_index, site_table, mean, spread, standardized: jnp.log(standardized),
+        )
+
+
+def test_a_derived_parameter_declared_pointwise_must_be():
+    def normalized(dim_index, site_table, mean, spread, standardized):
+        return jnp.exp(standardized) / jnp.exp(standardized).sum()
+
+    with pytest.raises(ValueError, match="declare it pointwise=False"):
+        pooled_vector(compute=normalized)
+    assert not pooled_vector(compute=normalized, pointwise=False).derived_parameters[0].pointwise
+
+
+def test_a_vector_with_a_non_pointwise_derived_parameter_reads_only_its_own_dim_labels():
+    def correlated(dim_index, site_table, mean, spread, standardized):
+        return jnp.exp(spread * jnp.cumsum(standardized))
+
+    full = pooled_vector(compute=correlated, pointwise=False)
+    smaller = full.select(sites=[1, 27])
+    theta = jax.random.normal(jax.random.key(4), (2, full.dimension))
+    with pytest.raises(ValueError, match="derived parameter that is not pointwise"):
+        smaller.flat(full.dataset(theta))
+    with pytest.raises(ValueError, match="derived parameter that is not pointwise"):
+        smaller.site_fields(full.dataset(theta))
+    np.testing.assert_allclose(full.flat(full.dataset(theta)), theta, atol=1e-12)
+    pointwise = pooled_vector()
+    assert pointwise.select(sites=[1, 27]).flat(pointwise.dataset(theta)).shape == (2, 5)
+
+
+# ── site positions and nesting ────────────────────────────────────────────────
+
+
+def test_site_positions_index_each_sites_dim_label(pooled):
+    table = pooled.site_table
+    np.testing.assert_array_equal(site_positions(table, "site"), [0, 1, 2])
+    labels = list(pooled.dim_index("pft"))
+    np.testing.assert_array_equal(site_positions(table, "pft"), [labels.index(label) for label in PFT])
+    assert site_positions(table, "pft").dtype == np.int64
+
+
+def test_site_positions_need_a_categorical_column(pooled):
+    with pytest.raises(KeyError, match="no column 'biomes'"):
+        site_positions(pooled.site_table, "biomes")
+    with pytest.raises(TypeError, match="not categorical"):
+        site_positions(pooled.site_table.astype({"pft": str}), "pft")
+
+
+def test_dim_label_positions_read_a_coarser_dim_at_a_finer_ones_labels(pooled):
+    table = pooled.site_table
+    np.testing.assert_array_equal(dim_label_positions(table, "site", "biome"), site_positions(table, "biome"))
+    # Sites 1 and 27 are a deciduous and a conifer site, both in the forest.
+    forest = pooled.select(sites=[1, 27]).site_table
+    positions = dim_label_positions(forest, "pft", "biome")
+    np.testing.assert_array_equal(positions, [0, 0])
+    assert positions.dtype == np.int64
+
+
+def test_dims_that_do_not_nest_are_refused(pooled):
+    # The deciduous sites 1 and 4711 are in the forest and the tundra.
+    with pytest.raises(ValueError, match="dim label 'deciduous' carry 2 biome dim labels"):
+        dim_label_positions(pooled.site_table, "pft", "biome")
+
+
+def test_joint_probe_points_are_probe_points_over_every_part():
+    (only,) = joint_probe_points([((2, 3), 3)])
+    np.testing.assert_array_equal(only, probe_points((2, 3), unconstrained_size=3))
+    first, second = joint_probe_points([((), 1), ((4,), 1)])
+    assert first.shape == (len(second), ) and second.shape[1:] == (4,)
+    # A coordinate direction of each part moves that part alone.
+    moved_first = (first != 0) & (np.abs(second).sum(axis=1) == 0)
+    moved_second = (first == 0) & (np.abs(second[:, 0]) > 0) & (np.abs(second[:, 1:]).sum(axis=1) == 0)
+    assert moved_first.sum() == 4 and moved_second.sum() == 4
+
+
+def test_a_scalar_derived_parameter_is_not_on_the_simplex():
+    with pytest.raises(ValueError, match="needs at least two natural"):
+        DerivedParameter(name="shares", units="1", dim="site", support=SIMPLEX, derived_from=("standardized",),
+                         compute=lambda d, t, standardized: jax.nn.softmax(standardized))
+
+
+def test_compute_runs_vmapped_at_construction():
+    def branching(dim_index, site_table, mean, spread, standardized):
+        return standardized if spread > 0.5 else 2.0 * standardized
+
+    with pytest.raises(jax.errors.TracerBoolConversionError):
+        pooled_vector(compute=branching)
+
+
+def test_a_non_pointwise_vector_reads_its_own_dim_labels_in_any_order():
+    def correlated(dim_index, site_table, mean, spread, standardized):
+        return jnp.exp(spread * jnp.cumsum(standardized))
+
+    vector = pooled_vector(compute=correlated, pointwise=False)
+    theta = jax.random.normal(jax.random.key(5), (2, vector.dimension))
+    permuted = vector.dataset(theta).isel(site=[2, 0, 1])
+    np.testing.assert_allclose(vector.flat(permuted), theta, atol=1e-12)
+
+
+def test_derived_values_need_the_inputs(pooled):
+    with pytest.raises(KeyError, match="computed from \\['spread', 'standardized'\\], which the natural values lack"):
+        pooled.derived_values({"mean": jnp.zeros(2)})
+
+
+def test_zero_draws_round_trip(vector):
+    empty = jnp.zeros((0, vector.dimension))
+    assert vector.to_unconstrained(vector.to_natural(empty)).shape == (0, vector.dimension)
+    assert vector.flat(vector.dataset(empty)).shape == (0, vector.dimension)
+
+
+def test_a_derived_parameter_reaching_a_neighbor_is_not_pointwise():
+    def with_neighbor(dim_index, site_table, mean, spread, standardized):
+        return standardized + jnp.roll(standardized, 1)
+
+    with pytest.raises(ValueError, match="declare it pointwise=False"):
+        pooled_vector(compute=with_neighbor)
+
+
+def test_negative_infinity_is_outside_the_positive_line():
+    def falling(dim_index, site_table, mean, spread, standardized):
+        return jnp.where(standardized > 15.0, -jnp.inf, 1.0)
+
+    with pytest.raises(ValueError, match="outside its declared support"):
+        pooled_vector(support=POSITIVE, compute=falling)
+
+
+def test_a_dim_label_whose_sites_carry_none_of_the_other_dim_does_not_nest(pooled):
+    table = pooled.select(sites=[1, 27]).site_table
+    table["pft"] = table["pft"].cat.add_categories(["unused"])
+    with pytest.raises(ValueError, match="dim label 'unused' carry 0 biome dim labels"):
+        dim_label_positions(table, "pft", "biome")
+
+
+def test_a_derived_parameter_reading_its_last_dim_label_is_not_pointwise():
+    def against_the_last(dim_index, site_table, mean, spread, standardized):
+        return standardized - standardized[-1]
+
+    with pytest.raises(ValueError, match="declare it pointwise=False"):
+        pooled_vector(compute=against_the_last)
+
+
+def test_a_derived_parameter_without_a_dim_reading_one_with_a_dim_is_not_pointwise():
+    def site_mean(dim_index, site_table, standardized):
+        return standardized.mean()
+
+    parameters = [Parameter(name="standardized", support=REAL, units=None, dim="site")]
+    derived = {"name": "site_mean", "units": None, "derived_from": ("standardized",), "compute": site_mean}
+    with pytest.raises(ValueError, match="has no dim but is computed from \\['standardized'\\]"):
+        ParameterVector(parameters=parameters, derived_parameters=[DerivedParameter(**derived)],
+                        site_table=site_table())
+    vector = ParameterVector(parameters=parameters, site_table=site_table(),
+                             derived_parameters=[DerivedParameter(**derived, pointwise=False)])
+    assert vector.to_natural(jnp.asarray([1.0, 2.0, 3.0]))["site_mean"] == 2.0
+
+
+def test_the_boundary_passes_only_at_the_outer_probes():
+    def rectified(dim_index, site_table, mean, spread, standardized):
+        return jax.nn.relu(standardized)
+
+    # relu is 0, the positive line's boundary, at theta = 0.
+    with pytest.raises(ValueError, match="outside its declared support"):
+        pooled_vector(support=POSITIVE, compute=rectified)
+    # exp underflows to 0 only at the outer probes, which is float64, not the support.
+    underflowing = pooled_vector(
+        support=POSITIVE,
+        compute=lambda dim_index, site_table, mean, spread, standardized: jnp.exp(100.0 * standardized),
+    )
+    assert float(underflowing.to_natural(jnp.full(underflowing.dimension, -20.0))["soil_carbon"][0]) == 0.0

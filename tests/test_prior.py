@@ -262,8 +262,11 @@ def test_every_parameter_needs_one_term_keyed_by_its_name():
     with pytest.raises(KeyError, match="no parameter of the vector"):
         Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0)),
                                 "other": term(log_normal(median=1.0, geometric_sd=2.0))})
-    with pytest.raises(TypeError, match="give each parameter its own term"):
-        Prior(vector, {("rate", "share"): term(log_normal(median=1.0, geometric_sd=2.0))})
+    with pytest.raises(TypeError, match="or a tuple of names for a joint term"):
+        Prior(vector, {3: term(log_normal(median=1.0, geometric_sd=2.0))})
+    with pytest.raises(ValueError, match="covered by the terms"):
+        Prior(vector, {"rate": term(log_normal(median=1.0, geometric_sd=2.0)),
+                       ("rate", "share"): term(log_normal(median=1.0, geometric_sd=2.0))})
 
 
 def test_a_term_is_a_prior_term_with_a_provenance():

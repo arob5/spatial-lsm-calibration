@@ -877,7 +877,7 @@ class TestRefusals:
 
     def test_a_map_that_does_not_fit_the_vector(self, parameter_vector, climate, observation_vector):
         reads_nothing_held = SIPNETParameterMap(rules=[Copy(value_name="missing", sipnet_parameter_name="soil_carbon")])
-        with pytest.raises(KeyError, match="neither a parameter nor an external input"):
+        with pytest.raises(KeyError, match="neither a parameter, a derived parameter nor an external input"):
             build(parameter_vector, reads_nothing_held, climate, observation_vector)
 
     def test_theta_of_the_wrong_shape_or_not_finite(self, forward, theta):

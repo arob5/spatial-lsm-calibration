@@ -13,6 +13,7 @@ fixture.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
@@ -33,6 +34,7 @@ from sipnet_calibration.prior import (
     logit_normal,
     logit_normal_from_interval,
     softmax_normal,
+    term_name,
 )
 from sipnet_calibration.sipnet_parameter_map import (
     ComputePhotosynthesisRates,
@@ -48,22 +50,35 @@ __all__ = ["describe_calibration", "example_calibration"]
 def describe_calibration(
     parameter_vector: ParameterVector, prior: Prior, sipnet_parameter_map: SIPNETParameterMap
 ) -> pd.DataFrame:
-    """One row per parameter, indexed by ``parameter``: the three objects'
-    descriptions joined.
+    """One row per parameter, then per derived parameter, indexed by
+    ``parameter``: the three objects' descriptions joined.
 
-    Columns: ``dim``, ``support``, ``units`` and ``bijector`` (the vector);
-    ``prior``, ``given`` and ``provenance`` (the prior); and
-    ``sipnet_parameters`` and ``rules`` (the map: what the parameter reaches,
-    comma-separated, and by which rules).
+    Columns: ``dim``, ``support``, ``units``, ``bijector`` and
+    ``derived_from`` (the vector); ``term`` (the name of the term covering
+    the parameter, a joint term's names joined with ``"+"``), ``prior``,
+    ``given`` and ``provenance`` (the prior, empty for a derived parameter,
+    which has none); and ``sipnet_parameters`` and ``rules`` (the map: what
+    the parameter or derived parameter reaches, comma-separated, and by
+    which rules).
 
     Raises
     ------
     KeyError
         If the prior lacks a term for one of the vector's parameters.
     """
-    vector = parameter_vector.describe()[["dim", "support", "units", "bijector"]]
+    vector = parameter_vector.describe()[["dim", "support", "units", "bijector", "derived_from"]]
     terms = prior.describe()[["prior", "given", "provenance"]]
-    reached = {name: ([], []) for name in parameter_vector.parameter_names}
+    covering = {
+        name: term_name(key) for key in prior.terms for name in ((key,) if isinstance(key, str) else key)
+    }
+    rows = {}
+    for name in vector.index:
+        if name in parameter_vector.derived_parameter_names:
+            rows[name] = {"term": "", "prior": "", "given": "", "provenance": ""}
+        else:
+            check_prior_covers_the_parameter(name, covering)
+            rows[name] = {"term": covering[name], **terms.loc[covering[name]].to_dict()}
+    reached = {name: ([], []) for name in vector.index}
     for rule in sipnet_parameter_map.rules:
         for name in rule.values_read:
             if name in reached:
@@ -75,7 +90,7 @@ def describe_calibration(
             "rules": {n: ", ".join(dict.fromkeys(r[1])) for n, r in reached.items()},
         }
     )
-    return vector.join(terms.loc[list(vector.index)]).join(links).rename_axis("parameter")
+    return vector.join(pd.DataFrame.from_dict(rows, orient="index")).join(links).rename_axis("parameter")
 
 
 def example_calibration(
@@ -190,3 +205,16 @@ def example_calibration(
         ],
     )
     return vector, prior, sipnet_map
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+
+
+def check_prior_covers_the_parameter(name: str, covering: Mapping[str, str]) -> None:
+    """The prior has a term for each of the vector's parameters: a prior over
+    another vector would describe the wrong parameters."""
+    if name not in covering:
+        raise KeyError(
+            f"the prior has no term for parameter {name!r}; describe a prior built on this vector, "
+            "prior.parameter_vector."
+        )

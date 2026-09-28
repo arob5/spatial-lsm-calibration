@@ -31,6 +31,11 @@ name, whose dim labels are the classes some site carries. It has a
 label), an unconstrained size :math:`e_p` (the dimension of :math:`A_p`) and
 a bijection :math:`T_p : \\mathbb{R}^{e_p} \\to A_p`.
 
+It may also hold **derived parameters** :math:`y_q = f_q(x)`
+(:class:`DerivedParameter`): deterministic functions of the parameters and
+earlier derived parameters, each with a dim, natural names and units like a
+parameter's, but with no entries of theta and no prior.
+
 A value takes three forms:
 
 **theta** (Flat). ``float64``, ``(D,)`` or ``(J, D)``, with
@@ -39,8 +44,9 @@ in declaration order; within one, dim labels in :meth:`~ParameterVector.dim_inde
 order; within a dim label, unconstrained names in order.
 :attr:`ParameterVector.index` names every entry.
 
-**Natural values** (:data:`NaturalValues`). ``{parameter name: array}``,
-each ``(..., *value_shape)``, in the parameter's units and support:
+**Natural values** (:data:`NaturalValues`). ``{name: array}`` for every
+parameter and, where computed, every derived parameter, each ``(...,
+*value_shape)``, in its units and support:
 
 =========================== ============ ============= =========== ============
                             no dim,      no dim,       dim,        dim,
@@ -63,11 +69,13 @@ coordinates  the batch dim, ``int64`` ``0`` to ``J - 1``; ``site``, ``int32``
              site ids with ``lon``/``lat``, with the attributes of
              :mod:`sipnet_calibration.conventions`; a site-labels dim, its
              dim labels (strings), with a ``long_name``
-variables    one ``float64`` variable per natural name of every parameter:
-             ``<name>`` for a scalar, ``<name>.<natural name>`` for a vector,
-             on ``(batch?, dim?)``
-attributes   ``parameter``; ``natural_name`` (a vector's); ``units``
-             (omitted when ``None``); ``support``
+variables    one ``float64`` variable per natural name of every parameter and
+             derived parameter: ``<name>`` for a scalar,
+             ``<name>.<natural name>`` for a vector, on ``(batch?, dim?)``
+attributes   ``parameter`` (its name); ``natural_name`` (a vector's);
+             ``units`` (omitted when ``None``); ``support`` (a parameter's,
+             and a derived parameter's when it declares one);
+             ``derived_from`` (a derived parameter's inputs, comma-separated)
 missing      never
 ============ ===============================================================
 
@@ -79,13 +87,16 @@ Functions and classes
 ---------------------
 :class:`ParameterVector`
     Identity, selection, the coordinate maps (``to_natural``,
-    ``to_unconstrained``, ``at_sites``) and the labeled form (``dataset``,
-    ``flat``, ``site_fields``).
-:class:`Parameter`, :class:`Support`
-    One unknown, and the open set it lives in: :data:`REAL`,
-    :data:`POSITIVE`, :data:`OPEN_UNIT_INTERVAL`, :data:`SIMPLEX` and
-    :func:`OpenInterval`.
-:func:`probe_points`
+    ``derived_values``, ``to_unconstrained``, ``at_sites``) and the labeled
+    form (``dataset``, ``flat``, ``site_fields``).
+:class:`Parameter`, :class:`DerivedParameter`, :class:`Support`
+    One unknown, a quantity computed from them, and the open set a value
+    lives in: :data:`REAL`, :data:`POSITIVE`, :data:`OPEN_UNIT_INTERVAL`,
+    :data:`SIMPLEX` and :func:`OpenInterval`.
+:func:`site_positions`, :func:`dim_label_positions`
+    How a value on one dim is read at the sites, or at the dim labels of
+    another dim, inside a prior function, a derived parameter or a rule.
+:func:`probe_points`, :func:`joint_probe_points`
     The fixed points in theta at which bijectors and priors are probed.
 :data:`NaturalValues`, :data:`ParameterDataset`
     The aliases, with :func:`validate_natural_values` and
@@ -138,7 +149,7 @@ Usage
 from __future__ import annotations
 
 import keyword
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import InitVar, dataclass, field
 from functools import cached_property
 from typing import Any, Literal
@@ -193,6 +204,7 @@ __all__ = [
     "REAL",
     "RESERVED_NAMES",
     "SIMPLEX",
+    "DerivedParameter",
     "NaturalValues",
     "OpenInterval",
     "Parameter",
@@ -204,7 +216,10 @@ __all__ = [
     "check_parameter_vector_is_valid",
     "check_parameter_vectors_share_a_layout",
     "check_theta_ends_in_the_dimension",
+    "dim_label_positions",
+    "joint_probe_points",
     "probe_points",
+    "site_positions",
     "validate_natural_values",
     "validate_parameter_dataset",
 ]
@@ -237,6 +252,9 @@ class ParameterVector:
     ----------
     parameters:
         The :class:`Parameter`\\ s, in the order they occupy theta.
+    derived_parameters:
+        The :class:`DerivedParameter`\\ s, each computed from parameters and
+        earlier derived parameters.
     site_table:
         The sites, one row each in ascending ``site_id``, with ``lon`` and
         ``lat``, such as :func:`sipnet_calibration.sites.select_sites`
@@ -252,21 +270,24 @@ class ParameterVector:
         some site carries, in the categories' order, or sorted for plain
         labels.
     site_covariate_names:
-        The columns of *site_table* a prior function or SIPNET rule may read,
-        each ``float64`` and finite. No other column is kept.
+        The columns of *site_table* a prior function, derived parameter or
+        SIPNET rule may read, each ``float64`` and finite. No other column is
+        kept.
 
     Raises
     ------
     TypeError
         If a site label, or a named site covariate, has the wrong type.
     KeyError
-        If a named site covariate is not a column of *site_table*.
+        If a named site covariate is not a column of *site_table*, or a
+        derived parameter is computed from a name the vector lacks.
     ValueError
-        If the parameters, sites and site labels do not make one vector; the
-        message names the rule.
+        If the parameters, derived parameters, sites and site labels do not
+        make one vector; the message names the rule.
     """
 
     parameters: Sequence[Parameter]
+    derived_parameters: Sequence[DerivedParameter] = ()
     # A keyword only: the attribute of the same name is the property attached
     # below the class, so the dataclass must not read it as a default.
     site_table: InitVar[pd.DataFrame]
@@ -277,6 +298,7 @@ class ParameterVector:
 
     def __post_init__(self, site_table: pd.DataFrame) -> None:
         object.__setattr__(self, "parameters", tuple(self.parameters))
+        object.__setattr__(self, "derived_parameters", tuple(self.derived_parameters))
         object.__setattr__(
             self,
             "site_covariate_names",
@@ -315,15 +337,25 @@ class ParameterVector:
         return len(self.parameters)
 
     def __repr__(self) -> str:
+        derived = (
+            f", derived_parameters={list(self.derived_parameter_names)}"
+            if self.derived_parameters
+            else ""
+        )
         return (
-            f"ParameterVector(D={self.dimension}, parameters={list(self.parameter_names)}, "
-            f"sites={self.n_sites})"
+            f"ParameterVector(D={self.dimension}, parameters={list(self.parameter_names)}"
+            f"{derived}, sites={self.n_sites})"
         )
 
     @property
     def parameter_names(self) -> tuple[str, ...]:
         """The parameter names, in declaration order."""
         return tuple(p.name for p in self.parameters)
+
+    @property
+    def derived_parameter_names(self) -> tuple[str, ...]:
+        """The derived parameter names, in declaration order."""
+        return tuple(d.name for d in self.derived_parameters)
 
     @property
     def dimension(self) -> int:
@@ -342,8 +374,10 @@ class ParameterVector:
 
     @property
     def dim_names(self) -> tuple[str, ...]:
-        """The dims the parameters vary over, in the order they first appear."""
-        return tuple(dict.fromkeys(p.dim for p in self.parameters if p.dim is not None))
+        """The dims the parameters and derived parameters vary over, in the
+        order they first appear."""
+        pieces = (*self.parameters, *self.derived_parameters)
+        return tuple(dict.fromkeys(p.dim for p in pieces if p.dim is not None))
 
     def dim_index(self, dim_name: str) -> pd.Index:
         """The dim labels of ``"site"`` (the site ids) or of a site-labels name.
@@ -359,10 +393,11 @@ class ParameterVector:
         check_dim_is_the_vectors(dim_name, self)
         return pd.Index(list(self._table[dim_name].cat.categories), name=dim_name)
 
-    def value_shape(self, parameter_name: str) -> tuple[int, ...]:
-        """The shape of one natural value of a parameter: ``(n?, k?)``."""
-        parameter = self[parameter_name]
-        return self._dim_shape(parameter) + parameter.natural_shape
+    def value_shape(self, name: str) -> tuple[int, ...]:
+        """The shape of one natural value of a parameter or derived
+        parameter: ``(n?, k?)``."""
+        piece = self._piece(name)
+        return self._dim_shape(piece) + piece.natural_shape
 
     def unconstrained_shape(self, parameter_name: str) -> tuple[int, ...]:
         """The shape of one unconstrained value of a parameter: ``(n?, e?)``."""
@@ -451,9 +486,12 @@ class ParameterVector:
         return np.flatnonzero(mask).astype(np.int64)
 
     def describe(self) -> pd.DataFrame:
-        """One row per parameter, indexed by ``parameter``: ``dim``,
-        ``dim_labels`` (their number), ``support``, ``bijector``, ``units``,
-        ``natural_size``, ``unconstrained_size`` and ``entries`` (of theta)."""
+        """One row per parameter, then per derived parameter, indexed by
+        ``parameter``: ``dim``, ``dim_labels`` (their number), ``support``,
+        ``bijector``, ``units``, ``natural_size``, ``unconstrained_size``,
+        ``entries`` (of theta) and ``derived_from``. A derived parameter has
+        no bijector and no entries, and its support is the one it declares,
+        if any."""
         rows = [
             {
                 "parameter": p.name,
@@ -465,8 +503,24 @@ class ParameterVector:
                 "natural_size": p.natural_size,
                 "unconstrained_size": p.unconstrained_size,
                 "entries": self._sizes[p.name],
+                "derived_from": "",
             }
             for p in self.parameters
+        ]
+        rows += [
+            {
+                "parameter": d.name,
+                "dim": d.dim or NO_DIM,
+                "dim_labels": self._dim_shape(d)[0] if d.dim else 1,
+                "support": "" if d.support is None else d.support.name,
+                "bijector": "",
+                "units": d.units,
+                "natural_size": d.natural_size,
+                "unconstrained_size": 0,
+                "entries": 0,
+                "derived_from": ", ".join(d.derived_from),
+            }
+            for d in self.derived_parameters
         ]
         return pd.DataFrame(rows).set_index("parameter")
 
@@ -495,7 +549,8 @@ class ParameterVector:
         -------
         ParameterVector
             Over the kept sites, whose dim indexes are recomputed from them;
-            the site covariates and site labels are carried.
+            the site covariates and site labels are carried, and so is every
+            derived parameter whose inputs are all kept.
 
         Raises
         ------
@@ -518,8 +573,14 @@ class ParameterVector:
             name: pd.Categorical(table[name].astype(str), categories=self._declared_dim_labels[name])
             for name in self._declared_dim_labels
         }
+        available, derived = set(names), []
+        for d in self.derived_parameters:
+            if available.issuperset(d.derived_from):
+                derived.append(d)
+                available.add(d.name)
         return ParameterVector(
             parameters=[self[n] for n in names],
+            derived_parameters=derived,
             site_table=table[[SITE_ID, LON, LAT, *self.site_covariate_names]],
             site_labels=site_labels,
             site_covariate_names=self.site_covariate_names,
@@ -528,12 +589,14 @@ class ParameterVector:
     # ── coordinates ───────────────────────────────────────────────────────────
 
     def to_natural(self, theta: Any) -> NaturalValues:
-        """Theta to natural values: :math:`x_p = T_p(\\theta_p)` for every parameter.
+        """Theta to natural values: :math:`x_p = T_p(\\theta_p)` for every
+        parameter, then :math:`y_q = f_q(x)` for every derived parameter.
 
         :math:`\\theta_p` is theta at ``positions(parameter_name=p)``, shaped
         ``(..., *unconstrained_shape(p))``, and :math:`T_p` is
-        ``parameter.bijector``, applied per dim label. Traceable under
-        ``jax.jit``, ``jax.grad`` and ``jax.vmap``.
+        ``parameter.bijector``, applied per dim label; the derived
+        parameters are :meth:`derived_values`. Traceable under ``jax.jit``,
+        ``jax.grad`` and ``jax.vmap``.
 
         Parameters
         ----------
@@ -543,7 +606,8 @@ class ParameterVector:
         Returns
         -------
         NaturalValues
-            ``{name: (..., *value_shape(name))}``, ``float64``.
+            ``{name: (..., *value_shape(name))}``, ``float64``, parameters
+            first.
 
         Raises
         ------
@@ -552,13 +616,51 @@ class ParameterVector:
         """
         theta = jnp.asarray(theta, dtype=jnp.float64)
         check_theta_ends_in_the_dimension(theta.shape, self.dimension)
-        lead = theta.shape[:-1]
-        return {
-            p.name: p.bijector.forward(
-                theta[..., self._slices[p.name]].reshape(lead + self.unconstrained_shape(p.name))
-            )
-            for p in self.parameters
-        }
+        natural_values = self._parameters_at(theta)
+        return natural_values | self.derived_values(natural_values)
+
+    def derived_values(
+        self, natural_values: NaturalValues, *, derived_parameter_names: Sequence[str] | None = None
+    ) -> NaturalValues:
+        """The derived parameters computed from natural values:
+        :math:`y_q = f_q(x, y_{<q})`, one draw at a time.
+
+        Each ``compute`` is called as ``compute(dim_index, site_table,
+        **inputs)``, with the index of the derived parameter's dim (``None``
+        without one), the vector's site table, and one draw's value of each
+        name it is derived from, and it is ``jax.vmap``-ed over the leading
+        shape. Traceable under ``jax.jit``, ``jax.grad`` and ``jax.vmap``.
+
+        Parameters
+        ----------
+        natural_values:
+            ``{name: (..., *value_shape(name))}`` holding at least what the
+            requested derived parameters are computed from.
+        derived_parameter_names:
+            The derived parameters wanted; those they are computed from are
+            computed too. ``None``: every one.
+
+        Returns
+        -------
+        NaturalValues
+            ``{name: (..., *value_shape(name))}``, ``float64``, for the
+            wanted derived parameters and those they need, in declaration
+            order.
+
+        Raises
+        ------
+        KeyError
+            If a name is not a derived parameter of the vector, or an input
+            a derived parameter needs is missing from *natural_values*.
+        """
+        wanted = self._derived_closure(derived_parameter_names)
+        values = dict(natural_values)
+        out = {}
+        for derived in self.derived_parameters:
+            if derived.name in wanted:
+                check_natural_values_hold_the_inputs(derived, values)
+                out[derived.name] = values[derived.name] = self._computed(derived, values)
+        return out
 
     def to_unconstrained(self, natural_values: NaturalValues) -> Array:
         """Natural values to theta: :math:`\\theta_p = T_p^{-1}(x_p)`, flattened
@@ -586,7 +688,7 @@ class ParameterVector:
         for p in self.parameters:
             values = jnp.asarray(natural_values[p.name], dtype=jnp.float64)
             lead = values.shape[: values.ndim - len(self.value_shape(p.name))]
-            pieces.append(p.bijector.inverse(values).reshape(lead + (-1,)))
+            pieces.append(p.bijector.inverse(values).reshape(lead + (self._sizes[p.name],)))
         return jnp.concatenate(pieces, axis=-1)
 
     def at_sites(self, natural_values: NaturalValues) -> NaturalValues:
@@ -598,7 +700,8 @@ class ParameterVector:
         Parameters
         ----------
         natural_values:
-            :data:`NaturalValues` with one leading shape.
+            :data:`NaturalValues` with one leading shape; derived parameters
+            are read at the sites too where present.
 
         Returns
         -------
@@ -611,7 +714,8 @@ class ParameterVector:
             As :func:`validate_natural_values`.
         """
         validate_natural_values(natural_values, self)
-        return {p.name: self._at_sites(p, natural_values[p.name]) for p in self.parameters}
+        pieces = (*self.parameters, *(d for d in self.derived_parameters if d.name in natural_values))
+        return {p.name: self._at_sites(p, natural_values[p.name]) for p in pieces}
 
     # ── representations ───────────────────────────────────────────────────────
 
@@ -645,7 +749,7 @@ class ParameterVector:
         one = is_one_vector(theta)
         natural_values = self.to_natural(batched[0] if one else batched)
         variables = {}
-        for p in self.parameters:
+        for p in (*self.parameters, *self.derived_parameters):
             dims = ((batch_dim,) if not one else ()) + ((p.dim,) if p.dim else ())
             values = np.asarray(natural_values[p.name], dtype=np.float64)
             for i, (variable_name, attributes) in enumerate(_dataset_variables(p)):
@@ -661,8 +765,10 @@ class ParameterVector:
         parameter_dataset:
             A :data:`ParameterDataset` holding a variable for every natural
             name of every parameter, with every dim label of this vector:
-            a larger vector's projects onto this one. Its rows keep their
-            order.
+            a larger vector's projects onto this one, unless this vector has
+            a derived parameter that is not pointwise, whose dataset must
+            then have exactly this vector's dim labels. Derived parameters'
+            variables are not read. Its rows keep their order.
 
         Returns
         -------
@@ -673,18 +779,20 @@ class ParameterVector:
         ------
         TypeError, ValueError
             As :func:`validate_parameter_dataset`; ``ValueError`` too for a
-            variable on other dims than its parameter, or a value outside
-            its support.
+            variable on other dims than its parameter, a value outside its
+            support, or a projection a derived parameter that is not
+            pointwise refuses.
         KeyError
             For a missing variable or dim label.
         """
         validate_parameter_dataset(parameter_dataset)
+        check_dataset_can_project_onto_the_vector(parameter_dataset, self)
         batch = batch_dims(parameter_dataset)
         pieces = []
         for p in self.parameters:
             values = jnp.asarray(self._natural_values_of(p, parameter_dataset, batch))
             check_values_are_in_the_support(p, values)
-            pieces.append(p.bijector.inverse(values).reshape(values.shape[: len(batch)] + (-1,)))
+            pieces.append(p.bijector.inverse(values).reshape(values.shape[: len(batch)] + (self._sizes[p.name],)))
         return jnp.concatenate(pieces, axis=-1)
 
     def site_fields(self, parameter_dataset: ParameterDataset) -> xr.Dataset:
@@ -692,20 +800,24 @@ class ParameterVector:
         ``(batch?, site)``, carrying the variable's attributes, with ``units``
         ``"1"`` for a parameter without physical units. Not invertible.
 
+        Derived parameters are read from their variables like parameters.
+
         Raises
         ------
         TypeError, KeyError, ValueError
             As :meth:`flat`.
         """
         validate_parameter_dataset(parameter_dataset)
+        check_dataset_can_project_onto_the_vector(parameter_dataset, self)
         batch = batch_dims(parameter_dataset)
         coordinates = site_coordinates(self.sites, self._table)
         if batch:
             coordinates[batch[0]] = parameter_dataset[batch[0]]
         variables = {}
-        for p in self.parameters:
+        for p in (*self.parameters, *self.derived_parameters):
             values = self._natural_values_of(p, parameter_dataset, batch)
-            check_values_are_in_the_support(p, jnp.asarray(values))
+            if p.support is not None:
+                check_values_are_in_the_support(p, jnp.asarray(values))
             on_sites = np.asarray(self._at_sites(p, values))
             for i, (variable_name, _) in enumerate(_dataset_variables(p)):
                 variable_values = on_sites[..., i] if p.natural_names is not None else on_sites
@@ -729,24 +841,65 @@ class ParameterVector:
             start += self._sizes[p.name]
         return frozendict(out)
 
-    def _dim_shape(self, parameter: Parameter) -> tuple[int, ...]:
+    def _dim_shape(self, parameter: Parameter | DerivedParameter) -> tuple[int, ...]:
         return (len(self.dim_index(parameter.dim)),) if parameter.dim else ()
 
-    def _at_sites(self, parameter: Parameter, values: Any) -> Array:
-        """One parameter's natural values, ``(..., *value_shape)``, at every site."""
+    def _parameters_at(self, theta: Any) -> dict[str, Array]:
+        """The parameters' natural values at theta, ``(..., D)``."""
+        theta = jnp.asarray(theta, dtype=jnp.float64)
+        lead = theta.shape[:-1]
+        return {
+            p.name: p.bijector.forward(
+                theta[..., self._slices[p.name]].reshape(lead + self.unconstrained_shape(p.name))
+            )
+            for p in self.parameters
+        }
+
+    def _piece(self, name: str) -> Parameter | DerivedParameter:
+        """The parameter or derived parameter called *name*."""
+        if name in self.derived_parameter_names:
+            return self.derived_parameters[self.derived_parameter_names.index(name)]
+        return self[name]
+
+    def _derived_closure(self, names: Sequence[str] | None) -> set[str]:
+        """The derived parameters *names* need, themselves included; every
+        one for ``None``."""
+        if names is None:
+            return set(self.derived_parameter_names)
+        wanted = set(as_names(names, message_name="derived_parameter_names"))
+        check_derived_parameter_names_are_held(wanted, self)
+        for derived in reversed(self.derived_parameters):
+            if derived.name in wanted:
+                wanted.update(n for n in derived.derived_from if n in self.derived_parameter_names)
+        return wanted
+
+    def _computed(self, derived: DerivedParameter, values: Mapping[str, Any]) -> Array:
+        """One derived parameter from its inputs' values, ``(..., *shape)``,
+        its ``compute`` vmapped over the leading shape."""
+        inputs = {name: jnp.asarray(values[name], dtype=jnp.float64) for name in derived.derived_from}
+        first = derived.derived_from[0]
+        lead = inputs[first].shape[: inputs[first].ndim - len(self.value_shape(first))]
+        dim_index = self.dim_index(derived.dim) if derived.dim else None
+        site_table = self._table.copy()
+
+        def one_draw(draw: Mapping[str, Array]) -> Array:
+            return jnp.asarray(derived.compute(dim_index, site_table, **draw), dtype=jnp.float64)
+
+        if not lead:
+            return one_draw(inputs)
+        flat = {name: value.reshape((-1, *value.shape[len(lead):])) for name, value in inputs.items()}
+        out = jax.vmap(one_draw)(flat)
+        return out.reshape(lead + out.shape[1:])
+
+    def _at_sites(self, parameter: Parameter | DerivedParameter, values: Any) -> Array:
+        """One natural value, ``(..., *value_shape)``, at every site."""
         values = jnp.asarray(values)
         lead_ndim = values.ndim - len(self.value_shape(parameter.name))
         if parameter.dim is not None:
-            return jnp.take(values, self._site_positions(parameter.dim), axis=lead_ndim)
+            return jnp.take(values, site_positions(self._table, parameter.dim), axis=lead_ndim)
         values = jnp.expand_dims(values, lead_ndim)
         shape = values.shape[:lead_ndim] + (self.n_sites,) + parameter.natural_shape
         return jnp.broadcast_to(values, shape)
-
-    def _site_positions(self, dim_name: str) -> np.ndarray:
-        """``(S,)``: each site's position along ``dim_index(dim_name)``."""
-        if dim_name == SITE:
-            return np.arange(self.n_sites)
-        return self._table[dim_name].cat.codes.to_numpy(np.int64)
 
     def _selected_site_mask(
         self, sites: Sequence[int] | None, dim_labels: Mapping[str, Sequence[str]] | None
@@ -909,6 +1062,103 @@ class Parameter:
         )
 
 
+@dataclass(frozen=True, eq=False, kw_only=True)
+class DerivedParameter:
+    """A deterministic function of the parameters: :math:`y = f(x)`.
+
+    It has no entries of theta and no prior; its distribution is the
+    pushforward :math:`f_\\# \\pi` of the prior on :math:`x`. It is computed
+    by :meth:`ParameterVector.to_natural` after the parameters, carried by
+    the labeled form, and read by SIPNET rules by name.
+
+    Parameters
+    ----------
+    name:
+        As :class:`Parameter`'s, and distinct from every parameter's.
+    units:
+        UDUNITS units of the value, or ``None``. Required.
+    dim:
+        ``"site"``, a site-labels name of the vector, or ``None``.
+    natural_names:
+        The names of one dim label's ``k`` numbers, or ``None`` for a scalar.
+    derived_from:
+        The parameters and earlier derived parameters it is computed from.
+    compute:
+        ``compute(dim_index, site_table, **inputs)``: one draw's value, of
+        shape ``(n?, k?)``, from ``dim_index`` (the index of *dim*, or
+        ``None``), the vector's site table, and one draw's natural value of
+        each name in *derived_from*, passed by name. It must be traceable
+        by JAX. :func:`site_positions` reads an input on another dim at this
+        one's sites.
+    pointwise:
+        Whether the value at each dim label depends only on the inputs at
+        that dim label, at its dim label along another dim, and on inputs
+        without a dim. A non-centered Gaussian process,
+        :math:`x = \\exp(m + L(\\ell) z)`, is not: every :math:`x_s` depends
+        on every :math:`z_{s'}`. Nor is a derived parameter without a dim
+        computed from an input with one, such as a mean over sites.
+    support:
+        An open set every value lies in, or ``None``. Declaring one lets a
+        SIPNET rule's bounds be checked before anything runs.
+
+    Raises
+    ------
+    ValueError
+        For a malformed name or natural names, or no *derived_from*.
+
+    Notes
+    -----
+    The vector checks, at construction, that ``compute`` gives the value
+    shape at :math:`\\theta = 0`; that its values at the probe points lie in
+    the declared support, where at the outer probes (every probe but
+    :math:`\\theta = 0` and :math:`\\pm 3 \\mathbf 1`) the support's closure
+    and an infinite value at an unbounded end pass, as float64 underflow and
+    overflow; and, when
+    *pointwise*, that changing each input on the same dim at its first or
+    last dim label, at a fixed random theta, changes the value there only.
+    These are probes, not proofs.
+
+    A derived parameter that is not pointwise is recomputed from the kept
+    dim labels alone after :meth:`ParameterVector.select`, so the same
+    theta gives other values at the same sites: the prior is still the
+    right marginal, but draws cannot move between the two vectors, and
+    :meth:`ParameterVector.flat` refuses a dataset over other dim labels.
+
+    Standardize a site covariate once, before the vector is built, never
+    inside ``compute``: the site table after ``select`` has fewer rows, and
+    a standardization over them would change what the parameters mean.
+    """
+
+    name: str
+    units: str | None
+    dim: str | None = None
+    natural_names: tuple[str, ...] | None = None
+    derived_from: tuple[str, ...]
+    compute: Callable[..., Array]
+    pointwise: bool = True
+    support: Support | None = None
+
+    def __post_init__(self) -> None:
+        if self.natural_names is not None:
+            object.__setattr__(
+                self,
+                "natural_names",
+                as_names(self.natural_names, message_name=f"{self.name!r} natural_names"),
+            )
+        object.__setattr__(
+            self, "derived_from", as_names(self.derived_from, message_name=f"{self.name!r} derived_from")
+        )
+        check_derived_parameter_is_valid(self)
+
+    @property
+    def natural_size(self) -> int:
+        return 1 if self.natural_names is None else len(self.natural_names)
+
+    @property
+    def natural_shape(self) -> tuple[int, ...]:
+        return () if self.natural_names is None else (self.natural_size,)
+
+
 @dataclass(frozen=True)
 class Support:
     """An open set a natural value lies in, and its default bijection from
@@ -1051,6 +1301,81 @@ def OpenInterval(low: float, high: float) -> Support:  # noqa: N802 - reads as a
 # ── functions ─────────────────────────────────────────────────────────────────
 
 
+def site_positions(site_table: pd.DataFrame, dim_name: str) -> np.ndarray:
+    """Each site's position along a dim: :math:`\\ell_d(s)` for every site
+    :math:`s`, as an index into the dim's labels.
+
+    With *site_table* the table a prior function, derived parameter or rule
+    was given, a value ``v`` on dim *dim_name*, shape ``(n, ...)``, is read at
+    the sites as ``v[site_positions(site_table, dim_name)]``, shape
+    ``(S, ...)``.
+
+    Parameters
+    ----------
+    site_table:
+        The vector's site table, in its own row order, with a categorical
+        column per site-labels name whose categories are that dim's labels.
+    dim_name:
+        ``"site"``, for which the positions are ``0`` to ``S - 1``, or a
+        site-labels name.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(S,)`` ``int64``: the position of each site's dim label within
+        ``site_table[dim_name].cat.categories``, which is
+        :meth:`ParameterVector.dim_index` order.
+
+    Raises
+    ------
+    KeyError, TypeError
+        If *site_table* has no categorical column *dim_name*.
+    """
+    if dim_name == SITE:
+        return np.arange(len(site_table), dtype=np.int64)
+    check_site_table_has_a_categorical_dim(site_table, dim_name)
+    return site_table[dim_name].cat.codes.to_numpy(np.int64)
+
+
+def dim_label_positions(site_table: pd.DataFrame, from_dim: str, to_dim: str) -> np.ndarray:
+    """Each dim label of one dim's position along another that it nests in.
+
+    For dim label :math:`i` of *from_dim*, whose sites are
+    :math:`\\{s : \\ell_{\\mathrm{from}}(s) = i\\}`, the result is the one
+    :math:`j` with :math:`\\ell_{\\mathrm{to}}(s) = j` at all of them. A value
+    ``v`` on *to_dim* is then read at *from_dim*'s labels as
+    ``v[dim_label_positions(site_table, from_dim, to_dim)]``: PFT-level
+    values around biome-level means, for example.
+
+    Parameters
+    ----------
+    site_table:
+        As :func:`site_positions`.
+    from_dim, to_dim:
+        ``"site"`` or site-labels names.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_from,)`` ``int64``, in *from_dim*'s dim-label order.
+
+    Raises
+    ------
+    KeyError, TypeError
+        As :func:`site_positions`.
+    ValueError
+        If the sites of some *from_dim* dim label carry more than one
+        *to_dim* dim label, so the two dims do not nest; the message names
+        that dim label.
+    """
+    from_positions = site_positions(site_table, from_dim)
+    to_positions = site_positions(site_table, to_dim)
+    labels = _dim_labels_of(site_table, from_dim)
+    pairs = np.unique(np.stack([from_positions, to_positions], axis=1), axis=0)
+    check_dims_nest(pairs, labels, from_dim, to_dim)
+    return pairs[:, 1].astype(np.int64)
+
+
 def bijectors_agree(first: tfb.Bijector, second: tfb.Bijector, probes: Any) -> bool:
     """Whether two bijectors map *probes* alike, to a relative tolerance of
     ``1e-10``. Images are compared, never bijectors: ``tfb.Sigmoid()`` and
@@ -1085,19 +1410,46 @@ def probe_points(unconstrained_shape: tuple[int, ...], *, unconstrained_size: in
     only near 37. A probe test is not a proof: a support that differs only
     beyond the probes passes it.
     """
-    shape = tuple(unconstrained_shape)
-    size = int(np.prod(shape, dtype=int))
-    points = [np.zeros(size)]
-    points += [sign * c * np.ones(size) for c in (3.0, 10.0, 20.0) for sign in (1.0, -1.0)]
-    for i in range(min(unconstrained_size, size)):
-        for c in (10.0, 20.0):
-            for sign in (1.0, -1.0):
-                point = np.zeros(size)
-                point[i] = sign * c
-                points.append(point)
-    directions = np.random.default_rng(_PROBE_SEED).standard_normal((4, size))
+    return joint_probe_points([(unconstrained_shape, unconstrained_size)])[0]
+
+
+def joint_probe_points(parts: Sequence[tuple[tuple[int, ...], int]]) -> list[np.ndarray]:
+    """:func:`probe_points` over several unconstrained values at once.
+
+    Each part is ``(unconstrained_shape, unconstrained_size)``, as
+    :func:`probe_points` takes. The points are those of :func:`probe_points`
+    in the space of all parts concatenated: :math:`\\theta = 0`,
+    :math:`\\pm c \\mathbf 1`, :math:`\\pm c\\, e_i` along the first dim
+    label's unconstrained numbers of every part in turn, and four
+    fixed-seed random directions of norm 10. For one part it is
+    :func:`probe_points`.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        One per part, ``(n_probes, *unconstrained_shape)``, ``float64``,
+        with one ``n_probes`` for all.
+    """
+    shapes = [tuple(shape) for shape, _ in parts]
+    sizes = [int(np.prod(shape, dtype=int)) for shape in shapes]
+    total = sum(sizes)
+    offsets = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(int)
+    points = [np.zeros(total)]
+    points += [sign * c * np.ones(total) for c in (3.0, 10.0, 20.0) for sign in (1.0, -1.0)]
+    for (_, unconstrained_size), size, offset in zip(parts, sizes, offsets):
+        for i in range(min(unconstrained_size, size)):
+            for c in (10.0, 20.0):
+                for sign in (1.0, -1.0):
+                    point = np.zeros(total)
+                    point[offset + i] = sign * c
+                    points.append(point)
+    directions = np.random.default_rng(_PROBE_SEED).standard_normal((4, total))
     points += list(10.0 * directions / np.linalg.norm(directions, axis=1, keepdims=True))
-    return np.asarray(points, dtype=np.float64).reshape((len(points), *shape))
+    stacked = np.asarray(points, dtype=np.float64)
+    return [
+        stacked[:, offset : offset + size].reshape((len(points), *shape))
+        for shape, size, offset in zip(shapes, sizes, offsets)
+    ]
 
 
 # ── the aliases and their validators ──────────────────────────────────────────
@@ -1115,7 +1467,8 @@ def validate_natural_values(
     natural_values: Any, parameter_vector: ParameterVector, *, at_sites: bool = False
 ) -> None:
     """Check that *natural_values* are :data:`NaturalValues` of the vector,
-    or its values at sites when *at_sites*.
+    or its values at sites when *at_sites*. A derived parameter's value is
+    checked where present.
 
     Raises
     ------
@@ -1129,7 +1482,8 @@ def validate_natural_values(
     """
     check_natural_values_are_a_mapping(natural_values)
     leads = []
-    for p in parameter_vector.parameters:
+    present = [d for d in parameter_vector.derived_parameters if d.name in natural_values]
+    for p in (*parameter_vector.parameters, *present):
         expected = (
             (parameter_vector.n_sites, *p.natural_shape)
             if at_sites
@@ -1166,6 +1520,15 @@ _SIMPLEX_SUM_TOLERANCE = 1e-10
 #: The seed of :func:`probe_points`' random directions.
 _PROBE_SEED = 20260926
 
+#: The seed of the theta the pointwise check is made at.
+_POINTWISE_SEED = 20260929
+
+#: The input :math:`|\\theta|` beyond which a probe is an outer one, where a
+#: derived parameter's value may round onto its support's boundary: every
+#: probe but :math:`\\theta = 0` and :math:`\\pm 3 \\mathbf 1`. A random
+#: direction of norm 10 already underflows :math:`\\exp(m + \\tau z)`.
+_OUTER_PROBE = 3.0
+
 
 def _same_label(label: Any, wanted: Any) -> bool:
     """Whether dim label *label* is *wanted*: strings match strings, and
@@ -1175,8 +1538,9 @@ def _same_label(label: Any, wanted: Any) -> bool:
     return isinstance(wanted, (int, np.integer)) and not isinstance(wanted, bool) and label == wanted
 
 
-def _dataset_variables(parameter: Parameter) -> list[tuple[str, dict[str, Any]]]:
-    """``(variable name, attributes)`` for each natural name of *parameter*."""
+def _dataset_variables(parameter: Parameter | DerivedParameter) -> list[tuple[str, dict[str, Any]]]:
+    """``(variable name, attributes)`` for each natural name of a parameter
+    or derived parameter."""
     names = (None,) if parameter.natural_names is None else parameter.natural_names
     out = []
     for natural_name in names:
@@ -1185,10 +1549,51 @@ def _dataset_variables(parameter: Parameter) -> list[tuple[str, dict[str, Any]]]
             attributes["natural_name"] = natural_name
         if parameter.units is not None:
             attributes["units"] = parameter.units
-        attributes["support"] = parameter.support.name
+        if parameter.support is not None:
+            attributes["support"] = parameter.support.name
+        if isinstance(parameter, DerivedParameter):
+            attributes["derived_from"] = ", ".join(parameter.derived_from)
         variable_name = parameter.name if natural_name is None else f"{parameter.name}.{natural_name}"
         out.append((variable_name, attributes))
     return out
+
+
+def _dim_labels_of(site_table: pd.DataFrame, dim_name: str) -> list[Any]:
+    """A dim's labels in the table: the site ids for ``"site"``, else the
+    categories of its column."""
+    if dim_name == SITE:
+        return site_table[SITE_ID].tolist()
+    return list(site_table[dim_name].cat.categories)
+
+
+def _derived_probe_theta(parameter_vector: ParameterVector, derived: DerivedParameter) -> np.ndarray:
+    """Theta at :func:`joint_probe_points` over the parameters *derived* is
+    computed from, directly or through earlier derived parameters; every
+    other entry 0."""
+    needed = set(derived.derived_from)
+    for earlier in reversed(parameter_vector.derived_parameters):
+        if earlier.name in needed:
+            needed.update(earlier.derived_from)
+    parameters = [p for p in parameter_vector.parameters if p.name in needed]
+    parts = joint_probe_points(
+        [(parameter_vector.unconstrained_shape(p.name), p.unconstrained_size) for p in parameters]
+    )
+    theta = np.zeros((len(parts[0]), parameter_vector.dimension))
+    for parameter, points in zip(parameters, parts):
+        theta[:, parameter_vector.positions(parameter_name=parameter.name)] = points.reshape((len(points), -1))
+    return theta
+
+
+def _lies_in_the_support_or_overflows(support: Support, values: Array) -> Array:
+    """Whether each value lies in *support*'s closure, or is infinite at an
+    end the support leaves unbounded (float64 overflow); NaN never does."""
+    values = jnp.asarray(values, dtype=jnp.float64)
+    inside = support.contains(values, closure=True)
+    if support.kind == "real":
+        return ~jnp.isnan(values)
+    if support.kind == "positive":
+        return inside | jnp.isposinf(values)
+    return inside
 
 
 def _normalized_site_table(site_table: Any, site_covariate_names: tuple[str, ...]) -> pd.DataFrame:
@@ -1258,18 +1663,23 @@ def _declared_labels(labels: pd.Series) -> tuple[str, ...] | None:
 
 
 def check_parameter_vector_is_valid(parameter_vector: ParameterVector) -> None:
-    """The parameters, site table and site labels make one vector."""
+    """The parameters, derived parameters, site table and site labels make
+    one vector."""
     check_vector_has_a_parameter(parameter_vector.parameters)
     check_parameter_names_are_unique(parameter_vector.parameter_names)
+    check_names_are_unique(parameter_vector.derived_parameter_names, message_name="the derived parameter names")
     names = {
+        "derived parameter": parameter_vector.derived_parameter_names,
         "site covariate": parameter_vector.site_covariate_names,
         "site-labels name": tuple(parameter_vector.site_labels),
     }
     for what, taken in names.items():
         check_names_are_not_reserved(taken, what)
     check_names_are_distinct(parameter_vector.parameter_names, names)
-    for parameter in parameter_vector.parameters:
+    for parameter in (*parameter_vector.parameters, *parameter_vector.derived_parameters):
         check_parameter_dim_is_the_vectors(parameter, parameter_vector)
+    for derived in parameter_vector.derived_parameters:
+        check_derived_parameter_fits_the_vector(derived, parameter_vector)
 
 
 def check_parameter_is_valid(parameter: Parameter) -> None:
@@ -1320,9 +1730,10 @@ def check_batch_dim_name_is_not_taken(parameter_vector: ParameterVector, batch_d
     """*batch_dim* can name the labeled form's batch dim: no reserved name,
     and none of the vector's dims or variables, which it would collide with."""
     check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
+    pieces = (*parameter_vector.parameters, *parameter_vector.derived_parameters)
     taken = {
         *parameter_vector.site_labels,
-        *(name for p in parameter_vector.parameters for name, _ in _dataset_variables(p)),
+        *(name for p in pieces for name, _ in _dataset_variables(p)),
     }
     if batch_dim in taken:
         raise ValueError(
@@ -1386,8 +1797,11 @@ def check_names_are_distinct(
             seen[name] = what
 
 
-def check_parameter_dim_is_the_vectors(parameter: Parameter, parameter_vector: ParameterVector) -> None:
-    """A parameter's dim is ``"site"`` or a site-labels name of the vector."""
+def check_parameter_dim_is_the_vectors(
+    parameter: Parameter | DerivedParameter, parameter_vector: ParameterVector
+) -> None:
+    """A parameter's or derived parameter's dim is ``"site"`` or a
+    site-labels name of the vector."""
     if parameter.dim is not None and parameter.dim != SITE and parameter.dim not in parameter_vector.site_labels:
         raise ValueError(
             f"parameter {parameter.name!r} varies over {parameter.dim!r}, which is neither "
@@ -1396,9 +1810,141 @@ def check_parameter_dim_is_the_vectors(parameter: Parameter, parameter_vector: P
         )
 
 
-def check_simplex_has_two_natural_names(parameter: Parameter) -> None:
-    """A simplex parameter names at least two natural numbers."""
-    if parameter.support.kind == "simplex" and parameter.natural_size < 2:
+def check_derived_parameter_fits_the_vector(
+    derived: DerivedParameter, parameter_vector: ParameterVector
+) -> None:
+    """A derived parameter reads earlier names, and its value has its shape,
+    lies in its declared support, and is pointwise when it says so."""
+    check_derived_parameter_reads_earlier_names(derived, parameter_vector)
+    check_derived_parameter_has_its_value_shape(derived, parameter_vector)
+    if derived.support is not None:
+        check_derived_parameter_lies_in_its_support(derived, parameter_vector)
+    if derived.pointwise:
+        check_derived_parameter_is_pointwise(derived, parameter_vector)
+
+
+def check_derived_parameter_is_valid(derived: DerivedParameter) -> None:
+    """A derived parameter's name and natural names are usable, and it is
+    computed from something."""
+    check_name_is_usable(derived.name, "a derived parameter")
+    if derived.natural_names is not None:
+        for natural_name in derived.natural_names:
+            check_name_is_usable(natural_name, f"a natural name of {derived.name!r}", reserved=False)
+        check_names_are_unique(derived.natural_names, message_name=f"{derived.name!r} natural_names")
+    check_simplex_has_two_natural_names(derived)
+    check_derived_parameter_is_computed_from_something(derived)
+
+
+def check_derived_parameter_is_computed_from_something(derived: DerivedParameter) -> None:
+    """A derived parameter has inputs, whose draws give its values their
+    leading shape; a constant would not broadcast over the draws."""
+    if not derived.derived_from:
+        raise ValueError(
+            f"derived parameter {derived.name!r} is computed from nothing; a value fixed across "
+            "draws is a Fixed SIPNET parameter or an external input, not a derived parameter."
+        )
+
+
+def check_derived_parameter_reads_earlier_names(
+    derived: DerivedParameter, parameter_vector: ParameterVector
+) -> None:
+    """A derived parameter is computed from parameters and derived parameters
+    declared before it, which :meth:`ParameterVector.to_natural` has computed
+    by then."""
+    derived_names = parameter_vector.derived_parameter_names
+    earlier = set(parameter_vector.parameter_names) | set(derived_names[: derived_names.index(derived.name)])
+    for name in derived.derived_from:
+        if name in earlier:
+            continue
+        if name in derived_names:
+            raise ValueError(
+                f"derived parameter {derived.name!r} is computed from {name!r}, which is declared "
+                "after it; declare the derived parameters in the order they are computed."
+            )
+        raise KeyError(
+            f"derived parameter {derived.name!r} is computed from {name!r}, which is no parameter "
+            "or derived parameter of the vector; name one of them."
+        )
+
+
+def check_derived_parameter_has_its_value_shape(
+    derived: DerivedParameter, parameter_vector: ParameterVector
+) -> None:
+    """A derived parameter's ``compute`` returns its value shape at theta = 0,
+    which would otherwise broadcast or misalign against the sites."""
+    # One draw's worth of theta with a leading axis, so compute runs vmapped
+    # as it does at run time.
+    natural_values = parameter_vector._parameters_at(np.zeros((1, parameter_vector.dimension)))
+    value = parameter_vector.derived_values(natural_values, derived_parameter_names=[derived.name])
+    shape, expected = tuple(jnp.shape(value[derived.name]))[1:], parameter_vector.value_shape(derived.name)
+    if shape != expected:
+        raise ValueError(
+            f"derived parameter {derived.name!r} computes a value of shape {shape}, but its dim and "
+            f"natural names give {expected}; return one draw's value, shape (n?, k?)."
+        )
+
+
+def check_derived_parameter_lies_in_its_support(
+    derived: DerivedParameter, parameter_vector: ParameterVector
+) -> None:
+    """A derived parameter's values at the probe points lie in the support it
+    declares, which the SIPNET map would otherwise trust in its bounds check;
+    its closure, or infinity at an unbounded end, only at the outer probes,
+    where float64 underflows and overflows."""
+    theta = _derived_probe_theta(parameter_vector, derived)
+    natural_values = parameter_vector._parameters_at(theta)
+    values = parameter_vector.derived_values(natural_values, derived_parameter_names=[derived.name])[derived.name]
+    n_probes = len(theta)
+    inside = derived.support.contains(values).reshape((n_probes, -1)).all(axis=-1)
+    lenient = _lies_in_the_support_or_overflows(derived.support, values).reshape((n_probes, -1)).all(axis=-1)
+    outer = np.abs(theta).max(axis=-1) > _OUTER_PROBE
+    if not bool(jnp.all(jnp.where(outer, lenient, inside))):
+        raise ValueError(
+            f"derived parameter {derived.name!r} takes values outside its declared support "
+            f"{derived.support.name!r} at the probe points; declare the support its values have, "
+            "or none."
+        )
+
+
+def check_derived_parameter_is_pointwise(derived: DerivedParameter, parameter_vector: ParameterVector) -> None:
+    """A derived parameter declared pointwise changes at one dim label only
+    when its inputs on the same dim change there, and one without a dim reads
+    no input with one, as selection and localization assume."""
+    if derived.dim is None:
+        dimensioned = [n for n in derived.derived_from if parameter_vector._piece(n).dim is not None]
+        if dimensioned:
+            raise ValueError(
+                f"derived parameter {derived.name!r} has no dim but is computed from {dimensioned}, "
+                "which have one, so its value depends on every dim label present; declare it "
+                "pointwise=False."
+            )
+        return
+    theta = np.random.default_rng(_POINTWISE_SEED).standard_normal(parameter_vector.dimension)
+    natural_values = parameter_vector._parameters_at(theta)
+    natural_values |= parameter_vector.derived_values(
+        natural_values, derived_parameter_names=[derived.name]
+    )
+    before = np.asarray(natural_values[derived.name])
+    for name in derived.derived_from:
+        if parameter_vector._piece(name).dim != derived.dim:
+            continue
+        value = jnp.asarray(natural_values[name])
+        for label in sorted({0, len(value) - 1}):
+            nudged = {**natural_values, name: value.at[label].add(0.5 * (1.0 + jnp.abs(value[label])))}
+            after = np.asarray(parameter_vector._computed(derived, nudged))
+            others = np.arange(len(before)) != label
+            if not np.allclose(after[others], before[others], rtol=1e-12, atol=0.0, equal_nan=True):
+                raise ValueError(
+                    f"derived parameter {derived.name!r} is declared pointwise, but changing "
+                    f"{name!r} at one {derived.dim} dim label changes its value at others; declare "
+                    "it pointwise=False."
+                )
+
+
+def check_simplex_has_two_natural_names(parameter: Parameter | DerivedParameter) -> None:
+    """A value on the simplex names at least two natural numbers; a scalar's
+    support would otherwise be read across its dim labels."""
+    if parameter.support is not None and parameter.support.kind == "simplex" and parameter.natural_size < 2:
         raise ValueError(
             f"parameter {parameter.name!r} is on the simplex, which needs at least two natural "
             "numbers; give natural_names=(...) with two or more names."
@@ -1657,7 +2203,75 @@ def check_site_labels_are_strings(name: str, labels: Sequence[Any]) -> None:
         )
 
 
-def check_values_are_in_the_support(parameter: Parameter, values: Array) -> None:
+def check_natural_values_hold_the_inputs(derived: DerivedParameter, natural_values: Mapping[str, Any]) -> None:
+    """The natural values hold everything a derived parameter is computed
+    from."""
+    missing = [name for name in derived.derived_from if name not in natural_values]
+    if missing:
+        raise KeyError(
+            f"derived parameter {derived.name!r} is computed from {missing}, which the natural "
+            "values lack; give every parameter it is computed from."
+        )
+
+
+def check_derived_parameter_names_are_held(names: Sequence[str], parameter_vector: ParameterVector) -> None:
+    """Every name is one of the vector's derived parameters; any other would
+    be computed as nothing, and missed far from the request."""
+    for name in names:
+        if name not in parameter_vector.derived_parameter_names:
+            raise KeyError(
+                f"the vector has no derived parameter {name!r}; name one of "
+                f"{truncated(list(parameter_vector.derived_parameter_names))}."
+            )
+
+
+def check_dataset_can_project_onto_the_vector(parameter_dataset: xr.Dataset, parameter_vector: ParameterVector) -> None:
+    """A vector with a derived parameter that is not pointwise reads only a
+    labeled form over its own dim labels: over others, the same theta would
+    give that derived parameter other values at the same sites."""
+    if all(d.pointwise for d in parameter_vector.derived_parameters):
+        return
+    for dim in parameter_vector.dim_names:
+        held = parameter_dataset.indexes.get(dim)
+        # flat and site_fields read by label, so the order does not matter.
+        if held is not None and set(held) != set(parameter_vector.dim_index(dim)):
+            raise ValueError(
+                f"the parameter dataset's {dim!r} dim labels are not the vector's, and the vector has a "
+                "derived parameter that is not pointwise, whose values depend on every dim label "
+                "present; read the dataset with the vector it was made by, or give it this "
+                "vector's dim labels."
+            )
+
+
+def check_site_table_has_a_categorical_dim(site_table: pd.DataFrame, dim_name: str) -> None:
+    """A site table has a categorical column for the dim, whose categories
+    are the dim labels positions are counted along."""
+    if dim_name not in site_table.columns:
+        raise KeyError(
+            f"the site table has no column {dim_name!r}; pass the site_table a prior function, "
+            "derived parameter or rule was given, which has one per site-labels name."
+        )
+    if not isinstance(site_table[dim_name].dtype, pd.CategoricalDtype):
+        raise TypeError(
+            f"the site table's {dim_name!r} is not categorical, so its dim labels have no order; pass "
+            "the site_table a prior function, derived parameter or rule was given."
+        )
+
+
+def check_dims_nest(pairs: np.ndarray, from_labels: Sequence[Any], from_dim: str, to_dim: str) -> None:
+    """The sites of each dim label of one dim carry exactly one dim label of
+    the other, so a value on the second can be read at the first's labels."""
+    counts = np.bincount(pairs[:, 0], minlength=len(from_labels))
+    bad = np.flatnonzero(counts != 1)
+    if bad.size:
+        label = from_labels[bad[0]]
+        raise ValueError(
+            f"the sites of {from_dim} dim label {label!r} carry {int(counts[bad[0]])} {to_dim} dim "
+            f"labels, so {from_dim!r} does not nest in {to_dim!r}; pool over dims that nest."
+        )
+
+
+def check_values_are_in_the_support(parameter: Parameter | DerivedParameter, values: Array) -> None:
     """Natural values read from the labeled form lie in their support."""
     inside = parameter.support.contains(values)
     if not bool(jnp.all(inside)):
