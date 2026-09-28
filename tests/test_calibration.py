@@ -10,13 +10,18 @@ from __future__ import annotations
 import warnings
 
 import jax
+import jax.numpy as jnp
 import pytest
 from pysipnet.build import find_binary, missing_binary_message
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
+from tensorflow_probability.substrates import jax as tfp
 
 from conftest import EXAMPLE_REFERENCE_PFT, EXAMPLE_REFERENCE_SITES, niwot_parameters, site_table_of
 from sipnet_calibration.calibration import describe_calibration, example_calibration
 from sipnet_calibration.fields import sipnet_overrides
+from sipnet_calibration.parameter_vector import POSITIVE, REAL, DerivedParameter, Parameter, ParameterVector
+from sipnet_calibration.prior import Prior, PriorTerm, gaussian_copula
+from sipnet_calibration.sipnet_parameter_map import Copy, SIPNETParameterMap
 
 
 @pytest.fixture(scope="module")
@@ -40,6 +45,40 @@ def test_describe_calibration_joins_the_three_descriptions(example):
     assert row["rules"] == "ComputePhotosynthesisRates"
     assert table.loc["allocation", "dim"] == "pft"
     assert table.loc["allocation", "prior"] == "iid softmax-normal"
+
+
+def test_describe_calibration_has_a_row_per_derived_parameter_and_a_joint_terms_name():
+    vector = ParameterVector(
+        parameters=[
+            Parameter(name="intercept", support=REAL, units=None),
+            Parameter(name="slope", support=REAL, units="K-1"),
+        ],
+        derived_parameters=[
+            DerivedParameter(
+                name="respiration", units="yr-1", dim="site", support=POSITIVE,
+                derived_from=("intercept", "slope"),
+                compute=lambda dim_index, site_table, intercept, slope: jnp.exp(
+                    intercept + slope * site_table["anomaly"].to_numpy()),
+            )
+        ],
+        site_table=site_table_of(*EXAMPLE_REFERENCE_SITES).assign(anomaly=0.0),
+        site_covariate_names=["anomaly"],
+    )
+    normal = tfp.distributions.Normal(jnp.float64(0.0), jnp.float64(1.0))
+    prior = Prior(vector, {("intercept", "slope"): PriorTerm(
+        gaussian_copula({"intercept": normal, "slope": normal}, correlation=[[1.0, 0.2], [0.2, 1.0]]),
+        provenance="test",
+    )})
+    sipnet_map = SIPNETParameterMap(
+        rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")]
+    )
+    table = describe_calibration(vector, prior, sipnet_map)
+    assert list(table.index) == ["intercept", "slope", "respiration"]
+    assert table.loc["slope", "term"] == "intercept+slope"
+    assert table.loc["slope", "prior"] == "gaussian copula"
+    derived = table.loc["respiration"]
+    assert derived["derived_from"] == "intercept, slope" and derived["prior"] == ""
+    assert derived["sipnet_parameters"] == "base_soil_respiration_rate" and derived["rules"] == "Copy"
 
 
 def test_the_example_prior_lands_in_every_domain(example, sipnet_parameter_fields):

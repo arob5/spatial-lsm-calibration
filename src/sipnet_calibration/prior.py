@@ -83,6 +83,8 @@ The family builders
     :func:`log_normal_from_samples`, :func:`logit_normal`,
     :func:`logit_normal_from_interval`, :func:`logit_normal_from_samples`,
     :func:`softmax_normal`.
+:func:`term_name`
+    A term's name, which keys its randomness.
 :class:`DeclaresGaussian`
     The protocol a builder implements to declare its term's Gaussian in
     theta.
@@ -194,6 +196,7 @@ __all__ = [
     "logit_normal_from_interval",
     "logit_normal_from_samples",
     "softmax_normal",
+    "term_name",
 ]
 
 tfd = tfp.distributions
@@ -251,8 +254,8 @@ class Prior:
         object.__setattr__(self, "terms", frozendict(self.terms))
         check_terms_cover_the_parameters(self.terms, self.parameter_vector)
         for key, term in self.terms.items():
-            check_term_is_a_prior_term(_term_name(key), term)
-            check_given_names_are_held(_term_name(key), term.given, self.parameter_vector)
+            check_term_is_a_prior_term(term_name(key), term)
+            check_given_names_are_held(term_name(key), term.given, self.parameter_vector)
         order = _draw_order(self.terms, self.parameter_vector)
         object.__setattr__(self, "_draw_order", order)
         object.__setattr__(self, "_built", frozendict(self._build_terms(order)))
@@ -304,7 +307,7 @@ class Prior:
         for key, term in self.terms.items():
             names = _names_of(key)
             if any(name in kept for name in names):
-                check_selection_keeps_what_a_term_needs(_term_name(key), (*names, *term.given), kept)
+                check_selection_keeps_what_a_term_needs(term_name(key), (*names, *term.given), kept)
                 terms[key] = term
         return Prior(vector, terms)
 
@@ -693,6 +696,13 @@ def gaussian_copula(marginals: Mapping[str, tfd.Distribution], *, correlation: A
     )
 
 
+def term_name(key: TermKey) -> str:
+    """A term's name: its key, or a joint term's names joined with ``"+"``.
+    It keys the term's randomness in :meth:`Prior.sample` and names its row
+    in :meth:`Prior.describe`."""
+    return key if isinstance(key, str) else "+".join(key)
+
+
 # ── the family builders ───────────────────────────────────────────────────────
 
 
@@ -1068,7 +1078,7 @@ class _BuiltTerm:
 
     @property
     def name(self) -> str:
-        return _term_name(self.key)
+        return term_name(self.key)
 
     @property
     def joint(self) -> bool:
@@ -1247,10 +1257,6 @@ _DECLARATION_RELATIVE_TOLERANCE, _DECLARATION_ABSOLUTE_TOLERANCE = 1e-10, 1e-12
 
 def _names_of(key: TermKey) -> tuple[str, ...]:
     return (key,) if isinstance(key, str) else tuple(key)
-
-
-def _term_name(key: TermKey) -> str:
-    return key if isinstance(key, str) else "+".join(key)
 
 
 def _term_key(key: Array, name: str) -> Array:
@@ -1520,9 +1526,9 @@ def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: Parameter
             if name in owner:
                 raise ValueError(
                     f"parameter {name!r} is covered by the terms {owner[name]!r} and "
-                    f"{_term_name(key)!r}; cover each parameter by one term."
+                    f"{term_name(key)!r}; cover each parameter by one term."
                 )
-            owner[name] = _term_name(key)
+            owner[name] = term_name(key)
         check_joint_term_shares_a_dim(key, vector)
     missing = [name for name in vector.parameter_names if name not in owner]
     if missing:
@@ -1535,7 +1541,7 @@ def check_joint_term_shares_a_dim(key: TermKey, vector: ParameterVector) -> None
     dims = {vector[name].dim for name in _names_of(key)}
     if len(dims) > 1:
         raise ValueError(
-            f"the joint term {_term_name(key)!r} covers parameters on the dims "
+            f"the joint term {term_name(key)!r} covers parameters on the dims "
             f"{sorted(map(str, dims))}; a joint term's parameters share one dim or none, so give "
             "each dim its own term and link them with given=."
         )
@@ -1556,7 +1562,7 @@ def check_given_links_are_acyclic(cycle: Sequence[tuple[str, Any]] | None) -> No
     no order of draws could satisfy; *cycle* is the one found, if any."""
     if cycle is None:
         return
-    names = [_term_name(value) if kind == "term" else value for kind, value in cycle]
+    names = [term_name(value) if kind == "term" else value for kind, value in cycle]
     raise ValueError(
         f"the given links form a cycle, {' -> '.join(names)}; a term cannot depend on itself, so "
         "break the cycle."
