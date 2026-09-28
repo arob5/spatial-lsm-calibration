@@ -385,3 +385,12 @@ def test_the_copulas_declaration_agrees_with_log_prob_and_the_moments_of_draws(o
     standard_error = np.sqrt(np.diag(covariance) / len(theta))
     np.testing.assert_array_less(np.abs(theta.mean(axis=0) - gaussian.mean), 5 * standard_error)
     np.testing.assert_allclose(np.cov(theta.T), covariance, atol=0.05 * covariance.max())
+
+
+def test_the_change_of_variables_sums_the_jacobian_over_dim_labels():
+    gamma = tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0))
+    prior = prior_of(RATE_BY_SITE, iid_over_dim(gamma))
+    assert prior.describe().iloc[0]["evaluated_by"] == "change of variables"
+    theta = jax.random.normal(jax.random.key(15), (4, 3))
+    expected = (gamma.log_prob(jnp.exp(theta)) + theta).sum(axis=-1)
+    np.testing.assert_allclose(prior.log_prob(theta), expected, rtol=1e-12)

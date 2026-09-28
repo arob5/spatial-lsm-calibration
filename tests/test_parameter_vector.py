@@ -919,3 +919,26 @@ def test_zero_draws_round_trip(vector):
     empty = jnp.zeros((0, vector.dimension))
     assert vector.to_unconstrained(vector.to_natural(empty)).shape == (0, vector.dimension)
     assert vector.flat(vector.dataset(empty)).shape == (0, vector.dimension)
+
+
+def test_a_derived_parameter_reaching_a_neighbor_is_not_pointwise():
+    def with_neighbor(dim_index, site_table, mean, spread, standardized):
+        return standardized + jnp.roll(standardized, 1)
+
+    with pytest.raises(ValueError, match="declare it pointwise=False"):
+        pooled_vector(compute=with_neighbor)
+
+
+def test_negative_infinity_is_outside_the_positive_line():
+    def falling(dim_index, site_table, mean, spread, standardized):
+        return jnp.where(standardized > 15.0, -jnp.inf, 1.0)
+
+    with pytest.raises(ValueError, match="outside its declared support"):
+        pooled_vector(support=POSITIVE, compute=falling)
+
+
+def test_a_dim_label_whose_sites_carry_none_of_the_other_dim_does_not_nest(pooled):
+    table = pooled.select(sites=[1, 27]).site_table
+    table["pft"] = table["pft"].cat.add_categories(["unused"])
+    with pytest.raises(ValueError, match="dim label 'unused' carry 0 biome dim labels"):
+        dim_label_positions(table, "pft", "biome")

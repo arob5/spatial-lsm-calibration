@@ -497,3 +497,17 @@ def test_a_term_is_not_given_what_it_covers_or_a_name_twice():
         Prior(vector_of(RATE), {"rate": term(rate_given, given=("rate",))})
     with pytest.raises(ValueError, match="given"):
         PriorTerm(share_given, given=("rate", "rate"), provenance="test")
+
+
+def test_a_term_whose_evaluation_changes_with_its_given_values_is_refused():
+    calls = []
+
+    def shifted(dim_index, site_table, rate):
+        # One structure at both ancestral draws, but a pushforward through the
+        # parameter's own bijector at the first only.
+        calls.append(rate)
+        return tfd.TransformedDistribution(normal(0.0, 1.0), tfb.Shift(jnp.float64(0.0 if len(calls) == 1 else 1.0)))
+
+    offset = Parameter(name="offset", support=REAL, units=None)
+    with pytest.raises(ValueError, match="changes its structure"):
+        Prior(vector_of(RATE, offset), {"rate": term(RATE_MARGINAL), "offset": term(shifted, given=("rate",))})
