@@ -88,13 +88,13 @@ with its file index beside it as
 :data:`~sipnet_calibration.conventions.DATA_SOURCE_MEMBER_ATTRIBUTES` says.
 
 Variables that share one grid are one ``xarray.Dataset`` (a model output, a
-parameter vector's Fields); variables that do not are a
+parameter vector's per-site view); variables that do not are a
 ``dict[str, DataArray]`` (the constraints). ``dict(model_output.data_vars)``
 is a model output's dict form.
 
 The data model
 --------------
-Three aliases name the forms this module owns, each checked by one validator:
+Four aliases name the forms this module owns, each checked by one validator:
 
 :data:`Field` (``xr.DataArray``)
     One variable under the field contract above; :func:`validate_field`.
@@ -110,9 +110,15 @@ Three aliases name the forms this module owns, each checked by one validator:
     per parameter under pySIPNET's flat name, each with a ``site``, as a dim
     or a scalar coordinate, and no ``time``, on batch dims of its own:
     ``(*batch, site)``, or ``(*batch,)`` with a scalar ``site``;
-    :func:`validate_sipnet_parameter_fields`. A parameter vector's are on
-    ``(*batch, site)``; one run's, as the forward model's worker builds
-    them, are zero-dimensional with a scalar ``site``.
+    :func:`validate_sipnet_parameter_fields`. Each variable has the batch
+    dims it has, so variables of one Dataset may be on different subsets of
+    ``(*batch, site)``, as a SIPNET parameter map writes them
+    (:mod:`sipnet_calibration.sipnet_parameter_map`); one run's, as the
+    forward model's worker builds them, are zero-dimensional with a scalar
+    ``site``.
+:data:`SIPNETOverrides` (``Mapping[str, float]``)
+    One run's SIPNET parameter values, the keywords ``SIPNETModel`` takes,
+    under pySIPNET's flat names; :func:`validate_sipnet_overrides`.
 
 Identifiers
 -----------
@@ -179,8 +185,10 @@ Functions
 :func:`validate_field`, :func:`validate_model_output`
     Check that an array is a field, or a Dataset a model output, raising on
     the first rule it breaks.
-:func:`validate_sipnet_parameter_fields`
-    The same for SIPNET parameter fields.
+:func:`validate_sipnet_parameter_fields`, :func:`validate_sipnet_overrides`
+    The same for SIPNET parameter fields and SIPNET overrides.
+:func:`sipnet_overrides`
+    One run's SIPNET overrides, from SIPNET parameter fields.
 :func:`batch_dims`
     A field's batch dims, in its dim order.
 :func:`in_field_layout`
@@ -317,12 +325,8 @@ rest from the stacked field::
         for name, array in made.items()
     }
 
-For a Dataset, such as a parameter vector's Fields,
-``fields_dataset.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))``.
-The round trip needs fields (``int32`` ``site`` with ``lon``/``lat``): the
-observation vector's always are, and a parameter vector's are when it was
-built from a site table; one built from bare site ids gives Fields without
-``lon``/``lat``, which the stack refuses.
+For a Dataset of fields,
+``dataset.map(lambda field: stack_batch_dims(field, new_batch_dim="run"))``.
 
 Labeling run after run, with the site table read once::
 
@@ -387,12 +391,13 @@ from sipnet_calibration.sites import (
     site_coordinates,
     site_locations,
 )
-from sipnet_calibration.validation import as_batch_label, as_names, as_site_id
+from sipnet_calibration.validation import as_batch_label, as_names, as_site_id, truncated
 
 __all__ = [
     "MODEL_OUTPUT_COORDINATE_NAMES",
     "Field",
     "ModelOutput",
+    "SIPNETOverrides",
     "SIPNETParameterFields",
     "STACKED_COMPANIONS_ATTRIBUTE",
     "STACKED_DIMS_ATTRIBUTE",
@@ -419,12 +424,14 @@ __all__ = [
     "recorded_stacked_dims",
     "resolve_output_variable_names",
     "scalar_batch_labels",
+    "sipnet_overrides",
     "stack_batch_dims",
     "stack_model_outputs",
     "to_model_output",
     "unstack_batch_dims",
     "validate_field",
     "validate_model_output",
+    "validate_sipnet_overrides",
     "validate_sipnet_parameter_fields",
     "without_stale_time_attributes",
 ]
@@ -440,6 +447,10 @@ type ModelOutput = xr.Dataset
 #: SIPNET parameter values, as this module's data model has them; checked by
 #: :func:`validate_sipnet_parameter_fields`.
 type SIPNETParameterFields = xr.Dataset
+
+#: One run's SIPNET overrides, the keywords ``SIPNETModel`` takes; checked by
+#: :func:`validate_sipnet_overrides`.
+type SIPNETOverrides = Mapping[str, float]
 
 #: The suffix of the coordinates :func:`stack_batch_dims` keeps each stacked
 #: dim's labels in: stacking ``initial_condition_member`` keeps its labels as
@@ -557,11 +568,6 @@ def validate_sipnet_parameter_fields(
         If it is not SIPNET parameter fields; the message names the variable
         and the rule.
 
-    Notes
-    -----
-    A variable may have batch dims of its own, so a parameter vector's
-    (``sample``) merged with an initial condition ensemble's
-    (``initial_condition_member``) are SIPNET parameter fields.
     """
     name = "the SIPNET parameter fields" if message_name is None else message_name
     check_sipnet_parameter_fields_are_a_dataset(sipnet_parameter_fields, name)
@@ -571,6 +577,77 @@ def validate_sipnet_parameter_fields(
         validate_field(variable, message_name=variable_message_name)
         check_parameter_variable_has_a_site(variable, variable_message_name)
         check_parameter_variable_is_off_time(variable, variable_message_name)
+
+
+def validate_sipnet_overrides(sipnet_overrides: Any, *, message_name: str | None = None) -> None:
+    """Check that *sipnet_overrides* are :data:`SIPNETOverrides`: pySIPNET flat
+    parameter names to numbers.
+
+    Raises
+    ------
+    TypeError
+        If it is not a mapping, or a key is not a string or a value not a
+        number (a boolean included).
+    KeyError
+        If a key is no pySIPNET parameter.
+    ValueError
+        If a key is an alias of pySIPNET's flat name.
+    """
+    name = "the SIPNET overrides" if message_name is None else message_name
+    check_sipnet_overrides_are_a_mapping(sipnet_overrides, name)
+    for key, value in sipnet_overrides.items():
+        check_sipnet_parameter_name_is_a_flat_name(key, name)
+        check_sipnet_override_is_a_number(key, value, name)
+
+
+def sipnet_overrides(
+    sipnet_parameter_fields: SIPNETParameterFields,
+    *,
+    site: int,
+    batch: Mapping[str, int] | None = None,
+) -> SIPNETOverrides:
+    """One run's SIPNET overrides, the keyword arguments of ``SIPNETModel``:
+    the SIPNET parameter fields at one site and one label of each batch dim.
+
+    Parameters
+    ----------
+    sipnet_parameter_fields:
+        :data:`SIPNETParameterFields` on a ``site`` dim.
+    site:
+        The site id.
+    batch:
+        ``{batch dim: label}`` for every batch dim of the fields, such as
+        ``{"sample": 3}``; required when they have one.
+
+    Returns
+    -------
+    SIPNETOverrides
+        A ``dict`` of Python floats, for the SIPNET parameters the fields
+        hold; the model's base parameter set supplies the rest.
+
+    Raises
+    ------
+    TypeError
+        If *site* or a batch label is not an integer, or *batch* not a
+        mapping.
+    ValueError
+        If the fields are not SIPNET parameter fields on a ``site`` dim, or
+        *batch* does not name exactly their batch dims.
+    KeyError
+        If *site* or a batch label is not theirs.
+    """
+    site_id = as_site_id(site, message_name="site")
+    requested = _requested_batch_labels(batch)
+    validate_sipnet_parameter_fields(sipnet_parameter_fields)
+    check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields)
+    check_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, SITE, site_id)
+    check_batch_labels_name_the_batch_dims(batch_dims(sipnet_parameter_fields), requested)
+    for dim, label in requested.items():
+        check_label_is_in_the_sipnet_parameter_fields(sipnet_parameter_fields, dim, label)
+    selected = sipnet_parameter_fields.sel({SITE: site_id, **requested})
+    overrides = {str(name): float(value) for name, value in selected.data_vars.items()}
+    validate_sipnet_overrides(overrides)
+    return overrides
 
 
 def in_field_layout(array: xr.DataArray) -> xr.DataArray:
@@ -1236,6 +1313,14 @@ _COORDINATE_NAMES_NO_BATCH_DIM_TAKES: tuple[str, ...] = (
 )
 
 
+def _requested_batch_labels(batch: Any) -> dict[str, int]:
+    """*batch* as ``{dim: label}`` with plain-integer labels; empty for ``None``."""
+    if batch is None:
+        return {}
+    check_batch_labels_are_a_mapping(batch)
+    return {dim: as_batch_label(label, message_name=f"batch[{dim!r}]") for dim, label in batch.items()}
+
+
 def _is_batch_dim(field: xr.DataArray | xr.Dataset, dim: str) -> bool:
     """Whether *dim* of *field* is a batch dim: not a non-batch name, integer labels."""
     if dim in NON_BATCH_DIM_NAMES or dim not in field.indexes:
@@ -1589,7 +1674,7 @@ def check_sipnet_parameter_fields_are_a_dataset(
         raise TypeError(
             f"{message_name} must be an xarray Dataset of SIPNET parameters, got "
             f"{type(sipnet_parameter_fields).__name__}; build them with "
-            "ParameterVector.sipnet_parameter_fields, or, for one run, a Dataset of "
+            "SIPNETParameterMap.sipnet_parameter_fields, or, for one run, a Dataset of "
             "pysipnet's SIPNETParameters.dataarray(name) with the run's scalar site."
         )
 
@@ -1614,6 +1699,58 @@ def check_sipnet_parameter_name_is_a_flat_name(name: Any, message_name: str) -> 
             f"{message_name} name {name!r}, an alias of pySIPNET's {flat_name!r}; "
             "SIPNETModel, the model output and SIPNET parameter fields carry only the flat "
             f"names, so rename it to {flat_name!r}."
+        )
+
+
+def check_sipnet_overrides_are_a_mapping(sipnet_overrides: Any, message_name: str) -> None:
+    """SIPNET overrides are a mapping."""
+    if not isinstance(sipnet_overrides, Mapping):
+        raise TypeError(
+            f"{message_name} must be a mapping from SIPNET parameter name to value, got "
+            f"{type(sipnet_overrides).__name__}; pass what sipnet_overrides returns."
+        )
+
+
+def check_sipnet_override_is_a_number(name: str, value: Any, message_name: str) -> None:
+    """One SIPNET override is a number, not a boolean."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, float, np.number)):
+        raise TypeError(
+            f"{message_name}[{name!r}] must be a number, got {type(value).__name__}; one run "
+            "takes one value per SIPNET parameter."
+        )
+
+
+def check_sipnet_parameter_fields_are_on_sites(sipnet_parameter_fields: xr.Dataset) -> None:
+    """The SIPNET parameter fields have a ``site`` dim, which
+    :func:`sipnet_overrides` selects one site of."""
+    if SITE not in sipnet_parameter_fields.dims:
+        raise ValueError(
+            "the SIPNET parameter fields have no site dim; pass them on their site dim, as "
+            "SIPNETParameterMap.sipnet_parameter_fields returns them."
+        )
+
+
+def check_batch_labels_name_the_batch_dims(
+    batch_dim_names: tuple[str, ...], requested: Mapping[str, Any]
+) -> None:
+    """*batch* names exactly the SIPNET parameter fields' batch dims."""
+    if set(batch_dim_names) != set(requested):
+        raise ValueError(
+            f"the SIPNET parameter fields have the batch dims {list(batch_dim_names)} and "
+            f"batch= names {list(requested)}; pass batch={{dim: label}} for each of their "
+            "batch dims and no other."
+        )
+
+
+def check_label_is_in_the_sipnet_parameter_fields(
+    sipnet_parameter_fields: xr.Dataset, dim: str, label: Any
+) -> None:
+    """The label asked for, a batch label or a site id, is one of theirs on *dim*."""
+    labels = np.asarray(sipnet_parameter_fields[dim].values).tolist()
+    if label not in labels:
+        raise KeyError(
+            f"{dim} {label!r} is not one of the SIPNET parameter fields' {dim} labels "
+            f"({truncated(labels)})."
         )
 
 
@@ -1670,7 +1807,7 @@ def check_field_dims_are_field_dims(field: xr.DataArray, message_name: str) -> N
 def check_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message_name: str) -> None:
     """Every dim of *field* is labeled and is a batch dim, a spatial dim or ``time``."""
     # The part of the field contract that holds in any dim order, which the
-    # vectors' flat and parameter_vector.sipnet_overrides apply to what they
+    # observation vector's flat and sipnet_overrides apply to what they
     # read.
     check_dims_are_labeled(field, message_name=message_name)
     check_labeled_dims_are_batch_spatial_or_time(field, message_name=message_name)
@@ -1699,7 +1836,8 @@ def check_labeled_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message
             f"coordinate holds integers, not named {list(NON_BATCH_DIM_NAMES)}), a spatial "
             f"dim nor time; they are labeled {dtypes}. A structural axis (variable, "
             "quantile, a PFT class) is never a dim of a field: select it away, or split "
-            "it into a dict of fields."
+            "it into a dict of fields. A parameter dataset's site-labels dim is read at the "
+            "sites with ParameterVector.site_fields."
         )
 
 
