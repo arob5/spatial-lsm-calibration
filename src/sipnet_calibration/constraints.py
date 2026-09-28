@@ -212,11 +212,10 @@ from sipnet_calibration.conventions import (
     SITE_ID,
     TIME,
     TIME_BOUNDS,
-    WINDOW_END,
-    WINDOW_START,
     data_root,
     tracked_data_root,
 )
+from sipnet_calibration.fields import window_coordinates
 from sipnet_calibration.io import utc_timestamp
 from sipnet_calibration.sites import (
     check_processed_file_has_the_coordinates,
@@ -915,7 +914,7 @@ def _fields_of_variable(
         dataset = load_constraint(spec, constraint_path(spec, directory))
         field = dataset[variable_name].rename(name)
         if TIME_BOUNDS in dataset.coords:
-            field = field.assign_coords(_window_coords(dataset))
+            field = field.assign_coords(window_coordinates(dataset[TIME_BOUNDS]))
         if wanted is not None:
             check_processed_file_holds_the_sites(
                 dataset, wanted, message_name=f"the processed file of {name}"
@@ -923,33 +922,6 @@ def _fields_of_variable(
             field = field.sel({SITE: wanted})
         fields[name] = field
     return fields
-
-
-def _window_coords(dataset: xr.Dataset) -> dict[str, xr.DataArray]:
-    """CF ``time_bounds`` as the two one-dimensional window coordinates on ``time``.
-
-    A ``DataArray`` cannot carry the ``(time, bounds)`` variable, its
-    ``bounds`` dimension being none of the array's, so the pair rides along
-    as :data:`~sipnet_calibration.conventions.WINDOW_START` and
-    :data:`~sipnet_calibration.conventions.WINDOW_END`, the way pySIPNET's
-    model output carries ``timestep_start`` beside ``time``.
-    """
-    bounds = dataset[TIME_BOUNDS]
-    comment = "One edge of the CF time_bounds of the value at this label."
-    start_name = "Start of the interval the value is attributed to"
-    end_name = "End of the interval the value is attributed to"
-    return {
-        WINDOW_START: xr.DataArray(
-            bounds.isel({BOUNDS_DIMENSION: 0}).values,
-            dims=TIME,
-            attrs={"long_name": start_name, "comment": comment},
-        ),
-        WINDOW_END: xr.DataArray(
-            bounds.isel({BOUNDS_DIMENSION: 1}).values,
-            dims=TIME,
-            attrs={"long_name": end_name, "comment": comment},
-        ),
-    }
 
 
 # ── checks ────────────────────────────────────────────────────────────────────
