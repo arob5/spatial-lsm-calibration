@@ -1095,7 +1095,8 @@ class DerivedParameter:
         that dim label, at its dim label along another dim, and on inputs
         without a dim. A non-centered Gaussian process,
         :math:`x = \\exp(m + L(\\ell) z)`, is not: every :math:`x_s` depends
-        on every :math:`z_{s'}`.
+        on every :math:`z_{s'}`. Nor is a derived parameter without a dim
+        computed from an input with one, such as a mean over sites.
     support:
         An open set every value lies in, or ``None``. Declaring one lets a
         SIPNET rule's bounds be checked before anything runs.
@@ -1109,10 +1110,13 @@ class DerivedParameter:
     -----
     The vector checks, at construction, that ``compute`` gives the value
     shape at :math:`\\theta = 0`; that its values at the probe points lie in
-    the declared support, an infinite value at an unbounded end being
-    float64 overflow and not a violation; and, when *pointwise*, that
-    changing each input on the same dim at one dim label changes the value
-    there only. These are probes, not proofs.
+    the declared support, where at the outer probes (every probe but
+    :math:`\\theta = 0` and :math:`\\pm 3 \\mathbf 1`) the support's closure
+    and an infinite value at an unbounded end pass, as float64 underflow and
+    overflow; and, when
+    *pointwise*, that changing each input on the same dim at its first or
+    last dim label, at a fixed random theta, changes the value there only.
+    These are probes, not proofs.
 
     A derived parameter that is not pointwise is recomputed from the kept
     dim labels alone after :meth:`ParameterVector.select`, so the same
@@ -1516,6 +1520,15 @@ _SIMPLEX_SUM_TOLERANCE = 1e-10
 #: The seed of :func:`probe_points`' random directions.
 _PROBE_SEED = 20260926
 
+#: The seed of the theta the pointwise check is made at.
+_POINTWISE_SEED = 20260929
+
+#: The input :math:`|\\theta|` beyond which a probe is an outer one, where a
+#: derived parameter's value may round onto its support's boundary: every
+#: probe but :math:`\\theta = 0` and :math:`\\pm 3 \\mathbf 1`. A random
+#: direction of norm 10 already underflows :math:`\\exp(m + \\tau z)`.
+_OUTER_PROBE = 3.0
+
 
 def _same_label(label: Any, wanted: Any) -> bool:
     """Whether dim label *label* is *wanted*: strings match strings, and
@@ -1806,7 +1819,7 @@ def check_derived_parameter_fits_the_vector(
     check_derived_parameter_has_its_value_shape(derived, parameter_vector)
     if derived.support is not None:
         check_derived_parameter_lies_in_its_support(derived, parameter_vector)
-    if derived.pointwise and derived.dim is not None:
+    if derived.pointwise:
         check_derived_parameter_is_pointwise(derived, parameter_vector)
 
 
@@ -1875,10 +1888,17 @@ def check_derived_parameter_lies_in_its_support(
     derived: DerivedParameter, parameter_vector: ParameterVector
 ) -> None:
     """A derived parameter's values at the probe points lie in the support it
-    declares, which the SIPNET map would otherwise trust in its bounds check."""
-    natural_values = parameter_vector._parameters_at(_derived_probe_theta(parameter_vector, derived))
-    values = parameter_vector.derived_values(natural_values, derived_parameter_names=[derived.name])
-    if not bool(jnp.all(_lies_in_the_support_or_overflows(derived.support, values[derived.name]))):
+    declares, which the SIPNET map would otherwise trust in its bounds check;
+    its closure, or infinity at an unbounded end, only at the outer probes,
+    where float64 underflows and overflows."""
+    theta = _derived_probe_theta(parameter_vector, derived)
+    natural_values = parameter_vector._parameters_at(theta)
+    values = parameter_vector.derived_values(natural_values, derived_parameter_names=[derived.name])[derived.name]
+    n_probes = len(theta)
+    inside = derived.support.contains(values).reshape((n_probes, -1)).all(axis=-1)
+    lenient = _lies_in_the_support_or_overflows(derived.support, values).reshape((n_probes, -1)).all(axis=-1)
+    outer = np.abs(theta).max(axis=-1) > _OUTER_PROBE
+    if not bool(jnp.all(jnp.where(outer, lenient, inside))):
         raise ValueError(
             f"derived parameter {derived.name!r} takes values outside its declared support "
             f"{derived.support.name!r} at the probe points; declare the support its values have, "
@@ -1888,9 +1908,19 @@ def check_derived_parameter_lies_in_its_support(
 
 def check_derived_parameter_is_pointwise(derived: DerivedParameter, parameter_vector: ParameterVector) -> None:
     """A derived parameter declared pointwise changes at one dim label only
-    when its inputs on the same dim change there, as selection and
-    localization assume."""
-    natural_values = parameter_vector._parameters_at(np.zeros(parameter_vector.dimension))
+    when its inputs on the same dim change there, and one without a dim reads
+    no input with one, as selection and localization assume."""
+    if derived.dim is None:
+        dimensioned = [n for n in derived.derived_from if parameter_vector._piece(n).dim is not None]
+        if dimensioned:
+            raise ValueError(
+                f"derived parameter {derived.name!r} has no dim but is computed from {dimensioned}, "
+                "which have one, so its value depends on every dim label present; declare it "
+                "pointwise=False."
+            )
+        return
+    theta = np.random.default_rng(_POINTWISE_SEED).standard_normal(parameter_vector.dimension)
+    natural_values = parameter_vector._parameters_at(theta)
     natural_values |= parameter_vector.derived_values(
         natural_values, derived_parameter_names=[derived.name]
     )
@@ -1899,14 +1929,16 @@ def check_derived_parameter_is_pointwise(derived: DerivedParameter, parameter_ve
         if parameter_vector._piece(name).dim != derived.dim:
             continue
         value = jnp.asarray(natural_values[name])
-        nudged = {**natural_values, name: value.at[0].add(0.5 * (1.0 + jnp.abs(value[0])))}
-        after = np.asarray(parameter_vector._computed(derived, nudged))
-        if not np.allclose(after[1:], before[1:], rtol=1e-12, atol=0.0, equal_nan=True):
-            raise ValueError(
-                f"derived parameter {derived.name!r} is declared pointwise, but changing {name!r} "
-                f"at one {derived.dim} dim label changes its value at others; declare it "
-                "pointwise=False."
-            )
+        for label in sorted({0, len(value) - 1}):
+            nudged = {**natural_values, name: value.at[label].add(0.5 * (1.0 + jnp.abs(value[label])))}
+            after = np.asarray(parameter_vector._computed(derived, nudged))
+            others = np.arange(len(before)) != label
+            if not np.allclose(after[others], before[others], rtol=1e-12, atol=0.0, equal_nan=True):
+                raise ValueError(
+                    f"derived parameter {derived.name!r} is declared pointwise, but changing "
+                    f"{name!r} at one {derived.dim} dim label changes its value at others; declare "
+                    "it pointwise=False."
+                )
 
 
 def check_simplex_has_two_natural_names(parameter: Parameter | DerivedParameter) -> None:

@@ -942,3 +942,40 @@ def test_a_dim_label_whose_sites_carry_none_of_the_other_dim_does_not_nest(poole
     table["pft"] = table["pft"].cat.add_categories(["unused"])
     with pytest.raises(ValueError, match="dim label 'unused' carry 0 biome dim labels"):
         dim_label_positions(table, "pft", "biome")
+
+
+def test_a_derived_parameter_reading_its_last_dim_label_is_not_pointwise():
+    def against_the_last(dim_index, site_table, mean, spread, standardized):
+        return standardized - standardized[-1]
+
+    with pytest.raises(ValueError, match="declare it pointwise=False"):
+        pooled_vector(compute=against_the_last)
+
+
+def test_a_derived_parameter_without_a_dim_reading_one_with_a_dim_is_not_pointwise():
+    def site_mean(dim_index, site_table, standardized):
+        return standardized.mean()
+
+    parameters = [Parameter(name="standardized", support=REAL, units=None, dim="site")]
+    derived = {"name": "site_mean", "units": None, "derived_from": ("standardized",), "compute": site_mean}
+    with pytest.raises(ValueError, match="has no dim but is computed from \\['standardized'\\]"):
+        ParameterVector(parameters=parameters, derived_parameters=[DerivedParameter(**derived)],
+                        site_table=site_table())
+    vector = ParameterVector(parameters=parameters, site_table=site_table(),
+                             derived_parameters=[DerivedParameter(**derived, pointwise=False)])
+    assert vector.to_natural(jnp.asarray([1.0, 2.0, 3.0]))["site_mean"] == 2.0
+
+
+def test_the_boundary_passes_only_at_the_outer_probes():
+    def rectified(dim_index, site_table, mean, spread, standardized):
+        return jax.nn.relu(standardized)
+
+    # relu is 0, the positive line's boundary, at theta = 0.
+    with pytest.raises(ValueError, match="outside its declared support"):
+        pooled_vector(support=POSITIVE, compute=rectified)
+    # exp underflows to 0 only at the outer probes, which is float64, not the support.
+    underflowing = pooled_vector(
+        support=POSITIVE,
+        compute=lambda dim_index, site_table, mean, spread, standardized: jnp.exp(100.0 * standardized),
+    )
+    assert float(underflowing.to_natural(jnp.full(underflowing.dimension, -20.0))["soil_carbon"][0]) == 0.0
