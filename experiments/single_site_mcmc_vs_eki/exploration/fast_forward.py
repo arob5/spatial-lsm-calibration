@@ -22,18 +22,20 @@ Functions
     One run's fast predictions against the library's.
 """
 
-import os
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from pysipnet.units import conversion_factor
 
-import config
-import runs
-from sipnet_calibration.conventions import TIME, WINDOW_END, WINDOW_START
+from sipnet_calibration.conventions import SITE, TIME, WINDOW_END, WINDOW_START
+from sipnet_calibration.fields import to_model_output
 from sipnet_calibration.observation import ObservationVector
+
+from .. import config
+from ..model import inputs, sipnet
 
 __all__ = [
     "ANNUAL_SUMMARY_NAMES",
@@ -167,10 +169,6 @@ def run_batch(
     that fails carries its error and NaN predictions.
     """
     n_workers = n_workers or config.N_WORKERS
-    # The workers are fresh processes: they find this directory's modules by
-    # the environment, not by the caller's sys.path.
-    paths = [str(config.EXPERIMENT_DIRECTORY), os.environ.get("PYTHONPATH", "")]
-    os.environ["PYTHONPATH"] = os.pathsep.join(p for p in paths if p)
     with ProcessPoolExecutor(n_workers, initializer=_start_worker) as pool:
         return list(
             pool.map(_run_one, overrides_batch, [predictor] * len(overrides_batch))
@@ -181,12 +179,6 @@ def check_fast_predictions(
     vector: ObservationVector, sipnet_result, overrides: dict, predictor: FastPredictor
 ) -> float:
     """The largest absolute difference between the fast and the library predictions."""
-    from sipnet_calibration.conventions import SITE
-    import xarray as xr
-
-    import inputs
-    from sipnet_calibration.fields import to_model_output
-
     model_output = to_model_output(
         sipnet_result,
         output_variable_names=list(vector.output_variable_names),
@@ -220,7 +212,7 @@ def _start_worker() -> None:
 
     warnings.filterwarnings("ignore")
     global _MODEL
-    _MODEL = runs.sipnet_model()
+    _MODEL = sipnet.sipnet_model()
 
 
 def _run_one(overrides: dict, predictor: FastPredictor | None) -> dict:

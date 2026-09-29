@@ -31,8 +31,6 @@ from pysipnet.model import SIPNETModel
 from pysipnet.parameters.model import SIPNETParameters
 from pysipnet.runner import SIPNETRunner
 
-import config
-import inputs
 from sipnet_calibration.forward import ForwardModel
 from sipnet_calibration.observation import ObservationVector
 from sipnet_calibration.parameter_vector import ParameterVector
@@ -40,6 +38,9 @@ from sipnet_calibration.sipnet_parameter_map import (
     INITIAL_STATE_NAMES,
     SIPNETParameterMap,
 )
+
+from .. import config
+from . import inputs
 
 __all__ = [
     "base_sipnet_parameters",
@@ -96,7 +97,8 @@ def climate_drivers() -> ClimateDrivers:
     """The prepared driver file, opened without reading it.
 
     File-backed, as the forward model requires under a parallel backend; the
-    labels are validated at the first read. Run ``prepare_drivers.py`` first.
+    labels are validated at the first read. Run ``scripts/prepare_drivers.py``
+    first.
     """
     directory = (
         config.PREPARED_DRIVERS_ROOT
@@ -111,8 +113,8 @@ def initial_state() -> xr.Dataset:
 
     External inputs on ``site`` alone, in the processed file's units, under
     the names ``ComputeInitialConditions`` reads them by. Each state's median
-    is taken separately, so they need not be one member's; a stand-in until
-    step 4 decides which initial conditions are calibrated.
+    is taken separately, so they need not be one member's. The calibration
+    reads the states it does not calibrate from here (``prior.external_inputs``).
     """
     fields = inputs.initial_condition_fields()
     return xr.Dataset(

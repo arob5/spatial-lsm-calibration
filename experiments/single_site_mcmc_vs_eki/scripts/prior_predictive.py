@@ -1,36 +1,33 @@
-"""Step 3's forward check: SIPNET run once, and as an ensemble, against the observations.
+"""The prior predictive: SIPNET run once, and as an ensemble, against the observations.
 
 Overview
 --------
-Runs a calibration's prior two ways, the calibration's own
-(``calibration_prior.py``, the default) or step 3's stand-in
-(``stand_in_calibration.py``), and writes what came back, for ``plots.py``
-to draw:
+Runs the calibration's prior (``model/prior.py``) two ways and writes what
+came back, for ``figures/prior_predictive.py`` to draw:
 
-1. **One run, by hand**, at the center of the prior, through pySIPNET
-   directly. It shows the layers the forward model composes: theta to SIPNET
-   parameter fields (the SIPNET parameter map), fields to a run's keywords
-   (SIPNET overrides), one ``SIPNETModel`` call, the run's output as model
-   output, and the observation vector's operators on it.
-2. **An ensemble**, ``config.FORWARD_CHECK_ENSEMBLE_SIZE`` draws of the
+1. **One run, by hand**, at the prior mean, through pySIPNET directly. It
+   shows the layers the forward model composes: theta to SIPNET parameter
+   fields (the SIPNET parameter map), fields to a run's keywords (SIPNET
+   overrides), one ``SIPNETModel`` call, the run's output as model output,
+   and the observation vector's operators on it.
+2. **An ensemble**, ``config.PRIOR_PREDICTIVE_ENSEMBLE_SIZE`` draws of the
    prior, through :class:`~sipnet_calibration.forward.ForwardModel` and
    PyEns on local workers: once for the predictions of the calibration and
    validation observations, once for daily model output.
 
-Every run is scored under the calibration's likelihood (``noise.py``).
+Every run is scored under the calibration's likelihood (``model/noise.py``).
 
 Input data
 ----------
-The prepared driver file (``prepare_drivers.py``), the processed files
-``inputs.py`` reads, and ``config``.
+The prepared driver file (``scripts/prepare_drivers.py``), the processed
+files ``model/inputs.py`` reads, and ``config``.
 
 Output data
 -----------
-Under ``config.FORWARD_CHECK_DIRECTORY / <calibration>``, ``prior`` or
-``stand_in``:
+Under ``config.PRIOR_PREDICTIVE_DIRECTORY``:
 
 - ``single_run_daily.nc``, ``ensemble_daily.nc``: the model output variables
-  of ``config.FORWARD_CHECK_OUTPUT_VARIABLE_NAMES``, aggregated to days by
+  of ``config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES``, aggregated to days by
   each variable's kind, on ``(site, time)`` and ``(sample, site, time)``;
 - ``predictions/<run>/<vector>/<observation source>.nc``, ``<run>`` being
   ``single_run`` or ``ensemble`` and ``<vector>`` ``calibration`` or
@@ -41,20 +38,17 @@ Under ``config.FORWARD_CHECK_DIRECTORY / <calibration>``, ``prior`` or
   the diagonal of its noise covariance block;
 - ``parameters.csv``: theta's natural values, one row per run
   (``single_run`` first, then the samples), with each run's log likelihood;
-- ``calibration.csv``: ``describe_calibration`` of the stand-in, the record
-  of what was run.
-
-Notes
------
-The stand-in's base parameters are a conifer's and its priors are
-placeholders, so the fit is not the point: that the pieces compose, and how
-the model sits against the data, is.
+- ``calibration.csv``: ``describe_calibration`` of the calibration, the
+  record of what was run;
+- ``provenance.json``: the code, packages, command and inputs of the run
+  (``scripts/provenance.py``).
 
 Usage
 -----
-    uv run python experiments/single_site_mcmc_vs_eki/forward_check.py
-    uv run python experiments/single_site_mcmc_vs_eki/forward_check.py --calibration stand_in
-    uv run python experiments/single_site_mcmc_vs_eki/forward_check.py --ensemble-size 200
+From the repository root::
+
+    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prior_predictive
+    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prior_predictive --ensemble-size 32
 """
 
 import argparse
@@ -65,18 +59,14 @@ import jax
 import numpy as np
 import xarray as xr
 
-import config
-import inputs
-import noise
-import observations
-import runs
-import calibration_prior
-import stand_in_calibration
 from sipnet_calibration.calibration import describe_calibration
 from sipnet_calibration.conventions import SITE
 from sipnet_calibration.fields import to_model_output
 from sipnet_calibration.observation import aggregate_time
-from sipnet_calibration.site_labels import load_site_labels
+
+from .. import config
+from ..model import inputs, noise, observations, prior, sipnet
+from . import provenance
 
 __all__ = ["main"]
 
@@ -85,25 +75,26 @@ __all__ = ["main"]
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the forward check of one calibration and write its outputs."""
+    """Run the prior predictive and write its outputs."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
     arguments = _parser().parse_args(argv)
-    vector, prior, sipnet_map, external_inputs = CALIBRATIONS[arguments.calibration]()
+    vector, calibration_prior, sipnet_map = prior.calibration()
+    external_inputs = prior.external_inputs()
     calibration = observations.calibration_observation_vector()
     validation = observations.validation_observation_vector()
-    directory = config.FORWARD_CHECK_DIRECTORY / arguments.calibration
+    directory = config.PRIOR_PREDICTIVE_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
-    describe_calibration(vector, prior, sipnet_map).to_csv(
+    describe_calibration(vector, calibration_prior, sipnet_map).to_csv(
         directory / "calibration.csv"
     )
 
-    center = np.asarray(prior.gaussian().mean)
+    center = np.asarray(calibration_prior.gaussian().mean)
     single = run_once_by_hand(
         vector, sipnet_map, center, calibration, validation, external_inputs
     )
     print("one run by hand: done")
-    samples = prior.sample(
-        jax.random.key(config.FORWARD_CHECK_SEED), arguments.ensemble_size
+    samples = calibration_prior.sample(
+        jax.random.key(config.PRIOR_PREDICTIVE_SEED), arguments.ensemble_size
     )
     ensemble = run_ensemble(
         vector, sipnet_map, samples, calibration, validation, external_inputs
@@ -116,6 +107,9 @@ def main(argv: list[str] | None = None) -> int:
     write_observations(
         directory, {"calibration": calibration, "validation": validation}
     )
+    provenance.write_provenance(
+        directory / "provenance.json", input_files=provenance.model_input_files()
+    )
     print(f"wrote {directory}")
     return 0
 
@@ -127,10 +121,9 @@ def run_once_by_hand(
     vector, sipnet_map, theta, calibration, validation, external_inputs
 ) -> dict:
     """One run at *theta*, through each layer the forward model composes."""
-    initial = external_inputs
     # The map: theta and the external inputs to SIPNET parameter fields.
     sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(
-        vector, theta, external_inputs=initial
+        vector, theta, external_inputs=external_inputs
     )
     # One run's keywords: each field's value at the site.
     sipnet_overrides = {
@@ -138,9 +131,9 @@ def run_once_by_hand(
         for name in sipnet_parameter_fields.data_vars
     }
     # One SIPNET run, and its output as model output.
-    sipnet_result = runs.sipnet_model()(**sipnet_overrides)
+    sipnet_result = sipnet.sipnet_model()(**sipnet_overrides)
     output_variable_names = sorted(
-        set(config.FORWARD_CHECK_OUTPUT_VARIABLE_NAMES)
+        set(config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES)
         | set(calibration.output_variable_names)
     )
     model_output = to_model_output(
@@ -172,7 +165,7 @@ def run_once_by_hand(
     daily = xr.Dataset(
         {
             name: aggregate_time(model_output[name], "1D")
-            for name in config.FORWARD_CHECK_OUTPUT_VARIABLE_NAMES
+            for name in config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES
         }
     )
     return {
@@ -191,7 +184,7 @@ def run_ensemble(
         ("calibration", calibration),
         ("validation", validation),
     ):
-        evaluation = runs.forward_model(
+        evaluation = sipnet.forward_model(
             vector,
             sipnet_map,
             observation_vector=observation_vector,
@@ -202,10 +195,10 @@ def run_ensemble(
         if label == "calibration":
             likelihood = noise.calibration_likelihood(calibration)
             log_likelihood = np.asarray(likelihood.log_density(evaluation.predictions))
-    daily = runs.forward_model(
+    daily = sipnet.forward_model(
         vector,
         sipnet_map,
-        output_variable_names=config.FORWARD_CHECK_OUTPUT_VARIABLE_NAMES,
+        output_variable_names=config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES,
         freq="1D",
         external_inputs=external_inputs,
     ).evaluate(samples)
@@ -256,32 +249,11 @@ def write_observations(directory, vectors) -> None:
 # ── helpers ──
 
 
-def _stand_in():
-    """The step-3 stand-in calibration, with the site's whole initial state."""
-    labels = load_site_labels(stand_in_calibration.SITE_LABELS_NAME)
-    site_label = labels.loc[labels["site_id"] == config.SITE, "label"]
-    return (
-        *stand_in_calibration.stand_in_calibration(inputs.site_table(), site_label),
-        runs.initial_state(),
-    )
-
-
-def _prior():
-    """The calibration's parameterization and prior, with its external inputs."""
-    return (*calibration_prior.calibration(), calibration_prior.external_inputs())
-
-
-#: The calibrations the forward check can run, by the name its output is
-#: written under: the calibration's prior, or step 3's stand-in.
-CALIBRATIONS = {"prior": _prior, "stand_in": _stand_in}
-
-
 def _parser() -> argparse.ArgumentParser:
-    """The command line: which calibration to run."""
+    """The command line: the ensemble's size."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--calibration", choices=CALIBRATIONS, default="prior")
     parser.add_argument(
-        "--ensemble-size", type=int, default=config.FORWARD_CHECK_ENSEMBLE_SIZE
+        "--ensemble-size", type=int, default=config.PRIOR_PREDICTIVE_ENSEMBLE_SIZE
     )
     return parser
 

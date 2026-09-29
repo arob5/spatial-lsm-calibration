@@ -15,13 +15,13 @@ Sections, in order:
 - **the observations**: the NEE series and how they are windowed, the pool
   constraints, the data sources left out, and the operator that predicts each
   observation source;
-- **step 3, the forward check**: the stand-in ensemble's size and seed, and
-  what it writes;
+- **the prior predictive**: the ensemble's size and seed, and what it
+  writes;
 - **the noise model**: the measurement-error floors and the model-discrepancy
   terms of the noise covariance.
 
-The base SIPNET parameters are a stand-in until step 4, which adds the
-parameterization and the priors; the algorithm settings come after.
+The parameterization and the prior are ``model/prior.py``'s; the algorithm
+settings come after.
 """
 
 import os
@@ -33,9 +33,10 @@ from pysipnet import niwot_reference_files
 from pysipnet.parameters.model import ModelFlags
 from pysipnet.runner import ClimateStaging
 
-from operators import AverageRateOverWindows, ComputeAbovegroundBiomass
 from sipnet_calibration.conventions import data_root
 from sipnet_calibration.observation import DEFAULT_OBS_OPS, ReduceOverRun
+
+from .model.operators import AverageRateOverWindows, ComputeAbovegroundBiomass
 
 __all__ = [
     "BASE_SIPNET_PARAMETER_FILE",
@@ -48,10 +49,6 @@ __all__ = [
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
     "FIGURE_DIRECTORY",
-    "FORWARD_CHECK_DIRECTORY",
-    "FORWARD_CHECK_ENSEMBLE_SIZE",
-    "FORWARD_CHECK_OUTPUT_VARIABLE_NAMES",
-    "FORWARD_CHECK_SEED",
     "LAI_DISCREPANCY_STANDARD_DEVIATION",
     "LAI_DISCREPANCY_TIMESCALE",
     "LAI_STANDARD_DEVIATION_FLOOR",
@@ -66,6 +63,10 @@ __all__ = [
     "OBSERVATION_OPERATORS",
     "OUTPUT_DIRECTORY",
     "PREPARED_DRIVERS_ROOT",
+    "PRIOR_PREDICTIVE_DIRECTORY",
+    "PRIOR_PREDICTIVE_ENSEMBLE_SIZE",
+    "PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES",
+    "PRIOR_PREDICTIVE_SEED",
     "RAW_DRIVERS_ROOT",
     "SIPNET_TIMEOUT",
     "SITE",
@@ -96,8 +97,8 @@ OUTPUT_DIRECTORY = EXPERIMENT_DIRECTORY / "output"
 RAW_DRIVERS_ROOT = data_root() / "raw" / "drivers"
 
 #: The driver file the runs read: the raw file of :data:`SITE` and
-#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``prepare_drivers.py``, laid out
-#: as the raw ones.
+#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``scripts/prepare_drivers.py``,
+#: laid out as the raw ones.
 PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"
 
 # ── the drivers ──
@@ -108,14 +109,15 @@ PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"
 DRIVER_SOURCE_INDEX = 1
 
 #: The clock the prepared driver file's labels are on, declared to pySIPNET.
-#: ``prepare_drivers.py`` relabels each row with the UTC start of the step its
-#: values describe, so the model's time axis is UTC, the observed NEE's clock.
+#: ``scripts/prepare_drivers.py`` relabels each row with the UTC start of the
+#: step its values describe, so the model's time axis is UTC, the observed
+#: NEE's clock.
 DRIVER_TIME_ZONE = "UTC"
 
 #: The timescale of the exponential filter of air temperature that
-#: ``prepare_drivers.py`` computes soil temperature with. It is PEcAn's
-#: ``met2model.SIPNET`` choice; there the filter averages the following weeks,
-#: here the preceding ones.
+#: ``scripts/prepare_drivers.py`` computes soil temperature with. It is
+#: PEcAn's ``met2model.SIPNET`` choice; there the filter averages the
+#: following weeks, here the preceding ones.
 SOIL_TEMPERATURE_TIMESCALE = timedelta(days=15)
 
 # ── the model ──
@@ -130,10 +132,10 @@ MODEL_FLAGS = ModelFlags.standard()
 
 #: The base SIPNET parameter set: the value of every SIPNET parameter a
 #: calibration's map leaves unset. pySIPNET's Niwot Ridge reference parameters,
-#: a subalpine conifer forest, the only complete set on hand. Only the step-3
-#: stand-in calibration reads it: the calibration's map
-#: (calibration_prior.py) sets every SIPNET parameter, its fixed ones from the
-#: temperate deciduous values of fixed_sipnet_parameters.csv.
+#: a subalpine conifer forest, the only complete set on hand. The calibration's
+#: map (``model/prior.py``) sets every SIPNET parameter, its fixed ones from
+#: the temperate deciduous values of ``model/fixed_sipnet_parameters.csv``, so
+#: no value of this set reaches a calibrated run.
 BASE_SIPNET_PARAMETER_FILE = niwot_reference_files().param
 
 # ── running SIPNET ──
@@ -272,28 +274,28 @@ OBSERVATION_OPERATORS = frozendict(
     }
 )
 
-# ── step 3: the forward check ──
+# ── the prior predictive ──
 #
-# One SIPNET run and one small ensemble through the stand-in calibration
-# (stand_in_calibration.py), to see the pieces work together and the model
-# against the data; forward_check.py runs them and plots.py draws them.
+# The prior mean's run and an ensemble of prior draws, the model against the
+# data before calibration; scripts/prior_predictive.py runs them and
+# figures/prior_predictive.py draws them.
 
-#: Where the forward check writes its runs.
-FORWARD_CHECK_DIRECTORY = OUTPUT_DIRECTORY / "forward_check"
+#: Where the prior predictive writes its runs.
+PRIOR_PREDICTIVE_DIRECTORY = OUTPUT_DIRECTORY / "prior_predictive"
 
 #: Where the figures go.
 FIGURE_DIRECTORY = OUTPUT_DIRECTORY / "figures"
 
-#: How many draws of the stand-in prior the ensemble runs.
-FORWARD_CHECK_ENSEMBLE_SIZE = 32
+#: How many prior draws the ensemble runs.
+PRIOR_PREDICTIVE_ENSEMBLE_SIZE = 200
 
 #: The seed of the ensemble's prior draws.
-FORWARD_CHECK_SEED = 20260929
+PRIOR_PREDICTIVE_SEED = 20260929
 
-#: The model output variables the forward check keeps as daily trajectories,
+#: The model output variables the prior predictive keeps as daily trajectories,
 #: for the figures: what the observation operators read, and the fluxes and
 #: pools behind them.
-FORWARD_CHECK_OUTPUT_VARIABLE_NAMES = (
+PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
     "net_ecosystem_exchange",
     "gross_primary_production",
     "ecosystem_respiration",
@@ -306,7 +308,7 @@ FORWARD_CHECK_OUTPUT_VARIABLE_NAMES = (
 #
 # The covariance R of the observation errors, block-diagonal over the
 # observation sources, each block measurement error plus model discrepancy;
-# README.md, "Noise model", states it exactly and noise.py builds it. The
+# MODEL.md, "Noise model", states it exactly and model/noise.py builds it. The
 # discrepancy terms carry most of the weight: they set how much each source
 # constrains the calibration. The timescales are those of the exponential
 # correlation exp(-|t - t'| / tau).

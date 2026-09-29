@@ -26,7 +26,9 @@ soil-wetness columns are ignored by SIPNET and dropped). It is named
 ``ERA5.<member>.<first day>.<last day>.clim`` for the days its first and last
 steps start on, which the shift of correction 2 moves back by three hours, so
 ``drivers.load_drivers(root=PREPARED_DRIVERS_ROOT)`` reads it as it reads a
-raw root. Its labels are declared UTC (``config.DRIVER_TIME_ZONE``).
+raw root. Its labels are declared UTC (``config.DRIVER_TIME_ZONE``). Beside
+it, ``provenance.json`` records the code, packages, command and raw file it
+was made from (``scripts/provenance.py``).
 
 Notes
 -----
@@ -115,7 +117,9 @@ first.
 
 Usage
 -----
-    uv run python experiments/single_site_mcmc_vs_eki/prepare_drivers.py
+From the repository root::
+
+    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prepare_drivers
 """
 
 import sys
@@ -126,10 +130,12 @@ import pandas as pd
 import xarray as xr
 from pysipnet.climate import CLIMATE_COLUMNS, ClimateDrivers
 
-import config
 from sipnet_calibration import drivers
 from sipnet_calibration.conventions import TIME, TIMESTEP_START
 from sipnet_calibration.io import write_checked
+
+from .. import config
+from . import provenance
 
 #: The raw files' 14 columns, in the legacy layout's order: pySIPNET's
 #: climate columns between a site identifier and a soil-wetness value, both
@@ -181,6 +187,9 @@ def main() -> int:
         prepared = corrected_drivers(raw, validity_times)
         prepared_path = prepared_driver_path(raw_path, prepared)
         write_prepared_driver_file(prepared_path, prepared, raw, validity_times)
+        provenance.write_provenance(
+            prepared_path.parent / "provenance.json", input_files=[raw_path]
+        )
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

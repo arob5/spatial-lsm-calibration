@@ -35,22 +35,16 @@ Usage
 -----
 ::
 
-    uv run python experiments/single_site_mcmc_vs_eki/observations.py
-
-    import observations
+    from experiments.single_site_mcmc_vs_eki.model import observations
     calibration = observations.calibration_observation_vector()
     calibration.describe()
     calibration.y                         # Flat observations, site-major
 """
 
-import sys
-
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-import config
-import inputs
 from sipnet_calibration import net_ecosystem_exchange as nee
 from sipnet_calibration.conventions import (
     TIME,
@@ -60,6 +54,9 @@ from sipnet_calibration.conventions import (
 )
 from sipnet_calibration.observation import ObservationSource, ObservationVector
 from sipnet_calibration.observation.time_alignment import reduce_windows
+
+from .. import config
+from . import inputs
 
 __all__ = [
     "calibration_observation_vector",
@@ -192,32 +189,6 @@ def observed_soil_carbon() -> xr.DataArray:
     return inputs.constraint_fields()["soilgrids_soil_organic_carbon"]
 
 
-# ── entry point ──
-
-
-def main() -> int:
-    """Build both observation vectors and print what they hold."""
-    try:
-        calibration = calibration_observation_vector()
-        validation = validation_observation_vector()
-    except (FileNotFoundError, KeyError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-    with pd.option_context("display.width", 200, "display.max_columns", 20):
-        print(f"calibration: {calibration!r}")
-        print(calibration.describe().to_string())
-        print(f"\nvalidation: {validation!r}")
-        print(validation.describe().to_string())
-        print("\nNEE windows kept, as a fraction of the period's windows, by month")
-        for label, vector, period in (
-            ("calibration", calibration, config.CALIBRATION_NEE_PERIOD),
-            ("validation", validation, config.VALIDATION_NEE_PERIOD),
-        ):
-            for name in config.NEE_WINDOWS:
-                print(f"  {label} {name}: {_kept_by_month(vector[name], period)}")
-    return 0
-
-
 # ── helpers ──
 
 
@@ -269,18 +240,6 @@ def _with_windows(field: xr.DataArray, windows: pd.IntervalIndex) -> xr.DataArra
     )
 
 
-def _kept_by_month(source: ObservationSource, period: tuple[int, int]) -> list[float]:
-    """The fraction of each month's windows in *period* the source keeps."""
-    kept = pd.DatetimeIndex(source.observed_values[WINDOW_START].values)
-    first, last = period
-    days = pd.date_range(f"{first}-01-01", f"{last}-12-31", freq="D")
-    kept_counts = pd.Series(kept.month).value_counts()
-    all_counts = pd.Series(days.month).value_counts()
-    return [
-        round(float(kept_counts.get(m, 0) / all_counts[m]), 2) for m in range(1, 13)
-    ]
-
-
 # ── checks ──
 
 
@@ -295,7 +254,3 @@ def check_windows_are_inside_the_run(
             f"{observation_source_name}: the window {first} is not inside the "
             f"run's record {record}; shorten the period to the drivers' record"
         )
-
-
-if __name__ == "__main__":
-    sys.exit(main())

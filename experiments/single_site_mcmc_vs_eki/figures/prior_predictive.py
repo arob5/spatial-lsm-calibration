@@ -1,29 +1,42 @@
-"""Step 5: the prior predictive figures, sized for slides.
+"""The prior predictive's figures.
 
-Reads what ``forward_check.py --calibration prior`` wrote (run it with
-``--ensemble-size 200`` for these figures) and draws, into
-``config.FIGURE_DIRECTORY``:
+Reads what ``scripts/prior_predictive.py`` wrote and draws it through
+:mod:`sipnet_calibration.plotting`; nothing here runs a model. Run as a
+script, it draws every figure into ``config.FIGURE_DIRECTORY``.
 
-- ``prior_marginals``: each calibrated parameter's prior, as the draws the
-  ensemble ran;
-- ``prior_predictive_nee_seasonal``: NEE's seasonal cycle, observed against the
-  prior predictive, both averaged by week of year over the same windows the
-  likelihood reads;
-- ``prior_predictive_nee_annual``: annual NEE, the prior predictive against both
-  towers' annual totals;
-- ``prior_predictive_coverage``: per observation source, the fraction of
-  observations inside the prior predictive's 50% and 90% intervals, noise
-  included.
+The time series and pools, against the observations:
 
-``plots.py --calibration prior`` draws the time series and pool figures from
-the same run.
+- :func:`plot_nee_windows` (``prior_predictive_nee``): the two NEE sources,
+  observed against the one run and the ensemble, over the whole record and
+  over one year;
+- :func:`plot_pool_observations` (``prior_predictive_pools``): leaf area
+  index, biomass and soil carbon, observed against the same;
+- :func:`plot_daily_trajectories` (``prior_predictive_trajectories``): the
+  fluxes and pools behind them, day by day.
+
+In these the ensemble is the prior's draws (role ``prior``: a median and 50%
+and 90% bands), the one run is at the prior mean (a solid line), and
+observations are black points with error bars of the noise model's total
+standard deviation; the held-out tower's are hollow.
+
+The summaries, sized for slides (:data:`SLIDE_STYLE`):
+
+- :func:`plot_prior_marginals` (``prior_marginals``): each calibrated
+  parameter's prior, as the draws the ensemble ran;
+- :func:`plot_nee_seasonal_cycle` (``prior_predictive_nee_seasonal``): NEE's
+  seasonal cycle, observed against the prior predictive, both averaged by
+  week of year over the windows the likelihood reads;
+- :func:`plot_nee_annual` (``prior_predictive_nee_annual``): annual NEE, the
+  prior predictive against both towers' annual totals;
+- :func:`plot_coverage` (``prior_predictive_coverage``): per observation
+  source, the fraction of observations inside the prior predictive's 50% and
+  90% intervals, noise included.
 
 Usage
 -----
-::
+From the repository root::
 
-    uv run python experiments/single_site_mcmc_vs_eki/forward_check.py --ensemble-size 200
-    uv run python experiments/single_site_mcmc_vs_eki/talk_figures.py
+    uv run python -m experiments.single_site_mcmc_vs_eki.figures.prior_predictive
 """
 
 import sys
@@ -32,19 +45,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-import config
-import inputs
-import plots
 from sipnet_calibration.conventions import SAMPLE, TIME, TIMESTEP_LENGTH, TIMESTEP_START
 from sipnet_calibration.observation import aggregate_time
+from sipnet_calibration.plotting import plot_time_series
 from sipnet_calibration.plotting.style import role_style, use_project_style
 
+from .. import config
+from ..model import inputs
+from .common import NEE_TITLES, load_prior_predictive, one_legend
+
 __all__ = [
+    "SLIDE_STYLE",
     "plot_coverage",
+    "plot_daily_trajectories",
     "plot_nee_annual",
     "plot_nee_seasonal_cycle",
+    "plot_nee_windows",
+    "plot_pool_observations",
     "plot_prior_marginals",
 ]
+
+#: The legend entries of the three things every time series panel shows.
+ENSEMBLE_LABEL = "ensemble (prior draws)"
+SINGLE_RUN_LABEL = "one run (prior center)"
+OBSERVED_LABEL = "observed (US-Ha1, constraints)"
+HELD_OUT_LABEL = "held out (US-xHA)"
 
 #: Font sizes for slides.
 SLIDE_STYLE = {
@@ -89,6 +114,74 @@ _SOURCE_LABELS = {
 }
 
 
+def plot_nee_windows(outputs: dict, *, zoom_year: int = 2015) -> plt.Figure:
+    """Both NEE sources: the whole record (left) and one year with error bars (right)."""
+    figure, axes = plt.subplots(
+        len(config.NEE_WINDOWS), 2, figsize=(12, 6), width_ratios=(2.2, 1), sharey="row"
+    )
+    for row, name in enumerate(config.NEE_WINDOWS):
+        whole, year = axes[row]
+        for vector in ("calibration", "validation"):
+            _draw_predictions(whole, outputs, vector, name)
+            _draw_observed(whole, outputs, vector, name, error_bars=False)
+        _draw_predictions(year, outputs, "calibration", name)
+        _draw_observed(year, outputs, "calibration", name, error_bars=True)
+        year.set_xlim(
+            np.datetime64(f"{zoom_year}-01-01"), np.datetime64(f"{zoom_year + 1}-01-01")
+        )
+        whole.set_title(NEE_TITLES[name])
+        year.set_title(f"{NEE_TITLES[name]}, {zoom_year}")
+        for ax in (whole, year):
+            ax.axhline(0.0, color="#999999", linewidth=0.6, zorder=0)
+            ax.set_xlabel("")
+        whole.set_ylabel("NEE (umol m-2 s-1 CO2)")
+        year.set_ylabel("")
+    one_legend(figure, axes)
+    return figure
+
+
+def plot_pool_observations(outputs: dict) -> plt.Figure:
+    """Leaf area index, aboveground biomass and soil carbon, observed against the runs."""
+    figure, axes = plt.subplots(1, 3, figsize=(12, 3.4), width_ratios=(2, 1.2, 0.7))
+    for ax, name in zip(
+        axes[:2],
+        ("modis_leaf_area_index", "landtrendr_aboveground_biomass"),
+        strict=True,
+    ):
+        _draw_predictions(ax, outputs, "calibration", name)
+        _draw_observed(ax, outputs, "calibration", name, error_bars=True)
+        ax.set_xlabel("")
+    axes[0].set_title("MODIS leaf area index (June-August composites)")
+    axes[1].set_title("LandTrendr aboveground biomass (dry)")
+    _draw_static(axes[2], outputs, "soilgrids_soil_organic_carbon")
+    axes[2].set_title("SoilGrids soil carbon")
+    one_legend(figure, axes)
+    return figure
+
+
+def plot_daily_trajectories(outputs: dict) -> plt.Figure:
+    """The fluxes and pools behind the observations, as daily model output."""
+    names = config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES
+    figure, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
+    for ax, name in zip(axes.flat, names, strict=True):
+        plot_time_series(
+            outputs["daily"]["ensemble"][name],
+            ax=ax,
+            role="prior",
+            label=ENSEMBLE_LABEL,
+        )
+        plot_time_series(
+            outputs["daily"]["single_run"][name],
+            ax=ax,
+            role="posterior",
+            label=SINGLE_RUN_LABEL,
+        )
+        ax.set_title(name.replace("_", " "))
+        ax.set_xlabel("")
+    one_legend(figure, axes)
+    return figure
+
+
 def plot_prior_marginals(parameters: pd.DataFrame) -> plt.Figure:
     """A histogram of each calibrated parameter's prior draws."""
     names = [name for name in PARAMETER_TITLES if name in parameters]
@@ -114,12 +207,12 @@ def plot_prior_marginals(parameters: pd.DataFrame) -> plt.Figure:
     return figure
 
 
-def plot_nee_seasonal_cycle(check: dict) -> plt.Figure:
+def plot_nee_seasonal_cycle(outputs: dict) -> plt.Figure:
     """NEE by week of year, observed against the prior predictive, at the observed windows."""
     figure, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True)
     for ax, name in zip(axes, config.NEE_WINDOWS, strict=True):
-        observed = check["observed"]["calibration"][name]["value"]
-        predicted = check["predicted"]["ensemble"]["calibration"][name]
+        observed = outputs["observed"]["calibration"][name]["value"]
+        predicted = outputs["predicted"]["ensemble"]["calibration"][name]
         weeks = _week_of_year(observed[TIME])
         observed_weekly = pd.Series(observed.to_numpy()).groupby(weeks).mean()
         predicted_weekly = (
@@ -163,10 +256,10 @@ def plot_nee_seasonal_cycle(check: dict) -> plt.Figure:
             label="observed, US-Ha1 2012-2020",
         )
         ax.axhline(0.0, color="#999999", linewidth=0.6, zorder=0)
-        ax.set_title(plots.NEE_TITLES[name])
+        ax.set_title(NEE_TITLES[name])
         ax.set_xlabel("week of year")
     axes[0].set_ylabel("NEE (µmol CO₂ m⁻² s⁻¹), weekly mean")
-    plots._one_legend(figure, axes)
+    one_legend(figure, axes)
     figure.suptitle(
         "NEE's seasonal cycle, prior predictive against observed: weekly means over "
         "the observed windows"
@@ -174,9 +267,9 @@ def plot_nee_seasonal_cycle(check: dict) -> plt.Figure:
     return figure
 
 
-def plot_nee_annual(check: dict) -> plt.Figure:
+def plot_nee_annual(outputs: dict) -> plt.Figure:
     """Annual NEE per year: the prior predictive's spread against both towers' totals."""
-    daily = check["daily"]["ensemble"]["net_ecosystem_exchange"]
+    daily = outputs["daily"]["ensemble"]["net_ecosystem_exchange"]
     annual = aggregate_time(daily, "YS")
     # A cell is labeled with its end; its year is its first step's. The
     # record's first cell is the three hours before 2012 and is dropped; its
@@ -221,13 +314,13 @@ def plot_nee_annual(check: dict) -> plt.Figure:
     return figure
 
 
-def plot_coverage(check: dict) -> plt.Figure:
+def plot_coverage(outputs: dict) -> plt.Figure:
     """Per source, the fraction of observations inside the 50% and 90% predictive intervals."""
     rng = np.random.default_rng(0)
     rows = []
     for name, label in _SOURCE_LABELS.items():
-        observed = check["observed"]["calibration"][name]
-        predicted = check["predicted"]["ensemble"]["calibration"][name]
+        observed = outputs["observed"]["calibration"][name]
+        predicted = outputs["predicted"]["ensemble"]["calibration"][name]
         y = np.atleast_1d(observed["value"].to_numpy())
         sd = np.atleast_1d(observed["noise_standard_deviation"].to_numpy())
         samples = (
@@ -302,30 +395,116 @@ def plot_coverage(check: dict) -> plt.Figure:
 
 
 def main() -> int:
-    """Draw the step-5 figures from the prior's forward check."""
+    """Draw every figure of the prior predictive into ``config.FIGURE_DIRECTORY``."""
     use_project_style()
-    plt.rcParams.update(SLIDE_STYLE)
-    directory = config.FORWARD_CHECK_DIRECTORY / "prior"
+    directory = config.PRIOR_PREDICTIVE_DIRECTORY
     try:
-        check = plots.load_forward_check(directory)
+        outputs = load_prior_predictive(directory)
         parameters = pd.read_csv(directory / "parameters.csv", index_col=0)
     except FileNotFoundError as error:
-        print(f"error: {error}; run forward_check.py first", file=sys.stderr)
+        print(f"error: {error}; run scripts/prior_predictive.py first", file=sys.stderr)
         return 1
     config.FIGURE_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    for name, figure in (
-        ("prior_marginals", plot_prior_marginals(parameters)),
-        ("prior_predictive_nee_seasonal", plot_nee_seasonal_cycle(check)),
-        ("prior_predictive_nee_annual", plot_nee_annual(check)),
-        ("prior_predictive_coverage", plot_coverage(check)),
+    for name, draw in (
+        ("prior_predictive_nee", plot_nee_windows),
+        ("prior_predictive_pools", plot_pool_observations),
+        ("prior_predictive_trajectories", plot_daily_trajectories),
     ):
-        path = config.FIGURE_DIRECTORY / f"{name}.png"
-        figure.savefig(path)
-        print(f"wrote {path}")
+        _save(draw(outputs), name)
+    with plt.rc_context(SLIDE_STYLE):
+        for name, figure in (
+            ("prior_marginals", plot_prior_marginals(parameters)),
+            ("prior_predictive_nee_seasonal", plot_nee_seasonal_cycle(outputs)),
+            ("prior_predictive_nee_annual", plot_nee_annual(outputs)),
+            ("prior_predictive_coverage", plot_coverage(outputs)),
+        ):
+            _save(figure, name)
     return 0
 
 
 # ── helpers ──
+
+
+def _save(figure: plt.Figure, name: str) -> None:
+    """Write *figure* as ``<name>.png`` into the figure directory, and close it."""
+    path = config.FIGURE_DIRECTORY / f"{name}.png"
+    figure.savefig(path)
+    plt.close(figure)
+    print(f"wrote {path}")
+
+
+def _draw_predictions(ax, outputs: dict, vector: str, name: str) -> None:
+    """The ensemble's fan and the one run's line at a source's observations."""
+    ensemble = outputs["predicted"]["ensemble"][vector].get(name)
+    single = outputs["predicted"]["single_run"][vector].get(name)
+    if ensemble is None:
+        return
+    plot_time_series(ensemble, ax=ax, role="prior", label=ENSEMBLE_LABEL)
+    plot_time_series(
+        single, ax=ax, role="posterior", label=SINGLE_RUN_LABEL, linewidth=0.8
+    )
+
+
+def _draw_observed(
+    ax, outputs: dict, vector: str, name: str, *, error_bars: bool
+) -> None:
+    """A source's observed values, with the noise model's standard deviation."""
+    observed = outputs["observed"][vector].get(name)
+    if observed is None:
+        return
+    held_out = vector == "validation"
+    plot_time_series(
+        observed["value"],
+        ax=ax,
+        role="observation",
+        show="points",
+        standard_deviation=observed["noise_standard_deviation"] if error_bars else None,
+        label=HELD_OUT_LABEL if held_out else OBSERVED_LABEL,
+        markersize=2.5,
+        **({"markerfacecolor": "none"} if held_out else {}),
+    )
+
+
+def _draw_static(ax, outputs: dict, name: str) -> None:
+    """A static source: the ensemble's values as a strip, the run and the observation."""
+    ensemble = outputs["predicted"]["ensemble"]["calibration"][name].squeeze()
+    single = float(outputs["predicted"]["single_run"]["calibration"][name].squeeze())
+    observed = outputs["observed"]["calibration"][name]
+    rng = np.random.default_rng(0)
+    values = ensemble.transpose(SAMPLE, ...).to_numpy().ravel()
+    ax.scatter(
+        rng.uniform(-0.15, 0.15, values.size),
+        values,
+        s=10,
+        **{
+            key: value
+            for key, value in role_style("prior", "line").items()
+            if key == "color"
+        },
+        alpha=0.6,
+        label=ENSEMBLE_LABEL,
+    )
+    ax.scatter(
+        [0.0],
+        [single],
+        marker="_",
+        s=400,
+        color=role_style("posterior")["color"],
+        label=SINGLE_RUN_LABEL,
+    )
+    ax.errorbar(
+        [0.5],
+        [float(observed["value"])],
+        yerr=[float(observed["noise_standard_deviation"])],
+        fmt="o",
+        color="black",
+        markersize=4,
+        capsize=3,
+        label=OBSERVED_LABEL,
+    )
+    ax.set_xlim(-0.5, 1.0)
+    ax.set_xticks([0.0, 0.5], ["model", "observed"])
+    ax.set_ylabel(f"soil carbon ({observed['value'].attrs.get('units')} C)")
 
 
 def _week_of_year(times) -> np.ndarray:

@@ -1,7 +1,8 @@
 # Parameter analysis (step 4)
 
-The evidence behind `../calibration_prior.py` and `../fixed_sipnet_parameters.csv`.
-The experiment README's "Parameterization and prior" section summarizes it;
+The evidence behind `../../model/prior.py` and
+`../../model/fixed_sipnet_parameters.csv`. The experiment's `MODEL.md`,
+"Parameterization and prior", summarizes it;
 these are the records it cites.
 
 | File | What it is |
@@ -16,5 +17,7 @@ these are the records it cites.
 
 The exploration scripts that produced these (`phase2_*.py`, the per-iteration
 tables and the prior-predictive draws, `prior_predictive.npz`) are in the
-untracked `../output/analysis/`, as run; they use `../fast_forward.py`. They are
-the record, not maintained code, so they are not tracked.
+untracked `../../output/analysis/`, as run; they used `../fast_forward.py`,
+when it and the model modules sat at the experiment's top level, so they
+import it as `fast_forward` and would need their imports updated to rerun.
+They are the record, not maintained code, so they are not tracked.

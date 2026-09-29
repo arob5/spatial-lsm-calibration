@@ -25,20 +25,19 @@ Functions
 :func:`measurement_standard_deviations`
     Each observation's measurement-error standard deviation, before any
     floor or discrepancy.
+:func:`noise_summary`
+    What each observation source contributes to ``R``.
 
 Usage
 -----
 ::
 
-    uv run python experiments/single_site_mcmc_vs_eki/noise.py
-
-    import noise, observations
+    from experiments.single_site_mcmc_vs_eki.model import noise, observations
     vector = observations.calibration_observation_vector()
     likelihood = noise.calibration_likelihood(vector)
     likelihood.log_density(predictions)      # predictions (J, N) -> (J,)
 """
 
-import sys
 from collections.abc import Callable
 from datetime import timedelta
 
@@ -48,19 +47,21 @@ import pandas as pd
 from pyeki.gauss import Gaussian
 from pyeki.linalg import DensePSD, PSDBlockDiag
 
-import config
-import observations
 from sipnet_calibration import constraints
 from sipnet_calibration import net_ecosystem_exchange as nee
 from sipnet_calibration.conventions import TIME
 from sipnet_calibration.observation import ObservationSource, ObservationVector
 from sipnet_calibration.observation.time_alignment import windows_from_observed_values
 
+from .. import config
+from . import observations
+
 __all__ = [
     "calibration_likelihood",
     "measurement_standard_deviations",
     "noise_covariance",
     "noise_covariance_blocks",
+    "noise_summary",
     "validation_likelihood",
 ]
 
@@ -152,33 +153,51 @@ def measurement_standard_deviations(
     }
 
 
-# ── entry point ──
+def noise_summary(vector: ObservationVector, nee_series_name: str) -> pd.DataFrame:
+    """What each observation source contributes to ``R``, one row per source.
 
-
-def main() -> int:
-    """Build both likelihoods' covariances and print what each source contributes."""
-    try:
-        calibration = observations.calibration_observation_vector()
-        validation = observations.validation_observation_vector()
-        summaries = [
-            _summary(calibration, config.CALIBRATION_NEE_SERIES, "calibration"),
-            _summary(validation, config.VALIDATION_NEE_SERIES, "validation"),
-        ]
-    except (FileNotFoundError, KeyError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-    with pd.option_context("display.width", 200, "display.max_columns", 20):
-        print(pd.concat(summaries).to_string(float_format=lambda x: f"{x:.3g}"))
-    print(
-        "\nunreported counts the NEE windows none of whose values reports an "
-        "uncertainty, given their source's median measurement error. "
-        "measurement and discrepancy are medians of each observation's standard "
-        "deviation; total is the median of sqrt(diag R). effective_n is how many "
-        "independent observations of the median total variance would constrain a "
-        "shift common to the whole source as tightly: (1' R^-1 1) times that "
-        "variance."
-    )
-    return 0
+    The columns are the number of observations; ``unreported``, the NEE
+    windows none of whose values reports an uncertainty, which take their
+    source's median measurement error; the source's units; ``measurement``
+    and ``discrepancy``, medians of each observation's standard deviations;
+    ``total``, the median of ``sqrt(diag R_k)``; ``effective_n``, how many
+    independent observations of the median total variance would constrain a
+    shift common to the whole source as tightly, ``(1' R_k^-1 1)`` times that
+    variance; and ``R_k``'s smallest eigenvalue.
+    """
+    measurement = measurement_standard_deviations(vector, nee_series_name)
+    blocks = noise_covariance_blocks(vector, nee_series_name)
+    rows = []
+    for name, block in blocks.items():
+        unreported = (
+            int(
+                np.isnan(
+                    _reported_nee_window_standard_deviations(
+                        vector[name], nee_series_name
+                    )
+                ).sum()
+            )
+            if name in config.NEE_WINDOWS
+            else 0
+        )
+        total = np.sqrt(np.diag(block))
+        discrepancy = np.sqrt(np.clip(np.diag(block) - measurement[name] ** 2, 0, None))
+        ones = np.ones(block.shape[0])
+        effective = float(ones @ np.linalg.solve(block, ones)) * np.median(total) ** 2
+        rows.append(
+            {
+                "observation_source": name,
+                "observations": block.shape[0],
+                "unreported": unreported,
+                "units": vector[name].observed_values.attrs.get("units"),
+                "measurement": np.median(measurement[name]),
+                "discrepancy": np.median(discrepancy),
+                "total": np.median(total),
+                "effective_n": effective,
+                "smallest_eigenvalue": np.linalg.eigvalsh(block)[0],
+            }
+        )
+    return pd.DataFrame(rows).set_index("observation_source")
 
 
 # ── the blocks, one builder per kind of observation source ──
@@ -334,46 +353,6 @@ def _observed_values(source: ObservationSource) -> np.ndarray:
     return np.atleast_1d(source.observed_values.squeeze().to_numpy())
 
 
-def _summary(
-    vector: ObservationVector, nee_series_name: str, label: str
-) -> pd.DataFrame:
-    """Per source: counts, the median standard deviations, the effective number."""
-    measurement = measurement_standard_deviations(vector, nee_series_name)
-    blocks = noise_covariance_blocks(vector, nee_series_name)
-    rows = []
-    for name, block in blocks.items():
-        unreported = (
-            int(
-                np.isnan(
-                    _reported_nee_window_standard_deviations(
-                        vector[name], nee_series_name
-                    )
-                ).sum()
-            )
-            if name in config.NEE_WINDOWS
-            else 0
-        )
-        total = np.sqrt(np.diag(block))
-        discrepancy = np.sqrt(np.clip(np.diag(block) - measurement[name] ** 2, 0, None))
-        ones = np.ones(block.shape[0])
-        effective = float(ones @ np.linalg.solve(block, ones)) * np.median(total) ** 2
-        rows.append(
-            {
-                "vector": label,
-                "observation_source": name,
-                "observations": block.shape[0],
-                "unreported": unreported,
-                "units": vector[name].observed_values.attrs.get("units"),
-                "measurement": np.median(measurement[name]),
-                "discrepancy": np.median(discrepancy),
-                "total": np.median(total),
-                "effective_n": effective,
-                "smallest_eigenvalue": np.linalg.eigvalsh(block)[0],
-            }
-        )
-    return pd.DataFrame(rows).set_index(["vector", "observation_source"])
-
-
 # ── checks ──
 
 
@@ -404,7 +383,7 @@ def check_source_has_a_block_builder(name: str) -> None:
     if name not in _CONSTRAINT_BLOCK_BUILDERS:
         raise KeyError(
             f"no noise block is defined for the observation source {name!r}; "
-            "add one to noise.py and its terms to config.py"
+            "add one to model/noise.py and its terms to config.py"
         )
 
 
@@ -430,7 +409,3 @@ def check_standard_deviations_are_non_negative(values: np.ndarray, name: str) ->
             f"{name}: its standard deviations at the observations are not all "
             "finite and non-negative; the noise model cannot use them"
         )
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -30,7 +30,7 @@ fixed value carries its provenance, and
 justifications in ``fixed_sipnet_parameters.csv``.
 
 **External inputs**: the initial leaf carbon and soil moisture, the site's
-initial-condition medians (``runs.initial_state``).
+initial-condition medians (``sipnet.initial_state``).
 """
 
 import csv
@@ -42,8 +42,6 @@ import pandas as pd
 import tensorflow_probability.substrates.jax as tfp
 import xarray as xr
 
-import inputs
-import runs
 from sipnet_calibration.parameter_vector import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
@@ -69,7 +67,9 @@ from sipnet_calibration.sipnet_parameter_map import (
     Fixed,
     SIPNETParameterMap,
 )
-from stand_in_calibration import DECIDUOUS_BY_SITE_LABEL, SITE_LABELS_NAME
+
+from .. import config
+from . import inputs, sipnet
 
 __all__ = [
     "FIXED_SIPNET_PARAMETERS_FILE",
@@ -77,6 +77,17 @@ __all__ = [
     "external_inputs",
     "fixed_sipnet_parameters",
 ]
+
+#: The site-labels data source the site's deciduousness is read from.
+SITE_LABELS_NAME = "reanalysis_3pft"
+
+#: Whether each class of :data:`SITE_LABELS_NAME` is deciduous, which decides
+#: whether a run starts with leaves.
+DECIDUOUS_BY_SITE_LABEL = {
+    "temperate.deciduous.HPDA": True,
+    "boreal.coniferous": False,
+    "semiarid.grassland_HPDA": False,
+}
 
 #: The fixed SIPNET parameters' values and justifications.
 FIXED_SIPNET_PARAMETERS_FILE = (
@@ -179,7 +190,7 @@ def calibration() -> tuple[ParameterVector, Prior, SIPNETParameterMap]:
 
 def external_inputs() -> xr.Dataset:
     """The initial states the map reads that are not calibrated, on ``site``."""
-    return runs.initial_state()[list(EXTERNAL_STATE_NAMES)]
+    return sipnet.initial_state()[list(EXTERNAL_STATE_NAMES)]
 
 
 def fixed_sipnet_parameters() -> pd.DataFrame:
@@ -408,7 +419,6 @@ def _base_soil_respiration_rate(
 
 def _site_labels() -> list[str]:
     """The site's class under the site labels its deciduousness is read from."""
-    import config
     from sipnet_calibration.site_labels import load_site_labels
 
     labels = load_site_labels(SITE_LABELS_NAME)
