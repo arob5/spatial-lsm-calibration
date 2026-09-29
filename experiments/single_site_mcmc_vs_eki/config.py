@@ -4,17 +4,28 @@ The one source of truth for this experiment. Every script here reads its
 choices from this module and nothing else; change the site, the driver member
 or an observation source here, and every step follows.
 
-What is configured so far: the site, the driver member and how its file is
-corrected, the data sources the calibration reads and the ones it leaves out,
-how each is prepared as observations and the operator that predicts it, and
-where the experiment writes. The noise model, the parameterization, the priors
+Sections, in order:
+
+- **the site**: which site is calibrated;
+- **paths**: where the experiment reads raw inputs and writes everything else;
+- **the drivers**: which driver member runs, and how its file is corrected;
+- **the model**: what SIPNET simulates, which changes results;
+- **running SIPNET**: how the runs are executed, which does not;
+- **the observations**: the NEE series and how they are windowed, the pool
+  constraints, the data sources left out, and the operator that predicts each
+  observation source.
+
+The noise model, the base SIPNET parameters, the parameterization, the priors
 and the algorithm settings are added by later steps.
 """
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
 from frozendict import frozendict
+from pysipnet.parameters.model import ModelFlags
+from pysipnet.runner import ClimateStaging
 
 from operators import AverageRateOverWindows, ComputeAbovegroundBiomass
 from sipnet_calibration.conventions import data_root
@@ -23,18 +34,22 @@ from sipnet_calibration.observation import DEFAULT_OBS_OPS, ReduceOverRun
 __all__ = [
     "CALIBRATION_NEE_PERIOD",
     "CALIBRATION_NEE_SERIES",
+    "CLIMATE_STAGING",
     "CONSTRAINT_NAMES",
     "DRIVER_SOURCE_INDEX",
     "DRIVER_TIME_ZONE",
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
     "LANDTRENDR_YEARS",
+    "MODEL_FLAGS",
     "NEE_MINIMUM_MEASURED_FRACTION",
     "NEE_WINDOWS",
+    "N_WORKERS",
     "OBSERVATION_OPERATORS",
     "OUTPUT_DIRECTORY",
     "PREPARED_DRIVERS_ROOT",
     "RAW_DRIVERS_ROOT",
+    "SIPNET_TIMEOUT",
     "SITE",
     "SOIL_TEMPERATURE_TIMESCALE",
     "VALIDATION_NEE_PERIOD",
@@ -47,6 +62,23 @@ __all__ = [
 #: The site calibrated, by its id in the site pool: Harvard Forest, where the
 #: AmeriFlux towers US-Ha1 (hourly) and US-xHA (NEON, half-hourly) both stand.
 SITE = 4977
+
+# ── paths ──
+
+#: This experiment's directory.
+EXPERIMENT_DIRECTORY = Path(__file__).resolve().parent
+
+#: Everything the experiment writes, untracked.
+OUTPUT_DIRECTORY = EXPERIMENT_DIRECTORY / "output"
+
+#: Where the raw driver files are: ``ERA5_<site>_<index>/`` directories of
+#: ``.clim`` files, as copied from the SCC. Never edited.
+RAW_DRIVERS_ROOT = data_root() / "raw" / "drivers"
+
+#: The driver file the runs read: the raw file of :data:`SITE` and
+#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``prepare_drivers.py``, laid out
+#: as the raw ones.
+PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"
 
 # ── the drivers ──
 
@@ -66,11 +98,39 @@ DRIVER_TIME_ZONE = "UTC"
 #: here the preceding ones.
 SOIL_TEMPERATURE_TIMESCALE = timedelta(days=15)
 
-#: Where the raw driver files are: ``ERA5_<site>_<index>/`` directories of
-#: ``.clim`` files, as copied from the SCC. Never edited.
-RAW_DRIVERS_ROOT = data_root() / "raw" / "drivers"
+# ── the model ──
 
-# ── the observations ──
+#: Which of SIPNET's optional processes are on: pySIPNET's standard set, the
+#: binary's own defaults. Leaf-on is decided by growing degree-days (not soil
+#: temperature); snow and the soil-moisture limit on decomposition are on; the
+#: litter pool is off, so litter goes straight into ``soil_carbon``, which is
+#: what the soil carbon operator reads; growth respiration and leaf water are
+#: off. The flags also decide which SIPNET parameters must be given.
+MODEL_FLAGS = ModelFlags.standard()
+
+# ── running SIPNET ──
+#
+# How the runs are executed. None of this changes a result. Left at
+# pySIPNET's defaults: the binary, found by pySIPNET's own lookup
+# ($PYSIPNET_BINARY, then its cache), and checked against the pinned SIPNET
+# tag before the first run; each run's working directory, a fresh one under
+# the system temporary directory ($TMPDIR on the SCC), deleted afterwards;
+# and the output, parsed into memory rather than kept as SIPNET's text file.
+# Results worth keeping are written by the experiment, under OUTPUT_DIRECTORY.
+
+#: The longest one SIPNET run may take before it is abandoned and its row
+#: marked failed. A run over the whole record takes about a second.
+SIPNET_TIMEOUT = timedelta(seconds=60)
+
+#: How the driver file reaches each run's working directory: linked, not
+#: copied, since every run reads the same file.
+CLIMATE_STAGING = ClimateStaging.SYMLINK
+
+#: How many SIPNET runs execute at once on this machine: one fewer than its
+#: processors, leaving one for the calling process.
+N_WORKERS = max(1, (os.cpu_count() or 2) - 1)
+
+# ── the observations: NEE ──
 
 #: The NEE series calibrated against: US-Ha1's hourly record, with the u*
 #: threshold estimated per year (``NEE_VUT_REF``). It covers 2012-2020 of the
@@ -78,15 +138,15 @@ RAW_DRIVERS_ROOT = data_root() / "raw" / "drivers"
 #: pool's sites than the constant one, and the two differ little here.
 CALIBRATION_NEE_SERIES = "ameriflux_nee_hourly_ustar_variable"
 
-#: The NEE series held out for an out-of-sample check: US-xHA's half-hourly
-#: record, a second tower at the same site, over the years the calibration
-#: series does not cover.
-VALIDATION_NEE_SERIES = "ameriflux_nee_half_hourly_ustar_variable"
-
 #: The years of :data:`CALIBRATION_NEE_SERIES` calibrated against, inclusive,
 #: as ``(first, last)`` calendar years in UTC: all of US-Ha1's record inside
 #: the drivers'.
 CALIBRATION_NEE_PERIOD = (2012, 2020)
+
+#: The NEE series held out for an out-of-sample check: US-xHA's half-hourly
+#: record, a second tower at the same site, over the years the calibration
+#: series does not cover.
+VALIDATION_NEE_SERIES = "ameriflux_nee_half_hourly_ustar_variable"
 
 #: The years of :data:`VALIDATION_NEE_SERIES` held out, inclusive, as
 #: ``(first, last)`` calendar years in UTC.
@@ -112,6 +172,8 @@ NEE_WINDOWS = frozendict(
 #: marginal distribution sampling, a model of its own.
 NEE_MINIMUM_MEASURED_FRACTION = 0.5
 
+# ── the observations: pool constraints ──
+
 #: The constraints calibrated against, by name in
 #: :data:`sipnet_calibration.constraints.CONSTRAINTS`.
 CONSTRAINT_NAMES = (
@@ -134,6 +196,8 @@ LANDTRENDR_YEARS = (2012, 2017)
 #: Gibbs (2020), the initial conditions' aboveground carbon map, and its spec
 #: says the constituent is unconfirmed by about that factor.
 WOOD_CARBON_FRACTION = 0.48
+
+# ── the observations: data sources left out ──
 
 #: The constraints left out, each with the reason.
 EXCLUDED_CONSTRAINTS = frozendict(
@@ -158,6 +222,8 @@ EXCLUDED_CONSTRAINTS = frozendict(
     }
 )
 
+# ── the observations: operators ──
+
 #: Which operator predicts each observation source, by observation source
 #: name. NEE is a mean rate over its window; leaf area index is the
 #: library's default, leaf carbon over leaf carbon per area at the step
@@ -177,16 +243,3 @@ OBSERVATION_OPERATORS = frozendict(
         "soilgrids_soil_organic_carbon": ReduceOverRun("soil_carbon", how="mean"),
     }
 )
-
-# ── where the experiment writes ──
-
-#: This experiment's directory.
-EXPERIMENT_DIRECTORY = Path(__file__).resolve().parent
-
-#: Everything the experiment writes, untracked.
-OUTPUT_DIRECTORY = EXPERIMENT_DIRECTORY / "output"
-
-#: The driver file the runs read: the raw file of :data:`SITE` and
-#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``prepare_drivers.py``, laid out
-#: as the raw ones.
-PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"

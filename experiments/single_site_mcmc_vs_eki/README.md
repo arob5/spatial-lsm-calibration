@@ -9,7 +9,7 @@ a choice.
 
 | File | What it does |
 |---|---|
-| `config.py` | the site, the driver member and its clock, the data sources read and left out, where the experiment writes |
+| `config.py` | every choice, in sections: the site, paths, the drivers, the model (SIPNET's process flags), running SIPNET (timeout, staging, workers), and the observations (NEE windows, pool constraints, sources left out, operators) |
 | `prepare_drivers.py` | writes the site's driver file, corrected for four known defects of the ERA5 driver files, to `output/drivers/`, which the runs read; its docstring says what each defect is and how it is corrected |
 | `inputs.py` | one loader per data source, restricted to the site; run it to check that every input is found |
 | `operators.py` | the two observation operators the library does not have: a mean rate over each window (NEE), and dry aboveground biomass from wood carbon (LandTrendr) |
