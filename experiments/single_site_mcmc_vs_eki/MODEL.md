@@ -442,59 +442,81 @@ The final EKI ensemble is $\theta_1, \dots, \theta_J$, $J = 100$, and
 $\hat g_W = \operatorname{median}_j \mathcal H_W(\mathcal M(\theta_j))$ is its
 median prediction, with residual $\hat\rho_W = y_W - \hat g_W$.
 
-### The test: the misfit at the posterior
+### The test: a posterior predictive check
 
-Suppose the model of the data is right: $y = G(\theta^\star) + \varepsilon$,
-$\varepsilon \sim \mathcal N(0, R)$, with $\theta^\star$ drawn from the prior.
-Then $R^{-1/2}\varepsilon$ is standard normal, so
+The test is a posterior predictive check with a realized discrepancy (Gelman,
+Meng and Stern 1996, *Statistica Sinica* 6, 733-807), whose test quantity is
+the misfit itself, $T(y, \theta) = \Phi(\theta; y)$, a function of the data
+and the parameters. For each posterior draw $\theta_j$, the realized
+discrepancy $T(y, \theta_j)$ is compared with the discrepancy of data
+replicated under the model at that draw,
 
 $$
-2\,\Phi(\theta^\star) = \varepsilon^{\top} R^{-1} \varepsilon \sim \chi^2_N,
+y^{\mathrm{rep}}_j \sim \mathcal N\big(G(\theta_j), R\big),
 \qquad
-\mathbb E\,\Phi(\theta^\star) = \tfrac N2,
-\qquad
-\operatorname{sd}\,\Phi(\theta^\star) = \sqrt{N/2},
+T\big(y^{\mathrm{rep}}_j, \theta_j\big) = \tfrac12 \big(y^{\mathrm{rep}}_j - G(\theta_j)\big)^{\!\top} R^{-1} \big(y^{\mathrm{rep}}_j - G(\theta_j)\big),
 $$
 
-and likewise $2\,\Phi_k(\theta^\star) \sim \chi^2_{n_k}$, independently over
-$k$. The same holds at a draw $\theta$ of the exact posterior. The truth and
-the data are drawn jointly, $\theta^\star$ from the prior and then $y$ given
-$\theta^\star$, and by Bayes' rule their joint density factors both ways,
+and the posterior predictive p-value is
 
 $$
-p(\theta^\star)\, p(y \mid \theta^\star) = p(y)\, p(\theta^\star \mid y):
+p = \Pr\Big(T\big(y^{\mathrm{rep}}, \theta\big) \ge T(y, \theta) \;\Big|\; y\Big),
+\qquad \theta \sim p(\theta \mid y),\;\; y^{\mathrm{rep}} \mid \theta \sim \mathcal N\big(G(\theta), R\big).
 $$
 
-$\theta^\star$ is distributed as the prior marginally, and as the posterior
-given the data it generated. A draw $\theta \sim p(\theta \mid y)$, made
-given $y$ and independently of $\theta^\star$, makes a pair $(\theta, y)$ of
-joint density $p(y)\, p(\theta \mid y)$, the right-hand side. The two pairs
-have one joint distribution, so $\Phi(\theta)$ has the distribution of
-$\Phi(\theta^\star)$, $2\,\Phi(\theta) \sim \chi^2_N$. Two conditions come
-with it: the statement is over data sets drawn from the model, not
-conditional on the one observed $y$, so for the observed data it is a
-calibration check; and it holds only if the prior the posterior is formed
-with is the one the truth is drawn from, which is part of the model being
-right. The members of the final ensemble approximate posterior draws, so
-under the model their misfits should lie near $N/2$, within a few multiples
-of $\sqrt{N/2}$.
+For this test quantity the replicated discrepancy's distribution is known
+exactly: at any fixed $\theta$, $R^{-1/2}\big(y^{\mathrm{rep}} - G(\theta)\big)$
+is standard normal, so $2\,T(y^{\mathrm{rep}}, \theta) \sim \chi^2_N$, whatever
+$\theta$ is. No replicated data need be drawn, and with $J$ draws
 
-On synthetic data, where the model is right by construction, they do: with
-$N = 2715$, $N/2 = 1357.5$ and $\sqrt{N/2} = 36.8$, the final ensemble's mean
-misfit is 1349 and the truth's is 1344. On the observed data they do not:
+$$
+p \approx \frac1J \sum_{j=1}^{J} \Pr\Big(\chi^2_N \ge 2\,\Phi(\theta_j)\Big).
+$$
 
-| | $\Phi$ or $\Phi_k$ | $N/2$ or $n_k/2$ | $2\Phi_k / n_k$ | $(\Phi_k - n_k/2) / \sqrt{n_k/2}$ |
-|---|---|---|---|---|
-| all sources, every member | 2476 to 2509 | 1357.5 | 1.83 | 30.8 |
-| NEE, day-centered | 1708 | 909.5 | 1.88 | 26.5 |
-| NEE, night-centered | 558 | 400 | 1.40 | 7.9 |
-| MODIS LAI | 218 | 44.5 | 4.90 | 26.0 |
-| LandTrendr biomass | 8 | 3 | 2.7 | 2.9 |
+Since $R$ is block-diagonal, the same holds for each source alone, with
+$\Phi_k$ and $\chi^2_{n_k}$ in place of $\Phi$ and $\chi^2_N$; the per-source
+checks are independent given $\theta$. Under the model, the realized misfits
+lie where $\tfrac12\chi^2_N$ puts its mass: near $N/2$, within a few
+multiples of $\sqrt{N/2}$. (That the realized discrepancy, and not only the
+replicated one, is centered there follows from Bayes' rule: $\theta^\star$
+drawn from the prior and $y$ from the model at it have joint density
+$p(\theta^\star)\,p(y \mid \theta^\star) = p(y)\,p(\theta^\star \mid y)$, the
+joint density of $y$ with a posterior draw $\theta$, so averaged over data
+sets $\Phi(\theta)$ has the distribution of $\Phi(\theta^\star)$, which is
+$\tfrac12\chi^2_N$.)
 
-The per-source rows are the median over members of $\Phi_k(\theta_j)$; the
-first row's $2\Phi/N$ and standardized value are those of the members' mean
-misfit, 2492. The whitened residuals $R^{-1/2}\rho(\theta_j)$ have mean
-square 1.82 to 1.85 across the members, where the model says 1.
+Two cautions come with the check:
+
+- **It is conservative.** The data form the posterior and are then checked
+  against it, so under the model the p-value is not uniform: it concentrates
+  around $\tfrac12$, and small values are rarer than their nominal rate. A
+  p-value near 0 is strong evidence against the model; a moderate one is
+  weak evidence for it.
+- **The draws are approximate.** The $\theta_j$ are the final EKI ensemble,
+  which approximates the posterior. The same check on synthetic data, where
+  the model is right by construction, shows whether that approximation can
+  fail the check by itself.
+
+With $N = 2715$, $N/2 = 1357.5$ and $\sqrt{N/2} = 36.8$. Per source, $\Phi_k$
+is the median over the $J = 100$ members, and $p$ the average above:
+
+| | $n_k$ | $n_k/2$ | synthetic: $\Phi_k$ | $p$ | observed: $\Phi_k$ | $2\Phi_k/n_k$ | $p$ |
+|---|---|---|---|---|---|---|---|
+| NEE, night-centered | 800 | 400 | 419 | 0.17 | 558 | 1.39 | 1 × 10⁻¹⁰ |
+| NEE, day-centered | 1819 | 909.5 | 887 | 0.77 | 1708 | 1.88 | 1 × 10⁻⁹⁵ |
+| MODIS LAI | 89 | 44.5 | 40.5 | 0.70 | 218 | 4.89 | 1 × 10⁻⁴⁵ |
+| LandTrendr biomass | 6 | 3 | 1.3 | 0.79 | 7.6 | 2.53 | 0.04 |
+| SoilGrids soil carbon | 1 | 0.5 | 0.2 | 0.60 | 0.4 | 0.8 | 0.41 |
+| all sources | 2715 | 1357.5 | 1343 to 1361 | 0.59 | 2476 to 2509 | 1.83 | 1 × 10⁻¹³⁵ |
+
+The last row's $\Phi$ is the range over members. On synthetic data every
+source passes, with p-values near $\tfrac12$ as the first caution leads one
+to expect, and the ensemble's misfits bracket the truth's, 1344: the
+approximation does not fail the check by itself. On the observed data the
+check fails, overall and for NEE by day and night and for LAI, by margins no
+conservativeness or approximation accounts for: every member's misfit is
+about 31 standard deviations above $N/2$, and the whitened residuals
+$R^{-1/2}\rho(\theta_j)$ have mean square 1.82 to 1.85 where the model says 1.
 
 So no $\theta$ the calibration reached makes the residuals as small as $R$
 says they are. For the likelihood, "$R$ is too small" and "SIPNET cannot
@@ -704,11 +726,13 @@ a first calibration, as follows.
 4. **The check on held-out data.** $\hat\phi_k$ is fitted to the residuals of
    the data the calibration saw, so it is judged on data neither saw: the
    validation vector, US-xHA in 2021-2024, with $R^{\mathrm{val}}_k$ built
-   from $\hat\phi_k$ and US-xHA's own measurement errors. Under the model,
-   $2\,\Phi^{\mathrm{val}}_k / n^{\mathrm{val}}_k$ at the posterior is near 1,
-   within $\sqrt{2 / n^{\mathrm{val}}_k}$, and the predictive intervals cover
-   at their nominal rates. The three variants are
-   ranked by the held-out log predictive density,
+   from $\hat\phi_k$ and US-xHA's own measurement errors. The posterior
+   predictive check above, applied to the validation vector, should pass:
+   $2\,\Phi^{\mathrm{val}}_k / n^{\mathrm{val}}_k$ near 1, within about
+   $\sqrt{2 / n^{\mathrm{val}}_k}$, and the predictive intervals covering at
+   their nominal rates. On held-out data the check is not conservative, since
+   those data did not form the posterior. The three variants are ranked by
+   the held-out log predictive density,
 
    $$
    \log p\big(y^{\mathrm{val}} \mid y\big) \approx \log \frac1J \sum_{j=1}^{J} \mathcal N\big(y^{\mathrm{val}};\, G^{\mathrm{val}}(\theta_j),\, R^{\mathrm{val}}\big),
