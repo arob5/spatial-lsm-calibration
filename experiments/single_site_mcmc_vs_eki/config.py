@@ -4,11 +4,11 @@ The one source of truth for this experiment. Every script here reads its
 choices from this module and nothing else; change the site, the driver member
 or an observation source here, and every step follows.
 
-What is configured so far (step 1): the site, the driver member and how its
-file is corrected, the data sources the calibration reads and the ones it
-leaves out, and where the experiment writes. The observation operators, the
-parameterization, the priors and the algorithm settings are added by later
-steps.
+What is configured so far: the site, the driver member and how its file is
+corrected, the data sources the calibration reads and the ones it leaves out,
+how each is prepared as observations and the operator that predicts it, and
+where the experiment writes. The noise model, the parameterization, the priors
+and the algorithm settings are added by later steps.
 """
 
 from datetime import timedelta
@@ -16,15 +16,22 @@ from pathlib import Path
 
 from frozendict import frozendict
 
+from operators import AverageRateOverWindows, ComputeAbovegroundBiomass
 from sipnet_calibration.conventions import data_root
+from sipnet_calibration.observation import DEFAULT_OBS_OPS, ReduceOverRun
 
 __all__ = [
+    "CALIBRATION_NEE_PERIOD",
     "CALIBRATION_NEE_SERIES",
     "CONSTRAINT_NAMES",
     "DRIVER_SOURCE_INDEX",
     "DRIVER_TIME_ZONE",
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
+    "LANDTRENDR_YEARS",
+    "NEE_MINIMUM_MEASURED_FRACTION",
+    "NEE_WINDOWS",
+    "OBSERVATION_OPERATORS",
     "OUTPUT_DIRECTORY",
     "PREPARED_DRIVERS_ROOT",
     "RAW_DRIVERS_ROOT",
@@ -32,6 +39,7 @@ __all__ = [
     "SOIL_TEMPERATURE_TIMESCALE",
     "VALIDATION_NEE_PERIOD",
     "VALIDATION_NEE_SERIES",
+    "WOOD_CARBON_FRACTION",
 ]
 
 # ── the site ──
@@ -75,18 +83,57 @@ CALIBRATION_NEE_SERIES = "ameriflux_nee_hourly_ustar_variable"
 #: series does not cover.
 VALIDATION_NEE_SERIES = "ameriflux_nee_half_hourly_ustar_variable"
 
+#: The years of :data:`CALIBRATION_NEE_SERIES` calibrated against, inclusive,
+#: as ``(first, last)`` calendar years in UTC: all of US-Ha1's record inside
+#: the drivers'.
+CALIBRATION_NEE_PERIOD = (2012, 2020)
+
 #: The years of :data:`VALIDATION_NEE_SERIES` held out, inclusive, as
 #: ``(first, last)`` calendar years in UTC.
 VALIDATION_NEE_PERIOD = (2021, 2024)
+
+#: The windows observed NEE is averaged over, each an observation source:
+#: name to ``(start, end)``, offsets from 00:00 UTC of each day. Each day is
+#: split in two twelve-hour windows, one centered on the day and one on the
+#: night (07:00-19:00 and 19:00-07:00 local standard time at Harvard Forest,
+#: UTC-5). A whole day would need both halves measured, which keeps too few
+#: summer days: calm summer nights fail the u* filter. Both edges are
+#: timestep edges of the three-hourly model, so a window averages whole steps.
+NEE_WINDOWS = frozendict(
+    {
+        "nee_night_centered": (timedelta(hours=0), timedelta(hours=12)),
+        "nee_day_centered": (timedelta(hours=12), timedelta(hours=24)),
+    }
+)
+
+#: The fewest of a window's NEE values that must be measured rather than
+#: gap-filled (quality flag 0) for the window to be an observation, as a
+#: fraction of the window's values. Below it the window's mean is mostly
+#: marginal distribution sampling, a model of its own.
+NEE_MINIMUM_MEASURED_FRACTION = 0.5
 
 #: The constraints calibrated against, by name in
 #: :data:`sipnet_calibration.constraints.CONSTRAINTS`.
 CONSTRAINT_NAMES = (
     "modis_leaf_area_index",
     "landtrendr_aboveground_biomass",
-    "gedi_aboveground_biomass",
     "soilgrids_soil_organic_carbon",
 )
+
+#: The years of LandTrendr biomass calibrated against, inclusive: those whose
+#: values and uncertainties are LandTrendr's own. From 2018 the uncertainties
+#: come from a random-forest prediction beside the product, and both they and
+#: the values change at that boundary (``data/README.md`` open question 19).
+LANDTRENDR_YEARS = (2012, 2017)
+
+#: The mass fraction of dry wood that is carbon, which turns SIPNET's wood
+#: carbon into the dry biomass LandTrendr estimates: the IPCC default for
+#: temperate broadleaf wood, 0.48 (2006 IPCC Guidelines, Volume 4, Table 4.3).
+#: LandTrendr is taken to be dry biomass, although its spec records carbon,
+#: because it is at the site about twice the carbon density of Spawn and
+#: Gibbs (2020), the initial conditions' aboveground carbon map, and its spec
+#: says the constituent is unconfirmed by about that factor.
+WOOD_CARBON_FRACTION = 0.48
 
 #: The constraints left out, each with the reason.
 EXCLUDED_CONSTRAINTS = frozendict(
@@ -101,6 +148,33 @@ EXCLUDED_CONSTRAINTS = frozendict(
             "differ by the porosity. About ten values at one site would not "
             "repay an operator built on an assumed depth and porosity."
         ),
+        "gedi_aboveground_biomass": (
+            "Its units are not established, carbon or dry biomass "
+            "(data/README.md open question 9), and its three values at the "
+            "site fall from 145 to 78 over 2019-2022 while LandTrendr's change "
+            "by a few percent, so three values of unknown meaning would add "
+            "little but their disagreement."
+        ),
+    }
+)
+
+#: Which operator predicts each observation source, by observation source
+#: name. NEE is a mean rate over its window; leaf area index is the
+#: library's default, leaf carbon over leaf carbon per area at the step
+#: containing each composite's label; biomass is wood carbon over the carbon
+#: fraction, averaged over each year's window; soil carbon, a single static
+#: value, is SIPNET's soil pool averaged over the run.
+OBSERVATION_OPERATORS = frozendict(
+    {
+        **{
+            name: AverageRateOverWindows("net_ecosystem_exchange")
+            for name in NEE_WINDOWS
+        },
+        "modis_leaf_area_index": DEFAULT_OBS_OPS["modis_leaf_area_index"],
+        "landtrendr_aboveground_biomass": ComputeAbovegroundBiomass(
+            WOOD_CARBON_FRACTION
+        ),
+        "soilgrids_soil_organic_carbon": ReduceOverRun("soil_carbon", how="mean"),
     }
 )
 
