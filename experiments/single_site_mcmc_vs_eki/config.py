@@ -25,7 +25,6 @@ Sections, in order:
 The parameterization and the prior are ``model/prior.py``'s.
 """
 
-import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -163,9 +162,13 @@ SIPNET_TIMEOUT = timedelta(seconds=60)
 #: copied, since every run reads the same file.
 CLIMATE_STAGING = ClimateStaging.SYMLINK
 
-#: How many SIPNET runs execute at once on this machine: one fewer than its
-#: processors, leaving one for the calling process.
-N_WORKERS = max(1, (os.cpu_count() or 2) - 1)
+#: How many SIPNET runs execute at once on this machine: a fixed budget, not
+#: every processor, since other sessions run ensembles on the same machine.
+#: Each worker holds about 0.3 GB and the calling process about 0.8 GB (a
+#: 14-member evaluation peaked at 2.7 GB with 7 workers), so 3 keeps a run
+#: near 2 GB; with the 16 GB and 8 processors here, two such runs fit beside
+#: the desktop.
+N_WORKERS = 3
 
 # ── the observations: NEE ──
 
@@ -317,7 +320,8 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 # observation sources, each block measurement error plus model discrepancy;
 # MODEL.md, "Noise model", states it exactly and model/noise.py builds it. The
 # discrepancy terms carry most of the weight: they set how much each source
-# constrains the calibration. The timescales are those of the exponential
+# constrains the calibration. NEE's discrepancy has the three terms of
+# model/discrepancy.py; the LAI timescale is that of the exponential
 # correlation exp(-|t - t'| / tau).
 
 #: NEE's model discrepancy, per NEE observation source: the short, long and
@@ -330,11 +334,11 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 NEE_DISCREPANCY = frozendict(
     {
         "nee_night_centered": NEEDiscrepancy(
-            short_sd=0.690,
+            short_standard_deviation=0.690,
             short_timescale=timedelta(days=1.17),
-            long_sd=0.795,
+            long_standard_deviation=0.795,
             long_timescale=timedelta(days=64.2),
-            recurring_sd=0.724,
+            recurring_standard_deviation=0.724,
             recurring_width=0.437,
             provenance=(
                 "three-term fit to the residuals of EKI run "
@@ -342,11 +346,11 @@ NEE_DISCREPANCY = frozendict(
             ),
         ),
         "nee_day_centered": NEEDiscrepancy(
-            short_sd=2.02,
+            short_standard_deviation=2.02,
             short_timescale=timedelta(days=1.78),
-            long_sd=1.68,
+            long_standard_deviation=1.68,
             long_timescale=timedelta(days=46.6),
-            recurring_sd=1.30,
+            recurring_standard_deviation=1.30,
             recurring_width=0.208,
             provenance=(
                 "three-term fit to the residuals of EKI run "

@@ -36,10 +36,13 @@ Under ``config.EKI_DIRECTORY / <data>``:
   and increment, the misfits' mean, minimum and maximum, the mean
   prediction's misfit, the parameter spread, the effective sample size, the
   valid members), with the fraction of members out of pySIPNET's domain;
-- ``steps/step_<k>.npz``: step ``k``'s evaluation, ``ensemble`` ``(J, D)``,
-  ``predictions`` ``(J, N)`` and per-member ``misfits`` ``(J,)``, and the
-  state after it, ``next_ensemble``, ``next_beta``, ``next_step`` and
-  ``next_key`` (the key's data), from which ``--resume`` continues;
+- ``initial_ensemble.npy``: the initial ensemble, theta ``(J, D)``, as drawn;
+- ``steps/step_<k>.npz``: step ``k``'s evaluation, ``ensemble`` ``(J, D)``
+  (failed members moved to the valid center), ``predictions`` ``(J, N)``,
+  per-member ``misfits`` ``(J,)`` and ``valid`` ``(J,)``, whether the
+  member's run succeeded, and the state after it, ``next_ensemble``,
+  ``next_beta``, ``next_step`` and ``next_key`` (the key's data), from which
+  ``--resume`` continues;
   ``steps/step_<k>_failures.csv``, the failed runs, when there are any;
 - ``prior_ensemble.csv``, ``posterior_ensemble.csv``: the initial and the
   final ensembles' natural values, one row per member;
@@ -47,6 +50,10 @@ Under ``config.EKI_DIRECTORY / <data>``:
   ``synthetic.npz``, ``theta_true`` ``(D,)``, ``predictions_true`` and
   ``y`` ``(N,)``;
 - ``calibration.csv`` and ``provenance.json``, as the prior predictive's.
+
+A run started without ``--resume`` first removes what an earlier run of the
+same setup and data left: its steps, history, posterior ensemble, posterior
+predictive, diagnostics and discrepancy fit.
 
 The last step is an evaluation of the final ensemble, at beta = 1, with no
 update (its increment is 0), so its ``predictions`` are the posterior
@@ -63,6 +70,7 @@ From the repository root::
 
 import argparse
 import dataclasses
+import shutil
 import sys
 import warnings
 from pathlib import Path
@@ -86,6 +94,7 @@ from sipnet_calibration.calibration import describe_calibration
 from .. import config
 from ..model import inverse_problem
 from ..model.inverse_problem import InverseProblem
+from ..model.outputs import load_eki_run
 from . import provenance
 
 __all__ = ["main"]
@@ -112,6 +121,9 @@ def main(argv: list[str] | None = None) -> int:
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    if arguments.resume and load_eki_run(directory)["finished"]:
+        print(f"the run under {directory} is finished; nothing to resume")
+        return 0
     if not arguments.resume:
         _write_start(directory, problem, state)
     state = run_ladder(problem, state, directory)
@@ -221,10 +233,14 @@ class _RecordingForward:
 
 
 def _write_start(directory: Path, problem: InverseProblem, state: EKIState) -> None:
-    """The record of what runs, and the initial ensemble."""
+    """The record of what runs, and the initial ensemble; an earlier run's outputs go."""
     for path in (directory / "steps").glob("step_*"):
         path.unlink()
-    (directory / "history.csv").unlink(missing_ok=True)
+    for name in ("history.csv", "posterior_ensemble.csv", "nee_discrepancy_fit.csv"):
+        (directory / name).unlink(missing_ok=True)
+    for name in ("posterior_predictive", "diagnostics"):
+        shutil.rmtree(directory / name, ignore_errors=True)
+    np.save(directory / "initial_ensemble.npy", np.asarray(state.ensemble))
     describe_calibration(
         problem.parameter_vector, problem.prior, problem.sipnet_parameter_map
     ).to_csv(directory / "calibration.csv")
@@ -245,6 +261,7 @@ def _write_step(directory, problem, state, record, evaluation, forward_evaluatio
         next_beta=float(state.beta),
         next_step=state.step,
         next_key=np.asarray(jax.random.key_data(state.key)),
+        valid=np.asarray(forward_evaluation.valid),
     )
     failures = forward_evaluation.failures
     if len(failures):
@@ -268,7 +285,7 @@ def _terminal_record(problem: InverseProblem, evaluation) -> HistoryRecord:
     member_misfits = misfits(
         problem.y, evaluation.predictions, problem.noise_covariance
     )
-    centre = misfits(
+    center = misfits(
         problem.y,
         evaluation.predictions.mean(axis=0),
         problem.noise_covariance,
@@ -283,7 +300,7 @@ def _terminal_record(problem: InverseProblem, evaluation) -> HistoryRecord:
         misfit_mean=member_misfits.mean(),
         misfit_min=member_misfits.min(),
         misfit_max=member_misfits.max(),
-        centre_misfit=centre,
+        centre_misfit=center,
         spread=evaluation.rms_parameter_spread,
         ess=jax.numpy.asarray(float(evaluation.ensemble.shape[0])),
     )
@@ -293,7 +310,12 @@ def _parser() -> argparse.ArgumentParser:
     """The command line: which data, the ensemble's size, and whether to resume."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--data", choices=("synthetic", "observed"), required=True)
-    parser.add_argument("--ensemble-size", type=int, default=config.EKI_ENSEMBLE_SIZE)
+    parser.add_argument(
+        "--ensemble-size",
+        type=int,
+        default=config.EKI_ENSEMBLE_SIZE,
+        help="J; a resumed run keeps its own",
+    )
     parser.add_argument(
         "--resume", action="store_true", help="continue from the last step written"
     )

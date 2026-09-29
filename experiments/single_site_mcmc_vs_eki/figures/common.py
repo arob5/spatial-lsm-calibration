@@ -16,7 +16,16 @@ import numpy as np
 
 from .. import config
 
-__all__ = ["NEE_TITLES", "one_legend", "save_figure"]
+__all__ = ["NEE_TITLES", "SOURCE_LABELS", "one_legend", "save_figure"]
+
+#: The observation sources' labels, in the order the figures draw them.
+SOURCE_LABELS = {
+    "nee_night_centered": "NEE, night-centered",
+    "nee_day_centered": "NEE, day-centered",
+    "modis_leaf_area_index": "MODIS LAI",
+    "landtrendr_aboveground_biomass": "LandTrendr biomass",
+    "soilgrids_soil_organic_carbon": "SoilGrids soil C",
+}
 
 #: Panel titles of the NEE sources.
 NEE_TITLES = {

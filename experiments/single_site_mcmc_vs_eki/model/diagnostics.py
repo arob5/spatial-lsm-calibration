@@ -50,6 +50,7 @@ from .discrepancy import NEEDiscrepancy
 __all__ = [
     "AUTOCORRELATION_LAGS",
     "COVERAGE_LEVEL",
+    "SMOOTHING_WEEKS",
     "SourcePredictions",
     "check_files_hold_the_vector",
     "nee_residuals",
@@ -79,14 +80,19 @@ _COVERAGE_SEED = 0
 
 @dataclass(frozen=True, eq=False)
 class SourcePredictions:
-    """One observation source's observed values and an ensemble's predictions of them."""
+    """One observation source's observed values and an ensemble's predictions of them.
 
-    name: str
+    ``members_dropped`` counts the members left out of ``predictions`` for a
+    prediction that is not finite anywhere in the vector: a failed run, or
+    one the forward model failed for leaving pySIPNET's domain.
+    """
+
     times: pd.DatetimeIndex
     y: np.ndarray
     predictions: np.ndarray
     noise_block: np.ndarray
-    measurement_sd: np.ndarray
+    measurement_standard_deviation: np.ndarray
+    members_dropped: int = 0
 
 
 # ── the builders ──
@@ -95,8 +101,14 @@ class SourcePredictions:
 def sources_from_flat(
     vector: ObservationVector, y, predictions, nee_series_name: str
 ) -> dict[str, SourcePredictions]:
-    """The sources of *vector* from Flat *y* ``(N,)`` and *predictions* ``(J, N)``."""
+    """The sources of *vector* from Flat *y* ``(N,)`` and *predictions* ``(J, N)``.
+
+    A member whose predictions are not all finite is left out of every
+    source, and counted.
+    """
     y, predictions = np.asarray(y), np.asarray(predictions)
+    finite = np.isfinite(predictions).all(axis=1)
+    predictions = predictions[finite]
     blocks = noise.noise_covariance_blocks(vector, nee_series_name)
     measurement = noise.measurement_standard_deviations(vector, nee_series_name)
     times = vector.index.get_level_values(TIME)
@@ -104,12 +116,12 @@ def sources_from_flat(
     for name in vector:
         positions = vector.positions(observation_source_name=name)
         sources[name] = SourcePredictions(
-            name=name,
             times=pd.DatetimeIndex(times[positions]),
             y=y[positions],
             predictions=predictions[:, positions],
             noise_block=blocks[name],
-            measurement_sd=np.asarray(measurement[name]),
+            measurement_standard_deviation=np.asarray(measurement[name]),
+            members_dropped=int((~finite).sum()),
         )
     return sources
 
@@ -152,6 +164,8 @@ def predictive_check(sources: dict[str, SourcePredictions]) -> pd.DataFrame:
     """The posterior predictive check, per source and for all sources together.
 
     One row per source and a last row ``all``. The columns are ``n``;
+    ``members``, the members scored, and ``members_dropped``, those left out
+    for a prediction that is not finite;
     ``misfit_median``, ``misfit_min``, ``misfit_max``, over the members;
     ``ratio``, twice the median misfit over ``n``; ``standardized``,
     ``(median - n / 2) / sqrt(n / 2)``; ``p_value``, the members' mean of
@@ -167,12 +181,23 @@ def predictive_check(sources: dict[str, SourcePredictions]) -> pd.DataFrame:
         rows.append(
             {
                 "source": name,
+                "members": source.predictions.shape[0],
+                "members_dropped": source.members_dropped,
                 **_misfit_row(member_misfits, source.y.size),
                 "coverage": _coverage(source, rng),
             }
         )
     n_total = sum(source.y.size for source in sources.values())
-    rows.append({"source": "all", **_misfit_row(total, n_total), "coverage": np.nan})
+    first = next(iter(sources.values()))
+    rows.append(
+        {
+            "source": "all",
+            "members": first.predictions.shape[0],
+            "members_dropped": first.members_dropped,
+            **_misfit_row(total, n_total),
+            "coverage": np.nan,
+        }
+    )
     return pd.DataFrame(rows).set_index("source")
 
 
@@ -184,7 +209,7 @@ def nee_residuals(sources: dict[str, SourcePredictions]) -> pd.DataFrame:
 
     One row per window: ``source``, ``time`` (the window's end), ``observed``,
     ``predicted`` (the members' median), ``residual`` (their difference) and
-    ``measurement_sd``.
+    ``measurement_standard_deviation``.
     """
     frames = []
     for name in config.NEE_WINDOWS:
@@ -200,7 +225,7 @@ def nee_residuals(sources: dict[str, SourcePredictions]) -> pd.DataFrame:
                     "observed": source.y,
                     "predicted": predicted,
                     "residual": source.y - predicted,
-                    "measurement_sd": source.measurement_sd,
+                    "measurement_standard_deviation": source.measurement_standard_deviation,
                 }
             )
         )
@@ -211,8 +236,8 @@ def residual_summary(residuals: pd.DataFrame) -> pd.DataFrame:
     """Per NEE source: the residuals' size beyond measurement error, and their seasonality.
 
     Columns: ``n``; ``residual_variance``; ``measurement_variance``, the mean
-    of the windows' measurement variances; ``non_measurement_sd``, the square
-    root of their difference; ``discrepancy_sd``, the configured
+    of the windows' measurement variances; ``non_measurement_standard_deviation``, the square
+    root of their difference; ``discrepancy_standard_deviation``, the configured
     discrepancy's at one window; ``recurring_share``, the recurring seasonal
     part's share of the residual variance; and the correlation of each year's
     weekly means with the other years' mean, its median, minimum and maximum
@@ -224,16 +249,18 @@ def residual_summary(residuals: pd.DataFrame) -> pd.DataFrame:
     for name, frame in residuals.groupby("source", sort=False):
         residual = _residual_series(frame)
         recurring = _recurring_part(residual)
-        excess = residual.var() - np.mean(frame["measurement_sd"] ** 2)
+        excess = residual.var() - np.mean(frame["measurement_standard_deviation"] ** 2)
         correlations = _year_to_year_correlations(residual)
         rows.append(
             {
                 "source": name,
                 "n": len(residual),
                 "residual_variance": residual.var(),
-                "measurement_variance": np.mean(frame["measurement_sd"] ** 2),
-                "non_measurement_sd": np.sqrt(max(excess, 0.0)),
-                "discrepancy_sd": np.sqrt(
+                "measurement_variance": np.mean(
+                    frame["measurement_standard_deviation"] ** 2
+                ),
+                "non_measurement_standard_deviation": np.sqrt(max(excess, 0.0)),
+                "discrepancy_standard_deviation": np.sqrt(
                     config.NEE_DISCREPANCY[name].total_variance()
                 ),
                 "recurring_share": recurring.var() / residual.var(),
@@ -290,7 +317,8 @@ def residual_autocorrelation(residuals: pd.DataFrame) -> pd.DataFrame:
         residual = _residual_series(frame)
         remainder = residual - _recurring_part(residual)
         modeled = _modeled_correlation(
-            config.NEE_DISCREPANCY[name], np.mean(frame["measurement_sd"] ** 2)
+            config.NEE_DISCREPANCY[name],
+            np.mean(frame["measurement_standard_deviation"] ** 2),
         )
         for lag in AUTOCORRELATION_LAGS:
             rows.append(
@@ -343,7 +371,7 @@ def tower_comparison(
     ``difference``, first minus second), and a summary per source: ``n``,
     ``first_year``, ``last_year``, ``mean_difference``,
     ``difference_variance``, ``measurement_variance`` (the mean of the two
-    towers' summed measurement variances), ``representativeness_sd`` (the
+    towers' summed measurement variances), ``representativeness_standard_deviation`` (the
     per-tower representativeness error the difference bounds, ``MODEL.md``,
     "Diagnostics"), and the mean difference per calendar quarter.
     """
@@ -355,7 +383,10 @@ def tower_comparison(
         )
         frames[label] = {
             name: pd.DataFrame(
-                {label: source.y, f"{label}_sd": source.measurement_sd},
+                {
+                    label: source.y,
+                    f"{label}_standard_deviation": source.measurement_standard_deviation,
+                },
                 index=source.times,
             )
             for name, source in sources.items()
@@ -364,7 +395,10 @@ def tower_comparison(
     for name in config.NEE_WINDOWS:
         both = frames["first"][name].join(frames["second"][name], how="inner")
         both["difference"] = both["first"] - both["second"]
-        measurement = np.mean(both["first_sd"] ** 2 + both["second_sd"] ** 2)
+        measurement = np.mean(
+            both["first_standard_deviation"] ** 2
+            + both["second_standard_deviation"] ** 2
+        )
         variance = both["difference"].var()
         quarters = both["difference"].groupby(both.index.quarter).mean()
         rows.append(
@@ -376,7 +410,9 @@ def tower_comparison(
                 "mean_difference": both["difference"].mean(),
                 "difference_variance": variance,
                 "measurement_variance": measurement,
-                "representativeness_sd": np.sqrt(max((variance - measurement) / 2, 0)),
+                "representativeness_standard_deviation": np.sqrt(
+                    max((variance - measurement) / 2, 0)
+                ),
                 **{
                     f"mean_difference_q{q}": quarters.get(q, np.nan)
                     for q in range(1, 5)
@@ -414,9 +450,10 @@ def _misfit_row(member_misfits: np.ndarray, n: int) -> dict:
 
 def _coverage(source: SourcePredictions, rng: np.random.Generator) -> float:
     """The fraction of the source's observations inside the noisy predictive interval."""
-    noise_sd = np.sqrt(np.diag(source.noise_block))
+    noise_standard_deviation = np.sqrt(np.diag(source.noise_block))
     noisy = (
-        source.predictions + rng.standard_normal(source.predictions.shape) * noise_sd
+        source.predictions
+        + rng.standard_normal(source.predictions.shape) * noise_standard_deviation
     )
     tail = (1 - COVERAGE_LEVEL) / 2
     low, high = np.quantile(noisy, [tail, 1 - tail], axis=0)
@@ -445,8 +482,9 @@ def _seasonal_means(residual: pd.Series) -> dict[str, float]:
 
 
 def _week_of_year(times: pd.DatetimeIndex) -> np.ndarray:
-    """The ISO week of each time, week 53 counted as 52."""
-    return np.minimum(times.isocalendar().week.to_numpy(), 52)
+    """The week of the calendar year of each time, ``(day of year - 1) // 7 + 1``,
+    its short 53rd week counted as 52, so a week never spans two years."""
+    return np.minimum((times.dayofyear.to_numpy() - 1) // 7 + 1, 52)
 
 
 def _smoothed_weekly_means(residual: pd.Series) -> pd.Series:

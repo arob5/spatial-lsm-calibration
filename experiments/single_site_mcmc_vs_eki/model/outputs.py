@@ -36,6 +36,7 @@ __all__ = [
     "DIAGNOSTIC_INDEX_COLUMNS",
     "VECTOR_NAMES",
     "at_site",
+    "check_eki_run_finished",
     "check_eki_run_wrote_a_step",
     "check_run_was_diagnosed",
     "load_diagnostics",
@@ -113,12 +114,17 @@ def load_eki_run(directory: Path) -> dict:
     """An EKI run's outputs.
 
     Returns ``{"history": DataFrame, "prior": DataFrame, "posterior":
-    DataFrame, "theta_prior": (J, D), "theta_posterior": (J, D),
-    "predictions": (J, N), "beta": float, "y": (N,) or None, "truth":
-    DataFrame or None, "theta_true": (D,) or None}``. ``predictions`` are the
-    last step's, which for a finished run is the final ensemble evaluated at
-    beta = 1; ``y`` is the synthetic observations, or ``None`` for a run on
-    the calibration vector's own.
+    DataFrame or None, "theta_prior": (J, D), "theta_posterior": (J, D),
+    "predictions": (J, N), "beta": float, "finished": bool, "y": (N,) or
+    None, "truth": DataFrame or None, "theta_true": (D,) or None}``.
+
+    ``theta_prior`` is the initial ensemble as drawn; ``theta_posterior`` the
+    ensemble after the last step. ``predictions`` are the last step's, a
+    member's row NaN where its run failed, since the evaluation moved it to
+    the valid center. ``finished`` says whether that last step is the
+    evaluation of the final ensemble, at beta = 1 with no update, so the
+    predictions are the posterior's. ``y`` is the synthetic observations, or
+    ``None`` for a run on the calibration vector's own.
 
     Raises
     ------
@@ -128,21 +134,30 @@ def load_eki_run(directory: Path) -> dict:
     steps = sorted((directory / "steps").glob("step_*.npz"))
     check_eki_run_wrote_a_step(steps, directory)
     first, last = np.load(steps[0]), np.load(steps[-1])
+    history = pd.read_csv(directory / "history.csv")
+    predictions = np.array(last["predictions"])
+    if "valid" in last:
+        predictions[~last["valid"]] = np.nan
+    initial_path = directory / "initial_ensemble.npy"
     synthetic_path = directory / "synthetic.npz"
     synthetic = np.load(synthetic_path) if synthetic_path.exists() else None
     posterior_path = directory / "posterior_ensemble.csv"
+    final = history.iloc[-1]
     return {
-        "history": pd.read_csv(directory / "history.csv"),
+        "history": history,
         "prior": pd.read_csv(directory / "prior_ensemble.csv", index_col=0),
         "posterior": (
             pd.read_csv(posterior_path, index_col=0)
             if posterior_path.exists()
             else None
         ),
-        "theta_prior": first["ensemble"],
+        "theta_prior": (
+            np.load(initial_path) if initial_path.exists() else first["ensemble"]
+        ),
         "theta_posterior": last["next_ensemble"],
-        "predictions": last["predictions"],
+        "predictions": predictions,
         "beta": float(last["next_beta"]),
+        "finished": bool(final["increment"] == 0 and np.isclose(final["beta"], 1.0)),
         "y": synthetic["y"] if synthetic is not None else None,
         "truth": (
             pd.read_csv(directory / "truth.csv", index_col=0)
@@ -207,4 +222,13 @@ def check_run_was_diagnosed(paths: list[Path], directory: Path) -> None:
         raise FileNotFoundError(
             f"no diagnostics under {directory / 'diagnostics'}; run "
             "scripts/diagnose.py first"
+        )
+
+
+def check_eki_run_finished(run: dict, directory: Path) -> None:
+    """An EKI run reached beta = 1 and evaluated its final ensemble."""
+    if not run["finished"]:
+        raise ValueError(
+            f"the run under {directory} has not evaluated a final ensemble at "
+            "beta = 1; finish it with scripts/eki.py --resume"
         )

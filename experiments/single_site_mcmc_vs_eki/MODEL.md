@@ -550,8 +550,10 @@ September-November, by the month of $w^-$).
 
 **The recurring seasonal part** (`nee_weekly_residuals.csv`, and
 `recurring_share` and `year_correlation_*` in the summary). Let
-$\omega(W) \in \{1, \dots, 52\}$ be the ISO week of $w^-$, week 53 counted
-as 52, and $\bar\rho_\omega$ the mean of $\hat\rho_W$ over the windows of
+$\omega(W) = \min\big(\lfloor (\mathrm{doy}(w^-) - 1) / 7 \rfloor + 1,\ 52\big)$
+be the week of the calendar year of $w^-$, $\mathrm{doy}$ its day of the
+year, the last one or two days counted in week 52, so that a week never
+spans two years, and $\bar\rho_\omega$ the mean of $\hat\rho_W$ over the windows of
 week $\omega$ in all years. Smoothed circularly over five weeks,
 
 $$
@@ -620,7 +622,7 @@ the second term's bar the mean over the paired windows. If the footprints
 overlap, $r^{(1)}$ and $r^{(2)}$ are correlated with some $\kappa \ge 0$,
 $\operatorname{Var}(r^{(1)} - r^{(2)}) = 2\sigma_r^2(1 - \kappa)$, and
 $\hat\sigma_r^2$ estimates $\sigma_r^2(1 - \kappa) \le \sigma_r^2$: a lower
-bound (`representativeness_sd`). The summary also reports the mean
+bound (`representativeness_standard_deviation`). The summary also reports the mean
 difference, overall and per calendar quarter, since part of $r^{(i)}$ can be
 a bias.
 
@@ -698,8 +700,8 @@ variances:
 
 | Source | mean of $\hat\rho_W$, DJF / MAM / JJA / SON | recurring share of the variance | year-to-year correlation, median (range) |
 |---|---|---|---|
-| night-centered | 0.02 / 0.84 / 1.38 / 0.88 | 0.17 | 0.37 (0.04 to 0.58) |
-| day-centered | −0.27 / −1.40 / −1.94 / −0.46 | 0.10 | 0.47 (0.14 to 0.55) |
+| night-centered | 0.02 / 0.84 / 1.38 / 0.88 | 0.18 | 0.37 (0.11 to 0.54) |
+| day-centered | −0.27 / −1.40 / −1.94 / −0.46 | 0.10 | 0.36 (0.23 to 0.60) |
 
 NEE is positive to the atmosphere, so from spring to autumn the observed
 night respiration exceeds the model's and the observed daytime uptake
@@ -714,7 +716,7 @@ recurring part, against the correlation the run's $R$ implies:
 | night-centered, $\hat\rho^{\mathrm{rem}}$ | 0.50 | 0.36 | 0.33 | 0.35 | 0.20 |
 | night-centered, $c^R(\ell)$ | 0.41 | 0.25 | 0.06 | 0.005 | 0.000 |
 | day-centered, $\hat\rho$ | 0.63 | 0.53 | 0.39 | 0.30 | 0.12 |
-| day-centered, $\hat\rho^{\mathrm{rem}}$ | 0.57 | 0.46 | 0.31 | 0.22 | 0.12 |
+| day-centered, $\hat\rho^{\mathrm{rem}}$ | 0.57 | 0.46 | 0.31 | 0.22 | 0.13 |
 | day-centered, $c^R(\ell)$ | 0.46 | 0.28 | 0.06 | 0.005 | 0.000 |
 
 The correlation drops over the first day or two and then decays over weeks:
@@ -830,11 +832,12 @@ a first calibration, as follows.
    over the logarithms of the parameters, by L-BFGS-B with the gradient from
    JAX, within bounds on each (`scripts/fit_nee_discrepancy.py`'s `BOUNDS`),
    from the starts of its `VARIANTS` (three for the three-term model, their
-   standard deviations fractions of $\hat s_k$ and their timescales from a
-   day to two months), keeping the best. Each evaluation is one Cholesky
+   standard deviations fractions of $\hat s_k$ and their timescales from
+   half a day to two months), keeping the best. Each evaluation is one Cholesky
    factorization of $R_k$, of side $n_k \le 1819$; no SIPNET run is needed.
-   The residuals are taken with mean zero: the recurring term carries the
-   bias.
+   The residuals are modeled as zero-mean, their bias carried by the
+   recurring term, whose constant Fourier term is a bias common to every
+   season.
 3. **The tower floor.** The total discrepancy variance of each source is at
    least the towers' estimate of the representativeness error alone,
 

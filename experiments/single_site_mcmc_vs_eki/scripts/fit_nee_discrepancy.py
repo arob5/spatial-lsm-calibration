@@ -51,6 +51,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
+from frozendict import frozendict
+from scipy.linalg import solve_triangular
 from scipy.optimize import minimize
 from scipy.special import logsumexp
 
@@ -59,104 +61,17 @@ from ..model import diagnostics, observations
 from ..model.discrepancy import NEEDiscrepancy
 from ..model.outputs import load_diagnostics, load_eki_run, load_predictive
 
-__all__ = ["VARIANTS", "main"]
-
-
-@dataclass(frozen=True)
-class Variant:
-    """One form of the discrepancy: its free parameters, their bounds and starts."""
-
-    name: str
-    parameter_names: tuple[str, ...]
-    starts: tuple[dict[str, float], ...]
-
-
-#: The bounds of each parameter, in its natural units (umol m-2 s-1, days, or
-#: dimensionless for the recurring width); the fit works in their logarithms.
-BOUNDS = {
-    "short_sd": (1e-3, 20.0),
-    "short_timescale": (0.05, 60.0),
-    "long_sd": (1e-3, 20.0),
-    "long_timescale": (5.0, 730.0),
-    "recurring_sd": (1e-3, 20.0),
-    "recurring_width": (0.05, 3.0),
-    "recurring_timescale": (180.0, 36500.0),
-}
-
-#: The variants fitted, each from its starts; a start's standard deviations
-#: are fractions of the source's non-measurement residual sd, its timescales
-#: in days.
-VARIANTS = (
-    Variant(
-        "single",
-        ("short_sd", "short_timescale"),
-        ({"short_sd": 1.0, "short_timescale": 2.0},),
-    ),
-    Variant(
-        "three_term",
-        (
-            "short_sd",
-            "short_timescale",
-            "long_sd",
-            "long_timescale",
-            "recurring_sd",
-            "recurring_width",
-        ),
-        (
-            {
-                "short_sd": 0.7,
-                "short_timescale": 1.0,
-                "long_sd": 0.5,
-                "long_timescale": 30.0,
-                "recurring_sd": 0.4,
-                "recurring_width": 0.5,
-            },
-            {
-                "short_sd": 0.5,
-                "short_timescale": 0.5,
-                "long_sd": 0.7,
-                "long_timescale": 60.0,
-                "recurring_sd": 0.4,
-                "recurring_width": 0.3,
-            },
-            {
-                "short_sd": 0.8,
-                "short_timescale": 2.0,
-                "long_sd": 0.4,
-                "long_timescale": 15.0,
-                "recurring_sd": 0.5,
-                "recurring_width": 1.0,
-            },
-        ),
-    ),
-    Variant(
-        "drifting",
-        (
-            "short_sd",
-            "short_timescale",
-            "long_sd",
-            "long_timescale",
-            "recurring_sd",
-            "recurring_width",
-            "recurring_timescale",
-        ),
-        (
-            {
-                "short_sd": 0.7,
-                "short_timescale": 1.0,
-                "long_sd": 0.5,
-                "long_timescale": 30.0,
-                "recurring_sd": 0.4,
-                "recurring_width": 0.5,
-                "recurring_timescale": 1500.0,
-            },
-        ),
-    ),
-)
-
-#: The parameters given in units of the non-measurement residual sd at the
-#: starts.
-_RELATIVE_START_NAMES = ("short_sd", "long_sd", "recurring_sd")
+__all__ = [
+    "BOUNDS",
+    "VARIANTS",
+    "Variant",
+    "calibration_sources",
+    "check_residuals_are_finite",
+    "fit_variant",
+    "heldout_scores",
+    "heldout_sources",
+    "main",
+]
 
 
 # ── entry point ──
@@ -170,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         run = load_eki_run(directory)
         floors = load_diagnostics(directory)["nee_towers_summary"][
-            "representativeness_sd"
+            "representativeness_standard_deviation"
         ]
     except (FileNotFoundError, KeyError) as error:
         print(
@@ -183,7 +98,9 @@ def main(argv: list[str] | None = None) -> int:
     rows = []
     for name in config.NEE_WINDOWS:
         for variant in VARIANTS:
-            fitted, log_likelihood = fit_variant(calibration[name], variant)
+            fitted, log_likelihood, convergence = fit_variant(
+                calibration[name], variant
+            )
             rows.append(
                 {
                     "source": name,
@@ -193,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
                     "k": len(variant.parameter_names),
                     "aic": 2 * len(variant.parameter_names) - 2 * log_likelihood,
                     "floor_holds": fitted.total_variance() >= floors[name] ** 2,
+                    **convergence,
                     **heldout_scores(heldout, name, fitted),
                 }
             )
@@ -230,11 +148,22 @@ def heldout_sources(directory, data: str) -> dict | None:
     )
 
 
-def fit_variant(source, variant: Variant) -> tuple[NEEDiscrepancy, float]:
-    """The maximum-likelihood discrepancy of *variant* for *source*'s residuals."""
+def fit_variant(source, variant: "Variant") -> tuple[NEEDiscrepancy, float, dict]:
+    """The maximum-likelihood discrepancy of *variant* for *source*'s residuals.
+
+    Returns the fit, its log likelihood, and ``converged`` (whether the best
+    start's optimizer reported success) with ``at_bound`` (the parameters
+    within 1% of a bound, which a wider bound might move).
+
+    Raises
+    ------
+    ValueError
+        If a residual is not finite.
+    """
     residual = source.y - np.median(source.predictions, axis=0)
+    check_residuals_are_finite(residual)
     times = _days_since_first(source.times)
-    measurement_variance = source.measurement_sd**2
+    measurement_variance = source.measurement_standard_deviation**2
     scale = np.sqrt(max(np.var(residual) - measurement_variance.mean(), 1e-6))
     negative_log_likelihood = _negative_log_likelihood(
         variant,
@@ -261,9 +190,17 @@ def fit_variant(source, variant: Variant) -> tuple[NEEDiscrepancy, float]:
     parameters = dict(
         zip(variant.parameter_names, np.exp(best.x).tolist(), strict=True)
     )
+    at_bound = [
+        name
+        for name, value, (low, high) in zip(
+            variant.parameter_names, best.x, bounds, strict=True
+        )
+        if min(value - low, high - value) < np.log(1.01)
+    ]
     return (
         _discrepancy_of(parameters, provenance=f"fitted, variant {variant.name}"),
         -float(best.fun),
+        {"converged": bool(best.success), "at_bound": " ".join(at_bound)},
     )
 
 
@@ -274,12 +211,12 @@ def heldout_scores(
     if heldout is None:
         return {}
     source = heldout[name]
-    covariance = np.diag(source.measurement_sd**2) + discrepancy.covariance(
-        _days_since_first(source.times)
-    )
+    covariance = np.diag(
+        source.measurement_standard_deviation**2
+    ) + discrepancy.covariance(_days_since_first(source.times))
     factor = np.linalg.cholesky(covariance)
     residuals = source.y[None, :] - source.predictions
-    whitened = np.linalg.solve(factor, residuals.T).T
+    whitened = solve_triangular(factor, residuals.T, lower=True).T
     member_misfits = 0.5 * np.sum(whitened**2, axis=1)
     log_normalizer = np.sum(np.log(np.diag(factor))) + 0.5 * source.y.size * np.log(
         2 * np.pi
@@ -329,11 +266,13 @@ def _negative_log_likelihood(variant, residual, times, measurement_variance):
 def _discrepancy_of(parameters: dict, provenance: str = "") -> NEEDiscrepancy:
     """A discrepancy from fitted values, terms left out at 0, timescales in days."""
     return NEEDiscrepancy(
-        short_sd=parameters["short_sd"],
+        short_standard_deviation=parameters["short_standard_deviation"],
         short_timescale=parameters["short_timescale"],
-        long_sd=parameters.get("long_sd", 0.0),
+        long_standard_deviation=parameters.get("long_standard_deviation", 0.0),
         long_timescale=parameters.get("long_timescale", 30.0),
-        recurring_sd=parameters.get("recurring_sd", 0.0),
+        recurring_standard_deviation=parameters.get(
+            "recurring_standard_deviation", 0.0
+        ),
         recurring_width=parameters.get("recurring_width", 0.5),
         recurring_timescale=parameters.get("recurring_timescale"),
         provenance=provenance,
@@ -350,6 +289,126 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--data", choices=("synthetic", "observed"), required=True)
     return parser
+
+
+# ── supporting types, and the variants ──
+#
+# The variants are built last: their construction needs Variant.
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One form of the discrepancy: its free parameters, their bounds and starts."""
+
+    name: str
+    parameter_names: tuple[str, ...]
+    starts: tuple[dict[str, float], ...]
+
+
+#: The bounds of each parameter, in its natural units (umol m-2 s-1, days, or
+#: dimensionless for the recurring width); the fit works in their logarithms.
+BOUNDS = frozendict(
+    {
+        "short_standard_deviation": (1e-3, 20.0),
+        "short_timescale": (0.05, 60.0),
+        "long_standard_deviation": (1e-3, 20.0),
+        "long_timescale": (5.0, 730.0),
+        "recurring_standard_deviation": (1e-3, 20.0),
+        "recurring_width": (0.05, 3.0),
+        "recurring_timescale": (180.0, 36500.0),
+    }
+)
+
+#: The variants fitted, each from its starts; a start's standard deviations
+#: are fractions of the source's non-measurement residual sd, its timescales
+#: in days.
+VARIANTS = (
+    Variant(
+        "single",
+        ("short_standard_deviation", "short_timescale"),
+        ({"short_standard_deviation": 1.0, "short_timescale": 2.0},),
+    ),
+    Variant(
+        "three_term",
+        (
+            "short_standard_deviation",
+            "short_timescale",
+            "long_standard_deviation",
+            "long_timescale",
+            "recurring_standard_deviation",
+            "recurring_width",
+        ),
+        (
+            {
+                "short_standard_deviation": 0.7,
+                "short_timescale": 1.0,
+                "long_standard_deviation": 0.5,
+                "long_timescale": 30.0,
+                "recurring_standard_deviation": 0.4,
+                "recurring_width": 0.5,
+            },
+            {
+                "short_standard_deviation": 0.5,
+                "short_timescale": 0.5,
+                "long_standard_deviation": 0.7,
+                "long_timescale": 60.0,
+                "recurring_standard_deviation": 0.4,
+                "recurring_width": 0.3,
+            },
+            {
+                "short_standard_deviation": 0.8,
+                "short_timescale": 2.0,
+                "long_standard_deviation": 0.4,
+                "long_timescale": 15.0,
+                "recurring_standard_deviation": 0.5,
+                "recurring_width": 1.0,
+            },
+        ),
+    ),
+    Variant(
+        "drifting",
+        (
+            "short_standard_deviation",
+            "short_timescale",
+            "long_standard_deviation",
+            "long_timescale",
+            "recurring_standard_deviation",
+            "recurring_width",
+            "recurring_timescale",
+        ),
+        (
+            {
+                "short_standard_deviation": 0.7,
+                "short_timescale": 1.0,
+                "long_standard_deviation": 0.5,
+                "long_timescale": 30.0,
+                "recurring_standard_deviation": 0.4,
+                "recurring_width": 0.5,
+                "recurring_timescale": 1500.0,
+            },
+        ),
+    ),
+)
+
+#: The parameters given in units of the non-measurement residual sd at the
+#: starts.
+_RELATIVE_START_NAMES = (
+    "short_standard_deviation",
+    "long_standard_deviation",
+    "recurring_standard_deviation",
+)
+
+
+# ── checks ──
+
+
+def check_residuals_are_finite(residual: np.ndarray) -> None:
+    """Every residual the fit reads is finite."""
+    if not np.isfinite(residual).all():
+        raise ValueError(
+            "a residual is not finite; diagnose the run and check its failed "
+            "members before fitting"
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """The noise model: the covariance of the observation errors, and the likelihood it defines.
 
-``README.md``, "The observation model", states the model exactly; this module
+``MODEL.md``, "The observation model", states the model exactly; this module
 builds it. The covariance ``R`` of ``y`` is block-diagonal over the
 observation sources, and each source's block is its measurement error plus a
 model discrepancy:
@@ -136,7 +136,7 @@ def measurement_standard_deviations(
 ) -> dict[str, np.ndarray]:
     """Each observation's measurement-error standard deviation, per observation source.
 
-    As ``README.md``, "Measurement error", defines them: for a NEE window, the
+    As ``MODEL.md``, "Measurement error", defines them: for a NEE window, the
     random part averaged down over its values and the u* part not, and the
     median of the source's windows for a window none of whose values reports
     an uncertainty; for a constraint, its data source's own standard

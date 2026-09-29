@@ -37,7 +37,7 @@ import numpy as np
 
 from .. import config
 from ..model import prior
-from ..model.outputs import load_eki_run
+from ..model.outputs import check_eki_run_finished, load_eki_run
 from . import predictive, provenance
 
 __all__ = ["main"]
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
 def final_ensemble(run_directory: Path) -> np.ndarray:
     """The ensemble a finished EKI run ended with, ``(J, D)``."""
     run = load_eki_run(run_directory)
-    check_run_reached_the_posterior(run["beta"], run_directory)
+    check_eki_run_finished(run, run_directory)
     return run["theta_posterior"]
 
 
@@ -86,18 +86,6 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--data", choices=("synthetic", "observed"), required=True)
     return parser
-
-
-# ── checks ──
-
-
-def check_run_reached_the_posterior(beta: float, run_directory: Path) -> None:
-    """The EKI run's last step reached beta = 1."""
-    if not np.isclose(beta, 1.0):
-        raise ValueError(
-            f"the run under {run_directory} ended at beta {beta:g}, not 1; "
-            "finish it with scripts/eki.py --resume"
-        )
 
 
 if __name__ == "__main__":

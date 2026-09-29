@@ -38,35 +38,33 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..model.outputs import load_diagnostics, run_directory
-from .common import NEE_TITLES, save_figure
+from .common import NEE_TITLES, SOURCE_LABELS, save_figure
 from .prior_predictive import SLIDE_STYLE
 
 __all__ = [
+    "CHECK_ROW_LABELS",
     "plot_autocorrelation",
     "plot_predictive_check",
     "plot_towers",
     "plot_weekly_residuals",
 ]
 
-#: Row labels of the observation sources, in the order they are drawn.
-SOURCE_LABELS = {
-    "nee_night_centered": "NEE, night-centered",
-    "nee_day_centered": "NEE, day-centered",
-    "modis_leaf_area_index": "MODIS LAI",
-    "landtrendr_aboveground_biomass": "LandTrendr biomass",
-    "soilgrids_soil_organic_carbon": "SoilGrids soil C",
-    "all": "all sources",
-}
+#: The predictive check's row labels: every source's, then all sources'.
+CHECK_ROW_LABELS = {**SOURCE_LABELS, "all": "all sources"}
 
 
-def plot_predictive_check(tables: dict) -> plt.Figure:
-    """The standardized misfit per source, against the band the model expects."""
+def plot_predictive_check(tables: dict, *, kind: str = "posterior") -> plt.Figure:
+    """The standardized misfit per source, against the band the model expects.
+
+    *kind* names the check in the title: ``posterior``, or ``prior`` for the
+    prior predictive.
+    """
     rows = []
     for vector in ("calibration", "validation"):
         table = tables.get(f"predictive_check_{vector}")
         if table is None:
             continue
-        for source, label in SOURCE_LABELS.items():
+        for source, label in CHECK_ROW_LABELS.items():
             if source in table.index:
                 row = table.loc[source]
                 scale = np.sqrt(row["n"] / 2)
@@ -98,7 +96,8 @@ def plot_predictive_check(tables: dict) -> plt.Figure:
     ax.set_xlim(min(-3.0, frame["low"].min() - 1), frame["high"].max() * 1.25 + 4)
     ax.set_xlabel("standardized misfit, (misfit − n/2) / √(n/2)")
     ax.set_title(
-        "Posterior predictive check: each source's misfit against its χ² reference"
+        f"{kind.capitalize()} predictive check: each source's misfit against its "
+        "χ² reference"
     )
     ax.legend(loc="lower right", fontsize=10)
     return figure
@@ -181,7 +180,7 @@ def plot_towers(tables: dict) -> plt.Figure:
         ax.set_title(
             f"{NEE_TITLES[name]}\n{int(row['n'])} windows, "
             f"{int(row['first_year'])}-{int(row['last_year'])}; "
-            f"representativeness sd ≥ {row['representativeness_sd']:.2f}"
+            f"representativeness sd ≥ {row['representativeness_standard_deviation']:.2f}"
         )
         ax.set_xlabel("US-xHA (µmol CO₂ m⁻² s⁻¹)")
         ax.set_ylabel("US-Ha1 (µmol CO₂ m⁻² s⁻¹)")
@@ -208,8 +207,13 @@ def main(argv: list[str] | None = None) -> int:
     eki_run = run_name != "prior"
     with plt.rc_context(SLIDE_STYLE):
         prefix = f"diagnostics_{run_name}"
+        kind = "prior" if run_name == "prior" else "posterior"
+        save_figure(
+            plot_predictive_check(tables, kind=kind),
+            f"{prefix}_predictive_check",
+            eki_run=eki_run,
+        )
         for name, draw in (
-            ("predictive_check", plot_predictive_check),
             ("weekly_residuals", plot_weekly_residuals),
             ("autocorrelation", plot_autocorrelation),
         ):

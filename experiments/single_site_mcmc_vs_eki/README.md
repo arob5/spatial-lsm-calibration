@@ -4,7 +4,9 @@ Calibrate SIPNET at one site, Harvard Forest by default, to observed NEE and
 the pool constraints, and compare the posterior an MCMC sampler finds with the
 one EKI finds. `config.py` is the one source of truth; nothing else here makes
 a choice. `MODEL.md` states the model exactly: the observation operators, the
-noise covariance, and the parameterization and prior.
+noise covariance, the parameterization and prior, the diagnostics every run
+is checked by, and NEE's error, the first calibration's test of it and the
+revised model fitted in its place.
 
 ## Layout
 
@@ -58,7 +60,7 @@ processed files built (`scripts/ingest_*.py`):
 ```bash
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prepare_drivers
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.describe
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prior_predictive   # about 15 minutes here; --ensemble-size for fewer draws
+uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prior_predictive   # about 15 minutes on 7 workers, so roughly 35 on the default 3; --ensemble-size for fewer draws
 uv run python -m experiments.single_site_mcmc_vs_eki.figures.prior_predictive
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data synthetic   # --resume continues an interrupted run
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data observed
@@ -76,8 +78,9 @@ uv run python -m experiments.single_site_mcmc_vs_eki.figures.diagnostics --run o
 uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data observed
 ```
 
-To refit NEE's discrepancy to an EKI run's residuals (after its diagnosis,
-which the fit's tower floor reads):
+To refit NEE's discrepancy to an EKI run's residuals (after its posterior
+predictive, which the held-out scores read, and its diagnosis, which the
+tower floor reads):
 
 ```bash
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.fit_nee_discrepancy --data observed

@@ -4,7 +4,10 @@ What the prior and the posterior predictive share: running an ensemble of
 theta through the forward model for the calibration and validation
 predictions and for daily model output, scoring each row under the
 calibration likelihood, and writing it all in one layout, which
-``model/outputs.py``'s ``load_predictive`` reads.
+``model/outputs.py``'s ``load_predictive`` reads. A member that fails, or
+whose SIPNET parameters leave pySIPNET's domain (the forward model's
+``out_of_domain="fail_row"``, as EKI runs it), is written as NaN rather than
+stopping the run, and the failures are printed.
 
 Output data
 -----------
@@ -141,6 +144,7 @@ def run_ensemble(
             sipnet_map,
             observation_vector=observation_vector,
             external_inputs=external_inputs,
+            out_of_domain="fail_row",
         ).evaluate(samples)
         _report_failures(label, evaluation)
         predicted[label] = evaluation.predicted_fields()
@@ -153,6 +157,7 @@ def run_ensemble(
         output_variable_names=config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES,
         freq="1D",
         external_inputs=external_inputs,
+        out_of_domain="fail_row",
     ).evaluate(samples)
     _report_failures("daily output", daily)
     return {

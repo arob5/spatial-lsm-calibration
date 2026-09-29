@@ -47,12 +47,16 @@ import sys
 import warnings
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from .. import config
 from ..model import diagnostics, observations
-from ..model.outputs import load_eki_run, load_predictive, run_directory
+from ..model.outputs import (
+    check_eki_run_finished,
+    load_eki_run,
+    load_predictive,
+    run_directory,
+)
 
 __all__ = ["NOISE_CONFIG_NAMES", "main"]
 
@@ -112,7 +116,7 @@ def run_sources(run_name: str, directory: Path):
             ),
         )
     run = load_eki_run(directory)
-    check_run_reached_the_posterior(run["beta"], directory)
+    check_eki_run_finished(run, directory)
     y = run["y"] if run["y"] is not None else calibration_vector.y
     calibration = diagnostics.sources_from_flat(
         calibration_vector, y, run["predictions"], config.CALIBRATION_NEE_SERIES
@@ -210,18 +214,6 @@ def _parser() -> argparse.ArgumentParser:
         "--run", choices=("prior", "synthetic", "observed"), required=True
     )
     return parser
-
-
-# ── checks ──
-
-
-def check_run_reached_the_posterior(beta: float, directory: Path) -> None:
-    """An EKI run's last step reached beta = 1."""
-    if not np.isclose(beta, 1.0):
-        raise ValueError(
-            f"the run under {directory} ended at beta {beta:g}, not 1; "
-            "finish it with scripts/eki.py --resume"
-        )
 
 
 if __name__ == "__main__":

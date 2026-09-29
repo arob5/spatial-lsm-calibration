@@ -5,7 +5,7 @@ The three objects of a calibration for this experiment: the
 calibrated), the :class:`~sipnet_calibration.prior.Prior` (what is believed
 beforehand) and the
 :class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap` (how a
-value reaches SIPNET), with the external inputs the map reads. ``README.md``,
+value reaches SIPNET), with the external inputs the map reads. ``MODEL.md``,
 "Parameterization and prior", says how they were found; every prior term and
 fixed value carries its provenance, and
 :func:`sipnet_calibration.calibration.describe_calibration` tabulates them.

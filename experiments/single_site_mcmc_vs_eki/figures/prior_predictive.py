@@ -55,9 +55,10 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 from .. import config
 from ..model import inputs
 from ..model.outputs import load_predictive
-from .common import NEE_TITLES, one_legend, save_figure
+from .common import NEE_TITLES, SOURCE_LABELS, one_legend, save_figure
 
 __all__ = [
+    "PARAMETER_TITLES",
     "PREDICTIVES",
     "SLIDE_STYLE",
     "plot_coverage",
@@ -128,15 +129,6 @@ PARAMETER_TITLES = {
 
 #: g C m-2 in one umol CO2 m-2 s-1 sustained for one second.
 _GRAMS_CARBON_PER_UMOL_SECOND = 12.011e-6
-
-#: The observation sources' labels on the coverage figure.
-_SOURCE_LABELS = {
-    "nee_night_centered": "NEE, night-centered",
-    "nee_day_centered": "NEE, day-centered",
-    "modis_leaf_area_index": "MODIS LAI",
-    "landtrendr_aboveground_biomass": "LandTrendr biomass",
-    "soilgrids_soil_organic_carbon": "SoilGrids soil C",
-}
 
 
 def plot_nee_windows(
@@ -352,7 +344,7 @@ def plot_coverage(
     rows = []
     source_labels = {
         name: label
-        for name, label in _SOURCE_LABELS.items()
+        for name, label in SOURCE_LABELS.items()
         if name in outputs["observed"][vector]
     }
     for name, label in source_labels.items():
