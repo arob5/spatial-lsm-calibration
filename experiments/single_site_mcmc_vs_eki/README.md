@@ -31,12 +31,14 @@ the repository root with `python -m`. Its parts depend one way:
 | `model/fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
 | `scripts/prepare_drivers.py` | writes the site's driver file, corrected for four known defects of the ERA5 driver files, to `output/drivers/`, which the runs read; its docstring says what each defect is and how it is corrected |
 | `scripts/describe.py` | prints what the inputs, the observation vectors and the noise model hold; the check that everything is found and builds |
-| `scripts/prior_predictive.py` | one SIPNET run by hand at the prior mean and an ensemble of prior draws through the forward model, predicting both observation vectors, scored under the likelihood; writes to `output/prior_predictive/` |
+| `scripts/predictive.py` | what the prior and posterior predictives share: an ensemble (and optionally one run by hand) through the forward model, predicting both observation vectors and daily output, scored under the likelihood, written in one layout |
+| `scripts/prior_predictive.py` | one SIPNET run by hand at the prior mean and an ensemble of prior draws; writes to `output/prior_predictive/` |
 | `scripts/eki.py` | EKI in its sampling form, on observed or synthetic data: a prior ensemble moved up an adaptive tempering ladder to beta = 1 by the perturbed-observation update, every step checkpointed and resumable; writes to `output/eki/<data>/` |
+| `scripts/posterior_predictive.py` | an EKI run's final ensemble through the same predictive; writes to `output/eki/<data>/posterior_predictive/` |
 | `scripts/provenance.py` | the `provenance.json` each script writes beside its outputs |
 | `figures/common.py` | reading the scripts' outputs, and the shared legend |
 | `figures/prior_predictive.py` | the prior predictive's figures: NEE windows, pool constraints and daily trajectories, and the slide figures (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); writes to `output/figures/` |
-| `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, and, on synthetic data, recovery of the truth |
+| `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, on synthetic data recovery of the truth, and the posterior predictive's figures |
 | `exploration/parameter_analysis/` | the evidence for the prior and the fixed values: the parameter-structure analysis, the base set, the sensitivity screening and the prior-predictive checks |
 | `exploration/fast_forward.py` | a fast forward path for exploration, SIPNET in a process pool with the predictions by index arithmetic; it equals the library's to 1e-11, and is not the calibration's forward model |
 | `output/` | everything the experiment writes; untracked |
@@ -54,6 +56,9 @@ uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prior_predictive   
 uv run python -m experiments.single_site_mcmc_vs_eki.figures.prior_predictive
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data synthetic   # --resume continues an interrupted run
 uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data synthetic
+uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data observed
+uv run python -m experiments.single_site_mcmc_vs_eki.scripts.posterior_predictive --data observed
+uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data observed
 ```
 
 In a notebook started from the repository root, import the parts the same

@@ -2,9 +2,9 @@
 
 Functions
 ---------
-:func:`load_prior_predictive`
-    What ``scripts/prior_predictive.py`` wrote, as nested dicts of xarray
-    objects at the site.
+:func:`load_predictive`
+    What ``scripts/predictive.py`` wrote for a prior or a posterior
+    predictive, as nested dicts of xarray objects at the site.
 :func:`at_site`
     Data at the configured site, the ``site`` dim dropped.
 :func:`one_legend`
@@ -21,7 +21,7 @@ from sipnet_calibration.conventions import SITE
 
 from .. import config
 
-__all__ = ["NEE_TITLES", "at_site", "load_prior_predictive", "one_legend"]
+__all__ = ["NEE_TITLES", "at_site", "load_predictive", "one_legend"]
 
 #: Panel titles of the NEE sources.
 NEE_TITLES = {
@@ -30,24 +30,27 @@ NEE_TITLES = {
 }
 
 
-def load_prior_predictive(directory: Path | None = None) -> dict:
-    """What ``scripts/prior_predictive.py`` wrote, as nested dicts of xarray objects.
+def load_predictive(directory: Path | None = None) -> dict:
+    """What ``scripts/predictive.py`` wrote, as nested dicts of xarray objects.
 
-    Returns ``{"daily": {"single_run", "ensemble"}, "predicted": {run:
-    {vector: {source: field}}}, "observed": {vector: {source: dataset}}}``,
-    every field at the site. Raises ``FileNotFoundError`` when a daily file
-    is missing.
+    Returns ``{"daily": {run: Dataset}, "predicted": {run: {vector: {source:
+    field}}}, "observed": {vector: {source: dataset}}}``, every field at the
+    site, the runs being ``ensemble`` and, when the predictive has one run
+    by hand, ``single_run``. *directory* defaults to the prior predictive's.
+    Raises ``FileNotFoundError`` when the ensemble's daily file is missing.
     """
     directory = directory or config.PRIOR_PREDICTIVE_DIRECTORY
+    runs = ["ensemble"]
+    if (directory / "single_run_daily.nc").exists():
+        runs = ["single_run", *runs]
     outputs = {
         "daily": {
-            "single_run": at_site(xr.load_dataset(directory / "single_run_daily.nc")),
-            "ensemble": at_site(xr.load_dataset(directory / "ensemble_daily.nc")),
+            run: at_site(xr.load_dataset(directory / f"{run}_daily.nc")) for run in runs
         },
         "predicted": {},
         "observed": {},
     }
-    for run in ("single_run", "ensemble"):
+    for run in runs:
         outputs["predicted"][run] = {
             vector: {
                 path.stem: at_site(xr.load_dataarray(path))

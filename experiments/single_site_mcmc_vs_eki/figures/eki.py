@@ -14,13 +14,18 @@ and draws, into ``config.FIGURE_DIRECTORY``:
   each entry of theta standardized by the prior, ``(theta - m_0) / sd_0``,
   with the prior's and the posterior ensemble's 90% intervals and the
   truth, and the posterior's standard deviation as a fraction of the
-  prior's.
+  prior's;
+- once ``scripts/posterior_predictive.py`` has run, the prior predictive's
+  figures drawn for the posterior predictive (``eki_posterior_predictive_*``),
+  ``figures/prior_predictive.py``'s functions with ``kind="posterior"``, and
+  its coverage of the held-out tower as well.
 
 Usage
 -----
 From the repository root::
 
     uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data synthetic
+    uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data observed
 """
 
 import argparse
@@ -35,7 +40,9 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..model import prior
-from .prior_predictive import PARAMETER_TITLES
+from . import prior_predictive
+from .common import load_predictive
+from .prior_predictive import PARAMETER_TITLES, SLIDE_STYLE
 
 __all__ = ["load_eki", "plot_ladder", "plot_marginals", "plot_recovery"]
 
@@ -220,11 +227,49 @@ def main(argv: list[str] | None = None) -> int:
         )
         figures["eki_recovery_synthetic"] = plot_recovery(run, entry_names)
     for name, figure in figures.items():
-        path = config.FIGURE_DIRECTORY / f"{name}.png"
-        figure.savefig(path)
-        plt.close(figure)
-        print(f"wrote {path}")
+        _save(figure, name)
+    predictive_directory = config.EKI_DIRECTORY / data / "posterior_predictive"
+    if (predictive_directory / "ensemble_daily.nc").exists():
+        _draw_posterior_predictive(load_predictive(predictive_directory), data)
     return 0
+
+
+# ── helpers ──
+
+
+def _draw_posterior_predictive(outputs: dict, data: str) -> None:
+    """The prior predictive's figures, drawn for the posterior predictive."""
+    prefix = f"eki_posterior_predictive_{data}"
+    for name, draw in (
+        ("nee", prior_predictive.plot_nee_windows),
+        ("pools", prior_predictive.plot_pool_observations),
+        ("trajectories", prior_predictive.plot_daily_trajectories),
+    ):
+        _save(draw(outputs, kind="posterior"), f"{prefix}_{name}")
+    with plt.rc_context(SLIDE_STYLE):
+        for name, figure in (
+            (
+                "nee_seasonal",
+                prior_predictive.plot_nee_seasonal_cycle(outputs, kind="posterior"),
+            ),
+            ("nee_annual", prior_predictive.plot_nee_annual(outputs, kind="posterior")),
+            ("coverage", prior_predictive.plot_coverage(outputs, kind="posterior")),
+            (
+                "coverage_validation",
+                prior_predictive.plot_coverage(
+                    outputs, kind="posterior", vector="validation"
+                ),
+            ),
+        ):
+            _save(figure, f"{prefix}_{name}")
+
+
+def _save(figure: plt.Figure, name: str) -> None:
+    """Write *figure* as ``<name>.png`` into the figure directory, and close it."""
+    path = config.FIGURE_DIRECTORY / f"{name}.png"
+    figure.savefig(path)
+    plt.close(figure)
+    print(f"wrote {path}")
 
 
 if __name__ == "__main__":

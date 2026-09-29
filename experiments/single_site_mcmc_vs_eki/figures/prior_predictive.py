@@ -45,6 +45,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from frozendict import frozendict
+
 from sipnet_calibration.conventions import SAMPLE, TIME, TIMESTEP_LENGTH, TIMESTEP_START
 from sipnet_calibration.observation import aggregate_time
 from sipnet_calibration.plotting import plot_time_series
@@ -52,9 +54,10 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..model import inputs
-from .common import NEE_TITLES, load_prior_predictive, one_legend
+from .common import NEE_TITLES, load_predictive, one_legend
 
 __all__ = [
+    "PREDICTIVES",
     "SLIDE_STYLE",
     "plot_coverage",
     "plot_daily_trajectories",
@@ -65,8 +68,29 @@ __all__ = [
     "plot_prior_marginals",
 ]
 
-#: The legend entries of the three things every time series panel shows.
-ENSEMBLE_LABEL = "ensemble (prior draws)"
+#: How each predictive is drawn, by its kind: its ensemble's role, its
+#: ensemble's legend entry, and its name in titles and legends.
+PREDICTIVES = frozendict(
+    {
+        "prior": frozendict(
+            {
+                "role": "prior",
+                "ensemble_label": "ensemble (prior draws)",
+                "name": "prior predictive",
+            }
+        ),
+        "posterior": frozendict(
+            {
+                "role": "posterior",
+                "ensemble_label": "ensemble (EKI posterior)",
+                "name": "posterior predictive",
+            }
+        ),
+    }
+)
+
+#: The legend entries of the other things a time series panel shows: the one
+#: run, which only the prior predictive has, and the observations.
 SINGLE_RUN_LABEL = "one run (prior center)"
 OBSERVED_LABEL = "observed (US-Ha1, constraints)"
 HELD_OUT_LABEL = "held out (US-xHA)"
@@ -114,7 +138,9 @@ _SOURCE_LABELS = {
 }
 
 
-def plot_nee_windows(outputs: dict, *, zoom_year: int = 2015) -> plt.Figure:
+def plot_nee_windows(
+    outputs: dict, *, kind: str = "prior", zoom_year: int = 2015
+) -> plt.Figure:
     """Both NEE sources: the whole record (left) and one year with error bars (right)."""
     figure, axes = plt.subplots(
         len(config.NEE_WINDOWS), 2, figsize=(12, 6), width_ratios=(2.2, 1), sharey="row"
@@ -122,9 +148,9 @@ def plot_nee_windows(outputs: dict, *, zoom_year: int = 2015) -> plt.Figure:
     for row, name in enumerate(config.NEE_WINDOWS):
         whole, year = axes[row]
         for vector in ("calibration", "validation"):
-            _draw_predictions(whole, outputs, vector, name)
+            _draw_predictions(whole, outputs, vector, name, kind)
             _draw_observed(whole, outputs, vector, name, error_bars=False)
-        _draw_predictions(year, outputs, "calibration", name)
+        _draw_predictions(year, outputs, "calibration", name, kind)
         _draw_observed(year, outputs, "calibration", name, error_bars=True)
         year.set_xlim(
             np.datetime64(f"{zoom_year}-01-01"), np.datetime64(f"{zoom_year + 1}-01-01")
@@ -140,7 +166,7 @@ def plot_nee_windows(outputs: dict, *, zoom_year: int = 2015) -> plt.Figure:
     return figure
 
 
-def plot_pool_observations(outputs: dict) -> plt.Figure:
+def plot_pool_observations(outputs: dict, *, kind: str = "prior") -> plt.Figure:
     """Leaf area index, aboveground biomass and soil carbon, observed against the runs."""
     figure, axes = plt.subplots(1, 3, figsize=(12, 3.4), width_ratios=(2, 1.2, 0.7))
     for ax, name in zip(
@@ -148,18 +174,18 @@ def plot_pool_observations(outputs: dict) -> plt.Figure:
         ("modis_leaf_area_index", "landtrendr_aboveground_biomass"),
         strict=True,
     ):
-        _draw_predictions(ax, outputs, "calibration", name)
+        _draw_predictions(ax, outputs, "calibration", name, kind)
         _draw_observed(ax, outputs, "calibration", name, error_bars=True)
         ax.set_xlabel("")
     axes[0].set_title("MODIS leaf area index (June-August composites)")
     axes[1].set_title("LandTrendr aboveground biomass (dry)")
-    _draw_static(axes[2], outputs, "soilgrids_soil_organic_carbon")
+    _draw_static(axes[2], outputs, "soilgrids_soil_organic_carbon", kind)
     axes[2].set_title("SoilGrids soil carbon")
     one_legend(figure, axes)
     return figure
 
 
-def plot_daily_trajectories(outputs: dict) -> plt.Figure:
+def plot_daily_trajectories(outputs: dict, *, kind: str = "prior") -> plt.Figure:
     """The fluxes and pools behind the observations, as daily model output."""
     names = config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES
     figure, axes = plt.subplots(2, 3, figsize=(12, 6), sharex=True)
@@ -167,15 +193,16 @@ def plot_daily_trajectories(outputs: dict) -> plt.Figure:
         plot_time_series(
             outputs["daily"]["ensemble"][name],
             ax=ax,
-            role="prior",
-            label=ENSEMBLE_LABEL,
+            role=PREDICTIVES[kind]["role"],
+            label=PREDICTIVES[kind]["ensemble_label"],
         )
-        plot_time_series(
-            outputs["daily"]["single_run"][name],
-            ax=ax,
-            role="posterior",
-            label=SINGLE_RUN_LABEL,
-        )
+        if "single_run" in outputs["daily"]:
+            plot_time_series(
+                outputs["daily"]["single_run"][name],
+                ax=ax,
+                role="posterior",
+                label=SINGLE_RUN_LABEL,
+            )
         ax.set_title(name.replace("_", " "))
         ax.set_xlabel("")
     one_legend(figure, axes)
@@ -207,8 +234,9 @@ def plot_prior_marginals(parameters: pd.DataFrame) -> plt.Figure:
     return figure
 
 
-def plot_nee_seasonal_cycle(outputs: dict) -> plt.Figure:
-    """NEE by week of year, observed against the prior predictive, at the observed windows."""
+def plot_nee_seasonal_cycle(outputs: dict, *, kind: str = "prior") -> plt.Figure:
+    """NEE by week of year, observed against a predictive, at the observed windows."""
+    predictive = PREDICTIVES[kind]["name"]
     figure, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True)
     for ax, name in zip(axes, config.NEE_WINDOWS, strict=True):
         observed = outputs["observed"]["calibration"][name]["value"]
@@ -221,7 +249,7 @@ def plot_nee_seasonal_cycle(outputs: dict) -> plt.Figure:
             .mean()
         )
         quantiles = predicted_weekly.quantile([0.05, 0.25, 0.5, 0.75, 0.95], axis=1).T
-        color = role_style("prior", "band")["color"]
+        color = role_style(PREDICTIVES[kind]["role"], "band")["color"]
         ax.fill_between(
             quantiles.index,
             quantiles[0.05],
@@ -229,7 +257,7 @@ def plot_nee_seasonal_cycle(outputs: dict) -> plt.Figure:
             color=color,
             alpha=0.25,
             linewidth=0,
-            label="prior predictive, 90%",
+            label=f"{predictive}, 90%",
         )
         ax.fill_between(
             quantiles.index,
@@ -238,14 +266,14 @@ def plot_nee_seasonal_cycle(outputs: dict) -> plt.Figure:
             color=color,
             alpha=0.5,
             linewidth=0,
-            label="prior predictive, 50%",
+            label=f"{predictive}, 50%",
         )
         ax.plot(
             quantiles.index,
             quantiles[0.5],
             color="#555555",
             linewidth=1.5,
-            label="prior predictive, median",
+            label=f"{predictive}, median",
         )
         ax.plot(
             observed_weekly.index,
@@ -261,14 +289,15 @@ def plot_nee_seasonal_cycle(outputs: dict) -> plt.Figure:
     axes[0].set_ylabel("NEE (µmol CO₂ m⁻² s⁻¹), weekly mean")
     one_legend(figure, axes)
     figure.suptitle(
-        "NEE's seasonal cycle, prior predictive against observed: weekly means over "
+        f"NEE's seasonal cycle, {predictive} against observed: weekly means over "
         "the observed windows"
     )
     return figure
 
 
-def plot_nee_annual(outputs: dict) -> plt.Figure:
-    """Annual NEE per year: the prior predictive's spread against both towers' totals."""
+def plot_nee_annual(outputs: dict, *, kind: str = "prior") -> plt.Figure:
+    """Annual NEE per year: a predictive's spread against both towers' totals."""
+    predictive = PREDICTIVES[kind]["name"]
     daily = outputs["daily"]["ensemble"]["net_ecosystem_exchange"]
     annual = aggregate_time(daily, "YS")
     # A cell is labeled with its end; its year is its first step's. The
@@ -279,7 +308,7 @@ def plot_nee_annual(outputs: dict) -> plt.Figure:
     values = annual.transpose(SAMPLE, TIME).to_numpy()
     keep = days >= 365
     figure, ax = plt.subplots(figsize=(12, 5))
-    color = role_style("prior", "band")["color"]
+    color = role_style(PREDICTIVES[kind]["role"], "band")["color"]
     parts = ax.violinplot(
         [values[:, i] for i in np.flatnonzero(keep)],
         positions=years[keep],
@@ -305,22 +334,29 @@ def plot_nee_annual(outputs: dict) -> plt.Figure:
             markerfacecolor="black" if marker == "o" else "none",
             label=label,
         )
-    ax.plot([], [], color=color, linewidth=8, alpha=0.5, label="prior predictive")
+    ax.plot([], [], color=color, linewidth=8, alpha=0.5, label=predictive)
     ax.axhline(0.0, color="#999999", linewidth=0.6, zorder=0)
     ax.set_xticks(range(2012, 2025))
     ax.set_ylabel("annual NEE (g C m⁻² yr⁻¹)\nnegative = uptake")
-    ax.set_title("Annual NEE: prior predictive against the towers' gap-filled totals")
+    ax.set_title(f"Annual NEE: {predictive} against the towers' gap-filled totals")
     ax.legend(loc="upper left", ncol=3)
     return figure
 
 
-def plot_coverage(outputs: dict) -> plt.Figure:
+def plot_coverage(
+    outputs: dict, *, kind: str = "prior", vector: str = "calibration"
+) -> plt.Figure:
     """Per source, the fraction of observations inside the 50% and 90% predictive intervals."""
     rng = np.random.default_rng(0)
     rows = []
-    for name, label in _SOURCE_LABELS.items():
-        observed = outputs["observed"]["calibration"][name]
-        predicted = outputs["predicted"]["ensemble"]["calibration"][name]
+    source_labels = {
+        name: label
+        for name, label in _SOURCE_LABELS.items()
+        if name in outputs["observed"][vector]
+    }
+    for name, label in source_labels.items():
+        observed = outputs["observed"][vector][name]
+        predicted = outputs["predicted"]["ensemble"][vector][name]
         y = np.atleast_1d(observed["value"].to_numpy())
         sd = np.atleast_1d(observed["noise_standard_deviation"].to_numpy())
         samples = (
@@ -342,12 +378,12 @@ def plot_coverage(outputs: dict) -> plt.Figure:
     table = (
         pd.DataFrame(rows)
         .pivot(index="source", columns="level", values="inside")
-        .loc[list(_SOURCE_LABELS.values())]
+        .loc[list(source_labels.values())]
     )
     counts = pd.DataFrame(rows).groupby("source")["n"].first()
     figure, ax = plt.subplots(figsize=(10, 4.5))
     positions = np.arange(len(table))
-    color = role_style("prior", "band")["color"]
+    color = role_style(PREDICTIVES[kind]["role"], "band")["color"]
     ax.barh(
         positions + 0.2,
         table[0.9],
@@ -386,7 +422,11 @@ def plot_coverage(outputs: dict) -> plt.Figure:
     ax.invert_yaxis()
     ax.set_xlim(0, 1.08)
     ax.set_xlabel("fraction of observations (dashed: the nominal level)")
-    ax.set_title("Prior predictive coverage, noise model included")
+    held_out = ", held-out tower" if vector == "validation" else ""
+    ax.set_title(
+        f"{PREDICTIVES[kind]['name'].capitalize()} coverage{held_out}, "
+        "noise model included"
+    )
     ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2)
     return figure
 
@@ -399,7 +439,7 @@ def main() -> int:
     use_project_style()
     directory = config.PRIOR_PREDICTIVE_DIRECTORY
     try:
-        outputs = load_prior_predictive(directory)
+        outputs = load_predictive(directory)
         parameters = pd.read_csv(directory / "parameters.csv", index_col=0)
     except FileNotFoundError as error:
         print(f"error: {error}; run scripts/prior_predictive.py first", file=sys.stderr)
@@ -433,16 +473,22 @@ def _save(figure: plt.Figure, name: str) -> None:
     print(f"wrote {path}")
 
 
-def _draw_predictions(ax, outputs: dict, vector: str, name: str) -> None:
-    """The ensemble's fan and the one run's line at a source's observations."""
+def _draw_predictions(ax, outputs: dict, vector: str, name: str, kind: str) -> None:
+    """The ensemble's fan and the one run's line, if any, at a source's observations."""
     ensemble = outputs["predicted"]["ensemble"][vector].get(name)
-    single = outputs["predicted"]["single_run"][vector].get(name)
+    single = outputs["predicted"].get("single_run", {}).get(vector, {}).get(name)
     if ensemble is None:
         return
-    plot_time_series(ensemble, ax=ax, role="prior", label=ENSEMBLE_LABEL)
     plot_time_series(
-        single, ax=ax, role="posterior", label=SINGLE_RUN_LABEL, linewidth=0.8
+        ensemble,
+        ax=ax,
+        role=PREDICTIVES[kind]["role"],
+        label=PREDICTIVES[kind]["ensemble_label"],
     )
+    if single is not None:
+        plot_time_series(
+            single, ax=ax, role="posterior", label=SINGLE_RUN_LABEL, linewidth=0.8
+        )
 
 
 def _draw_observed(
@@ -465,10 +511,9 @@ def _draw_observed(
     )
 
 
-def _draw_static(ax, outputs: dict, name: str) -> None:
+def _draw_static(ax, outputs: dict, name: str, kind: str) -> None:
     """A static source: the ensemble's values as a strip, the run and the observation."""
     ensemble = outputs["predicted"]["ensemble"]["calibration"][name].squeeze()
-    single = float(outputs["predicted"]["single_run"]["calibration"][name].squeeze())
     observed = outputs["observed"]["calibration"][name]
     rng = np.random.default_rng(0)
     values = ensemble.transpose(SAMPLE, ...).to_numpy().ravel()
@@ -478,20 +523,22 @@ def _draw_static(ax, outputs: dict, name: str) -> None:
         s=10,
         **{
             key: value
-            for key, value in role_style("prior", "line").items()
+            for key, value in role_style(PREDICTIVES[kind]["role"], "line").items()
             if key == "color"
         },
         alpha=0.6,
-        label=ENSEMBLE_LABEL,
+        label=PREDICTIVES[kind]["ensemble_label"],
     )
-    ax.scatter(
-        [0.0],
-        [single],
-        marker="_",
-        s=400,
-        color=role_style("posterior")["color"],
-        label=SINGLE_RUN_LABEL,
-    )
+    if "single_run" in outputs["predicted"]:
+        single = outputs["predicted"]["single_run"]["calibration"][name]
+        ax.scatter(
+            [0.0],
+            [float(single.squeeze())],
+            marker="_",
+            s=400,
+            color=role_style("posterior")["color"],
+            label=SINGLE_RUN_LABEL,
+        )
     ax.errorbar(
         [0.5],
         [float(observed["value"])],
