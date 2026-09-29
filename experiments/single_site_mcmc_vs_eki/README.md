@@ -18,7 +18,8 @@ a choice.
 | `runs.py` | what running SIPNET needs, built from `config`: the base parameters, the runner and model, the drivers, the site's initial state, and the forward model over PyEns |
 | `stand_in_calibration.py` | step 3's stand-in parameter vector, prior and SIPNET parameter map: three parameters, enough to run the machinery; **not** the calibration, which step 4 writes |
 | `forward_check.py` | one SIPNET run by hand and an ensemble of prior draws through the forward model, predicting both observation vectors, scored under the likelihood; the calibration's prior by default, or step 3's stand-in; writes to `output/forward_check/<calibration>/` |
-| `plots.py` | the figures, from what the scripts wrote; writes to `output/figures/` |
+| `plots.py` | the forward check's figures (NEE windows, pool constraints, daily trajectories), from what the scripts wrote; writes to `output/figures/` |
+| `talk_figures.py` | step 5: the prior predictive figures for slides (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); writes to `output/figures/` |
 | `calibration_prior.py` | **the calibration's parameterization and prior** (step 4): the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance |
 | `fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
 | `parameter_analysis/` | the evidence for both: the parameter-structure analysis, the base set, the sensitivity screening and the prior-predictive checks |
@@ -38,6 +39,7 @@ uv run python experiments/single_site_mcmc_vs_eki/observations.py
 uv run python experiments/single_site_mcmc_vs_eki/noise.py
 uv run python experiments/single_site_mcmc_vs_eki/forward_check.py   # a few minutes; --calibration stand_in for step 3's
 uv run python experiments/single_site_mcmc_vs_eki/plots.py           # the same --calibration
+uv run python experiments/single_site_mcmc_vs_eki/talk_figures.py    # after forward_check.py --ensemble-size 200
 ```
 
 ## The observation model

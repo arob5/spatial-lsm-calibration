@@ -54,6 +54,7 @@ Usage
 -----
     uv run python experiments/single_site_mcmc_vs_eki/forward_check.py
     uv run python experiments/single_site_mcmc_vs_eki/forward_check.py --calibration stand_in
+    uv run python experiments/single_site_mcmc_vs_eki/forward_check.py --ensemble-size 200
 """
 
 import argparse
@@ -102,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     print("one run by hand: done")
     samples = prior.sample(
-        jax.random.key(config.FORWARD_CHECK_SEED), config.FORWARD_CHECK_ENSEMBLE_SIZE
+        jax.random.key(config.FORWARD_CHECK_SEED), arguments.ensemble_size
     )
     ensemble = run_ensemble(
         vector, sipnet_map, samples, calibration, validation, external_inputs
@@ -279,6 +280,9 @@ def _parser() -> argparse.ArgumentParser:
     """The command line: which calibration to run."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--calibration", choices=CALIBRATIONS, default="prior")
+    parser.add_argument(
+        "--ensemble-size", type=int, default=config.FORWARD_CHECK_ENSEMBLE_SIZE
+    )
     return parser
 
 
