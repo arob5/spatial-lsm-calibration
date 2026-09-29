@@ -1,0 +1,339 @@
+---
+title: "Calibrating SIPNET at Harvard Forest"
+subtitle: "A single-site test bed for EKI and MCMC"
+author: "Andrew Roberts"
+date: 2026-09-30
+format:
+  revealjs:
+    width: 1600
+    height: 900
+    slide-number: true
+    code-line-numbers: false
+    code-overflow: wrap
+    highlight-style: github
+    fig-align: center
+    css: slides.css
+    mermaid-format: svg
+jupyter: python3
+execute:
+  warning: false
+---
+
+```{python}
+#| include: false
+import matplotlib.pyplot as plt
+
+import config
+import plots
+from sipnet_calibration.plotting import use_project_style
+
+# Scale up project style defaults for slide deck. Scaling relative to font.size
+use_project_style()
+plt.rcParams.update({
+    "figure.dpi": 200,
+    "figure.figsize": (14, 7),
+    "font.size": 15,
+    "axes.titlesize": "large",
+    "axes.labelsize": "medium",
+    "xtick.labelsize": "small",
+    "ytick.labelsize": "small",
+    "legend.fontsize": "small",
+    "legend.title_fontsize": "medium",
+})
+```
+
+## Where we are
+
+```{mermaid}
+%%| fig-width: 15.5
+%%| fig-height: 7
+%%{init: {"flowchart": {"nodeSpacing": 90}}}%%
+flowchart LR
+  P["Prior over θ"] --> G["G(θ): SIPNET<br/>+ observation operators"]
+  D[Drivers] --> G
+  I[Initial conditions] --> G
+  G --> L["Likelihood<br/>N(y; G(θ), R)"]
+  Y["Data y: NEE,<br/>LAI, biomass, soil C"] --> L
+  L --> E["EKI"]
+  L --> M["MCMC"]
+  E --> C{"Compare<br/>posteriors"}
+  M --> C
+```
+
+::: notes
+Last time: the pieces. This time: all of them put together at one site, a
+first calibration with EKI, and what it taught us about the error model.
+MCMC is running now; the comparison is next.
+:::
+
+# One site
+
+## Why Harvard Forest, and why one site
+
+- Site 4977 in the pool: Harvard Forest, a temperate deciduous forest with
+  **two AmeriFlux towers** in the pixel:
+  - US-Ha1 (hourly) calibrates, 2012-2020
+  - US-xHA (NEON, half-hourly) is held out, 2021-2024
+- One site keeps the problem small enough for **MCMC as a reference**:
+  $\theta \in \mathbb R^{15}$, one driver member, a deterministic forward
+  model
+- Everything is one experiment, `experiments/single_site_mcmc_vs_eki/`:
+  `config.py` is the source of truth, `MODEL.md` the math
+
+## The inverse problem
+
+$$
+y = H\big(M(\theta)\big) + \varepsilon,
+\qquad \varepsilon \sim \mathrm{N}(0, R),
+\qquad \theta \sim \mathrm{N}(m_0, C_0)
+$$
+
+| Observation source | $n$ | What the operator does |
+|---|---|---|
+| NEE, 00-12 UTC (night-centered) | 800 | mean rate over the 12 h window |
+| NEE, 12-24 UTC (day-centered) | 1819 | mean rate over the 12 h window |
+| MODIS LAI, June-August | 89 | leaf carbon / leaf mass per area |
+| LandTrendr biomass, 2012-2017 | 6 | wood carbon / 0.48, annual mean |
+| SoilGrids soil carbon | 1 | mean over the run |
+
+$N = 2715$. GEDI and SMAP are left out; `config.EXCLUDED_CONSTRAINTS` says
+why.
+
+::: notes
+A window is kept only when at least half its hours were measured, not
+gap-filled; whole days would keep almost no summer days, since calm nights
+fail the u* filter.
+:::
+
+## Drivers, corrected before any run
+
+Four known defects of the ERA5 driver files, fixed in
+`scripts/prepare_drivers.py`:
+
+1. hour labels that **drift** from the step lengths: rebuilt from position
+2. radiation and precipitation cover the 3 h **ending** at the label: every
+   label moves back 3 h
+3. temperature, humidity and wind are **snapshots**: the mean of the two
+   edge values
+4. soil temperature was a filter over the **following** weeks: recomputed
+   running forward in time
+
+The model's clock is then UTC, the observed NEE's.
+
+# Parameters and prior
+
+## 13 calibrated parameters, 15 entries of θ
+
+- **Photosynthesis**: capacity $P$ and respiration share $\rho$ (replacing
+  four SIPNET parameters), optimum temperature, half-saturation light
+- **Water**: soil water holding capacity
+- **Phenology**: leaf growth at leaf-on, its growing degree-days
+- **Allocation**: a simplex over leaf, wood, fine and coarse root (3 entries)
+- **Respiration**: wood rate at 10 °C, soil flux at 10 °C, soil $Q_{10}$
+- **Initial state**: wood and soil organic carbon, fitted to the site's
+  initial condition ensemble
+
+Every term is a Gaussian pushed through its parameter's bijector, so the
+prior is **exactly Gaussian in θ**, which EKI needs.
+
+## The prior
+
+```{python}
+plots.prior_marginals();
+```
+
+# The prior predictive
+
+## NEE's seasonal cycle
+
+```{python}
+plots.prior_predictive_nee_seasonal();
+```
+
+::: notes
+200 draws, weekly means over the same windows the likelihood reads. Weak
+summer uptake and low spring respiration are already visible here.
+:::
+
+## Annual NEE
+
+```{python}
+plots.prior_predictive_nee_annual();
+```
+
+## The pools
+
+```{python}
+plots.prior_predictive_pools();
+```
+
+## Coverage
+
+```{python}
+plots.prior_predictive_coverage();
+```
+
+# EKI
+
+## Ensemble Kalman inversion, sampling form
+
+Tempered targets from the prior ($\beta = 0$) to the posterior ($\beta = 1$):
+
+$$
+\pi_\beta(\theta) \propto \pi_0(\theta)\, e^{-\beta\,\Phi(\theta)},
+\qquad
+\Phi(\theta) = \tfrac12 \big\|R^{-1/2}\big(y - G(\theta)\big)\big\|^2
+$$
+
+- Each step conditions on $y$ with noise $R / \Delta\beta$, by the
+  **perturbed-observation** (stochastic Matheron) update
+- $\Delta\beta$ adaptive: the largest step keeping the effective sample size
+  at half of $J$
+- $J = 100$ members, $D = 15$; about 20 steps; failed runs are repaired to
+  the ensemble's center and counted
+
+## First, a synthetic truth
+
+$y^\star = G(\theta^\star) + \varepsilon$, with $\theta^\star$ one prior draw:
+
+```{python}
+plots.synthetic_recovery();
+```
+
+::: notes
+The fit is as good as the truth's (misfit 1349 vs 1344), and 11 of 15
+entries hold the truth in their 90% interval. The misses are the allocation
+simplex, along a wood / coarse-root ridge, where this truth is a tail draw.
+:::
+
+# The first calibration
+
+## The ladder
+
+```{python}
+plots.eki_ladder();
+```
+
+## Prior and posterior
+
+```{python}
+plots.eki_marginals();
+```
+
+::: notes
+Two parameters leave their priors: the optimum photosynthesis temperature
+(prior 90% 18.6-25.8 °C, posterior 29.8-30.7) and soil Q10 (prior 1.4-2.8,
+posterior about 1.0). Compensation for structure, not information.
+:::
+
+## The posterior predictive
+
+```{python}
+plots.posterior_predictive_nee_seasonal();
+```
+
+## Is the fit consistent with the noise model?
+
+A **posterior predictive check** with the misfit as its test quantity: at
+any $\theta$, replicated data give $2\,\Phi(y^{\mathrm{rep}}, \theta) \sim
+\chi^2_N$ exactly, so
+
+$$
+p \approx \frac1J \sum_{j=1}^{J} \Pr\Big(\chi^2_N \ge 2\,\Phi(\theta_j)\Big)
+$$
+
+- Under the model, $\Phi(\theta_j)$ sits near $N/2 = 1357.5$, within a few
+  multiples of $\sqrt{N/2} = 36.8$
+- On synthetic data it does: 1343 to 1361, $p = 0.59$
+- On the observed data: **2476 to 2509**, $p \approx 10^{-135}$
+
+## The check, per source
+
+```{python}
+plots.predictive_check();
+```
+
+::: notes
+Synthetic data pass everywhere (p near one half). Observed data fail by
+about 30 standard deviations overall, for NEE by day and for LAI; the
+held-out tower fails by day too.
+:::
+
+# What the residuals show
+
+## A bias that recurs every year
+
+```{python}
+plots.weekly_residuals();
+```
+
+## Memory over weeks
+
+```{python}
+plots.residual_autocorrelation();
+```
+
+::: notes
+The error model assumed a 2-day exponential correlation. The residuals keep
+a correlation of 0.3-0.5 at 5 to 10 days.
+:::
+
+## Why the structure matters
+
+If the error has a component along a direction $v$ of variance $\sigma^2$,
+$R = A + \sigma^2 v v^{\top}$, then
+
+$$
+v^{\top} R^{-1} v = \frac{a}{1 + \sigma^2 a} < \frac{1}{\sigma^2},
+\qquad a = v^{\top} A^{-1} v,
+$$
+
+however many observations there are.
+
+- A recurring or persistent error **caps** the evidence in its direction
+- The first $R$ had no such term: nine springs of one bias counted as nine
+  independent pieces of evidence
+- That is how $Q_{10}$ reached 1.0
+
+## What the two towers show
+
+```{python}
+plots.towers();
+```
+
+::: notes
+The difference cancels SIPNET's own error, so it bounds only the
+observation side: about a fifth of the non-measurement variance. A floor,
+not an estimate.
+:::
+
+# A revised NEE error model
+
+## Three terms
+
+$$
+\Sigma^\delta_{WW'} =
+\sigma_{\mathrm s}^2 e^{-|\Delta| / \tau_{\mathrm s}}
++ \sigma_\ell^2 e^{-|\Delta| / \tau_\ell}
++ \sigma_{\mathrm p}^2 \exp\!\Big(-\frac{2 \sin^2(\pi \Delta / P)}{\lambda^2}\Big),
+\qquad \Delta = t_W - t_{W'},\ P = 365.25\ \mathrm d
+$$
+
+Fitted by maximum marginal likelihood to the first calibration's residuals,
+floored by the towers, checked on the held-out tower:
+
+| Source | $\sigma_{\mathrm s}$ | $\tau_{\mathrm s}$ | $\sigma_\ell$ | $\tau_\ell$ | $\sigma_{\mathrm p}$ | $\lambda$ | held-out gain over one term |
+|---|---|---|---|---|---|---|---|
+| night | 0.69 | 1.2 d | 0.80 | 64 d | 0.72 | 0.44 | 22 nats |
+| day | 2.02 | 1.8 d | 1.68 | 47 d | 1.30 | 0.21 | 24 nats |
+
+## Next
+
+- **EKI under the fitted $R$**, its posterior predictive and diagnostics, and
+  one refit of the discrepancy on its residuals
+- **MCMC on the same problem** (running now): is the posterior EKI finds
+  the posterior?
+- **Open data questions**:
+  - five winter 2015 windows of daytime NEE at 10-17 µmol m⁻² s⁻¹
+  - low MODIS LAI composites in midsummer
+  - leaf-on by growing degree-days against the gradual onset of uptake

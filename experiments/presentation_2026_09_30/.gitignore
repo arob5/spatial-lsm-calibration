@@ -1,0 +1,5 @@
+# Rendered deck and Quarto's caches: all regenerable from slides.qmd.
+/slides.html
+/slides_files/
+/.quarto/
+/slides.quarto_ipynb
