@@ -19,6 +19,10 @@ a choice.
 | `stand_in_calibration.py` | step 3's stand-in parameter vector, prior and SIPNET parameter map: three parameters, enough to run the machinery; **not** the calibration, which step 4 writes |
 | `forward_check.py` | step 3: one SIPNET run by hand and a stand-in ensemble through the forward model, predicting both observation vectors, scored under the likelihood; writes to `output/forward_check/` |
 | `plots.py` | the figures, from what the scripts wrote; writes to `output/figures/` |
+| `calibration_prior.py` | **the calibration's parameterization and prior** (step 4): the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance |
+| `fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
+| `parameter_analysis/` | the evidence for both: the parameter-structure analysis, the base set, the sensitivity screening and the prior-predictive checks |
+| `fast_forward.py` | a fast forward path for exploration, SIPNET in a process pool with the predictions by index arithmetic; it equals the library's to 1e-11, and is not the calibration's forward model |
 | `output/` | everything the experiment writes; untracked |
 
 ## Running it
@@ -287,6 +291,147 @@ $c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
 - **SoilGrids**: $R = \sigma^2 + (0.25\, y)^2$, the second term for the depth
   and definition SIPNET's single soil pool does not share with a 0-200 cm
   stock (`data/README.md` open question 21).
+
+## Parameterization and prior
+
+`calibration_prior.calibration()` returns the three objects; this section says
+how they were found. The records are in `parameter_analysis/`
+(`phase1_report.md`, `phase2_report.md` and their tables). It is a
+**starting point**: every prior is set from the literature, the traits or the
+site's data, and none was tuned to the observations beyond checking that the
+prior predictive covers them.
+
+### Method
+
+1. **The parameter structure, from the SIPNET source.** Every claim of the
+   earlier structure analysis was checked against the pinned SIPNET
+   (tag v2.2.0-alpha.1, commit 41fa853e), with line numbers
+   (`phase1_report.md`). The photosynthesis parameters `aMax`, `aMaxFrac`,
+   `baseFolRespFrac` and `cFracLeaf` enter only through
+   $P = a_{\max}(f + r)/c$ and $a_{\max} r / c$ (`sipnet.c:614, 617, 633`):
+   two exactly flat directions.
+2. **A temperate deciduous base set.** Every SIPNET parameter got a value:
+   the temperate deciduous BETY trait posterior's median, converted to SIPNET's
+   units as PEcAn's `write.configs.SIPNET.R` converts it, where that is sound;
+   else PEcAn's template; else a cited value (`base_parameter_candidates.csv`).
+   Three BETY traits were rejected (below). With it, Harvard Forest is a
+   modest sink, where the step-3 conifer stand-in made it a strong source.
+3. **Screening.** Morris elementary effects over 29 candidates, 20
+   trajectories (600 runs, none failed), on each observation source's misfit
+   and on annual GPP, respiration, NEE, peak LAI and the change of wood and
+   soil carbon (`morris_relative_mu_star.csv`).
+4. **The parameterization.** The most influential parameters, reparameterized
+   to remove the known ridges, and the initial wood and soil carbon, whose
+   ensemble spread at the site is wide. Flat or redundant directions are fixed.
+5. **Priors, then the prior predictive, iterated.** Each prior from its
+   provenance; then 250 draws through the forward model, checked for coverage
+   (the fraction of observations inside the 90% prior-predictive interval of
+   prediction plus noise, per source and season) and for ecological
+   plausibility (annual GPP, NEE, LAI, pool changes, respiration ratios). Five
+   iterations, each change for a stated reason (`phase2_report.md`, section 4).
+
+### The parameters
+
+Thirteen parameters, $D = 15$ entries of $\theta$ (the allocation simplex is
+three):
+
+| Parameter | Prior | 5 / 50 / 95% | Reaches SIPNET as |
+|---|---|---|---|
+| photosynthetic capacity $P$ (nmol g⁻¹ s⁻¹) | log-normal, 95% in 140-450 | 161 / 252 / 402 | `aMax`, by `ComputePhotosynthesisRates` |
+| respiration share $\rho$ | logit-normal, 95% in 0.04-0.20 | 0.05 / 0.09 / 0.18 | `baseFolRespFrac`, same rule |
+| optimum photosynthesis temperature (°C) | normal(22, 2.5) | 17.6 / 21.8 / 26.4 | `psnTOpt`; `psnTMin` derived at a fixed range |
+| half-saturation light (mol m⁻² d⁻¹) | log-normal, 4.6-26.3 | 5.0 / 10.1 / 21.4 | `halfSatPar` |
+| soil water holding capacity (cm) | log-normal, 15-150 | 18 / 52 / 123 | `soilWHC` |
+| leaf growth at leaf-on (g C m⁻²) | log-normal, 50-180 | 60 / 91 / 149 | `leafGrowth` |
+| leaf-on growing degree-days | log-normal, 500-1100 | 552 / 741 / 1008 | `gddLeafOn` |
+| allocation (leaf, wood, fine root, coarse root) | softmax-normal about (0.18, 0.45, 0.065, 0.305) | leaf 0.11-0.25, wood 0.34-0.57 | `leafAllocation`, `woodAllocation`, `fineRootAllocation` |
+| wood respiration rate at 10 °C (yr⁻¹) | log-normal, 0.006-0.04 | 0.007 / 0.015 / 0.035 | `baseVegResp` and `baseCoarseRootResp`, each $r_{10}/Q_{10}$ |
+| soil respiration flux at 10 °C, $F_{10}$ (g C m⁻² yr⁻¹) | log-normal, 200-900 | 230 / 423 / 855 | `baseSoilResp` $= F_{10} / (1000\, C_{s,0}\, Q_{10})$ |
+| soil respiration $Q_{10}$ | log-normal, 1.3-3.2 | 1.37 / 2.08 / 2.91 | `soilRespQ10` |
+| initial wood carbon (kg C m⁻²) | log-normal fitted to the site's initial-condition members | 2.9 / 7.3 / 23.5 | `plantWoodInit`, by `ComputeInitialConditions` |
+| initial soil carbon $C_{s,0}$ (kg C m⁻²) | the same | 4.5 / 17.9 / 64 | `soilInit`, same rule |
+
+"95% in a-b" is the interval the log-normal or logit-normal is fitted to.
+Every term is independent: the ridges were removed by reparameterizing, and
+there is no evidence for a correlation among the rest. Each term's full
+provenance is in `calibration_prior.PROVENANCE` and `prior_proposal.csv`.
+
+**The reparameterizations**, each against a ridge the analysis found:
+
+- **$P$ and $\rho$** for the four photosynthesis parameters, with `aMaxFrac`
+  and `cFracLeaf` fixed at the BETY medians: the model sees nothing else.
+- **Respiration rates at 10 °C.** SIPNET's base rates are at 0 °C
+  (`sipnet.c:1066-1067, 1073-1078`), so a base rate and its $Q_{10}$ trade
+  against each other over the observed temperatures. A rate at 10 °C is
+  nearly decorrelated from its $Q_{10}$. The coarse roots take the wood's rate,
+  since they are wood.
+- **The soil respiration flux $F_{10} = k_{10} C_{s,0}$**, not the rate
+  $k_{10}$. Heterotrophic respiration depends on the product, so a rate prior
+  independent of a wide initial-pool prior put 67% of the first iteration's
+  runs at NEE > 0; the NEE data inform $F_{10}$, and the soil carbon
+  observation informs $C_{s,0}$.
+- **Allocation as a simplex**, which also rules out SIPNET's exit on
+  fractions summing past one (`sipnet.c:1111-1123`).
+
+**Fixed** (`fixed_sipnet_parameters.csv`): everything else. That includes
+four parameters that scored high but are flat or redundant. Light
+attenuation and leaf carbon per area enter the fluxes only as their ratio, and
+BETY pins leaf carbon per area to ±12%. Water use efficiency and water removal
+duplicate the soil water direction.
+
+**Values that depart from PEcAn's**, with the reason:
+
+- The BETY temperate deciduous optimum photosynthesis temperature, 43 °C
+  (27.6-67.0), is implausible; the prior is centered on 22 °C.
+- BETY's `Amax` converts to $P \approx 58$, which gives GPP near
+  690 g C m⁻² yr⁻¹, half of Harvard's; the prior on $P$ is set from leaf
+  physiology instead.
+- PEcAn converts stem and root respiration to per-day rates, but SIPNET reads
+  them as per-year and divides by 365 again (`write.configs.SIPNET.R:461-491`
+  against `sipnet.c:1873, 1902`). The fine-root rate is fixed at the BETY
+  median in SIPNET's units, 0.186 yr⁻¹, 365 times PEcAn's.
+- BETY's leaf turnover, 0.75 yr⁻¹, counts leaf fall twice, since leaves fall
+  at leaf-off by `fracLeafFall`; the template's 0.13 is used.
+
+### The prior predictive
+
+250 draws, none failed (`final_coverage.csv`, `final_plausibility.csv`):
+
+| Observation source | Inside the 90% interval | Below | Above |
+|---|---|---|---|
+| NEE, night-centered | 0.86 | 0.02 | 0.12 |
+| NEE, day-centered | 0.91 | 0.08 | 0.02 |
+| MODIS LAI | 0.87 | 0.12 | 0.01 |
+| LandTrendr biomass | 1.00 | 0 | 0 |
+| SoilGrids soil carbon | 1.00 | 0 | 0 |
+
+The median run: GPP 1451, NEE −203 g C m⁻² yr⁻¹, June-August LAI 4.7,
+autotrophic respiration 0.59 of GPP. The tails are broad (GPP above 1800 in 26%
+of runs, NEE above 0 in 34%), mostly from $P$, the half-saturation light and
+the two initial-condition priors, which keep the ensemble's own spread.
+
+**Structure no prior removes**, for the calibration and the model to answer:
+summer daytime uptake is too weak at the median, and winter and spring night
+respiration too low. SIPNET keeps allocating to leaves until leaf-off, so the
+annual peak LAI exceeds 8 in 30% of runs. The fine-root pool settles near
+allocation times NPP over turnover whatever it starts at.
+
+### Recommended, not adopted
+
+- **Leaf-on by soil temperature.** At the observed onset of daytime uptake,
+  the soil temperature is 14.3 ± 0.7 °C across years, where the growing
+  degree-days are 847 ± 119: soil temperature is the steadier trigger
+  (`phenology_evidence.csv`). But the evidence is the calibration data
+  themselves, so check it against Harvard's phenology record before switching
+  `config.MODEL_FLAGS`.
+- **Screen the low MODIS LAI values.** 14 of the 89 summer composites are 0.7-2.2,
+  which a closed deciduous canopy does not reach in midsummer; likely cloud or
+  quality contamination. A screening rule should come from the product's
+  quality layers rather than a floor chosen by eye.
+- **The NEE discrepancy.** The best prior runs' residuals are about twice the
+  noise model's standard deviations and seasonally structured, which a
+  two-day correlation cannot represent. Revisit `config.NEE_DISCREPANCY_*`
+  after a first calibration, not against the prior.
 
 ## Decisions
 

@@ -128,10 +128,12 @@ SOIL_TEMPERATURE_TIMESCALE = timedelta(days=15)
 #: off. The flags also decide which SIPNET parameters must be given.
 MODEL_FLAGS = ModelFlags.standard()
 
-#: The base SIPNET parameter set: the value of every SIPNET parameter the
-#: calibration's map leaves unset. **A stand-in**: pySIPNET's Niwot Ridge
-#: reference parameters, a subalpine conifer forest, the only complete set on
-#: hand. Step 4 replaces it with a temperate deciduous set.
+#: The base SIPNET parameter set: the value of every SIPNET parameter a
+#: calibration's map leaves unset. pySIPNET's Niwot Ridge reference parameters,
+#: a subalpine conifer forest, the only complete set on hand. Only the step-3
+#: stand-in calibration reads it: the calibration's map
+#: (calibration_prior.py) sets every SIPNET parameter, its fixed ones from the
+#: temperate deciduous values of fixed_sipnet_parameters.csv.
 BASE_SIPNET_PARAMETER_FILE = niwot_reference_files().param
 
 # ── running SIPNET ──

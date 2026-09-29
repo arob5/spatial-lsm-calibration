@@ -132,12 +132,15 @@ def forward_model(
     observation_vector: ObservationVector | None = None,
     output_variable_names: Sequence[str] | None = None,
     freq: str | None = None,
+    external_inputs: xr.Dataset | None = None,
 ) -> ForwardModel:
     """The forward model over the site, on the configured number of local workers.
 
     Give *observation_vector* for predictions ``(J, N)``, or
-    *output_variable_names* (and optionally *freq*) for model output; the
-    site's initial state enters as external inputs.
+    *output_variable_names* (and optionally *freq*) for model output.
+    *external_inputs* default to the site's whole initial state
+    (:func:`initial_state`); a calibration that calibrates some initial
+    states passes the rest.
     """
     return ForwardModel(
         sipnet_model(),
@@ -145,7 +148,7 @@ def forward_model(
         sipnet_parameter_map,
         climate={config.SITE: climate_drivers()},
         backend=LocalBackend(n_workers=config.N_WORKERS),
-        external_inputs=initial_state(),
+        external_inputs=initial_state() if external_inputs is None else external_inputs,
         observation_vector=observation_vector,
         output_variable_names=output_variable_names,
         freq=freq,
