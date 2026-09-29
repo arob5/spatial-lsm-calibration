@@ -72,6 +72,13 @@ The inverse problem:
 :mod:`~sipnet_calibration.compute`
     The SCC's PyEns backend preset.
 
+Sampling the posterior:
+
+:mod:`~sipnet_calibration.smc`
+    Tempered sequential Monte Carlo from a base density to the posterior,
+    and importance sampling as its one-step case, over any prior and
+    batched log likelihood; it knows nothing of SIPNET.
+
 :mod:`~sipnet_calibration.plotting`
     Figures of fields: series, maps and grids of either.
 
@@ -103,7 +110,8 @@ imports pySIPNET; ``calibration`` on all three; and ``forward`` on
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside
-plotting imports it. :mod:`~sipnet_calibration.compute` depends on nothing here.
+plotting imports it. :mod:`~sipnet_calibration.compute` depends on nothing here,
+and :mod:`~sipnet_calibration.smc` on ``io`` and ``validation`` only.
 
 Notes
 -----

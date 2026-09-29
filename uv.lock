@@ -2211,7 +2211,7 @@ wheels = [
 [[package]]
 name = "pysipnet"
 version = "0.1.0.dev0"
-source = { git = "https://github.com/TARPS-group/pySIPNET.git?branch=main#bfb90f952761b0993920fc666326ec6e0fd7afb1" }
+source = { git = "https://github.com/TARPS-group/pySIPNET.git?branch=main#e780fc910d6b0152cdbad49be79bfb2258b16317" }
 dependencies = [
     { name = "numpy" },
     { name = "packaging" },
