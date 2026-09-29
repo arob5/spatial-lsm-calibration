@@ -4,9 +4,10 @@ Overview
 --------
 ``MODEL.md``, "NEE error", "Estimating the parameters", states the method;
 this script carries it out on one EKI run. For each NEE observation source
-and each of three variants of the discrepancy (``model/discrepancy.py``),
+and each of four variants of the discrepancy (``model/discrepancy.py``),
 
 - ``single``: the short term alone, refitted (the first calibration's form);
+- ``two_term``: the short and long terms, no recurring one;
 - ``three_term``: the short, long and recurring terms;
 - ``drifting``: the three terms, the recurring one drifting from year to year,
 
@@ -21,7 +22,8 @@ source of truth, and adopting a fit is a decision made by copying it there.
 
 Input data
 ----------
-``config.EKI_DIRECTORY / <data>``: the run's final step, its diagnostics
+``output/eki/<setup>/<data>``, ``<setup>`` ``config.EKI_RUN_NAME`` unless
+``--setup`` names another: the run's final step, its diagnostics
 (``scripts/diagnose.py``, for the towers' floor) and, for the held-out
 score, its posterior predictive (``scripts/posterior_predictive.py``).
 
@@ -40,6 +42,7 @@ Usage
 From the repository root::
 
     uv run python -m experiments.single_site_mcmc_vs_eki.scripts.fit_nee_discrepancy --data observed
+    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.fit_nee_discrepancy --data observed --setup single_term_discrepancy
 """
 
 import argparse
@@ -80,8 +83,9 @@ __all__ = [
 def main(argv: list[str] | None = None) -> int:
     """Fit every variant to every NEE source and write the table."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
-    data = _parser().parse_args(argv).data
-    directory = config.EKI_DIRECTORY / data
+    arguments = _parser().parse_args(argv)
+    data = arguments.data
+    directory = config.OUTPUT_DIRECTORY / "eki" / arguments.setup / data
     try:
         run = load_eki_run(directory)
         floors = load_diagnostics(directory)["nee_towers_summary"][
@@ -285,9 +289,14 @@ def _days_since_first(times: pd.DatetimeIndex) -> np.ndarray:
 
 
 def _parser() -> argparse.ArgumentParser:
-    """The command line: which EKI run."""
+    """The command line: which EKI run, by its data and its setup."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--data", choices=("synthetic", "observed"), required=True)
+    parser.add_argument(
+        "--setup",
+        default=config.EKI_RUN_NAME,
+        help="the EKI setup whose run is fitted; config.EKI_RUN_NAME by default",
+    )
     return parser
 
 
@@ -327,6 +336,29 @@ VARIANTS = (
         "single",
         ("short_standard_deviation", "short_timescale"),
         ({"short_standard_deviation": 1.0, "short_timescale": 2.0},),
+    ),
+    Variant(
+        "two_term",
+        (
+            "short_standard_deviation",
+            "short_timescale",
+            "long_standard_deviation",
+            "long_timescale",
+        ),
+        (
+            {
+                "short_standard_deviation": 0.7,
+                "short_timescale": 1.0,
+                "long_standard_deviation": 0.6,
+                "long_timescale": 30.0,
+            },
+            {
+                "short_standard_deviation": 0.5,
+                "short_timescale": 0.5,
+                "long_standard_deviation": 0.8,
+                "long_timescale": 60.0,
+            },
+        ),
     ),
     Variant(
         "three_term",

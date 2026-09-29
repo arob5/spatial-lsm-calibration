@@ -93,7 +93,7 @@ the earlier runs in place. A run is diagnosed while `config` holds the setup
 it ran with, since the diagnostics score it under `config`'s $R$; the
 diagnosis says when the run's `provenance.json` records other noise
 settings. The first calibration's setup is `single_term_discrepancy`, the
-current one `three_term_discrepancy`.
+second `three_term_discrepancy`, and the current one `two_term_discrepancy`.
 
 In a notebook started from the repository root, import the parts the same
 way: `from experiments.single_site_mcmc_vs_eki import config` and
@@ -157,12 +157,13 @@ Each records what was chosen and why, so a result can be read against it.
 - **GEDI is left out**: its units are not established, and its three values
   at the site disagree with each other and with LandTrendr
   (`config.EXCLUDED_CONSTRAINTS`).
-- **NEE's discrepancy has three terms, fitted to the first calibration.**
+- **NEE's discrepancy has two terms, fitted to the first calibration.**
   The first calibration, with one exponential term of two days, failed its
   posterior predictive check by about 30 standard deviations, and its NEE
   residuals showed a bias recurring every year and a memory of weeks
-  (`MODEL.md`, "NEE error"). The discrepancy is now a short, a long and a
-  recurring term per NEE source, fitted by maximum marginal likelihood to
-  that calibration's residuals, checked against the two towers' floor and
-  the held-out tower; a drifting recurring term fitted no better, so the
-  simpler form was kept.
+  (`MODEL.md`, "NEE error"). A three-term discrepancy with a term recurring
+  every year passed the check but let the calibration give up summer
+  daytime uptake as a shared seasonal bias, so the recurring term was
+  dropped. The discrepancy is a short and a long term per NEE source, fitted
+  by maximum marginal likelihood to the first calibration's residuals and
+  checked against the two towers' floor and the held-out tower.

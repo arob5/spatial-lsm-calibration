@@ -224,28 +224,32 @@ section. The temporal correlation below is
 $c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
 
 - **NEE**, for each of the two sources separately, the two independent: the
-  measurement error on the diagonal plus a discrepancy of three terms,
+  measurement error on the diagonal plus a discrepancy of two terms,
 
   $$
   R_{WW'} = \big(\sigma^{\mathrm{obs}}_W\big)^2 \mathbf{1}[W = W'] + \big(\Sigma^\delta\big)_{WW'},
   $$
 
-  $\Sigma^\delta$ a short, a long and a recurring term in the window ends
+  $\Sigma^\delta$ a short and a long exponential term in the window ends
   $t_W = w^+$ (`model/discrepancy.py`), whose form, parameters and fit are
-  "NEE error" below. The parameters are `config.NEE_DISCREPANCY`'s:
+  "NEE error" below. The parameters are `config.NEE_DISCREPANCY`'s (EKI
+  setup `two_term_discrepancy`):
 
-  | Source | $\sigma_{\mathrm s}$ | $\tau_{\mathrm s}$ (d) | $\sigma_\ell$ | $\tau_\ell$ (d) | $\sigma_{\mathrm p}$ | $\lambda$ |
-  |---|---|---|---|---|---|---|
-  | `nee_night_centered` | 0.690 | 1.17 | 0.795 | 64.2 | 0.724 | 0.437 |
-  | `nee_day_centered` | 2.02 | 1.78 | 1.68 | 46.6 | 1.30 | 0.208 |
+  | Source | $\sigma_{\mathrm s}$ | $\tau_{\mathrm s}$ (d) | $\sigma_\ell$ | $\tau_\ell$ (d) |
+  |---|---|---|---|---|
+  | `nee_night_centered` | 0.603 | 0.740 | 1.20 | 57.2 |
+  | `nee_day_centered` | 1.96 | 1.72 | 2.30 | 36.5 |
 
-  with the standard deviations in µmol m⁻² s⁻¹. The first calibration (EKI
-  setup `single_term_discrepancy`) ran with the short term alone,
-  $\sigma_\delta^2 \, c_\tau(w^+, w'^+)$, $\sigma_\delta = 1.0$ at night and
-  1.8 by day and $\tau = 2$ days: $\sigma_\delta$ 0.7 times the standard
-  deviation of the observed windows' anomalies from their seasonal cycle
-  (1.43 and 2.55), $\tau$ a correlation of 0.61 between consecutive days,
-  where the observed anomalies' is 0.45-0.50. That calibration rejected it.
+  with the standard deviations in µmol m⁻² s⁻¹. Two earlier setups are
+  recorded in "NEE error". The first calibration (`single_term_discrepancy`)
+  ran with the short term alone, $\sigma_\delta^2 \, c_\tau(w^+, w'^+)$,
+  $\sigma_\delta = 1.0$ at night and 1.8 by day and $\tau = 2$ days:
+  $\sigma_\delta$ 0.7 times the standard deviation of the observed windows'
+  anomalies from their seasonal cycle (1.43 and 2.55), $\tau$ a correlation
+  of 0.61 between consecutive days, where the observed anomalies' is
+  0.45-0.50. That calibration rejected it. The second
+  (`three_term_discrepancy`) added a term recurring every year, which was
+  dropped for the reason "The three-term run" gives.
 - **MODIS LAI**:
 
   $$
@@ -510,7 +514,7 @@ $\mathcal H_i(\mathcal M(\theta_j)) + \epsilon_{ij}$,
 $\epsilon_{ij} \sim \mathcal N(0, R_{ii})$ independent (seed 0). The row
 `all` sums the misfits over sources per member.
 
-Three cautions come with the check:
+Four cautions come with the check:
 
 - **It is conservative.** The data form the posterior and are then checked
   against it, so under the model the p-value is not uniform: it concentrates
@@ -525,6 +529,12 @@ Three cautions come with the check:
 - **On the prior predictive** the same computation, with prior draws, is a
   prior predictive check, which asks whether the prior's draws could have
   produced the data, not whether the fitted model describes them.
+- **It tests consistency with $R$, and nothing more.** An $R$ that makes a
+  bias cheap, such as one shared by every year, passes a fit that has the
+  bias. The check is read with the coverage, the seasonal means of the
+  residuals and the weekly residuals ("NEE's residuals"), never alone: "The
+  three-term run" in "NEE error" is a calibration that passed it and missed
+  the summer uptake by half.
 
 ### NEE's residuals
 
@@ -870,7 +880,13 @@ a first calibration, as follows.
 5. **One iteration.** The residuals of step 1 came from a calibration with
    the old $R$. EKI is rerun with $R(\hat\phi)$, and steps 1-2 repeated on its
    residuals; if every $\hat\sigma$ and $\hat\tau$ moves by less than about
-   10%, $\hat\phi$ stands, and otherwise the loop runs once more.
+   10%, $\hat\phi$ stands, and otherwise the loop runs once more. The loop
+   is not safe on its own: a term that can absorb a bias the parameters
+   should explain lets the calibration leave the bias in the residuals, the
+   refit then asks for more of the term, and the discrepancy grows with each
+   round. Each round is therefore checked on the residuals themselves, their
+   seasonal means and coverage, before its fit is adopted ("The three-term
+   run").
 
 This fits the discrepancy to the same data the calibration then conditions
 on, which the held-out check guards against. The principled version infers
@@ -899,9 +915,11 @@ models given that one posterior, not posteriors formed under each.
 | Source | variant | $k$ | $\ell_k(\hat\phi_k)$ | AIC | held-out $\log p(y^{\mathrm{val}} \mid y)$ | held-out $2\Phi/n$ |
 |---|---|---|---|---|---|---|
 | night-centered | single | 2 | −1239.6 | 2483.1 | −422.1 | 1.11 |
+| | two-term | 4 | −1197.5 | 2403.0 | −408.3 | 0.92 |
 | | three-term | 6 | −1184.2 | 2380.3 | −399.8 | 0.88 |
 | | drifting | 7 | −1181.1 | 2376.2 | −401.3 | 0.92 |
 | day-centered | single | 2 | −4144.2 | 8292.3 | −1359.4 | 1.14 |
+| | two-term | 4 | −4094.8 | 8197.5 | −1351.5 | 1.15 |
 | | three-term | 6 | −4073.0 | 8158.1 | −1335.5 | 1.12 |
 | | drifting | 7 | −4070.9 | 8155.9 | −1334.6 | 1.12 |
 
@@ -914,11 +932,57 @@ three-term model and the drifting one they do not separate: at night AIC
 favors the drifting variant by 4.2 and the held-out density the three-term
 one by 1.4 nats, by day the drifting variant by 2.2 and 0.9, and its fitted
 drift is slow, $\tau_{\mathrm p}$ of 7.9 years at night and 4.7 by day. The
-three-term model is adopted for both sources, the simpler of two the data do
-not tell apart, with the values of "Noise model" above. Every fit holds the
-towers' floor: the fitted discrepancy's standard deviation at one window,
-1.28 at night and 2.93 by day, against $\hat\sigma_r$ of 0.63 and 1.30.
+three-term model was adopted for both sources, the simpler of two the data
+do not tell apart, and run as setup `three_term_discrepancy`. Every fit holds
+the towers' floor: the three-term discrepancy's standard deviation at one
+window is 1.28 at night and 2.93 by day, against $\hat\sigma_r$ of 0.63 and
+1.30. The two-term variant, the short and long terms without the recurring
+one, was fitted after that run, by `--setup single_term_discrepancy`: it
+fits the residuals less well than three terms and better than one, and is
+the one adopted now, for the reason below.
 
-The next step is step 5 of "Estimating the parameters": EKI under the
-fitted $R$ (setup `three_term_discrepancy`), its diagnostics, and the fit
-repeated on its residuals.
+### The three-term run
+
+EKI under the three-term $R$ (setup `three_term_discrepancy`, observed data)
+passed the posterior predictive check and gave the summer uptake up:
+
+| | first calibration | three-term run |
+|---|---|---|
+| all sources, $2\Phi/N$ ($p$) | 1.84 ($10^{-135}$) | 1.05 (0.03) |
+| NEE day, $2\Phi_k/n_k$; coverage | 1.88; 0.74 | 0.86; 0.67 |
+| NEE night, $2\Phi_k/n_k$; coverage | 1.39; 0.83 | 1.10; 0.88 |
+| held-out tower, $2\Phi/n$ | 1.61 | 0.85 |
+| NEE day, residual variance; non-measurement sd | 10.0; 2.99 | 20.0; 4.36 |
+| NEE day, mean residual MAM / JJA / SON | −1.40 / −1.94 / −0.46 | −2.23 / −8.91 / −3.02 |
+| NEE day, recurring share of the residual variance | 0.10 | 0.65 |
+
+The posterior predictive puts summer daytime NEE near −6 µmol m⁻² s⁻¹
+where the weekly observed means reach −17. The posterior moved to less
+uptake: photosynthetic capacity 182-228 (the first calibration's 255-283),
+half-saturation light 23-37 (prior 90% 6-26), the foliar respiration share
+0.028-0.054 (prior 0.051-0.164), and the wood respiration rate at 10 °C
+0.026-0.044 (prior 0.006-0.030). Soil $Q_{10}$ moved off 1.0 (0.97-1.61) and
+the optimum photosynthesis temperature stayed out of its prior (28.3-30.3
+°C). The refit on its residuals kept the night terms and asked, by day, for
+a recurring standard deviation of 4.56 over a width $\lambda$ of 0.95, 3.5
+and 4.6 times the run's.
+
+The recurring term is perfectly correlated across years, so by the argument
+of "Why the structure matters" the evidence against a bias that repeats in
+every summer is capped at about $1/\sigma_{\mathrm p}^2$ in its direction,
+however many summers there are. That is what the term was meant to do for
+the first calibration's small recurring bias; it also made a large one
+cheap, and the calibration took it, trading the summer uptake for the rest
+of the fit. The refit then read the larger bias as a larger recurring term,
+the runaway step 5 now warns of. This is the confounding of a discrepancy
+with the parameters (Brynjarsdóttir and O'Hagan 2014, *Inverse Problems* 30,
+114007): a discrepancy flexible enough to absorb what the parameters should
+explain needs an informative prior, or it takes the signal.
+
+The recurring term is therefore dropped. The long term remains: with
+$\tau_\ell$ of 36-57 days it correlates the windows of one season but not
+the same season of different years, so each year's miss of the summer
+uptake counts as its own evidence. The run under the two-term $R$ is setup
+`two_term_discrepancy`. The principled form, a discrepancy inferred with
+$\theta$ under an informative prior on its parameters, is for MCMC, which
+can update $\phi$ at no extra SIPNET cost.

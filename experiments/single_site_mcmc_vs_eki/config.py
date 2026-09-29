@@ -324,36 +324,33 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 # model/discrepancy.py; the LAI timescale is that of the exponential
 # correlation exp(-|t - t'| / tau).
 
-#: NEE's model discrepancy, per NEE observation source: the short, long and
-#: recurring terms of model/discrepancy.py (MODEL.md, "NEE error"), standard
-#: deviations in umol m-2 s-1 of CO2. The values are the three-term fit of
-#: scripts/fit_nee_discrepancy.py to the residuals of the first calibration
-#: (EKI run "single_term_discrepancy", observed data), rounded to three
-#: figures; that run's own discrepancy, the short term alone (1.0 at night,
-#: 1.8 by day, each over 2 days), is in its provenance.json.
+#: NEE's model discrepancy, per NEE observation source: the short and long
+#: terms of model/discrepancy.py (MODEL.md, "NEE error"), standard deviations
+#: in umol m-2 s-1 of CO2, and no recurring term. The values are the two-term
+#: fit of scripts/fit_nee_discrepancy.py to the residuals of the first
+#: calibration (EKI setup "single_term_discrepancy", observed data), rounded
+#: to three figures. The three-term fit, with a term recurring every year,
+#: was run as setup "three_term_discrepancy" and dropped: it let the posterior
+#: give up summer daytime uptake as a shared seasonal bias (MODEL.md).
 NEE_DISCREPANCY = frozendict(
     {
         "nee_night_centered": NEEDiscrepancy(
-            short_standard_deviation=0.690,
-            short_timescale=timedelta(days=1.17),
-            long_standard_deviation=0.795,
-            long_timescale=timedelta(days=64.2),
-            recurring_standard_deviation=0.724,
-            recurring_width=0.437,
+            short_standard_deviation=0.603,
+            short_timescale=timedelta(days=0.740),
+            long_standard_deviation=1.20,
+            long_timescale=timedelta(days=57.2),
             provenance=(
-                "three-term fit to the residuals of EKI run "
+                "two-term fit to the residuals of EKI run "
                 "single_term_discrepancy, observed data"
             ),
         ),
         "nee_day_centered": NEEDiscrepancy(
-            short_standard_deviation=2.02,
-            short_timescale=timedelta(days=1.78),
-            long_standard_deviation=1.68,
-            long_timescale=timedelta(days=46.6),
-            recurring_standard_deviation=1.30,
-            recurring_width=0.208,
+            short_standard_deviation=1.96,
+            short_timescale=timedelta(days=1.72),
+            long_standard_deviation=2.30,
+            long_timescale=timedelta(days=36.5),
             provenance=(
-                "three-term fit to the residuals of EKI run "
+                "two-term fit to the residuals of EKI run "
                 "single_term_discrepancy, observed data"
             ),
         ),
@@ -395,9 +392,10 @@ SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
 
 #: The name of the current EKI setup. Each setup's runs are kept under their
 #: own name, so a change to the noise model or the algorithm leaves the
-#: earlier runs' outputs in place; the first calibration, under the
-#: single-term NEE discrepancy, is "single_term_discrepancy".
-EKI_RUN_NAME = "three_term_discrepancy"
+#: earlier runs' outputs in place. The first calibration, under the
+#: single-term NEE discrepancy, is "single_term_discrepancy"; the run under
+#: the three-term one, "three_term_discrepancy".
+EKI_RUN_NAME = "two_term_discrepancy"
 
 #: Where the current setup's EKI runs write, one directory per data set:
 #: ``synthetic`` or ``observed``.
