@@ -9,16 +9,19 @@ Sections, in order:
 - **the site**: which site is calibrated;
 - **paths**: where the experiment reads raw inputs and writes everything else;
 - **the drivers**: which driver member runs, and how its file is corrected;
-- **the model**: what SIPNET simulates, which changes results;
+- **the model**: what SIPNET simulates and its base parameters, which change
+  results;
 - **running SIPNET**: how the runs are executed, which does not;
 - **the observations**: the NEE series and how they are windowed, the pool
   constraints, the data sources left out, and the operator that predicts each
   observation source;
+- **step 3, the forward check**: the stand-in ensemble's size and seed, and
+  what it writes;
 - **the noise model**: the measurement-error floors and the model-discrepancy
   terms of the noise covariance.
 
-The base SIPNET parameters, the parameterization, the priors and the
-algorithm settings are added by later steps.
+The base SIPNET parameters are a stand-in until step 4, which adds the
+parameterization and the priors; the algorithm settings come after.
 """
 
 import os
@@ -26,6 +29,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from frozendict import frozendict
+from pysipnet import niwot_reference_files
 from pysipnet.parameters.model import ModelFlags
 from pysipnet.runner import ClimateStaging
 
@@ -34,6 +38,7 @@ from sipnet_calibration.conventions import data_root
 from sipnet_calibration.observation import DEFAULT_OBS_OPS, ReduceOverRun
 
 __all__ = [
+    "BASE_SIPNET_PARAMETER_FILE",
     "CALIBRATION_NEE_PERIOD",
     "CALIBRATION_NEE_SERIES",
     "CLIMATE_STAGING",
@@ -42,6 +47,11 @@ __all__ = [
     "DRIVER_TIME_ZONE",
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
+    "FIGURE_DIRECTORY",
+    "FORWARD_CHECK_DIRECTORY",
+    "FORWARD_CHECK_ENSEMBLE_SIZE",
+    "FORWARD_CHECK_OUTPUT_VARIABLE_NAMES",
+    "FORWARD_CHECK_SEED",
     "LAI_DISCREPANCY_STANDARD_DEVIATION",
     "LAI_DISCREPANCY_TIMESCALE",
     "LAI_STANDARD_DEVIATION_FLOOR",
@@ -117,6 +127,12 @@ SOIL_TEMPERATURE_TIMESCALE = timedelta(days=15)
 #: what the soil carbon operator reads; growth respiration and leaf water are
 #: off. The flags also decide which SIPNET parameters must be given.
 MODEL_FLAGS = ModelFlags.standard()
+
+#: The base SIPNET parameter set: the value of every SIPNET parameter the
+#: calibration's map leaves unset. **A stand-in**: pySIPNET's Niwot Ridge
+#: reference parameters, a subalpine conifer forest, the only complete set on
+#: hand. Step 4 replaces it with a temperate deciduous set.
+BASE_SIPNET_PARAMETER_FILE = niwot_reference_files().param
 
 # ── running SIPNET ──
 #
@@ -252,6 +268,36 @@ OBSERVATION_OPERATORS = frozendict(
         ),
         "soilgrids_soil_organic_carbon": ReduceOverRun("soil_carbon", how="mean"),
     }
+)
+
+# ── step 3: the forward check ──
+#
+# One SIPNET run and one small ensemble through the stand-in calibration
+# (stand_in_calibration.py), to see the pieces work together and the model
+# against the data; forward_check.py runs them and plots.py draws them.
+
+#: Where the forward check writes its runs.
+FORWARD_CHECK_DIRECTORY = OUTPUT_DIRECTORY / "forward_check"
+
+#: Where the figures go.
+FIGURE_DIRECTORY = OUTPUT_DIRECTORY / "figures"
+
+#: How many draws of the stand-in prior the ensemble runs.
+FORWARD_CHECK_ENSEMBLE_SIZE = 32
+
+#: The seed of the ensemble's prior draws.
+FORWARD_CHECK_SEED = 20260929
+
+#: The model output variables the forward check keeps as daily trajectories,
+#: for the figures: what the observation operators read, and the fluxes and
+#: pools behind them.
+FORWARD_CHECK_OUTPUT_VARIABLE_NAMES = (
+    "net_ecosystem_exchange",
+    "gross_primary_production",
+    "ecosystem_respiration",
+    "leaf_carbon",
+    "wood_carbon",
+    "soil_carbon",
 )
 
 # ── the noise model ──
