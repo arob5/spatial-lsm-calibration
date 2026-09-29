@@ -22,6 +22,7 @@ Functions
 """
 
 from collections.abc import Sequence
+from typing import Literal
 
 import xarray as xr
 from pyens import LocalBackend
@@ -135,6 +136,7 @@ def forward_model(
     output_variable_names: Sequence[str] | None = None,
     freq: str | None = None,
     external_inputs: xr.Dataset | None = None,
+    out_of_domain: Literal["raise", "fail_row"] = "raise",
 ) -> ForwardModel:
     """The forward model over the site, on the configured number of local workers.
 
@@ -142,7 +144,8 @@ def forward_model(
     *output_variable_names* (and optionally *freq*) for model output.
     *external_inputs* default to the site's whole initial state
     (:func:`initial_state`); a calibration that calibrates some initial
-    states passes the rest.
+    states passes the rest. *out_of_domain* is the forward model's: raise on
+    a SIPNET parameter outside pySIPNET's domain, or fail its row.
     """
     return ForwardModel(
         sipnet_model(),
@@ -154,4 +157,5 @@ def forward_model(
         observation_vector=observation_vector,
         output_variable_names=output_variable_names,
         freq=freq,
+        out_of_domain=out_of_domain,
     )

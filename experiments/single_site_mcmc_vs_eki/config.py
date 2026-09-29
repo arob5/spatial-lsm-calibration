@@ -18,10 +18,11 @@ Sections, in order:
 - **the prior predictive**: the ensemble's size and seed, and what it
   writes;
 - **the noise model**: the measurement-error floors and the model-discrepancy
-  terms of the noise covariance.
+  terms of the noise covariance;
+- **EKI**: the ensemble, the tempering ladder and the update, the seeds, and
+  the synthetic truth.
 
-The parameterization and the prior are ``model/prior.py``'s; the algorithm
-settings come after.
+The parameterization and the prior are ``model/prior.py``'s.
 """
 
 import os
@@ -46,6 +47,11 @@ __all__ = [
     "CONSTRAINT_NAMES",
     "DRIVER_SOURCE_INDEX",
     "DRIVER_TIME_ZONE",
+    "EKI_DIRECTORY",
+    "EKI_ENSEMBLE_SIZE",
+    "EKI_ESS_FRACTION",
+    "EKI_SEED",
+    "EKI_SYNTHETIC_TRUTH_SEED",
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
     "FIGURE_DIRECTORY",
@@ -351,3 +357,31 @@ LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION = 5.0
 #: the observed stock: for the depth and definition SIPNET's single soil pool
 #: does not share with a 0-200 cm stock (data/README.md open question 21).
 SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
+
+# ── EKI ──
+#
+# Ensemble Kalman inversion in its sampling form: an ensemble drawn from the
+# prior, moved up the tempering ladder from beta = 0 (the prior) to beta = 1
+# (the posterior) by pyEKI's perturbed-observation update, the increments
+# chosen adaptively. scripts/eki.py runs it and figures/eki.py draws it.
+
+#: Where each EKI run writes, one directory per data set:
+#: ``synthetic`` or ``observed``.
+EKI_DIRECTORY = OUTPUT_DIRECTORY / "eki"
+
+#: The number of ensemble members, J. Every iterate lies in the affine span of
+#: the initial ensemble, so J - 1 must exceed theta's 15 entries with room to
+#: spare.
+EKI_ENSEMBLE_SIZE = 100
+
+#: The seed of the initial ensemble's prior draw and of the updates'
+#: perturbed observations.
+EKI_SEED = 20260930
+
+#: The effective sample size, as a fraction of J, the adaptive ladder's
+#: increments target (pyEKI's AdaptiveESSSchedule and its default).
+EKI_ESS_FRACTION = 0.5
+
+#: The seed of the synthetic truth: one prior draw theta*, and the noise
+#: realization added to its predictions to make the synthetic observations.
+EKI_SYNTHETIC_TRUTH_SEED = 20260931
