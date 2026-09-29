@@ -2,8 +2,10 @@
 
 Overview
 --------
-Runs the stand-in calibration (``stand_in_calibration.py``) two ways and
-writes what came back, for ``plots.py`` to draw:
+Runs a calibration's prior two ways, the calibration's own
+(``calibration_prior.py``, the default) or step 3's stand-in
+(``stand_in_calibration.py``), and writes what came back, for ``plots.py``
+to draw:
 
 1. **One run, by hand**, at the center of the prior, through pySIPNET
    directly. It shows the layers the forward model composes: theta to SIPNET
@@ -24,7 +26,8 @@ The prepared driver file (``prepare_drivers.py``), the processed files
 
 Output data
 -----------
-Under ``config.FORWARD_CHECK_DIRECTORY``:
+Under ``config.FORWARD_CHECK_DIRECTORY / <calibration>``, ``prior`` or
+``stand_in``:
 
 - ``single_run_daily.nc``, ``ensemble_daily.nc``: the model output variables
   of ``config.FORWARD_CHECK_OUTPUT_VARIABLE_NAMES``, aggregated to days by
@@ -50,8 +53,10 @@ the model sits against the data, is.
 Usage
 -----
     uv run python experiments/single_site_mcmc_vs_eki/forward_check.py
+    uv run python experiments/single_site_mcmc_vs_eki/forward_check.py --calibration stand_in
 """
 
+import argparse
 import sys
 import warnings
 
@@ -64,6 +69,7 @@ import inputs
 import noise
 import observations
 import runs
+import calibration_prior
 import stand_in_calibration
 from sipnet_calibration.calibration import describe_calibration
 from sipnet_calibration.conventions import SITE
@@ -77,25 +83,30 @@ __all__ = ["main"]
 # ── entry point ──
 
 
-def main() -> int:
-    """Run the forward check and write its outputs."""
+def main(argv: list[str] | None = None) -> int:
+    """Run the forward check of one calibration and write its outputs."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
-    vector, prior, sipnet_map = _stand_in()
+    arguments = _parser().parse_args(argv)
+    vector, prior, sipnet_map, external_inputs = CALIBRATIONS[arguments.calibration]()
     calibration = observations.calibration_observation_vector()
     validation = observations.validation_observation_vector()
-    directory = config.FORWARD_CHECK_DIRECTORY
+    directory = config.FORWARD_CHECK_DIRECTORY / arguments.calibration
     directory.mkdir(parents=True, exist_ok=True)
     describe_calibration(vector, prior, sipnet_map).to_csv(
         directory / "calibration.csv"
     )
 
     center = np.asarray(prior.gaussian().mean)
-    single = run_once_by_hand(vector, sipnet_map, center, calibration, validation)
+    single = run_once_by_hand(
+        vector, sipnet_map, center, calibration, validation, external_inputs
+    )
     print("one run by hand: done")
     samples = prior.sample(
         jax.random.key(config.FORWARD_CHECK_SEED), config.FORWARD_CHECK_ENSEMBLE_SIZE
     )
-    ensemble = run_ensemble(vector, sipnet_map, samples, calibration, validation)
+    ensemble = run_ensemble(
+        vector, sipnet_map, samples, calibration, validation, external_inputs
+    )
     print(f"ensemble of {samples.shape[0]}: done")
 
     write_outputs(
@@ -111,9 +122,11 @@ def main() -> int:
 # ── the steps ──
 
 
-def run_once_by_hand(vector, sipnet_map, theta, calibration, validation) -> dict:
+def run_once_by_hand(
+    vector, sipnet_map, theta, calibration, validation, external_inputs
+) -> dict:
     """One run at *theta*, through each layer the forward model composes."""
-    initial = runs.initial_state()
+    initial = external_inputs
     # The map: theta and the external inputs to SIPNET parameter fields.
     sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(
         vector, theta, external_inputs=initial
@@ -168,7 +181,9 @@ def run_once_by_hand(vector, sipnet_map, theta, calibration, validation) -> dict
     }
 
 
-def run_ensemble(vector, sipnet_map, samples, calibration, validation) -> dict:
+def run_ensemble(
+    vector, sipnet_map, samples, calibration, validation, external_inputs
+) -> dict:
     """The ensemble through the forward model: predictions of both vectors, then daily output."""
     predicted = {}
     for label, observation_vector in (
@@ -176,7 +191,10 @@ def run_ensemble(vector, sipnet_map, samples, calibration, validation) -> dict:
         ("validation", validation),
     ):
         evaluation = runs.forward_model(
-            vector, sipnet_map, observation_vector=observation_vector
+            vector,
+            sipnet_map,
+            observation_vector=observation_vector,
+            external_inputs=external_inputs,
         ).evaluate(samples)
         _report_failures(label, evaluation)
         predicted[label] = evaluation.predicted_fields()
@@ -188,6 +206,7 @@ def run_ensemble(vector, sipnet_map, samples, calibration, validation) -> dict:
         sipnet_map,
         output_variable_names=config.FORWARD_CHECK_OUTPUT_VARIABLE_NAMES,
         freq="1D",
+        external_inputs=external_inputs,
     ).evaluate(samples)
     _report_failures("daily output", daily)
     return {
@@ -237,10 +256,30 @@ def write_observations(directory, vectors) -> None:
 
 
 def _stand_in():
-    """The stand-in calibration at the configured site."""
+    """The step-3 stand-in calibration, with the site's whole initial state."""
     labels = load_site_labels(stand_in_calibration.SITE_LABELS_NAME)
     site_label = labels.loc[labels["site_id"] == config.SITE, "label"]
-    return stand_in_calibration.stand_in_calibration(inputs.site_table(), site_label)
+    return (
+        *stand_in_calibration.stand_in_calibration(inputs.site_table(), site_label),
+        runs.initial_state(),
+    )
+
+
+def _prior():
+    """The calibration's parameterization and prior, with its external inputs."""
+    return (*calibration_prior.calibration(), calibration_prior.external_inputs())
+
+
+#: The calibrations the forward check can run, by the name its output is
+#: written under: the calibration's prior, or step 3's stand-in.
+CALIBRATIONS = {"prior": _prior, "stand_in": _stand_in}
+
+
+def _parser() -> argparse.ArgumentParser:
+    """The command line: which calibration to run."""
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--calibration", choices=CALIBRATIONS, default="prior")
+    return parser
 
 
 def _report_failures(label: str, evaluation) -> None:

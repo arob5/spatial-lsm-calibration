@@ -17,7 +17,7 @@ a choice.
 | `noise.py` | the noise covariance $R$ and the Gaussian likelihood it defines, for both vectors; run it to see what each observation source contributes |
 | `runs.py` | what running SIPNET needs, built from `config`: the base parameters, the runner and model, the drivers, the site's initial state, and the forward model over PyEns |
 | `stand_in_calibration.py` | step 3's stand-in parameter vector, prior and SIPNET parameter map: three parameters, enough to run the machinery; **not** the calibration, which step 4 writes |
-| `forward_check.py` | step 3: one SIPNET run by hand and a stand-in ensemble through the forward model, predicting both observation vectors, scored under the likelihood; writes to `output/forward_check/` |
+| `forward_check.py` | one SIPNET run by hand and an ensemble of prior draws through the forward model, predicting both observation vectors, scored under the likelihood; the calibration's prior by default, or step 3's stand-in; writes to `output/forward_check/<calibration>/` |
 | `plots.py` | the figures, from what the scripts wrote; writes to `output/figures/` |
 | `calibration_prior.py` | **the calibration's parameterization and prior** (step 4): the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance |
 | `fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
@@ -36,8 +36,8 @@ uv run python experiments/single_site_mcmc_vs_eki/prepare_drivers.py
 uv run python experiments/single_site_mcmc_vs_eki/inputs.py
 uv run python experiments/single_site_mcmc_vs_eki/observations.py
 uv run python experiments/single_site_mcmc_vs_eki/noise.py
-uv run python experiments/single_site_mcmc_vs_eki/forward_check.py   # a few minutes
-uv run python experiments/single_site_mcmc_vs_eki/plots.py
+uv run python experiments/single_site_mcmc_vs_eki/forward_check.py   # a few minutes; --calibration stand_in for step 3's
+uv run python experiments/single_site_mcmc_vs_eki/plots.py           # the same --calibration
 ```
 
 ## The observation model

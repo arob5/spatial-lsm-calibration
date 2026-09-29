@@ -14,7 +14,7 @@ Step 3, the forward check (``forward_check.py``):
 - :func:`plot_daily_trajectories`: the fluxes and pools behind them, day by
   day.
 
-In every figure the ensemble is the stand-in prior's (role ``prior``: a
+In every figure the ensemble is the prior's draws (role ``prior``: a
 median and 50% and 90% bands), the one run is at the prior's center (a solid
 line), and observations are black points with error bars of the noise model's
 total standard deviation; the held-out tower's are hollow.
@@ -23,9 +23,10 @@ Usage
 -----
 ::
 
-    uv run python experiments/single_site_mcmc_vs_eki/plots.py
+    uv run python experiments/single_site_mcmc_vs_eki/plots.py [--calibration stand_in]
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -46,7 +47,7 @@ __all__ = [
 ]
 
 #: The legend entries of the three things every forward-check panel shows.
-ENSEMBLE_LABEL = "ensemble (stand-in prior)"
+ENSEMBLE_LABEL = "ensemble (prior draws)"
 SINGLE_RUN_LABEL = "one run (prior center)"
 OBSERVED_LABEL = "observed (US-Ha1, constraints)"
 HELD_OUT_LABEL = "held out (US-xHA)"
@@ -162,11 +163,14 @@ def plot_daily_trajectories(check: dict) -> plt.Figure:
 # ── entry point ──
 
 
-def main() -> int:
-    """Draw every figure of the forward check into ``config.FIGURE_DIRECTORY``."""
+def main(argv: list[str] | None = None) -> int:
+    """Draw every figure of one forward check into ``config.FIGURE_DIRECTORY``."""
+    parser = argparse.ArgumentParser(description="Draw the forward check's figures.")
+    parser.add_argument("--calibration", choices=("prior", "stand_in"), default="prior")
+    name_of_check = parser.parse_args(argv).calibration
     use_project_style()
     try:
-        check = load_forward_check()
+        check = load_forward_check(config.FORWARD_CHECK_DIRECTORY / name_of_check)
     except FileNotFoundError as error:
         print(f"error: {error}; run forward_check.py first", file=sys.stderr)
         return 1
@@ -176,7 +180,7 @@ def main() -> int:
         ("forward_check_pools", plot_pool_observations),
         ("forward_check_trajectories", plot_daily_trajectories),
     ):
-        path = config.FIGURE_DIRECTORY / f"{name}.png"
+        path = config.FIGURE_DIRECTORY / f"{name}_{name_of_check}.png"
         draw(check).savefig(path)
         print(f"wrote {path}")
     return 0
