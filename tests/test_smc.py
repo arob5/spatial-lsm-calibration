@@ -293,8 +293,8 @@ def test_systematic_resampling_takes_each_sample_about_n_times_its_weight_and_ne
 @pytest.mark.parametrize(
     ("from_prior", "mean_tolerance", "evidence_tolerance"),
     # Largest over eight seeds, from the base and from the prior: mean or sd
-    # error 0.036 and 0.077 posterior sds, evidence error 0.068 and 0.097.
-    [(False, 0.08, 0.15), (True, 0.15, 0.2)],
+    # error 0.054 and 0.047 posterior sds, evidence error 0.059 and 0.113.
+    [(False, 0.11, 0.12), (True, 0.1, 0.23)],
 )
 def test_tempered_smc_recovers_the_linear_gaussian_posterior_and_evidence(
     from_prior, mean_tolerance, evidence_tolerance
@@ -318,11 +318,11 @@ def test_each_kernel_alone_recovers_the_linear_gaussian_posterior(bounds):
     )
     final = run(problem, smc.SMCSettings(n_samples=2000, seed=0, independent_fraction_bounds=bounds))[-1]
     mean, covariance = weighted_moments(final)
-    # Largest over eight seeds, either kernel: mean or sd error 0.061
-    # posterior sds, evidence error 0.079.
-    assert np.max(np.abs(mean - problem_.posterior_mean) / problem_.posterior_sd) < 0.12
-    assert np.max(np.abs(np.sqrt(np.diag(covariance)) / problem_.posterior_sd - 1)) < 0.12
-    assert abs(final.log_evidence - problem_.log_evidence) < 0.16
+    # Largest over eight seeds, either kernel: mean or sd error 0.049
+    # posterior sds, evidence error 0.117.
+    assert np.max(np.abs(mean - problem_.posterior_mean) / problem_.posterior_sd) < 0.1
+    assert np.max(np.abs(np.sqrt(np.diag(covariance)) / problem_.posterior_sd - 1)) < 0.1
+    assert abs(final.log_evidence - problem_.log_evidence) < 0.24
 
 
 @pytest.mark.parametrize("bounds", [(0.0, 0.0), (1.0, 1.0)], ids=["random_walk", "independent"])
@@ -358,11 +358,11 @@ def test_every_stage_samples_its_tempered_target():
     assert len(stage_ends) >= 2
     for state in stage_ends:
         # A Gaussian base makes every pi_beta Gaussian, with this mean. The
-        # largest error over eight seeds is 2.5 standard errors of 2000
+        # largest error over eight seeds is 3.2 standard errors of 2000
         # independent draws.
         expected = problem_.tempered_moments(base, state.beta)
         spread = np.asarray(state.theta).std(0)
-        assert np.all(np.abs(np.asarray(state.theta).mean(0) - expected) < 5 * spread / math.sqrt(2000))
+        assert np.all(np.abs(np.asarray(state.theta).mean(0) - expected) < 6.5 * spread / math.sqrt(2000))
 
 
 def test_one_step_is_importance_sampling_from_the_base():
@@ -381,11 +381,11 @@ def test_one_step_is_importance_sampling_from_the_base():
     assert final.log_evidence == pytest.approx(np.logaddexp.reduce(log_ratios) - math.log(20_000), abs=1e-12)
     assert final.records[-1]["pareto_k"] == pytest.approx(smc.pareto_k(log_ratios))
     # With a good base the estimates are the posterior's; the largest errors
-    # over eight seeds are 0.016 posterior sds and 0.013 of the log evidence,
-    # and k-hat is at most -0.28.
+    # over eight seeds are 0.025 posterior sds and 0.010 of the log evidence,
+    # and k-hat is at most -0.25.
     mean, _ = weighted_moments(final)
-    assert np.max(np.abs(mean - problem_.posterior_mean) / problem_.posterior_sd) < 0.04
-    assert abs(final.log_evidence - problem_.log_evidence) < 0.03
+    assert np.max(np.abs(mean - problem_.posterior_mean) / problem_.posterior_sd) < 0.05
+    assert abs(final.log_evidence - problem_.log_evidence) < 0.02
     assert final.records[-1]["pareto_k"] < final.records[-1]["pareto_k_threshold"]
 
 
@@ -395,8 +395,8 @@ def test_one_step_from_a_poor_base_is_flagged_by_its_pareto_k():
         log_prior=problem_.prior.log_prob, log_likelihood=problem_.log_likelihood, base=problem_.base()
     )
     record = run(problem, smc.SMCSettings(n_samples=2000, seed=3, one_step=True))[-1].records[-1]
-    # Over eight seeds k-hat exceeds its threshold by 0.72 to 1.20, and the
-    # ESS is at most 20 of 2000.
+    # Over eight seeds k-hat exceeds its threshold by 0.54 to 0.99, and the
+    # ESS is at most 16 of 2000.
     assert record["pareto_k"] > record["pareto_k_threshold"] + 0.3
     assert record["ess"] < 0.02 * 2000
 
@@ -404,8 +404,8 @@ def test_one_step_from_a_poor_base_is_flagged_by_its_pareto_k():
 @pytest.mark.parametrize(
     ("from_prior", "mean_tolerance", "evidence_tolerance"),
     # Largest over eight seeds, from the base and from the prior: mean error
-    # 0.057 and 0.040 posterior sds, evidence error 0.038 and 0.20.
-    [(False, 0.12, 0.08), (True, 0.1, 0.4)],
+    # 0.050 and 0.057 posterior sds, evidence error 0.047 and 0.28.
+    [(False, 0.1, 0.1), (True, 0.12, 0.55)],
 )
 def test_failed_runs_truncate_the_posterior_and_its_evidence(from_prior, mean_tolerance, evidence_tolerance):
     problem_ = LinearGaussian()
@@ -438,10 +438,10 @@ def test_tempered_smc_recovers_the_survey_gaussian():
     reference = target.reference(200_000, np.random.default_rng(123))
     theta = np.asarray(final.theta)
     whitening = np.linalg.inv(np.linalg.cholesky(target.covariance))
-    # Largest over eight seeds: mean error 0.081 posterior sds, whitened
+    # Largest over eight seeds: mean error 0.089 posterior sds, whitened
     # covariance error 0.27 (1000 independent draws give about 0.24), in 23
-    # to 36 calls.
-    assert np.max(np.abs(theta.mean(0) - reference.mean(0)) / reference.std(0)) < 0.16
+    # to 38 calls.
+    assert np.max(np.abs(theta.mean(0) - reference.mean(0)) / reference.std(0)) < 0.18
     assert np.linalg.norm(whitening @ np.cov(theta.T) @ whitening.T - np.eye(15), 2) < 0.5
 
 
@@ -451,11 +451,11 @@ def test_tempered_smc_recovers_the_survey_banana_and_its_evidence():
     reference = target.reference(200_000, np.random.default_rng(123))
     theta = np.asarray(final.theta)
     scale = reference.std(0)
-    # Largest over eight seeds: mean error 0.27 posterior sds, W1 distances
-    # 0.14 and 0.27 of theta_1's and theta_2's, evidence error 0.13, in 78 to
-    # 101 calls.
-    assert np.max(np.abs(theta.mean(0) - reference.mean(0)) / scale) < 0.5
-    for i, tolerance in ((0, 0.3), (1, 0.5)):
+    # Largest over eight seeds: mean error 0.22 posterior sds, W1 distances
+    # 0.11 and 0.22 of theta_1's and theta_2's, evidence error 0.13, in 79 to
+    # 81 calls.
+    assert np.max(np.abs(theta.mean(0) - reference.mean(0)) / scale) < 0.45
+    for i, tolerance in ((0, 0.22), (1, 0.45)):
         assert stats.wasserstein_distance(theta[:, i], reference[:, i]) / scale[i] < tolerance
     assert abs(final.log_evidence - target.log_evidence()) < 0.3
 
@@ -463,9 +463,9 @@ def test_tempered_smc_recovers_the_survey_banana_and_its_evidence():
 def test_one_step_on_the_survey_banana_is_flagged_by_its_effective_sample_size():
     target = SurveyBanana()
     record = run(survey_problem(target), smc.SMCSettings(n_samples=5000, seed=0, one_step=True))[-1].records[-1]
-    # Over eight seeds the ESS is 1.2% to 1.8% of the draws. k-hat is the
-    # weaker flag here: it exceeds its threshold, 0.70, in six of the eight,
-    # ranging from 0.50 to 0.78.
+    # Over eight seeds the ESS is 1.0% to 1.6% of the draws. k-hat is the
+    # weaker flag here: it exceeds its threshold, 0.70, in three of the eight,
+    # ranging from 0.52 to 0.90.
     assert record["ess"] < 0.03 * 5000
 
 

@@ -222,8 +222,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from frozendict import frozendict
+from scipy import stats
 from scipy.linalg import solve_triangular
-from scipy.special import gammaln, logsumexp
+from scipy.special import logsumexp
 
 from sipnet_calibration.io import write_checked
 from sipnet_calibration.validation import as_batched_flat, as_integer, as_positive_integer
@@ -315,6 +316,9 @@ class BaseDensity(Protocol):
 class MultivariateStudentT:
     """A multivariate Student-t of given mean and covariance, or a Gaussian.
 
+    SciPy's ``multivariate_t`` (``multivariate_normal`` for the Gaussian),
+    parameterized by its covariance and returning JAX arrays.
+
     Parameters
     ----------
     mean
@@ -333,41 +337,30 @@ class MultivariateStudentT:
 
     Notes
     -----
-    With scale matrix :math:`S = \\Sigma (\\nu - 2)/\\nu` (:math:`S = \\Sigma`
-    for the Gaussian), :math:`S = L L^\\top` and :math:`r^2 = \\lVert
-    L^{-1}(\\theta - m)\\rVert^2`,
-
-    .. math::
-
-        \\log t_\\nu = \\log\\Gamma\\!\\left(\\tfrac{\\nu + D}{2}\\right)
-            - \\log\\Gamma\\!\\left(\\tfrac{\\nu}{2}\\right)
-            - \\tfrac{D}{2}\\log(\\nu\\pi) - \\tfrac12 \\log|S|
-            - \\tfrac{\\nu + D}{2} \\log\\left(1 + \\tfrac{r^2}{\\nu}\\right),
-        \\qquad
-        \\log N = -\\tfrac12\\left(D \\log 2\\pi + \\log|S| + r^2\\right),
-
-    and a draw is :math:`m + L z / \\sqrt{u/\\nu}`, :math:`z \\sim N(0, I)`,
-    :math:`u \\sim \\chi^2_\\nu` (:math:`m + Lz` for the Gaussian). The
-    covariance is given rather than the scale so that one inflation factor
+    SciPy parameterizes the t by its scale matrix :math:`S`, whose covariance
+    is :math:`S \\nu / (\\nu - 2)`, so :math:`S = \\Sigma (\\nu - 2)/\\nu`. The
+    covariance is taken rather than the scale so that one inflation factor
     means the same spread whatever :math:`\\nu`.
     """
 
     mean: jax.Array
     covariance: jax.Array
     degrees_of_freedom: float | None = None
-    _cholesky: np.ndarray = field(init=False, repr=False)
+    _distribution: Any = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         mean = np.array(self.mean, dtype=np.float64)
         covariance = np.array(self.covariance, dtype=np.float64)
         check_student_t_is_valid(mean, covariance, self.degrees_of_freedom)
         nu = self.degrees_of_freedom
-        scale = covariance if nu is None else covariance * (nu - 2.0) / nu
-        cholesky = np.linalg.cholesky(scale)
-        cholesky.setflags(write=False)
+        distribution = (
+            stats.multivariate_normal(mean, covariance)
+            if nu is None
+            else stats.multivariate_t(mean, covariance * (nu - 2.0) / nu, df=nu)
+        )
         object.__setattr__(self, "mean", jnp.asarray(mean))
         object.__setattr__(self, "covariance", jnp.asarray(covariance))
-        object.__setattr__(self, "_cholesky", cholesky)
+        object.__setattr__(self, "_distribution", distribution)
 
     @property
     def dimension(self) -> int:
@@ -377,32 +370,13 @@ class MultivariateStudentT:
     def log_prob(self, theta: Any) -> jax.Array:
         """The normalized log density, ``(n, D) -> (n,)``."""
         theta = np.asarray(as_batched_flat(theta, self.dimension, message_name="theta"))
-        whitened = solve_triangular(
-            self._cholesky, (theta - np.asarray(self.mean)).T, lower=True
-        )
-        squared_radius = np.sum(whitened**2, axis=0)
-        dimension = self.dimension
-        log_det = 2.0 * np.sum(np.log(np.diag(self._cholesky)))
-        nu = self.degrees_of_freedom
-        if nu is None:
-            values = -0.5 * (dimension * math.log(2.0 * math.pi) + log_det + squared_radius)
-        else:
-            values = (
-                gammaln(0.5 * (nu + dimension))
-                - gammaln(0.5 * nu)
-                - 0.5 * dimension * math.log(nu * math.pi)
-                - 0.5 * log_det
-                - 0.5 * (nu + dimension) * np.log1p(squared_radius / nu)
-            )
-        return jnp.asarray(values)
+        # SciPy returns a scalar for one row; the batch keeps its axis.
+        return jnp.asarray(np.atleast_1d(self._distribution.logpdf(theta)))
 
     def sample(self, rng: np.random.Generator, n_samples: int) -> jax.Array:
         """*n_samples* independent draws, ``(n_samples, D)``."""
-        draws = rng.standard_normal((n_samples, self.dimension)) @ self._cholesky.T
-        if self.degrees_of_freedom is not None:
-            nu = self.degrees_of_freedom
-            draws = draws / np.sqrt(rng.chisquare(nu, n_samples) / nu)[:, None]
-        return jnp.asarray(draws + np.asarray(self.mean))
+        draws = self._distribution.rvs(size=n_samples, random_state=rng)
+        return jnp.asarray(np.reshape(draws, (n_samples, self.dimension)))
 
 
 @dataclass(frozen=True, eq=False, kw_only=True)
@@ -480,8 +454,8 @@ def fit_student_t(
         \\hat C = \\frac{\\sum_i W_i (\\theta_i - \\hat m)(\\theta_i - \\hat m)^\\top}
             {1 - \\sum_i W_i^2},
 
-    the unbiased weighted covariance (:math:`1/(n-1)` for equal weights), and
-    the result has mean :math:`\\hat m` and covariance :math:`\\kappa \\hat C`.
+    the unbiased weighted covariance (``np.cov`` with ``aweights``, which is
+    :math:`1/(n-1)` for equal weights), and the result has mean :math:`\\hat m` and covariance :math:`\\kappa \\hat C`.
 
     Parameters
     ----------
@@ -508,13 +482,9 @@ def fit_student_t(
         else _normalized_weights(np.asarray(log_weights, dtype=np.float64))
     )
     check_covariance_inflation_is_positive(covariance_inflation)
-    mean = weights @ theta
-    centered = theta - mean
-    covariance = (weights[:, None] * centered).T @ centered / (1.0 - np.sum(weights**2))
-    covariance = 0.5 * (covariance + covariance.T)
     return MultivariateStudentT(
-        mean=mean,
-        covariance=covariance_inflation * covariance,
+        mean=np.average(theta, axis=0, weights=weights),
+        covariance=covariance_inflation * np.cov(theta.T, aweights=weights),
         degrees_of_freedom=degrees_of_freedom,
     )
 
@@ -700,7 +670,7 @@ class SMCState:
     def log_target(self) -> jax.Array:
         """:math:`\\log\\pi_\\beta` at the samples, up to its constant, ``(n,)``."""
         return jnp.asarray(
-            _log_target(
+            _tempered_log_target(
                 self.beta,
                 np.asarray(self.log_base),
                 np.asarray(self.log_prior),
@@ -725,12 +695,12 @@ def initial_state(problem: TemperingProblem, settings: SMCSettings) -> SMCState:
         log density ratio :math:`\\ell` is NaN or :math:`+\\infty`.
     """
     n = settings.n_samples
-    theta = np.asarray(problem.base.sample(_generator(settings.seed, 0, 0), n))
-    log_likelihood, auxiliary, failed = _evaluate(problem, theta)
-    log_prior, log_base = _log_densities(problem, theta)
-    check_log_ratios_are_valid(_log_ratio(log_prior, log_likelihood, log_base))
+    theta = np.asarray(problem.base.sample(_generator_for_step(settings.seed, 0, 0), n))
+    log_likelihood, auxiliary, failed = _evaluate_log_likelihood(problem, theta)
+    log_prior, log_base = _log_prior_and_base_densities(problem, theta)
+    check_log_ratios_are_valid(_log_density_ratios(log_prior, log_likelihood, log_base))
     low, high = settings.independent_fraction_bounds
-    record = _record(
+    record = _stage_record(
         stage=0,
         beta=0.0,
         n_zero_weight=failed,
@@ -781,9 +751,11 @@ def run_smc(problem: TemperingProblem, state: SMCState) -> Iterator[SMCState]:
         if state.phase == "reweight":
             if state.stage >= state.settings.max_stages:
                 return
-            state = _reweight(problem, state)
+            state = _reweight_to_next_beta(problem, state)
+            if not state.finished:
+                state = _resample_and_fit_proposals(state)
         else:
-            state = _move(problem, state)
+            state = _take_metropolis_hastings_step(problem, state)
         yield state
 
 
@@ -798,7 +770,7 @@ def save_state(path: Path | str, state: SMCState) -> Path:
     pathlib.Path
         *path*.
     """
-    arrays, metadata = _state_contents(state)
+    arrays, metadata = _state_arrays_and_metadata(state)
 
     def write(partial: Path) -> None:
         with open(partial, "wb") as handle:
@@ -967,11 +939,11 @@ def systematic_resample(log_weights: Any, n_samples: int, rng: np.random.Generat
 # ── private helpers ───────────────────────────────────────────────────────────
 
 
-def _reweight(problem: TemperingProblem, state: SMCState) -> SMCState:
-    """Stage ``stage + 1``'s increment and reweight, then its resampling unless one-step."""
+def _reweight_to_next_beta(problem: TemperingProblem, state: SMCState) -> SMCState:
+    """Stage ``stage + 1``'s increment and reweight, and its record; no call and no resampling."""
     settings = state.settings
     log_weights = np.asarray(state.log_weights)
-    log_ratios = _log_ratio(
+    log_ratios = _log_density_ratios(
         np.asarray(state.log_prior), np.asarray(state.log_likelihood), np.asarray(state.log_base)
     )
     check_some_run_succeeded(log_ratios)
@@ -1013,24 +985,20 @@ def _reweight(problem: TemperingProblem, state: SMCState) -> SMCState:
         n_zero_weight=int((~finite).sum()),
         log_evidence=reweighted.log_evidence,
     )
-    if settings.one_step:
-        return replace(
-            reweighted,
-            phase="done",
-            records=state.records
-            + (_record(**record, failed_runs=0, n_evaluations=state.n_evaluations, n_calls=state.n_calls),),
-        )
-    return _resampled(reweighted, record)
+    record = _stage_record(**record, failed_runs=0, n_evaluations=state.n_evaluations, n_calls=state.n_calls)
+    return replace(
+        reweighted, phase="done" if settings.one_step else "move", records=state.records + (record,)
+    )
 
 
-def _resampled(state: SMCState, record: dict) -> SMCState:
-    """*state* resampled to equal weights, with its stage's proposal fitted before."""
+def _resample_and_fit_proposals(state: SMCState) -> SMCState:
+    """The reweighted samples resampled to equal weights, with the stage's proposal fitted to them first."""
     theta = np.asarray(state.theta)
     fitted = fit_student_t(theta, log_weights=state.log_weights)
     indices = systematic_resample(
-        state.log_weights, state.settings.n_samples, _generator(state.settings.seed, state.stage, 0)
+        state.log_weights, state.settings.n_samples, _generator_for_step(state.settings.seed, state.stage, 0)
     )
-    record["n_unique"] = int(np.unique(indices).size)
+    record = dict(state.records[-1], n_unique=int(np.unique(indices).size))
     n = state.settings.n_samples
     return replace(
         state,
@@ -1044,15 +1012,15 @@ def _resampled(state: SMCState, record: dict) -> SMCState:
         proposal_mean=fitted.mean,
         proposal_covariance=fitted.covariance,
         moves=MoveTally(moved=jnp.zeros(n, dtype=bool)),
-        records=state.records + (_record(**record),),
+        records=state.records[:-1] + (frozendict(record),),
     )
 
 
-def _move(problem: TemperingProblem, state: SMCState) -> SMCState:
+def _take_metropolis_hastings_step(problem: TemperingProblem, state: SMCState) -> SMCState:
     """One Metropolis-Hastings step of every sample, invariant for :math:`\\pi_\\beta`; one call."""
     settings = state.settings
     n, dimension = state.theta.shape
-    rng = _generator(settings.seed, state.stage, state.moves.steps + 1)
+    rng = _generator_for_step(settings.seed, state.stage, state.moves.steps + 1)
     covariance = np.asarray(state.proposal_covariance)
     cholesky = np.linalg.cholesky(covariance)
     independent = MultivariateStudentT(
@@ -1061,7 +1029,7 @@ def _move(problem: TemperingProblem, state: SMCState) -> SMCState:
         degrees_of_freedom=settings.independent_degrees_of_freedom,
     )
     theta = np.asarray(state.theta)
-    current = _log_target(
+    current = _tempered_log_target(
         state.beta,
         np.asarray(state.log_base),
         np.asarray(state.log_prior),
@@ -1072,9 +1040,9 @@ def _move(problem: TemperingProblem, state: SMCState) -> SMCState:
     walk = theta + state.random_walk_scale * rng.standard_normal((n, dimension)) @ cholesky.T
     jump = np.asarray(independent.sample(rng, n))
     proposal = np.where(use_independent[:, None], jump, walk)
-    log_likelihood, auxiliary, failed = _evaluate(problem, proposal)
-    log_prior, log_base = _log_densities(problem, proposal)
-    proposed = _log_target(state.beta, log_base, log_prior, log_likelihood)
+    log_likelihood, auxiliary, failed = _evaluate_log_likelihood(problem, proposal)
+    log_prior, log_base = _log_prior_and_base_densities(problem, proposal)
+    proposed = _tempered_log_target(state.beta, log_base, log_prior, log_likelihood)
     correction = np.asarray(independent.log_prob(theta)) - np.asarray(independent.log_prob(proposal))
     log_alpha = proposed - current + np.where(use_independent, correction, 0.0)
     accept = np.log1p(-rng.random(n)) <= log_alpha
@@ -1100,7 +1068,7 @@ def _move(problem: TemperingProblem, state: SMCState) -> SMCState:
         log_likelihood=jnp.asarray(np.where(accept, log_likelihood, np.asarray(state.log_likelihood))),
         log_prior=jnp.asarray(np.where(accept, log_prior, np.asarray(state.log_prior))),
         log_base=jnp.asarray(np.where(accept, log_base, np.asarray(state.log_base))),
-        auxiliary=_accepted_auxiliary(state.auxiliary, auxiliary, accept),
+        auxiliary=_auxiliary_after_step(state.auxiliary, auxiliary, accept),
         n_evaluations=state.n_evaluations + n,
         n_calls=state.n_calls + 1,
         moves=tally,
@@ -1110,17 +1078,17 @@ def _move(problem: TemperingProblem, state: SMCState) -> SMCState:
         tally.steps < settings.min_move_steps or moved_fraction < settings.move_probability
     ):
         return moved
-    return _stage_ended(moved, moved_fraction)
+    return _end_stage_and_adapt_kernel(moved, moved_fraction)
 
 
-def _stage_ended(state: SMCState, moved_fraction: float) -> SMCState:
+def _end_stage_and_adapt_kernel(state: SMCState, moved_fraction: float) -> SMCState:
     """The stage's record completed, and the next stage's kernel adapted from its moves."""
     settings = state.settings
     moves = state.moves
-    acceptance_random_walk = _ratio(moves.acceptance_random_walk, moves.proposed_random_walk)
-    acceptance_independent = _ratio(moves.acceptance_independent, moves.proposed_independent)
-    jump_random_walk = _ratio(moves.jump_random_walk, moves.proposed_random_walk)
-    jump_independent = _ratio(moves.jump_independent, moves.proposed_independent)
+    acceptance_random_walk = _mean_or_nan(moves.acceptance_random_walk, moves.proposed_random_walk)
+    acceptance_independent = _mean_or_nan(moves.acceptance_independent, moves.proposed_independent)
+    jump_random_walk = _mean_or_nan(moves.jump_random_walk, moves.proposed_random_walk)
+    jump_independent = _mean_or_nan(moves.jump_independent, moves.proposed_independent)
     n_proposed = moves.proposed_random_walk + moves.proposed_independent
     record = dict(state.records[-1])
     record.update(
@@ -1154,7 +1122,7 @@ def _stage_ended(state: SMCState, moved_fraction: float) -> SMCState:
     )
 
 
-def _evaluate(problem: TemperingProblem, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray | None, int]:
+def _evaluate_log_likelihood(problem: TemperingProblem, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray | None, int]:
     """The log likelihood at *theta*, NaN made :math:`-\\infty`; its auxiliary values; the failures."""
     result = problem.log_likelihood(np.array(theta))
     auxiliary = None
@@ -1169,7 +1137,7 @@ def _evaluate(problem: TemperingProblem, theta: np.ndarray) -> tuple[np.ndarray,
     return values, auxiliary, int(failed.sum())
 
 
-def _log_densities(problem: TemperingProblem, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _log_prior_and_base_densities(problem: TemperingProblem, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """:math:`\\log p_0` and :math:`\\log q` at *theta*, ``(n,)`` each."""
     log_prior = np.asarray(problem.log_prior(theta), dtype=np.float64)
     log_base = np.asarray(problem.base.log_prob(theta), dtype=np.float64)
@@ -1178,14 +1146,14 @@ def _log_densities(problem: TemperingProblem, theta: np.ndarray) -> tuple[np.nda
     return log_prior, log_base
 
 
-def _log_ratio(log_prior: np.ndarray, log_likelihood: np.ndarray, log_base: np.ndarray) -> np.ndarray:
+def _log_density_ratios(log_prior: np.ndarray, log_likelihood: np.ndarray, log_base: np.ndarray) -> np.ndarray:
     """:math:`\\ell = \\log p_0 + \\log L - \\log q`, :math:`-\\infty` where the run failed."""
     with np.errstate(invalid="ignore"):
         ratios = log_prior + log_likelihood - log_base
     return np.where(np.isneginf(log_likelihood), -np.inf, ratios)
 
 
-def _log_target(beta: float, log_base: np.ndarray, log_prior: np.ndarray, log_likelihood: np.ndarray) -> np.ndarray:
+def _tempered_log_target(beta: float, log_base: np.ndarray, log_prior: np.ndarray, log_likelihood: np.ndarray) -> np.ndarray:
     """:math:`(1 - \\beta)\\log q + \\beta(\\log p_0 + \\log L)`; :math:`-\\infty` where a run failed, for :math:`\\beta > 0`."""
     # At either end one term is absent, not multiplied by 0, which would make
     # NaN of a log density of -inf there.
@@ -1207,7 +1175,7 @@ def _normalized_weights(log_weights: np.ndarray) -> np.ndarray:
     return np.exp(log_weights - logsumexp(log_weights))
 
 
-def _accepted_auxiliary(current: jax.Array | None, proposed: np.ndarray | None, accept: np.ndarray) -> jax.Array | None:
+def _auxiliary_after_step(current: jax.Array | None, proposed: np.ndarray | None, accept: np.ndarray) -> jax.Array | None:
     """The auxiliary values of the samples after the step: the proposal's where accepted."""
     if current is None:
         return None
@@ -1215,22 +1183,22 @@ def _accepted_auxiliary(current: jax.Array | None, proposed: np.ndarray | None, 
     return jnp.asarray(np.where(mask, proposed, np.asarray(current)))
 
 
-def _record(**values: Any) -> frozendict:
+def _stage_record(**values: Any) -> frozendict:
     """A stage's record: every field of :data:`RECORD_FIELD_NAMES`, NaN where not given."""
     return frozendict({name: values.get(name, math.nan) for name in RECORD_FIELD_NAMES})
 
 
-def _ratio(total: float, count: int) -> float:
+def _mean_or_nan(total: float, count: int) -> float:
     """*total* over *count*, NaN for no count."""
     return total / count if count else math.nan
 
 
-def _generator(seed: int, stage: int, step: int) -> np.random.Generator:
+def _generator_for_step(seed: int, stage: int, step: int) -> np.random.Generator:
     """The generator of stage *stage*'s step *step* (0: its draw or resampling)."""
     return np.random.default_rng([seed, stage, step])
 
 
-def _state_contents(state: SMCState) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+def _state_arrays_and_metadata(state: SMCState) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
     """*state* as the arrays and the JSON-able values :func:`save_state` writes."""
     arrays = {
         name: np.asarray(getattr(state, name))
@@ -1431,8 +1399,8 @@ def check_samples_have_finite_target_density(log_target: np.ndarray) -> None:
 def check_saved_state_equals(loaded: SMCState, state: SMCState) -> None:
     """A state read back from its file equals the one written, bit for bit, so
     a resumed run continues the same run."""
-    written, written_metadata = _state_contents(state)
-    read, read_metadata = _state_contents(loaded)
+    written, written_metadata = _state_arrays_and_metadata(state)
+    read, read_metadata = _state_arrays_and_metadata(loaded)
     same_arrays = written.keys() == read.keys() and all(
         written[name].dtype == read[name].dtype and np.array_equal(written[name], read[name], equal_nan=True)
         for name in written
