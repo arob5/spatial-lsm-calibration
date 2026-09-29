@@ -457,13 +457,27 @@ $$
 $$
 
 and likewise $2\,\Phi_k(\theta^\star) \sim \chi^2_{n_k}$, independently over
-$k$. The same holds at a draw $\theta$ of the exact posterior
-$p(\theta \mid y)$: the pairs $(\theta^\star, y)$ and $(\theta, y)$ have the
-same joint distribution, since given $y$ both $\theta^\star$ and $\theta$
-are distributed as $p(\theta \mid y)$, so over data sets drawn from the
-model $\Phi(\theta)$ has the distribution of $\Phi(\theta^\star)$. The members of the final ensemble approximate
-posterior draws, so under the model their misfits should lie near $N/2$,
-within a few multiples of $\sqrt{N/2}$.
+$k$. The same holds at a draw $\theta$ of the exact posterior. The truth and
+the data are drawn jointly, $\theta^\star$ from the prior and then $y$ given
+$\theta^\star$, and by Bayes' rule their joint density factors both ways,
+
+$$
+p(\theta^\star)\, p(y \mid \theta^\star) = p(y)\, p(\theta^\star \mid y):
+$$
+
+$\theta^\star$ is distributed as the prior marginally, and as the posterior
+given the data it generated. A draw $\theta \sim p(\theta \mid y)$, made
+given $y$ and independently of $\theta^\star$, makes a pair $(\theta, y)$ of
+joint density $p(y)\, p(\theta \mid y)$, the right-hand side. The two pairs
+have one joint distribution, so $\Phi(\theta)$ has the distribution of
+$\Phi(\theta^\star)$, $2\,\Phi(\theta) \sim \chi^2_N$. Two conditions come
+with it: the statement is over data sets drawn from the model, not
+conditional on the one observed $y$, so for the observed data it is a
+calibration check; and it holds only if the prior the posterior is formed
+with is the one the truth is drawn from, which is part of the model being
+right. The members of the final ensemble approximate posterior draws, so
+under the model their misfits should lie near $N/2$, within a few multiples
+of $\sqrt{N/2}$.
 
 On synthetic data, where the model is right by construction, they do: with
 $N = 2715$, $N/2 = 1357.5$ and $\sqrt{N/2} = 36.8$, the final ensemble's mean
