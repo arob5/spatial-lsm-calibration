@@ -244,6 +244,15 @@ them.
 | **member** | one member of a data source's own ensemble, only inside a name that says which source: `initial_condition_member`, `driver_member` | bare `member` as a dim name |
 | **batch shape** | TFP's term, only in TFP code, always written "TFP batch shape" | "batch member" for a dim label |
 
+**Sampling.** The samples of tempered SMC and importance sampling are
+samples, as above; "particle" is not used.
+
+| Word | Meaning | Retires |
+|---|---|---|
+| **base density** | the normalized density `q` a tempered SMC run or an importance sampler draws from, `smc.BaseDensity`: the prior, or a Student-t fitted to an ensemble | "proposal" for it: a proposal is a move's |
+| **stage** | one tempering increment of SMC, with its resampling and moves (`SMCState.stage`) | "iteration" |
+| **weight** | a sample's normalized importance weight `W`; `log_weights` in code | |
+
 **Narrowed words.** *label*: an xarray coordinate label, text on a figure, or
 "site labels" the data source. *kind*: only pySIPNET's variable kind. *source*:
 only "data source" and its attributes (`source_file`, `source_column`).
@@ -793,8 +802,8 @@ The layout below is the **agreed target**, specified in
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
 `parameter_vector.py`, `prior.py`, `sipnet_parameter_map.py`,
-`calibration.py`, `site_labels.py`, `forward.py`, `compute.py` and the
-`observation/` package are implemented, `fields.py` has the model-output
+`calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py` and
+the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
@@ -909,6 +918,13 @@ src/sipnet_calibration/
                           # worker; ForwardEvaluation with its run index; the
                           # failure split
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
+  smc.py                  # tempered SMC from a base density q to the
+                          # posterior, importance sampling its one-step case;
+                          # knows nothing of SIPNET. MultivariateStudentT,
+                          # DefensiveMixture, fit_student_t; TemperingProblem,
+                          # SMCSettings, SMCState; initial_state(), run_smc(),
+                          # save_state()/load_state(); next_increment() (CESS),
+                          # pareto_k() (ArviZ's PSIS), systematic_resample()
   fields.py               # the field contract: validate_field(), batch_dims(),
                           # stack_batch_dims()/unstack_batch_dims(),
                           # batch_coordinate(), scalar_batch_labels(),
