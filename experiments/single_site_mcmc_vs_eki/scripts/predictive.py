@@ -4,7 +4,7 @@ What the prior and the posterior predictive share: running an ensemble of
 theta through the forward model for the calibration and validation
 predictions and for daily model output, scoring each row under the
 calibration likelihood, and writing it all in one layout, which
-``figures/common.py``'s ``load_predictive`` reads.
+``model/outputs.py``'s ``load_predictive`` reads.
 
 Output data
 -----------

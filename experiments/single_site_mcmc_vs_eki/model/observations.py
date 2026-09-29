@@ -60,6 +60,7 @@ from . import inputs
 
 __all__ = [
     "calibration_observation_vector",
+    "nee_observation_vector",
     "observed_aboveground_biomass",
     "observed_leaf_area_index",
     "observed_nee_windows",
@@ -85,11 +86,17 @@ def calibration_observation_vector() -> ObservationVector:
 
 def validation_observation_vector() -> ObservationVector:
     """The held-out NEE of the second tower, over the years the calibration does not see."""
-    record = run_record()
+    return nee_observation_vector(
+        config.VALIDATION_NEE_SERIES, config.VALIDATION_NEE_PERIOD
+    )
+
+
+def nee_observation_vector(
+    series_name: str, period: tuple[int, int]
+) -> ObservationVector:
+    """One NEE series' two window sources over *period*, ``(first, last)`` years."""
     return _observation_vector_of(
-        observed_nee_windows(
-            config.VALIDATION_NEE_SERIES, config.VALIDATION_NEE_PERIOD, record
-        )
+        observed_nee_windows(series_name, period, run_record())
     )
 
 

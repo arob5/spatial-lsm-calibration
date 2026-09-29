@@ -54,7 +54,8 @@ from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..model import inputs
-from .common import NEE_TITLES, load_predictive, one_legend
+from ..model.outputs import load_predictive
+from .common import NEE_TITLES, one_legend, save_figure
 
 __all__ = [
     "PREDICTIVES",
@@ -444,13 +445,12 @@ def main() -> int:
     except FileNotFoundError as error:
         print(f"error: {error}; run scripts/prior_predictive.py first", file=sys.stderr)
         return 1
-    config.FIGURE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     for name, draw in (
         ("prior_predictive_nee", plot_nee_windows),
         ("prior_predictive_pools", plot_pool_observations),
         ("prior_predictive_trajectories", plot_daily_trajectories),
     ):
-        _save(draw(outputs), name)
+        save_figure(draw(outputs), name)
     with plt.rc_context(SLIDE_STYLE):
         for name, figure in (
             ("prior_marginals", plot_prior_marginals(parameters)),
@@ -458,19 +458,11 @@ def main() -> int:
             ("prior_predictive_nee_annual", plot_nee_annual(outputs)),
             ("prior_predictive_coverage", plot_coverage(outputs)),
         ):
-            _save(figure, name)
+            save_figure(figure, name)
     return 0
 
 
 # ── helpers ──
-
-
-def _save(figure: plt.Figure, name: str) -> None:
-    """Write *figure* as ``<name>.png`` into the figure directory, and close it."""
-    path = config.FIGURE_DIRECTORY / f"{name}.png"
-    figure.savefig(path)
-    plt.close(figure)
-    print(f"wrote {path}")
 
 
 def _draw_predictions(ax, outputs: dict, vector: str, name: str, kind: str) -> None:

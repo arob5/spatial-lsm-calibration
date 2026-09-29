@@ -205,12 +205,8 @@ def noise_summary(vector: ObservationVector, nee_series_name: str) -> pd.DataFra
 
 def _nee_block(source: ObservationSource, measurement: np.ndarray) -> np.ndarray:
     """Measurement error on the diagonal plus discrepancy correlated in time."""
-    discrepancy = config.NEE_DISCREPANCY_STANDARD_DEVIATIONS[
-        source.observation_source_name
-    ]
-    times = _times_in_days(source)
-    correlation = _exponential_correlation(times, config.NEE_DISCREPANCY_TIMESCALE)
-    return np.diag(measurement**2) + discrepancy**2 * correlation
+    discrepancy = config.NEE_DISCREPANCY[source.observation_source_name]
+    return np.diag(measurement**2) + discrepancy.covariance(_times_in_days(source))
 
 
 def _leaf_area_index_block(

@@ -1,7 +1,7 @@
 """EKI's figures: the ladder, the marginals, and, on synthetic data, recovery of the truth.
 
 Reads what ``scripts/eki.py`` wrote under ``config.EKI_DIRECTORY / <data>``
-and draws, into ``config.FIGURE_DIRECTORY``:
+and draws, into ``config.FIGURE_DIRECTORY / config.EKI_RUN_NAME``:
 
 - :func:`plot_ladder` (``eki_ladder_<data>``): per step, the level beta and
   the increment, the members' misfits against ``N / 2``, the value expected
@@ -30,48 +30,20 @@ From the repository root::
 
 import argparse
 import sys
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 from sipnet_calibration.plotting.style import role_style, use_project_style
 
 from .. import config
 from ..model import prior
 from . import prior_predictive
-from .common import load_predictive
+from ..model.outputs import load_eki_run, load_predictive
+from .common import save_figure
 from .prior_predictive import PARAMETER_TITLES, SLIDE_STYLE
 
-__all__ = ["load_eki", "plot_ladder", "plot_marginals", "plot_recovery"]
-
-
-def load_eki(directory: Path) -> dict:
-    """What ``scripts/eki.py`` wrote: the history, the ensembles, and the truth if any.
-
-    Returns ``{"history": DataFrame, "prior": DataFrame, "posterior":
-    DataFrame, "theta_prior": (J, D), "theta_posterior": (J, D), "n_observations":
-    N, "truth": DataFrame or None, "theta_true": (D,) or None}``. Raises
-    ``FileNotFoundError`` when the run has not finished.
-    """
-    steps = sorted((directory / "steps").glob("step_*.npz"))
-    first, last = np.load(steps[0]), np.load(steps[-1])
-    synthetic = directory / "synthetic.npz"
-    return {
-        "history": pd.read_csv(directory / "history.csv"),
-        "prior": pd.read_csv(directory / "prior_ensemble.csv", index_col=0),
-        "posterior": pd.read_csv(directory / "posterior_ensemble.csv", index_col=0),
-        "theta_prior": first["ensemble"],
-        "theta_posterior": last["next_ensemble"],
-        "n_observations": last["predictions"].shape[1],
-        "truth": (
-            pd.read_csv(directory / "truth.csv", index_col=0)
-            if synthetic.exists()
-            else None
-        ),
-        "theta_true": np.load(synthetic)["theta_true"] if synthetic.exists() else None,
-    }
+__all__ = ["plot_ladder", "plot_marginals", "plot_recovery"]
 
 
 def plot_ladder(run: dict) -> plt.Figure:
@@ -90,7 +62,7 @@ def plot_ladder(run: dict) -> plt.Figure:
         misfit.plot(steps, history[column], style, label=column.replace("_", " "))
     misfit.plot(steps, history["centre_misfit"], "s:", label="misfit of the mean")
     misfit.axhline(
-        run["n_observations"] / 2,
+        run["predictions"].shape[1] / 2,
         color="black",
         linewidth=0.8,
         label="N / 2, expected at the truth",
@@ -212,11 +184,10 @@ def main(argv: list[str] | None = None) -> int:
     data = parser.parse_args(argv).data
     use_project_style()
     try:
-        run = load_eki(config.EKI_DIRECTORY / data)
-    except (FileNotFoundError, IndexError) as error:
+        run = load_eki_run(config.EKI_DIRECTORY / data)
+    except FileNotFoundError as error:
         print(f"error: {error}; run scripts/eki.py first", file=sys.stderr)
         return 1
-    config.FIGURE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     figures = {
         f"eki_ladder_{data}": plot_ladder(run),
         f"eki_marginals_{data}": plot_marginals(run),
@@ -227,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         figures["eki_recovery_synthetic"] = plot_recovery(run, entry_names)
     for name, figure in figures.items():
-        _save(figure, name)
+        save_figure(figure, name, eki_run=True)
     predictive_directory = config.EKI_DIRECTORY / data / "posterior_predictive"
     if (predictive_directory / "ensemble_daily.nc").exists():
         _draw_posterior_predictive(load_predictive(predictive_directory), data)
@@ -245,7 +216,7 @@ def _draw_posterior_predictive(outputs: dict, data: str) -> None:
         ("pools", prior_predictive.plot_pool_observations),
         ("trajectories", prior_predictive.plot_daily_trajectories),
     ):
-        _save(draw(outputs, kind="posterior"), f"{prefix}_{name}")
+        save_figure(draw(outputs, kind="posterior"), f"{prefix}_{name}", eki_run=True)
     with plt.rc_context(SLIDE_STYLE):
         for name, figure in (
             (
@@ -261,15 +232,7 @@ def _draw_posterior_predictive(outputs: dict, data: str) -> None:
                 ),
             ),
         ):
-            _save(figure, f"{prefix}_{name}")
-
-
-def _save(figure: plt.Figure, name: str) -> None:
-    """Write *figure* as ``<name>.png`` into the figure directory, and close it."""
-    path = config.FIGURE_DIRECTORY / f"{name}.png"
-    figure.savefig(path)
-    plt.close(figure)
-    print(f"wrote {path}")
+            save_figure(figure, f"{prefix}_{name}", eki_run=True)
 
 
 if __name__ == "__main__":

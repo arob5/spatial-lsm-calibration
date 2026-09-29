@@ -19,8 +19,8 @@ Sections, in order:
   writes;
 - **the noise model**: the measurement-error floors and the model-discrepancy
   terms of the noise covariance;
-- **EKI**: the ensemble, the tempering ladder and the update, the seeds, and
-  the synthetic truth.
+- **EKI**: the setup's name, the ensemble, the tempering ladder and the
+  update, the seeds, and the synthetic truth.
 
 The parameterization and the prior are ``model/prior.py``'s.
 """
@@ -37,6 +37,7 @@ from pysipnet.runner import ClimateStaging
 from sipnet_calibration.conventions import data_root
 from sipnet_calibration.observation import DEFAULT_OBS_OPS, ReduceOverRun
 
+from .model.discrepancy import NEEDiscrepancy
 from .model.operators import AverageRateOverWindows, ComputeAbovegroundBiomass
 
 __all__ = [
@@ -50,6 +51,7 @@ __all__ = [
     "EKI_DIRECTORY",
     "EKI_ENSEMBLE_SIZE",
     "EKI_ESS_FRACTION",
+    "EKI_RUN_NAME",
     "EKI_SEED",
     "EKI_SYNTHETIC_TRUTH_SEED",
     "EXCLUDED_CONSTRAINTS",
@@ -61,8 +63,7 @@ __all__ = [
     "LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION",
     "LANDTRENDR_YEARS",
     "MODEL_FLAGS",
-    "NEE_DISCREPANCY_STANDARD_DEVIATIONS",
-    "NEE_DISCREPANCY_TIMESCALE",
+    "NEE_DISCREPANCY",
     "NEE_MINIMUM_MEASURED_FRACTION",
     "NEE_WINDOWS",
     "N_WORKERS",
@@ -319,18 +320,41 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 # constrains the calibration. The timescales are those of the exponential
 # correlation exp(-|t - t'| / tau).
 
-#: The standard deviation of NEE's model discrepancy, per NEE observation
-#: source, in umol m-2 s-1: 0.7 times the standard deviation of the observed
-#: windows' anomalies from their seasonal cycle at the site (1.43 at night,
-#: 2.55 by day), SIPNET taken to explain about half the day-to-day variance.
-NEE_DISCREPANCY_STANDARD_DEVIATIONS = frozendict(
-    {"nee_night_centered": 1.0, "nee_day_centered": 1.8}
+#: NEE's model discrepancy, per NEE observation source: the short, long and
+#: recurring terms of model/discrepancy.py (MODEL.md, "NEE error"), standard
+#: deviations in umol m-2 s-1 of CO2. The values are the three-term fit of
+#: scripts/fit_nee_discrepancy.py to the residuals of the first calibration
+#: (EKI run "single_term_discrepancy", observed data), rounded to three
+#: figures; that run's own discrepancy, the short term alone (1.0 at night,
+#: 1.8 by day, each over 2 days), is in its provenance.json.
+NEE_DISCREPANCY = frozendict(
+    {
+        "nee_night_centered": NEEDiscrepancy(
+            short_sd=0.690,
+            short_timescale=timedelta(days=1.17),
+            long_sd=0.795,
+            long_timescale=timedelta(days=64.2),
+            recurring_sd=0.724,
+            recurring_width=0.437,
+            provenance=(
+                "three-term fit to the residuals of EKI run "
+                "single_term_discrepancy, observed data"
+            ),
+        ),
+        "nee_day_centered": NEEDiscrepancy(
+            short_sd=2.02,
+            short_timescale=timedelta(days=1.78),
+            long_sd=1.68,
+            long_timescale=timedelta(days=46.6),
+            recurring_sd=1.30,
+            recurring_width=0.208,
+            provenance=(
+                "three-term fit to the residuals of EKI run "
+                "single_term_discrepancy, observed data"
+            ),
+        ),
+    }
 )
-
-#: The timescale of NEE's discrepancy correlation between windows of one
-#: source: 0.61 between consecutive days, where the observed anomalies'
-#: correlation is 0.45-0.50.
-NEE_DISCREPANCY_TIMESCALE = timedelta(days=2)
 
 #: The smallest standard deviation a MODIS LAI observation is given, in
 #: m2 m-2: the reanalysis's floor (data/README.md open question 22). The
@@ -365,9 +389,15 @@ SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
 # (the posterior) by pyEKI's perturbed-observation update, the increments
 # chosen adaptively. scripts/eki.py runs it and figures/eki.py draws it.
 
-#: Where each EKI run writes, one directory per data set:
+#: The name of the current EKI setup. Each setup's runs are kept under their
+#: own name, so a change to the noise model or the algorithm leaves the
+#: earlier runs' outputs in place; the first calibration, under the
+#: single-term NEE discrepancy, is "single_term_discrepancy".
+EKI_RUN_NAME = "three_term_discrepancy"
+
+#: Where the current setup's EKI runs write, one directory per data set:
 #: ``synthetic`` or ``observed``.
-EKI_DIRECTORY = OUTPUT_DIRECTORY / "eki"
+EKI_DIRECTORY = OUTPUT_DIRECTORY / "eki" / EKI_RUN_NAME
 
 #: The number of ensemble members, J. Every iterate lies in the affine span of
 #: the initial ensemble, so J - 1 must exceed theta's 15 entries with room to

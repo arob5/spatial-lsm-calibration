@@ -37,6 +37,7 @@ import numpy as np
 
 from .. import config
 from ..model import prior
+from ..model.outputs import load_eki_run
 from . import predictive, provenance
 
 __all__ = ["main"]
@@ -72,11 +73,9 @@ def main(argv: list[str] | None = None) -> int:
 
 def final_ensemble(run_directory: Path) -> np.ndarray:
     """The ensemble a finished EKI run ended with, ``(J, D)``."""
-    paths = sorted((run_directory / "steps").glob("step_*.npz"))
-    check_run_was_written(paths, run_directory)
-    last = np.load(paths[-1])
-    check_run_reached_the_posterior(float(last["next_beta"]), run_directory)
-    return last["next_ensemble"]
+    run = load_eki_run(run_directory)
+    check_run_reached_the_posterior(run["beta"], run_directory)
+    return run["theta_posterior"]
 
 
 # ── helpers ──
@@ -90,14 +89,6 @@ def _parser() -> argparse.ArgumentParser:
 
 
 # ── checks ──
-
-
-def check_run_was_written(paths: list[Path], run_directory: Path) -> None:
-    """The EKI run wrote its steps."""
-    if not paths:
-        raise FileNotFoundError(
-            f"no step under {run_directory / 'steps'}; run scripts/eki.py first"
-        )
 
 
 def check_run_reached_the_posterior(beta: float, run_directory: Path) -> None:
