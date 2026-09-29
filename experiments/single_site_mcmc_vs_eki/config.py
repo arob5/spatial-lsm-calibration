@@ -13,10 +13,12 @@ Sections, in order:
 - **running SIPNET**: how the runs are executed, which does not;
 - **the observations**: the NEE series and how they are windowed, the pool
   constraints, the data sources left out, and the operator that predicts each
-  observation source.
+  observation source;
+- **the noise model**: the measurement-error floors and the model-discrepancy
+  terms of the noise covariance.
 
-The noise model, the base SIPNET parameters, the parameterization, the priors
-and the algorithm settings are added by later steps.
+The base SIPNET parameters, the parameterization, the priors and the
+algorithm settings are added by later steps.
 """
 
 import os
@@ -40,8 +42,14 @@ __all__ = [
     "DRIVER_TIME_ZONE",
     "EXCLUDED_CONSTRAINTS",
     "EXPERIMENT_DIRECTORY",
+    "LAI_DISCREPANCY_STANDARD_DEVIATION",
+    "LAI_DISCREPANCY_TIMESCALE",
+    "LAI_STANDARD_DEVIATION_FLOOR",
+    "LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION",
     "LANDTRENDR_YEARS",
     "MODEL_FLAGS",
+    "NEE_DISCREPANCY_STANDARD_DEVIATIONS",
+    "NEE_DISCREPANCY_TIMESCALE",
     "NEE_MINIMUM_MEASURED_FRACTION",
     "NEE_WINDOWS",
     "N_WORKERS",
@@ -51,10 +59,12 @@ __all__ = [
     "RAW_DRIVERS_ROOT",
     "SIPNET_TIMEOUT",
     "SITE",
+    "SOIL_CARBON_DISCREPANCY_FRACTION",
     "SOIL_TEMPERATURE_TIMESCALE",
     "VALIDATION_NEE_PERIOD",
     "VALIDATION_NEE_SERIES",
     "WOOD_CARBON_FRACTION",
+    "WOOD_CARBON_FRACTION_UNCERTAINTY",
 ]
 
 # ── the site ──
@@ -243,3 +253,51 @@ OBSERVATION_OPERATORS = frozendict(
         "soilgrids_soil_organic_carbon": ReduceOverRun("soil_carbon", how="mean"),
     }
 )
+
+# ── the noise model ──
+#
+# The covariance R of the observation errors, block-diagonal over the
+# observation sources, each block measurement error plus model discrepancy;
+# README.md, "Noise model", states it exactly and noise.py builds it. The
+# discrepancy terms carry most of the weight: they set how much each source
+# constrains the calibration. The timescales are those of the exponential
+# correlation exp(-|t - t'| / tau).
+
+#: The standard deviation of NEE's model discrepancy, per NEE observation
+#: source, in umol m-2 s-1: 0.7 times the standard deviation of the observed
+#: windows' anomalies from their seasonal cycle at the site (1.43 at night,
+#: 2.55 by day), SIPNET taken to explain about half the day-to-day variance.
+NEE_DISCREPANCY_STANDARD_DEVIATIONS = frozendict(
+    {"nee_night_centered": 1.0, "nee_day_centered": 1.8}
+)
+
+#: The timescale of NEE's discrepancy correlation between windows of one
+#: source: 0.61 between consecutive days, where the observed anomalies'
+#: correlation is 0.45-0.50.
+NEE_DISCREPANCY_TIMESCALE = timedelta(days=2)
+
+#: The smallest standard deviation a MODIS LAI observation is given, in
+#: m2 m-2: the reanalysis's floor (data/README.md open question 22). The
+#: product's own is a spread among retrieval solutions and reaches 0.1.
+LAI_STANDARD_DEVIATION_FLOOR = 0.66
+
+#: The standard deviation of LAI's model discrepancy, in m2 m-2.
+LAI_DISCREPANCY_STANDARD_DEVIATION = 0.5
+
+#: The timescale of LAI's discrepancy correlation within one summer; composites
+#: of different summers are uncorrelated.
+LAI_DISCREPANCY_TIMESCALE = timedelta(days=30)
+
+#: The uncertainty of :data:`WOOD_CARBON_FRACTION`: half the IPCC range for
+#: temperate broadleaf wood, 0.46-0.50. Its error is shared by every
+#: LandTrendr year.
+WOOD_CARBON_FRACTION_UNCERTAINTY = 0.02
+
+#: The standard deviation of LandTrendr's year-to-year model discrepancy, in
+#: Mg ha-1, independent between years.
+LANDTRENDR_DISCREPANCY_STANDARD_DEVIATION = 5.0
+
+#: The standard deviation of the soil carbon discrepancy, as a fraction of
+#: the observed stock: for the depth and definition SIPNET's single soil pool
+#: does not share with a 0-200 cm stock (data/README.md open question 21).
+SOIL_CARBON_DISCREPANCY_FRACTION = 0.25

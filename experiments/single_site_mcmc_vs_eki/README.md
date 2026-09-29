@@ -9,11 +9,12 @@ a choice.
 
 | File | What it does |
 |---|---|
-| `config.py` | every choice, in sections: the site, paths, the drivers, the model (SIPNET's process flags), running SIPNET (timeout, staging, workers), and the observations (NEE windows, pool constraints, sources left out, operators) |
+| `config.py` | every choice, in sections: the site, paths, the drivers, the model (SIPNET's process flags), running SIPNET (timeout, staging, workers), the observations (NEE windows, pool constraints, sources left out, operators), and the noise model (floors, discrepancy terms, timescales) |
 | `prepare_drivers.py` | writes the site's driver file, corrected for four known defects of the ERA5 driver files, to `output/drivers/`, which the runs read; its docstring says what each defect is and how it is corrected |
 | `inputs.py` | one loader per data source, restricted to the site; run it to check that every input is found |
 | `operators.py` | the two observation operators the library does not have: a mean rate over each window (NEE), and dry aboveground biomass from wood carbon (LandTrendr) |
 | `observations.py` | the observed values of every observation source, prepared from `inputs` as `config` says, and the calibration and validation observation vectors; run it to see what each holds |
+| `noise.py` | the noise covariance $R$ and the Gaussian likelihood it defines, for both vectors; run it to see what each observation source contributes |
 | `output/` | everything the experiment writes; untracked |
 
 ## Running it
@@ -26,6 +27,7 @@ processed files built (`scripts/ingest_*.py`):
 uv run python experiments/single_site_mcmc_vs_eki/prepare_drivers.py
 uv run python experiments/single_site_mcmc_vs_eki/inputs.py
 uv run python experiments/single_site_mcmc_vs_eki/observations.py
+uv run python experiments/single_site_mcmc_vs_eki/noise.py
 ```
 
 ## The observation model
@@ -42,8 +44,8 @@ $K = 5$ observation sources below, and $R$ is the noise covariance. $y$, its
 order (site-major, then source in the order below, then time) and the
 operators are `observations.calibration_observation_vector()`; each operator
 is bound to its source in `config.OBSERVATION_OPERATORS`. This section states
-each source's data, its operator and its measurement error exactly; the noise
-model assembling $R$ follows, as a proposal.
+each source's data, its operator and its measurement error exactly, and then
+the noise model assembling $R$, which `noise.py` builds.
 
 ### Notation
 
@@ -200,20 +202,25 @@ added to is the noise model below.
   that report them. The random part is independent from hour to hour, so it
   averages down with $n_W$; the u\* part shifts every hour of a window
   together, so it does not. Where some hours report no uncertainty, the mean
-  over those that do stands for all twelve.
+  over those that do stands for all twelve. Where none does, as for whole
+  days in which the file carries neither column (about 2% of the windows,
+  most in November-December 2020), the window takes the median
+  $\sigma^{\mathrm{obs}}_W$ of its source's other windows.
 - **MODIS LAI.** $\sigma_i$ is the product's `LaiStdDev_500m` (times its 0.1
   scale factor). The retrieval finds every canopy its radiative transfer
   model accepts as consistent with the observed reflectances; $y_i$ is their
   mean LAI and $\sigma_i$ their standard deviation, which the MOD15 user guide
   (V6.1) calls "a measure of the solution accuracy". It is a spread among
-  solutions, not a comparison with ground measurements.
+  solutions, not a comparison with ground measurements. It can be exactly 0
+  (two composites at the site, both of LAI 1.3), which the floor below
+  replaces.
 - **LandTrendr.** $\sigma_j$ is the raw file's `agb_sd`, which for 2012-2017
   `data/README.md` records as LandTrendr's own; what it quantifies is not
   documented in the file.
 - **SoilGrids.** $\sigma$ is the raw file's `sd`, carried with the value
   through the assembly; how it was derived from SoilGrids is not recorded.
 
-### Noise model (proposed, not yet implemented)
+### Noise model
 
 $R$ is fixed, not a function of $\theta$, so that MCMC and EKI target the same
 posterior, and block-diagonal over the sources, no two sources' errors
@@ -232,8 +239,11 @@ $$
 \log p(y \mid \theta) = -\tfrac12 \big(y - \mathcal{H}(\mathcal{M}(\theta))\big)^{\!\top} R^{-1} \big(y - \mathcal{H}(\mathcal{M}(\theta))\big) - \tfrac12 \log\det R - \tfrac{N}{2} \log 2\pi,
 $$
 
-scored as `pyeki.gauss.Gaussian(y, DensePSD(R)).log_density`, with $R$
-factored once; a failed run scores $-\infty$. The temporal correlation below is
+scored as `noise.calibration_likelihood().log_density(predictions)`, a
+`pyeki.gauss.Gaussian` whose covariance is a `PSDBlockDiag` of one `DensePSD`
+block per source, each factored once; a failed run's NaN row is the caller's
+to score $-\infty$. The constants below are `config`'s "noise model"
+section. The temporal correlation below is
 $c_\tau(t, t') = \exp(-|t - t'| / \tau)$, with $t$ in days.
 
 - **NEE**, for each of the two sources separately, the two independent:
