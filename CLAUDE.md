@@ -1261,9 +1261,19 @@ plotting code. The load-bearing rules:
 - **The Niwot reference data ships inside the package** (PR #40), so real SIPNET inputs and
   real SIPNET output are available with no pySIPNET checkout: `niwot_reference_output()`
   (a `SIPNETOutput`, no binary needed), `niwot_reference_climate()`,
-  `niwot_reference_files()` (`.param` / `.clim` / `.output` / `.readme` paths). The tests here
-  use the first; there is still no public `.param` reader (pySIPNET issue #19), so
-  `tests/conftest.py` carries a small one.
+  `niwot_reference_files()` (`.param` / `.clim` / `.output` / `.readme` paths), and
+  `niwot_reference_parameters()` (the `SIPNETParameters` the reference output was run with,
+  PR #54). The tests use all but the paths.
+- **A `.param` file is read by pySIPNET** (PR #54): `SIPNETParameters.from_param_file(path)`,
+  or `pysipnet.io.param_io.read_parameters(path)`. It refuses what SIPNET would misread
+  (a value that is not a number, a duplicate name, an overlong line) and a file missing a
+  parameter SIPNET always requires; a name it cannot hold is dropped with an
+  `UnknownParameterWarning`. `param_io.read_param_file(path)` is the flat `{name: value}` dict.
+- **Each parameter says when SIPNET requires it** (PR #54): `ParameterSpec.required_when`,
+  `"always"` or a condition on the flags (`"snow"`, `"not gdd and not soil_phenol"`), which
+  `validate_for_flags` and the reader both read. So `soil_respiration_moisture_exponent` is
+  `float | None`, required only under `water_hresp`, and `leaf_on_day`/`leaf_off_day` are
+  `NON_NEGATIVE`, since 0 switches that trigger off.
 - **The binary is found, not assumed** (PR #41). `pysipnet.build.find_binary()` returns `None`
   when there is none and `missing_binary_message()` says where it looked. The search is
   `$PYSIPNET_BINARY`, then a binary bundled in the wheel, then — only when pySIPNET is

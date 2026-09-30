@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 from pyens import LocalBackend, SequentialBackend
-from pysipnet import niwot_reference_output
+from pysipnet import niwot_reference_output, niwot_reference_parameters
 from pysipnet.climate import ClimateDrivers
 from pysipnet.model import SIPNETModel
 from pysipnet.parameters.model import ModelFlags
@@ -906,10 +906,9 @@ class TestRealSipnet:
 
         if find_binary() is None:
             pytest.skip(missing_binary_message())
-        from conftest import niwot_parameters
         from sipnet_calibration.fields import to_model_output
 
-        model = SIPNETModel(SIPNETRunner(flags=ModelFlags.standard(), timeout=120.0), base_params=niwot_parameters())
+        model = SIPNETModel(SIPNETRunner(flags=ModelFlags.standard(), timeout=120.0), base_params=niwot_reference_parameters())
         forward = ForwardModel(model, parameter_vector, sipnet_map, climate=files,
                                backend=LocalBackend(n_workers=2), observation_vector=observation_vector)
         evaluation = forward.evaluate(theta[:2])
