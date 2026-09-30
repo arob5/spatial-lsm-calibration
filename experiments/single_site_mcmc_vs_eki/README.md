@@ -19,6 +19,7 @@ the repository root with `python -m`. Its parts depend one way:
 | `model/` | the calibration's definitions: nothing here writes a file or has a `main` | `config`, the library |
 | `scripts/` | the entry points, which run the model and write under `output/` | `model`, `config` |
 | `figures/` | drawing what the scripts wrote; nothing here runs a model | `model`, `config` |
+| `report/` | `report.qmd`, a Quarto document walking through the setup and the results, reading the scripts' outputs | `model`, `figures`, `config`; nothing imports it |
 | `exploration/` | tools and records that found the model, not needed to reproduce it | anything; nothing imports it |
 
 | File | What it does |
@@ -101,6 +102,16 @@ it ran with, since the diagnostics score it under `config`'s $R$; the
 diagnosis says when the run's `provenance.json` records other noise
 settings. The first calibration's setup is `single_term_discrepancy`, the
 second `three_term_discrepancy`, and the current one `two_term_discrepancy`.
+
+To render the report, with Quarto pointed at the worktree's interpreter:
+
+```bash
+export QUARTO_PYTHON=$(git rev-parse --show-toplevel)/.venv/bin/python
+```
+
+```bash
+quarto preview experiments/single_site_mcmc_vs_eki/report/report.qmd
+```
 
 In a notebook started from the repository root, import the parts the same
 way: `from experiments.single_site_mcmc_vs_eki import config` and

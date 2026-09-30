@@ -1,0 +1,5 @@
+# Rendered document and Quarto's caches: all regenerable from report.qmd.
+/report.html
+/report_files/
+/.quarto/
+/report.quarto_ipynb
