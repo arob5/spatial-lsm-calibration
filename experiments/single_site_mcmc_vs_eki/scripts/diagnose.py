@@ -28,8 +28,9 @@ Under the run's directory, ``diagnostics/``:
   (when there are validation predictions): ``diagnostics.predictive_check``;
 - ``nee_residuals.csv``: each calibration NEE window's residual;
 - ``nee_residual_summary.csv``, ``nee_weekly_residuals.csv``,
-  ``nee_autocorrelation.csv``, ``nee_night_day.csv``: the residuals'
-  size, recurring seasonal part, autocorrelation and night-day correlation;
+  ``nee_autocorrelation.csv``, ``nee_slow_fast.csv``, ``nee_night_day.csv``:
+  the residuals' size, recurring seasonal part, autocorrelation, slow and
+  fast parts, and night-day correlation;
 - ``nee_towers.csv``, ``nee_towers_summary.csv``: the two towers' windows
   and what their differences bound (the same for every run).
 
@@ -166,6 +167,7 @@ def diagnose(calibration: dict, validation: dict | None) -> dict[str, pd.DataFra
         "nee_residual_summary": diagnostics.residual_summary(residuals),
         "nee_weekly_residuals": diagnostics.weekly_residuals(residuals),
         "nee_autocorrelation": diagnostics.residual_autocorrelation(residuals),
+        "nee_slow_fast": diagnostics.slow_fast_split(residuals),
         "nee_night_day": diagnostics.night_day_correlation(residuals).to_frame("value"),
         "nee_towers": tower_windows,
         "nee_towers_summary": tower_summary,
@@ -195,6 +197,7 @@ def print_report(run_name: str, tables: dict[str, pd.DataFrame]) -> None:
             "predictive_check_calibration",
             "predictive_check_validation",
             "nee_residual_summary",
+            "nee_slow_fast",
             "nee_night_day",
             "nee_towers_summary",
         ):

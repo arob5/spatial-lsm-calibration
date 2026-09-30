@@ -68,6 +68,7 @@ __all__ = [
     "plot_nee_windows",
     "plot_pool_observations",
     "plot_prior_marginals",
+    "weekly_nee_quantiles",
 ]
 
 #: How each predictive is drawn, by its kind: its ensemble's role, its
@@ -232,16 +233,7 @@ def plot_nee_seasonal_cycle(outputs: dict, *, kind: str = "prior") -> plt.Figure
     predictive = PREDICTIVES[kind]["name"]
     figure, axes = plt.subplots(1, 2, figsize=(14, 5), sharex=True)
     for ax, name in zip(axes, config.NEE_WINDOWS, strict=True):
-        observed = outputs["observed"]["calibration"][name]["value"]
-        predicted = outputs["predicted"]["ensemble"]["calibration"][name]
-        weeks = _week_of_year(observed[TIME])
-        observed_weekly = pd.Series(observed.to_numpy()).groupby(weeks).mean()
-        predicted_weekly = (
-            pd.DataFrame(predicted.transpose(SAMPLE, TIME).to_numpy().T)
-            .groupby(weeks)
-            .mean()
-        )
-        quantiles = predicted_weekly.quantile([0.05, 0.25, 0.5, 0.75, 0.95], axis=1).T
+        observed_weekly, quantiles = weekly_nee_quantiles(outputs, name)
         color = role_style(PREDICTIVES[kind]["role"], "band")["color"]
         ax.fill_between(
             quantiles.index,
@@ -286,6 +278,26 @@ def plot_nee_seasonal_cycle(outputs: dict, *, kind: str = "prior") -> plt.Figure
         "the observed windows"
     )
     return figure
+
+
+def weekly_nee_quantiles(outputs: dict, name: str) -> tuple[pd.Series, pd.DataFrame]:
+    """One NEE source by week of year: the observed means, and the predictive's quantiles.
+
+    The observations are averaged by the week of each window's end, and each
+    member's predictions over the same windows; the quantiles, columns 0.05,
+    0.25, 0.5, 0.75 and 0.95, are over the members' weekly means.
+    """
+    observed = outputs["observed"]["calibration"][name]["value"]
+    predicted = outputs["predicted"]["ensemble"]["calibration"][name]
+    weeks = _week_of_year(observed[TIME])
+    observed_weekly = pd.Series(observed.to_numpy()).groupby(weeks).mean()
+    predicted_weekly = (
+        pd.DataFrame(predicted.transpose(SAMPLE, TIME).to_numpy().T)
+        .groupby(weeks)
+        .mean()
+    )
+    quantiles = predicted_weekly.quantile([0.05, 0.25, 0.5, 0.75, 0.95], axis=1).T
+    return observed_weekly, quantiles
 
 
 def plot_nee_annual(outputs: dict, *, kind: str = "prior") -> plt.Figure:

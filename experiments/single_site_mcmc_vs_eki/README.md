@@ -5,8 +5,8 @@ the pool constraints, and compare the posterior an MCMC sampler finds with the
 one EKI finds. `config.py` is the one source of truth; nothing else here makes
 a choice. `MODEL.md` states the model exactly: the observation operators, the
 noise covariance, the parameterization and prior, the diagnostics every run
-is checked by, and NEE's error, the first calibration's test of it and the
-revised model fitted in its place.
+is checked by, NEE's error, and what the EKI setups show about the error
+model and a trade-off within SIPNET.
 
 ## Layout
 
@@ -46,6 +46,7 @@ the repository root with `python -m`. Its parts depend one way:
 | `figures/common.py` | panel titles, the shared legend, and saving a figure |
 | `figures/prior_predictive.py` | the prior predictive's figures: NEE windows, pool constraints and daily trajectories, and the slide figures (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); writes to `output/figures/` |
 | `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, on synthetic data recovery of the truth, and the posterior predictive's figures; writes to `output/figures/<setup>/` |
+| `figures/comparison.py` | the EKI setups compared, for slides: each setup's posterior predictive seasonal cycle, the parameters the error model moves, and the daytime residual's slow and fast parts; writes to `output/figures/comparison/` |
 | `figures/diagnostics.py` | a run's diagnostic figures, for slides: the predictive check per source, the weekly residuals and their recurring part, the residuals' autocorrelation against $R$'s, and the two towers |
 | `exploration/parameter_analysis/` | the evidence for the prior and the fixed values: the parameter-structure analysis, the base set, the sensitivity screening and the prior-predictive checks |
 | `exploration/fast_forward.py` | a fast forward path for exploration, SIPNET in a process pool with the predictions by index arithmetic; it equals the library's to 1e-11, and is not the calibration's forward model |
@@ -76,6 +77,12 @@ data. The diagnostics are the same for every run, so runs compare directly;
 uv run python -m experiments.single_site_mcmc_vs_eki.scripts.diagnose --run observed
 uv run python -m experiments.single_site_mcmc_vs_eki.figures.diagnostics --run observed
 uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data observed
+```
+
+To compare the EKI setups, once each has run through its diagnostics:
+
+```bash
+uv run python -m experiments.single_site_mcmc_vs_eki.figures.comparison
 ```
 
 To refit NEE's discrepancy to an EKI run's residuals (after its posterior
@@ -166,4 +173,9 @@ Each records what was chosen and why, so a result can be read against it.
   daytime uptake as a shared seasonal bias, so the recurring term was
   dropped. The discrepancy is a short and a long term per NEE source, fitted
   by maximum marginal likelihood to the first calibration's residuals and
-  checked against the two towers' floor and the held-out tower.
+  checked against the two towers' floor and the held-out tower. Together the
+  three setups show that the error model chooses between two fits SIPNET
+  cannot make at once, the summer uptake and the day-to-day variation of
+  daytime NEE, so $R$ is part of the calibration's specification and is not
+  refitted to a calibration's residuals (`MODEL.md`, "The error model and
+  the fast-slow trade-off").

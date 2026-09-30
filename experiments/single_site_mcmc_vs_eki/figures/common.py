@@ -47,16 +47,24 @@ def one_legend(figure: plt.Figure, axes) -> None:
     )
 
 
-def save_figure(figure: plt.Figure, name: str, *, eki_run: bool = False) -> None:
+def save_figure(
+    figure: plt.Figure,
+    name: str,
+    *,
+    eki_run: bool = False,
+    subdirectory: str | None = None,
+) -> None:
     """Write *figure* as ``<name>.png`` and close it.
 
-    Into ``config.FIGURE_DIRECTORY``, or for a figure of an EKI run
-    (*eki_run*), into its subdirectory ``config.EKI_RUN_NAME``, beside the
-    figures of the setup's other runs.
+    Into ``config.FIGURE_DIRECTORY``; for a figure of an EKI run (*eki_run*),
+    into its subdirectory ``config.EKI_RUN_NAME``, beside the figures of the
+    setup's other runs; or into the named *subdirectory*.
     """
     directory = config.FIGURE_DIRECTORY
     if eki_run:
         directory = directory / config.EKI_RUN_NAME
+    elif subdirectory is not None:
+        directory = directory / subdirectory
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.png"
     figure.savefig(path)

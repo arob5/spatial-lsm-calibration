@@ -55,6 +55,7 @@ DIAGNOSTIC_INDEX_COLUMNS = frozendict(
         "predictive_check_calibration": "source",
         "predictive_check_validation": "source",
         "nee_residual_summary": "source",
+        "nee_slow_fast": "source",
         "nee_weekly_residuals": "week",
         "nee_autocorrelation": ["source", "lag_days"],
         "nee_night_day": 0,

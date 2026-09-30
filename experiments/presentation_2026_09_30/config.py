@@ -8,6 +8,7 @@ setup, so the deck shows the same runs whatever the experiment runs next.
 from pathlib import Path
 
 __all__ = [
+    "COMPARED_SETUPS",
     "EKI_OBSERVED_DIRECTORY",
     "EKI_SYNTHETIC_DIRECTORY",
     "EXPERIMENT_OUTPUT_DIRECTORY",
@@ -36,4 +37,11 @@ EKI_SYNTHETIC_DIRECTORY = (
 )
 EKI_OBSERVED_DIRECTORY = (
     EXPERIMENT_OUTPUT_DIRECTORY / "eki" / FIRST_CALIBRATION_SETUP / "observed"
+)
+
+#: The EKI setups the deck compares, in the order they were run.
+COMPARED_SETUPS = (
+    "single_term_discrepancy",
+    "three_term_discrepancy",
+    "two_term_discrepancy",
 )

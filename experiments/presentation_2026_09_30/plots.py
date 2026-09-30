@@ -19,6 +19,9 @@ if str(config.REPOSITORY) not in sys.path:
     sys.path.insert(0, str(config.REPOSITORY))
 
 from experiments.single_site_mcmc_vs_eki.figures import (  # noqa: E402
+    comparison as comparison_figures,
+)
+from experiments.single_site_mcmc_vs_eki.figures import (  # noqa: E402
     diagnostics as diagnostic_figures,
 )
 from experiments.single_site_mcmc_vs_eki.figures import eki as eki_figures  # noqa: E402
@@ -33,6 +36,9 @@ from experiments.single_site_mcmc_vs_eki.model.outputs import (  # noqa: E402
 )
 
 __all__ = [
+    "comparison_parameters",
+    "comparison_seasonal_cycles",
+    "comparison_slow_fast",
     "eki_ladder",
     "eki_marginals",
     "posterior_predictive_coverage",
@@ -154,6 +160,24 @@ def towers():
     return diagnostic_figures.plot_towers(_diagnostics())
 
 
+# ── the error models compared ──
+
+
+def comparison_seasonal_cycles():
+    """NEE's seasonal cycle, observed against each EKI setup's posterior predictive."""
+    return comparison_figures.plot_seasonal_cycles(_setups())
+
+
+def comparison_parameters():
+    """The parameters the error model moves, per EKI setup."""
+    return comparison_figures.plot_moving_parameters(_setups())
+
+
+def comparison_slow_fast():
+    """The daytime residual's slow and fast parts, and the model's day-to-day variability."""
+    return comparison_figures.plot_slow_fast(_setups())
+
+
 # ── helpers ──
 
 
@@ -183,3 +207,9 @@ def _eki_run(data: str) -> dict:
 def _diagnostics() -> dict:
     """The first calibration's diagnostics, under the R it ran with."""
     return load_diagnostics(config.EKI_OBSERVED_DIRECTORY)
+
+
+@cache
+def _setups() -> dict:
+    """The compared EKI setups' observed-data runs, read once."""
+    return comparison_figures.load_setups(config.COMPARED_SETUPS)

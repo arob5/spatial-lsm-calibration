@@ -2,8 +2,9 @@
 
 The mathematics of the single-site calibration: what is observed and how the
 model predicts it, the noise covariance, the parameterization and prior, the
-diagnostics every run is checked by, and NEE's error: the first
-calibration's test of it and the revised model fitted in its place.
+diagnostics every run is checked by, NEE's error (the first calibration's
+test of it and the revised models), and what the three EKI setups show
+about the error model and a trade-off within SIPNET.
 `README.md` says how to run it and records the decisions; the code is in
 `model/`, and every constant named here is `config.py`'s.
 
@@ -603,6 +604,27 @@ the day-centered window $(d + 12\,\mathrm h, d + 24\,\mathrm h]$
 (`next_night`), with the numbers of pairs. $R$ makes the two sources
 independent; these say how far that holds.
 
+**Slow and fast** (`nee_slow_fast.csv`). Each daily series $x_d$, one value
+per day $d$ of $w^-$ (the observations $y$, the median prediction $\hat g$,
+and their residual $\hat\rho$), splits into a slow part, its centered
+running mean over 31 days,
+
+$$
+x^{\mathrm{slow}}_d = \operatorname{mean}\{x_{d'} : |d' - d| \le 15,\ x_{d'} \text{ observed}\}
+\quad (\text{defined where at least 5 are}),
+\qquad
+x^{\mathrm{fast}}_d = x_d - x^{\mathrm{slow}}_d ,
+$$
+
+the fast part being the day-to-day variation about it. The table reports
+$\operatorname{Var}(\hat\rho^{\mathrm{slow}})$ and
+$\operatorname{Var}(\hat\rho^{\mathrm{fast}})$, where the misfit sits; the
+correlation of $y^{\mathrm{fast}}$ with $\hat g^{\mathrm{fast}}$, how well the
+model follows the day-to-day variation; and
+$\operatorname{sd}(\hat g^{\mathrm{fast}}) / \operatorname{sd}(y^{\mathrm{fast}})$,
+how large the model's day-to-day variation is against the observed. None of
+these depends on $R$.
+
 ### The two towers
 
 `nee_towers.csv` and `nee_towers_summary.csv`, the same for every run.
@@ -983,6 +1005,108 @@ The recurring term is therefore dropped. The long term remains: with
 $\tau_\ell$ of 36-57 days it correlates the windows of one season but not
 the same season of different years, so each year's miss of the summer
 uptake counts as its own evidence. The run under the two-term $R$ is setup
-`two_term_discrepancy`. The principled form, a discrepancy inferred with
-$\theta$ under an informative prior on its parameters, is for MCMC, which
-can update $\phi$ at no extra SIPNET cost.
+`two_term_discrepancy`. It also gave most of the summer uptake up, which
+showed that the recurring term was not the cause: "The error model and the
+fast-slow trade-off" below is what the three runs show together. The
+principled form, a discrepancy inferred with $\theta$ under an informative
+prior on its parameters, is for MCMC, which can update $\phi$ at no extra
+SIPNET cost.
+
+## The error model and the fast-slow trade-off
+
+The three EKI setups differ only in the NEE discrepancy of $R$: the same
+prior, observations, forward model and algorithm (100 members, the
+perturbed-observation update, the adaptive ladder to $\beta = 1$). They are
+therefore an experiment on the error model. `figures/comparison.py` draws
+them (`output/figures/comparison/`).
+
+| Setup | NEE discrepancy, per source |
+|---|---|
+| `single_term_discrepancy` | short term, $\sigma_\delta$ 1.0 (night) and 1.8 (day) over 2 days |
+| `three_term_discrepancy` | short, long and recurring terms, fitted to the first setup's residuals |
+| `two_term_discrepancy` | short and long terms, fitted to the first setup's residuals |
+
+### What changes
+
+**The summer uptake.** The first setup's posterior predictive follows the
+seasonal cycle of daytime NEE; the other two fall well short of the summer
+uptake (`comparison_seasonal_cycles`). Night NEE differs little.
+
+| | one term | three terms | two terms |
+|---|---|---|---|
+| day residual, mean over June-August | −1.9 | −8.9 | −7.4 |
+| day residual, $\operatorname{Var}(\hat\rho^{\mathrm{slow}})$ | 3.8 | 16.5 | 11.9 |
+| day residual, $\operatorname{Var}(\hat\rho^{\mathrm{fast}})$ | 5.7 | 3.7 | 3.9 |
+| day, $\operatorname{corr}(y^{\mathrm{fast}}, \hat g^{\mathrm{fast}})$ | 0.41 | 0.45 | 0.46 |
+| day, $\operatorname{sd}(\hat g^{\mathrm{fast}}) / \operatorname{sd}(y^{\mathrm{fast}})$ | 1.09 | 0.68 | 0.76 |
+| night, $\operatorname{sd}(\hat g^{\mathrm{fast}}) / \operatorname{sd}(y^{\mathrm{fast}})$ | 0.24 | 0.18 | 0.18 |
+| all sources, $2\Phi/N$ under the setup's own $R$ | 1.84 | 1.05 | 1.08 |
+| day coverage, calibration / held-out tower | 0.74 / 0.82 | 0.67 / 0.70 | 0.72 / 0.74 |
+
+**The parameters.** Median and 90% interval (`comparison_parameters`):
+
+| Parameter | prior | one term | three terms | two terms |
+|---|---|---|---|---|
+| photosynthetic capacity $P$ | 257 (157-399) | 268 (255-283) | 207 (182-228) | 221 (198-240) |
+| half-saturation light | 12.0 (6.0-26.1) | 15.4 (14.1-17.3) | 29.0 (23.0-36.7) | 25.7 (21.2-30.5) |
+| foliar respiration share $\rho$ | 0.094 (0.051-0.164) | 0.069 (0.060-0.080) | 0.040 (0.028-0.054) | 0.041 (0.029-0.053) |
+| wood respiration at 10 °C | 0.014 (0.006-0.030) | 0.020 (0.014-0.025) | 0.037 (0.026-0.044) | 0.033 (0.025-0.040) |
+| optimum photosynthesis temperature | 21.9 (18.6-25.8) | 30.2 (29.8-30.7) | 29.1 (28.3-30.3) | 29.6 (28.7-30.6) |
+| soil $Q_{10}$ | 1.91 (1.41-2.83) | 1.00 (0.92-1.09) | 1.19 (0.97-1.61) | 1.07 (0.90-1.35) |
+
+### What it shows
+
+**A trade-off within SIPNET.** One parameter set does not give SIPNET both
+the observed summer uptake and the observed day-to-day variation of daytime
+NEE. The first setup's posterior reaches the summer uptake with a high
+capacity and a low half-saturation light, and its daily NEE then varies
+more than the observed ($\operatorname{sd}$ ratio 1.09) and misses more of
+the day-to-day variation ($\operatorname{Var}(\hat\rho^{\mathrm{fast}})$ 5.7).
+The other two damp the light response, a lower capacity and a higher
+half-saturation light, and fit the day-to-day variation better (3.7 to 3.9)
+at the cost of the summer mean. Scored under one $R$, the two-term one, the
+first setup's posterior misfits the daytime windows by 998 and the two-term
+setup's by 806, the latter's lower prior density notwithstanding (median
+$-\log$ prior 14.8 against 17.2): under that $R$, damping the light response
+is the better fit.
+
+**The error model chooses the point on the trade-off.** A discrepancy with
+only a short timescale weighs a slow error and a fast one alike, window by
+window, and the calibration fits the seasonal amplitude. A discrepancy with
+a long or a recurring term makes a slow error cheaper, by the argument of
+"Why the structure matters", and the calibration fits the fast variation
+instead. Neither choice is wrong about the residuals; each is a statement
+of which features of the data the calibration should reproduce, and it
+moves the parameters that carry physical meaning (capacity, light response,
+respiration) by more than their posterior widths.
+
+**So $R$ cannot be fitted to the calibration's residuals and adopted.** Each
+setup's residuals carry the trade-off it chose, and a discrepancy fitted to
+them grows the part it made cheap. The refits on the three-term and
+two-term runs' residuals asked, by day, for a recurring term 3.5 times the
+run's (1.30 to 4.56) and a long term twice the run's over five times the
+timescale (2.30 over 36 days to 4.54 over 180), while the night terms held.
+Nor does the posterior predictive check arbitrate: it tests consistency with
+the $R$ the calibration ran under, and passes both kinds of fit that the
+lenient $R$ allows.
+
+**What no error model changes.** In every setup the model's day-to-day
+variation of night NEE is a fifth of the observed (sd ratio 0.18 to 0.24),
+and the optimum photosynthesis temperature sits near 29-30 °C, far above its
+prior. These are properties of SIPNET's configuration at the site, the
+respiration's response to daily weather and the photosynthesis temperature
+curve, not of $R$.
+
+### Consequences for the calibration
+
+- $R$ is part of the calibration's specification, stated for what the
+  calibration is to reproduce, and recorded with every result (each run's
+  `provenance.json` holds `config.NEE_DISCREPANCY`).
+- The comparison of MCMC with EKI is made under one fixed $R$, so that the
+  two differ by the algorithm alone; which $R$ is a choice to make and state
+  before the comparison runs.
+- A discrepancy inferred jointly with $\theta$ needs an informative prior on
+  its timescales and sizes, since the data alone move it towards whichever
+  features the parameters cannot fit.
+- The diagnostics report the slow and fast parts for every run, so the
+  trade-off is visible for any $R$ ("Slow and fast" in "Diagnostics").

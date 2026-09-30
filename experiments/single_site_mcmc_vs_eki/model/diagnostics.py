@@ -24,10 +24,12 @@ Functions
 :func:`nee_residuals`
     Each NEE window's residual from the ensemble's median prediction.
 :func:`residual_summary`, :func:`weekly_residuals`,
-:func:`residual_autocorrelation`, :func:`night_day_correlation`
+:func:`residual_autocorrelation`, :func:`slow_fast_split`,
+:func:`night_day_correlation`
     The residuals' size beyond measurement error, their recurring seasonal
-    part, their autocorrelation against the one ``R`` implies, and the
-    correlation of one day's night and day windows.
+    part, their autocorrelation against the one ``R`` implies, their split
+    into slow and fast parts, and the correlation of one day's night and day
+    windows.
 :func:`tower_comparison`
     The two towers' window differences, and the representativeness error
     they bound.
@@ -50,6 +52,8 @@ from .discrepancy import NEEDiscrepancy
 __all__ = [
     "AUTOCORRELATION_LAGS",
     "COVERAGE_LEVEL",
+    "SLOW_MINIMUM_DAYS",
+    "SLOW_WINDOW_DAYS",
     "SMOOTHING_WEEKS",
     "SourcePredictions",
     "check_files_hold_the_vector",
@@ -58,6 +62,7 @@ __all__ = [
     "predictive_check",
     "residual_autocorrelation",
     "residual_summary",
+    "slow_fast_split",
     "sources_from_flat",
     "sources_from_predictive",
     "tower_comparison",
@@ -73,6 +78,11 @@ COVERAGE_LEVEL = 0.9
 #: The number of weeks the recurring seasonal part is smoothed over,
 #: centered and circular.
 SMOOTHING_WEEKS = 5
+
+#: The length, in days, of the centered running mean that is the slow part of
+#: a daily series, and the fewest observed days a mean is taken over.
+SLOW_WINDOW_DAYS = 31
+SLOW_MINIMUM_DAYS = 5
 
 #: The seed of the noise draws the coverage adds to the predictions.
 _COVERAGE_SEED = 0
@@ -333,6 +343,39 @@ def residual_autocorrelation(residuals: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows).set_index(["source", "lag_days"])
 
 
+def slow_fast_split(residuals: pd.DataFrame) -> pd.DataFrame:
+    """Per NEE source: how much of the misfit is slow and how much fast.
+
+    Each daily series (the observations, the median prediction and their
+    residual) splits into a slow part, its centered running mean over
+    :data:`SLOW_WINDOW_DAYS` days, and a fast part, what remains. Columns:
+    ``slow_variance`` and ``fast_variance`` of the residual;
+    ``fast_correlation``, the correlation of the observations' fast part with
+    the prediction's; and ``fast_standard_deviation_ratio``, the prediction's
+    fast standard deviation over the observations'. ``MODEL.md``,
+    "Diagnostics", defines them.
+    """
+    rows = []
+    for name, frame in residuals.groupby("source", sort=False):
+        parts = {
+            column: _slow_and_fast(_daily(_residual_series(frame, column)))
+            for column in ("residual", "observed", "predicted")
+        }
+        (residual_slow, residual_fast) = parts["residual"]
+        observed_fast, predicted_fast = parts["observed"][1], parts["predicted"][1]
+        rows.append(
+            {
+                "source": name,
+                "slow_variance": residual_slow.var(),
+                "fast_variance": residual_fast.var(),
+                "fast_correlation": observed_fast.corr(predicted_fast),
+                "fast_standard_deviation_ratio": predicted_fast.std()
+                / observed_fast.std(),
+            }
+        )
+    return pd.DataFrame(rows).set_index("source")
+
+
 def night_day_correlation(residuals: pd.DataFrame) -> pd.Series:
     """The correlation of one UTC day's night-centered and day-centered residuals.
 
@@ -460,15 +503,15 @@ def _coverage(source: SourcePredictions, rng: np.random.Generator) -> float:
     return float(np.mean((source.y >= low) & (source.y <= high)))
 
 
-def _residual_series(frame: pd.DataFrame) -> pd.Series:
-    """One source's residuals, indexed by the start of each window.
+def _residual_series(frame: pd.DataFrame, column: str = "residual") -> pd.Series:
+    """One source's residuals (or another *column*), indexed by the start of each window.
 
     The seasonal and daily groupings go by the window's start, so a window
     ending at midnight on 1 January belongs to the day and year it covers.
     """
     start, end = config.NEE_WINDOWS[frame["source"].iloc[0]]
     starts = pd.DatetimeIndex(frame["time"]) - (end - start)
-    return pd.Series(frame["residual"].to_numpy(), index=starts)
+    return pd.Series(frame[column].to_numpy(), index=starts)
 
 
 def _seasonal_means(residual: pd.Series) -> dict[str, float]:
@@ -533,6 +576,14 @@ def _year_to_year_correlations(residual: pd.Series) -> np.ndarray:
 def _daily(residual: pd.Series) -> pd.Series:
     """The residuals on a daily grid, one per day, missing days NaN."""
     return pd.Series(residual.to_numpy(), index=residual.index.normalize()).asfreq("D")
+
+
+def _slow_and_fast(daily: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """A daily series' centered running mean, and what remains."""
+    slow = daily.rolling(
+        SLOW_WINDOW_DAYS, center=True, min_periods=SLOW_MINIMUM_DAYS
+    ).mean()
+    return slow, daily - slow
 
 
 def _modeled_correlation(discrepancy: NEEDiscrepancy, measurement_variance: float):

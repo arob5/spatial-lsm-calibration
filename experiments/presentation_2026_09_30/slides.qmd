@@ -307,33 +307,82 @@ observation side: about a fifth of the non-measurement variance. A floor,
 not an estimate.
 :::
 
-# A revised NEE error model
+# Three error models
 
-## Three terms
+## Three error models, one experiment
+
+Everything the same but the NEE discrepancy in $R$:
+
+| Setup | NEE discrepancy |
+|---|---|
+| one term | exponential, 2 days (the first calibration) |
+| three terms | short, long, and **recurring every year**, fitted to the first run's residuals |
+| two terms | short (1-2 d) and long (36-57 d), fitted to the first run's residuals |
 
 $$
 \Sigma^\delta_{WW'} =
 \sigma_{\mathrm s}^2 e^{-|\Delta| / \tau_{\mathrm s}}
 + \sigma_\ell^2 e^{-|\Delta| / \tau_\ell}
-+ \sigma_{\mathrm p}^2 \exp\!\Big(-\frac{2 \sin^2(\pi \Delta / P)}{\lambda^2}\Big),
-\qquad \Delta = t_W - t_{W'},\ P = 365.25\ \mathrm d
+\ \big[\, + \sigma_{\mathrm p}^2 \exp\!\big(-2 \sin^2(\pi \Delta / P) / \lambda^2\big) \big],
+\qquad \Delta = t_W - t_{W'}
 $$
 
-Fitted by maximum marginal likelihood to the first calibration's residuals,
-floored by the towers, checked on the held-out tower:
+Both refitted models pass the predictive check ($2\Phi/N$ 1.05 and 1.08,
+from 1.84).
 
-| Source | $\sigma_{\mathrm s}$ | $\tau_{\mathrm s}$ | $\sigma_\ell$ | $\tau_\ell$ | $\sigma_{\mathrm p}$ | $\lambda$ | held-out gain over one term |
-|---|---|---|---|---|---|---|---|
-| night | 0.69 | 1.2 d | 0.80 | 64 d | 0.72 | 0.44 | 22 nats |
-| day | 2.02 | 1.8 d | 1.68 | 47 d | 1.30 | 0.21 | 24 nats |
+## They pass the check, and give up the summer uptake
+
+```{python}
+plots.comparison_seasonal_cycles();
+```
+
+::: notes
+June-August daytime residual: -1.9 (one term), -8.9 (three terms), -7.4
+(two terms).
+:::
+
+## Where the misfit goes
+
+```{python}
+plots.comparison_slow_fast();
+```
+
+::: notes
+Slow = 31-day running mean of the daily residual; fast = what remains. The
+one-term fit reaches the summer mean with a daily NEE that varies 9% more
+than observed; the others damp it and fit the day-to-day variation better.
+:::
+
+## And the parameters move with it
+
+```{python}
+plots.comparison_parameters();
+```
+
+## A trade-off within SIPNET
+
+- One parameter set does not give SIPNET both the **summer uptake** and the
+  **day-to-day variation** of daytime NEE
+- The error model picks the point on that trade-off:
+  - a short-timescale discrepancy weighs slow and fast errors alike: fit the
+    seasonal amplitude
+  - a long or recurring term makes slow errors cheap: fit the daily swings
+- Scored under one $R$, the damped fit is the better one: misfit 806 against
+  998
+- So **$R$ is part of the specification**, chosen for what the calibration
+  should reproduce, not refitted to its own residuals (the refits ran away:
+  4.5 over 180 days)
+- Unchanged by any $R$: night NEE's daily variation at a fifth of the
+  observed, the optimum temperature near 30 °C
 
 ## Next
 
-- **EKI under the fitted $R$**, its posterior predictive and diagnostics, and
-  one refit of the discrepancy on its residuals
-- **MCMC on the same problem** (running now): is the posterior EKI finds
-  the posterior?
+- **MCMC against EKI under one fixed $R$**: is the posterior EKI finds the
+  posterior?
+- **Which $R$**: what should the calibration reproduce? The seasonal carbon
+  budget argues for weekly or monthly NEE
+- **The model**: the light response and the abrupt leaf-on; night
+  respiration's weak response to daily weather
 - **Open data questions**:
   - five winter 2015 windows of daytime NEE at 10-17 µmol m⁻² s⁻¹
   - low MODIS LAI composites in midsummer
-  - leaf-on by growing degree-days against the gradual onset of uptake
