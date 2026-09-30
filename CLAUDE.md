@@ -1263,12 +1263,12 @@ plotting code. The load-bearing rules:
   (a `SIPNETOutput`, no binary needed), `niwot_reference_climate()`,
   `niwot_reference_files()` (`.param` / `.clim` / `.output` / `.readme` paths), and
   `niwot_reference_parameters()` (the `SIPNETParameters` the reference output was run with,
-  PR #54). The tests use the first and the last.
+  PR #54). The tests use all but the paths.
 - **A `.param` file is read by pySIPNET** (PR #54): `SIPNETParameters.from_param_file(path)`,
   or `pysipnet.io.param_io.read_parameters(path)`. It refuses what SIPNET would misread
   (a value that is not a number, a duplicate name, an overlong line) and a file missing a
   parameter SIPNET always requires; a name it cannot hold is dropped with an
-  `UnknownParameterWarning`. `read_param_file(path)` is the flat `{name: value}` dict.
+  `UnknownParameterWarning`. `param_io.read_param_file(path)` is the flat `{name: value}` dict.
 - **Each parameter says when SIPNET requires it** (PR #54): `ParameterSpec.required_when`,
   `"always"` or a condition on the flags (`"snow"`, `"not gdd and not soil_phenol"`), which
   `validate_for_flags` and the reader both read. So `soil_respiration_moisture_exponent` is
