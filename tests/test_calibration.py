@@ -12,11 +12,12 @@ import warnings
 import jax
 import jax.numpy as jnp
 import pytest
+from pysipnet import niwot_reference_parameters
 from pysipnet.build import find_binary, missing_binary_message
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import EXAMPLE_REFERENCE_PFT, EXAMPLE_REFERENCE_SITES, niwot_parameters, site_table_of
+from conftest import EXAMPLE_REFERENCE_PFT, EXAMPLE_REFERENCE_SITES, site_table_of
 from sipnet_calibration.calibration import describe_calibration, example_calibration
 from sipnet_calibration.fields import sipnet_overrides
 from sipnet_calibration.parameter_vector import POSITIVE, REAL, DerivedParameter, Parameter, ParameterVector
@@ -91,7 +92,7 @@ def test_the_example_is_gaussian_in_theta(example):
 
 
 def test_a_draw_assembles_into_validated_sipnet_parameters(sipnet_parameter_fields):
-    base = niwot_parameters().model_dump()
+    base = niwot_reference_parameters().model_dump()
     group_of = {path.split(".", 1)[1]: path.split(".", 1)[0] for path in PARAMETER_SPECS}
     for sample in range(0, 200, 25):
         for site in EXAMPLE_REFERENCE_SITES:
@@ -113,7 +114,7 @@ def test_a_prior_draw_runs_the_niwot_fixture(sipnet_parameter_fields):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # the fixture has a few vpd <= 0 rows
         climate = niwot_reference_climate().head(8 * 30)
-    model = SIPNETModel(SIPNETRunner(flags=ModelFlags.standard()), base_params=niwot_parameters(),
+    model = SIPNETModel(SIPNETRunner(flags=ModelFlags.standard()), base_params=niwot_reference_parameters(),
                         base_climate=climate)
     result = model(**sipnet_overrides(sipnet_parameter_fields, site=27, batch={"sample": 0}))
     assert result.provenance.success, result.provenance.stderr
