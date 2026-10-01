@@ -104,9 +104,10 @@ class DerivedParameter:
         at least one.
     constants:
         ``{name: xr.DataArray}``: values *function* reads that are the same
-        in every draw, each on dims of the collection's coords, keyed by
-        label (a covariate on ``site``, a longitude). They are passed at the
-        coords' labels, in their order, so they may hold more labels.
+        in every draw, keyed by label, each on dims of the collection's
+        coords or element axes of its values (a covariate on ``site``, a
+        longitude). They are passed at those labels, in their order, so they
+        may hold more labels.
         ``float64``, or ``bool``, which stays boolean.
     memberships:
         ``{name: xr.DataArray}``: for each label of one dim of the coords,
@@ -267,7 +268,7 @@ class DerivedParameters:
             "_aligned",
             frozendict({
                 d.name: (
-                    aligned_constants(d.constants, self.coords, message_name=f"{d.name!r} constants"),
+                    aligned_constants(d.constants, self._labels_by_dim, message_name=f"{d.name!r} constants"),
                     aligned_memberships(d.memberships, self.coords, message_name=f"{d.name!r} memberships"),
                 )
                 for d in self.derived_parameters
@@ -299,6 +300,13 @@ class DerivedParameters:
 
     def __repr__(self) -> str:
         return f"DerivedParameters(names={list(self.names)}, over={list(self.parameter_vector)})"
+
+    @property
+    def _labels_by_dim(self) -> Mapping[str, pd.Index]:
+        """The coords and every element axis of the parameters and derived
+        parameters: the labels a constant may be read at."""
+        pieces = (*self.parameter_vector.parameters, *self.derived_parameters)
+        return {**{axis: labels for p in pieces for axis, labels in p.element_labels.items()}, **self.coords}
 
     def block_shape(self, name: str) -> tuple[int, ...]:
         """A derived parameter's block shape, ``(*index shape, *shape)``."""

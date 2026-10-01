@@ -17,22 +17,15 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd
 import pytest
+import xarray as xr
+from scipy import stats
 from tensorflow_probability.substrates import jax as tfp
 
-from conftest import site_table_of
-from sipnet_calibration.parameter_vector import (
-    OPEN_UNIT_INTERVAL,
-    POSITIVE,
-    REAL,
-    SIMPLEX,
-    OpenInterval,
-    Parameter,
-    ParameterVector,
-)
-from sipnet_calibration.parameter_vector import site_positions
-from sipnet_calibration.prior import (
+from sipnet_calibration.parameters.parameter import Parameter
+from sipnet_calibration.parameters.support import OPEN_UNIT_INTERVAL, POSITIVE, REAL, SIMPLEX, Interval
+from sipnet_calibration.parameters.vector import ParameterVector
+from sipnet_calibration.parameters.prior import (
     Prior,
     PriorTerm,
     gaussian_copula,
@@ -46,27 +39,41 @@ from sipnet_calibration.prior import (
 
 tfd, tfb = tfp.distributions, tfp.bijectors
 
-SITES = (1, 27, 4711)
-PFT = ("deciduous", "conifer", "deciduous")
+SITES = np.array([1, 27, 4711], dtype=np.int32)
+PFT_OF_SITE = ("deciduous", "conifer", "deciduous")
+PFT = ("conifer", "deciduous")
 NAMES = ("a", "b", "c", "d")
 
 
 def vector_of(*parameters: Parameter) -> ParameterVector:
-    return ParameterVector(parameters=parameters, site_table=site_table_of(*SITES), site_labels={"pft": PFT})
+    coords = {"pft": PFT, "site": SITES}
+    used = {d for p in parameters for d in p.indexed_by}
+    return ParameterVector(parameters=parameters, coords={d: v for d, v in coords.items() if d in used})
 
 
-def prior_of(parameter: Parameter, distribution) -> Prior:
-    return Prior(vector_of(parameter), {parameter.name: PriorTerm(distribution, provenance="test")})
+def prior_of(parameter: Parameter, distribution, constants=None) -> Prior:
+    term = PriorTerm(distribution, constants=constants or {}, provenance="test")
+    return Prior(vector_of(parameter), {parameter.name: term})
 
 
 def simplex(bijector=None) -> Parameter:
-    return Parameter(name="shares", support=SIMPLEX, units="1", natural_names=NAMES, bijector=bijector)
+    return Parameter(name="shares", support=SIMPLEX, units="1", shape=(4,), element_labels={"part": NAMES},
+                     bijector=bijector)
+
+
+def by_site(values, sites=SITES) -> xr.DataArray:
+    return xr.DataArray(np.asarray(values, dtype=np.float64), dims="site", coords={"site": np.asarray(sites)})
+
+
+def log_density(gaussian, theta) -> np.ndarray:
+    """The log density of a Gaussian's moments at *theta*."""
+    return stats.multivariate_normal(np.asarray(gaussian.mean), np.asarray(gaussian.covariance)).logpdf(np.asarray(theta))
 
 
 def integral_by_importance_sampling(prior: Prior, *, n: int = 400_000, scale: float = 3.0) -> float:
     """:math:`\\int \\pi_\\theta = E_q[\\pi_\\theta / q]` with
     :math:`q = \\mathcal N(0, \\mathrm{scale}^2 I)`."""
-    dimension = prior.parameter_vector.dimension
+    dimension = prior.parameter_vector.unconstrained.size
     proposal = tfd.MultivariateNormalDiag(jnp.zeros(dimension), jnp.full(dimension, scale))
     theta = proposal.sample(n, seed=jax.random.key(7))
     return float(jnp.mean(jnp.exp(prior.log_prob(theta) - proposal.log_prob(theta))))
@@ -83,7 +90,7 @@ def integral_by_importance_sampling(prior: Prior, *, n: int = 400_000, scale: fl
          tfd.HalfNormal(jnp.float64(2.0))),
         (Parameter(name="rate", support=POSITIVE, units="1", bijector=tfb.Softplus()),
          log_normal(median=1.0, geometric_sd=2.0)),
-        (Parameter(name="share", support=OpenInterval(1.0, 5.0), units="1"),
+        (Parameter(name="share", support=Interval(1.0, 5.0), units="1"),
          tfd.Uniform(jnp.float64(1.0), jnp.float64(5.0))),
     ],
 )
@@ -146,82 +153,79 @@ def test_a_gamma_integrates_to_one_in_theta():
 
 RATE = Parameter(name="rate", support=POSITIVE, units="1")
 SHARE = Parameter(name="share", support=OPEN_UNIT_INTERVAL, units="1")
-Q10 = Parameter(name="q10", support=OpenInterval(1.0, 5.0), units="1")
+Q10 = Parameter(name="q10", support=Interval(1.0, 5.0), units="1")
 OFFSET = Parameter(name="offset", support=REAL, units=None)
-ALLOCATION_BY_PFT = Parameter(name="allocation", support=SIMPLEX, units="1", dim="pft", natural_names=NAMES)
-RATE_BY_SITE = Parameter(name="rate", support=POSITIVE, units="1", dim="site")
-Q10_BY_PFT = Parameter(name="q10", support=OpenInterval(1.0, 5.0), units="1", dim="pft")
-OFFSET_BY_SITE = Parameter(name="offset", support=REAL, units=None, dim="site")
+ALLOCATION_BY_PFT = Parameter(name="allocation", support=SIMPLEX, units="1", shape=(4,), indexed_by=("pft",),
+                              element_labels={"part": NAMES})
+RATE_BY_SITE = Parameter(name="rate", support=POSITIVE, units="1", indexed_by=("site",))
+Q10_BY_PFT = Parameter(name="q10", support=Interval(1.0, 5.0), units="1", indexed_by=("pft",))
+OFFSET_BY_SITE = Parameter(name="offset", support=REAL, units=None, indexed_by=("site",))
+CENTERS = xr.DataArray([[0.3, 0.3, 0.2, 0.2], [0.2, 0.4, 0.1, 0.3]], dims=("pft", "part"),
+                       coords={"pft": list(PFT), "part": list(NAMES)})
 
 DECLARING = [
-    (RATE, log_normal(median=2.0, geometric_sd=1.7)),
-    (SHARE, logit_normal(median=0.3, logit_sd=0.8)),
-    (Q10, logit_normal_from_interval(lower=1.5, upper=3.0, support=OpenInterval(1.0, 5.0))),
-    (OFFSET, tfd.Normal(jnp.float64(1.0), jnp.float64(2.0))),
-    (simplex(), softmax_normal(center=(0.1, 0.2, 0.3, 0.4), logit_sd=(0.5, 0.7, 0.9))),
-    (ALLOCATION_BY_PFT, iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5))),
-    (RATE_BY_SITE, iid_over_dim(log_normal(median=2.0, geometric_sd=1.7))),
-    (RATE_BY_SITE, independent_over_dim(log_normal, median={1: 1.0, 27: 2.0, 4711: 3.0}, geometric_sd=1.5)),
-    (Q10_BY_PFT, iid_over_dim(logit_normal(median=2.0, logit_sd=0.5, support=OpenInterval(1.0, 5.0)))),
-    (OFFSET_BY_SITE, iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)))),
-    (ALLOCATION_BY_PFT, independent_over_dim(
-        softmax_normal, center={"conifer": (0.3, 0.3, 0.2, 0.2), "deciduous": (0.2, 0.4, 0.1, 0.3)},
-        logit_sd=0.4)),
+    (RATE, log_normal(median=2.0, geometric_sd=1.7), None),
+    (SHARE, logit_normal(median=0.3, logit_sd=0.8), None),
+    (Q10, logit_normal_from_interval(lower=1.5, upper=3.0, support=Interval(1.0, 5.0)), None),
+    (OFFSET, tfd.Normal(jnp.float64(1.0), jnp.float64(2.0)), None),
+    (simplex(), softmax_normal(center=(0.1, 0.2, 0.3, 0.4), logit_sd=(0.5, 0.7, 0.9)), None),
+    (ALLOCATION_BY_PFT, iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)), None),
+    (RATE_BY_SITE, iid_over_dim(log_normal(median=2.0, geometric_sd=1.7)), None),
+    (RATE_BY_SITE, independent_over_dim(log_normal, geometric_sd=1.5), {"median": by_site([1.0, 2.0, 3.0])}),
+    (Q10_BY_PFT, iid_over_dim(logit_normal(median=2.0, logit_sd=0.5, support=Interval(1.0, 5.0))), None),
+    (OFFSET_BY_SITE, iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0))), None),
+    (ALLOCATION_BY_PFT, independent_over_dim(softmax_normal, logit_sd=0.4), {"center": CENTERS}),
 ]
 
 
-@pytest.mark.parametrize("parameter, distribution", DECLARING)
-def test_each_declaration_agrees_with_log_prob_on_draws(parameter, distribution):
-    prior = prior_of(parameter, distribution)
+@pytest.mark.parametrize("parameter, distribution, constants", DECLARING)
+def test_each_declaration_agrees_with_log_prob_on_draws(parameter, distribution, constants):
+    prior = prior_of(parameter, distribution, constants)
     assert prior.describe().iloc[0]["declared_gaussian"]
     gaussian = prior.gaussian()
     theta = prior.sample(jax.random.key(3), 200)
     log_prob = prior.log_prob(theta)
     tolerance = 1e-10 * jnp.abs(log_prob) + 1e-12 * theta.shape[-1]
-    assert bool(jnp.all(jnp.abs(gaussian.log_density(theta) - log_prob) <= tolerance))
+    assert bool(jnp.all(jnp.abs(log_density(gaussian, theta) - log_prob) <= tolerance))
 
 
-@pytest.mark.parametrize("parameter, distribution", DECLARING)
-def test_each_declaration_matches_the_moments_of_draws(parameter, distribution):
-    prior = prior_of(parameter, distribution)
+@pytest.mark.parametrize("parameter, distribution, constants", DECLARING)
+def test_each_declaration_matches_the_moments_of_draws(parameter, distribution, constants):
+    prior = prior_of(parameter, distribution, constants)
     gaussian = prior.gaussian()
     theta = np.asarray(prior.sample(jax.random.key(4), 20_000))
-    covariance = np.asarray(gaussian.cov.to_dense())
+    covariance = np.asarray(gaussian.covariance)
     standard_error = np.sqrt(np.diag(covariance) / len(theta))
     np.testing.assert_array_less(np.abs(theta.mean(axis=0) - gaussian.mean), 5 * standard_error)
     np.testing.assert_allclose(np.cov(theta.T).reshape(covariance.shape), covariance, atol=0.05 * covariance.max())
 
 
 def test_a_logit_normal_on_an_open_interval_is_declared_exactly():
-    gaussian = prior_of(Q10, logit_normal(median=2.0, logit_sd=0.5, support=OpenInterval(1.0, 5.0))).gaussian()
+    gaussian = prior_of(Q10, logit_normal(median=2.0, logit_sd=0.5, support=Interval(1.0, 5.0))).gaussian()
     assert float(gaussian.mean[0]) == pytest.approx(np.log(0.25 / 0.75))
-    assert float(gaussian.cov.to_dense()[0, 0]) == pytest.approx(0.25)
+    assert float(gaussian.covariance[0, 0]) == pytest.approx(0.25)
 
 
 # ── select, and keys ──────────────────────────────────────────────────────────
 
 
 def test_select_gives_the_marginal():
-    medians = {1: 1.0, 27: 2.0, 4711: 3.0}
     prior = Prior(
         vector_of(RATE_BY_SITE, ALLOCATION_BY_PFT),
         {
-            "rate": PriorTerm(independent_over_dim(log_normal, median=medians, geometric_sd=1.5), provenance="t"),
+            "rate": PriorTerm(independent_over_dim(log_normal, geometric_sd=1.5),
+                              constants={"median": by_site([1.0, 2.0, 3.0])}, provenance="t"),
             "allocation": PriorTerm(
                 iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)), provenance="t"
             ),
         },
     )
-    smaller = prior.select(sites=[1, 4711])
-    kept = np.concatenate(
-        [
-            prior.parameter_vector.positions(parameter_name="rate", dim_label=s) for s in (1, 4711)
-        ]
-        + [prior.parameter_vector.positions(parameter_name="allocation", dim_label="deciduous")]
-    )
+    selectors = {"site": [1, 4711], "pft": ["deciduous"]}
+    smaller = prior.select(**selectors)
+    kept = prior.parameter_vector.unconstrained.positions(**selectors)
     full, marginal = prior.gaussian(), smaller.gaussian()
     np.testing.assert_allclose(marginal.mean, full.mean[kept])
-    np.testing.assert_allclose(marginal.cov.to_dense(), full.cov.to_dense()[np.ix_(kept, kept)])
+    np.testing.assert_allclose(marginal.covariance, full.covariance[np.ix_(kept, kept)])
 
 
 def test_a_terms_draws_depend_on_its_name_alone():
@@ -237,11 +241,12 @@ def test_a_terms_draws_depend_on_its_name_alone():
     np.testing.assert_array_equal(forward, appended[:, :2])
 
 
-def test_independent_over_dim_is_aligned_by_dim_label_whatever_the_order():
-    shuffled = pd.Series({4711: 3.0, 1: 1.0, 27: 2.0, 9: 0.5})
-    ordered = {1: 1.0, 27: 2.0, 4711: 3.0}
-    first = prior_of(RATE_BY_SITE, independent_over_dim(log_normal, median=shuffled, geometric_sd=1.5))
-    second = prior_of(RATE_BY_SITE, independent_over_dim(log_normal, median=ordered, geometric_sd=1.5))
+def test_independent_over_dim_is_aligned_by_label_whatever_the_order():
+    shuffled = by_site([3.0, 1.0, 2.0, 0.5], sites=[4711, 1, 27, 9])
+    ordered = by_site([1.0, 2.0, 3.0])
+    family = independent_over_dim(log_normal, geometric_sd=1.5)
+    first = prior_of(RATE_BY_SITE, family, {"median": shuffled})
+    second = prior_of(RATE_BY_SITE, family, {"median": ordered})
     np.testing.assert_allclose(first.gaussian().mean, second.gaussian().mean)
     np.testing.assert_allclose(first.gaussian().mean, np.log([1.0, 2.0, 3.0]))
 
@@ -293,13 +298,14 @@ def test_an_oversized_monte_carlo_block_is_refused():
 
 # ── joint terms and terms given others ────────────────────────────────────────
 
-MEAN_BY_PFT = Parameter(name="mean", support=REAL, units=None, dim="pft")
+MEAN_BY_PFT = Parameter(name="mean", support=REAL, units=None, indexed_by=("pft",))
 SPREAD = Parameter(name="spread", support=POSITIVE, units=None)
-CARBON_BY_SITE = Parameter(name="carbon", support=POSITIVE, units="1", dim="site")
+CARBON_BY_SITE = Parameter(name="carbon", support=POSITIVE, units="1", indexed_by=("site",))
+PFT_OF_SITE_MEMBERSHIP = xr.DataArray(list(PFT_OF_SITE), dims="site", coords={"site": SITES}, name="pft")
 
 
-def carbon_given_pft(dim_index, site_table, mean, spread):
-    loc = mean[site_positions(site_table, "pft")]
+def carbon_given_pft(index_shape, mean, spread, pft_of_site):
+    loc = mean[pft_of_site]
     return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(loc, spread), 1), tfb.Exp())
 
 
@@ -307,7 +313,8 @@ def centered_terms() -> dict:
     return {
         "mean": PriorTerm(iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0))), provenance="t"),
         "spread": PriorTerm(log_normal(median=1.0, geometric_sd=1.5), provenance="t"),
-        "carbon": PriorTerm(carbon_given_pft, given=("mean", "spread"), provenance="t"),
+        "carbon": PriorTerm(carbon_given_pft, given=("mean", "spread"),
+                            memberships={"pft_of_site": PFT_OF_SITE_MEMBERSHIP}, provenance="t"),
     }
 
 
@@ -336,7 +343,7 @@ def test_a_joint_term_by_change_of_variables_integrates_to_one_in_theta():
 
 def test_a_centered_hierarchy_integrates_to_one_in_theta():
     prior = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
-    assert prior.parameter_vector.dimension == 6
+    assert prior.parameter_vector.unconstrained.size == 6
     assert integral_by_importance_sampling(prior, n=1_000_000, scale=2.0) == pytest.approx(1.0, abs=0.03)
 
 
@@ -351,7 +358,7 @@ def test_a_given_terms_draws_depend_on_its_name_and_parents_alone():
     draws = [prior.sample(key, 6) for prior in (first, reordered, appended)]
     for name in ("mean", "spread", "carbon"):
         wanted = [
-            theta[:, prior.parameter_vector.positions(parameter_name=name)]
+            prior.parameter_vector.unconstrained.flat_to_values(theta)[name]
             for theta, prior in zip(draws, (first, reordered, appended))
         ]
         np.testing.assert_array_equal(wanted[0], wanted[1])
@@ -361,11 +368,11 @@ def test_a_given_terms_draws_depend_on_its_name_and_parents_alone():
 def test_a_given_term_draws_from_its_conditional():
     prior = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
     vector = prior.parameter_vector
-    theta = np.asarray(prior.sample(jax.random.key(13), 40_000))
-    natural_values = vector.to_natural(theta)
-    pft = site_positions(vector.site_table, "pft")
+    theta = prior.sample(jax.random.key(13), 40_000)
+    natural_values = vector.flat_to_values(vector.to_natural(theta))
+    pft = [PFT.index(p) for p in PFT_OF_SITE]
     standardized = (
-        theta[:, vector.positions(parameter_name="carbon")] - np.asarray(natural_values["mean"])[:, pft]
+        np.asarray(vector.unconstrained.flat_to_values(theta)["carbon"]) - np.asarray(natural_values["mean"])[:, pft]
     ) / np.asarray(natural_values["spread"])[:, None]
     np.testing.assert_allclose(standardized.mean(axis=0), 0.0, atol=0.02)
     np.testing.assert_allclose(standardized.std(axis=0), 1.0, atol=0.02)
@@ -379,15 +386,15 @@ def test_the_copulas_declaration_agrees_with_log_prob_and_the_moments_of_draws(o
     theta = prior.sample(jax.random.key(14), 20_000)
     log_prob = prior.log_prob(theta[:200])
     tolerance = 1e-10 * jnp.abs(log_prob) + 1e-12 * theta.shape[-1]
-    assert bool(jnp.all(jnp.abs(gaussian.log_density(theta[:200]) - log_prob) <= tolerance))
+    assert bool(jnp.all(jnp.abs(log_density(gaussian, theta[:200]) - log_prob) <= tolerance))
     theta = np.asarray(theta)
-    covariance = np.asarray(gaussian.cov.to_dense())
+    covariance = np.asarray(gaussian.covariance)
     standard_error = np.sqrt(np.diag(covariance) / len(theta))
     np.testing.assert_array_less(np.abs(theta.mean(axis=0) - gaussian.mean), 5 * standard_error)
     np.testing.assert_allclose(np.cov(theta.T), covariance, atol=0.05 * covariance.max())
 
 
-def test_the_change_of_variables_sums_the_jacobian_over_dim_labels():
+def test_the_change_of_variables_sums_the_jacobian_over_labels():
     gamma = tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0))
     prior = prior_of(RATE_BY_SITE, iid_over_dim(gamma))
     assert prior.describe().iloc[0]["evaluated_by"] == "change of variables"

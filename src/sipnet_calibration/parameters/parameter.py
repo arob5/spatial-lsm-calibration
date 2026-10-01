@@ -184,7 +184,8 @@ _TRANSFORM_NAMES: Mapping[type, str] = frozendict(
 def _maps_onto_the_support(parameter: Parameter) -> bool:
     """Whether the parameter's bijector maps the probe points into the
     support's closure, and the default bijector's images of them back to
-    finite points that it maps there again."""
+    finite points that it maps there again; the first half alone for a
+    support whose type has no default bijector."""
     try:
         shape = parameter.unconstrained_shape
     except (TypeError, ValueError):
@@ -193,13 +194,17 @@ def _maps_onto_the_support(parameter: Parameter) -> bool:
     support = parameter.support
     # The closure: a bijector may round onto the boundary at the outer probes
     # (IteratedSigmoidCentered does at 20), which is float64, not a wrong map.
-    into = support.closure().contains(parameter.bijector.forward(probes))
-    targets = bijector_for(support).forward(jnp.array(probes))
+    into = bool(jnp.all(support.closure().contains(parameter.bijector.forward(probes))))
+    try:
+        default = bijector_for(support)
+    except KeyError:
+        return into
+    targets = default.forward(jnp.array(probes))
     back = parameter.bijector.inverse(targets)
     # A fresh copy: TFP caches the pair, and would hand targets back unchanged.
     again = parameter.bijector.forward(jnp.array(np.asarray(back)))
     return (
-        bool(jnp.all(into))
+        into
         and bool(jnp.all(jnp.isfinite(back)))
         and bool(np.allclose(again, targets, rtol=1e-6, atol=1e-9))
     )

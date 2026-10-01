@@ -1,9 +1,10 @@
 """Labels: the coords of dims, and the constants and memberships read at
 them. Private to the parameter layer.
 
-A **constant** is an ``xr.DataArray`` on dims of the coords, keyed by label,
-``float64`` or ``bool``; it is read at the coords' labels, in the coords'
-order, keeping its own order of dims. A **membership** is a one-dimensional
+A **constant** is an ``xr.DataArray`` keyed by label, ``float64`` or
+``bool``, on dims of the coords or element axes of the values in use (a
+simplex center per PFT is on ``(pft, allocation_part)``); it is read at
+their labels, in their order, keeping its own order of dims. A **membership** is a one-dimensional
 ``xr.DataArray`` on one dim of the coords, named for another, whose values
 are labels of the other; it is read as ``int64`` positions into the other
 dim's labels, so ``x[membership]`` reads a value on the other dim at each
@@ -95,24 +96,37 @@ def as_memberships(memberships: Any, *, message_name: str) -> frozendict:
     return frozendict(out)
 
 
-def aligned_constants(constants: Mapping[str, xr.DataArray], coords: Mapping[str, pd.Index], *, message_name: str) -> dict[str, jax.Array]:
-    """Each constant read at the coords' labels: ``{name: array}``, of shape
-    ``[len(coords[d]) for d in constant.dims]``, its dtype kept.
+def aligned_constants(
+    constants: Mapping[str, xr.DataArray], labels_by_dim: Mapping[str, pd.Index], *, message_name: str
+) -> dict[str, jax.Array]:
+    """Each constant read at the labels of its dims: ``{name: array}``, of
+    shape ``[len(labels_by_dim[d]) for d in constant.dims]``, its dtype kept.
+
+    Parameters
+    ----------
+    constants:
+        ``{name: xr.DataArray}``.
+    labels_by_dim:
+        The coords and the element axes of the values in use, ``{dim:
+        labels}``.
+    message_name:
+        What the constants are called in an error message.
 
     Raises
     ------
     ValueError
-        If a constant is on a dim the coords lack, or a dim without labels.
+        If a constant is on a dim *labels_by_dim* lacks, or a dim without
+        labels.
     KeyError
-        If a constant lacks a label of the coords.
+        If a constant lacks a label it is read at.
     """
     out = {}
     for name, constant in constants.items():
         for dim in constant.dims:
-            check_dim_is_in_the_coords(name, str(dim), coords, message_name=message_name)
+            check_dim_is_in_the_coords(name, str(dim), labels_by_dim, message_name=message_name)
             check_dim_is_labeled(name, constant, str(dim), message_name=message_name)
-            check_labels_are_covered(name, constant.indexes[dim], coords[dim], message_name=message_name)
-        selected = constant.sel({d: list(coords[d]) for d in constant.dims})
+            check_labels_are_covered(name, constant.indexes[dim], labels_by_dim[dim], message_name=message_name)
+        selected = constant.sel({d: list(labels_by_dim[d]) for d in constant.dims})
         out[name] = jnp.asarray(np.asarray(selected.values))
     return out
 
@@ -223,12 +237,13 @@ def check_membership_is_one_dimensional(name: str, membership: xr.DataArray, *, 
         )
 
 
-def check_dim_is_in_the_coords(name: str, dim: str, coords: Mapping[str, pd.Index], *, message_name: str) -> None:
-    """A constant is on dims of the coords, whose labels it is read at."""
-    if dim not in coords:
+def check_dim_is_in_the_coords(name: str, dim: str, labels_by_dim: Mapping[str, pd.Index], *, message_name: str) -> None:
+    """A constant is on dims of the coords or element axes, whose labels it
+    is read at; any other dim would be read by position."""
+    if dim not in labels_by_dim:
         raise ValueError(
-            f"{message_name}[{name!r}] is on {dim!r}, which is not a dim of the coords "
-            f"{list(coords)}; give it on those dims."
+            f"{message_name}[{name!r}] is on {dim!r}, which is neither a dim of the coords nor an "
+            f"element axis ({list(labels_by_dim)}); give it on those dims."
         )
 
 

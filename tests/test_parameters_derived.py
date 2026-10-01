@@ -306,7 +306,7 @@ def test_a_constant_or_membership_covers_the_labels():
     with pytest.raises(KeyError, match="no value at 'site' label"):
         DerivedParameters(parameter_vector=vector, coords={"site": SITES},
                           derived_parameters=[regression(constants={"elevation": site_constant(ELEVATION).isel(site=[0, 1])})])
-    with pytest.raises(ValueError, match="which is not a dim of the coords"):
+    with pytest.raises(ValueError, match="neither a dim of the coords nor an element axis"):
         DerivedParameters(parameter_vector=vector, coords={"site": SITES},
                           derived_parameters=[regression(constants={"elevation": site_constant(ELEVATION).rename(site="point")})])
     hierarchy_vector = ParameterVector(parameters=[MEAN, SPREAD, STANDARDIZED], coords={"pft": PFT, "site": SITES})

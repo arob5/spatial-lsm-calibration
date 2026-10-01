@@ -4,36 +4,36 @@ Where this sits
 ---------------
 ::
 
-    parameter_vector.ParameterVector      (the unknowns x, and theta = T^-1(x))
-      -> prior.Prior                      (pi(x), and so the density of theta)
-      -> pyEKI (sample, gaussian), an MCMC target (log_prob)
+    parameters.vector.ParameterVector        (the unknowns x, and theta = T^-1(x))
+    parameters.derived.DerivedParameters     (y = f(x), which a term may be given)
+      -> parameters.prior.Prior              (pi(x), and so the density of theta)
+      -> a sampler (sample, log_prob), an ensemble Kalman method (gaussian)
 
-This module imports TFP's distributions and pyEKI's ``Gaussian`` and
-operators, and not pySIPNET.
+It imports TFP's distributions, and nothing of the package outside
+``parameters``.
 
 What it reads
 -------------
-A :class:`~sipnet_calibration.parameter_vector.ParameterVector` and its
-:class:`PriorTerm`\\ s. A term covers one parameter, keyed by its name, or
-several that share one dim or none, keyed by a tuple of their names (a
-**joint term**), and it may be **given** other parameters or derived
-parameters. Its distribution is the prior of the whole natural value of
-what it covers:
+A :class:`~sipnet_calibration.parameters.vector.ParameterVector`, optionally
+its :class:`~sipnet_calibration.parameters.derived.DerivedParameters`, and
+one :class:`PriorTerm` per parameter or group of parameters. A term covers
+one parameter, keyed by its name, or several indexed by the same dims,
+keyed by a tuple of their names (a **joint term**); it may be **given**
+other parameters or derived parameters, and read constants and
+memberships. Its distribution is the prior of the whole natural value of
+what it covers, its event shape the covered parameters' block shape
+``(*index shape, *shape)`` (a dict of them for a joint term), its TFP batch
+shape ``()``, in ``float64``:
 
-- **one parameter without a dim, given nothing**: a TFP distribution whose
-  event shape is the parameter's value shape, with batch shape ``()``, in
-  ``float64``; or a :data:`PriorFunction` called with ``dim_index=None``;
-- **one parameter with a dim**: a :data:`PriorFunction`, called as
-  ``f(dim_index, site_table)`` with the vector's
-  :meth:`~sipnet_calibration.parameter_vector.ParameterVector.dim_index` and
-  site table, returning such a distribution over every dim label at once.
-  :func:`iid_over_dim` and :func:`independent_over_dim` make one;
-- **a joint term**: the same, with draws that are dicts keyed by the names
-  covered, each of its parameter's value shape. :func:`gaussian_copula`
-  makes one;
-- **a term given others**: a :data:`PriorFunction` called as
-  ``f(dim_index, site_table, **given_values)`` with one draw's natural
-  value of each name given, for one draw at a time.
+- **a parameter indexed by nothing, given nothing, reading nothing**: a TFP
+  distribution, or a :data:`PriorFunction`;
+- **any other term**: a :data:`PriorFunction`, called as
+  ``f(index_shape, **given, **constants, **memberships)`` with the covered
+  parameters' index shape, one draw's natural value of each name given (of
+  its block shape), and the term's constants and memberships read at the
+  coords' labels (``int64`` positions for a membership). :func:`iid_over_dim`
+  and :func:`independent_over_dim` make one over the index dims;
+  :func:`gaussian_copula` makes a joint term.
 
 The distributions of the family builders (:func:`log_normal`,
 :func:`logit_normal`, :func:`softmax_normal` and their ``_from_*`` forms)
@@ -42,8 +42,8 @@ are pushforwards of a Gaussian through their support's default bijector.
 The density
 -----------
 With parameters :math:`x`, derived parameters :math:`y`, terms
-:math:`B_1, \\dots, B_m`, and :math:`x_{g(b)}` and :math:`y_{g(b)}` the
-parameters and derived parameters term :math:`b` is given,
+:math:`B_1, \\dots, B_m`, and :math:`x_{g(b)}` and :math:`y_{g(b)}` what term
+:math:`b` is given,
 
 .. math::
 
@@ -56,26 +56,33 @@ and with coordinates :math:`\\theta = T^{-1}(x)`,
     \\log \\pi_\\theta(\\theta) = \\sum_b \\Big[ \\log \\pi_b\\big(T(\\theta)_{B_b} \\mid
         T(\\theta)_{g(b)}, y_{g(b)}\\big) + \\sum_{p \\in B_b} \\log J_p(\\theta_p) \\Big],
 
-each density and :math:`J_p` against the reference measure of
-:meth:`~sipnet_calibration.parameter_vector.Support.log_jacobian`.
-:meth:`Prior.log_prob` evaluates each term by its base density where it is a
-pushforward through its parameters' own bijectors, and by change of
-variables otherwise. The ``given`` links, with each derived parameter linked
-to what it is computed from, must form a directed acyclic graph; terms are
-drawn in its topological order.
+with :math:`\\log J_p` the log-Jacobian of parameter :math:`p`'s transform,
+summed over its numbers: :math:`\\log |T'(\\theta)|` per number on an
+interval, and on the simplex
+:math:`\\log |\\det \\partial(x_1, \\dots, x_{k-1}) / \\partial \\theta|`, against
+Lebesgue measure on the first :math:`k - 1` coordinates, the measure a
+``Dirichlet``'s density is written against. :meth:`Prior.log_prob`
+evaluates each term by its base density where it is a pushforward through
+its parameters' own bijectors, which needs no Jacobian, and by change of
+variables otherwise. The ``given`` links, with each derived parameter
+linked to its parameter names, must form a directed acyclic graph; terms
+are drawn in its topological order.
 
-A term's :math:`\\theta_{B_b}` is its parameters' entries of theta in the
-order of its key, each parameter's in theta's order. A joint term's base,
-when it is evaluated by its base density, has that vector as its event.
+A term's :math:`\\theta_{B_b}` is its parameters' unconstrained values in
+the order of its key, each parameter's in C order of its block. A joint
+term's base, when it is evaluated by its base density, has that vector as
+its event.
 
 Functions and classes
 ---------------------
 :class:`Prior`
     ``sample``, ``log_prob``, ``gaussian``, ``select``, ``describe``.
-:class:`PriorTerm`, :data:`PriorFunction`
-    One term's prior, what it is given, and its provenance.
+:class:`PriorTerm`, :data:`PriorFunction`, :data:`TermKey`
+    One term's prior, what it is given and reads, and its provenance.
+:class:`GaussianMoments`
+    What ``gaussian`` returns: a mean and a dense covariance over theta.
 :func:`iid_over_dim`, :func:`independent_over_dim`
-    Priors over a dim, independent across dim labels.
+    Priors over a parameter's index dims, independent across their labels.
 :func:`gaussian_copula`
     A joint prior of scalar parameters whose unconstrained values are
     correlated Gaussians.
@@ -105,24 +112,17 @@ wrong declaration could distort the Gaussian approximation but never
 ``log_prob``, and the check catches it first. A term given others declares
 nothing.
 
-**A prior function must marginalize consistently.** ``Prior(vector.select(...),
-prior.terms)`` rebuilds each term on fewer dim labels, which is the exact
-marginal only if the distribution at a set of dim labels is the marginal of
-the one at any larger set. The builders here satisfy this, and so does a
-term whose dim labels are independent given what it is given. A
-user-written function that normalizes over the labels present, or
-standardizes a covariate inside, does not, and changes meaning under
-``select``.
+**A prior function must marginalize consistently.** ``prior.select(...)``
+rebuilds each term on fewer labels, which is the exact marginal only if the
+distribution at a set of labels is the marginal of the one at any larger
+set. The builders here satisfy this, and so does a term whose labels are
+independent given what it is given. A user-written function that normalizes
+over the labels present, or standardizes a covariate inside, does not, and
+changes meaning under ``select``.
 
 Usage
 -----
 ::
-
-    import jax
-    from sipnet_calibration.prior import (
-        Prior, PriorTerm, gaussian_copula, iid_over_dim, log_normal_from_interval,
-        logit_normal, softmax_normal,
-    )
 
     prior = Prior(vector, {
         ("respiration_share", "leaf_fall_fraction"): PriorTerm(
@@ -134,54 +134,67 @@ Usage
             iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)),
             provenance="..."),
         "initial_soil_carbon": PriorTerm(
-            iid_over_dim(log_normal_from_interval(lower=5e3, upper=8e4)), provenance="..."),
+            independent_over_dim(log_normal, geometric_sd=2.0),
+            constants={"median": median_by_site}, provenance="..."),
     })
     theta = prior.sample(jax.random.key(0), 50)   # (50, D)
     prior.log_prob(theta)                         # (50,)
-    prior.gaussian()                              # pyeki.gauss.Gaussian, exact here
-    prior.describe()                              # one row per term
+    prior.gaussian()                              # GaussianMoments(mean, covariance), exact here
 
 A centered hierarchy, a site-level value given its PFT's mean and a shared
 spread::
 
-    def soil_carbon_given_pft(dim_index, site_table, mean, spread):
-        loc = mean[site_positions(site_table, "pft")]
-        return tfd.TransformedDistribution(
-            tfd.Independent(tfd.Normal(loc, spread), 1), tfb.Exp())
+    def soil_carbon_given_pft(index_shape, mean, spread, pft_of_site):
+        loc = mean[pft_of_site]
+        return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(loc, spread), 1), tfb.Exp())
 
-    PriorTerm(soil_carbon_given_pft, given=("mean", "spread"), provenance="...")
+    PriorTerm(soil_carbon_given_pft, given=("mean", "spread"),
+              memberships={"pft_of_site": site_dims.labels("pft")}, provenance="...")
 """
 
 from __future__ import annotations
 
 import dataclasses
+import math
 import zlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import KW_ONLY, dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, NamedTuple, Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 from frozendict import frozendict
-from pyeki.gauss import Gaussian
-from pyeki.linalg import DensePSD, PSDBlockDiag, PSDDiagonal, PSDLinOp
 from tensorflow_probability.substrates import jax as tfp
 
-from sipnet_calibration.parameter_vector import (
+from sipnet_calibration.parameters._labels import (
+    aligned_constants,
+    aligned_memberships,
+    as_constants,
+    as_memberships,
+)
+from sipnet_calibration.parameters._validation import as_count, as_names, check_names_are_unique, truncated
+from sipnet_calibration.parameters.derived import DerivedParameters
+from sipnet_calibration.parameters.parameter import Parameter
+from sipnet_calibration.parameters.support import (
     OPEN_UNIT_INTERVAL,
-    Parameter,
-    ParameterVector,
+    Interval,
+    Simplex,
     Support,
+    bijector_for,
     bijectors_agree,
-    check_theta_ends_in_the_dimension,
     joint_probe_points,
 )
-from sipnet_calibration.validation import as_bounded_integer, as_names, check_names_are_unique, truncated
+from sipnet_calibration.parameters.vector import (
+    ParameterVector,
+    check_flat_ends_in_the_size,
+    check_parameter_vectors_share_a_layout,
+)
 
 __all__ = [
     "DeclaresGaussian",
+    "GaussianMoments",
     "Prior",
     "PriorFunction",
     "PriorTerm",
@@ -205,14 +218,22 @@ tfb = tfp.bijectors
 
 Array = jax.Array
 
-#: A prior over a whole natural value, built for the vector at hand: called as
-#: ``f(dim_index, site_table, **given_values)`` and returning a TFP
-#: distribution.
+#: A prior over a whole natural value, built for the labels at hand: called
+#: as ``f(index_shape, **given, **constants, **memberships)`` and returning a
+#: TFP distribution.
 type PriorFunction = Callable[..., tfd.Distribution]
 
 #: What a term covers: one parameter's name, or a tuple of names for a joint
 #: term.
 type TermKey = str | tuple[str, ...]
+
+
+class GaussianMoments(NamedTuple):
+    """A Gaussian over theta, as arrays: ``mean`` ``(D,)`` and
+    ``covariance`` ``(D, D)``, both ``float64`` and in theta's order."""
+
+    mean: Array
+    covariance: Array
 
 
 # ── the prior ─────────────────────────────────────────────────────────────────
@@ -230,35 +251,46 @@ class Prior:
     terms:
         ``{key: PriorTerm}``, a key being one parameter's name or a tuple of
         the names a joint term covers; every parameter is covered once.
+    derived_parameters:
+        The derived parameters over the vector, needed when a term is given
+        one; checked to share the vector's layout.
 
     Raises
     ------
     TypeError
         If a key is not a name or a tuple of names, a term is not a
-        :class:`PriorTerm`, a parameter with a dim is given a bare
-        distribution, or a term given others is not a function.
+        :class:`PriorTerm`, a term that needs a function (indexed, given
+        others, or reading constants or memberships) is given a bare
+        distribution.
     KeyError
-        If a key or a ``given`` names nothing of the vector.
+        If a key or a ``given`` names nothing of the vector or its derived
+        parameters.
     ValueError
         If a parameter is covered by no term or by two, a joint term's
-        parameters have different dims, the ``given`` links form a cycle, or
-        a term fails a check of :func:`check_prior_term_is_valid`; the
-        message names the term.
+        parameters are indexed differently, the ``given`` links form a
+        cycle, the derived parameters are over another vector, or a term
+        fails a check of :func:`check_prior_term_is_valid`; the message
+        names the term.
     """
 
     parameter_vector: ParameterVector
     terms: Mapping[TermKey, PriorTerm]
+    _: KW_ONLY
+    derived_parameters: DerivedParameters | None = None
     _built: Mapping[TermKey, _BuiltTerm] = field(init=False, repr=False)
     _draw_order: tuple[TermKey, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "terms", frozendict(self.terms))
+        if self.derived_parameters is not None:
+            check_derived_parameters_are_derived_parameters(self.derived_parameters)
+            check_parameter_vectors_share_a_layout(self.parameter_vector, self.derived_parameters.parameter_vector)
         check_terms_cover_the_parameters(self.terms, self.parameter_vector)
         for key, term in self.terms.items():
             check_term_is_a_prior_term(term_name(key), term)
-            check_given_names_are_held(term_name(key), term.given, self.parameter_vector)
+            check_given_names_are_held(term_name(key), term.given, self)
             check_term_is_not_given_what_it_covers(key, term.given)
-        order = _draw_order(self.terms, self.parameter_vector)
+        order = _draw_order(self)
         object.__setattr__(self, "_draw_order", order)
         object.__setattr__(self, "_built", frozendict(self._build_terms(order)))
 
@@ -270,13 +302,30 @@ class Prior:
         return self.terms[key]
 
     def __repr__(self) -> str:
-        return f"Prior(D={self.parameter_vector.dimension}, terms={list(self.terms)})"
+        return f"Prior(D={self.parameter_vector.unconstrained.size}, terms={list(self.terms)})"
+
+    @property
+    def coords(self) -> Mapping[str, pd.Index]:
+        """The labels the terms' constants and memberships are read at: the
+        derived parameters' coords, or the vector's."""
+        if self.derived_parameters is not None:
+            return self.derived_parameters.coords
+        return self.parameter_vector.coords
+
+    @property
+    def _labels_by_dim(self) -> Mapping[str, pd.Index]:
+        """The coords and every element axis of the parameters and derived
+        parameters: the labels a term's constants may be read at."""
+        pieces = [*self.parameter_vector.parameters]
+        if self.derived_parameters is not None:
+            pieces += self.derived_parameters.derived_parameters
+        return {**{axis: labels for p in pieces for axis, labels in p.element_labels.items()}, **self.coords}
 
     def describe(self) -> pd.DataFrame:
-        """One row per term, in theta's order, indexed by ``parameters`` (a
-        joint term's names joined with ``"+"``): ``prior``, ``given``
-        (comma-separated), ``evaluated_by`` (``"base density"`` or ``"change
-        of variables"``), ``declared_gaussian`` and ``provenance``."""
+        """One row per term, in the vector's declaration order, indexed by
+        ``parameters`` (a joint term's names joined with ``"+"``): ``prior``,
+        ``given`` (comma-separated), ``evaluated_by`` (``"base density"`` or
+        ``"change of variables"``), ``declared_gaussian`` and ``provenance``."""
         rows = [
             {
                 "parameters": built.name,
@@ -293,8 +342,9 @@ class Prior:
     # ── selection ─────────────────────────────────────────────────────────────
 
     def select(self, **selectors: Any) -> Prior:
-        """``Prior(vector.select(**selectors), kept terms)``: the prior of a
-        smaller vector, each term rebuilt on its dim labels.
+        """The prior of ``parameter_vector.select(**selectors)``: the kept
+        terms, each rebuilt on its kept labels, with the derived parameters
+        selected alike.
 
         Raises
         ------
@@ -303,15 +353,16 @@ class Prior:
             ``ValueError`` too if the selection drops a parameter a kept term
             covers or is given, directly or through a derived parameter.
         """
-        vector = self.parameter_vector.select(**selectors)
-        kept = {*vector.parameter_names, *vector.derived_parameter_names}
+        derived = None if self.derived_parameters is None else self.derived_parameters.select(**selectors)
+        vector = self.parameter_vector.select(**selectors) if derived is None else derived.parameter_vector
+        kept = {*vector.parameter_names, *(() if derived is None else derived.names)}
         terms = {}
         for key, term in self.terms.items():
             names = _names_of(key)
             if any(name in kept for name in names):
                 check_selection_keeps_what_a_term_needs(term_name(key), (*names, *term.given), kept)
                 terms[key] = term
-        return Prior(vector, terms)
+        return Prior(vector, terms, derived_parameters=derived)
 
     # ── evaluation ────────────────────────────────────────────────────────────
 
@@ -335,8 +386,8 @@ class Prior:
             prior with mass on its support's boundary gives in ``float64``;
             the message names the term.
         """
-        n = as_bounded_integer(n, minimum=0, message_name="n")
-        theta = jnp.zeros((n, self.parameter_vector.dimension), dtype=jnp.float64)
+        n = as_count(n, message_name="n")
+        theta = jnp.zeros((n, self.parameter_vector.unconstrained.size), dtype=jnp.float64)
         natural_values: dict[str, Array] = {}
         for term_key in self._draw_order:
             built = self._built[term_key]
@@ -350,8 +401,8 @@ class Prior:
     def log_prob(self, theta: Any) -> Array:
         """:math:`\\log \\pi_\\theta(\\theta)`, ``(..., D) -> (...)``.
 
-        Each term contributes, at its :math:`\\theta_B` and given the
-        natural values :math:`v = (x_{g(b)}, y_{g(b)})` at theta,
+        Each term contributes, at its :math:`\\theta_B` and given the natural
+        values :math:`v = (x_{g(b)}, y_{g(b)})` at theta,
 
         - by **base density**, when its distribution is
           ``TransformedDistribution(base, b)`` with ``b`` equal, at the probe
@@ -360,10 +411,8 @@ class Prior:
           :math:`\\log \\mathrm{base}(\\theta_B \\mid v)`, exactly;
         - by **change of variables** otherwise:
           :math:`\\log \\pi_b(T(\\theta_B) \\mid v) + \\sum_{p \\in B}
-          \\sum_i \\log J_p(\\theta_p)_i`, summed over each parameter's
-          numbers (over its dim labels on the simplex), with
-          :math:`\\log J_p` from
-          :meth:`~sipnet_calibration.parameter_vector.Support.log_jacobian`.
+          \\log J_p(\\theta_p)`, with :math:`\\log J_p` the module's
+          log-Jacobian, summed over the parameter's numbers.
 
         A term given others is evaluated one draw at a time under
         ``jax.vmap``. Traceable under ``jax.jit``, ``jax.grad`` and
@@ -375,7 +424,7 @@ class Prior:
             If the last axis of *theta* is not ``D`` long.
         """
         theta = jnp.asarray(theta, dtype=jnp.float64)
-        check_theta_ends_in_the_dimension(theta.shape, self.parameter_vector.dimension)
+        check_flat_ends_in_the_size(theta.shape, self.parameter_vector.unconstrained.size)
         natural_values = self._natural_values_given(theta)
         total = jnp.zeros(theta.shape[:-1], dtype=jnp.float64)
         for built in self._built.values():
@@ -383,18 +432,19 @@ class Prior:
             total = total + built.log_prob(theta[..., built.positions], given_values)
         return total
 
-    def gaussian(self, *, key: Array | None = None, n_moment_samples: int = 0) -> Gaussian:
-        """The prior as a Gaussian over theta, ``pyeki.gauss.Gaussian``.
+    def gaussian(self, *, key: Array | None = None, n_moment_samples: int = 0) -> GaussianMoments:
+        """The prior as a Gaussian over theta: its mean and a dense
+        covariance, in theta's order.
 
-        The covariance is a ``PSDBlockDiag`` with one block per **dependent
-        set**, in theta's order. Two parameters are in one dependent set when
-        one term covers both, or a term covering one is given the other,
-        directly or through a derived parameter it is computed from; the
-        prior makes different dependent sets independent. A dependent set
-        whose one term declares its Gaussian, honored, gets that exact
-        :math:`(m, C)`. Any other is moment-matched from
-        :math:`M` = *n_moment_samples* joint draws :math:`\\theta^{(i)}` of
-        :meth:`sample` with *key*, restricted to the set's entries:
+        The covariance is block-diagonal over the **dependent sets**, its
+        blocks placed at each set's positions in theta. Two parameters are
+        in one dependent set when one term covers both, or a term covering
+        one is given the other, directly or through a derived parameter it
+        is computed from; the prior makes different dependent sets
+        independent. A dependent set whose one term declares its Gaussian,
+        honored, gets that exact :math:`(m, C)`. Any other is moment-matched
+        from :math:`M` = *n_moment_samples* joint draws :math:`\\theta^{(i)}`
+        of :meth:`sample` with *key*, restricted to the set's entries:
 
         .. math::
 
@@ -407,50 +457,54 @@ class Prior:
         NotImplementedError
             If a dependent set needs moment matching and no *key* was given.
         ValueError
-            If a dependent set is not one contiguous run of the vector's
-            parameters, which a block-diagonal covariance needs, or a
-            moment-matched block has at least *n_moment_samples* entries:
-            :math:`\\hat C` then has rank at most :math:`M - 1` and is
-            singular.
+            If a moment-matched block has at least *n_moment_samples*
+            entries: :math:`\\hat C` then has rank at most :math:`M - 1` and
+            is singular.
         """
-        n_moment_samples = as_bounded_integer(n_moment_samples, minimum=0, message_name="n_moment_samples")
-        vector = self.parameter_vector
-        sets = self._dependent_sets()
-        for names in sets:
-            check_dependent_set_is_contiguous(names, vector)
+        n_moment_samples = as_count(n_moment_samples, message_name="n_moment_samples")
+        size = self.parameter_vector.unconstrained.size
+        mean = np.zeros(size)
+        covariance = np.zeros((size, size))
         draws = None
-        means, blocks = [], []
-        for names in sets:
+        for names in self._dependent_sets():
             terms = [b for b in self._built.values() if b.names[0] in names]
-            positions = np.concatenate([vector.positions(parameter_name=n) for n in names])
             if len(terms) == 1 and terms[0].declared is not None:
-                mean, block = _in_theta_order(terms[0].declared, terms[0].positions)
+                positions = terms[0].positions
+                block_mean, block = terms[0].declared
             else:
+                positions = np.concatenate([self._theta_positions[n] for n in names])
                 check_moment_matching_is_possible(names, len(positions), key, n_moment_samples)
                 if draws is None:
                     draws = self.sample(key, n_moment_samples)
-                mean, block = _moment_matched(draws[:, positions])
-            means.append(jnp.asarray(mean, dtype=jnp.float64))
-            blocks.append(block)
-        return Gaussian(mean=jnp.concatenate(means), cov=PSDBlockDiag(tuple(blocks)))
+                block_mean, block = _moment_matched(draws[:, positions])
+            mean[positions] = np.asarray(block_mean)
+            covariance[np.ix_(positions, positions)] = np.asarray(block)
+        return GaussianMoments(mean=jnp.asarray(mean), covariance=jnp.asarray(covariance))
 
     # ── supporting methods ────────────────────────────────────────────────────
+
+    @property
+    def _theta_positions(self) -> Mapping[str, np.ndarray]:
+        """Each parameter's positions in theta, in C order of its block."""
+        unconstrained = self.parameter_vector.unconstrained
+        values = unconstrained.flat_to_values(jnp.arange(unconstrained.size, dtype=jnp.float64))
+        return {name: np.asarray(value).ravel().astype(np.int64) for name, value in values.items()}
 
     def _build_terms(self, order: tuple[TermKey, ...]) -> dict[TermKey, _BuiltTerm]:
         """Every term built in draw order. When some term is given others,
         two ancestral draws are made as the terms are built, and each term
         given others is built and checked at both."""
-        vector = self.parameter_vector
         ancestral = any(term.given for term in self.terms.values())
+        positions = self._theta_positions
         natural_values: dict[str, Array] = {}
         built: dict[TermKey, _BuiltTerm] = {}
         for term_key in order:
             term = self.terms[term_key]
             given_values = None
             if term.given:
-                natural_values |= _derived_needed(vector, term.given, natural_values)
+                natural_values |= self._derived_needed(term.given, natural_values)
                 given_values = {name: natural_values[name] for name in term.given}
-            built[term_key] = _BuiltTerm.build(term_key, term, vector, given_values)
+            built[term_key] = _BuiltTerm.build(term_key, term, self, positions, given_values)
             if ancestral:
                 name = built[term_key].name
                 theta_b = built[term_key].sample_theta(
@@ -458,35 +512,41 @@ class Prior:
                 )
                 check_draws_map_to_finite_theta(name, theta_b)
                 natural_values |= built[term_key].natural_values(theta_b)
-        return {key: built[key] for key in sorted(built, key=lambda k: int(built[k].positions.min()))}
+        declared = {n: i for i, n in enumerate(self.parameter_vector.parameter_names)}
+        return {key: built[key] for key in sorted(built, key=lambda k: declared[_names_of(k)[0]])}
 
     def _natural_values_given(self, theta: Array) -> dict[str, Array]:
-        """The natural values at *theta* that some term is given, and those
-        the derived ones among them are computed from."""
-        vector = self.parameter_vector
+        """The natural values at *theta* that some term is given, and the
+        parameters' values the derived ones among them are computed from."""
         given = list(dict.fromkeys(name for built in self._built.values() for name in built.given))
         if not given:
             return {}
-        needed = _parameters_behind(vector, given)
-        derived = [name for name in given if name in vector.derived_parameter_names]
-        natural_values = {
-            p.name: p.bijector.forward(
-                theta[..., vector.positions(parameter_name=p.name)].reshape(
-                    theta.shape[:-1] + vector.unconstrained_shape(p.name)
-                )
-            )
-            for p in vector.parameters
-            if p.name in needed
-        }
-        return natural_values | vector.derived_values(natural_values, derived_parameter_names=derived)
+        vector = self.parameter_vector
+        natural_values = vector.flat_to_values(vector.to_natural(theta))
+        return natural_values | self._derived_needed(given, natural_values)
+
+    def _derived_needed(self, names: Sequence[str], natural_values: Mapping[str, Array]) -> dict[str, Array]:
+        """The derived parameters among *names* that *natural_values* lacks,
+        computed from it."""
+        if self.derived_parameters is None:
+            return {}
+        missing = [n for n in names if n in self.derived_parameters.names and n not in natural_values]
+        if not missing:
+            return {}
+        return self.derived_parameters.values(natural_values, names=missing)
 
     def _given_values(self, built: _BuiltTerm, natural_values: dict[str, Array]) -> dict[str, Array] | None:
         """What *built* is given, from *natural_values*, computing the
         derived parameters among it there; ``None`` when it is given nothing."""
         if not built.given:
             return None
-        natural_values |= _derived_needed(self.parameter_vector, built.given, natural_values)
+        natural_values |= self._derived_needed(built.given, natural_values)
         return {name: natural_values[name] for name in built.given}
+
+    def _parameters_behind(self, names: Sequence[str]) -> set[str]:
+        if self.derived_parameters is None:
+            return set(names)
+        return set(self.derived_parameters.parameters_behind(names))
 
     def _dependent_sets(self) -> list[tuple[str, ...]]:
         """The dependent sets, each in the vector's order, ordered by their
@@ -500,7 +560,7 @@ class Prior:
             return name
 
         for built in self._built.values():
-            linked = [*built.names, *sorted(_parameters_behind(vector, built.given))]
+            linked = [*built.names, *sorted(self._parameters_behind(built.given))]
             for name in linked[1:]:
                 root[find(name)] = find(linked[0])
         sets: dict[str, list[str]] = {}
@@ -514,8 +574,8 @@ class Prior:
 
 @dataclass(frozen=True, eq=False)
 class PriorTerm:
-    """The prior of what a term covers, what it is given, and where it came
-    from.
+    """The prior of what a term covers, what it is given and reads, and
+    where it came from.
 
     A term covering parameters :math:`B` and given :math:`g` is the
     conditional density :math:`\\pi_B(x_B \\mid x_g, y_g)`: at each draw, the
@@ -531,6 +591,14 @@ class PriorTerm:
         The parameters and derived parameters the distribution is
         conditioned on, passed to its function by name, one draw's natural
         value each.
+    constants:
+        ``{name: xr.DataArray}``, labeled values the function reads, as a
+        derived parameter's are: on dims of the coords or element axes, read
+        at their labels and passed by name.
+    memberships:
+        ``{name: xr.DataArray}``, for each label of one dim the label of
+        another, passed by name as ``int64`` positions, as a derived
+        parameter's are.
     provenance:
         Where the prior came from, with its citation; a placeholder says it
         is one.
@@ -538,113 +606,121 @@ class PriorTerm:
     Raises
     ------
     TypeError
-        If *given* is one string rather than a sequence of names.
+        If *given* is one string rather than a sequence of names, or a
+        constant or membership is not a DataArray of the right kind.
     ValueError
-        If *given* names something twice, or *provenance* is empty.
+        If a keyword is given twice, a membership is not on one dim, or
+        *provenance* is empty.
     """
 
     distribution: tfd.Distribution | PriorFunction
     _: KW_ONLY
     given: tuple[str, ...] = ()
+    constants: Mapping[str, Any] = field(default_factory=frozendict)
+    memberships: Mapping[str, Any] = field(default_factory=frozendict)
     provenance: str
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "given", as_names(self.given, message_name="given"))
-        check_names_are_unique(self.given, message_name="given")
+        object.__setattr__(self, "constants", as_constants(self.constants, message_name="the term's constants"))
+        object.__setattr__(
+            self, "memberships", as_memberships(self.memberships, message_name="the term's memberships")
+        )
+        check_names_are_unique(
+            [*self.given, *self.constants, *self.memberships], message_name="the term's given, constants and memberships"
+        )
         check_provenance_is_given(self.provenance)
 
 
-# ── priors over a dim, and joint priors ───────────────────────────────────────
+# ── priors over the index dims, and joint priors ──────────────────────────────
 
 
 def iid_over_dim(distribution: tfd.Distribution) -> PriorFunction:
-    """Every dim label independently distributed as *distribution*:
+    """Every label of the index dims independently distributed as
+    *distribution*:
 
     .. math::
 
-        \\pi(x) = \\prod_{\\ell=1}^{n} \\pi_0(x_\\ell).
+        \\pi(x) = \\prod_{\\ell} \\pi_0(x_\\ell),
 
-    A ``TransformedDistribution(base, b)`` (a family builder's, say) is
-    built as ``TransformedDistribution(Sample(base, n), b)``, with the
-    bijector outside, so that :meth:`Prior.log_prob` evaluates it by its base
-    density; any other distribution as ``Sample(distribution, n)``. Over a
-    family builder's distribution with Gaussian base :math:`(m_0, C_0)` it
-    declares :math:`(\\mathbf 1_n \\otimes m_0,\\ I_n \\otimes C_0)`.
+    over the labels :math:`\\ell` of the product of the parameter's index
+    dims. A ``TransformedDistribution(base, b)`` (a family builder's, say)
+    is built as ``TransformedDistribution(Sample(base, index_shape), b)``,
+    with the bijector outside, so that :meth:`Prior.log_prob` evaluates it by
+    its base density; any other distribution as ``Sample(distribution,
+    index_shape)``. Over a family builder's distribution with Gaussian base
+    :math:`(m_0, C_0)` it declares
+    :math:`(\\mathbf 1_n \\otimes m_0,\\ I_n \\otimes C_0)`, with :math:`n`
+    the number of labels.
 
     Parameters
     ----------
     distribution:
-        The prior of one dim label's value, batch shape ``()``.
+        The prior of one label's value, TFP batch shape ``()``.
 
     Returns
     -------
     PriorFunction
     """
     return _OverDim(
-        per_dim_label=lambda dim_index: distribution,
+        per_label=lambda index_shape, **constants: distribution,
         repeated=True,
         name=f"iid {_distribution_name(distribution)}",
     )
 
 
-def independent_over_dim(
-    distribution_family: Callable[..., tfd.Distribution], /, **arguments: Any
-) -> PriorFunction:
-    """Independent across dim labels, each dim label's distribution made by
-    *distribution_family* from its own arguments:
+def independent_over_dim(distribution_family: Callable[..., tfd.Distribution], /, **arguments: Any) -> PriorFunction:
+    """Independent across the labels of the index dims, each label's
+    distribution made by *distribution_family* from its own arguments:
 
     .. math::
 
-        \\pi(x) = \\prod_{\\ell=1}^{n} \\pi_{\\mathrm{family}}\\big(x_\\ell;\\ a_\\ell\\big).
+        \\pi(x) = \\prod_{\\ell} \\pi_{\\mathrm{family}}\\big(x_\\ell;\\ a_\\ell\\big).
 
     Parameters
     ----------
     distribution_family:
         Builds a distribution from keyword arguments, such as
-        :func:`log_normal`, and gives it batch shape ``(n,)`` when each
-        argument has one entry per dim label.
+        :func:`log_normal`, giving it the TFP batch shape of the index when
+        an argument has one entry per label.
     **arguments:
-        Each either one value shared by every dim label, passed as it is, or
-        a ``Mapping`` or ``pd.Series`` keyed by dim label, read at the
-        vector's dim labels (a superset is allowed) and passed as an array
-        with one leading entry per dim label. A transformed family is built
-        with its bijector outside, as for :func:`iid_over_dim`. Over a family
-        builder, with dim label :math:`\\ell`'s base Gaussian
-        :math:`(m_\\ell, C_\\ell)`, it declares
-        :math:`\\big((m_1, \\dots, m_n),\\ \\mathrm{blockdiag}(C_1, \\dots, C_n)\\big)`.
+        Arguments shared by every label, passed as they are. An argument per
+        label is a constant of the term (``PriorTerm(constants=...)``),
+        passed to the family by its name at the coords' labels, on the
+        parameter's index dims in ``indexed_by`` order.
 
     Returns
     -------
     PriorFunction
+        A transformed family is built with its bijector outside, as for
+        :func:`iid_over_dim`. Over a family builder, with label
+        :math:`\\ell`'s base Gaussian :math:`(m_\\ell, C_\\ell)`, it declares
+        :math:`\\big((m_1, \\dots, m_n),\\ \\mathrm{blockdiag}(C_1, \\dots, C_n)\\big)`.
 
     Raises
     ------
-    KeyError
-        When called, for a dim label a keyed argument lacks.
     ValueError
         When called, if the family's distribution is not a batch of one per
-        dim label, as when no argument is keyed (:func:`iid_over_dim` is that
+        label, as when no argument is per label (:func:`iid_over_dim` is that
         prior).
     """
 
-    def per_dim_label(dim_index: pd.Index) -> tfd.Distribution:
-        aligned = {
-            name: _aligned_argument(name, value, dim_index) for name, value in arguments.items()
-        }
-        distribution = distribution_family(**aligned)
-        check_family_is_one_per_dim_label(distribution, len(dim_index))
+    def per_label(index_shape: tuple[int, ...], **constants: Any) -> tfd.Distribution:
+        distribution = distribution_family(**arguments, **constants)
+        check_family_is_one_per_label(distribution, index_shape)
         return distribution
 
     return _OverDim(
-        per_dim_label=per_dim_label,
+        per_label=per_label,
         repeated=False,
         name=f"independent {getattr(distribution_family, '__name__', 'family')}",
     )
 
 
 def gaussian_copula(marginals: Mapping[str, tfd.Distribution], *, correlation: Any) -> PriorFunction:
-    """The joint prior of scalar parameters without a dim whose marginals are
-    *marginals* and whose unconstrained values are correlated Gaussians.
+    """The joint prior of scalar parameters indexed by nothing whose
+    marginals are *marginals* and whose unconstrained values are correlated
+    Gaussians.
 
     Each marginal :math:`i` is a family builder's scalar distribution, a
     pushforward :math:`x_i = T_i(t_i)` of :math:`t_i \\sim \\mathcal
@@ -664,16 +740,17 @@ def gaussian_copula(marginals: Mapping[str, tfd.Distribution], *, correlation: A
     ----------
     marginals:
         ``{parameter name: distribution}``, each :func:`log_normal`,
-        :func:`logit_normal` (on any open interval), their ``_from_*`` forms,
-        or a ``tfd.Normal``, with batch shape ``()``. List them in the order
-        of the term's key, which is the order its base is laid out in.
+        :func:`logit_normal` (on any finite interval), their ``_from_*``
+        forms, or a ``tfd.Normal``, with TFP batch shape ``()``. List them in
+        the order of the term's key, which is the order its base is laid out
+        in.
     correlation:
         ``(m, m)``: symmetric, unit diagonal, positive definite.
 
     Returns
     -------
     PriorFunction
-        Called with ``dim_index=None``; its draws are dicts keyed like
+        Called with ``index_shape=()``; its draws are dicts keyed like
         *marginals*.
 
     Raises
@@ -722,7 +799,7 @@ def log_normal(*, median: Any, geometric_sd: Any) -> tfd.LogNormal:
     Parameters
     ----------
     median:
-        Positive; one value per dim label gives a batch.
+        Positive; one value per label gives a batch.
     geometric_sd:
         Above 1.
 
@@ -773,10 +850,8 @@ def log_normal_from_samples(samples: Any) -> tfd.LogNormal:
     return tfd.LogNormal(loc=jnp.mean(logs), scale=_positive_std(logs, "log_normal_from_samples"))
 
 
-def logit_normal(
-    *, median: Any, logit_sd: Any, support: Support = OPEN_UNIT_INTERVAL
-) -> tfd.Distribution:
-    """The logit-normal on the open interval *support*, :math:`(a, b)`:
+def logit_normal(*, median: Any, logit_sd: Any, support: Interval = OPEN_UNIT_INTERVAL) -> tfd.Distribution:
+    """The logit-normal on the finite interval *support*, :math:`(a, b)`:
 
     .. math::
 
@@ -786,22 +861,25 @@ def logit_normal(
 
     On :math:`(0, 1)` this is ``tfd.LogitNormal``; on :math:`(a, b)`,
     ``TransformedDistribution(Normal, Sigmoid(low=a, high=b))``. A
-    ``logit_sd`` near 1.7 is close to flat.
+    ``logit_sd`` near 1.7 is close to flat. Its mass is on the interior
+    whichever ends *support* closes.
 
     Raises
     ------
+    TypeError
+        If *support* is not an :class:`Interval`.
     ValueError
-        If *median* is outside *support*, *logit_sd* is not positive, or
-        *support* is not an interval.
+        If *median* is outside the interior of *support*, *logit_sd* is not
+        positive, or an end of *support* is infinite.
     """
-    check_support_is_an_interval(support)
+    check_support_is_a_finite_interval(support)
     fraction = _interval_fraction("logit_normal median", median, support)
     logit_sd = _positive_array("logit_normal logit_sd", logit_sd)
     return _logit_normal_on(support, _logit(fraction), logit_sd)
 
 
 def logit_normal_from_interval(
-    *, lower: Any, upper: Any, mass: float = 0.95, support: Support = OPEN_UNIT_INTERVAL
+    *, lower: Any, upper: Any, mass: float = 0.95, support: Interval = OPEN_UNIT_INTERVAL
 ) -> tfd.Distribution:
     """The logit-normal on *support* whose central *mass* interval is
     ``[lower, upper]``: :func:`log_normal_from_interval`'s formulas on the
@@ -809,18 +887,18 @@ def logit_normal_from_interval(
 
     Raises
     ------
-    ValueError
-        If an end is outside *support*, ``upper <= lower``, or *mass* is not
-        in ``(0, 1)``.
+    TypeError, ValueError
+        As :func:`logit_normal`, for an end outside *support*, ``upper <=
+        lower``, or *mass* not in ``(0, 1)``.
     """
-    check_support_is_an_interval(support)
+    check_support_is_a_finite_interval(support)
     lower = _interval_fraction("logit_normal_from_interval lower", lower, support)
     upper = _interval_fraction("logit_normal_from_interval upper", upper, support)
     loc, scale = _normal_from_interval(_logit(lower), _logit(upper), mass)
     return _logit_normal_on(support, loc, scale)
 
 
-def logit_normal_from_samples(samples: Any, *, support: Support = OPEN_UNIT_INTERVAL) -> tfd.Distribution:
+def logit_normal_from_samples(samples: Any, *, support: Interval = OPEN_UNIT_INTERVAL) -> tfd.Distribution:
     """The maximum-likelihood logit-normal on *support*, :math:`(a, b)`, of
     samples inside it: with :math:`t = \\operatorname{logit}((x - a)/(b - a))`,
     :math:`\\mu = \\bar t` and :math:`\\sigma` the standard deviation of
@@ -828,10 +906,11 @@ def logit_normal_from_samples(samples: Any, *, support: Support = OPEN_UNIT_INTE
 
     Raises
     ------
-    ValueError
-        As :func:`log_normal_from_samples`, for samples outside *support*.
+    TypeError, ValueError
+        As :func:`log_normal_from_samples`, for samples outside the interior
+        of *support*, and as :func:`logit_normal` for *support*.
     """
-    check_support_is_an_interval(support)
+    check_support_is_a_finite_interval(support)
     fractions = (
         _samples_in_support(
             "logit_normal_from_samples", samples, lambda v: (v > support.low) & (v < support.high)
@@ -858,11 +937,11 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
     ----------
     center:
         ``(k,)`` positive fractions summing to 1, ``k >= 2``, or ``(n, k)``
-        for one per dim label.
+        for one per label.
     logit_sd:
         A scalar; one value per unconstrained number, ``(k - 1,)``; or, with
-        an ``(n, k)`` center, one value per dim label, ``(n,)``, or one per
-        dim label and unconstrained number, ``(n, k - 1)``.
+        an ``(n, k)`` center, one value per label, ``(n,)``, or one per
+        label and unconstrained number, ``(n, k - 1)``.
 
     Raises
     ------
@@ -882,7 +961,7 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
     loc = jnp.log(center[..., :-1] / center[..., -1:])
     check_logit_sd_fits_the_center(logit_sd, loc)
     if loc.ndim == 2 and logit_sd.shape == loc.shape[:1]:
-        logit_sd = logit_sd[:, None]  # one per dim label, across its numbers
+        logit_sd = logit_sd[:, None]  # one per label, across its numbers
     scale = jnp.broadcast_to(logit_sd, loc.shape)
     return tfd.TransformedDistribution(
         tfd.MultivariateNormalDiag(loc=loc, scale_diag=scale), tfb.SoftmaxCentered()
@@ -896,58 +975,57 @@ def softmax_normal(*, center: Any, logit_sd: Any) -> tfd.TransformedDistribution
 class DeclaresGaussian(Protocol):
     """A prior builder that knows its term's Gaussian in theta.
 
-    ``unconstrained_gaussian(dim_index, site_table, parameter_names)``
+    ``unconstrained_gaussian(index_shape, parameter_names, **constants)``
     returns ``(mean, covariance, assumed_bijectors)`` for the term covering
-    *parameter_names* on these dim labels: the mean ``(D_b,)`` and a
-    ``PSDLinOp`` covariance of :math:`\\theta_B`, laid out as the module
-    docstring says, and the bijector each parameter's value is assumed to
-    be the image of, keyed by those names. It returns ``None`` when it
-    declares nothing for these dim labels. The declaration is honored only
-    where every assumed bijector agrees with its parameter's at the probe
-    points.
+    *parameter_names* at this index shape, with these constants: the mean
+    ``(D_b,)`` and the dense covariance ``(D_b, D_b)`` of :math:`\\theta_B`,
+    laid out as the module docstring says, and the bijector each parameter's
+    value is assumed to be the image of, keyed by those names. It returns
+    ``None`` when it declares nothing. The declaration is honored only where
+    every assumed bijector agrees with its parameter's at the probe points.
     """
 
     def unconstrained_gaussian(
-        self, dim_index: pd.Index | None, site_table: pd.DataFrame, parameter_names: tuple[str, ...]
-    ) -> tuple[Array, PSDLinOp, Mapping[str, tfb.Bijector]] | None: ...
+        self, index_shape: tuple[int, ...], parameter_names: tuple[str, ...], **constants: Any
+    ) -> tuple[Array, Array, Mapping[str, tfb.Bijector]] | None: ...
 
 
 @dataclass(frozen=True, eq=False)
 class _OverDim:
-    """A :data:`PriorFunction` over a dim that declares its Gaussian when
-    each dim label's distribution is a family builder's.
+    """A :data:`PriorFunction` over the index dims that declares its
+    Gaussian when each label's distribution is a family builder's.
 
-    ``per_dim_label(dim_index)`` gives one dim label's distribution when
-    *repeated*, else every dim label's as a batch of ``n``.
+    ``per_label(index_shape, **constants)`` gives one label's distribution
+    when *repeated*, else every label's as a batch of the index shape.
     """
 
-    per_dim_label: Callable[[pd.Index], tfd.Distribution]
+    per_label: Callable[..., tfd.Distribution]
     repeated: bool
     name: str
 
-    def __call__(self, dim_index: pd.Index | None, site_table: pd.DataFrame) -> tfd.Distribution:
-        check_prior_over_a_dim_has_a_dim(dim_index, self.name)
-        distribution = self.per_dim_label(dim_index)
-        n = len(dim_index)
+    def __call__(self, index_shape: tuple[int, ...], **constants: Any) -> tfd.Distribution:
+        check_prior_over_a_dim_has_a_dim(index_shape, self.name)
+        distribution = self.per_label(index_shape, **constants)
         if type(distribution) in _CARRIES_ITS_BIJECTOR:
             base = distribution.distribution
-            base = tfd.Sample(base, n) if self.repeated else tfd.Independent(base, 1)
+            base = tfd.Sample(base, index_shape) if self.repeated else tfd.Independent(base, len(index_shape))
             return tfd.TransformedDistribution(base, distribution.bijector)
-        return tfd.Sample(distribution, n) if self.repeated else tfd.Independent(distribution, 1)
+        if self.repeated:
+            return tfd.Sample(distribution, index_shape)
+        return tfd.Independent(distribution, len(index_shape))
 
     def unconstrained_gaussian(
-        self, dim_index: pd.Index, site_table: pd.DataFrame, parameter_names: tuple[str, ...]
-    ) -> tuple[Array, PSDLinOp, Mapping[str, tfb.Bijector]] | None:
-        family = _family_gaussian(self.per_dim_label(dim_index))
+        self, index_shape: tuple[int, ...], parameter_names: tuple[str, ...], **constants: Any
+    ) -> tuple[Array, Array, Mapping[str, tfb.Bijector]] | None:
+        family = _family_gaussian(self.per_label(index_shape, **constants))
         if family is None:
             return None
         loc, scale, bijector = family
         if self.repeated:
-            n = len(dim_index)
-            loc = jnp.broadcast_to(loc, (n, *loc.shape))
-            scale = jnp.broadcast_to(scale, (n, *scale.shape))
+            loc = jnp.broadcast_to(loc, (*index_shape, *loc.shape))
+            scale = jnp.broadcast_to(scale, (*index_shape, *scale.shape))
         (name,) = parameter_names
-        return jnp.ravel(loc), PSDDiagonal(jnp.ravel(scale) ** 2), {name: bijector}
+        return jnp.ravel(loc), jnp.diag(jnp.ravel(scale) ** 2), {name: bijector}
 
 
 @dataclass(frozen=True, eq=False)
@@ -961,8 +1039,8 @@ class _GaussianCopula:
     correlation: Array
     name: str = "gaussian copula"
 
-    def __call__(self, dim_index: pd.Index | None, site_table: pd.DataFrame) -> tfd.Distribution:
-        check_prior_without_a_dim_has_none(dim_index, self.name)
+    def __call__(self, index_shape: tuple[int, ...]) -> tfd.Distribution:
+        check_prior_without_a_dim_has_none(index_shape, self.name)
         to_values = tfb.Chain([
             tfb.JointMap({n: tfb.Chain([b, tfb.Reshape([], [1])]) for n, b in zip(self.names, self.bijectors)}),
             tfb.Restructure({n: i for i, n in enumerate(self.names)}),
@@ -972,13 +1050,13 @@ class _GaussianCopula:
         return tfd.TransformedDistribution(base, to_values)
 
     def unconstrained_gaussian(
-        self, dim_index: pd.Index | None, site_table: pd.DataFrame, parameter_names: tuple[str, ...]
-    ) -> tuple[Array, PSDLinOp, Mapping[str, tfb.Bijector]]:
+        self, index_shape: tuple[int, ...], parameter_names: tuple[str, ...], **constants: Any
+    ) -> tuple[Array, Array, Mapping[str, tfb.Bijector]]:
         # Laid out in the term's order, which a key listed in another order
         # than the marginals permutes.
         order = [self.names.index(n) for n in parameter_names]
         covariance = self._covariance[np.ix_(order, order)]
-        return self.loc[np.asarray(order)], DensePSD(covariance), dict(zip(self.names, self.bijectors))
+        return self.loc[np.asarray(order)], covariance, dict(zip(self.names, self.bijectors))
 
     @property
     def _covariance(self) -> Array:
@@ -988,70 +1066,77 @@ class _GaussianCopula:
 @dataclass(frozen=True, eq=False)
 class _GivenDirectly:
     """A family builder's distribution given directly for a parameter
-    without a dim, which declares its own Gaussian."""
+    indexed by nothing, which declares its own Gaussian."""
 
     distribution: tfd.Distribution
 
     def unconstrained_gaussian(
-        self, dim_index: None, site_table: pd.DataFrame, parameter_names: tuple[str, ...]
-    ) -> tuple[Array, PSDLinOp, Mapping[str, tfb.Bijector]] | None:
+        self, index_shape: tuple[int, ...], parameter_names: tuple[str, ...], **constants: Any
+    ) -> tuple[Array, Array, Mapping[str, tfb.Bijector]] | None:
         family = _family_gaussian(self.distribution)
         if family is None:
             return None
         (name,) = parameter_names
-        return jnp.ravel(family[0]), PSDDiagonal(jnp.ravel(family[1]) ** 2), {name: family[2]}
+        return jnp.ravel(family[0]), jnp.diag(jnp.ravel(family[1]) ** 2), {name: family[2]}
 
 
 @dataclass(frozen=True, eq=False)
 class _BuiltTerm:
     """A term built for the vector at hand.
 
-    Its theta is flat, ``(..., D_b)``, in key order. A term given others
-    keeps the distribution at the first ancestral draw, for its checks and
-    its description, and rebuilds it per draw to evaluate and sample.
+    Its theta is flat, ``(..., D_b)``, in key order, each parameter's
+    unconstrained block in C order; ``positions`` are those entries'
+    positions in theta. ``labeled_arguments`` are its constants and
+    memberships, read at the coords' labels. A term given others keeps the distribution at the
+    first ancestral draw, for its checks and its description, and rebuilds
+    it per draw to evaluate and sample.
     """
 
     key: TermKey
     parameters: tuple[Parameter, ...]
     given: tuple[str, ...]
     source: tfd.Distribution | PriorFunction
-    dim_index: pd.Index | None
-    site_table: pd.DataFrame
+    index_shape: tuple[int, ...]
+    labeled_arguments: Mapping[str, Any]
     distribution: tfd.Distribution
     positions: np.ndarray
     shapes: tuple[tuple[int, ...], ...]
     by_base_density: bool
-    declared: tuple[Array, PSDLinOp] | None
+    declared: tuple[Array, Array] | None
 
     @classmethod
     def build(
         cls,
         key: TermKey,
         term: PriorTerm,
-        vector: ParameterVector,
+        prior: Prior,
+        theta_positions: Mapping[str, np.ndarray],
         given_values: Mapping[str, Array] | None,
     ) -> _BuiltTerm:
         """Build and check a term; one given others at each ancestral draw
-        in *given_values* (``(draws, *value_shape)`` each)."""
+        in *given_values* (``(draws, *block shape)`` each)."""
+        vector = prior.parameter_vector
         names = _names_of(key)
-        parameters = tuple(vector[n] for n in names)
-        dim = parameters[0].dim
+        labeled_arguments = {
+            **aligned_constants(term.constants, prior._labels_by_dim, message_name=f"the prior of {term_name(key)!r} constants"),
+            **aligned_memberships(term.memberships, prior.coords, message_name=f"the prior of {term_name(key)!r} memberships"),
+        }
         built = cls(
             key=key,
-            parameters=parameters,
+            parameters=tuple(vector[n] for n in names),
             given=term.given,
             source=term.distribution,
-            dim_index=vector.dim_index(dim) if dim else None,
-            site_table=vector.site_table,
+            index_shape=vector.index_shape(names[0]),
+            labeled_arguments=frozendict(labeled_arguments),
             distribution=None,
-            positions=np.concatenate([vector.positions(parameter_name=n) for n in names]),
-            shapes=tuple(vector.unconstrained_shape(n) for n in names),
+            positions=np.concatenate([theta_positions[n] for n in names]),
+            shapes=tuple(vector.unconstrained.block_shape(n) for n in names),
             by_base_density=False,
             declared=None,
         )
-        check_term_given_others_is_a_function(built)
+        check_term_needing_a_function_is_one(built)
         probes = built.probes()
-        expected = {n: vector.value_shape(n) for n in names} if built.joint else vector.value_shape(names[0])
+        expected = {n: vector.block_shape(n) for n in names} if built.joint else vector.block_shape(names[0])
         if term.given:
             draws = [{n: v[i] for n, v in given_values.items()} for i in range(_N_ANCESTRAL_DRAWS)]
             distributions = [built.distribution_at(values) for values in draws]
@@ -1096,20 +1181,22 @@ class _BuiltTerm:
         return "base density" if self.by_base_density else "change of variables"
 
     def probes(self) -> Array:
-        """:func:`joint_probe_points` over the covered parameters, flat,
-        ``(n_probes, D_b)``."""
-        parts = joint_probe_points([(s, p.unconstrained_size) for s, p in zip(self.shapes, self.parameters)])
+        """:func:`joint_probe_points` over the covered parameters' blocks,
+        the axis probes along each one's first value, flat, ``(n_probes,
+        D_b)``."""
+        index_ndim = len(self.index_shape)
+        parts = joint_probe_points([(shape, math.prod(shape[index_ndim:])) for shape in self.shapes])
         return jnp.asarray(np.concatenate([part.reshape((len(part), -1)) for part in parts], axis=-1))
 
     def distribution_at(self, given_values: Mapping[str, Array]) -> tfd.Distribution:
         """The distribution at one draw's given values."""
-        return self.source(self.dim_index, self.site_table, **given_values)
+        return self.source(self.index_shape, **given_values, **self.labeled_arguments)
 
     def split(self, theta: Array) -> dict[str, Array]:
-        """Flat theta, ``(..., D_b)``, as each parameter's unconstrained value."""
+        """Flat theta, ``(..., D_b)``, as each parameter's unconstrained block."""
         lead, out, start = theta.shape[:-1], {}, 0
         for parameter, shape in zip(self.parameters, self.shapes):
-            size = int(np.prod(shape, dtype=int))
+            size = math.prod(shape)
             out[parameter.name] = theta[..., start : start + size].reshape(lead + shape)
             start += size
         return out
@@ -1167,7 +1254,7 @@ class _BuiltTerm:
         density = distribution.log_prob(values if self.joint else values[self.names[0]])
         lead_ndim = theta.ndim - 1
         for parameter in self.parameters:
-            log_jacobian = parameter.support.log_jacobian(parameter.bijector, split[parameter.name])
+            log_jacobian = _log_jacobian(parameter.support, parameter.bijector, split[parameter.name])
             density = density + log_jacobian.sum(axis=tuple(range(lead_ndim, log_jacobian.ndim)))
         return density
 
@@ -1180,20 +1267,20 @@ class _BuiltTerm:
         values = distribution.sample(sample_shape, seed=key)
         values = values if self.joint else {self.names[0]: values}
         pieces = [
-            p.bijector.inverse(values[p.name]).reshape(sample_shape + (int(np.prod(shape, dtype=int)),))
+            p.bijector.inverse(values[p.name]).reshape(sample_shape + (math.prod(shape),))
             for p, shape in zip(self.parameters, self.shapes)
         ]
         return jnp.concatenate(pieces, axis=-1)
 
     def _base_event(self, theta: Array) -> Array:
         """Flat theta as the base's event: a joint term's is flat, one
-        parameter's is its unconstrained shape."""
+        parameter's is its unconstrained block shape."""
         if self.joint:
             return theta
         return theta.reshape(theta.shape[:-1] + self.shapes[0])
 
 
-def _declaration(built: _BuiltTerm, probes: Array) -> tuple[Array, PSDLinOp] | None:
+def _declaration(built: _BuiltTerm, probes: Array) -> tuple[Array, Array] | None:
     """The term's declared Gaussian, when its builder declares one and every
     covered parameter's bijector agrees with the one it assumes."""
     source = built.source
@@ -1203,14 +1290,14 @@ def _declaration(built: _BuiltTerm, probes: Array) -> tuple[Array, PSDLinOp] | N
         declarer = _GivenDirectly(source)
     else:
         return None
-    declared = declarer.unconstrained_gaussian(built.dim_index, built.site_table, built.names)
+    declared = declarer.unconstrained_gaussian(built.index_shape, built.names, **built.labeled_arguments)
     if declared is None:
         return None
     mean, covariance, assumed = declared
     split = built.split(probes)
     if not all(bijectors_agree(assumed[p.name], p.bijector, split[p.name]) for p in built.parameters):
         return None
-    return mean, covariance
+    return jnp.asarray(mean, dtype=jnp.float64), jnp.asarray(covariance, dtype=jnp.float64)
 
 
 def _family_gaussian(distribution: tfd.Distribution) -> tuple[Array, Array, tfb.Bijector] | None:
@@ -1240,6 +1327,54 @@ def _family_gaussian(distribution: tfd.Distribution) -> tuple[Array, Array, tfb.
     return loc, scale, bijector
 
 
+def _log_jacobian(support: Support, bijector: tfb.Bijector, theta: Array) -> Array:
+    """:math:`\\log J(\\theta)`, the log absolute Jacobian determinant of
+    *bijector* against the reference measure of *support*'s densities.
+
+    On an :class:`Interval` the measure is Lebesgue measure and
+    :math:`\\log J = \\log |T'(\\theta)|`, number by number, the shape of
+    *theta*. On the :class:`Simplex` it is Lebesgue measure on the first
+    :math:`k - 1` coordinates, the measure a ``Dirichlet``'s density is
+    written against, which makes :math:`\\pi_\\theta` a normalized density on
+    :math:`\\mathbb{R}^{k-1}`:
+
+    .. math::
+
+        \\log J(\\theta) = \\log \\left| \\det
+            \\frac{\\partial (x_1, \\dots, x_{k-1})}{\\partial \\theta} \\right|,
+        \\qquad x = T(\\theta),
+
+    by automatic differentiation over the last axis, ``(..., k - 1) ->
+    (...)``, whatever the bijector. TFP's
+    ``SoftmaxCentered.forward_log_det_jacobian`` is instead
+    :math:`\\tfrac12 \\log \\det(J^\\top J)` of the full :math:`k \\times (k-1)`
+    Jacobian, against the simplex's surface measure, which differs from this
+    by :math:`\\tfrac12 \\log k`.
+    """
+    theta = jnp.asarray(theta, dtype=jnp.float64)
+    if isinstance(support, Interval):
+        return bijector.forward_log_det_jacobian(theta, event_ndims=0)
+
+    def log_determinant(t: Array) -> Array:
+        jacobian = jax.jacfwd(lambda u: bijector.forward(u)[:-1])(t)
+        return jnp.linalg.slogdet(jacobian)[1]
+
+    flat = theta.reshape((-1, theta.shape[-1]))
+    return jax.vmap(log_determinant)(flat).reshape(theta.shape[:-1])
+
+
+def _gaussian_log_density(mean: Array, covariance: Array, points: Array) -> Array:
+    """:math:`\\log \\mathcal N(x; m, C) = -\\tfrac12 \\big(d \\log 2\\pi +
+    \\log\\det C + (x - m)^\\top C^{-1} (x - m)\\big)`, through the Cholesky
+    factor of :math:`C`, ``(..., d) -> (...)``."""
+    factor = jnp.linalg.cholesky(covariance)
+    residual = jnp.asarray(points) - mean
+    whitened = jax.scipy.linalg.solve_triangular(factor, residual.reshape((-1, len(mean))).T, lower=True).T
+    log_determinant = 2.0 * jnp.sum(jnp.log(jnp.diag(factor)))
+    quadratic = jnp.sum(whitened**2, axis=-1).reshape(residual.shape[:-1])
+    return -0.5 * (len(mean) * jnp.log(2.0 * jnp.pi) + log_determinant + quadratic)
+
+
 # ── private helpers ───────────────────────────────────────────────────────────
 
 #: TFP's classes whose ``.distribution`` and ``.bijector`` are a base in theta
@@ -1248,7 +1383,7 @@ def _family_gaussian(distribution: tfd.Distribution) -> tuple[Array, Array, tfb.
 _CARRIES_ITS_BIJECTOR = (tfd.TransformedDistribution, tfd.LogNormal, tfd.LogitNormal)
 
 #: The number of draws of the draw-based support check, and the size of each
-#: batch of them, which bounds its memory for a term over many dim labels.
+#: batch of them, which bounds its memory for a term over many labels.
 _SUPPORT_DRAWS, _SUPPORT_DRAW_BATCH = 10_000, 1_000
 
 #: The seed of the draw-based support check.
@@ -1271,42 +1406,19 @@ def _term_key(key: Array, name: str) -> Array:
     return jax.random.fold_in(key, zlib.crc32(name.encode()))
 
 
-def _parameters_behind(vector: ParameterVector, names: Sequence[str]) -> set[str]:
-    """The parameters among *names*, and those the derived parameters among
-    them are computed from, directly or through others."""
-    derived = {d.name: d for d in vector.derived_parameters}
-    out, pending = set(), list(names)
-    while pending:
-        name = pending.pop()
-        if name in derived:
-            pending.extend(derived[name].derived_from)
-        else:
-            out.add(name)
-    return out
-
-
-def _derived_needed(
-    vector: ParameterVector, names: Sequence[str], natural_values: Mapping[str, Array]
-) -> dict[str, Array]:
-    """The derived parameters among *names* that *natural_values* lacks,
-    computed from it."""
-    missing = [n for n in names if n in vector.derived_parameter_names and n not in natural_values]
-    if not missing:
-        return {}
-    return vector.derived_values(natural_values, derived_parameter_names=missing)
-
-
-def _draw_order(terms: Mapping[TermKey, PriorTerm], vector: ParameterVector) -> tuple[TermKey, ...]:
+def _draw_order(prior: Prior) -> tuple[TermKey, ...]:
     """The terms in a topological order of the ``given`` links, each after
     everything it is given: the covering term of a parameter, and, through a
     derived parameter, the covering terms of what it is computed from."""
+    terms, vector = prior.terms, prior.parameter_vector
     owner = {name: key for key in terms for name in _names_of(key)}
-    derived = {d.name: d for d in vector.derived_parameters}
+    derived = prior.derived_parameters
+    derived_names = () if derived is None else derived.names
 
     def links(node: tuple[str, Any]) -> list[tuple[str, Any]]:
         kind, value = node
-        names = terms[value].given if kind == "term" else derived[value].derived_from
-        return [("derived", n) if n in derived else ("term", owner[n]) for n in names]
+        names = terms[value].given if kind == "term" else derived[value].parameter_names
+        return [("derived", n) if n in derived_names else ("term", owner[n]) for n in names]
 
     order: list[TermKey] = []
     state: dict[tuple[str, Any], str] = {}
@@ -1334,47 +1446,27 @@ def _draw_order(terms: Mapping[TermKey, PriorTerm], vector: ParameterVector) -> 
     return tuple(order)
 
 
-def _in_theta_order(declared: tuple[Array, PSDLinOp], positions: np.ndarray) -> tuple[Array, PSDLinOp]:
-    """A declared Gaussian over a term's theta, in key order, reordered into
-    theta's order."""
-    mean, covariance = declared
-    if np.all(np.diff(positions) > 0):
-        return mean, covariance
-    order = np.argsort(positions)
-    return mean[order], DensePSD(covariance.to_dense()[np.ix_(order, order)])
-
-
-def _moment_matched(draws: Array) -> tuple[Array, PSDLinOp]:
+def _moment_matched(draws: Array) -> tuple[Array, Array]:
     mean = draws.mean(axis=0)
     centered = draws - mean
-    return mean, DensePSD(centered.T @ centered / (len(draws) - 1))
+    return mean, centered.T @ centered / (len(draws) - 1)
 
 
 def _distribution_for(built: _BuiltTerm) -> tfd.Distribution:
     """The distribution of a term given nothing: called when a function."""
     source = built.source
     if isinstance(source, tfd.Distribution):
-        check_bare_distribution_has_no_dim(built)
         return source
-    return source(built.dim_index, built.site_table)
+    return source(built.index_shape, **built.labeled_arguments)
 
 
-def _aligned_argument(name: str, value: Any, dim_index: pd.Index) -> Any:
-    """One argument of :func:`independent_over_dim`: a keyed one as one entry
-    per dim label, a shared one as it is."""
-    if not isinstance(value, (Mapping, pd.Series)):
-        return value
-    check_argument_covers_the_dim_labels(name, value, dim_index)
-    return jnp.asarray(np.asarray([value[label] for label in dim_index], dtype=np.float64))
-
-
-def _logit_normal_on(support: Support, loc: Array, scale: Array) -> tfd.Distribution:
+def _logit_normal_on(support: Interval, loc: Array, scale: Array) -> tfd.Distribution:
     if (support.low, support.high) == (0.0, 1.0):
         return tfd.LogitNormal(loc=loc, scale=scale)
-    return tfd.TransformedDistribution(tfd.Normal(loc, scale), support.bijector())
+    return tfd.TransformedDistribution(tfd.Normal(loc, scale), bijector_for(support))
 
 
-def _interval_fraction(what: str, value: Any, support: Support) -> Array:
+def _interval_fraction(what: str, value: Any, support: Interval) -> Array:
     """``(value - a) / (b - a)``, checked inside :math:`(0, 1)`."""
     array = jnp.asarray(value, dtype=jnp.float64)
     fraction = (array - support.low) / (support.high - support.low)
@@ -1452,10 +1544,10 @@ def _shape_of(shape: Any) -> Any:
 def _inside_at_each_probe(built: _BuiltTerm, values: Mapping[str, Array], *, closure: bool = False) -> Array:
     """``(n_probes,)``: whether every covered parameter's value lies in its
     support (its closure when *closure*)."""
-    inside = [
-        p.support.contains(values[p.name], closure=closure).reshape((len(values[p.name]), -1)).all(axis=-1)
-        for p in built.parameters
-    ]
+    inside = []
+    for p in built.parameters:
+        support = p.support.closure() if closure else p.support
+        inside.append(support.contains(values[p.name]).reshape((len(values[p.name]), -1)).all(axis=-1))
     return jnp.all(jnp.stack(inside), axis=0)
 
 
@@ -1517,16 +1609,25 @@ def _draws_lie_in_the_support(built: _BuiltTerm) -> bool | None:
 
 
 def check_prior_term_is_valid(built: _BuiltTerm) -> None:
-    """A term's prior has the supports its parameters declare, and on the
-    simplex a density :meth:`Prior.log_prob` can evaluate."""
+    """A term's prior has the supports its parameters declare, and a density
+    :meth:`Prior.log_prob` can evaluate."""
+    check_change_of_variables_has_a_measure(built)
     check_simplex_density_is_a_dirichlet(built)
     check_declared_support_lies_in_the_priors(built)
     check_priors_support_lies_in_the_declared(built)
 
 
+def check_derived_parameters_are_derived_parameters(derived_parameters: Any) -> None:
+    """The derived parameters are a :class:`DerivedParameters`."""
+    if not isinstance(derived_parameters, DerivedParameters):
+        raise TypeError(
+            f"derived_parameters must be a DerivedParameters, got {type(derived_parameters).__name__}."
+        )
+
+
 def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: ParameterVector) -> None:
     """The terms are keyed by the vector's parameter names, or tuples of
-    them over one dim, and cover every parameter once, so no density is
+    them indexed alike, and cover every parameter once, so no density is
     counted twice or left out."""
     owner: dict[str, str] = {}
     for key in terms:
@@ -1534,7 +1635,7 @@ def check_terms_cover_the_parameters(terms: Mapping[Any, Any], vector: Parameter
         for name in _names_of(key):
             check_term_covers_a_parameter_once(name, term_name(key), vector, owner)
             owner[name] = term_name(key)
-        check_joint_term_shares_a_dim(key, vector)
+        check_joint_term_is_indexed_alike(key, vector)
     check_every_parameter_has_a_term(owner, vector)
 
 
@@ -1579,26 +1680,27 @@ def check_every_parameter_has_a_term(owner: Mapping[str, str], vector: Parameter
         raise ValueError(f"the parameter(s) {truncated(missing)} have no prior term; give each one.")
 
 
-def check_joint_term_shares_a_dim(key: TermKey, vector: ParameterVector) -> None:
-    """A joint term's parameters share one dim or none: dependence across
-    dims is what ``given`` expresses."""
-    dims = {vector[name].dim for name in _names_of(key)}
-    if len(dims) > 1:
+def check_joint_term_is_indexed_alike(key: TermKey, vector: ParameterVector) -> None:
+    """A joint term's parameters are indexed by the same dims: dependence
+    across dims is what ``given`` expresses."""
+    indexed = {vector[name].indexed_by for name in _names_of(key)}
+    if len(indexed) > 1:
         raise ValueError(
-            f"the joint term {term_name(key)!r} covers parameters on the dims "
-            f"{sorted(map(str, dims))}; a joint term's parameters share one dim or none, so give "
-            "each dim its own term and link them with given=."
+            f"the joint term {term_name(key)!r} covers parameters indexed by {sorted(indexed)}; a "
+            "joint term's parameters are indexed alike, so give each its own term and link them "
+            "with given=."
         )
 
 
-def check_given_names_are_held(name: str, given: Sequence[str], vector: ParameterVector) -> None:
-    """What a term is given is a parameter or derived parameter of the
-    vector, which it would otherwise be passed no value for."""
+def check_given_names_are_held(name: str, given: Sequence[str], prior: Prior) -> None:
+    """What a term is given is a parameter or derived parameter, which it
+    would otherwise be passed no value for."""
+    derived = () if prior.derived_parameters is None else prior.derived_parameters.names
     for given_name in given:
-        if given_name not in vector and given_name not in vector.derived_parameter_names:
+        if given_name not in prior.parameter_vector and given_name not in derived:
             raise KeyError(
-                f"the prior of {name!r} is given {given_name!r}, which is no parameter or derived "
-                "parameter of the vector."
+                f"the prior of {name!r} is given {given_name!r}, which is no parameter of the vector "
+                "nor a derived parameter of derived_parameters=."
             )
 
 
@@ -1624,13 +1726,27 @@ def check_given_links_are_acyclic(cycle: Sequence[tuple[str, Any]] | None) -> No
     )
 
 
-def check_term_given_others_is_a_function(built: _BuiltTerm) -> None:
-    """A term given others is a function of their values; a distribution
-    would ignore them."""
-    if built.given and isinstance(built.source, tfd.Distribution):
+def check_term_needing_a_function_is_one(built: _BuiltTerm) -> None:
+    """A term over indexed parameters, given others, or reading constants or
+    memberships is a function of them; a bare distribution would ignore
+    them."""
+    if not isinstance(built.source, tfd.Distribution):
+        return
+    if built.given:
         raise TypeError(
             f"the prior of {built.name!r} is given {list(built.given)} but is a distribution; give "
-            "a function f(dim_index, site_table, **given_values) that returns one."
+            "a function f(index_shape, **given_values) that returns one."
+        )
+    if built.index_shape:
+        raise TypeError(
+            f"the prior of {built.name!r} is over parameters indexed by "
+            f"{built.parameters[0].indexed_by}, so it is built for the labels present; wrap the "
+            "distribution as iid_over_dim(distribution) or independent_over_dim(family, ...)."
+        )
+    if built.labeled_arguments:
+        raise TypeError(
+            f"the prior of {built.name!r} reads {sorted(built.labeled_arguments)} but is a distribution; "
+            "give a function that reads them."
         )
 
 
@@ -1662,17 +1778,6 @@ def check_selection_keeps_what_a_term_needs(name: str, needed: Sequence[str], ke
         )
 
 
-def check_dependent_set_is_contiguous(names: Sequence[str], vector: ParameterVector) -> None:
-    """A dependent set is one contiguous run of the vector's parameters,
-    which one block of a block-diagonal covariance needs."""
-    positions = sorted(vector.parameter_names.index(n) for n in names)
-    if positions[-1] - positions[0] + 1 != len(positions):
-        raise ValueError(
-            f"the dependent set {list(names)} is not contiguous in the vector's parameters, so its "
-            "block of the Gaussian cannot be formed; declare those parameters next to each other."
-        )
-
-
 def check_term_is_held(key: Any, prior: Prior) -> None:
     """The prior has a term for the key asked for."""
     if key not in prior.terms:
@@ -1697,40 +1802,29 @@ def check_provenance_is_given(provenance: Any) -> None:
         )
 
 
-def check_bare_distribution_has_no_dim(built: _BuiltTerm) -> None:
-    """A term over a dim takes a prior function, since its prior depends on
-    the dim labels present."""
-    if built.dim_index is not None:
+def check_prior_over_a_dim_has_a_dim(index_shape: tuple[int, ...], name: str) -> None:
+    """A prior over the index dims is given to a parameter indexed by some."""
+    if not index_shape:
         raise TypeError(
-            f"the prior of {built.name!r} varies over {built.dim_index.name!r}, so it is built for "
-            "the dim labels present; wrap the distribution as iid_over_dim(distribution) or "
-            "independent_over_dim(family, ...)."
+            f"{name} is a prior over a parameter's index dims, given to a parameter indexed by "
+            "nothing; give that parameter the distribution itself."
         )
 
 
-def check_prior_over_a_dim_has_a_dim(dim_index: Any, name: str) -> None:
-    """A prior over a dim is given to a parameter with a dim."""
-    if dim_index is None:
-        raise TypeError(
-            f"{name} is a prior over a dim, given to a parameter without one; give that "
-            "parameter the distribution itself."
-        )
-
-
-def check_prior_without_a_dim_has_none(dim_index: Any, name: str) -> None:
-    """A prior of parameters without a dim is not given parameters with one,
+def check_prior_without_a_dim_has_none(index_shape: tuple[int, ...], name: str) -> None:
+    """A prior of parameters indexed by nothing is not given indexed ones,
     whose draws would otherwise be refused for their shape, far from the
     reason."""
-    if dim_index is not None:
+    if index_shape:
         raise TypeError(
-            f"{name} is a prior of parameters without a dim, given parameters on "
-            f"{dim_index.name!r}; give those parameters a prior over their dim."
+            f"{name} is a prior of parameters indexed by nothing, given parameters of index shape "
+            f"{index_shape}; give those parameters a prior over their index dims."
         )
 
 
 def check_term_is_over_the_whole_value(name: str, distribution: Any, expected: Any) -> None:
     """A term's distribution is ``float64`` over the whole value it covers:
-    event shape the value shape (a dict of them for a joint term), batch
+    event shape the block shape (a dict of them for a joint term), TFP batch
     shape ``()``."""
     if not isinstance(distribution, tfd.Distribution):
         raise TypeError(
@@ -1741,11 +1835,25 @@ def check_term_is_over_the_whole_value(name: str, distribution: Any, expected: A
     batches = batch.values() if isinstance(batch, Mapping) else [batch]
     if event != expected or any(b != () for b in batches) or any(d != jnp.float64 for d in dtypes):
         raise ValueError(
-            f"the prior of {name!r} has event shape {event}, batch shape {batch} and dtype "
+            f"the prior of {name!r} has event shape {event}, TFP batch shape {batch} and dtype "
             f"{distribution.dtype}, but must be a float64 distribution over the whole value it "
-            f"covers: event shape {expected}, batch shape (). A batch of priors, one per dim "
-            "label, is iid_over_dim or independent_over_dim; a joint term's draws are a dict "
-            "keyed by the names it covers."
+            f"covers: event shape {expected}, TFP batch shape (). A batch of priors, one per label, "
+            "is iid_over_dim or independent_over_dim; a joint term's draws are a dict keyed by the "
+            "names it covers."
+        )
+
+
+def check_change_of_variables_has_a_measure(built: _BuiltTerm) -> None:
+    """A term evaluated by change of variables is over intervals and
+    simplices, the supports whose Jacobian's reference measure is known."""
+    if built.by_base_density:
+        return
+    unknown = [p.name for p in built.parameters if not isinstance(p.support, (Interval, Simplex))]
+    if unknown:
+        raise ValueError(
+            f"the prior of {built.name!r} is evaluated by change of variables over {unknown}, whose "
+            "supports have no known reference measure; write it as a pushforward through the "
+            "parameters' bijectors, TransformedDistribution(base, bijector)."
         )
 
 
@@ -1753,7 +1861,7 @@ def check_simplex_density_is_a_dirichlet(built: _BuiltTerm) -> None:
     """On the simplex, a term evaluated by change of variables is one
     parameter's ``Dirichlet``, whose density is against the first ``k - 1``
     coordinates, as the Jacobian is."""
-    if built.by_base_density or not any(p.support.kind == "simplex" for p in built.parameters):
+    if built.by_base_density or not any(isinstance(p.support, Simplex) for p in built.parameters):
         return
     inner = built.distribution
     if type(inner) in (tfd.Sample, tfd.Independent):
@@ -1796,15 +1904,13 @@ def check_priors_support_lies_in_the_declared(built: _BuiltTerm) -> None:
         )
 
 
-def check_declaration_agrees_with_log_prob(
-    built: _BuiltTerm, declared: tuple[Array, PSDLinOp], probes: Array
-) -> None:
+def check_declaration_agrees_with_log_prob(built: _BuiltTerm, declared: tuple[Array, Array], probes: Array) -> None:
     """A declared Gaussian's log density :math:`\\log q` equals the term's,
     :math:`\\log p`, at every probe point, to
     :math:`|\\log q - \\log p| \\le 10^{-10} |\\log p| + 10^{-12} D_b`, with
     :math:`D_b` the term's number of entries of theta."""
     mean, covariance = declared
-    declared_log_density = Gaussian(mean=mean, cov=covariance).log_density(probes)
+    declared_log_density = _gaussian_log_density(mean, covariance, probes)
     log_density = built.log_prob(probes, None)
     tolerance = (
         _DECLARATION_RELATIVE_TOLERANCE * jnp.abs(log_density)
@@ -1855,7 +1961,7 @@ def check_copula_marginal_is_a_scalar_gaussian_pushforward(
     if family is None or tuple(marginal.batch_shape) != () or tuple(marginal.event_shape) != ():
         raise ValueError(
             f"gaussian_copula's marginal {name!r} is not a scalar pushforward of a Gaussian; give "
-            "log_normal, logit_normal, their _from_* forms, or tfd.Normal, with batch shape ()."
+            "log_normal, logit_normal, their _from_* forms, or tfd.Normal, with TFP batch shape ()."
         )
 
 
@@ -1877,30 +1983,15 @@ def check_correlation_is_a_correlation_matrix(correlation: Array, n_marginals: i
         )
 
 
-def check_argument_covers_the_dim_labels(name: str, value: Mapping[Any, Any], dim_index: pd.Index) -> None:
-    """A keyed argument has a value for every dim label."""
-    missing = [label for label in dim_index if label not in value]
-    if missing:
-        raise KeyError(
-            f"independent_over_dim argument {name!r} has no value for dim label(s) "
-            f"{truncated(missing)}; key it by every dim label."
-        )
-
-
-def center_shape_of(loc: Array) -> tuple[int, ...]:
-    """The center's shape, from the base's location: one more number."""
-    return (*loc.shape[:-1], loc.shape[-1] + 1)
-
-
-def check_family_is_one_per_dim_label(distribution: Any, n_dim_labels: int) -> None:
-    """A family's distribution is a batch of one per dim label, which the dim
-    labels would otherwise be misaligned with."""
+def check_family_is_one_per_label(distribution: Any, index_shape: tuple[int, ...]) -> None:
+    """A family's distribution is a batch of one per label, which the labels
+    would otherwise be misaligned with."""
     batch = tuple(getattr(distribution, "batch_shape", ()))
-    if batch != (n_dim_labels,):
+    if batch != tuple(index_shape):
         raise ValueError(
-            f"independent_over_dim built a distribution of batch shape {batch} for "
-            f"{n_dim_labels} dim labels; key at least one argument by dim label, or use "
-            "iid_over_dim for one distribution shared by every dim label."
+            f"independent_over_dim built a distribution of TFP batch shape {batch} for the index "
+            f"shape {tuple(index_shape)}; give at least one argument per label, as a constant of "
+            "the term, or use iid_over_dim for one distribution shared by every label."
         )
 
 
@@ -1917,19 +2008,19 @@ def check_values_are_positive(what: str, array: Array, value: Any) -> None:
 
 
 def check_values_are_inside(what: str, fraction: Array, value: Any, support: Support) -> None:
-    """A logit-normal's median or end lies inside its support."""
+    """A logit-normal's median or end lies inside the interior of its support."""
     if not bool(jnp.all((fraction > 0) & (fraction < 1))):
-        raise ValueError(f"{what} is {value!r}, outside {support.name}; give a value inside it.")
+        raise ValueError(f"{what} is {value!r}, outside the interior of {support.name}; give a value inside it.")
 
 
-def check_support_is_an_interval(support: Any) -> None:
-    """A logit-normal's support is an open interval."""
-    if not isinstance(support, Support):
-        raise TypeError(f"support must be a Support, got {type(support).__name__}; use OpenInterval(low, high).")
-    if support.kind != "interval":
+def check_support_is_a_finite_interval(support: Any) -> None:
+    """A logit-normal's support is an interval with finite ends."""
+    if not isinstance(support, Interval):
+        raise TypeError(f"support must be an Interval, got {type(support).__name__}; use Interval(low, high).")
+    if math.isinf(support.low) or math.isinf(support.high):
         raise ValueError(
-            f"a logit-normal is on an open interval, got support {support!r}; use "
-            "OPEN_UNIT_INTERVAL or OpenInterval(low, high)."
+            f"a logit-normal is on a finite interval, got support {support.name}; use log_normal on "
+            "a half-line."
         )
 
 
@@ -1960,7 +2051,7 @@ def check_samples_vary(what: str, std: Array) -> None:
 
 
 def check_center_is_on_the_simplex(center: Array) -> None:
-    """A softmax-normal's center is a point of the simplex, per dim label or shared."""
+    """A softmax-normal's center is a point of the simplex, per label or shared."""
     if center.ndim not in (1, 2) or center.shape[-1] < 2:
         raise ValueError(f"softmax_normal: center has shape {center.shape}; give (k,) or (n, k) with k >= 2.")
     if not bool(jnp.all(center > 0)) or not bool(jnp.allclose(center.sum(axis=-1), 1.0, atol=1e-8)):
@@ -1975,13 +2066,13 @@ def check_logit_sd_fits_the_center(logit_sd: Array, loc: Array) -> None:
     if logit_sd.shape not in allowed:
         raise ValueError(
             f"softmax_normal: logit_sd has shape {logit_sd.shape}, which fits the center of shape "
-            f"{center_shape_of(loc)} as none of {sorted(allowed)}; give a scalar, one value per "
-            "unconstrained number, or, for a center per dim label, one per dim label or one per "
-            "dim label and number."
+            f"{(*loc.shape[:-1], loc.shape[-1] + 1)} as none of {sorted(allowed)}; give a scalar, one "
+            "value per unconstrained number, or, for a center per label, one per label or one per "
+            "label and number."
         )
     if loc.ndim == 2 and per_label == per_number and logit_sd.shape == per_number:
         raise ValueError(
-            f"softmax_normal: logit_sd of shape {logit_sd.shape} could be one value per dim label "
+            f"softmax_normal: logit_sd of shape {logit_sd.shape} could be one value per label "
             "or one per unconstrained number, since there are as many of each; give it as "
             f"{loc.shape}."
         )
