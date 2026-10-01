@@ -138,6 +138,7 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
+from sipnet_calibration.parameters._labels import as_coords
 from sipnet_calibration.parameters._validation import (
     as_names,
     as_sequence,
@@ -210,7 +211,7 @@ class ParameterVector:
     def __post_init__(self) -> None:
         check_parameters_are_parameters(self.parameters)
         object.__setattr__(self, "parameters", tuple(self.parameters))
-        object.__setattr__(self, "coords", _coords_of(self.coords))
+        object.__setattr__(self, "coords", as_coords(self.coords))
         default_order = (PARAMETER_LEVEL, *self.coords)
         order = default_order if self.order is None else as_names(self.order, message_name="order")
         object.__setattr__(self, "order", order)
@@ -843,25 +844,6 @@ class _Layout:
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _coords_of(coords: Any) -> frozendict:
-    """``{dim: pd.Index of labels named for the dim}``, after the checks
-    every dim's labels pass."""
-    check_coords_are_a_mapping(coords)
-    out = {}
-    for dim, labels in coords.items():
-        check_dim_is_a_string(dim)
-        if not isinstance(labels, (pd.Index, np.ndarray)):
-            labels = list(as_sequence(labels, message_name=f"coords[{dim!r}]"))
-        else:
-            as_sequence(labels, message_name=f"coords[{dim!r}]")
-        index = pd.Index(labels, name=dim)
-        check_labels_are_integers_or_strings(dim, index)
-        check_names_are_unique(list(index), message_name=f"coords[{dim!r}]")
-        check_dim_has_a_label(dim, index)
-        out[dim] = index
-    return frozendict(out)
-
-
 def _variable_attributes(parameter: Parameter) -> dict[str, Any]:
     attributes: dict[str, Any] = {"support": parameter.support.name}
     if parameter.units is not None:
@@ -927,35 +909,6 @@ def check_vector_has_a_parameter(parameters: tuple[Parameter, ...]) -> None:
     """A vector holds at least one parameter, since an empty one fails far from its cause."""
     if not parameters:
         raise ValueError("a parameter vector needs at least one parameter; give parameters=[...].")
-
-
-def check_coords_are_a_mapping(coords: Any) -> None:
-    """Coords are ``{dim: labels}``."""
-    if not isinstance(coords, Mapping):
-        raise TypeError(f"coords must be a mapping {{dim: labels}}, got {type(coords).__name__}.")
-
-
-def check_dim_is_a_string(dim: Any) -> None:
-    """A dim is named by a string."""
-    if not isinstance(dim, str):
-        raise TypeError(f"coords names a dim {dim!r}; dims are named by strings.")
-
-
-def check_labels_are_integers_or_strings(dim: str, labels: pd.Index) -> None:
-    """A dim's labels are all integers or all strings, since a selector's
-    labels are compared with them by type."""
-    values = list(labels)
-    if not (all(_is_integer_label(v) for v in values) or all(isinstance(v, str) for v in values)):
-        raise TypeError(
-            f"coords[{dim!r}] holds labels that are neither all integers nor all strings, such as "
-            f"{truncated(values)}; give site ids as integers and classes as strings."
-        )
-
-
-def check_dim_has_a_label(dim: str, labels: pd.Index) -> None:
-    """A dim has at least one label, since a parameter on it would have no value."""
-    if len(labels) == 0:
-        raise ValueError(f"coords[{dim!r}] holds no label; give at least one, or drop the dim.")
 
 
 def check_parameter_dims_are_in_the_coords(parameter: Parameter, coords: Mapping[str, pd.Index]) -> None:
