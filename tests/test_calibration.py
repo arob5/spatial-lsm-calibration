@@ -144,9 +144,8 @@ def test_the_example_prior_lands_in_every_domain(example, values, sipnet_paramet
     assert example[2].out_of_domain(sipnet_parameter_fields, values, site_dims=SITE_DIMS).empty
 
 
-def test_the_example_is_gaussian_in_theta(example):
-    assert example[1].describe()["declared_gaussian"].all()
-    assert example[1].gaussian().mean.shape == (example[0].unconstrained.size,)
+def test_the_examples_terms_are_evaluated_by_their_base_densities(example):
+    assert set(example[1].describe()["evaluated_by"]) == {"base density"}
 
 
 def test_a_draw_assembles_into_validated_sipnet_parameters(sipnet_parameter_fields):

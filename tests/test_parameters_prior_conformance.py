@@ -5,8 +5,9 @@
   simplex under ``SoftmaxCentered`` and ``IteratedSigmoidCentered``.
 - Joint terms, by base density and by change of variables, and a
   centered hierarchy given its hyperparameters, integrate to one.
-- Each builder's declared Gaussian, the copula's included, agrees with
-  ``log_prob`` on draws and with the moments of 20 000 draws.
+- Each builder's term is, in theta, the Gaussian of its base, the copula's
+  included: ``log_prob`` on draws and the moments of 20 000 draws agree
+  with it.
 - ``select`` gives the marginal, and a term's draws depend on its name
   and what it is given alone, whatever the declaration order.
 - The support checks accept and refuse what they should.
@@ -22,18 +23,24 @@ import xarray as xr
 from scipy import stats
 from tensorflow_probability.substrates import jax as tfp
 
+from conftest import theta_gaussian
+
 from sipnet_calibration.parameters.derived import DerivedParameter, DerivedParameters
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.prior import (
-    Prior,
-    PriorTerm,
-    gaussian_copula,
-    iid_over_dim,
-    independent_over_dim,
+from sipnet_calibration.parameters.families import (
     log_normal,
     logit_normal,
     logit_normal_from_interval,
     softmax_normal,
+)
+from sipnet_calibration.parameters.prior import (
+    Prior,
+    PriorTerm,
+)
+from sipnet_calibration.parameters.prior_functions import (
+    gaussian_copula,
+    iid_over_dim,
+    independent_over_dim,
 )
 from sipnet_calibration.parameters.support import (
     OPEN_UNIT_INTERVAL,
@@ -73,9 +80,9 @@ def by_site(values, sites=SITES) -> xr.DataArray:
     return xr.DataArray(np.asarray(values, dtype=np.float64), dims="site", coords={"site": np.asarray(sites)})
 
 
-def log_density(gaussian, theta) -> np.ndarray:
-    """The log density of a Gaussian's moments at *theta*."""
-    return stats.multivariate_normal(np.asarray(gaussian.mean), np.asarray(gaussian.covariance)).logpdf(np.asarray(theta))
+def log_density(mean, covariance, theta) -> np.ndarray:
+    """The log density of the Gaussian of *mean* and *covariance* at *theta*."""
+    return stats.multivariate_normal(np.asarray(mean), np.asarray(covariance)).logpdf(np.asarray(theta))
 
 
 def integral_by_importance_sampling(prior: Prior, *, n: int = 400_000, scale: float = 3.0) -> float:
@@ -171,7 +178,8 @@ OFFSET_BY_SITE = Parameter(name="offset", support=REAL, units=None, indexed_by=(
 CENTERS = xr.DataArray([[0.3, 0.3, 0.2, 0.2], [0.2, 0.4, 0.1, 0.3]], dims=("pft", "part"),
                        coords={"pft": list(PFT), "part": list(NAMES)})
 
-DECLARING = [
+#: One parameter's term from each builder, each a Gaussian in theta.
+GAUSSIAN_IN_THETA = [
     (RATE, log_normal(median=2.0, geometric_sd=1.7), None),
     (SHARE, logit_normal(median=0.3, logit_sd=0.8), None),
     (Q10, logit_normal_from_interval(lower=1.5, upper=3.0, support=Interval(1.0, 5.0)), None),
@@ -186,32 +194,31 @@ DECLARING = [
 ]
 
 
-@pytest.mark.parametrize("parameter, distribution, constants", DECLARING)
-def test_each_declaration_agrees_with_log_prob_on_draws(parameter, distribution, constants):
+@pytest.mark.parametrize("parameter, distribution, constants", GAUSSIAN_IN_THETA)
+def test_each_builders_log_prob_is_the_gaussian_of_its_base(parameter, distribution, constants):
     prior = prior_of(parameter, distribution, constants)
-    assert prior.describe().iloc[0]["declared_gaussian"]
-    gaussian = prior.gaussian()
+    mean, variances = theta_gaussian(prior, parameter.name)
     theta = prior.sample(jax.random.key(3), 200)
     log_prob = prior.log_prob(theta)
     tolerance = 1e-10 * jnp.abs(log_prob) + 1e-12 * theta.shape[-1]
-    assert bool(jnp.all(jnp.abs(log_density(gaussian, theta) - log_prob) <= tolerance))
+    assert bool(jnp.all(jnp.abs(log_density(mean, np.diag(variances), theta) - log_prob) <= tolerance))
 
 
-@pytest.mark.parametrize("parameter, distribution, constants", DECLARING)
-def test_each_declaration_matches_the_moments_of_draws(parameter, distribution, constants):
+@pytest.mark.parametrize("parameter, distribution, constants", GAUSSIAN_IN_THETA)
+def test_each_builders_draws_have_the_moments_of_its_base(parameter, distribution, constants):
     prior = prior_of(parameter, distribution, constants)
-    gaussian = prior.gaussian()
+    mean, variances = theta_gaussian(prior, parameter.name)
     theta = np.asarray(prior.sample(jax.random.key(4), 20_000))
-    covariance = np.asarray(gaussian.covariance)
-    standard_error = np.sqrt(np.diag(covariance) / len(theta))
-    np.testing.assert_array_less(np.abs(theta.mean(axis=0) - gaussian.mean), 5 * standard_error)
+    covariance = np.diag(variances)
+    np.testing.assert_array_less(np.abs(theta.mean(axis=0) - mean), 5 * np.sqrt(variances / len(theta)))
     np.testing.assert_allclose(np.cov(theta.T).reshape(covariance.shape), covariance, atol=0.05 * covariance.max())
 
 
-def test_a_logit_normal_on_an_open_interval_is_declared_exactly():
-    gaussian = prior_of(Q10, logit_normal(median=2.0, logit_sd=0.5, support=Interval(1.0, 5.0))).gaussian()
-    assert float(gaussian.mean[0]) == pytest.approx(np.log(0.25 / 0.75))
-    assert float(gaussian.covariance[0, 0]) == pytest.approx(0.25)
+def test_a_logit_normal_on_an_open_interval_is_normal_on_its_logit_scale():
+    prior = prior_of(Q10, logit_normal(median=2.0, logit_sd=0.5, support=Interval(1.0, 5.0)))
+    mean, variances = theta_gaussian(prior, "q10")
+    assert float(mean[0]) == pytest.approx(np.log(0.25 / 0.75))
+    assert float(variances[0]) == pytest.approx(0.25)
 
 
 # ── select, and keys ──────────────────────────────────────────────────────────
@@ -231,9 +238,9 @@ def test_select_gives_the_marginal():
     selectors = {"site": [1, 4711], "pft": ["deciduous"]}
     smaller = prior.select(**selectors)
     kept = prior.parameter_vector.unconstrained.positions(**selectors)
-    full, marginal = prior.gaussian(), smaller.gaussian()
-    np.testing.assert_allclose(marginal.mean, full.mean[kept])
-    np.testing.assert_allclose(marginal.covariance, full.covariance[np.ix_(kept, kept)])
+    for which, moments in enumerate(zip(*(theta_gaussian(prior, n) for n in ("rate", "allocation")))):
+        marginal = np.concatenate([theta_gaussian(smaller, n)[which] for n in ("rate", "allocation")])
+        np.testing.assert_allclose(marginal, np.concatenate(moments)[kept])
 
 
 def test_a_terms_draws_depend_on_its_name_alone():
@@ -256,8 +263,8 @@ def test_independent_over_dim_is_aligned_by_label_whatever_the_order():
     family = independent_over_dim(log_normal, geometric_sd=1.5)
     first = prior_of(RATE_BY_SITE, family, {"median": shuffled})
     second = prior_of(RATE_BY_SITE, family, {"median": ordered})
-    np.testing.assert_allclose(first.gaussian().mean, second.gaussian().mean)
-    np.testing.assert_allclose(first.gaussian().mean, np.log([1.0, 2.0, 3.0]))
+    np.testing.assert_allclose(theta_gaussian(first, "rate")[0], theta_gaussian(second, "rate")[0])
+    np.testing.assert_allclose(theta_gaussian(first, "rate")[0], np.log([1.0, 2.0, 3.0]))
 
 
 # ── support checks ────────────────────────────────────────────────────────────
@@ -296,13 +303,6 @@ def test_a_non_dirichlet_density_on_the_simplex_is_refused():
 def test_a_gamma_whose_draws_reach_the_boundary_is_refused():
     with pytest.raises(ValueError, match="or on its boundary"):
         prior_of(RATE, tfd.Gamma(jnp.float64(0.02), jnp.float64(1.0)))
-
-
-def test_an_oversized_monte_carlo_block_is_refused():
-    prior = prior_of(RATE_BY_SITE, iid_over_dim(tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0))))
-    with pytest.raises(ValueError, match="is singular"):
-        prior.gaussian(key=jax.random.key(0), n_moment_samples=3)
-    assert prior.gaussian(key=jax.random.key(0), n_moment_samples=4).mean.shape == (3,)
 
 
 # ── joint terms and terms given others ────────────────────────────────────────
@@ -402,19 +402,19 @@ def test_a_given_term_draws_from_its_conditional():
     np.testing.assert_allclose(standardized.std(axis=0), 1.0, atol=0.02)
 
 
-@pytest.mark.parametrize("order", [("rate", "share"), ("share", "rate")], ids=["key order", "other order"])
-def test_the_copulas_declaration_agrees_with_log_prob_and_the_moments_of_draws(order):
+@pytest.mark.parametrize("order", [("rate", "share"), ("share", "rate")], ids=["parameter order", "other order"])
+def test_the_copula_is_its_gaussian_in_theta_in_log_prob_and_the_moments_of_draws(order):
     prior = Prior(vector_of(RATE, SHARE), [copula_term(order)])
-    assert prior.describe().iloc[0]["declared_gaussian"]
-    gaussian = prior.gaussian()
+    # In theta's order, (rate, share), whatever the marginals' order.
+    mean = np.asarray([np.log(2.0), np.log(0.3 / 0.7)])
+    sigma = np.asarray([np.log(1.7), 0.8])
+    covariance = sigma[:, None] * np.asarray([[1.0, -0.5], [-0.5, 1.0]]) * sigma[None, :]
     theta = prior.sample(jax.random.key(14), 20_000)
     log_prob = prior.log_prob(theta[:200])
     tolerance = 1e-10 * jnp.abs(log_prob) + 1e-12 * theta.shape[-1]
-    assert bool(jnp.all(jnp.abs(log_density(gaussian, theta[:200]) - log_prob) <= tolerance))
+    assert bool(jnp.all(jnp.abs(log_density(mean, covariance, theta[:200]) - log_prob) <= tolerance))
     theta = np.asarray(theta)
-    covariance = np.asarray(gaussian.covariance)
-    standard_error = np.sqrt(np.diag(covariance) / len(theta))
-    np.testing.assert_array_less(np.abs(theta.mean(axis=0) - gaussian.mean), 5 * standard_error)
+    np.testing.assert_array_less(np.abs(theta.mean(axis=0) - mean), 5 * sigma / np.sqrt(len(theta)))
     np.testing.assert_allclose(np.cov(theta.T), covariance, atol=0.05 * covariance.max())
 
 

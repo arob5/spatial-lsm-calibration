@@ -14,14 +14,11 @@ import pytest
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
+from conftest import theta_gaussian
+
 from sipnet_calibration.parameters import prior as module
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.prior import (
-    GaussianMoments,
-    Prior,
-    PriorTerm,
-    iid_over_dim,
-    independent_over_dim,
+from sipnet_calibration.parameters.families import (
     log_normal,
     log_normal_from_interval,
     log_normal_from_samples,
@@ -29,6 +26,14 @@ from sipnet_calibration.parameters.prior import (
     logit_normal_from_interval,
     logit_normal_from_samples,
     softmax_normal,
+)
+from sipnet_calibration.parameters.prior import (
+    Prior,
+    PriorTerm,
+)
+from sipnet_calibration.parameters.prior_functions import (
+    iid_over_dim,
+    independent_over_dim,
 )
 from sipnet_calibration.parameters.support import (
     OPEN_UNIT_INTERVAL,
@@ -169,8 +174,8 @@ def test_iid_over_dim_covers_the_product_of_the_index_dims():
     rate = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("site", "pft"))
     prior = Prior(vector_of(rate), [term("rate", iid_over_dim(log_normal(median=1.0, geometric_sd=2.0)))])
     assert tuple(prior._built["rate"].distribution.event_shape) == (3, 2)
-    gaussian = prior.gaussian()
-    np.testing.assert_allclose(np.diag(gaussian.covariance), np.log(2.0) ** 2)
+    _, variances = theta_gaussian(prior, "rate")
+    np.testing.assert_allclose(variances, np.full(6, np.log(2.0) ** 2))
 
 
 def test_independent_over_dim_reads_its_constants_by_label():
@@ -189,9 +194,9 @@ def test_a_constant_on_an_element_axis_is_read_at_the_element_labels():
     logit_sd = xr.DataArray([5.0, 0.1], dims="pft", coords={"pft": ["deciduous", "conifer"]})
     prior = Prior(vector_of(ALLOCATION), [term("allocation", independent_over_dim(softmax_normal),
                                                               constants={"center": centers, "logit_sd": logit_sd})])
-    gaussian = prior.gaussian()
-    np.testing.assert_allclose(np.diag(gaussian.covariance), [0.01] * 3 + [25.0] * 3)
-    np.testing.assert_allclose(gaussian.mean[:3], np.log(np.asarray(CENTER[:3]) / CENTER[3]))
+    mean, variances = theta_gaussian(prior, "allocation")
+    np.testing.assert_allclose(variances, [0.01] * 3 + [25.0] * 3)
+    np.testing.assert_allclose(mean[:3], np.log(np.asarray(CENTER[:3]) / CENTER[3]))
 
 
 def test_sample_takes_zero_draws(prior):
@@ -258,36 +263,13 @@ def test_the_prior_follows_any_order():
     np.testing.assert_allclose(second.log_prob(moved), first.log_prob(theta), rtol=1e-13)
     np.testing.assert_allclose(site_major.unconstrained.flat_to_values(second.sample(jax.random.key(3), 5))["soil_carbon"],
                                values["soil_carbon"])
-    gaussian, moved_gaussian = first.gaussian(), second.gaussian()
-    order = np.asarray(site_major.unconstrained.values_to_flat(vector.unconstrained.flat_to_values(jnp.arange(10.0))))
-    np.testing.assert_allclose(moved_gaussian.mean, gaussian.mean[order.astype(int)])
-    np.testing.assert_allclose(moved_gaussian.covariance, gaussian.covariance[np.ix_(order.astype(int), order.astype(int))])
 
 
 def test_describe_says_how_each_term_is_evaluated(prior):
     table = prior.describe()
     assert list(table.index) == ["rate", "share", "allocation", "soil_carbon"]
     assert set(table["evaluated_by"]) == {"base density"}
-    assert table["declared_gaussian"].all()
     assert table.loc["allocation", "prior"] == "iid softmax-normal"
-
-
-def test_gaussian_is_exact_for_declared_terms(prior):
-    gaussian = prior.gaussian()
-    assert isinstance(gaussian, GaussianMoments)
-    rate = log_normal_from_interval(lower=0.004, upper=0.02)
-    assert float(gaussian.mean[0]) == pytest.approx(float(rate.distribution.loc))
-    assert float(gaussian.covariance[0, 0]) == pytest.approx(float(rate.distribution.scale) ** 2)
-    np.testing.assert_array_equal(gaussian.covariance, np.diag(np.diag(gaussian.covariance)))
-
-
-def test_gaussian_moment_matches_an_undeclared_term():
-    gamma = Prior(vector_of(RATE), [term("rate", tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)))])
-    with pytest.raises(NotImplementedError, match="pass key="):
-        gamma.gaussian()
-    gaussian = gamma.gaussian(key=jax.random.key(0), n_moment_samples=20_000)
-    draws = jnp.log(tfd.Gamma(3.0, 2.0).sample(200_000, seed=jax.random.key(1)))
-    assert float(gaussian.mean[0]) == pytest.approx(float(draws.mean()), abs=0.02)
 
 
 def test_select_rebuilds_the_terms_on_the_kept_labels(prior):
@@ -406,23 +388,10 @@ def test_a_prior_that_can_neither_be_sampled_nor_mapped_is_refused():
               [term("offset", Opaque(jnp.float64(0.0), jnp.float64(1.0)))])
 
 
-def test_a_declaration_that_disagrees_with_log_prob_is_refused(monkeypatch):
-    real = module._family_gaussian
-
-    def widened(distribution):
-        found = real(distribution)
-        return None if found is None else (found[0], 2.0 * found[1], found[2])
-
-    monkeypatch.setattr(module, "_family_gaussian", widened)
-    with pytest.raises(ValueError, match="disagrees with its log density"):
-        Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0))])
-
-
-def test_a_declaration_under_another_bijector_is_not_honored():
+def test_a_family_under_another_bijector_is_evaluated_by_change_of_variables():
     softplus_rate = Parameter(name="rate", support=POSITIVE, units="1", bijector=tfb.Softplus())
     prior = Prior(vector_of(softplus_rate), [term("rate", log_normal(median=1.0, geometric_sd=2.0))])
-    row = prior.describe().loc["rate"]
-    assert row["evaluated_by"] == "change of variables" and not row["declared_gaussian"]
+    assert prior.describe().loc["rate", "evaluated_by"] == "change of variables"
 
 
 def test_a_change_of_variables_needs_a_known_measure():
@@ -472,4 +441,5 @@ def test_a_constant_is_read_in_the_parameters_dim_order_whatever_its_own():
     # Built on (site, pft), with as many sites as PFTs, so a transposed read would pass unnoticed.
     median = xr.DataArray([[1.0, 10.0], [100.0, 1000.0]], dims=("site", "pft"), coords={"site": [3, 5], "pft": ["a", "b"]})
     prior = Prior(vector, [term("rate", independent_over_dim(log_normal, geometric_sd=1.5), constants={"median": median})])
-    np.testing.assert_allclose(np.exp(prior.gaussian().mean).reshape(2, 2), median.transpose("pft", "site").values)
+    mean, _ = theta_gaussian(prior, "rate")
+    np.testing.assert_allclose(np.exp(mean).reshape(2, 2), median.transpose("pft", "site").values)

@@ -933,3 +933,15 @@ def example_reference_natural_values(reference: xr.Dataset, parameter_vector) ->
         "leaf_fall_fraction": at("leaf_fall_fraction")[:, 0],
         "initial_soil_carbon": at("initial_soil_carbon"),
     }
+
+
+# ── priors ────────────────────────────────────────────────────────────────────
+
+
+def theta_gaussian(prior, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """The mean and variances, flat in C order, of a term's Gaussian in
+    theta: its base's, when it is evaluated by its base density, else its
+    own (a Normal on the real line, under the identity)."""
+    built = prior._built[name]
+    gaussian = built.distribution.distribution if built.by_base_density else built.distribution
+    return np.ravel(gaussian.mean()), np.ravel(gaussian.variance())

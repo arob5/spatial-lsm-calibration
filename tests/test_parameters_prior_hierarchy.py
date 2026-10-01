@@ -1,13 +1,13 @@
 """Tests for hierarchy and dependence in the prior: terms given others,
-joint terms and the Gaussian copula, derived parameters in the prior, the
-``given`` graph, dependent sets and their Gaussian blocks.
+joint terms and the Gaussian copula, derived parameters in the prior, and
+the ``given`` graph.
 
 The worked examples are partial pooling of a site-level quantity within PFTs
 in both forms, non-centered through a derived parameter and centered through
-``given`` a derived location at each site; a covariate regression, and a centered term
-given its derived mean; and a correlated pair. The mathematics common to
-every term (densities integrating to one, declarations against draws, key
-stability) is in ``test_parameters_prior_conformance.py``.
+``given`` a derived location at each site; a covariate regression, and a
+centered term given its derived mean; and a correlated pair. The mathematics
+common to every term (densities integrating to one, each builder's Gaussian
+in theta, key stability) is in ``test_parameters_prior_conformance.py``.
 """
 
 from __future__ import annotations
@@ -19,16 +19,22 @@ import pytest
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
 
+from conftest import theta_gaussian
+
 from sipnet_calibration.parameters.derived import DerivedParameter, DerivedParameters
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.prior import (
-    Prior,
-    PriorTerm,
-    gaussian_copula,
-    iid_over_dim,
+from sipnet_calibration.parameters.families import (
     log_normal,
     logit_normal,
     softmax_normal,
+)
+from sipnet_calibration.parameters.prior import (
+    Prior,
+    PriorTerm,
+)
+from sipnet_calibration.parameters.prior_functions import (
+    gaussian_copula,
+    iid_over_dim,
 )
 from sipnet_calibration.parameters.support import (
     OPEN_UNIT_INTERVAL,
@@ -140,13 +146,9 @@ def log_soil_carbon_draws(prior: Prior, n: int) -> np.ndarray:
 # ── partial pooling ───────────────────────────────────────────────────────────
 
 
-def test_the_non_centered_form_is_declared_exactly(non_centered):
-    assert non_centered.describe()["declared_gaussian"].all()
-    gaussian = non_centered.gaussian()
-    covariance = np.asarray(gaussian.covariance)
-    np.testing.assert_array_equal(covariance, np.diag(np.diag(covariance)))
-    np.testing.assert_allclose(gaussian.mean[:2], LOG_MEDIAN)
-    np.testing.assert_allclose(np.diag(covariance)[3:], 1.0)
+def test_the_non_centered_form_is_gaussian_in_theta(non_centered):
+    np.testing.assert_allclose(theta_gaussian(non_centered, "mean")[0], LOG_MEDIAN)
+    np.testing.assert_allclose(theta_gaussian(non_centered, "standardized")[1], 1.0)
 
 
 def test_iid_over_dim_repeats_a_values_distribution_given_others():
@@ -178,7 +180,6 @@ def test_the_centered_form_is_evaluated_by_its_base_density(centered):
     row = centered.describe().loc["soil_carbon"]
     assert row["given"] == "site_log_mean, spread"
     assert row["evaluated_by"] == "base density"
-    assert not row["declared_gaussian"]
 
 
 def test_the_centered_density_is_the_hierarchy(centered):
@@ -208,16 +209,6 @@ def test_both_forms_are_one_model(non_centered, centered):
     shared = np.corrcoef(centered_draws[:, 0], centered_draws[:, 2])[0, 1]
     assert shared == pytest.approx(np.corrcoef(non_centered_draws[:, 0], non_centered_draws[:, 2])[0, 1], abs=0.02)
     assert shared > 0.5 and abs(np.corrcoef(centered_draws[:, 0], centered_draws[:, 1])[0, 1]) < 0.02
-
-
-def test_the_centered_form_gets_one_monte_carlo_block(centered):
-    with pytest.raises(NotImplementedError, match="pass key="):
-        centered.gaussian()
-    gaussian = centered.gaussian(key=jax.random.key(1), n_moment_samples=20_000)
-    assert gaussian.covariance.shape == (6, 6) and bool(jnp.all(gaussian.covariance != 0.0))
-    np.testing.assert_allclose(gaussian.mean[:2], LOG_MEDIAN, atol=0.03)
-    with pytest.raises(ValueError, match=r"the dependent set \['mean', 'spread', 'soil_carbon'\] has 6"):
-        centered.gaussian(key=jax.random.key(1), n_moment_samples=6)
 
 
 def test_a_given_term_draws_do_not_depend_on_where_it_is_declared(centered):
@@ -305,9 +296,6 @@ def test_a_centered_term_may_be_given_a_derived_mean():
     marginals = sum(prior._built[n].log_prob(theta[:, prior._built[n].positions], None)
                     for n in ("intercept", "slope", "spread"))
     np.testing.assert_allclose(prior.log_prob(theta), marginals + conditional.sum(axis=-1), rtol=1e-12)
-    # The derived mean ties the respiration to the coefficients it is computed from.
-    gaussian = prior.gaussian(key=jax.random.key(5), n_moment_samples=5_000)
-    assert gaussian.covariance.shape == (6, 6) and bool(jnp.all(gaussian.covariance != 0.0))
 
 
 # ── a correlated pair ─────────────────────────────────────────────────────────
@@ -315,6 +303,14 @@ def test_a_centered_term_may_be_given_a_derived_mean():
 RATE = Parameter(name="rate", support=POSITIVE, units="yr-1")
 SHARE = Parameter(name="share", support=OPEN_UNIT_INTERVAL, units="1")
 CORRELATION = [[1.0, 0.6], [0.6, 1.0]]
+
+
+def copula_in_theta() -> tfd.Distribution:
+    """The copula of RATE_MARGINAL and SHARE_MARGINAL in theta, (rate, share):
+    a Gaussian of the marginals' means, standard deviations and CORRELATION."""
+    sigma = np.asarray([np.log(1.5), 0.8])
+    mu = np.asarray([np.log(2.0), np.log(0.3 / 0.7)])
+    return tfd.MultivariateNormalFullCovariance(mu, sigma[:, None] * np.asarray(CORRELATION) * sigma[None, :])
 
 
 def copula(parameter_names, **marginals) -> PriorTerm:
@@ -329,26 +325,19 @@ def test_a_correlated_pair_is_a_multivariate_normal_in_theta():
     prior = Prior(vector_of(RATE, SHARE), [copula(("rate", "share"), rate=RATE_MARGINAL, share=SHARE_MARGINAL)])
     row = prior.describe().loc["rate+share"]
     assert row["prior"] == "gaussian copula" and row["evaluated_by"] == "base density"
-    assert row["declared_gaussian"]
-    sigma = np.asarray([np.log(1.5), 0.8])
-    mu = np.asarray([np.log(2.0), np.log(0.3 / 0.7)])
-    covariance = sigma[:, None] * np.asarray(CORRELATION) * sigma[None, :]
-    gaussian = prior.gaussian()
-    np.testing.assert_allclose(gaussian.mean, mu, rtol=1e-12)
-    np.testing.assert_allclose(gaussian.covariance, covariance, rtol=1e-12)
     theta = prior.sample(jax.random.key(6), 50_000)
-    reference = tfd.MultivariateNormalFullCovariance(mu, covariance)
+    reference = copula_in_theta()
     np.testing.assert_allclose(prior.log_prob(theta[:5]), reference.log_prob(theta[:5]), rtol=1e-12)
     assert float(np.corrcoef(np.asarray(theta).T)[0, 1]) == pytest.approx(0.6, abs=0.01)
     rates = np.asarray(natural(prior, theta)["rate"])
     assert float(np.median(rates)) == pytest.approx(2.0, rel=0.02)
 
 
-def test_a_copula_listed_in_another_order_than_its_key_is_still_declared():
+def test_a_copula_listed_in_another_order_than_its_parameters_is_the_same_density():
     prior = Prior(vector_of(RATE, SHARE), [copula(("share", "rate"), rate=RATE_MARGINAL, share=SHARE_MARGINAL)])
-    row = prior.describe().loc["share+rate"]
-    assert row["evaluated_by"] == "change of variables" and row["declared_gaussian"]
-    np.testing.assert_allclose(prior.gaussian().mean, [np.log(2.0), np.log(0.3 / 0.7)], rtol=1e-12)
+    assert prior.describe().loc["share+rate", "evaluated_by"] == "change of variables"
+    theta = prior.sample(jax.random.key(7), 5)
+    np.testing.assert_allclose(prior.log_prob(theta), copula_in_theta().log_prob(theta), rtol=1e-10)
 
 
 def test_a_joint_term_may_be_any_dict_valued_distribution():
@@ -446,17 +435,6 @@ def test_select_refuses_to_drop_what_a_kept_term_needs(centered, non_centered):
 def test_select_refuses_to_drop_what_a_derived_parameter_given_needs():
     with pytest.raises(ValueError, match="drops \\['log_mean'\\]"):
         centered_given_a_derived_mean().select(parameter=["intercept", "spread", "respiration"])
-
-
-def test_a_dependent_set_need_not_be_contiguous():
-    other = Parameter(name="other", support=POSITIVE, units=None)
-    prior = centered_prior(MEAN, other, SPREAD, SOIL_CARBON, terms=[term("other", RATE_MARGINAL)])
-    gaussian = prior.gaussian(key=jax.random.key(0), n_moment_samples=100)
-    covariance = np.asarray(gaussian.covariance)
-    # "other" is entry 2, between mean's two and spread's one: independent of the set around it.
-    np.testing.assert_array_equal(np.delete(covariance[2], 2), 0.0)
-    assert covariance[2, 2] == pytest.approx(np.log(1.5) ** 2)
-    assert np.all(np.delete(np.delete(covariance, 2, axis=0), 2, axis=1) != 0.0)
 
 
 def test_a_joint_density_on_the_simplex_is_refused():

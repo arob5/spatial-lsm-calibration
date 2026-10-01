@@ -227,7 +227,6 @@ one variable per parameter and derived parameter.
 | **prior term** | one factor of the prior, a `PriorTerm`: the distribution of the blocks of the parameters it names (`parameter_names`; several indexed alike are a **joint term**), possibly **given** other parameters or derived parameters and reading constants | the dict key of a term, `TermKey`, `term_name` |
 | **prior function** | a function `f(**given, **constants)` returning a prior term's distribution, its event shape coming from what it reads (`PriorFunction`); `iid_over_dim`, `independent_over_dim` and `gaussian_copula` build them | `f(index_shape, ...)` |
 | **derived parameter** | a deterministic quantity `y = f(x)`, a `DerivedParameter` in a `DerivedParameters` over one vector: `indexed_by`, one value's shape, units and optionally a support like a parameter's, computed by a pure array function of what it is **given** (parameters and other derived parameters, the same word as a prior term's), constants and memberships; no entries of theta and no prior. A SIPNET convention (a unit reference, a formula of sipnet.c) is a `Compute` rule instead | `derived_from`, `parameter_names` for its inputs, `compute`, "pointwise" |
-| **dependent set** | parameters linked by a term covering both or a `given`, directly or through a derived parameter; one block of `Prior.gaussian()`'s covariance | |
 | **site dims** | the sites and the dims they define, a `SiteDims`: each site's id, location, site covariates and site labels | the parameter vector's `site_table`, `site_labels`, `sites` |
 | **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
 | **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
@@ -929,20 +928,24 @@ src/sipnet_calibration/
     labels.py             # coords, constants and memberships: what a labeled
                           # value given to a function is, and how it is read
                           # at the labels in use (the contract's one home)
+    families.py           # one value's distribution: log_normal,
+                          # logit_normal (support=) and their _from_* forms,
+                          # softmax_normal
+    prior_functions.py    # PriorFunction; iid_over_dim (a distribution or a
+                          # function of what the term reads),
+                          # independent_over_dim, gaussian_copula
     prior.py              # Prior: what is believed beforehand, over a sequence
                           # of PriorTerms, each naming its parameters, with
                           # given= and constants=, its distribution a TFP
                           # distribution or a prior function f(**given,
                           # **constants); sample() in topological order of the
                           # given links, log_prob() (base density or change of
-                          # variables, the log-Jacobian private), gaussian() ->
-                          # GaussianMoments (dense; declared Gaussians exact,
-                          # others moment-matched per dependent set);
-                          # iid_over_dim, independent_over_dim, gaussian_copula;
-                          # log_normal, logit_normal (support=) and their _from_*
-                          # forms, softmax_normal; DeclaresGaussian
-    _description.py, _probes.py, _validation.py   # private: the shared
-                          # description checks, the probe points and bijector
+                          # variables, the log-Jacobian private), select(),
+                          # describe()
+    _description.py, _distributions.py, _probes.py, _validation.py
+                          # private: the shared description checks and
+                          # labeled form, what the prior and its builders
+                          # share of TFP, the probe points and bijector
                           # comparison, coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
                           # labels() (memberships), covariate(), at_sites(),

@@ -10,7 +10,9 @@ Where this sits
       -> parameters.parameter   Parameter: one value's description and T
       -> parameters.vector      ParameterVector: the layout, its three forms
       -> parameters.derived     DerivedParameters: y = f(x), over one vector
-      -> parameters.prior       Prior: the density of theta
+    parameters.families     one value's distribution: log_normal, logit_normal, softmax_normal
+      -> parameters.prior_functions   iid_over_dim, independent_over_dim, gaussian_copula
+      -> parameters.prior       PriorTerm, Prior: the density of theta
     ──────── seam: the labeled natural values, an xr.Dataset ────────
       -> site_dims, sipnet_parameter_map, forward   (the adapter layer)
 
@@ -36,19 +38,19 @@ Modules
 :mod:`~sipnet_calibration.parameters.derived`
     Derived parameters, pure array functions of parameters, constants and
     memberships.
+:mod:`~sipnet_calibration.parameters.families`
+    One value's distribution, a pushforward of a Gaussian through its
+    support's default bijector.
+:mod:`~sipnet_calibration.parameters.prior_functions`
+    A prior term's distribution over its parameters' blocks, built for the
+    labels in use.
 :mod:`~sipnet_calibration.parameters.prior`
-    The prior over a vector, its terms and builders.
+    The prior over a vector and its terms.
 """
 
 from sipnet_calibration.parameters.derived import DerivedParameter, DerivedParameters
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.prior import (
-    GaussianMoments,
-    Prior,
-    PriorTerm,
-    gaussian_copula,
-    iid_over_dim,
-    independent_over_dim,
+from sipnet_calibration.parameters.families import (
     log_normal,
     log_normal_from_interval,
     log_normal_from_samples,
@@ -56,6 +58,13 @@ from sipnet_calibration.parameters.prior import (
     logit_normal_from_interval,
     logit_normal_from_samples,
     softmax_normal,
+)
+from sipnet_calibration.parameters.prior import Prior, PriorTerm
+from sipnet_calibration.parameters.prior_functions import (
+    PriorFunction,
+    gaussian_copula,
+    iid_over_dim,
+    independent_over_dim,
 )
 from sipnet_calibration.parameters.support import (
     DEFAULT_BIJECTORS,
@@ -89,12 +98,12 @@ __all__ = [
     "UNIT_INTERVAL",
     "DerivedParameter",
     "DerivedParameters",
-    "GaussianMoments",
     "Interval",
     "Parameter",
     "ParameterDataset",
     "ParameterVector",
     "Prior",
+    "PriorFunction",
     "PriorTerm",
     "Simplex",
     "Support",
