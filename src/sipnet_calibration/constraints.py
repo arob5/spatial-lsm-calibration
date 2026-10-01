@@ -1277,11 +1277,13 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         units="percent",
         constituent="",
         description=(
-            "SMAP Level 4 sm_profile_analysis at the site, multiplied by 100, on the "
-            "July 15 key of each year 2015-2024, as extracted by PEcAn SMAP_SMP_prep.R. "
-            "The standard deviation is either a fixed 4 or the L4 ensemble standard "
-            "deviation x 100; which produced this file is not documented. The source "
-            "grid is coarser than the site grid, so neighboring sites can share a value."
+            "SMAP L4 (SPL4SMAU) sm_profile_analysis, total profile soil moisture from 0 "
+            "cm to model bedrock depth, at the site, multiplied by 100: one 3-hourly "
+            "snapshot between July 15 and 16 of each year 2015-2024, as extracted by "
+            "PEcAn Prep.SMAP.CSV.from.DAAC. The standard deviation is the L4 ensemble "
+            "standard deviation, sm_profile_analysis_ensstd, multiplied by 100. The "
+            "source grid is the 9 km EASE-Grid 2.0, so neighboring sites can share a "
+            "value."
         ),
         upstream_product="SMAP Level 4 soil moisture",
         time_structure=TimeStructure.DATED,
@@ -1291,14 +1293,15 @@ CONSTRAINTS: tuple[ConstraintSpec, ...] = (
         sd_column="sd",
         time_column="date",
         units_provenance=(
-            "A fraction multiplied by 100 in the prep code. What the fraction is of "
-            "(volumetric water, saturation, holding capacity) and over what depth is not "
-            "established. " + PRODUCER_UNCONFIRMED
+            "Percent volumetric water content: the product specification gives "
+            "sm_profile_analysis in m3 m-3, and the extraction code multiplies it by "
+            "100. The product version current at download is not recorded. "
+            + PRODUCER_UNCONFIRMED
         ),
         comment=(
-            "The date is the assembler's July 15 snapshot key, not an acquisition time. "
-            "Documented as a single SMAP L4 value on that day; the time of day is not "
-            "confirmed."
+            "The date is the start of the extraction's July 15-16 search, not an "
+            "acquisition time: the value is the first 3-hourly snapshot the search "
+            "returned, at an hour not recorded."
         ),
     ),
     ConstraintSpec(

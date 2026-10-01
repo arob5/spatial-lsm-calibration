@@ -430,11 +430,11 @@ cannot disagree about what a region means.
 **Format.** ERA5 reanalysis written in the SIPNET climate format: text with no
 header row, one row per timestep, the fields separated by tabs and padded with
 spaces. [pySIPNET] describes the format as space-delimited, and SIPNET itself
-accepts either. Each of the three files present has 37,992 rows and 14 columns,
+accepts either. Each of the files present has 37,992 rows and 14 columns,
 covering 2012-01-01 to the end of 2024 on a 3-hourly timestep. That row count is
 4749 days, being thirteen years including four leap years, at eight timesteps
 per day, and the `year`, `day`, `time` and `length` columns are identical across
-the three files.
+the files.
 
 Columns follow the 14-column layout defined by [pySIPNET].
 
@@ -446,7 +446,7 @@ Columns follow the 14-column layout defined by [pySIPNET].
 | 4 | `time` | hours | Hour-of-day label of the timestep; drifts and is not a timestamp, see Note 15 |
 | 5 | `length` | days | Timestep duration; 0.125, that is 3 hours |
 | 6 | `tair` | deg C | Air temperature at 2 m, instantaneous at the label; see Note 16 |
-| 7 | `tsoil` | deg C | Mean soil temperature |
+| 7 | `tsoil` | deg C | Soil temperature, not from ERA5: a filter of `tair` that weights the following weeks; see Note 29 |
 | 8 | `par` | mol m-2 | Photosynthetically active radiation, integrated over the timestep |
 | 9 | `precip` | mm | Total precipitation over the timestep |
 | 10 | `vpd` | Pa | Vapor pressure deficit, instantaneous at the label; see Note 16 |
@@ -526,6 +526,23 @@ the producer has not confirmed them. How the forcing was sampled is Note 18.
 > 03:00, ..., 21:00 UTC, and nothing was aggregated from hourly data. The
 > settings of the 8000-site assimilation run point at these files (open
 > question 18).
+
+> **Note 29.** `tsoil` is not an ERA5 field: the `ensemble_members` product the
+> files were made from has no soil temperature, so PEcAn's `met2model.SIPNET`
+> makes one from `tair` (`models/sipnet/R/met2model.SIPNET.R`, the
+> `soil_temperature` branch): `filt <- exp(-(1:n) / tau)`, normalized, with
+> `tau` 15 days of steps, then `stats::convolve(Tair, filt)`, per year. With
+> `convolve`'s default `type = "circular"`, the value at step *k* is the
+> filter's weighted mean of the air temperature at steps *k* onward, wrapping
+> from the year's end to its start. So the soil temperature **anticipates** the
+> air temperature, where a real soil lags it. That filter reproduces `tsoil` in
+> every local file, year by year, to within 0.006 deg C, and on daily means
+> `tsoil` leads `tair` by between 5 and 15 days, depending on the year. It also
+> explains why the two have the same annual mean (open question 17): a
+> normalized circular filter preserves the mean. SIPNET reads `tsoil` for
+> heterotrophic and root respiration and for its frozen-soil threshold. The raw
+> downloads, `anchorSites/ERA5/ERA5_<year>.nc`, carry no soil temperature
+> either. Open question 29.
 
 > **Note 4.** The driver ensemble has **10 members**. The three
 > directories present locally are members 1, 2 and 5, so this cannot be
@@ -886,8 +903,37 @@ the flag filter reproduces only 85.9%. The rule is what the PEcAn prep code does
 #### `smap_soil_moisture.csv.gz`
 
 7,974 sites x 10 years, 2015-2024, complete; the variable is absent before
-2015. Values run 0.99 to 92.95, so the scale is 0-100 despite the source
-variable being named a fraction (Note 9).
+2015. Values run 0.99 to 92.95.
+
+**What the values are.** The file is the output of
+`PEcAn.data.remote::Prep.SMAP.CSV.from.DAAC` (PEcAn
+`modules/data.remote/R/SMAP_SMP_prep.R`), which the "SM" chunk of
+`/projectnb/dietzelab/dongchen/anchorSites/NA_runs/Data_prep_6400_NA.Rmd`
+calls once a year, 2015-2024, searching from July 15 to July 16. It requests
+DOI `10.5067/02LGW4DGJYRX`, which NASA's CMR resolves to SPL4SMAU version 008,
+"SMAP L4 Global 3-hourly 9 km EASE-Grid Surface and Root Zone Soil Moisture
+Analysis Update"; the version current at download is not recorded. It reads
+only the first granule the search returns, so each value is one 3-hourly
+snapshot within those two days, at an hour not recorded. `smp` is
+`sm_profile_analysis * 100` and `sd` is `sm_profile_analysis_ensstd * 100`.
+The product specification (SMAP L4_SM Product Specification Document, for
+version 8) defines the first as analysis total profile soil moisture, "0 cm to
+model bedrock depth", in m3 m-3, and the second as its ensemble standard
+deviation. So `smp` is **percent volumetric water content over the whole
+modeled profile**, not surface soil moisture and not a degree of saturation,
+and `sd` is the L4 ensemble's spread. The same function's other path,
+`SMAP_SMP_prep`, fixes `sd` at 4; this file's `sd` takes tens of thousands of
+distinct values, so that path did not make it.
+
+**How the reanalysis used it.** As the state `SoilMoistFrac`, compared with
+SIPNET's `soilWetnessFrac` times 100 (PEcAn `model2netcdf.SIPNET.R`,
+`read_restart.SIPNET.R`) through an identity observation operator. SIPNET's
+`soilWetnessFrac` is soil water over `soilWHC` (`sipnet.c`), and PEcAn sets
+`soilWHC` to porosity times thickness summed over the soil profile
+(`write.configs.SIPNET.R`), so the model side is close to a degree of
+saturation. The comparison sets a volumetric content against a degree of
+saturation, which differ by the porosity. The analysis is written back as
+`soilWFracInit` (`write_restart.SIPNET.R`).
 
 The `date` column holds **only the July 15 snapshot label** -- ten distinct
 values, all July 15 -- so the acquisition date of the underlying retrieval is
@@ -1861,25 +1907,30 @@ half-hour is refilled, so a 3-hour row has identical members exactly when all
 its half-hours were measured (verified at `US-UMB`, both ways). The processed
 files now carry ONEFlux's `quality_flag`, which says the same thing per step directly.
 
-**9. Units of the constraints.** No unit is stated by any attribute
-in any of the five raw files. `Mg C ha-1` for LandTrendr biomass and `m2 m-2`
-for MODIS leaf area index are documented for the published reanalysis output
-rather than for these inputs; `Mg C ha-1` for SoilGrids soil carbon is inferred
-from its being exactly ten times the assembled values, which are themselves
-declared `kg C m-2` on the same unconfirmed basis. The SMAP scale is 0-100
-despite the source variable being named a fraction, and what it is a fraction of
--- saturation, porosity, water holding capacity -- is not established, which
-matters because SIPNET's `soilWFracInit` is a fraction of water holding
-capacity. GEDI's units are not established at all, and biomass against carbon
+**9. Units of the constraints.** No unit is stated by any attribute in any of
+the five raw files. `Mg C ha-1` for LandTrendr biomass and `m2 m-2` for MODIS
+leaf area index are documented for the published reanalysis output rather than
+for these inputs; `Mg C ha-1` for SoilGrids soil carbon is inferred from its
+being exactly ten times the assembled values, which are themselves declared
+`kg C m-2` on the same unconfirmed basis. The SMAP units are established from the
+extraction code and the product specification: percent volumetric water content
+over the modeled profile (Constraints, `smap_soil_moisture.csv.gz`), which is
+not what SIPNET's `soilWFracInit`, a fraction of water holding capacity,
+measures. GEDI's units are not established at all, and biomass against carbon
 differs there by about a factor of two.
 
 **10. Provenance of the assembled observation files.** The `obs.mean.Rdata` we
 hold is byte-identical to a file in a sibling directory dated ten months
 earlier, while the `obs.cov.Rdata` beside it matches none of the twelve other
 covariance files upstream and differs from its sibling only by the `LAI` floor
-of question 22. No script producing it has been found, so whether the two are an
-intended pair is unknown. The directory is named as though its contents carry
-variable attributes; they do not (Note 10).
+of question 22. A candidate producer has been found: the "Combine observations"
+chunk of `NA_runs/Data_prep_6400_NA.Rmd` assembles `obs.mean` and `obs.cov` in
+this nesting from the four per-variable files and saves them to
+`SDA_8k_site/Rdata/`. That directory does not exist, and the `obs.mean` we hold
+is byte-identical to `SDA_8k_site/observation/Rdata/obs.mean.Rdata`, which the
+next chunk loads, so whether that chunk wrote the files we hold, and whether the
+two are an intended pair, is unknown. The directory is named as though its
+contents carry variable attributes; they do not (Note 10).
 
 **11. Where plant functional type labels live, and which to use.**
 *Resolved for the three-class table, open for the finer one.* A class is not
@@ -2021,9 +2072,9 @@ percent of rows with `vpd_soil` exactly zero is a larger fraction than the 0 to
 that negative excursions stay within 1e-4 of zero and records the counts in the
 variable attributes, since clamping would hide an upstream artifact and a
 value of -1e-15 mm harms nothing. What produces them is a question for the
-producer. Also unexplained: in every file the mean of `tsoil` equals the mean
-of `tair` to about 3e-5 deg C, as though `tsoil` were a mean-preserving filter
-of `tair`.
+producer. That in every file the mean of `tsoil` equals the mean of `tair` to
+about 3e-5 deg C is explained: `tsoil` is a normalized circular filter of
+`tair` (Note 29, open question 29, issue #64).
 
 **18. Hourly or 3-hourly forcing.** The [NALCR] dataset guide describes the
 reanalysis as run on hourly ERA5 forcing, while these files are 3-hourly.
@@ -2181,3 +2232,15 @@ coordinates (414-633 m from the site center): the reanalysis took their
 coordinates from BETY, which disagrees with AmeriFlux. They are matched by name.
 Which coordinates are right, and whether the pool cell is representative of the
 tower's footprint, is unresolved.
+
+**29. The driver files' soil temperature.** `tsoil` is PEcAn's filter of
+`tair`, and it weights the following weeks rather than the preceding ones
+(Note 29), so the soil warms and cools one to two weeks ahead of the air.
+Because SIPNET's soil and root respiration and its frozen-soil threshold read
+it, that shifts the seasonal timing of respiration and so of NEE. At the
+source it is a defect of `met2model.SIPNET`, whose comment says the filter was
+borrowed from SIPNET's CRUNCEP preprocessing (`tsoil.py`), which has not been
+found to check which direction it ran. Open: whether the files will be
+regenerated with a causal filter or with a soil temperature from a product that
+has one, and what timescale a causal filter should use; the 15 days is PEcAn's.
+Tracked as [issue #64](https://github.com/arob5/spatial-lsm-calibration/issues/64).
