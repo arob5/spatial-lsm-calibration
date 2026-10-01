@@ -59,7 +59,12 @@ def main(argv: list[str] | None = None) -> int:
     vector, _, sipnet_map = prior.calibration()
     directory = run_directory / "posterior_predictive"
     predictive.run_predictive(
-        directory, vector, sipnet_map, prior.external_inputs(), samples
+        directory,
+        vector,
+        sipnet_map,
+        prior.site_dims(),
+        prior.external_inputs(),
+        samples,
     )
     provenance.write_provenance(
         directory / "provenance.json", input_files=provenance.model_input_files()

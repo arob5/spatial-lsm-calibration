@@ -49,7 +49,8 @@ Under ``config.EKI_DIRECTORY / <data>``:
 - ``synthetic`` only: ``truth.csv``, theta*'s natural values, and
   ``synthetic.npz``, ``theta_true`` ``(D,)``, ``predictions_true`` and
   ``y`` ``(N,)``;
-- ``calibration.csv`` and ``provenance.json``, as the prior predictive's.
+- ``calibration_parameters.csv``, ``calibration_sipnet_parameters.csv`` and
+  ``provenance.json``, as the prior predictive's.
 
 A run started without ``--resume`` first removes what an earlier run of the
 same setup and data left: its steps, history, posterior ensemble, posterior
@@ -89,10 +90,8 @@ from pyeki.eki import (
 )
 from pyeki.gauss import Gaussian
 
-from sipnet_calibration.calibration import describe_calibration
-
 from .. import config
-from ..model import inverse_problem
+from ..model import inverse_problem, prior
 from ..model.inverse_problem import InverseProblem
 from ..model.outputs import load_eki_run
 from . import provenance
@@ -212,7 +211,7 @@ def write_ensemble(
 ) -> None:
     """An ensemble's natural values, one row per member."""
     theta = np.asarray(theta)
-    natural = problem.parameter_vector.dataset(theta).to_dataframe()
+    natural = prior.natural_table(problem.parameter_vector, theta)
     natural.index = labels or [f"member_{i}" for i in range(theta.shape[0])]
     natural.to_csv(path)
 
@@ -236,14 +235,19 @@ def _write_start(directory: Path, problem: InverseProblem, state: EKIState) -> N
     """The record of what runs, and the initial ensemble; an earlier run's outputs go."""
     for path in (directory / "steps").glob("step_*"):
         path.unlink()
-    for name in ("history.csv", "posterior_ensemble.csv", "nee_discrepancy_fit.csv"):
+    for name in (
+        "history.csv",
+        "posterior_ensemble.csv",
+        "nee_discrepancy_fit.csv",
+        "calibration.csv",
+    ):
         (directory / name).unlink(missing_ok=True)
     for name in ("posterior_predictive", "diagnostics"):
         shutil.rmtree(directory / name, ignore_errors=True)
     np.save(directory / "initial_ensemble.npy", np.asarray(state.ensemble))
-    describe_calibration(
-        problem.parameter_vector, problem.prior, problem.sipnet_parameter_map
-    ).to_csv(directory / "calibration.csv")
+    provenance.write_calibration(
+        directory, problem.parameter_vector, problem.prior, problem.sipnet_parameter_map
+    )
     write_ensemble(directory / "prior_ensemble.csv", problem, state.ensemble)
 
 

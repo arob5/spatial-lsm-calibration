@@ -193,9 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         f"eki_marginals_{data}": plot_marginals(run),
     }
     if run["theta_true"] is not None:
-        entry_names = list(
-            prior.calibration()[0].index.get_level_values("unconstrained_name")
-        )
+        entry_names = list(prior.calibration()[0].unconstrained.entry_names)
         figures["eki_recovery_synthetic"] = plot_recovery(run, entry_names)
     for name, figure in figures.items():
         save_figure(figure, name, eki_run=True)

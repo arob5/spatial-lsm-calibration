@@ -27,18 +27,18 @@ from typing import Literal
 import xarray as xr
 from pyens import LocalBackend
 from pysipnet.climate import ClimateDrivers
-from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
 from pysipnet.model import SIPNETModel
 from pysipnet.parameters.model import SIPNETParameters
 from pysipnet.runner import SIPNETRunner
 
 from sipnet_calibration.forward import ForwardModel
 from sipnet_calibration.observation import ObservationVector
-from sipnet_calibration.parameter_vector import ParameterVector
+from sipnet_calibration.parameters import ParameterVector
 from sipnet_calibration.sipnet_parameter_map import (
     INITIAL_STATE_NAMES,
     SIPNETParameterMap,
 )
+from sipnet_calibration.site_dims import SiteDims
 
 from .. import config
 from . import inputs
@@ -54,26 +54,8 @@ __all__ = [
 
 
 def base_sipnet_parameters() -> SIPNETParameters:
-    """``config.BASE_SIPNET_PARAMETER_FILE`` as pySIPNET parameters.
-
-    Every parameter the file names is read; one it does not keeps pySIPNET's
-    default. pySIPNET has no public ``.param`` reader yet (its issue #19), so
-    the file is read through its name mapping, as ``tests/conftest.py`` does.
-    """
-    raw = read_param_file(config.BASE_SIPNET_PARAMETER_FILE)
-    groups: dict[str, dict[str, float]] = {
-        name: {} for name in SIPNETParameters.model_fields
-    }
-    for dotted, sipnet_name in PYTHON_TO_SIPNET.items():
-        group, _, field = dotted.partition(".")
-        if group in groups and sipnet_name in raw:
-            groups[group][field] = raw[sipnet_name]
-    return SIPNETParameters(
-        **{
-            name: SIPNETParameters.model_fields[name].annotation(**values)
-            for name, values in groups.items()
-        }
-    )
+    """``config.BASE_SIPNET_PARAMETER_FILE`` as pySIPNET parameters, read by pySIPNET."""
+    return SIPNETParameters.from_param_file(config.BASE_SIPNET_PARAMETER_FILE)
 
 
 def sipnet_runner() -> SIPNETRunner:
@@ -113,7 +95,7 @@ def initial_state() -> xr.Dataset:
     """The site's initial conditions, each state at its median over the members.
 
     External inputs on ``site`` alone, in the processed file's units, under
-    the names ``ComputeInitialConditions`` reads them by. Each state's median
+    the names ``initial_condition_rules`` read them by. Each state's median
     is taken separately, so they need not be one member's. The calibration
     reads the states it does not calibrate from here (``prior.external_inputs``).
     """
@@ -132,6 +114,7 @@ def forward_model(
     parameter_vector: ParameterVector,
     sipnet_parameter_map: SIPNETParameterMap,
     *,
+    site_dims: SiteDims,
     observation_vector: ObservationVector | None = None,
     output_variable_names: Sequence[str] | None = None,
     freq: str | None = None,
@@ -140,7 +123,8 @@ def forward_model(
 ) -> ForwardModel:
     """The forward model over the site, on the configured number of local workers.
 
-    Give *observation_vector* for predictions ``(J, N)``, or
+    *site_dims* are the site the calibration's values are read at
+    (``prior.site_dims``). Give *observation_vector* for predictions ``(J, N)``, or
     *output_variable_names* (and optionally *freq*) for model output.
     *external_inputs* default to the site's whole initial state
     (:func:`initial_state`); a calibration that calibrates some initial
@@ -151,6 +135,7 @@ def forward_model(
         sipnet_model(),
         parameter_vector,
         sipnet_parameter_map,
+        site_dims=site_dims,
         climate={config.SITE: climate_drivers()},
         backend=LocalBackend(n_workers=config.N_WORKERS),
         external_inputs=initial_state() if external_inputs is None else external_inputs,

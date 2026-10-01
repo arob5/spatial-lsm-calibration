@@ -37,7 +37,7 @@ from sipnet_calibration.fields import to_model_output
 from sipnet_calibration.observation import aggregate_time
 
 from .. import config
-from ..model import inputs, noise, observations, sipnet
+from ..model import inputs, noise, observations, prior, sipnet
 
 __all__ = [
     "run_ensemble",
@@ -49,20 +49,31 @@ __all__ = [
 
 
 def run_predictive(
-    directory, vector, sipnet_map, external_inputs, samples, *, center=None
+    directory, vector, sipnet_map, site_dims, external_inputs, samples, *, center=None
 ) -> None:
-    """Run *samples*, and one run by hand at *center* if given, and write it all."""
+    """Run *samples*, and one run by hand at *center* if given, and write it all.
+
+    *vector*, *sipnet_map*, *site_dims* and *external_inputs* are the
+    calibration's (``model/prior.py``); *samples* and *center* are theta,
+    ``(J, D)`` and ``(D,)``.
+    """
     calibration = observations.calibration_observation_vector()
     validation = observations.validation_observation_vector()
     directory.mkdir(parents=True, exist_ok=True)
     single = None
     if center is not None:
         single = run_once_by_hand(
-            vector, sipnet_map, center, calibration, validation, external_inputs
+            vector,
+            sipnet_map,
+            site_dims,
+            center,
+            calibration,
+            validation,
+            external_inputs,
         )
         print("one run by hand: done")
     ensemble = run_ensemble(
-        vector, sipnet_map, samples, calibration, validation, external_inputs
+        vector, sipnet_map, site_dims, samples, calibration, validation, external_inputs
     )
     print(f"ensemble of {samples.shape[0]}: done")
     rows = [np.asarray(samples)] if center is None else [center, np.asarray(samples)]
@@ -73,12 +84,18 @@ def run_predictive(
 
 
 def run_once_by_hand(
-    vector, sipnet_map, theta, calibration, validation, external_inputs
+    vector, sipnet_map, site_dims, theta, calibration, validation, external_inputs
 ) -> dict:
     """One run at *theta*, through each layer the forward model composes."""
-    # The map: theta and the external inputs to SIPNET parameter fields.
+    # The map: theta's natural values and the external inputs to SIPNET
+    # parameter fields.
+    values = xr.merge(
+        [vector.flat_to_dataset(vector.to_natural(theta)), external_inputs],
+        join="exact",
+        combine_attrs="drop_conflicts",
+    )
     sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(
-        vector, theta, external_inputs=external_inputs
+        values, site_dims=site_dims
     )
     # One run's keywords: each field's value at the site.
     sipnet_overrides = {
@@ -131,7 +148,7 @@ def run_once_by_hand(
 
 
 def run_ensemble(
-    vector, sipnet_map, samples, calibration, validation, external_inputs
+    vector, sipnet_map, site_dims, samples, calibration, validation, external_inputs
 ) -> dict:
     """The ensemble through the forward model: predictions of both vectors, then daily output."""
     predicted = {}
@@ -142,6 +159,7 @@ def run_ensemble(
         evaluation = sipnet.forward_model(
             vector,
             sipnet_map,
+            site_dims=site_dims,
             observation_vector=observation_vector,
             external_inputs=external_inputs,
             out_of_domain="fail_row",
@@ -154,6 +172,7 @@ def run_ensemble(
     daily = sipnet.forward_model(
         vector,
         sipnet_map,
+        site_dims=site_dims,
         output_variable_names=config.PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES,
         freq="1D",
         external_inputs=external_inputs,
@@ -183,7 +202,7 @@ def write_outputs(directory, vector, theta, single, ensemble) -> None:
             target.mkdir(parents=True, exist_ok=True)
             for source_name, field in fields.items():
                 field.to_netcdf(target / f"{source_name}.nc")
-    natural = vector.dataset(theta).to_dataframe()
+    natural = prior.natural_table(vector, theta)
     n_samples = len(ensemble["log_likelihood"])
     natural.index = [
         *(["single_run"] if single is not None else []),

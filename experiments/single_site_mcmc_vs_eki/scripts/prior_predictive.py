@@ -28,8 +28,9 @@ Under ``config.PRIOR_PREDICTIVE_DIRECTORY``: the daily output, predictions,
 observed values and ``parameters.csv`` in ``scripts/predictive.py``'s
 layout, the one run by hand as ``single_run``, and
 
-- ``calibration.csv``: ``describe_calibration`` of the calibration, the
-  record of what was run;
+- ``calibration_parameters.csv``, ``calibration_sipnet_parameters.csv``:
+  the calibration's record (``scripts/provenance.py``'s
+  ``write_calibration``);
 - ``provenance.json``: the code, packages, command and inputs of the run
   (``scripts/provenance.py``).
 
@@ -48,10 +49,8 @@ import warnings
 import jax
 import numpy as np
 
-from sipnet_calibration.calibration import describe_calibration
-
 from .. import config
-from ..model import prior
+from ..model import inverse_problem, prior
 from . import predictive, provenance
 
 __all__ = ["main"]
@@ -67,9 +66,7 @@ def main(argv: list[str] | None = None) -> int:
     vector, calibration_prior, sipnet_map = prior.calibration()
     directory = config.PRIOR_PREDICTIVE_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
-    describe_calibration(vector, calibration_prior, sipnet_map).to_csv(
-        directory / "calibration.csv"
-    )
+    provenance.write_calibration(directory, vector, calibration_prior, sipnet_map)
     samples = calibration_prior.sample(
         jax.random.key(config.PRIOR_PREDICTIVE_SEED), arguments.ensemble_size
     )
@@ -77,9 +74,10 @@ def main(argv: list[str] | None = None) -> int:
         directory,
         vector,
         sipnet_map,
+        prior.site_dims(),
         prior.external_inputs(),
         samples,
-        center=np.asarray(calibration_prior.gaussian().mean),
+        center=np.asarray(inverse_problem.prior_gaussian(calibration_prior).mean),
     )
     provenance.write_provenance(
         directory / "provenance.json", input_files=provenance.model_input_files()

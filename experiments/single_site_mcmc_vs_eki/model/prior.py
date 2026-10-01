@@ -1,11 +1,13 @@
 """The calibration's parameterization and prior: the starting point step 4 found.
 
 The three objects of a calibration for this experiment: the
-:class:`~sipnet_calibration.parameter_vector.ParameterVector` (what is
-calibrated), the :class:`~sipnet_calibration.prior.Prior` (what is believed
+:class:`~sipnet_calibration.parameters.ParameterVector` (what is calibrated),
+the :class:`~sipnet_calibration.parameters.Prior` (what is believed
 beforehand) and the
 :class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap` (how a
-value reaches SIPNET), with the external inputs the map reads. ``MODEL.md``,
+value reaches SIPNET), with the
+:class:`~sipnet_calibration.site_dims.SiteDims` of the one site and the
+external inputs the map reads. ``MODEL.md``,
 "Parameterization and prior", says how they were found; every prior term and
 fixed value carries its provenance, and
 :func:`sipnet_calibration.calibration.describe_calibration` tabulates them.
@@ -13,10 +15,10 @@ fixed value carries its provenance, and
 **Calibrated** (13 parameters, D = 15 entries of theta):
 
 - photosynthesis: the capacity ``P`` and respiration share ``rho`` of
-  :class:`~sipnet_calibration.sipnet_parameter_map.ComputePhotosynthesisRates`,
+  :func:`~sipnet_calibration.sipnet_parameter_map.photosynthesis_rules`,
   which replace the four SIPNET parameters that enter only through them
   (``sipnet.c:614, 617, 633``); the optimum temperature, with the minimum
-  derived at a fixed range; the half-saturation light;
+  written at a fixed range; the half-saturation light;
 - water: the soil water holding capacity, the one water-limitation direction;
 - phenology: the leaf growth at leaf-on and its growing degree-days;
 - allocation: a four-part simplex (leaf, wood, fine root, coarse root, the
@@ -25,6 +27,10 @@ fixed value carries its provenance, and
   the soil respiration flux at 10 C, ``F10 = k10 * SOC0``, and the soil Q10;
 - the initial state: initial wood and soil organic carbon, with priors fitted
   to the site's initial-condition ensemble.
+
+Four SIPNET parameters are written by ``Compute`` rules from a value
+referenced differently: the minimum photosynthesis temperature, and the wood,
+coarse-root and soil base respiration rates.
 
 **Fixed**: every other SIPNET parameter, at the values and with the
 justifications in ``fixed_sipnet_parameters.csv``.
@@ -42,16 +48,13 @@ import pandas as pd
 import tensorflow_probability.substrates.jax as tfp
 import xarray as xr
 
-from sipnet_calibration.parameter_vector import (
+from sipnet_calibration.parameters import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
     REAL,
     SIMPLEX,
-    DerivedParameter,
     Parameter,
     ParameterVector,
-)
-from sipnet_calibration.prior import (
     Prior,
     PriorTerm,
     log_normal_from_interval,
@@ -60,22 +63,29 @@ from sipnet_calibration.prior import (
     softmax_normal,
 )
 from sipnet_calibration.sipnet_parameter_map import (
-    ComputeInitialConditions,
-    ComputePhotosynthesisRates,
+    Compute,
     Copy,
     CopySimplex,
     Fixed,
     SIPNETParameterMap,
+    ValueRequirement,
+    initial_condition_rules,
+    photosynthesis_rules,
 )
+from sipnet_calibration.site_dims import SiteDims
+from sipnet_calibration.site_labels import load_site_labels
 
-from .. import config
 from . import inputs, sipnet
 
 __all__ = [
+    "ALLOCATION_PART",
+    "ALLOCATION_PARTS",
     "FIXED_SIPNET_PARAMETERS_FILE",
     "calibration",
     "external_inputs",
     "fixed_sipnet_parameters",
+    "natural_table",
+    "site_dims",
 ]
 
 #: The site-labels data source the site's deciduousness is read from.
@@ -88,6 +98,11 @@ DECIDUOUS_BY_SITE_LABEL = {
     "boreal.coniferous": False,
     "semiarid.grassland_HPDA": False,
 }
+
+#: The allocation simplex's element axis, and its labels in order; the last
+#: is SIPNET's remainder.
+ALLOCATION_PART = "allocation_part"
+ALLOCATION_PARTS = ("leaf", "wood", "fine_root", "coarse_root")
 
 #: The fixed SIPNET parameters' values and justifications.
 FIXED_SIPNET_PARAMETERS_FILE = (
@@ -188,9 +203,37 @@ def calibration() -> tuple[ParameterVector, Prior, SIPNETParameterMap]:
     return vector, _prior(vector), _sipnet_parameter_map()
 
 
+def site_dims() -> SiteDims:
+    """The configured site, with its class under :data:`SITE_LABELS_NAME` as ``pft``."""
+    return SiteDims(
+        site_table=inputs.site_table(),
+        site_labels={"pft": load_site_labels(SITE_LABELS_NAME)},
+    )
+
+
 def external_inputs() -> xr.Dataset:
     """The initial states the map reads that are not calibrated, on ``site``."""
     return sipnet.initial_state()[list(EXTERNAL_STATE_NAMES)]
+
+
+def natural_table(vector: ParameterVector, theta) -> pd.DataFrame:
+    """Theta's natural values, one row per row of *theta*, ``(J, D)``.
+
+    One column per parameter, and per element of a parameter with a shape,
+    named ``<parameter>.<element label>`` (``allocation.leaf``). The rows
+    are numbered; a caller labels them.
+    """
+    values_by_parameter = vector.flat_to_values(vector.to_natural(theta))
+    columns = {}
+    for name, values in values_by_parameter.items():
+        values = np.asarray(values)
+        if values.ndim == 1:
+            columns[name] = values
+            continue
+        (labels,) = vector[name].element_labels.values()
+        for position, label in enumerate(labels):
+            columns[f"{name}.{label}"] = values[:, position]
+    return pd.DataFrame(columns)
 
 
 def fixed_sipnet_parameters() -> pd.DataFrame:
@@ -202,7 +245,7 @@ def fixed_sipnet_parameters() -> pd.DataFrame:
 
 
 def _parameter_vector() -> ParameterVector:
-    """The 13 parameters and the 4 derived parameters the rules read."""
+    """The 13 parameters: one value each, the allocation simplex four."""
     parameters = [
         Parameter(
             name="photosynthetic_capacity", support=POSITIVE, units="nmol g-1 s-1"
@@ -219,7 +262,8 @@ def _parameter_vector() -> ParameterVector:
             name="allocation",
             support=SIMPLEX,
             units="1",
-            natural_names=("leaf", "wood", "fine_root", "coarse_root"),
+            shape=(len(ALLOCATION_PARTS),),
+            element_labels={ALLOCATION_PART: ALLOCATION_PARTS},
         ),
         Parameter(name="wood_respiration_rate_at_10c", support=POSITIVE, units="yr-1"),
         Parameter(
@@ -229,46 +273,7 @@ def _parameter_vector() -> ParameterVector:
         Parameter(name="initial_wood_carbon", support=POSITIVE, units="kg m-2"),
         Parameter(name="initial_soil_organic_carbon", support=POSITIVE, units="kg m-2"),
     ]
-    derived = [
-        DerivedParameter(
-            name="min_photosynthesis_temperature",
-            units="degC",
-            support=REAL,
-            derived_from=("optimum_photosynthesis_temperature",),
-            compute=_minimum_photosynthesis_temperature,
-        ),
-        DerivedParameter(
-            name="base_wood_respiration_rate",
-            units="yr-1",
-            support=POSITIVE,
-            derived_from=("wood_respiration_rate_at_10c",),
-            compute=_base_wood_respiration_rate,
-        ),
-        DerivedParameter(
-            name="base_coarse_root_respiration_rate",
-            units="yr-1",
-            support=POSITIVE,
-            derived_from=("wood_respiration_rate_at_10c",),
-            compute=_base_coarse_root_respiration_rate,
-        ),
-        DerivedParameter(
-            name="base_soil_respiration_rate",
-            units="yr-1",
-            support=POSITIVE,
-            derived_from=(
-                "soil_respiration_flux_at_10c",
-                "initial_soil_organic_carbon",
-                "soil_respiration_q10",
-            ),
-            compute=_base_soil_respiration_rate,
-        ),
-    ]
-    return ParameterVector(
-        parameters=parameters,
-        derived_parameters=derived,
-        site_table=inputs.site_table(),
-        site_labels={"pft": _site_labels()},
-    )
+    return ParameterVector(parameters=parameters)
 
 
 def _prior(vector: ParameterVector) -> Prior:
@@ -280,63 +285,65 @@ def _prior(vector: ParameterVector) -> Prior:
     }
 
     def term(name, distribution):
-        return PriorTerm(distribution, provenance=PROVENANCE[name])
+        return PriorTerm(
+            parameter_names=(name,),
+            distribution=distribution,
+            provenance=PROVENANCE[name],
+        )
 
     return Prior(
         vector,
-        {
-            "photosynthetic_capacity": term(
+        [
+            term(
                 "photosynthetic_capacity",
                 log_normal_from_interval(lower=140.0, upper=450.0),
             ),
-            "respiration_share": term(
+            term(
                 "respiration_share", logit_normal_from_interval(lower=0.04, upper=0.20)
             ),
-            "optimum_photosynthesis_temperature": term(
+            term(
                 "optimum_photosynthesis_temperature",
                 tfp.distributions.Normal(jnp.float64(22.0), jnp.float64(2.5)),
             ),
-            "half_saturation_light": term(
+            term(
                 "half_saturation_light", log_normal_from_interval(lower=4.6, upper=26.3)
             ),
-            "soil_water_holding_capacity": term(
+            term(
                 "soil_water_holding_capacity",
                 log_normal_from_interval(lower=15.0, upper=150.0),
             ),
-            "leaf_on_growth": term(
-                "leaf_on_growth", log_normal_from_interval(lower=50.0, upper=180.0)
-            ),
-            "leaf_on_growing_degree_days": term(
+            term("leaf_on_growth", log_normal_from_interval(lower=50.0, upper=180.0)),
+            term(
                 "leaf_on_growing_degree_days",
                 log_normal_from_interval(lower=500.0, upper=1100.0),
             ),
-            "allocation": term(
+            term(
                 "allocation",
                 softmax_normal(
                     center=jnp.array([0.18, 0.45, 0.065, 0.305]),
                     logit_sd=jnp.array([0.25, 0.30, 0.30]),
                 ),
             ),
-            "wood_respiration_rate_at_10c": term(
+            term(
                 "wood_respiration_rate_at_10c",
                 log_normal_from_interval(lower=0.006, upper=0.04),
             ),
-            "soil_respiration_flux_at_10c": term(
+            term(
                 "soil_respiration_flux_at_10c",
                 log_normal_from_interval(lower=200.0, upper=900.0),
             ),
-            "soil_respiration_q10": term(
+            term(
                 "soil_respiration_q10", log_normal_from_interval(lower=1.3, upper=3.2)
             ),
-            "initial_wood_carbon": term(
+            term(
                 "initial_wood_carbon",
                 log_normal_from_samples(members["initial_wood_carbon"]),
             ),
-            "initial_soil_organic_carbon": term(
+            term(
                 "initial_soil_organic_carbon",
                 log_normal_from_samples(members["initial_soil_organic_carbon"]),
             ),
-        },
+        ],
     )
 
 
@@ -344,22 +351,19 @@ def _sipnet_parameter_map() -> SIPNETParameterMap:
     """The rules for the calibrated values, and every other SIPNET parameter fixed."""
     copies = (
         "optimum_photosynthesis_temperature",
-        "min_photosynthesis_temperature",
         "half_saturation_light",
         "soil_water_holding_capacity",
         "leaf_on_growth",
         "leaf_on_growing_degree_days",
-        "base_wood_respiration_rate",
-        "base_coarse_root_respiration_rate",
-        "base_soil_respiration_rate",
         "soil_respiration_q10",
     )
     rules = [
-        ComputePhotosynthesisRates(
+        *photosynthesis_rules(
             capacity_value_name="photosynthetic_capacity",
             respiration_share_value_name="respiration_share",
         ),
         *(Copy(value_name=name, sipnet_parameter_name=name) for name in copies),
+        *_reference_rules(),
         CopySimplex(
             value_name="allocation",
             sipnet_parameter_names=(
@@ -368,7 +372,7 @@ def _sipnet_parameter_map() -> SIPNETParameterMap:
                 "fine_root_allocation",
             ),
         ),
-        ComputeInitialConditions(deciduous=DECIDUOUS_BY_SITE_LABEL),
+        *initial_condition_rules(deciduous=DECIDUOUS_BY_SITE_LABEL),
     ]
     with FIXED_SIPNET_PARAMETERS_FILE.open() as file:
         fixed = [
@@ -382,44 +386,76 @@ def _sipnet_parameter_map() -> SIPNETParameterMap:
     return SIPNETParameterMap(rules=rules, fixed=fixed)
 
 
-# ── derived parameters, JAX-traceable ──
+def _reference_rules() -> list[Compute]:
+    """The four SIPNET parameters written from a value referenced differently."""
+    return [
+        Compute(
+            sipnet_parameter_name="min_photosynthesis_temperature",
+            values_read={
+                "optimum_photosynthesis_temperature": ValueRequirement("degC", REAL)
+            },
+            function=_minimum_photosynthesis_temperature,
+            provenance=(
+                "psnTMin = psnTOpt less the base set's fixed range of "
+                f"{PHOTOSYNTHESIS_TEMPERATURE_RANGE} C"
+            ),
+        ),
+        Compute(
+            sipnet_parameter_name="base_wood_respiration_rate",
+            values_read={
+                "wood_respiration_rate_at_10c": ValueRequirement("yr-1", POSITIVE)
+            },
+            function=_base_wood_respiration_rate,
+            provenance="baseVegResp = r10 / vegRespQ10, sipnet.c:1066-1067",
+        ),
+        Compute(
+            sipnet_parameter_name="base_coarse_root_respiration_rate",
+            values_read={
+                "wood_respiration_rate_at_10c": ValueRequirement("yr-1", POSITIVE)
+            },
+            function=_base_coarse_root_respiration_rate,
+            provenance=(
+                "baseCoarseRootResp = r10 / coarseRootQ10: coarse roots respire "
+                "at the wood rate at 10 C"
+            ),
+        ),
+        Compute(
+            sipnet_parameter_name="base_soil_respiration_rate",
+            values_read={
+                "soil_respiration_flux_at_10c": ValueRequirement(
+                    "g m-2 yr-1", POSITIVE
+                ),
+                "initial_soil_organic_carbon": ValueRequirement("kg m-2", POSITIVE),
+                "soil_respiration_q10": ValueRequirement("1", POSITIVE),
+            },
+            function=_base_soil_respiration_rate,
+            provenance=(
+                "F10 = k10 SOC0 referenced to 10 C and unit moisture: "
+                "baseSoilResp = F10 / (1000 SOC0 Q10)"
+            ),
+        ),
+    ]
 
 
-def _minimum_photosynthesis_temperature(
-    dim_index, site_table, optimum_photosynthesis_temperature
-):
+# ── the Compute rules' formulas, JAX-traceable ──
+
+
+def _minimum_photosynthesis_temperature(optimum_photosynthesis_temperature):
     return optimum_photosynthesis_temperature - PHOTOSYNTHESIS_TEMPERATURE_RANGE
 
 
-def _base_wood_respiration_rate(dim_index, site_table, wood_respiration_rate_at_10c):
+def _base_wood_respiration_rate(wood_respiration_rate_at_10c):
     return wood_respiration_rate_at_10c / WOOD_RESPIRATION_Q10
 
 
-def _base_coarse_root_respiration_rate(
-    dim_index, site_table, wood_respiration_rate_at_10c
-):
+def _base_coarse_root_respiration_rate(wood_respiration_rate_at_10c):
     return wood_respiration_rate_at_10c / COARSE_ROOT_RESPIRATION_Q10
 
 
 def _base_soil_respiration_rate(
-    dim_index,
-    site_table,
-    soil_respiration_flux_at_10c,
-    initial_soil_organic_carbon,
-    soil_respiration_q10,
+    soil_respiration_flux_at_10c, initial_soil_organic_carbon, soil_respiration_q10
 ):
     # F10 = k10 SOC0 with SOC0 in g m-2, and k10 = baseSoilResp Q10.
     return soil_respiration_flux_at_10c / (
         1000.0 * initial_soil_organic_carbon * soil_respiration_q10
     )
-
-
-# ── helpers ──
-
-
-def _site_labels() -> list[str]:
-    """The site's class under the site labels its deciduousness is read from."""
-    from sipnet_calibration.site_labels import load_site_labels
-
-    labels = load_site_labels(SITE_LABELS_NAME)
-    return list(labels.loc[labels["site_id"] == config.SITE, "label"])
