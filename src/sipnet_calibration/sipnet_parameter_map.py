@@ -1,42 +1,54 @@
-"""The SIPNET parameter map: how a value reaches SIPNET.
+"""The SIPNET parameter map: how the values at a site become SIPNET's
+parameters at that site.
 
 Where this sits
 ---------------
 ::
 
-    parameter_vector.ParameterVector, theta        (calibrated values, by name)
-    external inputs                                (propagated values, by name)
-      -> sipnet_parameter_map.SIPNETParameterMap   (rules and fixed values)
-      -> SIPNET parameter fields                   (fields.SIPNETParameterFields)
+    labeled natural values (parameters, derived parameters)    the parameter layer's seam
+    external inputs                                            propagated values, by name
+      -> sipnet_parameter_map.SIPNETParameterMap (with a site_dims.SiteDims)
+      -> SIPNET parameter fields (fields.SIPNETParameterFields)
       -> forward.ForwardModel, one SIPNET run each
 
-Of the three calibration objects it alone reads pySIPNET's parameter
-specs, which own every SIPNET parameter's name, units and domain.
+Of the calibration's objects it alone reads pySIPNET's parameter specs,
+which own every SIPNET parameter's name, units and domain. It knows nothing
+of theta, priors, or which values are calibrated: it is a function of
+labeled values, so the same map evaluates a posterior mean, a sensitivity
+grid or BETY's medians as readily as a draw.
 
 What it reads
 -------------
-A :class:`~sipnet_calibration.parameter_vector.ParameterVector` and theta,
-and optionally :data:`ExternalInputs`: uncertain values a rule reads that are
-propagated rather than calibrated.
+One labeled Dataset of the values its rules read, by name: the parameters'
+and derived parameters' labeled forms
+(:mod:`sipnet_calibration.parameters.vector`'s data model) merged with any
+:data:`ExternalInputs`, uncertain values that are propagated rather than
+calibrated; and a :class:`~sipnet_calibration.site_dims.SiteDims`, which
+reads them at the sites.
 
 The map
 -------
-For run :math:`s`, the SIPNET parameters are
+For the run at site :math:`s`, the SIPNET parameters are
 
 .. math::
 
-    \\psi_s = M\\big(\\{x_p^{(s)}\\}, \\{y_q^{(s)}\\}, u_s, c_s\\big),
+    \\psi_s = M\\big(v^{(s)}, c^{(s)}\\big),
 
-with :math:`x_p^{(s)}` and :math:`y_q^{(s)}` the parameters and derived
-parameters at the run's site
-(:meth:`~sipnet_calibration.parameter_vector.ParameterVector.at_sites`),
-:math:`u_s` its external inputs and :math:`c_s` the :class:`Fixed` values.
-:math:`M` is a list of :class:`SIPNETRule`\\ s, applied in order. A rule
-reads values by name, whether a parameter's, a derived parameter's or an
-external input's, and declares what it requires of each
-(:class:`ValueRequirement`); it may read
-SIPNET parameters that are fixed or written by an earlier rule. Each SIPNET
-parameter has one writer.
+with :math:`v^{(s)}` every value read at the site
+(:meth:`SiteDims.at_sites`) and :math:`c^{(s)}` the rules' constants and
+the :class:`Fixed` values there. :math:`M` is a list of
+:class:`SIPNETRule`\\ s, applied in order. A rule reads values by name,
+declaring what it requires of each (:class:`ValueRequirement`), reads
+constants, and may read SIPNET parameters that are fixed or written by an
+earlier rule. Each SIPNET parameter has one writer.
+
+**The rule contract**: every SIPNET parameter a rule writes depends on
+everything the rule reads, so a formula whose outputs read different inputs
+is written as several rules (:func:`photosynthesis_rules`,
+:func:`initial_condition_rules`). It makes
+:meth:`SIPNETParameterMap.dependencies` exact, and with it which SIPNET
+parameters a calibration varies
+(:meth:`SIPNETParameterMap.sipnet_parameter_names_depending_on`).
 
 **External inputs** (:data:`ExternalInputs`, checked by
 :func:`validate_external_inputs`) are an ``xr.Dataset`` of ``float64``
@@ -55,58 +67,57 @@ any other batch dim          an ensemble of the input's values     cross
 (integer labels)
 ============================ ===================================== ==============
 
-Variables sharing a crossed dim vary together; different crossed dims cross.
-
 **The result** is SIPNET parameter fields
 (:data:`~sipnet_calibration.fields.SIPNETParameterFields`), one ``float64``
 variable per SIPNET parameter written, in ``PARAMETER_SPECS`` order, each on
-the dims of what it was computed from, in the order ``(batch dim, crossed
-dims, site)``: a variable fed by theta alone is on ``(batch dim, site)``, one
-fed also by a crossed input on ``(batch dim, crossed dim, site)``, a fixed
-value on ``(site,)``. Each carries pySIPNET's
+the batch dims of what it was computed from, in the order they first appear
+among the values, then ``site``: a variable fed by theta's values is on
+``(sample, site)``, one fed also by a crossed input on ``(sample, crossed
+dim, site)``, a fixed value on ``(site,)``. Each carries pySIPNET's
 ``ParameterSpec.xarray_attributes()`` and ``set_by``.
 
-A value's bounds are checked before anything runs where its support is
-known: a parameter's, and a derived parameter's that declares one
-(:func:`check_sipnet_parameter_map_fits`). A derived parameter without a
-declared support is checked at run time only, with every other value
-(:meth:`SIPNETParameterMap.out_of_domain`).
+**What is checked when.** Before anything runs,
+:func:`check_sipnet_parameter_map_fits` checks that every value read exists,
+in the units and shape its rule requires, and that every constant and fixed
+value covers the labels the sites carry. Domains are checked on values
+only, by :meth:`SIPNETParameterMap.out_of_domain`: each rule input against
+its requirement's domain, each SIPNET parameter against pySIPNET's.
 
 Functions and classes
 ---------------------
 :class:`SIPNETParameterMap`
-    ``sipnet_parameter_fields``, ``out_of_domain``, ``describe``.
+    ``sipnet_parameter_fields``, ``out_of_domain``, ``dependencies``,
+    ``sipnet_parameter_names_depending_on``, ``describe``.
+:class:`SIPNETRule`, :class:`ValueRequirement`, :func:`support_from_sipnet_domain`
+    The rule protocol, what a rule requires of a value it reads, and
+    pySIPNET's domains as supports.
+:class:`Copy`, :class:`CopySimplex`, :class:`Compute`
+    The rules; :func:`photosynthesis_rules` and :func:`initial_condition_rules`
+    make the ``Compute`` rules of two derivations.
 :class:`Fixed`
-    A SIPNET parameter held at a value, shared or per dim label.
-:class:`SIPNETRule`, :class:`ValueRequirement`, :class:`Bounds`
-    The rule protocol, and what a rule requires of a value it reads.
-:class:`Copy`, :class:`CopySimplex`, :class:`ComputePhotosynthesisRates`, :class:`ComputeInitialConditions`
-    The rules.
+    A SIPNET parameter held at a value, shared or per label.
 :data:`ExternalInputs`, :func:`validate_external_inputs`
     The alias and its validator.
-:func:`check_sipnet_parameter_map_fits`, :func:`check_sipnet_parameter_map_is_in_domain_at_the_corners`
-    The checks against a vector and external inputs.
+:func:`check_sipnet_parameter_map_fits`
+    The static check against the values' descriptions.
 :class:`SIPNETParametersOutOfDomainError`
-    Raised by the forward model for SIPNET parameters outside pySIPNET's
-    domains.
+    Raised by the forward model for values outside their domains.
 
 Notes
 -----
 **A rule is elementwise over leading dims and sites**: each output entry
 depends only on the input entries at the same leading position and site.
-That is what lets the map broadcast theta's values against external inputs
-on other dims and run each rule once.
+That is what lets the map broadcast values on different batch dims and run
+each rule once.
 
 Usage
 -----
 ::
 
-    vector, prior, _ = example_calibration(site_table, pft)   # sipnet_calibration.calibration
-    theta = prior.sample(jax.random.key(0), 50)
     sipnet_map = SIPNETParameterMap(
         rules=[
-            ComputePhotosynthesisRates(capacity_value_name="photosynthetic_capacity",
-                                       respiration_share_value_name="respiration_share"),
+            *photosynthesis_rules(capacity_value_name="photosynthetic_capacity",
+                                  respiration_share_value_name="respiration_share"),
             CopySimplex(value_name="allocation", sipnet_parameter_names=(
                 "leaf_allocation", "wood_allocation", "fine_root_allocation")),
             Copy(value_name="initial_soil_carbon", sipnet_parameter_name="soil_carbon"),
@@ -114,21 +125,20 @@ Usage
         fixed=[
             Fixed(sipnet_parameter_name="daily_mean_photosynthesis_fraction", value=0.76,
                   provenance="..."),
-            Fixed(sipnet_parameter_name="leaf_carbon_fraction", dim="pft", provenance="...",
-                  value={"boreal.coniferous": 0.506, "temperate.deciduous.HPDA": 0.466}),
+            Fixed(sipnet_parameter_name="leaf_carbon_fraction", provenance="...",
+                  value=pd.Series({"boreal.coniferous": 0.506, "temperate.deciduous": 0.466})
+                  .rename_axis("pft").to_xarray()),
         ],
     )
-    check_sipnet_parameter_map_fits(sipnet_map, vector)
-    sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(vector, theta)
-    sipnet_map.out_of_domain(sipnet_parameter_fields)       # empty DataFrame: all in domain
+    values = vector.flat_to_dataset(vector.to_natural(theta), batch_dims=("sample",))
+    sipnet_parameter_fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
+    sipnet_map.out_of_domain(sipnet_parameter_fields, values, site_dims=site_dims)   # empty: in domain
 """
 
 from __future__ import annotations
 
-import itertools
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from math import inf
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Protocol, runtime_checkable
 
 import jax
@@ -145,21 +155,29 @@ from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SAMPLE, SITE
 from sipnet_calibration.fields import (
     SIPNETParameterFields,
     batch_coordinate,
-    check_batch_dim_name_is_not_reserved,
     check_sipnet_parameter_name_is_a_flat_name,
 )
 from sipnet_calibration.initial_conditions.specs import resolve_initial_condition
-from sipnet_calibration.parameter_vector import DerivedParameter, Parameter, ParameterVector, Support
+from sipnet_calibration.parameters import (
+    NON_NEGATIVE,
+    OPEN_UNIT_INTERVAL,
+    POSITIVE,
+    REAL,
+    UNIT_INTERVAL,
+    DerivedParameter,
+    Interval,
+    Parameter,
+    Simplex,
+    Support,
+)
+from sipnet_calibration.site_dims import SiteDims
 from sipnet_calibration.sites import site_coordinates
-from sipnet_calibration.validation import as_batched_flat, as_frozen_mapping, is_one_vector, truncated
+from sipnet_calibration.validation import as_frozen_mapping, as_names, truncated
 
 __all__ = [
-    "DOMAIN_CHECK_CORNERS",
     "INITIAL_STATE_NAMES",
     "REQUIRED_SIPNET_PARAMETER_NAMES",
-    "Bounds",
-    "ComputeInitialConditions",
-    "ComputePhotosynthesisRates",
+    "Compute",
     "Copy",
     "CopySimplex",
     "ExternalInputs",
@@ -169,8 +187,10 @@ __all__ = [
     "SIPNETRule",
     "ValueRequirement",
     "check_sipnet_parameter_map_fits",
-    "check_sipnet_parameter_map_is_in_domain_at_the_corners",
     "check_sipnet_parameter_map_is_valid",
+    "initial_condition_rules",
+    "photosynthesis_rules",
+    "support_from_sipnet_domain",
     "validate_external_inputs",
 ]
 
@@ -182,8 +202,12 @@ Array = jax.Array
 
 @dataclass(frozen=True, eq=False, kw_only=True)
 class SIPNETParameterMap:
-    """The map :math:`M` from values to SIPNET parameters: rules applied in
-    order, and fixed values.
+    """How values at a site become SIPNET parameters at that site: rules
+    applied in order, and fixed values.
+
+    Every SIPNET parameter a rule writes depends on everything the rule
+    reads, the module's rule contract; a formula whose outputs read
+    different inputs is written as several rules.
 
     Parameters
     ----------
@@ -195,11 +219,11 @@ class SIPNETParameterMap:
     Raises
     ------
     KeyError
-        If a SIPNET parameter written or read is not pySIPNET's.
+        For a SIPNET parameter name pySIPNET lacks.
     ValueError
-        If a SIPNET parameter has two writers, a rule reads a SIPNET
-        parameter neither fixed nor written by an earlier rule, or a fixed
-        value is outside its domain.
+        For a SIPNET parameter with two writers, a SIPNET parameter read
+        before any rule or fixed value sets it, or a fixed value outside its
+        domain.
     """
 
     rules: Sequence[SIPNETRule]
@@ -229,18 +253,6 @@ class SIPNETParameterMap:
                 requirements[name] = (*requirements.get(name, ()), requirement)
         return frozendict(requirements)
 
-    def crossed_dims(self, external_inputs: ExternalInputs | None, *, batch_dim: str = SAMPLE) -> tuple[str, ...]:
-        """The batch dims of the external inputs the rules read, other than
-        *batch_dim*, in the order they first appear: the dims crossed with
-        theta's rows."""
-        if external_inputs is None:
-            return ()
-        dims: dict[str, None] = {}
-        for name, variable in external_inputs.data_vars.items():
-            if name in self.values_read:
-                dims.update(dict.fromkeys(str(d) for d in variable.dims if d not in (SITE, batch_dim)))
-        return tuple(dims)
-
     @property
     def unset_sipnet_parameter_names(self) -> tuple[str, ...]:
         """The :data:`REQUIRED_SIPNET_PARAMETER_NAMES` this map writes none of;
@@ -248,47 +260,73 @@ class SIPNETParameterMap:
         written = set(self._writers)
         return tuple(name for name in REQUIRED_SIPNET_PARAMETER_NAMES if name not in written)
 
+    def dependencies(self) -> frozendict:
+        """For each SIPNET parameter written, the value names it depends on:
+        its rule's ``values_read``, and, through each SIPNET parameter the
+        rule reads, that parameter's dependencies. Empty for a fixed value,
+        or a rule reading only constants and fixed values."""
+        out: dict[str, frozenset[str]] = {fixed.sipnet_parameter_name: frozenset() for fixed in self.fixed}
+        for rule in self.rules:
+            names = set(rule.values_read)
+            for read in rule.sipnet_parameter_names_read:
+                names |= out[read]
+            for written in rule.sipnet_parameter_names_written:
+                out[written] = frozenset(names)
+        return frozendict({name: out[name] for name in self.sipnet_parameter_names_written})
+
+    def sipnet_parameter_names_depending_on(self, value_names: Sequence[str]) -> tuple[str, ...]:
+        """The SIPNET parameters that depend on any of *value_names*, in
+        ``PARAMETER_SPECS`` order: with a vector's parameter and derived
+        parameter names, the SIPNET parameters a calibration varies.
+
+        Raises
+        ------
+        TypeError
+            If *value_names* is one string rather than a sequence.
+        """
+        wanted = set(as_names(value_names, message_name="value_names"))
+        return tuple(name for name, depends in self.dependencies().items() if depends & wanted)
+
     def describe(self) -> pd.DataFrame:
         """One row per SIPNET parameter written, indexed by
-        ``sipnet_parameter``: ``set_by``, ``values_read`` and ``provenance``."""
+        ``sipnet_parameter``: ``set_by``, ``values_read`` (its own rule's,
+        comma-separated), ``depends_on`` (:meth:`dependencies`) and
+        ``provenance`` (a fixed value's or a ``Compute`` rule's)."""
+        dependencies = self.dependencies()
         rows = []
         for name in self.sipnet_parameter_names_written:
             writer = self._writers[name]
-            if isinstance(writer, Fixed):
-                rows.append({"sipnet_parameter": name, "set_by": "fixed", "values_read": "",
-                             "provenance": writer.provenance})
-            else:
-                rows.append({"sipnet_parameter": name, "set_by": _set_by(writer),
-                             "values_read": ", ".join(writer.values_read), "provenance": ""})
+            is_fixed = isinstance(writer, Fixed)
+            rows.append({
+                "sipnet_parameter": name,
+                "set_by": "fixed" if is_fixed else _set_by(writer),
+                "values_read": "" if is_fixed else ", ".join(writer.values_read),
+                "depends_on": ", ".join(sorted(dependencies[name])),
+                "provenance": getattr(writer, "provenance", ""),
+            })
         return pd.DataFrame(rows).set_index("sipnet_parameter")
 
     # ── evaluation ────────────────────────────────────────────────────────────
 
-    def sipnet_parameter_fields(
-        self,
-        parameter_vector: ParameterVector,
-        theta: Any,
-        *,
-        external_inputs: ExternalInputs | None = None,
-        batch_dim: str = SAMPLE,
-    ) -> SIPNETParameterFields:
-        """Theta, and any external inputs, to SIPNET parameter fields.
+    def sipnet_parameter_fields(self, values: xr.Dataset, *, site_dims: SiteDims) -> SIPNETParameterFields:
+        """Values to SIPNET parameter fields.
 
-        Each rule reads its values aligned by dim name and broadcast to the
-        union of their dims, and writes each SIPNET parameter on that union.
-        The values may lie outside pySIPNET's domains; :meth:`out_of_domain`
+        Every value a rule reads, the rules' constants and the fixed values
+        are read at the sites (:meth:`SiteDims.at_sites`); each rule then
+        reads its inputs broadcast to the union of their batch dims (one
+        name zips, two names cross) and writes each SIPNET parameter on that
+        union. The values may lie outside their domains; :meth:`out_of_domain`
         says where.
 
         Parameters
         ----------
-        parameter_vector:
-            The vector theta is of.
-        theta:
-            ``(D,)``, or ``(J, D)`` labeled ``0`` to ``J - 1`` on *batch_dim*.
-        external_inputs:
-            :data:`ExternalInputs`, or ``None``.
-        batch_dim:
-            The name of theta's batch dim.
+        values:
+            Every value a rule reads, ``float64``, on any of: the dims of
+            ``site_dims.coords``, batch dims (integer labels), and element
+            axes (string labels). Variables no rule reads (a
+            hyperparameter, say) are ignored.
+        site_dims:
+            The sites, which the fields are over.
 
         Returns
         -------
@@ -297,72 +335,74 @@ class SIPNETParameterMap:
 
         Raises
         ------
-        TypeError, ValueError
-            If *theta* is not ``(D,)`` or ``(J, D)``, or *external_inputs*
-            are not :data:`ExternalInputs` for *theta*.
+        TypeError
+            If *values* is not an ``xr.Dataset``.
         KeyError
-            If a value a rule reads is neither a parameter, a derived
-            parameter nor an external input, or an external input lacks a
-            site of the vector.
+            For a value a rule reads that *values* lacks, or a label a site
+            carries that a value lacks.
+        ValueError
+            For a value whose element axes are not its requirement's shape.
         """
-        check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
-        batched = jnp.asarray(as_batched_flat(theta, parameter_vector.dimension, message_name="theta"))
-        one = is_one_vector(theta)
-        if external_inputs is not None:
-            validate_external_inputs(external_inputs, batch_dim=batch_dim)
-            check_external_inputs_are_for_theta(external_inputs, None if one else len(batched), batch_dim)
-        natural_values = parameter_vector.to_natural(batched[0] if one else batched)
-        at_sites = parameter_vector.at_sites(natural_values)
-        theta_dims = (SITE,) if one else (batch_dim, SITE)
-        values: dict[str, _Labeled] = {name: _Labeled(theta_dims, array) for name, array in at_sites.items()}
-        order = (batch_dim, *self.crossed_dims(external_inputs, batch_dim=batch_dim), SITE)
-        if external_inputs is not None:
-            read = external_inputs[[name for name in external_inputs.data_vars if name in self.values_read]]
-            values.update(_external_values(read, parameter_vector, order))
-        sizes = _dim_sizes(values)
-        site_table = parameter_vector.site_table
-        written: dict[str, tuple[_Labeled, str]] = {
-            fixed.sipnet_parameter_name: (_Labeled((SITE,), fixed.at_sites(parameter_vector)), "fixed")
+        check_values_are_a_dataset(values)
+        read = self._values_at_sites(values, site_dims)
+        order = _batch_dims_in_order(read.values())
+        labeled = {
+            **{name: _LabeledAtSites.of(variable, order) for name, variable in read.items()},
+            **{name: _LabeledAtSites.of(variable, order) for name, variable in self._constants_at_sites(site_dims).items()},
+        }
+        written: dict[str, tuple[_LabeledAtSites, str]] = {
+            fixed.sipnet_parameter_name: (_LabeledAtSites.of(fixed.at_sites(site_dims), order), "fixed")
             for fixed in self.fixed
         }
-        external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
         for rule in self.rules:
-            for name in rule.values_read:
-                check_value_is_held_once(name, parameter_vector, external_names)
-            read = {name: values[name] for name in rule.values_read}
-            read_sipnet = {name: written[name][0] for name in rule.sipnet_parameter_names_read}
-            dims = _union(order, [*read.values(), *read_sipnet.values()])
+            inputs = [labeled[n] for n in (*rule.values_read, *rule.constants)]
+            inputs += [written[n][0] for n in rule.sipnet_parameter_names_read]
+            dims = _union(order, inputs)
+            sizes = {d: n for item in inputs for d, n in zip(item.batch_dims, item.batch_shape)}
             output = rule(
-                {n: v.broadcast(dims, sizes) for n, v in read.items()},
-                {n: v.broadcast(dims, sizes) for n, v in read_sipnet.items()},
-                site_table,
+                {n: labeled[n].broadcast(dims, sizes) for n in (*rule.values_read, *rule.constants)},
+                {n: written[n][0].broadcast(dims, sizes) for n in rule.sipnet_parameter_names_read},
             )
+            labels = {d: item.labels[d] for item in inputs for d in item.batch_dims}
             for name, array in output.items():
-                written[name] = (_Labeled(dims, array), _set_by(rule))
-        return self._dataset(parameter_vector, written, batched, one, order[:-1], external_inputs)
+                written[name] = (_LabeledAtSites(dims, np.asarray(array, dtype=np.float64), labels), _set_by(rule))
+        return _sipnet_parameter_fields(written, site_dims)
 
-    def out_of_domain(self, sipnet_parameter_fields: SIPNETParameterFields) -> pd.DataFrame:
-        """Where SIPNET parameter fields lie outside pySIPNET's domains.
+    def out_of_domain(
+        self, sipnet_parameter_fields: SIPNETParameterFields, values: xr.Dataset, *, site_dims: SiteDims
+    ) -> pd.DataFrame:
+        """Every value outside its domain: a rule input outside its
+        requirement's domain, or a SIPNET parameter outside pySIPNET's.
+
+        Parameters
+        ----------
+        sipnet_parameter_fields:
+            The fields :meth:`sipnet_parameter_fields` made from *values*.
+        values, site_dims:
+            As :meth:`sipnet_parameter_fields` takes them.
 
         Returns
         -------
         pandas.DataFrame
-            One row per value outside its SIPNET parameter's
-            ``ParameterDomain`` (non-finite values included): a column per
-            dim of the fields (missing for a variable not on it), then
-            ``sipnet_parameter`` and ``value``. Empty when every value is in
-            its domain.
+            One row per value outside its domain (a non-finite one
+            included), once for requirements alike: a column per batch dim and ``site`` (missing for a
+            value not on it), then ``sipnet_parameter`` or ``value_name``
+            (the other missing), and ``value`` (``NaN`` for a value of rank
+            1 or more, whose element the row does not name). Empty when
+            every value is in its domain.
         """
-        dims = list(sipnet_parameter_fields.dims)
         rows = []
         for name, variable in sipnet_parameter_fields.data_vars.items():
-            values = np.asarray(variable.values, dtype=np.float64)
-            outside = ~_FLAT_SPECS[str(name)].domain.contains(values) | ~np.isfinite(values)
-            labels = [variable[dim].values for dim in variable.dims]
-            for position in np.argwhere(outside):
-                row = {dim: labels[axis][i] for axis, (dim, i) in enumerate(zip(variable.dims, position))}
-                rows.append({**row, "sipnet_parameter": str(name), "value": values[tuple(position)]})
-        return pd.DataFrame(rows, columns=[*dims, "sipnet_parameter", "value"])
+            array = np.asarray(variable.values, dtype=np.float64)
+            outside = ~_FLAT_SPECS[str(name)].domain.contains(array)
+            rows += _rows_outside(variable, outside, array, {"sipnet_parameter": str(name)})
+        read = self._values_at_sites(values, site_dims)
+        for name, requirements in self.values_read.items():
+            for requirement in dict.fromkeys(requirements):
+                if requirement.domain is not None:
+                    rows += _rows_outside_the_requirement(name, read[name], requirement)
+        dims = list(dict.fromkeys([d for row in rows for d in row if d not in _REPORT_COLUMNS]))
+        return pd.DataFrame(rows, columns=[*dims, *_REPORT_COLUMNS])
 
     # ── supporting methods ────────────────────────────────────────────────────
 
@@ -373,35 +413,69 @@ class SIPNETParameterMap:
             writers.update(dict.fromkeys(rule.sipnet_parameter_names_written, rule))
         return writers
 
-    def _dataset(
-        self,
-        parameter_vector: ParameterVector,
-        written: Mapping[str, tuple[_Labeled, str]],
-        batched: Array,
-        one: bool,
-        batch_dims: tuple[str, ...],
-        external_inputs: xr.Dataset | None,
-    ) -> xr.Dataset:
-        """The SIPNET parameter fields; *batch_dims* are theta's batch dim,
-        then the crossed dims."""
-        batch_dim, *crossed = batch_dims
-        coordinates: dict[str, Any] = dict(site_coordinates(parameter_vector.sites, parameter_vector.site_table))
-        if not one:
-            coordinates[batch_dim] = batch_coordinate(batch_dim, np.arange(len(batched)))
-        for dim in crossed:
-            coordinates[dim] = batch_coordinate(dim, external_inputs[dim].values)
-        variables = {
-            name: (
-                labeled.dims,
-                np.asarray(labeled.array, dtype=np.float64),
-                {**_FLAT_SPECS[name].xarray_attributes(), "set_by": set_by},
-            )
-            for name, (labeled, set_by) in sorted(written.items(), key=lambda kv: _SPEC_ORDER[kv[0]])
-        }
-        return xr.Dataset(variables, coords=coordinates)
+    def _values_at_sites(self, values: xr.Dataset, site_dims: SiteDims) -> dict[str, xr.DataArray]:
+        """Every value a rule reads, at the sites, in the order of *values*,
+        checked for its shape."""
+        check_values_hold_what_the_rules_read(list(self.values_read), values)
+        names = [str(name) for name in values.data_vars if name in self.values_read]
+        at_sites = site_dims.at_sites(values[names])
+        for name, requirements in self.values_read.items():
+            variable = at_sites[name]
+            for requirement in requirements:
+                check_value_has_the_required_shape(name, variable, requirement.shape)
+        return {name: at_sites[name] for name in names}
+
+    def _constants_at_sites(self, site_dims: SiteDims) -> dict[str, xr.DataArray]:
+        """Every rule's constants, at the sites."""
+        constants = {name: constant for rule in self.rules for name, constant in rule.constants.items()}
+        if not constants:
+            return {}
+        at_sites = site_dims.at_sites(xr.Dataset({name: c.rename(None) for name, c in constants.items()}))
+        return {name: at_sites[name] for name in constants}
 
 
-# ── fixed values ──────────────────────────────────────────────────────────────
+# ── what a rule requires, and fixed values ────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ValueRequirement:
+    """What a rule requires of a value it reads.
+
+    Parameters
+    ----------
+    units:
+        The units the rule's arithmetic assumes. The value's units must
+        convert to them by a factor of exactly 1
+        (``pysipnet.units.conversion_factor``), so ``"g/m2"`` meets
+        ``"g m-2"`` and ``"kg m-2"`` does not: the rule never converts.
+        ``None`` means no physical units, read as ``"1"``. Checked before
+        anything runs.
+    domain:
+        The set the rule's formula is defined on for this value, checked on
+        the values: at the corners of theta when the forward model is
+        built, and at every evaluation (:meth:`SIPNETParameterMap.out_of_domain`).
+        ``None``: no requirement.
+    shape:
+        One site's value's shape: ``()`` for a scalar, ``(k,)`` for a
+        vector. Checked before anything runs.
+    """
+
+    units: str | None
+    domain: Support | None = None
+    shape: tuple[int, ...] = ()
+
+
+def support_from_sipnet_domain(domain: ParameterDomain) -> Support:
+    """pySIPNET's domain as a support: ``REAL`` the real line, ``POSITIVE``
+    :math:`(0, \\infty)`, ``NON_NEGATIVE`` :math:`[0, \\infty)`,
+    ``UNIT_INTERVAL`` :math:`[0, 1]`, ``OPEN_UNIT_INTERVAL`` :math:`(0, 1)`.
+
+    Raises
+    ------
+    KeyError
+        For a domain pySIPNET added that this table lacks.
+    """
+    return _SIPNET_DOMAIN_SUPPORTS[domain]
 
 
 @dataclass(frozen=True, eq=False, kw_only=True)
@@ -413,48 +487,47 @@ class Fixed:
     sipnet_parameter_name:
         pySIPNET's flat name.
     value:
-        A number; or, with *dim*, ``{dim label: number}`` covering the
-        vector's dim labels (a superset is allowed).
-    dim:
-        ``"site"``, a site-labels name of the vector, or ``None``.
+        A number; or a numeric ``xr.DataArray`` keyed by label, on ``site``
+        or a site-labels dim (``pd.Series({...}).rename_axis("pft").to_xarray()``),
+        covering the labels the sites carry (a superset is allowed).
     provenance:
         Where the value came from.
 
     Raises
     ------
     TypeError
-        If *value* is not a number or a mapping of numbers, or a mapping is
-        given without *dim*.
+        If *value* is neither a number nor a numeric DataArray.
     ValueError
         If *provenance* is empty.
     """
 
     sipnet_parameter_name: str
-    value: float | Mapping[Any, float]
-    dim: str | None = None
+    value: float | xr.DataArray
     provenance: str
 
     def __post_init__(self) -> None:
-        if isinstance(self.value, Mapping):
-            object.__setattr__(self, "value", as_frozen_mapping(self.value, message_name="value"))
         check_fixed_is_valid(self)
+        if isinstance(self.value, xr.DataArray):
+            value = self.value.astype(np.float64).copy(deep=True)
+            value.values.setflags(write=False)
+            object.__setattr__(self, "value", value)
 
-    def values(self) -> tuple[float, ...]:
-        """Every value, in mapping order."""
-        if isinstance(self.value, Mapping):
-            return tuple(float(v) for v in self.value.values())
-        return (float(self.value),)
+    def values(self) -> np.ndarray:
+        """Every value, flat, ``float64``."""
+        if isinstance(self.value, xr.DataArray):
+            return np.asarray(self.value.values, dtype=np.float64).ravel()
+        return np.asarray([float(self.value)])
 
-    def at_sites(self, parameter_vector: ParameterVector) -> Array:
-        """The value at every site of the vector, ``(S,)``."""
-        if self.dim is None:
-            return jnp.full(parameter_vector.n_sites, float(self.value))
-        labels = (
-            parameter_vector.sites
-            if self.dim == SITE
-            else parameter_vector.site_table[self.dim].astype(str).tolist()
-        )
-        return jnp.asarray([float(self.value[label]) for label in labels])
+    def at_sites(self, site_dims: SiteDims) -> xr.DataArray:
+        """The value at every site, on ``site``.
+
+        Raises
+        ------
+        KeyError
+            If a per-label value lacks a label some site carries.
+        """
+        value = self.value if isinstance(self.value, xr.DataArray) else xr.DataArray(float(self.value))
+        return site_dims.at_sites(xr.Dataset({self.sipnet_parameter_name: value.rename(None)}))[self.sipnet_parameter_name]
 
 
 # ── rules ─────────────────────────────────────────────────────────────────────
@@ -467,108 +540,39 @@ class SIPNETRule(Protocol):
     Attributes
     ----------
     values_read:
-        ``{name: ValueRequirement}``: parameters, derived parameters or
-        external inputs.
+        ``{name: ValueRequirement}``: the values it reads (parameters,
+        derived parameters, external inputs), each with what it requires.
+    constants:
+        ``{name: xr.DataArray}``: constants it reads, which the map reads at
+        the sites and passes beside the values; empty when none.
     sipnet_parameter_names_read:
         SIPNET parameters it reads, each fixed or written by an earlier rule.
     sipnet_parameter_names_written:
-        SIPNET parameters it writes.
+        SIPNET parameters it writes, each depending on everything it reads.
 
-    A rule may also declare ``dim_label_arguments``, ``{dim name: mapping
-    keyed by dim label}``, whose keys the fit check holds to cover the
-    vector's dim labels.
-
-    The call takes ``values_at_sites`` (``{name: (..., S)}``, or ``(..., S,
-    k)`` for a vector), ``sipnet_parameter_values`` (``{name: (..., S)}``)
-    and the vector's site table, all broadcast to one leading shape, and
-    returns ``{SIPNET name written: (..., S)}``. It must be elementwise over
-    the leading dims and sites, and traceable by JAX.
+    The call takes ``values`` (``{name: (..., S, *shape)}`` for each value
+    and constant) and ``sipnet_parameter_values`` (``{name: (..., S)}``), all
+    of one leading shape, and returns ``{SIPNET parameter written: (...,
+    S)}``. It is elementwise over the leading axes and sites, and traceable
+    by JAX.
     """
 
     values_read: Mapping[str, ValueRequirement]
+    constants: Mapping[str, xr.DataArray]
     sipnet_parameter_names_read: tuple[str, ...]
     sipnet_parameter_names_written: tuple[str, ...]
 
-    def __call__(
-        self,
-        values_at_sites: Mapping[str, Array],
-        sipnet_parameter_values: Mapping[str, Array],
-        site_table: pd.DataFrame,
-    ) -> dict[str, Array]: ...
-
-
-@dataclass(frozen=True)
-class ValueRequirement:
-    """What a rule requires of a value it reads.
-
-    Parameters
-    ----------
-    units:
-        UDUNITS units the value must be in, compared by a conversion factor
-        of exactly 1 (``pysipnet.units.conversion_factor``); ``None`` for no
-        physical units, which reads as ``"1"``.
-    bounds:
-        The :class:`Bounds` every number of the value lies in, or ``None``.
-    natural_size:
-        ``k``, the numbers per site.
-    """
-
-    units: str | None
-    bounds: Bounds | None = None
-    natural_size: int = 1
-
-
-@dataclass(frozen=True)
-class Bounds:
-    """An interval a value must lie in; either end may be closed or infinite.
-
-    Parameters
-    ----------
-    low, high:
-        The ends.
-    low_closed, high_closed:
-        Whether each end belongs to the interval.
-    """
-
-    low: float = -inf
-    high: float = inf
-    low_closed: bool = False
-    high_closed: bool = False
-
-    @classmethod
-    def from_sipnet_domain(cls, domain: ParameterDomain) -> Bounds:
-        """The bounds of a pySIPNET ``ParameterDomain``: ``REAL``
-        :math:`(-\\infty, \\infty)`, ``POSITIVE`` :math:`(0, \\infty)`,
-        ``NON_NEGATIVE`` :math:`[0, \\infty)`, ``UNIT_INTERVAL`` :math:`[0, 1]`,
-        ``OPEN_UNIT_INTERVAL`` :math:`(0, 1)`."""
-        return _DOMAIN_BOUNDS[domain]
-
-    def contains(self, values: Any) -> Array:
-        """Whether each value lies within the bounds, elementwise."""
-        values = jnp.asarray(values, dtype=jnp.float64)
-        above = values >= self.low if self.low_closed else values > self.low
-        below = values <= self.high if self.high_closed else values < self.high
-        return above & below
-
-    def contains_support(self, support: Support) -> bool:
-        """Whether the open *support* lies within the bounds, every entry of
-        a simplex being in :math:`(0, 1)`."""
-        low, high = {
-            "real": (-inf, inf),
-            "positive": (0.0, inf),
-            "interval": (support.low, support.high),
-            "simplex": (0.0, 1.0),
-        }[support.kind]
-        return self.low <= low and high <= self.high
+    def __call__(self, values: Mapping[str, Array], sipnet_parameter_values: Mapping[str, Array]) -> dict[str, Array]: ...
 
 
 @dataclass(frozen=True, kw_only=True)
 class Copy:
-    """The identity: :math:`\\psi = x`, one scalar value to one SIPNET
+    """The identity, :math:`\\psi = x`: one scalar value to one SIPNET
     parameter, which requires the value in its units and domain."""
 
     value_name: str
     sipnet_parameter_name: str
+    constants: ClassVar[Mapping[str, xr.DataArray]] = frozendict()
     sipnet_parameter_names_read: ClassVar[tuple[str, ...]] = ()
 
     @property
@@ -578,25 +582,27 @@ class Copy:
     @property
     def values_read(self) -> Mapping[str, ValueRequirement]:
         spec = _spec(self.sipnet_parameter_name)
-        return {self.value_name: ValueRequirement(spec.units, Bounds.from_sipnet_domain(spec.domain))}
+        return {self.value_name: ValueRequirement(spec.units, support_from_sipnet_domain(spec.domain))}
 
-    def __call__(self, values_at_sites, sipnet_parameter_values, site_table) -> dict[str, Array]:
-        return {self.sipnet_parameter_name: values_at_sites[self.value_name]}
+    def __call__(self, values, sipnet_parameter_values) -> dict[str, Array]:
+        return {self.sipnet_parameter_name: values[self.value_name]}
 
 
 @dataclass(frozen=True, kw_only=True)
 class CopySimplex:
-    """A point :math:`x` of the ``k``-simplex to ``k - 1`` SIPNET parameters:
-    :math:`\\psi_i = x_i` for :math:`i < k`.
+    """A point :math:`x` of the ``k``-simplex to ``k - 1`` SIPNET
+    parameters: :math:`\\psi_i = x_i` for :math:`i < k`.
 
     The last number is not written: SIPNET recomputes it as
     :math:`1 - \\sum_{i<k} x_i` (``sipnet.c:1113-1115``) and exits if that
-    is negative (``sipnet.c:1117-1122``). Reading the whole simplex is
-    what keeps every draw strictly inside it.
+    is negative (``sipnet.c:1117-1122``). Reading the whole simplex is what
+    keeps every draw inside it; the requirement's domain is the closed
+    simplex. Each SIPNET parameter written depends on the one value read.
     """
 
     value_name: str
     sipnet_parameter_names: tuple[str, ...]
+    constants: ClassVar[Mapping[str, xr.DataArray]] = frozendict()
     sipnet_parameter_names_read: ClassVar[tuple[str, ...]] = ()
 
     @property
@@ -605,66 +611,123 @@ class CopySimplex:
 
     @property
     def values_read(self) -> Mapping[str, ValueRequirement]:
-        bounds = _intersection(
-            [Bounds.from_sipnet_domain(_spec(n).domain) for n in self.sipnet_parameter_names]
-        )
-        return {self.value_name: ValueRequirement("1", bounds, len(self.sipnet_parameter_names) + 1)}
+        return {self.value_name: ValueRequirement("1", Simplex(closed=True), (len(self.sipnet_parameter_names) + 1,))}
 
-    def __call__(self, values_at_sites, sipnet_parameter_values, site_table) -> dict[str, Array]:
-        simplex = values_at_sites[self.value_name]
+    def __call__(self, values, sipnet_parameter_values) -> dict[str, Array]:
+        simplex = values[self.value_name]
         return {name: simplex[..., i] for i, name in enumerate(self.sipnet_parameter_names)}
 
 
-@dataclass(frozen=True, kw_only=True)
-class ComputePhotosynthesisRates:
-    """SIPNET's photosynthesis pair from its identifiable combination.
+@dataclass(frozen=True, eq=False, kw_only=True)
+class Compute:
+    """One SIPNET parameter as a formula of values, constants and SIPNET
+    parameters: :math:`\\psi = f(v_1, \\dots, v_m, c_1, \\dots, \\phi_1, \\dots)`.
+
+    Parameters
+    ----------
+    sipnet_parameter_name:
+        pySIPNET's flat name of the SIPNET parameter written.
+    function:
+        Called as ``function(**values, **constants, **sipnet_parameter_values)``,
+        keywords named as below. Each array has one leading shape ``(...,
+        S)``, with a value's shape after it. The result is ``(..., S)``,
+        **in the SIPNET parameter's units** (``ParameterSpec.units``): the
+        map cannot check the arithmetic, but requiring the inputs' units
+        makes the inputs checkable, and the domain checks check the result.
+        Elementwise over the leading axes and sites; traceable by JAX.
+    values_read:
+        ``{name: ValueRequirement}``: the values it reads, each with what
+        the function assumes.
+    constants:
+        ``{name: xr.DataArray}``: constants it reads, a scalar or keyed by
+        label on ``site`` or a site-labels dim; a boolean one stays boolean.
+    sipnet_parameter_names_read:
+        SIPNET parameters it reads, each fixed or written by an earlier rule.
+    provenance:
+        Where the formula comes from: a line of ``sipnet.c``, a paper.
+
+    Raises
+    ------
+    TypeError
+        If *function* is not callable, or a constant is not a DataArray.
+    ValueError
+        If one keyword names two things (a value and a SIPNET parameter of
+        one name, as ``soil_respiration_q10`` is both: rename in a wrapper),
+        or *provenance* is empty.
+    """
+
+    sipnet_parameter_name: str
+    function: Callable[..., Array]
+    values_read: Mapping[str, ValueRequirement]
+    constants: Mapping[str, xr.DataArray] = field(default_factory=frozendict)
+    sipnet_parameter_names_read: tuple[str, ...] = ()
+    provenance: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "values_read", as_frozen_mapping(self.values_read, message_name="values_read"))
+        object.__setattr__(self, "constants", as_frozen_mapping(self.constants, message_name="constants"))
+        object.__setattr__(
+            self,
+            "sipnet_parameter_names_read",
+            as_names(self.sipnet_parameter_names_read, message_name="sipnet_parameter_names_read"),
+        )
+        check_compute_is_valid(self)
+
+    @property
+    def sipnet_parameter_names_written(self) -> tuple[str, ...]:
+        return (self.sipnet_parameter_name,)
+
+    def __call__(self, values, sipnet_parameter_values) -> dict[str, Array]:
+        arguments = {n: values[n] for n in (*self.values_read, *self.constants)}
+        arguments |= {n: sipnet_parameter_values[n] for n in self.sipnet_parameter_names_read}
+        return {self.sipnet_parameter_name: jnp.asarray(self.function(**arguments), dtype=jnp.float64)}
+
+
+def photosynthesis_rules(*, capacity_value_name: str, respiration_share_value_name: str) -> list[Compute]:
+    """SIPNET's photosynthesis pair from its identifiable combination, as
+    two ``Compute`` rules.
 
     ``aMax`` (:math:`A`), ``aMaxFrac`` (:math:`f`), ``baseFolRespFrac``
     (:math:`r`) and ``cFracLeaf`` (:math:`c`) enter SIPNET only through
     :math:`P = A (f + r) / c` and :math:`\\rho = r / (f + r)`
-    (``sipnet.c:614, 617, 633``). With :math:`f` and :math:`c` read as SIPNET
-    parameters, this rule inverts them:
+    (``sipnet.c:614, 617, 633``). With :math:`f` and :math:`c` read as
+    SIPNET parameters, the rules invert them:
 
     .. math::
 
-        r = \\frac{\\rho f}{1 - \\rho}, \\qquad A = \\frac{P c (1 - \\rho)}{f},
+        A = \\frac{P c (1 - \\rho)}{f}, \\qquad r = \\frac{\\rho f}{1 - \\rho},
 
     from the capacity :math:`P` (``nmol g-1 s-1``, per gram of leaf carbon)
-    and the respiration share :math:`\\rho` (``1``).
+    and the respiration share :math:`\\rho` (``1``). They are two rules
+    since :math:`r` reads neither :math:`P` nor :math:`c`.
+
+    Returns
+    -------
+    list of Compute
+        ``max_photosynthesis_rate``, then ``foliar_respiration_fraction``.
     """
-
-    capacity_value_name: str
-    respiration_share_value_name: str
-    sipnet_parameter_names_read: ClassVar[tuple[str, ...]] = (
-        "daily_mean_photosynthesis_fraction",
-        "leaf_carbon_fraction",
-    )
-    sipnet_parameter_names_written: ClassVar[tuple[str, ...]] = (
-        "max_photosynthesis_rate",
-        "foliar_respiration_fraction",
-    )
-
-    @property
-    def values_read(self) -> Mapping[str, ValueRequirement]:
-        return {
-            self.capacity_value_name: ValueRequirement(
-                _spec("max_photosynthesis_rate").units, Bounds(0.0, inf)
-            ),
-            self.respiration_share_value_name: ValueRequirement("1", Bounds(0.0, 1.0)),
-        }
-
-    def __call__(self, values_at_sites, sipnet_parameter_values, site_table) -> dict[str, Array]:
-        capacity = values_at_sites[self.capacity_value_name]
-        share = values_at_sites[self.respiration_share_value_name]
-        fraction = sipnet_parameter_values["daily_mean_photosynthesis_fraction"]
-        leaf_carbon = sipnet_parameter_values["leaf_carbon_fraction"]
-        return {
-            "max_photosynthesis_rate": capacity * leaf_carbon * (1.0 - share) / fraction,
-            "foliar_respiration_fraction": share * fraction / (1.0 - share),
-        }
+    capacity = ValueRequirement(_spec("max_photosynthesis_rate").units, POSITIVE)
+    share = ValueRequirement("1", OPEN_UNIT_INTERVAL)
+    provenance = "P = aMax (aMaxFrac + baseFolRespFrac) / cFracLeaf, rho = baseFolRespFrac / (aMaxFrac + baseFolRespFrac): sipnet.c:614, 617, 633"
+    return [
+        Compute(
+            sipnet_parameter_name="max_photosynthesis_rate",
+            values_read={capacity_value_name: capacity, respiration_share_value_name: share},
+            sipnet_parameter_names_read=("daily_mean_photosynthesis_fraction", "leaf_carbon_fraction"),
+            function=_MaxPhotosynthesisRate(capacity_value_name, respiration_share_value_name),
+            provenance=f"aMax = P cFracLeaf (1 - rho) / aMaxFrac, from {provenance}",
+        ),
+        Compute(
+            sipnet_parameter_name="foliar_respiration_fraction",
+            values_read={respiration_share_value_name: share},
+            sipnet_parameter_names_read=("daily_mean_photosynthesis_fraction",),
+            function=_FoliarRespirationFraction(respiration_share_value_name),
+            provenance=f"baseFolRespFrac = rho aMaxFrac / (1 - rho), from {provenance}",
+        ),
+    ]
 
 
-#: The initial state a :class:`ComputeInitialConditions` reads, in order: soil
+#: The initial state :func:`initial_condition_rules` reads, in order: soil
 #: organic carbon, wood carbon and leaf carbon (``kg m-2`` of carbon), and
 #: surface soil moisture (percent of saturation), in the initial conditions'
 #: processed file's names and units.
@@ -676,15 +739,20 @@ INITIAL_STATE_NAMES: tuple[str, ...] = (
 )
 
 
-@dataclass(frozen=True, kw_only=True)
-class ComputeInitialConditions:
-    """SIPNET's initial state from a site's state values.
+def initial_condition_rules(
+    *,
+    deciduous: Mapping[str, bool] | xr.DataArray,
+    deciduous_dim: str = "pft",
+    state_value_names: Sequence[str] = INITIAL_STATE_NAMES,
+) -> list[Compute]:
+    """SIPNET's initial state from a site's state values, as four
+    ``Compute`` rules.
 
     With soil organic carbon :math:`C_s`, wood carbon :math:`C_w`, leaf
     carbon :math:`C_l` (``kg m-2``), soil moisture :math:`m` (percent of
-    saturation), and the SIPNET parameters ``fine_root_fraction``
-    :math:`f`, ``coarse_root_fraction`` :math:`g` and
-    ``leaf_carbon_per_area`` :math:`\\lambda` (``g m-2``):
+    saturation), and the SIPNET parameters ``fine_root_fraction`` :math:`f`,
+    ``coarse_root_fraction`` :math:`g` and ``leaf_carbon_per_area``
+    :math:`\\lambda` (``g m-2``):
 
     .. math::
 
@@ -701,69 +769,59 @@ class ComputeInitialConditions:
     Parameters
     ----------
     deciduous:
-        ``{dim label: bool}`` over *deciduous_dim*'s dim labels (a superset
-        is allowed).
+        Whether each class of *deciduous_dim* is deciduous: ``{label:
+        bool}``, or a boolean DataArray on *deciduous_dim*; a superset of
+        the classes is allowed.
     deciduous_dim:
         The site-labels name a site's deciduousness is read from.
     state_value_names:
         The names the four state values are read by, in the order of
         :data:`INITIAL_STATE_NAMES`.
 
+    Returns
+    -------
+    list of Compute
+        ``soil_carbon``, ``total_wood_carbon``, ``leaf_area_index``,
+        ``soil_wetness_fraction``.
+
     Raises
     ------
     TypeError
-        If a value of *deciduous* is not a boolean.
+        If a deciduousness is not a boolean: ``NaN`` or ``2.0`` cast to a
+        boolean is ``True``.
+    ValueError
+        If *state_value_names* does not name four values.
     """
-
-    deciduous: Mapping[str, bool]
-    deciduous_dim: str = "pft"
-    state_value_names: tuple[str, ...] = INITIAL_STATE_NAMES
-    sipnet_parameter_names_read: ClassVar[tuple[str, ...]] = (
-        "fine_root_fraction",
-        "coarse_root_fraction",
-        "leaf_carbon_per_area",
+    if isinstance(deciduous, xr.DataArray):
+        check_deciduous_values_are_booleans(dict(zip(deciduous[deciduous.dims[0]].values.tolist(), deciduous.values.tolist())))
+        mask = deciduous.copy()
+    else:
+        deciduous = as_frozen_mapping(deciduous, message_name="deciduous")
+        check_deciduous_values_are_booleans(deciduous)
+        mask = xr.DataArray(np.asarray(list(deciduous.values()), dtype=bool), dims=deciduous_dim,
+                            coords={deciduous_dim: list(deciduous)})
+    state_value_names = as_names(state_value_names, message_name="state_value_names")
+    check_state_value_names_are_four(state_value_names)
+    soil, wood, leaf, moisture = state_value_names
+    carbon = {state: ValueRequirement(resolve_initial_condition(state).units, NON_NEGATIVE) for state in INITIAL_STATE_NAMES[:3]}
+    saturation = ValueRequirement(
+        resolve_initial_condition("initial_soil_moisture_saturation").units,
+        Interval(0.0, 100.0, low_closed=True, high_closed=True),
     )
-    sipnet_parameter_names_written: ClassVar[tuple[str, ...]] = (
-        "soil_carbon",
-        "total_wood_carbon",
-        "leaf_area_index",
-        "soil_wetness_fraction",
-    )
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "deciduous", as_frozen_mapping(self.deciduous, message_name="deciduous"))
-        object.__setattr__(self, "state_value_names", tuple(self.state_value_names))
-        check_deciduous_values_are_booleans(self.deciduous)
-
-    @property
-    def values_read(self) -> Mapping[str, ValueRequirement]:
-        carbon, saturation = Bounds(0.0, inf, low_closed=True), Bounds(0.0, 100.0, True, True)
-        return {
-            name: ValueRequirement(
-                resolve_initial_condition(state).units,
-                saturation if state == "initial_soil_moisture_saturation" else carbon,
-            )
-            for name, state in zip(self.state_value_names, INITIAL_STATE_NAMES, strict=True)
-        }
-
-    @property
-    def dim_label_arguments(self) -> Mapping[str, Mapping[str, bool]]:
-        return {self.deciduous_dim: self.deciduous}
-
-    def __call__(self, values_at_sites, sipnet_parameter_values, site_table) -> dict[str, Array]:
-        soil, wood, leaf, moisture = (values_at_sites[name] for name in self.state_value_names)
-        fine = sipnet_parameter_values["fine_root_fraction"]
-        coarse = sipnet_parameter_values["coarse_root_fraction"]
-        leaf_carbon_per_area = sipnet_parameter_values["leaf_carbon_per_area"]
-        deciduous = np.asarray(
-            [self.deciduous[label] for label in site_table[self.deciduous_dim].astype(str)], dtype=bool
-        )
-        return {
-            "soil_carbon": _GRAMS_PER_KILOGRAM * soil,
-            "total_wood_carbon": _GRAMS_PER_KILOGRAM * wood / (1.0 - fine - coarse),
-            "leaf_area_index": jnp.where(deciduous, 0.0, _GRAMS_PER_KILOGRAM * leaf / leaf_carbon_per_area),
-            "soil_wetness_fraction": moisture / _PERCENT,
-        }
+    source = "to_sipnet_initial_conditions (sipnet_calibration.initial_conditions)"
+    return [
+        Compute(sipnet_parameter_name="soil_carbon", values_read={soil: carbon["initial_soil_organic_carbon"]},
+                function=_Scaled(soil, _GRAMS_PER_KILOGRAM), provenance=f"1000 C_s, {source}"),
+        Compute(sipnet_parameter_name="total_wood_carbon", values_read={wood: carbon["initial_wood_carbon"]},
+                sipnet_parameter_names_read=("fine_root_fraction", "coarse_root_fraction"),
+                function=_TotalWoodCarbon(wood), provenance=f"1000 C_w / (1 - fineRootFrac - coarseRootFrac), {source}"),
+        Compute(sipnet_parameter_name="leaf_area_index", values_read={leaf: carbon["initial_leaf_carbon"]},
+                constants={"deciduous": mask}, sipnet_parameter_names_read=("leaf_carbon_per_area",),
+                function=_LeafAreaIndex(leaf),
+                provenance=f"1000 C_l / leafCSpWt, 0 at a deciduous site, which starts leafless; {source}"),
+        Compute(sipnet_parameter_name="soil_wetness_fraction", values_read={moisture: saturation},
+                function=_Scaled(moisture, 1.0 / _PERCENT), provenance=f"m / 100, {source}"),
+    ]
 
 
 # ── external inputs ───────────────────────────────────────────────────────────
@@ -780,10 +838,10 @@ def validate_external_inputs(external_inputs: Any, *, batch_dim: str = SAMPLE) -
     Raises
     ------
     TypeError
-        If it is not an ``xr.Dataset``.
+        If it is not an ``xr.Dataset``, or a variable is not ``float64``.
     ValueError
-        If a variable is not ``float64`` or lacks valid ``units``, or a dim
-        is neither ``site`` nor a batch dim with integer labels.
+        If a variable lacks valid ``units``, or a dim is neither ``site``
+        nor a batch dim with integer labels.
     """
     check_external_inputs_are_a_dataset(external_inputs)
     for name, variable in external_inputs.data_vars.items():
@@ -803,16 +861,11 @@ REQUIRED_SIPNET_PARAMETER_NAMES: tuple[str, ...] = tuple(
     if field_info.is_required()
 )
 
-#: The values of each unconstrained number at which
-#: :func:`check_sipnet_parameter_map_is_in_domain_at_the_corners` evaluates
-#: the map: ``+-12`` spans ten orders of magnitude on a log scale and reaches
-#: ``1 - 6e-6`` on a logit scale, while staying inside float64.
-DOMAIN_CHECK_CORNERS: tuple[float, ...] = (-12.0, 0.0, 12.0)
-
 
 class SIPNETParametersOutOfDomainError(ValueError):
-    """SIPNET parameters outside pySIPNET's domains: the prior and the map
-    put mass where SIPNET is undefined."""
+    """Values outside their domains: a rule input outside its requirement's,
+    or a SIPNET parameter outside pySIPNET's. The prior and the map put mass
+    where a rule or SIPNET is undefined."""
 
 
 # ── private helpers ───────────────────────────────────────────────────────────
@@ -822,36 +875,99 @@ _FLAT_SPECS: Mapping[str, ParameterSpec] = frozendict(
 )
 _SPEC_ORDER: Mapping[str, int] = frozendict({name: i for i, name in enumerate(_FLAT_SPECS)})
 
-_DOMAIN_BOUNDS: Mapping[ParameterDomain, Bounds] = frozendict(
+_SIPNET_DOMAIN_SUPPORTS: Mapping[ParameterDomain, Support] = frozendict(
     {
-        ParameterDomain.REAL: Bounds(),
-        ParameterDomain.POSITIVE: Bounds(0.0, inf),
-        ParameterDomain.NON_NEGATIVE: Bounds(0.0, inf, low_closed=True),
-        ParameterDomain.UNIT_INTERVAL: Bounds(0.0, 1.0, True, True),
-        ParameterDomain.OPEN_UNIT_INTERVAL: Bounds(0.0, 1.0),
+        ParameterDomain.REAL: REAL,
+        ParameterDomain.POSITIVE: POSITIVE,
+        ParameterDomain.NON_NEGATIVE: NON_NEGATIVE,
+        ParameterDomain.UNIT_INTERVAL: UNIT_INTERVAL,
+        ParameterDomain.OPEN_UNIT_INTERVAL: OPEN_UNIT_INTERVAL,
     }
 )
+
+#: The columns of :meth:`SIPNETParameterMap.out_of_domain` after the dims.
+_REPORT_COLUMNS = ("sipnet_parameter", "value_name", "value")
 
 #: Grams in a kilogram, and percent in one.
 _GRAMS_PER_KILOGRAM, _PERCENT = 1000.0, 100.0
 
 
 @dataclass(frozen=True)
-class _Labeled:
-    """An array whose leading axes are *dims*, and whose further axes (a
-    vector's natural numbers) are not dims."""
+class _LabeledAtSites:
+    """A value at the sites: an array on ``(*batch_dims, site, *element
+    axes)``, the batch dims' labels, and nothing else of xarray, so a rule
+    receives arrays."""
 
-    dims: tuple[str, ...]
-    array: Array
+    batch_dims: tuple[str, ...]
+    array: np.ndarray
+    labels: Mapping[str, np.ndarray]
+
+    @classmethod
+    def of(cls, variable: xr.DataArray, order: Sequence[str]) -> _LabeledAtSites:
+        batch = tuple(d for d in order if d in variable.dims)
+        elements = [d for d in variable.dims if d not in batch and d != SITE]
+        variable = variable.transpose(*batch, SITE, *elements)
+        labels = {d: np.asarray(variable[d].values) if d in variable.indexes else np.arange(variable.sizes[d]) for d in batch}
+        return cls(batch, np.asarray(variable.values), labels)
+
+    @property
+    def batch_shape(self) -> tuple[int, ...]:
+        return self.array.shape[: len(self.batch_dims)]
 
     def broadcast(self, dims: tuple[str, ...], sizes: Mapping[str, int]) -> Array:
-        """The array on *dims*, a superset of its own in the same order."""
-        array = jnp.asarray(self.array)
-        trailing = array.shape[len(self.dims):]
+        """The array on *dims* then ``site`` and its element axes, *dims* a
+        superset of its batch dims in the same order."""
+        array = self.array
         for axis, dim in enumerate(dims):
-            if dim not in self.dims:
-                array = jnp.expand_dims(array, axis)
-        return jnp.broadcast_to(array, tuple(sizes[d] for d in dims) + trailing)
+            if dim not in self.batch_dims:
+                array = np.expand_dims(array, axis)
+        target = (*(sizes[d] for d in dims), *array.shape[len(dims):])
+        return jnp.asarray(np.broadcast_to(array, target))
+
+
+@dataclass(frozen=True)
+class _MaxPhotosynthesisRate:
+    capacity_value_name: str
+    respiration_share_value_name: str
+
+    def __call__(self, daily_mean_photosynthesis_fraction, leaf_carbon_fraction, **values) -> Array:
+        capacity = values[self.capacity_value_name]
+        share = values[self.respiration_share_value_name]
+        return capacity * leaf_carbon_fraction * (1.0 - share) / daily_mean_photosynthesis_fraction
+
+
+@dataclass(frozen=True)
+class _FoliarRespirationFraction:
+    respiration_share_value_name: str
+
+    def __call__(self, daily_mean_photosynthesis_fraction, **values) -> Array:
+        share = values[self.respiration_share_value_name]
+        return share * daily_mean_photosynthesis_fraction / (1.0 - share)
+
+
+@dataclass(frozen=True)
+class _Scaled:
+    value_name: str
+    factor: float
+
+    def __call__(self, **values) -> Array:
+        return self.factor * values[self.value_name]
+
+
+@dataclass(frozen=True)
+class _TotalWoodCarbon:
+    value_name: str
+
+    def __call__(self, fine_root_fraction, coarse_root_fraction, **values) -> Array:
+        return _GRAMS_PER_KILOGRAM * values[self.value_name] / (1.0 - fine_root_fraction - coarse_root_fraction)
+
+
+@dataclass(frozen=True)
+class _LeafAreaIndex:
+    value_name: str
+
+    def __call__(self, deciduous, leaf_carbon_per_area, **values) -> Array:
+        return jnp.where(deciduous, 0.0, _GRAMS_PER_KILOGRAM * values[self.value_name] / leaf_carbon_per_area)
 
 
 def _spec(sipnet_parameter_name: str) -> ParameterSpec:
@@ -862,58 +978,68 @@ def _set_by(rule: Any) -> str:
     return f"rule {type(rule).__name__}"
 
 
-def _intersection(bounds: Sequence[Bounds]) -> Bounds:
-    """The tightest bounds within every one of *bounds*."""
-    low = max(b.low for b in bounds)
-    high = min(b.high for b in bounds)
-    return Bounds(
-        low,
-        high,
-        all(b.low_closed for b in bounds if b.low == low),
-        all(b.high_closed for b in bounds if b.high == high),
-    )
+def _batch_dims_in_order(variables: Sequence[xr.DataArray] | Any) -> tuple[str, ...]:
+    """The batch dims of the values, in the order they first appear: every
+    dim but ``site`` and the element axes (string labels)."""
+    order: dict[str, None] = {}
+    for variable in variables:
+        for dim in variable.dims:
+            index = variable.indexes.get(dim)
+            is_element = index is not None and len(index) > 0 and all(isinstance(v, str) for v in index)
+            if dim != SITE and not is_element:
+                order[str(dim)] = None
+    return tuple(order)
 
 
-def _union(order: tuple[str, ...], labeled: Sequence[_Labeled]) -> tuple[str, ...]:
-    """The dims of *labeled*, in *order*; always ``site``, since every value
-    is read at the sites."""
-    present = {SITE, *(dim for value in labeled for dim in value.dims)}
-    return tuple(dim for dim in order if dim in present)
+def _union(order: tuple[str, ...], inputs: Sequence[_LabeledAtSites]) -> tuple[str, ...]:
+    """The batch dims of *inputs*, in *order*. Values of one Dataset share
+    one index per dim, so a batch dim's labels are the same in every input."""
+    present = {d for item in inputs for d in item.batch_dims}
+    return tuple(d for d in order if d in present)
 
 
-def _dim_sizes(values: Mapping[str, _Labeled]) -> dict[str, int]:
-    sizes: dict[str, int] = {}
-    for value in values.values():
-        sizes.update(zip(value.dims, jnp.shape(value.array)))
-    return sizes
+def _sipnet_parameter_fields(written: Mapping[str, tuple[_LabeledAtSites, str]], site_dims: SiteDims) -> xr.Dataset:
+    """The SIPNET parameter fields, in ``PARAMETER_SPECS`` order."""
+    coordinates: dict[str, Any] = {}
+    variables = {}
+    for name, (labeled, set_by) in sorted(written.items(), key=lambda kv: _SPEC_ORDER[kv[0]]):
+        for dim in labeled.batch_dims:
+            coordinates[dim] = batch_coordinate(dim, labeled.labels[dim])
+        variables[name] = (
+            (*labeled.batch_dims, SITE),
+            np.asarray(labeled.array, dtype=np.float64),
+            {**_FLAT_SPECS[name].xarray_attributes(), "set_by": set_by},
+        )
+    dataset = xr.Dataset(variables, coords=coordinates)
+    return dataset.assign_coords(site_coordinates(site_dims.sites, site_dims.site_table))
 
 
-def _external_values(
-    external_inputs: xr.Dataset, parameter_vector: ParameterVector, order: tuple[str, ...]
-) -> dict[str, _Labeled]:
-    """Each external input on the vector's sites, its dims in *order*."""
-    out = {}
-    for name, variable in external_inputs.data_vars.items():
-        if SITE in variable.dims:
-            check_external_input_covers_the_sites(str(name), variable, parameter_vector.sites)
-            variable = variable.sel({SITE: list(parameter_vector.sites)})
-        variable = variable.transpose(*[d for d in order if d in variable.dims])
-        out[str(name)] = _Labeled(tuple(str(d) for d in variable.dims), jnp.asarray(variable.values))
-    return out
-
-
-def _corner_theta(parameter_vector: ParameterVector) -> np.ndarray:
-    """Rows of theta: each parameter at every corner of its unconstrained
-    numbers (:data:`DOMAIN_CHECK_CORNERS`, the same for each dim label), the
-    others at 0."""
+def _rows_outside(
+    variable: xr.DataArray, outside: np.ndarray, values: np.ndarray | None, identity: Mapping[str, str]
+) -> list[dict[str, Any]]:
+    """One row per position of *variable* where *outside* holds, labeled by
+    its dims."""
     rows = []
-    for parameter in parameter_vector.parameters:
-        positions = parameter_vector.positions(parameter_name=parameter.name)
-        for corner in itertools.product(DOMAIN_CHECK_CORNERS, repeat=parameter.unconstrained_size):
-            row = np.zeros(parameter_vector.dimension)
-            row[positions] = np.tile(corner, len(positions) // parameter.unconstrained_size)
-            rows.append(row)
-    return np.asarray(rows)
+    labels = [variable[dim].values if dim in variable.coords else np.arange(variable.sizes[dim]) for dim in variable.dims]
+    for position in np.argwhere(outside):
+        row = {str(dim): labels[axis][i].item() for axis, (dim, i) in enumerate(zip(variable.dims, position))}
+        value = np.nan if values is None else float(values[tuple(position)])
+        rows.append({**row, "sipnet_parameter": None, "value_name": None, **identity, "value": value})
+    return rows
+
+
+def _rows_outside_the_requirement(name: str, variable: xr.DataArray, requirement: ValueRequirement) -> list[dict[str, Any]]:
+    """One row per batch position and site where a value read lies outside
+    its requirement's domain; a value of rank 1 or more is outside when any
+    of its numbers, or its whole vector, is."""
+    array = np.asarray(variable.values, dtype=np.float64)
+    inside = np.asarray(requirement.domain.contains(array))
+    leading = variable.ndim - len(requirement.shape)
+    if inside.ndim > leading:
+        inside = inside.all(axis=tuple(range(leading, inside.ndim)))
+    elements = variable.dims[leading:]
+    at_positions = variable.isel({d: 0 for d in elements}, drop=True) if elements else variable
+    return _rows_outside(at_positions, ~inside, None if elements else array, {"value_name": name})
 
 
 def _units_match(units: str | None, required: str | None) -> bool:
@@ -936,6 +1062,7 @@ def check_sipnet_parameter_map_is_valid(sipnet_parameter_map: SIPNETParameterMap
         check_sipnet_parameter_has_one_writer(fixed.sipnet_parameter_name, "a fixed value", writers)
         check_fixed_values_are_in_the_domain(fixed)
     for rule in sipnet_parameter_map.rules:
+        check_rule_is_a_rule(rule)
         for name in rule.sipnet_parameter_names_read:
             check_sipnet_parameter_name_is_a_flat_name(name, f"{_set_by(rule)} reads, whose names")
             check_sipnet_parameter_read_is_set_earlier(name, rule, writers)
@@ -946,87 +1073,87 @@ def check_sipnet_parameter_map_is_valid(sipnet_parameter_map: SIPNETParameterMap
 
 def check_sipnet_parameter_map_fits(
     sipnet_parameter_map: SIPNETParameterMap,
-    parameter_vector: ParameterVector,
+    descriptions: Mapping[str, Parameter | DerivedParameter],
     external_inputs: ExternalInputs | None = None,
+    site_dims: SiteDims | None = None,
 ) -> None:
-    """The map reads what the vector and external inputs hold, as its rules
-    require, and its per-dim-label values cover the vector's dim labels."""
+    """The map reads what the parameters, derived parameters and external
+    inputs hold, in the units and shapes its rules require, and its
+    constants and fixed values cover the labels the sites carry."""
     external_names = () if external_inputs is None else tuple(map(str, external_inputs.data_vars))
-    check_external_inputs_share_no_name_with_the_parameters(external_names, parameter_vector)
-    derived = dict(zip(parameter_vector.derived_parameter_names, parameter_vector.derived_parameters))
+    check_external_inputs_share_no_name_with_the_values(external_names, descriptions)
     for name, requirements in sipnet_parameter_map.values_read.items():
-        check_value_is_held_once(name, parameter_vector, external_names)
+        check_value_is_held(name, descriptions, external_names)
         for requirement in requirements:
-            if name in parameter_vector:
-                check_parameter_meets_the_requirement(parameter_vector[name], requirement)
-            elif name in derived:
-                check_parameter_meets_the_requirement(derived[name], requirement)
+            if name in descriptions:
+                check_description_meets_the_requirement(descriptions[name], requirement)
             else:
                 check_external_input_meets_the_requirement(name, external_inputs[name], requirement)
-    for fixed in sipnet_parameter_map.fixed:
-        if fixed.dim is not None:
-            check_keys_cover_the_dim_labels(
-                fixed.value, fixed.dim, parameter_vector, f"fixed {fixed.sipnet_parameter_name!r}"
-            )
-    for rule in sipnet_parameter_map.rules:
-        for dim, mapping in getattr(rule, "dim_label_arguments", {}).items():
-            check_keys_cover_the_dim_labels(mapping, dim, parameter_vector, _set_by(rule))
+    if site_dims is not None:
+        for rule in sipnet_parameter_map.rules:
+            for name, constant in rule.constants.items():
+                check_labels_cover_the_sites(constant, site_dims, f"{_set_by(rule)} constant {name!r}")
+        for fixed in sipnet_parameter_map.fixed:
+            if isinstance(fixed.value, xr.DataArray):
+                check_labels_cover_the_sites(fixed.value, site_dims, f"fixed {fixed.sipnet_parameter_name!r}")
 
 
-def check_sipnet_parameter_map_is_in_domain_at_the_corners(
-    sipnet_parameter_map: SIPNETParameterMap,
-    parameter_vector: ParameterVector,
-    external_inputs: ExternalInputs | None = None,
-    *,
-    batch_dim: str = SAMPLE,
-) -> None:
-    """The map writes SIPNET parameters in pySIPNET's domains with each
-    parameter at every corner of :data:`DOMAIN_CHECK_CORNERS`, the others at
-    0: an early warning, complete only for maps monotone in each number of
-    theta."""
-    corners = _corner_theta(parameter_vector)
-    inputs = external_inputs
-    if inputs is not None and batch_dim in inputs.dims:
-        # Rows of theta here are corners, not samples: take the inputs of one.
-        inputs = inputs.isel({batch_dim: 0}, drop=True)
-    fields = sipnet_parameter_map.sipnet_parameter_fields(
-        parameter_vector, corners, external_inputs=inputs, batch_dim=batch_dim
-    )
-    outside = sipnet_parameter_map.out_of_domain(fields)
-    if not outside.empty:
-        names = sorted(set(outside["sipnet_parameter"]))
-        raise ValueError(
-            f"the map can write {truncated(names)} outside pySIPNET's domains, at a corner of "
-            f"theta in {DOMAIN_CHECK_CORNERS}; give the parameter a support or prior whose "
-            "values the rule maps into the domain."
+def check_rule_is_a_rule(rule: Any) -> None:
+    """A rule has what the map reads of one: what it reads, its constants,
+    what it writes, and a call."""
+    if not isinstance(rule, SIPNETRule):
+        raise TypeError(
+            f"{type(rule).__name__} is not a SIPNET rule: a rule has values_read, constants, "
+            "sipnet_parameter_names_read, sipnet_parameter_names_written and a call."
         )
+
+
+def check_compute_is_valid(compute: Compute) -> None:
+    """A ``Compute`` rule has a function, reads each keyword once, reads
+    values by requirement and constants as DataArrays, and says where its
+    formula came from."""
+    if not callable(compute.function):
+        raise TypeError(f"Compute {compute.sipnet_parameter_name!r} has a function that is not callable.")
+    for name, requirement in compute.values_read.items():
+        if not isinstance(requirement, ValueRequirement):
+            raise TypeError(f"Compute {compute.sipnet_parameter_name!r} reads {name!r} without a ValueRequirement.")
+    for name, constant in compute.constants.items():
+        if not isinstance(constant, xr.DataArray):
+            raise TypeError(
+                f"Compute {compute.sipnet_parameter_name!r} constant {name!r} is a {type(constant).__name__}; "
+                "give a DataArray, such as pd.Series({...}).rename_axis('pft').to_xarray()."
+            )
+    keywords = [*compute.values_read, *compute.constants, *compute.sipnet_parameter_names_read]
+    repeated = sorted({k for k in keywords if keywords.count(k) > 1})
+    if repeated:
+        raise ValueError(
+            f"Compute {compute.sipnet_parameter_name!r} receives {repeated} as two things (a value, a "
+            "constant or a SIPNET parameter); rename in a wrapper."
+        )
+    if not isinstance(compute.provenance, str) or not compute.provenance.strip():
+        raise ValueError(f"Compute {compute.sipnet_parameter_name!r} has no provenance; say where the formula comes from.")
 
 
 def check_fixed_is_valid(fixed: Fixed) -> None:
-    """A fixed value is a number, or with a dim a mapping of numbers, and
-    says where it came from."""
-    if isinstance(fixed.value, Mapping) != (fixed.dim is not None):
+    """A fixed value is a number or a numeric DataArray, and says where it
+    came from."""
+    value = fixed.value
+    if isinstance(value, xr.DataArray):
+        if value.dtype.kind not in "iuf" or value.dtype == np.bool_:
+            raise TypeError(f"fixed {fixed.sipnet_parameter_name!r} holds {value.dtype} values; give numbers.")
+    elif isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
         raise TypeError(
-            f"fixed {fixed.sipnet_parameter_name!r}: a value per dim label is a mapping with "
-            "dim=, and a shared value a number without it."
+            f"fixed {fixed.sipnet_parameter_name!r} holds {value!r}, which is neither a number nor a numeric "
+            "DataArray keyed by label."
         )
-    for value in (fixed.value.values() if isinstance(fixed.value, Mapping) else [fixed.value]):
-        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
-            raise TypeError(
-                f"fixed {fixed.sipnet_parameter_name!r} holds {value!r}, which is not a number; "
-                "give numbers."
-            )
     if not isinstance(fixed.provenance, str) or not fixed.provenance.strip():
-        raise ValueError(
-            f"fixed {fixed.sipnet_parameter_name!r} has no provenance; say where the value came from."
-        )
+        raise ValueError(f"fixed {fixed.sipnet_parameter_name!r} has no provenance; say where the value came from.")
 
 
 def check_fixed_values_are_in_the_domain(fixed: Fixed) -> None:
     """Every fixed value lies in its SIPNET parameter's domain."""
     domain = _spec(fixed.sipnet_parameter_name).domain
-    values = np.asarray(fixed.values(), dtype=np.float64)
-    if not (domain.contains(values) & np.isfinite(values)).all():
+    if not domain.contains(fixed.values()).all():
         raise ValueError(
             f"fixed {fixed.sipnet_parameter_name!r} holds a value outside pySIPNET's domain "
             f"{domain.value!r}; fix it inside the domain."
@@ -1036,9 +1163,7 @@ def check_fixed_values_are_in_the_domain(fixed: Fixed) -> None:
 def check_sipnet_parameter_has_one_writer(name: str, writer: str, writers: dict[str, str]) -> None:
     """Each SIPNET parameter is written once, by a rule or a fixed value."""
     if name in writers:
-        raise ValueError(
-            f"{name!r} is written by both {writers[name]} and {writer}; keep one writer."
-        )
+        raise ValueError(f"{name!r} is written by both {writers[name]} and {writer}; keep one writer.")
     writers[name] = writer
 
 
@@ -1046,122 +1171,127 @@ def check_sipnet_parameter_read_is_set_earlier(name: str, rule: Any, writers: Ma
     """A SIPNET parameter a rule reads is fixed or written by an earlier rule."""
     if name not in writers:
         raise ValueError(
-            f"{_set_by(rule)} reads {name!r}, which is neither fixed nor written by an earlier "
-            "rule; fix it, or move the rule that writes it before this one."
+            f"{_set_by(rule)} reads {name!r}, which is neither fixed nor written by an earlier rule; fix "
+            "it, or move the rule that writes it before this one."
         )
 
 
-def check_external_inputs_share_no_name_with_the_parameters(
-    external_names: Sequence[str], parameter_vector: ParameterVector
+def check_values_are_a_dataset(values: Any) -> None:
+    """Values are a labeled ``xr.Dataset``, read by name."""
+    if not isinstance(values, xr.Dataset):
+        raise TypeError(f"the map reads values from an xarray Dataset, got {type(values).__name__}.")
+
+
+def check_values_hold_what_the_rules_read(names: Sequence[str], values: xr.Dataset) -> None:
+    """The values hold every value a rule reads."""
+    missing = [name for name in names if name not in values.data_vars]
+    if missing:
+        raise KeyError(
+            f"the map reads {truncated(missing)}, which the values lack; merge in the parameters', derived "
+            "parameters' and external inputs' labeled values."
+        )
+
+
+def check_value_has_the_required_shape(name: str, variable: xr.DataArray, shape: tuple[int, ...]) -> None:
+    """A value's element axes at a site have the shape its rule requires,
+    which a rule would otherwise read across the wrong axes."""
+    elements = tuple(variable.sizes[d] for d in variable.dims[variable.dims.index(SITE) + 1:])
+    if elements != tuple(shape):
+        raise ValueError(
+            f"the value {name!r} has element axes of shape {elements} at a site, but the rule reading it "
+            f"requires {tuple(shape)}."
+        )
+
+
+def check_external_inputs_share_no_name_with_the_values(
+    external_names: Sequence[str], descriptions: Mapping[str, Any]
 ) -> None:
     """No external input is named like a parameter or derived parameter,
     since values are read by name."""
-    taken = {*parameter_vector.parameter_names, *parameter_vector.derived_parameter_names}
-    shared = [name for name in external_names if name in taken]
+    shared = [name for name in external_names if name in descriptions]
     if shared:
         raise ValueError(
-            f"the external inputs {truncated(shared)} are named like parameters or derived "
-            "parameters of the vector; values are read by name, so rename them."
+            f"the external inputs {truncated(shared)} are named like parameters or derived parameters; "
+            "values are read by name, so rename them."
         )
 
 
-def check_value_is_held_once(name: str, parameter_vector: ParameterVector, external_names: Sequence[str]) -> None:
-    """A value a rule reads is exactly one parameter, derived parameter or
+def check_value_is_held(name: str, descriptions: Mapping[str, Any], external_names: Sequence[str]) -> None:
+    """A value a rule reads is a parameter, a derived parameter or an
     external input."""
-    in_vector = name in parameter_vector or name in parameter_vector.derived_parameter_names
-    held = in_vector + (name in external_names)
-    if held == 0:
+    if name not in descriptions and name not in external_names:
         raise KeyError(
-            f"the map reads {name!r}, which is neither a parameter, a derived parameter nor an "
-            "external input; add it to one of them, or read a value that exists."
-        )
-    if held == 2:
-        raise ValueError(
-            f"the map reads {name!r}, which is both a parameter and an external input; rename one."
+            f"the map reads {name!r}, which is neither a parameter, a derived parameter nor an external "
+            "input; add it to one of them, or read a value that exists."
         )
 
 
-def check_parameter_meets_the_requirement(
-    parameter: Parameter | DerivedParameter, requirement: ValueRequirement
+def check_description_meets_the_requirement(
+    description: Parameter | DerivedParameter, requirement: ValueRequirement
 ) -> None:
     """A parameter or derived parameter read by a rule is in the units and
-    natural size the rule requires, and its whole support, where known,
-    lies within the bounds."""
-    if not _units_match(parameter.units, requirement.units):
+    shape the rule requires."""
+    if not _units_match(description.units, requirement.units):
         raise ValueError(
-            f"parameter {parameter.name!r} is in {parameter.units!r}, but the rule reading it "
-            f"requires {requirement.units!r}; give the parameter those units."
+            f"{description.name!r} is in {description.units!r}, but the rule reading it requires "
+            f"{requirement.units!r}; give it those units."
         )
-    if parameter.natural_size != requirement.natural_size:
+    if tuple(description.shape) != tuple(requirement.shape):
         raise ValueError(
-            f"parameter {parameter.name!r} has {parameter.natural_size} natural numbers, but the "
-            f"rule reading it requires {requirement.natural_size}."
-        )
-    if (
-        requirement.bounds is not None
-        and parameter.support is not None
-        and not requirement.bounds.contains_support(parameter.support)
-    ):
-        raise ValueError(
-            f"parameter {parameter.name!r} has support {parameter.support.name!r}, which reaches "
-            f"outside what the rule reading it requires ({requirement.bounds}); give it a support "
-            "within those bounds."
+            f"{description.name!r} has shape {description.shape}, but the rule reading it requires "
+            f"{tuple(requirement.shape)}."
         )
 
 
-def check_external_input_meets_the_requirement(
-    name: str, variable: xr.DataArray, requirement: ValueRequirement
-) -> None:
+def check_external_input_meets_the_requirement(name: str, variable: xr.DataArray, requirement: ValueRequirement) -> None:
     """An external input read by a rule is in the units the rule requires,
-    and every value lies within its bounds."""
-    if requirement.natural_size != 1:
+    and is one number per site, as the rule requires."""
+    if requirement.shape != ():
         raise ValueError(
-            f"external input {name!r} is read by a rule requiring {requirement.natural_size} "
-            "numbers per site, and an external input holds one."
+            f"external input {name!r} is read by a rule requiring a value of shape {requirement.shape} per "
+            "site, and an external input holds one number."
         )
     if not _units_match(variable.attrs.get("units"), requirement.units):
         raise ValueError(
-            f"external input {name!r} is in {variable.attrs.get('units')!r}, but the rule reading "
-            f"it requires {requirement.units!r}; convert it first."
+            f"external input {name!r} is in {variable.attrs.get('units')!r}, but the rule reading it "
+            f"requires {requirement.units!r}; convert it first."
         )
-    if requirement.bounds is not None:
-        inside = np.asarray(requirement.bounds.contains(variable.values))
-        if not inside.all():
-            where = variable.where(xr.DataArray(~inside, dims=variable.dims), drop=True)
-            labels = {str(d): truncated(where[d].values.tolist()) for d in where.dims if d in where.coords}
-            raise ValueError(
-                f"external input {name!r} holds values outside {requirement.bounds}, at {labels}; "
-                "choose or clip the members before they enter."
-            )
 
 
-def check_keys_cover_the_dim_labels(
-    mapping: Mapping[Any, Any], dim: str, parameter_vector: ParameterVector, what: str
-) -> None:
-    """A mapping per dim label covers every dim label of the vector."""
-    labels = list(parameter_vector.dim_index(dim))
-    missing = [label for label in labels if label not in mapping]
-    if missing:
-        raise KeyError(
-            f"{what} has no value for {dim} dim label(s) {truncated(missing)}; key it by every "
-            "dim label of the vector."
-        )
+def check_labels_cover_the_sites(array: xr.DataArray, site_dims: SiteDims, what: str) -> None:
+    """A constant or fixed value is on dims of the site dims, labeled, with
+    a value at every label the sites carry."""
+    for dim in array.dims:
+        if dim not in site_dims.coords:
+            raise ValueError(f"{what} is on {dim!r}, which is not a dim of the site dims {list(site_dims.coords)}.")
+        if dim not in array.indexes:
+            raise ValueError(f"{what} has no {dim!r} coordinate; give {dim!r} its labels.")
+        missing = [label for label in site_dims.coords[dim] if label not in set(array.indexes[dim].tolist())]
+        if missing:
+            raise KeyError(f"{what} has no value for {dim} label(s) {truncated(missing)} some site carries.")
 
 
 def check_deciduous_values_are_booleans(deciduous: Mapping[Any, Any]) -> None:
-    """Deciduousness is a boolean per dim label: a number cast to bool would
+    """Deciduousness is a boolean per class: a number cast to bool would
     make every non-zero value, NaN included, deciduous and zero its leaves."""
     bad = [key for key, value in deciduous.items() if not isinstance(value, (bool, np.bool_))]
     if bad:
         raise TypeError(f"deciduous values must be booleans; {truncated(bad)} are not.")
 
 
+def check_state_value_names_are_four(state_value_names: Sequence[str]) -> None:
+    """The initial state is read by four names, one per state value."""
+    if len(state_value_names) != len(INITIAL_STATE_NAMES):
+        raise ValueError(
+            f"state_value_names names {len(state_value_names)} values; name the four of "
+            f"{INITIAL_STATE_NAMES}, in that order."
+        )
+
+
 def check_external_inputs_are_a_dataset(external_inputs: Any) -> None:
     """External inputs are an ``xr.Dataset``, which is how they are read."""
     if not isinstance(external_inputs, xr.Dataset):
-        raise TypeError(
-            f"external inputs are an xarray Dataset, got {type(external_inputs).__name__}; pass one."
-        )
+        raise TypeError(f"external inputs are an xarray Dataset, got {type(external_inputs).__name__}; pass one.")
 
 
 def check_external_input_is_float64_with_units(name: str, variable: xr.DataArray) -> None:
@@ -1186,28 +1316,6 @@ def check_external_input_dim_is_site_or_a_batch_dim(dim: str, external_inputs: x
     labels = external_inputs.indexes.get(dim)
     if dim in NON_BATCH_DIM_NAMES or labels is None or labels.dtype.kind not in "iu":
         raise ValueError(
-            f"external inputs are on {dim!r}, which is neither 'site' nor a batch dim with "
-            "integer labels; select or reduce it first."
+            f"external inputs are on {dim!r}, which is neither 'site' nor a batch dim with integer labels; "
+            "select or reduce it first."
         )
-
-
-def check_external_inputs_are_for_theta(external_inputs: xr.Dataset, n_rows: int | None, batch_dim: str) -> None:
-    """External inputs on theta's batch dim are labeled ``0`` to ``J - 1``,
-    one per row, with which they zip."""
-    if batch_dim not in external_inputs.dims:
-        return
-    labels = external_inputs[batch_dim].values.tolist()
-    if n_rows is None or labels != list(range(n_rows)):
-        raise ValueError(
-            f"external inputs on {batch_dim!r} are labeled {truncated(labels)}, but theta has "
-            f"{'no rows' if n_rows is None else n_rows}; label them 0 to J - 1, one per row of "
-            "theta, or name their dim otherwise to cross them with theta."
-        )
-
-
-def check_external_input_covers_the_sites(name: str, variable: xr.DataArray, sites: Sequence[int]) -> None:
-    """An external input on ``site`` holds every site of the vector."""
-    held = set(variable.indexes[SITE].tolist())
-    missing = [site for site in sites if site not in held]
-    if missing:
-        raise KeyError(f"external input {name!r} has no value for site(s) {truncated(missing)}.")
