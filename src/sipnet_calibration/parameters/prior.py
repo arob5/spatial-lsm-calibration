@@ -600,7 +600,8 @@ class PriorTerm:
     constants:
         ``{name: xr.DataArray}``, labeled values the function reads, as a
         derived parameter's are: on dims of the coords or element axes, read
-        at their labels and passed by name.
+        at their labels, their dims in the covered parameters' ``indexed_by``
+        order then their element axes, and passed by name.
     memberships:
         ``{name: xr.DataArray}``, for each label of one dim the label of
         another, passed by name as ``int64`` positions, as a derived
@@ -692,8 +693,8 @@ def independent_over_dim(distribution_family: Callable[..., tfd.Distribution], /
     **arguments:
         Arguments shared by every label, passed as they are. An argument per
         label is a constant of the term (``PriorTerm(constants=...)``),
-        passed to the family by its name at the coords' labels, on the
-        parameter's index dims in ``indexed_by`` order.
+        passed to the family by its name at the coords' labels, its dims in
+        the parameter's ``indexed_by`` order then its element axes.
 
     Returns
     -------
@@ -1124,7 +1125,11 @@ class _BuiltTerm:
         vector = prior.parameter_vector
         names = _names_of(key)
         labeled_arguments = {
-            **aligned_constants(term.constants, prior._labels_by_dim, message_name=f"the prior of {term_name(key)!r} constants"),
+            **aligned_constants(
+                term.constants, prior._labels_by_dim,
+                dim_order=(*vector[names[0]].indexed_by, *(a for n in names for a in vector[n].element_labels)),
+                message_name=f"the prior of {term_name(key)!r} constants",
+            ),
             **aligned_memberships(term.memberships, prior.coords, message_name=f"the prior of {term_name(key)!r} memberships"),
         }
         built = cls(

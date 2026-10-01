@@ -447,3 +447,13 @@ def test_site_ids_of_two_integer_dtypes_are_one_layout():
     check_parameter_vectors_share_a_layout(first, vector_of(SOIL, site=np.asarray(sites, dtype=np.int32)))
     with pytest.raises(ValueError, match="differ in their"):
         check_parameter_vectors_share_a_layout(first, vector_of(SOIL, site=np.asarray(sites[::-1])))
+
+
+def test_a_value_on_a_closed_end_has_no_theta():
+    from sipnet_calibration.parameters.support import NON_NEGATIVE, UNIT_INTERVAL
+
+    vector = vector_of(Parameter(name="share", support=UNIT_INTERVAL, units="1"),
+                       Parameter(name="amount", support=NON_NEGATIVE, units="1"))
+    natural = jnp.asarray([[0.0, 1.0], [1.0, 0.0], [0.5, 2.0]])
+    assert vector.contains(natural).tolist() == [False, False, True]
+    assert not bool(jnp.isfinite(vector.to_unconstrained(natural)[:2]).all())

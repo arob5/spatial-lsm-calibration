@@ -24,12 +24,13 @@ tuple of string labels per axis of ``shape``.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
+import pandas as pd
 from frozendict import frozendict
 from tensorflow_probability.substrates import jax as tfp
 
@@ -135,33 +136,30 @@ class Parameter:
         :data:`REAL`; units ``None``; the identity; shape
         :attr:`unconstrained_shape`.
 
-        Its element labels are the natural ones when the bijector keeps the
-        shape; for ``SoftmaxCentered``, the same axes with the last label of
-        the last axis dropped, entry :math:`i` being the additive log-ratio
-        :math:`\\log(x_i / x_k)`; otherwise the defaults. Its long name is
-        :math:`g(n)`, with :math:`n` this parameter's long name or name and
-        :math:`g` the inverse transform's name: ``log`` for ``Exp``,
-        ``logit`` for ``Sigmoid``, ``alr`` (the additive log-ratio) for
-        ``SoftmaxCentered``, or the bijector's own name; under the identity
-        it is this parameter's long name.
+        Its long name is :math:`g(n)`, with :math:`n` this parameter's long
+        name or name and :math:`g` the name of :math:`T^{-1}`: ``log`` for
+        ``Exp``, ``logit`` for ``Sigmoid``, and ``alr``, the additive
+        log-ratio :math:`\\theta_i = \\log(x_i / x_k)`, for
+        ``SoftmaxCentered``; under the identity it is this parameter's long
+        name. Its element labels are the natural ones, the last label of the
+        last axis dropped under ``SoftmaxCentered``. Another bijector gives
+        :math:`g` its own name, and keeps the natural labels when it keeps
+        the shape, the defaults otherwise.
         """
-        shape = self.unconstrained_shape
-        if shape == self.shape:
-            labels = dict(self.element_labels)
-        elif isinstance(self.bijector, tfb.SoftmaxCentered):
-            labels = dict(self.element_labels)
-            last = list(labels)[-1]
-            labels[last] = labels[last][:-1]
+        coordinates = _UNCONSTRAINED_COORDINATES.get(type(self.bijector))
+        if coordinates is None:
+            transform = self.bijector.name
+            labels = dict(self.element_labels) if self.unconstrained_shape == self.shape else None
         else:
-            labels = None
+            transform, labels = coordinates.transform, coordinates.element_labels(self.element_labels)
         return Parameter(
             name=self.name,
             support=REAL,
             units=None,
-            shape=shape,
+            shape=self.unconstrained_shape,
             element_labels=None if labels is None else {axis: list(v) for axis, v in labels.items()},
             indexed_by=self.indexed_by,
-            long_name=self._unconstrained_long_name(),
+            long_name=self.long_name if transform is None else f"{transform}({self.long_name or self.name})",
         )
 
     def __repr__(self) -> str:
@@ -169,18 +167,43 @@ class Parameter:
         shape = f", shape={self.shape}" if self.shape else ""
         return f"Parameter(name={self.name!r}, support={self.support.name!r}, units={self.units!r}{shape}{indexed})"
 
-    def _unconstrained_long_name(self) -> str | None:
-        if isinstance(self.bijector, tfb.Identity):
-            return self.long_name
-        transform = _TRANSFORM_NAMES.get(type(self.bijector), self.bijector.name)
-        return f"{transform}({self.long_name or self.name})"
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-#: The name of :math:`T^{-1}` for the bijectors whose inverse has one.
-_TRANSFORM_NAMES: Mapping[type, str] = frozendict(
-    {tfb.Exp: "log", tfb.Sigmoid: "logit", tfb.SoftmaxCentered: "alr"}
+@dataclass(frozen=True)
+class _Coordinates:
+    """What theta's coordinates are under one type of bijector: the name of
+    :math:`T^{-1}` (``None`` for the identity, which keeps the long name),
+    and theta's element labels from the natural ones."""
+
+    transform: str | None
+    element_labels: Callable[[Mapping[str, pd.Index]], dict[str, pd.Index]]
+
+
+def _same_labels(labels: Mapping[str, pd.Index]) -> dict[str, pd.Index]:
+    return dict(labels)
+
+
+def _without_the_last_label(labels: Mapping[str, pd.Index]) -> dict[str, pd.Index]:
+    """The labels with the last label of the last axis dropped: theta's
+    element :math:`i` is the additive log-ratio :math:`\\log(x_i / x_k)`."""
+    out = dict(labels)
+    last = list(out)[-1]
+    out[last] = out[last][:-1]
+    return out
+
+
+#: theta's coordinates under each type of default bijector: ``log`` for
+#: ``Exp``, ``logit`` for ``Sigmoid``, and ``alr``, the additive log-ratio
+#: :math:`\theta_i = \log(x_i / x_k)`, for ``SoftmaxCentered``, which drops
+#: the last label.
+_UNCONSTRAINED_COORDINATES: Mapping[type, _Coordinates] = frozendict(
+    {
+        tfb.Identity: _Coordinates(None, _same_labels),
+        tfb.Exp: _Coordinates("log", _same_labels),
+        tfb.Sigmoid: _Coordinates("logit", _same_labels),
+        tfb.SoftmaxCentered: _Coordinates("alr", _without_the_last_label),
+    }
 )
 
 

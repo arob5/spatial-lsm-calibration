@@ -617,11 +617,13 @@ class ParameterVector:
         return self.unconstrained.values_to_flat({p.name: p.bijector.inverse(natural[p.name]) for p in self.parameters})
 
     def contains(self, natural_flat: Any) -> Array:
-        """Whether every value of each row lies in its parameter's support,
-        ``(*batch, size) -> (*batch,)``. Traceable.
+        """Whether every value of each row has a theta: it lies in its
+        parameter's support, and :math:`T_p^{-1}` of it is finite, so it is
+        not on a closed end, which no theta reaches. ``(*batch, size) ->
+        (*batch,)``. Traceable.
 
-        A natural value outside its support, such as a hand-set initial value
-        of 0 for a positive parameter, becomes a non-finite theta without any
+        A natural value without a theta, such as a hand-set initial value of
+        0 for a positive parameter, becomes a non-finite theta without any
         error, so this is the check to make before :meth:`to_unconstrained`
         on values that were not drawn.
 
@@ -631,12 +633,13 @@ class ParameterVector:
             If the last axis of *natural_flat* is not ``size`` long.
         """
         natural = self.flat_to_values(natural_flat)
-        batch_ndim = jnp.ndim(natural_flat) - 1
-        inside = [
-            p.support.contains(natural[p.name]).reshape((*jnp.shape(natural_flat)[:-1], -1)).all(axis=-1)
-            for p in self.parameters
-        ]
-        return jnp.all(jnp.stack(inside, axis=batch_ndim), axis=batch_ndim)
+        batch = jnp.shape(natural_flat)[:-1]
+        inside = []
+        for p in self.parameters:
+            in_support = p.support.contains(natural[p.name]).reshape((*batch, -1)).all(axis=-1)
+            reached = jnp.isfinite(p.bijector.inverse(natural[p.name])).reshape((*batch, -1)).all(axis=-1)
+            inside.append(in_support & reached)
+        return jnp.all(jnp.stack(inside, axis=len(batch)), axis=len(batch))
 
     # ── supporting methods ────────────────────────────────────────────────────
 

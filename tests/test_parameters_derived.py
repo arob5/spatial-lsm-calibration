@@ -371,3 +371,14 @@ def test_a_derived_element_axis_is_named_apart():
     with pytest.raises(ValueError, match="named like a dim, a parameter"):
         DerivedParameters(parameter_vector=vector, derived_parameters=[derived("x", ("a", "b"))])
     DerivedParameters(parameter_vector=vector, derived_parameters=[derived("part", ("a", "b"))])
+
+
+def test_a_constant_reaches_its_function_in_the_derived_parameters_dim_order():
+    vector = ParameterVector(parameters=[Parameter(name="x", units=None)])
+    constant = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("site", "pft"), coords={"site": [3, 5], "pft": ["a", "b"]})
+    collection = DerivedParameters(
+        parameter_vector=vector, coords={"pft": ["a", "b"], "site": [3, 5]},
+        derived_parameters=[DerivedParameter(name="y", units=None, indexed_by=("pft", "site"), parameter_names=("x",),
+                                             constants={"c": constant}, function=lambda x, c: x + c)],
+    )
+    np.testing.assert_allclose(collection.values({"x": jnp.zeros(1)})["y"][0], constant.transpose("pft", "site").values)

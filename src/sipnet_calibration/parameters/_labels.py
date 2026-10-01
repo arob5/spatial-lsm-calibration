@@ -4,7 +4,9 @@ them. Private to the parameter layer.
 A **constant** is an ``xr.DataArray`` keyed by label, ``float64`` or
 ``bool``, on dims of the coords or element axes of the values in use (a
 simplex center per PFT is on ``(pft, allocation_part)``); it is read at
-their labels, in their order, keeping its own order of dims. A **membership** is a one-dimensional
+their labels, in their order, with its dims in the order of the values it
+is read for (their ``indexed_by``, then their element axes), any other dims
+after them in its own order. A **membership** is a one-dimensional
 ``xr.DataArray`` on one dim of the coords, named for another, whose values
 are labels of the other; it is read as ``int64`` positions into the other
 dim's labels, so ``x[membership]`` reads a value on the other dim at each
@@ -13,7 +15,7 @@ label of the first.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import jax
@@ -101,10 +103,14 @@ def as_memberships(memberships: Any, *, message_name: str) -> frozendict:
 
 
 def aligned_constants(
-    constants: Mapping[str, xr.DataArray], labels_by_dim: Mapping[str, pd.Index], *, message_name: str
+    constants: Mapping[str, xr.DataArray],
+    labels_by_dim: Mapping[str, pd.Index],
+    *,
+    dim_order: Sequence[str],
+    message_name: str,
 ) -> dict[str, jax.Array]:
-    """Each constant read at the labels of its dims: ``{name: array}``, of
-    shape ``[len(labels_by_dim[d]) for d in constant.dims]``, its dtype kept.
+    """Each constant read at the labels of its dims, its dims put in
+    *dim_order*: ``{name: array}``, its dtype kept.
 
     Parameters
     ----------
@@ -113,6 +119,11 @@ def aligned_constants(
     labels_by_dim:
         The coords and the element axes of the values in use, ``{dim:
         labels}``.
+    dim_order:
+        The dims of the values the constants are read for, in order: a
+        constant's dims among them come first, in this order, then its
+        others in its own order. A function receiving a constant then reads
+        its axes in the values' order, whatever order the caller built it in.
     message_name:
         What the constants are called in an error message.
 
@@ -131,6 +142,8 @@ def aligned_constants(
             check_dim_is_labeled(name, constant, str(dim), message_name=message_name)
             check_labels_are_covered(name, constant.indexes[dim], labels_by_dim[dim], message_name=message_name)
         selected = constant.sel({d: list(labels_by_dim[d]) for d in constant.dims})
+        ordered = [d for d in dim_order if d in selected.dims]
+        selected = selected.transpose(*ordered, *(d for d in selected.dims if d not in ordered))
         out[name] = jnp.asarray(np.asarray(selected.values))
     return out
 

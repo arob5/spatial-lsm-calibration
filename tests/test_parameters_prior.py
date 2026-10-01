@@ -425,3 +425,12 @@ def test_derived_parameters_over_another_vector_are_refused():
         Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0))}, derived_parameters=derived)
     with pytest.raises(TypeError, match="must be a DerivedParameters"):
         Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0))}, derived_parameters=[])
+
+
+def test_a_constant_is_read_in_the_parameters_dim_order_whatever_its_own():
+    rate = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("pft", "site"))
+    vector = ParameterVector(parameters=[rate], coords={"pft": ["a", "b"], "site": [3, 5]})
+    # Built on (site, pft), with as many sites as PFTs, so a transposed read would pass unnoticed.
+    median = xr.DataArray([[1.0, 10.0], [100.0, 1000.0]], dims=("site", "pft"), coords={"site": [3, 5], "pft": ["a", "b"]})
+    prior = Prior(vector, {"rate": term(independent_over_dim(log_normal, geometric_sd=1.5), constants={"median": median})})
+    np.testing.assert_allclose(np.exp(prior.gaussian().mean).reshape(2, 2), median.transpose("pft", "site").values)

@@ -141,8 +141,9 @@ class DerivedParameter:
         in every draw, keyed by label, each on dims of the collection's
         coords or element axes of its values (a covariate on ``site``, a
         longitude). They are passed at those labels, in their order, so they
-        may hold more labels.
-        ``float64``, or ``bool``, which stays boolean.
+        may hold more labels, with their dims in the order of *indexed_by*
+        then the element axes, any other after. ``float64``, or ``bool``,
+        which stays boolean.
     memberships:
         ``{name: xr.DataArray}``: for each label of one dim of the coords,
         the label of another dim it belongs to, as a one-dimensional
@@ -302,7 +303,8 @@ class DerivedParameters:
             "_aligned",
             frozendict({
                 d.name: (
-                    aligned_constants(d.constants, self._labels_by_dim, message_name=f"{d.name!r} constants"),
+                    aligned_constants(d.constants, self._labels_by_dim, dim_order=(*d.indexed_by, *d.element_labels),
+                                      message_name=f"{d.name!r} constants"),
                     aligned_memberships(d.memberships, self.coords, message_name=f"{d.name!r} memberships"),
                 )
                 for d in self.derived_parameters
