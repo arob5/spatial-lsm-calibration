@@ -6,6 +6,7 @@ Where this sits
 ::
 
     parameters.support      Support, Interval, Simplex; the default bijectors
+    parameters.labels       coords, constants, memberships: labeled values read as arrays
       -> parameters.parameter   Parameter: one value's description and T
       -> parameters.vector      ParameterVector: the layout, its three forms
       -> parameters.derived     DerivedParameters: y = f(x), over one vector
@@ -23,8 +24,12 @@ Modules
 -------
 :mod:`~sipnet_calibration.parameters.support`
     The sets values lie in, and their default bijections.
+:mod:`~sipnet_calibration.parameters.labels`
+    Coords, and the constants and memberships functions read: what each is,
+    and how it is read at the labels in use.
 :mod:`~sipnet_calibration.parameters.parameter`
-    One array-valued unknown and its unconstrained counterpart.
+    One array-valued unknown and its unconstrained counterpart: the shape
+    of one value, and its block over the dims it is indexed by.
 :mod:`~sipnet_calibration.parameters.vector`
     The layout: Flat, values by parameter and the labeled form, the two
     spaces, and selection.

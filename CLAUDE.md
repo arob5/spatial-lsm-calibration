@@ -217,12 +217,15 @@ one variable per parameter and derived parameter.
 |---|---|---|
 | **parameter** | one unknown of the calibration, a `Parameter`: an array-valued quantity with a support, units, one value's `shape`, and the dims it is indexed by; always distinct from a **SIPNET parameter**, which is always called by its full name | "calibration parameter" |
 | **dim** / **dim label** | a dim a parameter is indexed by (`Parameter.indexed_by`), and one of its labels, in `ParameterVector.coords`; in the adapter layer a dim is `site` or a site-labels name, whose labels are the site ids or the classes some site carries (`SiteDims.coords`) | "group", "copy", `varies_by`, `group_dim`, `dim=`, `dim_index` |
-| **element** / **element labels** | one number of one value, of shape `Parameter.shape`; its axes' names and labels (strings) are its element labels (`Parameter.element_labels`), and name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" |
-| **block** | one parameter's value at one tuple of labels of its dims; a parameter's values are `(*batch, *index shape, *shape)`, the **block shape** after the batch, with the index shape `[len(coords[d]) for d in indexed_by]` | |
+| **value** | a parameter's value at one tuple of labels of its dims, of shape `Parameter.shape`; `shape` is always one value's, never the block's | |
+| **element** / **element axes** / **element labels** | one number of one value; a value's axes are its element axes, named, with their labels (strings), by its element labels (`Parameter.element_labels`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" |
+| **block** | all of a parameter's values, one at each tuple of labels of its dims: **block shape** `(*index shape, *shape)`, the **index shape** `[len(coords[d]) for d in indexed_by]`, the labels in use; values by parameter put the batch in front, `(*batch, *block shape)` | "block" for one value |
+| **event** | only TFP's sense: the axes one draw of a distribution covers. A prior term's event is its parameters' blocks; one value's distribution, which `iid_over_dim` repeats over a block, has the element axes as its event; a support's or bijector's `event_ndims` is how many trailing element axes it constrains jointly (0 on an interval, 1 on the simplex) | "event" for element axes |
 | **support** | a set of values, a `Support` (`Interval`, `Simplex`, ...): the set a parameter's values lie in, whose default bijector is `bijector_for(support)`; a rule's domain is one too (`ValueRequirement.domain`) | "the open set", `Bounds`, `OpenInterval` |
-| **constant** | a value a derived parameter, prior term or SIPNET rule reads that is the same in every draw: an `xr.DataArray`, scalar or keyed by label on dims of the coords, read at the labels in use; a boolean one stays boolean | |
-| **membership** | for each label of one dim, the label of another it belongs to (a site's PFT, a PFT's biome): an `xr.DataArray` named for the other dim (`SiteDims.labels`), passed to a function as `int64` positions into that dim's labels | `site_positions`, `dim_label_positions` |
-| **prior term** | the prior of one parameter, or of several indexed alike jointly (a **joint term**, keyed by a tuple of names), possibly **given** other parameters or derived parameters, and reading constants and memberships; a `PriorTerm` | |
+| **constant** | a value a derived parameter, prior term or SIPNET rule reads that is the same in every draw: an `xr.DataArray`, `float64` or `bool`, scalar or keyed by label on dims of the coords or element axes, read at the labels in use (`parameters.labels` defines it) | |
+| **membership** | for each label of one dim, the label of another it belongs to (a site's PFT, a PFT's biome): an `xr.DataArray` named for the other dim (`SiteDims.labels`), passed to a derived parameter's function as `int64` positions into that dim's labels; only derived parameters read memberships | `site_positions`, `dim_label_positions` |
+| **prior term** | one factor of the prior, a `PriorTerm`: the distribution of the blocks of the parameters it names (`parameter_names`; several indexed alike are a **joint term**), possibly **given** other parameters or derived parameters and reading constants | the dict key of a term, `TermKey`, `term_name` |
+| **prior function** | a function `f(**given, **constants)` returning a prior term's distribution, its event shape coming from what it reads (`PriorFunction`); `iid_over_dim`, `independent_over_dim` and `gaussian_copula` build them | `f(index_shape, ...)` |
 | **derived parameter** | a deterministic value `y = f(x)`, a `DerivedParameter` in a `DerivedParameters` over one vector: `indexed_by`, shape, units and optionally a support like a parameter's, computed by a pure array function of parameters, other derived parameters, constants and memberships; no entries of theta and no prior. A SIPNET convention (a unit reference, a formula of sipnet.c) is a `Compute` rule instead | `derived_from`, `compute`, "pointwise" |
 | **dependent set** | parameters linked by a term covering both or a `given`, directly or through a derived parameter; one block of `Prior.gaussian()`'s covariance | |
 | **site dims** | the sites and the dims they define, a `SiteDims`: each site's id, location, site covariates and site labels | the parameter vector's `site_table`, `site_labels`, `sites` |
@@ -922,19 +925,24 @@ src/sipnet_calibration/
                           # memberships); DerivedParameters over a vector, in
                           # dependency order: values(), values_to_dataset(),
                           # select()
-    prior.py              # Prior: what is believed beforehand. PriorTerm per
-                          # parameter or joint term, with given=, constants=,
-                          # memberships=; sample() in topological order of the
+    labels.py             # coords, constants and memberships: what a labeled
+                          # value given to a function is, and how it is read
+                          # at the labels in use (the contract's one home)
+    prior.py              # Prior: what is believed beforehand, over a sequence
+                          # of PriorTerms, each naming its parameters, with
+                          # given= and constants=, its distribution a TFP
+                          # distribution or a prior function f(**given,
+                          # **constants); sample() in topological order of the
                           # given links, log_prob() (base density or change of
                           # variables, the log-Jacobian private), gaussian() ->
                           # GaussianMoments (dense; declared Gaussians exact,
                           # others moment-matched per dependent set);
                           # iid_over_dim, independent_over_dim, gaussian_copula;
                           # log_normal, logit_normal (support=) and their _from_*
-                          # forms, softmax_normal; DeclaresGaussian; term_name
-    _description.py, _labels.py, _probes.py, _validation.py   # private: the
-                          # shared description checks, label alignment, the
-                          # probe points and bijector comparison, coercion
+                          # forms, softmax_normal; DeclaresGaussian
+    _description.py, _probes.py, _validation.py   # private: the shared
+                          # description checks, the probe points and bijector
+                          # comparison, coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
                           # labels() (memberships), covariate(), at_sites(),
                           # site_fields(), select()

@@ -78,7 +78,7 @@ from sipnet_calibration.parameters._description import (
     check_description_is_valid,
     resolved_element_labels,
 )
-from sipnet_calibration.parameters._labels import (
+from sipnet_calibration.parameters.labels import (
     aligned_constants,
     aligned_memberships,
     as_constants,
@@ -138,24 +138,24 @@ class DerivedParameter:
         at least one.
     constants:
         ``{name: xr.DataArray}``: values *function* reads that are the same
-        in every draw, keyed by label, each on dims of the collection's
-        coords or element axes of its values (a covariate on ``site``, a
-        longitude). They are passed at those labels, in their order, so they
-        may hold more labels, with their dims in the order of *indexed_by*
-        then the element axes, any other after. ``float64``, or ``bool``,
-        which stays boolean.
+        in every draw, such as a covariate on ``site`` or a longitude. Each
+        is a constant as :mod:`~sipnet_calibration.parameters.labels`
+        defines one, read at the labels of the collection's coords and of
+        any element axis of its parameters and derived parameters, with
+        *indexed_by* first, then :math:`y`'s element axes.
     memberships:
-        ``{name: xr.DataArray}``: for each label of one dim of the coords,
-        the label of another dim it belongs to, as a one-dimensional
-        DataArray named for the other dim (``site_dims.labels("pft")`` is
-        on ``site`` and named ``"pft"``). Each is passed as ``int64``
-        positions into the other dim's labels, so ``x[pft_of_site]`` reads a
+        ``{name: xr.DataArray}``: for each label of one dim, the label of
+        another it belongs to, such as each site's PFT
+        (``site_dims.labels("pft")``). Each is a membership as
+        :mod:`~sipnet_calibration.parameters.labels` defines one, and is
+        passed as ``int64`` positions, so ``x[pft_of_site]`` reads a
         PFT-level value at each site.
     function:
         ``function(**parameters, **constants, **memberships) -> y`` for
-        **one draw**: each parameter name's value of its block shape, each
-        constant of the lengths of its dims, each membership of the length
-        of its dim; :math:`y` of block shape ``(*[len(coords[d]) for d in
+        **one draw**: each name in *parameter_names* its block (every value
+        at every label in use of its dims, of block shape ``(*index shape,
+        *shape)``), each constant and membership as read; it returns
+        :math:`y`'s block, of block shape ``(*[len(coords[d]) for d in
         indexed_by], *shape)``. Traceable by JAX.
 
     Raises

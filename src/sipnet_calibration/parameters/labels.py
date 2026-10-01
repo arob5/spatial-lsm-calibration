@@ -1,16 +1,61 @@
-"""Labels: the coords of dims, and the constants and memberships read at
-them. Private to the parameter layer.
+"""Labels: the coords a vector's dims are read at, and the fixed labeled
+values a derived parameter or a prior term reads at them.
 
-A **constant** is an ``xr.DataArray`` keyed by label, ``float64`` or
-``bool``, on dims of the coords or element axes of the values in use (a
-simplex center per PFT is on ``(pft, allocation_part)``); it is read at
-their labels, in their order, with its dims in the order of the values it
-is read for (their ``indexed_by``, then their element axes), any other dims
-after them in its own order. A **membership** is a one-dimensional
-``xr.DataArray`` on one dim of the coords, named for another, whose values
-are labels of the other; it is read as ``int64`` positions into the other
-dim's labels, so ``x[membership]`` reads a value on the other dim at each
-label of the first.
+Where this sits
+---------------
+::
+
+    parameters.labels                (coords, constants, memberships)
+      -> parameters.vector           (the coords of the dims)
+      -> parameters.derived          (constants and memberships of a derived parameter)
+      -> parameters.prior            (constants of a prior term)
+
+The functions a derived parameter or a prior term computes with are pure
+array functions: they receive arrays, never labels. This module is where
+labeled values become those arrays, and so where the rules for giving one
+are stated, once.
+
+Data model
+----------
+**Coords** are ``{dim: pandas.Index}``: a dim's labels, all integers or all
+strings, unique, at least one.
+
+A **constant** is an ``xr.DataArray`` of ``float64`` or ``bool``: a value
+that is the same in every draw, such as a covariate per site, a prior median
+per site or a simplex center per PFT. Each of its dims is labeled (it has an
+index coordinate), and is either a dim of the coords or an element axis
+(which axes are allowed is the reader's to say). It is read:
+
+- at the labels in use, in their order, by label: so it may hold more
+  labels than are in use, such as every site of the pool, and it is read
+  again when a selection changes them;
+- with its dims transposed into the order of the values it is read for:
+  their ``indexed_by`` dims first, in that order, then their element axes,
+  then its other dims in its own order.
+
+The function then receives an array of shape ``[len(labels[d]) for d in
+dims]``, with the constant's dtype. A ``float64`` constant on ``site``, for
+a parameter indexed by ``site``, arrives as ``(S,)``; one on ``(pft,
+allocation_part)`` for a simplex indexed by ``pft`` as ``(P, k)``.
+
+A **membership** is a one-dimensional ``xr.DataArray`` on one dim of the
+coords, named for another (its *target*), whose values are labels of the
+target: for each label of its dim, the target label it belongs to, such as
+each site's PFT (``site_dims.labels("pft")``, on ``site`` and named
+``"pft"``). It is read at its dim's labels in use, and the function receives
+``int64`` positions into the target's labels in use, so ``x[pft_of_site]``
+reads a PFT-level value at each site. Only a derived parameter reads
+memberships: indexing a random value by another dim is its job.
+
+Missing is never allowed: a constant or membership lacking a label in use is
+refused.
+
+Functions
+---------
+:func:`as_coords`, :func:`as_constants`, :func:`as_memberships`
+    Coerce and check what a caller gives, before any labels are known.
+:func:`aligned_constants`, :func:`aligned_memberships`
+    Read them at the labels in use, as arrays.
 """
 
 from __future__ import annotations

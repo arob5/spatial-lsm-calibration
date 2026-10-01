@@ -138,7 +138,7 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
-from sipnet_calibration.parameters._labels import as_coords
+from sipnet_calibration.parameters.labels import as_coords
 from sipnet_calibration.parameters._probes import bijectors_agree, probe_points
 from sipnet_calibration.parameters._validation import (
     as_names,
@@ -262,11 +262,13 @@ class ParameterVector:
         return int(self._layout.entry_block.size)
 
     def index_shape(self, name: str) -> tuple[int, ...]:
-        """A parameter's index shape, ``[len(coords[d]) for d in indexed_by]``."""
+        """A parameter's index shape, ``[len(coords[d]) for d in indexed_by]``:
+        how many values it has along each dim it is indexed by."""
         return tuple(len(self.coords[d]) for d in self[name].indexed_by)
 
     def block_shape(self, name: str) -> tuple[int, ...]:
-        """A parameter's block shape, ``(*index shape, *shape)``."""
+        """A parameter's block shape, ``(*index shape, *shape)``: all its
+        values, one of ``shape`` at each tuple of labels of its dims."""
         return (*self.index_shape(name), *self[name].shape)
 
     @cached_property

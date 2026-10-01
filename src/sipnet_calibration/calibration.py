@@ -35,7 +35,6 @@ from sipnet_calibration.parameters import (
     logit_normal_from_interval,
     softmax_normal,
 )
-from sipnet_calibration.parameters.prior import term_name
 from sipnet_calibration.sipnet_parameter_map import (
     Copy,
     CopySimplex,
@@ -94,7 +93,7 @@ def describe_calibration(
     derived = prior.derived_parameters
     derived_parameters = () if derived is None else derived.derived_parameters
     dependencies = sipnet_parameter_map.dependencies()
-    covering = {name: term_name(key) for key in prior.terms for name in ((key,) if isinstance(key, str) else key)}
+    covering = {name: term.name for term in prior.terms for name in term.parameter_names}
     terms = prior.describe()[["prior", "given", "provenance"]]
     rows = []
     for piece in (*parameter_vector.parameters, *derived_parameters):
@@ -166,41 +165,47 @@ def example_calibration(site_dims: SiteDims) -> tuple[ParameterVector, Prior, SI
     # P = aMax (aMaxFrac + baseFolRespFrac) / cFracLeaf and
     # rho = baseFolRespFrac / (aMaxFrac + baseFolRespFrac).
     a_max_frac, c_frac_leaf, a_max, fol_resp = 0.76, 0.466, 58.0, 0.17
-    prior = Prior(vector, {
-        "photosynthetic_capacity": PriorTerm(
-            log_normal(median=a_max * (a_max_frac + fol_resp) / c_frac_leaf, geometric_sd=1.75),
+    prior = Prior(vector, [
+        PriorTerm(
+            parameter_names=("photosynthetic_capacity",),
+            distribution=log_normal(median=a_max * (a_max_frac + fol_resp) / c_frac_leaf, geometric_sd=1.75),
             provenance=fixture + "Median from the temperate-deciduous BETY posterior medians aMax "
             "58 nmol g-1 s-1 and baseFolRespFrac 0.17, with aMaxFrac 0.76 and cFracLeaf 0.466. "
             "Geometric sd 1.75 is about twice, on the log scale, the 1.32 the BETY aMax "
             "2.5-97.5% range 28-83 implies.",
         ),
-        "respiration_share": PriorTerm(
-            logit_normal_from_interval(lower=0.10 / (a_max_frac + 0.10), upper=0.39 / (a_max_frac + 0.39)),
+        PriorTerm(
+            parameter_names=("respiration_share",),
+            distribution=logit_normal_from_interval(lower=0.10 / (a_max_frac + 0.10), upper=0.39 / (a_max_frac + 0.39)),
             provenance=fixture + "From the BETY baseFolRespFrac 2.5-97.5% range 0.10-0.39 at "
             "fixed aMaxFrac.",
         ),
-        "allocation": PriorTerm(
-            iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)),
+        PriorTerm(
+            parameter_names=("allocation",),
+            distribution=iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)),
             provenance=fixture + "Center is the temperate-deciduous BETY allocation posterior "
             "medians; logit sd 0.5 is a placeholder. One value per PFT, all with this prior.",
         ),
-        "base_soil_respiration": PriorTerm(
-            iid_over_dim(log_normal_from_interval(lower=0.004, upper=0.020)),
+        PriorTerm(
+            parameter_names=("base_soil_respiration",),
+            distribution=iid_over_dim(log_normal_from_interval(lower=0.004, upper=0.020)),
             provenance=fixture + "BETY som_respiration_rate posterior, 2.5-97.5% quantiles "
             "0.004-0.020 yr-1, for every PFT.",
         ),
-        "leaf_fall_fraction": PriorTerm(
-            logit_normal(median=0.5, logit_sd=1.7),
+        PriorTerm(
+            parameter_names=("leaf_fall_fraction",),
+            distribution=logit_normal(median=0.5, logit_sd=1.7),
             provenance=fixture + "A near-flat logit-normal on (0, 1): a placeholder until a "
             "prior is fitted to BETY fracLeafFall.",
         ),
-        "initial_soil_carbon": PriorTerm(
-            iid_over_dim(log_normal(median=30_000.0, geometric_sd=2.0)),
+        PriorTerm(
+            parameter_names=("initial_soil_carbon",),
+            distribution=iid_over_dim(log_normal(median=30_000.0, geometric_sd=2.0)),
             provenance=fixture + "Median 30 kg C m-2, the center of the 12-75 kg C m-2 the "
             "ISCN-derived initial soil carbon spans at the first test sites; a placeholder "
             "until priors are fitted per site to the initial condition ensemble.",
         ),
-    })
+    ])
     sipnet_map = SIPNETParameterMap(
         rules=[
             *photosynthesis_rules(

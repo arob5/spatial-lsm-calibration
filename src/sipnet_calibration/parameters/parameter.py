@@ -19,7 +19,26 @@ simplex. :meth:`Parameter.unconstrained` is the parameter describing
 
 A value is one unit: its numbers are called its **elements**, laid out in C
 (row-major) order, and named by its element labels, one axis name and one
-tuple of string labels per axis of ``shape``.
+tuple of string labels per axis of ``shape``, its **element axes**.
+
+Values and blocks
+-----------------
+``shape`` is the shape of **one value**, never of the parameter as a whole.
+A parameter indexed by dims has one value at each tuple of their labels;
+all of them together are its **block**, of block shape ``(*index shape,
+*shape)``, the index shape being the number of labels in use of each dim
+in ``indexed_by``. For example, an allocation simplex with ``shape=(4,)``
+indexed by ``pft`` has, over three PFTs, three values of shape ``(4,)`` and
+a block of shape ``(3, 4)``; a soil carbon indexed by ``site``, with
+``shape=()``, has a block of shape ``(S,)``. The labels, and so the index
+shape, belong to the vector (``ParameterVector.coords``), and a selection
+changes them; ``shape`` never changes.
+
+A prior term's TFP event is its parameters' blocks. One value's axes, the
+element axes, are the event of one value's distribution, which
+:func:`~sipnet_calibration.parameters.prior.iid_over_dim` repeats over the
+block. ``support.event_ndims`` is a third thing: how many trailing element
+axes the support constrains jointly, 0 on an interval and 1 on the simplex.
 """
 
 from __future__ import annotations
@@ -66,7 +85,8 @@ class Parameter:
     units:
         The value's units, or ``None`` for none. Required.
     shape:
-        One value's shape. Default ``()``: a scalar.
+        The shape of one value, at one tuple of labels of *indexed_by*, not
+        of the block. Default ``()``: a scalar.
     element_labels:
         ``{axis name: labels}``, one entry per axis of *shape*, in order,
         each as long as its axis, labels unique strings. They name the
@@ -75,8 +95,10 @@ class Parameter:
         axes ``<name>_axis_0``, ``<name>_axis_1``, ... labeled ``"0"`` to
         ``"n - 1"``.
     indexed_by:
-        The dims the value is replicated over, in order. Their labels are
-        the vector's (``ParameterVector.coords``). Default ``()``.
+        The dims the value is replicated over, in order: the parameter has
+        one value per tuple of their labels, and its block is ``(*index
+        shape, *shape)``. Their labels are the vector's
+        (``ParameterVector.coords``). Default ``()``.
     bijector:
         :math:`T`, from unconstrained space onto *support*, acting on the
         last ``support.event_ndims`` axes. ``None`` takes

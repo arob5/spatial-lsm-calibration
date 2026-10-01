@@ -8,13 +8,13 @@ Where this sits
     sites.select_sites, site_labels.load_site_labels   (the site table, the site labels)
       -> site_dims.SiteDims                           (each site's id, location, covariates, labels)
       -> parameters.ParameterVector(coords=site_dims.coords)
-         DerivedParameter / PriorTerm(constants=..., memberships=site_dims.labels(...))
+         DerivedParameter(constants=..., memberships=site_dims.labels(...)), PriorTerm(constants=...)
       -> sipnet_parameter_map, forward                (values read at the sites)
 
 The parameter layer knows nothing of sites; :class:`SiteDims` is how a
 calibration over sites talks to it. It gives the vector its coords, gives
-derived and prior functions their constants and memberships, and reads
-labeled values at the sites.
+derived and prior functions their constants, derived functions their
+memberships, and reads labeled values at the sites.
 
 What it reads
 -------------

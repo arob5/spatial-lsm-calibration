@@ -111,25 +111,26 @@ def single_site():
     ]
     vector = ParameterVector(parameters=parameters)
 
-    def term(distribution):
-        return PriorTerm(distribution, provenance="Reference fixture.")
+    def term(parameter_names, distribution):
+        names = (parameter_names,) if isinstance(parameter_names, str) else parameter_names
+        return PriorTerm(parameter_names=names, distribution=distribution, provenance="Reference fixture.")
 
-    prior = Prior(vector, {
-        "photosynthetic_capacity": term(log_normal_from_interval(lower=140.0, upper=450.0)),
-        "respiration_share": term(logit_normal_from_interval(lower=0.04, upper=0.20)),
-        "optimum_photosynthesis_temperature": term(tfp.distributions.Normal(jnp.float64(22.0), jnp.float64(2.5))),
-        "half_saturation_light": term(log_normal_from_interval(lower=4.6, upper=26.3)),
-        "soil_water_holding_capacity": term(log_normal_from_interval(lower=15.0, upper=150.0)),
-        "leaf_on_growth": term(log_normal_from_interval(lower=50.0, upper=180.0)),
-        "leaf_on_growing_degree_days": term(log_normal_from_interval(lower=500.0, upper=1100.0)),
-        "allocation": term(softmax_normal(center=jnp.array([0.18, 0.45, 0.065, 0.305]),
+    prior = Prior(vector, [
+        term("photosynthetic_capacity", log_normal_from_interval(lower=140.0, upper=450.0)),
+        term("respiration_share", logit_normal_from_interval(lower=0.04, upper=0.20)),
+        term("optimum_photosynthesis_temperature", tfp.distributions.Normal(jnp.float64(22.0), jnp.float64(2.5))),
+        term("half_saturation_light", log_normal_from_interval(lower=4.6, upper=26.3)),
+        term("soil_water_holding_capacity", log_normal_from_interval(lower=15.0, upper=150.0)),
+        term("leaf_on_growth", log_normal_from_interval(lower=50.0, upper=180.0)),
+        term("leaf_on_growing_degree_days", log_normal_from_interval(lower=500.0, upper=1100.0)),
+        term("allocation", softmax_normal(center=jnp.array([0.18, 0.45, 0.065, 0.305]),
                                           logit_sd=jnp.array([0.25, 0.30, 0.30]))),
-        "wood_respiration_rate_at_10c": term(log_normal_from_interval(lower=0.006, upper=0.04)),
-        "soil_respiration_flux_at_10c": term(log_normal_from_interval(lower=200.0, upper=900.0)),
-        "soil_respiration_q10": term(log_normal_from_interval(lower=1.3, upper=3.2)),
-        "initial_wood_carbon": term(log_normal_from_interval(lower=5.0, upper=15.0)),
-        "initial_soil_organic_carbon": term(log_normal_from_interval(lower=5.0, upper=60.0)),
-    })
+        term("wood_respiration_rate_at_10c", log_normal_from_interval(lower=0.006, upper=0.04)),
+        term("soil_respiration_flux_at_10c", log_normal_from_interval(lower=200.0, upper=900.0)),
+        term("soil_respiration_q10", log_normal_from_interval(lower=1.3, upper=3.2)),
+        term("initial_wood_carbon", log_normal_from_interval(lower=5.0, upper=15.0)),
+        term("initial_soil_organic_carbon", log_normal_from_interval(lower=5.0, upper=60.0)),
+    ])
     copies = ("optimum_photosynthesis_temperature", "half_saturation_light", "soil_water_holding_capacity",
               "leaf_on_growth", "leaf_on_growing_degree_days", "soil_respiration_q10")
     rules = [

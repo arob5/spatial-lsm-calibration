@@ -22,6 +22,7 @@ import xarray as xr
 from scipy import stats
 from tensorflow_probability.substrates import jax as tfp
 
+from sipnet_calibration.parameters.derived import DerivedParameter, DerivedParameters
 from sipnet_calibration.parameters.parameter import Parameter
 from sipnet_calibration.parameters.prior import (
     Prior,
@@ -58,8 +59,9 @@ def vector_of(*parameters: Parameter) -> ParameterVector:
 
 
 def prior_of(parameter: Parameter, distribution, constants=None) -> Prior:
-    term = PriorTerm(distribution, constants=constants or {}, provenance="test")
-    return Prior(vector_of(parameter), {parameter.name: term})
+    term = PriorTerm(parameter_names=(parameter.name,), distribution=distribution, constants=constants or {},
+                     provenance="test")
+    return Prior(vector_of(parameter), [term])
 
 
 def simplex(bijector=None) -> Parameter:
@@ -218,13 +220,13 @@ def test_a_logit_normal_on_an_open_interval_is_declared_exactly():
 def test_select_gives_the_marginal():
     prior = Prior(
         vector_of(RATE_BY_SITE, ALLOCATION_BY_PFT),
-        {
-            "rate": PriorTerm(independent_over_dim(log_normal, geometric_sd=1.5),
+        [
+            PriorTerm(parameter_names=("rate",), distribution=independent_over_dim(log_normal, geometric_sd=1.5),
                               constants={"median": by_site([1.0, 2.0, 3.0])}, provenance="t"),
-            "allocation": PriorTerm(
+            PriorTerm(parameter_names=("allocation",), distribution=
                 iid_over_dim(softmax_normal(center=(0.18, 0.40, 0.07, 0.35), logit_sd=0.5)), provenance="t"
             ),
-        },
+        ],
     )
     selectors = {"site": [1, 4711], "pft": ["deciduous"]}
     smaller = prior.select(**selectors)
@@ -235,13 +237,14 @@ def test_select_gives_the_marginal():
 
 
 def test_a_terms_draws_depend_on_its_name_alone():
-    rate = PriorTerm(log_normal(median=2.0, geometric_sd=1.7), provenance="t")
-    share = PriorTerm(logit_normal(median=0.3, logit_sd=0.8), provenance="t")
-    offset = PriorTerm(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)), provenance="t")
+    rate = PriorTerm(parameter_names=("rate",), distribution=log_normal(median=2.0, geometric_sd=1.7), provenance="t")
+    share = PriorTerm(parameter_names=("share",), distribution=logit_normal(median=0.3, logit_sd=0.8), provenance="t")
+    offset = PriorTerm(parameter_names=("offset",), distribution=tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)),
+                       provenance="t")
     key = jax.random.key(11)
-    forward = Prior(vector_of(RATE, SHARE), {"rate": rate, "share": share}).sample(key, 5)
-    reversed_ = Prior(vector_of(SHARE, RATE), {"share": share, "rate": rate}).sample(key, 5)
-    appended = Prior(vector_of(RATE, SHARE, OFFSET), {"rate": rate, "share": share, "offset": offset}).sample(key, 5)
+    forward = Prior(vector_of(RATE, SHARE), [rate, share]).sample(key, 5)
+    reversed_ = Prior(vector_of(SHARE, RATE), [share, rate]).sample(key, 5)
+    appended = Prior(vector_of(RATE, SHARE, OFFSET), [rate, share, offset]).sample(key, 5)
     np.testing.assert_array_equal(forward[:, 0], reversed_[:, 1])
     np.testing.assert_array_equal(forward[:, 1], reversed_[:, 0])
     np.testing.assert_array_equal(forward, appended[:, :2])
@@ -310,30 +313,44 @@ CARBON_BY_SITE = Parameter(name="carbon", support=POSITIVE, units="1", indexed_b
 PFT_OF_SITE_MEMBERSHIP = xr.DataArray(list(PFT_OF_SITE), dims="site", coords={"site": SITES}, name="pft")
 
 
-def carbon_given_pft(index_shape, mean, spread, pft_of_site):
-    loc = mean[pft_of_site]
-    return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(loc, spread), 1), tfb.Exp())
+def carbon_given_its_mean(carbon_log_mean, spread):
+    return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(carbon_log_mean, spread), 1), tfb.Exp())
 
 
-def centered_terms() -> dict:
-    return {
-        "mean": PriorTerm(iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0))), provenance="t"),
-        "spread": PriorTerm(log_normal(median=1.0, geometric_sd=1.5), provenance="t"),
-        "carbon": PriorTerm(carbon_given_pft, given=("mean", "spread"),
-                            memberships={"pft_of_site": PFT_OF_SITE_MEMBERSHIP}, provenance="t"),
-    }
+def centered_prior(*parameters: Parameter, terms=()) -> Prior:
+    """Carbon at each site given its PFT's mean, through the derived location
+    ``carbon_log_mean``, over *parameters*' vector, with *terms* for any
+    parameters beside mean, spread and carbon."""
+    vector = vector_of(*parameters)
+    location = DerivedParameter(
+        name="carbon_log_mean", units=None, indexed_by=("site",), parameter_names=("mean",),
+        memberships={"pft_of_site": PFT_OF_SITE_MEMBERSHIP}, function=lambda mean, pft_of_site: mean[pft_of_site],
+    )
+    return Prior(
+        vector,
+        [
+            PriorTerm(parameter_names=("mean",), distribution=iid_over_dim(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0))),
+                      provenance="t"),
+            PriorTerm(parameter_names=("spread",), distribution=log_normal(median=1.0, geometric_sd=1.5), provenance="t"),
+            PriorTerm(parameter_names=("carbon",), distribution=carbon_given_its_mean,
+                      given=("carbon_log_mean", "spread"), provenance="t"),
+            *terms,
+        ],
+        derived_parameters=DerivedParameters(parameter_vector=vector, derived_parameters=[location]),
+    )
 
 
 def copula_term(order=("rate", "share")) -> PriorTerm:
     marginals = {"rate": log_normal(median=2.0, geometric_sd=1.7), "share": logit_normal(median=0.3, logit_sd=0.8)}
     return PriorTerm(
-        gaussian_copula({n: marginals[n] for n in order}, correlation=[[1.0, -0.5], [-0.5, 1.0]]),
+        parameter_names=("rate", "share"),
+        distribution=gaussian_copula({n: marginals[n] for n in order}, correlation=[[1.0, -0.5], [-0.5, 1.0]]),
         provenance="t",
     )
 
 
 def test_a_copula_integrates_to_one_in_theta():
-    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): copula_term()})
+    prior = Prior(vector_of(RATE, SHARE), [copula_term()])
     assert integral_by_importance_sampling(prior) == pytest.approx(1.0, abs=0.02)
 
 
@@ -342,24 +359,25 @@ def test_a_joint_term_by_change_of_variables_integrates_to_one_in_theta():
         "rate": tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)),
         "share": tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
     })
-    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): PriorTerm(joint, provenance="t")})
+    prior = Prior(vector_of(RATE, SHARE), [PriorTerm(parameter_names=("rate", "share"), distribution=joint, provenance="t")])
     assert prior.describe().iloc[0]["evaluated_by"] == "change of variables"
     assert integral_by_importance_sampling(prior) == pytest.approx(1.0, abs=0.02)
 
 
 def test_a_centered_hierarchy_integrates_to_one_in_theta():
-    prior = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
+    prior = centered_prior(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE)
     assert prior.parameter_vector.unconstrained.size == 6
     assert integral_by_importance_sampling(prior, n=1_000_000, scale=2.0) == pytest.approx(1.0, abs=0.03)
 
 
 def test_a_given_terms_draws_depend_on_its_name_and_parents_alone():
     key = jax.random.key(12)
-    first = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
-    reordered = Prior(vector_of(CARBON_BY_SITE, MEAN_BY_PFT, SPREAD), centered_terms())
-    appended = Prior(
-        vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE, OFFSET),
-        {**centered_terms(), "offset": PriorTerm(tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)), provenance="t")},
+    first = centered_prior(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE)
+    reordered = centered_prior(CARBON_BY_SITE, MEAN_BY_PFT, SPREAD)
+    appended = centered_prior(
+        MEAN_BY_PFT, SPREAD, CARBON_BY_SITE, OFFSET,
+        terms=[PriorTerm(parameter_names=("offset",), distribution=tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)),
+                         provenance="t")],
     )
     draws = [prior.sample(key, 6) for prior in (first, reordered, appended)]
     for name in ("mean", "spread", "carbon"):
@@ -372,7 +390,7 @@ def test_a_given_terms_draws_depend_on_its_name_and_parents_alone():
 
 
 def test_a_given_term_draws_from_its_conditional():
-    prior = Prior(vector_of(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE), centered_terms())
+    prior = centered_prior(MEAN_BY_PFT, SPREAD, CARBON_BY_SITE)
     vector = prior.parameter_vector
     theta = prior.sample(jax.random.key(13), 40_000)
     natural_values = vector.flat_to_values(vector.to_natural(theta))
@@ -386,7 +404,7 @@ def test_a_given_term_draws_from_its_conditional():
 
 @pytest.mark.parametrize("order", [("rate", "share"), ("share", "rate")], ids=["key order", "other order"])
 def test_the_copulas_declaration_agrees_with_log_prob_and_the_moments_of_draws(order):
-    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): copula_term(order)})
+    prior = Prior(vector_of(RATE, SHARE), [copula_term(order)])
     assert prior.describe().iloc[0]["declared_gaussian"]
     gaussian = prior.gaussian()
     theta = prior.sample(jax.random.key(14), 20_000)

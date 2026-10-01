@@ -54,8 +54,10 @@ def vector_of(*parameters: Parameter) -> ParameterVector:
     return ParameterVector(parameters=parameters, coords={d: v for d, v in coords.items() if d in used})
 
 
-def term(distribution, **arguments) -> PriorTerm:
-    return PriorTerm(distribution, provenance="test", **arguments)
+def term(parameter_names, distribution, **arguments) -> PriorTerm:
+    """A test term; one parameter's name may be given alone."""
+    names = (parameter_names,) if isinstance(parameter_names, str) else parameter_names
+    return PriorTerm(parameter_names=names, distribution=distribution, provenance="test", **arguments)
 
 
 def by_site(values) -> xr.DataArray:
@@ -73,13 +75,13 @@ SOIL = Parameter(name="soil_carbon", support=POSITIVE, units="g m-2", indexed_by
 def prior() -> Prior:
     return Prior(
         vector_of(RATE, SHARE, ALLOCATION, SOIL),
-        {
-            "rate": term(log_normal_from_interval(lower=0.004, upper=0.02)),
-            "share": term(logit_normal(median=0.2, logit_sd=0.4)),
-            "allocation": term(iid_over_dim(softmax_normal(center=CENTER, logit_sd=0.5))),
-            "soil_carbon": term(independent_over_dim(log_normal, geometric_sd=2.0),
+        [
+            term("rate", log_normal_from_interval(lower=0.004, upper=0.02)),
+            term("share", logit_normal(median=0.2, logit_sd=0.4)),
+            term("allocation", iid_over_dim(softmax_normal(center=CENTER, logit_sd=0.5))),
+            term("soil_carbon", independent_over_dim(log_normal, geometric_sd=2.0),
                                 constants={"median": by_site([1e4, 2e4, 3e4])}),
-        },
+        ],
     )
 
 
@@ -165,7 +167,7 @@ def test_iid_over_dim_puts_the_bijector_outside(prior):
 
 def test_iid_over_dim_covers_the_product_of_the_index_dims():
     rate = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("site", "pft"))
-    prior = Prior(vector_of(rate), {"rate": term(iid_over_dim(log_normal(median=1.0, geometric_sd=2.0)))})
+    prior = Prior(vector_of(rate), [term("rate", iid_over_dim(log_normal(median=1.0, geometric_sd=2.0)))])
     assert tuple(prior._built["rate"].distribution.event_shape) == (3, 2)
     gaussian = prior.gaussian()
     np.testing.assert_allclose(np.diag(gaussian.covariance), np.log(2.0) ** 2)
@@ -173,8 +175,8 @@ def test_iid_over_dim_covers_the_product_of_the_index_dims():
 
 def test_independent_over_dim_reads_its_constants_by_label():
     medians = xr.DataArray([3e4, 1.0, 1e4, 2e4], dims="site", coords={"site": [4711, 99, 1, 27]})
-    prior = Prior(vector_of(SOIL), {"soil_carbon": term(independent_over_dim(log_normal, geometric_sd=2.0),
-                                                        constants={"median": medians})})
+    prior = Prior(vector_of(SOIL), [term("soil_carbon", independent_over_dim(log_normal, geometric_sd=2.0),
+                                                        constants={"median": medians})])
     base = prior._built["soil_carbon"].distribution.distribution.distribution
     np.testing.assert_allclose(np.exp(base.loc), [1e4, 2e4, 3e4])
 
@@ -185,8 +187,8 @@ def test_a_constant_on_an_element_axis_is_read_at_the_element_labels():
         dims=("pft", "allocation_part"), coords={"pft": ["deciduous", "conifer"], "allocation_part": list(PARTS[::-1])},
     )
     logit_sd = xr.DataArray([5.0, 0.1], dims="pft", coords={"pft": ["deciduous", "conifer"]})
-    prior = Prior(vector_of(ALLOCATION), {"allocation": term(independent_over_dim(softmax_normal),
-                                                              constants={"center": centers, "logit_sd": logit_sd})})
+    prior = Prior(vector_of(ALLOCATION), [term("allocation", independent_over_dim(softmax_normal),
+                                                              constants={"center": centers, "logit_sd": logit_sd})])
     gaussian = prior.gaussian()
     np.testing.assert_allclose(np.diag(gaussian.covariance), [0.01] * 3 + [25.0] * 3)
     np.testing.assert_allclose(gaussian.mean[:3], np.log(np.asarray(CENTER[:3]) / CENTER[3]))
@@ -198,29 +200,29 @@ def test_sample_takes_zero_draws(prior):
 
 def test_a_constant_missing_a_label_is_refused():
     with pytest.raises(KeyError, match="no value at 'site' label"):
-        Prior(vector_of(SOIL), {"soil_carbon": term(independent_over_dim(log_normal, geometric_sd=2.0),
-                                                    constants={"median": by_site([1.0, 2.0, 3.0]).isel(site=[0])})})
+        Prior(vector_of(SOIL), [term("soil_carbon", independent_over_dim(log_normal, geometric_sd=2.0),
+                                                    constants={"median": by_site([1.0, 2.0, 3.0]).isel(site=[0])})])
 
 
 def test_independent_over_dim_needs_one_distribution_per_label():
     with pytest.raises(ValueError, match="give at least one argument per label"):
-        Prior(vector_of(SOIL), {"soil_carbon": term(independent_over_dim(log_normal, median=1.0, geometric_sd=2.0))})
+        Prior(vector_of(SOIL), [term("soil_carbon", independent_over_dim(log_normal, median=1.0, geometric_sd=2.0))])
 
 
 def test_a_prior_over_the_index_dims_needs_an_indexed_parameter():
     with pytest.raises(TypeError, match="prior over a parameter's index dims"):
-        Prior(vector_of(RATE), {"rate": term(iid_over_dim(log_normal(median=1.0, geometric_sd=2.0)))})
+        Prior(vector_of(RATE), [term("rate", iid_over_dim(log_normal(median=1.0, geometric_sd=2.0)))])
 
 
 def test_an_indexed_parameter_needs_a_prior_function():
     with pytest.raises(TypeError, match="iid_over_dim"):
-        Prior(vector_of(SOIL), {"soil_carbon": term(log_normal(median=1.0, geometric_sd=2.0))})
+        Prior(vector_of(SOIL), [term("soil_carbon", log_normal(median=1.0, geometric_sd=2.0))])
 
 
 def test_a_term_reading_constants_needs_a_prior_function():
     with pytest.raises(TypeError, match="reads \\['scale'\\] but is a distribution"):
-        Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0),
-                                             constants={"scale": xr.DataArray(1.0)})})
+        Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0),
+                                             constants={"scale": xr.DataArray(1.0)})])
 
 
 # ── the prior ─────────────────────────────────────────────────────────────────
@@ -244,11 +246,11 @@ def test_log_prob_takes_any_leading_shape_and_is_traceable(prior):
 def test_the_prior_follows_any_order():
     vector = vector_of(RATE, ALLOCATION, SOIL)
     site_major = ParameterVector(parameters=vector.parameters, coords=vector.coords, order=("site", "pft", "parameter"))
-    terms = {
-        "rate": term(log_normal_from_interval(lower=0.004, upper=0.02)),
-        "allocation": term(iid_over_dim(softmax_normal(center=CENTER, logit_sd=0.5))),
-        "soil_carbon": term(independent_over_dim(log_normal, geometric_sd=2.0), constants={"median": by_site([1e4, 2e4, 3e4])}),
-    }
+    terms = [
+        term("rate", log_normal_from_interval(lower=0.004, upper=0.02)),
+        term("allocation", iid_over_dim(softmax_normal(center=CENTER, logit_sd=0.5))),
+        term("soil_carbon", independent_over_dim(log_normal, geometric_sd=2.0), constants={"median": by_site([1e4, 2e4, 3e4])}),
+    ]
     first, second = Prior(vector, terms), Prior(site_major, terms)
     theta = first.sample(jax.random.key(3), 5)
     values = vector.unconstrained.flat_to_values(theta)
@@ -280,7 +282,7 @@ def test_gaussian_is_exact_for_declared_terms(prior):
 
 
 def test_gaussian_moment_matches_an_undeclared_term():
-    gamma = Prior(vector_of(RATE), {"rate": term(tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)))})
+    gamma = Prior(vector_of(RATE), [term("rate", tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)))])
     with pytest.raises(NotImplementedError, match="pass key="):
         gamma.gaussian()
     gaussian = gamma.gaussian(key=jax.random.key(0), n_moment_samples=20_000)
@@ -295,49 +297,69 @@ def test_select_rebuilds_the_terms_on_the_kept_labels(prior):
     np.testing.assert_allclose(np.exp(base.loc), [2e4])
 
 
-def test_getitem_returns_the_term(prior):
-    assert prior["rate"].provenance == "test"
+def test_getitem_returns_the_term_covering_a_parameter(prior):
+    assert prior["rate"].provenance == "test" and prior["rate"].parameter_names == ("rate",)
     assert repr(prior) == "Prior(D=11, terms=['rate', 'share', 'allocation', 'soil_carbon'])"
-    with pytest.raises(KeyError, match="no term"):
+    with pytest.raises(KeyError, match="no term covering 'nothing'"):
         prior["nothing"]
+
+
+def test_the_terms_are_held_in_the_vectors_order_whatever_theirs(prior):
+    reversed_ = Prior(prior.parameter_vector, prior.terms[::-1])
+    assert [t.name for t in reversed_.terms] == [t.name for t in prior.terms]
 
 
 # ── construction checks ───────────────────────────────────────────────────────
 
 
-def test_every_parameter_needs_one_term_keyed_by_its_name():
+def test_every_parameter_is_covered_by_one_term():
     vector = vector_of(RATE, SHARE)
     with pytest.raises(ValueError, match="no prior term"):
-        Prior(vector, {"rate": term(log_normal(median=1.0, geometric_sd=2.0))})
+        Prior(vector, [term("rate", log_normal(median=1.0, geometric_sd=2.0))])
     with pytest.raises(KeyError, match="no parameter of the vector"):
-        Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0)),
-                                "other": term(log_normal(median=1.0, geometric_sd=2.0))})
-    with pytest.raises(TypeError, match="or a tuple of names for a joint term"):
-        Prior(vector, {3: term(log_normal(median=1.0, geometric_sd=2.0))})
+        Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0)),
+                                term("other", log_normal(median=1.0, geometric_sd=2.0))])
+    with pytest.raises(TypeError, match="give a sequence of PriorTerms"):
+        Prior(vector, {"rate": term("rate", log_normal(median=1.0, geometric_sd=2.0))})
     with pytest.raises(ValueError, match="covered by the terms"):
-        Prior(vector, {"rate": term(log_normal(median=1.0, geometric_sd=2.0)),
-                       ("rate", "share"): term(log_normal(median=1.0, geometric_sd=2.0))})
+        Prior(vector, [term("rate", log_normal(median=1.0, geometric_sd=2.0)),
+                       term(("rate", "share"), log_normal(median=1.0, geometric_sd=2.0))])
 
 
 def test_a_term_is_a_prior_term_with_a_provenance():
     with pytest.raises(TypeError, match="wrap it as PriorTerm"):
-        Prior(vector_of(RATE), {"rate": log_normal(median=1.0, geometric_sd=2.0)})
+        Prior(vector_of(RATE), [log_normal(median=1.0, geometric_sd=2.0)])
     with pytest.raises(ValueError, match="needs a provenance"):
-        PriorTerm(log_normal(median=1.0, geometric_sd=2.0), provenance=" ")
+        PriorTerm(parameter_names=("rate",), distribution=log_normal(median=1.0, geometric_sd=2.0), provenance=" ")
+
+
+def test_a_term_names_the_parameters_it_is_the_prior_of():
+    with pytest.raises(ValueError, match="has no parameter_names"):
+        PriorTerm(parameter_names=(), distribution=log_normal(median=1.0, geometric_sd=2.0), provenance="test")
+    with pytest.raises(TypeError, match="parameter_names"):
+        PriorTerm(parameter_names="rate", distribution=log_normal(median=1.0, geometric_sd=2.0), provenance="test")
+    assert term(("rate", "share"), log_normal(median=1.0, geometric_sd=2.0)).name == "rate+share"
+
+
+def test_a_terms_distribution_is_a_distribution_or_a_function():
+    with pytest.raises(TypeError, match="give a TFP distribution or a prior function"):
+        term("rate", 1.0)
 
 
 def test_a_terms_keywords_name_one_thing_each():
     with pytest.raises(ValueError, match="more than once"):
-        term(lambda index_shape, mean: None, given=("mean",), constants={"mean": xr.DataArray(1.0)})
+        term("rate", lambda mean: None, given=("mean",), constants={"mean": xr.DataArray(1.0)})
+    with pytest.raises(ValueError, match="more than once"):
+        term("rate", lambda rate: None, constants={"rate": xr.DataArray(1.0)})
     with pytest.raises(TypeError, match="give a DataArray"):
-        term(lambda index_shape, scale: None, constants={"scale": 1.0})
+        term("rate", lambda scale: None, constants={"scale": 1.0})
 
 
 def test_a_term_covers_the_whole_value_in_float64():
     with pytest.raises(ValueError, match="TFP batch shape"):
-        Prior(vector_of(RATE), {"rate": term(log_normal(median=[1.0, 2.0], geometric_sd=2.0))})
+        Prior(vector_of(RATE), [term("rate", log_normal(median=[1.0, 2.0], geometric_sd=2.0))])
     with pytest.raises(TypeError, match="not a TFP distribution"):
-        Prior(vector_of(SOIL), {"soil_carbon": term(lambda index_shape: 1.0)})
+        Prior(vector_of(SOIL), [term("soil_carbon", lambda: 1.0)])
 
 
 def test_a_draw_on_the_boundary_is_refused():
@@ -350,7 +372,7 @@ def test_a_draw_on_the_boundary_is_refused():
 
 def test_a_dirichlet_on_the_simplex_is_accepted():
     shares = Parameter(name="shares", support=SIMPLEX, units="1", shape=(3,))
-    prior = Prior(vector_of(shares), {"shares": term(tfd.Dirichlet(jnp.full(3, 2.0)))})
+    prior = Prior(vector_of(shares), [term("shares", tfd.Dirichlet(jnp.full(3, 2.0)))])
     assert prior.describe().loc["shares", "evaluated_by"] == "change of variables"
 
 
@@ -364,7 +386,7 @@ def test_a_prior_that_can_neither_be_sampled_nor_mapped_is_refused():
 
     with pytest.raises(ValueError, match="neither a default event-space bijector nor a sampler"):
         Prior(vector_of(Parameter(name="offset", support=REAL, units=None)),
-              {"offset": term(Opaque(jnp.float64(0.0), jnp.float64(1.0)))})
+              [term("offset", Opaque(jnp.float64(0.0), jnp.float64(1.0)))])
 
 
 def test_a_declaration_that_disagrees_with_log_prob_is_refused(monkeypatch):
@@ -376,12 +398,12 @@ def test_a_declaration_that_disagrees_with_log_prob_is_refused(monkeypatch):
 
     monkeypatch.setattr(module, "_family_gaussian", widened)
     with pytest.raises(ValueError, match="disagrees with its log density"):
-        Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0))})
+        Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0))])
 
 
 def test_a_declaration_under_another_bijector_is_not_honored():
     softplus_rate = Parameter(name="rate", support=POSITIVE, units="1", bijector=tfb.Softplus())
-    prior = Prior(vector_of(softplus_rate), {"rate": term(log_normal(median=1.0, geometric_sd=2.0))})
+    prior = Prior(vector_of(softplus_rate), [term("rate", log_normal(median=1.0, geometric_sd=2.0))])
     row = prior.describe().loc["rate"]
     assert row["evaluated_by"] == "change of variables" and not row["declared_gaussian"]
 
@@ -408,7 +430,7 @@ def test_a_change_of_variables_needs_a_known_measure():
 
     rate = Parameter(name="rate", support=Halfline(), units="1", bijector=tfb.Exp())
     with pytest.raises(ValueError, match="no known reference measure"):
-        Prior(vector_of(rate), {"rate": term(tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)))})
+        Prior(vector_of(rate), [term("rate", tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)))])
 
 
 def test_derived_parameters_over_another_vector_are_refused():
@@ -422,9 +444,9 @@ def test_derived_parameters_over_another_vector_are_refused():
         DerivedParameter(name="double", units="1", parameter_names=("share",), function=lambda share: 2 * share),
     ])
     with pytest.raises(ValueError, match="differ in their"):
-        Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0))}, derived_parameters=derived)
+        Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0))], derived_parameters=derived)
     with pytest.raises(TypeError, match="must be a DerivedParameters"):
-        Prior(vector_of(RATE), {"rate": term(log_normal(median=1.0, geometric_sd=2.0))}, derived_parameters=[])
+        Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0))], derived_parameters=[])
 
 
 def test_a_constant_is_read_in_the_parameters_dim_order_whatever_its_own():
@@ -432,5 +454,5 @@ def test_a_constant_is_read_in_the_parameters_dim_order_whatever_its_own():
     vector = ParameterVector(parameters=[rate], coords={"pft": ["a", "b"], "site": [3, 5]})
     # Built on (site, pft), with as many sites as PFTs, so a transposed read would pass unnoticed.
     median = xr.DataArray([[1.0, 10.0], [100.0, 1000.0]], dims=("site", "pft"), coords={"site": [3, 5], "pft": ["a", "b"]})
-    prior = Prior(vector, {"rate": term(independent_over_dim(log_normal, geometric_sd=1.5), constants={"median": median})})
+    prior = Prior(vector, [term("rate", independent_over_dim(log_normal, geometric_sd=1.5), constants={"median": median})])
     np.testing.assert_allclose(np.exp(prior.gaussian().mean).reshape(2, 2), median.transpose("pft", "site").values)

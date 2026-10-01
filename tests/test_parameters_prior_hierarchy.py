@@ -4,7 +4,7 @@ joint terms and the Gaussian copula, derived parameters in the prior, the
 
 The worked examples are partial pooling of a site-level quantity within PFTs
 in both forms, non-centered through a derived parameter and centered through
-``given`` with a membership; a covariate regression, and a centered term
+``given`` a derived location at each site; a covariate regression, and a centered term
 given its derived mean; and a correlated pair. The mathematics common to
 every term (densities integrating to one, declarations against draws, key
 stability) is in ``test_parameters_prior_conformance.py``.
@@ -47,8 +47,10 @@ PFT_POSITIONS = [PFT.index(p) for p in PFT_OF_SITE]
 LOG_MEDIAN = float(np.log(1e4))
 
 
-def term(distribution, **arguments) -> PriorTerm:
-    return PriorTerm(distribution, provenance="test", **arguments)
+def term(parameter_names, distribution, **arguments) -> PriorTerm:
+    """A test term; one parameter's name may be given alone."""
+    names = (parameter_names,) if isinstance(parameter_names, str) else parameter_names
+    return PriorTerm(parameter_names=names, distribution=distribution, provenance="test", **arguments)
 
 
 def normal(loc: float, scale: float) -> tfd.Normal:
@@ -87,15 +89,30 @@ def soil_carbon_non_centered(mean, spread, standardized, pft_of_site):
     return jnp.exp(mean[pft_of_site] + spread * standardized)
 
 
-def soil_carbon_given_pft(index_shape, mean, spread, pft_of_site):
-    loc = mean[pft_of_site]
-    return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(loc, spread), 1), tfb.Exp())
+def site_log_mean(vector: ParameterVector) -> DerivedParameters:
+    """Each site's location, its PFT's mean: what a centered term is given."""
+    return DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
+        name="site_log_mean", units=None, indexed_by=("site",), parameter_names=("mean",),
+        memberships={"pft_of_site": pft_of_site()}, function=lambda mean, pft_of_site: mean[pft_of_site],
+    )])
 
 
-HYPERPRIORS = {
-    "mean": term(iid_over_dim(normal(LOG_MEDIAN, 1.0))),
-    "spread": term(log_normal(median=0.5, geometric_sd=2.0)),
-}
+def soil_carbon_given_its_mean(site_log_mean, spread):
+    return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(site_log_mean, spread), 1), tfb.Exp())
+
+
+def centered_prior(*parameters: Parameter, terms=()) -> Prior:
+    """The centered hierarchy over *parameters*' vector, with *terms* for any
+    parameters beside mean, spread and soil_carbon."""
+    vector = vector_of(*parameters)
+    soil_carbon = term("soil_carbon", soil_carbon_given_its_mean, given=("site_log_mean", "spread"))
+    return Prior(vector, [*HYPERPRIORS, *terms, soil_carbon], derived_parameters=site_log_mean(vector))
+
+
+HYPERPRIORS = [
+    term("mean", iid_over_dim(normal(LOG_MEDIAN, 1.0))),
+    term("spread", log_normal(median=0.5, geometric_sd=2.0)),
+]
 
 
 @pytest.fixture(scope="module")
@@ -106,17 +123,13 @@ def non_centered() -> Prior:
         parameter_names=("mean", "spread", "standardized"), memberships={"pft_of_site": pft_of_site()},
         function=soil_carbon_non_centered,
     )])
-    return Prior(vector, {**HYPERPRIORS, "standardized": term(iid_over_dim(normal(0.0, 1.0)))},
+    return Prior(vector, [*HYPERPRIORS, term("standardized", iid_over_dim(normal(0.0, 1.0)))],
                  derived_parameters=derived)
 
 
 @pytest.fixture(scope="module")
 def centered() -> Prior:
-    return Prior(
-        vector_of(MEAN, SPREAD, SOIL_CARBON),
-        {**HYPERPRIORS, "soil_carbon": term(soil_carbon_given_pft, given=("mean", "spread"),
-                                            memberships={"pft_of_site": pft_of_site()})},
-    )
+    return centered_prior(MEAN, SPREAD, SOIL_CARBON)
 
 
 def log_soil_carbon_draws(prior: Prior, n: int) -> np.ndarray:
@@ -136,9 +149,34 @@ def test_the_non_centered_form_is_declared_exactly(non_centered):
     np.testing.assert_allclose(np.diag(covariance)[3:], 1.0)
 
 
+def test_iid_over_dim_repeats_a_values_distribution_given_others():
+    offsets = Parameter(name="offsets", support=REAL, units=None, indexed_by=("site",))
+    prior = Prior(vector_of(SPREAD, offsets), [
+        term("spread", log_normal(median=0.5, geometric_sd=2.0)),
+        term("offsets", iid_over_dim(lambda spread: tfd.Normal(jnp.float64(0.0), spread)), given=("spread",)),
+    ])
+    theta = prior.sample(jax.random.key(6), 5)
+    values = natural(prior, theta)
+    spread = np.asarray(values["spread"])
+    expected = (
+        log_normal(median=0.5, geometric_sd=2.0).distribution.log_prob(np.log(spread))
+        + normal(0.0, 1.0).log_prob(np.asarray(values["offsets"]) / spread[:, None]).sum(axis=-1)
+        - len(SITES) * np.log(spread)
+    )
+    np.testing.assert_allclose(prior.log_prob(theta), expected, rtol=1e-12)
+
+
+def test_a_function_whose_event_lacks_the_index_dims_points_to_iid_over_dim():
+    with pytest.raises(ValueError, match="identically distributed are iid_over_dim"):
+        Prior(vector_of(SPREAD, SOIL_CARBON), [
+            term("spread", log_normal(median=0.5, geometric_sd=2.0)),
+            term("soil_carbon", lambda spread: tfd.LogNormal(jnp.float64(0.0), spread), given=("spread",)),
+        ])
+
+
 def test_the_centered_form_is_evaluated_by_its_base_density(centered):
     row = centered.describe().loc["soil_carbon"]
-    assert row["given"] == "mean, spread"
+    assert row["given"] == "site_log_mean, spread"
     assert row["evaluated_by"] == "base density"
     assert not row["declared_gaussian"]
 
@@ -183,7 +221,7 @@ def test_the_centered_form_gets_one_monte_carlo_block(centered):
 
 
 def test_a_given_term_draws_do_not_depend_on_where_it_is_declared(centered):
-    reordered = Prior(vector_of(SOIL_CARBON, SPREAD, MEAN), dict(centered.terms))
+    reordered = centered_prior(SOIL_CARBON, SPREAD, MEAN)
     key = jax.random.key(9)
     first, second = centered.sample(key, 5), reordered.sample(key, 5)
     for name in ("mean", "spread", "soil_carbon"):
@@ -218,12 +256,12 @@ def test_a_covariate_regression_is_a_prior_on_its_coefficients():
     derived = DerivedParameters(parameter_vector=vector, derived_parameters=[rate], coords={"site": SITES})
     prior = Prior(
         vector,
-        {
-            ("intercept", "slope"): term(gaussian_copula(
+        [
+            term(("intercept", "slope"), gaussian_copula(
                 {"intercept": normal(np.log(0.01), 0.5), "slope": normal(0.0, 0.1)},
                 correlation=[[1.0, -0.4], [-0.4, 1.0]],
             )),
-        },
+        ],
         derived_parameters=derived,
     )
     assert prior.parameter_vector.unconstrained.size == 2
@@ -242,17 +280,17 @@ def centered_given_a_derived_mean() -> Prior:
         constants={"anomaly": ANOMALY}, function=regression,
     )])
 
-    def respiration_given_mean(index_shape, log_mean, spread):
+    def respiration_given_mean(log_mean, spread):
         return tfd.TransformedDistribution(tfd.Independent(tfd.Normal(log_mean, spread), 1), tfb.Exp())
 
     return Prior(
         vector,
-        {
-            "intercept": term(normal(np.log(0.01), 0.5)),
-            "slope": term(normal(0.0, 0.1)),
-            "spread": term(log_normal(median=0.2, geometric_sd=1.5)),
-            "respiration": term(respiration_given_mean, given=("log_mean", "spread")),
-        },
+        [
+            term("intercept", normal(np.log(0.01), 0.5)),
+            term("slope", normal(0.0, 0.1)),
+            term("spread", log_normal(median=0.2, geometric_sd=1.5)),
+            term("respiration", respiration_given_mean, given=("log_mean", "spread")),
+        ],
         derived_parameters=derived,
     )
 
@@ -279,8 +317,8 @@ SHARE = Parameter(name="share", support=OPEN_UNIT_INTERVAL, units="1")
 CORRELATION = [[1.0, 0.6], [0.6, 1.0]]
 
 
-def copula(**marginals) -> PriorTerm:
-    return term(gaussian_copula(marginals, correlation=CORRELATION))
+def copula(parameter_names, **marginals) -> PriorTerm:
+    return term(parameter_names, gaussian_copula(marginals, correlation=CORRELATION))
 
 
 RATE_MARGINAL = log_normal(median=2.0, geometric_sd=1.5)
@@ -288,7 +326,7 @@ SHARE_MARGINAL = logit_normal(median=0.3, logit_sd=0.8)
 
 
 def test_a_correlated_pair_is_a_multivariate_normal_in_theta():
-    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): copula(rate=RATE_MARGINAL, share=SHARE_MARGINAL)})
+    prior = Prior(vector_of(RATE, SHARE), [copula(("rate", "share"), rate=RATE_MARGINAL, share=SHARE_MARGINAL)])
     row = prior.describe().loc["rate+share"]
     assert row["prior"] == "gaussian copula" and row["evaluated_by"] == "base density"
     assert row["declared_gaussian"]
@@ -307,7 +345,7 @@ def test_a_correlated_pair_is_a_multivariate_normal_in_theta():
 
 
 def test_a_copula_listed_in_another_order_than_its_key_is_still_declared():
-    prior = Prior(vector_of(RATE, SHARE), {("share", "rate"): copula(rate=RATE_MARGINAL, share=SHARE_MARGINAL)})
+    prior = Prior(vector_of(RATE, SHARE), [copula(("share", "rate"), rate=RATE_MARGINAL, share=SHARE_MARGINAL)])
     row = prior.describe().loc["share+rate"]
     assert row["evaluated_by"] == "change of variables" and row["declared_gaussian"]
     np.testing.assert_allclose(prior.gaussian().mean, [np.log(2.0), np.log(0.3 / 0.7)], rtol=1e-12)
@@ -318,7 +356,7 @@ def test_a_joint_term_may_be_any_dict_valued_distribution():
         "rate": tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)),
         "share": tfd.Beta(jnp.float64(2.0), jnp.float64(5.0)),
     })
-    prior = Prior(vector_of(RATE, SHARE), {("rate", "share"): term(joint)})
+    prior = Prior(vector_of(RATE, SHARE), [term(("rate", "share"), joint)])
     assert prior.describe().loc["rate+share", "evaluated_by"] == "change of variables"
     theta = prior.sample(jax.random.key(7), 4)
     values = natural(prior, theta)
@@ -335,39 +373,39 @@ def test_a_joint_term_may_be_any_dict_valued_distribution():
 
 def test_a_joint_term_covers_parameters_indexed_alike():
     with pytest.raises(ValueError, match="a joint term's parameters are indexed alike"):
-        Prior(vector_of(RATE, SOIL_CARBON), {("rate", "soil_carbon"): term(RATE_MARGINAL)})
+        Prior(vector_of(RATE, SOIL_CARBON), [term(("rate", "soil_carbon"), RATE_MARGINAL)])
 
 
 def test_a_joint_term_draws_a_dict_of_its_names():
     with pytest.raises(ValueError, match="a joint term's draws are a dict"):
-        Prior(vector_of(RATE, SHARE), {("rate", "share"): term(RATE_MARGINAL)})
+        Prior(vector_of(RATE, SHARE), [term(("rate", "share"), RATE_MARGINAL)])
 
 
 def test_a_term_given_others_is_a_function():
     with pytest.raises(TypeError, match="is given \\['rate'\\] but is a distribution"):
-        Prior(vector_of(RATE, SHARE), {"rate": term(RATE_MARGINAL), "share": term(SHARE_MARGINAL, given=("rate",))})
+        Prior(vector_of(RATE, SHARE), [term("rate", RATE_MARGINAL), term("share", SHARE_MARGINAL, given=("rate",))])
 
 
 def test_given_names_something_of_the_vector():
     with pytest.raises(KeyError, match="is given 'nothing'"):
-        Prior(vector_of(RATE, SHARE), {"rate": term(RATE_MARGINAL),
-                                       "share": term(lambda index_shape, nothing: SHARE_MARGINAL, given=("nothing",))})
+        Prior(vector_of(RATE, SHARE), [term("rate", RATE_MARGINAL),
+                                       term("share", lambda nothing: SHARE_MARGINAL, given=("nothing",))])
     with pytest.raises(TypeError, match="sequence"):
-        PriorTerm(RATE_MARGINAL, given="rate", provenance="test")
+        PriorTerm(parameter_names=("share",), distribution=RATE_MARGINAL, given="rate", provenance="test")
 
 
-def share_given(index_shape, rate):
+def share_given(rate):
     return logit_normal(median=0.3, logit_sd=0.5 + 0.0 * rate)
 
 
-def rate_given(index_shape, share):
+def rate_given(share):
     return log_normal(median=2.0, geometric_sd=1.5 + 0.0 * share)
 
 
 def test_a_cycle_of_given_links_is_refused_by_name():
     with pytest.raises(ValueError, match="cycle, rate -> share -> rate"):
-        Prior(vector_of(RATE, SHARE), {"rate": term(rate_given, given=("share",)),
-                                       "share": term(share_given, given=("rate",))})
+        Prior(vector_of(RATE, SHARE), [term("rate", rate_given, given=("share",)),
+                                       term("share", share_given, given=("rate",))])
 
 
 def test_a_cycle_through_a_derived_parameter_is_refused():
@@ -376,14 +414,14 @@ def test_a_cycle_through_a_derived_parameter_is_refused():
         name="doubled", units="yr-1", parameter_names=("rate",), function=lambda rate: 2.0 * rate,
     )])
     with pytest.raises(ValueError, match="cycle, rate -> doubled -> rate"):
-        Prior(vector, {"rate": term(lambda index_shape, doubled: RATE_MARGINAL, given=("doubled",))},
+        Prior(vector, [term("rate", lambda doubled: RATE_MARGINAL, given=("doubled",))],
               derived_parameters=derived)
 
 
 def test_a_term_that_changes_structure_with_its_given_values_is_refused():
     calls = []
 
-    def switching(index_shape, rate):
+    def switching(rate):
         # A different class at each ancestral draw, as a branch on the given
         # value would give.
         calls.append(rate)
@@ -391,14 +429,14 @@ def test_a_term_that_changes_structure_with_its_given_values_is_refused():
             jnp.float64(2.0), jnp.float64(2.0))
 
     with pytest.raises(ValueError, match="changes its structure"):
-        Prior(vector_of(RATE, SHARE), {"rate": term(log_normal(median=2.0, geometric_sd=3.0)),
-                                       "share": term(switching, given=("rate",))})
+        Prior(vector_of(RATE, SHARE), [term("rate", log_normal(median=2.0, geometric_sd=3.0)),
+                                       term("share", switching, given=("rate",))])
 
 
 def test_select_refuses_to_drop_what_a_kept_term_needs(centered, non_centered):
     with pytest.raises(ValueError, match="drops \\['spread'\\], which the prior term 'soil_carbon'"):
         centered.select(parameter=["mean", "soil_carbon"])
-    pair = Prior(vector_of(RATE, SHARE), {("rate", "share"): copula(rate=RATE_MARGINAL, share=SHARE_MARGINAL)})
+    pair = Prior(vector_of(RATE, SHARE), [copula(("rate", "share"), rate=RATE_MARGINAL, share=SHARE_MARGINAL)])
     with pytest.raises(ValueError, match="which the prior term 'rate\\+share' covers"):
         pair.select(parameter=["rate"])
     # A derived parameter is dropped with its inputs; the prior never sees it.
@@ -412,12 +450,7 @@ def test_select_refuses_to_drop_what_a_derived_parameter_given_needs():
 
 def test_a_dependent_set_need_not_be_contiguous():
     other = Parameter(name="other", support=POSITIVE, units=None)
-    prior = Prior(
-        vector_of(MEAN, other, SPREAD, SOIL_CARBON),
-        {**HYPERPRIORS, "other": term(RATE_MARGINAL),
-         "soil_carbon": term(soil_carbon_given_pft, given=("mean", "spread"),
-                             memberships={"pft_of_site": pft_of_site()})},
-    )
+    prior = centered_prior(MEAN, other, SPREAD, SOIL_CARBON, terms=[term("other", RATE_MARGINAL)])
     gaussian = prior.gaussian(key=jax.random.key(0), n_moment_samples=100)
     covariance = np.asarray(gaussian.covariance)
     # "other" is entry 2, between mean's two and spread's one: independent of the set around it.
@@ -432,7 +465,7 @@ def test_a_joint_density_on_the_simplex_is_refused():
         "shares": tfd.Dirichlet(jnp.full(3, 2.0)), "rate": tfd.Gamma(jnp.float64(3.0), jnp.float64(2.0)),
     })
     with pytest.raises(ValueError, match="other than a Dirichlet"):
-        Prior(vector_of(shares, RATE), {("shares", "rate"): term(joint)})
+        Prior(vector_of(shares, RATE), [term(("shares", "rate"), joint)])
 
 
 @pytest.mark.parametrize(
@@ -456,8 +489,8 @@ def test_the_copula_refuses_bad_arguments(marginals, correlation, message):
 def test_a_copula_is_for_parameters_indexed_by_nothing():
     by_site = Parameter(name="rate", support=POSITIVE, units="yr-1", indexed_by=("site",))
     with pytest.raises(TypeError, match="prior of parameters indexed by nothing"):
-        Prior(vector_of(by_site, SOIL_CARBON), {("rate", "soil_carbon"): copula(rate=RATE_MARGINAL,
-                                                                                soil_carbon=RATE_MARGINAL)})
+        Prior(vector_of(by_site, SOIL_CARBON), [copula(("rate", "soil_carbon"), rate=RATE_MARGINAL,
+                                                       soil_carbon=RATE_MARGINAL)])
 
 
 def test_zero_draws_of_a_prior_evaluated_by_change_of_variables(non_centered, centered):
@@ -466,15 +499,15 @@ def test_zero_draws_of_a_prior_evaluated_by_change_of_variables(non_centered, ce
 
 
 def test_a_joint_term_given_others_may_be_a_joint_distribution():
-    def pair_given_spread(index_shape, spread):
+    def pair_given_spread(spread):
         return tfd.JointDistributionNamedAutoBatched({
             "rate": tfd.Gamma(jnp.float64(3.0), spread), "share": tfd.Beta(jnp.float64(2.0), spread),
         })
 
-    prior = Prior(vector_of(RATE, SHARE, SPREAD), {
-        ("rate", "share"): term(pair_given_spread, given=("spread",)),
-        "spread": HYPERPRIORS["spread"],
-    })
+    prior = Prior(vector_of(RATE, SHARE, SPREAD), [
+        term(("rate", "share"), pair_given_spread, given=("spread",)),
+        term("spread", log_normal(median=0.5, geometric_sd=2.0)),
+    ])
     theta = prior.sample(jax.random.key(8), 4)
     values = natural(prior, theta)
     spread = values["spread"]
@@ -487,23 +520,23 @@ def test_a_joint_term_given_others_may_be_a_joint_distribution():
     np.testing.assert_allclose(jax.jit(prior.log_prob)(theta), expected, rtol=1e-10)
 
 
-@pytest.mark.parametrize("key", [("rate",), ()])
-def test_a_joint_term_is_keyed_by_two_or_more_names(key):
-    with pytest.raises(ValueError, match="a joint term covers two or more"):
-        Prior(vector_of(RATE), {key: term(RATE_MARGINAL)})
+def test_a_term_over_one_parameter_has_its_value_as_its_event():
+    prior = Prior(vector_of(RATE), [term(("rate",), RATE_MARGINAL)])
+    assert prior.describe().index.tolist() == ["rate"]
+    assert not prior._built["rate"].joint
 
 
 def test_a_term_is_not_given_what_it_covers_or_a_name_twice():
     with pytest.raises(ValueError, match="is given \\['rate'\\], which it covers"):
-        Prior(vector_of(RATE), {"rate": term(rate_given, given=("rate",))})
+        Prior(vector_of(RATE), [term("rate", rate_given, given=("rate",))])
     with pytest.raises(ValueError, match="given"):
-        PriorTerm(share_given, given=("rate", "rate"), provenance="test")
+        PriorTerm(parameter_names=("share",), distribution=share_given, given=("rate", "rate"), provenance="test")
 
 
 def test_a_term_whose_evaluation_changes_with_its_given_values_is_refused():
     calls = []
 
-    def shifted(index_shape, rate):
+    def shifted(rate):
         # One structure at both ancestral draws, but a pushforward through the
         # parameter's own bijector at the first only.
         calls.append(rate)
@@ -511,17 +544,4 @@ def test_a_term_whose_evaluation_changes_with_its_given_values_is_refused():
 
     offset = Parameter(name="offset", support=REAL, units=None)
     with pytest.raises(ValueError, match="changes its structure"):
-        Prior(vector_of(RATE, offset), {"rate": term(RATE_MARGINAL), "offset": term(shifted, given=("rate",))})
-
-
-def test_a_membership_reaches_the_prior_function_as_positions(centered):
-    seen = []
-
-    def recording(index_shape, mean, spread, pft_of_site):
-        seen.append(np.asarray(pft_of_site))
-        return soil_carbon_given_pft(index_shape, mean, spread, pft_of_site)
-
-    Prior(vector_of(MEAN, SPREAD, SOIL_CARBON),
-          {**HYPERPRIORS, "soil_carbon": term(recording, given=("mean", "spread"),
-                                              memberships={"pft_of_site": pft_of_site()})})
-    assert seen[0].tolist() == PFT_POSITIONS and seen[0].dtype == np.int64
+        Prior(vector_of(RATE, offset), [term("rate", RATE_MARGINAL), term("offset", shifted, given=("rate",))])

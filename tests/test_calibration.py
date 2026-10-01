@@ -81,8 +81,8 @@ def test_describe_calibration_joins_the_descriptions(example):
 
 def test_every_role_is_given_by_what_a_sipnet_parameter_depends_on():
     vector = ParameterVector(parameters=[Parameter(name="initial_wood_carbon", support=POSITIVE, units="kg m-2")])
-    prior = Prior(vector, {"initial_wood_carbon": PriorTerm(
-        tfp.distributions.LogNormal(jnp.float64(2.0), jnp.float64(0.3)), provenance="test")})
+    prior = Prior(vector, [PriorTerm(parameter_names=("initial_wood_carbon",), distribution=
+        tfp.distributions.LogNormal(jnp.float64(2.0), jnp.float64(0.3)), provenance="test")])
     sipnet_map = SIPNETParameterMap(
         rules=initial_condition_rules(deciduous={"deciduous": True, "conifer": False},
                                       state_value_names=("soil_input", "initial_wood_carbon", "leaf_input", "moisture_input")),
@@ -102,7 +102,7 @@ def test_a_rule_of_constants_alone_is_constant():
     from sipnet_calibration.sipnet_parameter_map import Compute
 
     vector = ParameterVector(parameters=[Parameter(name="x", units=None)])
-    prior = Prior(vector, {"x": PriorTerm(tfp.distributions.Normal(jnp.float64(0.0), jnp.float64(1.0)), provenance="t")})
+    prior = Prior(vector, [PriorTerm(parameter_names=("x",), distribution=tfp.distributions.Normal(jnp.float64(0.0), jnp.float64(1.0)), provenance="t")])
     sipnet_map = SIPNETParameterMap(rules=[Compute(
         sipnet_parameter_name="soil_carbon", values_read={}, constants={"level": xr.DataArray(1000.0)},
         function=lambda level: level, provenance="t")])
@@ -121,10 +121,10 @@ def test_describe_calibration_has_a_row_per_derived_parameter_and_a_joint_terms_
                          function=lambda intercept, slope, anomaly: jnp.exp(intercept + slope * anomaly)),
     ])
     normal = tfp.distributions.Normal(jnp.float64(0.0), jnp.float64(1.0))
-    prior = Prior(vector, {("intercept", "slope"): PriorTerm(
+    prior = Prior(vector, [PriorTerm(parameter_names=("intercept", "slope"), distribution=
         gaussian_copula({"intercept": normal, "slope": normal}, correlation=[[1.0, 0.2], [0.2, 1.0]]),
         provenance="test",
-    )}, derived_parameters=derived)
+    )], derived_parameters=derived)
     sipnet_map = SIPNETParameterMap(
         rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")]
     )
