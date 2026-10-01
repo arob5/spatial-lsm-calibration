@@ -59,6 +59,7 @@ from sipnet_calibration.parameters._labels import (
     as_coords,
     as_memberships,
 )
+from sipnet_calibration.parameters._probes import joint_probe_points
 from sipnet_calibration.parameters._validation import (
     as_names,
     as_sequence,
@@ -68,7 +69,7 @@ from sipnet_calibration.parameters._validation import (
 from sipnet_calibration.parameters.parameter import (
     check_shape_has_the_supports_event_axes,
 )
-from sipnet_calibration.parameters.support import Interval, Support, joint_probe_points
+from sipnet_calibration.parameters.support import Interval, Support
 from sipnet_calibration.parameters.vector import (
     PARAMETER_LEVEL,
     ParameterVector,

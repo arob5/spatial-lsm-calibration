@@ -14,6 +14,11 @@ import numpy as np
 import pytest
 from tensorflow_probability.substrates import jax as tfp
 
+from sipnet_calibration.parameters._probes import (
+    bijectors_agree,
+    joint_probe_points,
+    probe_points,
+)
 from sipnet_calibration.parameters.support import (
     DEFAULT_BIJECTORS,
     NON_NEGATIVE,
@@ -26,9 +31,6 @@ from sipnet_calibration.parameters.support import (
     Simplex,
     Support,
     bijector_for,
-    bijectors_agree,
-    joint_probe_points,
-    probe_points,
 )
 
 tfb = tfp.bijectors
@@ -182,7 +184,7 @@ def test_bijectors_are_compared_by_their_images():
     assert not bijectors_agree(tfb.Exp(), tfb.Softplus(), probes)
 
 
-# ── probe points ──────────────────────────────────────────────────────────────
+# ── probe points (private to the parameter layer) ──────────────────────────────────────────────────────────────
 
 
 def test_probe_points_run_along_the_first_values_numbers():

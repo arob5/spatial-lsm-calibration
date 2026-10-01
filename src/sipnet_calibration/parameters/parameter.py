@@ -38,13 +38,9 @@ from sipnet_calibration.parameters._description import (
     check_description_is_valid,
     resolved_element_labels,
 )
+from sipnet_calibration.parameters._probes import probe_points
 from sipnet_calibration.parameters._validation import as_names
-from sipnet_calibration.parameters.support import (
-    REAL,
-    Support,
-    bijector_for,
-    probe_points,
-)
+from sipnet_calibration.parameters.support import REAL, Support, bijector_for
 
 __all__ = [
     "Parameter",

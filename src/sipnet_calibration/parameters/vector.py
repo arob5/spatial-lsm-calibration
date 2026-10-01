@@ -139,6 +139,7 @@ import xarray as xr
 from frozendict import frozendict
 
 from sipnet_calibration.parameters._labels import as_coords
+from sipnet_calibration.parameters._probes import bijectors_agree, probe_points
 from sipnet_calibration.parameters._validation import (
     as_names,
     as_sequence,
@@ -146,7 +147,6 @@ from sipnet_calibration.parameters._validation import (
     truncated,
 )
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.support import bijectors_agree, probe_points
 
 __all__ = [
     "ELEMENT_LEVEL",

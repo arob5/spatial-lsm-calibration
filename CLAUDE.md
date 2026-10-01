@@ -219,7 +219,7 @@ one variable per parameter and derived parameter.
 | **dim** / **dim label** | a dim a parameter is indexed by (`Parameter.indexed_by`), and one of its labels, in `ParameterVector.coords`; in the adapter layer a dim is `site` or a site-labels name, whose labels are the site ids or the classes some site carries (`SiteDims.coords`) | "group", "copy", `varies_by`, `group_dim`, `dim=`, `dim_index` |
 | **element** / **element labels** | one number of one value, of shape `Parameter.shape`; its axes' names and labels (strings) are its element labels (`Parameter.element_labels`), and name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" |
 | **block** | one parameter's value at one tuple of labels of its dims; a parameter's values are `(*batch, *index shape, *shape)`, the **block shape** after the batch, with the index shape `[len(coords[d]) for d in indexed_by]` | |
-| **support** | a set of values, with its endpoints declared: a parameter's support, or a rule's domain (`ValueRequirement.domain`); a `Support` (`Interval`, `Simplex`), whose default bijector is `bijector_for(support)` | "the open set", `Bounds`, `OpenInterval` |
+| **support** | a set of values, a `Support` (`Interval`, `Simplex`, ...): the set a parameter's values lie in, whose default bijector is `bijector_for(support)`; a rule's domain is one too (`ValueRequirement.domain`) | "the open set", `Bounds`, `OpenInterval` |
 | **constant** | a value a derived parameter, prior term or SIPNET rule reads that is the same in every draw: an `xr.DataArray`, scalar or keyed by label on dims of the coords, read at the labels in use; a boolean one stays boolean | |
 | **membership** | for each label of one dim, the label of another it belongs to (a site's PFT, a PFT's biome): an `xr.DataArray` named for the other dim (`SiteDims.labels`), passed to a function as `int64` positions into that dim's labels | `site_positions`, `dim_label_positions` |
 | **prior term** | the prior of one parameter, or of several indexed alike jointly (a **joint term**, keyed by a tuple of names), possibly **given** other parameters or derived parameters, and reading constants and memberships; a `PriorTerm` | |
@@ -906,8 +906,7 @@ src/sipnet_calibration/
     support.py            # Support (Interval, Simplex: contains, closure),
                           # REAL, POSITIVE, NON_NEGATIVE, OPEN_UNIT_INTERVAL,
                           # UNIT_INTERVAL, SIMPLEX; DEFAULT_BIJECTORS and
-                          # bijector_for; probe_points(), joint_probe_points(),
-                          # bijectors_agree()
+                          # bijector_for
     parameter.py          # Parameter: support, units, shape, string element
                           # labels, indexed_by, T; unconstrained()
     vector.py             # ParameterVector: parameters, coords {dim: labels},
@@ -931,8 +930,9 @@ src/sipnet_calibration/
                           # iid_over_dim, independent_over_dim, gaussian_copula;
                           # log_normal, logit_normal (support=) and their _from_*
                           # forms, softmax_normal; DeclaresGaussian; term_name
-    _description.py, _labels.py, _validation.py   # private: the shared
-                          # description checks, label alignment, coercion
+    _description.py, _labels.py, _probes.py, _validation.py   # private: the
+                          # shared description checks, label alignment, the
+                          # probe points and bijector comparison, coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
                           # labels() (memberships), covariate(), at_sites(),
                           # site_fields(), select()

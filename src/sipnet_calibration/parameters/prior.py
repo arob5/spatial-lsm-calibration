@@ -174,6 +174,7 @@ from sipnet_calibration.parameters._labels import (
     as_constants,
     as_memberships,
 )
+from sipnet_calibration.parameters._probes import bijectors_agree, joint_probe_points
 from sipnet_calibration.parameters._validation import (
     as_count,
     as_names,
@@ -188,8 +189,6 @@ from sipnet_calibration.parameters.support import (
     Simplex,
     Support,
     bijector_for,
-    bijectors_agree,
-    joint_probe_points,
 )
 from sipnet_calibration.parameters.vector import (
     ParameterVector,
