@@ -8,18 +8,45 @@ noise covariance, the parameterization and prior, the diagnostics every run
 is checked by, NEE's error, and what the EKI setups show about the error
 model and a trade-off within SIPNET.
 
+## Pipeline
+
+Every entry point is a module of `run/`, run from the repository root as
+`uv run python -m experiments.single_site_mcmc_vs_eki.run.<module>`. In the
+order a calibration runs them:
+
+| Stage | `run.<module>` | Writes | Then |
+|---|---|---|---|
+| setup | `prepare_drivers` | the site's corrected driver file, `output/drivers/` | |
+| setup | `check_inputs` | nothing: prints what the inputs, observation vectors and noise model hold | |
+| 1 | `prior_predictive` | `output/prior_predictive/` | draws its figures, and diagnoses it |
+| 2 | `eki --data synthetic` or `--data observed` | `output/eki/<setup>/<data>/` | draws its ladder and marginals (and, on synthetic data, the recovery of the truth) |
+| 3 | `posterior_predictive --data <data>` | `output/eki/<setup>/<data>/posterior_predictive/` | draws its figures, and diagnoses the run |
+| 4 | `compare_setups` | `output/figures/comparison/` | |
+
+`<setup>` is `config.EKI_RUN_NAME`. A diagnosis is the same for every run, so
+runs compare directly: the tables under the run's `diagnostics/` and their
+figures, as `MODEL.md`, "Diagnostics", defines them. `--no-diagnose` skips it.
+
+For a run already written:
+
+| `run.<module>` | What it does |
+|---|---|
+| `diagnose --run <run>` | rediagnoses it, under `config`'s current noise model; `<run>` is `prior`, `synthetic` or `observed` |
+| `draw_figures --run <run>` | redraws its figures, after a change to `figures/` |
+| `fit_nee_discrepancy --data <data>` | fits NEE's discrepancy to an EKI run's residuals; adopting a fit is copying it into `config` |
+
 ## Layout
 
-The experiment is a package, `experiments.single_site_mcmc_vs_eki`, run from
-the repository root with `python -m`. Its parts depend one way:
+The experiment is a package, `experiments.single_site_mcmc_vs_eki`. Its
+parts depend one way:
 
 | Part | What it holds | Imports |
 |---|---|---|
-| `config.py` | every choice, in sections: the site, paths, the drivers, the model (SIPNET's process flags), running SIPNET (timeout, staging, workers), the observations (NEE windows, pool constraints, sources left out, operators), the prior predictive, the noise model (floors, NEE's three-term discrepancy, the other discrepancy terms), and EKI (the setup's name, ensemble, seeds, ladder) | the library, `model/operators.py`, `model/discrepancy.py` |
+| `config.py` | every choice, in sections: the site, paths, the drivers, the model (SIPNET's process flags), running SIPNET (timeout, staging, workers), the observations (NEE windows, pool constraints, sources left out, operators), the prior predictive, the noise model (floors, NEE's discrepancy, the other discrepancy terms), and EKI (the setup's name, ensemble, seeds, ladder) | the library, `model/operators.py`, `model/discrepancy.py` |
 | `model/` | the calibration's definitions: nothing here writes a file or has a `main` | `config`, the library |
-| `scripts/` | the entry points, which run the model and write under `output/` | `model`, `config` |
-| `figures/` | drawing what the scripts wrote; nothing here runs a model | `model`, `config` |
-| `report/` | `report.qmd`, a Quarto document walking through the setup and the results, reading the scripts' outputs | `model`, `figures`, `config`; nothing imports it |
+| `run/` | the entry points, and nothing else: each public module has a `main`, and the underscore modules are the machinery they share | `model`, `figures`, `config` |
+| `figures/` | the figures, as functions of what the runs wrote; the runs call them, and nothing here runs a model or has a `main` | `model`, `config` |
+| `report/` | `report.qmd`, a Quarto document walking through the setup and the results, reading the runs' outputs | `model`, `figures`, `config`; nothing imports it |
 | `exploration/` | tools and records that found the model, not needed to reproduce it | anything; nothing imports it |
 
 | File | What it does |
@@ -32,23 +59,25 @@ the repository root with `python -m`. Its parts depend one way:
 | `model/sipnet.py` | what running SIPNET needs, built from `config`: the base parameters, the runner and model, the drivers, the site's initial state, and the forward model over PyEns |
 | `model/prior.py` | **the calibration's parameterization and prior**: the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance; the site's `SiteDims`; theta's natural values as a table |
 | `model/inverse_problem.py` | the problem every algorithm conditions on: the prior (exactly Gaussian in theta, and as a pyEKI Gaussian, `prior_gaussian`), the forward model over the calibration vector, `y` and `R`; synthetic observations replace `y` |
-| `model/outputs.py` | reading what the scripts wrote: a predictive, an EKI run, a run's diagnostics |
-| `model/diagnostics.py` | the diagnostics of a run, as `MODEL.md`, "Diagnostics", defines them: the posterior predictive check, NEE's residuals (size, recurring seasonal part, autocorrelation against $R$'s, night-day correlation), and the two towers |
+| `model/outputs.py` | reading what the runs wrote: a predictive, an EKI run, a run's diagnostics |
+| `model/diagnostics.py` | the diagnostics of a run, as `MODEL.md`, "Diagnostics", defines them: the posterior predictive check, NEE's residuals (size, recurring seasonal part, autocorrelation against $R$'s, slow and fast parts, night-day correlation), and the two towers |
 | `model/fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
-| `scripts/prepare_drivers.py` | writes the site's driver file, corrected for four known defects of the ERA5 driver files, to `output/drivers/`, which the runs read; its docstring says what each defect is and how it is corrected |
-| `scripts/describe.py` | prints what the inputs, the observation vectors and the noise model hold; the check that everything is found and builds |
-| `scripts/predictive.py` | what the prior and posterior predictives share: an ensemble (and optionally one run by hand) through the forward model, predicting both observation vectors and daily output, scored under the likelihood, written in one layout |
-| `scripts/prior_predictive.py` | one SIPNET run by hand at the prior mean and an ensemble of prior draws; writes to `output/prior_predictive/` |
-| `scripts/eki.py` | EKI in its sampling form, on observed or synthetic data: a prior ensemble moved up an adaptive tempering ladder to beta = 1 by the perturbed-observation update, every step checkpointed and resumable; writes to `output/eki/<setup>/<data>/`, `<setup>` being `config.EKI_RUN_NAME` |
-| `scripts/posterior_predictive.py` | an EKI run's final ensemble through the same predictive; writes to `output/eki/<setup>/<data>/posterior_predictive/` |
-| `scripts/diagnose.py` | the diagnostics of a run (the prior predictive, or an EKI run), written as tables under its `diagnostics/`; **run after every run** |
-| `scripts/fit_nee_discrepancy.py` | fits NEE's discrepancy to an EKI run's residuals by maximum marginal likelihood, three variants per source, checked against the towers and the held-out tower; writes `nee_discrepancy_fit.csv` beside the run, and adopting a fit is copying it into `config` |
-| `scripts/provenance.py` | the `provenance.json` each script writes beside its outputs, and the calibration's record, `calibration_parameters.csv` and `calibration_sipnet_parameters.csv` |
+| `run/prepare_drivers.py` | the site's driver file, corrected for four known defects of the ERA5 driver files; its docstring says what each defect is and how it is corrected |
+| `run/check_inputs.py` | prints what the inputs, the observation vectors and the noise model hold; the check that everything is found and builds |
+| `run/prior_predictive.py` | one SIPNET run by hand at the prior mean and an ensemble of prior draws |
+| `run/eki.py` | EKI in its sampling form, on observed or synthetic data: a prior ensemble moved up an adaptive tempering ladder to beta = 1 by the perturbed-observation update, every step checkpointed and resumable (`--resume`) |
+| `run/posterior_predictive.py` | an EKI run's final ensemble through the same predictive |
+| `run/compare_setups.py` | the EKI setups' figures side by side |
+| `run/diagnose.py` | a run's diagnosis: its tables under `diagnostics/`, and their figures |
+| `run/draw_figures.py` | a stored run's figures, redrawn |
+| `run/fit_nee_discrepancy.py` | fits NEE's discrepancy to an EKI run's residuals by maximum marginal likelihood, several variants per source, checked against the towers and the held-out tower; writes `nee_discrepancy_fit.csv` beside the run |
+| `run/_predictive.py` | what the prior and posterior predictives share: an ensemble (and optionally one run by hand) through the forward model, predicting both observation vectors and daily output, scored under the likelihood, written in one layout |
+| `run/_provenance.py` | the `provenance.json` each run writes beside its outputs, and the calibration's record, `calibration_parameters.csv` and `calibration_sipnet_parameters.csv` |
 | `figures/common.py` | panel titles, the shared legend, and saving a figure |
-| `figures/prior_predictive.py` | the prior predictive's figures: NEE windows, pool constraints and daily trajectories, and the slide figures (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); writes to `output/figures/` |
-| `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, on synthetic data recovery of the truth, and the posterior predictive's figures; writes to `output/figures/<setup>/` |
-| `figures/comparison.py` | the EKI setups compared, for slides: each setup's posterior predictive seasonal cycle, the parameters the error model moves, and the daytime residual's slow and fast parts; writes to `output/figures/comparison/` |
+| `figures/prior_predictive.py` | the prior predictive's figures: NEE windows, pool constraints and daily trajectories, and the slide figures (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); into `output/figures/` |
+| `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, on synthetic data recovery of the truth, and the posterior predictive's figures; into `output/figures/<setup>/` |
 | `figures/diagnostics.py` | a run's diagnostic figures, for slides: the predictive check per source, the weekly residuals and their recurring part, the residuals' autocorrelation against $R$'s, and the two towers |
+| `figures/comparison.py` | the EKI setups compared, for slides: each setup's posterior predictive seasonal cycle, the parameters the error model moves, and the daytime residual's slow and fast parts; into `output/figures/comparison/` |
 | `exploration/parameter_analysis/` | the evidence for the prior and the fixed values: the parameter-structure analysis, the base set, the sensitivity screening and the prior-predictive checks |
 | `exploration/fast_forward.py` | a fast forward path for exploration, SIPNET in a process pool with the predictions by index arithmetic; it equals the library's to 1e-11, and is not the calibration's forward model |
 | `output/` | everything the experiment writes; untracked |
@@ -60,38 +89,22 @@ with the site's driver directories under `data/raw/drivers/` and the
 processed files built (`scripts/ingest_*.py`):
 
 ```bash
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prepare_drivers
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.describe
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.prior_predictive   # about 15 minutes on 7 workers, so roughly 35 on the default 3; --ensemble-size for fewer draws
-uv run python -m experiments.single_site_mcmc_vs_eki.figures.prior_predictive
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data synthetic   # --resume continues an interrupted run
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data observed
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.posterior_predictive --data observed
+uv run python -m experiments.single_site_mcmc_vs_eki.run.prepare_drivers
+uv run python -m experiments.single_site_mcmc_vs_eki.run.check_inputs
+uv run python -m experiments.single_site_mcmc_vs_eki.run.prior_predictive   # about 35 minutes on the default 3 workers; --ensemble-size for fewer draws
+uv run python -m experiments.single_site_mcmc_vs_eki.run.eki --data synthetic   # --resume continues an interrupted run
+uv run python -m experiments.single_site_mcmc_vs_eki.run.posterior_predictive --data synthetic
+uv run python -m experiments.single_site_mcmc_vs_eki.run.eki --data observed
+uv run python -m experiments.single_site_mcmc_vs_eki.run.posterior_predictive --data observed
+uv run python -m experiments.single_site_mcmc_vs_eki.run.compare_setups
 ```
 
-**After every run**, diagnose it and draw its figures, with `--run` the
-run's name (`prior`, `synthetic` or `observed`) and `--data` an EKI run's
-data. The diagnostics are the same for every run, so runs compare directly;
-`MODEL.md`, "Diagnostics", defines each quantity:
+To refit NEE's discrepancy to an EKI run's residuals, once its posterior
+predictive has run (the held-out scores and the tower floor read it and its
+diagnosis):
 
 ```bash
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.diagnose --run observed
-uv run python -m experiments.single_site_mcmc_vs_eki.figures.diagnostics --run observed
-uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data observed
-```
-
-To compare the EKI setups, once each has run through its diagnostics:
-
-```bash
-uv run python -m experiments.single_site_mcmc_vs_eki.figures.comparison
-```
-
-To refit NEE's discrepancy to an EKI run's residuals (after its posterior
-predictive, which the held-out scores read, and its diagnosis, which the
-tower floor reads):
-
-```bash
-uv run python -m experiments.single_site_mcmc_vs_eki.scripts.fit_nee_discrepancy --data observed
+uv run python -m experiments.single_site_mcmc_vs_eki.run.fit_nee_discrepancy --data observed
 ```
 
 **EKI setups.** Each EKI setup, a noise model or an algorithm, has a name,
@@ -120,8 +133,8 @@ way: `from experiments.single_site_mcmc_vs_eki import config` and
 ## The record of a run
 
 The code will move on after a result is reported, so a result is recorded
-rather than the code frozen. Each script writes `provenance.json` beside its
-outputs (`scripts/provenance.py`): the repository commit and whether the tree
+rather than the code frozen. Each run writes `provenance.json` beside its
+outputs (`run/_provenance.py`): the repository commit and whether the tree
 was dirty, each companion package's installed commit, the SIPNET pin and
 binary, the command, every `config` constant, and the path, size and MD5 of
 every input file. Beside it, a run of the calibration writes the
@@ -140,7 +153,7 @@ Each records what was chosen and why, so a result can be read against it.
 - **The driver file is corrected before any run**, so that every row means
   what SIPNET's format says: labeled with the UTC start of its three-hour
   step, and every value a total or a mean over that step. The four
-  corrections, in `scripts/prepare_drivers.py`: the drifting hour labels are rebuilt
+  corrections, in `run/prepare_drivers.py`: the drifting hour labels are rebuilt
   from position (`data/README.md` Note 15); every label moves back three hours,
   since radiation and precipitation cover the three hours *ending* at the
   label (Note 16); the snapshot columns (temperature, humidity, wind) become

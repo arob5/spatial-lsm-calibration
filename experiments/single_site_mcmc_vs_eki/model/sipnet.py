@@ -80,7 +80,7 @@ def climate_drivers() -> ClimateDrivers:
     """The prepared driver file, opened without reading it.
 
     File-backed, as the forward model requires under a parallel backend; the
-    labels are validated at the first read. Run ``scripts/prepare_drivers.py``
+    labels are validated at the first read. Run ``run/prepare_drivers.py``
     first.
     """
     directory = (

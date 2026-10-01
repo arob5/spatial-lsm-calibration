@@ -2,15 +2,17 @@
 
 Overview
 --------
-Runs ``model/diagnostics.py`` on one run and writes its tables beside the
-run, as ``MODEL.md``, "Diagnostics", defines them. Every run of this
-experiment is diagnosed the same way, so runs compare directly:
+Runs ``model/diagnostics.py`` on one run, writes its tables beside the run,
+as ``MODEL.md``, "Diagnostics", defines them, and draws their figures
+(``figures/diagnostics.py``). Every run of this experiment is diagnosed the
+same way, so runs compare directly. The predictive runs diagnose themselves
+at their end (:func:`diagnose_run`); this script rediagnoses a stored run:
 
 - ``--run prior``: the prior predictive's ensemble (a prior predictive
   check, the same computation against the prior's draws);
 - ``--run synthetic``, ``--run observed``: an EKI run's final ensemble,
   against the observations it conditioned on, and, for ``observed`` once
-  ``scripts/posterior_predictive.py`` has run, against the held-out tower.
+  ``run/posterior_predictive.py`` has run, against the held-out tower.
 
 Input data
 ----------
@@ -34,12 +36,14 @@ Under the run's directory, ``diagnostics/``:
 - ``nee_towers.csv``, ``nee_towers_summary.csv``: the two towers' windows
   and what their differences bound (the same for every run).
 
+The figures go where ``figures/diagnostics.py`` says.
+
 Usage
 -----
 From the repository root::
 
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.diagnose --run observed
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.diagnose --run prior
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.diagnose --run observed
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.diagnose --run prior
 """
 
 import argparse
@@ -51,6 +55,7 @@ from pathlib import Path
 import pandas as pd
 
 from .. import config
+from ..figures.diagnostics import draw_diagnostic_figures
 from ..model import diagnostics, observations
 from ..model.outputs import (
     check_eki_run_finished,
@@ -59,7 +64,7 @@ from ..model.outputs import (
     run_directory,
 )
 
-__all__ = ["NOISE_CONFIG_NAMES", "main"]
+__all__ = ["NOISE_CONFIG_NAMES", "diagnose_run", "main"]
 
 #: The config constants the noise model is built from.
 NOISE_CONFIG_NAMES = (
@@ -77,20 +82,36 @@ NOISE_CONFIG_NAMES = (
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Diagnose one run and write its tables."""
+    """Diagnose one stored run: write its tables and draw their figures."""
     warnings.filterwarnings("ignore", message=".*vapor_pressure_deficit.*")
-    run_name = _parser().parse_args(argv).run
-    directory = run_directory(run_name)
     try:
-        calibration, validation = run_sources(run_name, directory)
+        diagnose_run(_parser().parse_args(argv).run)
     except (FileNotFoundError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
+    return 0
+
+
+def diagnose_run(run_name: str) -> None:
+    """Diagnose run *run_name* (``prior``, ``synthetic`` or ``observed``).
+
+    Writes its tables under its ``diagnostics/``, prints the main ones and
+    draws their figures.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the run, or for an EKI run its final step, is missing.
+    ValueError
+        If an EKI run has not reached beta = 1.
+    """
+    directory = run_directory(run_name)
+    calibration, validation = run_sources(run_name, directory)
     report_noise_model_changes(directory)
     tables = diagnose(calibration, validation)
     write_tables(directory / "diagnostics", tables)
     print_report(run_name, tables)
-    return 0
+    draw_diagnostic_figures(run_name)
 
 
 # ── the steps ──

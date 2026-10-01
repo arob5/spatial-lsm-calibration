@@ -25,7 +25,7 @@ known truth.
 
 Input data
 ----------
-Everything the forward model reads (``scripts/prior_predictive.py`` lists
+Everything the forward model reads (``run/prior_predictive.py`` lists
 it), and ``config``.
 
 Output data
@@ -52,6 +52,12 @@ Under ``config.EKI_DIRECTORY / <data>``:
 - ``calibration_parameters.csv``, ``calibration_sipnet_parameters.csv`` and
   ``provenance.json``, as the prior predictive's.
 
+Once the ladder reaches beta = 1, the run draws its ladder, its marginals
+and, on synthetic data, its recovery of the truth (``figures/eki.py``) into
+``config.FIGURE_DIRECTORY / config.EKI_RUN_NAME``. It is diagnosed by its
+posterior predictive (``run/posterior_predictive.py``), which the held-out
+tower's check reads.
+
 A run started without ``--resume`` first removes what an earlier run of the
 same setup and data left: its steps, history, posterior ensemble, posterior
 predictive, diagnostics and discrepancy fit.
@@ -64,9 +70,9 @@ Usage
 -----
 From the repository root::
 
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data synthetic
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data observed
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.eki --data observed --resume
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.eki --data synthetic
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.eki --data observed
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.eki --data observed --resume
 """
 
 import argparse
@@ -91,10 +97,11 @@ from pyeki.eki import (
 from pyeki.gauss import Gaussian
 
 from .. import config
+from ..figures.eki import draw_eki_figures
 from ..model import inverse_problem, prior
 from ..model.inverse_problem import InverseProblem
 from ..model.outputs import load_eki_run
-from . import provenance
+from . import _provenance
 
 __all__ = ["main"]
 
@@ -127,10 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         _write_start(directory, problem, state)
     state = run_ladder(problem, state, directory)
     write_ensemble(directory / "posterior_ensemble.csv", problem, state.ensemble)
-    provenance.write_provenance(
-        directory / "provenance.json", input_files=provenance.model_input_files()
+    _provenance.write_provenance(
+        directory / "provenance.json", input_files=_provenance.model_input_files()
     )
     print(f"beta {float(state.beta):g} after {state.step} steps; wrote {directory}")
+    draw_eki_figures(arguments.data)
     return 0
 
 
@@ -245,7 +253,7 @@ def _write_start(directory: Path, problem: InverseProblem, state: EKIState) -> N
     for name in ("posterior_predictive", "diagnostics"):
         shutil.rmtree(directory / name, ignore_errors=True)
     np.save(directory / "initial_ensemble.npy", np.asarray(state.ensemble))
-    provenance.write_calibration(
+    _provenance.write_calibration(
         directory, problem.parameter_vector, problem.prior, problem.sipnet_parameter_map
     )
     write_ensemble(directory / "prior_ensemble.csv", problem, state.ensemble)

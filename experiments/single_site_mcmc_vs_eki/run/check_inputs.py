@@ -9,7 +9,7 @@ it.
 
 Input data
 ----------
-The prepared driver file (``scripts/prepare_drivers.py``), the processed
+The prepared driver file (``run/prepare_drivers.py``), the processed
 files ``model/inputs.py`` reads, and ``config``.
 
 Output data
@@ -27,7 +27,7 @@ Usage
 -----
 From the repository root::
 
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.describe
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.check_inputs
 """
 
 import sys

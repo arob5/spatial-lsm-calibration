@@ -1,20 +1,20 @@
-"""Reading what the scripts wrote: a predictive, and an EKI run.
+"""Reading what the runs wrote: a predictive, and an EKI run.
 
-The scripts write; this module reads, so the diagnostics and the figures
+The runs write; this module reads, so the diagnostics and the figures
 read a run one way. Nothing here runs a model or writes a file.
 
 Functions
 ---------
 :func:`load_predictive`
-    A predictive's directory (``scripts/predictive.py``'s layout: the prior
+    A predictive's directory (``run/_predictive.py``'s layout: the prior
     predictive, or an EKI run's posterior predictive), as nested dicts of
     xarray objects at the site.
 :func:`load_eki_run`
-    An EKI run's directory (``scripts/eki.py``): its history, its first and
+    An EKI run's directory (``run/eki.py``): its history, its first and
     final ensembles, the final ensemble's predictions of the calibration
     vector, and the synthetic truth when there is one.
 :func:`load_diagnostics`
-    A run's diagnostics (``scripts/diagnose.py``), one table per file.
+    A run's diagnostics (``run/diagnose.py``), one table per file.
 :func:`run_directory`
     Where a run's outputs are, by the run's name.
 :func:`at_site`
@@ -172,7 +172,7 @@ def load_eki_run(directory: Path) -> dict:
 def load_diagnostics(directory: Path) -> dict[str, pd.DataFrame]:
     """A run's diagnostics, ``<directory>/diagnostics/<name>.csv``, by name.
 
-    Each table has the index ``scripts/diagnose.py`` wrote it with, and the
+    Each table has the index ``run/diagnose.py`` wrote it with, and the
     ``time`` columns are parsed.
 
     Raises
@@ -213,7 +213,7 @@ def check_eki_run_wrote_a_step(steps: list[Path], directory: Path) -> None:
     """An EKI run wrote at least one step."""
     if not steps:
         raise FileNotFoundError(
-            f"no step under {directory / 'steps'}; run scripts/eki.py first"
+            f"no step under {directory / 'steps'}; run run/eki.py first"
         )
 
 
@@ -221,8 +221,9 @@ def check_run_was_diagnosed(paths: list[Path], directory: Path) -> None:
     """A run has diagnostics tables."""
     if not paths:
         raise FileNotFoundError(
-            f"no diagnostics under {directory / 'diagnostics'}; run "
-            "scripts/diagnose.py first"
+            f"no diagnostics under {directory / 'diagnostics'}; run its "
+            "predictive (run/prior_predictive.py or run/posterior_predictive.py), "
+            "or run/diagnose.py"
         )
 
 
@@ -231,5 +232,5 @@ def check_eki_run_finished(run: dict, directory: Path) -> None:
     if not run["finished"]:
         raise ValueError(
             f"the run under {directory} has not evaluated a final ensemble at "
-            "beta = 1; finish it with scripts/eki.py --resume"
+            "beta = 1; finish it with run/eki.py --resume"
         )

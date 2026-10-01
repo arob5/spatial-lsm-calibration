@@ -1,6 +1,6 @@
 """The prior predictive's figures.
 
-Reads what ``scripts/prior_predictive.py`` wrote and draws it through
+Reads what ``run/prior_predictive.py`` wrote and draws it through
 :mod:`sipnet_calibration.plotting`; nothing here runs a model. Run as a
 script, it draws every figure into ``config.FIGURE_DIRECTORY``.
 
@@ -32,14 +32,10 @@ The summaries, sized for slides (:data:`SLIDE_STYLE`):
   source, the fraction of observations inside the prior predictive's 50% and
   90% intervals, noise included.
 
-Usage
------
-From the repository root::
-
-    uv run python -m experiments.single_site_mcmc_vs_eki.figures.prior_predictive
+:func:`draw_prior_predictive_figures` draws them all; ``run/prior_predictive.py``
+calls it at the end of the run, and ``run/draw_figures.py --run prior``
+redraws them.
 """
-
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -61,6 +57,7 @@ __all__ = [
     "PARAMETER_TITLES",
     "PREDICTIVES",
     "SLIDE_STYLE",
+    "draw_prior_predictive_figures",
     "plot_coverage",
     "plot_daily_trajectories",
     "plot_nee_annual",
@@ -436,19 +433,21 @@ def plot_coverage(
     return figure
 
 
-# ── entry point ──
+# ── drawing the run ──
 
 
-def main() -> int:
-    """Draw every figure of the prior predictive into ``config.FIGURE_DIRECTORY``."""
+def draw_prior_predictive_figures() -> None:
+    """Draw every figure of the prior predictive into ``config.FIGURE_DIRECTORY``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the prior predictive has not run.
+    """
     use_project_style()
     directory = config.PRIOR_PREDICTIVE_DIRECTORY
-    try:
-        outputs = load_predictive(directory)
-        parameters = pd.read_csv(directory / "parameters.csv", index_col=0)
-    except FileNotFoundError as error:
-        print(f"error: {error}; run scripts/prior_predictive.py first", file=sys.stderr)
-        return 1
+    outputs = load_predictive(directory)
+    parameters = pd.read_csv(directory / "parameters.csv", index_col=0)
     for name, draw in (
         ("prior_predictive_nee", plot_nee_windows),
         ("prior_predictive_pools", plot_pool_observations),
@@ -463,7 +462,6 @@ def main() -> int:
             ("prior_predictive_coverage", plot_coverage(outputs)),
         ):
             save_figure(figure, name)
-    return 0
 
 
 # ── helpers ──
@@ -567,7 +565,3 @@ def _observed_annual_nee(series_name: str) -> pd.Series:
     complete = grouped.count() == grouped.size()
     complete &= grouped.size() >= 0.99 * 365 * 86400 / step_seconds
     return totals[complete]
-
-
-if __name__ == "__main__":
-    sys.exit(main())

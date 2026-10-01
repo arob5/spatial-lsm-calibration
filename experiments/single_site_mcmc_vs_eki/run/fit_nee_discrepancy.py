@@ -23,9 +23,9 @@ source of truth, and adopting a fit is a decision made by copying it there.
 Input data
 ----------
 ``output/eki/<setup>/<data>``, ``<setup>`` ``config.EKI_RUN_NAME`` unless
-``--setup`` names another: the run's final step, its diagnostics
-(``scripts/diagnose.py``, for the towers' floor) and, for the held-out
-score, its posterior predictive (``scripts/posterior_predictive.py``).
+``--setup`` names another: the run's final step, its posterior
+predictive and the diagnosis it ends with (``run/posterior_predictive.py``),
+for the held-out score and the towers' floor.
 
 Output data
 -----------
@@ -41,8 +41,8 @@ Usage
 -----
 From the repository root::
 
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.fit_nee_discrepancy --data observed
-    uv run python -m experiments.single_site_mcmc_vs_eki.scripts.fit_nee_discrepancy --data observed --setup single_term_discrepancy
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.fit_nee_discrepancy --data observed
+    uv run python -m experiments.single_site_mcmc_vs_eki.run.fit_nee_discrepancy --data observed --setup single_term_discrepancy
 """
 
 import argparse
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
         ]
     except (FileNotFoundError, KeyError) as error:
         print(
-            f"error: {error}; run scripts/eki.py and scripts/diagnose.py first",
+            f"error: {error}; run run/eki.py and run/posterior_predictive.py first",
             file=sys.stderr,
         )
         return 1

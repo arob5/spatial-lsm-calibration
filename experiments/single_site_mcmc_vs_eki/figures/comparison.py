@@ -16,14 +16,10 @@ sized for slides, into ``config.FIGURE_DIRECTORY / "comparison"``:
 
 ``MODEL.md``, "The error model and the fast-slow trade-off", reads them.
 
-Usage
------
-From the repository root::
-
-    uv run python -m experiments.single_site_mcmc_vs_eki.figures.comparison
+:func:`draw_comparison_figures` draws them all; ``run/compare_setups.py``
+runs it.
 """
 
-import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -45,6 +41,7 @@ from .prior_predictive import PARAMETER_TITLES, SLIDE_STYLE, weekly_nee_quantile
 __all__ = [
     "COMPARED_SETUPS",
     "MOVING_PARAMETER_NAMES",
+    "draw_comparison_figures",
     "load_setups",
     "plot_moving_parameters",
     "plot_seasonal_cycles",
@@ -204,21 +201,19 @@ def plot_slow_fast(runs: dict) -> plt.Figure:
     return figure
 
 
-# ── entry point ──
+# ── drawing the comparison ──
 
 
-def main() -> int:
-    """Draw the comparison of the setups into the figure directory's ``comparison``."""
+def draw_comparison_figures(setups=COMPARED_SETUPS) -> None:
+    """Draw the setups compared into the figure directory's ``comparison``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a setup's run, posterior predictive or diagnostics is missing.
+    """
     use_project_style()
-    try:
-        runs = load_setups()
-    except FileNotFoundError as error:
-        print(
-            f"error: {error}; run each setup's EKI, posterior predictive and "
-            "diagnostics first",
-            file=sys.stderr,
-        )
-        return 1
+    runs = load_setups(setups)
     with plt.rc_context(SLIDE_STYLE):
         for name, draw in (
             ("comparison_seasonal_cycles", plot_seasonal_cycles),
@@ -226,7 +221,6 @@ def main() -> int:
             ("comparison_slow_fast", plot_slow_fast),
         ):
             save_figure(draw(runs), name, subdirectory="comparison")
-    return 0
 
 
 # ── helpers ──
@@ -235,7 +229,3 @@ def main() -> int:
 def _run_directory(setup: str) -> Path:
     """A setup's observed-data run."""
     return config.OUTPUT_DIRECTORY / "eki" / setup / "observed"
-
-
-if __name__ == "__main__":
-    sys.exit(main())

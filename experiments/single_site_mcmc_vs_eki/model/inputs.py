@@ -2,7 +2,7 @@
 
 One loader per data source the calibration reads, each restricted to
 ``config.SITE`` and to the choices ``config`` makes, so every later step reads
-its inputs the same way. ``scripts/describe.py`` loads them all and prints
+its inputs the same way. ``run/check_inputs.py`` loads them all and prints
 what it found, which is the check that the configuration points at data that
 exists.
 """
@@ -34,7 +34,7 @@ def site_table() -> pd.DataFrame:
 def driver_dataset() -> xr.Dataset:
     """The prepared drivers of the site and member, on ``(driver_member, site, time)``.
 
-    Run ``scripts/prepare_drivers.py`` first: the raw files are refused by
+    Run ``run/prepare_drivers.py`` first: the raw files are refused by
     pySIPNET.
     """
     with warnings.catch_warnings():

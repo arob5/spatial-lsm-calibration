@@ -1,6 +1,6 @@
 """EKI's figures: the ladder, the marginals, and, on synthetic data, recovery of the truth.
 
-Reads what ``scripts/eki.py`` wrote under ``config.EKI_DIRECTORY / <data>``
+Reads what ``run/eki.py`` wrote under ``config.EKI_DIRECTORY / <data>``
 and draws, into ``config.FIGURE_DIRECTORY / config.EKI_RUN_NAME``:
 
 - :func:`plot_ladder` (``eki_ladder_<data>``): per step, the level beta and
@@ -15,21 +15,16 @@ and draws, into ``config.FIGURE_DIRECTORY / config.EKI_RUN_NAME``:
   with the prior's and the posterior ensemble's 90% intervals and the
   truth, and the posterior's standard deviation as a fraction of the
   prior's;
-- once ``scripts/posterior_predictive.py`` has run, the prior predictive's
+- once ``run/posterior_predictive.py`` has run, the prior predictive's
   figures drawn for the posterior predictive (``eki_posterior_predictive_*``),
   ``figures/prior_predictive.py``'s functions with ``kind="posterior"``, and
   its coverage of the held-out tower as well.
 
-Usage
------
-From the repository root::
-
-    uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data synthetic
-    uv run python -m experiments.single_site_mcmc_vs_eki.figures.eki --data observed
+:func:`draw_eki_figures` draws the first three, which ``run/eki.py`` calls
+at the end of a run, and :func:`draw_posterior_predictive_figures` the
+rest, which ``run/posterior_predictive.py`` calls at the end of its run;
+``run/draw_figures.py --run <data>`` redraws them all.
 """
-
-import argparse
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -43,7 +38,13 @@ from ..model.outputs import load_eki_run, load_predictive
 from .common import save_figure
 from .prior_predictive import PARAMETER_TITLES, SLIDE_STYLE
 
-__all__ = ["plot_ladder", "plot_marginals", "plot_recovery"]
+__all__ = [
+    "draw_eki_figures",
+    "draw_posterior_predictive_figures",
+    "plot_ladder",
+    "plot_marginals",
+    "plot_recovery",
+]
 
 
 def plot_ladder(run: dict) -> plt.Figure:
@@ -174,20 +175,21 @@ def plot_recovery(run: dict, entry_names: list[str]) -> plt.Figure:
     return figure
 
 
-# ── entry point ──
+# ── drawing a run ──
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Draw one EKI run's figures into ``config.FIGURE_DIRECTORY``."""
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--data", choices=("synthetic", "observed"), required=True)
-    data = parser.parse_args(argv).data
+def draw_eki_figures(data: str) -> None:
+    """Draw one EKI run's ladder, marginals and, on synthetic data, its recovery.
+
+    The figures go into ``config.FIGURE_DIRECTORY / config.EKI_RUN_NAME``.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the run under ``config.EKI_DIRECTORY / data`` has not started.
+    """
     use_project_style()
-    try:
-        run = load_eki_run(config.EKI_DIRECTORY / data)
-    except FileNotFoundError as error:
-        print(f"error: {error}; run scripts/eki.py first", file=sys.stderr)
-        return 1
+    run = load_eki_run(config.EKI_DIRECTORY / data)
     figures = {
         f"eki_ladder_{data}": plot_ladder(run),
         f"eki_marginals_{data}": plot_marginals(run),
@@ -197,17 +199,18 @@ def main(argv: list[str] | None = None) -> int:
         figures["eki_recovery_synthetic"] = plot_recovery(run, entry_names)
     for name, figure in figures.items():
         save_figure(figure, name, eki_run=True)
-    predictive_directory = config.EKI_DIRECTORY / data / "posterior_predictive"
-    if (predictive_directory / "ensemble_daily.nc").exists():
-        _draw_posterior_predictive(load_predictive(predictive_directory), data)
-    return 0
 
 
-# ── helpers ──
+def draw_posterior_predictive_figures(data: str) -> None:
+    """Draw an EKI run's posterior predictive with the prior predictive's figures.
 
-
-def _draw_posterior_predictive(outputs: dict, data: str) -> None:
-    """The prior predictive's figures, drawn for the posterior predictive."""
+    Raises
+    ------
+    FileNotFoundError
+        If the run's posterior predictive has not run.
+    """
+    use_project_style()
+    outputs = load_predictive(config.EKI_DIRECTORY / data / "posterior_predictive")
     prefix = f"eki_posterior_predictive_{data}"
     for name, draw in (
         ("nee", prior_predictive.plot_nee_windows),
@@ -231,7 +234,3 @@ def _draw_posterior_predictive(outputs: dict, data: str) -> None:
             ),
         ):
             save_figure(figure, f"{prefix}_{name}", eki_run=True)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -1,6 +1,6 @@
 """What every figure of the experiment shares: panel titles, the legend, saving.
 
-The figures read what the scripts wrote through ``model/outputs.py``.
+The figures read what the runs wrote through ``model/outputs.py``.
 
 Functions
 ---------

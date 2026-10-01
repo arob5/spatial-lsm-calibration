@@ -1,6 +1,6 @@
 """A run's diagnostic figures, sized for slides.
 
-Reads what ``scripts/diagnose.py`` wrote (``model/outputs.py``'s
+Reads what ``run/diagnose.py`` wrote (``model/outputs.py``'s
 ``load_diagnostics``) and draws, for ``--run <run>``, into
 ``config.FIGURE_DIRECTORY`` for the prior predictive and into its
 ``config.EKI_RUN_NAME`` subdirectory for an EKI run:
@@ -20,15 +20,10 @@ Reads what ``scripts/diagnose.py`` wrote (``model/outputs.py``'s
 
 ``MODEL.md``, "Diagnostics", defines each quantity.
 
-Usage
------
-From the repository root::
-
-    uv run python -m experiments.single_site_mcmc_vs_eki.figures.diagnostics --run observed
+:func:`draw_diagnostic_figures` draws them all; the predictive runs call it
+once they have diagnosed themselves, and ``run/draw_figures.py`` redraws
+them.
 """
-
-import argparse
-import sys
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -43,6 +38,7 @@ from .prior_predictive import SLIDE_STYLE
 
 __all__ = [
     "CHECK_ROW_LABELS",
+    "draw_diagnostic_figures",
     "plot_autocorrelation",
     "plot_predictive_check",
     "plot_towers",
@@ -188,22 +184,22 @@ def plot_towers(tables: dict) -> plt.Figure:
     return figure
 
 
-# ── entry point ──
+# ── drawing a run ──
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Draw one run's diagnostic figures into ``config.FIGURE_DIRECTORY``."""
-    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument(
-        "--run", choices=("prior", "synthetic", "observed"), required=True
-    )
-    run_name = parser.parse_args(argv).run
+def draw_diagnostic_figures(run_name: str) -> None:
+    """Draw one run's diagnostic figures into ``config.FIGURE_DIRECTORY``.
+
+    *run_name* is ``prior``, ``synthetic`` or ``observed``
+    (``model/outputs.py``'s ``run_directory``).
+
+    Raises
+    ------
+    FileNotFoundError
+        If the run has not been diagnosed.
+    """
     use_project_style()
-    try:
-        tables = load_diagnostics(run_directory(run_name))
-    except FileNotFoundError as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
+    tables = load_diagnostics(run_directory(run_name))
     eki_run = run_name != "prior"
     with plt.rc_context(SLIDE_STYLE):
         prefix = f"diagnostics_{run_name}"
@@ -219,8 +215,3 @@ def main(argv: list[str] | None = None) -> int:
         ):
             save_figure(draw(tables), f"{prefix}_{name}", eki_run=eki_run)
         save_figure(plot_towers(tables), "diagnostics_towers")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

@@ -395,7 +395,7 @@ autotrophic respiration 0.59 of GPP. The tails are broad (GPP above 1800 in 26%
 of runs, NEE above 0 in 34%), mostly from $P$, the half-saturation light and
 the two initial-condition priors, which keep the ensemble's own spread.
 
-The recorded prior predictive, `scripts/prior_predictive.py`'s 200 draws
+The recorded prior predictive, `run/prior_predictive.py`'s 200 draws
 through the forward model, a separate set of draws, gives the same picture;
 its coverage is `figures/prior_predictive.py`'s `prior_predictive_coverage`
 figure.
@@ -426,7 +426,7 @@ allocation times NPP over turnover whatever it starts at.
 ## Diagnostics
 
 Every run of the experiment is diagnosed the same way, so that runs compare
-directly: `scripts/diagnose.py --run <run>` computes the quantities below
+directly: `run/diagnose.py --run <run>` computes the quantities below
 (`model/diagnostics.py`) and writes them as tables under the run's
 `diagnostics/`, and `figures/diagnostics.py --run <run>` draws them. A run
 is the prior predictive (`prior`) or an EKI run (`synthetic`, `observed`)
@@ -862,7 +862,7 @@ a first calibration, as follows.
    $$
 
    over the logarithms of the parameters, by L-BFGS-B with the gradient from
-   JAX, within bounds on each (`scripts/fit_nee_discrepancy.py`'s `BOUNDS`),
+   JAX, within bounds on each (`run/fit_nee_discrepancy.py`'s `BOUNDS`),
    from the starts of its `VARIANTS` (three for the three-term model, their
    standard deviations fractions of $\hat s_k$ and their timescales from
    half a day to two months), keeping the best. Each evaluation is one Cholesky
@@ -928,7 +928,7 @@ of its configuration (see "Recommended, not adopted").
 
 ### The fit
 
-`scripts/fit_nee_discrepancy.py --data observed`, on the first
+`run/fit_nee_discrepancy.py --data observed`, on the first
 calibration's residuals, recorded in its run directory as
 `nee_discrepancy_fit.csv`. The held-out columns score each fitted $R$ on the
 first calibration's posterior predictive of US-xHA: they rank the error

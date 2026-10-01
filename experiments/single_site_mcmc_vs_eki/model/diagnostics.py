@@ -2,7 +2,7 @@
 
 ``MODEL.md``, "Diagnostics", defines every quantity computed here; this
 module computes them from an ensemble's predictions and writes nothing.
-``scripts/diagnose.py`` runs them on a run and writes the tables, and
+``run/diagnose.py`` runs them on a run and writes the tables, and
 ``figures/diagnostics.py`` draws them.
 
 Data model

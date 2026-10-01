@@ -103,7 +103,7 @@ OUTPUT_DIRECTORY = EXPERIMENT_DIRECTORY / "output"
 RAW_DRIVERS_ROOT = data_root() / "raw" / "drivers"
 
 #: The driver file the runs read: the raw file of :data:`SITE` and
-#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``scripts/prepare_drivers.py``,
+#: :data:`DRIVER_SOURCE_INDEX`, corrected by ``run/prepare_drivers.py``,
 #: laid out as the raw ones.
 PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"
 
@@ -115,13 +115,13 @@ PREPARED_DRIVERS_ROOT = OUTPUT_DIRECTORY / "drivers"
 DRIVER_SOURCE_INDEX = 1
 
 #: The clock the prepared driver file's labels are on, declared to pySIPNET.
-#: ``scripts/prepare_drivers.py`` relabels each row with the UTC start of the
+#: ``run/prepare_drivers.py`` relabels each row with the UTC start of the
 #: step its values describe, so the model's time axis is UTC, the observed
 #: NEE's clock.
 DRIVER_TIME_ZONE = "UTC"
 
 #: The timescale of the exponential filter of air temperature that
-#: ``scripts/prepare_drivers.py`` computes soil temperature with. It is
+#: ``run/prepare_drivers.py`` computes soil temperature with. It is
 #: PEcAn's ``met2model.SIPNET`` choice; there the filter averages the
 #: following weeks, here the preceding ones.
 SOIL_TEMPERATURE_TIMESCALE = timedelta(days=15)
@@ -287,7 +287,7 @@ OBSERVATION_OPERATORS = frozendict(
 # ── the prior predictive ──
 #
 # The prior mean's run and an ensemble of prior draws, the model against the
-# data before calibration; scripts/prior_predictive.py runs them and
+# data before calibration; run/prior_predictive.py runs them and
 # figures/prior_predictive.py draws them.
 
 #: Where the prior predictive writes its runs.
@@ -327,7 +327,7 @@ PRIOR_PREDICTIVE_OUTPUT_VARIABLE_NAMES = (
 #: NEE's model discrepancy, per NEE observation source: the short and long
 #: terms of model/discrepancy.py (MODEL.md, "NEE error"), standard deviations
 #: in umol m-2 s-1 of CO2, and no recurring term. The values are the two-term
-#: fit of scripts/fit_nee_discrepancy.py to the residuals of the first
+#: fit of run/fit_nee_discrepancy.py to the residuals of the first
 #: calibration (EKI setup "single_term_discrepancy", observed data), rounded
 #: to three figures. The three-term fit, with a term recurring every year,
 #: was run as setup "three_term_discrepancy" and dropped: it let the posterior
@@ -388,7 +388,7 @@ SOIL_CARBON_DISCREPANCY_FRACTION = 0.25
 # Ensemble Kalman inversion in its sampling form: an ensemble drawn from the
 # prior, moved up the tempering ladder from beta = 0 (the prior) to beta = 1
 # (the posterior) by pyEKI's perturbed-observation update, the increments
-# chosen adaptively. scripts/eki.py runs it and figures/eki.py draws it.
+# chosen adaptively. run/eki.py runs it and figures/eki.py draws it.
 
 #: The name of the current EKI setup. Each setup's runs are kept under their
 #: own name, so a change to the noise model or the algorithm leaves the
