@@ -1,0 +1,75 @@
+---
+title: "Single-site calibration of SIPNET at Harvard Forest"
+author: "Andrew Roberts"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-tools: true
+    fig-align: center
+    fig-width: 10
+    fig-height: 5
+    html-math-method: mathjax
+    embed-resources: true
+jupyter: python3
+execute:
+  warning: false
+---
+
+```{python}
+#| include: false
+import sys
+from pathlib import Path
+
+# The experiment is a package under the repository root, which a document
+# rendered from this directory does not have on its path.
+REPOSITORY = Path.cwd().resolve().parents[2]
+if str(REPOSITORY) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY))
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import xarray as xr
+
+from sipnet_calibration.plotting.style import use_project_style
+
+from experiments.single_site_mcmc_vs_eki import config
+from experiments.single_site_mcmc_vs_eki.figures import comparison as comparison_figures
+from experiments.single_site_mcmc_vs_eki.figures import diagnostics as diagnostic_figures
+from experiments.single_site_mcmc_vs_eki.figures import eki as eki_figures
+from experiments.single_site_mcmc_vs_eki.figures import prior_predictive as predictive_figures
+from experiments.single_site_mcmc_vs_eki.model import (
+    diagnostics,
+    inputs,
+    inverse_problem,
+    noise,
+    observations,
+    prior,
+)
+from experiments.single_site_mcmc_vs_eki.model.outputs import (
+    load_diagnostics,
+    load_eki_run,
+    load_predictive,
+)
+
+use_project_style()
+plt.rcParams.update({"figure.dpi": 150})
+
+# The runs the document reads: each EKI setup's observed-data run, and the
+# synthetic-truth run of the first setup.
+EKI_OBSERVED_DIRECTORIES = {
+    setup: config.OUTPUT_DIRECTORY / "eki" / setup / "observed"
+    for setup in comparison_figures.COMPARED_SETUPS
+}
+EKI_SYNTHETIC_DIRECTORY = (
+    config.OUTPUT_DIRECTORY / "eki" / "single_term_discrepancy" / "synthetic"
+)
+```
+
+# Setup
+
+# Results
