@@ -30,7 +30,12 @@ from sipnet_calibration.parameters.prior import (
     logit_normal,
     softmax_normal,
 )
-from sipnet_calibration.parameters.support import OPEN_UNIT_INTERVAL, POSITIVE, REAL, SIMPLEX
+from sipnet_calibration.parameters.support import (
+    OPEN_UNIT_INTERVAL,
+    POSITIVE,
+    REAL,
+    SIMPLEX,
+)
 from sipnet_calibration.parameters.vector import ParameterVector
 
 tfd, tfb = tfp.distributions, tfp.bijectors

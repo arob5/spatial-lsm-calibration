@@ -9,7 +9,8 @@ one string, a set or a mapping; an integer is never a boolean or a float.
 from __future__ import annotations
 
 import numbers
-from collections.abc import Iterable, KeysView, Mapping, Sequence, Set
+from collections.abc import Iterable, KeysView, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from typing import Any
 
 import numpy as np
@@ -111,7 +112,7 @@ def check_sequence_is_not_a_string(values: Any, *, message_name: str) -> None:
 
 def check_sequence_is_not_a_set_or_a_mapping(values: Any, *, message_name: str) -> None:
     """A sequence argument is not a set, which has no order, nor a mapping."""
-    if isinstance(values, Set) and not isinstance(values, KeysView):
+    if isinstance(values, AbstractSet) and not isinstance(values, KeysView):
         raise TypeError(
             f"{message_name} was given as a {type(values).__name__}, which has no order to "
             "keep; pass a list or a tuple."

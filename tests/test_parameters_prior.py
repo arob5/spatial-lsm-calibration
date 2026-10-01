@@ -10,7 +10,6 @@ from __future__ import annotations
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd
 import pytest
 import xarray as xr
 from tensorflow_probability.substrates import jax as tfp
@@ -21,8 +20,8 @@ from sipnet_calibration.parameters.prior import (
     GaussianMoments,
     Prior,
     PriorTerm,
-    independent_over_dim,
     iid_over_dim,
+    independent_over_dim,
     log_normal,
     log_normal_from_interval,
     log_normal_from_samples,
@@ -413,7 +412,10 @@ def test_a_change_of_variables_needs_a_known_measure():
 
 
 def test_derived_parameters_over_another_vector_are_refused():
-    from sipnet_calibration.parameters.derived import DerivedParameter, DerivedParameters
+    from sipnet_calibration.parameters.derived import (
+        DerivedParameter,
+        DerivedParameters,
+    )
 
     other = vector_of(SHARE)
     derived = DerivedParameters(parameter_vector=other, derived_parameters=[

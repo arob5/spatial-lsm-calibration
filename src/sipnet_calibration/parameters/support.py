@@ -203,7 +203,7 @@ class Simplex(Support):
 
 
 def bijector_for(
-    support: Support, bijectors: Mapping[type, Callable[[Support], tfb.Bijector]] = None
+    support: Support, bijectors: Mapping[type, Callable[[Support], tfb.Bijector]] | None = None
 ) -> tfb.Bijector:
     """The bijector *bijectors* registers for *support*'s type, or for the
     nearest of its base classes that has one.

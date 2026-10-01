@@ -19,7 +19,12 @@ import pytest
 import xarray as xr
 
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.support import OPEN_UNIT_INTERVAL, POSITIVE, REAL, SIMPLEX
+from sipnet_calibration.parameters.support import (
+    OPEN_UNIT_INTERVAL,
+    POSITIVE,
+    REAL,
+    SIMPLEX,
+)
 from sipnet_calibration.parameters.vector import (
     ParameterVector,
     check_parameter_vectors_share_a_layout,
@@ -121,7 +126,7 @@ def test_describe_has_a_row_per_parameter(vector):
 
 def test_the_vector_holds_its_parameters(vector):
     assert vector["soil"] is SOIL and "soil" in vector and "nothing" not in vector and ["soil"] not in vector
-    assert list(reversed(vector))[0] == "loading" and len(vector) == 5
+    assert next(reversed(vector)) == "loading" and len(vector) == 5
     assert repr(vector).startswith("ParameterVector(size=24")
     with pytest.raises(KeyError, match="no parameter 'nothing'"):
         vector["nothing"]

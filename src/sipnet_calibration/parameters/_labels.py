@@ -23,13 +23,17 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
-from sipnet_calibration.parameters._validation import as_sequence, check_names_are_unique, truncated
+from sipnet_calibration.parameters._validation import (
+    as_sequence,
+    check_names_are_unique,
+    truncated,
+)
 
 __all__ = [
     "aligned_constants",
     "aligned_memberships",
-    "as_coords",
     "as_constants",
+    "as_coords",
     "as_memberships",
 ]
 

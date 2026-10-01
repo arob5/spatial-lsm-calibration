@@ -30,7 +30,6 @@ from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
-import pandas as pd
 from frozendict import frozendict
 from tensorflow_probability.substrates import jax as tfp
 
@@ -40,7 +39,12 @@ from sipnet_calibration.parameters._description import (
     resolved_element_labels,
 )
 from sipnet_calibration.parameters._validation import as_names
-from sipnet_calibration.parameters.support import REAL, Support, bijector_for, probe_points
+from sipnet_calibration.parameters.support import (
+    REAL,
+    Support,
+    bijector_for,
+    probe_points,
+)
 
 __all__ = [
     "Parameter",

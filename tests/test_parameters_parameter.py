@@ -15,7 +15,13 @@ import pytest
 from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.support import OPEN_UNIT_INTERVAL, POSITIVE, REAL, SIMPLEX, UNIT_INTERVAL
+from sipnet_calibration.parameters.support import (
+    OPEN_UNIT_INTERVAL,
+    POSITIVE,
+    REAL,
+    SIMPLEX,
+    UNIT_INTERVAL,
+)
 
 tfb = tfp.bijectors
 

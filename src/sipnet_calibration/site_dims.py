@@ -74,7 +74,15 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
-from sipnet_calibration.conventions import LAT, LON, RESERVED_NAMES, SITE, SITE_DTYPE, SITE_ID, ReadOnlyCopies
+from sipnet_calibration.conventions import (
+    LAT,
+    LON,
+    RESERVED_NAMES,
+    SITE,
+    SITE_DTYPE,
+    SITE_ID,
+    ReadOnlyCopies,
+)
 from sipnet_calibration.site_labels import LABEL_COLUMN
 from sipnet_calibration.sites import (
     check_site_table_has_locations,
@@ -82,7 +90,13 @@ from sipnet_calibration.sites import (
     site_coordinates,
     site_lookup,
 )
-from sipnet_calibration.validation import as_names, as_sequence, as_site_ids, check_names_are_unique, truncated
+from sipnet_calibration.validation import (
+    as_names,
+    as_sequence,
+    as_site_ids,
+    check_names_are_unique,
+    truncated,
+)
 
 __all__ = [
     "SiteDims",

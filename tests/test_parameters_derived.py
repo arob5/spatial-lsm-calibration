@@ -20,7 +20,7 @@ import xarray as xr
 
 from sipnet_calibration.parameters.derived import DerivedParameter, DerivedParameters
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.support import POSITIVE, REAL, SIMPLEX, Interval
+from sipnet_calibration.parameters.support import POSITIVE, SIMPLEX, Interval
 from sipnet_calibration.parameters.vector import ParameterVector
 
 SITES = np.array([1, 27, 4711], dtype=np.int32)

@@ -10,11 +10,9 @@ of sites by class. Every check is provoked once.
 
 from __future__ import annotations
 
-import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 import pytest
-import xarray as xr
 
 from conftest import site_table_of
 from sipnet_calibration.fields import validate_field

@@ -23,19 +23,25 @@ from scipy import stats
 from tensorflow_probability.substrates import jax as tfp
 
 from sipnet_calibration.parameters.parameter import Parameter
-from sipnet_calibration.parameters.support import OPEN_UNIT_INTERVAL, POSITIVE, REAL, SIMPLEX, Interval
-from sipnet_calibration.parameters.vector import ParameterVector
 from sipnet_calibration.parameters.prior import (
     Prior,
     PriorTerm,
     gaussian_copula,
-    independent_over_dim,
     iid_over_dim,
+    independent_over_dim,
     log_normal,
     logit_normal,
     logit_normal_from_interval,
     softmax_normal,
 )
+from sipnet_calibration.parameters.support import (
+    OPEN_UNIT_INTERVAL,
+    POSITIVE,
+    REAL,
+    SIMPLEX,
+    Interval,
+)
+from sipnet_calibration.parameters.vector import ParameterVector
 
 tfd, tfb = tfp.distributions, tfp.bijectors
 

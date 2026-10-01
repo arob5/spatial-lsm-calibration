@@ -174,7 +174,12 @@ from sipnet_calibration.parameters._labels import (
     as_constants,
     as_memberships,
 )
-from sipnet_calibration.parameters._validation import as_count, as_names, check_names_are_unique, truncated
+from sipnet_calibration.parameters._validation import (
+    as_count,
+    as_names,
+    check_names_are_unique,
+    truncated,
+)
 from sipnet_calibration.parameters.derived import DerivedParameters
 from sipnet_calibration.parameters.parameter import Parameter
 from sipnet_calibration.parameters.support import (
@@ -201,8 +206,8 @@ __all__ = [
     "TermKey",
     "check_prior_term_is_valid",
     "gaussian_copula",
-    "independent_over_dim",
     "iid_over_dim",
+    "independent_over_dim",
     "log_normal",
     "log_normal_from_interval",
     "log_normal_from_samples",
@@ -1307,10 +1312,7 @@ def _family_gaussian(distribution: tfd.Distribution) -> tuple[Array, Array, tfb.
     kind = type(distribution)
     if kind is tfd.Normal:
         found = distribution.loc, distribution.scale, tfb.Identity()
-    elif kind in (tfd.LogNormal, tfd.LogitNormal):
-        base = distribution.distribution
-        found = base.loc, base.scale, distribution.bijector
-    elif kind is tfd.TransformedDistribution and type(distribution.distribution) is tfd.Normal and type(
+    elif kind in (tfd.LogNormal, tfd.LogitNormal) or kind is tfd.TransformedDistribution and type(distribution.distribution) is tfd.Normal and type(
         distribution.bijector
     ) is tfb.Sigmoid:
         base = distribution.distribution

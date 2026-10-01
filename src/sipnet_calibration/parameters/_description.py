@@ -13,7 +13,12 @@ import numpy as np
 import pandas as pd
 from frozendict import frozendict
 
-from sipnet_calibration.parameters._validation import as_names, as_sequence, check_names_are_unique, truncated
+from sipnet_calibration.parameters._validation import (
+    as_names,
+    as_sequence,
+    check_names_are_unique,
+    truncated,
+)
 
 __all__ = [
     "as_shape",
