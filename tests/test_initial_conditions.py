@@ -1291,15 +1291,19 @@ def test_conversion_fields_merge_into_a_sipnet_parameter_maps():
         ensemble_state(), leaf_carbon_per_area=32.0, fine_root_fraction=0.2,
         coarse_root_fraction=0.25, deciduous=False,
     )
+    from sipnet_calibration.site_dims import SiteDims
+
     site_table = pd.DataFrame(
         {"site_id": initial[SITE].values, "lon": initial["lon"].values, "lat": initial["lat"].values}
     )
-    vector, prior, sipnet_map = example_calibration(site_table, pft=("a", "b"))
+    site_dims = SiteDims(site_table=site_table, site_labels={"pft": ("a", "b")})
+    vector, prior, sipnet_map = example_calibration(site_dims)
     theta = prior.sample(jax.random.key(0), 3)
+    values = vector.flat_to_dataset(vector.to_natural(theta), batch_dims=("sample",))
     # The map writes soil_carbon, which the conversion sets too: drop it from
     # one of the two, as the conversion's docstring says.
     merged = xr.merge(
-        [sipnet_map.sipnet_parameter_fields(vector, theta), initial.drop_vars("soil_carbon")],
+        [sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims), initial.drop_vars("soil_carbon")],
         compat="no_conflicts", join="outer",
     )
     validate_sipnet_parameter_fields(merged)

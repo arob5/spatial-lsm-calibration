@@ -919,7 +919,7 @@ def example_reference() -> xr.Dataset:
 def example_reference_natural_values(reference: xr.Dataset, parameter_vector) -> dict:
     """The reference's natural values, as the example calibration's
     parameters hold them: per-site values read at each dim label."""
-    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.dim_index("pft")]
+    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.coords["pft"]]
     allocation = ("leaf", "wood", "fine_root", "coarse_root")
 
     def at(name: str) -> np.ndarray:
@@ -933,3 +933,15 @@ def example_reference_natural_values(reference: xr.Dataset, parameter_vector) ->
         "leaf_fall_fraction": at("leaf_fall_fraction")[:, 0],
         "initial_soil_carbon": at("initial_soil_carbon"),
     }
+
+
+# ── priors ────────────────────────────────────────────────────────────────────
+
+
+def theta_gaussian(prior, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """The mean and variances, flat in C order, of a term's Gaussian in
+    theta: its base's, when it is evaluated by its base density, else its
+    own (a Normal on the real line, under the identity)."""
+    built = prior._built[name]
+    gaussian = built.distribution.distribution if built.by_base_density else built.distribution
+    return np.ravel(gaussian.mean()), np.ravel(gaussian.variance())

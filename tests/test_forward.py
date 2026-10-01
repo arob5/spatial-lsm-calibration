@@ -56,6 +56,7 @@ from sipnet_calibration.sipnet_parameter_map import (
     SIPNETParametersOutOfDomainError,
     ValueRequirement,
 )
+from sipnet_calibration.site_dims import SiteDims
 
 SITES = (1, 27)
 PFT = ("temperate.deciduous", "boreal.coniferous")
@@ -64,6 +65,7 @@ REFERENCE_WOOD = REFERENCE.select(["wood_carbon"])["wood_carbon"]
 SHORT_STEPS = 40  # site 27's drivers are cut to this many steps
 LABELS = pd.DatetimeIndex(REFERENCE_WOOD["time"].values[[5, 20, 30]])
 SITE_TABLE = site_table_of(*SITES, lon=[-105.0, -70.0], lat=[40.0, 45.0])
+SITE_DIMS = SiteDims(site_table=SITE_TABLE, site_labels={"pft": PFT})
 RATE_UNITS = "nmol g-1 s-1"
 
 
@@ -132,6 +134,7 @@ class CopyRate:
     pySIPNET's refusals included."""
 
     value_name: str = "rate_input"
+    constants: ClassVar[dict] = {}
     sipnet_parameter_names_read: ClassVar[tuple[str, ...]] = ()
     sipnet_parameter_names_written: ClassVar[tuple[str, ...]] = ("max_photosynthesis_rate",)
 
@@ -139,8 +142,14 @@ class CopyRate:
     def values_read(self):
         return {self.value_name: ValueRequirement(RATE_UNITS)}
 
-    def __call__(self, values_at_sites, sipnet_parameter_values, site_table):
-        return {"max_photosynthesis_rate": values_at_sites[self.value_name]}
+    def __call__(self, values, sipnet_parameter_values):
+        return {"max_photosynthesis_rate": values[self.value_name]}
+
+
+def fields_of(sipnet_map, parameter_vector, theta):
+    """The SIPNET parameter fields at theta, as the forward model makes them."""
+    values = parameter_vector.flat_to_dataset(parameter_vector.to_natural(theta), batch_dims=("sample",))
+    return sipnet_map.sipnet_parameter_fields(values, site_dims=SITE_DIMS)
 
 
 def _expected_wood(sipnet_parameter_fields, sample, site, n_steps=None, **labels):
@@ -155,7 +164,7 @@ def _expected_wood(sipnet_parameter_fields, sample, site, n_steps=None, **labels
 
 @pytest.fixture(scope="module")
 def example():
-    return example_calibration(SITE_TABLE, PFT)
+    return example_calibration(SITE_DIMS)
 
 
 @pytest.fixture(scope="module")
@@ -236,6 +245,7 @@ def observation_vector():
 
 def build(parameter_vector, sipnet_map, climate, observation_vector=None, *, model=None, **keywords):
     keywords.setdefault("backend", SequentialBackend())
+    keywords.setdefault("site_dims", SITE_DIMS)
     return ForwardModel(
         model or scaled_niwot_model(), parameter_vector, sipnet_map, climate=climate,
         observation_vector=observation_vector, **keywords,
@@ -258,7 +268,7 @@ class TestEvaluate:
     ):
         evaluation = forward.evaluate(theta)
         assert isinstance(evaluation, ForwardEvaluation)
-        fields = sipnet_map.sipnet_parameter_fields(parameter_vector, theta)
+        fields = fields_of(sipnet_map, parameter_vector, theta)
         assert not np.allclose(fields["soil_carbon"].sel(site=1), fields["soil_carbon"].sel(site=27))
         predicted = evaluation.predicted_fields()["landtrendr_aboveground_biomass"]
         for sample in range(3):
@@ -293,7 +303,7 @@ class TestEvaluate:
         ])
         forward = build(parameter_vector, sipnet_map, climate, observation_vector)
         predicted = observation_vector.fields(forward(theta))["soil"]
-        expected = sipnet_map.sipnet_parameter_fields(parameter_vector, theta)["soil_carbon"]
+        expected = fields_of(sipnet_map, parameter_vector, theta)["soil_carbon"]
         for sample in range(len(theta)):
             for site in SITES:
                 row = predicted.sel(sample=sample, site=site).values
@@ -440,7 +450,7 @@ class TestEvaluate:
         ])
         evaluation = build(parameter_vector, sipnet_map, climate, observed).evaluate(theta)
         assert evaluation.valid.all() and np.isfinite(evaluation.predictions).all()
-        fields = sipnet_map.sipnet_parameter_fields(parameter_vector, theta)
+        fields = fields_of(sipnet_map, parameter_vector, theta)
         rate = fields["max_photosynthesis_rate"].sel(site=1).values
         soil = fields["soil_carbon"].sel(site=1).values
         expected = REFERENCE_WOOD.values[late] * (rate / 10.0) * (soil / SOIL_REFERENCE) * 0.01
@@ -452,7 +462,7 @@ class TestEvaluate:
         forward = build(parameter_vector, sipnet_map, climate, observation_vector.select(sites=[1]))
         assert not forward._run.returns_model_output
         overrides = sipnet_overrides(
-            sipnet_map.sipnet_parameter_fields(parameter_vector, theta), batch={"sample": 0}, site=27
+            fields_of(sipnet_map, parameter_vector, theta), batch={"sample": 0}, site=27
         )
         output = forward._run(climate=climate[27], site=27, site_observation_vector=None, **overrides)
         assert output.model_output is None and output.predictions is None
@@ -582,12 +592,11 @@ class TestOutOfDomain:
         assert evaluation.failures["error"].tolist() == ["ValidationError"]  # pySIPNET refused the run too
 
     def test_the_corner_check_refuses_a_map_outside_the_domain_when_built(self, climate, observation_vector):
-        from sipnet_calibration.parameter_vector import REAL, Parameter, ParameterVector
+        from sipnet_calibration.parameters import REAL, Parameter, ParameterVector
 
-        vector = ParameterVector(parameters=[Parameter(name="offset", support=REAL, units=RATE_UNITS)],
-                                 site_table=SITE_TABLE)
+        vector = ParameterVector(parameters=[Parameter(name="offset", support=REAL, units=RATE_UNITS)])
         unbounded = SIPNETParameterMap(rules=[CopyRate(value_name="offset")])
-        with pytest.raises(ValueError, match="outside pySIPNET's domains, at a corner"):
+        with pytest.raises(ValueError, match="outside their domains, at a corner"):
             build(vector, unbounded, climate, output_variable_names=("wood_carbon",))
         build(vector, unbounded, climate, output_variable_names=("wood_carbon",), out_of_domain="fail_row")
 
@@ -683,13 +692,13 @@ class TestExternalInputs:
         np.testing.assert_allclose(second, 3.0 * first)  # soil 3e4 against 1e4
 
     def test_a_failure_invalidates_its_combination_only(self, parameter_vector, sipnet_map, climate, observation_vector, theta):
-        rules = [CopyRate(), *sipnet_map.rules[1:4]]
+        rules = [CopyRate(), *sipnet_map.rules[1:5]]
         crossed_rates = xr.Dataset(
             {"rate_input": (("initial_condition_member",), [100.0, 1.5 * BLOW_UP], {"units": RATE_UNITS})},
             coords={"initial_condition_member": [0, 1]},
         )
         crossed = SIPNETParameterMap(
-            rules=[*rules, sipnet_map.rules[4]], fixed=sipnet_map.fixed
+            rules=[*rules, sipnet_map.rules[5]], fixed=sipnet_map.fixed
         )
         evaluation = build(parameter_vector, crossed, climate, observation_vector,
                            external_inputs=crossed_rates).evaluate(theta[:2])
@@ -749,7 +758,7 @@ class TestExternalInputs:
         state = EKIState(prior.sample(jax.random.key(1), n_members), 0.0, 0, jax.random.key(2))
         result = run(state, forward, observation_vector.y, PSDDiagonal(jax.numpy.ones(observation_vector.dimension)),
                      schedule=FixedSchedule((0.5, 0.5)))
-        assert result.state.ensemble.shape == (n_members, parameter_vector.dimension)
+        assert result.state.ensemble.shape == (n_members, parameter_vector.unconstrained.size)
         assert bool(jax.numpy.isfinite(result.state.ensemble).all())
 
     def test_an_input_named_like_a_parameter_is_refused(self, parameter_vector, sipnet_map, climate):
@@ -771,7 +780,7 @@ class TestPriorPredictive:
         assert set(output.data_vars) == {"net_ecosystem_exchange", "wood_carbon"}
         assert output["wood_carbon"].dims == ("sample", "site", "time")
         assert output["lon"].values.tolist() == [-105.0, -70.0]
-        fields = sipnet_map.sipnet_parameter_fields(parameter_vector, theta)
+        fields = fields_of(sipnet_map, parameter_vector, theta)
         for site, n_steps in ((1, REFERENCE_WOOD.sizes["time"]), (27, SHORT_STEPS)):
             wood = output["wood_carbon"].sel(sample=2, site=site).dropna("time")
             assert wood.sizes["time"] == n_steps
@@ -845,7 +854,7 @@ class TestRefusals:
 
     def test_an_observed_site_that_is_not_run(self, parameter_vector, sipnet_map, climate, observation_vector):
         with pytest.raises(ValueError, match=r"observes site\(s\) \[27\]"):
-            build(parameter_vector.select(sites=[1]), sipnet_map, climate, observation_vector)
+            build(parameter_vector, sipnet_map, climate, observation_vector, site_dims=SITE_DIMS.select([1]))
 
     def test_memory_backed_drivers_under_a_process_backend(self, parameter_vector, sipnet_map, climate, observation_vector):
         with pytest.raises(ValueError, match="held in memory"):
@@ -892,7 +901,7 @@ class TestRefusals:
 
     def test_not_a_sipnet_model_or_backend(self, parameter_vector, sipnet_map, climate, observation_vector):
         with pytest.raises(TypeError, match="SIPNETModel"):
-            ForwardModel(lambda **k: None, parameter_vector, sipnet_map, climate=climate,
+            ForwardModel(lambda **k: None, parameter_vector, sipnet_map, site_dims=SITE_DIMS, climate=climate,
                          backend=SequentialBackend(), observation_vector=observation_vector)
         with pytest.raises(TypeError, match="Backend"):
             build(parameter_vector, sipnet_map, climate, observation_vector, backend="local")
@@ -909,7 +918,7 @@ class TestRealSipnet:
         from sipnet_calibration.fields import to_model_output
 
         model = SIPNETModel(SIPNETRunner(flags=ModelFlags.standard(), timeout=120.0), base_params=niwot_reference_parameters())
-        forward = ForwardModel(model, parameter_vector, sipnet_map, climate=files,
+        forward = ForwardModel(model, parameter_vector, sipnet_map, site_dims=SITE_DIMS, climate=files,
                                backend=LocalBackend(n_workers=2), observation_vector=observation_vector)
         evaluation = forward.evaluate(theta[:2])
         assert evaluation.predictions.shape == (2, observation_vector.dimension)
@@ -1062,11 +1071,11 @@ class TestTheBatchDimIsNamedOnce:
         with pytest.raises(ValueError, match="cannot name a batch dim"):
             build(parameter_vector, sipnet_map, climate, observation_vector, batch_dim="site")
 
-    @pytest.mark.parametrize("name", ["initial_soil_carbon", "pft", "allocation.leaf"])
+    @pytest.mark.parametrize("name", ["initial_soil_carbon", "pft", "allocation_part"])
     def test_a_name_of_the_vectors_labeled_form_is_refused(
         self, parameter_vector, sipnet_map, climate, observation_vector, name
     ):
-        with pytest.raises(ValueError, match="dim or variable of the vector's labeled form"):
+        with pytest.raises(ValueError, match="or the batch dim's"):
             build(parameter_vector, sipnet_map, climate, observation_vector, batch_dim=name)
 
     def test_an_output_variable_name_or_alias_is_refused(self, parameter_vector, sipnet_map, climate):
@@ -1153,3 +1162,86 @@ class TestRunSucceededIsAField:
             plot_map(evaluation.run_succeeded.isel(sample=0), ax=ax)
         finally:
             plt.close(figure)
+
+
+class TestComposition:
+    """What the forward model checks of the parameter layer's objects and the site dims."""
+
+    def test_a_dim_the_site_dims_lack_is_refused(self, sipnet_map, climate):
+        from sipnet_calibration.parameters import POSITIVE, Parameter, ParameterVector
+
+        vector = ParameterVector(parameters=[Parameter(name="rate", support=POSITIVE, units="yr-1",
+                                                       indexed_by=("biome",))], coords={"biome": ["boreal"]})
+        with pytest.raises(ValueError, match="neither 'site' nor a site-labels name of the site dims"):
+            build(vector, sipnet_map, climate, output_variable_names=("wood_carbon",))
+
+    def test_a_label_the_sites_carry_is_needed(self, parameter_vector, sipnet_map, climate):
+        smaller = parameter_vector.select(pft=["boreal.coniferous"])
+        with pytest.raises(KeyError, match="labels lack \\['temperate.deciduous'\\]"):
+            build(smaller, sipnet_map, climate, output_variable_names=("wood_carbon",))
+        # Extra labels are read at no site.
+        build(parameter_vector, sipnet_map, climate, output_variable_names=("wood_carbon",),
+              site_dims=SITE_DIMS.select([1]))
+
+    def test_a_reserved_name_is_refused(self, parameter_vector, sipnet_map, climate):
+        from sipnet_calibration.parameters import REAL, Parameter, ParameterVector
+
+        lon = ParameterVector(parameters=[*parameter_vector.parameters, Parameter(name="lon", support=REAL, units=None)],
+                              coords=parameter_vector.coords)
+        with pytest.raises(ValueError, match="\\['lon'\\] name parameters"):
+            build(lon, sipnet_map, climate, output_variable_names=("wood_carbon",))
+        inputs = crossed_soil().rename(soil_input="time")
+        with pytest.raises(ValueError, match="\\['time'\\] name parameters"):
+            build(parameter_vector, sipnet_map, climate, output_variable_names=("wood_carbon",), external_inputs=inputs)
+
+    def test_derived_parameters_over_another_vector_are_refused(self, parameter_vector, sipnet_map, climate):
+        from sipnet_calibration.parameters import DerivedParameter, DerivedParameters
+
+        other = parameter_vector.select(parameter=["photosynthetic_capacity"])
+        derived = DerivedParameters(parameter_vector=other, derived_parameters=[DerivedParameter(
+            name="doubled", units="nmol g-1 s-1", given=("photosynthetic_capacity",),
+            function=lambda photosynthetic_capacity: 2.0 * photosynthetic_capacity)])
+        with pytest.raises(ValueError, match="differ in their"):
+            build(parameter_vector, sipnet_map, climate, output_variable_names=("wood_carbon",),
+                  derived_parameters=derived)
+
+    def test_a_derived_parameter_reaches_the_map(self, parameter_vector, sipnet_map, climate, theta):
+        from sipnet_calibration.parameters import (
+            POSITIVE,
+            DerivedParameter,
+            DerivedParameters,
+        )
+
+        derived = DerivedParameters(parameter_vector=parameter_vector, derived_parameters=[DerivedParameter(
+            name="soil_doubled", units="g m-2", support=POSITIVE, indexed_by=("site",),
+            given=("initial_soil_carbon",), function=lambda initial_soil_carbon: 2.0 * initial_soil_carbon)])
+        rules = [rule for rule in sipnet_map.rules if "soil_carbon" not in rule.sipnet_parameter_names_written]
+        doubled = SIPNETParameterMap(rules=[*rules, Copy(value_name="soil_doubled", sipnet_parameter_name="soil_carbon")],
+                                     fixed=sipnet_map.fixed)
+        evaluation = build(parameter_vector, doubled, climate, output_variable_names=("wood_carbon",),
+                           derived_parameters=derived).evaluate(theta)
+        natural = parameter_vector.flat_to_values(parameter_vector.to_natural(theta))
+        np.testing.assert_allclose(evaluation.sipnet_parameter_fields["soil_carbon"],
+                                   2.0 * np.asarray(natural["initial_soil_carbon"]), rtol=1e-12)
+        assert build(parameter_vector, doubled, climate, output_variable_names=("wood_carbon",),
+                     derived_parameters=derived).derived_parameters is derived
+
+    def test_a_rule_input_outside_its_domain_is_refused_or_fails_its_row(self, parameter_vector, soil_map, climate, theta):
+        negative = crossed_soil().assign(soil_input=lambda d: d["soil_input"] * xr.DataArray([1.0, -1.0], dims="site"))
+        with pytest.raises(ValueError, match="outside their domains, at a corner"):
+            build(parameter_vector, soil_map, climate, output_variable_names=("wood_carbon",), external_inputs=negative)
+        forward = build(parameter_vector, soil_map, climate, output_variable_names=("wood_carbon",),
+                        external_inputs=negative, out_of_domain="fail_row")
+        evaluation = forward.evaluate(theta[:1])
+        assert evaluation.valid.tolist() == [False, False] and evaluation.out_of_domain_fraction == 1.0
+
+    def test_the_corner_check_runs_along_the_axes_of_a_large_value(self):
+        from sipnet_calibration.forward import _corner_theta
+        from sipnet_calibration.parameters import Parameter, ParameterVector
+
+        small = ParameterVector(parameters=[Parameter(name="x", units=None, shape=(3,))])
+        large = ParameterVector(parameters=[Parameter(name="x", units=None, shape=(7,))])
+        assert _corner_theta(small).shape == (27, 3)
+        corners = _corner_theta(large)
+        assert corners.shape == (2 * 7 + 3, 7)
+        assert np.count_nonzero(corners[3:], axis=1).tolist() == [1] * 14
