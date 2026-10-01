@@ -5,8 +5,10 @@ Where this sits
 ---------------
 ::
 
-    theta (J, D), external inputs
-      --SIPNETParameterMap.sipnet_parameter_fields-->  SIPNET parameter fields
+    theta (J, D)
+      --ParameterVector.to_natural, DerivedParameters.values-->  values by parameter
+      --values_to_dataset, merged with external inputs-->  labeled natural values
+      --SIPNETParameterMap.sipnet_parameter_fields, at the SiteDims' sites-->  SIPNET parameter fields
       --PyEns, one SIPNETModel run per (sample, crossed labels, site)-->  model output
       --ObservationVector.predict and .flat on the worker-->  one site's segment of Flat
       --placed at its run and at positions(site=) by the calling process-->  (R, N)
@@ -14,17 +16,20 @@ Where this sits
 :class:`ForwardModel` is the one object this module adds: the callable
 ``(J, D) -> (J, N)`` that pyEKI's ``run`` takes as ``forward``, and that an
 MCMC target calls. Everything it composes exists elsewhere: the parameter
-vector, the SIPNET parameter map, pySIPNET's ``SIPNETModel``, PyEns's
+layer's vector and derived parameters, the site dims, the SIPNET parameter
+map, pySIPNET's ``SIPNETModel``, PyEns's
 ``PartialSpec``/``EnsembleRunner``/``Backend`` and its xarray bridge, the
 observation vector, and the stacking of runs
 (:func:`sipnet_calibration.fields.stack_model_outputs`).
 
 What it reads
 -------------
-A :class:`pysipnet.model.SIPNETModel`, a
-:class:`~sipnet_calibration.parameter_vector.ParameterVector` and a
-:class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap`, optional
-:data:`~sipnet_calibration.sipnet_parameter_map.ExternalInputs`, one
+A :class:`pysipnet.model.SIPNETModel`; a
+:class:`~sipnet_calibration.parameters.ParameterVector`, optionally its
+:class:`~sipnet_calibration.parameters.DerivedParameters`, a
+:class:`~sipnet_calibration.site_dims.SiteDims` (the sites run) and a
+:class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap`; optional
+:data:`~sipnet_calibration.sipnet_parameter_map.ExternalInputs`; one
 ``ClimateDrivers`` per site, a PyEns backend, and either an
 :class:`~sipnet_calibration.observation.ObservationVector` (the calibration
 path: each run reduced to its site's predictions on the worker) or the
@@ -73,11 +78,11 @@ produced:
     ``error`` (the exception's class name) and ``message``, one row per run
     that failed at its parameters.
 ``valid``
-    bool ``(R,)`` ``jax.Array``: every run of the row succeeded, its SIPNET
-    parameters are in pySIPNET's domains, and its predictions are finite.
+    bool ``(R,)`` ``jax.Array``: every run of the row succeeded, its values
+    are in their domains, and its predictions are finite.
 ``out_of_domain_fraction``
-    The fraction of rows with a SIPNET parameter outside pySIPNET's domains;
-    ``0.0`` unless ``out_of_domain="fail_row"``.
+    The fraction of rows with a value outside its domain; ``0.0`` unless
+    ``out_of_domain="fail_row"``.
 
 A run **fails at its parameters** when pySIPNET refuses them
 (``pydantic.ValidationError``), SIPNET exits non-zero or writes nothing
@@ -90,9 +95,13 @@ whose ``evaluation`` attribute holds what was collected. On the
 prior-predictive path a batch in which every run failed at its parameters is
 raised the same way.
 
-**SIPNET parameters outside pySIPNET's domains** mean the prior and the map
-put mass where SIPNET is undefined. By default the model refuses them before
-anything runs (:class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParametersOutOfDomainError`);
+**Values outside their domains**, a rule input outside its requirement's or
+a SIPNET parameter outside pySIPNET's
+(:meth:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap.out_of_domain`),
+mean the prior and the map put mass where a rule or SIPNET is undefined. By
+default the model refuses them before anything runs
+(:class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParametersOutOfDomainError`),
+and checks the map at the corners of theta when it is built;
 ``out_of_domain="fail_row"`` marks their rows invalid instead, which
 truncates the prior to the region the map sends into the domains: a prior
 that neither ``Prior.log_prob`` nor ``Prior.sample`` knows.
@@ -128,11 +137,12 @@ Usage
 -----
 ::
 
-    forward = ForwardModel(model, prior.parameter_vector, sipnet_map, climate=climate,
+    forward = ForwardModel(model, prior.parameter_vector, sipnet_map, site_dims=site_dims,
+                           derived_parameters=prior.derived_parameters, climate=climate,
                            backend=LocalBackend(8), observation_vector=observation_vector)
     result = pyeki.eki.run(state, forward, observation_vector.y, noise_cov, schedule=...)
 
-    predictive = ForwardModel(model, vector, sipnet_map, climate=climate,
+    predictive = ForwardModel(model, vector, sipnet_map, site_dims=site_dims, climate=climate,
                               backend=LocalBackend(8), external_inputs=initial_states,
                               output_variable_names=("nee",), freq="1D")
     evaluation = predictive.evaluate(prior.sample(key, 100))
@@ -141,6 +151,8 @@ Usage
 
 from __future__ import annotations
 
+import itertools
+import math
 import subprocess
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -172,7 +184,14 @@ from pysipnet.resample import STEP_LENGTH_RESAMPLED
 from pysipnet.runner import SIPNETRunError
 from pysipnet.variables import resolve_output_variable
 
-from sipnet_calibration.conventions import BATCH_LABEL_DTYPE, SAMPLE, SITE, SITE_DTYPE, ReadOnlyCopies
+from sipnet_calibration.conventions import (
+    BATCH_LABEL_DTYPE,
+    RESERVED_NAMES,
+    SAMPLE,
+    SITE,
+    SITE_DTYPE,
+    ReadOnlyCopies,
+)
 from sipnet_calibration.fields import (
     Field,
     ModelOutput,
@@ -190,24 +209,32 @@ from sipnet_calibration.observation import (
     aggregate_time,
     check_batch_dim_is_not_an_observation_source_name,
 )
-from sipnet_calibration.observation.time_alignment import check_frequency_is_an_offset_alias
-from sipnet_calibration.parameter_vector import ParameterVector, check_batch_dim_name_is_not_taken
+from sipnet_calibration.observation.time_alignment import (
+    check_frequency_is_an_offset_alias,
+)
+from sipnet_calibration.parameters import (
+    DerivedParameters,
+    ParameterVector,
+    check_parameter_vectors_share_a_layout,
+)
 from sipnet_calibration.sipnet_parameter_map import (
     ExternalInputs,
     SIPNETParameterMap,
     SIPNETParametersOutOfDomainError,
     check_sipnet_parameter_map_fits,
-    check_sipnet_parameter_map_is_in_domain_at_the_corners,
     validate_external_inputs,
 )
+from sipnet_calibration.site_dims import SiteDims
 from sipnet_calibration.sites import site_locations, site_lookup
 from sipnet_calibration.validation import as_batched_flat, is_one_vector, truncated
 
 __all__ = [
+    "DOMAIN_CHECK_CORNERS",
     "MODEL_FAILURES",
     "ForwardEvaluation",
     "ForwardModel",
     "ModelOutputNotFiniteError",
+    "check_sipnet_parameter_map_is_in_domain_at_the_corners",
 ]
 
 
@@ -217,25 +244,34 @@ class ForwardModel:
     .. math::
 
         G(\\theta) = \\big(H_s(\\mathrm{SIPNET}(\\psi_s))\\big)_s, \\qquad
-        \\psi_s = M\\big(T(\\theta)^{(s)}, u_s, c_s\\big),
+        \\psi_s = M\\big((x, f(x))^{(s)}, u_s, c_s\\big), \\qquad x = T(\\theta),
 
-    with :math:`T` the vector's transform, :math:`M` the SIPNET parameter
-    map, :math:`u_s` a run's external inputs, :math:`c_s` its fixed SIPNET
-    parameters, and :math:`H_s` the observation operators at the run's site.
+    with :math:`T` the vector's transform, :math:`f` the derived
+    parameters, :math:`(\\cdot)^{(s)}` a value read at site :math:`s`,
+    :math:`M` the SIPNET parameter map, :math:`u_s` a run's external inputs,
+    :math:`c_s` its constants and fixed SIPNET parameters, and :math:`H_s`
+    the observation operators at the run's site.
 
     Parameters
     ----------
     model:
         The :class:`pysipnet.model.SIPNETModel` every run goes through.
     parameter_vector:
-        The vector theta is of; its sites are the sites run, located by its
-        site table. Pass ``prior.parameter_vector``, so the prior and the
-        forward model share one.
+        The vector theta is of. Pass ``prior.parameter_vector``, so the
+        prior and the forward model share one.
     sipnet_parameter_map:
-        How theta, and the external inputs, reach SIPNET. It is checked to
-        fit the vector and the external inputs.
+        How the values, and the external inputs, reach SIPNET. It is checked
+        to fit them, and, with ``out_of_domain="raise"``, at the corners of
+        theta (:func:`check_sipnet_parameter_map_is_in_domain_at_the_corners`).
+    site_dims:
+        The sites run, located by their site table, and the dims the vector
+        and derived parameters are on: each of their dims is a dim of
+        ``site_dims.coords``, with every label some site carries.
+    derived_parameters:
+        The derived parameters the map reads, over this vector: pass
+        ``prior.derived_parameters``.
     climate:
-        ``{site id: ClimateDrivers}``, a superset of the vector's sites.
+        ``{site id: ClimateDrivers}``, a superset of the sites run.
         Under any backend but ``SequentialBackend`` each must be
         file-backed, opened with ``ClimateDrivers.from_path``.
     backend:
@@ -251,7 +287,7 @@ class ForwardModel:
     observation_vector:
         The observation vector whose operators reduce each run on the worker
         and whose order the predictions take. Its sites must be among the
-        vector's.
+        sites run.
     output_variable_names:
         Without an observation vector, the pySIPNET output variables each run
         returns. With one, defaults to those its operators read.
@@ -268,10 +304,15 @@ class ForwardModel:
         If an argument has the wrong type.
     ValueError
         If the arguments cannot make one forward model, checked before
-        anything runs; the message names the rule.
+        anything runs: a dim the site dims lack; a parameter, derived
+        parameter, element axis or external input named with a reserved
+        name or the batch dim's; derived parameters over another vector;
+        the map not fitting; values outside their domains at the corners;
+        the message names the rule.
     KeyError
-        If an output variable is unknown, or the map reads a value neither
-        the vector nor the external inputs hold.
+        If an output variable is unknown, the map reads a value nothing
+        holds, or the vector or a derived parameter lacks a label some site
+        carries.
     """
 
     def __init__(
@@ -280,6 +321,8 @@ class ForwardModel:
         parameter_vector: ParameterVector,
         sipnet_parameter_map: SIPNETParameterMap,
         *,
+        site_dims: SiteDims,
+        derived_parameters: DerivedParameters | None = None,
         climate: Mapping[int, ClimateDrivers],
         backend: Backend,
         external_inputs: ExternalInputs | None = None,
@@ -290,10 +333,10 @@ class ForwardModel:
         batch_dim: str = SAMPLE,
     ) -> None:
         check_batch_dim_name_is_not_reserved(batch_dim, message_name="batch_dim")
-        check_batch_dim_name_is_not_taken(parameter_vector, batch_dim)
+        check_forward_model_composes(parameter_vector, derived_parameters, site_dims, external_inputs, batch_dim)
         check_forward_model_arguments(
             model,
-            parameter_vector,
+            site_dims.sites,
             climate=climate,
             backend=backend,
             observation_vector=observation_vector,
@@ -303,22 +346,24 @@ class ForwardModel:
         )
         if external_inputs is not None:
             validate_external_inputs(external_inputs, batch_dim=batch_dim)
-        check_sipnet_parameter_map_fits(sipnet_parameter_map, parameter_vector, external_inputs)
-        if out_of_domain == "raise":
-            check_sipnet_parameter_map_is_in_domain_at_the_corners(
-                sipnet_parameter_map, parameter_vector, external_inputs, batch_dim=batch_dim
-            )
+        check_sipnet_parameter_map_fits(
+            sipnet_parameter_map, _descriptions(parameter_vector, derived_parameters), external_inputs, site_dims
+        )
         self._model = model
         self._parameter_vector = parameter_vector
+        self._derived_parameters = derived_parameters
+        self._site_dims = site_dims
         self._sipnet_parameter_map = sipnet_parameter_map
         self._external_inputs = external_inputs
         self._out_of_domain = out_of_domain
-        self._sites: tuple[int, ...] = parameter_vector.sites
+        self._sites: tuple[int, ...] = site_dims.sites
         self._backend = backend
         self._observation_vector = observation_vector
         self._freq = freq
         self._batch_dim = batch_dim
-        self._crossed_dims = sipnet_parameter_map.crossed_dims(external_inputs, batch_dim=batch_dim)
+        self._crossed_dims = _crossed_dims(sipnet_parameter_map, external_inputs, batch_dim)
+        if out_of_domain == "raise":
+            check_sipnet_parameter_map_is_in_domain_at_the_corners(self)
         self._climate = frozendict({site: climate[site] for site in self._sites})
         self._output_variable_names = _output_variable_names(output_variable_names, observation_vector)
         check_output_variables_can_be_returned(self._output_variable_names, model, freq)
@@ -331,7 +376,7 @@ class ForwardModel:
                 check_batch_dim_is_not_an_observation_source_name(
                     observation_vector.observation_sources, dim
                 )
-        site_table = parameter_vector.site_table
+        site_table = site_dims.site_table
         self._site_locations = site_locations(self._sites, site_table)
         self._site_table = site_lookup(site_table)
         if observation_vector is not None:
@@ -360,6 +405,14 @@ class ForwardModel:
     @property
     def parameter_vector(self) -> ParameterVector:
         return self._parameter_vector
+
+    @property
+    def derived_parameters(self) -> DerivedParameters | None:
+        return self._derived_parameters
+
+    @property
+    def site_dims(self) -> SiteDims:
+        return self._site_dims
 
     @property
     def sipnet_parameter_map(self) -> SIPNETParameterMap:
@@ -393,7 +446,7 @@ class ForwardModel:
 
     @property
     def sites(self) -> tuple[int, ...]:
-        """The sites run: the vector's, in its order."""
+        """The sites run: the site dims', ascending."""
         return self._sites
 
     @property
@@ -419,8 +472,8 @@ class ForwardModel:
 
     @property
     def input_dimension(self) -> int:
-        """``D``."""
-        return self.parameter_vector.dimension
+        """``D``, ``parameter_vector.unconstrained.size``."""
+        return self.parameter_vector.unconstrained.size
 
     @property
     def output_dimension(self) -> int:
@@ -493,8 +546,8 @@ class ForwardModel:
             non-finite value, or has other rows than external inputs on
             ``batch_dim`` label.
         SIPNETParametersOutOfDomainError
-            With ``out_of_domain="raise"``, if a SIPNET parameter lies outside
-            pySIPNET's domain; nothing runs.
+            With ``out_of_domain="raise"``, if a value lies outside its
+            domain; nothing runs.
         RuntimeError
             If a run failed in the machinery rather than at its parameters,
             or, on the prior-predictive path, every run failed at its
@@ -504,10 +557,9 @@ class ForwardModel:
         theta = np.asarray(as_batched_flat(theta, self.input_dimension, message_name="theta"))
         check_theta_has_a_row(theta)
         check_theta_is_finite(theta)
-        sipnet_parameter_fields = self._sipnet_parameter_map.sipnet_parameter_fields(
-            self._parameter_vector, theta, external_inputs=self._external_inputs, batch_dim=self._batch_dim
-        )
-        outside = self._sipnet_parameter_map.out_of_domain(sipnet_parameter_fields)
+        values = self._labeled_values(theta, self._external_inputs)
+        sipnet_parameter_fields = self._sipnet_parameter_map.sipnet_parameter_fields(values, site_dims=self._site_dims)
+        outside = self._sipnet_parameter_map.out_of_domain(sipnet_parameter_fields, values, site_dims=self._site_dims)
         if self._out_of_domain == "raise":
             check_sipnet_parameters_are_in_the_domain(outside)
         run_index = self._run_index(len(theta), sipnet_parameter_fields)
@@ -563,6 +615,27 @@ class ForwardModel:
         return predictions[0] if is_one_vector(theta) else predictions
 
     # ── supporting methods ────────────────────────────────────────────────────
+
+    def _labeled_values(self, theta: np.ndarray, external_inputs: xr.Dataset | None) -> xr.Dataset:
+        """The labeled natural values at *theta*, ``(J, D)``, rows on
+        ``batch_dim``: the parameters', the derived parameters' and the
+        external inputs', merged."""
+        vector = self._parameter_vector
+        values_by_parameter = vector.flat_to_values(vector.to_natural(theta))
+        batch_dims = (self._batch_dim,)
+        pieces = [vector.values_to_dataset(values_by_parameter, batch_dims=batch_dims)]
+        if self._derived_parameters is not None:
+            derived = self._derived_parameters.values(values_by_parameter)
+            pieces.append(self._derived_parameters.values_to_dataset(derived, batch_dims=batch_dims))
+        if external_inputs is not None:
+            check_external_inputs_are_for_theta(external_inputs, len(theta), self._batch_dim)
+            for name, variable in external_inputs.data_vars.items():
+                if SITE in variable.dims:
+                    check_external_input_covers_the_sites(str(name), variable, self._sites)
+            pieces.append(external_inputs)
+        # Each piece at the sites run alone, so one index per dim holds in the merge.
+        at_sites = [piece.sel({SITE: list(self._sites)}) if SITE in piece.dims else piece for piece in pieces]
+        return xr.merge(at_sites, join="exact", combine_attrs="drop_conflicts")
 
     def _observation_vector_for(self, what: str) -> ObservationVector:
         """The observation vector, or a ``ValueError`` saying *what* needs one."""
@@ -629,6 +702,13 @@ MODEL_FAILURES: tuple[type[BaseException], ...] = (
     subprocess.TimeoutExpired,
     ModelOutputNotFiniteError,
 )
+
+
+#: The values of each unconstrained number at which
+#: :func:`check_sipnet_parameter_map_is_in_domain_at_the_corners` evaluates
+#: the map: ``+-12`` spans ten orders of magnitude on a log scale and reaches
+#: ``1 - 6e-6`` on a logit scale, while staying inside float64.
+DOMAIN_CHECK_CORNERS: tuple[float, ...] = (-12.0, 0.0, 12.0)
 
 
 @dataclass(frozen=True, eq=False, kw_only=True)
@@ -738,6 +818,61 @@ class _Run:
 
 #: The temporary name of the run index's rows while predictions are unstacked.
 _ROW = "__row__"
+
+#: The most unconstrained numbers per value whose every corner is checked:
+#: ``3^6 = 729`` rows per parameter; a value with more is checked along its
+#: axes instead.
+_MOST_CORNER_NUMBERS = 6
+
+
+def _descriptions(
+    parameter_vector: ParameterVector, derived_parameters: DerivedParameters | None
+) -> dict[str, Any]:
+    """``{name: Parameter | DerivedParameter}``: what the map's fit check reads."""
+    out: dict[str, Any] = {p.name: p for p in parameter_vector.parameters}
+    if derived_parameters is not None:
+        out |= {d.name: d for d in derived_parameters.derived_parameters}
+    return out
+
+
+def _crossed_dims(
+    sipnet_parameter_map: SIPNETParameterMap, external_inputs: xr.Dataset | None, batch_dim: str
+) -> tuple[str, ...]:
+    """The batch dims of the external inputs the rules read, other than
+    *batch_dim*, in the order they first appear: the dims crossed with
+    theta's rows."""
+    if external_inputs is None:
+        return ()
+    dims: dict[str, None] = {}
+    for name, variable in external_inputs.data_vars.items():
+        if name in sipnet_parameter_map.values_read:
+            dims.update(dict.fromkeys(str(d) for d in variable.dims if d not in (SITE, batch_dim)))
+    return tuple(dims)
+
+
+def _corner_theta(parameter_vector: ParameterVector) -> np.ndarray:
+    """Rows of theta: each parameter at every corner of
+    :data:`DOMAIN_CHECK_CORNERS` over the ``e`` unconstrained numbers of one
+    value, the same at each of its blocks, the others at 0; for ``e`` above
+    :data:`_MOST_CORNER_NUMBERS`, at the ``2e + 3`` points 0, ``+-c * 1`` and
+    ``+-c`` along each number, ``c`` the outer corner."""
+    unconstrained = parameter_vector.unconstrained
+    positions = unconstrained.flat_to_values(jnp.arange(unconstrained.size, dtype=jnp.float64))
+    rows = []
+    for parameter in unconstrained.parameters:
+        place = np.asarray(positions[parameter.name]).astype(np.int64).reshape(-1, math.prod(parameter.shape))
+        size = place.shape[1]
+        if size <= _MOST_CORNER_NUMBERS:
+            corners = itertools.product(DOMAIN_CHECK_CORNERS, repeat=size)
+        else:
+            outer = max(abs(c) for c in DOMAIN_CHECK_CORNERS)
+            corners = [np.zeros(size), np.full(size, outer), np.full(size, -outer)]
+            corners += [sign * outer * np.eye(size)[i] for i in range(size) for sign in (1.0, -1.0)]
+        for corner in corners:
+            row = np.zeros(unconstrained.size)
+            row[place] = np.asarray(corner, dtype=np.float64)
+            rows.append(row)
+    return np.asarray(rows)
 
 
 def _run_labels(run_index: pd.Index) -> list[np.ndarray]:
@@ -939,7 +1074,7 @@ def _with_evaluation(error: RuntimeError, evaluation: ForwardEvaluation) -> Runt
 
 def check_forward_model_arguments(
     model: Any,
-    parameter_vector: ParameterVector,
+    sites: Sequence[int],
     *,
     climate: Mapping[int, Any],
     backend: Any,
@@ -949,7 +1084,6 @@ def check_forward_model_arguments(
     out_of_domain: Any,
 ) -> None:
     """Every check on :class:`ForwardModel`'s arguments that needs nothing computed."""
-    sites = parameter_vector.sites
     check_model_is_a_sipnet_model(model)
     check_backend_is_a_pyens_backend(backend)
     check_out_of_domain_is_known(out_of_domain)
@@ -963,6 +1097,130 @@ def check_forward_model_arguments(
         check_observation_sites_are_run(observation_vector, sites)
 
 
+def check_forward_model_composes(
+    parameter_vector: ParameterVector,
+    derived_parameters: DerivedParameters | None,
+    site_dims: SiteDims,
+    external_inputs: xr.Dataset | None,
+    batch_dim: str,
+) -> None:
+    """The parameter layer's objects and the site dims make one model: the
+    derived parameters over the vector, every dim one the sites carry, and
+    names apart from the reserved ones and the batch dim's."""
+    check_parameter_vector_is_a_parameter_vector(parameter_vector)
+    check_site_dims_are_site_dims(site_dims)
+    if derived_parameters is not None:
+        check_derived_parameters_are_derived_parameters(derived_parameters)
+        check_parameter_vectors_share_a_layout(parameter_vector, derived_parameters.parameter_vector)
+    coords = parameter_vector.coords if derived_parameters is None else derived_parameters.coords
+    for dim, labels in coords.items():
+        check_dim_covers_the_sites_labels(dim, labels, site_dims)
+    check_names_are_free(parameter_vector, derived_parameters, external_inputs, batch_dim)
+
+
+def check_sipnet_parameter_map_is_in_domain_at_the_corners(forward_model: ForwardModel) -> None:
+    """The map reads and writes values in their domains with each parameter
+    at the corners of :data:`DOMAIN_CHECK_CORNERS`, the others at 0: an
+    early warning, complete only for maps monotone in each number of theta."""
+    inputs = forward_model._external_inputs
+    batch_dim = forward_model.batch_dim
+    if inputs is not None and batch_dim in inputs.dims:
+        # Rows of theta here are corners, not samples: take the inputs of one.
+        inputs = inputs.isel({batch_dim: 0}, drop=True)
+    values = forward_model._labeled_values(_corner_theta(forward_model.parameter_vector), inputs)
+    sipnet_map = forward_model.sipnet_parameter_map
+    fields = sipnet_map.sipnet_parameter_fields(values, site_dims=forward_model.site_dims)
+    outside = sipnet_map.out_of_domain(fields, values, site_dims=forward_model.site_dims)
+    if not outside.empty:
+        names = sorted({str(n) for n in (*outside["sipnet_parameter"].dropna(), *outside["value_name"].dropna())})
+        raise ValueError(
+            f"the map can read or write {truncated(names)} outside their domains, at a corner of theta "
+            f"in {DOMAIN_CHECK_CORNERS}; give the parameters supports or priors whose values the rules "
+            "map into the domains, or pass out_of_domain='fail_row'."
+        )
+
+
+def check_parameter_vector_is_a_parameter_vector(parameter_vector: Any) -> None:
+    """The vector is a :class:`~sipnet_calibration.parameters.ParameterVector`."""
+    if not isinstance(parameter_vector, ParameterVector):
+        raise TypeError(f"parameter_vector must be a ParameterVector, got {type(parameter_vector).__name__}.")
+
+
+def check_site_dims_are_site_dims(site_dims: Any) -> None:
+    """The sites are a :class:`~sipnet_calibration.site_dims.SiteDims`."""
+    if not isinstance(site_dims, SiteDims):
+        raise TypeError(f"site_dims must be a SiteDims, got {type(site_dims).__name__}.")
+
+
+def check_derived_parameters_are_derived_parameters(derived_parameters: Any) -> None:
+    """The derived parameters are a :class:`~sipnet_calibration.parameters.DerivedParameters`."""
+    if not isinstance(derived_parameters, DerivedParameters):
+        raise TypeError(f"derived_parameters must be a DerivedParameters, got {type(derived_parameters).__name__}.")
+
+
+def check_dim_covers_the_sites_labels(dim: str, labels: pd.Index, site_dims: SiteDims) -> None:
+    """A dim of the vector or derived parameters is a dim of the site dims,
+    holding every label some site carries, so every site finds its value;
+    extra labels are read at no site."""
+    if dim not in site_dims.coords:
+        raise ValueError(
+            f"the parameters are indexed by {dim!r}, which is neither 'site' nor a site-labels name of the "
+            f"site dims ({list(site_dims.coords)}); give its site labels to SiteDims."
+        )
+    missing = [label for label in site_dims.coords[dim] if label not in set(labels.tolist())]
+    if missing:
+        raise KeyError(
+            f"the parameters' {dim!r} labels lack {truncated(missing)}, which some site carries; build "
+            "the vector on site_dims.coords."
+        )
+
+
+def check_names_are_free(
+    parameter_vector: ParameterVector,
+    derived_parameters: DerivedParameters | None,
+    external_inputs: xr.Dataset | None,
+    batch_dim: str,
+) -> None:
+    """No parameter, derived parameter, element axis or external input is a
+    reserved name or the batch dim's, nor is a dim the batch dim's, since the
+    merged labeled values take them as dims and coordinates: a parameter
+    named ``lon`` would overwrite one."""
+    pieces = [*parameter_vector.parameters, *(() if derived_parameters is None else derived_parameters.derived_parameters)]
+    names = {p.name for p in pieces} | {axis for p in pieces for axis in p.element_labels}
+    if external_inputs is not None:
+        names |= {str(n) for n in external_inputs.data_vars}
+    dims = parameter_vector.coords if derived_parameters is None else derived_parameters.coords
+    taken = sorted(n for n in names if n in RESERVED_NAMES or n == batch_dim)
+    taken += [d for d in dims if d == batch_dim]
+    if taken:
+        raise ValueError(
+            f"{truncated(taken)} name parameters, derived parameters, element axes, external inputs or dims, "
+            f"but are reserved names ({sorted(RESERVED_NAMES)}) or the batch dim's {batch_dim!r}; rename them."
+        )
+
+
+def check_external_inputs_are_for_theta(external_inputs: xr.Dataset, n_rows: int, batch_dim: str) -> None:
+    """External inputs on theta's batch dim are labeled ``0`` to ``J - 1``,
+    one per row, with which they zip."""
+    if batch_dim not in external_inputs.dims:
+        return
+    labels = external_inputs[batch_dim].values.tolist()
+    if labels != list(range(n_rows)):
+        raise ValueError(
+            f"external inputs on {batch_dim!r} are labeled {truncated(labels)}, but theta has {n_rows} rows; "
+            "label them 0 to J - 1, one per row of theta, or name their dim otherwise to cross them with "
+            "theta."
+        )
+
+
+def check_external_input_covers_the_sites(name: str, variable: xr.DataArray, sites: Sequence[int]) -> None:
+    """An external input on ``site`` holds every site run."""
+    held = set(variable.indexes[SITE].tolist())
+    missing = [site for site in sites if site not in held]
+    if missing:
+        raise KeyError(f"external input {name!r} has no value for site(s) {truncated(missing)}.")
+
+
 def check_out_of_domain_is_known(out_of_domain: Any) -> None:
     """``out_of_domain`` is ``"raise"`` or ``"fail_row"``."""
     if out_of_domain not in ("raise", "fail_row"):
@@ -970,16 +1228,16 @@ def check_out_of_domain_is_known(out_of_domain: Any) -> None:
 
 
 def check_sipnet_parameters_are_in_the_domain(outside: pd.DataFrame) -> None:
-    """Every SIPNET parameter lies in pySIPNET's domain, since the prior and
-    the map otherwise put mass where SIPNET is undefined."""
+    """Every value lies in its domain, a rule input in its requirement's and
+    a SIPNET parameter in pySIPNET's, since the prior and the map otherwise
+    put mass where a rule or SIPNET is undefined."""
     if outside.empty:
         return
     first = outside.iloc[0].dropna().to_dict()
     raise SIPNETParametersOutOfDomainError(
-        f"{len(outside)} SIPNET parameter value(s) lie outside pySIPNET's domains, the first "
-        f"at {first}; nothing ran. Give the parameters supports or priors the map sends into "
-        "the domains, or pass out_of_domain='fail_row' to mark such rows invalid, which "
-        "truncates the prior."
+        f"{len(outside)} value(s) lie outside their domains, the first at {first}; nothing ran. Give "
+        "the parameters supports or priors the map sends into the domains, or pass "
+        "out_of_domain='fail_row' to mark such rows invalid, which truncates the prior."
     )
 
 
@@ -1118,9 +1376,9 @@ def check_observation_sites_are_run(observation_vector: ObservationVector, sites
     extra = sorted(set(observation_vector.sites) - set(sites))
     if extra:
         raise ValueError(
-            f"the observation vector observes site(s) {truncated(extra)} that the parameter vector "
-            "does not run; restrict the observation vector to the parameter vector's sites "
-            "first (observation_vector.restrict_to_sites(parameter_vector.sites))."
+            f"the observation vector observes site(s) {truncated(extra)} that are not run; restrict "
+            "the observation vector to the sites run first "
+            "(observation_vector.restrict_to_sites(site_dims.sites))."
         )
 
 

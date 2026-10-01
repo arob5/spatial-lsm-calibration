@@ -919,7 +919,7 @@ def example_reference() -> xr.Dataset:
 def example_reference_natural_values(reference: xr.Dataset, parameter_vector) -> dict:
     """The reference's natural values, as the example calibration's
     parameters hold them: per-site values read at each dim label."""
-    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.dim_index("pft")]
+    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.coords["pft"]]
     allocation = ("leaf", "wood", "fine_root", "coarse_root")
 
     def at(name: str) -> np.ndarray:

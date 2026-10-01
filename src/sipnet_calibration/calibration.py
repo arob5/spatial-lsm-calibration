@@ -1,31 +1,30 @@
-"""A calibration's three objects together: the record of them, and an example.
+"""A calibration's objects together: the record of them, and an example.
 
-A calibration is specified by a
-:class:`~sipnet_calibration.parameter_vector.ParameterVector` (what is
-calibrated), a :class:`~sipnet_calibration.prior.Prior` (what is believed
-beforehand) and a
-:class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap` (how a
-value reaches SIPNET). They hold functions, so they cannot be serialized;
-:func:`describe_calibration` is the table an experiment writes beside every
-run instead. :func:`example_calibration` is the worked example and test
-fixture.
+A calibration over sites is specified by a
+:class:`~sipnet_calibration.parameters.ParameterVector` (what is
+calibrated), its :class:`~sipnet_calibration.parameters.DerivedParameters`
+(what is computed from it), a :class:`~sipnet_calibration.parameters.Prior`
+(what is believed beforehand), a
+:class:`~sipnet_calibration.site_dims.SiteDims` (the sites) and a
+:class:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap` (how
+the values at a site become SIPNET parameters). They hold functions, so
+they cannot be serialized; :func:`describe_calibration` is the record an
+experiment writes beside every run instead. :func:`example_calibration` is
+the worked example and test fixture.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 import pandas as pd
 
-from sipnet_calibration.parameter_vector import (
+from sipnet_calibration.parameters import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
     SIMPLEX,
     Parameter,
     ParameterVector,
-)
-from sipnet_calibration.prior import (
     Prior,
     PriorTerm,
     iid_over_dim,
@@ -34,69 +33,98 @@ from sipnet_calibration.prior import (
     logit_normal,
     logit_normal_from_interval,
     softmax_normal,
-    term_name,
 )
+from sipnet_calibration.parameters.prior import term_name
 from sipnet_calibration.sipnet_parameter_map import (
-    ComputePhotosynthesisRates,
     Copy,
     CopySimplex,
     Fixed,
     SIPNETParameterMap,
+    photosynthesis_rules,
 )
+from sipnet_calibration.site_dims import SiteDims
 
-__all__ = ["describe_calibration", "example_calibration"]
+__all__ = ["ROLES", "describe_calibration", "example_calibration"]
+
+#: The roles of a SIPNET parameter written, as :func:`describe_calibration`
+#: has them: it depends on a parameter or derived parameter (``calibrated``),
+#: on external inputs only (``propagated``), on nothing, being a rule of
+#: constants and fixed values (``constant``), or is held (``fixed``).
+ROLES: tuple[str, ...] = ("calibrated", "propagated", "constant", "fixed")
 
 
 def describe_calibration(
     parameter_vector: ParameterVector, prior: Prior, sipnet_parameter_map: SIPNETParameterMap
-) -> pd.DataFrame:
-    """One row per parameter, then per derived parameter, indexed by
-    ``parameter``: the three objects' descriptions joined.
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The record of a calibration: one table per parameter, and one per
+    SIPNET parameter written.
 
-    Columns: ``dim``, ``support``, ``units``, ``bijector`` and
-    ``derived_from`` (the vector); ``term`` (the name of the term covering
-    the parameter, a joint term's names joined with ``"+"``), ``prior``,
-    ``given`` and ``provenance`` (the prior, empty for a derived parameter,
-    which has none); and ``sipnet_parameters`` and ``rules`` (the map: what
-    the parameter or derived parameter reaches, comma-separated, and by
-    which rules).
+    Parameters
+    ----------
+    parameter_vector, prior, sipnet_parameter_map:
+        The calibration's objects; the derived parameters are the prior's
+        (``prior.derived_parameters``).
+
+    Returns
+    -------
+    tuple of pandas.DataFrame
+        ``(parameters, sipnet_parameters)``.
+
+        ``parameters``, one row per parameter then per derived parameter,
+        indexed by ``parameter``: ``indexed_by``, ``shape``, ``support``,
+        ``units`` and ``bijector`` (the vector's; a derived parameter's
+        support is the one it declares, if any, and it has no bijector);
+        ``parameter_names`` (what a derived parameter is computed from);
+        ``term`` (the name of the term covering the parameter, a joint
+        term's names joined with ``"+"``), ``prior``, ``given`` and
+        ``provenance`` (the prior's, empty for a derived parameter); and
+        ``sipnet_parameters``, the SIPNET parameters depending on it,
+        comma-separated.
+
+        ``sipnet_parameters``, the map's
+        :meth:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap.describe`
+        with ``role``, one of :data:`ROLES`.
 
     Raises
     ------
     KeyError
         If the prior lacks a term for one of the vector's parameters.
     """
-    vector = parameter_vector.describe()[["dim", "support", "units", "bijector", "derived_from"]]
+    derived = prior.derived_parameters
+    derived_parameters = () if derived is None else derived.derived_parameters
+    dependencies = sipnet_parameter_map.dependencies()
+    covering = {name: term_name(key) for key in prior.terms for name in ((key,) if isinstance(key, str) else key)}
     terms = prior.describe()[["prior", "given", "provenance"]]
-    covering = {
-        name: term_name(key) for key in prior.terms for name in ((key,) if isinstance(key, str) else key)
-    }
-    rows = {}
-    for name in vector.index:
-        if name in parameter_vector.derived_parameter_names:
-            rows[name] = {"term": "", "prior": "", "given": "", "provenance": ""}
-        else:
-            check_prior_covers_the_parameter(name, covering)
-            rows[name] = {"term": covering[name], **terms.loc[covering[name]].to_dict()}
-    reached = {name: ([], []) for name in vector.index}
-    for rule in sipnet_parameter_map.rules:
-        for name in rule.values_read:
-            if name in reached:
-                reached[name][0].extend(rule.sipnet_parameter_names_written)
-                reached[name][1].append(type(rule).__name__)
-    links = pd.DataFrame(
-        {
-            "sipnet_parameters": {n: ", ".join(r[0]) for n, r in reached.items()},
-            "rules": {n: ", ".join(dict.fromkeys(r[1])) for n, r in reached.items()},
+    rows = []
+    for piece in (*parameter_vector.parameters, *derived_parameters):
+        is_parameter = isinstance(piece, Parameter)
+        row = {
+            "parameter": piece.name,
+            "indexed_by": ", ".join(piece.indexed_by),
+            "shape": piece.shape,
+            "support": "" if piece.support is None else piece.support.name,
+            "units": piece.units,
+            "bijector": piece.bijector.name if is_parameter else "",
+            "parameter_names": "" if is_parameter else ", ".join(piece.parameter_names),
+            "term": "", "prior": "", "given": "", "provenance": "",
+            "sipnet_parameters": ", ".join(n for n, depends in dependencies.items() if piece.name in depends),
         }
-    )
-    return vector.join(pd.DataFrame.from_dict(rows, orient="index")).join(links).rename_axis("parameter")
+        if is_parameter:
+            check_prior_covers_the_parameter(piece.name, covering)
+            row |= {"term": covering[piece.name], **terms.loc[covering[piece.name]].to_dict()}
+        rows.append(row)
+    calibrated = {*parameter_vector.parameter_names, *(d.name for d in derived_parameters)}
+    sipnet_parameters = sipnet_parameter_map.describe()
+    sipnet_parameters.insert(1, "role", [
+        _role(set_by, dependencies[name], calibrated)
+        for name, set_by in sipnet_parameters["set_by"].items()
+    ])
+    return pd.DataFrame(rows).set_index("parameter"), sipnet_parameters
 
 
-def example_calibration(
-    site_table: pd.DataFrame, pft: Any
-) -> tuple[ParameterVector, Prior, SIPNETParameterMap]:
-    """A small example calibration. **Not the calibration, and not a reviewed
+def example_calibration(site_dims: SiteDims) -> tuple[ParameterVector, Prior, SIPNETParameterMap]:
+    """A small example calibration over the sites of *site_dims*, which
+    labels them by ``"pft"``. **Not the calibration, and not a reviewed
     prior.**
 
     Its parameters are a shared photosynthetic capacity and respiration
@@ -107,31 +135,28 @@ def example_calibration(
     parameter set supplies
     (:attr:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap.unset_sipnet_parameter_names`).
 
-    Parameters
-    ----------
-    site_table:
-        The sites, as :class:`~sipnet_calibration.parameter_vector.ParameterVector`
-        takes them.
-    pft:
-        The site labels, named ``"pft"`` in the vector.
-
     Returns
     -------
     tuple
         ``(parameter_vector, prior, sipnet_parameter_map)``.
+
+    Raises
+    ------
+    KeyError
+        If *site_dims* has no site labels ``"pft"``.
     """
+    pft = site_dims.coords["pft"]
     vector = ParameterVector(
         parameters=[
             Parameter(name="photosynthetic_capacity", support=POSITIVE, units="nmol g-1 s-1"),
             Parameter(name="respiration_share", support=OPEN_UNIT_INTERVAL, units="1"),
-            Parameter(name="allocation", support=SIMPLEX, units="1", dim="pft",
-                      natural_names=("leaf", "wood", "fine_root", "coarse_root")),
-            Parameter(name="base_soil_respiration", support=POSITIVE, units="yr-1", dim="pft"),
+            Parameter(name="allocation", support=SIMPLEX, units="1", shape=(4,), indexed_by=("pft",),
+                      element_labels={"allocation_part": ("leaf", "wood", "fine_root", "coarse_root")}),
+            Parameter(name="base_soil_respiration", support=POSITIVE, units="yr-1", indexed_by=("pft",)),
             Parameter(name="leaf_fall_fraction", support=OPEN_UNIT_INTERVAL, units="1"),
-            Parameter(name="initial_soil_carbon", support=POSITIVE, units="g m-2", dim="site"),
+            Parameter(name="initial_soil_carbon", support=POSITIVE, units="g m-2", indexed_by=("site",)),
         ],
-        site_table=site_table,
-        site_labels={"pft": pft},
+        coords={"pft": pft, "site": site_dims.coords["site"]},
     )
     fixture = "Example fixture, not a reviewed prior. "
     # Temperate-deciduous BETY medians, with aMaxFrac and cFracLeaf fixed:
@@ -175,7 +200,7 @@ def example_calibration(
     })
     sipnet_map = SIPNETParameterMap(
         rules=[
-            ComputePhotosynthesisRates(
+            *photosynthesis_rules(
                 capacity_value_name="photosynthetic_capacity",
                 respiration_share_value_name="respiration_share",
             ),
@@ -193,8 +218,8 @@ def example_calibration(
                 "photosynthesis directions (sipnet.c:614, 617, 633).",
             ),
             Fixed(
-                sipnet_parameter_name="leaf_carbon_fraction", dim="pft",
-                value=dict.fromkeys(vector.dim_index("pft"), c_frac_leaf),
+                sipnet_parameter_name="leaf_carbon_fraction",
+                value=pd.Series(dict.fromkeys(pft, c_frac_leaf)).rename_axis("pft").to_xarray(),
                 provenance=fixture + "The BETY leafC posterior median for temperate deciduous, "
                 "0.466, applied to every PFT here; fixed for the same reason as aMaxFrac.",
             ),
@@ -205,6 +230,18 @@ def example_calibration(
         ],
     )
     return vector, prior, sipnet_map
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _role(set_by: str, depends_on: frozenset[str], calibrated: set[str]) -> str:
+    """A SIPNET parameter's role, one of :data:`ROLES`."""
+    if set_by == "fixed":
+        return "fixed"
+    if depends_on & calibrated:
+        return "calibrated"
+    return "propagated" if depends_on else "constant"
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

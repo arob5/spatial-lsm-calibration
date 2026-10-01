@@ -151,8 +151,8 @@ variable, optionally for a subset of sites.
 member; :func:`to_sipnet_initial_condition_fields` converts a whole
 ``(initial_condition_member, site)`` ensemble to SIPNET parameter fields,
 which merge into a SIPNET parameter map's. In a calibration the map's
-:class:`~sipnet_calibration.sipnet_parameter_map.ComputeInitialConditions`
-rule applies the same formulas.
+:func:`~sipnet_calibration.sipnet_parameter_map.initial_condition_rules`
+apply the same formulas.
 
 **Paths and encodings.** :func:`default_source_root` and
 :func:`default_processed_path` say where the source tree and the processed
