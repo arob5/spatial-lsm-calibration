@@ -352,11 +352,11 @@ class SIPNETParameterMap:
         read = self._values_at_sites(values, site_dims)
         order = _batch_dims_in_order(read.values())
         labeled = {
-            **{name: _LabeledAtSites.of(variable, order) for name, variable in read.items()},
-            **{name: _LabeledAtSites.of(variable, order) for name, variable in self._constants_at_sites(site_dims).items()},
+            **{name: _LabeledAtSites.from_dataarray(variable, order) for name, variable in read.items()},
+            **{name: _LabeledAtSites.from_dataarray(variable, order) for name, variable in self._constants_at_sites(site_dims).items()},
         }
         written: dict[str, tuple[_LabeledAtSites, str]] = {
-            fixed.sipnet_parameter_name: (_LabeledAtSites.of(fixed.at_sites(site_dims), order), "fixed")
+            fixed.sipnet_parameter_name: (_LabeledAtSites.from_dataarray(fixed.at_sites(site_dims), order), "fixed")
             for fixed in self.fixed
         }
         for rule in self.rules:
@@ -921,7 +921,7 @@ class _LabeledAtSites:
     labels: Mapping[str, np.ndarray]
 
     @classmethod
-    def of(cls, variable: xr.DataArray, order: Sequence[str]) -> _LabeledAtSites:
+    def from_dataarray(cls, variable: xr.DataArray, order: Sequence[str]) -> _LabeledAtSites:
         batch = tuple(d for d in order if d in variable.dims)
         elements = [d for d in variable.dims if d not in batch and d != SITE]
         variable = variable.transpose(*batch, SITE, *elements)

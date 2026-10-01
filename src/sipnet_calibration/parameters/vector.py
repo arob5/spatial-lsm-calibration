@@ -645,7 +645,7 @@ class ParameterVector:
 
     @cached_property
     def _layout(self) -> _Layout:
-        return _Layout.of(self)
+        return _Layout.from_vector(self)
 
     def _batch_shape_of(self, values_by_parameter: Mapping[str, Any]) -> tuple[int, ...]:
         first = self.parameters[0].name
@@ -803,50 +803,74 @@ class _Layout:
     entry_element: np.ndarray
 
     @classmethod
-    def of(cls, vector: ParameterVector) -> _Layout:
-        dims = vector.dims
-        # One row per block: its parameter, its label positions along every
-        # dim (-1 where not indexed), and its sort key under the order.
-        block_parameter, block_labels, block_index = [], [], []
-        for i, p in enumerate(vector.parameters):
-            index_shape = vector.index_shape(p.name)
-            grid = np.indices(index_shape).reshape(len(index_shape), -1) if index_shape else np.zeros((0, 1), int)
-            n = grid.shape[1]
-            labels = np.full((n, len(dims)), -1, dtype=np.int64)
-            for axis, dim in enumerate(p.indexed_by):
-                labels[:, dims.index(dim)] = grid[axis]
-            block_parameter.append(np.full(n, i))
-            block_labels.append(labels)
-            block_index.append(np.arange(n))
-        block_parameter = np.concatenate(block_parameter)
-        block_labels = np.concatenate(block_labels)
-        block_index = np.concatenate(block_index)
-        keys = [block_parameter if level == PARAMETER_LEVEL else block_labels[:, dims.index(level)] for level in vector.order]
-        # np.lexsort sorts by its last key first.
-        sorted_blocks = np.lexsort(keys[::-1])
-        value_sizes = np.asarray([math.prod(p.shape) for p in vector.parameters])[block_parameter]
-        starts = np.zeros(len(block_parameter), dtype=np.int64)
-        starts[sorted_blocks] = np.concatenate([[0], np.cumsum(value_sizes[sorted_blocks])[:-1]])
-        positions_by_parameter = {}
-        for i, p in enumerate(vector.parameters):
-            mine = block_parameter == i
-            size = math.prod(p.shape)
-            positions = starts[mine][:, None] + np.arange(size)[None, :]
-            positions_by_parameter[p.name] = positions.reshape((*vector.index_shape(p.name), size))
+    def from_vector(cls, vector: ParameterVector) -> _Layout:
+        """The layout of *vector*'s Flat."""
+        block_parameter, block_label_positions = _blocks_of(vector)
+        value_size = np.asarray([math.prod(p.shape) for p in vector.parameters])[block_parameter]
+        flat_order = _blocks_in_flat_order(vector, block_parameter, block_label_positions)
+        block_start = np.empty_like(value_size)
+        block_start[flat_order] = np.cumsum(value_size[flat_order]) - value_size[flat_order]
+        positions_by_parameter = {
+            p.name: _value_positions(block_start[block_parameter == i], math.prod(p.shape)).reshape(
+                (*vector.index_shape(p.name), math.prod(p.shape))
+            )
+            for i, p in enumerate(vector.parameters)
+        }
         parameter_major = np.concatenate([positions_by_parameter[p.name].ravel() for p in vector.parameters])
-        total = len(parameter_major)
-        flat_from_parameter_major = np.empty(total, dtype=np.int64)
-        flat_from_parameter_major[parameter_major] = np.arange(total)
-        entry_block = np.repeat(sorted_blocks, value_sizes[sorted_blocks])
-        entry_element = np.concatenate([np.arange(s) for s in value_sizes[sorted_blocks]]) if total else np.zeros(0, int)
+        entry_block = np.repeat(flat_order, value_size[flat_order])
         return cls(
             positions_by_parameter=frozendict(positions_by_parameter),
-            flat_from_parameter_major=flat_from_parameter_major,
+            flat_from_parameter_major=_inverse_permutation(parameter_major),
             entry_parameter=block_parameter[entry_block],
             entry_block=entry_block,
-            entry_label_positions=block_labels[entry_block],
-            entry_element=entry_element,
+            entry_label_positions=block_label_positions[entry_block],
+            entry_element=np.arange(entry_block.size) - block_start[entry_block],
         )
+
+
+def _blocks_of(vector: ParameterVector) -> tuple[np.ndarray, np.ndarray]:
+    """Every block of *vector*, parameter by parameter in declaration order
+    and each parameter's blocks in C order over its index shape: the
+    parameter's declaration position, ``(n_blocks,)``, and the block's label
+    position along each of the vector's dims, ``(n_blocks, n_dims)``, ``-1``
+    along a dim its parameter is not indexed by."""
+    block_parameter, block_label_positions = [], []
+    for i, p in enumerate(vector.parameters):
+        index_shape = vector.index_shape(p.name)
+        n_blocks = math.prod(index_shape)
+        grid = np.indices(index_shape).reshape(len(index_shape), n_blocks)
+        label_positions = np.full((n_blocks, len(vector.dims)), -1, dtype=np.int64)
+        for axis, dim in enumerate(p.indexed_by):
+            label_positions[:, vector.dims.index(dim)] = grid[axis]
+        block_parameter.append(np.full(n_blocks, i, dtype=np.int64))
+        block_label_positions.append(label_positions)
+    return np.concatenate(block_parameter), np.concatenate(block_label_positions)
+
+
+def _blocks_in_flat_order(
+    vector: ParameterVector, block_parameter: np.ndarray, block_label_positions: np.ndarray
+) -> np.ndarray:
+    """The block numbers sorted by the vector's order, level by level, where
+    ``-1`` (not indexed) sorts before every label."""
+    keys = [
+        block_parameter if level == PARAMETER_LEVEL else block_label_positions[:, vector.dims.index(level)]
+        for level in vector.order
+    ]
+    # np.lexsort sorts by its last key first.
+    return np.lexsort(keys[::-1])
+
+
+def _value_positions(block_start: np.ndarray, value_size: int) -> np.ndarray:
+    """The Flat positions of each block's numbers, ``(n_blocks, value_size)``:
+    a value is contiguous, from its block's start."""
+    return block_start[:, None] + np.arange(value_size)[None, :]
+
+
+def _inverse_permutation(permutation: np.ndarray) -> np.ndarray:
+    """The permutation ``q`` with ``q[permutation[k]] = k``."""
+    inverse = np.empty_like(permutation)
+    inverse[permutation] = np.arange(permutation.size)
+    return inverse
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
