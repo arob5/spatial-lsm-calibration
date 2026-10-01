@@ -367,7 +367,9 @@ coercion lives in `validation.py`.
   data source member dims `INITIAL_CONDITION_MEMBER` and `DRIVER_MEMBER`
   (`DATA_SOURCE_MEMBER_NAMES`), coordinates, `SOURCE_INDEX`, the `site_id`
   column, the `time_bounds` variable and its `BOUNDS` dim,
-  `NON_BATCH_DIM_NAMES`, `SIPNET_ROW_LABEL_NAMES`, the attributes of
+  `NON_BATCH_DIM_NAMES`, `SIPNET_ROW_LABEL_NAMES`, `RESERVED_NAMES` (what
+  no parameter, derived parameter, element axis, external input, site-labels
+  name or site covariate may be named), the attributes of
   `site`/`lon`/`lat`/`sample` and of a data source's member dim
   (`DATA_SOURCE_MEMBER_ATTRIBUTES`), `SITE_DTYPE`, `BATCH_LABEL_DTYPE`,
   `NAME_PATTERN`, `STALE_TIME_ATTRIBUTE_NAMES`, `CF_CONVENTIONS`,
@@ -849,8 +851,8 @@ src/sipnet_calibration/
   conventions.py          # every shared name constant: SITE, TIME, SAMPLE,
                           # INITIAL_CONDITION_MEMBER, DRIVER_MEMBER,
                           # the reserved spatial names, TIMESTEP_START/LENGTH,
-                          # WINDOW_START/END, TIME_BOUNDS, SITE_ID, SOURCE_INDEX;
-                          # the attributes of site/lon/lat/sample and a source
+                          # WINDOW_START/END, TIME_BOUNDS, SITE_ID, SOURCE_INDEX,
+                          # RESERVED_NAMES; the attributes of site/lon/lat/sample and a source
                           # member; SITE_DTYPE, BATCH_LABEL_DTYPE, NAME_PATTERN;
                           # CF_CONVENTIONS, data_root() and
                           # tracked_data_root(); read_only_copy(),

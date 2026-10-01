@@ -1,6 +1,32 @@
 """Derived parameters: values computed deterministically from the
 parameters.
 
+Where this sits
+---------------
+::
+
+    parameters.vector.ParameterVector          (the parameters x)
+      -> parameters.derived.DerivedParameters  (y = f(x), over that vector)
+      -> parameters.prior.Prior                (a term may be given y)
+      -> the adapter layer, through y's labeled form
+
+What it reads
+-------------
+A :class:`~sipnet_calibration.parameters.vector.ParameterVector`, the labels
+of any dims only derived parameters are indexed by, and each derived
+parameter's constants and memberships, labeled ``xr.DataArray``\\ s.
+
+Data model
+----------
+A derived parameter's values by parameter are ``(*batch, *block shape)``, its
+block shape ``(*[len(coords[d]) for d in indexed_by], *shape)``. Its labeled
+form (:meth:`DerivedParameters.values_to_dataset`) is the vector's: one
+``float64`` variable per derived parameter on ``(*batch dims, *indexed_by,
+*element axes)``, with ``units`` (omitted when ``None``), ``support`` (when
+declared) and ``long_name`` (when set); missing never.
+
+The model
+---------
 A **derived parameter** is a deterministic node of the statistical model,
 
 .. math::
@@ -341,7 +367,9 @@ class DerivedParameters:
         on this collection's own coords applied to them too.
 
         It keeps each derived parameter whose parameter names are all kept,
-        its constants and memberships read again at the kept labels.
+        its constants and memberships read again at the kept labels. A dim of
+        the vector that no kept parameter is indexed by, but a kept derived
+        parameter is, becomes one of the collection's own coords.
 
         Raises
         ------
@@ -369,6 +397,13 @@ class DerivedParameters:
                 kept.append(derived)
                 available.add(name)
         used = {d for derived in kept for d in derived.indexed_by}
+        # A dim of the vector that no kept parameter is on, but a kept derived
+        # parameter is, becomes this collection's own, at the kept labels.
+        for dim in used - set(vector.coords) - set(own):
+            labels = self.parameter_vector.coords[dim]
+            if dim in vector_selectors:
+                labels = labels[labels.isin(list(vector_selectors[dim]))]
+            own[dim] = labels
         return DerivedParameters(
             parameter_vector=vector,
             derived_parameters=[d for d in self.derived_parameters if d in kept],
@@ -582,6 +617,7 @@ def check_derived_parameters_are_valid(collection: DerivedParameters) -> None:
     names = [d.name for d in collection.derived_parameters]
     check_names_are_unique(names, message_name="the derived parameter names")
     check_derived_names_are_free(names, collection)
+    check_derived_element_axes_are_free(collection)
     for derived in collection.derived_parameters:
         check_parameter_names_exist(derived, names, vector)
         check_derived_dims_are_in_the_coords(derived, collection.coords)
@@ -653,6 +689,28 @@ def check_derived_names_are_free(names: Sequence[str], collection: DerivedParame
             f"the derived parameters {clashing} are named like a parameter, a dim or an element axis; "
             "values are read by name, so rename them."
         )
+
+
+def check_derived_element_axes_are_free(collection: DerivedParameters) -> None:
+    """A derived parameter's element axis is named like no dim, parameter or
+    derived parameter, and one it shares with another value has the same
+    labels, since the labeled values would otherwise misalign them."""
+    vector = collection.parameter_vector
+    taken = {*collection.coords, *vector.parameter_names, *(d.name for d in collection.derived_parameters)}
+    axes = {axis: labels for p in vector.parameters for axis, labels in p.element_labels.items()}
+    for derived in collection.derived_parameters:
+        for axis, labels in derived.element_labels.items():
+            if axis in taken:
+                raise ValueError(
+                    f"derived parameter {derived.name!r} has an element axis {axis!r} named like a dim, a "
+                    "parameter or a derived parameter; name its axes for what they index."
+                )
+            if axis in axes and not axes[axis].equals(labels):
+                raise ValueError(
+                    f"derived parameter {derived.name!r} names an element axis {axis!r} that another value "
+                    "has with different labels, which the labeled values would misalign; name the axes apart."
+                )
+            axes[axis] = labels
 
 
 def check_parameter_names_exist(derived: DerivedParameter, names: Sequence[str], vector: ParameterVector) -> None:

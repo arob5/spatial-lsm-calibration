@@ -61,8 +61,10 @@ summed over its numbers: :math:`\\log |T'(\\theta)|` per number on an
 interval, and on the simplex
 :math:`\\log |\\det \\partial(x_1, \\dots, x_{k-1}) / \\partial \\theta|`, against
 Lebesgue measure on the first :math:`k - 1` coordinates, the measure a
-``Dirichlet``'s density is written against. :meth:`Prior.log_prob`
-evaluates each term by its base density where it is a pushforward through
+``Dirichlet``'s density is written against; TFP's
+``SoftmaxCentered.forward_log_det_jacobian`` is against the simplex's
+surface measure instead, and exceeds this by :math:`\\tfrac12 \\log k`.
+:meth:`Prior.log_prob` evaluates each term by its base density where it is a pushforward through
 its parameters' own bijectors, which needs no Jacobian, and by change of
 variables otherwise. The ``given`` links, with each derived parameter
 linked to its parameter names, must form a directed acyclic graph; terms
@@ -263,7 +265,7 @@ class Prior:
     ------
     TypeError
         If a key is not a name or a tuple of names, a term is not a
-        :class:`PriorTerm`, a term that needs a function (indexed, given
+        :class:`PriorTerm`, or a term that needs a function (indexed, given
         others, or reading constants or memberships) is given a bare
         distribution.
     KeyError
@@ -392,14 +394,14 @@ class Prior:
         """
         n = as_count(n, message_name="n")
         theta = jnp.zeros((n, self.parameter_vector.unconstrained.size), dtype=jnp.float64)
-        natural_values: dict[str, Array] = {}
+        values_by_parameter: dict[str, Array] = {}
         for term_key in self._draw_order:
             built = self._built[term_key]
-            given_values = self._given_values(built, natural_values)
+            given_values = self._given_values(built, values_by_parameter)
             theta_b = built.sample_theta(_term_key(key, built.name), n, given_values)
             check_draws_map_to_finite_theta(built.name, theta_b)
             theta = theta.at[:, built.positions].set(theta_b)
-            natural_values |= built.natural_values(theta_b)
+            values_by_parameter |= built.natural_values(theta_b)
         return theta
 
     def log_prob(self, theta: Any) -> Array:
@@ -429,10 +431,10 @@ class Prior:
         """
         theta = jnp.asarray(theta, dtype=jnp.float64)
         check_flat_ends_in_the_size(theta.shape, self.parameter_vector.unconstrained.size)
-        natural_values = self._natural_values_given(theta)
+        values_by_parameter = self._natural_values_given(theta)
         total = jnp.zeros(theta.shape[:-1], dtype=jnp.float64)
         for built in self._built.values():
-            given_values = self._given_values(built, natural_values)
+            given_values = self._given_values(built, values_by_parameter)
             total = total + built.log_prob(theta[..., built.positions], given_values)
         return total
 
@@ -500,14 +502,14 @@ class Prior:
         given others is built and checked at both."""
         ancestral = any(term.given for term in self.terms.values())
         positions = self._theta_positions
-        natural_values: dict[str, Array] = {}
+        values_by_parameter: dict[str, Array] = {}
         built: dict[TermKey, _BuiltTerm] = {}
         for term_key in order:
             term = self.terms[term_key]
             given_values = None
             if term.given:
-                natural_values |= self._derived_needed(term.given, natural_values)
-                given_values = {name: natural_values[name] for name in term.given}
+                values_by_parameter |= self._derived_needed(term.given, values_by_parameter)
+                given_values = {name: values_by_parameter[name] for name in term.given}
             built[term_key] = _BuiltTerm.build(term_key, term, self, positions, given_values)
             if ancestral:
                 name = built[term_key].name
@@ -515,7 +517,7 @@ class Prior:
                     _term_key(jax.random.key(_ANCESTRAL_SEED), name), _N_ANCESTRAL_DRAWS, given_values
                 )
                 check_draws_map_to_finite_theta(name, theta_b)
-                natural_values |= built[term_key].natural_values(theta_b)
+                values_by_parameter |= built[term_key].natural_values(theta_b)
         declared = {n: i for i, n in enumerate(self.parameter_vector.parameter_names)}
         return {key: built[key] for key in sorted(built, key=lambda k: declared[_names_of(k)[0]])}
 
@@ -526,26 +528,26 @@ class Prior:
         if not given:
             return {}
         vector = self.parameter_vector
-        natural_values = vector.flat_to_values(vector.to_natural(theta))
-        return natural_values | self._derived_needed(given, natural_values)
+        values_by_parameter = vector.flat_to_values(vector.to_natural(theta))
+        return values_by_parameter | self._derived_needed(given, values_by_parameter)
 
-    def _derived_needed(self, names: Sequence[str], natural_values: Mapping[str, Array]) -> dict[str, Array]:
-        """The derived parameters among *names* that *natural_values* lacks,
+    def _derived_needed(self, names: Sequence[str], values_by_parameter: Mapping[str, Array]) -> dict[str, Array]:
+        """The derived parameters among *names* that *values_by_parameter* lacks,
         computed from it."""
         if self.derived_parameters is None:
             return {}
-        missing = [n for n in names if n in self.derived_parameters.names and n not in natural_values]
+        missing = [n for n in names if n in self.derived_parameters.names and n not in values_by_parameter]
         if not missing:
             return {}
-        return self.derived_parameters.values(natural_values, names=missing)
+        return self.derived_parameters.values(values_by_parameter, names=missing)
 
-    def _given_values(self, built: _BuiltTerm, natural_values: dict[str, Array]) -> dict[str, Array] | None:
-        """What *built* is given, from *natural_values*, computing the
+    def _given_values(self, built: _BuiltTerm, values_by_parameter: dict[str, Array]) -> dict[str, Array] | None:
+        """What *built* is given, from *values_by_parameter*, computing the
         derived parameters among it there; ``None`` when it is given nothing."""
         if not built.given:
             return None
-        natural_values |= self._derived_needed(built.given, natural_values)
-        return {name: natural_values[name] for name in built.given}
+        values_by_parameter |= self._derived_needed(built.given, values_by_parameter)
+        return {name: values_by_parameter[name] for name in built.given}
 
     def _parameters_behind(self, names: Sequence[str]) -> set[str]:
         if self.derived_parameters is None:
@@ -1345,16 +1347,28 @@ def _log_jacobian(support: Support, bijector: tfb.Bijector, theta: Array) -> Arr
             \\frac{\\partial (x_1, \\dots, x_{k-1})}{\\partial \\theta} \\right|,
         \\qquad x = T(\\theta),
 
-    by automatic differentiation over the last axis, ``(..., k - 1) ->
-    (...)``, whatever the bijector. TFP's
-    ``SoftmaxCentered.forward_log_det_jacobian`` is instead
+    over the last axis, ``(..., k - 1) -> (...)``. For ``SoftmaxCentered``
+    it is the closed form
+
+    .. math::
+
+        \\log J(\\theta) = \\sum_{i=1}^{k} \\log x_i,
+        \\qquad \\log x = \\operatorname{log\\_softmax}([\\theta, 0]),
+
+    computed from :math:`\\theta` so that no coordinate rounds to 0; for any
+    other bijector, automatic differentiation of the determinant, which
+    loses precision when coordinates are tiny. TFP's
+    ``SoftmaxCentered.forward_log_det_jacobian`` is
     :math:`\\tfrac12 \\log \\det(J^\\top J)` of the full :math:`k \\times (k-1)`
-    Jacobian, against the simplex's surface measure, which differs from this
-    by :math:`\\tfrac12 \\log k`.
+    Jacobian instead, against the simplex's surface measure: it is this plus
+    :math:`\\tfrac12 \\log k`.
     """
     theta = jnp.asarray(theta, dtype=jnp.float64)
     if isinstance(support, Interval):
         return bijector.forward_log_det_jacobian(theta, event_ndims=0)
+    if type(bijector) is tfb.SoftmaxCentered:
+        padded = jnp.concatenate([theta, jnp.zeros((*theta.shape[:-1], 1))], axis=-1)
+        return jax.nn.log_softmax(padded, axis=-1).sum(axis=-1)
 
     def log_determinant(t: Array) -> Array:
         jacobian = jax.jacfwd(lambda u: bijector.forward(u)[:-1])(t)
@@ -1487,7 +1501,7 @@ def _logit(p: Array) -> Array:
 
 def _normal_from_interval(lower: Array, upper: Array, mass: float) -> tuple[Array, Array]:
     """The Normal whose central *mass* interval is ``[lower, upper]``."""
-    check_interval_is_valid(lower, upper, mass)
+    check_interval_ends_and_mass_are_valid(lower, upper, mass)
     z = tfd.Normal(jnp.float64(0.0), jnp.float64(1.0)).quantile(jnp.float64(0.5 + mass / 2))
     return (lower + upper) / 2.0, (upper - lower) / (2.0 * z)
 
@@ -2025,7 +2039,7 @@ def check_support_is_a_finite_interval(support: Any) -> None:
         )
 
 
-def check_interval_is_valid(lower: Array, upper: Array, mass: float) -> None:
+def check_interval_ends_and_mass_are_valid(lower: Array, upper: Array, mass: float) -> None:
     """An interval's mass is in (0, 1) and its upper end exceeds its lower."""
     if not 0.0 < mass < 1.0:
         raise ValueError(f"mass is {mass}, outside (0, 1); give the central mass as a fraction.")

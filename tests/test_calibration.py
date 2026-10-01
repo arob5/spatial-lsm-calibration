@@ -65,18 +65,18 @@ def sipnet_parameter_fields(example, values):
 
 
 def test_describe_calibration_joins_the_descriptions(example):
-    parameters, sipnet_parameters = describe_calibration(*example)
-    assert list(parameters.index) == list(example[0].parameter_names)
-    row = parameters.loc["photosynthetic_capacity"]
+    parameter_table, sipnet_parameter_table = describe_calibration(*example)
+    assert list(parameter_table.index) == list(example[0].parameter_names)
+    row = parameter_table.loc["photosynthetic_capacity"]
     assert row["support"] == "(0, inf)" and row["units"] == "nmol g-1 s-1" and row["bijector"] == "exp"
     assert row["prior"] == "log-normal" and row["provenance"].startswith("Example fixture")
-    assert row["sipnet_parameters"] == "max_photosynthesis_rate"
-    assert parameters.loc["respiration_share", "sipnet_parameters"] == "max_photosynthesis_rate, foliar_respiration_fraction"
-    assert parameters.loc["allocation", "indexed_by"] == "pft" and parameters.loc["allocation", "shape"] == (4,)
-    assert parameters.loc["allocation", "prior"] == "iid softmax-normal"
-    assert list(sipnet_parameters.index) == list(example[2].sipnet_parameter_names_written)
-    assert sipnet_parameters.loc["soil_carbon", "role"] == "calibrated"
-    assert sipnet_parameters.loc["leaf_carbon_fraction", "role"] == "fixed"
+    assert row["sipnet_parameter_names"] == "max_photosynthesis_rate"
+    assert parameter_table.loc["respiration_share", "sipnet_parameter_names"] == "max_photosynthesis_rate, foliar_respiration_fraction"
+    assert parameter_table.loc["allocation", "indexed_by"] == "pft" and parameter_table.loc["allocation", "shape"] == (4,)
+    assert parameter_table.loc["allocation", "prior"] == "iid softmax-normal"
+    assert list(sipnet_parameter_table.index) == list(example[2].sipnet_parameter_names_written)
+    assert sipnet_parameter_table.loc["soil_carbon", "role"] == "calibrated"
+    assert sipnet_parameter_table.loc["leaf_carbon_fraction", "role"] == "fixed"
 
 
 def test_every_role_is_given_by_what_a_sipnet_parameter_depends_on():
@@ -89,8 +89,8 @@ def test_every_role_is_given_by_what_a_sipnet_parameter_depends_on():
         fixed=[Fixed(sipnet_parameter_name=n, value=0.2, provenance="t")
                for n in ("fine_root_fraction", "coarse_root_fraction", "leaf_carbon_per_area")],
     )
-    _, sipnet_parameters = describe_calibration(vector, prior, sipnet_map)
-    roles = sipnet_parameters["role"].to_dict()
+    _, sipnet_parameter_table = describe_calibration(vector, prior, sipnet_map)
+    roles = sipnet_parameter_table["role"].to_dict()
     assert roles["total_wood_carbon"] == "calibrated" and roles["leaf_area_index"] == "propagated"
     assert roles["fine_root_fraction"] == "fixed"
     constant = SIPNETParameterMap(rules=[*sipnet_map.rules[:1]], fixed=sipnet_map.fixed)
@@ -128,14 +128,16 @@ def test_describe_calibration_has_a_row_per_derived_parameter_and_a_joint_terms_
     sipnet_map = SIPNETParameterMap(
         rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")]
     )
-    table, sipnet_parameters = describe_calibration(vector, prior, sipnet_map)
+    table, sipnet_parameter_table = describe_calibration(vector, prior, sipnet_map)
     assert list(table.index) == ["intercept", "slope", "respiration"]
     assert table.loc["slope", "term"] == "intercept+slope"
     assert table.loc["slope", "prior"] == "gaussian copula"
     row = table.loc["respiration"]
     assert row["parameter_names"] == "intercept, slope" and row["prior"] == "" and row["bijector"] == ""
-    assert row["sipnet_parameters"] == "base_soil_respiration_rate"
-    assert sipnet_parameters.loc["base_soil_respiration_rate", "role"] == "calibrated"
+    assert row["sipnet_parameter_names"] == "base_soil_respiration_rate"
+    assert sipnet_parameter_table.loc["base_soil_respiration_rate", "role"] == "calibrated"
+    # A parameter reaches what its derived parameters reach.
+    assert table.loc["intercept", "sipnet_parameter_names"] == "base_soil_respiration_rate"
 
 
 def test_the_example_prior_lands_in_every_domain(example, values, sipnet_parameter_fields):

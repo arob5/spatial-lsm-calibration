@@ -222,6 +222,8 @@ def test_the_labeled_form_is_read_strictly(vector):
         vector.dataset_to_values(dataset.assign(soil=dataset["soil"].isel(site=0, drop=True)))
     with pytest.raises(ValueError, match="not the vector's"):
         vector.dataset_to_values(dataset.isel(site=[0, 1]))
+    with pytest.raises(ValueError, match="not the vector's"):
+        vector.dataset_to_values(dataset.isel(site=[0, 1, 2, 2]))
     with pytest.raises(ValueError, match="has no 'site' coordinate"):
         vector.dataset_to_values(dataset.drop_vars("site"))
     with pytest.raises(ValueError, match="non-finite"):
@@ -429,3 +431,19 @@ def test_a_transform_that_differs_numerically_breaks_the_layout():
                          long_name="soil carbon", bijector=tfp.bijectors.Softplus())
     with pytest.raises(ValueError, match="differ in their transforms"):
         check_parameter_vectors_share_a_layout(vector_of(SOIL), vector_of(softplus))
+
+
+def test_a_simplex_and_another_value_on_one_axis_are_refused_when_built():
+    with pytest.raises(ValueError, match="different labels in theta's layout"):
+        vector_of(
+            Parameter(name="x", support=SIMPLEX, units="1", shape=(2,), element_labels={"part": ("a", "b")}),
+            Parameter(name="y", units=None, shape=(2,), element_labels={"part": ("a", "b")}),
+        )
+
+
+def test_site_ids_of_two_integer_dtypes_are_one_layout():
+    sites = [1, 27]
+    first = vector_of(SOIL, site=np.asarray(sites, dtype=np.int64))
+    check_parameter_vectors_share_a_layout(first, vector_of(SOIL, site=np.asarray(sites, dtype=np.int32)))
+    with pytest.raises(ValueError, match="differ in their"):
+        check_parameter_vectors_share_a_layout(first, vector_of(SOIL, site=np.asarray(sites[::-1])))

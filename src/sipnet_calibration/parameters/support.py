@@ -283,10 +283,10 @@ def check_interval_is_valid(interval: Interval) -> None:
 #: The real line, per number; its bijector is the identity.
 REAL = Interval()
 
-#: :math:`(0, \\infty)`; its bijector is :math:`\\exp`.
+#: :math:`(0, \infty)`; its bijector is :math:`\exp`.
 POSITIVE = Interval(0.0, math.inf)
 
-#: :math:`[0, \\infty)`, as pySIPNET's ``ParameterDomain.NON_NEGATIVE`` is.
+#: :math:`[0, \infty)`, as pySIPNET's ``ParameterDomain.NON_NEGATIVE`` is.
 NON_NEGATIVE = Interval(0.0, math.inf, low_closed=True)
 
 #: :math:`(0, 1)`, as pySIPNET's ``ParameterDomain.OPEN_UNIT_INTERVAL`` is;

@@ -589,9 +589,8 @@ class ParameterVector:
 
     def to_unconstrained(self, natural_flat: Any) -> Array:
         """The natural Flat form to theta: :math:`\\theta_p = T_p^{-1}(x_p)`.
-        Traceable, so it cannot raise on values: a value outside its support
-        maps to non-finite entries, and a caller converting values it did
-        not draw checks :meth:`contains` first.
+        A value outside its support maps to non-finite entries, which is not
+        an error. Traceable.
 
         Parameters
         ----------
@@ -607,6 +606,12 @@ class ParameterVector:
         ------
         ValueError
             If the last axis of *natural_flat* is not ``size`` long.
+
+        Notes
+        -----
+        A traced function cannot raise on values, so this one does not
+        check them; a caller converting values it did not draw checks
+        :meth:`contains` first.
         """
         natural = self.flat_to_values(natural_flat)
         return self.unconstrained.values_to_flat({p.name: p.bijector.inverse(natural[p.name]) for p in self.parameters})
@@ -853,6 +858,14 @@ def _variable_attributes(parameter: Parameter) -> dict[str, Any]:
     return attributes
 
 
+def _same_entries(first: pd.MultiIndex, second: pd.MultiIndex) -> bool:
+    """Whether two indexes name the same entries in the same order, labels
+    compared by value whatever their dtype, NA alike."""
+    return len(first) == len(second) and first.to_frame(index=False).astype(str).equals(
+        second.to_frame(index=False).astype(str)
+    )
+
+
 def _is_integer_label(label: Any) -> bool:
     return isinstance(label, (int, np.integer)) and not isinstance(label, (bool, np.bool_))
 
@@ -870,16 +883,19 @@ def check_parameter_vector_is_valid(parameter_vector: ParameterVector) -> None:
     check_every_dim_is_used(parameter_vector)
     check_order_is_a_permutation(parameter_vector.order, (PARAMETER_LEVEL, *parameter_vector.coords))
     check_names_do_not_collide(parameter_vector)
+    check_theta_element_axes_agree(parameter_vector.parameters)
 
 
 def check_parameter_vectors_share_a_layout(first: ParameterVector, second: ParameterVector) -> None:
     """Two vectors give theta one meaning: the same index, coords and order
     in both spaces, the same supports, and transforms that agree at the
-    probe points."""
+    probe points. Labels are compared by value, so site ids of two integer
+    dtypes are one layout."""
     differences = [
-        ("index", lambda: first.index.equals(second.index) and first.unconstrained.index.equals(second.unconstrained.index)),
+        ("index", lambda: _same_entries(first.index, second.index)
+         and _same_entries(first.unconstrained.index, second.unconstrained.index)),
         ("coords", lambda: list(first.coords) == list(second.coords) and all(
-            first.coords[d].equals(second.coords[d]) for d in first.coords
+            first.coords[d].tolist() == second.coords[d].tolist() for d in first.coords
         )),
         ("order", lambda: first.order == second.order),
         ("supports", lambda: all(p.support == q.support for p, q in zip(first.parameters, second.parameters))),
@@ -959,6 +975,22 @@ def check_names_do_not_collide(parameter_vector: ParameterVector) -> None:
                 raise ValueError(
                     f"two parameters name an element axis {axis!r} with different labels, which the "
                     "labeled form would misalign; name the axes apart."
+                )
+            axes[axis] = labels
+
+
+def check_theta_element_axes_agree(parameters: Sequence[Parameter]) -> None:
+    """An element axis two parameters share has one set of labels in theta's
+    layout too, where a simplex drops its last label: a simplex and another
+    value on one axis would otherwise build, and fail at the first use of
+    theta."""
+    axes: dict[str, pd.Index] = {}
+    for parameter in parameters:
+        for axis, labels in parameter.unconstrained().element_labels.items():
+            if axis in axes and not axes[axis].equals(labels):
+                raise ValueError(
+                    f"the element axis {axis!r} has different labels in theta's layout for two parameters "
+                    "(a simplex drops its last label); name their axes apart."
                 )
             axes[axis] = labels
 
@@ -1102,15 +1134,17 @@ def check_variable_has_its_dims(name: str, dims: tuple[Any, ...], own: tuple[str
 
 
 def check_variable_labels_are_the_vectors(name: str, dim: str, variable: xr.DataArray, labels: pd.Index) -> None:
-    """A variable's labels along a dim or element axis are the vector's, as
-    a set, and are labeled, since xarray would otherwise read by position."""
+    """A variable's labels along a dim or element axis are labeled, once
+    each, and are the vector's as a set, since xarray would otherwise read
+    by position or twice."""
     if dim not in variable.indexes:
         raise ValueError(
             f"the parameter dataset's {name!r} has no {dim!r} coordinate, so its values cannot be "
             f"matched to labels; give {dim!r} its labels."
         )
-    held = set(variable.indexes[dim].tolist())
-    if held != set(labels.tolist()):
+    listed = variable.indexes[dim].tolist()
+    held = set(listed)
+    if len(held) != len(listed) or held != set(labels.tolist()):
         raise ValueError(
             f"the parameter dataset's {name!r} has {dim!r} labels {truncated(sorted(held, key=str))}, "
             f"not the vector's {truncated(list(labels))}; select the vector's labels first."

@@ -59,8 +59,7 @@ class Parameter:
     Parameters
     ----------
     name:
-        A Python identifier, not a keyword: prior and derived functions
-        receive values as keyword arguments named for it.
+        The parameter's name.
     support:
         The set one value lies in. Default :data:`REAL`.
     units:
@@ -95,11 +94,13 @@ class Parameter:
     TypeError
         For an argument of the wrong type.
     ValueError
-        For a name that is not an identifier; repeated dims, labels or axis
-        names, or axis names taken by the name or a dim; element labels
-        whose lengths are not *shape*; a shape lacking the support's event
-        axes (a simplex needs a last axis of 2 or more); or a custom
-        bijector that does not map onto the support at the probe points.
+        For a name that is not a Python identifier, or is a keyword (prior
+        and derived functions receive values as keyword arguments named for
+        it); repeated dims, labels or axis names, or axis names taken by the
+        name or a dim; element labels whose lengths are not *shape*; a shape
+        lacking the support's event axes (a simplex needs a last axis of 2
+        or more); or a custom bijector that does not map onto the support at
+        the probe points.
     """
 
     name: str
@@ -136,11 +137,13 @@ class Parameter:
 
         Its element labels are the natural ones when the bijector keeps the
         shape; for ``SoftmaxCentered``, the same axes with the last label of
-        the last axis dropped, entry :math:`i` being
+        the last axis dropped, entry :math:`i` being the additive log-ratio
         :math:`\\log(x_i / x_k)`; otherwise the defaults. Its long name is
         :math:`g(n)`, with :math:`n` this parameter's long name or name and
-        :math:`g` ``log``, ``logit``, ``alr`` or the bijector's name; under
-        the identity it is this parameter's.
+        :math:`g` the inverse transform's name: ``log`` for ``Exp``,
+        ``logit`` for ``Sigmoid``, ``alr`` (the additive log-ratio) for
+        ``SoftmaxCentered``, or the bijector's own name; under the identity
+        it is this parameter's long name.
         """
         shape = self.unconstrained_shape
         if shape == self.shape:

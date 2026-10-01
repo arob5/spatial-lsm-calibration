@@ -151,7 +151,12 @@ from pysipnet.parameters.base import ParameterDomain, ParameterSpec
 from pysipnet.parameters.model import PARAMETER_SPECS, SIPNETParameters
 from pysipnet.units import conversion_factor, validate_units
 
-from sipnet_calibration.conventions import NON_BATCH_DIM_NAMES, SAMPLE, SITE
+from sipnet_calibration.conventions import (
+    NON_BATCH_DIM_NAMES,
+    SAMPLE,
+    SITE,
+    read_only_copy,
+)
 from sipnet_calibration.fields import (
     SIPNETParameterFields,
     batch_coordinate,
@@ -364,8 +369,11 @@ class SIPNETParameterMap:
                 {n: written[n][0].broadcast(dims, sizes) for n in rule.sipnet_parameter_names_read},
             )
             labels = {d: item.labels[d] for item in inputs for d in item.batch_dims}
+            expected = (*(sizes[d] for d in dims), site_dims.n_sites)
             for name, array in output.items():
-                written[name] = (_LabeledAtSites(dims, np.asarray(array, dtype=np.float64), labels), _set_by(rule))
+                array = np.asarray(array, dtype=np.float64)
+                check_rule_output_has_the_shape(rule, name, array.shape, expected)
+                written[name] = (_LabeledAtSites(dims, np.broadcast_to(array, expected).copy(), labels), _set_by(rule))
         return _sipnet_parameter_fields(written, site_dims)
 
     def out_of_domain(
@@ -384,9 +392,10 @@ class SIPNETParameterMap:
         Returns
         -------
         pandas.DataFrame
-            One row per value outside its domain (a non-finite one
-            included), once for requirements alike: a column per batch dim and ``site`` (missing for a
-            value not on it), then ``sipnet_parameter`` or ``value_name``
+            One row per value outside its domain, a non-finite one
+            included, and once for a value two rules require alike: a
+            column per batch dim and ``site`` (missing for a value not on
+            it), then ``sipnet_parameter`` or ``value_name``
             (the other missing), and ``value`` (``NaN`` for a value of rank
             1 or more, whose element the row does not name). Empty when
             every value is in its domain.
@@ -631,10 +640,9 @@ class Compute:
         Called as ``function(**values, **constants, **sipnet_parameter_values)``,
         keywords named as below. Each array has one leading shape ``(...,
         S)``, with a value's shape after it. The result is ``(..., S)``,
-        **in the SIPNET parameter's units** (``ParameterSpec.units``): the
-        map cannot check the arithmetic, but requiring the inputs' units
-        makes the inputs checkable, and the domain checks check the result.
-        Elementwise over the leading axes and sites; traceable by JAX.
+        or broadcasts to it, **in the SIPNET parameter's units**
+        (``ParameterSpec.units``). Elementwise over the leading axes and
+        sites; traceable by JAX.
     values_read:
         ``{name: ValueRequirement}``: the values it reads, each with what
         the function assumes.
@@ -654,6 +662,12 @@ class Compute:
         If one keyword names two things (a value and a SIPNET parameter of
         one name, as ``soil_respiration_q10`` is both: rename in a wrapper),
         or *provenance* is empty.
+
+    Notes
+    -----
+    The map cannot check the function's arithmetic. Requiring each input's
+    units makes the inputs checkable, and the domain checks check the
+    result.
     """
 
     sipnet_parameter_name: str
@@ -672,6 +686,9 @@ class Compute:
             as_names(self.sipnet_parameter_names_read, message_name="sipnet_parameter_names_read"),
         )
         check_compute_is_valid(self)
+        object.__setattr__(
+            self, "constants", frozendict({name: read_only_copy(c.copy(deep=True)) for name, c in self.constants.items()})
+        )
 
     @property
     def sipnet_parameter_names_written(self) -> tuple[str, ...]:
@@ -793,7 +810,8 @@ def initial_condition_rules(
         If *state_value_names* does not name four values.
     """
     if isinstance(deciduous, xr.DataArray):
-        check_deciduous_values_are_booleans(dict(zip(deciduous[deciduous.dims[0]].values.tolist(), deciduous.values.tolist())))
+        check_deciduous_mask_is_on_its_dim(deciduous, deciduous_dim)
+        check_deciduous_values_are_booleans(dict(zip(deciduous[deciduous_dim].values.tolist(), deciduous.values.tolist())))
         mask = deciduous.copy()
     else:
         deciduous = as_frozen_mapping(deciduous, message_name="deciduous")
@@ -1279,6 +1297,31 @@ def check_deciduous_values_are_booleans(deciduous: Mapping[Any, Any]) -> None:
         raise TypeError(f"deciduous values must be booleans; {truncated(bad)} are not.")
 
 
+def check_deciduous_mask_is_on_its_dim(deciduous: xr.DataArray, deciduous_dim: str) -> None:
+    """A deciduous mask given as a DataArray is on *deciduous_dim* alone, the
+    dim it is read at."""
+    if deciduous.dims != (deciduous_dim,):
+        raise ValueError(
+            f"the deciduous mask is on {deciduous.dims}, but deciduous_dim is {deciduous_dim!r}; give it on "
+            "that dim alone."
+        )
+
+
+def check_rule_output_has_the_shape(rule: Any, name: str, shape: tuple[int, ...], expected: tuple[int, ...]) -> None:
+    """A rule writes each SIPNET parameter on its inputs' batch dims and the
+    sites, or something that broadcasts to them, since a misshapen value
+    would be placed at the wrong runs."""
+    try:
+        broadcast = np.broadcast_shapes(shape, expected)
+    except ValueError:
+        broadcast = None
+    if broadcast != expected:
+        raise ValueError(
+            f"{_set_by(rule)} wrote {name!r} of shape {shape}, which is not (*batch, sites) = {expected}; "
+            "return one value per leading position and site."
+        )
+
+
 def check_state_value_names_are_four(state_value_names: Sequence[str]) -> None:
     """The initial state is read by four names, one per state value."""
     if len(state_value_names) != len(INITIAL_STATE_NAMES):
@@ -1309,11 +1352,14 @@ def check_external_input_is_float64_with_units(name: str, variable: xr.DataArray
 
 
 def check_external_input_dim_is_site_or_a_batch_dim(dim: str, external_inputs: xr.Dataset) -> None:
-    """An external input's dim is ``site`` or a batch dim with integer
-    labels, since any other would be crossed with theta silently."""
-    if dim == SITE:
-        return
+    """An external input's dim is a labeled ``site`` or a batch dim with
+    integer labels, since any other would be crossed with theta silently,
+    and an unlabeled site read by position."""
     labels = external_inputs.indexes.get(dim)
+    if dim == SITE:
+        if labels is None:
+            raise ValueError("external inputs are on 'site' without a coordinate; label it with the site ids.")
+        return
     if dim in NON_BATCH_DIM_NAMES or labels is None or labels.dtype.kind not in "iu":
         raise ValueError(
             f"external inputs are on {dim!r}, which is neither 'site' nor a batch dim with integer labels; "

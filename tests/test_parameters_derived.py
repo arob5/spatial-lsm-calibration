@@ -357,3 +357,17 @@ def test_the_collection_holds_its_derived_parameters(hierarchy):
     assert repr(hierarchy) == "DerivedParameters(names=['soil_carbon'], over=['mean', 'spread', 'standardized'])"
     with pytest.raises(KeyError, match="no derived parameter"):
         hierarchy["mean"]
+
+
+def test_a_derived_element_axis_is_named_apart():
+    vector = ParameterVector(parameters=[Parameter(name="x", units=None, shape=(2,), element_labels={"part": ("a", "b")})])
+
+    def derived(axis, labels):
+        return DerivedParameter(name="y", units=None, shape=(len(labels),), element_labels={axis: labels},
+                                parameter_names=("x",), function=lambda x: x[: len(labels)])
+
+    with pytest.raises(ValueError, match="with different labels"):
+        DerivedParameters(parameter_vector=vector, derived_parameters=[derived("part", ("a", "c"))])
+    with pytest.raises(ValueError, match="named like a dim, a parameter"):
+        DerivedParameters(parameter_vector=vector, derived_parameters=[derived("x", ("a", "b"))])
+    DerivedParameters(parameter_vector=vector, derived_parameters=[derived("part", ("a", "b"))])

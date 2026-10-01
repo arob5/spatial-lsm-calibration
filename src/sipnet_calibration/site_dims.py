@@ -308,9 +308,8 @@ class SiteDims:
         """The sites among *sites* (every one when ``None``) that carry one
         of the given labels on each named site-labels dim.
 
-        ``select(pft=["boreal.coniferous"])`` is the sites of that PFT, the
-        replacement for selecting a vector's sites by class; it is also a
-        forward model over fewer sites.
+        ``select(pft=["boreal.coniferous"])`` is the sites of that PFT, and
+        a forward model over them is built on it.
 
         Returns
         -------
@@ -335,6 +334,7 @@ class SiteDims:
             check_sites_are_held(requested, self)
             kept &= self._table[SITE_ID].isin(requested).to_numpy()
         for name, wanted in labels.items():
+            check_selector_is_not_site(name)
             check_labeled_dim_is_a_site_labels_name(name, self)
             wanted = as_sequence(wanted, message_name=f"select {name}=")
             check_names_are_unique(wanted, message_name=f"select {name}=")
@@ -476,6 +476,13 @@ def check_labeled_dim_is_a_site_labels_name(dim: Any, site_dims: SiteDims) -> No
         raise ValueError("'site' labels nothing but itself; ask for a site-labels name's labels.")
     if dim not in site_dims.site_labels:
         raise KeyError(f"there are no site labels {dim!r}; name one of {list(site_dims.site_labels)}.")
+
+
+def check_selector_is_not_site(name: str) -> None:
+    """Sites are selected by ``sites=``, the selector of site ids, not by a
+    site-labels name."""
+    if name == SITE:
+        raise ValueError("select sites by their ids with sites=[...], not site=.")
 
 
 def check_along_is_a_dim(along: Any, site_dims: SiteDims) -> None:

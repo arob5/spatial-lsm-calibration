@@ -23,6 +23,7 @@ from sipnet_calibration.parameters import (
     OPEN_UNIT_INTERVAL,
     POSITIVE,
     SIMPLEX,
+    DerivedParameters,
     Parameter,
     ParameterVector,
     Prior,
@@ -68,9 +69,9 @@ def describe_calibration(
     Returns
     -------
     tuple of pandas.DataFrame
-        ``(parameters, sipnet_parameters)``.
+        ``(parameter_table, sipnet_parameter_table)``.
 
-        ``parameters``, one row per parameter then per derived parameter,
+        ``parameter_table``, one row per parameter then per derived parameter,
         indexed by ``parameter``: ``indexed_by``, ``shape``, ``support``,
         ``units`` and ``bijector`` (the vector's; a derived parameter's
         support is the one it declares, if any, and it has no bijector);
@@ -78,10 +79,10 @@ def describe_calibration(
         ``term`` (the name of the term covering the parameter, a joint
         term's names joined with ``"+"``), ``prior``, ``given`` and
         ``provenance`` (the prior's, empty for a derived parameter); and
-        ``sipnet_parameters``, the SIPNET parameters depending on it,
-        comma-separated.
+        ``sipnet_parameter_names``, the SIPNET parameters depending on it,
+        directly or through derived parameters, comma-separated.
 
-        ``sipnet_parameters``, the map's
+        ``sipnet_parameter_table``, the map's
         :meth:`~sipnet_calibration.sipnet_parameter_map.SIPNETParameterMap.describe`
         with ``role``, one of :data:`ROLES`.
 
@@ -107,19 +108,21 @@ def describe_calibration(
             "bijector": piece.bijector.name if is_parameter else "",
             "parameter_names": "" if is_parameter else ", ".join(piece.parameter_names),
             "term": "", "prior": "", "given": "", "provenance": "",
-            "sipnet_parameters": ", ".join(n for n, depends in dependencies.items() if piece.name in depends),
+            "sipnet_parameter_names": ", ".join(
+                n for n, depends in dependencies.items() if depends & _influenced(piece.name, derived)
+            ),
         }
         if is_parameter:
             check_prior_covers_the_parameter(piece.name, covering)
             row |= {"term": covering[piece.name], **terms.loc[covering[piece.name]].to_dict()}
         rows.append(row)
     calibrated = {*parameter_vector.parameter_names, *(d.name for d in derived_parameters)}
-    sipnet_parameters = sipnet_parameter_map.describe()
-    sipnet_parameters.insert(1, "role", [
+    sipnet_parameter_table = sipnet_parameter_map.describe()
+    sipnet_parameter_table.insert(1, "role", [
         _role(set_by, dependencies[name], calibrated)
-        for name, set_by in sipnet_parameters["set_by"].items()
+        for name, set_by in sipnet_parameter_table["set_by"].items()
     ])
-    return pd.DataFrame(rows).set_index("parameter"), sipnet_parameters
+    return pd.DataFrame(rows).set_index("parameter"), sipnet_parameter_table
 
 
 def example_calibration(site_dims: SiteDims) -> tuple[ParameterVector, Prior, SIPNETParameterMap]:
@@ -233,6 +236,18 @@ def example_calibration(site_dims: SiteDims) -> tuple[ParameterVector, Prior, SI
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _influenced(name: str, derived: DerivedParameters | None) -> set[str]:
+    """*name* and every derived parameter computed from it, directly or
+    through others."""
+    out = {name}
+    if derived is None:
+        return out
+    for derived_name in derived.names:  # dependency order: inputs come first
+        if out & set(derived[derived_name].parameter_names):
+            out.add(derived_name)
+    return out
 
 
 def _role(set_by: str, depends_on: frozenset[str], calibrated: set[str]) -> str:

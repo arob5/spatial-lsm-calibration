@@ -214,6 +214,8 @@ def test_selection_is_refused_by_the_projects_rules(site_dims):
         site_dims.select([27], pft=["deciduous"])
     with pytest.raises(ValueError, match="keeps nothing"):
         site_dims.select(pft=[])
+    with pytest.raises(ValueError, match="with sites="):
+        site_dims.select(site=[1])
 
 
 # ── construction ──────────────────────────────────────────────────────────────

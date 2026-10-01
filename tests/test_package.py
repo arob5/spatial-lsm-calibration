@@ -36,7 +36,7 @@ def test_the_package_declares_its_empty_public_api():
 
 
 def test_the_data_sources_and_observation_do_not_import_the_parameter_layer():
-    """initial_conditions and observation imported the parameter vector, and with it TFP and pyEKI."""
+    """initial_conditions and observation import neither the parameter layer nor TFP and pyEKI."""
     code = (
         "import sys; import sipnet_calibration.initial_conditions, "
         "sipnet_calibration.observation; "

@@ -554,3 +554,50 @@ def test_a_rule_reads_a_derived_parameter_by_name(site_dims):
     fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
     np.testing.assert_allclose(fields["base_soil_respiration_rate"], derived_values["respiration"], rtol=1e-12)
     assert fields["base_soil_respiration_rate"].dims == ("sample", "site")
+
+
+def test_an_external_input_on_site_is_labeled():
+    with pytest.raises(ValueError, match="without a coordinate"):
+        validate_external_inputs(xr.Dataset({"a": ("site", [1.0, 2.0], {"units": "1"})}))
+
+
+def test_a_rule_writes_one_value_per_leading_position_and_site(values, site_dims):
+    constant = SIPNETParameterMap(rules=[Compute(sipnet_parameter_name="soil_carbon", values_read={},
+                                                 function=lambda: jnp.float64(1000.0), provenance="t")])
+    fields = constant.sipnet_parameter_fields(values, site_dims=site_dims)
+    assert fields["soil_carbon"].dims == ("site",) and fields["soil_carbon"].values.tolist() == [1000.0] * 3
+    misshapen = SIPNETParameterMap(rules=[Compute(
+        sipnet_parameter_name="soil_carbon", values_read={"initial_soil_carbon": ValueRequirement("g m-2")},
+        function=lambda initial_soil_carbon: initial_soil_carbon[..., :2], provenance="t")])
+    with pytest.raises(ValueError, match="which is not \\(\\*batch, sites\\)"):
+        misshapen.sipnet_parameter_fields(values, site_dims=site_dims)
+
+
+def test_a_rules_constants_cannot_be_changed_through_it():
+    rule = initial_condition_rules(deciduous=DECIDUOUS)[2]
+    with pytest.raises(ValueError, match="read-only"):
+        rule.constants["deciduous"].values[0] = False
+    mask = by_pft(DECIDUOUS).copy(deep=True)
+    rule = Compute(sipnet_parameter_name="soil_carbon", values_read={}, constants={"mask": mask},
+                   function=lambda mask: 1.0 * mask, provenance="t")
+    mask.values[0] = not mask.values[0]
+    assert rule.constants["mask"].values.tolist() == list(by_pft(DECIDUOUS).values)
+
+
+def test_a_deciduous_mask_is_on_its_dim():
+    with pytest.raises(ValueError, match="give it on that dim alone"):
+        initial_condition_rules(deciduous=by_pft(DECIDUOUS).rename(pft="biome"))
+
+
+def test_a_vector_input_with_one_number_outside_an_interval_is_reported(site_dims):
+    rule = Compute(sipnet_parameter_name="leaf_allocation",
+                   values_read={"shares": ValueRequirement("1", OPEN_UNIT_INTERVAL, (3,))},
+                   function=lambda shares: shares[..., 0], provenance="t")
+    shares = np.full((2, 3, 3), 0.3)
+    shares[1, 2, 1] = 1.5
+    values = xr.Dataset({"shares": (("sample", "site", "part"), shares, {"units": "1"})},
+                        coords={"sample": [0, 1], "site": np.asarray(SITES, dtype=np.int32), "part": ["a", "b", "c"]})
+    sipnet_map = SIPNETParameterMap(rules=[rule])
+    fields = sipnet_map.sipnet_parameter_fields(values, site_dims=site_dims)
+    outside = sipnet_map.out_of_domain(fields, values, site_dims=site_dims)
+    assert outside[["sample", "site", "value_name"]].values.tolist() == [[1, 4711, "shares"]]

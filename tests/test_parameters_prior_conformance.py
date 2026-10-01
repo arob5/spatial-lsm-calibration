@@ -407,3 +407,17 @@ def test_the_change_of_variables_sums_the_jacobian_over_labels():
     theta = jax.random.normal(jax.random.key(15), (4, 3))
     expected = (gamma.log_prob(jnp.exp(theta)) + theta).sum(axis=-1)
     np.testing.assert_allclose(prior.log_prob(theta), expected, rtol=1e-12)
+
+
+@pytest.mark.parametrize("concentration", [0.15, 0.5])
+def test_the_simplex_jacobian_holds_where_coordinates_are_tiny(concentration):
+    """Under SoftmaxCentered the Jacobian is the closed form; autodiff lost
+    whole nats, or gave -inf, at a sparse Dirichlet's own draws."""
+    dirichlet = tfd.Dirichlet(jnp.full(4, concentration))
+    prior = prior_of(simplex(), dirichlet)
+    theta = prior.sample(jax.random.key(16), 20_000)
+    x = prior.parameter_vector.flat_to_values(prior.parameter_vector.to_natural(theta))["shares"]
+    padded = jnp.concatenate([theta, jnp.zeros((len(theta), 1))], axis=-1)
+    exact = dirichlet.log_prob(x) + jax.nn.log_softmax(padded, axis=-1).sum(axis=-1)
+    assert bool(jnp.isfinite(prior.log_prob(theta)).all())
+    np.testing.assert_allclose(prior.log_prob(theta), exact, rtol=1e-12, atol=1e-10)
