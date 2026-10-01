@@ -6,8 +6,8 @@ root fractions for ``plantWoodInit`` and the specific leaf weight for
 ``laiInit``. The conversion is therefore a function of a state *and* those
 SIPNET parameters, applied per proposal rather than once at ingest. It lives
 here; in a calibration,
-:class:`sipnet_calibration.sipnet_parameter_map.ComputeInitialConditions`
-applies the same formulas as a rule of the SIPNET parameter map.
+:func:`sipnet_calibration.sipnet_parameter_map.initial_condition_rules`
+applies the same formulas as rules of the SIPNET parameter map.
 
 Contents
 --------

@@ -54,15 +54,19 @@ The data sources, each a spec, a reader, a builder, a loader and a field view:
 
 The inverse problem:
 
-:mod:`~sipnet_calibration.parameter_vector`
-    What is calibrated: the parameters, their supports and dims, and the
-    coordinates theta.
-:mod:`~sipnet_calibration.prior`
-    What is believed beforehand: the prior over a parameter vector.
+:mod:`~sipnet_calibration.parameters`
+    The parameter layer, independent of the rest of the package: what is
+    calibrated (supports, parameters, the vector and its three forms), what
+    is computed from it (derived parameters), and what is believed
+    beforehand (the prior).
+:mod:`~sipnet_calibration.site_dims`
+    The sites and the dims they define: coords for a vector, constants and
+    memberships for its functions, and values read at the sites.
 :mod:`~sipnet_calibration.sipnet_parameter_map`
-    How a value reaches SIPNET: rules, fixed values and external inputs.
+    How the values at a site become SIPNET parameters: rules, fixed values
+    and external inputs.
 :mod:`~sipnet_calibration.calibration`
-    The three together: the record of a calibration, and an example.
+    The objects together: the record of a calibration, and an example.
 :mod:`~sipnet_calibration.observation`
     The observation vector, the observation operators and the time
     alignment they are written with.
@@ -72,6 +76,13 @@ The inverse problem:
 :mod:`~sipnet_calibration.compute`
     The SCC's PyEns backend preset.
 
+Sampling the posterior:
+
+:mod:`~sipnet_calibration.smc`
+    Tempered sequential Monte Carlo from a base density to the posterior,
+    and importance sampling as its one-step case, over any prior and
+    batched log likelihood; it knows nothing of SIPNET.
+
 :mod:`~sipnet_calibration.plotting`
     Figures of fields: series, maps and grids of either.
 
@@ -79,31 +90,37 @@ Dependencies
 ------------
 The dependency runs one way, from the foundations up::
 
+    parameters  (imports nothing of the package)
+
     conventions  <-  validation  <-  sites
         <-  fields, site_labels
         <-  constraints, drivers, initial_conditions,
-            net_ecosystem_exchange, parameter_vector
-        <-  observation, prior, sipnet_parameter_map
+            net_ecosystem_exchange, site_dims
+        <-  observation, sipnet_parameter_map
         <-  calibration, forward  <-  experiments
 
+:mod:`~sipnet_calibration.parameters` imports nothing of the package outside
+itself, which ``tests/test_package.py`` enforces; the adapter layer
+(``site_dims``, ``sipnet_parameter_map``, ``forward``) imports it, and the
+seam between them is the labeled natural values.
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
-and :mod:`~sipnet_calibration.projection` write through it;
-``parameter_vector`` reads ``site_labels``' column name. ``constraints``,
-``drivers``, ``initial_conditions``, ``net_ecosystem_exchange``,
-``parameter_vector`` and ``observation`` depend on ``fields`` (the field
-contract, its batch dims, the window coordinates of the two observation data
-sources, and the SIPNET parameter fields alias and validator, which is why
-neither ``initial_conditions`` nor
-``observation`` imports ``parameter_vector``). ``prior`` depends on
-``parameter_vector``; ``sipnet_parameter_map`` on ``parameter_vector``,
-``fields`` and ``initial_conditions``, and is the one of the three that
-imports pySIPNET; ``calibration`` on all three; and ``forward`` on
-``fields``, ``observation``, ``parameter_vector`` and
-``sipnet_parameter_map``.
+and :mod:`~sipnet_calibration.projection` write through it; ``site_dims``
+reads ``site_labels``' column name and the site table through ``sites``.
+``constraints``, ``drivers``, ``initial_conditions``,
+``net_ecosystem_exchange`` and ``observation`` depend on ``fields`` (the
+field contract, its batch dims, the window coordinates of the two
+observation data sources, and the SIPNET parameter fields alias and
+validator, which is why neither ``initial_conditions`` nor ``observation``
+imports the parameter layer). ``sipnet_parameter_map`` depends on
+``parameters``, ``site_dims``, ``fields`` and ``initial_conditions``, and is
+the one that imports pySIPNET's parameter specs; ``calibration`` on it and
+the parameter layer; and ``forward`` on ``fields``, ``observation``,
+``parameters``, ``site_dims`` and ``sipnet_parameter_map``.
 :mod:`~sipnet_calibration.projection` depends on ``validation`` and ``io``
 only, and :mod:`~sipnet_calibration.plotting` on ``conventions``,
 ``validation``, ``fields``, the site table and the projection; nothing outside
-plotting imports it. :mod:`~sipnet_calibration.compute` depends on nothing here.
+plotting imports it. :mod:`~sipnet_calibration.compute` depends on nothing here,
+and :mod:`~sipnet_calibration.smc` on ``io`` and ``validation`` only.
 
 Notes
 -----

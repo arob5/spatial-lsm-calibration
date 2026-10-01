@@ -1876,7 +1876,7 @@ def check_labeled_dims_are_batch_spatial_or_time(field: xr.DataArray, *, message
             f"dim nor time; they are labeled {dtypes}. A structural axis (variable, "
             "quantile, a PFT class) is never a dim of a field: select it away, or split "
             "it into a dict of fields. A parameter dataset's site-labels dim is read at the "
-            "sites with ParameterVector.site_fields."
+            "sites with SiteDims.site_fields."
         )
 
 

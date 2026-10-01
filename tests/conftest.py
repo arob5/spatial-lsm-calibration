@@ -395,6 +395,7 @@ def site_1_result(regular_drivers_root):
     :func:`pysipnet.build.find_binary` resolves, so ``pysipnet install-sipnet``
     is what makes this run.
     """
+    from pysipnet import niwot_reference_parameters
     from pysipnet.build import find_binary, missing_binary_message
     from pysipnet.climate import ClimateDrivers
     from pysipnet.parameters.model import ModelFlags
@@ -417,34 +418,7 @@ def site_1_result(regular_drivers_root):
         warnings.simplefilter("ignore")
         climate = ClimateDrivers.from_file(site_1_drivers).head(8 * SITE_1_DAYS)
     return SIPNETRunner(flags=ModelFlags.standard()).run(
-        niwot_parameters(), climate, run_id="site-1"
-    )
-
-
-def niwot_parameters():
-    """The reference ``sipnet.param`` as a ``SIPNETParameters``.
-
-    A stand-in for the production reader pySIPNET has not written yet (its
-    issue #19); built generically from the public name mapping so that a new
-    parameter needs no change here. A parameter the file does not name keeps
-    pySIPNET's own default, which is how the upstream fixture predating a
-    submodel is read at all.
-    """
-    from pysipnet import niwot_reference_files
-    from pysipnet.io.param_io import PYTHON_TO_SIPNET, read_param_file
-    from pysipnet.parameters.model import SIPNETParameters
-
-    raw = read_param_file(niwot_reference_files().param)
-    groups: dict[str, dict[str, float]] = {name: {} for name in SIPNETParameters.model_fields}
-    for dotted, sipnet_name in PYTHON_TO_SIPNET.items():
-        group, _, field = dotted.partition(".")
-        if group in groups and sipnet_name in raw:
-            groups[group][field] = raw[sipnet_name]
-    return SIPNETParameters(
-        **{
-            name: SIPNETParameters.model_fields[name].annotation(**values)
-            for name, values in groups.items()
-        }
+        niwot_reference_parameters(), climate, run_id="site-1"
     )
 
 
@@ -902,11 +876,12 @@ class ScaledNiwotRunner(SIPNETRunner):
 
 def scaled_niwot_model(runner_class: type[SIPNETRunner] = ScaledNiwotRunner) -> SIPNETModel:
     """A real ``SIPNETModel`` over the Niwot parameters, on a *runner_class* that needs no binary."""
+    from pysipnet import niwot_reference_parameters
     from pysipnet.parameters.model import ModelFlags
 
     return SIPNETModel(
         runner_class(flags=ModelFlags.standard(), verify_binary=False),
-        base_params=niwot_parameters(),
+        base_params=niwot_reference_parameters(),
     )
 
 
@@ -944,7 +919,7 @@ def example_reference() -> xr.Dataset:
 def example_reference_natural_values(reference: xr.Dataset, parameter_vector) -> dict:
     """The reference's natural values, as the example calibration's
     parameters hold them: per-site values read at each dim label."""
-    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.dim_index("pft")]
+    pft = [EXAMPLE_REFERENCE_PFT.index(label) for label in parameter_vector.coords["pft"]]
     allocation = ("leaf", "wood", "fine_root", "coarse_root")
 
     def at(name: str) -> np.ndarray:
@@ -958,3 +933,15 @@ def example_reference_natural_values(reference: xr.Dataset, parameter_vector) ->
         "leaf_fall_fraction": at("leaf_fall_fraction")[:, 0],
         "initial_soil_carbon": at("initial_soil_carbon"),
     }
+
+
+# ── priors ────────────────────────────────────────────────────────────────────
+
+
+def theta_gaussian(prior, name: str) -> tuple[np.ndarray, np.ndarray]:
+    """The mean and variances, flat in C order, of a term's Gaussian in
+    theta: its base's, when it is evaluated by its base density, else its
+    own (a Normal on the real line, under the identity)."""
+    built = prior._built[name]
+    gaussian = built.distribution.distribution if built.by_base_density else built.distribution
+    return np.ravel(gaussian.mean()), np.ravel(gaussian.variance())

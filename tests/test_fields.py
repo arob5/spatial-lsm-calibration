@@ -1784,5 +1784,5 @@ def test_a_parameter_datasets_label_dim_is_refused_with_advice():
     from sipnet_calibration.fields import validate_field
 
     array = xr.DataArray([0.1, 0.2], dims="pft", coords={"pft": ["a", "b"]}, attrs={"units": "1"})
-    with pytest.raises(ValueError, match="ParameterVector.site_fields"):
+    with pytest.raises(ValueError, match="SiteDims.site_fields"):
         validate_field(array)
