@@ -85,6 +85,7 @@ __all__ = [
     "NAME_PATTERN",
     "NON_BATCH_DIM_NAMES",
     "POINT",
+    "RESERVED_NAMES",
     "SAMPLE",
     "SAMPLE_ATTRIBUTES",
     "SIPNET_ROW_LABEL_NAMES",
@@ -232,6 +233,13 @@ BOUNDS = BOUNDS_DIMENSION
 #: The site table's key column, and the column every file keyed on sites
 #: addresses its records by.
 SITE_ID = "site_id"
+
+#: The names no parameter, derived parameter, element axis, external input,
+#: site-labels name or site covariate may take, since the labeled values meet
+#: these as dims and coordinates in one Dataset: :data:`SAMPLE`, the names that
+#: are never batch dims, the data sources' member dims, and the site table's
+#: ``site_id``. The adapter layer checks them (``site_dims``, ``forward``).
+RESERVED_NAMES: frozenset[str] = frozenset({SAMPLE, *NON_BATCH_DIM_NAMES, *DATA_SOURCE_MEMBER_NAMES, SITE_ID})
 
 
 # ── attributes ────────────────────────────────────────────────────────────────
