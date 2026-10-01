@@ -30,8 +30,8 @@ the repository root with `python -m`. Its parts depend one way:
 | `model/discrepancy.py` | the form of NEE's model discrepancy: a short, a long and a recurring term; `config.NEE_DISCREPANCY` holds its values |
 | `model/noise.py` | the noise covariance $R$ and the Gaussian likelihood it defines, for both vectors |
 | `model/sipnet.py` | what running SIPNET needs, built from `config`: the base parameters, the runner and model, the drivers, the site's initial state, and the forward model over PyEns |
-| `model/prior.py` | **the calibration's parameterization and prior**: the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance |
-| `model/inverse_problem.py` | the problem every algorithm conditions on: the prior (exactly Gaussian in theta), the forward model over the calibration vector, `y` and `R`; synthetic observations replace `y` |
+| `model/prior.py` | **the calibration's parameterization and prior**: the parameter vector, the prior and the SIPNET parameter map, with every prior term's provenance; the site's `SiteDims`; theta's natural values as a table |
+| `model/inverse_problem.py` | the problem every algorithm conditions on: the prior (exactly Gaussian in theta, and as a pyEKI Gaussian, `prior_gaussian`), the forward model over the calibration vector, `y` and `R`; synthetic observations replace `y` |
 | `model/outputs.py` | reading what the scripts wrote: a predictive, an EKI run, a run's diagnostics |
 | `model/diagnostics.py` | the diagnostics of a run, as `MODEL.md`, "Diagnostics", defines them: the posterior predictive check, NEE's residuals (size, recurring seasonal part, autocorrelation against $R$'s, night-day correlation), and the two towers |
 | `model/fixed_sipnet_parameters.csv` | every SIPNET parameter the calibration does not calibrate: its value and justification |
@@ -43,7 +43,7 @@ the repository root with `python -m`. Its parts depend one way:
 | `scripts/posterior_predictive.py` | an EKI run's final ensemble through the same predictive; writes to `output/eki/<setup>/<data>/posterior_predictive/` |
 | `scripts/diagnose.py` | the diagnostics of a run (the prior predictive, or an EKI run), written as tables under its `diagnostics/`; **run after every run** |
 | `scripts/fit_nee_discrepancy.py` | fits NEE's discrepancy to an EKI run's residuals by maximum marginal likelihood, three variants per source, checked against the towers and the held-out tower; writes `nee_discrepancy_fit.csv` beside the run, and adopting a fit is copying it into `config` |
-| `scripts/provenance.py` | the `provenance.json` each script writes beside its outputs |
+| `scripts/provenance.py` | the `provenance.json` each script writes beside its outputs, and the calibration's record, `calibration_parameters.csv` and `calibration_sipnet_parameters.csv` |
 | `figures/common.py` | panel titles, the shared legend, and saving a figure |
 | `figures/prior_predictive.py` | the prior predictive's figures: NEE windows, pool constraints and daily trajectories, and the slide figures (prior marginals, NEE's seasonal cycle, annual NEE against both towers, coverage per source); writes to `output/figures/` |
 | `figures/eki.py` | an EKI run's figures: the ladder, prior against posterior marginals, on synthetic data recovery of the truth, and the posterior predictive's figures; writes to `output/figures/<setup>/` |
@@ -124,7 +124,9 @@ rather than the code frozen. Each script writes `provenance.json` beside its
 outputs (`scripts/provenance.py`): the repository commit and whether the tree
 was dirty, each companion package's installed commit, the SIPNET pin and
 binary, the command, every `config` constant, and the path, size and MD5 of
-every input file. A result worth keeping is then the commit it names, tagged,
+every input file. Beside it, a run of the calibration writes the
+calibration's own record: one table per parameter with its prior term, and
+one per SIPNET parameter with its role and rule or fixed value. A result worth keeping is then the commit it names, tagged,
 with its `output/` directory archived beside the tag.
 
 ## Decisions
