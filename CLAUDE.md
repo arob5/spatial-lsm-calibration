@@ -144,7 +144,7 @@ Operational rules that follow from the data and are easy to get wrong in code:
   wood and leaf draws included, and applies **no state-to-parameter mapping**:
   three of the four SIPNET initial parameters depend on calibrated parameters,
   so the mapping is applied per proposal, by the SIPNET parameter map's
-  `ComputeInitialConditions` rule. Each spec's `pecan_conversion` says what
+  `initial_condition_rules`. Each spec's `pecan_conversion` says what
   PEcAn did.
 
 ## Code conventions
@@ -818,15 +818,16 @@ left to Grid Engine.
 The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
-`constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`,
-`parameter_vector.py`, `prior.py`, `sipnet_parameter_map.py`,
+`constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`, the
+`parameters/` package, `site_dims.py`, `sipnet_parameter_map.py`,
 `calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py` and
 the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
-reader and checks together.
+reader and checks together. `parameters` is a package for another reason:
+it is the parameter layer, which imports nothing of the rest.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -900,41 +901,59 @@ src/sipnet_calibration/
                           # processed file per source; read_raw(),
                           # build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
-  parameter_vector.py     # ParameterVector: what is calibrated. Parameter (a
-                          # Support, whose bijector is the default T; units; at
-                          # most one dim; natural names), DerivedParameter
-                          # (y = f(x): pointwise, support), Support and REAL,
-                          # POSITIVE, OPEN_UNIT_INTERVAL, OpenInterval, SIMPLEX;
-                          # index (parameter, dim, dim_label,
-                          # unconstrained_name), positions(), select();
-                          # to_natural()/derived_values()/to_unconstrained()/
-                          # at_sites(); dataset() <-> flat() (ParameterDataset,
-                          # on each parameter's own dim), site_fields();
-                          # site_positions(), dim_label_positions();
-                          # probe_points(), joint_probe_points();
-                          # check_parameter_vectors_share_a_layout
-  prior.py                # Prior: what is believed beforehand. PriorTerm per
-                          # parameter or joint term, with given=; sample() in
-                          # topological order of the given links, log_prob()
-                          # (base density or change of variables), gaussian()
-                          # (one block per dependent set: declared Gaussians
-                          # exact, others moment-matched); iid_over_dim,
-                          # independent_over_dim, gaussian_copula; log_normal,
-                          # logit_normal (support=) and their _from_* forms,
-                          # softmax_normal; DeclaresGaussian; term_name
-  sipnet_parameter_map.py # SIPNETParameterMap: how a value reaches SIPNET.
-                          # Rules (Copy, CopySimplex, ComputePhotosynthesisRates,
-                          # ComputeInitialConditions) reading values by name with
-                          # a ValueRequirement (units, Bounds, natural size);
-                          # Fixed; ExternalInputs; sipnet_parameter_fields(),
-                          # out_of_domain(); the fit and corner checks
-  calibration.py          # describe_calibration() (the record of the three),
+  parameters/             # the parameter layer: imports nothing of the package
+                          # outside itself (tested); __init__ re-exports it
+    support.py            # Support (Interval, Simplex: contains, closure),
+                          # REAL, POSITIVE, NON_NEGATIVE, OPEN_UNIT_INTERVAL,
+                          # UNIT_INTERVAL, SIMPLEX; DEFAULT_BIJECTORS and
+                          # bijector_for; probe_points(), joint_probe_points(),
+                          # bijectors_agree()
+    parameter.py          # Parameter: support, units, shape, string element
+                          # labels, indexed_by, T; unconstrained()
+    vector.py             # ParameterVector: parameters, coords {dim: labels},
+                          # order; index (parameter, *dims, element),
+                          # entry_names, select()/positions(); Flat, values by
+                          # parameter and the labeled form, converted by
+                          # <source>_to_<target>; unconstrained, to_natural(),
+                          # to_unconstrained(), contains(); ValuesByParameter,
+                          # ParameterDataset; check_parameter_vectors_share_a_layout
+    derived.py            # DerivedParameter, y = f(parameters, constants,
+                          # memberships); DerivedParameters over a vector, in
+                          # dependency order: values(), values_to_dataset(),
+                          # select()
+    prior.py              # Prior: what is believed beforehand. PriorTerm per
+                          # parameter or joint term, with given=, constants=,
+                          # memberships=; sample() in topological order of the
+                          # given links, log_prob() (base density or change of
+                          # variables, the log-Jacobian private), gaussian() ->
+                          # GaussianMoments (dense; declared Gaussians exact,
+                          # others moment-matched per dependent set);
+                          # iid_over_dim, independent_over_dim, gaussian_copula;
+                          # log_normal, logit_normal (support=) and their _from_*
+                          # forms, softmax_normal; DeclaresGaussian; term_name
+    _description.py, _labels.py, _validation.py   # private: the shared
+                          # description checks, label alignment, coercion
+  site_dims.py            # SiteDims: the sites and the dims they define; coords,
+                          # labels() (memberships), covariate(), at_sites(),
+                          # site_fields(), select()
+  sipnet_parameter_map.py # SIPNETParameterMap: how the values at a site become
+                          # SIPNET parameters, from labeled values and a
+                          # SiteDims. Rules (Copy, CopySimplex, Compute;
+                          # photosynthesis_rules, initial_condition_rules) reading
+                          # values by name with a ValueRequirement (units, a
+                          # Support domain, shape) and constants; Fixed;
+                          # dependencies(), sipnet_parameter_names_depending_on();
+                          # ExternalInputs; sipnet_parameter_fields(),
+                          # out_of_domain(); support_from_sipnet_domain; the fit
+                          # check
+  calibration.py          # describe_calibration() (two tables: per parameter,
+                          # per SIPNET parameter with its role),
                           # example_calibration()
   forward.py              # ForwardModel: theta (J, D) and external inputs ->
                           # predictions (R, N), SIPNET once per run through
                           # PyEns, the observation operators applied on the
                           # worker; ForwardEvaluation with its run index; the
-                          # failure split
+                          # failure split; the composition and corner checks
   compute.py              # scc_backend(): the SCC GridEngineBackend preset
   smc.py                  # tempered SMC from a base density q to the
                           # posterior, importance sampling its one-step case;
@@ -1083,9 +1102,11 @@ plotting code. The load-bearing rules:
   source is a modeling decision an experiment writes in `config.py`.
 - **The forward model is one class over existing pieces.**
   `forward.ForwardModel(model, parameter_vector, sipnet_parameter_map,
-  climate=, backend=, external_inputs=, out_of_domain=, observation_vector=)`
-  is pyEKI's `(J, D) -> (J, N)`; its module docstring says how the pieces
-  compose. The rules a session can get wrong: the observation
+  site_dims=, derived_parameters=, climate=, backend=, external_inputs=,
+  out_of_domain=, observation_vector=)` is pyEKI's `(J, D) -> (J, N)`; its
+  module docstring says how the pieces compose: the labeled natural values
+  (the parameter layer's seam) merged with the external inputs, read at the
+  site dims' sites by the map. The rules a session can get wrong: the observation
   operators run **on the worker**, each run receiving only its site's slice of
   the observation vector and returning that slice's Flat, which the calling
   process writes at `positions(site=)` (right because the vector is site-major,
@@ -1095,8 +1116,9 @@ plotting code. The load-bearing rules:
   `batch_dim` zips with theta's rows (labels `0` to `J - 1`), one on any other
   batch dim is crossed, and PyEns enumerates the runs; each run's output is
   placed by its coordinate on the run index `(batch_dim, *crossed dims)`, so
-  the row order is the repository's, not PyEns's. SIPNET parameters outside
-  pySIPNET's domains raise before anything runs, and the map is checked at the
+  the row order is the repository's, not PyEns's. Values outside their
+  domains (a rule input outside its requirement's, a SIPNET parameter outside
+  pySIPNET's) raise before anything runs, and the map is checked at the
   corners of theta when the model is built; `out_of_domain="fail_row"` marks
   their rows invalid instead, a truncation of the prior that `Prior` does not
   know. A run that fails at its parameters (`SIPNETRunError`,
@@ -1307,7 +1329,7 @@ plotting code. The load-bearing rules:
 - `tfd.LogNormal`, `tfd.LogitNormal` and any `TransformedDistribution` expose `.distribution`
   (the base) and `.bijector`. The coordinates are the parameter's, never the prior's:
   `Parameter.bijector` is its support's default unless overridden, and
-  `sipnet_calibration.prior` evaluates a term by its base density only when its
+  `sipnet_calibration.parameters.prior` evaluates a term by its base density only when its
   distribution's bijector agrees with the parameter's at the probe points, by change of
   variables otherwise.
 - Bijectors are compared by their images, never by equality:
@@ -1327,8 +1349,8 @@ plotting code. The load-bearing rules:
   `TransformedDistribution` subclasses over an internal reparameterization; their `.bijector` is
   not a map from unconstrained space. The prior reads `.distribution`/`.bijector` only off an
   exact `TransformedDistribution`, `LogNormal` or `LogitNormal`.
-- A prior over a dim puts the bijector outside the batch: `iid_over_dim` builds
-  `TransformedDistribution(Sample(base, n), b)`, whose base density is exact in theta.
+- A prior over the index dims puts the bijector outside the batch: `iid_over_dim` builds
+  `TransformedDistribution(Sample(base, index_shape), b)`, whose base density is exact in theta.
 - With the pinned build, a distribution built from `TransformedDistribution` pickles but fails
   `pickle.loads`; `LogNormal` and `LogitNormal` round-trip. Send PyEns workers plain data
   (SIPNET parameter fields through `pyens.xarray.fields_from_dataset`), never a vector or prior.
@@ -1338,7 +1360,7 @@ plotting code. The load-bearing rules:
   `forward_log_det_jacobian` is against the embedded volume element, `0.5 * logdet(J^T J)`,
   which differs from `log|det J|` of the first `k - 1` rows by `0.5 log k`; a `Dirichlet`'s
   density is against Lebesgue measure on the first `k - 1` coordinates.
-  `Support.log_jacobian` takes the latter, by autodiff, whatever the bijector.
+  The prior's private log-Jacobian takes the latter, by autodiff, whatever the bijector.
 - `IteratedSigmoidCentered` rounds a simplex coordinate to exactly 0 at `theta = 20 * 1` in
   float64, so the probe checks accept a bijector's image in the support's closure and skip
   probes that land on its boundary.

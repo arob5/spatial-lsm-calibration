@@ -35,12 +35,12 @@ def test_the_package_declares_its_empty_public_api():
     assert sipnet_calibration.__all__ == []
 
 
-def test_the_data_sources_and_observation_do_not_import_the_parameter_vector():
-    """initial_conditions and observation imported parameter_vector, and with it TFP and pyEKI."""
+def test_the_data_sources_and_observation_do_not_import_the_parameter_layer():
+    """initial_conditions and observation imported the parameter vector, and with it TFP and pyEKI."""
     code = (
         "import sys; import sipnet_calibration.initial_conditions, "
         "sipnet_calibration.observation; "
-        "print(sorted(m for m in ('sipnet_calibration.parameter_vector', "
+        "print(sorted(m for m in ('sipnet_calibration.parameters', "
         "'tensorflow_probability', 'pyeki') if m in sys.modules))"
     )
     result = subprocess.run(
@@ -91,3 +91,37 @@ def test_every_module_compiles_without_a_warning():
         warnings.simplefilter("error")
         for path in sorted(root.rglob("*.py")):
             compile(path.read_text(), str(path), "exec")
+
+
+def test_the_parameter_layer_imports_nothing_of_the_package_outside_itself():
+    """The parameter layer is replaceable (by ProbPipe, say) only while it is
+    independent: no module under parameters/ imports another module of the
+    package, by name or relatively, and importing it loads none, nor
+    pySIPNET, PyEns or pyEKI."""
+    import ast
+    from pathlib import Path
+
+    import sipnet_calibration.parameters as layer
+
+    outside = []
+    for path in sorted(Path(layer.__file__).parent.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""] if node.level == 0 else [f"relative level {node.level}"] * (node.level > 1)
+            else:
+                continue
+            for name in names:
+                own = name == "sipnet_calibration.parameters" or name.startswith("sipnet_calibration.parameters.")
+                if name.startswith("relative") or (name.split(".")[0] == "sipnet_calibration" and not own):
+                    outside.append(f"{path.name}: {name}")
+    assert outside == []
+    code = (
+        "import sys; import sipnet_calibration.parameters; "
+        "print(sorted(m for m in sys.modules if (m.startswith('sipnet_calibration.') "
+        "and not m.startswith('sipnet_calibration.parameters')) or m.split('.')[0] in "
+        "('pysipnet', 'pyens', 'pyeki')))"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "[]"
