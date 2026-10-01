@@ -457,3 +457,10 @@ def test_a_value_on_a_closed_end_has_no_theta():
     natural = jnp.asarray([[0.0, 1.0], [1.0, 0.0], [0.5, 2.0]])
     assert vector.contains(natural).tolist() == [False, False, True]
     assert not bool(jnp.isfinite(vector.to_unconstrained(natural)[:2]).all())
+
+
+def test_an_empty_batch_goes_to_flat_and_back():
+    vector = vector_of(Parameter(name="scalar", units=None), Parameter(name="shares", support=SIMPLEX, units="1", shape=(3,)))
+    theta = jnp.zeros((0, vector.unconstrained.size))
+    assert vector.to_natural(theta).shape == (0, vector.size)
+    assert vector.values_to_flat(vector.flat_to_values(jnp.zeros((0, vector.size)))).shape == (0, vector.size)

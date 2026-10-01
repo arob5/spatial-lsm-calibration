@@ -64,9 +64,10 @@ tfb = tfp.bijectors
 
 Array = jax.Array
 
-#: A function building a term's distribution for the labels in use, called
-#: as ``f(**given, **constants)``; :class:`~sipnet_calibration.parameters.prior.PriorTerm`
-#: says what it receives and returns.
+#: A function building a term's distribution for the labels in use: one a
+#: user writes is called as ``f(**given, **constants)``, as
+#: :class:`~sipnet_calibration.parameters.prior.PriorTerm` says; one a builder
+#: here returns is also passed the index shape, first.
 type PriorFunction = Callable[..., tfd.Distribution]
 
 
@@ -100,13 +101,16 @@ def iid_over_dim(distribution: tfd.Distribution | Callable[..., tfd.Distribution
     Returns
     -------
     PriorFunction
+        A builder's, which the prior passes the index shape.
     """
     if isinstance(distribution, tfd.Distribution):
-        return _OverDim(
-            per_label=lambda index_shape, **reads: distribution,
-            repeated=True,
-            name=f"iid {distribution_name(distribution)}",
-        )
+        name = f"iid {distribution_name(distribution)}"
+
+        def fixed(index_shape: tuple[int, ...], **reads: Any) -> tfd.Distribution:
+            check_fixed_prior_reads_nothing(name, reads)
+            return distribution
+
+        return _OverDim(per_label=fixed, repeated=True, name=name)
     return _OverDim(
         per_label=lambda index_shape, **reads: distribution(**reads),
         repeated=True,
@@ -138,7 +142,8 @@ def independent_over_dim(distribution_family: Callable[..., tfd.Distribution], /
     Returns
     -------
     PriorFunction
-        A transformed family is built with its bijector outside, as for
+        A builder's, which the prior passes the index shape. A transformed
+        family is built with its bijector outside, as for
         :func:`iid_over_dim`.
 
     Raises
@@ -197,7 +202,8 @@ def gaussian_copula(marginals: Mapping[str, tfd.Distribution], *, correlation: A
     Returns
     -------
     PriorFunction
-        For parameters indexed by nothing; its draws are dicts keyed like
+        A builder's, for parameters indexed by nothing; its draws are dicts
+        keyed like
         *marginals*.
 
     Raises
@@ -261,8 +267,9 @@ class _GaussianCopula(IndexShapedFunction):
     correlation: Array
     name: str = "gaussian copula"
 
-    def __call__(self, index_shape: tuple[int, ...]) -> tfd.Distribution:
+    def __call__(self, index_shape: tuple[int, ...], **reads: Any) -> tfd.Distribution:
         check_prior_without_a_dim_has_none(index_shape, self.name)
+        check_fixed_prior_reads_nothing(self.name, reads)
         to_values = tfb.Chain([
             tfb.JointMap({n: tfb.Chain([b, tfb.Reshape([], [1])]) for n, b in zip(self.names, self.bijectors)}),
             tfb.Restructure({n: i for i, n in enumerate(self.names)}),
@@ -312,6 +319,17 @@ def check_prior_over_a_dim_has_a_dim(index_shape: tuple[int, ...], name: str) ->
         raise TypeError(
             f"{name} is a prior over a parameter's index dims, given to a parameter indexed by "
             "nothing; give that parameter the distribution itself."
+        )
+
+
+def check_fixed_prior_reads_nothing(name: str, reads: Mapping[str, Any]) -> None:
+    """A builder's fixed prior is given nothing and reads no constant, which
+    it would otherwise ignore."""
+    if reads:
+        raise TypeError(
+            f"{name} is a fixed prior, but its term is given or reads {sorted(reads)}, which it would "
+            "ignore; write a prior function of them, or, for labels independent and identically "
+            "distributed, iid_over_dim(lambda spread: tfd.Normal(0.0, spread))."
         )
 
 

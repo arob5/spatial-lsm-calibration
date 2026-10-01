@@ -402,3 +402,28 @@ def test_a_constant_reaches_its_function_in_the_derived_parameters_dim_order():
                                              constants={"c": constant}, function=lambda x, c: x + c)],
     )
     np.testing.assert_allclose(collection.values({"x": jnp.zeros(1)})["y"][0], constant.transpose("pft", "site").values)
+
+
+def test_a_collections_own_dim_is_named_like_no_element_axis():
+    pools = Parameter(name="pools", units=None, shape=(3,), element_labels={"pool": ("a", "b", "c")})
+    with pytest.raises(ValueError, match="which are element axes of parameters"):
+        DerivedParameters(
+            parameter_vector=ParameterVector(parameters=[pools]), coords={"pool": [1, 2]},
+            derived_parameters=[DerivedParameter(name="first_two", units=None, indexed_by=("pool",), given=("pools",),
+                                                 function=lambda pools: pools[:2])],
+        )
+
+
+def test_a_membership_is_named_apart_from_what_is_given():
+    with pytest.raises(ValueError, match="as two of a name given, a constant and a membership"):
+        non_centered(memberships={"mean": pft_of_site()})
+
+
+def test_the_labeled_form_has_coordinates_only_for_the_dims_its_variables_use():
+    total = DerivedParameter(name="total", units=None, given=("intercept", "slope"),
+                             function=lambda intercept, slope: intercept + slope)
+    collection = DerivedParameters(parameter_vector=ParameterVector(parameters=[INTERCEPT, SLOPE]),
+                                   coords={"site": SITES}, derived_parameters=[regression(), total])
+    values = collection.values(natural_values(collection), derived_parameter_names=["total"])
+    dataset = collection.values_to_dataset(values, batch_dims=("sample",))
+    assert list(dataset.data_vars) == ["total"] and "site" not in dataset.coords

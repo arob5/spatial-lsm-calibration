@@ -212,9 +212,12 @@ class PriorTerm:
           term is given something, so it is a pure function of its
           arguments.
 
-        :mod:`~sipnet_calibration.parameters.prior_functions` builds prior
-        functions, and :mod:`~sipnet_calibration.parameters.families` one
-        value's distribution.
+        The builders of :mod:`~sipnet_calibration.parameters.prior_functions`
+        return prior functions that the prior also passes the index shape,
+        privately, since for labels independent and identically
+        distributed nothing they read carries it;
+        :mod:`~sipnet_calibration.parameters.families` builds one value's
+        distribution.
     given:
         The parameters and derived parameters the distribution is
         conditioned on, none of them in *parameter_names*. Default none.
@@ -328,9 +331,10 @@ class Prior:
     ValueError
         If a parameter is covered by no term or by two, a joint term's
         parameters are indexed differently, the ``given`` links form a
-        cycle, the derived parameters are over another vector, or a term
-        fails a check of :func:`check_prior_term_is_valid`; the message
-        names the term.
+        cycle, the derived parameters are over another vector, or a term's
+        distribution is not over its parameters' blocks, has another
+        support, or has no density the prior can evaluate; the message names
+        the term.
     """
 
     parameter_vector: ParameterVector
@@ -726,7 +730,7 @@ class _BuiltTerm:
         """This term at *distribution*, checked to be over its parameters' blocks,
         and evaluated by base density where it pushes through."""
         natural_shapes = {p.name: (*self.index_shape, *p.shape) for p in self.parameters}
-        check_term_is_over_the_whole_value(
+        check_term_is_over_its_parameters_blocks(
             self.name, distribution, natural_shapes if self.joint else natural_shapes[self.names[0]]
         )
         return dataclasses.replace(
@@ -771,10 +775,11 @@ def _constants_read_for(term: PriorTerm, prior: Prior) -> dict[str, Array]:
     """The term's constants read at the prior's labels, each with the
     parameters' ``indexed_by`` dims first, then their element axes."""
     vector = prior.parameter_vector
-    dim_order = (
+    # A joint term's parameters may share an element axis; it is named once.
+    dim_order = tuple(dict.fromkeys((
         *vector[term.parameter_names[0]].indexed_by,
         *(axis for name in term.parameter_names for axis in vector[name].element_labels),
-    )
+    )))
     return aligned_constants(
         term.constants, prior._labels_for(term), dim_order=dim_order,
         message_name=f"the prior of {term.name!r} constants",
@@ -1201,7 +1206,7 @@ def check_provenance_is_given(provenance: Any) -> None:
 
 
 
-def check_term_is_over_the_whole_value(name: str, distribution: Any, expected: Any) -> None:
+def check_term_is_over_its_parameters_blocks(name: str, distribution: Any, expected: Any) -> None:
     """A term's distribution is ``float64`` over its parameters' blocks:
     event shape the block shape (a dict of them for a joint term), TFP batch
     shape ``()``."""

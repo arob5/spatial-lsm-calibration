@@ -29,6 +29,14 @@ the support's default bijector:
 
 So a prior term over a parameter with that default bijector is evaluated by
 its base density, with no Jacobian.
+
+Notes
+-----
+A family's arguments are checked when they are concrete. Inside a prior
+function given others, which the prior traces and vmaps over draws, they
+are traced and have no value to check, so the value checks are skipped
+there. The prior builds each term at concrete ancestral draws too, where
+they do run.
 """
 
 from __future__ import annotations
@@ -287,23 +295,35 @@ def _positive_std(values: Array, what: str) -> Array:
     return std
 
 
+def _is_traced(*arrays: Any) -> bool:
+    """Whether any of *arrays* is a JAX tracer, whose values a check cannot
+    read."""
+    return any(isinstance(array, jax.core.Tracer) for array in arrays)
+
+
 # ── checks ────────────────────────────────────────────────────────────────────
 
 
 def check_geometric_sd_exceeds_one(geometric_sd: Array) -> None:
     """A geometric standard deviation exceeds 1, since its log is the scale."""
+    if _is_traced(geometric_sd):
+        return
     if not bool(jnp.all(geometric_sd > 1.0)):
         raise ValueError("log_normal: geometric_sd is at most 1, and it multiplies; give a value above 1.")
 
 
 def check_values_are_positive(what: str, array: Array, value: Any) -> None:
     """A family builder's positive argument is finite and positive."""
+    if _is_traced(array):
+        return
     if not bool(jnp.all(jnp.isfinite(array)) and jnp.all(array > 0)):
         raise ValueError(f"{what} is {value!r}, which is not finite and positive; give a positive value.")
 
 
 def check_values_are_inside(what: str, fraction: Array, value: Any, support: Support) -> None:
     """A logit-normal's median or end lies inside the interior of its support."""
+    if _is_traced(fraction):
+        return
     if not bool(jnp.all((fraction > 0) & (fraction < 1))):
         raise ValueError(f"{what} is {value!r}, outside the interior of {support.name}; give a value inside it.")
 
@@ -323,6 +343,8 @@ def check_interval_ends_and_mass_are_valid(lower: Array, upper: Array, mass: flo
     """An interval's mass is in (0, 1) and its upper end exceeds its lower."""
     if not 0.0 < mass < 1.0:
         raise ValueError(f"mass is {mass}, outside (0, 1); give the central mass as a fraction.")
+    if _is_traced(lower, upper):
+        return
     if not bool(jnp.all(upper > lower)):
         raise ValueError("upper does not exceed lower; give the interval's ends in order.")
 
@@ -331,6 +353,8 @@ def check_samples_are_usable(what: str, array: Array, in_support: Callable[[Arra
     """Samples to fit are at least two, finite and inside the support."""
     if array.size < 2:
         raise ValueError(f"{what}: {array.size} sample(s) cannot be fitted; give at least two.")
+    if _is_traced(array):
+        return
     bad = ~(jnp.isfinite(array) & in_support(array))
     if bool(jnp.any(bad)):
         raise ValueError(
@@ -341,6 +365,8 @@ def check_samples_are_usable(what: str, array: Array, in_support: Callable[[Arra
 
 def check_samples_vary(what: str, std: Array) -> None:
     """Samples to fit are not all equal, or no scale can be fitted."""
+    if _is_traced(std):
+        return
     if not bool(std > 0):
         raise ValueError(f"{what}: the samples are all equal, so no scale can be fitted; give samples that vary.")
 
@@ -349,6 +375,8 @@ def check_center_is_on_the_simplex(center: Array) -> None:
     """A softmax-normal's center is a point of the simplex, per label or shared."""
     if center.ndim not in (1, 2) or center.shape[-1] < 2:
         raise ValueError(f"softmax_normal: center has shape {center.shape}; give (k,) or (n, k) with k >= 2.")
+    if _is_traced(center):
+        return
     if not bool(jnp.all(center > 0)) or not bool(jnp.allclose(center.sum(axis=-1), 1.0, atol=1e-8)):
         raise ValueError("softmax_normal: center is not a point of the simplex; give positive fractions summing to 1.")
 

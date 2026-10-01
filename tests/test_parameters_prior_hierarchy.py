@@ -523,3 +523,58 @@ def test_a_term_whose_evaluation_changes_with_its_given_values_is_refused():
     offset = Parameter(name="offset", support=REAL, units=None)
     with pytest.raises(ValueError, match="changes its structure"):
         Prior(vector_of(RATE, offset), [term("rate", RATE_MARGINAL), term("offset", shifted, given=("rate",))])
+
+
+def test_a_joint_term_reads_a_constant_on_an_element_axis_its_parameters_share():
+    shared = {"element_labels": {"part": ("leaf", "wood")}, "shape": (2,), "units": None}
+    vector = ParameterVector(parameters=[Parameter(name="a", **shared), Parameter(name="b", **shared)])
+    center = xr.DataArray([0.0, 1.0], dims="part", coords={"part": ["leaf", "wood"]})
+
+    def pair(center):
+        return tfd.JointDistributionNamed({n: tfd.Independent(tfd.Normal(center, 1.0), 1) for n in ("a", "b")})
+
+    prior = Prior(vector, [term(("a", "b"), pair, constants={"center": center})])
+    theta = prior.sample(jax.random.key(9), 3)
+    expected = normal(0.0, 1.0).log_prob(np.asarray(theta) - np.tile([0.0, 1.0], 2)).sum(axis=-1)
+    np.testing.assert_allclose(prior.log_prob(theta), expected, rtol=1e-12)
+
+
+def test_iid_over_dim_of_a_family_given_others_traces():
+    gsd = Parameter(name="gsd", support=POSITIVE, units=None)
+    rates = Parameter(name="rates", support=POSITIVE, units=None, indexed_by=("site",))
+    prior = Prior(vector_of(gsd, rates), [
+        term("gsd", log_normal(median=1.0, geometric_sd=1.5)),
+        term("rates", iid_over_dim(lambda gsd: log_normal(median=2.0, geometric_sd=1.0 + gsd)), given=("gsd",)),
+    ])
+    theta = prior.sample(jax.random.key(10), 4)
+    values = natural(prior, theta)
+    scale = np.log(1.0 + np.asarray(values["gsd"]))[:, None]
+    log_rates = unconstrained(prior, theta, "rates")
+    expected = (
+        log_normal(median=1.0, geometric_sd=1.5).distribution.log_prob(np.log(np.asarray(values["gsd"])))
+        + (normal(0.0, 1.0).log_prob((log_rates - np.log(2.0)) / scale) - np.log(scale)).sum(axis=-1)
+    )
+    np.testing.assert_allclose(prior.log_prob(theta), expected, rtol=1e-12)
+
+
+def test_a_fixed_prior_refuses_what_its_term_is_given_or_reads():
+    offsets = Parameter(name="offsets", support=REAL, units=None, indexed_by=("site",))
+    with pytest.raises(TypeError, match="iid Normal is a fixed prior, but its term is given or reads \\['spread'\\]"):
+        Prior(vector_of(SPREAD, offsets), [
+            term("spread", log_normal(median=0.5, geometric_sd=2.0)),
+            term("offsets", iid_over_dim(normal(0.0, 1.0)), given=("spread",)),
+        ])
+    pair = gaussian_copula({"rate": RATE_MARGINAL, "share": SHARE_MARGINAL}, correlation=CORRELATION)
+    with pytest.raises(TypeError, match="gaussian copula is a fixed prior"):
+        Prior(vector_of(RATE, SHARE), [term(("rate", "share"), pair, constants={"c": xr.DataArray(1.0)})])
+
+
+def test_a_prior_given_others_scores_zero_draws(centered):
+    theta = centered.sample(jax.random.key(0), 0)
+    assert centered.log_prob(theta).shape == (0,)
+
+
+def test_a_copula_refuses_a_marginal_pushed_from_another_base():
+    gamma_on_unit = tfd.TransformedDistribution(tfd.Gamma(jnp.float64(2.0), jnp.float64(1.0)), tfb.Sigmoid())
+    with pytest.raises(ValueError, match="not a scalar pushforward of a Gaussian"):
+        gaussian_copula({"rate": RATE_MARGINAL, "share": gamma_on_unit}, correlation=CORRELATION)

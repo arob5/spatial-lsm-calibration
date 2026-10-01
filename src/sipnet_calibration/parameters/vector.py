@@ -24,17 +24,18 @@ Data model
 Parameter :math:`p` has one value's shape :math:`s_p` and is indexed by
 dims :math:`d_{p,1}, \\dots, d_{p,m}`, whose labels are ``coords``. Its
 **index shape** is :math:`(n_{p,1}, \\dots, n_{p,m})`, the number of labels
-of each; a **block** is its value at one tuple of labels, and its **block
-shape** is ``(*index shape, *s_p)``. The vector holds
+of each. It has one **value** of shape :math:`s_p` at each tuple of labels
+of its dims, and its **block** is all of them together, of **block shape**
+``(*index shape, *s_p)``. The vector holds
 :math:`\\sum_p \\prod(\\text{index shape}) \\prod(s_p)` numbers, its
 ``size``.
 
-**The order.** Blocks are sorted lexicographically by the levels named in
+**The order.** Values are sorted lexicographically by the levels named in
 ``order``, a permutation of ``("parameter", *dims)``: a parameter by its
-declaration position; a dim by its label's position in ``coords``, a block
-of a parameter not indexed by that dim coming before every label. A block's
-numbers follow contiguously, in C order of the value. The default order,
-``("parameter", *dims)``, puts each parameter's blocks together, sorted by
+declaration position; a dim by its label's position in ``coords``, a value
+of a parameter not indexed by that dim coming before every label. A value's
+numbers follow contiguously, in C order. The default order,
+``("parameter", *dims)``, puts each parameter's values together, sorted by
 its labels in the order of the dims of ``coords``; ``("site", "parameter",
 ...)`` is site-major.
 
@@ -69,7 +70,7 @@ parameters are each :meth:`Parameter.unconstrained`,
 
     x_p = T_p(\\theta_p), \\qquad \\theta_p = T_p^{-1}(x_p),
 
-applied to every block, each value of shape :math:`s_p` mapped from its
+applied to every value, each of shape :math:`s_p` mapped from its
 unconstrained shape :math:`u_p`. :meth:`~ParameterVector.to_natural` and
 :meth:`~ParameterVector.to_unconstrained` are these maps between Flat forms;
 theta, with ``D = vector.unconstrained.size`` entries, is laid out by
@@ -155,7 +156,14 @@ __all__ = [
     "ParameterDataset",
     "ParameterVector",
     "ValuesByParameter",
+    "check_batch_dims_name_the_leading_axes",
+    "check_flat_ends_in_the_size",
+    "check_labels_are_the_dims",
+    "check_labels_have_the_dims_type",
     "check_parameter_vectors_share_a_layout",
+    "check_selector_keeps_something",
+    "check_values_end_in_the_block_shape",
+    "check_values_share_a_batch_shape",
     "validate_parameter_dataset",
     "validate_values_by_parameter",
 ]
@@ -187,7 +195,7 @@ class ParameterVector:
         dtype.
     order:
         A permutation of ``("parameter", *coords)``; the module's data
-        model says how it orders the blocks. Default
+        model says how it orders the values. Default
         ``("parameter", *coords)``.
 
     Raises
@@ -260,7 +268,7 @@ class ParameterVector:
     @property
     def size(self) -> int:
         """The number of entries of the Flat form."""
-        return int(self._layout.entry_block.size)
+        return int(self._layout.entry_value.size)
 
     def index_shape(self, name: str) -> tuple[int, ...]:
         """A parameter's index shape, ``[len(coords[d]) for d in indexed_by]``:
@@ -468,7 +476,12 @@ class ParameterVector:
         validate_values_by_parameter(values_by_parameter, self)
         batch = self._batch_shape_of(values_by_parameter)
         parameter_major = jnp.concatenate(
-            [jnp.asarray(values_by_parameter[p.name], dtype=jnp.float64).reshape((*batch, -1)) for p in self.parameters],
+            [
+                jnp.asarray(values_by_parameter[p.name], dtype=jnp.float64).reshape(
+                    (*batch, math.prod(self.block_shape(p.name)))
+                )
+                for p in self.parameters
+            ],
             axis=-1,
         )
         return parameter_major[..., self._layout.flat_from_parameter_major]
@@ -560,7 +573,7 @@ class ParameterVector:
 
     def to_natural(self, theta: Any) -> Array:
         """Theta to the natural Flat form: :math:`x_p = T_p(\\theta_p)` for
-        every parameter, block by block. Traceable.
+        every parameter, value by value. Traceable.
 
         Parameters
         ----------
@@ -779,11 +792,11 @@ class _Layout:
     """Where every number sits in Flat, computed once per vector.
 
     ``positions_by_parameter[name]`` is ``(*index shape, value size)``:
-    the Flat position of each number of each block, in C order.
+    the Flat position of each number of each value, in C order.
     ``flat_from_parameter_major`` reorders the parameter-major concatenation
     of every parameter's values, each in C order, into Flat. Per entry of
-    Flat: ``entry_parameter`` (a declaration position), ``entry_block`` (a
-    block number), ``entry_label_positions`` (``(size, n_dims)``, a label's
+    Flat: ``entry_parameter`` (a declaration position), ``entry_value`` (a
+    value number), ``entry_label_positions`` (``(size, n_dims)``, a label's
     position in ``coords``, ``-1`` where not indexed) and ``entry_element``
     (the element's position in C order).
     """
@@ -791,72 +804,72 @@ class _Layout:
     positions_by_parameter: Mapping[str, np.ndarray]
     flat_from_parameter_major: np.ndarray
     entry_parameter: np.ndarray
-    entry_block: np.ndarray
+    entry_value: np.ndarray
     entry_label_positions: np.ndarray
     entry_element: np.ndarray
 
     @classmethod
     def from_vector(cls, vector: ParameterVector) -> _Layout:
         """The layout of *vector*'s Flat."""
-        block_parameter, block_label_positions = _blocks_of(vector)
-        value_size = np.asarray([math.prod(p.shape) for p in vector.parameters])[block_parameter]
-        flat_order = _blocks_in_flat_order(vector, block_parameter, block_label_positions)
-        block_start = np.empty_like(value_size)
-        block_start[flat_order] = np.cumsum(value_size[flat_order]) - value_size[flat_order]
+        value_parameter, value_label_positions = _values_of(vector)
+        value_size = np.asarray([math.prod(p.shape) for p in vector.parameters])[value_parameter]
+        flat_order = _values_in_flat_order(vector, value_parameter, value_label_positions)
+        value_start = np.empty_like(value_size)
+        value_start[flat_order] = np.cumsum(value_size[flat_order]) - value_size[flat_order]
         positions_by_parameter = {
-            p.name: _value_positions(block_start[block_parameter == i], math.prod(p.shape)).reshape(
+            p.name: _value_positions(value_start[value_parameter == i], math.prod(p.shape)).reshape(
                 (*vector.index_shape(p.name), math.prod(p.shape))
             )
             for i, p in enumerate(vector.parameters)
         }
         parameter_major = np.concatenate([positions_by_parameter[p.name].ravel() for p in vector.parameters])
-        entry_block = np.repeat(flat_order, value_size[flat_order])
+        entry_value = np.repeat(flat_order, value_size[flat_order])
         return cls(
             positions_by_parameter=frozendict(positions_by_parameter),
             flat_from_parameter_major=_inverse_permutation(parameter_major),
-            entry_parameter=block_parameter[entry_block],
-            entry_block=entry_block,
-            entry_label_positions=block_label_positions[entry_block],
-            entry_element=np.arange(entry_block.size) - block_start[entry_block],
+            entry_parameter=value_parameter[entry_value],
+            entry_value=entry_value,
+            entry_label_positions=value_label_positions[entry_value],
+            entry_element=np.arange(entry_value.size) - value_start[entry_value],
         )
 
 
-def _blocks_of(vector: ParameterVector) -> tuple[np.ndarray, np.ndarray]:
-    """Every block of *vector*, parameter by parameter in declaration order
-    and each parameter's blocks in C order over its index shape: the
-    parameter's declaration position, ``(n_blocks,)``, and the block's label
-    position along each of the vector's dims, ``(n_blocks, n_dims)``, ``-1``
+def _values_of(vector: ParameterVector) -> tuple[np.ndarray, np.ndarray]:
+    """Every value of *vector*, parameter by parameter in declaration order
+    and each parameter's values in C order over its index shape: the
+    parameter's declaration position, ``(n_values,)``, and the value's label
+    position along each of the vector's dims, ``(n_values, n_dims)``, ``-1``
     along a dim its parameter is not indexed by."""
-    block_parameter, block_label_positions = [], []
+    value_parameter, value_label_positions = [], []
     for i, p in enumerate(vector.parameters):
         index_shape = vector.index_shape(p.name)
-        n_blocks = math.prod(index_shape)
-        grid = np.indices(index_shape).reshape(len(index_shape), n_blocks)
-        label_positions = np.full((n_blocks, len(vector.dims)), -1, dtype=np.int64)
+        n_values = math.prod(index_shape)
+        grid = np.indices(index_shape).reshape(len(index_shape), n_values)
+        label_positions = np.full((n_values, len(vector.dims)), -1, dtype=np.int64)
         for axis, dim in enumerate(p.indexed_by):
             label_positions[:, vector.dims.index(dim)] = grid[axis]
-        block_parameter.append(np.full(n_blocks, i, dtype=np.int64))
-        block_label_positions.append(label_positions)
-    return np.concatenate(block_parameter), np.concatenate(block_label_positions)
+        value_parameter.append(np.full(n_values, i, dtype=np.int64))
+        value_label_positions.append(label_positions)
+    return np.concatenate(value_parameter), np.concatenate(value_label_positions)
 
 
-def _blocks_in_flat_order(
-    vector: ParameterVector, block_parameter: np.ndarray, block_label_positions: np.ndarray
+def _values_in_flat_order(
+    vector: ParameterVector, value_parameter: np.ndarray, value_label_positions: np.ndarray
 ) -> np.ndarray:
-    """The block numbers sorted by the vector's order, level by level, where
+    """The value numbers sorted by the vector's order, level by level, where
     ``-1`` (not indexed) sorts before every label."""
     keys = [
-        block_parameter if level == PARAMETER_LEVEL else block_label_positions[:, vector.dims.index(level)]
+        value_parameter if level == PARAMETER_LEVEL else value_label_positions[:, vector.dims.index(level)]
         for level in vector.order
     ]
     # np.lexsort sorts by its last key first.
     return np.lexsort(keys[::-1])
 
 
-def _value_positions(block_start: np.ndarray, value_size: int) -> np.ndarray:
-    """The Flat positions of each block's numbers, ``(n_blocks, value_size)``:
-    a value is contiguous, from its block's start."""
-    return block_start[:, None] + np.arange(value_size)[None, :]
+def _value_positions(value_start: np.ndarray, value_size: int) -> np.ndarray:
+    """The Flat positions of each value's numbers, ``(n_values, value_size)``:
+    a value is contiguous, from its start."""
+    return value_start[:, None] + np.arange(value_size)[None, :]
 
 
 def _inverse_permutation(permutation: np.ndarray) -> np.ndarray:

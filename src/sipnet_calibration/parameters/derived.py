@@ -270,6 +270,7 @@ class DerivedParameters:
         object.__setattr__(self, "derived_parameters", tuple(self.derived_parameters))
         own = as_coords(self.coords)
         check_coords_are_new_dims(own, self.parameter_vector)
+        check_coords_are_not_element_axes(own, self.parameter_vector)
         object.__setattr__(self, "_own_coords", own)
         object.__setattr__(self, "coords", frozendict({**self.parameter_vector.coords, **own}))
         check_derived_parameters_are_valid(self)
@@ -666,6 +667,19 @@ def check_coords_are_new_dims(own: Mapping[str, pd.Index], vector: ParameterVect
         raise ValueError(
             f"DerivedParameters(coords=) gives {shared}, which the vector already has; give only the "
             "dims derived parameters use and the vector lacks."
+        )
+
+
+def check_coords_are_not_element_axes(own: Mapping[str, pd.Index], vector: ParameterVector) -> None:
+    """A collection's own dims are named like no element axis of a
+    parameter, with which the labeled values and constants would confuse
+    them."""
+    axes = {axis for p in vector.parameters for axis in p.element_labels}
+    clashing = [d for d in own if d in axes]
+    if clashing:
+        raise ValueError(
+            f"DerivedParameters(coords=) gives {clashing}, which are element axes of parameters; "
+            "name the dims apart."
         )
 
 

@@ -36,8 +36,8 @@ changes them; ``shape`` never changes.
 
 A prior term's TFP event is its parameters' blocks. One value's axes, the
 element axes, are the event of one value's distribution, which
-:func:`~sipnet_calibration.parameters.prior.iid_over_dim` repeats over the
-block. ``support.event_ndims`` is a third thing: how many trailing element
+:func:`~sipnet_calibration.parameters.prior_functions.iid_over_dim`
+repeats over the block. ``support.event_ndims`` is a third thing: how many trailing element
 axes the support constrains jointly, 0 on an interval and 1 on the simplex.
 """
 
@@ -65,6 +65,7 @@ from sipnet_calibration.parameters.support import REAL, Support, bijector_for
 __all__ = [
     "Parameter",
     "check_parameter_is_valid",
+    "check_shape_has_the_supports_event_axes",
 ]
 
 tfb = tfp.bijectors
