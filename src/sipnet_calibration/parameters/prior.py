@@ -292,9 +292,9 @@ class PriorTerm:
         same in every draw, such as a covariate per site, a prior median per
         site or a simplex center per PFT. Each is a constant as
         :mod:`~sipnet_calibration.parameters.labels` defines one, read at
-        the labels of the prior's coords and the element axes of
-        *parameter_names*, with the parameters' ``indexed_by`` dims first,
-        then their element axes. Default none.
+        the labels of the prior's coords and of the element axes of the
+        parameters and of what the term is given, with the parameters'
+        ``indexed_by`` dims first, then their element axes. Default none.
     provenance:
         Where the prior came from, with its citation; a placeholder says it
         is one.
@@ -320,7 +320,8 @@ class PriorTerm:
     hierarchy over sites within PFTs is given the location at each site, a
     derived parameter ``pft_mean[pft_of_site]``, rather than the PFT means
     and a membership. A fixed value per PFT is a constant per site, built
-    before the term sees it: ``median_by_pft.sel(pft=site_dims.labels("pft"))``.
+    before the term sees it, ``median_by_pft.sel(pft=pft_of_site)`` with
+    ``pft_of_site`` each site's PFT on ``site``.
     A Gaussian process over sites reads its locations as constants, ``lon``
     and ``lat`` on ``site``.
 
@@ -476,7 +477,7 @@ class Prior:
         """
         derived = None if self.derived_parameters is None else self.derived_parameters.select(**selectors)
         vector = self.parameter_vector.select(**selectors) if derived is None else derived.parameter_vector
-        kept = {*vector.parameter_names, *(() if derived is None else derived.names)}
+        kept = {*vector.parameter_names, *(() if derived is None else derived.derived_parameter_names)}
         terms = []
         for term in self.terms:
             if any(name in kept for name in term.parameter_names):
@@ -626,12 +627,12 @@ class Prior:
 
     def _labels_for(self, term: PriorTerm) -> Mapping[str, pd.Index]:
         """The labels *term*'s constants are read at: the coords, and the
-        element axes of the parameters it covers."""
-        element_axes = {
-            axis: labels
-            for name in term.parameter_names
-            for axis, labels in self.parameter_vector[name].element_labels.items()
-        }
+        element axes of the parameters it covers and of what it is given."""
+        pieces = [
+            self.parameter_vector[n] if n in self.parameter_vector else self.derived_parameters[n]
+            for n in (*term.parameter_names, *term.given)
+        ]
+        element_axes = {axis: labels for p in pieces for axis, labels in p.element_labels.items()}
         return {**element_axes, **self.coords}
 
     @property
@@ -665,10 +666,10 @@ class Prior:
         computed from it."""
         if self.derived_parameters is None:
             return {}
-        missing = [n for n in names if n in self.derived_parameters.names and n not in values_by_parameter]
+        missing = [n for n in names if n in self.derived_parameters.derived_parameter_names and n not in values_by_parameter]
         if not missing:
             return {}
-        return self.derived_parameters.values(values_by_parameter, names=missing)
+        return self.derived_parameters.values(values_by_parameter, derived_parameter_names=missing)
 
     def _dependent_sets(self) -> list[tuple[str, ...]]:
         """The dependent sets, each in the vector's order, ordered by their
@@ -1535,11 +1536,11 @@ def _terms_in_draw_order(prior: Prior) -> tuple[str, ...]:
     terms = {term.name: term for term in prior.terms}
     owner = {name: term.name for term in prior.terms for name in term.parameter_names}
     derived = prior.derived_parameters
-    derived_names = () if derived is None else derived.names
+    derived_names = () if derived is None else derived.derived_parameter_names
 
     def links(node: tuple[str, Any]) -> list[tuple[str, Any]]:
         kind, value = node
-        names = terms[value].given if kind == "term" else derived[value].parameter_names
+        names = terms[value].given if kind == "term" else derived[value].given
         return [("derived", n) if n in derived_names else ("term", owner[n]) for n in names]
 
     order: list[str] = []
@@ -1820,7 +1821,7 @@ def check_joint_term_is_indexed_alike(term: PriorTerm, vector: ParameterVector) 
 def check_given_names_are_held(name: str, given: Sequence[str], prior: Prior) -> None:
     """What a term is given is a parameter or derived parameter, which it
     would otherwise be passed no value for."""
-    derived = () if prior.derived_parameters is None else prior.derived_parameters.names
+    derived = () if prior.derived_parameters is None else prior.derived_parameters.derived_parameter_names
     for given_name in given:
         if given_name not in prior.parameter_vector and given_name not in derived:
             raise KeyError(

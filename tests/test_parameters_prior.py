@@ -346,6 +346,23 @@ def test_a_terms_distribution_is_a_distribution_or_a_function():
         term("rate", 1.0)
 
 
+def test_a_terms_constant_may_be_on_an_element_axis_of_what_it_is_given():
+    center = Parameter(name="center", support=SIMPLEX, units="1", shape=(2,),
+                       element_labels={"part": ("leaf", "wood")})
+    shares = Parameter(name="shares", support=SIMPLEX, units="1", shape=(2,))
+    scale = xr.DataArray([0.5, 1.0], dims="part", coords={"part": ["leaf", "wood"]})
+
+    def shares_given_center(center, scale):
+        loc = jnp.log(center[:-1] / center[-1:])
+        return tfd.TransformedDistribution(tfd.MultivariateNormalDiag(loc, scale[:-1]), tfb.SoftmaxCentered())
+
+    prior = Prior(vector_of(center, shares), [
+        term("center", softmax_normal(center=(0.5, 0.5), logit_sd=0.5)),
+        term("shares", shares_given_center, given=("center",), constants={"scale": scale}),
+    ])
+    assert bool(jnp.isfinite(prior.log_prob(prior.sample(jax.random.key(3), 2))).all())
+
+
 def test_a_terms_keywords_name_one_thing_each():
     with pytest.raises(ValueError, match="more than once"):
         term("rate", lambda mean: None, given=("mean",), constants={"mean": xr.DataArray(1.0)})
@@ -441,7 +458,7 @@ def test_derived_parameters_over_another_vector_are_refused():
 
     other = vector_of(SHARE)
     derived = DerivedParameters(parameter_vector=other, derived_parameters=[
-        DerivedParameter(name="double", units="1", parameter_names=("share",), function=lambda share: 2 * share),
+        DerivedParameter(name="double", units="1", given=("share",), function=lambda share: 2 * share),
     ])
     with pytest.raises(ValueError, match="differ in their"):
         Prior(vector_of(RATE), [term("rate", log_normal(median=1.0, geometric_sd=2.0))], derived_parameters=derived)

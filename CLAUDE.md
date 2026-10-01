@@ -226,7 +226,7 @@ one variable per parameter and derived parameter.
 | **membership** | for each label of one dim, the label of another it belongs to (a site's PFT, a PFT's biome): an `xr.DataArray` named for the other dim (`SiteDims.labels`), passed to a derived parameter's function as `int64` positions into that dim's labels; only derived parameters read memberships | `site_positions`, `dim_label_positions` |
 | **prior term** | one factor of the prior, a `PriorTerm`: the distribution of the blocks of the parameters it names (`parameter_names`; several indexed alike are a **joint term**), possibly **given** other parameters or derived parameters and reading constants | the dict key of a term, `TermKey`, `term_name` |
 | **prior function** | a function `f(**given, **constants)` returning a prior term's distribution, its event shape coming from what it reads (`PriorFunction`); `iid_over_dim`, `independent_over_dim` and `gaussian_copula` build them | `f(index_shape, ...)` |
-| **derived parameter** | a deterministic value `y = f(x)`, a `DerivedParameter` in a `DerivedParameters` over one vector: `indexed_by`, shape, units and optionally a support like a parameter's, computed by a pure array function of parameters, other derived parameters, constants and memberships; no entries of theta and no prior. A SIPNET convention (a unit reference, a formula of sipnet.c) is a `Compute` rule instead | `derived_from`, `compute`, "pointwise" |
+| **derived parameter** | a deterministic quantity `y = f(x)`, a `DerivedParameter` in a `DerivedParameters` over one vector: `indexed_by`, one value's shape, units and optionally a support like a parameter's, computed by a pure array function of what it is **given** (parameters and other derived parameters, the same word as a prior term's), constants and memberships; no entries of theta and no prior. A SIPNET convention (a unit reference, a formula of sipnet.c) is a `Compute` rule instead | `derived_from`, `parameter_names` for its inputs, `compute`, "pointwise" |
 | **dependent set** | parameters linked by a term covering both or a `given`, directly or through a derived parameter; one block of `Prior.gaussian()`'s covariance | |
 | **site dims** | the sites and the dims they define, a `SiteDims`: each site's id, location, site covariates and site labels | the parameter vector's `site_table`, `site_labels`, `sites` |
 | **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
@@ -921,10 +921,11 @@ src/sipnet_calibration/
                           # <source>_to_<target>; unconstrained, to_natural(),
                           # to_unconstrained(), contains(); ValuesByParameter,
                           # ParameterDataset; check_parameter_vectors_share_a_layout
-    derived.py            # DerivedParameter, y = f(parameters, constants,
-                          # memberships); DerivedParameters over a vector, in
-                          # dependency order: values(), values_to_dataset(),
-                          # select()
+    derived.py            # DerivedParameter, y = f(given, constants,
+                          # memberships), a declaration; DerivedParameters over
+                          # a vector, held and computed in dependency order:
+                          # derived_parameter_names, values(),
+                          # values_to_dataset(), select(), parameters_behind()
     labels.py             # coords, constants and memberships: what a labeled
                           # value given to a function is, and how it is read
                           # at the labels in use (the contract's one home)

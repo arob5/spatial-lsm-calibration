@@ -49,7 +49,7 @@ def pft_of_site() -> xr.DataArray:
 def regression(**overrides) -> DerivedParameter:
     return DerivedParameter(**{
         "name": "log_rate", "units": None, "indexed_by": ("site",),
-        "parameter_names": ("intercept", "slope"),
+        "given": ("intercept", "slope"),
         "constants": {"elevation": site_constant(ELEVATION)},
         "function": lambda intercept, slope, elevation: intercept + slope * elevation,
         **overrides,
@@ -59,7 +59,7 @@ def regression(**overrides) -> DerivedParameter:
 def non_centered(**overrides) -> DerivedParameter:
     return DerivedParameter(**{
         "name": "soil_carbon", "units": "kg m-2", "support": POSITIVE, "indexed_by": ("site",),
-        "parameter_names": ("mean", "spread", "standardized"),
+        "given": ("mean", "spread", "standardized"),
         "memberships": {"pft_of_site": pft_of_site()},
         "function": lambda mean, spread, standardized, pft_of_site: jnp.exp(mean[pft_of_site] + spread * standardized),
         **overrides,
@@ -111,7 +111,7 @@ def test_a_membership_between_two_dims_reads_a_coarser_value_at_finer_labels():
         parameter_vector=vector,
         coords={"pft": PFT},
         derived_parameters=[DerivedParameter(
-            name="pft_mean", units=None, indexed_by=("pft",), parameter_names=("biome_mean",),
+            name="pft_mean", units=None, indexed_by=("pft",), given=("biome_mean",),
             memberships={"biome_of_pft": biome_of_pft},
             function=lambda biome_mean, biome_of_pft: biome_mean[biome_of_pft] + 1.0,
         )],
@@ -133,11 +133,30 @@ def test_a_constant_is_read_at_the_coords_labels_whatever_its_own_order():
         np.testing.assert_allclose(collection.values(values)["log_rate"], [ELEVATION])
 
 
+def test_a_constant_may_be_on_an_element_axis_of_what_is_given_and_no_other():
+    shares = Parameter(name="shares", support=SIMPLEX, units="1", shape=(3,),
+                       element_labels={"part": ("leaf", "wood", "root")})
+    other = Parameter(name="other", support=SIMPLEX, units="1", shape=(2,), element_labels={"side": ("a", "b")})
+    vector = ParameterVector(parameters=[shares, other])
+    weights = xr.DataArray([3.0, 1.0, 2.0], dims="part", coords={"part": ["wood", "root", "leaf"]})
+    weighted = DerivedParameter(name="weighted", units="1", given=("shares",), constants={"weights": weights},
+                                function=lambda shares, weights: jnp.sum(shares * weights))
+    collection = DerivedParameters(parameter_vector=vector, derived_parameters=[weighted])
+    values = collection.values({"shares": jnp.asarray([[0.5, 0.25, 0.25]]), "other": jnp.asarray([[0.5, 0.5]])})
+    np.testing.assert_allclose(values["weighted"], [0.5 * 2.0 + 0.25 * 3.0 + 0.25 * 1.0])
+    unrelated = xr.DataArray([1.0, 2.0], dims="side", coords={"side": ["a", "b"]})
+    with pytest.raises(ValueError, match="neither a dim of the coords nor an element axis"):
+        DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
+            name="weighted", units="1", given=("shares",), constants={"weights": unrelated},
+            function=lambda shares, weights: jnp.sum(shares),
+        )])
+
+
 def test_a_boolean_constant_stays_boolean():
     deciduous = xr.DataArray([False, True], dims="pft", coords={"pft": PFT})
     vector = ParameterVector(parameters=[MEAN], coords={"pft": PFT})
     collection = DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
-        name="masked", units=None, indexed_by=("pft",), parameter_names=("mean",),
+        name="masked", units=None, indexed_by=("pft",), given=("mean",),
         constants={"deciduous": deciduous},
         function=lambda mean, deciduous: jnp.where(deciduous, 0.0, mean),
     )])
@@ -150,11 +169,12 @@ def test_a_boolean_constant_stays_boolean():
 def test_derived_parameters_are_computed_in_dependency_order():
     vector = ParameterVector(parameters=[INTERCEPT, SLOPE])
     rate = DerivedParameter(name="rate", units="yr-1", support=POSITIVE, indexed_by=("site",),
-                            parameter_names=("log_rate",), function=lambda log_rate: jnp.exp(log_rate))
+                            given=("log_rate",), function=lambda log_rate: jnp.exp(log_rate))
     collection = DerivedParameters(parameter_vector=vector, coords={"site": SITES},
                                    derived_parameters=[rate, regression()])
-    assert collection.names == ("log_rate", "rate")
-    values = collection.values(natural_values(collection), names=["rate"])
+    assert collection.derived_parameter_names == ("log_rate", "rate")
+    assert [d.name for d in collection.derived_parameters] == ["log_rate", "rate"]
+    values = collection.values(natural_values(collection), derived_parameter_names=["rate"])
     assert list(values) == ["log_rate", "rate"]
     np.testing.assert_allclose(values["rate"], np.exp(values["log_rate"]))
     assert collection.parameters_behind(["rate"]) == ("intercept", "slope")
@@ -189,7 +209,7 @@ def test_values_need_the_parameters_and_known_names(hierarchy):
     with pytest.raises(KeyError, match="which the values lack"):
         hierarchy.values({n: v for n, v in values.items() if n != "spread"})
     with pytest.raises(KeyError, match="no derived parameter \\['nothing'\\]"):
-        hierarchy.values(values, names=["nothing"])
+        hierarchy.values(values, derived_parameter_names=["nothing"])
     with pytest.raises(ValueError, match="different batch shapes"):
         hierarchy.values({**values, "spread": values["spread"][:2]})
 
@@ -206,14 +226,14 @@ def test_select_reads_the_constants_again_at_the_kept_labels(regressed):
 
 def test_select_keeps_the_derived_parameters_whose_inputs_are_kept(hierarchy):
     selected = hierarchy.select(site=[27])
-    assert selected.names == ("soil_carbon",) and selected.parameter_vector.coords["site"].tolist() == [27]
+    assert selected.derived_parameter_names == ("soil_carbon",) and selected.parameter_vector.coords["site"].tolist() == [27]
     values = natural_values(selected)
     position = PFT.index("conifer")
     np.testing.assert_allclose(
         selected.values(values)["soil_carbon"][:, 0],
         np.exp(values["mean"][:, position] + values["spread"] * values["standardized"][:, 0]),
     )
-    assert hierarchy.select(parameter=["mean", "spread"]).names == ()
+    assert hierarchy.select(parameter=["mean", "spread"]).derived_parameter_names == ()
 
 
 def test_a_kept_membership_pointing_to_a_removed_label_is_refused(hierarchy):
@@ -241,17 +261,17 @@ def test_a_value_outside_its_declared_support_is_refused():
 
 def test_overflow_at_an_unbounded_end_passes_at_the_outer_probes():
     vector = ParameterVector(parameters=[Parameter(name="x", units=None)])
-    huge = DerivedParameter(name="huge", units=None, support=POSITIVE, parameter_names=("x",),
+    huge = DerivedParameter(name="huge", units=None, support=POSITIVE, given=("x",),
                             function=lambda x: jnp.exp(40.0 * x))
     DerivedParameters(parameter_vector=vector, derived_parameters=[huge])
 
 
 def test_the_boundary_passes_only_at_the_outer_probes():
     vector = ParameterVector(parameters=[Parameter(name="x", units=None)])
-    flat = DerivedParameter(name="flat", units=None, support=POSITIVE, parameter_names=("x",),
+    flat = DerivedParameter(name="flat", units=None, support=POSITIVE, given=("x",),
                             function=lambda x: jnp.where(jnp.abs(x) > 5.0, 0.0, 1.0))
     DerivedParameters(parameter_vector=vector, derived_parameters=[flat])
-    zero = DerivedParameter(name="zero", units=None, support=POSITIVE, parameter_names=("x",),
+    zero = DerivedParameter(name="zero", units=None, support=POSITIVE, given=("x",),
                             function=lambda x: 0.0 * x)
     with pytest.raises(ValueError, match="outside its declared support"):
         DerivedParameters(parameter_vector=vector, derived_parameters=[zero])
@@ -259,7 +279,7 @@ def test_the_boundary_passes_only_at_the_outer_probes():
 
 def test_a_nan_is_outside_every_support():
     vector = ParameterVector(parameters=[Parameter(name="x", units=None)])
-    nan = DerivedParameter(name="nan", units=None, support=Interval(), parameter_names=("x",),
+    nan = DerivedParameter(name="nan", units=None, support=Interval(), given=("x",),
                            function=lambda x: jnp.where(jnp.abs(x) > 15.0, jnp.nan, x))
     with pytest.raises(ValueError, match="outside its declared support"):
         DerivedParameters(parameter_vector=vector, derived_parameters=[nan])
@@ -267,7 +287,7 @@ def test_a_nan_is_outside_every_support():
 
 def test_a_simplex_valued_derived_parameter_is_checked_per_vector():
     vector = ParameterVector(parameters=[Parameter(name="x", units=None, shape=(2,))])
-    softmax = DerivedParameter(name="shares", units="1", support=SIMPLEX, shape=(3,), parameter_names=("x",),
+    softmax = DerivedParameter(name="shares", units="1", support=SIMPLEX, shape=(3,), given=("x",),
                                function=lambda x: jax.nn.softmax(jnp.concatenate([x, jnp.zeros(1)])))
     DerivedParameters(parameter_vector=vector, derived_parameters=[softmax])
 
@@ -286,9 +306,9 @@ def test_a_derived_parameter_must_compute_its_block_shape():
 @pytest.mark.parametrize(
     ("arguments", "error", "match"),
     [
-        ({"parameter_names": ()}, ValueError, "computed from nothing"),
+        ({"given": ()}, ValueError, "computed from nothing"),
         ({"function": 3.0}, TypeError, "not callable"),
-        ({"constants": {"intercept": site_constant(ELEVATION)}}, ValueError, "as both a parameter and a constant"),
+        ({"constants": {"intercept": site_constant(ELEVATION)}}, ValueError, "as two of a name given, a constant and a membership"),
         ({"constants": {"elevation": site_constant(ELEVATION).astype(np.int64)}}, TypeError, "neither float64 nor bool"),
         ({"constants": {"elevation": ELEVATION}}, TypeError, "give a DataArray"),
         ({"memberships": {"pft_of_site": pft_of_site().rename(None)}}, ValueError, "named for the dim"),
@@ -325,7 +345,7 @@ def test_the_collection_is_refused_where_names_or_dims_do_not_fit():
     vector = ParameterVector(parameters=[INTERCEPT, SLOPE])
     with pytest.raises(KeyError, match="neither parameters nor derived parameters"):
         DerivedParameters(parameter_vector=vector, coords={"site": SITES},
-                          derived_parameters=[regression(parameter_names=("intercept", "nothing"))])
+                          derived_parameters=[regression(given=("intercept", "nothing"))])
     with pytest.raises(ValueError, match="named like a parameter"):
         DerivedParameters(parameter_vector=vector, coords={"site": SITES}, derived_parameters=[regression(name="slope")])
     with pytest.raises(ValueError, match="named like a parameter, a dim"):
@@ -345,8 +365,8 @@ def test_the_collection_is_refused_where_names_or_dims_do_not_fit():
 
 def test_a_cycle_is_refused_by_name():
     vector = ParameterVector(parameters=[INTERCEPT])
-    first = DerivedParameter(name="a", units=None, parameter_names=("intercept", "b"), function=lambda intercept, b: b)
-    second = DerivedParameter(name="b", units=None, parameter_names=("a",), function=lambda a: a)
+    first = DerivedParameter(name="a", units=None, given=("intercept", "b"), function=lambda intercept, b: b)
+    second = DerivedParameter(name="b", units=None, given=("a",), function=lambda a: a)
     with pytest.raises(ValueError, match="cycle, a -> b -> a"):
         DerivedParameters(parameter_vector=vector, derived_parameters=[first, second])
 
@@ -354,7 +374,7 @@ def test_a_cycle_is_refused_by_name():
 def test_the_collection_holds_its_derived_parameters(hierarchy):
     assert "soil_carbon" in hierarchy and "mean" not in hierarchy and len(hierarchy) == 1
     assert list(hierarchy) == ["soil_carbon"] and hierarchy["soil_carbon"].units == "kg m-2"
-    assert repr(hierarchy) == "DerivedParameters(names=['soil_carbon'], over=['mean', 'spread', 'standardized'])"
+    assert repr(hierarchy) == "DerivedParameters(derived_parameter_names=['soil_carbon'], over=['mean', 'spread', 'standardized'])"
     with pytest.raises(KeyError, match="no derived parameter"):
         hierarchy["mean"]
 
@@ -364,7 +384,7 @@ def test_a_derived_element_axis_is_named_apart():
 
     def derived(axis, labels):
         return DerivedParameter(name="y", units=None, shape=(len(labels),), element_labels={axis: labels},
-                                parameter_names=("x",), function=lambda x: x[: len(labels)])
+                                given=("x",), function=lambda x: x[: len(labels)])
 
     with pytest.raises(ValueError, match="with different labels"):
         DerivedParameters(parameter_vector=vector, derived_parameters=[derived("part", ("a", "c"))])
@@ -378,7 +398,7 @@ def test_a_constant_reaches_its_function_in_the_derived_parameters_dim_order():
     constant = xr.DataArray([[1.0, 2.0], [3.0, 4.0]], dims=("site", "pft"), coords={"site": [3, 5], "pft": ["a", "b"]})
     collection = DerivedParameters(
         parameter_vector=vector, coords={"pft": ["a", "b"], "site": [3, 5]},
-        derived_parameters=[DerivedParameter(name="y", units=None, indexed_by=("pft", "site"), parameter_names=("x",),
+        derived_parameters=[DerivedParameter(name="y", units=None, indexed_by=("pft", "site"), given=("x",),
                                              constants={"c": constant}, function=lambda x, c: x + c)],
     )
     np.testing.assert_allclose(collection.values({"x": jnp.zeros(1)})["y"][0], constant.transpose("pft", "site").values)

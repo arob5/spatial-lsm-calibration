@@ -41,8 +41,8 @@ allocation_part)`` for a simplex indexed by ``pft`` as ``(P, k)``.
 A **membership** is a one-dimensional ``xr.DataArray`` on one dim of the
 coords, named for another (its *target*), whose values are labels of the
 target: for each label of its dim, the target label it belongs to, such as
-each site's PFT (``site_dims.labels("pft")``, on ``site`` and named
-``"pft"``). It is read at its dim's labels in use, and the function receives
+each site's PFT, a DataArray on ``site`` named ``"pft"`` holding PFT
+labels. It is read at its dim's labels in use, and the function receives
 ``int64`` positions into the target's labels in use, so ``x[pft_of_site]``
 reads a PFT-level value at each site. Only a derived parameter reads
 memberships: indexing a random value by another dim is its job.
@@ -294,8 +294,8 @@ def check_membership_is_one_dimensional(name: str, membership: xr.DataArray, *, 
     if membership.ndim != 1 or not isinstance(membership.name, str):
         raise ValueError(
             f"{message_name}[{name!r}] is on {membership.dims} and named {membership.name!r}; a "
-            "membership is on one dim and named for the dim its values label, as "
-            "SiteDims.labels gives one."
+            "membership is on one dim and named for the dim its values label, such as each "
+            "site's PFT on 'site', named 'pft'."
         )
 
 

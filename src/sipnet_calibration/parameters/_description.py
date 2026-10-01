@@ -1,6 +1,7 @@
 """What a parameter and a derived parameter both describe, and its checks:
 a name, units, one value's shape and element labels, the dims it is indexed
-by, and a long name. Private to the parameter layer.
+by, and a long name; and the labeled form of values so described. Private to
+the parameter layer.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from frozendict import frozendict
 
 from sipnet_calibration.parameters._validation import (
@@ -23,6 +25,7 @@ from sipnet_calibration.parameters._validation import (
 __all__ = [
     "as_shape",
     "check_description_is_valid",
+    "labeled_form",
     "resolved_element_labels",
 ]
 
@@ -40,6 +43,37 @@ def as_shape(shape: Any, *, message_name: str) -> tuple[int, ...]:
     axes = as_sequence(shape, message_name=message_name)
     check_shape_is_positive_integers(axes, message_name=message_name)
     return tuple(int(n) for n in axes)
+
+
+def labeled_form(
+    descriptions: Sequence[Any],
+    values_by_name: Mapping[str, Any],
+    coords: Mapping[str, pd.Index],
+    *,
+    batch_dims: tuple[str, ...],
+    batch_shape: tuple[int, ...],
+) -> xr.Dataset:
+    """Values of parameters or derived parameters, each ``(*batch, *block
+    shape)``, as their labeled form: one ``float64`` variable per
+    description on ``(*batch_dims, *indexed_by, *element axes)``, with
+    ``support`` (when declared), ``units`` (when not ``None``) and
+    ``long_name`` (when set); a coordinate for each dim, in *coords*' order,
+    each element axis, and each batch dim, labeled ``0`` to ``n - 1``. The
+    caller has checked the values' shapes."""
+    used = {d for description in descriptions for d in description.indexed_by}
+    coordinates: dict[str, Any] = {d: (d, np.asarray(labels)) for d, labels in coords.items() if d in used}
+    for description in descriptions:
+        coordinates.update({axis: (axis, np.asarray(labels)) for axis, labels in description.element_labels.items()})
+    coordinates.update({d: (d, np.arange(n, dtype=np.int64)) for d, n in zip(batch_dims, batch_shape)})
+    variables = {
+        description.name: (
+            (*batch_dims, *description.indexed_by, *description.element_labels),
+            np.asarray(values_by_name[description.name], dtype=np.float64),
+            _variable_attributes(description),
+        )
+        for description in descriptions
+    }
+    return xr.Dataset(variables, coords=coordinates)
 
 
 def resolved_element_labels(
@@ -69,6 +103,22 @@ def resolved_element_labels(
         out[axis_name] = pd.Index(labels, name=axis_name)
     check_element_labels_fit_the_shape(name, shape, out)
     return frozendict(out)
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+
+def _variable_attributes(description: Any) -> dict[str, Any]:
+    """A variable's attributes: ``support``, ``units`` and ``long_name``,
+    each when it has one."""
+    attributes: dict[str, Any] = {}
+    if description.support is not None:
+        attributes["support"] = description.support.name
+    if description.units is not None:
+        attributes["units"] = description.units
+    if description.long_name is not None:
+        attributes["long_name"] = description.long_name
+    return attributes
 
 
 # ── checks ────────────────────────────────────────────────────────────────────

@@ -323,7 +323,7 @@ def centered_prior(*parameters: Parameter, terms=()) -> Prior:
     parameters beside mean, spread and carbon."""
     vector = vector_of(*parameters)
     location = DerivedParameter(
-        name="carbon_log_mean", units=None, indexed_by=("site",), parameter_names=("mean",),
+        name="carbon_log_mean", units=None, indexed_by=("site",), given=("mean",),
         memberships={"pft_of_site": PFT_OF_SITE_MEMBERSHIP}, function=lambda mean, pft_of_site: mean[pft_of_site],
     )
     return Prior(

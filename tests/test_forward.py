@@ -1199,7 +1199,7 @@ class TestComposition:
 
         other = parameter_vector.select(parameter=["photosynthetic_capacity"])
         derived = DerivedParameters(parameter_vector=other, derived_parameters=[DerivedParameter(
-            name="doubled", units="nmol g-1 s-1", parameter_names=("photosynthetic_capacity",),
+            name="doubled", units="nmol g-1 s-1", given=("photosynthetic_capacity",),
             function=lambda photosynthetic_capacity: 2.0 * photosynthetic_capacity)])
         with pytest.raises(ValueError, match="differ in their"):
             build(parameter_vector, sipnet_map, climate, output_variable_names=("wood_carbon",),
@@ -1214,7 +1214,7 @@ class TestComposition:
 
         derived = DerivedParameters(parameter_vector=parameter_vector, derived_parameters=[DerivedParameter(
             name="soil_doubled", units="g m-2", support=POSITIVE, indexed_by=("site",),
-            parameter_names=("initial_soil_carbon",), function=lambda initial_soil_carbon: 2.0 * initial_soil_carbon)])
+            given=("initial_soil_carbon",), function=lambda initial_soil_carbon: 2.0 * initial_soil_carbon)])
         rules = [rule for rule in sipnet_map.rules if "soil_carbon" not in rule.sipnet_parameter_names_written]
         doubled = SIPNETParameterMap(rules=[*rules, Copy(value_name="soil_doubled", sipnet_parameter_name="soil_carbon")],
                                      fixed=sipnet_map.fixed)

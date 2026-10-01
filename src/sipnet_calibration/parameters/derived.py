@@ -1,4 +1,4 @@
-"""Derived parameters: values computed deterministically from the
+"""Derived parameters: quantities computed deterministically from the
 parameters.
 
 Where this sits
@@ -8,19 +8,22 @@ Where this sits
     parameters.vector.ParameterVector          (the parameters x)
       -> parameters.derived.DerivedParameters  (y = f(x), over that vector)
       -> parameters.prior.Prior                (a term may be given y)
-      -> the adapter layer, through y's labeled form
+      -> the labeled natural values, y's beside x's
 
 What it reads
 -------------
 A :class:`~sipnet_calibration.parameters.vector.ParameterVector`, the labels
 of any dims only derived parameters are indexed by, and each derived
-parameter's constants and memberships, labeled ``xr.DataArray``\\ s.
+parameter's constants and memberships, labeled ``xr.DataArray``\\ s as
+:mod:`~sipnet_calibration.parameters.labels` defines them.
 
 Data model
 ----------
-A derived parameter's values by parameter are ``(*batch, *block shape)``, its
-block shape ``(*[len(coords[d]) for d in indexed_by], *shape)``. Its labeled
-form (:meth:`DerivedParameters.values_to_dataset`) is the vector's: one
+A derived parameter has one value of its ``shape`` at each tuple of labels
+of its ``indexed_by`` dims; together they are its **block**, of block shape
+``(*index shape, *shape)``, as a parameter's are. Its values by parameter
+are ``(*batch, *block shape)``. Its labeled form
+(:meth:`DerivedParameters.values_to_dataset`) is the vector's: one
 ``float64`` variable per derived parameter on ``(*batch dims, *indexed_by,
 *element axes)``, with ``units`` (omitted when ``None``), ``support`` (when
 declared) and ``long_name`` (when set); missing never.
@@ -31,32 +34,30 @@ A **derived parameter** is a deterministic node of the statistical model,
 
 .. math::
 
-    y = f\\big(x_{a_1}, \\dots, x_{a_m};\\ c_1, \\dots;\\ g_1, \\dots\\big),
+    y = f\\big(x_{g_1}, \\dots, x_{g_m};\\ c_1, \\dots;\\ \\mu_1, \\dots\\big),
 
-computed from parameters and other derived parameters :math:`x_{a_i}` (its
-``parameter_names``), labeled constants :math:`c_j` (a covariate per site,
-a location) and memberships :math:`g_k` (which PFT each site is). With
+computed from what it is **given**, parameters and other derived parameters
+:math:`x_{g_i}`, with constants :math:`c_j` (a covariate per site, a
+location) and memberships :math:`\\mu_k` (which PFT each site is). With
 :math:`\\pi` the prior of the parameters, the distribution of :math:`y` is
 the pushforward :math:`f_\\# \\pi`; it has no entries of theta and no prior
 of its own. Its uses are non-centered hierarchies, regressions on
-covariates, and latent-factor or Gaussian-process fields. A formula that is
-how SIPNET wants a value expressed (a unit reference, a formula of
-``sipnet.c``) is a ``Compute`` rule of the SIPNET parameter map instead.
+covariates, latent-factor or Gaussian-process fields, and indexing one
+dim's values by another's, such as the location at each site that a
+centered hierarchy's term is given.
 
-:class:`DerivedParameters` holds the derived parameters over one vector. It
-reads each constant and membership at the coords' labels before any call,
-so :math:`f` is a pure array function: it receives one draw's value of each
-parameter name, of its block shape, each constant of the lengths of its
-dims, and each membership as ``int64`` positions, and returns
-:math:`y` of block shape ``(*[len(coords[d]) for d in indexed_by], *shape)``.
+:class:`DerivedParameters` holds the derived parameters over one vector, in
+dependency order. It reads each constant and membership at the labels in
+use before any call, so :math:`f` is a pure array function;
+:class:`DerivedParameter` says what it receives and returns.
 
 Functions and classes
 ---------------------
 :class:`DerivedParameter`
-    One node: its description and its function.
+    One node: a declaration of :math:`y` and its function.
 :class:`DerivedParameters`
     The nodes over a vector, in dependency order: ``values``,
-    ``values_to_dataset``, ``select``.
+    ``values_to_dataset``, ``select``, ``parameters_behind``.
 """
 
 from __future__ import annotations
@@ -76,6 +77,7 @@ from frozendict import frozendict
 from sipnet_calibration.parameters._description import (
     as_shape,
     check_description_is_valid,
+    labeled_form,
     resolved_element_labels,
 )
 from sipnet_calibration.parameters.labels import (
@@ -120,51 +122,53 @@ Array = jax.Array
 
 @dataclass(frozen=True, eq=False, kw_only=True)
 class DerivedParameter:
-    """A value computed deterministically from parameters and other
-    derived parameters: :math:`y = f(x)`.
+    """A quantity computed deterministically from parameters and other
+    derived parameters, :math:`y = f(x_g)`: like a parameter, one value at
+    each tuple of labels of its dims, but with no entries of theta and no
+    prior of its own.
 
     Parameters
     ----------
     name, units, shape, element_labels, indexed_by, long_name:
         As :class:`~sipnet_calibration.parameters.parameter.Parameter`'s,
-        describing :math:`y`.
+        describing :math:`y`: *shape* is one value's, and its block is
+        ``(*index shape, *shape)``, the index shape being the number of
+        labels in use of each dim of *indexed_by*.
     support:
         A set every value of :math:`y` is declared to lie in, checked at the
         probe points; ``None`` when nothing is known. It documents
-        :math:`y` and catches a wrong function early; a SIPNET rule's
-        requirements on :math:`y` are checked on its values either way.
-    parameter_names:
+        :math:`y` and catches a wrong function early.
+    given:
         The parameters and derived parameters :math:`y` is computed from;
         at least one.
     constants:
         ``{name: xr.DataArray}``: values *function* reads that are the same
-        in every draw, such as a covariate on ``site`` or a longitude. Each
-        is a constant as :mod:`~sipnet_calibration.parameters.labels`
-        defines one, read at the labels of the collection's coords and of
-        any element axis of its parameters and derived parameters, with
-        *indexed_by* first, then :math:`y`'s element axes.
+        in every draw, such as a covariate per site or a longitude. Each is
+        a constant as :mod:`~sipnet_calibration.parameters.labels` defines
+        one, read at the labels of the collection's coords and of the
+        element axes of :math:`y` and of what it is given, with
+        *indexed_by* first, then :math:`y`'s element axes. Default none.
     memberships:
         ``{name: xr.DataArray}``: for each label of one dim, the label of
-        another it belongs to, such as each site's PFT
-        (``site_dims.labels("pft")``). Each is a membership as
-        :mod:`~sipnet_calibration.parameters.labels` defines one, and is
-        passed as ``int64`` positions, so ``x[pft_of_site]`` reads a
-        PFT-level value at each site.
+        another it belongs to, such as each site's PFT, a DataArray on
+        ``site`` named ``"pft"``. Each is a membership as
+        :mod:`~sipnet_calibration.parameters.labels` defines one, passed as
+        ``int64`` positions, so ``x[pft_of_site]`` reads a PFT-level value at
+        each site. Default none.
     function:
-        ``function(**parameters, **constants, **memberships) -> y`` for
-        **one draw**: each name in *parameter_names* its block (every value
-        at every label in use of its dims, of block shape ``(*index shape,
-        *shape)``), each constant and membership as read; it returns
-        :math:`y`'s block, of block shape ``(*[len(coords[d]) for d in
-        indexed_by], *shape)``. Traceable by JAX.
+        ``function(**given, **constants, **memberships) -> y`` for **one
+        draw**: each name in *given* its block, each constant and
+        membership as read; it returns :math:`y`'s block. It is traced by
+        JAX and vmapped over draws, so it is a pure function of its
+        arguments.
 
     Raises
     ------
     TypeError, ValueError
         As :class:`~sipnet_calibration.parameters.parameter.Parameter`'s;
-        for no parameter names, a function that is not callable, a constant
-        neither ``float64`` nor ``bool``, a membership not on one dim, or
-        one keyword naming two things (a parameter and a constant, say).
+        for nothing given, a function that is not callable, a constant
+        neither ``float64`` nor ``bool``, a membership not on one dim, or one
+        keyword naming two things (a name given and a constant, say).
 
     Notes
     -----
@@ -187,7 +191,7 @@ class DerivedParameter:
     element_labels: Mapping[str, Sequence[str]] | None = None
     indexed_by: tuple[str, ...] = ()
     long_name: str | None = None
-    parameter_names: Sequence[str]
+    given: Sequence[str]
     constants: Mapping[str, xr.DataArray] = field(default_factory=frozendict)
     memberships: Mapping[str, xr.DataArray] = field(default_factory=frozendict)
     function: Callable[..., Array]
@@ -198,44 +202,16 @@ class DerivedParameter:
         object.__setattr__(
             self, "element_labels", resolved_element_labels(self.name, self.shape, self.element_labels)
         )
-        object.__setattr__(
-            self, "parameter_names", as_names(self.parameter_names, message_name=f"{self.name!r} parameter_names")
-        )
+        object.__setattr__(self, "given", as_names(self.given, message_name=f"{self.name!r} given"))
         object.__setattr__(self, "constants", as_constants(self.constants, message_name=f"{self.name!r} constants"))
         object.__setattr__(
             self, "memberships", as_memberships(self.memberships, message_name=f"{self.name!r} memberships")
         )
         check_derived_parameter_is_valid(self)
 
-    def __call__(
-        self,
-        values_by_parameter: Mapping[str, Any],
-        constants: Mapping[str, Any],
-        memberships: Mapping[str, Any],
-        *,
-        batch_ndim: int,
-    ) -> Array:
-        """:math:`y` for every draw: *values_by_parameter* are ``{name:
-        (*batch, *block shape)}`` over the leading *batch_ndim* axes, and
-        *constants* and *memberships* already read at the coords' labels.
-        The function is vmapped over ``*batch``. :class:`DerivedParameters`
-        does the reading, so this is how it evaluates one node, not how a
-        caller should."""
-        inputs = {name: jnp.asarray(values_by_parameter[name], dtype=jnp.float64) for name in self.parameter_names}
-        batch = jnp.shape(inputs[self.parameter_names[0]])[:batch_ndim]
-
-        def one_draw(draw: Mapping[str, Array]) -> Array:
-            return jnp.asarray(self.function(**draw, **constants, **memberships), dtype=jnp.float64)
-
-        if not batch:
-            return one_draw(inputs)
-        flat = {name: value.reshape((-1, *value.shape[batch_ndim:])) for name, value in inputs.items()}
-        out = jax.vmap(one_draw)(flat)
-        return out.reshape((*batch, *out.shape[1:]))
-
     def __repr__(self) -> str:
         indexed = f", indexed_by={self.indexed_by}" if self.indexed_by else ""
-        return f"DerivedParameter(name={self.name!r}, parameter_names={list(self.parameter_names)}{indexed})"
+        return f"DerivedParameter(name={self.name!r}, given={list(self.given)}{indexed})"
 
 
 @dataclass(frozen=True, eq=False, kw_only=True, repr=False)
@@ -247,8 +223,8 @@ class DerivedParameters:
     parameter_vector:
         The vector whose parameters they are computed from.
     derived_parameters:
-        The :class:`DerivedParameter`\\ s, in any order; they are computed in
-        dependency order.
+        The :class:`DerivedParameter`\\ s, in any order; they are held and
+        computed in dependency order.
     coords:
         Labels of the dims some derived parameter is indexed by that the
         vector lacks, and no other: a regression :math:`x_s =
@@ -260,22 +236,23 @@ class DerivedParameters:
     coords : frozendict of str to pandas.Index
         The vector's coords, then these: the labels every derived
         parameter's dims, constants and memberships are read at.
-    names : tuple of str
-        The derived parameters' names, in dependency order: each after the
-        derived parameters it is computed from, otherwise in declaration
-        order.
+    derived_parameters : tuple of DerivedParameter
+        In dependency order: each after the derived parameters it is given,
+        otherwise in declaration order.
+    derived_parameter_names : tuple of str
+        Their names, in that order.
 
     Raises
     ------
     TypeError
         For a malformed argument.
     KeyError
-        For a parameter name that is neither a parameter nor a derived
+        For a name given that is neither a parameter nor a derived
         parameter; a constant or membership missing a label of the coords;
         a membership whose value is not a label of its target dim.
     ValueError
         For a name given twice or shared with a parameter, a dim or an
-        element axis; a cycle among the parameter names; a dim of
+        element axis; a cycle among the names given; a dim of
         ``indexed_by`` the coords lack; a coords dim the vector already has,
         or that no derived parameter uses; a value of the wrong shape at
         :math:`\\theta = 0`; or a value outside the declared support at the
@@ -285,7 +262,6 @@ class DerivedParameters:
     parameter_vector: ParameterVector
     derived_parameters: Sequence[DerivedParameter]
     coords: Mapping[str, Sequence[Any]] = field(default_factory=frozendict)
-    names: tuple[str, ...] = field(init=False)
     _own_coords: Mapping[str, pd.Index] = field(init=False)
     _aligned: Mapping[str, tuple[dict[str, Array], dict[str, np.ndarray]]] = field(init=False)
 
@@ -297,13 +273,14 @@ class DerivedParameters:
         object.__setattr__(self, "_own_coords", own)
         object.__setattr__(self, "coords", frozendict({**self.parameter_vector.coords, **own}))
         check_derived_parameters_are_valid(self)
-        object.__setattr__(self, "names", _dependency_order(self))
+        by_name = {d.name: d for d in self.derived_parameters}
+        object.__setattr__(self, "derived_parameters", tuple(by_name[n] for n in _dependency_order(self)))
         object.__setattr__(
             self,
             "_aligned",
             frozendict({
                 d.name: (
-                    aligned_constants(d.constants, self._labels_by_dim, dim_order=(*d.indexed_by, *d.element_labels),
+                    aligned_constants(d.constants, self._labels_for(d), dim_order=(*d.indexed_by, *d.element_labels),
                                       message_name=f"{d.name!r} constants"),
                     aligned_memberships(d.memberships, self.coords, message_name=f"{d.name!r} memberships"),
                 )
@@ -320,29 +297,30 @@ class DerivedParameters:
     def __getitem__(self, name: str) -> DerivedParameter:
         """The derived parameter called *name*; ``KeyError`` for any other."""
         check_derived_parameter_names_are_held([name], self)
-        return self.derived_parameters[[d.name for d in self.derived_parameters].index(name)]
+        return self.derived_parameters[self.derived_parameter_names.index(name)]
 
     def __contains__(self, name: object) -> bool:
         try:
-            return name in self.names
+            return name in self.derived_parameter_names
         except TypeError:
             return False
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self.names)
+        return iter(self.derived_parameter_names)
 
     def __len__(self) -> int:
         return len(self.derived_parameters)
 
     def __repr__(self) -> str:
-        return f"DerivedParameters(names={list(self.names)}, over={list(self.parameter_vector)})"
+        return (
+            f"DerivedParameters(derived_parameter_names={list(self.derived_parameter_names)}, "
+            f"over={list(self.parameter_vector)})"
+        )
 
     @property
-    def _labels_by_dim(self) -> Mapping[str, pd.Index]:
-        """The coords and every element axis of the parameters and derived
-        parameters: the labels a constant may be read at."""
-        pieces = (*self.parameter_vector.parameters, *self.derived_parameters)
-        return {**{axis: labels for p in pieces for axis, labels in p.element_labels.items()}, **self.coords}
+    def derived_parameter_names(self) -> tuple[str, ...]:
+        """The derived parameters' names, in dependency order."""
+        return tuple(d.name for d in self.derived_parameters)
 
     def block_shape(self, name: str) -> tuple[int, ...]:
         """A derived parameter's block shape, ``(*index shape, *shape)``."""
@@ -356,8 +334,8 @@ class DerivedParameters:
         behind, pending = set(), list(names)
         while pending:
             name = pending.pop()
-            if name in self.names:
-                pending.extend(self[name].parameter_names)
+            if name in self.derived_parameter_names:
+                pending.extend(self[name].given)
             else:
                 behind.add(name)
         return tuple(n for n in self.parameter_vector.parameter_names if n in behind)
@@ -368,7 +346,7 @@ class DerivedParameters:
         """Over ``parameter_vector.select(**selectors)``, with the selectors
         on this collection's own coords applied to them too.
 
-        It keeps each derived parameter whose parameter names are all kept,
+        It keeps each derived parameter whose names given are all kept,
         its constants and memberships read again at the kept labels. A dim of
         the vector that no kept parameter is indexed by, but a kept derived
         parameter is, becomes one of the collection's own coords.
@@ -393,11 +371,10 @@ class DerivedParameters:
             own[key] = own[key][own[key].isin(wanted)]
         vector = self.parameter_vector.select(**vector_selectors)
         available, kept = set(vector.parameter_names), []
-        for name in self.names:
-            derived = self[name]
-            if available.issuperset(derived.parameter_names):
+        for derived in self.derived_parameters:
+            if available.issuperset(derived.given):
                 kept.append(derived)
-                available.add(name)
+                available.add(derived.name)
         used = {d for derived in kept for d in derived.indexed_by}
         # A dim of the vector that no kept parameter is on, but a kept derived
         # parameter is, becomes this collection's own, at the kept labels.
@@ -414,7 +391,9 @@ class DerivedParameters:
 
     # ── evaluation ────────────────────────────────────────────────────────────
 
-    def values(self, values_by_parameter: Mapping[str, Any], *, names: Sequence[str] | None = None) -> ValuesByParameter:
+    def values(
+        self, values_by_parameter: Mapping[str, Any], *, derived_parameter_names: Sequence[str] | None = None
+    ) -> ValuesByParameter:
         """The derived parameters, from the parameters' natural values.
         Traceable.
 
@@ -424,9 +403,9 @@ class DerivedParameters:
             ``{name: (*batch, *block shape)}``, holding every parameter the
             requested derived parameters are computed from; derived values
             it already holds are used as they are.
-        names:
-            The derived parameters wanted; those they are computed from are
-            computed too. ``None``: every one.
+        derived_parameter_names:
+            The derived parameters wanted; those they are given are computed
+            too. ``None``: every one.
 
         Returns
         -------
@@ -443,18 +422,17 @@ class DerivedParameters:
             If a value does not end in its block shape, or the batch shapes
             differ.
         """
-        wanted = self._closure(names)
+        wanted = self._closure(derived_parameter_names)
         needed = self.parameters_behind(sorted(wanted))
         check_values_hold_the_parameters(values_by_parameter, needed)
         batch_ndim = self._batch_ndim_of(values_by_parameter, needed)
         values = dict(values_by_parameter)
         out = {}
-        for name in self.names:
-            if name in wanted:
-                if name not in values:
-                    constants, memberships = self._aligned[name]
-                    values[name] = self[name](values, constants, memberships, batch_ndim=batch_ndim)
-                out[name] = values[name]
+        for derived in self.derived_parameters:
+            if derived.name in wanted:
+                if derived.name not in values:
+                    values[derived.name] = self._evaluate(derived, values, batch_ndim=batch_ndim)
+                out[derived.name] = values[derived.name]
         return out
 
     def values_to_dataset(self, values_by_parameter: Mapping[str, Any], *, batch_dims: Sequence[str] = ()) -> xr.Dataset:
@@ -471,7 +449,7 @@ class DerivedParameters:
             differ, or *batch_dims* does not name one dim per leading axis.
         """
         batch_dims = as_names(batch_dims, message_name="batch_dims")
-        present = [name for name in self.names if name in values_by_parameter]
+        present = [name for name in self.derived_parameter_names if name in values_by_parameter]
         batches = []
         for name in present:
             shape = tuple(jnp.shape(values_by_parameter[name]))
@@ -482,37 +460,49 @@ class DerivedParameters:
         check_values_share_a_batch_shape(batches)
         batch = batches[0][1]
         check_batch_dims_name_the_leading_axes(batch_dims, batch)
-        variables, coordinates = {}, {}
-        for name in present:
-            derived = self[name]
-            coordinates.update({d: (d, np.asarray(self.coords[d])) for d in derived.indexed_by})
-            coordinates.update({axis: (axis, np.asarray(labels)) for axis, labels in derived.element_labels.items()})
-            attributes = {} if derived.support is None else {"support": derived.support.name}
-            if derived.units is not None:
-                attributes["units"] = derived.units
-            if derived.long_name is not None:
-                attributes["long_name"] = derived.long_name
-            variables[name] = (
-                (*batch_dims, *derived.indexed_by, *derived.element_labels),
-                np.asarray(values_by_parameter[name], dtype=np.float64),
-                attributes,
-            )
-        coordinates.update({d: (d, np.arange(n, dtype=np.int64)) for d, n in zip(batch_dims, batch)})
-        return xr.Dataset(variables, coords=coordinates)
+        return labeled_form(
+            [self[name] for name in present], values_by_parameter, self.coords,
+            batch_dims=batch_dims, batch_shape=batch,
+        )
 
     # ── supporting methods ────────────────────────────────────────────────────
 
-    def _closure(self, names: Sequence[str] | None) -> set[str]:
-        """The derived parameters *names* need, themselves included; every
-        one for ``None``."""
-        if names is None:
-            return set(self.names)
-        wanted = set(as_names(names, message_name="names"))
+    def _labels_for(self, derived: DerivedParameter) -> Mapping[str, pd.Index]:
+        """The labels *derived*'s constants are read at: the coords, and the
+        element axes of its own value and of what it is given."""
+        given = [self.parameter_vector[n] if n in self.parameter_vector else self[n] for n in derived.given]
+        element_axes = {axis: labels for p in (derived, *given) for axis, labels in p.element_labels.items()}
+        return {**element_axes, **self.coords}
+
+    def _evaluate(self, derived: DerivedParameter, values_by_parameter: Mapping[str, Any], *, batch_ndim: int) -> Array:
+        """*derived* for every draw: *values_by_parameter* are ``{name:
+        (*batch, *block shape)}`` over the leading *batch_ndim* axes, and its
+        function is vmapped over ``*batch`` with its constants and
+        memberships read at the labels in use."""
+        constants, memberships = self._aligned[derived.name]
+        given = {name: jnp.asarray(values_by_parameter[name], dtype=jnp.float64) for name in derived.given}
+        batch = jnp.shape(given[derived.given[0]])[:batch_ndim]
+
+        def one_draw(draw: Mapping[str, Array]) -> Array:
+            return jnp.asarray(derived.function(**draw, **constants, **memberships), dtype=jnp.float64)
+
+        if not batch:
+            return one_draw(given)
+        flat = {name: value.reshape((-1, *value.shape[batch_ndim:])) for name, value in given.items()}
+        out = jax.vmap(one_draw)(flat)
+        return out.reshape((*batch, *out.shape[1:]))
+
+    def _closure(self, derived_parameter_names: Sequence[str] | None) -> set[str]:
+        """The derived parameters *derived_parameter_names* need, themselves
+        included; every one for ``None``."""
+        if derived_parameter_names is None:
+            return set(self.derived_parameter_names)
+        wanted = set(as_names(derived_parameter_names, message_name="derived_parameter_names"))
         check_derived_parameter_names_are_held(wanted, self)
         pending = list(wanted)
         while pending:
-            for name in self[pending.pop()].parameter_names:
-                if name in self.names and name not in wanted:
+            for name in self[pending.pop()].given:
+                if name in self.derived_parameter_names and name not in wanted:
                     wanted.add(name)
                     pending.append(name)
         return wanted
@@ -541,7 +531,7 @@ class DerivedParameters:
         values.update({n: jnp.asarray(points) for n, points in zip(names, parts)})
         theta = unconstrained.values_to_flat(values)
         natural = vector.flat_to_values(vector.to_natural(theta))
-        return np.asarray(theta), self.values(natural, names=[derived.name])[derived.name]
+        return np.asarray(theta), self.values(natural, derived_parameter_names=[derived.name])[derived.name]
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -561,11 +551,11 @@ def _dependency_order(collection: DerivedParameters) -> tuple[str, ...]:
     state: dict[str, str] = {}
 
     def visit(name: str, path: list[str]) -> None:
-        check_parameter_names_are_acyclic(name, path, state)
+        check_derived_parameters_are_acyclic(name, path, state)
         if state.get(name) == "done":
             return
         state[name] = "open"
-        for parent in derived[name].parameter_names:
+        for parent in derived[name].given:
             if parent in derived:
                 visit(parent, [*path, name])
         state[name] = "done"
@@ -606,7 +596,7 @@ def check_derived_parameter_is_valid(derived: DerivedParameter) -> None:
     if derived.support is not None:
         check_shape_has_the_supports_event_axes(derived.name, derived.shape, derived.support)
     check_derived_parameter_is_computed_from_something(derived)
-    check_names_are_unique(derived.parameter_names, message_name=f"{derived.name!r} parameter_names")
+    check_names_are_unique(derived.given, message_name=f"{derived.name!r} given")
     check_function_is_callable(derived)
     check_keywords_name_one_thing_each(derived)
 
@@ -621,7 +611,7 @@ def check_derived_parameters_are_valid(collection: DerivedParameters) -> None:
     check_derived_names_are_free(names, collection)
     check_derived_element_axes_are_free(collection)
     for derived in collection.derived_parameters:
-        check_parameter_names_exist(derived, names, vector)
+        check_given_names_exist(derived, names, vector)
         check_derived_dims_are_in_the_coords(derived, collection.coords)
     check_own_coords_are_used(collection)
 
@@ -641,9 +631,9 @@ def check_support_is_a_support_or_none(derived: DerivedParameter) -> None:
 
 
 def check_derived_parameter_is_computed_from_something(derived: DerivedParameter) -> None:
-    """A derived parameter has parameter names, whose draws give its values
+    """A derived parameter is given something, whose draws give its values
     their batch shape; a value fixed across draws is a constant."""
-    if not derived.parameter_names:
+    if not derived.given:
         raise ValueError(
             f"derived parameter {derived.name!r} is computed from nothing; a value fixed across draws "
             "is a constant, not a derived parameter."
@@ -659,12 +649,12 @@ def check_function_is_callable(derived: DerivedParameter) -> None:
 def check_keywords_name_one_thing_each(derived: DerivedParameter) -> None:
     """No keyword the function receives names two things, one of which it
     would never see."""
-    keywords = [*derived.parameter_names, *derived.constants, *derived.memberships]
+    keywords = [*derived.given, *derived.constants, *derived.memberships]
     repeated = sorted({k for k in keywords if keywords.count(k) > 1})
     if repeated:
         raise ValueError(
-            f"derived parameter {derived.name!r} receives {repeated} as both a parameter and a "
-            "constant or membership; name them apart."
+            f"derived parameter {derived.name!r} receives {repeated} as two of a name given, a "
+            "constant and a membership; name them apart."
         )
 
 
@@ -715,14 +705,14 @@ def check_derived_element_axes_are_free(collection: DerivedParameters) -> None:
             axes[axis] = labels
 
 
-def check_parameter_names_exist(derived: DerivedParameter, names: Sequence[str], vector: ParameterVector) -> None:
-    """A derived parameter is computed from parameters and derived
-    parameters that exist."""
-    missing = [n for n in derived.parameter_names if n not in vector and n not in names]
+def check_given_names_exist(derived: DerivedParameter, names: Sequence[str], vector: ParameterVector) -> None:
+    """A derived parameter is given parameters and derived parameters that
+    exist."""
+    missing = [n for n in derived.given if n not in vector and n not in names]
     if missing:
         raise KeyError(
-            f"derived parameter {derived.name!r} is computed from {missing}, which are neither "
-            "parameters nor derived parameters; name ones that are."
+            f"derived parameter {derived.name!r} is given {missing}, which are neither parameters nor "
+            "derived parameters; name ones that are."
         )
 
 
@@ -746,8 +736,8 @@ def check_own_coords_are_used(collection: DerivedParameters) -> None:
         raise ValueError(f"DerivedParameters(coords=) gives {unused}, which no derived parameter is indexed by; drop them.")
 
 
-def check_parameter_names_are_acyclic(name: str, path: Sequence[str], state: Mapping[str, str]) -> None:
-    """The derived parameters' parameter names form no cycle, which no order
+def check_derived_parameters_are_acyclic(name: str, path: Sequence[str], state: Mapping[str, str]) -> None:
+    """What the derived parameters are given forms no cycle, which no order
     of computation could satisfy."""
     if state.get(name) == "open":
         cycle = [*path[path.index(name):], name]
@@ -756,14 +746,17 @@ def check_parameter_names_are_acyclic(name: str, path: Sequence[str], state: Map
 
 def check_derived_parameter_names_are_held(names: Sequence[str] | set[str], collection: DerivedParameters) -> None:
     """Every name is one of the collection's derived parameters."""
-    unknown = [n for n in names if n not in collection.names]
+    unknown = [n for n in names if n not in collection.derived_parameter_names]
     if unknown:
-        raise KeyError(f"there is no derived parameter {truncated(sorted(unknown))}; name one of {list(collection.names)}.")
+        raise KeyError(
+            f"there is no derived parameter {truncated(sorted(unknown))}; name one of "
+            f"{list(collection.derived_parameter_names)}."
+        )
 
 
 def check_values_hold_the_parameters(values_by_parameter: Mapping[str, Any], needed: Sequence[str]) -> None:
     """The values hold every parameter the wanted derived parameters are
-    computed from."""
+    computed from, directly or through others."""
     missing = [n for n in needed if n not in values_by_parameter]
     if missing:
         raise KeyError(f"the derived parameters are computed from {missing}, which the values lack; give them.")
@@ -784,7 +777,7 @@ def check_derived_parameter_has_its_block_shape(derived: DerivedParameter, colle
     against the labels."""
     vector = collection.parameter_vector
     natural = vector.flat_to_values(vector.to_natural(jnp.zeros((1, vector.unconstrained.size))))
-    value = collection.values(natural, names=[derived.name])[derived.name]
+    value = collection.values(natural, derived_parameter_names=[derived.name])[derived.name]
     shape, expected = tuple(jnp.shape(value))[1:], collection.block_shape(derived.name)
     if shape != expected:
         raise ValueError(

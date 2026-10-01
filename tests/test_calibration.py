@@ -116,7 +116,7 @@ def test_describe_calibration_has_a_row_per_derived_parameter_and_a_joint_terms_
     ])
     derived = DerivedParameters(parameter_vector=vector, coords={"site": SITE_DIMS.coords["site"]}, derived_parameters=[
         DerivedParameter(name="respiration", units="yr-1", indexed_by=("site",), support=POSITIVE,
-                         parameter_names=("intercept", "slope"),
+                         given=("intercept", "slope"),
                          constants={"anomaly": xr.DataArray([0.0, 0.0, 0.0], dims="site", coords={"site": list(EXAMPLE_REFERENCE_SITES)})},
                          function=lambda intercept, slope, anomaly: jnp.exp(intercept + slope * anomaly)),
     ])
@@ -133,7 +133,7 @@ def test_describe_calibration_has_a_row_per_derived_parameter_and_a_joint_terms_
     assert table.loc["slope", "term"] == "intercept+slope"
     assert table.loc["slope", "prior"] == "gaussian copula"
     row = table.loc["respiration"]
-    assert row["parameter_names"] == "intercept, slope" and row["prior"] == "" and row["bijector"] == ""
+    assert row["given"] == "intercept, slope" and row["prior"] == "" and row["bijector"] == ""
     assert row["sipnet_parameter_names"] == "base_soil_respiration_rate"
     assert sipnet_parameter_table.loc["base_soil_respiration_rate", "role"] == "calibrated"
     # A parameter reaches what its derived parameters reach.

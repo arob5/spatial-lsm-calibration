@@ -138,6 +138,7 @@ import pandas as pd
 import xarray as xr
 from frozendict import frozendict
 
+from sipnet_calibration.parameters._description import labeled_form
 from sipnet_calibration.parameters.labels import as_coords
 from sipnet_calibration.parameters._probes import bijectors_agree, probe_points
 from sipnet_calibration.parameters._validation import (
@@ -500,19 +501,9 @@ class ParameterVector:
         batch = self._batch_shape_of(values_by_parameter)
         check_batch_dims_name_the_leading_axes(batch_dims, batch)
         check_batch_dim_names_are_free(batch_dims, self)
-        coordinates: dict[str, Any] = {d: (d, np.asarray(self.coords[d])) for d in self.dims}
-        for p in self.parameters:
-            coordinates.update({axis: (axis, np.asarray(labels)) for axis, labels in p.element_labels.items()})
-        coordinates.update({d: (d, np.arange(n, dtype=np.int64)) for d, n in zip(batch_dims, batch)})
-        variables = {
-            p.name: (
-                (*batch_dims, *p.indexed_by, *p.element_labels),
-                np.asarray(values_by_parameter[p.name], dtype=np.float64),
-                _variable_attributes(p),
-            )
-            for p in self.parameters
-        }
-        return xr.Dataset(variables, coords=coordinates)
+        return labeled_form(
+            self.parameters, values_by_parameter, self.coords, batch_dims=batch_dims, batch_shape=batch
+        )
 
     def dataset_to_values(self, parameter_dataset: ParameterDataset, *, batch_dims: Sequence[str] | None = None) -> ValuesByParameter:
         """The labeled form to values by parameter, a layout operation.
@@ -876,15 +867,6 @@ def _inverse_permutation(permutation: np.ndarray) -> np.ndarray:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
-
-
-def _variable_attributes(parameter: Parameter) -> dict[str, Any]:
-    attributes: dict[str, Any] = {"support": parameter.support.name}
-    if parameter.units is not None:
-        attributes["units"] = parameter.units
-    if parameter.long_name is not None:
-        attributes["long_name"] = parameter.long_name
-    return attributes
 
 
 def _same_entries(first: pd.MultiIndex, second: pd.MultiIndex) -> bool:

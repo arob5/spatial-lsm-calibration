@@ -668,6 +668,14 @@ class Compute:
     The map cannot check the function's arithmetic. Requiring each input's
     units makes the inputs checkable, and the domain checks check the
     result.
+
+    **A Compute rule or a derived parameter.** A formula that is how SIPNET
+    wants a value expressed, such as a unit reference or a formula of
+    ``sipnet.c``, is a Compute rule. A formula whose result is a quantity
+    of the model, one you would map, give a prior term, or check against
+    data, is a
+    :class:`~sipnet_calibration.parameters.derived.DerivedParameter`, which
+    the map then reads by name like a parameter.
     """
 
     sipnet_parameter_name: str

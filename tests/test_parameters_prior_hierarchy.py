@@ -92,7 +92,7 @@ def soil_carbon_non_centered(mean, spread, standardized, pft_of_site):
 def site_log_mean(vector: ParameterVector) -> DerivedParameters:
     """Each site's location, its PFT's mean: what a centered term is given."""
     return DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
-        name="site_log_mean", units=None, indexed_by=("site",), parameter_names=("mean",),
+        name="site_log_mean", units=None, indexed_by=("site",), given=("mean",),
         memberships={"pft_of_site": pft_of_site()}, function=lambda mean, pft_of_site: mean[pft_of_site],
     )])
 
@@ -120,7 +120,7 @@ def non_centered() -> Prior:
     vector = vector_of(MEAN, SPREAD, STANDARDIZED)
     derived = DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
         name="soil_carbon", units="g m-2", indexed_by=("site",), support=POSITIVE,
-        parameter_names=("mean", "spread", "standardized"), memberships={"pft_of_site": pft_of_site()},
+        given=("mean", "spread", "standardized"), memberships={"pft_of_site": pft_of_site()},
         function=soil_carbon_non_centered,
     )])
     return Prior(vector, [*HYPERPRIORS, term("standardized", iid_over_dim(normal(0.0, 1.0)))],
@@ -250,7 +250,7 @@ def test_a_covariate_regression_is_a_prior_on_its_coefficients():
     vector = vector_of(INTERCEPT, SLOPE)
     rate = DerivedParameter(
         name="respiration", units="yr-1", indexed_by=("site",), support=POSITIVE,
-        parameter_names=("intercept", "slope"), constants={"anomaly": ANOMALY},
+        given=("intercept", "slope"), constants={"anomaly": ANOMALY},
         function=lambda intercept, slope, anomaly: jnp.exp(regression(intercept, slope, anomaly)),
     )
     derived = DerivedParameters(parameter_vector=vector, derived_parameters=[rate], coords={"site": SITES})
@@ -276,7 +276,7 @@ def centered_given_a_derived_mean() -> Prior:
     respiration = Parameter(name="respiration", support=POSITIVE, units="yr-1", indexed_by=("site",))
     vector = vector_of(INTERCEPT, SLOPE, SPREAD, respiration)
     derived = DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
-        name="log_mean", units=None, indexed_by=("site",), parameter_names=("intercept", "slope"),
+        name="log_mean", units=None, indexed_by=("site",), given=("intercept", "slope"),
         constants={"anomaly": ANOMALY}, function=regression,
     )])
 
@@ -411,7 +411,7 @@ def test_a_cycle_of_given_links_is_refused_by_name():
 def test_a_cycle_through_a_derived_parameter_is_refused():
     vector = vector_of(RATE)
     derived = DerivedParameters(parameter_vector=vector, derived_parameters=[DerivedParameter(
-        name="doubled", units="yr-1", parameter_names=("rate",), function=lambda rate: 2.0 * rate,
+        name="doubled", units="yr-1", given=("rate",), function=lambda rate: 2.0 * rate,
     )])
     with pytest.raises(ValueError, match="cycle, rate -> doubled -> rate"):
         Prior(vector, [term("rate", lambda doubled: RATE_MARGINAL, given=("doubled",))],
@@ -440,7 +440,7 @@ def test_select_refuses_to_drop_what_a_kept_term_needs(centered, non_centered):
     with pytest.raises(ValueError, match="which the prior term 'rate\\+share' covers"):
         pair.select(parameter=["rate"])
     # A derived parameter is dropped with its inputs; the prior never sees it.
-    assert non_centered.select(parameter=["mean", "spread"]).derived_parameters.names == ()
+    assert non_centered.select(parameter=["mean", "spread"]).derived_parameters.derived_parameter_names == ()
 
 
 def test_select_refuses_to_drop_what_a_derived_parameter_given_needs():

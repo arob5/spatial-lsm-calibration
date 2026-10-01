@@ -461,7 +461,7 @@ def test_a_parameter_must_meet_the_requirement(parameter, message):
 
 
 def test_a_derived_parameter_is_held_to_the_requirement_too():
-    rate = DerivedParameter(name="respiration", units="d-1", parameter_names=("x",), function=lambda x: x)
+    rate = DerivedParameter(name="respiration", units="d-1", given=("x",), function=lambda x: x)
     sipnet_map = SIPNETParameterMap(rules=[Copy(value_name="respiration", sipnet_parameter_name="base_soil_respiration_rate")])
     with pytest.raises(ValueError, match="requires 'yr-1'"):
         check_sipnet_parameter_map_fits(sipnet_map, {"respiration": rate})
@@ -540,7 +540,7 @@ def test_a_rule_reads_a_derived_parameter_by_name(site_dims):
     vector = ParameterVector(parameters=[Parameter(name="intercept", support=REAL, units=None),
                                          Parameter(name="slope", support=REAL, units="K-1")])
     derived = DerivedParameters(parameter_vector=vector, coords={"site": site_dims.coords["site"]}, derived_parameters=[
-        DerivedParameter(name="respiration", units="yr-1", indexed_by=("site",), parameter_names=("intercept", "slope"),
+        DerivedParameter(name="respiration", units="yr-1", indexed_by=("site",), given=("intercept", "slope"),
                          constants={"anomaly": xr.DataArray([-1.0, 0.0, 2.0], dims="site", coords={"site": list(SITES)})},
                          function=lambda intercept, slope, anomaly: jnp.exp(intercept + slope * anomaly)),
     ])

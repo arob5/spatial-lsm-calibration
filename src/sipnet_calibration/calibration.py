@@ -74,10 +74,11 @@ def describe_calibration(
         indexed by ``parameter``: ``indexed_by``, ``shape``, ``support``,
         ``units`` and ``bijector`` (the vector's; a derived parameter's
         support is the one it declares, if any, and it has no bijector);
-        ``parameter_names`` (what a derived parameter is computed from);
         ``term`` (the name of the term covering the parameter, a joint
-        term's names joined with ``"+"``), ``prior``, ``given`` and
-        ``provenance`` (the prior's, empty for a derived parameter); and
+        term's names joined with ``"+"``), ``prior`` and ``provenance`` (the
+        prior's, empty for a derived parameter); ``given`` (what the
+        parameter's term or the derived parameter is given, comma-separated);
+        and
         ``sipnet_parameter_names``, the SIPNET parameters depending on it,
         directly or through derived parameters, comma-separated.
 
@@ -105,8 +106,8 @@ def describe_calibration(
             "support": "" if piece.support is None else piece.support.name,
             "units": piece.units,
             "bijector": piece.bijector.name if is_parameter else "",
-            "parameter_names": "" if is_parameter else ", ".join(piece.parameter_names),
-            "term": "", "prior": "", "given": "", "provenance": "",
+            "term": "", "prior": "", "given": "" if is_parameter else ", ".join(piece.given),
+            "provenance": "",
             "sipnet_parameter_names": ", ".join(
                 n for n, depends in dependencies.items() if depends & _influenced(piece.name, derived)
             ),
@@ -249,9 +250,9 @@ def _influenced(name: str, derived: DerivedParameters | None) -> set[str]:
     out = {name}
     if derived is None:
         return out
-    for derived_name in derived.names:  # dependency order: inputs come first
-        if out & set(derived[derived_name].parameter_names):
-            out.add(derived_name)
+    for derived_parameter in derived.derived_parameters:  # dependency order: what each is given first
+        if out & set(derived_parameter.given):
+            out.add(derived_parameter.name)
     return out
 
 
