@@ -218,7 +218,7 @@ one variable per parameter and derived parameter.
 | **parameter** | one unknown of the calibration, a `Parameter`: an array-valued quantity with a support, units, one value's `shape`, and the dims it is indexed by; always distinct from a **SIPNET parameter**, which is always called by its full name | "calibration parameter" |
 | **dim** / **dim label** | a dim a parameter is indexed by (`Parameter.indexed_by`), and one of its labels, in `ParameterVector.coords`; in the adapter layer a dim is `site` or a site-labels name, whose labels are the site ids or the classes some site carries (`SiteDims.coords`) | "group", "copy", `varies_by`, `group_dim`, `dim=`, `dim_index` |
 | **value** | a parameter's value at one tuple of labels of its dims, of shape `Parameter.shape`; `shape` is always one value's, never the block's | |
-| **element** / **element axes** / **element labels** | one number of one value; a value's axes are its element axes, named, with their labels (strings), by its element labels (`Parameter.element_labels`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" |
+| **element** / **element axes** / **element labels** | one number of one value; a value's axes are its element axes, named, with their labels (strings), by its element labels (`Parameter.element_labels`), which name the element axes of the labeled forms | "natural" / "unconstrained size and names", `k` and `e`, `natural_names`, "component" for an element |
 | **block** | all of a parameter's values, one at each tuple of labels of its dims: **block shape** `(*index shape, *shape)`, the **index shape** `[len(coords[d]) for d in indexed_by]`, the labels in use; values by parameter put the batch in front, `(*batch, *block shape)` | "block" for one value |
 | **event** | only TFP's sense: the axes one draw of a distribution covers. A prior term's event is its parameters' blocks; one value's distribution, which `iid_over_dim` repeats over a block, has the element axes as its event; a support's or bijector's `event_ndims` is how many trailing element axes it constrains jointly (0 on an interval, 1 on the simplex) | "event" for element axes |
 | **support** | a set of values, a `Support` (`Interval`, `Simplex`, ...): the set a parameter's values lie in, whose default bijector is `bijector_for(support)`; a rule's domain is one too (`ValueRequirement.domain`) | "the open set", `Bounds`, `OpenInterval` |
@@ -231,6 +231,21 @@ one variable per parameter and derived parameter.
 | **site covariate** | a `float64` column of the site table, named in `SiteDims(covariate_names=)`, read as a constant (`SiteDims.covariate`) | `site_covariate_names` |
 | **external input** | an uncertain value a SIPNET rule reads that is propagated, not calibrated, paired with theta by dim name (`sipnet_parameter_map.ExternalInputs`) | the `to_sipnet_parameter_fields` hook |
 | **role** | what a SIPNET parameter written depends on: `calibrated` (a parameter or derived parameter), `propagated` (external inputs only), `constant` (a rule of constants and fixed values), or `fixed` | |
+
+**The probability layer**, `sipnet_calibration.probability`, is replacing the
+parameter layer (CLAUDE.md's "The probability-layer refactor"). The words it
+has brought so far; the rest of its vocabulary is the design's §6 until a PR
+moves it here.
+
+| Word | Meaning | Retires / not to be confused with |
+|---|---|---|
+| **component** | a named array a draw of a model holds, declared by an `ArraySpec` (`probability.spec`): a parameter, a derived value, an observed value, a prediction | "component" for an element; not a **field** |
+| **stacked dim** | a dim whose labels are a `pandas.MultiIndex` with named levels (integers, strings or `datetime64[ns]`), how a ragged set of labels, such as the `(site, time)` pairs a source observes, becomes one dim; a level may be named wherever a dim may, and merges with a plain dim of its name in a layout's index | a batch dim |
+| **label map** | a one-dimensional `xr.DataArray` on a dim of the coords, named for its target (a dim or an element axis), whose values are the target's labels; a function receives it as `int64` positions (`probability.labels`) | "membership", once R1 removes the parameter layer |
+| **layout** | named arrays as one flat vector, a `Layout` (`probability.layout`): components in declaration order, each block in C order, with no `order` argument; theta's and y's | |
+| **values by name** / `ValuesByName` | a layout's structured, traceable form: `{name: (*batch, *block shape)}` | |
+| **labeled values** / `LabeledValues` | a layout's labeled form: a `dict` of one `xr.DataArray` per component on `(*batch dims, *indexed_by, *element axes)`, a dict because two stacked dims with a `site` level cannot share a Dataset; `encode_labeled_values` makes the Dataset netCDF holds | a `ParameterDataset` |
+| **own dim** | a dim of a constant that is neither a dim of the coords nor an element axis, passed whole, which its reader declares in `own_dims=` | |
 
 **Representations.**
 
@@ -318,6 +333,8 @@ form is stated in its home module's data model:
 | `SIPNETOverrides` | `fields` | `validate_sipnet_overrides` |
 | `ValuesByParameter` | `parameters.vector` | `validate_values_by_parameter` |
 | `ParameterDataset` | `parameters.vector` | `validate_parameter_dataset` |
+| `ValuesByName` | `probability.layout` | `validate_values_by_name` |
+| `LabeledValues` | `probability.layout` | `validate_labeled_values` |
 | `ExternalInputs` | `sipnet_parameter_map` | `validate_external_inputs` |
 
 The validators of the field forms are strict: each requires everything
@@ -424,11 +441,15 @@ coercion lives in `validation.py`.
   sites are held to (`check_site_table_lists_the_sites`,
   `check_sites_are_the_site_table`), and `N_SITES`. No lookup is written as a
   hand `set_index("site_id")`; `site_lookup` is the keyed form.
-- **`parameters/`**, the parameter layer, imports nothing of the package
-  outside itself, which `tests/test_package.py` enforces: it keeps its own
-  private coercion helpers, and the reserved names, the site table and
-  SIPNET are the adapter layer's (`site_dims.py`, `sipnet_parameter_map.py`,
-  `forward.py`).
+- **`probability/`**, the probability layer, imports nothing of the package
+  outside itself, and **`parameters/`**, the parameter layer it is replacing,
+  nothing but it (its supports, private coercion and probe points, which
+  `parameters` re-exports); `tests/test_package.py` enforces both. The
+  probability layer keeps its own private coercion helpers and its own
+  reserved names (`probability.names`, whose `SAMPLE` a test holds equal to
+  `conventions.SAMPLE`), and the project's reserved names, the site table
+  and SIPNET are the adapter layer's (`site_dims.py`,
+  `sipnet_parameter_map.py`, `forward.py`).
 - **`tests/conftest.py`** holds every fixture or builder more than one test
   file uses (some Niwot stacks and observation builders are still per file,
   until the module cleanups, PR 5).
@@ -909,15 +930,16 @@ The layout below is the **agreed target**, specified in
 `logs/2026-08-28_Plotting Design Spec.md` in the Obsidian vault. The src-layout
 reorg has landed, so the paths below are the real ones; `sites.py`,
 `constraints.py`, `initial_conditions/`, `drivers.py`, `projection.py`, the
-`parameters/` package, `site_dims.py`, `sipnet_parameter_map.py`,
+`parameters/` package, the first modules of the `probability/` package,
+`site_dims.py`, `sipnet_parameter_map.py`,
 `calibration.py`, `site_labels.py`, `forward.py`, `compute.py`, `smc.py` and
 the `observation/` package are implemented, `fields.py` has the model-output
 adapters, the plotting package has series, maps and grids, and the other
 modules carry the contract each is to satisfy.
 `initial_conditions` is a package rather than a module: it spans several
 artifacts, and giving each its own file keeps that artifact's schema, writer,
-reader and checks together. `parameters` is a package for another reason:
-it is the parameter layer, which imports nothing of the rest.
+reader and checks together. `parameters` and `probability` are packages for
+another reason: each is a layer, which imports nothing of the rest.
 
 ```
 pyproject.toml            # name = "sipnet-calibration"; src layout
@@ -991,12 +1013,35 @@ src/sipnet_calibration/
                           # processed file per source; read_raw(),
                           # build_site_labels(),
                           # load_site_labels(), site_labels_field() -> CF flags
+  probability/            # the probability layer, replacing parameters/:
+                          # imports nothing of the package outside itself
+                          # (tested); __init__ re-exports it
+    support.py            # Support (Interval, Simplex, PositiveDefinite:
+                          # contains, closure), REAL, POSITIVE, NON_NEGATIVE,
+                          # OPEN_UNIT_INTERVAL, UNIT_INTERVAL, SIMPLEX,
+                          # POSITIVE_DEFINITE; DEFAULT_BIJECTORS, bijector_for
+    names.py              # SAMPLE, COMPONENT_LEVEL, ELEMENT_LEVEL, THETA,
+                          # THETA_ENTRY, RESERVED_NAMES
+    labels.py             # coords (stacked dims), constants (own dims), label
+                          # maps (into dims or element axes): as_coords,
+                          # as_constants, as_label_maps, aligned_constants,
+                          # aligned_label_maps; indexer() by hashing
+    spec.py               # ArraySpec: name, units, support, indexed_by,
+                          # element_axes (labels or a length), bijector;
+                          # shape, unconstrained()
+    layout.py             # Layout: index (component, *dims, *levels,
+                          # element), select()/positions() by dim or level,
+                          # Flat, values by name and labeled values converted
+                          # by <source>_to_<target>, unconstrained,
+                          # to_natural(), to_unconstrained(), contains();
+                          # ValuesByName, LabeledValues;
+                          # encode_labeled_values/decode_labeled_values
+    _probes.py, _validation.py
+                          # private: the probe points, coercion
   parameters/             # the parameter layer: imports nothing of the package
-                          # outside itself (tested); __init__ re-exports it
-    support.py            # Support (Interval, Simplex: contains, closure),
-                          # REAL, POSITIVE, NON_NEGATIVE, OPEN_UNIT_INTERVAL,
-                          # UNIT_INTERVAL, SIMPLEX; DEFAULT_BIJECTORS and
-                          # bijector_for
+                          # outside itself but probability/ (tested);
+                          # __init__ re-exports it
+    support.py            # re-exports probability.support's supports
     parameter.py          # Parameter: support, units, shape, string element
                           # labels, indexed_by, T; unconstrained()
     vector.py             # ParameterVector: parameters, coords {dim: labels},
@@ -1031,8 +1076,8 @@ src/sipnet_calibration/
     _description.py, _distributions.py, _probes.py, _validation.py
                           # private: the shared description checks and
                           # labeled form, what the prior and its builders
-                          # share of TFP, the probe points and bijector
-                          # comparison, coercion
+                          # share of TFP; the last two re-export
+                          # probability's probe points and coercion
   site_dims.py            # SiteDims: the sites and the dims they define; coords,
                           # labels() (memberships), covariate(), at_sites(),
                           # site_fields(), select()

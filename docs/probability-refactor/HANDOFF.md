@@ -20,9 +20,9 @@ and proofs are the design's §12; the column below is a summary.
 | PR | Branch | Status | Needs | Scope |
 |---|---|---|---|---|
 | P0 | `docs/probability-refactor-workflow` | merged #76 | — | The workflow in CLAUDE.md; this file; `design.html` |
-| P1 | `refactor/probability-p1-references` | open #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
-| P2 | `refactor/probability-p2-foundations` | next | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
-| P3 | `refactor/probability-p3-prior-model` | waiting | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
+| P1 | `refactor/probability-p1-references` | merged #77 | P0 | A script writing reference values from today's code: the prior draws and densities (PR #69's prior transcribed, `example_calibration`, a hierarchy, a copula, a per-PFT simplex), and `ForwardModel` predictions on `test_forward`'s fake runners |
+| P2 | `refactor/probability-p2-foundations` | open #78 | P0 | Supports, with `PositiveDefinite`; `ArraySpec`; `labels` v2; `Layout`; encode and decode; shims left in `parameters` (split into P2a and P2b if large) |
+| P3 | `refactor/probability-p3-prior-model` | next | P1, P2 | Laws, families, builders; `FactorSpec`, `DeterministicSpec`, decorators; `joint`, `bind`, `FactoredDistribution`; `condition_on` and `Posterior` without simulators |
 | P4 | `refactor/probability-p4-adapter-prep` | waiting | P2 | F8; the SIPNET map on dicts and `ArraySpec`s; `ObservationSource.standard_deviation`; the observation dims and constants; `observation.model` |
 | P5 | `refactor/probability-p5-simulator` | waiting | P3, P4 | The `Simulator` seam; `SIPNETRuns`, with today's `ForwardModel` delegating to it; `SIPNETSimulator`; F6, F7 |
 | P6 | `refactor/probability-p6-gaussian` | waiting | P5 | Covariance specs, `GaussianSpec`, `noise_factor`, `gaussian_likelihood`, through the `probability/_linalg.py` shim over today's pyEKI |
@@ -156,3 +156,90 @@ removal of P0's stale worktree, and also refused reading `design.html`, until
 Andrew allowed both. A worktree-isolated session's hook allows writes only in
 its own worktree, so a session enters the new PR's worktree with
 `EnterWorktree(path=...)` before writing.
+
+### 2026-10-04: P2, the foundations
+
+**Done.** One PR; no split was needed. The new package
+`sipnet_calibration.probability` holds:
+
+- `support`, moved from `parameters` with `PositiveDefinite` and
+  `POSITIVE_DEFINITE` added (`closure()` is the semi-definite matrices);
+- `names`, the layer's own names and `RESERVED_NAMES`;
+- `labels` v2: coords with stacked dims (a `MultiIndex`, times converted to
+  `datetime64[ns]`), constants with `own_dims`, label maps into dims or
+  element axes, every lookup by `get_indexer` (`indexer`);
+- `spec.ArraySpec`;
+- `layout`: `Layout`, `ValuesByName`, `LabeledValues`, their validators,
+  `encode_labeled_values` and `decode_labeled_values`.
+
+`_validation` and `_probes` moved too. `parameters.support`,
+`parameters._validation` and `parameters._probes` are re-export shims, and
+`tests/test_package.py` lets `parameters` import `probability` (and nothing
+else) and checks that `probability` imports nothing of the package.
+Tests: 2475 passed and 94 skipped at P1's merge; 2651 and 94 after.
+
+**Review.** One Standard round (code, mutation testing, docs). It found,
+and this PR fixes:
+- a missing string label accepted (pandas 3 holds `None` among strings as
+  `str`);
+- `datetime64` selectors turned into integers or dates by coercion;
+- labeled values whose draws differ in number or order across components
+  paired wrongly;
+- an own dim that is also a coords dim passed unaligned;
+- integer labels held as `object` breaking `Layout.index`;
+- repeated labels in a constant or label map raising pandas' own error;
+- a stacked dim ordered two ways reaching `xr.Dataset` unchecked;
+- a stacked dim's tuples matched across kinds (`620.0` for `620`);
+- time-zone-aware and out-of-range times failing in pandas' words.
+
+Tests now cover each, and the gaps mutation testing found, with one
+exception: the round-trip half of `ArraySpec`'s custom-bijector check, which
+no TFP bijector at hand violates while passing the other half.
+
+**Deviations from the design.** None in substance. Choices it left open:
+
+- theta's element axis for a positive-definite value is named
+  `"<row axis>_<column axis>_cholesky"` (recorded in `design.html` §7.1);
+- the probes `-10 * 1` and `-20 * 1` make positive-definite values too
+  ill-conditioned to invert (`e^-10` on the diagonal under off-diagonals of
+  -10), so `ArraySpec`'s custom-bijector check round-trips only where the
+  default bijector inverts its own image;
+- `parameters.labels` was not shimmed: v2 checks more (finite constants,
+  label kinds) and `derived` and `prior` read v1's memberships, so v1 stays,
+  quadratic check included, until R1;
+- the conversions are named `values_to_labeled`, `labeled_to_values`,
+  `flat_to_labeled` and `labeled_to_flat`; `Layout` adds `slice_of(name)` and
+  `level_names`;
+- `validate_labeled_values` ignores keys that are not components, as
+  `validate_values_by_name` does (`ParameterDataset`'s refused them), so a
+  `to_labeled` holding `"theta"` converts as it is;
+- entry names carry no transform name (`log(x)`), there being no
+  `long_name` (D6); `describe()` has the bijector;
+- the encoding's attribute is `stacked_dims`, a JSON object
+  `{dim: [level, ...]}`; it refuses values that label a shared dim
+  differently rather than letting xarray outer-join them.
+
+**What P3 and later must know.**
+
+- **Order.** A layout's block is in C order over `indexed_by`;
+  `ParameterVector`'s default order sorts by the coords' dims instead. They
+  agree when every parameter's dims are in the coords' order, which holds for
+  all of P1's cases; `bind` should pass coords in the order the parameters
+  use them. `test_a_block_is_in_c_order_whatever_the_coords_order` pins the
+  difference.
+- **Coords at bind.** `Layout` refuses a coords dim no component uses, as
+  `ParameterVector` did, so `bind` filters `site_dims.coords` to the dims in
+  use.
+- **Selection.** `Layout.select` refuses a selection that leaves a kept
+  component's dim without a label (a source not observing the selected
+  site); `positions` does not. `FactoredDistribution.select` must drop such
+  components or say so.
+- **Positive-definite probes.** Any probe-point check of a law or
+  deterministic on a positive-definite component (P3, P8) meets the same
+  ill-conditioning at `-10 * 1` and `-20 * 1`; compare in the closure, and
+  skip what the default bijector cannot invert.
+- **Constants** must be finite at the labels in use, checked when
+  `aligned_constants` reads them, the earliest point that knows the labels.
+- Performance: binding 8,000 sites and 80,000 stacked labels, with a
+  constant and a label map on them, takes well under a second
+  (`test_eighty_thousand_labels_bind_in_under_a_second`).

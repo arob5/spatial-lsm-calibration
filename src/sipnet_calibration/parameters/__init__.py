@@ -5,7 +5,7 @@ Where this sits
 ---------------
 ::
 
-    parameters.support      Support, Interval, Simplex; the default bijectors
+    parameters.support      Support, Interval, Simplex; their bijectors (re-exported)
     parameters.labels       coords, constants, memberships: labeled values read as arrays
       -> parameters.parameter   Parameter: one value's description and T
       -> parameters.vector      ParameterVector: the layout, its three forms
@@ -16,8 +16,10 @@ Where this sits
     ──────── seam: the labeled natural values, an xr.Dataset ────────
       -> site_dims, sipnet_parameter_map, forward   (the adapter layer)
 
-No module here imports from ``sipnet_calibration`` outside ``parameters``,
-which ``tests/test_package.py`` enforces: sites, site labels, SIPNET and the
+No module here imports from ``sipnet_calibration`` outside ``parameters``
+but :mod:`sipnet_calibration.probability`, the layer replacing this one,
+whose supports, coercion and probe points it re-exports;
+``tests/test_package.py`` enforces this. Sites, site labels, SIPNET and the
 project's reserved names are the adapter layer's. So the layer can be
 replaced (by ProbPipe, say) by anything that produces the labeled natural
 values. It computes in ``float64``, which importing the package turns on.
@@ -25,7 +27,8 @@ values. It computes in ``float64``, which importing the package turns on.
 Modules
 -------
 :mod:`~sipnet_calibration.parameters.support`
-    The sets values lie in, and their default bijections.
+    The sets values lie in, and their default bijections, re-exported from
+    :mod:`sipnet_calibration.probability.support`.
 :mod:`~sipnet_calibration.parameters.labels`
     Coords, and the constants and memberships functions read: what each is,
     and how it is read at the labels in use.
