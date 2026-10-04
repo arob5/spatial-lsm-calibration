@@ -171,7 +171,7 @@ mjx-container[display="true"]{overflow-x:auto;overflow-y:hidden;max-width:100%;p
     <span><b>Date</b> 2026-10-04 (revision 5)</span>
     <span><b>Base</b> <code>origin/main</code> at <code>ec21aa9</code> (PR #72)</span>
     <span><b>References</b> ProbPipe <code>design/</code> at PR #467; EnsKit redesign at pyEKI <code>a9e2faf</code></span>
-    <span><b>Status</b> for review; nothing implemented</span>
+    <span><b>Status</b> being implemented; the handoff document records which PRs have landed</span>
   </div>
 </header>
 
@@ -779,7 +779,11 @@ class PositiveDefinite(Support):
     tfb.FillScaleTriL(diag_bijector=tfb.Exp(), diag_shift=None)])``. A density
     on the set is against Lebesgue measure on the :math:`p(p+1)/2` entries of
     the lower triangle. Theta's entries follow ``tfb.FillTriangular``'s
-    packing, labeled ``"L[i,j]"`` from the value's axis labels.
+    packing, labeled ``"L[i,j]"`` from the value's axis labels, on one
+    element axis named ``"&lt;row axis&gt;_&lt;column axis&gt;_cholesky"`` that
+    replaces the last two. The probes :math:`-10 \cdot 1` and
+    :math:`-20 \cdot 1` give values too ill-conditioned to invert, so a
+    check that round-trips a bijector skips them (P2).
 
     Attributes
     ----------

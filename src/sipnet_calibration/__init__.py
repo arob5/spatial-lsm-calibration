@@ -54,11 +54,17 @@ The data sources, each a spec, a reader, a builder, a loader and a field view:
 
 The inverse problem:
 
+:mod:`~sipnet_calibration.probability`
+    The probability layer, independent of the rest of the package, which is
+    replacing the parameter layer: so far its supports, the declaration of a
+    component (``ArraySpec``), coords with stacked dims, constants and label
+    maps, and the layout of named arrays with its three forms.
 :mod:`~sipnet_calibration.parameters`
-    The parameter layer, independent of the rest of the package: what is
-    calibrated (supports, parameters, the vector and its three forms), what
-    is computed from it (derived parameters), and what is believed
-    beforehand (the prior).
+    The parameter layer, independent of the rest of the package but for the
+    probability layer it reads its supports from: what is calibrated
+    (supports, parameters, the vector and its three forms), what is computed
+    from it (derived parameters), and what is believed beforehand (the
+    prior).
 :mod:`~sipnet_calibration.site_dims`
     The sites and the dims they define: coords for a vector, constants and
     memberships for its functions, and values read at the sites.
@@ -90,7 +96,7 @@ Dependencies
 ------------
 The dependency runs one way, from the foundations up::
 
-    parameters  (imports nothing of the package)
+    probability  (imports nothing of the package)  <-  parameters
 
     conventions  <-  validation  <-  sites
         <-  fields, site_labels
@@ -99,8 +105,9 @@ The dependency runs one way, from the foundations up::
         <-  observation, sipnet_parameter_map
         <-  calibration, forward  <-  experiments
 
-:mod:`~sipnet_calibration.parameters` imports nothing of the package outside
-itself, which ``tests/test_package.py`` enforces; the adapter layer
+:mod:`~sipnet_calibration.probability` imports nothing of the package outside
+itself, and :mod:`~sipnet_calibration.parameters` nothing but it, which
+``tests/test_package.py`` enforces; the adapter layer
 (``site_dims``, ``sipnet_parameter_map``, ``forward``) imports it, and the
 seam between them is the labeled natural values.
 :mod:`~sipnet_calibration.io` depends on nothing here, and the data sources
